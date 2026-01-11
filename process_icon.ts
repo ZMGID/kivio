@@ -14,9 +14,6 @@ async function processIcon() {
         // Resize to standard size if needed (e.g. 1024x1024)
         image.resize({ w: 512, h: 512 });
 
-        // Create a mask
-        const mask = new Jimp({ width: 512, height: 512, color: 0x00000000 });
-
         // Draw a white rounded rectangle on the mask
         // Squircle approximation: r = 22% of size ideally, circular is simpler for jimp
         // Jimp doesn't have advanced drawing. 

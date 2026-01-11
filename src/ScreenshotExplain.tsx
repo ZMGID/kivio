@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type CSSProperties } from 'react';
 import { Send, X, Loader2, ImageIcon, Clock } from 'lucide-react';
 
 interface Message {
@@ -6,8 +6,12 @@ interface Message {
     content: string;
 }
 
+type AppRegionStyle = CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' }
+const dragStyle: AppRegionStyle = { WebkitAppRegion: 'drag' }
+const noDragStyle: AppRegionStyle = { WebkitAppRegion: 'no-drag' }
+
 function ScreenshotExplain() {
-    const [imagePath, setImagePath] = useState<string>('');
+    const [imageId, setImageId] = useState<string>('');
     const [imagePreview, setImagePreview] = useState<string>('');
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
@@ -22,38 +26,39 @@ function ScreenshotExplain() {
     }>>([]);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    // Parse image path from URL
+    // Parse image id from URL
     useEffect(() => {
         const hash = window.location.hash;
         const params = new URLSearchParams(hash.split('?')[1] || '');
-        const imgPath = params.get('image');
-        if (imgPath) {
-            setImagePath(decodeURIComponent(imgPath));
-            loadImage(decodeURIComponent(imgPath));
-            getInitialSummary(decodeURIComponent(imgPath));
+        const id = params.get('imageId');
+        if (id) {
+            const decoded = decodeURIComponent(id);
+            setImageId(decoded);
+            loadImage(decoded);
+            getInitialSummary(decoded);
         }
         // Load history
         loadHistory();
     }, []);
 
     // Load image for preview
-    const loadImage = async (path: string) => {
-        if (window.ipcRenderer) {
-            const result = await window.ipcRenderer.invoke('explain-read-image', path);
+    const loadImage = async (id: string) => {
+        if (window.api) {
+            const result = await window.api.explainReadImage(id);
             if (result.success) {
-                setImagePreview(result.data);
+                setImagePreview(result.data ?? '');
             }
         }
     };
 
     // Get initial summary
-    const getInitialSummary = async (path: string) => {
+    const getInitialSummary = async (id: string) => {
         setInitializing(true);
         setLoading(true);
-        if (window.ipcRenderer) {
-            const result = await window.ipcRenderer.invoke('explain-get-initial-summary', path);
+        if (window.api) {
+            const result = await window.api.explainGetInitialSummary(id);
             if (result.success) {
-                setMessages([{ role: 'assistant', content: result.summary }]);
+                setMessages([{ role: 'assistant', content: result.summary ?? '' }]);
             } else {
                 setMessages([{ role: 'assistant', content: `错误: ${result.error}` }]);
             }
@@ -76,12 +81,12 @@ function ScreenshotExplain() {
         setInput('');
         setLoading(true);
 
-        if (window.ipcRenderer) {
+        if (window.api) {
             const conversationMessages = [...messages, userMessage];
-            const result = await window.ipcRenderer.invoke('explain-ask-question', imagePath, conversationMessages);
+            const result = await window.api.explainAskQuestion(imageId, conversationMessages);
 
             if (result.success) {
-                setMessages(prev => [...prev, { role: 'assistant', content: result.response }]);
+                setMessages(prev => [...prev, { role: 'assistant', content: result.response ?? '' }]);
             } else {
                 setMessages(prev => [...prev, { role: 'assistant', content: `错误: ${result.error}` }]);
             }
@@ -101,8 +106,8 @@ function ScreenshotExplain() {
 
     // Load history list
     const loadHistory = async () => {
-        if (window.ipcRenderer) {
-            const result = await window.ipcRenderer.invoke('explain-get-history');
+        if (window.api) {
+            const result = await window.api.explainGetHistory();
             if (result.success) {
                 setHistory(result.history || []);
             }
@@ -111,16 +116,16 @@ function ScreenshotExplain() {
 
     // Save current session to history
     const saveToHistory = async () => {
-        if (window.ipcRenderer && imagePath && messages.length > 0) {
-            await window.ipcRenderer.invoke('explain-save-history', imagePath, messages);
+        if (window.api && imageId && messages.length > 0) {
+            await window.api.explainSaveHistory(messages);
             await loadHistory();  // Refresh history list
         }
     };
 
     // Load a history record
     const loadHistoryRecord = async (historyId: string) => {
-        if (window.ipcRenderer) {
-            const result = await window.ipcRenderer.invoke('explain-load-history', historyId);
+        if (window.api) {
+            const result = await window.api.explainLoadHistory(historyId);
             if (result.success && result.record) {
                 setMessages(result.record.messages);
                 setShowHistory(false);
@@ -135,8 +140,8 @@ function ScreenshotExplain() {
         if (messages.length > 0) {
             await saveToHistory();
         }
-        if (window.ipcRenderer) {
-            window.ipcRenderer.send('close-explain-window');
+        if (window.api) {
+            window.api.closeExplainWindow();
         }
     };
 
@@ -145,13 +150,13 @@ function ScreenshotExplain() {
             {/* Header */}
             <div
                 className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 pl-20"
-                style={{ WebkitAppRegion: 'drag' } as any}
+                style={dragStyle}
             >
                 <div className="flex items-center space-x-2">
                     <ImageIcon size={20} className="text-gray-600 dark:text-gray-400" />
                     <h1 className="text-lg font-semibold text-gray-900 dark:text-white">截图解释</h1>
                 </div>
-                <div className="flex items-center space-x-2" style={{ WebkitAppRegion: 'no-drag' } as any}>
+                <div className="flex items-center space-x-2" style={noDragStyle}>
                     <button
                         onClick={() => setShowHistory(!showHistory)}
                         className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"

@@ -1,12 +1,16 @@
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { Settings as SettingsIcon, X, Save } from 'lucide-react'
+
+type AppRegionStyle = CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' }
+const dragStyle: AppRegionStyle = { WebkitAppRegion: 'drag' }
+const noDragStyle: AppRegionStyle = { WebkitAppRegion: 'no-drag' }
 
 type SettingsData = {
     hotkey: string;
     theme: 'system' | 'light' | 'dark';
     targetLang: string;
-    source: 'bing' | 'openai';
+    source: 'bing' | 'openai' | 'custom';
     openai: {
         apiKey: string;
         baseURL: string;
@@ -47,20 +51,20 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const [appVersion, setAppVersion] = useState('');
 
     useEffect(() => {
-        if (window.ipcRenderer) {
-            window.ipcRenderer.invoke('get-settings').then((data: SettingsData) => {
+        if (window.api) {
+            window.api.getSettings().then((data: SettingsData) => {
                 setSettings(data);
                 setLoading(false);
             });
-            window.ipcRenderer.invoke('get-app-version').then((ver: string) => {
+            window.api.getAppVersion().then((ver: string) => {
                 setAppVersion(ver);
             });
         }
     }, []);
 
     const handleSave = async () => {
-        if (!settings || !window.ipcRenderer) return;
-        await window.ipcRenderer.invoke('save-settings', settings);
+        if (!settings || !window.api) return;
+        await window.api.saveSettings(settings);
         onSettingsChange();
         onClose();
     };
@@ -70,12 +74,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     return (
         <div className="flex flex-col h-full bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 p-4 select-none">
             <div className="flex justify-between items-center mb-4 border-b dark:border-gray-700 pb-2"
-                style={{ WebkitAppRegion: 'drag' } as any}>
+                style={dragStyle}>
                 <h2 className="font-bold text-lg flex items-center gap-2">
                     <SettingsIcon size={18} /> Settings
                 </h2>
                 <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded text-gray-500"
-                    style={{ WebkitAppRegion: 'no-drag' } as any}>
+                    style={noDragStyle}>
                     <X size={20} />
                 </button>
             </div>
@@ -89,7 +93,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         <select
                             className="w-full p-2 border dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-sm"
                             value={settings.theme || 'system'}
-                            onChange={(e) => setSettings({ ...settings, theme: e.target.value as any })}
+                            onChange={(e) => setSettings({ ...settings, theme: e.target.value as SettingsData['theme'] })}
                         >
                             <option value="system">Follow System</option>
                             <option value="light">Light</option>
@@ -133,7 +137,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     <select
                         className="w-full p-2 border dark:border-gray-700 rounded bg-white dark:bg-gray-800"
                         value={settings.source}
-                        onChange={(e) => setSettings({ ...settings, source: e.target.value as any })}
+                        onChange={(e) => setSettings({ ...settings, source: e.target.value as SettingsData['source'] })}
                     >
                         <option value="bing">Bing Translate (Free)</option>
                         <option value="openai">DeepSeek / Zhipu / OpenAI (AI)</option>
@@ -238,7 +242,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                                         onChange={(e) => setSettings({ ...settings, screenshotTranslation: { ...settings.screenshotTranslation, enabled: true, hotkey: settings.screenshotTranslation?.hotkey || 'Command+Shift+A', ocrSource: 'glm', glmApiKey: e.target.value } })}
                                         placeholder="从 bigmodel.cn 获取"
                                     />
-                                    <p className="text-xs text-gray-400 mt-1">访问 <a href="#" onClick={() => window.ipcRenderer?.send('open-external', 'https://bigmodel.cn/console/apikey')} className="text-blue-500 hover:underline">bigmodel.cn</a> 获取免费 API Key</p>
+                                    <p className="text-xs text-gray-400 mt-1">访问 <a href="#" onClick={() => window.api?.openExternal('https://bigmodel.cn/console/apikey')} className="text-blue-500 hover:underline">bigmodel.cn</a> 获取免费 API Key</p>
                                 </div>
                             )}
                         </>
@@ -370,7 +374,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                                             placeholder="输入 API Key"
                                             className="w-full px-3 py-2 text-sm border dark:border-gray-600 rounded focus:border-blue-500 dark:bg-gray-700"
                                         />
-                                        <p className="text-xs text-gray-400 mt-1">访问 <a href="#" onClick={() => window.ipcRenderer?.send('open-external', 'https://bigmodel.cn/console/apikey')} className="text-blue-500 hover:underline">bigmodel.cn</a> 获取免费 API Key</p>
+                                        <p className="text-xs text-gray-400 mt-1">访问 <a href="#" onClick={() => window.api?.openExternal('https://bigmodel.cn/console/apikey')} className="text-blue-500 hover:underline">bigmodel.cn</a> 获取免费 API Key</p>
                                     </div>
                                 )}
                             </>

@@ -1,24 +1,15 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type CSSProperties } from 'react'
 import { Settings as SettingsIcon } from 'lucide-react'
 import Settings from './Settings'
 import ScreenshotResult from './ScreenshotResult'
 import ScreenshotExplain from './ScreenshotExplain'
 import './index.css'
 
-function App() {
-  // Check URL mode for screenshot result or explain
-  const urlParams = new URLSearchParams(window.location.search);
-  const hash = window.location.hash.replace('#', '');
-  const mode = urlParams.get('mode') || hash.split('?')[0];
+type AppRegionStyle = CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' }
+const dragStyle: AppRegionStyle = { WebkitAppRegion: 'drag' }
+const noDragStyle: AppRegionStyle = { WebkitAppRegion: 'no-drag' }
 
-  if (mode === 'screenshot') {
-    return <ScreenshotResult />;
-  }
-
-  if (mode === 'explain') {
-    return <ScreenshotExplain />;
-  }
-
+function Translator() {
   const [input, setInput] = useState('')
   const [result, setResult] = useState('')
   const [loading, setLoading] = useState(false)
@@ -30,8 +21,8 @@ function App() {
 
   // Load Theme Preference and Apply
   const applyTheme = async () => {
-    if (!window.ipcRenderer) return;
-    const settings = await window.ipcRenderer.invoke('get-settings');
+    if (!window.api) return;
+    const settings = await window.api.getSettings();
 
     // Set Theme
     const mode = settings.theme || 'system';
@@ -58,22 +49,21 @@ function App() {
 
   // Manage window size based on view
   useEffect(() => {
-    if (window.ipcRenderer) {
+    if (window.api) {
       if (showSettings) {
-        window.ipcRenderer.send('resize-window', 400, 520)
+        window.api.resizeWindow(400, 520)
       } else {
-        window.ipcRenderer.send('resize-window', 360, 120)
+        window.api.resizeWindow(360, 120)
       }
     }
   }, [showSettings])
 
   // Listen for Tray "Settings" click
   useEffect(() => {
-    if (window.ipcRenderer) {
-      // cast return type because we modified preload to return cleanup function, but types say IpcRenderer
-      const removeListener = window.ipcRenderer.on('open-settings', () => {
+    if (window.api) {
+      const removeListener = window.api.onOpenSettings(() => {
         setShowSettings(true);
-      }) as unknown as () => void;
+      });
 
       return () => {
         removeListener?.();
@@ -90,10 +80,9 @@ function App() {
       if (input.trim()) {
         setLoading(true)
         try {
-          if (window.ipcRenderer) {
-            const translated = await window.ipcRenderer.invoke('translate-text', input);
-            setResult(translated);
-          }
+          if (!window.api) return
+          const translated = await window.api.translateText(input);
+          setResult(translated);
         } catch (error) {
           setResult('Error')
         } finally {
@@ -126,14 +115,14 @@ function App() {
 
     if (e.key === 'Enter') {
       const textToCommit = result || input;
-      if (window.ipcRenderer) {
-        window.ipcRenderer.send('commit-translation', textToCommit)
+      if (window.api) {
+        window.api.commitTranslation(textToCommit)
         setInput('')
         setResult('')
       }
     } else if (e.key === 'Escape') {
-      if (window.ipcRenderer) {
-        window.ipcRenderer.send('close-window')
+      if (window.api) {
+        window.api.closeWindow()
       }
     }
   }
@@ -143,8 +132,8 @@ function App() {
     const handleCloseSettings = () => {
       setShowSettings(false);
       // Hide window after closing settings (useful when opened from tray)
-      if (window.ipcRenderer) {
-        window.ipcRenderer.send('hide-window');
+      if (window.api) {
+        window.api.hideWindow();
       }
     };
 
@@ -158,13 +147,13 @@ function App() {
   // Translation View
   return (
     <div className="h-screen w-screen flex flex-col p-2 bg-white/95 dark:bg-gray-900/95 rounded-lg border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-sm select-none overflow-hidden relative group"
-      style={{ WebkitAppRegion: 'drag' } as any}>
+      style={dragStyle}>
 
       {/* Settings Toggle (Hidden by default, shows on hover) */}
       <button
         onClick={() => setShowSettings(true)}
         className="absolute top-2 right-2 p-1 text-gray-300 hover:text-gray-500 rounded no-drag opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ WebkitAppRegion: 'no-drag' } as any}
+        style={noDragStyle}
       >
         <SettingsIcon size={14} />
       </button>
@@ -173,7 +162,7 @@ function App() {
         <div
           ref={resultRef}
           className="w-full mb-1 px-2 py-1 pr-8 bg-blue-50/50 dark:bg-blue-900/30 rounded text-base text-gray-800 dark:text-gray-200 font-medium select-text no-drag max-h-24 overflow-y-auto"
-          style={{ WebkitAppRegion: 'no-drag' } as any}>
+          style={noDragStyle}>
           {loading ? <span className="text-gray-400 text-sm">Translating...</span> : result}
         </div>
       )}
@@ -183,7 +172,7 @@ function App() {
           ref={inputRef}
           autoFocus
           className="w-full px-2 py-1 pr-8 bg-transparent text-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none no-drag"
-          style={{ WebkitAppRegion: 'no-drag' } as any}
+          style={noDragStyle}
           placeholder="Translation input..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -192,6 +181,17 @@ function App() {
       </div>
     </div>
   )
+}
+
+function App() {
+  // Check URL mode for screenshot result or explain
+  const urlParams = new URLSearchParams(window.location.search)
+  const hash = window.location.hash.replace('#', '')
+  const mode = urlParams.get('mode') || hash.split('?')[0]
+
+  if (mode === 'screenshot') return <ScreenshotResult />
+  if (mode === 'explain') return <ScreenshotExplain />
+  return <Translator />
 }
 
 export default App

@@ -1,0 +1,43 @@
+# Agent 协作记录（KeyLingo）
+
+本文件用于多 Agent 在本仓库内协作时的“共享上下文 + 变更记录 + 交接清单”。请保持内容短、可执行；重要结论写在“决策记录”。
+
+## 快速上下文
+
+- 产品：KeyLingo（macOS Electron 工具：翻译 / 截图翻译 / 截图解释）。
+- 架构：Electron 主进程 `electron/main.ts` + preload `electron/preload.ts` + 渲染层 React `src/`（Vite）。
+- IPC 约定：渲染层只允许调用 `window.api`（已禁用透传 `ipcRenderer`）。
+
+## 关键入口与目录
+
+- 主进程：`electron/main.ts`
+- Preload 白名单 API：`electron/preload.ts`
+- 渲染层入口：`src/main.tsx`、路由/模式切换：`src/App.tsx`
+- 设置页：`src/Settings.tsx`
+- 截图翻译：`src/ScreenshotResult.tsx`
+- 截图解释：`src/ScreenshotExplain.tsx`
+
+## 协作规则（必须遵守）
+
+- 不要重新引入 `window.ipcRenderer`；新增功能请扩展 `window.api` 的白名单方法。
+- 不要把本机文件路径从主进程“直接暴露”给渲染层；截图解释使用 `imageId`（主进程仅允许读取自身登记的 temp 文件）。
+- 外链打开走 `window.api.openExternal`；主进程侧仅允许 `https:`，如需更严格可加域名白名单。
+
+## 常用命令
+
+- `npm run dev`：本地开发
+- `npm run build`：打包（含 `electron-builder`）
+- `npm run lint`：ESLint
+- `npx --no-install tsc -p tsconfig.json --noEmit`：类型检查
+
+## 决策记录（Decision Log）
+
+- 2025-12-31：安全加固：`ipcRenderer` 改为 `window.api` 白名单；截图解释由 `imagePath` 改为 `imageId`，并在关闭窗口时清理 temp 图片；IPC 增加 sender 校验与 `window.open` 禁用（见 `electron/main.ts`）。
+
+
+## 交接模板（每次改动后追加一条）
+
+- 时间/作者：
+- 改动范围（文件/功能）：
+- 风险点 & 回滚方式：
+- 如何验证（最少 3 步）：

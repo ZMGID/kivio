@@ -16,7 +16,7 @@
 ### ✨ Key Features
 
 *   **Global Hotkey**: Toggle the translation bar instantly from any app (Default: `Cmd+Option+T`).
-*   **Screenshot Translation**: Capture any part of your screen and translate text from images using GLM-4V or System OCR (Default: `Cmd+Shift+X`).
+*   **Screenshot Translation**: Capture any part of your screen and translate text from images using GLM-4V or System OCR (Default: `Cmd+Shift+A`).
 *   **Screenshot Explanation (NEW in v1.3.0)**: AI-powered screenshot analysis with conversational Q&A - explain code, designs, or any visual content (Default: `Cmd+Shift+E`).
 *   **Minimalist Design**: Clean, distracting-free UI that floats over your windows. Supports **Light** and **Dark** modes (System sync).
 *   **Smart Translation**:
@@ -90,6 +90,9 @@ Built with [Electron](https://www.electronjs.org/), [React](https://react.dev/),
 ```bash
 # Install dependencies
 npm install
+
+# Build macOS System OCR helper (requires Xcode Command Line Tools)
+npm run build:ocr
 
 # Start development server
 npm run dev
@@ -174,6 +177,9 @@ npm run build
 ```bash
 # 安装依赖
 npm install
+
+# 构建 macOS 系统 OCR 辅助程序（需要安装 Xcode Command Line Tools）
+npm run build:ocr
 
 # 启动开发环境
 npm run dev

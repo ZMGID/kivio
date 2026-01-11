@@ -1,6 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { X, Copy, CheckCircle } from 'lucide-react'
 import './index.css'
+
+type AppRegionStyle = CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' }
+const dragStyle: AppRegionStyle = { WebkitAppRegion: 'drag' }
+const noDragStyle: AppRegionStyle = { WebkitAppRegion: 'no-drag' }
 
 export default function ScreenshotResult() {
     const [status, setStatus] = useState<'processing' | 'ready' | 'error'>('processing')
@@ -10,25 +14,25 @@ export default function ScreenshotResult() {
     const [copied, setCopied] = useState(false)
 
     useEffect(() => {
-        if (!window.ipcRenderer) return;
+        if (!window.api) return;
 
         // Listen for processing status
-        const cleanup1 = window.ipcRenderer.on('screenshot-processing', () => {
+        const cleanup1 = window.api.onScreenshotProcessing(() => {
             setStatus('processing');
-        }) as unknown as () => void;
+        });
 
         // Listen for results
-        const cleanup2 = window.ipcRenderer.on('screenshot-result', (_event: any, data: { original: string, translated: string }) => {
+        const cleanup2 = window.api.onScreenshotResult((data) => {
             setOriginal(data.original);
             setTranslated(data.translated);
             setStatus('ready');
-        }) as unknown as () => void;
+        });
 
         // Listen for errors
-        const cleanup3 = window.ipcRenderer.on('screenshot-error', (_event: any, errorMsg: string) => {
+        const cleanup3 = window.api.onScreenshotError((errorMsg) => {
             setError(errorMsg);
             setStatus('error');
-        }) as unknown as () => void;
+        });
 
         // ESC key to close
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -47,8 +51,8 @@ export default function ScreenshotResult() {
     }, []);
 
     const handleClose = () => {
-        if (window.ipcRenderer) {
-            window.ipcRenderer.send('close-screenshot-window');
+        if (window.api) {
+            window.api.closeScreenshotWindow();
         }
     };
 
@@ -63,7 +67,7 @@ export default function ScreenshotResult() {
 
     return (
         <div className="h-screen w-screen flex flex-col bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 select-none"
-            style={{ WebkitAppRegion: 'drag' } as any}>
+            style={dragStyle}>
 
             {/* Header */}
             <div className="flex justify-between items-center px-4 py-3 border-b dark:border-gray-700">
@@ -71,14 +75,14 @@ export default function ScreenshotResult() {
                 <button
                     onClick={handleClose}
                     className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded"
-                    style={{ WebkitAppRegion: 'no-drag' } as any}
+                    style={noDragStyle}
                 >
                     <X size={20} />
                 </button>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-auto p-4" style={{ WebkitAppRegion: 'no-drag' } as any}>
+            <div className="flex-1 overflow-auto p-4" style={noDragStyle}>
 
                 {status === 'processing' && (
                     <div className="flex flex-col items-center justify-center h-full">

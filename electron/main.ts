@@ -1,11 +1,12 @@
 import { app, BrowserWindow, globalShortcut, screen, ipcMain, clipboard, shell, Tray, Menu, nativeImage } from 'electron'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
-import { exec } from 'node:child_process'
+import { exec, spawn } from 'node:child_process'
 import { translate as bingTranslate } from 'bing-translate-api'
 import Store from 'electron-store'
 import OpenAI from 'openai'
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
@@ -14,6 +15,7 @@ export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
 export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
+const ALLOWED_FILE_BASE = pathToFileURL(path.join(RENDERER_DIST, path.sep)).toString()
 
 // Define Store Schema
 type StoreType = {
@@ -50,7 +52,6 @@ type StoreType = {
   };
   explainHistory: Array<{
     id: string;
-    imagePath: string;
     timestamp: number;
     messages: Array<{ role: string; content: string }>;
   }>;
@@ -92,6 +93,137 @@ let win: BrowserWindow | null
 let screenshotWin: BrowserWindow | null = null
 let explainWin: BrowserWindow | null = null
 let tray: Tray | null
+let currentExplainImageId: string | null = null
+const explainImages = new Map<string, { path: string; createdAt: number }>()
+
+function isAllowedIpcSender(senderUrl: string): boolean {
+  if (VITE_DEV_SERVER_URL) return senderUrl.startsWith(VITE_DEV_SERVER_URL)
+  return senderUrl.startsWith(ALLOWED_FILE_BASE)
+}
+
+function sanitizeExternalUrl(rawUrl: unknown): string | null {
+  if (typeof rawUrl !== 'string') return null
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:') return null
+  return url.toString()
+}
+
+function hardenWindow(window: BrowserWindow) {
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedIpcSender(url)) event.preventDefault()
+  })
+}
+
+function sanitizeSettings(input: unknown): Partial<StoreType> {
+  const defaults = store.store
+  if (!input || typeof input !== 'object') return {}
+
+  const raw = input as Record<string, unknown>
+  const result: Partial<StoreType> = {}
+
+  if (typeof raw.hotkey === 'string' && raw.hotkey.trim()) result.hotkey = raw.hotkey.trim()
+
+  if (raw.theme === 'system' || raw.theme === 'light' || raw.theme === 'dark') result.theme = raw.theme
+
+  if (typeof raw.targetLang === 'string' && raw.targetLang.trim()) result.targetLang = raw.targetLang.trim()
+
+  if (raw.source === 'bing' || raw.source === 'openai' || raw.source === 'custom') result.source = raw.source
+
+  if (raw.openai && typeof raw.openai === 'object') {
+    const o = raw.openai as Record<string, unknown>
+    result.openai = {
+      apiKey: typeof o.apiKey === 'string' ? o.apiKey : defaults.openai.apiKey,
+      baseURL: typeof o.baseURL === 'string' ? o.baseURL : defaults.openai.baseURL,
+      model: typeof o.model === 'string' ? o.model : defaults.openai.model,
+    }
+  }
+
+  if (raw.screenshotTranslation && typeof raw.screenshotTranslation === 'object') {
+    const st = raw.screenshotTranslation as Record<string, unknown>
+    result.screenshotTranslation = {
+      enabled: typeof st.enabled === 'boolean' ? st.enabled : defaults.screenshotTranslation.enabled,
+      hotkey: typeof st.hotkey === 'string' && st.hotkey.trim() ? st.hotkey.trim() : defaults.screenshotTranslation.hotkey,
+      ocrSource: st.ocrSource === 'system' || st.ocrSource === 'glm' ? st.ocrSource : defaults.screenshotTranslation.ocrSource,
+      glmApiKey: typeof st.glmApiKey === 'string' ? st.glmApiKey : defaults.screenshotTranslation.glmApiKey,
+    }
+  }
+
+  if (raw.screenshotExplain && typeof raw.screenshotExplain === 'object') {
+    const se = raw.screenshotExplain as Record<string, unknown>
+    const modelRaw = se.model && typeof se.model === 'object' ? (se.model as Record<string, unknown>) : {}
+    const promptsRaw = se.customPrompts && typeof se.customPrompts === 'object' ? (se.customPrompts as Record<string, unknown>) : undefined
+
+    result.screenshotExplain = {
+      enabled: typeof se.enabled === 'boolean' ? se.enabled : defaults.screenshotExplain.enabled,
+      hotkey: typeof se.hotkey === 'string' && se.hotkey.trim() ? se.hotkey.trim() : defaults.screenshotExplain.hotkey,
+      defaultLanguage: se.defaultLanguage === 'zh' || se.defaultLanguage === 'en' ? se.defaultLanguage : defaults.screenshotExplain.defaultLanguage,
+      model: {
+        provider: modelRaw.provider === 'glm' || modelRaw.provider === 'openai' ? modelRaw.provider : defaults.screenshotExplain.model.provider,
+        apiKey: typeof modelRaw.apiKey === 'string' ? modelRaw.apiKey : defaults.screenshotExplain.model.apiKey,
+        baseURL: typeof modelRaw.baseURL === 'string' ? modelRaw.baseURL : defaults.screenshotExplain.model.baseURL,
+        modelName: typeof modelRaw.modelName === 'string' ? modelRaw.modelName : defaults.screenshotExplain.model.modelName,
+      },
+      ...(promptsRaw
+        ? {
+          customPrompts: {
+            systemPrompt: typeof promptsRaw.systemPrompt === 'string' ? promptsRaw.systemPrompt : undefined,
+            summaryPrompt: typeof promptsRaw.summaryPrompt === 'string' ? promptsRaw.summaryPrompt : undefined,
+            questionPrompt: typeof promptsRaw.questionPrompt === 'string' ? promptsRaw.questionPrompt : undefined,
+          },
+        }
+        : {}),
+    }
+  }
+
+  return result
+}
+
+function resolveExplainImagePath(imageId: string): string {
+  const record = explainImages.get(imageId)
+  if (!record) throw new Error('Image not found')
+
+  const tempDir = app.getPath('temp')
+  const normalized = path.normalize(record.path)
+  const normalizedTemp = path.normalize(tempDir + path.sep)
+  if (!normalized.startsWith(normalizedTemp)) throw new Error('Invalid image path')
+  if (!fs.existsSync(normalized)) throw new Error('Image missing on disk')
+  return normalized
+}
+
+function cleanupExplainImage(imageId: string | null) {
+  if (!imageId) return
+  const record = explainImages.get(imageId)
+  if (record) {
+    try {
+      fs.unlinkSync(record.path)
+    } catch {
+      // Ignore cleanup errors
+    }
+    explainImages.delete(imageId)
+  }
+  if (currentExplainImageId === imageId) currentExplainImageId = null
+}
+
+function getOcrHelperPath(): string | null {
+  const helperName = 'keylingo-ocr'
+
+  const resourcesPath = (process as unknown as { resourcesPath?: string }).resourcesPath
+  if (resourcesPath) {
+    const packagedPath = path.join(resourcesPath, 'ocr', helperName)
+    if (fs.existsSync(packagedPath)) return packagedPath
+  }
+
+  const devPath = path.join(process.env.APP_ROOT || process.cwd(), 'resources', 'ocr', helperName)
+  if (fs.existsSync(devPath)) return devPath
+
+  return null
+}
 
 function createWindow() {
   const iconPath = path.join(process.env.VITE_PUBLIC, 'icon.png');
@@ -100,7 +232,9 @@ function createWindow() {
 
   try {
     if (app.dock) app.dock.hide(); // Hide from Dock for "Menu Bar App" feel
-  } catch (e) { }
+  } catch {
+    // Ignore platforms without dock support
+  }
 
   win = new BrowserWindow({
     width: 360,
@@ -120,6 +254,7 @@ function createWindow() {
     },
   })
 
+  hardenWindow(win)
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   if (VITE_DEV_SERVER_URL) {
@@ -265,8 +400,9 @@ ipcMain.handle('get-settings', () => {
   return store.store;
 })
 
-ipcMain.handle('save-settings', (_event, newSettings) => {
-  store.set(newSettings);
+ipcMain.handle('save-settings', (event, newSettings) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return false
+  store.set(sanitizeSettings(newSettings));
 
   // Unregister all hotkeys first
   globalShortcut.unregisterAll();
@@ -283,8 +419,11 @@ ipcMain.on('hide-window', () => {
   win?.hide();
 });
 
-ipcMain.on('open-external', (_event, url) => {
-  shell.openExternal(url);
+ipcMain.on('open-external', (event, url) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return
+  const safeUrl = sanitizeExternalUrl(url)
+  if (!safeUrl) return
+  shell.openExternal(safeUrl);
 })
 
 // Translation Logic
@@ -292,7 +431,8 @@ ipcMain.handle('get-app-version', () => {
   return app.getVersion();
 })
 
-ipcMain.handle('translate-text', async (_event, text) => {
+ipcMain.handle('translate-text', async (event, text) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return "Blocked"
   const source = store.get('source');
   const targetLangPref = store.get('targetLang');
   const trimmed = text.trim();
@@ -348,9 +488,10 @@ ipcMain.handle('translate-text', async (_event, text) => {
       });
 
       return completion.choices[0]?.message?.content?.trim() || "AI Error";
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("AI API Error:", e);
-      return `API Error: ${e.message}`;
+      const message = e instanceof Error ? e.message : String(e)
+      return `API Error: ${message}`;
     }
   }
 
@@ -382,6 +523,7 @@ function createScreenshotWindow() {
     },
   });
 
+  hardenWindow(screenshotWin)
   screenshotWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   if (VITE_DEV_SERVER_URL) {
@@ -433,81 +575,51 @@ async function callGLM4V(imagePath: string, apiKey: string): Promise<string> {
     }
 
     return data.choices[0]?.message?.content || '';
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('GLM-4V Error:', error);
     throw error;
   }
 }
 
 async function callSystemOCR(imagePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // Use Swift to call macOS Vision framework
-    const swiftScript = `
-import Foundation
-import Vision
-import AppKit
+  const helperPath = getOcrHelperPath()
+  if (!helperPath) {
+    throw new Error('系统 OCR 不可用：缺少 OCR helper。请在开发环境运行 `npm run build:ocr`，或在发布版中重新打包包含 helper。')
+  }
 
-let imagePath = CommandLine.arguments[1]
-guard let image = NSImage(contentsOfFile: imagePath),
-      let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-    print("Error: Could not load image")
-    exit(1)
-}
+  return await new Promise((resolve, reject) => {
+    const child = spawn(helperPath, [imagePath], { stdio: ['ignore', 'pipe', 'pipe'] })
 
-let request = VNRecognizeTextRequest { request, error in
-    guard let observations = request.results as? [VNRecognizedTextObservation] else {
-        print("")
-        exit(0)
-    }
-    
-    let recognizedStrings = observations.compactMap { observation in
-        observation.topCandidates(1).first?.string
-    }
-    
-    print(recognizedStrings.joined(separator: "\\n"))
-    exit(0)
-}
+    const stdoutChunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
 
-request.recognitionLevel = .accurate
-request.usesLanguageCorrection = true
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error('系统OCR识别超时'))
+    }, 15_000)
 
-let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-try? handler.perform([request])
+    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk))
+    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk))
 
-RunLoop.main.run(until: Date(timeIntervalSinceNow: 10))
-`;
+    child.on('error', (err) => {
+      clearTimeout(timeout)
+      reject(err)
+    })
 
-    // Write Swift script to temp file
-    const scriptPath = path.join(app.getPath('temp'), 'ocr_script.swift');
-    fs.writeFileSync(scriptPath, swiftScript);
+    child.on('close', (code) => {
+      clearTimeout(timeout)
 
-    // Compile and run Swift script
-    const outputPath = path.join(app.getPath('temp'), 'ocr_binary');
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
 
-    exec(`swiftc "${scriptPath}" -o "${outputPath}" && "${outputPath}" "${imagePath}"`, (error, stdout, stderr) => {
-      // Clean up
-      try {
-        fs.unlinkSync(scriptPath);
-        fs.unlinkSync(outputPath);
-      } catch (e) {
-        // Ignore cleanup errors
+      if (code !== 0) {
+        reject(new Error('系统OCR识别失败: ' + (stderr || `exit code ${code}`)))
+        return
       }
 
-      if (error) {
-        console.error('System OCR Error:', stderr || error.message);
-        reject(new Error('系统OCR识别失败: ' + (stderr || error.message)));
-        return;
-      }
-
-      const recognizedText = stdout.trim();
-      if (!recognizedText) {
-        resolve('未识别到文字');
-        return;
-      }
-
-      resolve(recognizedText);
-    });
-  });
+      resolve(stdout || '未识别到文字')
+    })
+  })
 }
 
 async function translateTextHelper(text: string): Promise<string> {
@@ -548,7 +660,7 @@ async function translateTextHelper(text: string): Promise<string> {
       });
 
       return completion.choices[0]?.message?.content?.trim() || trimmed;
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("AI Error:", e);
       return trimmed;
     }
@@ -628,9 +740,10 @@ function registerScreenshotHotkey() {
               translated: translatedText
             });
 
-          } catch (err: any) {
+          } catch (err: unknown) {
             console.error('Processing error:', err);
-            screenshotWin?.webContents.send('screenshot-error', err.message);
+            const message = err instanceof Error ? err.message : String(err)
+            screenshotWin?.webContents.send('screenshot-error', message);
           } finally {
             try {
               fs.unlinkSync(tempPath);
@@ -657,7 +770,7 @@ function registerScreenshotHotkey() {
 // ============================================
 
 // Create Screenshot Explanation Window
-function createExplainWindow(imagePath: string) {
+function createExplainWindow(imageId: string) {
   if (explainWin) {
     explainWin.focus();
     return;
@@ -678,24 +791,28 @@ function createExplainWindow(imagePath: string) {
 
   explainWin.on('closed', () => {
     explainWin = null;
+    cleanupExplainImage(currentExplainImageId)
   });
 
+  hardenWindow(explainWin)
+
   if (process.env.VITE_DEV_SERVER_URL) {
-    explainWin.loadURL(`${process.env.VITE_DEV_SERVER_URL}#explain?image=${encodeURIComponent(imagePath)}`);
+    explainWin.loadURL(`${process.env.VITE_DEV_SERVER_URL}#explain?imageId=${encodeURIComponent(imageId)}`);
   } else {
     const distPath = process.env.DIST || path.join(__dirname, '../dist');
     explainWin.loadFile(path.join(distPath, 'index.html'), {
-      hash: `explain?image=${encodeURIComponent(imagePath)}`
+      hash: `explain?imageId=${encodeURIComponent(imageId)}`
     });
   }
 }
 
 // Call Vision API (GLM-4V or OpenAI compatible)
-async function callVisionAPI(imagePath: string, messages: Array<{ role: string, content: any }>, language: string): Promise<string> {
+async function callVisionAPI(imageId: string, messages: Array<{ role: string, content: unknown }>, language: string): Promise<string> {
   const config = store.get('screenshotExplain');
   const { provider, apiKey, baseURL, modelName } = config.model;
 
   // Read and encode image
+  const imagePath = resolveExplainImagePath(imageId)
   const imageBuffer = fs.readFileSync(imagePath);
   const imageBase64 = imageBuffer.toString('base64');
 
@@ -742,7 +859,7 @@ async function callVisionAPI(imagePath: string, messages: Array<{ role: string, 
   }
 
   // Make API call
-  const requestBody: any = {
+  const requestBody: { model: string; messages: unknown; temperature: number; max_tokens?: number } = {
     model: modelName,
     messages: apiMessages,  // No system role for GLM
     temperature: 0.7
@@ -772,7 +889,7 @@ async function callVisionAPI(imagePath: string, messages: Array<{ role: string, 
 }
 
 // Get initial summary for an image
-async function getInitialSummary(imagePath: string, language: string): Promise<string> {
+async function getInitialSummary(imageId: string, language: string): Promise<string> {
   const config = store.get('screenshotExplain');
 
   const defaultPrompt = language === 'zh'
@@ -785,7 +902,7 @@ async function getInitialSummary(imagePath: string, language: string): Promise<s
     { role: 'user', content: prompt }
   ];
 
-  return await callVisionAPI(imagePath, messages, language);
+  return await callVisionAPI(imageId, messages, language);
 }
 
 // Register Screenshot Explanation Hotkey
@@ -825,10 +942,15 @@ function registerExplainHotkey() {
         }
 
         try {
-          // Create explain window with image path
-          createExplainWindow(tempImagePath);
+          cleanupExplainImage(currentExplainImageId)
+          const imageId = randomUUID()
+          currentExplainImageId = imageId
+          explainImages.set(imageId, { path: tempImagePath, createdAt: Date.now() })
+
+          createExplainWindow(imageId);
         } catch (err) {
           console.error('Error creating explain window:', err);
+          cleanupExplainImage(currentExplainImageId)
           win?.show();
         }
       });
@@ -845,18 +967,21 @@ function registerExplainHotkey() {
 }
 
 // IPC Handlers for Screenshot Explanation
-ipcMain.handle('explain-get-initial-summary', async (_event, imagePath: string) => {
+ipcMain.handle('explain-get-initial-summary', async (event, imageId: string) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return { success: false, error: 'Blocked' };
   const language = store.get('screenshotExplain').defaultLanguage;
   try {
-    const summary = await getInitialSummary(imagePath, language);
+    const summary = await getInitialSummary(imageId, language);
     return { success: true, summary };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error getting initial summary:', error);
-    return { success: false, error: error.message };
+    const message = error instanceof Error ? error.message : String(error)
+    return { success: false, error: message };
   }
 });
 
-ipcMain.handle('explain-ask-question', async (_event, imagePath: string, messages: Array<{ role: string, content: string }>) => {
+ipcMain.handle('explain-ask-question', async (event, imageId: string, messages: Array<{ role: string, content: string }>) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return { success: false, error: 'Blocked' };
   const language = store.get('screenshotExplain').defaultLanguage;
   try {
     // Build conversation with question prompt
@@ -871,34 +996,41 @@ ipcMain.handle('explain-ask-question', async (_event, imagePath: string, message
       { role: 'user', content: `${questionPrompt}\n\n用户问题：${userQuestion}` }
     ]);
 
-    const response = await callVisionAPI(imagePath, apiMessages, language);
+    const response = await callVisionAPI(imageId, apiMessages, language);
     return { success: true, response };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error asking question:', error);
-    return { success: false, error: error.message };
+    const message = error instanceof Error ? error.message : String(error)
+    return { success: false, error: message };
   }
 });
 
-ipcMain.handle('explain-read-image', async (_event, imagePath: string) => {
+ipcMain.handle('explain-read-image', async (event, imageId: string) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return { success: false, error: 'Blocked' };
   try {
+    const imagePath = resolveExplainImagePath(imageId)
     const imageBuffer = fs.readFileSync(imagePath);
     const base64 = imageBuffer.toString('base64');
     return { success: true, data: `data:image/png;base64,${base64}` };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error reading image:', error);
-    return { success: false, error: error.message };
+    const message = error instanceof Error ? error.message : String(error)
+    return { success: false, error: message };
   }
 });
 
-ipcMain.on('close-explain-window', () => {
+ipcMain.on('close-explain-window', (event) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return
   if (explainWin) {
     explainWin.close();
     explainWin = null;
   }
+  cleanupExplainImage(currentExplainImageId)
 });
 
 // Save explanation to history (max 5 records)
-ipcMain.handle('explain-save-history', async (_event, _imagePath: string, messages: Array<{ role: string; content: string }>) => {
+ipcMain.handle('explain-save-history', async (event, messages: Array<{ role: string; content: string }>) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return { success: false, error: 'Blocked' };
   try {
     const history = store.get('explainHistory') || [];
     const newRecord = {
@@ -913,25 +1045,29 @@ ipcMain.handle('explain-save-history', async (_event, _imagePath: string, messag
 
     console.log('History saved, total:', updatedHistory.length);
     return { success: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error saving history:', error);
-    return { success: false, error: error.message };
+    const message = error instanceof Error ? error.message : String(error)
+    return { success: false, error: message };
   }
 });
 
 // Get explanation history
-ipcMain.handle('explain-get-history', async () => {
+ipcMain.handle('explain-get-history', async (event) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return { success: false, error: 'Blocked', history: [] };
   try {
     const history = store.get('explainHistory') || [];
     return { success: true, history };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error getting history:', error);
-    return { success: false, error: error.message, history: [] };
+    const message = error instanceof Error ? error.message : String(error)
+    return { success: false, error: message, history: [] };
   }
 });
 
 // Load a specific history record
-ipcMain.handle('explain-load-history', async (_event, historyId: string) => {
+ipcMain.handle('explain-load-history', async (event, historyId: string) => {
+  if (!isAllowedIpcSender(event.senderFrame.url)) return { success: false, error: 'Blocked' };
   try {
     const history = store.get('explainHistory') || [];
     const record = history.find(h => h.id === historyId);
@@ -941,9 +1077,10 @@ ipcMain.handle('explain-load-history', async (_event, historyId: string) => {
     }
 
     return { success: true, record };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error loading history:', error);
-    return { success: false, error: error.message };
+    const message = error instanceof Error ? error.message : String(error)
+    return { success: false, error: message };
   }
 });
 
