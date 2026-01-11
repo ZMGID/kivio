@@ -37,7 +37,15 @@
 
 ## 交接模板（每次改动后追加一条）
 
-- 时间/作者：
+- 时间/作者：2026-01-12 / Agent
 - 改动范围（文件/功能）：
+  - `electron/main.ts`：新增 OpenAI OCR 支持；重构热键注册逻辑（`registerGlobalHotkey`）；所有文件读取改为异步 (`fs.promises`)。
+  - `src/Settings.tsx`：新增 OpenAI OCR 配置界面。
+  - `README.md` & `package.json`：更新版本至 v1.3.5。
+  - 性能优化：React 组件懒加载 (`React.lazy`)；Swift OCR 二进制缓存。
 - 风险点 & 回滚方式：
+  - OCR 逻辑变更较大，若截图无反应，检查控制台日志。回滚：`git revert HEAD`。
 - 如何验证（最少 3 步）：
+  1. 打开设置 -> 截图 -> 选择 OCR 源为 "OpenAI"，填入 Key/BaseURL，截图测试是否成功。
+  2. 使用 "系统 OCR" 截图，确认速度是否提升且无卡顿。
+  3. 连续开关设置/截图窗口，确认热键注册无报错 (`Command+Option+T`, `Command+Shift+A`)。
