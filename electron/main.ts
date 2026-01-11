@@ -31,8 +31,13 @@ type StoreType = {
   screenshotTranslation: {
     enabled: boolean;
     hotkey: string;
-    ocrSource: 'system' | 'glm';  // system = macOS Vision, glm = GLM-4V
+    ocrSource: 'system' | 'glm' | 'openai';
     glmApiKey: string;
+    openai?: {
+      apiKey: string;
+      baseURL: string;
+      model: string;
+    };
   };
   screenshotExplain: {
     enabled: boolean;
@@ -71,8 +76,13 @@ const store = new Store<StoreType>({
     screenshotTranslation: {
       enabled: true,
       hotkey: 'Command+Shift+A',
-      ocrSource: 'system',  // Default to system OCR (offline)
-      glmApiKey: ''
+      ocrSource: 'system',
+      glmApiKey: '',
+      openai: {
+        apiKey: '',
+        baseURL: 'https://api.openai.com/v1',
+        model: 'gpt-4o'
+      }
     },
     screenshotExplain: {
       enabled: true,
@@ -92,7 +102,7 @@ const store = new Store<StoreType>({
 let win: BrowserWindow | null
 let screenshotWin: BrowserWindow | null = null
 let explainWin: BrowserWindow | null = null
-let tray: Tray | null
+let tray: Tray | null = null
 let currentExplainImageId: string | null = null
 const explainImages = new Map<string, { path: string; createdAt: number }>()
 
@@ -146,11 +156,18 @@ function sanitizeSettings(input: unknown): Partial<StoreType> {
 
   if (raw.screenshotTranslation && typeof raw.screenshotTranslation === 'object') {
     const st = raw.screenshotTranslation as Record<string, unknown>
+    const oa = st.openai && typeof st.openai === 'object' ? (st.openai as Record<string, unknown>) : {}
+
     result.screenshotTranslation = {
       enabled: typeof st.enabled === 'boolean' ? st.enabled : defaults.screenshotTranslation.enabled,
       hotkey: typeof st.hotkey === 'string' && st.hotkey.trim() ? st.hotkey.trim() : defaults.screenshotTranslation.hotkey,
-      ocrSource: st.ocrSource === 'system' || st.ocrSource === 'glm' ? st.ocrSource : defaults.screenshotTranslation.ocrSource,
+      ocrSource: (st.ocrSource === 'system' || st.ocrSource === 'glm' || st.ocrSource === 'openai') ? st.ocrSource : defaults.screenshotTranslation.ocrSource,
       glmApiKey: typeof st.glmApiKey === 'string' ? st.glmApiKey : defaults.screenshotTranslation.glmApiKey,
+      openai: {
+        apiKey: typeof oa.apiKey === 'string' ? oa.apiKey : (defaults.screenshotTranslation.openai?.apiKey || ''),
+        baseURL: typeof oa.baseURL === 'string' ? oa.baseURL : (defaults.screenshotTranslation.openai?.baseURL || 'https://api.openai.com/v1'),
+        model: typeof oa.model === 'string' ? oa.model : (defaults.screenshotTranslation.openai?.model || 'gpt-4o'),
+      }
     }
   }
 
@@ -539,7 +556,7 @@ function createScreenshotWindow() {
 
 async function callGLM4V(imagePath: string, apiKey: string): Promise<string> {
   try {
-    const imageBuffer = fs.readFileSync(imagePath);
+    const imageBuffer = await fs.promises.readFile(imagePath);
     const base64Image = imageBuffer.toString('base64');
 
     const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
@@ -622,6 +639,41 @@ async function callSystemOCR(imagePath: string): Promise<string> {
   })
 }
 
+async function callOpenAIOCR(imagePath: string, config: { apiKey: string, baseURL: string, model: string }): Promise<string> {
+  try {
+    const imageBuffer = await fs.promises.readFile(imagePath);
+    const base64Image = imageBuffer.toString('base64');
+
+    const openai = new OpenAI({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+    });
+
+    const response = await openai.chat.completions.create({
+      model: config.model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Read all text in this image. Output only the text content, preserving original lines." },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/png;base64,${base64Image}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    return response.choices[0]?.message?.content || '';
+  } catch (error: unknown) {
+    console.error('OpenAI OCR Error:', error);
+    throw error;
+  }
+}
+
 async function translateTextHelper(text: string): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed) return "";
@@ -669,100 +721,133 @@ async function translateTextHelper(text: string): Promise<string> {
   return trimmed;
 }
 
+// ========== 工具函数 ==========
+
+/**
+ * 捕获屏幕截图并返回临时文件路径
+ * 如果用户取消截图，返回 null
+ */
+async function captureScreenshot(prefix: string = 'screenshot'): Promise<string | null> {
+  return new Promise((resolve) => {
+    const tempPath = path.join(app.getPath('temp'), `${prefix}-${Date.now()}.png`);
+
+    exec(`screencapture -i "${tempPath}"`, (error) => {
+      if (error || !fs.existsSync(tempPath)) {
+        resolve(null);
+        return;
+      }
+      resolve(tempPath);
+    });
+  });
+}
+
+/**
+ * 注册全局快捷键的通用辅助函数
+ */
+function registerGlobalHotkey(
+  hotkey: string,
+  name: string,
+  callback: () => void
+): boolean {
+  try {
+    globalShortcut.unregister(hotkey);
+    const ret = globalShortcut.register(hotkey, callback);
+
+    if (!ret) {
+      console.error(`${name} hotkey registration failed:`, hotkey);
+      return false;
+    }
+
+    console.log(`Registered ${name} hotkey:`, hotkey);
+    return true;
+  } catch (e) {
+    console.error(`Invalid ${name} hotkey:`, hotkey, e);
+    return false;
+  }
+}
+
 function registerScreenshotHotkey() {
   const config = store.get('screenshotTranslation');
   if (!config.enabled) return;
 
-  const hotkey = config.hotkey;
+  registerGlobalHotkey(config.hotkey, 'screenshot', async () => {
+    console.log('Screenshot Hotkey Triggered');
+    win?.hide();
+    app.hide();
 
-  try {
-    const ret = globalShortcut.register(hotkey, async () => {
-      console.log('Screenshot Hotkey Triggered');
+    // 短暂延迟确保窗口完全隐藏
+    await new Promise(resolve => setTimeout(resolve, 300));
 
-      win?.hide();
-      app.hide();
+    const tempPath = await captureScreenshot('translation');
+    app.show();
 
-      setTimeout(() => {
-        const tempPath = path.join(app.getPath('temp'), `screenshot-${Date.now()}.png`);
-
-        exec(`screencapture -i "${tempPath}"`, async (error) => {
-          app.show();
-
-          if (error) {
-            console.error('Screenshot cancelled or failed');
-            return;
-          }
-
-          if (!fs.existsSync(tempPath)) {
-            console.log('Screenshot cancelled');
-            return;
-          }
-
-          console.log('Screenshot captured');
-
-          const config = store.get('screenshotTranslation');
-          const ocrSource = config.ocrSource || 'system';
-
-          // Check API key only if using GLM
-          if (ocrSource === 'glm' && !config.glmApiKey) {
-            console.error('GLM API Key not configured');
-            return;
-          }
-
-          if (!screenshotWin) {
-            createScreenshotWindow();
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-
-          screenshotWin?.webContents.send('screenshot-processing');
-          screenshotWin?.show();
-          screenshotWin?.focus();
-
-          try {
-            let recognizedText: string;
-
-            // Choose OCR method based on config
-            if (ocrSource === 'system') {
-              console.log('Using system OCR (Vision framework)');
-              recognizedText = await callSystemOCR(tempPath);
-            } else {
-              console.log('Using GLM-4V OCR');
-              recognizedText = await callGLM4V(tempPath, config.glmApiKey);
-            }
-
-            console.log('Recognized:', recognizedText.substring(0, 100) + '...');
-
-            const translatedText = await translateTextHelper(recognizedText);
-            console.log('Translated:', translatedText.substring(0, 100) + '...');
-
-            screenshotWin?.webContents.send('screenshot-result', {
-              original: recognizedText,
-              translated: translatedText
-            });
-
-          } catch (err: unknown) {
-            console.error('Processing error:', err);
-            const message = err instanceof Error ? err.message : String(err)
-            screenshotWin?.webContents.send('screenshot-error', message);
-          } finally {
-            try {
-              fs.unlinkSync(tempPath);
-            } catch (e) {
-              // Ignore
-            }
-          }
-        });
-      }, 300);
-    });
-
-    if (!ret) {
-      console.error('Screenshot hotkey failed:', hotkey);
-    } else {
-      console.log('Registered screenshot hotkey:', hotkey);
+    if (!tempPath) {
+      console.log('Screenshot cancelled');
+      return;
     }
-  } catch (e) {
-    console.error('Invalid screenshot hotkey:', hotkey);
-  }
+
+    console.log('Screenshot captured');
+
+    const config = store.get('screenshotTranslation');
+    const ocrSource = config.ocrSource || 'system';
+
+    // 验证 API Key
+    if (ocrSource === 'glm' && !config.glmApiKey) {
+      console.error('GLM API Key not configured');
+      return;
+    }
+    if (ocrSource === 'openai' && !config.openai?.apiKey) {
+      console.error('OpenAI API Key not configured');
+      return;
+    }
+
+    // 创建或显示截图窗口
+    if (!screenshotWin) {
+      createScreenshotWindow();
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    screenshotWin?.webContents.send('screenshot-processing');
+    screenshotWin?.show();
+    screenshotWin?.focus();
+
+    try {
+      let recognizedText: string;
+
+      // 根据配置选择 OCR 方法
+      if (ocrSource === 'system') {
+        console.log('Using system OCR (Vision framework)');
+        recognizedText = await callSystemOCR(tempPath);
+      } else if (ocrSource === 'openai' && config.openai) {
+        console.log('Using OpenAI OCR');
+        recognizedText = await callOpenAIOCR(tempPath, config.openai);
+      } else {
+        console.log('Using GLM-4V OCR');
+        recognizedText = await callGLM4V(tempPath, config.glmApiKey);
+      }
+
+      console.log('Recognized:', recognizedText.substring(0, 100) + '...');
+
+      const translatedText = await translateTextHelper(recognizedText);
+      console.log('Translated:', translatedText.substring(0, 100) + '...');
+
+      screenshotWin?.webContents.send('screenshot-result', {
+        original: recognizedText,
+        translated: translatedText
+      });
+
+    } catch (err: unknown) {
+      console.error('Processing error:', err);
+      const message = err instanceof Error ? err.message : String(err);
+      screenshotWin?.webContents.send('screenshot-error', message);
+    } finally {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        // 忽略清理错误
+      }
+    }
+  });
 }
 
 // ============================================
@@ -813,7 +898,7 @@ async function callVisionAPI(imageId: string, messages: Array<{ role: string, co
 
   // Read and encode image
   const imagePath = resolveExplainImagePath(imageId)
-  const imageBuffer = fs.readFileSync(imagePath);
+  const imageBuffer = await fs.promises.readFile(imagePath);
   const imageBase64 = imageBuffer.toString('base64');
 
   // System prompt based on language (will be prepended to first user message)
@@ -850,13 +935,7 @@ async function callVisionAPI(imageId: string, messages: Array<{ role: string, co
   });
 
   // Construct API URL
-  let apiUrl = baseURL;
-  if (provider === 'glm') {
-    apiUrl = `${baseURL}/chat/completions`;
-  } else {
-    // OpenAI compatible
-    apiUrl = `${baseURL}/chat/completions`;
-  }
+  const apiUrl = `${baseURL}/chat/completions`;
 
   // Make API call
   const requestBody: { model: string; messages: unknown; temperature: number; max_tokens?: number } = {
@@ -908,62 +987,31 @@ async function getInitialSummary(imageId: string, language: string): Promise<str
 // Register Screenshot Explanation Hotkey
 function registerExplainHotkey() {
   const config = store.get('screenshotExplain');
-  if (!config.enabled) {
-    return;
-  }
+  if (!config.enabled) return;
 
-  const hotkey = config.hotkey;
+  registerGlobalHotkey(config.hotkey, 'explain', async () => {
+    console.log('Explain Hotkey Triggered');
+    win?.hide();
 
-
-  try {
-    globalShortcut.unregister(hotkey);
-
-    const ret = globalShortcut.register(hotkey, () => {
-      console.log('Explain Hotkey Triggered');
-
-      // Hide main window
-      win?.hide();
-
-      // Take screenshot
-      const tempImagePath = path.join(app.getPath('temp'), `explain-screenshot-${Date.now()}.png`);
-
-      exec(`screencapture -i "${tempImagePath}"`, async (error) => {
-        if (error) {
-          console.error('Screenshot error:', error);
-          win?.show();
-          return;
-        }
-
-        // Check if file exists (user might have cancelled)
-        if (!fs.existsSync(tempImagePath)) {
-          console.log('Screenshot cancelled');
-          win?.show();
-          return;
-        }
-
-        try {
-          cleanupExplainImage(currentExplainImageId)
-          const imageId = randomUUID()
-          currentExplainImageId = imageId
-          explainImages.set(imageId, { path: tempImagePath, createdAt: Date.now() })
-
-          createExplainWindow(imageId);
-        } catch (err) {
-          console.error('Error creating explain window:', err);
-          cleanupExplainImage(currentExplainImageId)
-          win?.show();
-        }
-      });
-    });
-
-    if (!ret) {
-      console.error('Explain hotkey failed:', hotkey);
-    } else {
-      console.log('Registered explain hotkey:', hotkey);
+    const tempImagePath = await captureScreenshot('explain');
+    if (!tempImagePath) {
+      console.log('Screenshot cancelled');
+      win?.show();
+      return;
     }
-  } catch (e) {
-    console.error('Invalid explain hotkey:', hotkey);
-  }
+
+    try {
+      cleanupExplainImage(currentExplainImageId);
+      const imageId = randomUUID();
+      currentExplainImageId = imageId;
+      explainImages.set(imageId, { path: tempImagePath, createdAt: Date.now() });
+      createExplainWindow(imageId);
+    } catch (err) {
+      console.error('Error creating explain window:', err);
+      cleanupExplainImage(currentExplainImageId);
+      win?.show();
+    }
+  });
 }
 
 // IPC Handlers for Screenshot Explanation

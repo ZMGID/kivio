@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type CSSProperties } from 'react'
-import { Settings as SettingsIcon } from 'lucide-react'
+import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import Settings from './Settings'
 import ScreenshotResult from './ScreenshotResult'
 import ScreenshotExplain from './ScreenshotExplain'
@@ -15,75 +15,72 @@ function Translator() {
   const [loading, setLoading] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system')
+  const [translateSource, setTranslateSource] = useState<string>('')
   const resultRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-
-  // Load Theme Preference and Apply
   const applyTheme = async () => {
-    if (!window.api) return;
-    const settings = await window.api.getSettings();
-
-    // Set Theme
-    const mode = settings.theme || 'system';
-    setThemeMode(mode);
-
-    const isDark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    if (!window.api) return
+    const settings = await window.api.getSettings()
+    const mode = settings.theme || 'system'
+    setThemeMode(mode)
+    const isDark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
     if (isDark) {
-      document.documentElement.classList.add('dark');
+      document.documentElement.classList.add('dark')
     } else {
-      document.documentElement.classList.remove('dark');
+      document.documentElement.classList.remove('dark')
+    }
+
+    if (settings.source === 'bing') {
+      setTranslateSource('Bing')
+    } else if (settings.source === 'openai') {
+      setTranslateSource(settings.openai?.model || 'AI')
+    } else {
+      setTranslateSource('')
     }
   }
 
   useEffect(() => {
-    applyTheme();
-    // Listen for system theme changes if mode is system
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    applyTheme()
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const changeHandler = () => {
-      if (themeMode === 'system') applyTheme();
-    };
-    mq.addEventListener('change', changeHandler);
-    return () => mq.removeEventListener('change', changeHandler);
+      if (themeMode === 'system') applyTheme()
+    }
+    mq.addEventListener('change', changeHandler)
+    return () => mq.removeEventListener('change', changeHandler)
   }, [themeMode])
 
-  // Manage window size based on view
   useEffect(() => {
     if (window.api) {
       if (showSettings) {
-        window.api.resizeWindow(400, 520)
+        window.api.resizeWindow(420, 520)
       } else {
-        window.api.resizeWindow(360, 120)
+        window.api.resizeWindow(340, 110)
       }
     }
   }, [showSettings])
 
-  // Listen for Tray "Settings" click
   useEffect(() => {
     if (window.api) {
       const removeListener = window.api.onOpenSettings(() => {
-        setShowSettings(true);
-      });
-
+        setShowSettings(true)
+      })
       return () => {
-        removeListener?.();
-      };
+        removeListener?.()
+      }
     }
   }, [])
 
-
-  // Debounce translation (only if not in settings)
   useEffect(() => {
-    if (showSettings) return;
-
+    if (showSettings) return
     const timer = setTimeout(async () => {
       if (input.trim()) {
         setLoading(true)
         try {
           if (!window.api) return
-          const translated = await window.api.translateText(input);
-          setResult(translated);
-        } catch (error) {
+          const translated = await window.api.translateText(input)
+          setResult(translated)
+        } catch {
           setResult('Error')
         } finally {
           setLoading(false)
@@ -92,29 +89,25 @@ function Translator() {
         setResult('')
       }
     }, 600)
-
     return () => clearTimeout(timer)
   }, [input, showSettings])
 
-  // Auto-scroll translation result to bottom when it updates
   useEffect(() => {
     if (resultRef.current) {
-      resultRef.current.scrollTop = resultRef.current.scrollHeight;
+      resultRef.current.scrollTop = resultRef.current.scrollHeight
     }
   }, [result])
 
-  // Auto-scroll input to show cursor (keep right side visible)
   useEffect(() => {
     if (inputRef.current) {
-      inputRef.current.scrollLeft = inputRef.current.scrollWidth;
+      inputRef.current.scrollLeft = inputRef.current.scrollWidth
     }
   }, [input])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (showSettings) return; // Don't handle shortcuts in settings mode
-
+    if (showSettings) return
     if (e.key === 'Enter') {
-      const textToCommit = result || input;
+      const textToCommit = result || input
       if (window.api) {
         window.api.commitTranslation(textToCommit)
         setInput('')
@@ -127,64 +120,87 @@ function Translator() {
     }
   }
 
-  // Settings View
   if (showSettings) {
     const handleCloseSettings = () => {
-      setShowSettings(false);
-      // Hide window after closing settings (useful when opened from tray)
+      setShowSettings(false)
       if (window.api) {
-        window.api.hideWindow();
+        window.api.hideWindow()
       }
-    };
-
+    }
     return (
-      <div className="h-screen w-screen bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 shadow-xl overflow-hidden">
+      <div className="h-screen w-screen bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl rounded-xl border border-black/10 dark:border-white/10 shadow-2xl overflow-hidden">
         <Settings onClose={handleCloseSettings} onSettingsChange={applyTheme} />
       </div>
     )
   }
 
-  // Translation View
   return (
-    <div className="h-screen w-screen flex flex-col p-2 bg-white/95 dark:bg-gray-900/95 rounded-lg border border-gray-200 dark:border-gray-700 shadow-xl backdrop-blur-sm select-none overflow-hidden relative group"
-      style={dragStyle}>
-
-      {/* Settings Toggle (Hidden by default, shows on hover) */}
+    <div
+      className="h-screen w-screen flex flex-col bg-white/80 dark:bg-neutral-900/80 backdrop-blur-2xl rounded-xl border border-black/10 dark:border-white/10 shadow-2xl select-none overflow-hidden relative group"
+      style={dragStyle}
+    >
+      {/* 设置按钮 */}
       <button
         onClick={() => setShowSettings(true)}
-        className="absolute top-2 right-2 p-1 text-gray-300 hover:text-gray-500 rounded no-drag opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute top-2.5 right-2.5 p-1 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-md hover:bg-black/5 dark:hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all duration-150"
         style={noDragStyle}
       >
-        <SettingsIcon size={14} />
+        <SettingsIcon size={13} strokeWidth={1.5} />
       </button>
 
-      {(result || loading) && (
-        <div
-          ref={resultRef}
-          className="w-full mb-1 px-2 py-1 pr-8 bg-blue-50/50 dark:bg-blue-900/30 rounded text-base text-gray-800 dark:text-gray-200 font-medium select-text no-drag max-h-24 overflow-y-auto"
-          style={noDragStyle}>
-          {loading ? <span className="text-gray-400 text-sm">Translating...</span> : result}
-        </div>
-      )}
+      {/* 主内容区 */}
+      <div className="flex-1 flex flex-col justify-center px-3.5 py-2.5">
+        {/* 翻译结果 */}
+        {(result || loading) && (
+          <div
+            ref={resultRef}
+            className="mb-2 px-3 py-2 bg-neutral-100/80 dark:bg-neutral-800/60 rounded-lg max-h-14 overflow-y-auto"
+            style={noDragStyle}
+          >
+            {loading ? (
+              <div className="flex items-center gap-2 text-neutral-400 text-sm">
+                <div className="w-3.5 h-3.5 border-[1.5px] border-neutral-400 border-t-transparent rounded-full animate-spin" />
+                <span className="text-xs">翻译中</span>
+              </div>
+            ) : (
+              <p className="text-neutral-800 dark:text-neutral-100 text-[15px] font-normal select-text leading-relaxed">
+                {result}
+              </p>
+            )}
+          </div>
+        )}
 
-      <div className="flex items-center w-full">
+        {/* 输入框 */}
         <input
           ref={inputRef}
           autoFocus
-          className="w-full px-2 py-1 pr-8 bg-transparent text-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none no-drag"
+          className="w-full px-3 py-2 bg-neutral-100/60 dark:bg-neutral-800/40 rounded-lg text-[15px] text-neutral-900 dark:text-white placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none focus:bg-neutral-100 dark:focus:bg-neutral-800/60 transition-colors"
           style={noDragStyle}
-          placeholder="Translation input..."
+          placeholder="输入文本..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
         />
+
+        {/* 底部提示 */}
+        <div className="mt-2 flex justify-between items-center text-[10px] text-neutral-400 dark:text-neutral-500">
+          <div className="flex items-center gap-2">
+            <span>↵ 确认</span>
+            <span>esc 关闭</span>
+          </div>
+          {translateSource && (
+            <span className="flex items-center gap-1 opacity-60">
+              <Cpu size={9} strokeWidth={1.5} />
+              {translateSource}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   )
 }
 
 function App() {
-  // Check URL mode for screenshot result or explain
   const urlParams = new URLSearchParams(window.location.search)
   const hash = window.location.hash.replace('#', '')
   const mode = urlParams.get('mode') || hash.split('?')[0]

@@ -1,7 +1,7 @@
 {
   "name": "keylingo",
   "private": true,
-  "version": "1.3.1",
+  "version": "1.3.5",
   "description": "KeyLingo - Smart Translation & AI Vision Tool for macOS",
   "author": "ZM",
   "type": "module",
