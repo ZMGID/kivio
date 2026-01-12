@@ -27,10 +27,17 @@ interface Window {
     getSettings: () => Promise<{
       hotkey: string
       theme: 'system' | 'light' | 'dark'
+      settingsLanguage?: 'zh' | 'en'
       targetLang: string
       source: 'bing' | 'openai' | 'custom'
       openai: { apiKey: string; baseURL: string; model: string }
-      screenshotTranslation: { enabled: boolean; hotkey: string; ocrSource: 'system' | 'glm'; glmApiKey: string }
+      screenshotTranslation: {
+        enabled: boolean
+        hotkey: string
+        ocrSource: 'system' | 'glm' | 'openai'
+        glmApiKey: string
+        openai?: { apiKey: string; baseURL: string; model: string }
+      }
       screenshotExplain: {
         enabled: boolean
         hotkey: string

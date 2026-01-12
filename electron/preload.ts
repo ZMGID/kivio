@@ -8,6 +8,7 @@ type ExplainMessage = { role: 'user' | 'assistant'; content: string }
 type SettingsData = {
   hotkey: string
   theme: 'system' | 'light' | 'dark'
+  settingsLanguage?: 'zh' | 'en'
   targetLang: string
   source: 'bing' | 'openai' | 'custom'
   openai: {
@@ -18,8 +19,13 @@ type SettingsData = {
   screenshotTranslation: {
     enabled: boolean
     hotkey: string
-    ocrSource: 'system' | 'glm'
+    ocrSource: 'system' | 'glm' | 'openai'
     glmApiKey: string
+    openai?: {
+      apiKey: string
+      baseURL: string
+      model: string
+    }
   }
   screenshotExplain: {
     enabled: boolean

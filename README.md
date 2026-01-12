@@ -41,7 +41,8 @@
 
 ### 📋 Version History
 
-**v1.3.5** (2025-01-12)
+**v1.3.6** (2025-01-12)
+- ✨ Added **Language Setting**: You can now switch the app's interface language between English and Chinese.
 - ✨ Added **OpenAI OCR** for screenshot translation - use any OpenAI-compatible Vision API (GPT-4o, etc.)
 - 🚀 **Performance Optimization**: 
     - Swift OCR binary caching for instant system OCR activation
@@ -145,7 +146,8 @@ npm run build
 
 ### 📋 版本历史
 
-**v1.3.5** (2025-01-12)
+**v1.3.6** (2025-01-12)
+- ✨ 新增 **界面语言设置**：您现在可以在设置中自由切换应用的界面语言（中文/英文）。
 - ✨ 新增 **OpenAI OCR** 支持 - 可使用 GPT-4o 等任何兼容 Vision API 的模型进行截图识别
 - 🚀 **性能极致优化**:
     - Swift OCR 二进制程序现在支持缓存，系统 OCR 启动几乎瞬时完成

@@ -21,7 +21,7 @@ export default function ScreenshotResult() {
 
     window.api.getSettings().then((settings) => {
       const ocr = settings.screenshotTranslation?.ocrSource || 'system'
-      setOcrSource(ocr === 'system' ? '系统 OCR' : 'GLM-4V')
+      setOcrSource(ocr === 'system' ? '系统 OCR' : (ocr === 'openai' ? 'OpenAI' : 'GLM-4V'))
 
       if (settings.source === 'bing') {
         setTranslateSource('Bing')

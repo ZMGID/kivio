@@ -21,6 +21,7 @@ const ALLOWED_FILE_BASE = pathToFileURL(path.join(RENDERER_DIST, path.sep)).toSt
 type StoreType = {
   hotkey: string;
   theme: 'system' | 'light' | 'dark';
+  settingsLanguage: 'zh' | 'en';
   targetLang: string; // 'auto' | 'zh' | 'en' ...
   source: 'bing' | 'openai' | 'custom';
   openai: {
@@ -66,6 +67,7 @@ const store = new Store<StoreType>({
   defaults: {
     hotkey: 'Command+Option+T',
     theme: 'system',
+    settingsLanguage: 'zh',
     targetLang: 'auto',
     source: 'bing',
     openai: {
@@ -140,6 +142,8 @@ function sanitizeSettings(input: unknown): Partial<StoreType> {
   if (typeof raw.hotkey === 'string' && raw.hotkey.trim()) result.hotkey = raw.hotkey.trim()
 
   if (raw.theme === 'system' || raw.theme === 'light' || raw.theme === 'dark') result.theme = raw.theme
+
+  if (raw.settingsLanguage === 'zh' || raw.settingsLanguage === 'en') result.settingsLanguage = raw.settingsLanguage
 
   if (typeof raw.targetLang === 'string' && raw.targetLang.trim()) result.targetLang = raw.targetLang.trim()
 
