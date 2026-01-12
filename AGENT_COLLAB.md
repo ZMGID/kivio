@@ -59,3 +59,19 @@
   1. 打开设置页，检查是否能切换语言（UI文本需即时更新）。
   2. 重启应用后，检查设置语言是否被记住。
   3. 确认版本号显示为 v1.3.6。
+- 时间/作者：2026-01-12 / Agent
+- 改动范围（文件/功能）：
+  - **Cross-Platform Architecture**: Refactored `electron/main.ts` using `PlatformAdapter` pattern.
+  - **Windows Support**: Implemented `win-screenshot.ps1` and C# `win-ocr` helper.
+  - `electron/platforms/`: Added `interface.ts`, `mac.ts`, `windows.ts`.
+  - `package.json` & `scripts/`: Added `build:win` and `build-ocr-helper.mjs` cross-platform build logic.
+  - Version bump to v1.4.0.
+- 风险点 & 回滚方式：
+  - Windows logic is "blind coded" (verified via static analysis but not runtime). Mac logic regression tested on Mac.
+  - Rollback: `git revert HEAD`.
+- 如何验证（Windows）：
+  - Follow `windows_verification_guide.md`.
+  - Test Screenshot Translation (Ctrl+Shift+A).
+  - Test AI Explanation (Ctrl+Shift+E).
+- 如何验证（Mac）：
+  - Existing `Command+Shift+A`, `Command+Shift+E` should work exactly as before (using `MacAdapter`).

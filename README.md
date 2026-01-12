@@ -11,7 +11,7 @@
 <a name="english"></a>
 ## 🇬🇧 KeyLingo - Smart Translation & AI Vision Tool
 
-**KeyLingo** is a smart translation and AI vision utility designed for macOS. With global hotkeys, you can instantly translate text, analyze screenshots, and work across any application seamlessly.
+**KeyLingo** is a smart translation and AI vision utility designed for **macOS and Windows**. With global hotkeys, you can instantly translate text, analyze screenshots, and work across any application seamlessly.
 
 ### ✨ Key Features
 
@@ -75,7 +75,7 @@ npm run build
 <a name="chinese"></a>
 ## 🇨🇳 KeyLingo - 智能翻译与 AI 视觉工具
 
-**KeyLingo** 是一款专为 macOS 设计的智能翻译和 AI 视觉工具。通过全局快捷键，您可以随时翻译文本、分析截图，并无缝跨应用工作。
+**KeyLingo** 是一款专为 **macOS 和 Windows** 设计的智能翻译和 AI 视觉工具。通过全局快捷键，您可以随时翻译文本、分析截图，并无缝跨应用工作。
 
 ### ✨ 核心功能
 
@@ -119,7 +119,13 @@ npm run build
 
 ## 📋 Version History / 版本历史
 
-**v1.3.6** (2025-01-12)
+**v1.4.0** (2026-01-12)
+- 🇬🇧 ✨ **Windows Support**: KeyLingo is now available on Windows 10/11! support screenshot translation & AI explanation.
+- 🇬🇧 🛠 **Cross-Platform Architecture**: Seamlessly run on both macOS and Windows with consistent features.
+- 🇨🇳 ✨ **Windows 版发布**：KeyLingo 现已支持 Windows 10/11！全功能支持截图翻译与 AI 讲解。
+- 🇨🇳 🛠 **跨平台架构升级**：底层重构，从单 macOS 应用升级为跨平台应用。
+ 
+**v1.3.6** (2026-01-12)
 - 🇬🇧 ✨ Added **Language Setting**: Switch app interface language between English and Chinese.
 - 🇨🇳 ✨ 新增 **界面语言设置**：可在设置中自由切换中英文界面。
 

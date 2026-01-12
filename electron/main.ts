@@ -1,12 +1,29 @@
 import { app, BrowserWindow, globalShortcut, screen, ipcMain, clipboard, shell, Tray, Menu, nativeImage } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
-import { exec, spawn } from 'node:child_process'
+
 import { translate as bingTranslate } from 'bing-translate-api'
 import Store from 'electron-store'
 import OpenAI from 'openai'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
+
+// Platform Adapters
+import { PlatformAdapter } from './platforms/interface';
+import { MacAdapter } from './platforms/mac';
+import { WindowsAdapter } from './platforms/windows';
+
+// Initialize Platform Adapter
+let platform: PlatformAdapter;
+
+if (process.platform === 'darwin') {
+  platform = new MacAdapter();
+} else if (process.platform === 'win32') {
+  platform = new WindowsAdapter();
+} else {
+  console.warn('Unsupported platform:', process.platform);
+  platform = new MacAdapter(); // Fallback
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
@@ -231,20 +248,7 @@ function cleanupExplainImage(imageId: string | null) {
   if (currentExplainImageId === imageId) currentExplainImageId = null
 }
 
-function getOcrHelperPath(): string | null {
-  const helperName = 'keylingo-ocr'
 
-  const resourcesPath = (process as unknown as { resourcesPath?: string }).resourcesPath
-  if (resourcesPath) {
-    const packagedPath = path.join(resourcesPath, 'ocr', helperName)
-    if (fs.existsSync(packagedPath)) return packagedPath
-  }
-
-  const devPath = path.join(process.env.APP_ROOT || process.cwd(), 'resources', 'ocr', helperName)
-  if (fs.existsSync(devPath)) return devPath
-
-  return null
-}
 
 function createWindow() {
   const iconPath = path.join(process.env.VITE_PUBLIC, 'icon.png');
@@ -410,9 +414,7 @@ ipcMain.on('commit-translation', (_event, text) => {
   app.hide()
 
   setTimeout(() => {
-    exec(`osascript -e 'tell application "System Events" to keystroke "v" using command down'`, (error) => {
-      if (error) console.error('Paste failed:', error)
-    })
+    platform.pasteText(text).catch(err => console.error('Paste failed:', err));
   }, 150)
 })
 
@@ -603,44 +605,7 @@ async function callGLM4V(imagePath: string, apiKey: string): Promise<string> {
 }
 
 async function callSystemOCR(imagePath: string): Promise<string> {
-  const helperPath = getOcrHelperPath()
-  if (!helperPath) {
-    throw new Error('系统 OCR 不可用：缺少 OCR helper。请在开发环境运行 `npm run build:ocr`，或在发布版中重新打包包含 helper。')
-  }
-
-  return await new Promise((resolve, reject) => {
-    const child = spawn(helperPath, [imagePath], { stdio: ['ignore', 'pipe', 'pipe'] })
-
-    const stdoutChunks: Buffer[] = []
-    const stderrChunks: Buffer[] = []
-
-    const timeout = setTimeout(() => {
-      child.kill('SIGKILL')
-      reject(new Error('系统OCR识别超时'))
-    }, 15_000)
-
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk))
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk))
-
-    child.on('error', (err) => {
-      clearTimeout(timeout)
-      reject(err)
-    })
-
-    child.on('close', (code) => {
-      clearTimeout(timeout)
-
-      const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
-
-      if (code !== 0) {
-        reject(new Error('系统OCR识别失败: ' + (stderr || `exit code ${code}`)))
-        return
-      }
-
-      resolve(stdout || '未识别到文字')
-    })
-  })
+  return platform.performSystemOCR(imagePath);
 }
 
 async function callOpenAIOCR(imagePath: string, config: { apiKey: string, baseURL: string, model: string }): Promise<string> {
@@ -732,17 +697,8 @@ async function translateTextHelper(text: string): Promise<string> {
  * 如果用户取消截图，返回 null
  */
 async function captureScreenshot(prefix: string = 'screenshot'): Promise<string | null> {
-  return new Promise((resolve) => {
-    const tempPath = path.join(app.getPath('temp'), `${prefix}-${Date.now()}.png`);
-
-    exec(`screencapture -i "${tempPath}"`, (error) => {
-      if (error || !fs.existsSync(tempPath)) {
-        resolve(null);
-        return;
-      }
-      resolve(tempPath);
-    });
-  });
+  // Use Platform Adapter
+  return platform.captureScreenshot(prefix === 'explain' ? 'selection' : 'selection');
 }
 
 /**
@@ -754,8 +710,11 @@ function registerGlobalHotkey(
   callback: () => void
 ): boolean {
   try {
+    // Unregister first strictly
     globalShortcut.unregister(hotkey);
-    const ret = globalShortcut.register(hotkey, callback);
+
+    // Use Platform Adapter
+    const ret = platform.registerHotkey(hotkey, callback);
 
     if (!ret) {
       console.error(`${name} hotkey registration failed:`, hotkey);
