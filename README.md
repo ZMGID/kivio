@@ -1,16 +1,4 @@
-# KeyLingo
-
-<p align="center">
-  <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
-</p>
-
-[English](#english) | [中文](#中文)
-
----
-
-<a name="english"></a>
-## 🇬🇧 English
-# KeyLingo
+# KeyLingo v2.0.0
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -23,96 +11,77 @@
 <a name="english"></a>
 ## 🇬🇧 English
 
-**KeyLingo** is a smart translation and AI vision utility designed for macOS and Windows. With global hotkeys, you can instantly translate text, analyze screenshots, and work across any application seamlessly.
+**KeyLingo** is a smart translation and AI vision utility designed for **macOS** and **Windows**. It enables instant text translation, screenshots translation, and AI-powered image analysis across any application with global hotkeys.
 
 ### ✨ Key Features
 
-*   **Global Hotkey**: Toggle the translation bar instantly from any app (Default: `Cmd/Ctrl+Alt+T`).
-*   **Screenshot Translation**: Capture any part of your screen and translate text from images using **OpenAI-compatible Vision OCR** (Default: `Cmd/Ctrl+Shift+A`).
-*   **Screenshot Explanation**: AI-powered screenshot analysis with conversational Q&A - explain code, designs, or any visual content (Default: `Cmd/Ctrl+Shift+E`).
-*   **Minimalist Design**: Clean, distracting-free UI that floats over your windows. Supports **Light** and **Dark** modes (System sync).
-*   **Smart Translation**:
-    *   **AI Integration**: Support for OpenAI-compatible APIs for high-quality, context-aware translations.
-*   **Performance Optimized**: Swift OCR binary caching, asynchronous I/O, and frontend lazy loading for ⚡️ lightning-fast response.
-*   **Auto-Paste**: Press `Enter` to translate and automatically paste the result into your text editor, browser, or chat window.
-*   **Menu Bar Integration**: Unobtrusive tray icon for quick access to settings and quitting.
-*   **Target Language**: Supports Auto-detection, English, Chinese, Japanese, Korean, French, and German.
+*   **Global Hotkey**: Toggle translation bar instantly (Default: `Cmd/Ctrl+Alt+T`).
+*   **AI Translation Engine**: Support for **OpenAI-compatible** APIs (OpenAI, DeepSeek, Agri, etc.) for high-quality, context-aware translations.
+*   **Screenshot Translation**: Capture any screen area and translate text instantly using OCR models (Default: `Cmd/Ctrl+Shift+A`).
+*   **Screenshot Explanation**: AI-powered analysis of screenshots with multi-turn conversation support - explain code, UI designs, or data (Default: `Cmd/Ctrl+Shift+E`).
+*   **Multi-Provider Support**: 
+    *   Configure different providers for Translation, OCR, and Explanation.
+    *   Support for custom Base URLs and Models.
+*   **Cross-Platform**: Fully optimized for **macOS** and **Windows**.
+    *   **macOS**: Native `screencapture` integration.
+    *   **Windows**: Native `ms-screenclip` integration.
+*   **Auto-Paste**: Automatically paste translation results into your active application (Editor, Browser, IDE).
+*   **Minimalist UI**: Clean, floating interface with Light/Dark mode support (System sync).
+*   **History**: Automatically saves recent screenshot explanation sessions.
 
 ### 📋 Version History
 
-**v1.3.5** (2025-01-12)
-- ✨ Added **OpenAI OCR** for screenshot translation - use any OpenAI-compatible Vision API (GPT-4o, etc.)
-- 🚀 **Performance Optimization**: 
-    - Swift OCR binary caching for instant system OCR activation
-    - Non-blocking asynchronous I/O for all image processing
-    - Frontend lazy loading implemented for faster initial startup
-- 🔧 **Refactored Codebase**: Improved modularity and decoupled screenshot/explanation logic
-- 🐛 Fixed hotkey registration issues and system lint errors
-
-**v1.3.0** (2025-12-21)
-- 🎉 **Project Renamed** to **KeyLingo**
-- ✨ Added **Screenshot Explanation** feature (Cmd/Ctrl+Shift+E) - AI analysis of screenshots with multi-turn conversation
-- ✨ Added **Conversation History** - Save and review last 5 screenshot explanations
-- ✨ Added **Custom Prompts** - Customize AI system and summary prompts
-- 🐛 Fixed tray menu settings bug - window now hides properly after closing settings
-
-**v1.2.0** (2025-12-20)
-- ✨ Added **System OCR** option for screenshot translation (offline, free using macOS Vision framework)
-- 🔧 Improved input field UX - auto-scroll to show cursor, better text visibility
-- 🔧 Fixed settings save bug - changes now apply immediately without restart
-- 📝 Enhanced translation result display with auto-scroll to latest content
-
-**v1.1.0** (2025-12-17)
-- ✨ Added **Screenshot Translation** feature with GLM-4V OCR
-- 🎨 New screenshot result UI with copy functionality
-
-**v1.0.0** (Initial Release)
-- 🚀 Global translation with customizable hotkey
-- 🤖 OpenAI-compatible AI model support
-- 🎨 Light/Dark mode with system sync
+**v2.0.0** (2025-02-05)
+- 🚀 **Major Rewrite**: Refactored core architecture for better stability and maintainability.
+- ✨ **Multi-Provider System**: Configure independent API providers for different tasks (Translation/OCR/Explain).
+- 🖼️ **Enhanced Windows Support**: Optimized screenshot capture workflow for Windows.
+- 🎨 **UI Overhaul**: Redesigned Settings interface for better usability.
+- 🔧 **Performance**: Improved binary handling and asynchronous operations.
 
 ### 🚀 Installation
 
-1.  Download the latest `.dmg` from the [Releases](./release) folder.
-2.  Open the `.dmg` and drag **KeyLingo** to your `Applications` folder.
-3.  **Permissions**: On first launch, you must grant **Accessibility Permissions** to allow the app to simulate keystrokes (for the Auto-Paste feature).
+1.  Download the latest installer from [Releases](https://github.com/ZMGID/keylingo/releases).
+2.  **macOS**: Drag `KeyLingo.app` to Applications.
+3.  **Windows**: Run the `.msi` or `.exe` installer.
+4.  **Permissions**:
+    *   **macOS**: Grant **Accessibility** permission (for Auto-Paste) and **Screen Recording** permission (for Screenshots).
+    *   **Windows**: No special permissions required usually.
 
 ### 🛠 Usage
 
-#### Main Translation
-1.  **Activate**: Press `Command/Ctrl + Alt + T` (configurable).
-2.  **Translate**: Type your text. The translation updates in real-time (with debounce).
-3.  **Commit**: Press `Enter`. The translated text is copied to your clipboard and pasted into the previous active app.
-    *   *Tip: Press `Esc` to close the window without pasting.*
+#### Translation
+1.  **Activate**: Press `Cmd/Ctrl + Alt + T`.
+2.  **Type**: Enter text to translate.
+3.  **Commit**: Press `Enter` to copy & paste result automatically.
 
-#### Screenshot Translation (NEW)
-1.  **Activate**: Press `Command/Ctrl + Shift + A` (configurable).
-2.  **Capture**: Select the screen area containing text you want to translate.
-3.  **Wait**: The app will recognize text using OpenAI-compatible Vision OCR and translate it automatically.
-4.  **View Results**: See both original recognized text and translation in a popup window.
-    *   *Tip: Click the copy button to copy the translation to clipboard.*
+#### Screenshot Translation
+1.  **Activate**: Press `Cmd/Ctrl + Shift + A`.
+2.  **Select**: Click and drag to capture area.
+3.  **Result**: View OCR text and translation side-by-side.
+
+#### Screenshot Explanation
+1.  **Activate**: Press `Cmd/Ctrl + Shift + E`.
+2.  **Select**: Capture area to analyze.
+3.  **Chat**: Ask questions about the image content.
 
 #### Settings
-Hover over the top-right corner of the translation bar and click the **Gear Icon ⚙️**:
-*   **Translation Engine**: OpenAI-compatible API.
-*   **AI Configuration**: Enter your API Key, Base URL, and Model Name.
-*   **Screenshot Translation**: 
-    *   Enable/disable screenshot translation
-    *   Configure hotkey
-    *   Configure OCR model (OpenAI-compatible)
+Click the gear icon ⚙️ in the translation bar to configure:
+*   **Providers**: Add OpenAI, DeepSeek, or other compatible API keys.
+*   **Hotkeys**: Customize global shortcuts.
+*   **Prompts**: Custom system prompts for AI analysis.
 
 ### 💻 Development
 
-Built with [Tauri 2](https://tauri.app/), [React](https://react.dev/), [Vite](https://vitejs.dev/), and [TailwindCSS](https://tailwindcss.com/).
+Built with [Tauri v2](https://v2.tauri.app/), [React](https://react.dev/), [Vite](https://vitejs.dev/) & [TailwindCSS v4](https://tailwindcss.com/).
 
 ```bash
 # Install dependencies
 npm install
 
-# Start dev (Tauri + Vite)
+# Dev
 npm run dev
 
-# Build (Tauri bundle)
+# Build
 npm run build
 ```
 
@@ -121,93 +90,75 @@ npm run build
 <a name="中文"></a>
 ## 🇨🇳 中文
 
-**KeyLingo** 是一款专为 macOS 与 Windows 设计的智能翻译和 AI 视觉工具。通过全局快捷键，您可以随时翻译文本、分析截图，并无缝跨应用工作。
+**KeyLingo** 是一款适用于 **macOS** 和 **Windows** 的智能翻译与 AI 视觉工具。通过全局快捷键，您可以随时进行文本翻译、截图翻译以及基于 AI 的屏幕内容分析。
 
 ### ✨ 核心功能
 
-*   **全局快捷键**：在任何应用中随时呼出翻译栏（默认：`Cmd/Ctrl+Alt+T`）。
-*   **截图翻译**：截取屏幕任意区域，使用 **OpenAI 兼容 Vision OCR** 识别并翻译（默认：`Cmd/Ctrl+Shift+A`）。
-*   **极简设计**：干净、无干扰的悬浮界面。支持 **亮色** 和 **暗色** 模式（跟随系统）。
-*   **性能优化**：Swift OCR 二进制缓存、异步 I/O 及前端组件懒加载，响应如闪电般迅速 ⚡️。
-*   **智能翻译**：
-    *   **AI 大模型**：支持配置兼容 OpenAI 格式的 API，提供更精准、更自然的翻译体验。
-*   **自动上屏**：按下 `Enter` 键确认，翻译结果将自动输入到您当前的光标位置（如编辑器、浏览器、微信等）。
-*   **菜单栏常驻**：顶部菜单栏图标，方便快速访问设置或退出应用，不占用 Dock 栏。
-*   **多语言支持**：支持自动检测，以及中、英、日、韩、法、德互译。
+*   **全局快捷键**：一键呼出翻译栏（默认：`Cmd/Ctrl+Alt+T`）。
+*   **AI 翻译引擎**：支持所有 **OpenAI 兼容** 接口（如 DeepSeek、OpenAI、SiliconFlow 等），提供精准的上下文翻译。
+*   **截图翻译**：截取屏幕任意区域，立即识别并翻译文字（默认：`Cmd/Ctrl+Shift+A`）。
+*   **截图讲解**：AI 深度分析截图内容，支持多轮对话——无论是代码解释、UI 分析还是数据提取（默认：`Cmd/Ctrl+Shift+E`）。
+*   **多供应商管理**：
+    *   分别为 翻译、OCR、讲解 配置不同的模型服务商。
+    *   支持自定义 Base URL 和 模型名称。
+*   **双平台完美支持**：
+    *   **macOS**: 原生 `screencapture` 集成。
+    *   **Windows**: 原生 `ms-screenclip` 集成。
+*   **自动上屏**：按下回车，自动将译文粘贴到您当前工作的软件中。
+*   **极简设计**：无干扰的悬浮界面，完美适配深色/浅色模式。
+*   **历史记录**：自动保存最近的截图分析会话方便回顾。
 
 ### 📋 版本历史
 
-**v1.3.5** (2025-01-12)
-- ✨ 新增 **OpenAI OCR** 支持 - 可使用 GPT-4o 等任何兼容 Vision API 的模型进行截图识别
-- 🚀 **性能极致优化**:
-    - Swift OCR 二进制程序现在支持缓存，系统 OCR 启动几乎瞬时完成
-    - 识图相关文件操作全面切换为非阻塞异步 I/O，主进程不再卡顿
-    - 实现前端组件懒加载，大幅提升应用启动速度并降低初始内存占用
-- 🔧 **代码重构**: 优化截图与讲解逻辑的解耦，提升模块化程度
-- 🐛 修复了热键注册可能导致的内存问题及系统编译警告
-
-**v1.3.0** (2025-12-21)
-- 🎉 **项目更名**为 **KeyLingo**
-- ✨ 新增**截图讲解**功能 (Cmd/Ctrl+Shift+E) - 使用 AI 分析截图内容并支持多轮对话
-- ✨ 新增**对话历史** - 自动保存并可回顾最近 5 次截图分析记录
-- ✨ 新增**自定义 Prompt** - 用户可自定义 AI 的系统提示词和总结提示词
-- 🐛 修复菜单栏设置项 Bug - 关闭设置后主窗口会正确隐藏
-
-**v1.2.0** (2025-12-20)
-- ✨ 新增**系统 OCR** 选项用于截图翻译（离线、免费，使用 macOS Vision 框架）
-- 🔧 优化输入框体验 - 自动滚动显示光标，文字可见性更好
-- 🔧 修复设置保存问题 - 设置更改立即生效，无需重启
-- 📝 增强翻译结果显示，自动滚动到最新内容
-
-**v1.1.0** (2025-12-17)
-- ✨ 新增**截图翻译**功能，支持 GLM-4V OCR
-- 🎨 全新截图结果界面，支持复制功能
-
-**v1.0.0** (首次发布)
-- 🚀 全局翻译，支持自定义快捷键
-- 🤖 OpenAI 兼容 AI 模型支持
-- 🎨 亮色/暗色主题，跟随系统
+**v2.0.0** (2025-02-05)
+- 🚀 **架构重写**: 全面重构底层代码，大幅提升稳定性与可维护性。
+- ✨ **多供应商系统**: 支持为翻译、OCR、讲解功能分别配置不同的 API 服务商。
+- 🖼️ **Windows 优化**: 重新设计 Windows 下的截图交互流程。
+- 🎨 **界面升级**: 全新的设置面板设计，交互更直观。
+- 🔧 **性能提升**: 优化异步任务处理与资源占用。
 
 ### 🚀 安装说明
 
-1.  在 [release](./release) 文件夹中找到最新的 `.dmg` 安装包。
-2.  双击 `.dmg` 并将 **KeyLingo** 拖入 `应用程序 (Applications)` 文件夹。
-3.  **权限授予**：首次运行时，系统会提示授予 **辅助功能 (Accessibility)** 权限。这是实现“自动粘贴”功能所必需的，请前往“系统设置 -> 隐私与安全性 -> 辅助功能”中勾选本应用。
+1.  从 [Releases](https://github.com/ZMGID/keylingo/releases) 下载最新安装包。
+2.  **macOS**: 将 `KeyLingo.app` 拖入“应用程序”文件夹。
+3.  **Windows**: 运行 `.msi` 或 `.exe` 安装程序。
+4.  **权限说明**:
+    *   **macOS**: 首次运行需授予 **辅助功能**（用于模拟按键粘贴）和 **屏幕录制**（用于截图）权限。
 
 ### 🛠 使用指南
 
-#### 主翻译功能
-1.  **唤出**：按下 `Command/Ctrl + Alt + T`（可在设置中修改）。
-2.  **翻译**：直接输入文字，并在上方查看实时翻译结果。
-3.  **确认/上屏**：按下 `Enter`。译文会自动复制并粘贴到您刚才工作的窗口中。
+#### 文本翻译
+1.  **呼出**: `Cmd/Ctrl + Alt + T`
+2.  **输入**: 输入或粘贴文本
+3.  **确认**: 按 `Enter` 自动复制并粘贴到上一个窗口
 
-#### 截图翻译（新功能）
-1.  **唤出**：按下 `Command/Ctrl + Shift + A`（可在设置中修改）。
-2.  **截图**：选择屏幕中包含要翻译文字的区域。
-3.  **等待**：应用会使用 OpenAI 兼容 Vision OCR 自动识别文字并翻译。
-4.  **查看结果**：在弹出窗口中查看识别的原文和翻译结果。
+#### 截图翻译
+1.  **呼出**: `Cmd/Ctrl + Shift + A`
+2.  **截图**: 框选屏幕区域
+3.  **查看**: 自动显示识别原文与译文
+
+#### 截图讲解
+1.  **呼出**: `Cmd/Ctrl + Shift + E`
+2.  **截图**: 框选需要分析的内容
+3.  **对话**: AI 会自动总结内容，您可以继续提问
 
 #### 设置
-将鼠标悬停在翻译栏右上角，点击出现的 **齿轮图标 ⚙️**：
-*   **翻译引擎**：OpenAI 兼容 API。
-*   **AI 配置**：填写您的 API Key、Base URL 和模型名称。
-*   **截图翻译**：
-    *   启用/禁用截图翻译功能
-    *   配置快捷键
-    *   配置 OCR 模型（OpenAI 兼容）
+点击翻译栏右上角的齿轮图标 ⚙️：
+*   **模型配置**: 添加 DeepSeek、OpenAI 等 API Key。
+*   **快捷键**: 自定义所有功能的触发热键。
+*   **Prompt**: 自定义 AI 的系统提示词和风格。
 
 ### 💻 开发构建
 
-
-本项目基于 [Tauri 2](https://tauri.app/), [React](https://react.dev/), [Vite](https://vitejs.dev/) 和 [TailwindCSS](https://tailwindcss.com/) 构建。
+基于 [Tauri v2](https://v2.tauri.app/), [React](https://react.dev/), [Vite](https://vitejs.dev/) 和 [TailwindCSS v4](https://tailwindcss.com/) 构建。
 
 ```bash
 # 安装依赖
 npm install
 
-# 启动开发环境 (Tauri + Vite)
+# 本地开发
 npm run dev
 
-# 打包应用 (Tauri bundle)
+# 打包构建
 npm run build
 ```
