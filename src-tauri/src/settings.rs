@@ -1,0 +1,420 @@
+use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
+use tauri_plugin_store::StoreBuilder;
+
+const SETTINGS_STORE: &str = "settings.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OpenAIConfig {
+  #[serde(default)]
+  pub api_key: String,
+  #[serde(default = "default_openai_base_url")]
+  pub base_url: String,
+  #[serde(default = "default_openai_model")]
+  pub model: String,
+}
+
+impl Default for OpenAIConfig {
+  fn default() -> Self {
+    Self {
+      api_key: "".to_string(),
+      base_url: "https://api.openai.com/v1".to_string(),
+      model: "gpt-4o".to_string(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProvider {
+  pub id: String,
+  pub name: String,
+  pub api_key: String,
+  pub base_url: String,
+  #[serde(default)]
+  pub available_models: Vec<String>,
+  #[serde(default)]
+  pub enabled_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ScreenshotTranslationConfig {
+  #[serde(default = "default_true")]
+  pub enabled: bool,
+  #[serde(default = "default_screenshot_translation_hotkey")]
+  pub hotkey: String,
+  #[serde(default)]
+  pub provider_id: String,
+  #[serde(default = "default_openai_model")]
+  pub model: String,
+  // Legacy field for migration
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub openai: Option<OpenAIConfig>,
+}
+
+impl Default for ScreenshotTranslationConfig {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      hotkey: "CommandOrControl+Shift+A".to_string(),
+      provider_id: "default-ocr".to_string(),
+      model: "gpt-4o".to_string(),
+      openai: None,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomPrompts {
+  pub system_prompt: Option<String>,
+  pub summary_prompt: Option<String>,
+  pub question_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenshotExplainModel {
+  pub provider: String,
+  pub api_key: String,
+  pub base_url: String,
+  pub model_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ScreenshotExplainConfig {
+  #[serde(default = "default_true")]
+  pub enabled: bool,
+  #[serde(default = "default_screenshot_explain_hotkey")]
+  pub hotkey: String,
+  #[serde(default)]
+  pub provider_id: String,
+  #[serde(default = "default_openai_model")]
+  pub model: String,
+  #[serde(default = "default_language_zh")]
+  pub default_language: String,
+  #[serde(default)]
+  pub custom_prompts: Option<CustomPrompts>,
+  // Legacy field for migration
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub model_legacy: Option<ScreenshotExplainModel>,
+}
+
+impl Default for ScreenshotExplainConfig {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      hotkey: "CommandOrControl+Shift+E".to_string(),
+      provider_id: "default-explain".to_string(),
+      model: "gpt-4o".to_string(),
+      default_language: "zh".to_string(),
+      custom_prompts: None,
+      model_legacy: None,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainMessage {
+  pub role: String,
+  pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainHistoryRecord {
+  pub id: String,
+  pub timestamp: i64,
+  pub messages: Vec<ExplainMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Settings {
+  #[serde(default = "default_hotkey")]
+  pub hotkey: String,
+  #[serde(default = "default_theme")]
+  pub theme: String,
+  #[serde(default = "default_target_lang")]
+  pub target_lang: String,
+  #[serde(default = "default_source")]
+  pub source: String,
+  #[serde(default = "default_true")]
+  pub auto_paste: bool,
+  #[serde(default)]
+  pub translator_provider_id: String,
+  #[serde(default = "default_openai_model")]
+  pub translator_model: String,
+  #[serde(default)]
+  pub providers: Vec<ModelProvider>,
+  #[serde(default)]
+  pub screenshot_translation: ScreenshotTranslationConfig,
+  #[serde(default)]
+  pub screenshot_explain: ScreenshotExplainConfig,
+  #[serde(default)]
+  pub explain_history: Vec<ExplainHistoryRecord>,
+  #[serde(default = "default_settings_language")]
+  pub settings_language: Option<String>,
+  // Legacy field for migration
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub openai: Option<OpenAIConfig>,
+}
+
+impl Settings {
+  pub fn get_provider(&self, id: &str) -> Option<&ModelProvider> {
+    self.providers.iter().find(|p| p.id == id)
+  }
+}
+
+impl Default for Settings {
+  fn default() -> Self {
+    Self {
+      hotkey: "CommandOrControl+Alt+T".to_string(),
+      theme: "system".to_string(),
+      target_lang: "auto".to_string(),
+      source: "openai".to_string(),
+      auto_paste: true,
+      translator_provider_id: "default-translator".to_string(),
+      translator_model: "gpt-4o".to_string(),
+      providers: vec![],
+      screenshot_translation: ScreenshotTranslationConfig::default(),
+      screenshot_explain: ScreenshotExplainConfig::default(),
+      explain_history: vec![],
+      settings_language: Some("zh".to_string()),
+      openai: None,
+    }
+  }
+}
+
+pub fn sanitize_settings(mut settings: Settings) -> Settings {
+  // 1. Migration from old settings
+  if settings.providers.is_empty() {
+    // Migrate Translator provider
+    if let Some(old_openai) = settings.openai.take() {
+      settings.providers.push(ModelProvider {
+        id: "default-translator".to_string(),
+        name: "OpenAI (Translator)".to_string(),
+        api_key: old_openai.api_key,
+        base_url: old_openai.base_url,
+        available_models: vec![],
+        enabled_models: vec![old_openai.model.clone()],
+      });
+      settings.translator_provider_id = "default-translator".to_string();
+      settings.translator_model = old_openai.model;
+    }
+
+    // Migrate OCR provider
+    if let Some(old_ocr) = settings.screenshot_translation.openai.take() {
+        settings.providers.push(ModelProvider {
+            id: "default-ocr".to_string(),
+            name: "OpenAI (OCR)".to_string(),
+            api_key: old_ocr.api_key,
+            base_url: old_ocr.base_url,
+            available_models: vec![],
+            enabled_models: vec![old_ocr.model.clone()],
+        });
+        settings.screenshot_translation.provider_id = "default-ocr".to_string();
+        settings.screenshot_translation.model = old_ocr.model;
+    }
+
+    // Migrate Explain provider
+    if let Some(old_explain) = settings.screenshot_explain.model_legacy.take() {
+        settings.providers.push(ModelProvider {
+            id: "default-explain".to_string(),
+            name: "OpenAI (Explain)".to_string(),
+            api_key: old_explain.api_key,
+            base_url: old_explain.base_url,
+            available_models: vec![],
+            enabled_models: vec![old_explain.model_name.clone()],
+        });
+        settings.screenshot_explain.provider_id = "default-explain".to_string();
+        settings.screenshot_explain.model = old_explain.model_name;
+    }
+  }
+
+  // 2. Ensure defaults for empty fields
+  if settings.translator_model.is_empty() {
+      settings.translator_model = "gpt-4o".to_string();
+  }
+  if settings.screenshot_translation.model.is_empty() {
+      settings.screenshot_translation.model = "gpt-4o".to_string();
+  }
+  if settings.screenshot_explain.model.is_empty() {
+      settings.screenshot_explain.model = "gpt-4o".to_string();
+  }
+
+  if settings.translator_provider_id.is_empty() && !settings.providers.is_empty() {
+      settings.translator_provider_id = settings.providers[0].id.clone();
+  }
+  if settings.screenshot_translation.provider_id.is_empty() && !settings.providers.is_empty() {
+      settings.screenshot_translation.provider_id = settings.providers[0].id.clone();
+  }
+  if settings.screenshot_explain.provider_id.is_empty() && !settings.providers.is_empty() {
+      settings.screenshot_explain.provider_id = settings.providers[0].id.clone();
+  }
+
+  let provider_exists = |id: &str| settings.providers.iter().any(|p| p.id == id);
+  if settings.providers.is_empty() {
+      settings.translator_provider_id.clear();
+      settings.screenshot_translation.provider_id.clear();
+      settings.screenshot_explain.provider_id.clear();
+  } else {
+      if !provider_exists(&settings.translator_provider_id) {
+          let first = &settings.providers[0];
+          settings.translator_provider_id = first.id.clone();
+          if let Some(model) = first.enabled_models.first() {
+              settings.translator_model = model.clone();
+          }
+      }
+      if !provider_exists(&settings.screenshot_translation.provider_id) {
+          let first = &settings.providers[0];
+          settings.screenshot_translation.provider_id = first.id.clone();
+          if let Some(model) = first.enabled_models.first() {
+              settings.screenshot_translation.model = model.clone();
+          }
+      }
+      if !provider_exists(&settings.screenshot_explain.provider_id) {
+          let first = &settings.providers[0];
+          settings.screenshot_explain.provider_id = first.id.clone();
+          if let Some(model) = first.enabled_models.first() {
+              settings.screenshot_explain.model = model.clone();
+          }
+      }
+  }
+
+  // 3. Ensure current models are in enabled_models
+  for provider in &mut settings.providers {
+      if provider.enabled_models.is_empty() {
+          // If a feature is using this provider, add its model to enabled_models
+          if settings.translator_provider_id == provider.id {
+              provider.enabled_models.push(settings.translator_model.clone());
+          }
+          if settings.screenshot_translation.provider_id == provider.id {
+              if !provider.enabled_models.contains(&settings.screenshot_translation.model) {
+                  provider.enabled_models.push(settings.screenshot_translation.model.clone());
+              }
+          }
+          if settings.screenshot_explain.provider_id == provider.id {
+              if !provider.enabled_models.contains(&settings.screenshot_explain.model) {
+                  provider.enabled_models.push(settings.screenshot_explain.model.clone());
+              }
+          }
+          // Default fallback if still empty
+          if provider.enabled_models.is_empty() {
+              provider.enabled_models.push("gpt-4o".to_string());
+          }
+      }
+  }
+
+  // 3. Ensure essential fields are not empty
+  if settings.hotkey.trim().is_empty() {
+    settings.hotkey = "CommandOrControl+Alt+T".to_string();
+  }
+  if settings.screenshot_translation.hotkey.trim().is_empty() {
+    settings.screenshot_translation.hotkey = "CommandOrControl+Shift+A".to_string();
+  }
+  if settings.screenshot_explain.hotkey.trim().is_empty() {
+    settings.screenshot_explain.hotkey = "CommandOrControl+Shift+E".to_string();
+  }
+
+  settings
+}
+
+pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+  let store = StoreBuilder::new(app, SETTINGS_STORE)
+    .build()
+    .map_err(|e| e.to_string())?;
+  store.set(
+    "settings".to_string(),
+    serde_json::to_value(settings).map_err(|e| e.to_string())?,
+  );
+  store.save().map_err(|e| e.to_string())
+}
+
+pub fn load_settings(app: &AppHandle) -> Settings {
+  let store = StoreBuilder::new(app, SETTINGS_STORE).build();
+  match store {
+    Ok(store) => store
+      .get("settings")
+      .and_then(|value| serde_json::from_value(value).ok())
+      .unwrap_or_default(),
+    Err(_) => Settings::default(),
+  }
+}
+
+pub fn default_system_prompt(language: &str) -> String {
+  if language == "zh" {
+    "你是一个图片分析助手。请用自然流畅的语言回答，不要使用小标题、序号或分点列举。如果遇到数学公式，请使用 LaTeX 格式（如 $...$ 或 $$...$$）以确保正确渲染。\n\n".to_string()
+  } else {
+    "You are an image analysis assistant. Please respond naturally without headings, bullet points, or numbered lists. If you encounter mathematical formulas, please use LaTeX format (e.g., $...$ or $$...$$) to ensure they are rendered correctly.\n\n"
+      .to_string()
+  }
+}
+
+pub fn default_summary_prompt(language: &str) -> String {
+  if language == "zh" {
+    "你是一个图片分析助手。请简洁地总结这张图片的主要内容，不要使用小标题、序号或分点列举。如果遇到数学公式，请使用 LaTeX 格式（如 $...$ 或 $$...$$）。\n\n要求：\n- 用1-3句话概括图片核心内容\n- 语言自然流畅，像在和朋友描述\n- 突出最重要的信息\n- 不要使用\"图片显示...\"这样的开头\n\n请用中文回复。"
+      .to_string()
+  } else {
+    "You are an image analysis assistant. Please provide a concise summary of this image's main content without using headings, bullet points, or numbered lists. If you encounter mathematical formulas, please use LaTeX format (e.g., $...$ or $$...$$).\n\nRequirements:\n- Summarize in 1-3 natural sentences\n- Write conversationally as if describing to a friend\n- Highlight the most important information\n- Don't start with \"The image shows...\"\n\nPlease respond in English."
+      .to_string()
+  }
+}
+
+pub fn default_question_prompt(language: &str) -> String {
+  if language == "zh" {
+    "你是一个图片分析助手。用户正在询问关于这张图片的问题。如果回答中包含数学公式，请务必使用 LaTeX 格式（如 $...$ 或 $$...$$）。\n\n要求：\n- 直接回答问题，不要使用小标题或分点列举\n- 语言自然、简洁\n- 基于图片内容回答\n- 如果问题与图片无关，礼貌地引导回到图片内容\n\n请用中文回复。"
+      .to_string()
+  } else {
+    "You are an image analysis assistant. The user is asking a question about this image. If your answer contains mathematical formulas, please use LaTeX format (e.g., $...$ or $$...$$).\n\nRequirements:\n- Answer directly without headings or bullet points\n- Be natural and concise\n- Base your answer on the image content\n- If the question is unrelated to the image, politely guide back\n\nPlease respond in English."
+      .to_string()
+  }
+}
+
+fn default_true() -> bool {
+  true
+}
+
+fn default_hotkey() -> String {
+  "CommandOrControl+Alt+T".to_string()
+}
+
+fn default_screenshot_translation_hotkey() -> String {
+  "CommandOrControl+Shift+A".to_string()
+}
+
+fn default_screenshot_explain_hotkey() -> String {
+  "CommandOrControl+Shift+E".to_string()
+}
+
+fn default_theme() -> String {
+  "system".to_string()
+}
+
+fn default_target_lang() -> String {
+  "auto".to_string()
+}
+
+fn default_source() -> String {
+  "openai".to_string()
+}
+
+fn default_openai_base_url() -> String {
+  "https://api.openai.com/v1".to_string()
+}
+
+fn default_openai_model() -> String {
+  "gpt-4o".to_string()
+}
+
+fn default_language_zh() -> String {
+  "zh".to_string()
+}
+
+fn default_settings_language() -> Option<String> {
+  Some("zh".to_string())
+}

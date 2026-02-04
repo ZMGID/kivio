@@ -25,6 +25,7 @@ dist-ssr
 
 dist-electron
 release
+src-tauri/target
 
 # Local build artifacts (OCR helper)
 resources/ocr

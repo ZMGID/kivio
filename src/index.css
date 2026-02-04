@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 
 /* Custom config to enable class strategy if needed, but in v4 it's often automatic or data-attribute. 
@@ -6,10 +7,25 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 html,
-body,
-#root {
+body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  /* macOS 透明窗口需要明确透明背景 */
   background-color: transparent;
+  background: transparent;
+}
+
+#root {
+  height: 100%;
+  margin: 0;
+  background-color: transparent;
+  background: transparent;
+}
+
+/* 解决 macOS 透明窗口底部边界线问题：给容器加 1px margin 让内容不紧贴窗口边缘 */
+.window-container {
+  margin: 1px;
+  height: calc(100% - 2px);
+  width: calc(100% - 2px);
 }

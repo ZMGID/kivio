@@ -1,49 +1,8 @@
-import { useState, useEffect, type CSSProperties, type ReactNode } from 'react'
-import { X, Save, Globe, Keyboard, Camera, Sparkles } from 'lucide-react'
+import { useState, useEffect, type ReactNode } from 'react'
+import { X, Save, Globe, Keyboard, Camera, Sparkles, Cpu, Plus, Trash2, RefreshCw } from 'lucide-react'
+import { api, type Settings as SettingsType, type ModelProvider } from './api/tauri'
 
-type AppRegionStyle = CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' }
-const dragStyle: AppRegionStyle = { WebkitAppRegion: 'drag' }
-const noDragStyle: AppRegionStyle = { WebkitAppRegion: 'no-drag' }
-
-type SettingsData = {
-  hotkey: string
-  theme: 'system' | 'light' | 'dark'
-  targetLang: string
-  source: 'bing' | 'openai' | 'custom'
-  openai: {
-    apiKey: string
-    baseURL: string
-    model: string
-  }
-  screenshotTranslation: {
-    enabled: boolean
-    hotkey: string
-    ocrSource: 'system' | 'glm' | 'openai'
-    glmApiKey: string
-    openai?: {
-      apiKey: string
-      baseURL: string
-      model: string
-    }
-  }
-  screenshotExplain: {
-    enabled: boolean
-    hotkey: string
-    model: {
-      provider: 'glm' | 'openai'
-      apiKey: string
-      baseURL: string
-      modelName: string
-    }
-    defaultLanguage: 'zh' | 'en'
-    customPrompts?: {
-      systemPrompt?: string
-      summaryPrompt?: string
-      questionPrompt?: string
-    }
-  }
-  settingsLanguage?: 'zh' | 'en'
-}
+type SettingsData = SettingsType
 
 interface SettingsProps {
   onClose: () => void
@@ -59,13 +18,14 @@ const i18n = {
     tabGeneral: '基础',
     tabTranslate: '翻译',
     tabScreenshot: '截图',
+    tabModels: '模型',
     theme: '主题',
     themeSystem: '跟随系统',
     themeLight: '浅色',
     themeDark: '深色',
     language: '界面语言',
     hotkey: '翻译快捷键',
-    hotkeyPlaceholder: '例如: Command+Option+T',
+    hotkeyPlaceholder: '例如: CommandOrControl+Alt+T',
     targetLang: '目标语言',
     langAuto: '自动 (中↔英)',
     langEn: '英语',
@@ -75,27 +35,34 @@ const i18n = {
     langFr: '法语',
     langDe: '德语',
     engine: '翻译引擎',
-    engineBing: 'Bing 翻译 (免费)',
-    engineAI: 'AI 翻译 (DeepSeek/智谱等)',
+    engineAI: 'AI 翻译 (OpenAI 兼容)',
     baseUrl: '接口地址',
     apiKey: 'API 密钥',
     modelName: '模型名称',
+    providerName: '供应商名称',
+    addProvider: '添加驱动',
+    editProvider: '编辑',
+    deleteProvider: '删除',
+    selectProvider: '选择驱动',
+    fetchModels: '获取模型列表',
+    fetching: '正在获取...',
+    autoPaste: '自动上屏',
     screenshotTranslate: '截图翻译',
     screenshotExplain: '截图解释',
     enabled: '启用',
-    ocrSource: 'OCR 识别源',
-    ocrSystem: '系统 OCR (离线免费)',
-    ocrGlm: 'GLM-4V (在线高精度)',
-    ocrOpenai: 'OpenAI (自定义)',
-    getApiKey: '获取 API Key',
     responseLanguage: '回复语言',
     visionModel: '视觉模型',
-    visionGlm: 'GLM-4V (推荐)',
     visionOpenai: 'OpenAI / 自定义',
     customPrompts: '自定义提示词',
     customPromptsHint: '留空使用默认值',
     systemPrompt: '系统提示词',
     summaryPrompt: '总结提示词',
+    availableModels: '可用模型',
+    registeredModels: '已启用模型',
+    addModel: '添加',
+    removeModel: '移除',
+    manualAddModel: '手动添加',
+    selectModelPair: '选择模型组合',
     version: '版本',
   },
   en: {
@@ -105,13 +72,14 @@ const i18n = {
     tabGeneral: 'General',
     tabTranslate: 'Translate',
     tabScreenshot: 'Screenshot',
+    tabModels: 'Models',
     theme: 'Theme',
     themeSystem: 'System',
     themeLight: 'Light',
     themeDark: 'Dark',
     language: 'Language',
     hotkey: 'Hotkey',
-    hotkeyPlaceholder: 'e.g. Command+Option+T',
+    hotkeyPlaceholder: 'e.g. CommandOrControl+Alt+T',
     targetLang: 'Target Language',
     langAuto: 'Auto (ZH↔EN)',
     langEn: 'English',
@@ -121,27 +89,34 @@ const i18n = {
     langFr: 'French',
     langDe: 'German',
     engine: 'Translation Engine',
-    engineBing: 'Bing Translate (Free)',
-    engineAI: 'AI (DeepSeek/Zhipu/OpenAI)',
+    engineAI: 'AI (OpenAI Compatible)',
     baseUrl: 'Base URL',
     apiKey: 'API Key',
     modelName: 'Model Name',
+    providerName: 'Provider Name',
+    addProvider: 'Add Provider',
+    editProvider: 'Edit',
+    deleteProvider: 'Delete',
+    selectProvider: 'Select Provider',
+    fetchModels: 'Fetch Models',
+    fetching: 'Fetching...',
+    autoPaste: 'Auto Paste',
     screenshotTranslate: 'Screenshot Translation',
     screenshotExplain: 'Screenshot Explain',
     enabled: 'Enabled',
-    ocrSource: 'OCR Source',
-    ocrSystem: 'System OCR (Offline)',
-    ocrGlm: 'GLM-4V (Online)',
-    ocrOpenai: 'OpenAI (Custom)',
-    getApiKey: 'Get API Key',
     responseLanguage: 'Response Language',
     visionModel: 'Vision Model',
-    visionGlm: 'GLM-4V (Recommended)',
     visionOpenai: 'OpenAI / Custom',
     customPrompts: 'Custom Prompts',
     customPromptsHint: 'Leave empty for defaults',
     systemPrompt: 'System Prompt',
     summaryPrompt: 'Summary Prompt',
+    availableModels: 'Available Models',
+    registeredModels: 'Enabled Models',
+    addModel: 'Add',
+    removeModel: 'Remove',
+    manualAddModel: 'Manual Add',
+    selectModelPair: 'Select Model Pair',
     version: 'Version',
   }
 }
@@ -153,7 +128,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
       type="button"
       onClick={() => onChange(!checked)}
       className={`relative w-[34px] h-5 rounded-full transition-all duration-200 ease-in-out ${checked ? 'bg-neutral-900 dark:bg-white' : 'bg-neutral-200 dark:bg-neutral-700'}`}
-      style={noDragStyle}
+      data-tauri-drag-region="false"
     >
       <span className={`absolute top-[2px] left-[2px] w-4 h-4 bg-white dark:bg-neutral-900 rounded-full shadow-sm transition-transform duration-200 ${checked ? 'translate-x-[14px]' : ''}`} />
     </button>
@@ -172,7 +147,7 @@ function Select({ value, onChange, options, className = '' }: {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className={`w-full appearance-none px-3 py-1.5 pr-8 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800 text-[13px] text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-500 transition-all ${className}`}
-        style={noDragStyle}
+        data-tauri-drag-region="false"
       >
         {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select>
@@ -185,21 +160,24 @@ function Select({ value, onChange, options, className = '' }: {
   )
 }
 
-function Input({ value, onChange, type = 'text', placeholder = '', className = '' }: {
+function Input({ value, onChange, type = 'text', placeholder = '', className = '', list, ...props }: {
   value: string
   onChange: (v: string) => void
   type?: string
   placeholder?: string
   className?: string
-}) {
+  list?: string
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
   return (
     <input
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      list={list}
       className={`w-full px-3 py-1.5 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800 text-[13px] font-mono text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-500 transition-all ${className}`}
-      style={noDragStyle}
+      data-tauri-drag-region="false"
+      {...props}
     />
   )
 }
@@ -217,13 +195,13 @@ function TextArea({ value, onChange, placeholder = '', rows = 2 }: {
       placeholder={placeholder}
       rows={rows}
       className="w-full px-3 py-2 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800 text-[13px] font-mono text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-500 transition-all resize-none"
-      style={noDragStyle}
+      data-tauri-drag-region="false"
     />
   )
 }
 
-function Label({ children }: { children: ReactNode }) {
-  return <label className="block text-[11px] font-medium text-neutral-500 dark:text-neutral-400 mb-1.5 uppercase tracking-wide">{children}</label>
+function Label({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return <label className={`block text-[11px] font-medium text-neutral-500 dark:text-neutral-400 mb-1.5 uppercase tracking-wide ${className}`}>{children}</label>
 }
 
 function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
@@ -259,7 +237,7 @@ function TabButton({ active, onClick, icon, label }: {
         ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
         : 'text-neutral-500 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 hover:text-neutral-700 dark:hover:text-neutral-200'
         }`}
-      style={noDragStyle}
+      data-tauri-drag-region="false"
     >
       {icon}
       {label}
@@ -271,26 +249,71 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [appVersion, setAppVersion] = useState('')
-  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'models'>('general')
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
 
   useEffect(() => {
-    if (window.api) {
-      window.api.getSettings().then((data: SettingsData) => {
+    api.getSettings()
+      .then((data: SettingsData) => {
         setSettings(data)
         setLoading(false)
       })
-      window.api.getAppVersion().then((ver: string) => {
-        setAppVersion(ver)
+      .catch((err) => {
+        console.error('Failed to load settings:', err)
+        // 使用默认设置以避免永远 loading
+        setSettings({
+          hotkey: 'CommandOrControl+Alt+T',
+          theme: 'system',
+          targetLang: 'auto',
+          source: 'openai',
+          autoPaste: true,
+          translatorProviderId: 'default-translator',
+          translatorModel: 'gpt-4o',
+          providers: [
+            { id: 'default-translator', name: 'OpenAI (Translator)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
+            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
+            { id: 'default-explain', name: 'OpenAI (Explain)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
+          ],
+          screenshotTranslation: {
+            enabled: true,
+            hotkey: 'CommandOrControl+Shift+A',
+            providerId: 'default-ocr',
+            model: 'gpt-4o'
+          },
+          screenshotExplain: {
+            enabled: true,
+            hotkey: 'CommandOrControl+Shift+E',
+            providerId: 'default-explain',
+            model: 'gpt-4o',
+            defaultLanguage: 'zh'
+          },
+          explainHistory: [],
+          settingsLanguage: 'zh'
+        })
+        setLoading(false)
       })
-    }
+    api.getAppVersion()
+      .then((ver: string) => setAppVersion(ver))
+      .catch(() => setAppVersion('unknown'))
+    // resizeWindow 已在 App.tsx 中处理，此处不再重复调用
   }, [])
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        console.log('[Settings] ESC pressed, calling onClose')
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
   const handleSave = async () => {
-    if (!settings || !window.api) return
-    await window.api.saveSettings(settings)
+    if (!settings) return
+    await api.saveSettings(settings)
     onSettingsChange()
     onClose()
   }
@@ -300,65 +323,130 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     setSettings({ ...settings, ...updates })
   }
 
-  const updateOpenAI = (updates: Partial<SettingsData['openai']>) => {
+  const updateProvider = (id: string, updates: Partial<ModelProvider>) => {
     if (!settings) return
-    setSettings({ ...settings, openai: { ...settings.openai, ...updates } })
+    setSettings({
+      ...settings,
+      providers: settings.providers.map(p => p.id === id ? { ...p, ...updates } : p)
+    })
+  }
+
+  const addProvider = () => {
+    if (!settings) return
+    const newId = `provider-${Date.now()}`
+    const newProvider: ModelProvider = {
+      id: newId,
+      name: 'New Provider',
+      apiKey: '',
+      baseUrl: 'https://api.openai.com/v1',
+      availableModels: [],
+      enabledModels: []
+    }
+    setSettings({
+      ...settings,
+      providers: [...settings.providers, newProvider]
+    })
+  }
+
+  const resolveProvider = (providers: ModelProvider[], providerId: string) => {
+    return providers.find(p => p.id === providerId) ?? providers[0]
+  }
+
+  const resolveModel = (provider: ModelProvider | undefined, currentModel: string) => {
+    if (!provider) return currentModel
+    if (provider.enabledModels.includes(currentModel)) return currentModel
+    return provider.enabledModels[0] || currentModel
+  }
+
+  const deleteProvider = (id: string) => {
+    if (!settings) return
+    const nextProviders = settings.providers.filter(p => p.id !== id)
+    const translatorProvider = resolveProvider(nextProviders, settings.translatorProviderId)
+    const screenshotProvider = resolveProvider(nextProviders, settings.screenshotTranslation?.providerId || '')
+    const explainProvider = resolveProvider(nextProviders, settings.screenshotExplain?.providerId || '')
+
+    setSettings({
+      ...settings,
+      providers: nextProviders,
+      translatorProviderId: translatorProvider ? translatorProvider.id : '',
+      translatorModel: resolveModel(translatorProvider, settings.translatorModel),
+      screenshotTranslation: {
+        ...settings.screenshotTranslation,
+        providerId: screenshotProvider ? screenshotProvider.id : '',
+        model: resolveModel(screenshotProvider, settings.screenshotTranslation?.model || '')
+      },
+      screenshotExplain: {
+        ...settings.screenshotExplain,
+        providerId: explainProvider ? explainProvider.id : '',
+        model: resolveModel(explainProvider, settings.screenshotExplain?.model || '')
+      }
+    })
+  }
+
+  const addEnabledModel = (providerId: string, model: string) => {
+    if (!settings || !model.trim()) return
+    const provider = settings.providers.find(p => p.id === providerId)
+    if (!provider || provider.enabledModels.includes(model)) return
+    updateProvider(providerId, {
+      enabledModels: [...provider.enabledModels, model.trim()]
+    })
+  }
+
+  const removeEnabledModel = (providerId: string, model: string) => {
+    if (!settings) return
+    const provider = settings.providers.find(p => p.id === providerId)
+    if (!provider) return
+    updateProvider(providerId, {
+      enabledModels: provider.enabledModels.filter(m => m !== model)
+    })
+  }
+
+  const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
+  const [manualInputs, setManualInputs] = useState<Record<string, string>>({})
+
+  const fetchModels = async (providerId: string) => {
+    if (!settings || fetchingProviderId) return
+    setFetchingProviderId(providerId)
+    try {
+      const models = await api.fetchModels(providerId)
+      const provider = settings.providers.find(p => p.id === providerId)
+      if (provider) {
+        updateProvider(providerId, { availableModels: models })
+      }
+    } catch (err) {
+      console.error('Failed to fetch models:', err)
+    } finally {
+      setFetchingProviderId(null)
+    }
   }
 
   const updateScreenshotTranslation = (updates: Partial<SettingsData['screenshotTranslation']>) => {
     if (!settings) return
-    const current = settings.screenshotTranslation || { enabled: true, hotkey: 'Command+Shift+A', ocrSource: 'system', glmApiKey: '' }
+    const current = settings.screenshotTranslation || {
+      enabled: true,
+      hotkey: 'CommandOrControl+Shift+A',
+      providerId: 'default-ocr'
+    }
     setSettings({ ...settings, screenshotTranslation: { ...current, ...updates } })
-  }
-
-  const updateScreenshotTranslationOpenAI = (updates: Partial<NonNullable<SettingsData['screenshotTranslation']['openai']>>) => {
-    if (!settings) return
-    const current = settings.screenshotTranslation || { enabled: true, hotkey: 'Command+Shift+A', ocrSource: 'system', glmApiKey: '' }
-    const currentOpenAI = current.openai || { apiKey: '', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o' }
-
-    setSettings({
-      ...settings,
-      screenshotTranslation: {
-        ...current,
-        openai: { ...currentOpenAI, ...updates }
-      }
-    })
   }
 
   const updateScreenshotExplain = (updates: Partial<SettingsData['screenshotExplain']>) => {
     if (!settings) return
     const current = settings.screenshotExplain || {
       enabled: true,
-      hotkey: 'Command+Shift+E',
-      model: { provider: 'glm', apiKey: '', baseURL: 'https://open.bigmodel.cn/api/paas/v4', modelName: 'glm-4v-flash' },
+      hotkey: 'CommandOrControl+Shift+E',
+      providerId: 'default-explain',
       defaultLanguage: 'zh'
     }
     setSettings({ ...settings, screenshotExplain: { ...current, ...updates } })
-  }
-
-  const updateExplainModel = (updates: Partial<SettingsData['screenshotExplain']['model']>) => {
-    if (!settings) return
-    const current = settings.screenshotExplain || {
-      enabled: true,
-      hotkey: 'Command+Shift+E',
-      model: { provider: 'glm', apiKey: '', baseURL: 'https://open.bigmodel.cn/api/paas/v4', modelName: 'glm-4v-flash' },
-      defaultLanguage: 'zh'
-    }
-    setSettings({
-      ...settings,
-      screenshotExplain: {
-        ...current,
-        model: { ...current.model, ...updates }
-      }
-    })
   }
 
   const updateCustomPrompts = (updates: Partial<NonNullable<SettingsData['screenshotExplain']['customPrompts']>>) => {
     if (!settings) return
     const current = settings.screenshotExplain || {
       enabled: true,
-      hotkey: 'Command+Shift+E',
-      model: { provider: 'glm', apiKey: '', baseURL: 'https://open.bigmodel.cn/api/paas/v4', modelName: 'glm-4v-flash' },
+      hotkey: 'CommandOrControl+Shift+E',
+      providerId: 'default-explain',
       defaultLanguage: 'zh'
     }
     setSettings({
@@ -379,14 +467,17 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-neutral-50/50 dark:bg-neutral-900/95 text-neutral-900 dark:text-neutral-100 select-none font-sans">
+    <div className="window-container flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl text-neutral-900 dark:text-neutral-100 font-sans rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden">
       {/* 标题栏 */}
-      <div className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl" style={dragStyle}>
+      <div
+        className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl rounded-t-xl"
+        data-tauri-drag-region
+      >
         <h2 className="font-semibold text-[15px] tracking-tight">{t.settings}</h2>
         <button
           onClick={onClose}
           className="p-1.5 hover:bg-black/5 dark:hover:bg-white/10 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-all duration-200"
-          style={noDragStyle}
+          data-tauri-drag-region="false"
         >
           <X size={18} strokeWidth={2} />
         </button>
@@ -412,6 +503,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             onClick={() => setActiveTab('screenshot')}
             icon={<Camera size={14} strokeWidth={2} />}
             label={t.tabScreenshot}
+          />
+          <TabButton
+            active={activeTab === 'models'}
+            onClick={() => setActiveTab('models')}
+            icon={<Cpu size={14} strokeWidth={2} />}
+            label={t.tabModels}
           />
         </div>
       </div>
@@ -457,6 +554,16 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 placeholder={t.hotkeyPlaceholder}
               />
             </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <Label>{t.autoPaste}</Label>
+                <Toggle
+                  checked={settings.autoPaste ?? true}
+                  onChange={(v) => updateSettings({ autoPaste: v })}
+                />
+              </div>
+            </Card>
           </div>
         )}
 
@@ -481,45 +588,27 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             </Card>
 
             <Card>
-              <Label>{t.engine}</Label>
-              <Select
-                value={settings.source}
-                onChange={(v) => updateSettings({ source: v as SettingsData['source'] })}
-                options={[
-                  { value: 'bing', label: t.engineBing },
-                  { value: 'openai', label: t.engineAI },
-                ]}
-              />
-
-              {settings.source === 'openai' && (
-                <div className="mt-4 pt-4 border-t border-black/5 dark:border-white/5 space-y-4">
-                  <div>
-                    <Label>{t.baseUrl}</Label>
-                    <Input
-                      value={settings.openai.baseURL}
-                      onChange={(v) => updateOpenAI({ baseURL: v })}
-                      placeholder="https://api.deepseek.com/v1"
-                    />
-                  </div>
-                  <div>
-                    <Label>{t.apiKey}</Label>
-                    <Input
-                      type="password"
-                      value={settings.openai.apiKey}
-                      onChange={(v) => updateOpenAI({ apiKey: v })}
-                      placeholder="sk-..."
-                    />
-                  </div>
-                  <div>
-                    <Label>{t.modelName}</Label>
-                    <Input
-                      value={settings.openai.model}
-                      onChange={(v) => updateOpenAI({ model: v })}
-                      placeholder="deepseek-chat"
-                    />
-                  </div>
+              <SectionTitle icon={<Globe size={14} strokeWidth={2} />}>
+                {t.engine}
+              </SectionTitle>
+              <div className="space-y-4">
+                <div>
+                  <Label>{t.selectModelPair}</Label>
+                  <Select
+                    value={`${settings.translatorProviderId}:${settings.translatorModel}`}
+                    onChange={(v) => {
+                      const [providerId, model] = v.split(':')
+                      updateSettings({ translatorProviderId: providerId, translatorModel: model })
+                    }}
+                    options={settings.providers.flatMap(p =>
+                      p.enabledModels.map(m => ({
+                        value: `${p.id}:${m}`,
+                        label: `${p.name} - ${m}`
+                      }))
+                    )}
+                  />
                 </div>
-              )}
+              </div>
             </Card>
           </div>
         )}
@@ -544,73 +633,27 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                   <div>
                     <Label>{t.hotkey}</Label>
                     <Input
-                      value={settings.screenshotTranslation?.hotkey || 'Command+Shift+A'}
+                      value={settings.screenshotTranslation?.hotkey || 'CommandOrControl+Shift+A'}
                       onChange={(v) => updateScreenshotTranslation({ hotkey: v })}
-                      placeholder="Command+Shift+A"
+                      placeholder="CommandOrControl+Shift+A"
                     />
                   </div>
                   <div>
-                    <Label>{t.ocrSource}</Label>
+                    <Label>{t.selectModelPair}</Label>
                     <Select
-                      value={settings.screenshotTranslation?.ocrSource || 'system'}
-                      onChange={(v) => updateScreenshotTranslation({ ocrSource: v as 'system' | 'glm' | 'openai' })}
-                      options={[
-                        { value: 'system', label: t.ocrSystem },
-                        { value: 'glm', label: t.ocrGlm },
-                        { value: 'openai', label: t.ocrOpenai },
-                      ]}
+                      value={`${settings.screenshotTranslation.providerId}:${settings.screenshotTranslation.model}`}
+                      onChange={(v) => {
+                        const [providerId, model] = v.split(':')
+                        updateScreenshotTranslation({ providerId, model })
+                      }}
+                      options={settings.providers.flatMap(p =>
+                        p.enabledModels.map(m => ({
+                          value: `${p.id}:${m}`,
+                          label: `${p.name} - ${m}`
+                        }))
+                      )}
                     />
                   </div>
-                  {settings.screenshotTranslation?.ocrSource === 'glm' && (
-                    <div className="animate-in fade-in slide-in-from-top-1 duration-200">
-                      <Label>GLM API Key</Label>
-                      <Input
-                        type="password"
-                        value={settings.screenshotTranslation?.glmApiKey || ''}
-                        onChange={(v) => updateScreenshotTranslation({ glmApiKey: v })}
-                        placeholder="..."
-                      />
-                      <p className="text-[10px] text-neutral-400 mt-2 flex items-center gap-1">
-                        <span className="w-1 h-1 rounded-full bg-neutral-400" />
-                        <a
-                          href="#"
-                          onClick={() => window.api?.openExternal('https://bigmodel.cn/console/apikey')}
-                          className="hover:text-neutral-600 dark:hover:text-neutral-300 underline underline-offset-2 transition-colors"
-                        >
-                          {t.getApiKey}
-                        </a>
-                      </p>
-                    </div>
-                  )}
-                  {settings.screenshotTranslation?.ocrSource === 'openai' && (
-                    <div className="pl-4 border-l-2 border-black/5 dark:border-white/5 space-y-4 animate-in fade-in slide-in-from-left-2 duration-200">
-                      <div>
-                        <Label>{t.baseUrl}</Label>
-                        <Input
-                          value={settings.screenshotTranslation?.openai?.baseURL || ''}
-                          onChange={(v) => updateScreenshotTranslationOpenAI({ baseURL: v })}
-                          placeholder="https://api.openai.com/v1"
-                        />
-                      </div>
-                      <div>
-                        <Label>{t.modelName}</Label>
-                        <Input
-                          value={settings.screenshotTranslation?.openai?.model || ''}
-                          onChange={(v) => updateScreenshotTranslationOpenAI({ model: v })}
-                          placeholder="gpt-4o"
-                        />
-                      </div>
-                      <div>
-                        <Label>{t.apiKey}</Label>
-                        <Input
-                          type="password"
-                          value={settings.screenshotTranslation?.openai?.apiKey || ''}
-                          onChange={(v) => updateScreenshotTranslationOpenAI({ apiKey: v })}
-                          placeholder="sk-..."
-                        />
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </Card>
@@ -632,9 +675,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                   <div>
                     <Label>{t.hotkey}</Label>
                     <Input
-                      value={settings.screenshotExplain?.hotkey || 'Command+Shift+E'}
+                      value={settings.screenshotExplain?.hotkey || 'CommandOrControl+Shift+E'}
                       onChange={(v) => updateScreenshotExplain({ hotkey: v })}
-                      placeholder="Command+Shift+E"
+                      placeholder="CommandOrControl+Shift+E"
                     />
                   </div>
                   <div>
@@ -649,82 +692,21 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     />
                   </div>
                   <div>
-                    <Label>{t.visionModel}</Label>
+                    <Label>{t.selectModelPair}</Label>
                     <Select
-                      value={settings.screenshotExplain?.model?.provider || 'glm'}
+                      value={`${settings.screenshotExplain.providerId}:${settings.screenshotExplain.model}`}
                       onChange={(v) => {
-                        if (v === 'glm') {
-                          updateExplainModel({
-                            provider: 'glm',
-                            baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-                            modelName: 'glm-4v-flash'
-                          })
-                        } else {
-                          updateExplainModel({
-                            provider: 'openai',
-                            baseURL: settings.screenshotExplain?.model?.baseURL || 'https://api.openai.com/v1',
-                            modelName: settings.screenshotExplain?.model?.modelName || 'gpt-4-vision-preview'
-                          })
-                        }
+                        const [providerId, model] = v.split(':')
+                        updateScreenshotExplain({ providerId, model })
                       }}
-                      options={[
-                        { value: 'glm', label: t.visionGlm },
-                        { value: 'openai', label: t.visionOpenai },
-                      ]}
+                      options={settings.providers.flatMap(p =>
+                        p.enabledModels.map(m => ({
+                          value: `${p.id}:${m}`,
+                          label: `${p.name} - ${m}`
+                        }))
+                      )}
                     />
                   </div>
-
-                  {settings.screenshotExplain?.model?.provider === 'openai' && (
-                    <div className="pl-4 border-l-2 border-black/5 dark:border-white/5 space-y-4 animate-in fade-in slide-in-from-left-2 duration-200">
-                      <div>
-                        <Label>{t.baseUrl}</Label>
-                        <Input
-                          value={settings.screenshotExplain?.model?.baseURL || ''}
-                          onChange={(v) => updateExplainModel({ baseURL: v })}
-                          placeholder="https://api.openai.com/v1"
-                        />
-                      </div>
-                      <div>
-                        <Label>{t.modelName}</Label>
-                        <Input
-                          value={settings.screenshotExplain?.model?.modelName || ''}
-                          onChange={(v) => updateExplainModel({ modelName: v })}
-                          placeholder="gpt-4-vision-preview"
-                        />
-                      </div>
-                      <div>
-                        <Label>{t.apiKey}</Label>
-                        <Input
-                          type="password"
-                          value={settings.screenshotExplain?.model?.apiKey || ''}
-                          onChange={(v) => updateExplainModel({ apiKey: v })}
-                          placeholder="sk-..."
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {(settings.screenshotExplain?.model?.provider === 'glm' || !settings.screenshotExplain?.model?.provider) && (
-                    <div className="animate-in fade-in slide-in-from-top-1 duration-200">
-                      <Label>GLM API Key</Label>
-                      <Input
-                        type="password"
-                        value={settings.screenshotExplain?.model?.apiKey || ''}
-                        onChange={(v) => updateExplainModel({ apiKey: v })}
-                        placeholder="..."
-                      />
-                      <p className="text-[10px] text-neutral-400 mt-2 flex items-center gap-1">
-                        <span className="w-1 h-1 rounded-full bg-neutral-400" />
-                        <a
-                          href="#"
-                          onClick={() => window.api?.openExternal('https://bigmodel.cn/console/apikey')}
-                          className="hover:text-neutral-600 dark:hover:text-neutral-300 underline underline-offset-2 transition-colors"
-                        >
-                          {t.getApiKey}
-                        </a>
-                      </p>
-                    </div>
-                  )}
 
                   {/* 自定义提示词 */}
                   <details className="group pt-2 border-t border-black/5 dark:border-white/5">
@@ -762,23 +744,161 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             </Card>
           </div>
         )}
+
+        {/* 模型管理 */}
+        {activeTab === 'models' && (
+          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            {settings.providers.map((provider) => (
+              <Card key={provider.id} className="relative group">
+                <div className="absolute right-4 top-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => deleteProvider(provider.id)}
+                    className="p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-all"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <Label>{t.providerName}</Label>
+                    <Input
+                      value={provider.name}
+                      onChange={(v) => updateProvider(provider.id, { name: v })}
+                      placeholder="e.g. OpenAI / DeepSeek"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>{t.baseUrl}</Label>
+                      <Input
+                        value={provider.baseUrl}
+                        onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </div>
+                    <div>
+                      <Label>{t.apiKey}</Label>
+                      <Input
+                        type="password"
+                        value={provider.apiKey}
+                        onChange={(v) => updateProvider(provider.id, { apiKey: v })}
+                        placeholder="sk-..."
+                      />
+                    </div>
+                  </div>
+
+                  {/* 已启用模型管理 */}
+                  <div className="space-y-3 pt-3 border-t border-black/5 dark:border-white/5">
+                    <div className="flex justify-between items-center">
+                      <Label className="mb-0">{t.registeredModels}</Label>
+                      <div className="flex gap-2">
+                        <div className="relative flex items-center gap-1">
+                          <Input
+                            className="h-7 w-32 !text-[11px] !py-0"
+                            placeholder={t.manualAddModel}
+                            value={manualInputs[provider.id] || ''}
+                            onChange={(v) => setManualInputs(prev => ({ ...prev, [provider.id]: v }))}
+                            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                              if (e.key === 'Enter') {
+                                addEnabledModel(provider.id, manualInputs[provider.id] || '')
+                                setManualInputs(prev => ({ ...prev, [provider.id]: '' }))
+                              }
+                            }}
+                          />
+                          <button
+                            onClick={() => {
+                              addEnabledModel(provider.id, manualInputs[provider.id] || '')
+                              setManualInputs(prev => ({ ...prev, [provider.id]: '' }))
+                            }}
+                            className="text-[10px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 px-2 py-1 rounded bg-black/5 dark:bg-white/5 transition-all text-nowrap"
+                          >
+                            {t.addModel}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 min-h-[24px]">
+                      {provider.enabledModels.map(model => (
+                        <span key={model} className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-md text-[11px] text-neutral-700 dark:text-neutral-300 font-mono border border-black/5 dark:border-white/5 group/tag">
+                          {model}
+                          <button
+                            onClick={() => removeEnabledModel(provider.id, model)}
+                            className="text-neutral-400 hover:text-red-500 transition-colors"
+                          >
+                            <X size={10} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 获取可用模型 */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <Label className="mb-0">{t.availableModels}</Label>
+                      <button
+                        onClick={() => fetchModels(provider.id)}
+                        disabled={fetchingProviderId === provider.id}
+                        className={`text-[11px] font-medium flex items-center gap-1 px-2 py-0.5 rounded-md transition-all ${fetchingProviderId === provider.id
+                          ? 'text-neutral-400 cursor-not-allowed'
+                          : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                          }`}
+                      >
+                        <RefreshCw size={10} className={fetchingProviderId === provider.id ? 'animate-spin' : ''} />
+                        {fetchingProviderId === provider.id ? t.fetching : t.fetchModels}
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 scrollbar-thin">
+                      {provider.availableModels.length > 0 ? (
+                        provider.availableModels.map(m => (
+                          <button
+                            key={m}
+                            onClick={() => addEnabledModel(provider.id, m)}
+                            disabled={provider.enabledModels.includes(m)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${provider.enabledModels.includes(m)
+                              ? 'bg-neutral-50 dark:bg-neutral-900/50 text-neutral-400 border-transparent cursor-default'
+                              : 'bg-black/5 dark:bg-white/5 text-neutral-500 border-black/5 dark:border-white/5 hover:border-neutral-300 dark:hover:border-neutral-600'
+                              }`}
+                          >
+                            {m}
+                          </button>
+                        ))
+                      ) : (
+                        <span className="text-[11px] text-neutral-400 italic">No models fetched yet</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            ))}
+
+            <button
+              onClick={addProvider}
+              className="w-full py-4 border-2 border-dashed border-black/5 dark:border-white/5 rounded-xl text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-black/10 dark:hover:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all flex flex-col items-center gap-2"
+            >
+              <Plus size={20} strokeWidth={2} />
+              <span className="text-[13px] font-medium">{t.addProvider}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 底部操作栏 */}
-      <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl">
+      <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl rounded-b-xl">
         <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
         <div className="flex gap-3">
           <button
             onClick={onClose}
             className="px-4 py-2 text-[13px] font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-all duration-200"
-            style={noDragStyle}
+            data-tauri-drag-region="false"
           >
             {t.cancel}
           </button>
           <button
             onClick={handleSave}
             className="flex items-center gap-2 px-5 py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-lg text-[13px] font-medium shadow-sm hover:shadow hover:bg-neutral-800 dark:hover:bg-neutral-100 transition-all duration-200 active:scale-95"
-            style={noDragStyle}
+            data-tauri-drag-region="false"
           >
             <Save size={14} strokeWidth={2} />
             {t.save}
