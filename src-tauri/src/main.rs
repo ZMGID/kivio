@@ -6,8 +6,9 @@ mod utils;
 mod windows;
 
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   fs,
+  future::Future,
   path::{Path, PathBuf},
   sync::{
     atomic::{AtomicBool, Ordering},
@@ -20,6 +21,7 @@ use std::{
 use arboard::Clipboard;
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
+use reqwest::{header::HeaderMap, StatusCode};
 use tauri::{
   AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
@@ -80,7 +82,26 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> bool {
+fn get_default_prompt_templates() -> serde_json::Value {
+  serde_json::json!({
+    "translationTemplate": DEFAULT_TRANSLATION_TEMPLATE,
+    "explainPrompts": {
+      "zh": {
+        "system": default_system_prompt("zh"),
+        "summary": default_summary_prompt("zh"),
+        "question": default_question_prompt("zh")
+      },
+      "en": {
+        "system": default_system_prompt("en"),
+        "summary": default_summary_prompt("en"),
+        "question": default_question_prompt("en")
+      }
+    }
+  })
+}
+
+#[tauri::command]
+fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
   let sanitized = sanitize_settings(settings);
   {
     let mut guard = state.settings.write().expect("settings lock");
@@ -89,14 +110,15 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
 
   if let Err(err) = persist_settings(&app, &sanitized) {
     eprintln!("Failed to save settings: {err}");
-    return false;
+    return Err(err);
   }
 
-  if let Err(err) = register_hotkeys(&app) {
-    eprintln!("Failed to register hotkeys: {err}");
+  register_hotkeys(&app)?;
+  if let Err(err) = setup_tray(&app) {
+    eprintln!("Failed to update tray: {err}");
   }
 
-  true
+  Ok(())
 }
 
 #[tauri::command]
@@ -116,11 +138,21 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
 
   let target_lang = resolve_target_lang(&settings.target_lang, trimmed);
   let lang_name = language_name(&target_lang).to_string();
-  let prompt = format!(
-    "Translate the following text to {lang_name}. Only output the translation.\n\n{trimmed}"
+  let prompt = build_translation_prompt(
+    trimmed,
+    &lang_name,
+    settings.translator_prompt.as_deref(),
   );
 
-  call_openai_text(&state.http, provider, &settings.translator_model, prompt).await
+  let retry_attempts = effective_retry_attempts(&settings);
+  call_openai_text(
+    &state.http,
+    provider,
+    &settings.translator_model,
+    prompt,
+    retry_attempts,
+  )
+  .await
 }
 
 #[tauri::command]
@@ -166,11 +198,14 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn explain_get_initial_summary(
+  app: AppHandle,
   state: State<'_, AppState>,
   image_id: String,
 ) -> Result<serde_json::Value, String> {
   let settings = state.settings.read().expect("settings lock").clone();
   let language = settings.screenshot_explain.default_language.clone();
+  let retry_attempts = effective_retry_attempts(&settings);
+  let stream_enabled = settings.screenshot_explain.stream_enabled;
   let prompt = settings
     .screenshot_explain
     .custom_prompts
@@ -183,7 +218,18 @@ async fn explain_get_initial_summary(
     content: prompt,
   }];
 
-  match call_vision_api(&state, &image_id, messages, &language).await {
+  match call_vision_api(
+    &app,
+    &state,
+    &image_id,
+    messages,
+    &language,
+    retry_attempts,
+    stream_enabled,
+    "summary",
+  )
+  .await
+  {
     Ok(summary) => Ok(serde_json::json!({ "success": true, "summary": summary })),
     Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
   }
@@ -191,12 +237,15 @@ async fn explain_get_initial_summary(
 
 #[tauri::command]
 async fn explain_ask_question(
+  app: AppHandle,
   state: State<'_, AppState>,
   image_id: String,
   messages: Vec<ExplainMessage>,
 ) -> Result<serde_json::Value, String> {
   let settings = state.settings.read().expect("settings lock").clone();
   let language = settings.screenshot_explain.default_language.clone();
+  let retry_attempts = effective_retry_attempts(&settings);
+  let stream_enabled = settings.screenshot_explain.stream_enabled;
 
   if messages.is_empty() {
     return Ok(serde_json::json!({
@@ -221,7 +270,18 @@ async fn explain_ask_question(
     });
   }
 
-  match call_vision_api(&state, &image_id, api_messages, &language).await {
+  match call_vision_api(
+    &app,
+    &state,
+    &image_id,
+    api_messages,
+    &language,
+    retry_attempts,
+    stream_enabled,
+    "answer",
+  )
+  .await
+  {
     Ok(response) => Ok(serde_json::json!({ "success": true, "response": response })),
     Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
   }
@@ -308,6 +368,7 @@ async fn fetch_models(state: State<'_, AppState>, provider_id: String) -> Result
     let settings = state.settings.read().expect("settings lock").clone();
     let provider = settings.get_provider(&provider_id)
         .ok_or_else(|| "Provider not found".to_string())?;
+    let retry_attempts = effective_retry_attempts(&settings);
 
     if provider.api_key.trim().is_empty() {
         return Err("Missing API Key".to_string());
@@ -315,24 +376,14 @@ async fn fetch_models(state: State<'_, AppState>, provider_id: String) -> Result
 
     let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
     println!("Requesting URL: {}", url);
-    
-    let response = state.http
-        .get(url)
-        .bearer_auth(&provider.api_key)
-        .send()
-        .await
-        .map_err(|e| {
-            println!("Request failed: {}", e);
-            e.to_string()
-        })?;
 
-    let status = response.status();
-    println!("Response status: {}", status);
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        println!("Error response: {}", text);
-        return Err(format!("API Error: {} - {}", status, text));
-    }
+    let response = send_with_retry("Models API", retry_attempts, || {
+        state.http
+            .get(url.clone())
+            .bearer_auth(&provider.api_key)
+            .send()
+    })
+    .await?;
 
     let value: serde_json::Value = response.json().await.map_err(|e| {
         println!("Json parsing failed: {}", e);
@@ -364,22 +415,32 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
   let settings = app.state::<AppState>().settings.read().expect("settings lock").clone();
   let shortcut_manager = app.global_shortcut();
   shortcut_manager.unregister_all().map_err(|e| e.to_string())?;
+  let mut errors = Vec::new();
+  let mut registered = HashSet::new();
 
   if !settings.hotkey.trim().is_empty() {
-    let hotkey = settings.hotkey.clone();
-    shortcut_manager
-      .on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-          toggle_main_window(app);
-        }
-      })
-      .map_err(|e| e.to_string())?;
+    let hotkey = settings.hotkey.trim().to_string();
+    let hotkey_key = hotkey.to_lowercase();
+    if !registered.insert(hotkey_key) {
+      errors.push(format!("Duplicate hotkey \"{hotkey}\" for translator"));
+    } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
+      if event.state == ShortcutState::Pressed {
+        toggle_main_window(app);
+      }
+    }) {
+      errors.push(format!("Failed to register translator hotkey \"{hotkey}\": {err}"));
+    }
   }
 
   if settings.screenshot_translation.enabled {
-    let hotkey = settings.screenshot_translation.hotkey.clone();
-    shortcut_manager
-      .on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
+    let hotkey = settings.screenshot_translation.hotkey.trim().to_string();
+    if hotkey.is_empty() {
+      errors.push("Screenshot translation hotkey is empty".to_string());
+    } else {
+      let hotkey_key = hotkey.to_lowercase();
+      if !registered.insert(hotkey_key) {
+        errors.push(format!("Duplicate hotkey \"{hotkey}\" for screenshot translation"));
+      } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
           let handle = app.clone();
           tauri::async_runtime::spawn(async move {
@@ -388,14 +449,21 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
             }
           });
         }
-      })
-      .map_err(|e| e.to_string())?;
+      }) {
+        errors.push(format!("Failed to register screenshot translation hotkey \"{hotkey}\": {err}"));
+      }
+    }
   }
 
   if settings.screenshot_explain.enabled {
-    let hotkey = settings.screenshot_explain.hotkey.clone();
-    shortcut_manager
-      .on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
+    let hotkey = settings.screenshot_explain.hotkey.trim().to_string();
+    if hotkey.is_empty() {
+      errors.push("Screenshot explain hotkey is empty".to_string());
+    } else {
+      let hotkey_key = hotkey.to_lowercase();
+      if !registered.insert(hotkey_key) {
+        errors.push(format!("Duplicate hotkey \"{hotkey}\" for screenshot explain"));
+      } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
           let handle = app.clone();
           tauri::async_runtime::spawn(async move {
@@ -404,11 +472,17 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
             }
           });
         }
-      })
-      .map_err(|e| e.to_string())?;
+      }) {
+        errors.push(format!("Failed to register screenshot explain hotkey \"{hotkey}\": {err}"));
+      }
+    }
   }
 
-  Ok(())
+  if errors.is_empty() {
+    Ok(())
+  } else {
+    Err(errors.join("\n"))
+  }
 }
 
 fn get_mouse_position(app: &AppHandle) -> Option<tauri::PhysicalPosition<f64>> {
@@ -503,11 +577,13 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
     return Ok(());
   }
 
+  let retry_attempts = effective_retry_attempts(&settings);
   let recognized = call_openai_ocr(
     &state.http,
     provider,
     &settings.screenshot_translation.model,
     &temp_path,
+    retry_attempts,
   )
   .await;
 
@@ -525,15 +601,25 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   } else {
     let target_lang = resolve_target_lang(&settings.target_lang, &recognized);
     let lang_name = language_name(&target_lang).to_string();
-    let prompt = format!(
-      "Translate the following text to {lang_name}. Only output the translation.\n\n{recognized}"
+    let prompt = build_translation_prompt(
+      &recognized,
+      &lang_name,
+      settings.screenshot_translation.prompt.as_deref(),
     );
     
     // Also use the translator provider for the secondary translation
     let t_provider = settings.get_provider(&settings.translator_provider_id)
         .unwrap_or(provider);
 
-    call_openai_text(&state.http, t_provider, &settings.translator_model, prompt).await.unwrap_or(recognized.clone())
+    call_openai_text(
+      &state.http,
+      t_provider,
+      &settings.translator_model,
+      prompt,
+      retry_attempts,
+    )
+    .await
+    .unwrap_or(recognized.clone())
   };
 
   app
@@ -664,6 +750,7 @@ async fn call_openai_text(
   config: &settings::ModelProvider,
   model: &str,
   prompt: String,
+  retry_attempts: usize,
 ) -> Result<String, String> {
   let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
   let body = serde_json::json!({
@@ -672,19 +759,14 @@ async fn call_openai_text(
     "temperature": 0.2
   });
 
-  let response = client
-    .post(url)
-    .bearer_auth(&config.api_key)
-    .json(&body)
-    .send()
-    .await
-    .map_err(|e| e.to_string())?;
-
-  let status = response.status();
-  if !status.is_success() {
-    let text = response.text().await.unwrap_or_default();
-    return Err(format!("OpenAI API Error: {} - {}", status, text));
-  }
+  let response = send_with_retry("OpenAI API", retry_attempts, || {
+    client
+      .post(url.clone())
+      .bearer_auth(&config.api_key)
+      .json(&body)
+      .send()
+  })
+  .await?;
 
   let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
   let content = value
@@ -698,11 +780,35 @@ async fn call_openai_text(
   Ok(content.trim().to_string())
 }
 
+const DEFAULT_TRANSLATION_TEMPLATE: &str =
+  "Translate the following text to {lang}. Only output the translation.\n\n{text}";
+
+fn build_translation_prompt(text: &str, lang_name: &str, template: Option<&str>) -> String {
+  let default_prompt = DEFAULT_TRANSLATION_TEMPLATE
+    .replace("{lang}", lang_name)
+    .replace("{text}", text);
+
+  let Some(template) = template else {
+    return default_prompt;
+  };
+  let trimmed = template.trim();
+  if trimmed.is_empty() {
+    return default_prompt;
+  }
+
+  let mut prompt = trimmed.replace("{text}", text).replace("{lang}", lang_name);
+  if !trimmed.contains("{text}") {
+    prompt = format!("{prompt}\n\n{text}");
+  }
+  prompt
+}
+
 async fn call_openai_ocr(
   client: &Client,
   config: &settings::ModelProvider,
   model: &str,
   image_path: &Path,
+  retry_attempts: usize,
 ) -> Result<String, String> {
   let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
   let base64 = general_purpose::STANDARD.encode(bytes);
@@ -728,19 +834,14 @@ async fn call_openai_ocr(
     "temperature": 0
   });
 
-  let response = client
-    .post(url)
-    .bearer_auth(&config.api_key)
-    .json(&body)
-    .send()
-    .await
-    .map_err(|e| e.to_string())?;
-
-  let status = response.status();
-  if !status.is_success() {
-    let text = response.text().await.unwrap_or_default();
-    return Err(format!("OpenAI OCR Error: {} - {}", status, text));
-  }
+  let response = send_with_retry("OpenAI OCR", retry_attempts, || {
+    client
+      .post(url.clone())
+      .bearer_auth(&config.api_key)
+      .json(&body)
+      .send()
+  })
+  .await?;
 
   let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
   let content = value
@@ -755,10 +856,14 @@ async fn call_openai_ocr(
 }
 
 async fn call_vision_api(
+  app: &AppHandle,
   state: &State<'_, AppState>,
   image_id: &str,
   messages: Vec<ExplainMessage>,
   language: &str,
+  retry_attempts: usize,
+  stream: bool,
+  stream_kind: &str,
 ) -> Result<String, String> {
   let settings = state.settings.read().expect("settings lock").clone();
   let provider = settings.get_provider(&settings.screenshot_explain.provider_id)
@@ -799,26 +904,28 @@ async fn call_vision_api(
   }
 
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
-  let body = serde_json::json!({
+  let mut body = serde_json::json!({
     "model": settings.screenshot_explain.model,
     "messages": api_messages,
     "temperature": 0.7,
     "max_tokens": 2000
   });
+  if stream {
+    body["stream"] = serde_json::json!(true);
+  }
 
-  let response = state
-    .http
-    .post(url)
-    .bearer_auth(&provider.api_key)
-    .json(&body)
-    .send()
-    .await
-    .map_err(|e| e.to_string())?;
+  let response = send_with_retry("Vision API", retry_attempts, || {
+    state
+      .http
+      .post(url.clone())
+      .bearer_auth(&provider.api_key)
+      .json(&body)
+      .send()
+  })
+  .await?;
 
-  let status = response.status();
-  if !status.is_success() {
-    let text = response.text().await.unwrap_or_default();
-    return Err(format!("Vision API Error: {} - {}", status, text));
+  if stream {
+    return stream_vision_response(app, response, image_id, stream_kind).await;
   }
 
   let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
@@ -831,6 +938,144 @@ async fn call_vision_api(
     .ok_or_else(|| "Invalid vision response".to_string())?;
 
   Ok(content.trim().to_string())
+}
+
+async fn stream_vision_response(
+  app: &AppHandle,
+  mut response: reqwest::Response,
+  image_id: &str,
+  kind: &str,
+) -> Result<String, String> {
+  let mut buffer = String::new();
+  let mut full = String::new();
+
+  while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+    let text = String::from_utf8_lossy(&chunk);
+    buffer.push_str(&text);
+
+    while let Some(pos) = buffer.find('\n') {
+      let line: String = buffer.drain(..=pos).collect();
+      let line = line.trim();
+      if !line.starts_with("data:") {
+        continue;
+      }
+      let data = line.trim_start_matches("data:").trim();
+      if data.is_empty() {
+        continue;
+      }
+      if data == "[DONE]" {
+        return Ok(full.trim().to_string());
+      }
+
+      let value: serde_json::Value = match serde_json::from_str(data) {
+        Ok(val) => val,
+        Err(_) => continue,
+      };
+
+      let delta = value
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("delta"))
+        .and_then(|delta| delta.get("content"))
+        .and_then(|content| content.as_str());
+
+      if let Some(content) = delta {
+        full.push_str(content);
+        let _ = app.emit(
+          "explain-stream",
+          serde_json::json!({ "imageId": image_id, "kind": kind, "delta": content }),
+        );
+      }
+    }
+  }
+
+  Ok(full.trim().to_string())
+}
+
+const RETRY_BASE_DELAY_MS: u64 = 500;
+const RETRY_MAX_DELAY_MS: u64 = 10_000;
+
+fn effective_retry_attempts(settings: &Settings) -> usize {
+  if settings.retry_enabled {
+    settings.retry_attempts as usize
+  } else {
+    1
+  }
+}
+
+fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
+  headers
+    .get("retry-after")
+    .and_then(|value| value.to_str().ok())
+    .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+  status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn is_retryable_error(error: &reqwest::Error) -> bool {
+  error.is_timeout() || error.is_connect()
+}
+
+fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
+  if let Some(seconds) = retry_after {
+    return seconds.saturating_mul(1000);
+  }
+
+  let delay = RETRY_BASE_DELAY_MS.saturating_mul(2u64.saturating_pow((attempt - 1) as u32));
+  delay.min(RETRY_MAX_DELAY_MS)
+}
+
+async fn send_with_retry<F, Fut>(label: &str, attempts: usize, mut send: F) -> Result<reqwest::Response, String>
+where
+  F: FnMut() -> Fut,
+  Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
+{
+  let attempts = attempts.max(1);
+  let mut last_error: Option<String> = None;
+
+  for attempt in 1..=attempts {
+    match send().await {
+      Ok(response) => {
+        let status = response.status();
+        if status.is_success() {
+          return Ok(response);
+        }
+
+        let retry_after = parse_retry_after(response.headers());
+        let text = response.text().await.unwrap_or_default();
+        let err_msg = format!("{} Error: {} - {}", label, status, text);
+
+        if is_retryable_status(status) && attempt < attempts {
+          last_error = Some(err_msg);
+          let delay = retry_delay_ms(attempt, retry_after);
+          eprintln!("{} retrying in {}ms (attempt {}/{})", label, delay, attempt, attempts);
+          tokio::time::sleep(Duration::from_millis(delay)).await;
+          continue;
+        }
+
+        return Err(format!("{} (attempt {}/{})", err_msg, attempt, attempts));
+      }
+      Err(err) => {
+        let err_msg = format!("{} Error: {}", label, err);
+        if is_retryable_error(&err) && attempt < attempts {
+          last_error = Some(err_msg);
+          let delay = retry_delay_ms(attempt, None);
+          eprintln!("{} retrying in {}ms (attempt {}/{})", label, delay, attempt, attempts);
+          tokio::time::sleep(Duration::from_millis(delay)).await;
+          continue;
+        }
+        return Err(format!("{} (attempt {}/{})", err_msg, attempt, attempts));
+      }
+    }
+  }
+
+  Err(last_error.map(|msg| {
+    format!("{} (attempt {}/{})", msg, attempts, attempts)
+  }).unwrap_or_else(|| {
+    format!("{} Error: exceeded retry attempts ({})", label, attempts)
+  }))
 }
 
 
@@ -896,24 +1141,53 @@ fn send_paste_shortcut() {
 }
 
 
-fn setup_tray(app: &AppHandle) -> Result<(), String> {
+fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str) {
+  match lang {
+    "en" => ("Show Translator", "Settings", "Quit"),
+    _ => ("显示翻译器", "设置", "退出"),
+  }
+}
+
+fn build_tray_menu(
+  app: &AppHandle,
+  lang: &str,
+) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
   use tauri::menu::{Menu, MenuItem};
+  let (show_label, settings_label, quit_label) = tray_labels(lang);
+  let show = MenuItem::with_id(app, "show", show_label, true, None::<&str>)
+    .map_err(|e| e.to_string())?;
+  let settings = MenuItem::with_id(app, "settings", settings_label, true, None::<&str>)
+    .map_err(|e| e.to_string())?;
+  let quit = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)
+    .map_err(|e| e.to_string())?;
+  Menu::with_items(app, &[&show, &settings, &quit]).map_err(|e| e.to_string())
+}
+
+fn setup_tray(app: &AppHandle) -> Result<(), String> {
   use tauri::tray::TrayIconBuilder;
 
-  let show = MenuItem::with_id(app, "show", "Show Translator", true, None::<&str>)
-    .map_err(|e| e.to_string())?;
-  let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)
-    .map_err(|e| e.to_string())?;
-  let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
-    .map_err(|e| e.to_string())?;
+  let lang = app
+    .state::<AppState>()
+    .settings
+    .read()
+    .expect("settings lock")
+    .settings_language
+    .clone()
+    .unwrap_or_else(|| "zh".to_string());
 
-  let menu = Menu::with_items(app, &[&show, &settings, &quit]).map_err(|e| e.to_string())?;
+  let menu = build_tray_menu(app, &lang)?;
+
+  if let Some(tray) = app.tray_by_id("main") {
+    tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    return Ok(());
+  }
+
   let icon_bytes = include_bytes!("../icons/icon.png");
   let icon_image = image::load_from_memory(icon_bytes)
     .map_err(|e| e.to_string())?
     .to_rgba8();
   let (width, height) = icon_image.dimensions();
-  let tray = TrayIconBuilder::new()
+  let tray = TrayIconBuilder::<tauri::Wry>::with_id("main")
     .icon(tauri::image::Image::new_owned(icon_image.into_raw(), width, height))
     .menu(&menu)
     .on_menu_event(|app, event| match event.id().as_ref() {
@@ -1001,6 +1275,7 @@ fn main() {
     })
     .invoke_handler(tauri::generate_handler![
       get_settings,
+      get_default_prompt_templates,
       save_settings,
       translate_text,
       commit_translation,

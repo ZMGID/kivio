@@ -1,4 +1,4 @@
-# KeyLingo v2.0.0
+# KeyLingo v2.0.1
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -30,6 +30,9 @@
 *   **History**: Automatically saves recent screenshot explanation sessions.
 
 ### 📋 Version History
+
+**v2.0.1** (2025-02-05)
+- 🐛 **Fixes**: Resolved UI border artifacts on transparent windows.
 
 **v2.0.0** (2025-02-05)
 - 🚀 **Major Rewrite**: Refactored core architecture for better stability and maintainability.
@@ -109,6 +112,9 @@ npm run build
 *   **历史记录**：自动保存最近的截图分析会话方便回顾。
 
 ### 📋 版本历史
+
+**v2.0.1** (2025-02-05)
+- 🐛 **修复**: 修复了 macOS 下透明背景的边框渲染问题。
 
 **v2.0.0** (2025-02-05)
 - 🚀 **架构重写**: 全面重构底层代码，大幅提升稳定性与可维护性。

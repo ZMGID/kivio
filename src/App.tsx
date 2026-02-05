@@ -76,9 +76,6 @@ function Translator({ translateSource, onOpenSettings }: { translateSource: stri
       // verify: backend handles hiding window
       setInput('')
       setResult('')
-    } else if (e.key === 'Escape') {
-      console.log('[Translator] ESC in input, hiding window')
-      await api.closeWindow()
     }
   }
 

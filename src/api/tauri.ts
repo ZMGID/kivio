@@ -7,6 +7,8 @@ export type ExplainMessage = { role: 'user' | 'assistant'; content: string }
 
 export type ScreenshotResultPayload = { original: string; translated: string }
 
+export type ExplainStreamPayload = { imageId: string; kind: 'summary' | 'answer'; delta: string }
+
 export type ModelProvider = {
   id: string
   name: string
@@ -24,12 +26,16 @@ export type Settings = {
   autoPaste: boolean
   translatorProviderId: string
   translatorModel: string
+  translatorPrompt?: string
   providers: ModelProvider[]
+  retryEnabled: boolean
+  retryAttempts: number
   screenshotTranslation: {
     enabled: boolean
     hotkey: string
     providerId: string
     model: string
+    prompt?: string
   }
   screenshotExplain: {
     enabled: boolean
@@ -37,6 +43,7 @@ export type Settings = {
     providerId: string
     model: string
     defaultLanguage: 'zh' | 'en'
+    streamEnabled?: boolean
     customPrompts?: {
       systemPrompt?: string
       summaryPrompt?: string
@@ -51,6 +58,14 @@ export type Settings = {
   settingsLanguage?: 'zh' | 'en'
 }
 
+export type DefaultPromptTemplates = {
+  translationTemplate: string
+  explainPrompts: {
+    zh: { system: string; summary: string; question: string }
+    en: { system: string; summary: string; question: string }
+  }
+}
+
 type Unlisten = () => void
 
 async function on<T>(event: string, handler: (payload: T) => void): Promise<Unlisten> {
@@ -62,7 +77,8 @@ async function on<T>(event: string, handler: (payload: T) => void): Promise<Unli
 
 export const api = {
   getSettings: () => invoke<Settings>('get_settings'),
-  saveSettings: (settings: Settings) => invoke<boolean>('save_settings', { settings }),
+  getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
+  saveSettings: (settings: Settings) => invoke<void>('save_settings', { settings }),
   fetchModels: (providerId: string) => invoke<string[]>('fetch_models', { providerId }),
   getAppVersion: () => getVersion(),
   translateText: (text: string) => invoke<string>('translate_text', { text }),
@@ -99,6 +115,8 @@ export const api = {
   onScreenshotResult: (listener: (data: ScreenshotResultPayload) => void) =>
     on<ScreenshotResultPayload>('screenshot-result', (data) => listener(data)),
   onScreenshotError: (listener: (errorMsg: string) => void) => on<string>('screenshot-error', (msg) => listener(msg)),
+  onExplainStream: (listener: (payload: ExplainStreamPayload) => void) =>
+    on<ExplainStreamPayload>('explain-stream', (payload) => listener(payload)),
 
   explainReadImage: (imageId: string) =>
     invoke<{ success: boolean; data?: string; error?: string }>('explain_read_image', { imageId }),

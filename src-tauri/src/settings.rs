@@ -49,6 +49,8 @@ pub struct ScreenshotTranslationConfig {
   pub provider_id: String,
   #[serde(default = "default_openai_model")]
   pub model: String,
+  #[serde(default)]
+  pub prompt: Option<String>,
   // Legacy field for migration
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openai: Option<OpenAIConfig>,
@@ -61,6 +63,7 @@ impl Default for ScreenshotTranslationConfig {
       hotkey: "CommandOrControl+Shift+A".to_string(),
       provider_id: "default-ocr".to_string(),
       model: "gpt-4o".to_string(),
+      prompt: None,
       openai: None,
     }
   }
@@ -97,6 +100,8 @@ pub struct ScreenshotExplainConfig {
   #[serde(default = "default_language_zh")]
   pub default_language: String,
   #[serde(default)]
+  pub stream_enabled: bool,
+  #[serde(default)]
   pub custom_prompts: Option<CustomPrompts>,
   // Legacy field for migration
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +116,7 @@ impl Default for ScreenshotExplainConfig {
       provider_id: "default-explain".to_string(),
       model: "gpt-4o".to_string(),
       default_language: "zh".to_string(),
+      stream_enabled: false,
       custom_prompts: None,
       model_legacy: None,
     }
@@ -150,6 +156,8 @@ pub struct Settings {
   #[serde(default = "default_openai_model")]
   pub translator_model: String,
   #[serde(default)]
+  pub translator_prompt: Option<String>,
+  #[serde(default)]
   pub providers: Vec<ModelProvider>,
   #[serde(default)]
   pub screenshot_translation: ScreenshotTranslationConfig,
@@ -159,6 +167,10 @@ pub struct Settings {
   pub explain_history: Vec<ExplainHistoryRecord>,
   #[serde(default = "default_settings_language")]
   pub settings_language: Option<String>,
+  #[serde(default = "default_retry_enabled")]
+  pub retry_enabled: bool,
+  #[serde(default = "default_retry_attempts")]
+  pub retry_attempts: u8,
   // Legacy field for migration
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openai: Option<OpenAIConfig>,
@@ -180,11 +192,14 @@ impl Default for Settings {
       auto_paste: true,
       translator_provider_id: "default-translator".to_string(),
       translator_model: "gpt-4o".to_string(),
+      translator_prompt: None,
       providers: vec![],
       screenshot_translation: ScreenshotTranslationConfig::default(),
       screenshot_explain: ScreenshotExplainConfig::default(),
       explain_history: vec![],
       settings_language: Some("zh".to_string()),
+      retry_enabled: default_retry_enabled(),
+      retry_attempts: default_retry_attempts(),
       openai: None,
     }
   }
@@ -310,16 +325,33 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
       }
   }
 
-  // 3. Ensure essential fields are not empty
-  if settings.hotkey.trim().is_empty() {
+  // 4. Normalize hotkey strings
+  settings.hotkey = normalize_hotkey(&settings.hotkey);
+  settings.screenshot_translation.hotkey =
+    normalize_hotkey(&settings.screenshot_translation.hotkey);
+  settings.screenshot_explain.hotkey = normalize_hotkey(&settings.screenshot_explain.hotkey);
+
+  settings.translator_prompt = normalize_optional_prompt(settings.translator_prompt.take());
+  settings.screenshot_translation.prompt =
+    normalize_optional_prompt(settings.screenshot_translation.prompt.take());
+  if let Some(prompts) = &mut settings.screenshot_explain.custom_prompts {
+    if sanitize_custom_prompts(prompts) {
+      settings.screenshot_explain.custom_prompts = None;
+    }
+  }
+
+  // 5. Ensure essential fields are not empty
+  if settings.hotkey.is_empty() {
     settings.hotkey = "CommandOrControl+Alt+T".to_string();
   }
-  if settings.screenshot_translation.hotkey.trim().is_empty() {
+  if settings.screenshot_translation.hotkey.is_empty() {
     settings.screenshot_translation.hotkey = "CommandOrControl+Shift+A".to_string();
   }
-  if settings.screenshot_explain.hotkey.trim().is_empty() {
+  if settings.screenshot_explain.hotkey.is_empty() {
     settings.screenshot_explain.hotkey = "CommandOrControl+Shift+E".to_string();
   }
+
+  settings.retry_attempts = clamp_retry_attempts(settings.retry_attempts);
 
   settings
 }
@@ -337,13 +369,14 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
 
 pub fn load_settings(app: &AppHandle) -> Settings {
   let store = StoreBuilder::new(app, SETTINGS_STORE).build();
-  match store {
+  let settings = match store {
     Ok(store) => store
       .get("settings")
       .and_then(|value| serde_json::from_value(value).ok())
       .unwrap_or_default(),
     Err(_) => Settings::default(),
-  }
+  };
+  sanitize_settings(settings)
 }
 
 pub fn default_system_prompt(language: &str) -> String {
@@ -417,4 +450,45 @@ fn default_language_zh() -> String {
 
 fn default_settings_language() -> Option<String> {
   Some("zh".to_string())
+}
+
+fn default_retry_attempts() -> u8 {
+  3
+}
+
+fn default_retry_enabled() -> bool {
+  true
+}
+
+fn clamp_retry_attempts(value: u8) -> u8 {
+  value.clamp(1, 5)
+}
+
+fn normalize_optional_prompt(value: Option<String>) -> Option<String> {
+  value.and_then(|v| {
+    let trimmed = v.trim();
+    if trimmed.is_empty() {
+      None
+    } else {
+      Some(trimmed.to_string())
+    }
+  })
+}
+
+fn sanitize_custom_prompts(prompts: &mut CustomPrompts) -> bool {
+  prompts.system_prompt = normalize_optional_prompt(prompts.system_prompt.take());
+  prompts.summary_prompt = normalize_optional_prompt(prompts.summary_prompt.take());
+  prompts.question_prompt = normalize_optional_prompt(prompts.question_prompt.take());
+  prompts.system_prompt.is_none()
+    && prompts.summary_prompt.is_none()
+    && prompts.question_prompt.is_none()
+}
+
+fn normalize_hotkey(value: &str) -> String {
+  value
+    .split('+')
+    .map(|part| part.trim())
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("+")
 }

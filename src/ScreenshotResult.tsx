@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Copy, Check, Cpu, Scan, Code, Eye } from 'lucide-react'
+import { Copy, Check, Cpu, Scan, Code, Eye } from 'lucide-react'
 import { api } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
@@ -20,6 +20,7 @@ export default function ScreenshotResult() {
   const isMountedRef = useRef(true)
   const originalCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const translatedCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showToggleInOriginal = Boolean(original)
 
   useEffect(() => {
     isMountedRef.current = true
@@ -161,34 +162,6 @@ export default function ScreenshotResult() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl text-neutral-900 dark:text-neutral-100 select-none overflow-hidden">
-      {/* 标题栏 */}
-      <div
-        className="flex justify-between items-center px-4 py-3 border-b border-neutral-200/60 dark:border-neutral-700/60"
-        data-tauri-drag-region
-      >
-        <h2 className="text-sm font-medium text-neutral-600 dark:text-neutral-300">截图翻译</h2>
-        <div className="flex items-center gap-2">
-          {status === 'ready' && (
-            <button
-              onClick={() => setShowRaw(!showRaw)}
-              className={`p-1 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors flex items-center gap-1 px-2`}
-              title={showRaw ? "显示预览" : "显示源码"}
-              data-tauri-drag-region="false"
-            >
-              {showRaw ? <Eye size={14} /> : <Code size={14} />}
-              <span className="text-[11px] font-medium">{showRaw ? '预览' : '源码'}</span>
-            </button>
-          )}
-          <button
-            onClick={handleClose}
-            className="p-1 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-            data-tauri-drag-region="false"
-          >
-            <X size={16} strokeWidth={1.5} />
-          </button>
-        </div>
-      </div>
-
       {/* 内容区 */}
       <div className="flex-1 overflow-auto p-4" data-tauri-drag-region="false">
         {/* 处理中状态 */}
@@ -230,14 +203,27 @@ export default function ScreenshotResult() {
                       </span>
                     )}
                   </div>
-                  <button
-                    onClick={() => handleCopy(original, 'original')}
-                    className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 opacity-0 group-hover:opacity-100 transition-opacity"
-                    data-tauri-drag-region="false"
-                  >
-                    {copiedOriginal ? <Check size={10} /> : <Copy size={10} />}
-                    {copiedOriginal ? '已复制' : '复制'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {showToggleInOriginal && (
+                      <button
+                        onClick={() => setShowRaw(!showRaw)}
+                        className="p-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors flex items-center gap-1.5 px-2"
+                        title={showRaw ? '显示预览' : '显示源码'}
+                        data-tauri-drag-region="false"
+                      >
+                        {showRaw ? <Eye size={12} /> : <Code size={12} />}
+                        <span className="text-[10px] font-medium">{showRaw ? '预览' : '源码'}</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleCopy(original, 'original')}
+                      className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 transition-colors"
+                      data-tauri-drag-region="false"
+                    >
+                      {copiedOriginal ? <Check size={10} /> : <Copy size={10} />}
+                      {copiedOriginal ? '已复制' : '复制'}
+                    </button>
+                  </div>
                 </div>
                 <div className="p-3 bg-neutral-50 dark:bg-neutral-800/50 rounded-lg text-sm leading-relaxed select-text prose dark:prose-invert max-w-none">
                   {showRaw ? (
@@ -268,14 +254,27 @@ export default function ScreenshotResult() {
                     </span>
                   )}
                 </div>
-                <button
-                  onClick={() => handleCopy(translated, 'translated')}
-                  className="flex items-center gap-1 px-2 py-1 text-[10px] text-white bg-neutral-800 dark:bg-neutral-200 dark:text-neutral-800 hover:bg-neutral-700 dark:hover:bg-neutral-300 rounded-md transition-colors"
-                  data-tauri-drag-region="false"
-                >
-                  {copiedTranslated ? <Check size={10} /> : <Copy size={10} />}
-                  {copiedTranslated ? '已复制' : '复制'}
-                </button>
+                <div className="flex items-center gap-2">
+                  {!showToggleInOriginal && (
+                    <button
+                      onClick={() => setShowRaw(!showRaw)}
+                      className="p-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors flex items-center gap-1.5 px-2"
+                      title={showRaw ? '显示预览' : '显示源码'}
+                      data-tauri-drag-region="false"
+                    >
+                      {showRaw ? <Eye size={12} /> : <Code size={12} />}
+                      <span className="text-[10px] font-medium">{showRaw ? '预览' : '源码'}</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleCopy(translated, 'translated')}
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-white bg-neutral-800 dark:bg-neutral-200 dark:text-neutral-800 hover:bg-neutral-700 dark:hover:bg-neutral-300 rounded-md transition-colors"
+                    data-tauri-drag-region="false"
+                  >
+                    {copiedTranslated ? <Check size={10} /> : <Copy size={10} />}
+                    {copiedTranslated ? '已复制' : '复制'}
+                  </button>
+                </div>
               </div>
               <div className="p-3 bg-neutral-100/80 dark:bg-neutral-800 rounded-lg text-sm leading-relaxed select-text prose dark:prose-invert max-w-none">
                 {showRaw ? (

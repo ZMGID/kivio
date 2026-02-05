@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Send, X, Loader2, Image, Clock, ChevronDown, ChevronRight, Cpu, Code, Eye } from 'lucide-react'
-import { api } from './api/tauri'
+import { api, type ExplainStreamPayload } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -24,15 +24,20 @@ export default function ScreenshotExplain() {
   const [historyMode, setHistoryMode] = useState(false)
   const [modelName, setModelName] = useState('')
   const [showRaw, setShowRaw] = useState(false)
+  const [streamEnabled, setStreamEnabled] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const imageIdRef = useRef('')
+  const streamingRef = useRef<null | { imageId: string; kind: 'summary' | 'answer'; index: number }>(null)
+  const settingsLoadedRef = useRef(false)
+  const streamEnabledRef = useRef(false)
 
   const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
   useEffect(() => {
-    const applyImageId = (decodedId: string) => {
+    const applyImageId = async (decodedId: string) => {
       if (!decodedId || decodedId === imageIdRef.current) return
+      streamingRef.current = null
       imageIdRef.current = decodedId
       setHistoryMode(false)
       setShowHistory(false)
@@ -40,6 +45,7 @@ export default function ScreenshotExplain() {
       setImageId(decodedId)
       setImagePreview('')
       setMessages([])
+      await ensureSettings()
       loadImage(decodedId)
       getInitialSummary(decodedId)
     }
@@ -49,20 +55,26 @@ export default function ScreenshotExplain() {
       const params = new URLSearchParams(hash.split('?')[1] || '')
       const id = params.get('imageId')
       if (id) {
-        applyImageId(decodeURIComponent(id))
+        void applyImageId(decodeURIComponent(id))
       }
     }
 
-    parseHash()
     window.addEventListener('hashchange', parseHash)
-    loadHistory()
-    loadModelInfo()
+    const init = async () => {
+      await loadModelInfo()
+      parseHash()
+      loadHistory()
+    }
+    void init()
     return () => window.removeEventListener('hashchange', parseHash)
   }, [])
 
   const loadModelInfo = async () => {
     try {
       const settings = await api.getSettings()
+      const stream = settings.screenshotExplain.streamEnabled ?? false
+      setStreamEnabled(stream)
+      streamEnabledRef.current = stream
       const providerId = settings.screenshotExplain.providerId
       const model = settings.screenshotExplain.model
       const provider = settings.providers.find(p => p.id === providerId)
@@ -74,10 +86,22 @@ export default function ScreenshotExplain() {
       } else {
         setModelName('AI')
       }
+      settingsLoadedRef.current = true
+      return true
     } catch (err) {
       console.error('Failed to load model info:', err)
-      setModelName('AI')
+      if (!settingsLoadedRef.current) {
+        setModelName('AI')
+        setStreamEnabled(false)
+        streamEnabledRef.current = false
+      }
+      return false
     }
+  }
+
+  const ensureSettings = async () => {
+    if (settingsLoadedRef.current) return
+    await loadModelInfo()
   }
 
   const loadImage = async (id: string) => {
@@ -94,14 +118,45 @@ export default function ScreenshotExplain() {
   const getInitialSummary = async (id: string) => {
     setInitializing(true)
     setLoading(true)
+    await ensureSettings()
+    const stream = streamEnabledRef.current
+    if (stream) {
+      streamingRef.current = { imageId: id, kind: 'summary', index: 0 }
+      setMessages([{ role: 'assistant', content: '' }])
+    }
     try {
       const result = await api.explainGetInitialSummary(id)
       if (imageIdRef.current !== id) return
-      setMessages([{ role: 'assistant', content: result.success ? (result.summary ?? '') : `错误: ${result.error}` }])
+      const content = result.success ? (result.summary ?? '') : `错误: ${result.error}`
+      if (stream) {
+        setMessages(prev => {
+          const next = [...prev]
+          const existing = next[0] ?? { role: 'assistant', content: '' }
+          const merged = result.success ? content : (existing.content ? `${existing.content}\n\n${content}` : content)
+          next[0] = { ...existing, content: merged }
+          return next
+        })
+      } else {
+        setMessages([{ role: 'assistant', content }])
+      }
     } catch (err) {
       if (imageIdRef.current !== id) return
-      setMessages([{ role: 'assistant', content: `错误: ${formatError(err)}` }])
+      const content = `错误: ${formatError(err)}`
+      if (stream) {
+        setMessages(prev => {
+          const next = [...prev]
+          const existing = next[0] ?? { role: 'assistant', content: '' }
+          const merged = existing.content ? `${existing.content}\n\n${content}` : content
+          next[0] = { ...existing, content: merged }
+          return next
+        })
+      } else {
+        setMessages([{ role: 'assistant', content }])
+      }
     } finally {
+      if (streamingRef.current?.imageId === id && streamingRef.current?.kind === 'summary') {
+        streamingRef.current = null
+      }
       if (imageIdRef.current !== id) return
       setLoading(false)
       setInitializing(false)
@@ -109,20 +164,83 @@ export default function ScreenshotExplain() {
     }
   }
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    api.onExplainStream((payload: ExplainStreamPayload) => {
+      const current = streamingRef.current
+      if (!current) return
+      if (payload.imageId !== current.imageId || payload.kind !== current.kind) return
+      setMessages(prev => {
+        if (current.index >= prev.length) return prev
+        const next = [...prev]
+        const existing = next[current.index]
+        if (!existing) return prev
+        next[current.index] = { ...existing, content: `${existing.content}${payload.delta}` }
+        return next
+      })
+    }).then((dispose) => {
+      unlisten = dispose
+    }).catch((err) => {
+      console.error('Failed to listen explain stream:', err)
+    })
+    return () => {
+      unlisten?.()
+    }
+  }, [])
+
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   const handleSend = async () => {
     if (!input.trim() || loading || historyMode || !imageId) return
     const userMessage: Message = { role: 'user', content: input }
-    setMessages(prev => [...prev, userMessage])
+    const requestImageId = imageId
+    const baseIndex = messages.length
+    await ensureSettings()
+    const stream = streamEnabledRef.current
+    if (stream) {
+      streamingRef.current = { imageId: requestImageId, kind: 'answer', index: baseIndex + 1 }
+      setMessages(prev => [...prev, userMessage, { role: 'assistant', content: '' }])
+    } else {
+      setMessages(prev => [...prev, userMessage])
+    }
     setInput('')
     setLoading(true)
     try {
-      const result = await api.explainAskQuestion(imageId, [...messages, userMessage])
-      setMessages(prev => [...prev, { role: 'assistant', content: result.success ? (result.response ?? '') : `错误: ${result.error}` }])
+      const result = await api.explainAskQuestion(requestImageId, [...messages, userMessage])
+      if (imageIdRef.current !== requestImageId) return
+      const content = result.success ? (result.response ?? '') : `错误: ${result.error}`
+      if (stream) {
+        setMessages(prev => {
+          const next = [...prev]
+          const existing = next[baseIndex + 1]
+          if (!existing) return prev
+          const merged = result.success ? content : (existing.content ? `${existing.content}\n\n${content}` : content)
+          next[baseIndex + 1] = { ...existing, content: merged }
+          return next
+        })
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content }])
+      }
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `错误: ${formatError(err)}` }])
+      if (imageIdRef.current !== requestImageId) return
+      const content = `错误: ${formatError(err)}`
+      if (stream) {
+        setMessages(prev => {
+          const next = [...prev]
+          const existing = next[baseIndex + 1]
+          if (!existing) return prev
+          const merged = existing.content ? `${existing.content}\n\n${content}` : content
+          next[baseIndex + 1] = { ...existing, content: merged }
+          return next
+        })
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content }])
+      }
     } finally {
+      if (streamingRef.current?.imageId === requestImageId && streamingRef.current?.kind === 'answer') {
+        streamingRef.current = null
+      }
+      if (imageIdRef.current !== requestImageId) return
       setLoading(false)
     }
   }
@@ -163,6 +281,7 @@ export default function ScreenshotExplain() {
         setImageId('')
         imageIdRef.current = ''
         setImagePreview('')
+        streamingRef.current = null
       }
     } catch (err) {
       console.error('Failed to load history record:', err)
@@ -176,18 +295,29 @@ export default function ScreenshotExplain() {
     } catch (err) {
       console.error('Failed to clean up explain image:', err)
     }
+    streamingRef.current = null
     api.closeExplainWindow()
   }
 
   return (
     <div className="h-screen w-screen flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl overflow-hidden font-sans text-neutral-900 dark:text-neutral-100">
-      {/* 顶部栏 */}
+      {/* 顶部工具栏 */}
       <div
-        className="flex items-center justify-between px-4 py-3.5 border-b border-black/5 dark:border-white/5 pl-20 select-none"
+        className="flex items-center justify-between px-4 py-2 border-b border-black/5 dark:border-white/5 select-none"
         data-tauri-drag-region
       >
-        <div className="flex items-center gap-2.5">
-          <h1 className="text-[13px] font-semibold text-neutral-700 dark:text-neutral-200 tracking-wide">截图解释</h1>
+        <div className="flex items-center gap-2">
+          {imagePreview && (
+            <button
+              onClick={() => setShowImage(!showImage)}
+              className="flex items-center gap-1.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
+              data-tauri-drag-region="false"
+            >
+              {showImage ? <ChevronDown size={14} strokeWidth={2} /> : <ChevronRight size={14} strokeWidth={2} />}
+              <Image size={13} strokeWidth={2} />
+              <span>{showImage ? '隐藏截图' : '显示截图'}</span>
+            </button>
+          )}
           {modelName && (
             <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 rounded-full border border-neutral-200/50 dark:border-neutral-700/50">
               <Cpu size={10} strokeWidth={2} />{modelName}
@@ -204,7 +334,7 @@ export default function ScreenshotExplain() {
             title="历史记录"
             data-tauri-drag-region="false"
           >
-            <Clock size={16} strokeWidth={2} />
+            <Clock size={15} strokeWidth={2} />
           </button>
           <button
             onClick={() => setShowRaw(!showRaw)}
@@ -212,10 +342,10 @@ export default function ScreenshotExplain() {
               ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white'
               : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/10'
               }`}
-            title={showRaw ? "显示预览" : "显示源码"}
+            title={showRaw ? '显示预览' : '显示源码'}
             data-tauri-drag-region="false"
           >
-            {showRaw ? <Eye size={16} strokeWidth={2} /> : <Code size={16} strokeWidth={2} />}
+            {showRaw ? <Eye size={14} strokeWidth={2} /> : <Code size={14} strokeWidth={2} />}
             <span className="text-[11px] font-medium">{showRaw ? '预览' : '源码'}</span>
           </button>
           <button
@@ -223,7 +353,7 @@ export default function ScreenshotExplain() {
             className="p-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-all duration-200"
             data-tauri-drag-region="false"
           >
-            <X size={16} strokeWidth={2} />
+            <X size={15} strokeWidth={2} />
           </button>
         </div>
       </div>
@@ -261,25 +391,14 @@ export default function ScreenshotExplain() {
         </div>
       )}
 
-      {/* 图片预览栏 */}
-      {imagePreview && (
+      {/* 图片预览 */}
+      {imagePreview && showImage && (
         <div className="border-b border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-sm">
-          <button
-            onClick={() => setShowImage(!showImage)}
-            className="w-full px-4 py-2 flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
-            data-tauri-drag-region="false"
-          >
-            {showImage ? <ChevronDown size={14} strokeWidth={2} /> : <ChevronRight size={14} strokeWidth={2} />}
-            <Image size={14} strokeWidth={2} />
-            <span>{showImage ? '隐藏截图' : '显示截图'}</span>
-          </button>
-          {showImage && (
-            <div className="px-4 pb-3 animate-in slide-in-from-top-2 duration-200">
-              <div className="rounded-xl overflow-hidden border border-black/5 dark:border-white/5 shadow-sm bg-neutral-100/50 dark:bg-neutral-800/50">
-                <img src={imagePreview} alt="Screenshot" className="max-w-full max-h-48 mx-auto object-contain" />
-              </div>
+          <div className="px-4 py-3 animate-in slide-in-from-top-2 duration-200">
+            <div className="rounded-xl overflow-hidden border border-black/5 dark:border-white/5 shadow-sm bg-neutral-100/50 dark:bg-neutral-800/50">
+              <img src={imagePreview} alt="Screenshot" className="max-w-full max-h-48 mx-auto object-contain" />
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -299,7 +418,7 @@ export default function ScreenshotExplain() {
           <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2 fade-in duration-300`}>
             <div
               className={`max-w-[85%] px-4 py-2.5 text-[13.5px] leading-relaxed shadow-sm ${msg.role === 'user'
-                ? 'bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-2xl rounded-tr-sm'
+                ? 'bg-white dark:bg-white text-neutral-900 border border-black/5 dark:border-white/10 rounded-2xl rounded-tr-sm'
                 : 'bg-white dark:bg-neutral-800 border border-black/5 dark:border-white/5 text-neutral-700 dark:text-neutral-200 rounded-2xl rounded-tl-sm'
                 }`}
             >
@@ -321,7 +440,7 @@ export default function ScreenshotExplain() {
           </div>
         ))}
 
-        {loading && !initializing && (
+        {loading && !initializing && !(streamEnabled && streamingRef.current) && (
           <div className="flex justify-start animate-in fade-in duration-200">
             <div className="bg-white dark:bg-neutral-800 px-4 py-2.5 rounded-2xl rounded-tl-sm border border-black/5 dark:border-white/5 shadow-sm">
               <Loader2 className="animate-spin text-neutral-400" size={16} strokeWidth={2} />

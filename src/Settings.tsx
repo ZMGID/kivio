@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from 'react'
 import { X, Save, Globe, Keyboard, Camera, Sparkles, Cpu, Plus, Trash2, RefreshCw } from 'lucide-react'
-import { api, type Settings as SettingsType, type ModelProvider } from './api/tauri'
+import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates } from './api/tauri'
 
 type SettingsData = SettingsType
 
@@ -26,6 +26,19 @@ const i18n = {
     language: '界面语言',
     hotkey: '翻译快捷键',
     hotkeyPlaceholder: '例如: CommandOrControl+Alt+T',
+    hotkeyRecordingPlaceholder: '按下组合键',
+    hotkeyRecord: '录制',
+    hotkeyRecording: '录制中',
+    retryEnabled: '自动重试',
+    retryAttempts: '重试次数',
+    retryAttemptsHint: 'AI 请求失败自动重试次数 (1-5)',
+    defaultTemplate: '默认模板',
+    translatorPrompt: '输入翻译提示词',
+    translatorPromptHint: '留空使用默认模板。支持 {lang} 目标语言，{text} 待翻译内容。',
+    screenshotTranslationPrompt: '截图翻译提示词',
+    screenshotTranslationPromptHint: '留空使用默认模板。支持 {lang} 目标语言，{text} 识别内容。',
+    questionPrompt: '提问提示词',
+    streamEnabled: '流式输出',
     targetLang: '目标语言',
     langAuto: '自动 (中↔英)',
     langEn: '英语',
@@ -80,6 +93,19 @@ const i18n = {
     language: 'Language',
     hotkey: 'Hotkey',
     hotkeyPlaceholder: 'e.g. CommandOrControl+Alt+T',
+    hotkeyRecordingPlaceholder: 'Press shortcut',
+    hotkeyRecord: 'Record',
+    hotkeyRecording: 'Recording',
+    retryEnabled: 'Auto retry',
+    retryAttempts: 'Retry attempts',
+    retryAttemptsHint: 'Retry failed AI requests (1-5)',
+    defaultTemplate: 'Default template',
+    translatorPrompt: 'Translation prompt',
+    translatorPromptHint: 'Leave empty for default. Supports {lang} and {text}.',
+    screenshotTranslationPrompt: 'Screenshot translation prompt',
+    screenshotTranslationPromptHint: 'Leave empty for default. Supports {lang} and {text}.',
+    questionPrompt: 'Question prompt',
+    streamEnabled: 'Streaming output',
     targetLang: 'Target Language',
     langAuto: 'Auto (ZH↔EN)',
     langEn: 'English',
@@ -120,6 +146,50 @@ const i18n = {
     version: 'Version',
   }
 }
+
+const modifierKeys = new Set(['Shift', 'Meta', 'Control', 'Alt', 'AltGraph'])
+
+const keyAliasMap: Record<string, string> = {
+  Escape: 'Esc',
+  ' ': 'Space',
+  Spacebar: 'Space',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right',
+}
+
+const normalizeKeyFromCode = (code: string) => {
+  if (code.startsWith('Key')) return code.slice(3)
+  if (code.startsWith('Digit')) return code.slice(5)
+  return ''
+}
+
+const normalizeHotkeyKey = (event: KeyboardEvent) => {
+  const { key, code } = event
+  if (!key) return ''
+  if (modifierKeys.has(key)) return ''
+  if (/^F\d{1,2}$/.test(key)) return key.toUpperCase()
+  const alias = keyAliasMap[key]
+  if (alias) return alias
+  const fromCode = normalizeKeyFromCode(code)
+  if (fromCode) return fromCode.toUpperCase()
+  if (key === 'Dead' || key === 'Process') return ''
+  if (key.length === 1 && key !== '+') return key.toUpperCase()
+  return ''
+}
+
+const buildHotkey = (event: KeyboardEvent) => {
+  const key = normalizeHotkeyKey(event)
+  if (!key) return ''
+  const parts: string[] = []
+  if (event.metaKey || event.ctrlKey) parts.push('CommandOrControl')
+  if (event.altKey || event.getModifierState('AltGraph')) parts.push('Alt')
+  if (event.shiftKey) parts.push('Shift')
+  parts.push(key)
+  return parts.join('+')
+}
+
 
 // 通用组件
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
@@ -212,6 +282,61 @@ function Card({ children, className = '' }: { children: ReactNode; className?: s
   )
 }
 
+function HotkeyInput({
+  value,
+  onChange,
+  placeholder,
+  recording,
+  onToggleRecording,
+  recordLabel,
+  recordingLabel,
+  recordingPlaceholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+  recording: boolean
+  onToggleRecording: () => void
+  recordLabel: string
+  recordingLabel: string
+  recordingPlaceholder: string
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        value={value}
+        onChange={onChange}
+        placeholder={recording ? recordingPlaceholder : placeholder}
+        readOnly={recording}
+        className={recording ? 'ring-1 ring-amber-400/60 dark:ring-amber-300/50' : ''}
+      />
+      <button
+        type="button"
+        onClick={onToggleRecording}
+        className={`px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
+          recording
+            ? 'border-amber-400/60 text-amber-600 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-900/20'
+            : 'border-black/10 dark:border-white/10 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+        }`}
+        data-tauri-drag-region="false"
+      >
+        {recording ? recordingLabel : recordLabel}
+      </button>
+    </div>
+  )
+}
+
+function DefaultPrompt({ label, content }: { label: string; content: string }) {
+  return (
+    <div className="mt-2 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-50 dark:bg-neutral-900/40 px-3 py-2">
+      <div className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 mb-1">{label}</div>
+      <pre className="whitespace-pre-wrap text-[11px] text-neutral-600 dark:text-neutral-300 font-mono">
+        {content.trim()}
+      </pre>
+    </div>
+  )
+}
+
 function SectionTitle({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
     <div className="flex items-center gap-2 mb-4">
@@ -250,17 +375,24 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [loading, setLoading] = useState(true)
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'models'>('general')
+  const [saveError, setSaveError] = useState('')
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotExplain'>(null)
+  const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
+  const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
 
   useEffect(() => {
+    let active = true
     api.getSettings()
       .then((data: SettingsData) => {
+        if (!active) return
         setSettings(data)
         setLoading(false)
       })
       .catch((err) => {
+        if (!active) return
         console.error('Failed to load settings:', err)
         // 使用默认设置以避免永远 loading
         setSettings({
@@ -271,23 +403,28 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           autoPaste: true,
           translatorProviderId: 'default-translator',
           translatorModel: 'gpt-4o',
+          translatorPrompt: '',
           providers: [
             { id: 'default-translator', name: 'OpenAI (Translator)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
             { id: 'default-ocr', name: 'OpenAI (OCR)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
             { id: 'default-explain', name: 'OpenAI (Explain)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
           ],
+          retryEnabled: true,
+          retryAttempts: 3,
           screenshotTranslation: {
             enabled: true,
             hotkey: 'CommandOrControl+Shift+A',
             providerId: 'default-ocr',
-            model: 'gpt-4o'
+            model: 'gpt-4o',
+            prompt: ''
           },
           screenshotExplain: {
             enabled: true,
             hotkey: 'CommandOrControl+Shift+E',
             providerId: 'default-explain',
             model: 'gpt-4o',
-            defaultLanguage: 'zh'
+            defaultLanguage: 'zh',
+            streamEnabled: false
           },
           explainHistory: [],
           settingsLanguage: 'zh'
@@ -295,13 +432,33 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         setLoading(false)
       })
     api.getAppVersion()
-      .then((ver: string) => setAppVersion(ver))
-      .catch(() => setAppVersion('unknown'))
+      .then((ver: string) => {
+        if (active) setAppVersion(ver)
+      })
+      .catch(() => {
+        if (active) setAppVersion('unknown')
+      })
+    api.getDefaultPromptTemplates()
+      .then((templates) => {
+        if (active) setDefaultPrompts(templates)
+      })
+      .catch((err) => {
+        console.error('Failed to load default prompt templates:', err)
+      })
     // resizeWindow 已在 App.tsx 中处理，此处不再重复调用
+    return () => {
+      active = false
+    }
   }, [])
 
   useEffect(() => {
+    if (!settings) return
+    setRetryAttemptsInput(String(settings.retryAttempts ?? 3))
+  }, [settings?.retryAttempts])
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (recordingTarget) return
       if (e.key === 'Escape') {
         console.log('[Settings] ESC pressed, calling onClose')
         onClose()
@@ -309,13 +466,50 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  }, [onClose, recordingTarget])
+
 
   const handleSave = async () => {
     if (!settings) return
-    await api.saveSettings(settings)
-    onSettingsChange()
-    onClose()
+    try {
+      setSaveError('')
+      await api.saveSettings(settings)
+      onSettingsChange()
+      onClose()
+    } catch (err) {
+      console.error('Failed to save settings:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      const prefix = lang === 'zh' ? '保存失败：' : 'Save failed: '
+      setSaveError(`${prefix}${message.replace(/\n/g, ' / ')}`)
+    }
+  }
+
+  const handleRetryAttemptsChange = (value: string) => {
+    if (!settings) return
+    setRetryAttemptsInput(value)
+    if (value.trim() === '') return
+    const parsed = Number.parseInt(value, 10)
+    if (Number.isNaN(parsed)) return
+    const clamped = Math.min(5, Math.max(1, parsed))
+    updateSettings({ retryAttempts: clamped })
+  }
+
+  const handleRetryAttemptsBlur = () => {
+    if (!settings) return
+    if (retryAttemptsInput.trim() === '') {
+      setRetryAttemptsInput(String(settings.retryAttempts ?? 3))
+      return
+    }
+    const parsed = Number.parseInt(retryAttemptsInput, 10)
+    if (Number.isNaN(parsed)) {
+      setRetryAttemptsInput(String(settings.retryAttempts ?? 3))
+      return
+    }
+    const clamped = Math.min(5, Math.max(1, parsed))
+    setRetryAttemptsInput(String(clamped))
+    if (clamped !== settings.retryAttempts) {
+      updateSettings({ retryAttempts: clamped })
+    }
   }
 
   const updateSettings = (updates: Partial<SettingsData>) => {
@@ -324,10 +518,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   const updateProvider = (id: string, updates: Partial<ModelProvider>) => {
-    if (!settings) return
-    setSettings({
-      ...settings,
-      providers: settings.providers.map(p => p.id === id ? { ...p, ...updates } : p)
+    setSettings((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        providers: prev.providers.map(p => p.id === id ? { ...p, ...updates } : p)
+      }
     })
   }
 
@@ -425,7 +621,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const current = settings.screenshotTranslation || {
       enabled: true,
       hotkey: 'CommandOrControl+Shift+A',
-      providerId: 'default-ocr'
+      providerId: 'default-ocr',
+      prompt: ''
     }
     setSettings({ ...settings, screenshotTranslation: { ...current, ...updates } })
   }
@@ -436,7 +633,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       enabled: true,
       hotkey: 'CommandOrControl+Shift+E',
       providerId: 'default-explain',
-      defaultLanguage: 'zh'
+      defaultLanguage: 'zh',
+      streamEnabled: false
     }
     setSettings({ ...settings, screenshotExplain: { ...current, ...updates } })
   }
@@ -457,6 +655,36 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       }
     })
   }
+
+  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotExplain') => {
+    setRecordingTarget((current) => (current === target ? null : target))
+  }
+
+  const explainDefaults = defaultPrompts?.explainPrompts[settings?.screenshotExplain?.defaultLanguage || 'zh']
+
+  useEffect(() => {
+    if (!recordingTarget) return
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.key === 'Escape') {
+        setRecordingTarget(null)
+        return
+      }
+      const hotkey = buildHotkey(e)
+      if (!hotkey) return
+      if (recordingTarget === 'main') {
+        updateSettings({ hotkey })
+      } else if (recordingTarget === 'screenshotTranslation') {
+        updateScreenshotTranslation({ hotkey })
+      } else if (recordingTarget === 'screenshotExplain') {
+        updateScreenshotExplain({ hotkey })
+      }
+      setRecordingTarget(null)
+    }
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
+  }, [recordingTarget, settings])
 
   if (loading || !settings) {
     return (
@@ -548,11 +776,41 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
             <Card>
               <Label>{t.hotkey}</Label>
-              <Input
+              <HotkeyInput
                 value={settings.hotkey}
                 onChange={(v) => updateSettings({ hotkey: v })}
                 placeholder={t.hotkeyPlaceholder}
+                recording={recordingTarget === 'main'}
+                onToggleRecording={() => toggleRecording('main')}
+                recordLabel={t.hotkeyRecord}
+                recordingLabel={t.hotkeyRecording}
+                recordingPlaceholder={t.hotkeyRecordingPlaceholder}
               />
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <Label>{t.retryEnabled}</Label>
+                <Toggle
+                  checked={settings.retryEnabled ?? true}
+                  onChange={(v) => updateSettings({ retryEnabled: v })}
+                />
+              </div>
+              <div className={`mt-3 ${settings.retryEnabled === false ? 'opacity-50 pointer-events-none' : ''}`}>
+                <Label className="mb-1.5">{t.retryAttempts}</Label>
+                <Input
+                  type="number"
+                  value={retryAttemptsInput}
+                  onChange={handleRetryAttemptsChange}
+                  onBlur={handleRetryAttemptsBlur}
+                  placeholder="3"
+                  min={1}
+                  max={5}
+                  disabled={settings.retryEnabled === false}
+                  aria-disabled={settings.retryEnabled === false}
+                />
+                <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">{t.retryAttemptsHint}</p>
+              </div>
             </Card>
 
             <Card>
@@ -610,6 +868,19 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 </div>
               </div>
             </Card>
+
+            <Card>
+              <Label>{t.translatorPrompt}</Label>
+              <TextArea
+                value={settings.translatorPrompt || ''}
+                onChange={(v) => updateSettings({ translatorPrompt: v })}
+                placeholder={t.translatorPromptHint}
+                rows={3}
+              />
+              {!settings.translatorPrompt?.trim() && defaultPrompts?.translationTemplate && (
+                <DefaultPrompt label={t.defaultTemplate} content={defaultPrompts.translationTemplate} />
+              )}
+            </Card>
           </div>
         )}
 
@@ -632,10 +903,15 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div>
                     <Label>{t.hotkey}</Label>
-                    <Input
+                    <HotkeyInput
                       value={settings.screenshotTranslation?.hotkey || 'CommandOrControl+Shift+A'}
                       onChange={(v) => updateScreenshotTranslation({ hotkey: v })}
                       placeholder="CommandOrControl+Shift+A"
+                      recording={recordingTarget === 'screenshotTranslation'}
+                      onToggleRecording={() => toggleRecording('screenshotTranslation')}
+                      recordLabel={t.hotkeyRecord}
+                      recordingLabel={t.hotkeyRecording}
+                      recordingPlaceholder={t.hotkeyRecordingPlaceholder}
                     />
                   </div>
                   <div>
@@ -654,6 +930,31 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       )}
                     />
                   </div>
+
+                  <details className="group pt-2 border-t border-black/5 dark:border-white/5">
+                    <summary className="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none">
+                      <div className="p-0.5 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 group-open:rotate-90 transition-transform">
+                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </div>
+                      {t.customPrompts}
+                    </summary>
+                    <div className="mt-4 space-y-2 pl-1 animate-in slide-in-from-top-2 duration-200">
+                      <div>
+                        <Label>{t.screenshotTranslationPrompt}</Label>
+                        <TextArea
+                          value={settings.screenshotTranslation?.prompt || ''}
+                          onChange={(v) => updateScreenshotTranslation({ prompt: v })}
+                          placeholder={t.screenshotTranslationPromptHint}
+                          rows={3}
+                        />
+                        {!settings.screenshotTranslation?.prompt?.trim() && defaultPrompts?.translationTemplate && (
+                          <DefaultPrompt label={t.defaultTemplate} content={defaultPrompts.translationTemplate} />
+                        )}
+                      </div>
+                    </div>
+                  </details>
                 </div>
               )}
             </Card>
@@ -674,10 +975,15 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
                   <div>
                     <Label>{t.hotkey}</Label>
-                    <Input
+                    <HotkeyInput
                       value={settings.screenshotExplain?.hotkey || 'CommandOrControl+Shift+E'}
                       onChange={(v) => updateScreenshotExplain({ hotkey: v })}
                       placeholder="CommandOrControl+Shift+E"
+                      recording={recordingTarget === 'screenshotExplain'}
+                      onToggleRecording={() => toggleRecording('screenshotExplain')}
+                      recordLabel={t.hotkeyRecord}
+                      recordingLabel={t.hotkeyRecording}
+                      recordingPlaceholder={t.hotkeyRecordingPlaceholder}
                     />
                   </div>
                   <div>
@@ -689,6 +995,13 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         { value: 'zh', label: '中文' },
                         { value: 'en', label: 'English' },
                       ]}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label>{t.streamEnabled}</Label>
+                    <Toggle
+                      checked={settings.screenshotExplain?.streamEnabled ?? false}
+                      onChange={(v) => updateScreenshotExplain({ streamEnabled: v })}
                     />
                   </div>
                   <div>
@@ -727,6 +1040,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           placeholder={t.customPromptsHint}
                           rows={2}
                         />
+                        {!settings.screenshotExplain?.customPrompts?.systemPrompt?.trim() && explainDefaults?.system && (
+                          <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.system} />
+                        )}
                       </div>
                       <div>
                         <Label>{t.summaryPrompt}</Label>
@@ -736,6 +1052,21 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           placeholder={t.customPromptsHint}
                           rows={3}
                         />
+                        {!settings.screenshotExplain?.customPrompts?.summaryPrompt?.trim() && explainDefaults?.summary && (
+                          <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.summary} />
+                        )}
+                      </div>
+                      <div>
+                        <Label>{t.questionPrompt}</Label>
+                        <TextArea
+                          value={settings.screenshotExplain?.customPrompts?.questionPrompt || ''}
+                          onChange={(v) => updateCustomPrompts({ questionPrompt: v })}
+                          placeholder={t.customPromptsHint}
+                          rows={3}
+                        />
+                        {!settings.screenshotExplain?.customPrompts?.questionPrompt?.trim() && explainDefaults?.question && (
+                          <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.question} />
+                        )}
                       </div>
                     </div>
                   </details>
@@ -886,7 +1217,17 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
       {/* 底部操作栏 */}
       <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl rounded-b-xl">
-        <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
+          {saveError && (
+            <span
+              className="text-[11px] text-red-500 dark:text-red-400 truncate max-w-[240px]"
+              title={saveError}
+            >
+              {saveError}
+            </span>
+          )}
+        </div>
         <div className="flex gap-3">
           <button
             onClick={onClose}
