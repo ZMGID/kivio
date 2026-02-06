@@ -1,6 +1,6 @@
 [package]
 name = "keylingo"
-version = "2.0.2"
+version = "2.0.3"
 description = "KeyLingo - Smart Translation & AI Vision Tool for macOS/Windows"
 authors = ["ZM"]
 edition = "2021"
@@ -24,9 +24,15 @@ uuid = { version = "1", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 arboard = "3"
 enigo = "0.1.3"
+keyring = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
 libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+xcap = "0.8"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

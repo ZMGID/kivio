@@ -3,6 +3,53 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreBuilder;
 
 const SETTINGS_STORE: &str = "settings.json";
+const KEYRING_SERVICE: &str = "com.zmair.keylingo";
+
+fn provider_credential_name(provider_id: &str) -> String {
+  format!("provider:{provider_id}")
+}
+
+fn save_provider_api_key(provider_id: &str, api_key: &str) -> Result<(), String> {
+  let entry = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id))
+    .map_err(|e| e.to_string())?;
+
+  if api_key.trim().is_empty() {
+    let _ = entry.delete_credential();
+    return Ok(());
+  }
+
+  entry.set_password(api_key).map_err(|e| e.to_string())
+}
+
+fn load_provider_api_key(provider_id: &str) -> Option<String> {
+  let entry = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id)).ok()?;
+  entry.get_password().ok()
+}
+
+fn persist_provider_api_keys(settings: &Settings) -> Result<(), String> {
+  for provider in &settings.providers {
+    save_provider_api_key(&provider.id, &provider.api_key)?;
+  }
+  Ok(())
+}
+
+fn hydrate_provider_api_keys(settings: &mut Settings) {
+  for provider in &mut settings.providers {
+    let inline_key = provider.api_key.trim().to_string();
+    if !inline_key.is_empty() {
+      if let Err(err) = save_provider_api_key(&provider.id, &inline_key) {
+        eprintln!(
+          "Failed to migrate API key for provider {} to keyring: {}",
+          provider.id, err
+        );
+      }
+      provider.api_key = inline_key;
+      continue;
+    }
+
+    provider.api_key = load_provider_api_key(&provider.id).unwrap_or_default();
+  }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -49,6 +96,8 @@ pub struct ScreenshotTranslationConfig {
   pub provider_id: String,
   #[serde(default = "default_openai_model")]
   pub model: String,
+  #[serde(default = "default_false")]
+  pub direct_translate: bool,
   #[serde(default)]
   pub prompt: Option<String>,
   // Legacy field for migration
@@ -63,6 +112,7 @@ impl Default for ScreenshotTranslationConfig {
       hotkey: "CommandOrControl+Shift+A".to_string(),
       provider_id: "default-ocr".to_string(),
       model: "gpt-4o".to_string(),
+      direct_translate: false,
       prompt: None,
       openai: None,
     }
@@ -360,12 +410,19 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 }
 
 pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+  persist_provider_api_keys(settings)?;
+
+  let mut persisted_settings = settings.clone();
+  for provider in &mut persisted_settings.providers {
+    provider.api_key.clear();
+  }
+
   let store = StoreBuilder::new(app, SETTINGS_STORE)
     .build()
     .map_err(|e| e.to_string())?;
   store.set(
     "settings".to_string(),
-    serde_json::to_value(settings).map_err(|e| e.to_string())?,
+    serde_json::to_value(persisted_settings).map_err(|e| e.to_string())?,
   );
   store.save().map_err(|e| e.to_string())
 }
@@ -379,7 +436,9 @@ pub fn load_settings(app: &AppHandle) -> Settings {
       .unwrap_or_default(),
     Err(_) => Settings::default(),
   };
-  sanitize_settings(settings)
+  let mut sanitized = sanitize_settings(settings);
+  hydrate_provider_api_keys(&mut sanitized);
+  sanitized
 }
 
 pub fn default_system_prompt(language: &str) -> String {

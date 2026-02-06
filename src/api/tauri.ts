@@ -36,6 +36,7 @@ export type Settings = {
     hotkey: string
     providerId: string
     model: string
+    directTranslate?: boolean
     prompt?: string
   }
   screenshotExplain: {
@@ -61,6 +62,7 @@ export type Settings = {
 
 export type DefaultPromptTemplates = {
   translationTemplate: string
+  screenshotTranslationTemplate?: string
   explainPrompts: {
     zh: { system: string; summary: string; question: string }
     en: { system: string; summary: string; question: string }
@@ -71,6 +73,16 @@ export type PermissionStatus = {
   platform: 'macos' | 'other'
   accessibility: boolean
   screenRecording: boolean
+}
+
+export type CaptureCommitPayload = {
+  absoluteX: number
+  absoluteY: number
+  x: number
+  y: number
+  width: number
+  height: number
+  scaleFactor: number
 }
 
 type Unlisten = () => void
@@ -92,6 +104,11 @@ export const api = {
   getPermissionStatus: () => invoke<PermissionStatus>('get_permission_status'),
   openPermissionSettings: (kind: 'accessibility' | 'screen-recording') =>
     invoke<void>('open_permission_settings', { kind }),
+  captureRequest: (mode: 'translate' | 'explain') =>
+    invoke<void>('capture_request', { mode }),
+  captureCommit: (payload: CaptureCommitPayload) =>
+    invoke<void>('capture_commit', payload),
+  captureCancel: () => invoke<void>('capture_cancel'),
   getAppVersion: () => getVersion(),
   translateText: (text: string) => invoke<string>('translate_text', { text }),
   commitTranslation: (text: string) => invoke<void>('commit_translation', { text }),

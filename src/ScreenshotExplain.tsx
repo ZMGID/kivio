@@ -29,7 +29,6 @@ export default function ScreenshotExplain() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const imageIdRef = useRef('')
   const streamingRef = useRef<null | { imageId: string; kind: 'summary' | 'answer'; index: number }>(null)
-  const settingsLoadedRef = useRef(false)
   const streamEnabledRef = useRef(false)
 
   const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err))
@@ -51,21 +50,17 @@ export default function ScreenshotExplain() {
       } else {
         setModelName('AI')
       }
-      settingsLoadedRef.current = true
       return true
     } catch (err) {
       console.error('Failed to load model info:', err)
-      if (!settingsLoadedRef.current) {
-        setModelName('AI')
-        setStreamEnabled(false)
-        streamEnabledRef.current = false
-      }
+      setModelName('AI')
+      setStreamEnabled(false)
+      streamEnabledRef.current = false
       return false
     }
   }, [])
 
   const ensureSettings = useCallback(async () => {
-    if (settingsLoadedRef.current) return
     await loadModelInfo()
   }, [loadModelInfo])
 
@@ -150,7 +145,7 @@ export default function ScreenshotExplain() {
       setImageId(decodedId)
       setImagePreview('')
       setMessages([])
-      await ensureSettings()
+      await loadModelInfo()
       loadImage(decodedId)
       getInitialSummary(decodedId)
     }
@@ -172,7 +167,7 @@ export default function ScreenshotExplain() {
     }
     void init()
     return () => window.removeEventListener('hashchange', parseHash)
-  }, [ensureSettings, getInitialSummary, loadHistory, loadImage, loadModelInfo])
+  }, [getInitialSummary, loadHistory, loadImage, loadModelInfo])
 
   useEffect(() => {
     let unlisten: (() => void) | undefined

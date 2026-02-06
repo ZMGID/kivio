@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { X, Save, Globe, Keyboard, Camera, Sparkles, Cpu, Plus, Trash2, RefreshCw, ExternalLink, Shield } from 'lucide-react'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
 
@@ -37,6 +37,10 @@ const i18n = {
     translatorPromptHint: '留空使用默认模板。支持 {lang} 目标语言，{text} 待翻译内容。',
     screenshotTranslationPrompt: '截图翻译提示词',
     screenshotTranslationPromptHint: '留空使用默认模板。支持 {lang} 目标语言，{text} 识别内容。',
+    screenshotTranslateMode: '翻译模式',
+    screenshotTranslateModeHint: '关闭时为 OCR→翻译模型两步流程；开启时直接用 OCR 模型输出翻译。',
+    screenshotTranslateModeDirect: '直接使用 OCR 模型翻译',
+    screenshotTranslateModeTwoStep: '两步模式（OCR + 翻译模型）',
     questionPrompt: '提问提示词',
     streamEnabled: '流式输出',
     targetLang: '目标语言',
@@ -96,6 +100,7 @@ const i18n = {
     discardAndClose: '放弃更改',
     continueEditing: '继续编辑',
     saving: '保存中...',
+    saved: '已保存',
   },
   en: {
     settings: 'Settings',
@@ -123,6 +128,10 @@ const i18n = {
     translatorPromptHint: 'Leave empty for default. Supports {lang} and {text}.',
     screenshotTranslationPrompt: 'Screenshot translation prompt',
     screenshotTranslationPromptHint: 'Leave empty for default. Supports {lang} and {text}.',
+    screenshotTranslateMode: 'Translation Mode',
+    screenshotTranslateModeHint: 'Off: OCR then translator model. On: OCR model translates directly.',
+    screenshotTranslateModeDirect: 'Direct OCR translation',
+    screenshotTranslateModeTwoStep: 'Two-step mode (OCR + translator)',
     questionPrompt: 'Question prompt',
     streamEnabled: 'Streaming output',
     targetLang: 'Target Language',
@@ -182,6 +191,7 @@ const i18n = {
     discardAndClose: 'Discard',
     continueEditing: 'Continue Editing',
     saving: 'Saving...',
+    saved: 'Saved',
   }
 }
 
@@ -454,6 +464,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'models'>('general')
   const [saveError, setSaveError] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotExplain'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
@@ -462,6 +473,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [permissionsLoading, setPermissionsLoading] = useState(false)
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
   const [providerTestFeedback, setProviderTestFeedback] = useState<Record<string, { ok: boolean; message: string }>>({})
+  const saveSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
@@ -604,20 +616,39 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     try {
       setSaving(true)
       setSaveError('')
+      setSaveSuccess(false)
+      if (saveSuccessTimerRef.current) {
+        clearTimeout(saveSuccessTimerRef.current)
+        saveSuccessTimerRef.current = null
+      }
       await api.saveSettings(settings)
       setInitialSettingsSnapshot(JSON.stringify(settings))
       onSettingsChange()
+      setSaveSuccess(true)
+      saveSuccessTimerRef.current = setTimeout(() => {
+        setSaveSuccess(false)
+        saveSuccessTimerRef.current = null
+      }, 2200)
       return true
     } catch (err) {
       console.error('Failed to save settings:', err)
       const message = err instanceof Error ? err.message : String(err)
       const prefix = lang === 'zh' ? '保存失败：' : 'Save failed: '
       setSaveError(`${prefix}${message.replace(/\n/g, ' / ')}`)
+      setSaveSuccess(false)
       return false
     } finally {
       setSaving(false)
     }
   }, [lang, onSettingsChange, settings])
+
+  useEffect(() => {
+    return () => {
+      if (saveSuccessTimerRef.current) {
+        clearTimeout(saveSuccessTimerRef.current)
+      }
+    }
+  }, [])
 
   const handleCloseRequest = useCallback(() => {
     if (recordingTarget) return
@@ -797,10 +828,46 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
   const removeEnabledModel = (providerId: string, model: string) => {
     if (!settings) return
-    const provider = settings.providers.find(p => p.id === providerId)
+    const provider = settings.providers.find((p) => p.id === providerId)
     if (!provider) return
-    updateProvider(providerId, {
-      enabledModels: provider.enabledModels.filter(m => m !== model)
+
+    const nextEnabledModels = provider.enabledModels.filter((m) => m !== model)
+    const resolveAfterRemoval = (currentModel: string) => {
+      if (currentModel !== model) return currentModel
+      return nextEnabledModels[0] || ''
+    }
+
+    setSettings((prev) => {
+      if (!prev) return prev
+
+      const nextProviders = prev.providers.map((p) =>
+        p.id === providerId ? { ...p, enabledModels: nextEnabledModels } : p,
+      )
+
+      const next = {
+        ...prev,
+        providers: nextProviders,
+      }
+
+      if (prev.translatorProviderId === providerId) {
+        next.translatorModel = resolveAfterRemoval(prev.translatorModel)
+      }
+
+      if (prev.screenshotTranslation.providerId === providerId) {
+        next.screenshotTranslation = {
+          ...prev.screenshotTranslation,
+          model: resolveAfterRemoval(prev.screenshotTranslation.model),
+        }
+      }
+
+      if (prev.screenshotExplain.providerId === providerId) {
+        next.screenshotExplain = {
+          ...prev.screenshotExplain,
+          model: resolveAfterRemoval(prev.screenshotExplain.model),
+        }
+      }
+
+      return next
     })
   }
 
@@ -830,6 +897,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         enabled: true,
         hotkey: 'CommandOrControl+Shift+A',
         providerId: 'default-ocr',
+        directTranslate: false,
         prompt: ''
       }
       return { ...prev, screenshotTranslation: { ...current, ...updates } }
@@ -1198,6 +1266,23 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       )}
                     />
                   </div>
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <Label className="mb-0">{t.screenshotTranslateMode}</Label>
+                      <Toggle
+                        checked={settings.screenshotTranslation?.directTranslate ?? false}
+                        onChange={(v) => updateScreenshotTranslation({ directTranslate: v })}
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
+                      {settings.screenshotTranslation?.directTranslate
+                        ? t.screenshotTranslateModeDirect
+                        : t.screenshotTranslateModeTwoStep}
+                    </p>
+                    <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
+                      {t.screenshotTranslateModeHint}
+                    </p>
+                  </div>
 
                   <details className="group pt-2 border-t border-black/5 dark:border-white/5">
                     <summary className="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none">
@@ -1217,8 +1302,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           placeholder={t.screenshotTranslationPromptHint}
                           rows={3}
                         />
-                        {!settings.screenshotTranslation?.prompt?.trim() && defaultPrompts?.translationTemplate && (
-                          <DefaultPrompt label={t.defaultTemplate} content={defaultPrompts.translationTemplate} />
+                        {!settings.screenshotTranslation?.prompt?.trim() && (defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate) && (
+                          <DefaultPrompt
+                            label={t.defaultTemplate}
+                            content={defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate || ''}
+                          />
                         )}
                       </div>
                     </div>
@@ -1516,6 +1604,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               title={saveError}
             >
               {saveError}
+            </span>
+          )}
+          {saveSuccess && !saveError && (
+            <span className="text-[11px] text-emerald-600 dark:text-emerald-400">
+              {t.saved}
             </span>
           )}
         </div>

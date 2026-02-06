@@ -4,7 +4,8 @@
   "windows": [
     "main",
     "screenshot",
-    "explain"
+    "explain",
+    "capture"
   ],
   "permissions": [
     "core:default",
