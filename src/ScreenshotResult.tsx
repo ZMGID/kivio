@@ -29,7 +29,10 @@ export default function ScreenshotResult() {
       if (!isMountedRef.current) return
       const ocrModel = settings.screenshotTranslation?.model || 'OpenAI OCR'
       setOcrSource(ocrModel)
-      const transModel = settings.translatorModel || 'AI'
+      const directTranslate = settings.screenshotTranslation?.directTranslate ?? false
+      const transModel = directTranslate
+        ? (settings.screenshotTranslation?.model || 'OpenAI OCR')
+        : (settings.translatorModel || 'AI')
       setTranslateSource(transModel)
     } catch (err) {
       if (!isMountedRef.current) return

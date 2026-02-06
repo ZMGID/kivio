@@ -1751,7 +1751,11 @@ fn main() {
       match event {
         tauri::WindowEvent::CloseRequested { api, .. } => {
           api.prevent_close();
-          let _ = window.hide();
+          if window.label() == "capture" {
+            let _ = capture_cancel(window.app_handle().clone());
+          } else {
+            let _ = window.hide();
+          }
         }
         tauri::WindowEvent::Focused(true) => {
           #[cfg(target_os = "macos")]
