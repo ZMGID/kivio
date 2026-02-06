@@ -11,7 +11,7 @@
 <a name="english"></a>
 ## 🇬🇧 English
 
-**KeyLingo** is a smart translation and AI vision utility designed for **macOS** and **Windows**. It enables instant text translation, screenshots translation, and AI-powered image analysis across any application with global hotkeys.
+**KeyLingo** is a lightweight translation and AI vision utility designed for **macOS** and **Windows**. It focuses on low resource usage while enabling instant text translation, screenshot translation, and AI-powered image analysis across any application with global hotkeys.
 
 ### ✨ Key Features
 
@@ -19,6 +19,8 @@
 *   **AI Translation Engine**: Support for **OpenAI-compatible** APIs (OpenAI, DeepSeek, Agri, etc.) for high-quality, context-aware translations.
 *   **Screenshot Translation**: Capture any screen area and translate text instantly using OCR models (Default: `Cmd/Ctrl+Shift+A`).
 *   **Screenshot Explanation**: AI-powered analysis of screenshots with multi-turn conversation support - explain code, UI designs, or data (Default: `Cmd/Ctrl+Shift+E`).
+*   **LaTeX Math Adaptation**: Optimized for mathematical formulas to improve readability and interpretation in formula-heavy content.
+*   **Lightweight by Design**: Built for small footprint and low resource usage during daily background use.
 *   **Multi-Provider Support**: 
     *   Configure different providers for Translation, OCR, and Explanation.
     *   Support for custom Base URLs and Models.
@@ -41,6 +43,8 @@
 - ✅ **Unsaved Changes Guard**: Close actions now show a three-option confirmation dialog.
 - ✅ **Connection Test**: Added provider-level connectivity test in Models.
 - ✅ **Permission Visibility**: Added macOS permission status panel with direct Settings entry.
+- ✅ **LaTeX Formula Support**: Improved adaptation for mathematical formula rendering and understanding.
+- ✅ **Lightweight Direction**: Continued optimization for smaller package footprint and lower runtime overhead.
 
 **v2.0.1** (2025-02-05)
 - 🐛 **Fixes**: Resolved UI border artifacts on transparent windows.
@@ -107,7 +111,7 @@ npm run build
 <a name="中文"></a>
 ## 🇨🇳 中文
 
-**KeyLingo** 是一款适用于 **macOS** 和 **Windows** 的智能翻译与 AI 视觉工具。通过全局快捷键，您可以随时进行文本翻译、截图翻译以及基于 AI 的屏幕内容分析。
+**KeyLingo** 是一款适用于 **macOS** 和 **Windows** 的轻量化翻译与 AI 视觉工具。它以小体积、低资源占用为核心方向，并通过全局快捷键实现文本翻译、截图翻译和智能分析。
 
 ### ✨ 核心功能
 
@@ -115,6 +119,8 @@ npm run build
 *   **AI 翻译引擎**：支持所有 **OpenAI 兼容** 接口（如 DeepSeek、OpenAI、SiliconFlow 等），提供精准的上下文翻译。
 *   **截图翻译**：截取屏幕任意区域，立即识别并翻译文字（默认：`Cmd/Ctrl+Shift+A`）。
 *   **截图讲解**：AI 深度分析截图内容，支持多轮对话——无论是代码解释、UI 分析还是数据提取（默认：`Cmd/Ctrl+Shift+E`）。
+*   **LaTeX 数学公式适配**：针对数学公式场景优化展示与解析，减少公式内容误读。
+*   **轻量低占用**：以小体积、低资源占用为设计目标，常驻使用更无负担。
 *   **多供应商管理**：
     *   分别为 翻译、OCR、讲解 配置不同的模型服务商。
     *   支持自定义 Base URL 和 模型名称。
@@ -137,6 +143,8 @@ npm run build
 - ✅ **未保存保护**：关闭设置时新增三选确认弹窗。
 - ✅ **连接测试**：模型管理中新增 Provider 连接测试按钮。
 - ✅ **权限可视化**：新增 macOS 权限状态卡片与快捷跳转。
+- ✅ **LaTeX 公式支持**：增强数学公式内容的展示与理解适配。
+- ✅ **轻量化方向**：持续优化安装包体积与运行时资源占用。
 
 **v2.0.1** (2025-02-05)
 - 🐛 **修复**: 修复了 macOS 下透明背景的边框渲染问题。
