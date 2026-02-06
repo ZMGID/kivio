@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
   fs,
   path::{Path, PathBuf},
@@ -28,7 +30,10 @@ pub fn capture_screenshot() -> Result<PathBuf, String> {
   #[cfg(target_os = "windows")]
   {
     let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-    let previous_hash = clipboard.get_image().ok().map(image_hash);
+    let previous_hash = clipboard
+      .get_image()
+      .ok()
+      .map(|image| image_hash(&image));
 
     std::process::Command::new("explorer.exe")
       .arg("ms-screenclip:")

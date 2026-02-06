@@ -3,6 +3,7 @@ import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import Settings from './Settings'
 import ScreenshotResult from './ScreenshotResult'
 import ScreenshotExplain from './ScreenshotExplain'
+import CaptureOverlay from './CaptureOverlay'
 import { api } from './api/tauri'
 import './index.css'
 
@@ -238,6 +239,7 @@ function App() {
 
   if (mode === 'screenshot') return <ScreenshotResult />
   if (mode === 'explain') return <ScreenshotExplain />
+  if (mode === 'capture') return <CaptureOverlay />
   if (mode === 'settings') {
     return (
       <div className="h-screen w-screen overflow-hidden">

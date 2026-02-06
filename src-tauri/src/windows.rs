@@ -47,6 +47,32 @@ pub fn ensure_screenshot_window(app: &AppHandle) -> Result<WebviewWindow, String
   })
 }
 
+pub fn ensure_capture_overlay_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+  if let Some(window) = app.get_webview_window("capture") {
+    return Ok(window);
+  }
+
+  WebviewWindowBuilder::new(
+    app,
+    "capture",
+    WebviewUrl::App("index.html#capture".into()),
+  )
+  .title("Capture")
+  .fullscreen(true)
+  .always_on_top(true)
+  .decorations(false)
+  .transparent(true)
+  .skip_taskbar(true)
+  .resizable(false)
+  .build()
+  .map_err(|e| e.to_string())
+  .map(|window| {
+    #[cfg(target_os = "macos")]
+    apply_macos_workspace_behavior(&window);
+    window
+  })
+}
+
 #[cfg(target_os = "macos")]
 pub fn apply_macos_workspace_behavior(window: &WebviewWindow) {
   let window_for_task = window.clone();
@@ -55,5 +81,6 @@ pub fn apply_macos_workspace_behavior(window: &WebviewWindow) {
   });
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_os = "macos"))]
 pub fn apply_macos_workspace_behavior(_window: &WebviewWindow) {}

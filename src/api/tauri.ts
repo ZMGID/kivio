@@ -73,6 +73,16 @@ export type PermissionStatus = {
   screenRecording: boolean
 }
 
+export type CaptureCommitPayload = {
+  absoluteX: number
+  absoluteY: number
+  x: number
+  y: number
+  width: number
+  height: number
+  scaleFactor: number
+}
+
 type Unlisten = () => void
 
 async function on<T>(event: string, handler: (payload: T) => void): Promise<Unlisten> {
@@ -92,6 +102,11 @@ export const api = {
   getPermissionStatus: () => invoke<PermissionStatus>('get_permission_status'),
   openPermissionSettings: (kind: 'accessibility' | 'screen-recording') =>
     invoke<void>('open_permission_settings', { kind }),
+  captureRequest: (mode: 'translate' | 'explain') =>
+    invoke<void>('capture_request', { mode }),
+  captureCommit: (payload: CaptureCommitPayload) =>
+    invoke<void>('capture_commit', payload),
+  captureCancel: () => invoke<void>('capture_cancel'),
   getAppVersion: () => getVersion(),
   translateText: (text: string) => invoke<string>('translate_text', { text }),
   commitTranslation: (text: string) => invoke<void>('commit_translation', { text }),

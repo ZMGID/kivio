@@ -24,34 +24,47 @@ use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
 use reqwest::{header::HeaderMap, StatusCode};
 use tauri::{
-  AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+  AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow,
+  WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutoStartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
 
-use screenshot::{capture_screenshot, cleanup_temp_file};
+#[cfg(not(target_os = "windows"))]
+use screenshot::capture_screenshot;
+use screenshot::cleanup_temp_file;
 use settings::{
   default_question_prompt, default_summary_prompt, default_system_prompt, load_settings,
   persist_settings, sanitize_settings, ExplainHistoryRecord, ExplainMessage, Settings,
 };
 use utils::{current_timestamp, language_name, resolve_target_lang};
-use windows::{apply_macos_workspace_behavior, ensure_main_window, ensure_screenshot_window, get_main_window};
+#[cfg(target_os = "macos")]
+use windows::apply_macos_workspace_behavior;
+use windows::{
+  ensure_capture_overlay_window, ensure_main_window, ensure_screenshot_window, get_main_window,
+};
+
+#[cfg(target_os = "windows")]
+use xcap::Monitor;
 
 struct AppState {
   settings: RwLock<Settings>,
   explain_images: Mutex<HashMap<String, PathBuf>>,
   current_explain_image_id: Mutex<Option<String>>,
+  pending_capture_mode: Mutex<Option<String>>,
   screenshot_translation_busy: AtomicBool,
   screenshot_explain_busy: AtomicBool,
   http: Client,
 }
 
+#[cfg(not(target_os = "windows"))]
 struct BusyGuard<'a> {
   flag: &'a AtomicBool,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl<'a> BusyGuard<'a> {
   fn new(flag: &'a AtomicBool) -> Option<Self> {
     if flag.swap(true, Ordering::SeqCst) {
@@ -62,6 +75,7 @@ impl<'a> BusyGuard<'a> {
   }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl Drop for BusyGuard<'_> {
   fn drop(&mut self) {
     self.flag.store(false, Ordering::SeqCst);
@@ -590,6 +604,240 @@ fn get_mouse_position(app: &AppHandle) -> Option<tauri::PhysicalPosition<f64>> {
   app.cursor_position().ok()
 }
 
+#[cfg(target_os = "windows")]
+fn capture_region_image(
+  absolute_x: i32,
+  absolute_y: i32,
+  x: i32,
+  y: i32,
+  width: u32,
+  height: u32,
+  scale_factor: f64,
+) -> Result<PathBuf, String> {
+  let sf = if scale_factor.is_finite() && scale_factor > 0.0 {
+    scale_factor
+  } else {
+    1.0
+  };
+
+  let absolute_physical_x = ((absolute_x as f64) * sf).round() as i32;
+  let absolute_physical_y = ((absolute_y as f64) * sf).round() as i32;
+
+  let monitor = Monitor::from_point(absolute_physical_x, absolute_physical_y)
+    .map_err(|e| e.to_string())?;
+  let monitor_x = monitor.x().map_err(|e| e.to_string())?;
+  let monitor_y = monitor.y().map_err(|e| e.to_string())?;
+
+  let relative_x = absolute_physical_x - monitor_x;
+  let relative_y = absolute_physical_y - monitor_y;
+  let region_width = ((width as f64) * sf).round() as u32;
+  let region_height = ((height as f64) * sf).round() as u32;
+
+  let monitor_width = monitor.width().map_err(|e| e.to_string())?;
+  let monitor_height = monitor.height().map_err(|e| e.to_string())?;
+  if relative_x < 0
+    || relative_y < 0
+    || region_width == 0
+    || region_height == 0
+    || (relative_x as u32) >= monitor_width
+    || (relative_y as u32) >= monitor_height
+  {
+    return Err("Invalid capture region".to_string());
+  }
+
+  let max_width = monitor_width.saturating_sub(relative_x as u32);
+  let max_height = monitor_height.saturating_sub(relative_y as u32);
+  let capture_width = region_width.min(max_width).max(1);
+  let capture_height = region_height.min(max_height).max(1);
+
+  eprintln!(
+    "capture region debug: abs_logical=({}, {}), abs_physical=({}, {}), monitor=({}, {}), logical=({}, {}, {}x{}), scale={}, physical=({}, {}, {}x{})",
+    absolute_x,
+    absolute_y,
+    absolute_physical_x,
+    absolute_physical_y,
+    monitor_x,
+    monitor_y,
+    x,
+    y,
+    width,
+    height,
+    sf,
+    relative_x,
+    relative_y,
+    capture_width,
+    capture_height
+  );
+
+  let image = monitor
+    .capture_region(
+      relative_x as u32,
+      relative_y as u32,
+      capture_width,
+      capture_height,
+    )
+    .map_err(|e| e.to_string())?;
+
+  let temp_path = std::env::temp_dir().join(format!("screenshot-{}.png", Uuid::new_v4()));
+  image.save(&temp_path).map_err(|e| e.to_string())?;
+  Ok(temp_path)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn capture_region_image(
+  _absolute_x: i32,
+  _absolute_y: i32,
+  _x: i32,
+  _y: i32,
+  _width: u32,
+  _height: u32,
+  _scale_factor: f64,
+) -> Result<PathBuf, String> {
+  Err("Region capture is not supported on this platform".to_string())
+}
+
+fn set_capture_busy(state: &AppState, mode: &str) -> Result<(), String> {
+  match mode {
+    "translate" => {
+      if state.screenshot_translation_busy.swap(true, Ordering::SeqCst) {
+        Err("Screenshot already in progress".to_string())
+      } else {
+        Ok(())
+      }
+    }
+    "explain" => {
+      if state.screenshot_explain_busy.swap(true, Ordering::SeqCst) {
+        Err("Screenshot explain already in progress".to_string())
+      } else {
+        Ok(())
+      }
+    }
+    _ => Err("Invalid capture mode".to_string()),
+  }
+}
+
+fn clear_capture_busy(state: &AppState, mode: &str) {
+  match mode {
+    "translate" => state.screenshot_translation_busy.store(false, Ordering::SeqCst),
+    "explain" => state.screenshot_explain_busy.store(false, Ordering::SeqCst),
+    _ => {}
+  }
+}
+
+#[tauri::command]
+fn capture_request(app: AppHandle, mode: String) -> Result<(), String> {
+  if mode != "translate" && mode != "explain" {
+    return Err("Invalid capture mode".to_string());
+  }
+
+  let state = app.state::<AppState>();
+  {
+    let mut pending = state
+      .pending_capture_mode
+      .lock()
+      .map_err(|_| "Capture state lock failed".to_string())?;
+    if pending.is_some() {
+      return Err("Capture already pending".to_string());
+    }
+    set_capture_busy(&state, &mode)?;
+    *pending = Some(mode.clone());
+  }
+
+  let capture_window = match ensure_capture_overlay_window(&app) {
+    Ok(window) => window,
+    Err(err) => {
+      if let Ok(mut pending) = state.pending_capture_mode.lock() {
+        *pending = None;
+      }
+      clear_capture_busy(&state, &mode);
+      return Err(err);
+    }
+  };
+  let _ = capture_window.eval("window.dispatchEvent(new Event('capture:reset'));\n");
+  if let Err(err) = capture_window.show().map_err(|e| e.to_string()) {
+    if let Ok(mut pending) = state.pending_capture_mode.lock() {
+      *pending = None;
+    }
+    clear_capture_busy(&state, &mode);
+    return Err(err);
+  }
+  if let Err(err) = capture_window.set_focus().map_err(|e| e.to_string()) {
+    if let Ok(mut pending) = state.pending_capture_mode.lock() {
+      *pending = None;
+    }
+    clear_capture_busy(&state, &mode);
+    return Err(err);
+  }
+  Ok(())
+}
+
+#[tauri::command]
+async fn capture_commit(
+  app: AppHandle,
+  absolute_x: i32,
+  absolute_y: i32,
+  x: i32,
+  y: i32,
+  width: u32,
+  height: u32,
+  scale_factor: f64,
+) -> Result<(), String> {
+  let state = app.state::<AppState>();
+  let mode = {
+    let mut pending = state
+      .pending_capture_mode
+      .lock()
+      .map_err(|_| "Capture state lock failed".to_string())?;
+    pending.take().ok_or_else(|| "No pending capture mode".to_string())?
+  };
+
+  if let Some(window) = app.get_webview_window("capture") {
+    let _ = window.hide();
+  }
+
+  let result = (|| async {
+    let temp_path = capture_region_image(
+      absolute_x,
+      absolute_y,
+      x,
+      y,
+      width,
+      height,
+      scale_factor,
+    )?;
+    if mode == "translate" {
+      process_screenshot_translation_from_path(&app, temp_path).await
+    } else {
+      process_screenshot_explain_from_path(&app, temp_path).await
+    }
+  })()
+  .await;
+
+  clear_capture_busy(&state, &mode);
+  result
+}
+
+#[tauri::command]
+fn capture_cancel(app: AppHandle) -> Result<(), String> {
+  let state = app.state::<AppState>();
+  let mode = {
+    let mut pending = state
+      .pending_capture_mode
+      .lock()
+      .map_err(|_| "Capture state lock failed".to_string())?;
+    pending.take()
+  };
+
+  if let Some(mode) = mode {
+    clear_capture_busy(&state, &mode);
+  }
+
+  if let Some(window) = app.get_webview_window("capture") {
+    let _ = window.hide();
+  }
+  Ok(())
+}
+
 fn toggle_main_window(app: &AppHandle) {
   let window = match ensure_main_window(app) {
     Ok(window) => window,
@@ -643,6 +891,23 @@ fn toggle_main_window(app: &AppHandle) {
   }
 }
 
+#[cfg(target_os = "windows")]
+async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
+  if let Some(window) = get_main_window(app) {
+    let _ = window.hide();
+  }
+
+  if let Err(err) = capture_request(app.clone(), "translate".to_string()) {
+    if let Some(window) = app.get_webview_window("screenshot") {
+      let _ = window.emit("screenshot-error", err.clone());
+    }
+    return Err(err);
+  }
+
+  Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
 async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
   let _guard = match BusyGuard::new(&state.screenshot_translation_busy) {
@@ -660,6 +925,14 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   }
 
   let temp_path = capture_screenshot()?;
+  process_screenshot_translation_from_path(app, temp_path).await
+}
+
+async fn process_screenshot_translation_from_path(
+  app: &AppHandle,
+  temp_path: PathBuf,
+) -> Result<(), String> {
+  let state = app.state::<AppState>();
   let screenshot_window = match ensure_screenshot_window(app) {
     Ok(window) => window,
     Err(err) => {
@@ -715,10 +988,10 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
       &lang_name,
       settings.screenshot_translation.prompt.as_deref(),
     );
-    
-    // Also use the translator provider for the secondary translation
-    let t_provider = settings.get_provider(&settings.translator_provider_id)
-        .unwrap_or(provider);
+
+    let t_provider = settings
+      .get_provider(&settings.translator_provider_id)
+      .unwrap_or(provider);
 
     call_openai_text(
       &state.http,
@@ -742,6 +1015,16 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+#[cfg(target_os = "windows")]
+async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
+  if let Some(window) = get_main_window(app) {
+    let _ = window.hide();
+  }
+
+  capture_request(app.clone(), "explain".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
 async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
   let _guard = match BusyGuard::new(&state.screenshot_explain_busy) {
@@ -757,6 +1040,14 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   }
 
   let temp_path = capture_screenshot()?;
+  process_screenshot_explain_from_path(app, temp_path).await
+}
+
+async fn process_screenshot_explain_from_path(
+  app: &AppHandle,
+  temp_path: PathBuf,
+) -> Result<(), String> {
+  let state = app.state::<AppState>();
   let image_id = Uuid::new_v4().to_string();
   let window = match ensure_explain_window(app, &image_id) {
     Ok(window) => window,
@@ -1230,12 +1521,6 @@ fn check_screen_recording_permission() -> bool {
   }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn check_screen_recording_permission() -> bool {
-  true
-}
-
-
 fn send_paste_shortcut() {
   #[cfg(target_os = "macos")]
   {
@@ -1396,6 +1681,7 @@ fn main() {
         settings: RwLock::new(settings),
         explain_images: Mutex::new(HashMap::new()),
         current_explain_image_id: Mutex::new(None),
+        pending_capture_mode: Mutex::new(None),
         screenshot_translation_busy: AtomicBool::new(false),
         screenshot_explain_busy: AtomicBool::new(false),
         http: build_http_client(),
@@ -1406,6 +1692,13 @@ fn main() {
       }
       if let Err(err) = setup_tray(&app.handle()) {
         eprintln!("Failed to setup tray: {err}");
+      }
+
+      #[cfg(target_os = "windows")]
+      {
+        if let Ok(capture_window) = ensure_capture_overlay_window(&app.handle()) {
+          let _ = capture_window.hide();
+        }
       }
       Ok(())
     })
@@ -1426,7 +1719,10 @@ fn main() {
       fetch_models,
       test_provider_connection,
       get_permission_status,
-      open_permission_settings
+      open_permission_settings,
+      capture_request,
+      capture_commit,
+      capture_cancel
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

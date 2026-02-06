@@ -35,6 +35,11 @@
       "dmg",
       "msi"
     ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    },
     "macOS": {
       "infoPlist": "Info.plist"
     },
