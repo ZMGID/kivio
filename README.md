@@ -1,4 +1,4 @@
-# KeyLingo v2.0.1
+# KeyLingo v2.0.2
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -28,8 +28,19 @@
 *   **Auto-Paste**: Automatically paste translation results into your active application (Editor, Browser, IDE).
 *   **Minimalist UI**: Clean, floating interface with Light/Dark mode support (System sync).
 *   **History**: Automatically saves recent screenshot explanation sessions.
+*   **Safer Settings Workflow**:
+    *   Saving settings no longer closes the settings window automatically.
+    *   Unsaved changes prompt before close (`Save & Close` / `Discard` / `Continue Editing`).
+*   **Provider Diagnostics**: One-click **Test Connection** for each provider in the Models tab.
+*   **Permission Dashboard (macOS)**: Real-time Accessibility and Screen Recording status with quick jump to System Settings.
 
 ### 📋 Version History
+
+**v2.0.2** (2026-02-06)
+- ✅ **Settings UX**: Saving settings keeps the page open for continued editing.
+- ✅ **Unsaved Changes Guard**: Close actions now show a three-option confirmation dialog.
+- ✅ **Connection Test**: Added provider-level connectivity test in Models.
+- ✅ **Permission Visibility**: Added macOS permission status panel with direct Settings entry.
 
 **v2.0.1** (2025-02-05)
 - 🐛 **Fixes**: Resolved UI border artifacts on transparent windows.
@@ -70,8 +81,11 @@
 #### Settings
 Click the gear icon ⚙️ in the translation bar to configure:
 *   **Providers**: Add OpenAI, DeepSeek, or other compatible API keys.
+*   **Provider Test**: Verify provider connectivity before saving or switching models.
 *   **Hotkeys**: Customize global shortcuts.
 *   **Prompts**: Custom system prompts for AI analysis.
+*   **Permissions (macOS)**: Check Accessibility / Screen Recording status and open System Settings quickly.
+*   **Close Confirmation**: If settings were modified, closing prompts for save/discard/continue.
 
 ### 💻 Development
 
@@ -110,8 +124,19 @@ npm run build
 *   **自动上屏**：按下回车，自动将译文粘贴到您当前工作的软件中。
 *   **极简设计**：无干扰的悬浮界面，完美适配深色/浅色模式。
 *   **历史记录**：自动保存最近的截图分析会话方便回顾。
+*   **更安全的设置流程**：
+    *   保存设置后不再自动关闭设置页。
+    *   检测到未保存更改时，关闭会弹出三选确认（保存并关闭 / 放弃更改 / 继续编辑）。
+*   **供应商诊断**：模型页支持一键测试每个 Provider 的连接状态。
+*   **权限状态面板（macOS）**：可视化展示辅助功能与屏幕录制授权，并支持直达系统设置。
 
 ### 📋 版本历史
+
+**v2.0.2** (2026-02-06)
+- ✅ **设置体验**：保存设置后可继续留在当前页面调整。
+- ✅ **未保存保护**：关闭设置时新增三选确认弹窗。
+- ✅ **连接测试**：模型管理中新增 Provider 连接测试按钮。
+- ✅ **权限可视化**：新增 macOS 权限状态卡片与快捷跳转。
 
 **v2.0.1** (2025-02-05)
 - 🐛 **修复**: 修复了 macOS 下透明背景的边框渲染问题。
@@ -151,8 +176,11 @@ npm run build
 #### 设置
 点击翻译栏右上角的齿轮图标 ⚙️：
 *   **模型配置**: 添加 DeepSeek、OpenAI 等 API Key。
+*   **连接测试**: 在模型页可直接测试 Provider 连通性。
 *   **快捷键**: 自定义所有功能的触发热键。
 *   **Prompt**: 自定义 AI 的系统提示词和风格。
+*   **权限状态（macOS）**: 查看辅助功能/屏幕录制授权并快速跳转系统设置。
+*   **关闭确认**: 有未保存更改时，关闭会提示保存/放弃/继续编辑。
 
 ### 💻 开发构建
 

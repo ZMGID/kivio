@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Send, X, Loader2, Image, Clock, ChevronDown, ChevronRight, Cpu, Code, Eye } from 'lucide-react'
 import { api, type ExplainStreamPayload } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
@@ -34,42 +34,7 @@ export default function ScreenshotExplain() {
 
   const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-  useEffect(() => {
-    const applyImageId = async (decodedId: string) => {
-      if (!decodedId || decodedId === imageIdRef.current) return
-      streamingRef.current = null
-      imageIdRef.current = decodedId
-      setHistoryMode(false)
-      setShowHistory(false)
-      setShowImage(true)
-      setImageId(decodedId)
-      setImagePreview('')
-      setMessages([])
-      await ensureSettings()
-      loadImage(decodedId)
-      getInitialSummary(decodedId)
-    }
-
-    const parseHash = () => {
-      const hash = window.location.hash
-      const params = new URLSearchParams(hash.split('?')[1] || '')
-      const id = params.get('imageId')
-      if (id) {
-        void applyImageId(decodeURIComponent(id))
-      }
-    }
-
-    window.addEventListener('hashchange', parseHash)
-    const init = async () => {
-      await loadModelInfo()
-      parseHash()
-      loadHistory()
-    }
-    void init()
-    return () => window.removeEventListener('hashchange', parseHash)
-  }, [])
-
-  const loadModelInfo = async () => {
+  const loadModelInfo = useCallback(async () => {
     try {
       const settings = await api.getSettings()
       const stream = settings.screenshotExplain.streamEnabled ?? false
@@ -97,14 +62,14 @@ export default function ScreenshotExplain() {
       }
       return false
     }
-  }
+  }, [])
 
-  const ensureSettings = async () => {
+  const ensureSettings = useCallback(async () => {
     if (settingsLoadedRef.current) return
     await loadModelInfo()
-  }
+  }, [loadModelInfo])
 
-  const loadImage = async (id: string) => {
+  const loadImage = useCallback(async (id: string) => {
     try {
       const result = await api.explainReadImage(id)
       if (imageIdRef.current !== id) return
@@ -113,9 +78,9 @@ export default function ScreenshotExplain() {
       if (imageIdRef.current !== id) return
       console.error('Failed to load image:', err)
     }
-  }
+  }, [])
 
-  const getInitialSummary = async (id: string) => {
+  const getInitialSummary = useCallback(async (id: string) => {
     setInitializing(true)
     setLoading(true)
     await ensureSettings()
@@ -157,12 +122,57 @@ export default function ScreenshotExplain() {
       if (streamingRef.current?.imageId === id && streamingRef.current?.kind === 'summary') {
         streamingRef.current = null
       }
-      if (imageIdRef.current !== id) return
-      setLoading(false)
-      setInitializing(false)
-      inputRef.current?.focus()
+      if (imageIdRef.current === id) {
+        setLoading(false)
+        setInitializing(false)
+        inputRef.current?.focus()
+      }
     }
-  }
+  }, [ensureSettings])
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const result = await api.explainGetHistory()
+      if (result.success) setHistory(result.history || [])
+    } catch (err) {
+      console.error('Failed to load history:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    const applyImageId = async (decodedId: string) => {
+      if (!decodedId || decodedId === imageIdRef.current) return
+      streamingRef.current = null
+      imageIdRef.current = decodedId
+      setHistoryMode(false)
+      setShowHistory(false)
+      setShowImage(true)
+      setImageId(decodedId)
+      setImagePreview('')
+      setMessages([])
+      await ensureSettings()
+      loadImage(decodedId)
+      getInitialSummary(decodedId)
+    }
+
+    const parseHash = () => {
+      const hash = window.location.hash
+      const params = new URLSearchParams(hash.split('?')[1] || '')
+      const id = params.get('imageId')
+      if (id) {
+        void applyImageId(decodeURIComponent(id))
+      }
+    }
+
+    window.addEventListener('hashchange', parseHash)
+    const init = async () => {
+      await loadModelInfo()
+      parseHash()
+      loadHistory()
+    }
+    void init()
+    return () => window.removeEventListener('hashchange', parseHash)
+  }, [ensureSettings, getInitialSummary, loadHistory, loadImage, loadModelInfo])
 
   useEffect(() => {
     let unlisten: (() => void) | undefined
@@ -240,23 +250,15 @@ export default function ScreenshotExplain() {
       if (streamingRef.current?.imageId === requestImageId && streamingRef.current?.kind === 'answer') {
         streamingRef.current = null
       }
-      if (imageIdRef.current !== requestImageId) return
-      setLoading(false)
+      if (imageIdRef.current === requestImageId) {
+        setLoading(false)
+      }
     }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
     else if (e.key === 'Escape') handleClose()
-  }
-
-  const loadHistory = async () => {
-    try {
-      const result = await api.explainGetHistory()
-      if (result.success) setHistory(result.history || [])
-    } catch (err) {
-      console.error('Failed to load history:', err)
-    }
   }
 
   const saveToHistory = async () => {

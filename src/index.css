@@ -23,9 +23,9 @@ body {
   background: transparent;
 }
 
-/* 解决 macOS 透明窗口底部边界线问题：给容器加 1px margin 让内容不紧贴窗口边缘 */
+/* 透明窗口容器：占满窗口，避免额外 margin 暴露系统边框/阴影边缘 */
 .window-container {
-  margin: 1px;
-  height: calc(100% - 2px);
-  width: calc(100% - 2px);
+  margin: 0;
+  height: 100%;
+  width: 100%;
 }

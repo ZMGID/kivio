@@ -1,6 +1,6 @@
-import { useState, useEffect, type ReactNode } from 'react'
-import { X, Save, Globe, Keyboard, Camera, Sparkles, Cpu, Plus, Trash2, RefreshCw } from 'lucide-react'
-import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates } from './api/tauri'
+import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { X, Save, Globe, Keyboard, Camera, Sparkles, Cpu, Plus, Trash2, RefreshCw, ExternalLink, Shield } from 'lucide-react'
+import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
 
 type SettingsData = SettingsType
 
@@ -77,6 +77,24 @@ const i18n = {
     manualAddModel: '手动添加',
     selectModelPair: '选择模型组合',
     version: '版本',
+    permissions: '权限状态',
+    accessibilityPermission: '辅助功能',
+    screenRecordingPermission: '屏幕录制',
+    permissionGranted: '已授权',
+    permissionMissing: '未授权',
+    refreshPermissions: '刷新状态',
+    openSystemSettings: '前往设置',
+    noPermissionNeeded: '当前平台无需额外权限。',
+    testConnection: '测试连接',
+    testingConnection: '测试中...',
+    connectionOk: '连接正常',
+    connectionFailed: '连接失败：',
+    unsavedChanges: '有未保存更改',
+    unsavedChangesDesc: '检测到设置已修改，关闭前请选择操作。',
+    saveAndClose: '保存并关闭',
+    discardAndClose: '放弃更改',
+    continueEditing: '继续编辑',
+    saving: '保存中...',
   },
   en: {
     settings: 'Settings',
@@ -144,6 +162,24 @@ const i18n = {
     manualAddModel: 'Manual Add',
     selectModelPair: 'Select Model Pair',
     version: 'Version',
+    permissions: 'Permission Status',
+    accessibilityPermission: 'Accessibility',
+    screenRecordingPermission: 'Screen Recording',
+    permissionGranted: 'Granted',
+    permissionMissing: 'Missing',
+    refreshPermissions: 'Refresh',
+    openSystemSettings: 'Open Settings',
+    noPermissionNeeded: 'No extra permissions needed on this platform.',
+    testConnection: 'Test Connection',
+    testingConnection: 'Testing...',
+    connectionOk: 'Connection OK',
+    connectionFailed: 'Connection failed: ',
+    unsavedChanges: 'Unsaved changes',
+    unsavedChangesDesc: 'Settings were changed. Choose what to do before closing.',
+    saveAndClose: 'Save & Close',
+    discardAndClose: 'Discard',
+    continueEditing: 'Continue Editing',
+    saving: 'Saving...',
   }
 }
 
@@ -282,6 +318,44 @@ function Card({ children, className = '' }: { children: ReactNode; className?: s
   )
 }
 
+function PermissionItem({
+  label,
+  granted,
+  grantedText,
+  missingText,
+  actionLabel,
+  onOpen,
+}: {
+  label: string
+  granted: boolean
+  grantedText: string
+  missingText: string
+  actionLabel: string
+  onOpen: () => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-black/5 dark:border-white/5">
+      <div className="min-w-0">
+        <p className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{label}</p>
+        <p className={`text-[11px] mt-0.5 ${granted ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+          {granted ? grantedText : missingText}
+        </p>
+      </div>
+      {!granted && (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md border border-black/10 dark:border-white/10 text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+          data-tauri-drag-region="false"
+        >
+          <ExternalLink size={11} />
+          {actionLabel}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function HotkeyInput({
   value,
   onChange,
@@ -372,16 +446,24 @@ function TabButton({ active, onClick, icon, label }: {
 
 export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null)
+  const [initialSettingsSnapshot, setInitialSettingsSnapshot] = useState('')
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'models'>('general')
   const [saveError, setSaveError] = useState('')
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotExplain'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
+  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
+  const [permissionsLoading, setPermissionsLoading] = useState(false)
+  const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
+  const [providerTestFeedback, setProviderTestFeedback] = useState<Record<string, { ok: boolean; message: string }>>({})
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
+  const hasUnsavedChanges = settings ? JSON.stringify(settings) !== initialSettingsSnapshot : false
 
   useEffect(() => {
     let active = true
@@ -389,6 +471,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       .then((data: SettingsData) => {
         if (!active) return
         setSettings(data)
+        setInitialSettingsSnapshot(JSON.stringify(data))
         setLoading(false)
       })
       .catch((err) => {
@@ -429,6 +512,40 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           explainHistory: [],
           settingsLanguage: 'zh'
         })
+        setInitialSettingsSnapshot(JSON.stringify({
+          hotkey: 'CommandOrControl+Alt+T',
+          theme: 'system',
+          targetLang: 'auto',
+          source: 'openai',
+          autoPaste: true,
+          translatorProviderId: 'default-translator',
+          translatorModel: 'gpt-4o',
+          translatorPrompt: '',
+          providers: [
+            { id: 'default-translator', name: 'OpenAI (Translator)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
+            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
+            { id: 'default-explain', name: 'OpenAI (Explain)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
+          ],
+          retryEnabled: true,
+          retryAttempts: 3,
+          screenshotTranslation: {
+            enabled: true,
+            hotkey: 'CommandOrControl+Shift+A',
+            providerId: 'default-ocr',
+            model: 'gpt-4o',
+            prompt: ''
+          },
+          screenshotExplain: {
+            enabled: true,
+            hotkey: 'CommandOrControl+Shift+E',
+            providerId: 'default-explain',
+            model: 'gpt-4o',
+            defaultLanguage: 'zh',
+            streamEnabled: false
+          },
+          explainHistory: [],
+          settingsLanguage: 'zh'
+        }))
         setLoading(false)
       })
     api.getAppVersion()
@@ -451,36 +568,120 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }, [])
 
-  useEffect(() => {
-    if (!settings) return
-    setRetryAttemptsInput(String(settings.retryAttempts ?? 3))
-  }, [settings?.retryAttempts])
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (recordingTarget) return
-      if (e.key === 'Escape') {
-        console.log('[Settings] ESC pressed, calling onClose')
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose, recordingTarget])
-
-
-  const handleSave = async () => {
-    if (!settings) return
+  const refreshPermissions = useCallback(async () => {
+    setPermissionsLoading(true)
     try {
+      const status = await api.getPermissionStatus()
+      setPermissionStatus(status)
+    } catch (err) {
+      console.error('Failed to get permission status:', err)
+    } finally {
+      setPermissionsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshPermissions()
+  }, [refreshPermissions])
+
+  useEffect(() => {
+    setProviderTestFeedback({})
+  }, [lang])
+
+  const retryAttempts = settings?.retryAttempts
+
+  useEffect(() => {
+    if (retryAttempts === undefined) return
+    setRetryAttemptsInput(String(retryAttempts ?? 3))
+  }, [retryAttempts])
+
+  const handleSave = useCallback(async () => {
+    if (!settings) return false
+    try {
+      setSaving(true)
       setSaveError('')
       await api.saveSettings(settings)
+      setInitialSettingsSnapshot(JSON.stringify(settings))
       onSettingsChange()
-      onClose()
+      return true
     } catch (err) {
       console.error('Failed to save settings:', err)
       const message = err instanceof Error ? err.message : String(err)
       const prefix = lang === 'zh' ? '保存失败：' : 'Save failed: '
       setSaveError(`${prefix}${message.replace(/\n/g, ' / ')}`)
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }, [lang, onSettingsChange, settings])
+
+  const handleCloseRequest = useCallback(() => {
+    if (recordingTarget) return
+    if (hasUnsavedChanges) {
+      setCloseConfirmOpen(true)
+      return
+    }
+    onClose()
+  }, [hasUnsavedChanges, onClose, recordingTarget])
+
+  const handleDiscardAndClose = () => {
+    setCloseConfirmOpen(false)
+    onClose()
+  }
+
+  const handleSaveAndClose = async () => {
+    const saved = await handleSave()
+    if (saved) {
+      setCloseConfirmOpen(false)
+      onClose()
+    }
+  }
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (recordingTarget) return
+      if (e.key === 'Escape') {
+        console.log('[Settings] ESC pressed, checking unsaved changes')
+        handleCloseRequest()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [handleCloseRequest, recordingTarget])
+
+  const handleTestConnection = async (providerId: string) => {
+    setTestingProviderId(providerId)
+    setProviderTestFeedback((prev) => {
+      const next = { ...prev }
+      delete next[providerId]
+      return next
+    })
+    try {
+      const result = await api.testProviderConnection(providerId)
+      if (result.success) {
+        setProviderTestFeedback((prev) => ({ ...prev, [providerId]: { ok: true, message: t.connectionOk } }))
+      } else {
+        setProviderTestFeedback((prev) => ({
+          ...prev,
+          [providerId]: { ok: false, message: `${t.connectionFailed}${result.error || 'Unknown error'}` },
+        }))
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setProviderTestFeedback((prev) => ({
+        ...prev,
+        [providerId]: { ok: false, message: `${t.connectionFailed}${message}` },
+      }))
+    } finally {
+      setTestingProviderId(null)
+    }
+  }
+
+  const handleOpenPermissionSettings = async (kind: 'accessibility' | 'screen-recording') => {
+    try {
+      await api.openPermissionSettings(kind)
+    } catch (err) {
+      console.error('Failed to open permission settings:', err)
     }
   }
 
@@ -512,10 +713,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }
 
-  const updateSettings = (updates: Partial<SettingsData>) => {
-    if (!settings) return
-    setSettings({ ...settings, ...updates })
-  }
+  const updateSettings = useCallback((updates: Partial<SettingsData>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      return { ...prev, ...updates }
+    })
+  }, [])
 
   const updateProvider = (id: string, updates: Partial<ModelProvider>) => {
     setSettings((prev) => {
@@ -616,45 +819,51 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }
 
-  const updateScreenshotTranslation = (updates: Partial<SettingsData['screenshotTranslation']>) => {
-    if (!settings) return
-    const current = settings.screenshotTranslation || {
-      enabled: true,
-      hotkey: 'CommandOrControl+Shift+A',
-      providerId: 'default-ocr',
-      prompt: ''
-    }
-    setSettings({ ...settings, screenshotTranslation: { ...current, ...updates } })
-  }
+  const updateScreenshotTranslation = useCallback((updates: Partial<SettingsData['screenshotTranslation']>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const current = prev.screenshotTranslation || {
+        enabled: true,
+        hotkey: 'CommandOrControl+Shift+A',
+        providerId: 'default-ocr',
+        prompt: ''
+      }
+      return { ...prev, screenshotTranslation: { ...current, ...updates } }
+    })
+  }, [])
 
-  const updateScreenshotExplain = (updates: Partial<SettingsData['screenshotExplain']>) => {
-    if (!settings) return
-    const current = settings.screenshotExplain || {
-      enabled: true,
-      hotkey: 'CommandOrControl+Shift+E',
-      providerId: 'default-explain',
-      defaultLanguage: 'zh',
-      streamEnabled: false
-    }
-    setSettings({ ...settings, screenshotExplain: { ...current, ...updates } })
-  }
+  const updateScreenshotExplain = useCallback((updates: Partial<SettingsData['screenshotExplain']>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const current = prev.screenshotExplain || {
+        enabled: true,
+        hotkey: 'CommandOrControl+Shift+E',
+        providerId: 'default-explain',
+        defaultLanguage: 'zh',
+        streamEnabled: false
+      }
+      return { ...prev, screenshotExplain: { ...current, ...updates } }
+    })
+  }, [])
 
-  const updateCustomPrompts = (updates: Partial<NonNullable<SettingsData['screenshotExplain']['customPrompts']>>) => {
-    if (!settings) return
-    const current = settings.screenshotExplain || {
-      enabled: true,
-      hotkey: 'CommandOrControl+Shift+E',
-      providerId: 'default-explain',
-      defaultLanguage: 'zh'
-    }
-    setSettings({
-      ...settings,
-      screenshotExplain: {
-        ...current,
-        customPrompts: { ...current.customPrompts, ...updates }
+  const updateCustomPrompts = useCallback((updates: Partial<NonNullable<SettingsData['screenshotExplain']['customPrompts']>>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const current = prev.screenshotExplain || {
+        enabled: true,
+        hotkey: 'CommandOrControl+Shift+E',
+        providerId: 'default-explain',
+        defaultLanguage: 'zh'
+      }
+      return {
+        ...prev,
+        screenshotExplain: {
+          ...current,
+          customPrompts: { ...current.customPrompts, ...updates }
+        }
       }
     })
-  }
+  }, [])
 
   const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotExplain') => {
     setRecordingTarget((current) => (current === target ? null : target))
@@ -684,7 +893,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [recordingTarget, settings])
+  }, [recordingTarget, updateScreenshotExplain, updateScreenshotTranslation, updateSettings])
 
   if (loading || !settings) {
     return (
@@ -695,7 +904,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   return (
-    <div className="window-container flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl text-neutral-900 dark:text-neutral-100 font-sans rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] overflow-hidden">
+    <div className="window-container flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden">
       {/* 标题栏 */}
       <div
         className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl rounded-t-xl"
@@ -703,7 +912,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       >
         <h2 className="font-semibold text-[15px] tracking-tight">{t.settings}</h2>
         <button
-          onClick={onClose}
+          onClick={handleCloseRequest}
           className="p-1.5 hover:bg-black/5 dark:hover:bg-white/10 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-all duration-200"
           data-tauri-drag-region="false"
         >
@@ -770,6 +979,51 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       { value: 'en', label: 'English' },
                     ]}
                   />
+                </div>
+              </div>
+            </Card>
+
+            <Card>
+              <SectionTitle icon={<Shield size={14} strokeWidth={2} />}>
+                {t.permissions}
+              </SectionTitle>
+              <div className="space-y-3">
+                {permissionStatus?.platform === 'macos' ? (
+                  <>
+                    <PermissionItem
+                      label={t.accessibilityPermission}
+                      granted={permissionStatus.accessibility}
+                      grantedText={t.permissionGranted}
+                      missingText={t.permissionMissing}
+                      actionLabel={t.openSystemSettings}
+                      onOpen={() => handleOpenPermissionSettings('accessibility')}
+                    />
+                    <PermissionItem
+                      label={t.screenRecordingPermission}
+                      granted={permissionStatus.screenRecording}
+                      grantedText={t.permissionGranted}
+                      missingText={t.permissionMissing}
+                      actionLabel={t.openSystemSettings}
+                      onOpen={() => handleOpenPermissionSettings('screen-recording')}
+                    />
+                  </>
+                ) : (
+                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400">{t.noPermissionNeeded}</p>
+                )}
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={refreshPermissions}
+                    disabled={permissionsLoading}
+                    className={`text-[11px] font-medium flex items-center gap-1 px-2 py-1 rounded-md transition-all ${permissionsLoading
+                      ? 'text-neutral-400 cursor-not-allowed'
+                      : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                      }`}
+                    data-tauri-drag-region="false"
+                  >
+                    <RefreshCw size={10} className={permissionsLoading ? 'animate-spin' : ''} />
+                    {t.refreshPermissions}
+                  </button>
                 </div>
               </div>
             </Card>
@@ -1118,6 +1372,29 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       />
                     </div>
                   </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleTestConnection(provider.id)}
+                      disabled={testingProviderId === provider.id}
+                      className={`text-[11px] font-medium flex items-center gap-1 px-2.5 py-1 rounded-md transition-all border ${testingProviderId === provider.id
+                        ? 'text-neutral-400 border-black/5 dark:border-white/5 cursor-not-allowed'
+                        : 'text-neutral-500 border-black/10 dark:border-white/10 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                        }`}
+                      data-tauri-drag-region="false"
+                    >
+                      <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
+                      {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
+                    </button>
+                    {providerTestFeedback[provider.id] && (
+                      <span className={`text-[11px] truncate ${providerTestFeedback[provider.id].ok
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-rose-600 dark:text-rose-400'
+                        }`} title={providerTestFeedback[provider.id].message}>
+                        {providerTestFeedback[provider.id].message}
+                      </span>
+                    )}
+                  </div>
 
                   {/* 已启用模型管理 */}
                   <div className="space-y-3 pt-3 border-t border-black/5 dark:border-white/5">
@@ -1230,7 +1507,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         </div>
         <div className="flex gap-3">
           <button
-            onClick={onClose}
+            onClick={handleCloseRequest}
             className="px-4 py-2 text-[13px] font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-all duration-200"
             data-tauri-drag-region="false"
           >
@@ -1238,14 +1515,48 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           </button>
           <button
             onClick={handleSave}
-            className="flex items-center gap-2 px-5 py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-lg text-[13px] font-medium shadow-sm hover:shadow hover:bg-neutral-800 dark:hover:bg-neutral-100 transition-all duration-200 active:scale-95"
+            disabled={saving}
+            className="flex items-center gap-2 px-5 py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-lg text-[13px] font-medium shadow-sm hover:shadow hover:bg-neutral-800 dark:hover:bg-neutral-100 disabled:opacity-60 disabled:cursor-not-allowed transition-all duration-200 active:scale-95"
             data-tauri-drag-region="false"
           >
             <Save size={14} strokeWidth={2} />
-            {t.save}
+            {saving ? t.saving : t.save}
           </button>
         </div>
       </div>
+
+      {closeConfirmOpen && (
+        <div className="absolute inset-0 z-50 bg-black/30 backdrop-blur-[1px] flex items-center justify-center p-4" data-tauri-drag-region="false">
+          <div className="w-full max-w-[320px] rounded-xl border border-black/10 dark:border-white/10 bg-white dark:bg-neutral-900 shadow-lg p-4 space-y-3">
+            <h3 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">{t.unsavedChanges}</h3>
+            <p className="text-[12px] text-neutral-600 dark:text-neutral-300 leading-relaxed">{t.unsavedChangesDesc}</p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setCloseConfirmOpen(false)}
+                className="px-3 py-1.5 text-[12px] rounded-md text-neutral-600 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+              >
+                {t.continueEditing}
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardAndClose}
+                className="px-3 py-1.5 text-[12px] rounded-md text-neutral-700 dark:text-neutral-200 border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+              >
+                {t.discardAndClose}
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveAndClose}
+                disabled={saving}
+                className="px-3 py-1.5 text-[12px] rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {saving ? t.saving : t.saveAndClose}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

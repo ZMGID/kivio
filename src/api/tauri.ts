@@ -66,6 +66,12 @@ export type DefaultPromptTemplates = {
   }
 }
 
+export type PermissionStatus = {
+  platform: 'macos' | 'other'
+  accessibility: boolean
+  screenRecording: boolean
+}
+
 type Unlisten = () => void
 
 async function on<T>(event: string, handler: (payload: T) => void): Promise<Unlisten> {
@@ -80,6 +86,11 @@ export const api = {
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   saveSettings: (settings: Settings) => invoke<void>('save_settings', { settings }),
   fetchModels: (providerId: string) => invoke<string[]>('fetch_models', { providerId }),
+  testProviderConnection: (providerId: string) =>
+    invoke<{ success: boolean; error?: string }>('test_provider_connection', { providerId }),
+  getPermissionStatus: () => invoke<PermissionStatus>('get_permission_status'),
+  openPermissionSettings: (kind: 'accessibility' | 'screen-recording') =>
+    invoke<void>('open_permission_settings', { kind }),
   getAppVersion: () => getVersion(),
   translateText: (text: string) => invoke<string>('translate_text', { text }),
   commitTranslation: (text: string) => invoke<void>('commit_translation', { text }),

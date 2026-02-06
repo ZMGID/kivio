@@ -1,8 +1,6 @@
 use std::{
   fs,
   path::{Path, PathBuf},
-  thread,
-  time::Duration,
 };
 
 use uuid::Uuid;
@@ -39,7 +37,7 @@ pub fn capture_screenshot() -> Result<PathBuf, String> {
 
     let start = std::time::Instant::now();
     loop {
-      if start.elapsed() > Duration::from_secs(25) {
+      if start.elapsed() > std::time::Duration::from_secs(25) {
         return Err("Screenshot timeout".to_string());
       }
 
@@ -52,7 +50,7 @@ pub fn capture_screenshot() -> Result<PathBuf, String> {
         }
       }
 
-      thread::sleep(Duration::from_millis(200));
+      std::thread::sleep(std::time::Duration::from_millis(200));
     }
   }
 

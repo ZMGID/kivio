@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "KeyLingo",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "identifier": "com.zmair.keylingo",
   "build": {
     "beforeDevCommand": "npm run dev:ui",
@@ -20,6 +20,7 @@
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
+        "shadow": false,
         "visibleOnAllWorkspaces": true,
         "create": false,
         "skipTaskbar": true,

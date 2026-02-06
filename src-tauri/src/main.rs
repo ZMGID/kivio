@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
 mod screenshot;
 mod settings;
@@ -32,7 +33,7 @@ use uuid::Uuid;
 use screenshot::{capture_screenshot, cleanup_temp_file};
 use settings::{
   default_question_prompt, default_summary_prompt, default_system_prompt, load_settings,
-  persist_settings, sanitize_settings, ExplainHistoryRecord, ExplainMessage, OpenAIConfig, Settings,
+  persist_settings, sanitize_settings, ExplainHistoryRecord, ExplainMessage, Settings,
 };
 use utils::{current_timestamp, language_name, resolve_target_lang};
 use windows::{apply_macos_workspace_behavior, ensure_main_window, ensure_screenshot_window, get_main_window};
@@ -171,9 +172,10 @@ fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> R
   }
 
   #[cfg(target_os = "macos")]
+  #[allow(deprecated, unexpected_cfgs)]
   unsafe {
     use cocoa::base::{id, nil};
-    use objc::{msg_send, sel, sel_impl, class};
+    use objc::{class, msg_send, sel, sel_impl};
     let ns_app: id = msg_send![class!(NSApplication), sharedApplication];
     let _: () = msg_send![ns_app, hide: nil];
   }
@@ -188,6 +190,7 @@ fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> R
 }
 
 #[tauri::command]
+#[allow(deprecated)]
 fn open_external(app: AppHandle, url: String) -> Result<(), String> {
   if !url.starts_with("https://") {
     return Err("Invalid URL".to_string());
@@ -410,6 +413,89 @@ async fn fetch_models(state: State<'_, AppState>, provider_id: String) -> Result
     Ok(models)
 }
 
+#[tauri::command]
+async fn test_provider_connection(
+  state: State<'_, AppState>,
+  provider_id: String,
+) -> Result<serde_json::Value, String> {
+  let settings = state.settings.read().expect("settings lock").clone();
+  let provider = settings
+    .get_provider(&provider_id)
+    .ok_or_else(|| "Provider not found".to_string())?;
+
+  if provider.api_key.trim().is_empty() {
+    return Ok(serde_json::json!({
+      "success": false,
+      "error": "Missing API Key"
+    }));
+  }
+
+  let retry_attempts = effective_retry_attempts(&settings);
+  let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
+  let result = send_with_retry("Provider API", retry_attempts, || {
+    state
+      .http
+      .get(url.clone())
+      .bearer_auth(&provider.api_key)
+      .send()
+  })
+  .await;
+
+  match result {
+    Ok(_) => Ok(serde_json::json!({ "success": true })),
+    Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
+  }
+}
+
+#[tauri::command]
+fn get_permission_status() -> serde_json::Value {
+  #[cfg(target_os = "macos")]
+  {
+    let accessibility = check_accessibility(false);
+    let screen_recording = check_screen_recording_permission();
+    return serde_json::json!({
+      "platform": "macos",
+      "accessibility": accessibility,
+      "screenRecording": screen_recording,
+    });
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    serde_json::json!({
+      "platform": "other",
+      "accessibility": true,
+      "screenRecording": true,
+    })
+  }
+}
+
+#[tauri::command]
+fn open_permission_settings(kind: String) -> Result<(), String> {
+  #[cfg(target_os = "macos")]
+  {
+    use std::process::Command;
+
+    let target = match kind.as_str() {
+      "accessibility" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+      "screen-recording" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+      _ => return Err("Unsupported permission kind".to_string()),
+    };
+
+    Command::new("open")
+      .arg(target)
+      .output()
+      .map_err(|e| e.to_string())?;
+    return Ok(());
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    let _ = kind;
+    Err("Permission settings are only available on macOS".to_string())
+  }
+}
+
 
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
   let settings = app.state::<AppState>().settings.read().expect("settings lock").clone();
@@ -559,9 +645,17 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   }
 
   let temp_path = capture_screenshot()?;
-  let screenshot_window = ensure_screenshot_window(app)?;
-  screenshot_window.emit("screenshot-processing", ())
-    .map_err(|e| e.to_string())?;
+  let screenshot_window = match ensure_screenshot_window(app) {
+    Ok(window) => window,
+    Err(err) => {
+      cleanup_temp_file(&temp_path);
+      return Err(err);
+    }
+  };
+  if let Err(err) = screenshot_window.emit("screenshot-processing", ()) {
+    cleanup_temp_file(&temp_path);
+    return Err(err.to_string());
+  }
   let _ = screenshot_window.show();
   let _ = screenshot_window.set_focus();
 
@@ -649,6 +743,13 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
 
   let temp_path = capture_screenshot()?;
   let image_id = Uuid::new_v4().to_string();
+  let window = match ensure_explain_window(app, &image_id) {
+    Ok(window) => window,
+    Err(err) => {
+      cleanup_temp_file(&temp_path);
+      return Err(err);
+    }
+  };
 
   {
     let previous_id = {
@@ -668,7 +769,6 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
     map.insert(image_id.clone(), temp_path);
   }
 
-  let window = ensure_explain_window(app, &image_id)?;
   let _ = window.show();
   let _ = window.set_focus();
 
@@ -1104,6 +1204,22 @@ fn check_accessibility(open_if_needed: bool) -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn check_screen_recording_permission() -> bool {
+  unsafe {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+      fn CGPreflightScreenCaptureAccess() -> bool;
+    }
+    CGPreflightScreenCaptureAccess()
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_screen_recording_permission() -> bool {
+  true
+}
+
 
 fn send_paste_shortcut() {
   #[cfg(target_os = "macos")]
@@ -1287,7 +1403,10 @@ fn main() {
       explain_save_history,
       explain_get_history,
       explain_load_history,
-      fetch_models
+      fetch_models,
+      test_provider_connection,
+      get_permission_status,
+      open_permission_settings
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
