@@ -28,4 +28,9 @@ body {
   margin: 0;
   height: 100%;
   width: 100%;
+  background-color: rgb(255 255 255);
+}
+
+.dark .window-container {
+  background-color: rgb(23 23 23);
 }

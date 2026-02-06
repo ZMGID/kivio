@@ -26,6 +26,7 @@ use reqwest::{header::HeaderMap, StatusCode};
 use tauri::{
   AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutoStartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
@@ -77,6 +78,19 @@ fn build_http_client() -> Client {
     })
 }
 
+fn apply_launch_at_startup(app: &AppHandle, enabled: bool) -> Result<(), String> {
+  let auto_launch = app.autolaunch();
+  let current = auto_launch.is_enabled().map_err(|e| e.to_string())?;
+
+  if enabled && !current {
+    auto_launch.enable().map_err(|e| e.to_string())?;
+  } else if !enabled && current {
+    auto_launch.disable().map_err(|e| e.to_string())?;
+  }
+
+  Ok(())
+}
+
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Settings {
   state.settings.read().expect("settings lock").clone()
@@ -104,6 +118,7 @@ fn get_default_prompt_templates() -> serde_json::Value {
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
   let sanitized = sanitize_settings(settings);
+  apply_launch_at_startup(&app, sanitized.launch_at_startup)?;
   {
     let mut guard = state.settings.write().expect("settings lock");
     *guard = sanitized.clone();
@@ -1347,6 +1362,7 @@ fn main() {
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .plugin(tauri_plugin_shell::init())
+    .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
     .on_window_event(|window, event| {
       match event {
         tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -1372,6 +1388,10 @@ fn main() {
       }
 
       let settings = load_settings(&app.handle());
+      if let Err(err) = apply_launch_at_startup(&app.handle(), settings.launch_at_startup) {
+        eprintln!("Failed to apply launch-at-startup setting: {err}");
+      }
+
       app.manage(AppState {
         settings: RwLock::new(settings),
         explain_images: Mutex::new(HashMap::new()),

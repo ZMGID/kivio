@@ -81,7 +81,7 @@ function Translator({ translateSource, onOpenSettings }: { translateSource: stri
 
   return (
     <div
-      className="window-container flex flex-col bg-white/92 dark:bg-neutral-900/92 backdrop-blur-2xl rounded-xl border border-black/5 dark:border-white/10 shadow-none select-none overflow-hidden relative group"
+      className="window-container flex flex-col bg-white dark:bg-neutral-900 rounded-xl border border-black/5 dark:border-white/10 shadow-none select-none overflow-hidden relative group"
     >
       {/* 设置按钮 */}
       <button

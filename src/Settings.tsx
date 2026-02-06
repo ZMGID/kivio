@@ -60,6 +60,7 @@ const i18n = {
     fetchModels: '获取模型列表',
     fetching: '正在获取...',
     autoPaste: '自动上屏',
+    launchAtStartup: '开机启动',
     screenshotTranslate: '截图翻译',
     screenshotExplain: '截图解释',
     enabled: '启用',
@@ -145,6 +146,7 @@ const i18n = {
     fetchModels: 'Fetch Models',
     fetching: 'Fetching...',
     autoPaste: 'Auto Paste',
+    launchAtStartup: 'Launch at startup',
     screenshotTranslate: 'Screenshot Translation',
     screenshotExplain: 'Screenshot Explain',
     enabled: 'Enabled',
@@ -484,6 +486,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           targetLang: 'auto',
           source: 'openai',
           autoPaste: true,
+          launchAtStartup: false,
           translatorProviderId: 'default-translator',
           translatorModel: 'gpt-4o',
           translatorPrompt: '',
@@ -518,6 +521,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           targetLang: 'auto',
           source: 'openai',
           autoPaste: true,
+          launchAtStartup: false,
           translatorProviderId: 'default-translator',
           translatorModel: 'gpt-4o',
           translatorPrompt: '',
@@ -904,10 +908,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   return (
-    <div className="window-container flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden">
+    <div className="window-container flex flex-col bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden">
       {/* 标题栏 */}
       <div
-        className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl rounded-t-xl"
+        className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-white dark:bg-neutral-900 rounded-t-xl"
         data-tauri-drag-region
       >
         <h2 className="font-semibold text-[15px] tracking-tight">{t.settings}</h2>
@@ -921,8 +925,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       </div>
 
       {/* 标签页导航 */}
-      <div className="px-2 py-2 border-b border-black/5 dark:border-white/5 bg-neutral-100/50 dark:bg-neutral-900/30">
-        <div className="flex p-1 bg-neutral-200/50 dark:bg-neutral-800/50 rounded-xl">
+      <div className="px-2 py-2 border-b border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-900">
+        <div className="flex p-1 bg-neutral-200 dark:bg-neutral-800 rounded-xl">
           <TabButton
             active={activeTab === 'general'}
             onClick={() => setActiveTab('general')}
@@ -1073,6 +1077,16 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 <Toggle
                   checked={settings.autoPaste ?? true}
                   onChange={(v) => updateSettings({ autoPaste: v })}
+                />
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <Label>{t.launchAtStartup}</Label>
+                <Toggle
+                  checked={settings.launchAtStartup ?? false}
+                  onChange={(v) => updateSettings({ launchAtStartup: v })}
                 />
               </div>
             </Card>
@@ -1493,7 +1507,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       </div>
 
       {/* 底部操作栏 */}
-      <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-xl rounded-b-xl">
+      <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-white dark:bg-neutral-900 rounded-b-xl">
         <div className="flex items-center gap-3 min-w-0">
           <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
           {saveError && (

@@ -24,6 +24,7 @@ export type Settings = {
   targetLang: string
   source: string
   autoPaste: boolean
+  launchAtStartup: boolean
   translatorProviderId: string
   translatorModel: string
   translatorPrompt?: string

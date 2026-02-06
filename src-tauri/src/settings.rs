@@ -151,6 +151,8 @@ pub struct Settings {
   pub source: String,
   #[serde(default = "default_true")]
   pub auto_paste: bool,
+  #[serde(default = "default_false")]
+  pub launch_at_startup: bool,
   #[serde(default)]
   pub translator_provider_id: String,
   #[serde(default = "default_openai_model")]
@@ -190,6 +192,7 @@ impl Default for Settings {
       target_lang: "auto".to_string(),
       source: "openai".to_string(),
       auto_paste: true,
+      launch_at_startup: false,
       translator_provider_id: "default-translator".to_string(),
       translator_model: "gpt-4o".to_string(),
       translator_prompt: None,
@@ -410,6 +413,10 @@ pub fn default_question_prompt(language: &str) -> String {
 
 fn default_true() -> bool {
   true
+}
+
+fn default_false() -> bool {
+  false
 }
 
 fn default_hotkey() -> String {
