@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Copy, Check, Cpu, Scan, Code, Eye } from 'lucide-react'
 import { api } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
@@ -21,24 +21,25 @@ export default function ScreenshotResult() {
   const originalCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const translatedCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const showToggleInOriginal = Boolean(original)
+  const translationPending = status === 'ready' && Boolean(original) && !translated.trim()
+
+  const loadModelInfo = useCallback(async () => {
+    try {
+      const settings = await api.getSettings()
+      if (!isMountedRef.current) return
+      const ocrModel = settings.screenshotTranslation?.model || 'OpenAI OCR'
+      setOcrSource(ocrModel)
+      const transModel = settings.translatorModel || 'AI'
+      setTranslateSource(transModel)
+    } catch (err) {
+      if (!isMountedRef.current) return
+      console.error('Failed to load settings', err)
+    }
+  }, [])
 
   useEffect(() => {
     isMountedRef.current = true
-    const loadSettings = async () => {
-      try {
-        const settings = await api.getSettings()
-        if (!isMountedRef.current) return
-        const ocrModel =
-          settings.screenshotTranslation?.model || 'OpenAI OCR'
-        setOcrSource(ocrModel)
-        const transModel = settings.translatorModel || 'AI'
-        setTranslateSource(transModel)
-      } catch (err) {
-        if (!isMountedRef.current) return
-        console.error('Failed to load settings', err)
-      }
-    }
-    loadSettings()
+    void loadModelInfo()
 
     let cleanup1: (() => void) | undefined
     let cleanup2: (() => void) | undefined
@@ -48,6 +49,8 @@ export default function ScreenshotResult() {
     api.onScreenshotProcessing(() => {
       if (!isMountedRef.current) return
       setStatus('processing')
+      setError('')
+      void loadModelInfo()
     }).then((unlisten) => {
       if (!active) {
         unlisten()
@@ -104,7 +107,7 @@ export default function ScreenshotResult() {
       if (translatedCopyTimeoutRef.current) clearTimeout(translatedCopyTimeoutRef.current)
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [])
+  }, [loadModelInfo])
 
   const handleClose = () => {
     api.closeScreenshotWindow()
@@ -268,6 +271,7 @@ export default function ScreenshotResult() {
                   )}
                   <button
                     onClick={() => handleCopy(translated, 'translated')}
+                    disabled={translationPending}
                     className="flex items-center gap-1 px-2 py-1 text-[10px] text-white bg-neutral-800 dark:bg-neutral-200 dark:text-neutral-800 hover:bg-neutral-700 dark:hover:bg-neutral-300 rounded-md transition-colors"
                     data-tauri-drag-region="false"
                   >
@@ -277,7 +281,9 @@ export default function ScreenshotResult() {
                 </div>
               </div>
               <div className="p-3 bg-neutral-100/80 dark:bg-neutral-800 rounded-lg text-sm leading-relaxed select-text prose dark:prose-invert max-w-none">
-                {showRaw ? (
+                {translationPending ? (
+                  <p className="text-[12px] text-neutral-500 dark:text-neutral-400">翻译中...</p>
+                ) : showRaw ? (
                   <pre className="whitespace-pre-wrap font-mono text-[12px] bg-transparent p-0 m-0 border-none shadow-none text-neutral-600 dark:text-neutral-400">
                     {translated}
                   </pre>

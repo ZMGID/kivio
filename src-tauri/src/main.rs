@@ -114,6 +114,7 @@ fn get_settings(state: State<AppState>) -> Settings {
 fn get_default_prompt_templates() -> serde_json::Value {
   serde_json::json!({
     "translationTemplate": DEFAULT_TRANSLATION_TEMPLATE,
+    "screenshotTranslationTemplate": DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
     "explainPrompts": {
       "zh": {
         "system": default_system_prompt("zh"),
@@ -131,6 +132,7 @@ fn get_default_prompt_templates() -> serde_json::Value {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
+  let previous_settings = state.settings.read().expect("settings lock").clone();
   let sanitized = sanitize_settings(settings);
   apply_launch_at_startup(&app, sanitized.launch_at_startup)?;
   {
@@ -138,12 +140,17 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
     *guard = sanitized.clone();
   }
 
-  if let Err(err) = persist_settings(&app, &sanitized) {
-    eprintln!("Failed to save settings: {err}");
+  if let Err(err) = register_hotkeys(&app) {
+    restore_runtime_settings(&app, &state, &previous_settings);
     return Err(err);
   }
 
-  register_hotkeys(&app)?;
+  if let Err(err) = persist_settings(&app, &sanitized) {
+    eprintln!("Failed to save settings: {err}");
+    restore_runtime_settings(&app, &state, &previous_settings);
+    return Err(err);
+  }
+
   if let Err(err) = setup_tray(&app) {
     eprintln!("Failed to update tray: {err}");
   }
@@ -907,6 +914,25 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: &Settings) {
+  if let Err(err) = apply_launch_at_startup(app, previous.launch_at_startup) {
+    eprintln!("Failed to rollback launch-at-startup setting: {err}");
+  }
+
+  {
+    let mut guard = state.settings.write().expect("settings lock");
+    *guard = previous.clone();
+  }
+
+  if let Err(err) = register_hotkeys(app) {
+    eprintln!("Failed to rollback hotkeys: {err}");
+  }
+
+  if let Err(err) = setup_tray(app) {
+    eprintln!("Failed to rollback tray: {err}");
+  }
+}
+
 #[cfg(not(target_os = "windows"))]
 async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
@@ -948,23 +974,42 @@ async fn process_screenshot_translation_from_path(
   let _ = screenshot_window.set_focus();
 
   let settings = state.settings.read().expect("settings lock").clone();
-  let provider = settings.get_provider(&settings.screenshot_translation.provider_id)
-    .ok_or_else(|| "OCR provider not found".to_string())?;
+  let provider = match settings.get_provider(&settings.screenshot_translation.provider_id) {
+    Some(provider) => provider,
+    None => {
+      cleanup_temp_file(&temp_path);
+      return Err("OCR provider not found".to_string());
+    }
+  };
 
   if provider.api_key.trim().is_empty() {
-    screenshot_window
-      .emit("screenshot-error", "Missing API Key")
-      .map_err(|e| e.to_string())?;
+    if let Err(err) = screenshot_window.emit("screenshot-error", "Missing API Key") {
+      cleanup_temp_file(&temp_path);
+      return Err(err.to_string());
+    }
     cleanup_temp_file(&temp_path);
     return Ok(());
   }
 
   let retry_attempts = effective_retry_attempts(&settings);
+  let direct_translate = settings.screenshot_translation.direct_translate;
+  let ocr_prompt = if direct_translate {
+    let target_lang = resolve_target_lang(&settings.target_lang, "");
+    let lang_name = language_name(&target_lang).to_string();
+    build_ocr_direct_translation_prompt(
+      &lang_name,
+      settings.screenshot_translation.prompt.as_deref(),
+    )
+  } else {
+    DEFAULT_OCR_PROMPT.to_string()
+  };
+
   let recognized = call_openai_ocr(
     &state.http,
     provider,
     &settings.screenshot_translation.model,
     &temp_path,
+    &ocr_prompt,
     retry_attempts,
   )
   .await;
@@ -978,38 +1023,60 @@ async fn process_screenshot_translation_from_path(
     }
   };
 
-  let translated = if recognized.trim().is_empty() {
-    "".to_string()
-  } else {
-    let target_lang = resolve_target_lang(&settings.target_lang, &recognized);
-    let lang_name = language_name(&target_lang).to_string();
-    let prompt = build_translation_prompt(
-      &recognized,
-      &lang_name,
-      settings.screenshot_translation.prompt.as_deref(),
-    );
-
-    let t_provider = settings
-      .get_provider(&settings.translator_provider_id)
-      .unwrap_or(provider);
-
-    call_openai_text(
-      &state.http,
-      t_provider,
-      &settings.translator_model,
-      prompt,
-      retry_attempts,
-    )
-    .await
-    .unwrap_or(recognized.clone())
-  };
-
-  app
-    .emit(
+  if direct_translate {
+    if let Err(err) = app.emit(
       "screenshot-result",
-      serde_json::json!({ "original": recognized, "translated": translated }),
-    )
-    .map_err(|e| e.to_string())?;
+      serde_json::json!({ "original": "", "translated": recognized }),
+    ) {
+      cleanup_temp_file(&temp_path);
+      return Err(err.to_string());
+    }
+    cleanup_temp_file(&temp_path);
+    return Ok(());
+  }
+
+  if let Err(err) = app.emit(
+    "screenshot-result",
+    serde_json::json!({ "original": recognized, "translated": "" }),
+  ) {
+    cleanup_temp_file(&temp_path);
+    return Err(err.to_string());
+  }
+
+  if recognized.trim().is_empty() {
+    cleanup_temp_file(&temp_path);
+    return Ok(());
+  }
+
+  let target_lang = resolve_target_lang(&settings.target_lang, &recognized);
+  let lang_name = language_name(&target_lang).to_string();
+  let prompt = build_screenshot_translation_prompt(
+    &recognized,
+    &lang_name,
+    settings.screenshot_translation.prompt.as_deref(),
+  );
+
+  let t_provider = settings
+    .get_provider(&settings.translator_provider_id)
+    .unwrap_or(provider);
+
+  let translated = call_openai_text(
+    &state.http,
+    t_provider,
+    &settings.translator_model,
+    prompt,
+    retry_attempts,
+  )
+  .await
+  .unwrap_or(recognized.clone());
+
+  if let Err(err) = app.emit(
+    "screenshot-result",
+    serde_json::json!({ "original": recognized, "translated": translated }),
+  ) {
+    cleanup_temp_file(&temp_path);
+    return Err(err.to_string());
+  }
 
   cleanup_temp_file(&temp_path);
   Ok(())
@@ -1187,10 +1254,21 @@ async fn call_openai_text(
 }
 
 const DEFAULT_TRANSLATION_TEMPLATE: &str =
-  "Translate the following text to {lang}. Only output the translation.\n\n{text}";
+  "Translate the following text to {lang}. Output only the translation.\n\nRules:\n- Preserve existing LaTeX formulas exactly (keep $...$ and $$...$$).\n- If formula-like plain text appears, normalize it to proper LaTeX when needed.\n- Keep the original line breaks and list structure when possible.\n- Do not add explanations.\n\n{text}";
 
-fn build_translation_prompt(text: &str, lang_name: &str, template: Option<&str>) -> String {
-  let default_prompt = DEFAULT_TRANSLATION_TEMPLATE
+const DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE: &str =
+  "Translate the OCR text below to {lang}. Output only the translation.\n\nRules:\n- Preserve existing LaTeX formulas exactly (keep $...$ and $$...$$).\n- If formula-like plain text appears, normalize it to proper LaTeX when needed.\n- Keep paragraph and line-break structure from OCR text when possible.\n- Correct only obvious OCR character mistakes; do not invent missing content.\n- Do not add explanations.\n\n{text}";
+
+const DEFAULT_OCR_PROMPT: &str =
+  "Read all text in this image. For mathematical formulas, use LaTeX format enclosed in $...$ for inline or $$...$$ for block math. Output only the text content, preserving original lines.";
+
+fn build_prompt_with_template(
+  text: &str,
+  lang_name: &str,
+  template: Option<&str>,
+  default_template: &str,
+) -> String {
+  let default_prompt = default_template
     .replace("{lang}", lang_name)
     .replace("{text}", text);
 
@@ -1209,11 +1287,32 @@ fn build_translation_prompt(text: &str, lang_name: &str, template: Option<&str>)
   prompt
 }
 
+fn build_translation_prompt(text: &str, lang_name: &str, template: Option<&str>) -> String {
+  build_prompt_with_template(text, lang_name, template, DEFAULT_TRANSLATION_TEMPLATE)
+}
+
+fn build_screenshot_translation_prompt(text: &str, lang_name: &str, template: Option<&str>) -> String {
+  build_prompt_with_template(text, lang_name, template, DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE)
+}
+
+fn build_ocr_direct_translation_prompt(lang_name: &str, template: Option<&str>) -> String {
+  let instruction = build_screenshot_translation_prompt(
+    "the text content recognized from this image",
+    lang_name,
+    template,
+  );
+  format!(
+    "Read all text in this image, then follow this instruction exactly:\n{}\n\nOutput only the final translated text. For mathematical formulas, keep LaTeX notation ($...$ or $$...$$).",
+    instruction
+  )
+}
+
 async fn call_openai_ocr(
   client: &Client,
   config: &settings::ModelProvider,
   model: &str,
   image_path: &Path,
+  prompt: &str,
   retry_attempts: usize,
 ) -> Result<String, String> {
   let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
@@ -1228,7 +1327,7 @@ async fn call_openai_ocr(
         "content": [
           {
             "type": "text",
-            "text": "Read all text in this image. For mathematical formulas, use LaTeX format enclosed in $...$ for inline or $$...$$ for block math. Output only the text content, preserving original lines."
+            "text": prompt
           },
           {
             "type": "image_url",

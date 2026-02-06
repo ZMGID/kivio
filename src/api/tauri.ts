@@ -36,6 +36,7 @@ export type Settings = {
     hotkey: string
     providerId: string
     model: string
+    directTranslate?: boolean
     prompt?: string
   }
   screenshotExplain: {
@@ -61,6 +62,7 @@ export type Settings = {
 
 export type DefaultPromptTemplates = {
   translationTemplate: string
+  screenshotTranslationTemplate?: string
   explainPrompts: {
     zh: { system: string; summary: string; question: string }
     en: { system: string; summary: string; question: string }

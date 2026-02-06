@@ -951,7 +951,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
 dependencies = [
- "libloading 0.7.4",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2340,13 +2340,14 @@ dependencies = [
 
 [[package]]
 name = "keylingo"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "arboard",
  "base64 0.22.1",
  "cocoa",
  "enigo",
  "image",
+ "keyring",
  "libc",
  "objc",
  "reqwest 0.12.28",
@@ -2362,6 +2363,16 @@ dependencies = [
  "tokio",
  "uuid",
  "xcap",
+]
+
+[[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "log",
+ "zeroize",
 ]
 
 [[package]]
