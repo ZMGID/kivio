@@ -1722,7 +1722,7 @@ fn open_settings_window(app: &AppHandle) -> Result<(), String> {
   let _ = window.eval(
     "window.location.hash = '#settings'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
   );
-  let _ = app.emit("open-settings", ());
+  let _ = window.emit("open-settings", ());
   Ok(())
 }
 
