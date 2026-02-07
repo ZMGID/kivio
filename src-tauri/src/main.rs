@@ -23,6 +23,7 @@ use arboard::Clipboard;
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
 use reqwest::{header::HeaderMap, StatusCode};
+use serde::Deserialize;
 use tauri::{
   AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow,
   WebviewWindowBuilder, WindowEvent,
@@ -30,6 +31,7 @@ use tauri::{
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutoStartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_single_instance::init as init_single_instance;
 use uuid::Uuid;
 
 #[cfg(not(target_os = "windows"))]
@@ -57,6 +59,39 @@ struct AppState {
   screenshot_translation_busy: AtomicBool,
   screenshot_explain_busy: AtomicBool,
   http: Client,
+}
+
+const AUTOSTART_ARG: &str = "--from-autostart";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderConnectionInput {
+  id: Option<String>,
+  base_url: String,
+  api_key: String,
+}
+
+fn resolve_provider_credentials(
+  settings: &Settings,
+  provider_id: &str,
+  provider: Option<ProviderConnectionInput>,
+) -> Result<(String, String), String> {
+  if let Some(provider) = provider {
+    let id_matches = provider
+      .id
+      .as_ref()
+      .map(|id| id.is_empty() || id == provider_id)
+      .unwrap_or(true);
+
+    if id_matches {
+      return Ok((provider.base_url, provider.api_key));
+    }
+  }
+
+  let provider = settings
+    .get_provider(provider_id)
+    .ok_or_else(|| "Provider not found".to_string())?;
+  Ok((provider.base_url.clone(), provider.api_key.clone()))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -402,24 +437,27 @@ fn explain_load_history(
 }
 
 #[tauri::command]
-async fn fetch_models(state: State<'_, AppState>, provider_id: String) -> Result<Vec<String>, String> {
+async fn fetch_models(
+  state: State<'_, AppState>,
+  provider_id: String,
+  provider: Option<ProviderConnectionInput>,
+) -> Result<Vec<String>, String> {
     println!("Fetching models for provider: {}", provider_id);
     let settings = state.settings.read().expect("settings lock").clone();
-    let provider = settings.get_provider(&provider_id)
-        .ok_or_else(|| "Provider not found".to_string())?;
+    let (base_url, api_key) = resolve_provider_credentials(&settings, &provider_id, provider)?;
     let retry_attempts = effective_retry_attempts(&settings);
 
-    if provider.api_key.trim().is_empty() {
+    if api_key.trim().is_empty() {
         return Err("Missing API Key".to_string());
     }
 
-    let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
     println!("Requesting URL: {}", url);
 
     let response = send_with_retry("Models API", retry_attempts, || {
         state.http
             .get(url.clone())
-            .bearer_auth(&provider.api_key)
+            .bearer_auth(&api_key)
             .send()
     })
     .await?;
@@ -453,13 +491,12 @@ async fn fetch_models(state: State<'_, AppState>, provider_id: String) -> Result
 async fn test_provider_connection(
   state: State<'_, AppState>,
   provider_id: String,
+  provider: Option<ProviderConnectionInput>,
 ) -> Result<serde_json::Value, String> {
   let settings = state.settings.read().expect("settings lock").clone();
-  let provider = settings
-    .get_provider(&provider_id)
-    .ok_or_else(|| "Provider not found".to_string())?;
+  let (base_url, api_key) = resolve_provider_credentials(&settings, &provider_id, provider)?;
 
-  if provider.api_key.trim().is_empty() {
+  if api_key.trim().is_empty() {
     return Ok(serde_json::json!({
       "success": false,
       "error": "Missing API Key"
@@ -467,12 +504,12 @@ async fn test_provider_connection(
   }
 
   let retry_attempts = effective_retry_attempts(&settings);
-  let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
+  let url = format!("{}/models", base_url.trim_end_matches('/'));
   let result = send_with_retry("Provider API", retry_attempts, || {
     state
       .http
       .get(url.clone())
-      .bearer_auth(&provider.api_key)
+      .bearer_auth(&api_key)
       .send()
   })
   .await;
@@ -540,6 +577,20 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
   let mut errors = Vec::new();
   let mut registered = HashSet::new();
 
+  let format_hotkey_error = |scope: &str, hotkey: &str, error_message: &str| {
+    let normalized = error_message.to_lowercase();
+    if normalized.contains("already registered")
+      || normalized.contains("already in use")
+      || normalized.contains("hotkey") && normalized.contains("registered")
+    {
+      format!(
+        "Hotkey conflict for {scope}: \"{hotkey}\" is already in use. Please change this shortcut or close the app that is occupying it."
+      )
+    } else {
+      format!("Failed to register {scope} hotkey \"{hotkey}\": {error_message}")
+    }
+  };
+
   if !settings.hotkey.trim().is_empty() {
     let hotkey = settings.hotkey.trim().to_string();
     let hotkey_key = hotkey.to_lowercase();
@@ -550,7 +601,7 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         toggle_main_window(app);
       }
     }) {
-      errors.push(format!("Failed to register translator hotkey \"{hotkey}\": {err}"));
+      errors.push(format_hotkey_error("translator", &hotkey, &err.to_string()));
     }
   }
 
@@ -572,7 +623,11 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
           });
         }
       }) {
-        errors.push(format!("Failed to register screenshot translation hotkey \"{hotkey}\": {err}"));
+        errors.push(format_hotkey_error(
+          "screenshot translation",
+          &hotkey,
+          &err.to_string(),
+        ));
       }
     }
   }
@@ -595,7 +650,11 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
           });
         }
       }) {
-        errors.push(format!("Failed to register screenshot explain hotkey \"{hotkey}\": {err}"));
+        errors.push(format_hotkey_error(
+          "screenshot explain",
+          &hotkey,
+          &err.to_string(),
+        ));
       }
     }
   }
@@ -1655,6 +1714,18 @@ fn send_paste_shortcut() {
   }
 }
 
+fn open_settings_window(app: &AppHandle) -> Result<(), String> {
+  let window = ensure_main_window(app)?;
+  let _ = window.set_size(tauri::LogicalSize::new(420.0, 520.0));
+  let _ = window.show();
+  let _ = window.set_focus();
+  let _ = window.eval(
+    "window.location.hash = '#settings'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
+  );
+  let _ = app.emit("open-settings", ());
+  Ok(())
+}
+
 
 fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str) {
   match lang {
@@ -1716,16 +1787,8 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
         }
       }
       "settings" => {
-        match ensure_main_window(app) {
-          Ok(window) => {
-            // 使用 LogicalSize 确保在 Retina 屏幕上尺寸正确
-            let _ = window.set_size(tauri::LogicalSize::new(420.0, 520.0));
-            let _ = window.show();
-            let _ = window.set_focus();
-            // 直接通过 JavaScript 设置 hash，触发前端 hashchange 事件
-            let _ = window.eval("window.location.hash = '#settings'; window.dispatchEvent(new HashChangeEvent('hashchange'));");
-          }
-          Err(err) => eprintln!("Failed to ensure main window: {}", err),
+        if let Err(err) = open_settings_window(app) {
+          eprintln!("Failed to open settings window: {}", err);
         }
       }
       "quit" => {
@@ -1741,12 +1804,33 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
 }
 
 fn main() {
+  let autostart_plugin = {
+    #[cfg(target_os = "macos")]
+    {
+      tauri_plugin_autostart::Builder::new()
+        .arg(AUTOSTART_ARG)
+        .macos_launcher(MacosLauncher::LaunchAgent)
+        .build()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+      tauri_plugin_autostart::Builder::new()
+        .arg(AUTOSTART_ARG)
+        .build()
+    }
+  };
+
   tauri::Builder::default()
+    .plugin(init_single_instance(|app, _args, _cwd| {
+      if let Err(err) = open_settings_window(app) {
+        eprintln!("Single-instance activation failed: {err}");
+      }
+    }))
     .plugin(tauri_plugin_global_shortcut::Builder::new().build())
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .plugin(tauri_plugin_shell::init())
-    .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+    .plugin(autostart_plugin)
     .on_window_event(|window, event| {
       match event {
         tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -1799,6 +1883,13 @@ fn main() {
 
       #[cfg(target_os = "windows")]
       {
+        let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
+        if !launched_from_autostart {
+          if let Err(err) = open_settings_window(&app.handle()) {
+            eprintln!("Failed to open settings on launch: {err}");
+          }
+        }
+
         if let Ok(capture_window) = ensure_capture_overlay_window(&app.handle()) {
           let _ = capture_window.hide();
         }

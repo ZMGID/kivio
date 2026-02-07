@@ -692,7 +692,14 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       return next
     })
     try {
-      const result = await api.testProviderConnection(providerId)
+      const provider = settings?.providers.find((p) => p.id === providerId)
+      const result = await api.testProviderConnection(providerId, provider
+        ? {
+          id: provider.id,
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+        }
+        : undefined)
       if (result.success) {
         setProviderTestFeedback((prev) => ({ ...prev, [providerId]: { ok: true, message: t.connectionOk } }))
       } else {
@@ -878,9 +885,15 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     if (!settings || fetchingProviderId) return
     setFetchingProviderId(providerId)
     try {
-      const models = await api.fetchModels(providerId)
-      const provider = settings.providers.find(p => p.id === providerId)
-      if (provider) {
+      const currentProvider = settings.providers.find(p => p.id === providerId)
+      const models = await api.fetchModels(providerId, currentProvider
+        ? {
+          id: currentProvider.id,
+          baseUrl: currentProvider.baseUrl,
+          apiKey: currentProvider.apiKey,
+        }
+        : undefined)
+      if (currentProvider) {
         updateProvider(providerId, { availableModels: models })
       }
     } catch (err) {

@@ -18,6 +18,12 @@ export type ModelProvider = {
   enabledModels: string[]
 }
 
+export type ProviderConnectionInput = {
+  id?: string
+  baseUrl: string
+  apiKey: string
+}
+
 export type Settings = {
   hotkey: string
   theme: 'system' | 'light' | 'dark'
@@ -98,9 +104,10 @@ export const api = {
   getSettings: () => invoke<Settings>('get_settings'),
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   saveSettings: (settings: Settings) => invoke<void>('save_settings', { settings }),
-  fetchModels: (providerId: string) => invoke<string[]>('fetch_models', { providerId }),
-  testProviderConnection: (providerId: string) =>
-    invoke<{ success: boolean; error?: string }>('test_provider_connection', { providerId }),
+  fetchModels: (providerId: string, provider?: ProviderConnectionInput) =>
+    invoke<string[]>('fetch_models', { providerId, provider }),
+  testProviderConnection: (providerId: string, provider?: ProviderConnectionInput) =>
+    invoke<{ success: boolean; error?: string }>('test_provider_connection', { providerId, provider }),
   getPermissionStatus: () => invoke<PermissionStatus>('get_permission_status'),
   openPermissionSettings: (kind: 'accessibility' | 'screen-recording') =>
     invoke<void>('open_permission_settings', { kind }),
