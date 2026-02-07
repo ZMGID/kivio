@@ -1,4 +1,4 @@
-# KeyLingo v2.0.3
+# KeyLingo v2.0.5
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -29,16 +29,33 @@
 - **Safer Settings UX**:
   - Saving settings does not auto-close the settings window.
   - Unsaved changes trigger a 3-action close dialog.
-- **Provider Diagnostics**: One-click **Test Connection** in settings.
+- **Provider Diagnostics**: One-click **Test Connection** + **Fetch Models**.
 - **Permission Dashboard (macOS)**: Accessibility/Screen Recording status + deep-link to System Settings.
 
-### 📦 Release Assets (v2.0.3)
+### 📦 Release Assets (v2.0.5)
 
-- **macOS (Apple Silicon)**: `KeyLingo_2.0.3_aarch64.dmg`
-- **Windows Installer**: `KeyLingo_2.0.3_x64-setup.exe`
-- **Windows MSI**: `KeyLingo_2.0.3_x64_en-US.msi`
+- **macOS (Apple Silicon)**: `KeyLingo_2.0.5_aarch64.dmg`
+- **Windows Installer (NSIS)**: `KeyLingo_2.0.5_x64-setup.exe`
+- **Windows Installer (MSI)**: `KeyLingo_2.0.5_x64_en-US.msi`
 
 ### 📚 Detailed Changelog
+
+#### v2.0.5 (2026-02-07)
+
+- **Provider Workflow Upgrade**
+  - Test connection and fetch model list now support current unsaved provider inputs (Base URL / API Key).
+  - You no longer need to save once before selecting models or validating connectivity.
+- **Windows Launch & Instance Behavior**
+  - Added single-instance guard to prevent multiple app processes from repeated icon clicks.
+  - Clicking app icon now focuses the existing instance and opens settings.
+  - Manual launch opens settings by default on Windows.
+  - Autostart launch uses dedicated argument to avoid forced settings popup.
+- **Hotkey & Capture Stability**
+  - Fixed a Windows issue where screenshot hotkey could fail after opening settings.
+  - Improved hotkey conflict error messages with clearer actionable hints.
+- **Release Engineering**
+  - Added GitHub Actions release workflow for macOS + Windows.
+  - Windows release now includes both NSIS `.exe` and MSI packages.
 
 #### v2.0.3 (2026-02-06)
 
@@ -112,7 +129,7 @@
 #### Settings
 Click gear icon ⚙️ in translator panel:
 - Providers/models/hotkeys/prompts
-- Test provider connectivity
+- Test provider connectivity + fetch models
 - Launch at startup toggle
 - Permission status (macOS)
 - Unsaved-changes close guard
@@ -125,11 +142,20 @@ Built with [Tauri v2](https://v2.tauri.app/), [React](https://react.dev/), [Vite
 # Install dependencies
 npm install
 
-# Dev
+# Dev (Tauri + UI)
 npm run dev
 
-# Build
+# Dev (UI only)
+npm run dev:ui
+
+# Build app bundle
 npm run build
+
+# Build UI only
+npm run build:ui
+
+# Lint
+npm run lint
 ```
 
 ---
@@ -155,16 +181,33 @@ npm run build
 - **设置页安全流程**：
   - 保存后不自动关闭设置页。
   - 有未保存更改时，关闭弹出三选确认。
-- **供应商诊断**：模型页支持一键“测试连接”。
+- **供应商诊断**：模型页支持一键“测试连接”与“获取模型列表”。
 - **权限状态面板（macOS）**：可视化查看辅助功能/屏幕录制授权并直达系统设置。
 
-### 📦 安装包（v2.0.3）
+### 📦 安装包（v2.0.5）
 
-- **macOS（Apple Silicon）**：`KeyLingo_2.0.3_aarch64.dmg`
-- **Windows 安装包**：`KeyLingo_2.0.3_x64-setup.exe`
-- **Windows MSI**：`KeyLingo_2.0.3_x64_en-US.msi`
+- **macOS（Apple Silicon）**：`KeyLingo_2.0.5_aarch64.dmg`
+- **Windows NSIS 安装包**：`KeyLingo_2.0.5_x64-setup.exe`
+- **Windows MSI 安装包**：`KeyLingo_2.0.5_x64_en-US.msi`
 
 ### 📚 详细更新目录
+
+#### v2.0.5（2026-02-07）
+
+- **Provider 工作流升级**
+  - 测试连接与获取模型列表支持直接使用“当前未保存”的 Base URL / API Key。
+  - 新增 Provider 时无需先保存一次设置再配置模型。
+- **Windows 启动与实例行为优化**
+  - 增加单实例保护，连续点击应用图标不会重复拉起多个进程。
+  - 再次点击应用图标会激活已运行实例并打开设置页。
+  - Windows 手动启动默认进入设置页。
+  - 开机自启通过专用启动参数区分，不会强制弹出设置页。
+- **快捷键与截图稳定性修复**
+  - 修复 Windows 下“打开设置后截图快捷键偶发失效”的问题。
+  - 优化快捷键冲突报错文案，提示更清晰。
+- **发布流程增强**
+  - 新增 GitHub Actions 自动发布流程（macOS + Windows）。
+  - Windows 发布同时产出 NSIS `.exe` 与 MSI 安装包。
 
 #### v2.0.3（2026-02-06）
 
@@ -238,7 +281,7 @@ npm run build
 #### 设置
 点击翻译面板右上角齿轮 ⚙️：
 - 管理 Provider / 模型 / 快捷键 / Prompt
-- 测试 Provider 连通性
+- 测试 Provider 连通性 + 获取模型
 - 开机启动开关
 - 权限状态（macOS）
 - 未保存更改关闭确认
@@ -251,9 +294,18 @@ npm run build
 # 安装依赖
 npm install
 
-# 本地开发
+# 本地开发（Tauri + UI）
 npm run dev
+
+# 仅前端开发
+npm run dev:ui
 
 # 打包构建
 npm run build
+
+# 仅构建前端
+npm run build:ui
+
+# 代码检查
+npm run lint
 ```
