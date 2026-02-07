@@ -33,7 +33,8 @@
     "active": true,
     "targets": [
       "dmg",
-      "msi"
+      "msi",
+      "nsis"
     ],
     "windows": {
       "nsis": {
