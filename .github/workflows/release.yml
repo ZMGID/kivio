@@ -7,15 +7,20 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build and publish (e.g. v2.0.5)'
+        description: 'Release tag to publish to (e.g. v2.0.5)'
         required: true
         default: 'v2.0.5'
+      ref:
+        description: 'Git ref to build from (branch/tag/commit)'
+        required: true
+        default: 'main'
 
 permissions:
   contents: write
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  BUILD_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
 
 jobs:
   tauri-release:
@@ -34,7 +39,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.BUILD_REF }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -57,6 +62,7 @@ jobs:
           releaseName: KeyLingo ${{ env.RELEASE_TAG }}
           releaseBody: |
             Automated build artifacts for ${{ env.RELEASE_TAG }}.
+            Built from: ${{ env.BUILD_REF }}
             - macOS: DMG
             - Windows: MSI + NSIS (.exe)
           releaseDraft: false
