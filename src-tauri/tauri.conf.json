@@ -19,7 +19,6 @@
         "resizable": true,
         "decorations": false,
         "transparent": true,
-        "alwaysOnTop": true,
         "shadow": false,
         "visibleOnAllWorkspaces": true,
         "create": false,

@@ -1,9 +1,16 @@
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+/**
+ * 获取主窗口
+ */
 pub fn get_main_window(app: &AppHandle) -> Option<WebviewWindow> {
   app.get_webview_window("main")
 }
 
+/**
+ * 确保主窗口存在（不存在则创建）
+ * 从 tauri.conf.json 中读取主窗口配置进行创建
+ */
 pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
   if let Some(window) = get_main_window(app) {
     return Ok(window);
@@ -23,6 +30,9 @@ pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .map_err(|e| e.to_string())
 }
 
+/**
+ * 确保截图翻译结果窗口存在（不存在则创建）
+ */
 pub fn ensure_screenshot_window(app: &AppHandle) -> Result<WebviewWindow, String> {
   if let Some(window) = app.get_webview_window("screenshot") {
     return Ok(window);
@@ -47,6 +57,10 @@ pub fn ensure_screenshot_window(app: &AppHandle) -> Result<WebviewWindow, String
   })
 }
 
+/**
+ * 确保截图区域选择覆盖层窗口存在（不存在则创建）
+ * 全屏透明窗口，用于 Windows 平台的区域选择
+ */
 pub fn ensure_capture_overlay_window(app: &AppHandle) -> Result<WebviewWindow, String> {
   if let Some(window) = app.get_webview_window("capture") {
     return Ok(window);
@@ -73,6 +87,10 @@ pub fn ensure_capture_overlay_window(app: &AppHandle) -> Result<WebviewWindow, S
   })
 }
 
+/**
+ * macOS 平台特有：设置窗口在所有工作区可见
+ * 确保截图窗口可以跨越桌面空间显示
+ */
 #[cfg(target_os = "macos")]
 pub fn apply_macos_workspace_behavior(window: &WebviewWindow) {
   let window_for_task = window.clone();

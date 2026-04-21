@@ -51,6 +51,10 @@ use windows::{
 #[cfg(target_os = "windows")]
 use xcap::Monitor;
 
+/// 应用全局状态
+/// 使用 RwLock 保护 settings，允许多读单写；
+/// Mutex 用于 explain_images 和 pending_capture_mode 等需要独占访问的数据；
+/// AtomicBool 用于标记截图翻译/解释是否正在进行，防止并发操作。
 struct AppState {
   settings: RwLock<Settings>,
   explain_images: Mutex<HashMap<String, PathBuf>>,
@@ -61,8 +65,10 @@ struct AppState {
   http: Client,
 }
 
+/// 自启动参数，用于区分用户手动启动和系统自动启动
 const AUTOSTART_ARG: &str = "--from-autostart";
 
+/// 供应商连接输入参数，用于测试连接或获取模型列表时临时传入
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderConnectionInput {
@@ -71,6 +77,8 @@ struct ProviderConnectionInput {
   api_key: String,
 }
 
+/// 解析供应商的凭据信息
+/// 优先使用传入的 ProviderConnectionInput（如测试连接时），否则从 settings 中查找对应的供应商
 fn resolve_provider_credentials(
   settings: &Settings,
   provider_id: &str,
@@ -94,6 +102,8 @@ fn resolve_provider_credentials(
   Ok((provider.base_url.clone(), provider.api_key.clone()))
 }
 
+/// 非 Windows 平台：BusyGuard 是一个 RAII 守卫，用于标记截图操作是否正在进行
+/// 如果当前已经有截图操作在执行，则返回 None，阻止新的截图操作
 #[cfg(not(target_os = "windows"))]
 struct BusyGuard<'a> {
   flag: &'a AtomicBool,
@@ -117,6 +127,7 @@ impl Drop for BusyGuard<'_> {
   }
 }
 
+/// 构建 HTTP 客户端，设置 60 秒超时
 fn build_http_client() -> Client {
   Client::builder()
     .timeout(Duration::from_secs(60))
@@ -127,6 +138,8 @@ fn build_http_client() -> Client {
     })
 }
 
+/// 应用开机自启动设置
+/// 根据传入的 enabled 参数启用或禁用自动启动
 fn apply_launch_at_startup(app: &AppHandle, enabled: bool) -> Result<(), String> {
   let auto_launch = app.autolaunch();
   let current = auto_launch.is_enabled().map_err(|e| e.to_string())?;
@@ -140,11 +153,14 @@ fn apply_launch_at_startup(app: &AppHandle, enabled: bool) -> Result<(), String>
   Ok(())
 }
 
+/// 获取当前应用设置
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Settings {
   state.settings.read().expect("settings lock").clone()
 }
 
+/// 获取默认提示词模板
+/// 返回翻译模板、截图翻译模板以及解释功能的系统/摘要/提问提示词
 #[tauri::command]
 fn get_default_prompt_templates() -> serde_json::Value {
   serde_json::json!({
@@ -165,6 +181,9 @@ fn get_default_prompt_templates() -> serde_json::Value {
   })
 }
 
+/// 保存设置
+/// 先对传入的设置进行清理（sanitize），然后应用开机自启动、重新注册热键、持久化设置、更新托盘菜单
+/// 如果热键注册失败，则回滚运行时设置到之前的状态
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
   let previous_settings = state.settings.read().expect("settings lock").clone();
@@ -193,6 +212,8 @@ fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> 
   Ok(())
 }
 
+/// 翻译文本命令
+/// 根据设置中的翻译供应商和模型进行翻译；如果 API Key 为空则返回提示信息
 #[tauri::command]
 async fn translate_text(state: State<'_, AppState>, text: String) -> Result<String, String> {
   let trimmed = text.trim();
@@ -227,6 +248,8 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
   .await
 }
 
+/// 提交翻译结果
+/// 将翻译后的文本写入剪贴板，隐藏主窗口，如果启用了自动粘贴则发送粘贴快捷键到之前的应用
 #[tauri::command]
 fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> Result<(), String> {
   if text.trim().is_empty() {
@@ -237,7 +260,7 @@ fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> R
   let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
   clipboard.set_text(text).map_err(|e| e.to_string())?;
 
-  // Always hide window first to allow focus to switch back to previous app
+  // 先隐藏窗口，让焦点回到之前的应用
   if let Some(window) = get_main_window(&app) {
     let _ = window.hide();
   }
@@ -252,7 +275,7 @@ fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> R
   }
 
   if auto_paste {
-    // Increased delay to ensure focus switch completes
+    // 增加延迟以确保焦点切换完成
     thread::sleep(Duration::from_millis(600));
     send_paste_shortcut();
   }
@@ -260,6 +283,7 @@ fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> R
   Ok(())
 }
 
+/// 使用系统默认浏览器打开外部链接（仅限 https）
 #[tauri::command]
 #[allow(deprecated)]
 fn open_external(app: AppHandle, url: String) -> Result<(), String> {
@@ -270,6 +294,8 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
   app.shell().open(url, None).map_err(|e| e.to_string())
 }
 
+/// 获取截图解释的初始摘要
+/// 调用视觉 API 对当前截图进行总结，支持流式输出
 #[tauri::command]
 async fn explain_get_initial_summary(
   app: AppHandle,
@@ -309,6 +335,8 @@ async fn explain_get_initial_summary(
   }
 }
 
+/// 对截图解释进行提问
+/// 将用户问题附加在 question_prompt 后发送给视觉模型
 #[tauri::command]
 async fn explain_ask_question(
   app: AppHandle,
@@ -361,6 +389,7 @@ async fn explain_ask_question(
   }
 }
 
+/// 读取解释图片并以 Base64 数据 URL 格式返回
 #[tauri::command]
 fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_json::Value, String> {
   let image_path = resolve_explain_image_path(&state, &image_id)?;
@@ -372,6 +401,7 @@ fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_
   }))
 }
 
+/// 关闭当前解释会话并清理对应的临时图片
 #[tauri::command]
 fn explain_close_current(app: AppHandle, state: State<AppState>) -> Result<(), String> {
   let current_id = {
@@ -386,6 +416,8 @@ fn explain_close_current(app: AppHandle, state: State<AppState>) -> Result<(), S
   Ok(())
 }
 
+/// 保存解释聊天记录到历史记录
+/// 最多保留最近 5 条记录
 #[tauri::command]
 fn explain_save_history(
   app: AppHandle,
@@ -413,6 +445,7 @@ fn explain_save_history(
   Ok(serde_json::json!({ "success": true }))
 }
 
+/// 获取所有解释历史记录
 #[tauri::command]
 fn explain_get_history(state: State<AppState>) -> Result<serde_json::Value, String> {
   let settings = state.settings.read().expect("settings lock");
@@ -422,6 +455,7 @@ fn explain_get_history(state: State<AppState>) -> Result<serde_json::Value, Stri
   }))
 }
 
+/// 加载指定的解释历史记录
 #[tauri::command]
 fn explain_load_history(
   state: State<AppState>,
@@ -436,6 +470,7 @@ fn explain_load_history(
   }
 }
 
+/// 从供应商 API 获取可用模型列表
 #[tauri::command]
 async fn fetch_models(
   state: State<'_, AppState>,
@@ -466,7 +501,7 @@ async fn fetch_models(
         println!("Json parsing failed: {}", e);
         e.to_string()
     })?;
-    
+
     let models = value.get("data")
         .and_then(|data| data.as_array())
         .ok_or_else(|| {
@@ -487,6 +522,7 @@ async fn fetch_models(
     Ok(models)
 }
 
+/// 测试供应商连接是否可用
 #[tauri::command]
 async fn test_provider_connection(
   state: State<'_, AppState>,
@@ -520,6 +556,7 @@ async fn test_provider_connection(
   }
 }
 
+/// 获取平台权限状态（仅限 macOS：辅助功能和屏幕录制权限）
 #[tauri::command]
 fn get_permission_status() -> serde_json::Value {
   #[cfg(target_os = "macos")]
@@ -543,6 +580,7 @@ fn get_permission_status() -> serde_json::Value {
   }
 }
 
+/// 打开系统权限设置面板（仅限 macOS）
 #[tauri::command]
 fn open_permission_settings(kind: String) -> Result<(), String> {
   #[cfg(target_os = "macos")]
@@ -569,7 +607,8 @@ fn open_permission_settings(kind: String) -> Result<(), String> {
   }
 }
 
-
+/// 注册全局热键
+/// 包括翻译热键、截图翻译热键、截图解释热键；会检测重复热键并给出友好错误提示
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
   let settings = app.state::<AppState>().settings.read().expect("settings lock").clone();
   let shortcut_manager = app.global_shortcut();
@@ -666,10 +705,13 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
   }
 }
 
+/// 获取当前鼠标位置
 fn get_mouse_position(app: &AppHandle) -> Option<tauri::PhysicalPosition<f64>> {
   app.cursor_position().ok()
 }
 
+/// Windows 平台：截取指定区域的屏幕图像
+/// 需要将逻辑坐标根据缩放因子转换为物理坐标，再转换为相对于显示器的相对坐标
 #[cfg(target_os = "windows")]
 fn capture_region_image(
   absolute_x: i32,
@@ -749,6 +791,7 @@ fn capture_region_image(
   Ok(temp_path)
 }
 
+/// 非 Windows 平台：区域截图占位符，直接返回不支持的错误
 #[cfg(not(target_os = "windows"))]
 fn capture_region_image(
   _absolute_x: i32,
@@ -762,6 +805,8 @@ fn capture_region_image(
   Err("Region capture is not supported on this platform".to_string())
 }
 
+/// 设置截图忙碌状态
+/// 根据模式（translate/explain）分别设置对应的 AtomicBool
 fn set_capture_busy(state: &AppState, mode: &str) -> Result<(), String> {
   match mode {
     "translate" => {
@@ -782,6 +827,7 @@ fn set_capture_busy(state: &AppState, mode: &str) -> Result<(), String> {
   }
 }
 
+/// 清除截图忙碌状态
 fn clear_capture_busy(state: &AppState, mode: &str) {
   match mode {
     "translate" => state.screenshot_translation_busy.store(false, Ordering::SeqCst),
@@ -790,6 +836,8 @@ fn clear_capture_busy(state: &AppState, mode: &str) {
   }
 }
 
+/// 请求开始区域截图
+/// 创建或显示全屏透明覆盖层窗口（capture），等待用户在前端选择区域
 #[tauri::command]
 fn capture_request(app: AppHandle, mode: String) -> Result<(), String> {
   if mode != "translate" && mode != "explain" {
@@ -837,6 +885,8 @@ fn capture_request(app: AppHandle, mode: String) -> Result<(), String> {
   Ok(())
 }
 
+/// 提交区域截图
+/// 前端完成区域选择后调用此命令，后端根据坐标截取屏幕区域并进行后续处理
 #[tauri::command]
 async fn capture_commit(
   app: AppHandle,
@@ -883,6 +933,8 @@ async fn capture_commit(
   result
 }
 
+/// 取消区域截图
+/// 隐藏覆盖层窗口并清除忙碌状态
 #[tauri::command]
 fn capture_cancel(app: AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
@@ -904,6 +956,14 @@ fn capture_cancel(app: AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+/// 设置窗口置顶状态
+#[tauri::command]
+fn set_always_on_top(window: WebviewWindow, always_on_top: bool) -> Result<(), String> {
+  window.set_always_on_top(always_on_top).map_err(|e| e.to_string())
+}
+
+/// 切换主窗口显示/隐藏
+/// 隐藏时直接隐藏；显示时窗口跟随鼠标位置偏移 (10,10) 弹出，翻译器保持置顶
 fn toggle_main_window(app: &AppHandle) {
   let window = match ensure_main_window(app) {
     Ok(window) => window,
@@ -918,6 +978,8 @@ fn toggle_main_window(app: &AppHandle) {
     let _ = window.hide();
     return;
   }
+
+  let _ = window.set_always_on_top(true);
 
   let pos = get_mouse_position(app)
     .map(|cursor| tauri::PhysicalPosition::new((cursor.x + 10.0) as i32, (cursor.y + 10.0) as i32));
@@ -957,6 +1019,8 @@ fn toggle_main_window(app: &AppHandle) {
   }
 }
 
+/// Windows 平台：处理截图翻译热键
+/// 隐藏主窗口并请求开始区域截图（由前端覆盖层完成区域选择）
 #[cfg(target_os = "windows")]
 async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   if let Some(window) = get_main_window(app) {
@@ -973,6 +1037,8 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+/// 恢复运行时设置
+/// 当保存设置失败时，将设置、热键、托盘等回滚到之前的状态
 fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: &Settings) {
   if let Err(err) = apply_launch_at_startup(app, previous.launch_at_startup) {
     eprintln!("Failed to rollback launch-at-startup setting: {err}");
@@ -992,6 +1058,8 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
   }
 }
 
+/// 非 Windows 平台：处理截图翻译热键
+/// 使用 BusyGuard 防止并发，直接调用系统截图命令获取图片后处理
 #[cfg(not(target_os = "windows"))]
 async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
@@ -1013,6 +1081,8 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
   process_screenshot_translation_from_path(app, temp_path).await
 }
 
+/// 处理截图翻译：从图片路径读取并进行 OCR 识别和翻译
+/// 流程：显示处理中 -> OCR ->（可选直接翻译）-> 翻译 -> 发送结果事件
 async fn process_screenshot_translation_from_path(
   app: &AppHandle,
   temp_path: PathBuf,
@@ -1141,6 +1211,8 @@ async fn process_screenshot_translation_from_path(
   Ok(())
 }
 
+/// Windows 平台：处理截图解释热键
+/// 隐藏主窗口并请求开始区域截图
 #[cfg(target_os = "windows")]
 async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   if let Some(window) = get_main_window(app) {
@@ -1150,6 +1222,8 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   capture_request(app.clone(), "explain".to_string())
 }
 
+/// 非 Windows 平台：处理截图解释热键
+/// 使用 BusyGuard 防止并发，直接截图后处理
 #[cfg(not(target_os = "windows"))]
 async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
@@ -1169,6 +1243,7 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   process_screenshot_explain_from_path(app, temp_path).await
 }
 
+/// 处理截图解释：从图片路径创建解释窗口并记录图片
 async fn process_screenshot_explain_from_path(
   app: &AppHandle,
   temp_path: PathBuf,
@@ -1207,8 +1282,8 @@ async fn process_screenshot_explain_from_path(
   Ok(())
 }
 
-
-
+/// 确保解释窗口存在
+/// 如果窗口已存在，则通过修改 hash 跳转并触发 hashchange 事件；否则新建窗口
 fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindow, String> {
   if let Some(window) = app.get_webview_window("explain") {
     let hash = format!("#explain?imageId={}", image_id);
@@ -1245,6 +1320,7 @@ fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindo
   Ok(window)
 }
 
+/// 清理解释图片：从映射中移除并删除临时文件
 fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
   let state = app.state::<AppState>();
   let mut map = state.explain_images.lock().expect("images lock");
@@ -1260,6 +1336,7 @@ fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
   }
 }
 
+/// 根据 image_id 解析解释图片的临时路径，并进行安全性校验（必须在 temp_dir 内且文件存在）
 fn resolve_explain_image_path(state: &State<AppState>, image_id: &str) -> Result<PathBuf, String> {
   let map = state.explain_images.lock().expect("images lock");
   let path = map
@@ -1277,6 +1354,8 @@ fn resolve_explain_image_path(state: &State<AppState>, image_id: &str) -> Result
   Ok(path)
 }
 
+/// 调用 OpenAI 兼容的文本聊天接口
+/// 发送单轮 user 消息，temperature 设为 0.2，返回模型生成的文本内容
 async fn call_openai_text(
   client: &Client,
   config: &settings::ModelProvider,
@@ -1312,15 +1391,20 @@ async fn call_openai_text(
   Ok(content.trim().to_string())
 }
 
+/// 默认翻译提示词模板
 const DEFAULT_TRANSLATION_TEMPLATE: &str =
   "Translate the following text to {lang}. Output only the translation.\n\nRules:\n- Preserve existing LaTeX formulas exactly (keep $...$ and $$...$$).\n- If formula-like plain text appears, normalize it to proper LaTeX when needed.\n- Keep the original line breaks and list structure when possible.\n- Do not add explanations.\n\n{text}";
 
+/// 默认截图翻译提示词模板
 const DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE: &str =
   "Translate the OCR text below to {lang}. Output only the translation.\n\nRules:\n- Preserve existing LaTeX formulas exactly (keep $...$ and $$...$$).\n- If formula-like plain text appears, normalize it to proper LaTeX when needed.\n- Keep paragraph and line-break structure from OCR text when possible.\n- Correct only obvious OCR character mistakes; do not invent missing content.\n- Do not add explanations.\n\n{text}";
 
+/// 默认 OCR 提示词：要求模型读取图片中的所有文本，并将数学公式转换为 LaTeX 格式
 const DEFAULT_OCR_PROMPT: &str =
   "Read all text in this image. For mathematical formulas, use LaTeX format enclosed in $...$ for inline or $$...$$ for block math. Output only the text content, preserving original lines.";
 
+/// 使用模板构建提示词
+/// 支持 {text} 和 {lang} 占位符；如果自定义模板为空或不含 {text}，则追加文本内容
 fn build_prompt_with_template(
   text: &str,
   lang_name: &str,
@@ -1346,14 +1430,18 @@ fn build_prompt_with_template(
   prompt
 }
 
+/// 构建普通翻译提示词
 fn build_translation_prompt(text: &str, lang_name: &str, template: Option<&str>) -> String {
   build_prompt_with_template(text, lang_name, template, DEFAULT_TRANSLATION_TEMPLATE)
 }
 
+/// 构建截图翻译提示词
 fn build_screenshot_translation_prompt(text: &str, lang_name: &str, template: Option<&str>) -> String {
   build_prompt_with_template(text, lang_name, template, DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE)
 }
 
+/// 构建 OCR 直接翻译提示词
+/// 将截图翻译模板嵌入到 OCR 指令中，让模型一次性完成识别和翻译
 fn build_ocr_direct_translation_prompt(lang_name: &str, template: Option<&str>) -> String {
   let instruction = build_screenshot_translation_prompt(
     "the text content recognized from this image",
@@ -1366,6 +1454,8 @@ fn build_ocr_direct_translation_prompt(lang_name: &str, template: Option<&str>) 
   )
 }
 
+/// 调用 OpenAI 兼容的 OCR/视觉接口
+/// 将图片转为 Base64 后作为 image_url 类型内容发送，temperature 设为 0 以提高识别稳定性
 async fn call_openai_ocr(
   client: &Client,
   config: &settings::ModelProvider,
@@ -1419,6 +1509,8 @@ async fn call_openai_ocr(
   Ok(content.trim().to_string())
 }
 
+/// 调用视觉 API（截图解释）
+/// 支持流式输出：如果 stream 为 true，则通过 stream_vision_response 逐段返回内容
 async fn call_vision_api(
   app: &AppHandle,
   state: &State<'_, AppState>,
@@ -1432,7 +1524,7 @@ async fn call_vision_api(
   let settings = state.settings.read().expect("settings lock").clone();
   let provider = settings.get_provider(&settings.screenshot_explain.provider_id)
     .ok_or_else(|| "Explain provider not found".to_string())?;
-  
+
   let image_path = resolve_explain_image_path(state, image_id)?;
   let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
   let base64 = general_purpose::STANDARD.encode(bytes);
@@ -1504,6 +1596,8 @@ async fn call_vision_api(
   Ok(content.trim().to_string())
 }
 
+/// 流式解析视觉 API 的 SSE 响应
+/// 逐 chunk 读取响应体，解析 "data:" 行，提取 delta 中的 content 并通过事件发送到前端
 async fn stream_vision_response(
   app: &AppHandle,
   mut response: reqwest::Response,
@@ -1556,9 +1650,13 @@ async fn stream_vision_response(
   Ok(full.trim().to_string())
 }
 
+/// 重试延迟基础值（毫秒）
 const RETRY_BASE_DELAY_MS: u64 = 500;
+/// 重试延迟最大值（毫秒）
 const RETRY_MAX_DELAY_MS: u64 = 10_000;
 
+/// 获取实际的重试次数
+/// 如果重试功能被禁用，则返回 1（即只尝试一次）
 fn effective_retry_attempts(settings: &Settings) -> usize {
   if settings.retry_enabled {
     settings.retry_attempts as usize
@@ -1567,6 +1665,7 @@ fn effective_retry_attempts(settings: &Settings) -> usize {
   }
 }
 
+/// 从响应头中解析 Retry-After 值（秒），转换为毫秒延迟
 fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
   headers
     .get("retry-after")
@@ -1574,14 +1673,20 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
     .and_then(|value| value.parse::<u64>().ok())
 }
 
+/// 判断 HTTP 状态码是否可重试
+/// 包括 429（限流）和所有服务器错误（5xx）
 fn is_retryable_status(status: StatusCode) -> bool {
   status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
+/// 判断请求错误是否可重试
+/// 包括超时和连接错误
 fn is_retryable_error(error: &reqwest::Error) -> bool {
   error.is_timeout() || error.is_connect()
 }
 
+/// 计算重试延迟
+/// 优先使用服务器返回的 Retry-After 头；否则使用指数退避策略
 fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
   if let Some(seconds) = retry_after {
     return seconds.saturating_mul(1000);
@@ -1591,6 +1696,8 @@ fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
   delay.min(RETRY_MAX_DELAY_MS)
 }
 
+/// 带重试机制的 HTTP 发送函数
+/// 对可重试的错误（限流、服务器错误、超时、连接失败）进行指数退避重试
 async fn send_with_retry<F, Fut>(label: &str, attempts: usize, mut send: F) -> Result<reqwest::Response, String>
 where
   F: FnMut() -> Fut,
@@ -1642,7 +1749,8 @@ where
   }))
 }
 
-
+/// macOS 平台：检查辅助功能权限
+/// 如果 open_if_needed 为 true 且未授权，则自动打开系统设置面板
 #[cfg(target_os = "macos")]
 fn check_accessibility(open_if_needed: bool) -> bool {
     use std::process::Command;
@@ -1651,14 +1759,14 @@ fn check_accessibility(open_if_needed: bool) -> bool {
         extern "C" {
             fn AXIsProcessTrustedWithOptions(options: *mut libc::c_void) -> bool;
         }
-        
-        // simple check without options first
+
+        // 先进行简单检查（不传入选项）
         if AXIsProcessTrustedWithOptions(std::ptr::null_mut()) {
             return true;
         }
 
         if open_if_needed {
-            // We open System Settings directly instead of trying to trigger the AX prompt via FFI.
+            // 直接打开系统设置，而不是尝试通过 FFI 触发授权弹窗
             eprintln!("Accessibility not trusted, opening preferences...");
             let _ = Command::new("open")
               .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
@@ -1668,6 +1776,7 @@ fn check_accessibility(open_if_needed: bool) -> bool {
     }
 }
 
+/// macOS 平台：检查屏幕录制权限
 #[cfg(target_os = "macos")]
 fn check_screen_recording_permission() -> bool {
   unsafe {
@@ -1679,12 +1788,14 @@ fn check_screen_recording_permission() -> bool {
   }
 }
 
+/// 发送粘贴快捷键到当前活动应用
+/// macOS 通过 AppleScript 发送 Command+V；Windows 通过 enigo 模拟 Ctrl+V
 fn send_paste_shortcut() {
   #[cfg(target_os = "macos")]
   {
     if !check_accessibility(true) {
         eprintln!("Accessibility permission missing!");
-        return; 
+        return;
     }
 
     use std::process::Command;
@@ -1692,7 +1803,7 @@ fn send_paste_shortcut() {
     match Command::new("osascript")
       .arg("-e")
       .arg("tell application \"System Events\" to keystroke \"v\" using command down")
-      .output() 
+      .output()
     {
       Ok(output) => {
          if !output.status.success() {
@@ -1714,9 +1825,12 @@ fn send_paste_shortcut() {
   }
 }
 
+/// 打开设置窗口
+/// 调整窗口大小为 420x520，取消置顶，显示并聚焦，同时通过 hash 路由切换到设置页面
 fn open_settings_window(app: &AppHandle) -> Result<(), String> {
   let window = ensure_main_window(app)?;
   let _ = window.set_size(tauri::LogicalSize::new(420.0, 520.0));
+  let _ = window.set_always_on_top(false);
   let _ = window.show();
   let _ = window.set_focus();
   let _ = window.eval(
@@ -1726,7 +1840,7 @@ fn open_settings_window(app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
 
-
+/// 根据语言返回托盘菜单的标签文本
 fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str) {
   match lang {
     "en" => ("Show Translator", "Settings", "Quit"),
@@ -1734,6 +1848,7 @@ fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str) {
   }
 }
 
+/// 构建托盘菜单
 fn build_tray_menu(
   app: &AppHandle,
   lang: &str,
@@ -1749,6 +1864,8 @@ fn build_tray_menu(
   Menu::with_items(app, &[&show, &settings, &quit]).map_err(|e| e.to_string())
 }
 
+/// 设置系统托盘图标和菜单
+/// 如果托盘已存在则只更新菜单；否则创建新的托盘图标并绑定菜单事件
 fn setup_tray(app: &AppHandle) -> Result<(), String> {
   use tauri::tray::TrayIconBuilder;
 
@@ -1780,6 +1897,7 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
       "show" => {
         match ensure_main_window(app) {
           Ok(window) => {
+            let _ = window.set_always_on_top(true);
             let _ = window.show();
             let _ = window.set_focus();
           }
@@ -1803,6 +1921,8 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+/// 应用入口函数
+/// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘
 fn main() {
   let autostart_plugin = {
     #[cfg(target_os = "macos")]
@@ -1853,7 +1973,7 @@ fn main() {
     .setup(|app| {
       #[cfg(target_os = "macos")]
       {
-        // Hide Dock icon by switching to accessory activation policy.
+        // 隐藏 Dock 图标，将应用设置为 accessory 激活策略
         let _ = app
           .handle()
           .set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -1883,6 +2003,7 @@ fn main() {
 
       #[cfg(target_os = "windows")]
       {
+        // Windows 平台：如果不是通过自启动启动的，则默认打开设置窗口
         let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
         if !launched_from_autostart {
           if let Err(err) = open_settings_window(&app.handle()) {
@@ -1890,6 +2011,7 @@ fn main() {
           }
         }
 
+        // 预创建截图覆盖层窗口并隐藏，以便后续快速显示
         if let Ok(capture_window) = ensure_capture_overlay_window(&app.handle()) {
           let _ = capture_window.hide();
         }
@@ -1916,7 +2038,8 @@ fn main() {
       open_permission_settings,
       capture_request,
       capture_commit,
-      capture_cancel
+      capture_cancel,
+      set_always_on_top
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

@@ -1,9 +1,10 @@
+/* 导入 TailwindCSS v4 */
 @import "tailwindcss";
+/* 导入 TailwindCSS 排版插件 */
 @plugin "@tailwindcss/typography";
 
 
-/* Custom config to enable class strategy if needed, but in v4 it's often automatic or data-attribute. 
-   Ah, in v4 'darkMode' is 'media' by default. We want 'selector' (class). */
+/* 自定义 dark 变体：通过 .dark 类启用深色模式 */
 @custom-variant dark (&:where(.dark, .dark *));
 
 html,
@@ -33,4 +34,40 @@ body {
 
 .dark .window-container {
   background-color: rgb(23 23 23);
+}
+
+/* 自定义滚动条 */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.18);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.32);
+}
+
+.dark .custom-scrollbar {
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.32);
 }

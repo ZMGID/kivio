@@ -6,33 +6,61 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 
+// 对话消息类型
 interface Message {
   role: 'user' | 'assistant'
   content: string
 }
 
+/**
+ * 截图解释组件
+ * 提供基于截图内容的 AI 图像理解、自动总结和多轮问答功能
+ * 支持流式输出和历史记录管理
+ */
 export default function ScreenshotExplain() {
+  // 当前截图的唯一标识
   const [imageId, setImageId] = useState('')
+  // 截图的 base64 预览数据
   const [imagePreview, setImagePreview] = useState('')
+  // 对话消息列表
   const [messages, setMessages] = useState<Message[]>([])
+  // 用户输入内容
   const [input, setInput] = useState('')
+  // 是否正在加载 AI 响应
   const [loading, setLoading] = useState(false)
+  // 是否正在初始化（获取初始总结）
   const [initializing, setInitializing] = useState(true)
+  // 是否显示截图预览
   const [showImage, setShowImage] = useState(true)
+  // 是否显示历史记录面板
   const [showHistory, setShowHistory] = useState(false)
+  // 历史记录列表
   const [history, setHistory] = useState<Array<{ id: string; timestamp: number; messages: Message[] }>>([])
+  // 是否处于历史记录浏览模式
   const [historyMode, setHistoryMode] = useState(false)
+  // 当前使用的模型名称
   const [modelName, setModelName] = useState('')
+  // 是否显示原始 Markdown 源码
   const [showRaw, setShowRaw] = useState(false)
+  // 是否启用流式输出
   const [streamEnabled, setStreamEnabled] = useState(false)
+
+  // DOM 引用
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // 使用 ref 存储最新值，避免闭包问题
   const imageIdRef = useRef('')
+  // 流式输出状态跟踪
   const streamingRef = useRef<null | { imageId: string; kind: 'summary' | 'answer'; index: number }>(null)
   const streamEnabledRef = useRef(false)
 
+  // 格式化错误信息
   const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
+  /**
+   * 加载当前使用的模型信息
+   */
   const loadModelInfo = useCallback(async () => {
     try {
       const settings = await api.getSettings()
@@ -64,6 +92,9 @@ export default function ScreenshotExplain() {
     await loadModelInfo()
   }, [loadModelInfo])
 
+  /**
+   * 加载指定截图图片的 base64 数据
+   */
   const loadImage = useCallback(async (id: string) => {
     try {
       const result = await api.explainReadImage(id)
@@ -75,6 +106,9 @@ export default function ScreenshotExplain() {
     }
   }, [])
 
+  /**
+   * 获取图片的初始 AI 总结
+   */
   const getInitialSummary = useCallback(async (id: string) => {
     setInitializing(true)
     setLoading(true)
@@ -125,6 +159,9 @@ export default function ScreenshotExplain() {
     }
   }, [ensureSettings])
 
+  /**
+   * 加载对话历史记录
+   */
   const loadHistory = useCallback(async () => {
     try {
       const result = await api.explainGetHistory()
@@ -134,6 +171,7 @@ export default function ScreenshotExplain() {
     }
   }, [])
 
+  // 初始化：监听 URL hash 变化加载图片
   useEffect(() => {
     const applyImageId = async (decodedId: string) => {
       if (!decodedId || decodedId === imageIdRef.current) return
@@ -169,6 +207,7 @@ export default function ScreenshotExplain() {
     return () => window.removeEventListener('hashchange', parseHash)
   }, [getInitialSummary, loadHistory, loadImage, loadModelInfo])
 
+  // 监听流式输出事件
   useEffect(() => {
     let unlisten: (() => void) | undefined
     api.onExplainStream((payload: ExplainStreamPayload) => {
@@ -193,8 +232,12 @@ export default function ScreenshotExplain() {
     }
   }, [])
 
+  // 消息列表自动滚动到底部
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
+  /**
+   * 发送用户问题
+   */
   const handleSend = async () => {
     if (!input.trim() || loading || historyMode || !imageId) return
     const userMessage: Message = { role: 'user', content: input }
@@ -251,11 +294,13 @@ export default function ScreenshotExplain() {
     }
   }
 
+  // 键盘事件：Enter 发送，Shift+Enter 换行，Esc 关闭
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
     else if (e.key === 'Escape') handleClose()
   }
 
+  // 保存当前对话到历史记录
   const saveToHistory = async () => {
     if (imageId && messages.length > 0) {
       try {
@@ -267,6 +312,7 @@ export default function ScreenshotExplain() {
     }
   }
 
+  // 加载历史记录中的某条对话
   const loadHistoryRecord = async (historyId: string) => {
     try {
       await api.explainCloseCurrent()
@@ -285,6 +331,7 @@ export default function ScreenshotExplain() {
     }
   }
 
+  // 关闭窗口并清理资源
   const handleClose = async () => {
     if (messages.length > 0) await saveToHistory()
     try {
@@ -304,6 +351,7 @@ export default function ScreenshotExplain() {
         data-tauri-drag-region
       >
         <div className="flex items-center gap-2">
+          {/* 显示/隐藏截图按钮 */}
           {imagePreview && (
             <button
               onClick={() => setShowImage(!showImage)}
@@ -315,6 +363,7 @@ export default function ScreenshotExplain() {
               <span>{showImage ? '隐藏截图' : '显示截图'}</span>
             </button>
           )}
+          {/* 当前模型名称标签 */}
           {modelName && (
             <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 rounded-full border border-neutral-200/50 dark:border-neutral-700/50">
               <Cpu size={10} strokeWidth={2} />{modelName}
@@ -322,6 +371,7 @@ export default function ScreenshotExplain() {
           )}
         </div>
         <div className="flex items-center gap-1" data-tauri-drag-region="false">
+          {/* 历史记录按钮 */}
           <button
             onClick={() => setShowHistory(!showHistory)}
             className={`p-1.5 rounded-lg transition-all duration-200 ${showHistory
@@ -333,6 +383,7 @@ export default function ScreenshotExplain() {
           >
             <Clock size={15} strokeWidth={2} />
           </button>
+          {/* 源码/预览切换按钮 */}
           <button
             onClick={() => setShowRaw(!showRaw)}
             className={`p-1.5 rounded-lg transition-all duration-200 flex items-center gap-1.5 ${showRaw
@@ -345,6 +396,7 @@ export default function ScreenshotExplain() {
             {showRaw ? <Eye size={14} strokeWidth={2} /> : <Code size={14} strokeWidth={2} />}
             <span className="text-[11px] font-medium">{showRaw ? '预览' : '源码'}</span>
           </button>
+          {/* 关闭按钮 */}
           <button
             onClick={handleClose}
             className="p-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-all duration-200"
@@ -357,7 +409,7 @@ export default function ScreenshotExplain() {
 
       {/* 历史记录面板 */}
       {showHistory && (
-        <div className="border-b border-black/5 dark:border-white/5 bg-neutral-50/90 dark:bg-neutral-900/90 backdrop-blur-md max-h-56 overflow-y-auto z-10">
+        <div className="border-b border-black/5 dark:border-white/5 bg-neutral-50/90 dark:bg-neutral-900/90 backdrop-blur-md max-h-56 overflow-y-auto custom-scrollbar z-10">
           <div className="p-3 space-y-2">
             <div className="flex items-center justify-between px-1">
               <p className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">历史记录</p>
@@ -388,7 +440,7 @@ export default function ScreenshotExplain() {
         </div>
       )}
 
-      {/* 图片预览 */}
+      {/* 图片预览区域 */}
       {imagePreview && showImage && (
         <div className="border-b border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-sm">
           <div className="px-4 py-3 animate-in slide-in-from-top-2 duration-200">
@@ -399,8 +451,9 @@ export default function ScreenshotExplain() {
         </div>
       )}
 
-      {/* 消息列表 */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-5" data-tauri-drag-region="false">
+      {/* 消息列表区域 */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-5 custom-scrollbar" data-tauri-drag-region="false">
+        {/* 初始化加载动画 */}
         {initializing && (
           <div className="flex flex-col items-center justify-center py-12 gap-4 animate-in fade-in duration-500">
             <div className="relative">
@@ -411,6 +464,7 @@ export default function ScreenshotExplain() {
           </div>
         )}
 
+        {/* 渲染消息列表 */}
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2 fade-in duration-300`}>
             <div
@@ -437,6 +491,7 @@ export default function ScreenshotExplain() {
           </div>
         ))}
 
+        {/* 加载中指示器（非流式模式） */}
         {loading && !initializing && !(streamEnabled && streamingRef.current) && (
           <div className="flex justify-start animate-in fade-in duration-200">
             <div className="bg-white dark:bg-neutral-800 px-4 py-2.5 rounded-2xl rounded-tl-sm border border-black/5 dark:border-white/5 shadow-sm">

@@ -2,13 +2,22 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreBuilder;
 
+// 设置存储文件名
 const SETTINGS_STORE: &str = "settings.json";
+// 系统钥匙串服务名（用于安全存储 API Key）
 const KEYRING_SERVICE: &str = "com.zmair.keylingo";
 
+/**
+ * 生成提供商 API Key 在钥匙串中的条目名称
+ */
 fn provider_credential_name(provider_id: &str) -> String {
   format!("provider:{provider_id}")
 }
 
+/**
+ * 将提供商 API Key 保存到系统钥匙串
+ * 如果 API Key 为空则删除对应条目
+ */
 fn save_provider_api_key(provider_id: &str, api_key: &str) -> Result<(), String> {
   let entry = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id))
     .map_err(|e| e.to_string())?;
@@ -21,11 +30,17 @@ fn save_provider_api_key(provider_id: &str, api_key: &str) -> Result<(), String>
   entry.set_password(api_key).map_err(|e| e.to_string())
 }
 
+/**
+ * 从系统钥匙串加载提供商 API Key
+ */
 fn load_provider_api_key(provider_id: &str) -> Option<String> {
   let entry = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id)).ok()?;
   entry.get_password().ok()
 }
 
+/**
+ * 将所有提供商的 API Key 持久化到钥匙串
+ */
 fn persist_provider_api_keys(settings: &Settings) -> Result<(), String> {
   for provider in &settings.providers {
     save_provider_api_key(&provider.id, &provider.api_key)?;
@@ -33,10 +48,15 @@ fn persist_provider_api_keys(settings: &Settings) -> Result<(), String> {
   Ok(())
 }
 
+/**
+ * 从钥匙串恢复所有提供商的 API Key
+ * 同时处理旧版本设置中内联存储的 API Key 迁移到钥匙串
+ */
 fn hydrate_provider_api_keys(settings: &mut Settings) {
   for provider in &mut settings.providers {
     let inline_key = provider.api_key.trim().to_string();
     if !inline_key.is_empty() {
+      // 如果 API Key 仍内联存储在设置中，迁移到钥匙串
       if let Err(err) = save_provider_api_key(&provider.id, &inline_key) {
         eprintln!(
           "Failed to migrate API key for provider {} to keyring: {}",
@@ -47,10 +67,16 @@ fn hydrate_provider_api_keys(settings: &mut Settings) {
       continue;
     }
 
+    // 从钥匙串加载
     provider.api_key = load_provider_api_key(&provider.id).unwrap_or_default();
   }
 }
 
+// ========== 数据结构定义 ==========
+
+/**
+ * 旧版 OpenAI 配置（用于迁移兼容）
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OpenAIConfig {
@@ -72,6 +98,9 @@ impl Default for OpenAIConfig {
   }
 }
 
+/**
+ * AI 模型提供商配置
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelProvider {
@@ -85,6 +114,9 @@ pub struct ModelProvider {
   pub enabled_models: Vec<String>,
 }
 
+/**
+ * 截图翻译功能配置
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ScreenshotTranslationConfig {
@@ -100,7 +132,7 @@ pub struct ScreenshotTranslationConfig {
   pub direct_translate: bool,
   #[serde(default)]
   pub prompt: Option<String>,
-  // Legacy field for migration
+  // 旧版字段，用于迁移
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openai: Option<OpenAIConfig>,
 }
@@ -119,6 +151,9 @@ impl Default for ScreenshotTranslationConfig {
   }
 }
 
+/**
+ * 截图解释自定义提示词
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomPrompts {
@@ -127,6 +162,9 @@ pub struct CustomPrompts {
   pub question_prompt: Option<String>,
 }
 
+/**
+ * 旧版截图解释模型配置（用于迁移兼容）
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenshotExplainModel {
@@ -136,6 +174,9 @@ pub struct ScreenshotExplainModel {
   pub model_name: String,
 }
 
+/**
+ * 截图解释功能配置
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ScreenshotExplainConfig {
@@ -153,7 +194,7 @@ pub struct ScreenshotExplainConfig {
   pub stream_enabled: bool,
   #[serde(default)]
   pub custom_prompts: Option<CustomPrompts>,
-  // Legacy field for migration
+  // 旧版字段，用于迁移
   #[serde(skip_serializing_if = "Option::is_none")]
   pub model_legacy: Option<ScreenshotExplainModel>,
 }
@@ -173,6 +214,9 @@ impl Default for ScreenshotExplainConfig {
   }
 }
 
+/**
+ * 对话消息
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainMessage {
@@ -180,6 +224,9 @@ pub struct ExplainMessage {
   pub content: String,
 }
 
+/**
+ * 历史记录条目
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainHistoryRecord {
@@ -188,6 +235,9 @@ pub struct ExplainHistoryRecord {
   pub messages: Vec<ExplainMessage>,
 }
 
+/**
+ * 应用完整设置
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -223,12 +273,15 @@ pub struct Settings {
   pub retry_enabled: bool,
   #[serde(default = "default_retry_attempts")]
   pub retry_attempts: u8,
-  // Legacy field for migration
+  // 旧版字段，用于迁移
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openai: Option<OpenAIConfig>,
 }
 
 impl Settings {
+  /**
+   * 根据 ID 查找提供商
+   */
   pub fn get_provider(&self, id: &str) -> Option<&ModelProvider> {
     self.providers.iter().find(|p| p.id == id)
   }
@@ -258,10 +311,20 @@ impl Default for Settings {
   }
 }
 
+/**
+ * 设置数据清理与迁移
+ *
+ * 执行以下操作：
+ * 1. 从旧版单提供商配置迁移到多提供商体系
+ * 2. 确保空字段有默认值
+ * 3. 确保当前使用的模型在 enabled_models 中
+ * 4. 规范化快捷键字符串
+ * 5. 确保必要字段不为空
+ */
 pub fn sanitize_settings(mut settings: Settings) -> Settings {
-  // 1. Migration from old settings
+  // 1. 从旧版配置迁移
   if settings.providers.is_empty() {
-    // Migrate Translator provider
+    // 迁移翻译提供商
     if let Some(old_openai) = settings.openai.take() {
       settings.providers.push(ModelProvider {
         id: "default-translator".to_string(),
@@ -275,7 +338,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
       settings.translator_model = old_openai.model;
     }
 
-    // Migrate OCR provider
+    // 迁移 OCR 提供商
     if let Some(old_ocr) = settings.screenshot_translation.openai.take() {
         settings.providers.push(ModelProvider {
             id: "default-ocr".to_string(),
@@ -289,7 +352,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         settings.screenshot_translation.model = old_ocr.model;
     }
 
-    // Migrate Explain provider
+    // 迁移解释提供商
     if let Some(old_explain) = settings.screenshot_explain.model_legacy.take() {
         settings.providers.push(ModelProvider {
             id: "default-explain".to_string(),
@@ -304,7 +367,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
   }
 
-  // 2. Ensure defaults for empty fields
+  // 2. 为空字段设置默认值
   if settings.translator_model.is_empty() {
       settings.translator_model = "gpt-4o".to_string();
   }
@@ -354,10 +417,10 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
       }
   }
 
-  // 3. Ensure current models are in enabled_models
+  // 3. 确保当前使用的模型在 enabled_models 列表中
   for provider in &mut settings.providers {
       if provider.enabled_models.is_empty() {
-          // If a feature is using this provider, add its model to enabled_models
+          // 如果该提供商被某个功能使用，添加对应模型
           if settings.translator_provider_id == provider.id {
               provider.enabled_models.push(settings.translator_model.clone());
           }
@@ -371,19 +434,20 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
                   provider.enabled_models.push(settings.screenshot_explain.model.clone());
               }
           }
-          // Default fallback if still empty
+          // 如果仍然为空，添加默认模型
           if provider.enabled_models.is_empty() {
               provider.enabled_models.push("gpt-4o".to_string());
           }
       }
   }
 
-  // 4. Normalize hotkey strings
+  // 4. 规范化快捷键字符串
   settings.hotkey = normalize_hotkey(&settings.hotkey);
   settings.screenshot_translation.hotkey =
     normalize_hotkey(&settings.screenshot_translation.hotkey);
   settings.screenshot_explain.hotkey = normalize_hotkey(&settings.screenshot_explain.hotkey);
 
+  // 规范化提示词（去除首尾空白，空值转为 None）
   settings.translator_prompt = normalize_optional_prompt(settings.translator_prompt.take());
   settings.screenshot_translation.prompt =
     normalize_optional_prompt(settings.screenshot_translation.prompt.take());
@@ -393,7 +457,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
   }
 
-  // 5. Ensure essential fields are not empty
+  // 5. 确保必要字段不为空
   if settings.hotkey.is_empty() {
     settings.hotkey = "CommandOrControl+Alt+T".to_string();
   }
@@ -409,9 +473,14 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   settings
 }
 
+/**
+ * 持久化设置到存储文件
+ * API Key 会被保存到钥匙串，设置文件中只保留空的 api_key 字段
+ */
 pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
   persist_provider_api_keys(settings)?;
 
+  // 克隆设置并清空 API Key（避免写入文件）
   let mut persisted_settings = settings.clone();
   for provider in &mut persisted_settings.providers {
     provider.api_key.clear();
@@ -427,6 +496,10 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
   store.save().map_err(|e| e.to_string())
 }
 
+/**
+ * 从存储文件加载设置
+ * 加载后会执行清理迁移并从钥匙串恢复 API Key
+ */
 pub fn load_settings(app: &AppHandle) -> Settings {
   let store = StoreBuilder::new(app, SETTINGS_STORE).build();
   let settings = match store {
@@ -441,6 +514,11 @@ pub fn load_settings(app: &AppHandle) -> Settings {
   sanitized
 }
 
+// ========== 默认提示词生成 ==========
+
+/**
+ * 获取默认系统提示词
+ */
 pub fn default_system_prompt(language: &str) -> String {
   if language == "zh" {
     "你是一个图片分析助手。请用自然流畅的语言回答，不要使用小标题、序号或分点列举。如果遇到数学公式，请使用 LaTeX 格式（如 $...$ 或 $$...$$）以确保正确渲染。\n\n".to_string()
@@ -450,6 +528,9 @@ pub fn default_system_prompt(language: &str) -> String {
   }
 }
 
+/**
+ * 获取默认总结提示词
+ */
 pub fn default_summary_prompt(language: &str) -> String {
   if language == "zh" {
     "你是一个图片分析助手。请简洁地总结这张图片的主要内容，不要使用小标题、序号或分点列举。如果遇到数学公式，请使用 LaTeX 格式（如 $...$ 或 $$...$$）。\n\n要求：\n- 用1-3句话概括图片核心内容\n- 语言自然流畅，像在和朋友描述\n- 突出最重要的信息\n- 不要使用\"图片显示...\"这样的开头\n\n请用中文回复。"
@@ -460,6 +541,9 @@ pub fn default_summary_prompt(language: &str) -> String {
   }
 }
 
+/**
+ * 获取默认问答提示词
+ */
 pub fn default_question_prompt(language: &str) -> String {
   if language == "zh" {
     "你是一个图片分析助手。用户正在询问关于这张图片的问题。如果回答中包含数学公式，请务必使用 LaTeX 格式（如 $...$ 或 $$...$$）。\n\n要求：\n- 直接回答问题，不要使用小标题或分点列举\n- 语言自然、简洁\n- 基于图片内容回答\n- 如果问题与图片无关，礼貌地引导回到图片内容\n\n请用中文回复。"
@@ -469,6 +553,8 @@ pub fn default_question_prompt(language: &str) -> String {
       .to_string()
   }
 }
+
+// ========== 默认值辅助函数 ==========
 
 fn default_true() -> bool {
   true
@@ -530,6 +616,9 @@ fn clamp_retry_attempts(value: u8) -> u8 {
   value.clamp(1, 5)
 }
 
+/**
+ * 规范化可选提示词：去除空白，空字符串转为 None
+ */
 fn normalize_optional_prompt(value: Option<String>) -> Option<String> {
   value.and_then(|v| {
     let trimmed = v.trim();
@@ -541,6 +630,9 @@ fn normalize_optional_prompt(value: Option<String>) -> Option<String> {
   })
 }
 
+/**
+ * 清理自定义提示词：如果所有提示词都为空，返回 true 表示应删除整个结构
+ */
 fn sanitize_custom_prompts(prompts: &mut CustomPrompts) -> bool {
   prompts.system_prompt = normalize_optional_prompt(prompts.system_prompt.take());
   prompts.summary_prompt = normalize_optional_prompt(prompts.summary_prompt.take());
@@ -550,6 +642,9 @@ fn sanitize_custom_prompts(prompts: &mut CustomPrompts) -> bool {
     && prompts.question_prompt.is_none()
 }
 
+/**
+ * 规范化快捷键字符串：去除各部分首尾空白并过滤空部分
+ */
 fn normalize_hotkey(value: &str) -> String {
   value
     .split('+')

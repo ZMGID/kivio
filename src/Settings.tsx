@@ -9,7 +9,8 @@ interface SettingsProps {
   onSettingsChange: () => void
 }
 
-// 多语言文本
+// ========== 多语言文本定义 ==========
+
 const i18n = {
   zh: {
     settings: '设置',
@@ -195,8 +196,10 @@ const i18n = {
   }
 }
 
+// 修饰键集合（录制快捷键时忽略）
 const modifierKeys = new Set(['Shift', 'Meta', 'Control', 'Alt', 'AltGraph'])
 
+// 键盘按键别名映射
 const keyAliasMap: Record<string, string> = {
   Escape: 'Esc',
   ' ': 'Space',
@@ -207,12 +210,18 @@ const keyAliasMap: Record<string, string> = {
   ArrowRight: 'Right',
 }
 
+/**
+ * 从键盘 code 提取字母/数字键值
+ */
 const normalizeKeyFromCode = (code: string) => {
   if (code.startsWith('Key')) return code.slice(3)
   if (code.startsWith('Digit')) return code.slice(5)
   return ''
 }
 
+/**
+ * 将键盘事件转换为快捷键字符串
+ */
 const normalizeHotkeyKey = (event: KeyboardEvent) => {
   const { key, code } = event
   if (!key) return ''
@@ -227,6 +236,9 @@ const normalizeHotkeyKey = (event: KeyboardEvent) => {
   return ''
 }
 
+/**
+ * 构建完整的快捷键字符串（如 CommandOrControl+Alt+T）
+ */
 const buildHotkey = (event: KeyboardEvent) => {
   const key = normalizeHotkeyKey(event)
   if (!key) return ''
@@ -239,7 +251,11 @@ const buildHotkey = (event: KeyboardEvent) => {
 }
 
 
-// 通用组件
+// ========== 通用 UI 组件 ==========
+
+/**
+ * 开关切换组件
+ */
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
@@ -253,6 +269,9 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
   )
 }
 
+/**
+ * 下拉选择组件
+ */
 function Select({ value, onChange, options, className = '' }: {
   value: string
   onChange: (v: string) => void
@@ -278,6 +297,9 @@ function Select({ value, onChange, options, className = '' }: {
   )
 }
 
+/**
+ * 文本输入组件
+ */
 function Input({ value, onChange, type = 'text', placeholder = '', className = '', list, ...props }: {
   value: string
   onChange: (v: string) => void
@@ -300,6 +322,9 @@ function Input({ value, onChange, type = 'text', placeholder = '', className = '
   )
 }
 
+/**
+ * 多行文本输入组件
+ */
 function TextArea({ value, onChange, placeholder = '', rows = 2 }: {
   value: string
   onChange: (v: string) => void
@@ -318,10 +343,16 @@ function TextArea({ value, onChange, placeholder = '', rows = 2 }: {
   )
 }
 
+/**
+ * 标签组件
+ */
 function Label({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <label className={`block text-[11px] font-medium text-neutral-500 dark:text-neutral-400 mb-1.5 uppercase tracking-wide ${className}`}>{children}</label>
 }
 
+/**
+ * 卡片容器组件
+ */
 function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
     <div className={`p-4 rounded-xl bg-white dark:bg-neutral-800/50 border border-black/5 dark:border-white/5 shadow-sm ${className}`}>
@@ -330,6 +361,9 @@ function Card({ children, className = '' }: { children: ReactNode; className?: s
   )
 }
 
+/**
+ * 权限状态项组件（macOS）
+ */
 function PermissionItem({
   label,
   granted,
@@ -368,6 +402,9 @@ function PermissionItem({
   )
 }
 
+/**
+ * 快捷键输入组件（支持录制模式）
+ */
 function HotkeyInput({
   value,
   onChange,
@@ -412,6 +449,9 @@ function HotkeyInput({
   )
 }
 
+/**
+ * 默认提示词展示组件
+ */
 function DefaultPrompt({ label, content }: { label: string; content: string }) {
   return (
     <div className="mt-2 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-50 dark:bg-neutral-900/40 px-3 py-2">
@@ -423,6 +463,9 @@ function DefaultPrompt({ label, content }: { label: string; content: string }) {
   )
 }
 
+/**
+ * 区块标题组件
+ */
 function SectionTitle({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
     <div className="flex items-center gap-2 mb-4">
@@ -434,7 +477,9 @@ function SectionTitle({ icon, children }: { icon: ReactNode; children: ReactNode
   )
 }
 
-// 标签页按钮
+/**
+ * 标签页按钮组件
+ */
 function TabButton({ active, onClick, icon, label }: {
   active: boolean
   onClick: () => void
@@ -456,6 +501,12 @@ function TabButton({ active, onClick, icon, label }: {
   )
 }
 
+// ========== 设置主组件 ==========
+
+/**
+ * 设置面板主组件
+ * 提供基础设置、翻译设置、截图设置、模型管理四大标签页
+ */
 export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null)
   const [initialSettingsSnapshot, setInitialSettingsSnapshot] = useState('')
@@ -477,8 +528,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
+  // 判断是否有未保存的更改
   const hasUnsavedChanges = settings ? JSON.stringify(settings) !== initialSettingsSnapshot : false
 
+  // 初始化：加载设置、版本号、默认提示词
   useEffect(() => {
     let active = true
     api.getSettings()
@@ -492,7 +545,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         if (!active) return
         console.error('Failed to load settings:', err)
         // 使用默认设置以避免永远 loading
-        setSettings({
+        const defaultSettings: SettingsData = {
           hotkey: 'CommandOrControl+Alt+T',
           theme: 'system',
           targetLang: 'auto',
@@ -526,42 +579,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           },
           explainHistory: [],
           settingsLanguage: 'zh'
-        })
-        setInitialSettingsSnapshot(JSON.stringify({
-          hotkey: 'CommandOrControl+Alt+T',
-          theme: 'system',
-          targetLang: 'auto',
-          source: 'openai',
-          autoPaste: true,
-          launchAtStartup: false,
-          translatorProviderId: 'default-translator',
-          translatorModel: 'gpt-4o',
-          translatorPrompt: '',
-          providers: [
-            { id: 'default-translator', name: 'OpenAI (Translator)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
-            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
-            { id: 'default-explain', name: 'OpenAI (Explain)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
-          ],
-          retryEnabled: true,
-          retryAttempts: 3,
-          screenshotTranslation: {
-            enabled: true,
-            hotkey: 'CommandOrControl+Shift+A',
-            providerId: 'default-ocr',
-            model: 'gpt-4o',
-            prompt: ''
-          },
-          screenshotExplain: {
-            enabled: true,
-            hotkey: 'CommandOrControl+Shift+E',
-            providerId: 'default-explain',
-            model: 'gpt-4o',
-            defaultLanguage: 'zh',
-            streamEnabled: false
-          },
-          explainHistory: [],
-          settingsLanguage: 'zh'
-        }))
+        }
+        setSettings(defaultSettings)
+        setInitialSettingsSnapshot(JSON.stringify(defaultSettings))
         setLoading(false)
       })
     api.getAppVersion()
@@ -584,6 +604,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }, [])
 
+  /**
+   * 刷新权限状态（macOS）
+   */
   const refreshPermissions = useCallback(async () => {
     setPermissionsLoading(true)
     try {
@@ -611,6 +634,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     setRetryAttemptsInput(String(retryAttempts ?? 3))
   }, [retryAttempts])
 
+  /**
+   * 保存设置
+   */
   const handleSave = useCallback(async () => {
     if (!settings) return false
     try {
@@ -650,6 +676,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }, [])
 
+  /**
+   * 请求关闭设置页（检查未保存更改）
+   */
   const handleCloseRequest = useCallback(() => {
     if (recordingTarget) return
     if (hasUnsavedChanges) {
@@ -659,11 +688,13 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     onClose()
   }, [hasUnsavedChanges, onClose, recordingTarget])
 
+  // 放弃更改并关闭
   const handleDiscardAndClose = () => {
     setCloseConfirmOpen(false)
     onClose()
   }
 
+  // 保存并关闭
   const handleSaveAndClose = async () => {
     const saved = await handleSave()
     if (saved) {
@@ -672,6 +703,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }
 
+  // Esc 键关闭（带未保存提示）
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (recordingTarget) return
@@ -684,6 +716,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     return () => window.removeEventListener('keydown', handler)
   }, [handleCloseRequest, recordingTarget])
 
+  /**
+   * 测试提供商连接
+   */
   const handleTestConnection = async (providerId: string) => {
     setTestingProviderId(providerId)
     setProviderTestFeedback((prev) => {
@@ -719,6 +754,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }
 
+  /**
+   * 打开 macOS 系统权限设置
+   */
   const handleOpenPermissionSettings = async (kind: 'accessibility' | 'screen-recording') => {
     try {
       await api.openPermissionSettings(kind)
@@ -727,6 +765,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }
 
+  // 重试次数输入处理
   const handleRetryAttemptsChange = (value: string) => {
     if (!settings) return
     setRetryAttemptsInput(value)
@@ -755,6 +794,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }
 
+  /**
+   * 更新设置字段
+   */
   const updateSettings = useCallback((updates: Partial<SettingsData>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -762,6 +804,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }, [])
 
+  /**
+   * 更新指定提供商配置
+   */
   const updateProvider = (id: string, updates: Partial<ModelProvider>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -772,6 +817,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }
 
+  /**
+   * 添加新提供商
+   */
   const addProvider = () => {
     if (!settings) return
     const newId = `provider-${Date.now()}`
@@ -789,16 +837,26 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }
 
+  /**
+   * 根据 ID 查找提供商（找不到则返回第一个）
+   */
   const resolveProvider = (providers: ModelProvider[], providerId: string) => {
     return providers.find(p => p.id === providerId) ?? providers[0]
   }
 
+  /**
+   * 确保当前模型在已启用模型列表中
+   */
   const resolveModel = (provider: ModelProvider | undefined, currentModel: string) => {
     if (!provider) return currentModel
     if (provider.enabledModels.includes(currentModel)) return currentModel
     return provider.enabledModels[0] || currentModel
   }
 
+  /**
+   * 删除提供商
+   * 删除后会自动将使用该提供商的功能切换到第一个可用提供商
+   */
   const deleteProvider = (id: string) => {
     if (!settings) return
     const nextProviders = settings.providers.filter(p => p.id !== id)
@@ -824,6 +882,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }
 
+  /**
+   * 添加已启用模型
+   */
   const addEnabledModel = (providerId: string, model: string) => {
     if (!settings || !model.trim()) return
     const provider = settings.providers.find(p => p.id === providerId)
@@ -833,6 +894,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }
 
+  /**
+   * 移除已启用模型
+   * 移除后会自动更新使用该模型的功能到新的默认模型
+   */
   const removeEnabledModel = (providerId: string, model: string) => {
     if (!settings) return
     const provider = settings.providers.find((p) => p.id === providerId)
@@ -881,6 +946,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
   const [manualInputs, setManualInputs] = useState<Record<string, string>>({})
 
+  /**
+   * 从提供商 API 获取可用模型列表
+   */
   const fetchModels = async (providerId: string) => {
     if (!settings || fetchingProviderId) return
     setFetchingProviderId(providerId)
@@ -903,6 +971,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }
 
+  /**
+   * 更新截图翻译配置
+   */
   const updateScreenshotTranslation = useCallback((updates: Partial<SettingsData['screenshotTranslation']>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -917,6 +988,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }, [])
 
+  /**
+   * 更新截图解释配置
+   */
   const updateScreenshotExplain = useCallback((updates: Partial<SettingsData['screenshotExplain']>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -931,6 +1005,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }, [])
 
+  /**
+   * 更新截图解释的自定义提示词
+   */
   const updateCustomPrompts = useCallback((updates: Partial<NonNullable<SettingsData['screenshotExplain']['customPrompts']>>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -950,12 +1027,17 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     })
   }, [])
 
+  /**
+   * 切换快捷键录制状态
+   */
   const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotExplain') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
+  // 当前语言对应的默认解释提示词
   const explainDefaults = defaultPrompts?.explainPrompts[settings?.screenshotExplain?.defaultLanguage || 'zh']
 
+  // 快捷键录制监听
   useEffect(() => {
     if (!recordingTarget) return
     const handler = (e: KeyboardEvent) => {
@@ -1036,8 +1118,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       </div>
 
       {/* 内容区域 */}
-      <div className="flex-1 overflow-auto p-5 space-y-5 scrollbar-hide">
-        {/* 基础设置 */}
+      <div className="flex-1 overflow-auto p-5 space-y-5 custom-scrollbar">
+        {/* ===== 基础设置标签页 ===== */}
         {activeTab === 'general' && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <Card>
@@ -1068,6 +1150,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               </div>
             </Card>
 
+            {/* 权限状态卡片（仅 macOS 显示） */}
             <Card>
               <SectionTitle icon={<Shield size={14} strokeWidth={2} />}>
                 {t.permissions}
@@ -1174,7 +1257,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           </div>
         )}
 
-        {/* 翻译设置 */}
+        {/* ===== 翻译设置标签页 ===== */}
         {activeTab === 'translate' && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <Card>
@@ -1233,10 +1316,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           </div>
         )}
 
-        {/* 截图设置 */}
+        {/* ===== 截图设置标签页 ===== */}
         {activeTab === 'screenshot' && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            {/* 截图翻译 */}
+            {/* 截图翻译设置 */}
             <Card>
               <div className="flex items-center justify-between mb-4">
                 <SectionTitle icon={<Camera size={14} className="text-purple-500" strokeWidth={2} />}>
@@ -1297,6 +1380,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     </p>
                   </div>
 
+                  {/* 自定义提示词折叠面板 */}
                   <details className="group pt-2 border-t border-black/5 dark:border-white/5">
                     <summary className="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none">
                       <div className="p-0.5 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 group-open:rotate-90 transition-transform">
@@ -1328,7 +1412,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               )}
             </Card>
 
-            {/* 截图解释 */}
+            {/* 截图解释设置 */}
             <Card>
               <div className="flex items-center justify-between mb-4">
                 <SectionTitle icon={<Sparkles size={14} className="text-amber-500" strokeWidth={2} />}>
@@ -1390,7 +1474,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     />
                   </div>
 
-                  {/* 自定义提示词 */}
+                  {/* 自定义提示词折叠面板 */}
                   <details className="group pt-2 border-t border-black/5 dark:border-white/5">
                     <summary className="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none">
                       <div className="p-0.5 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 group-open:rotate-90 transition-transform">
@@ -1445,7 +1529,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           </div>
         )}
 
-        {/* 模型管理 */}
+        {/* ===== 模型管理标签页 ===== */}
         {activeTab === 'models' && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {settings.providers.map((provider) => (
@@ -1556,7 +1640,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     </div>
                   </div>
 
-                  {/* 获取可用模型 */}
+                  {/* 获取可用模型列表 */}
                   <div className="space-y-2">
                     <div className="flex justify-between items-center">
                       <Label className="mb-0">{t.availableModels}</Label>
@@ -1572,7 +1656,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         {fetchingProviderId === provider.id ? t.fetching : t.fetchModels}
                       </button>
                     </div>
-                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 scrollbar-thin">
+                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
                       {provider.availableModels.length > 0 ? (
                         provider.availableModels.map(m => (
                           <button
@@ -1596,6 +1680,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               </Card>
             ))}
 
+            {/* 添加新提供商按钮 */}
             <button
               onClick={addProvider}
               className="w-full py-4 border-2 border-dashed border-black/5 dark:border-white/5 rounded-xl text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-black/10 dark:hover:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all flex flex-col items-center gap-2"
@@ -1645,6 +1730,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         </div>
       </div>
 
+      {/* 未保存更改确认弹窗 */}
       {closeConfirmOpen && (
         <div className="absolute inset-0 z-50 bg-black/30 backdrop-blur-[1px] flex items-center justify-center p-4" data-tauri-drag-region="false">
           <div className="w-full max-w-[320px] rounded-xl border border-black/10 dark:border-white/10 bg-white dark:bg-neutral-900 shadow-lg p-4 space-y-3">

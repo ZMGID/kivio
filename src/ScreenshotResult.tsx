@@ -7,7 +7,13 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import './index.css'
 
+/**
+ * 截图翻译结果展示组件
+ * 显示 OCR 识别的原文和翻译后的译文
+ * 支持 Markdown/LaTeX 渲染、源码/预览切换、复制功能
+ */
 export default function ScreenshotResult() {
+  // 当前状态：处理中 / 就绪 / 错误
   const [status, setStatus] = useState<'processing' | 'ready' | 'error'>('processing')
   const [original, setOriginal] = useState('')
   const [translated, setTranslated] = useState('')
@@ -20,9 +26,15 @@ export default function ScreenshotResult() {
   const isMountedRef = useRef(true)
   const originalCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const translatedCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 是否显示原文（直译模式下原文为空）
   const showToggleInOriginal = Boolean(original)
+  // 是否正在等待翻译结果
   const translationPending = status === 'ready' && Boolean(original) && !translated.trim()
 
+  /**
+   * 加载当前使用的模型信息
+   */
   const loadModelInfo = useCallback(async () => {
     try {
       const settings = await api.getSettings()
@@ -49,6 +61,7 @@ export default function ScreenshotResult() {
     let cleanup3: (() => void) | undefined
     let active = true
 
+    // 监听截图处理开始事件
     api.onScreenshotProcessing(() => {
       if (!isMountedRef.current) return
       setStatus('processing')
@@ -64,6 +77,7 @@ export default function ScreenshotResult() {
       console.error('Failed to listen screenshot-processing', err)
     })
 
+    // 监听截图翻译结果事件
     api.onScreenshotResult((data) => {
       if (!isMountedRef.current) return
       setOriginal(data.original)
@@ -79,6 +93,7 @@ export default function ScreenshotResult() {
       console.error('Failed to listen screenshot-result', err)
     })
 
+    // 监听截图错误事件
     api.onScreenshotError((errorMsg) => {
       if (!isMountedRef.current) return
       setError(errorMsg)
@@ -93,6 +108,7 @@ export default function ScreenshotResult() {
       console.error('Failed to listen screenshot-error', err)
     })
 
+    // Esc 键关闭窗口
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         handleClose()
@@ -112,10 +128,12 @@ export default function ScreenshotResult() {
     }
   }, [loadModelInfo])
 
+  // 关闭截图结果窗口
   const handleClose = () => {
     api.closeScreenshotWindow()
   }
 
+  // 兼容旧浏览器的复制回退方案
   const tryLegacyCopy = (text: string) => {
     const textarea = document.createElement('textarea')
     textarea.value = text
@@ -129,6 +147,7 @@ export default function ScreenshotResult() {
     return result
   }
 
+  // 复制文本到剪贴板
   const handleCopy = (text: string, type: 'original' | 'translated') => {
     const setCopiedFlag = () => {
       if (!isMountedRef.current) return
@@ -169,7 +188,7 @@ export default function ScreenshotResult() {
   return (
     <div className="h-screen w-screen flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl text-neutral-900 dark:text-neutral-100 select-none overflow-hidden">
       {/* 内容区 */}
-      <div className="flex-1 overflow-auto p-4" data-tauri-drag-region="false">
+      <div className="flex-1 overflow-auto p-4 custom-scrollbar" data-tauri-drag-region="false">
         {/* 处理中状态 */}
         {status === 'processing' && (
           <div className="flex flex-col items-center justify-center h-full gap-3">
@@ -196,7 +215,7 @@ export default function ScreenshotResult() {
         {/* 结果展示 */}
         {status === 'ready' && (
           <div className="space-y-4">
-            {/* 原文 */}
+            {/* 原文区域 */}
             {original && (
               <div className="group">
                 <div className="flex items-center justify-between mb-1.5">
@@ -248,7 +267,7 @@ export default function ScreenshotResult() {
               </div>
             )}
 
-            {/* 翻译结果 */}
+            {/* 翻译结果区域 */}
             <div className="group">
               <div className="flex items-center justify-between mb-1.5">
                 <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
