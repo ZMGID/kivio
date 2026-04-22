@@ -1,6 +1,13 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { X, Save, Globe, Keyboard, Camera, Sparkles, Cpu, Plus, Trash2, RefreshCw, ExternalLink, Shield } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { X, Save, Plus, Trash2, RefreshCw } from 'lucide-react'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
+import { i18n } from './settings/i18n'
+import { buildHotkey } from './settings/utils'
+import {
+  Toggle, Select, Input, TextArea, Label,
+  SettingRow, PermissionItem, HotkeyInput, DefaultPrompt,
+  SectionTitle, TabButton,
+} from './settings/components'
 
 type SettingsData = SettingsType
 
@@ -8,500 +15,6 @@ interface SettingsProps {
   onClose: () => void
   onSettingsChange: () => void
 }
-
-// ========== 多语言文本定义 ==========
-
-const i18n = {
-  zh: {
-    settings: '设置',
-    save: '保存',
-    cancel: '取消',
-    tabGeneral: '基础',
-    tabTranslate: '翻译',
-    tabScreenshot: '截图',
-    tabModels: '模型',
-    theme: '主题',
-    themeSystem: '跟随系统',
-    themeLight: '浅色',
-    themeDark: '深色',
-    language: '界面语言',
-    hotkey: '翻译快捷键',
-    hotkeyPlaceholder: '例如: CommandOrControl+Alt+T',
-    hotkeyRecordingPlaceholder: '按下组合键',
-    hotkeyRecord: '录制',
-    hotkeyRecording: '录制中',
-    retryEnabled: '自动重试',
-    retryAttempts: '重试次数',
-    retryAttemptsHint: 'AI 请求失败自动重试次数 (1-5)',
-    defaultTemplate: '默认模板',
-    translatorPrompt: '输入翻译提示词',
-    translatorPromptHint: '留空使用默认模板。支持 {lang} 目标语言，{text} 待翻译内容。',
-    screenshotTranslationPrompt: '截图翻译提示词',
-    screenshotTranslationPromptHint: '留空使用默认模板。支持 {lang} 目标语言，{text} 识别内容。',
-    screenshotTranslateMode: '翻译模式',
-    screenshotTranslateModeHint: '关闭时为 OCR→翻译模型两步流程；开启时直接用 OCR 模型输出翻译。',
-    screenshotTranslateModeDirect: '直接使用 OCR 模型翻译',
-    screenshotTranslateModeTwoStep: '两步模式（OCR + 翻译模型）',
-    questionPrompt: '提问提示词',
-    streamEnabled: '流式输出',
-    targetLang: '目标语言',
-    langAuto: '自动 (中↔英)',
-    langEn: '英语',
-    langZh: '中文',
-    langJa: '日语',
-    langKo: '韩语',
-    langFr: '法语',
-    langDe: '德语',
-    engine: '翻译引擎',
-    engineAI: 'AI 翻译 (OpenAI 兼容)',
-    baseUrl: '接口地址',
-    apiKey: 'API 密钥',
-    modelName: '模型名称',
-    providerName: '供应商名称',
-    addProvider: '添加驱动',
-    editProvider: '编辑',
-    deleteProvider: '删除',
-    selectProvider: '选择驱动',
-    fetchModels: '获取模型列表',
-    fetching: '正在获取...',
-    autoPaste: '自动上屏',
-    launchAtStartup: '开机启动',
-    screenshotTranslate: '截图翻译',
-    screenshotExplain: '截图解释',
-    enabled: '启用',
-    responseLanguage: '回复语言',
-    visionModel: '视觉模型',
-    visionOpenai: 'OpenAI / 自定义',
-    customPrompts: '自定义提示词',
-    customPromptsHint: '留空使用默认值',
-    systemPrompt: '系统提示词',
-    summaryPrompt: '总结提示词',
-    availableModels: '可用模型',
-    registeredModels: '已启用模型',
-    addModel: '添加',
-    removeModel: '移除',
-    manualAddModel: '手动添加',
-    selectModelPair: '选择模型组合',
-    version: '版本',
-    permissions: '权限状态',
-    accessibilityPermission: '辅助功能',
-    screenRecordingPermission: '屏幕录制',
-    permissionGranted: '已授权',
-    permissionMissing: '未授权',
-    refreshPermissions: '刷新状态',
-    openSystemSettings: '前往设置',
-    noPermissionNeeded: '当前平台无需额外权限。',
-    testConnection: '测试连接',
-    testingConnection: '测试中...',
-    connectionOk: '连接正常',
-    connectionFailed: '连接失败：',
-    unsavedChanges: '有未保存更改',
-    unsavedChangesDesc: '检测到设置已修改，关闭前请选择操作。',
-    saveAndClose: '保存并关闭',
-    discardAndClose: '放弃更改',
-    continueEditing: '继续编辑',
-    saving: '保存中...',
-    saved: '已保存',
-  },
-  en: {
-    settings: 'Settings',
-    save: 'Save',
-    cancel: 'Cancel',
-    tabGeneral: 'General',
-    tabTranslate: 'Translate',
-    tabScreenshot: 'Screenshot',
-    tabModels: 'Models',
-    theme: 'Theme',
-    themeSystem: 'System',
-    themeLight: 'Light',
-    themeDark: 'Dark',
-    language: 'Language',
-    hotkey: 'Hotkey',
-    hotkeyPlaceholder: 'e.g. CommandOrControl+Alt+T',
-    hotkeyRecordingPlaceholder: 'Press shortcut',
-    hotkeyRecord: 'Record',
-    hotkeyRecording: 'Recording',
-    retryEnabled: 'Auto retry',
-    retryAttempts: 'Retry attempts',
-    retryAttemptsHint: 'Retry failed AI requests (1-5)',
-    defaultTemplate: 'Default template',
-    translatorPrompt: 'Translation prompt',
-    translatorPromptHint: 'Leave empty for default. Supports {lang} and {text}.',
-    screenshotTranslationPrompt: 'Screenshot translation prompt',
-    screenshotTranslationPromptHint: 'Leave empty for default. Supports {lang} and {text}.',
-    screenshotTranslateMode: 'Translation Mode',
-    screenshotTranslateModeHint: 'Off: OCR then translator model. On: OCR model translates directly.',
-    screenshotTranslateModeDirect: 'Direct OCR translation',
-    screenshotTranslateModeTwoStep: 'Two-step mode (OCR + translator)',
-    questionPrompt: 'Question prompt',
-    streamEnabled: 'Streaming output',
-    targetLang: 'Target Language',
-    langAuto: 'Auto (ZH↔EN)',
-    langEn: 'English',
-    langZh: 'Chinese',
-    langJa: 'Japanese',
-    langKo: 'Korean',
-    langFr: 'French',
-    langDe: 'German',
-    engine: 'Translation Engine',
-    engineAI: 'AI (OpenAI Compatible)',
-    baseUrl: 'Base URL',
-    apiKey: 'API Key',
-    modelName: 'Model Name',
-    providerName: 'Provider Name',
-    addProvider: 'Add Provider',
-    editProvider: 'Edit',
-    deleteProvider: 'Delete',
-    selectProvider: 'Select Provider',
-    fetchModels: 'Fetch Models',
-    fetching: 'Fetching...',
-    autoPaste: 'Auto Paste',
-    launchAtStartup: 'Launch at startup',
-    screenshotTranslate: 'Screenshot Translation',
-    screenshotExplain: 'Screenshot Explain',
-    enabled: 'Enabled',
-    responseLanguage: 'Response Language',
-    visionModel: 'Vision Model',
-    visionOpenai: 'OpenAI / Custom',
-    customPrompts: 'Custom Prompts',
-    customPromptsHint: 'Leave empty for defaults',
-    systemPrompt: 'System Prompt',
-    summaryPrompt: 'Summary Prompt',
-    availableModels: 'Available Models',
-    registeredModels: 'Enabled Models',
-    addModel: 'Add',
-    removeModel: 'Remove',
-    manualAddModel: 'Manual Add',
-    selectModelPair: 'Select Model Pair',
-    version: 'Version',
-    permissions: 'Permission Status',
-    accessibilityPermission: 'Accessibility',
-    screenRecordingPermission: 'Screen Recording',
-    permissionGranted: 'Granted',
-    permissionMissing: 'Missing',
-    refreshPermissions: 'Refresh',
-    openSystemSettings: 'Open Settings',
-    noPermissionNeeded: 'No extra permissions needed on this platform.',
-    testConnection: 'Test Connection',
-    testingConnection: 'Testing...',
-    connectionOk: 'Connection OK',
-    connectionFailed: 'Connection failed: ',
-    unsavedChanges: 'Unsaved changes',
-    unsavedChangesDesc: 'Settings were changed. Choose what to do before closing.',
-    saveAndClose: 'Save & Close',
-    discardAndClose: 'Discard',
-    continueEditing: 'Continue Editing',
-    saving: 'Saving...',
-    saved: 'Saved',
-  }
-}
-
-// 修饰键集合（录制快捷键时忽略）
-const modifierKeys = new Set(['Shift', 'Meta', 'Control', 'Alt', 'AltGraph'])
-
-// 键盘按键别名映射
-const keyAliasMap: Record<string, string> = {
-  Escape: 'Esc',
-  ' ': 'Space',
-  Spacebar: 'Space',
-  ArrowUp: 'Up',
-  ArrowDown: 'Down',
-  ArrowLeft: 'Left',
-  ArrowRight: 'Right',
-}
-
-/**
- * 从键盘 code 提取字母/数字键值
- */
-const normalizeKeyFromCode = (code: string) => {
-  if (code.startsWith('Key')) return code.slice(3)
-  if (code.startsWith('Digit')) return code.slice(5)
-  return ''
-}
-
-/**
- * 将键盘事件转换为快捷键字符串
- */
-const normalizeHotkeyKey = (event: KeyboardEvent) => {
-  const { key, code } = event
-  if (!key) return ''
-  if (modifierKeys.has(key)) return ''
-  if (/^F\d{1,2}$/.test(key)) return key.toUpperCase()
-  const alias = keyAliasMap[key]
-  if (alias) return alias
-  const fromCode = normalizeKeyFromCode(code)
-  if (fromCode) return fromCode.toUpperCase()
-  if (key === 'Dead' || key === 'Process') return ''
-  if (key.length === 1 && key !== '+') return key.toUpperCase()
-  return ''
-}
-
-/**
- * 构建完整的快捷键字符串（如 CommandOrControl+Alt+T）
- */
-const buildHotkey = (event: KeyboardEvent) => {
-  const key = normalizeHotkeyKey(event)
-  if (!key) return ''
-  const parts: string[] = []
-  if (event.metaKey || event.ctrlKey) parts.push('CommandOrControl')
-  if (event.altKey || event.getModifierState('AltGraph')) parts.push('Alt')
-  if (event.shiftKey) parts.push('Shift')
-  parts.push(key)
-  return parts.join('+')
-}
-
-
-// ========== 通用 UI 组件 ==========
-
-/**
- * 开关切换组件
- */
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      className={`relative w-[34px] h-5 rounded-full transition-all duration-200 ease-in-out ${checked ? 'bg-neutral-900 dark:bg-white' : 'bg-neutral-200 dark:bg-neutral-700'}`}
-      data-tauri-drag-region="false"
-    >
-      <span className={`absolute top-[2px] left-[2px] w-4 h-4 bg-white dark:bg-neutral-900 rounded-full shadow-sm transition-transform duration-200 ${checked ? 'translate-x-[14px]' : ''}`} />
-    </button>
-  )
-}
-
-/**
- * 下拉选择组件
- */
-function Select({ value, onChange, options, className = '' }: {
-  value: string
-  onChange: (v: string) => void
-  options: { value: string; label: string }[]
-  className?: string
-}) {
-  return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`w-full appearance-none px-3 py-1.5 pr-8 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800 text-[13px] text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-500 transition-all ${className}`}
-        data-tauri-drag-region="false"
-      >
-        {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-      </select>
-      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400">
-        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </div>
-    </div>
-  )
-}
-
-/**
- * 文本输入组件
- */
-function Input({ value, onChange, type = 'text', placeholder = '', className = '', list, ...props }: {
-  value: string
-  onChange: (v: string) => void
-  type?: string
-  placeholder?: string
-  className?: string
-  list?: string
-} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
-  return (
-    <input
-      type={type}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      list={list}
-      className={`w-full px-3 py-1.5 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800 text-[13px] font-mono text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-500 transition-all ${className}`}
-      data-tauri-drag-region="false"
-      {...props}
-    />
-  )
-}
-
-/**
- * 多行文本输入组件
- */
-function TextArea({ value, onChange, placeholder = '', rows = 2 }: {
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  rows?: number
-}) {
-  return (
-    <textarea
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      rows={rows}
-      className="w-full px-3 py-2 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800 text-[13px] font-mono text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-neutral-400 dark:focus:ring-neutral-500 transition-all resize-none"
-      data-tauri-drag-region="false"
-    />
-  )
-}
-
-/**
- * 标签组件
- */
-function Label({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <label className={`block text-[11px] font-medium text-neutral-500 dark:text-neutral-400 mb-1.5 uppercase tracking-wide ${className}`}>{children}</label>
-}
-
-/**
- * 卡片容器组件
- */
-function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`p-4 rounded-xl bg-white dark:bg-neutral-800/50 border border-black/5 dark:border-white/5 shadow-sm ${className}`}>
-      {children}
-    </div>
-  )
-}
-
-/**
- * 权限状态项组件（macOS）
- */
-function PermissionItem({
-  label,
-  granted,
-  grantedText,
-  missingText,
-  actionLabel,
-  onOpen,
-}: {
-  label: string
-  granted: boolean
-  grantedText: string
-  missingText: string
-  actionLabel: string
-  onOpen: () => void
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-black/5 dark:border-white/5">
-      <div className="min-w-0">
-        <p className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{label}</p>
-        <p className={`text-[11px] mt-0.5 ${granted ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
-          {granted ? grantedText : missingText}
-        </p>
-      </div>
-      {!granted && (
-        <button
-          type="button"
-          onClick={onOpen}
-          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md border border-black/10 dark:border-white/10 text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 transition-all"
-          data-tauri-drag-region="false"
-        >
-          <ExternalLink size={11} />
-          {actionLabel}
-        </button>
-      )}
-    </div>
-  )
-}
-
-/**
- * 快捷键输入组件（支持录制模式）
- */
-function HotkeyInput({
-  value,
-  onChange,
-  placeholder,
-  recording,
-  onToggleRecording,
-  recordLabel,
-  recordingLabel,
-  recordingPlaceholder,
-}: {
-  value: string
-  onChange: (v: string) => void
-  placeholder: string
-  recording: boolean
-  onToggleRecording: () => void
-  recordLabel: string
-  recordingLabel: string
-  recordingPlaceholder: string
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Input
-        value={value}
-        onChange={onChange}
-        placeholder={recording ? recordingPlaceholder : placeholder}
-        readOnly={recording}
-        className={recording ? 'ring-1 ring-amber-400/60 dark:ring-amber-300/50' : ''}
-      />
-      <button
-        type="button"
-        onClick={onToggleRecording}
-        className={`px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
-          recording
-            ? 'border-amber-400/60 text-amber-600 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-900/20'
-            : 'border-black/10 dark:border-white/10 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
-        }`}
-        data-tauri-drag-region="false"
-      >
-        {recording ? recordingLabel : recordLabel}
-      </button>
-    </div>
-  )
-}
-
-/**
- * 默认提示词展示组件
- */
-function DefaultPrompt({ label, content }: { label: string; content: string }) {
-  return (
-    <div className="mt-2 rounded-lg border border-black/5 dark:border-white/5 bg-neutral-50 dark:bg-neutral-900/40 px-3 py-2">
-      <div className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 mb-1">{label}</div>
-      <pre className="whitespace-pre-wrap text-[11px] text-neutral-600 dark:text-neutral-300 font-mono">
-        {content.trim()}
-      </pre>
-    </div>
-  )
-}
-
-/**
- * 区块标题组件
- */
-function SectionTitle({ icon, children }: { icon: ReactNode; children: ReactNode }) {
-  return (
-    <div className="flex items-center gap-2 mb-4">
-      <div className="p-1 rounded-md bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300">
-        {icon}
-      </div>
-      <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{children}</span>
-    </div>
-  )
-}
-
-/**
- * 标签页按钮组件
- */
-function TabButton({ active, onClick, icon, label }: {
-  active: boolean
-  onClick: () => void
-  icon: ReactNode
-  label: string
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-200 ${active
-        ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-sm ring-1 ring-black/5 dark:ring-white/10'
-        : 'text-neutral-500 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 hover:text-neutral-700 dark:hover:text-neutral-200'
-        }`}
-      data-tauri-drag-region="false"
-    >
-      {icon}
-      {label}
-    </button>
-  )
-}
-
-// ========== 设置主组件 ==========
 
 /**
  * 设置面板主组件
@@ -1035,7 +548,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   // 当前语言对应的默认解释提示词
-  const explainDefaults = defaultPrompts?.explainPrompts[settings?.screenshotExplain?.defaultLanguage || 'zh']
+  const explainDefaults = defaultPrompts?.explainPrompts?.[settings?.screenshotExplain?.defaultLanguage || 'zh']
 
   // 快捷键录制监听
   useEffect(() => {
@@ -1064,17 +577,17 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
   if (loading || !settings) {
     return (
-      <div className="flex items-center justify-center h-full bg-neutral-50 dark:bg-neutral-900">
+      <div className="flex items-center justify-center h-full bg-neutral-200 dark:bg-black">
         <div className="w-6 h-6 border-2 border-neutral-300 dark:border-neutral-700 border-t-neutral-800 dark:border-t-neutral-200 rounded-full animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="window-container flex flex-col bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden">
+    <div className="flex flex-col bg-neutral-200 dark:bg-black text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden h-full w-full">
       {/* 标题栏 */}
       <div
-        className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-white dark:bg-neutral-900 rounded-t-xl"
+        className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-neutral-200 dark:bg-black rounded-t-xl"
         data-tauri-drag-region
       >
         <h2 className="font-semibold text-[15px] tracking-tight">{t.settings}</h2>
@@ -1087,46 +600,44 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         </button>
       </div>
 
-      {/* 标签页导航 */}
-      <div className="px-2 py-2 border-b border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-900">
-        <div className="flex p-1 bg-neutral-200 dark:bg-neutral-800 rounded-xl">
+      {/* 标签页导航 — 分段控制器 */}
+      <div className="px-5 py-3 border-b border-black/5 dark:border-white/5">
+        <div className="flex bg-neutral-200/50 dark:bg-neutral-800/50 rounded-lg p-0.5">
           <TabButton
             active={activeTab === 'general'}
             onClick={() => setActiveTab('general')}
-            icon={<Globe size={14} strokeWidth={2} />}
             label={t.tabGeneral}
           />
           <TabButton
             active={activeTab === 'translate'}
             onClick={() => setActiveTab('translate')}
-            icon={<Keyboard size={14} strokeWidth={2} />}
             label={t.tabTranslate}
           />
           <TabButton
             active={activeTab === 'screenshot'}
             onClick={() => setActiveTab('screenshot')}
-            icon={<Camera size={14} strokeWidth={2} />}
             label={t.tabScreenshot}
           />
           <TabButton
             active={activeTab === 'models'}
             onClick={() => setActiveTab('models')}
-            icon={<Cpu size={14} strokeWidth={2} />}
             label={t.tabModels}
           />
         </div>
       </div>
 
       {/* 内容区域 */}
-      <div className="flex-1 overflow-auto p-5 space-y-5 custom-scrollbar">
+      <div className="flex-1 overflow-auto px-4 py-3 space-y-5 custom-scrollbar">
         {/* ===== 基础设置标签页 ===== */}
         {activeTab === 'general' && (
-          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <Card>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>{t.theme}</Label>
+          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            {/* 外观 */}
+            <section>
+              <SectionTitle>{lang === 'zh' ? '外观' : 'Appearance'}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden divide-y divide-black/5 dark:divide-white/5">
+                <SettingRow label={t.theme}>
                   <Select
+                    className="w-36"
                     value={settings.theme || 'system'}
                     onChange={(v) => updateSettings({ theme: v as SettingsData['theme'] })}
                     options={[
@@ -1135,10 +646,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       { value: 'dark', label: t.themeDark },
                     ]}
                   />
-                </div>
-                <div>
-                  <Label>{t.language}</Label>
+                </SettingRow>
+                <SettingRow label={t.language}>
                   <Select
+                    className="w-36"
                     value={settings.settingsLanguage || 'zh'}
                     onChange={(v) => updateSettings({ settingsLanguage: v as 'zh' | 'en' })}
                     options={[
@@ -1146,145 +657,140 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       { value: 'en', label: 'English' },
                     ]}
                   />
-                </div>
+                </SettingRow>
               </div>
-            </Card>
+            </section>
 
-            {/* 权限状态卡片（仅 macOS 显示） */}
-            <Card>
-              <SectionTitle icon={<Shield size={14} strokeWidth={2} />}>
-                {t.permissions}
-              </SectionTitle>
-              <div className="space-y-3">
-                {permissionStatus?.platform === 'macos' ? (
-                  <>
-                    <PermissionItem
-                      label={t.accessibilityPermission}
-                      granted={permissionStatus.accessibility}
-                      grantedText={t.permissionGranted}
-                      missingText={t.permissionMissing}
-                      actionLabel={t.openSystemSettings}
-                      onOpen={() => handleOpenPermissionSettings('accessibility')}
+            {/* 快捷键 */}
+            <section>
+              <SectionTitle>{t.hotkey}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden px-4 py-3">
+                <HotkeyInput
+                  value={settings.hotkey}
+                  placeholder={t.hotkeyPlaceholder}
+                  recording={recordingTarget === 'main'}
+                  onToggleRecording={() => toggleRecording('main')}
+                  recordLabel={t.hotkeyRecord}
+                  recordingLabel={t.hotkeyRecording}
+                  recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                />
+              </div>
+            </section>
+
+            {/* 行为 */}
+            <section>
+              <SectionTitle>{lang === 'zh' ? '行为' : 'Behavior'}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden divide-y divide-black/5 dark:divide-white/5">
+                <SettingRow label={t.retryEnabled} description={t.retryAttemptsHint}>
+                  <Toggle
+                    checked={settings.retryEnabled ?? true}
+                    onChange={(v) => updateSettings({ retryEnabled: v })}
+                  />
+                </SettingRow>
+                {settings.retryEnabled !== false && (
+                  <div className="px-4 py-2.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                    <Input
+                      type="number"
+                      value={retryAttemptsInput}
+                      onChange={handleRetryAttemptsChange}
+                      onBlur={handleRetryAttemptsBlur}
+                      placeholder="3"
+                      min={1}
+                      max={5}
+                      className="!w-20 text-center"
                     />
-                    <PermissionItem
-                      label={t.screenRecordingPermission}
-                      granted={permissionStatus.screenRecording}
-                      grantedText={t.permissionGranted}
-                      missingText={t.permissionMissing}
-                      actionLabel={t.openSystemSettings}
-                      onOpen={() => handleOpenPermissionSettings('screen-recording')}
-                    />
-                  </>
-                ) : (
-                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400">{t.noPermissionNeeded}</p>
+                  </div>
                 )}
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={refreshPermissions}
-                    disabled={permissionsLoading}
-                    className={`text-[11px] font-medium flex items-center gap-1 px-2 py-1 rounded-md transition-all ${permissionsLoading
-                      ? 'text-neutral-400 cursor-not-allowed'
-                      : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
-                      }`}
-                    data-tauri-drag-region="false"
-                  >
-                    <RefreshCw size={10} className={permissionsLoading ? 'animate-spin' : ''} />
-                    {t.refreshPermissions}
-                  </button>
+                <SettingRow label={t.autoPaste}>
+                  <Toggle
+                    checked={settings.autoPaste ?? true}
+                    onChange={(v) => updateSettings({ autoPaste: v })}
+                  />
+                </SettingRow>
+                <SettingRow label={t.launchAtStartup}>
+                  <Toggle
+                    checked={settings.launchAtStartup ?? false}
+                    onChange={(v) => updateSettings({ launchAtStartup: v })}
+                  />
+                </SettingRow>
+              </div>
+            </section>
+
+            {/* 权限状态（仅 macOS 显示） */}
+            {permissionStatus?.platform === 'macos' && (
+              <section>
+                <SectionTitle>{t.permissions}</SectionTitle>
+                <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden divide-y divide-black/5 dark:divide-white/5">
+                  <PermissionItem
+                    label={t.accessibilityPermission}
+                    granted={permissionStatus.accessibility}
+                    grantedText={t.permissionGranted}
+                    missingText={t.permissionMissing}
+                    actionLabel={t.openSystemSettings}
+                    onOpen={() => handleOpenPermissionSettings('accessibility')}
+                  />
+                  <PermissionItem
+                    label={t.screenRecordingPermission}
+                    granted={permissionStatus.screenRecording}
+                    grantedText={t.permissionGranted}
+                    missingText={t.permissionMissing}
+                    actionLabel={t.openSystemSettings}
+                    onOpen={() => handleOpenPermissionSettings('screen-recording')}
+                  />
+                  <div className="flex justify-end px-4 py-2.5">
+                    <button
+                      type="button"
+                      onClick={refreshPermissions}
+                      disabled={permissionsLoading}
+                      className={`text-[11px] font-medium flex items-center gap-1 px-2 py-1 rounded-md transition-all ${permissionsLoading
+                        ? 'text-neutral-400 cursor-not-allowed'
+                        : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                        }`}
+                      data-tauri-drag-region="false"
+                    >
+                      <RefreshCw size={10} className={permissionsLoading ? 'animate-spin' : ''} />
+                      {t.refreshPermissions}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </Card>
-
-            <Card>
-              <Label>{t.hotkey}</Label>
-              <HotkeyInput
-                value={settings.hotkey}
-                onChange={(v) => updateSettings({ hotkey: v })}
-                placeholder={t.hotkeyPlaceholder}
-                recording={recordingTarget === 'main'}
-                onToggleRecording={() => toggleRecording('main')}
-                recordLabel={t.hotkeyRecord}
-                recordingLabel={t.hotkeyRecording}
-                recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-              />
-            </Card>
-
-            <Card>
-              <div className="flex items-center justify-between">
-                <Label>{t.retryEnabled}</Label>
-                <Toggle
-                  checked={settings.retryEnabled ?? true}
-                  onChange={(v) => updateSettings({ retryEnabled: v })}
-                />
-              </div>
-              <div className={`mt-3 ${settings.retryEnabled === false ? 'opacity-50 pointer-events-none' : ''}`}>
-                <Label className="mb-1.5">{t.retryAttempts}</Label>
-                <Input
-                  type="number"
-                  value={retryAttemptsInput}
-                  onChange={handleRetryAttemptsChange}
-                  onBlur={handleRetryAttemptsBlur}
-                  placeholder="3"
-                  min={1}
-                  max={5}
-                  disabled={settings.retryEnabled === false}
-                  aria-disabled={settings.retryEnabled === false}
-                />
-                <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">{t.retryAttemptsHint}</p>
-              </div>
-            </Card>
-
-            <Card>
-              <div className="flex items-center justify-between">
-                <Label>{t.autoPaste}</Label>
-                <Toggle
-                  checked={settings.autoPaste ?? true}
-                  onChange={(v) => updateSettings({ autoPaste: v })}
-                />
-              </div>
-            </Card>
-
-            <Card>
-              <div className="flex items-center justify-between">
-                <Label>{t.launchAtStartup}</Label>
-                <Toggle
-                  checked={settings.launchAtStartup ?? false}
-                  onChange={(v) => updateSettings({ launchAtStartup: v })}
-                />
-              </div>
-            </Card>
+              </section>
+            )}
           </div>
         )}
 
         {/* ===== 翻译设置标签页 ===== */}
         {activeTab === 'translate' && (
-          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <Card>
-              <Label>{t.targetLang}</Label>
-              <Select
-                value={settings.targetLang || 'auto'}
-                onChange={(v) => updateSettings({ targetLang: v })}
-                options={[
-                  { value: 'auto', label: t.langAuto },
-                  { value: 'en', label: t.langEn },
-                  { value: 'zh', label: t.langZh },
-                  { value: 'ja', label: t.langJa },
-                  { value: 'ko', label: t.langKo },
-                  { value: 'fr', label: t.langFr },
-                  { value: 'de', label: t.langDe },
-                ]}
-              />
-            </Card>
-
-            <Card>
-              <SectionTitle icon={<Globe size={14} strokeWidth={2} />}>
-                {t.engine}
-              </SectionTitle>
-              <div className="space-y-4">
-                <div>
-                  <Label>{t.selectModelPair}</Label>
+          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            {/* 目标语言 */}
+            <section>
+              <SectionTitle>{t.targetLang}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
+                <SettingRow label={t.targetLang}>
                   <Select
+                    className="w-40"
+                    value={settings.targetLang || 'auto'}
+                    onChange={(v) => updateSettings({ targetLang: v })}
+                    options={[
+                      { value: 'auto', label: t.langAuto },
+                      { value: 'en', label: t.langEn },
+                      { value: 'zh', label: t.langZh },
+                      { value: 'ja', label: t.langJa },
+                      { value: 'ko', label: t.langKo },
+                      { value: 'fr', label: t.langFr },
+                      { value: 'de', label: t.langDe },
+                    ]}
+                  />
+                </SettingRow>
+              </div>
+            </section>
+
+            {/* 翻译引擎 */}
+            <section>
+              <SectionTitle>{t.engine}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
+                <SettingRow label={t.selectModelPair}>
+                  <Select
+                    className="w-52"
                     value={`${settings.translatorProviderId}:${settings.translatorModel}`}
                     onChange={(v) => {
                       const [providerId, model] = v.split(':')
@@ -1297,244 +803,234 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       }))
                     )}
                   />
-                </div>
+                </SettingRow>
               </div>
-            </Card>
+            </section>
 
-            <Card>
-              <Label>{t.translatorPrompt}</Label>
-              <TextArea
-                value={settings.translatorPrompt || ''}
-                onChange={(v) => updateSettings({ translatorPrompt: v })}
-                placeholder={t.translatorPromptHint}
-                rows={3}
-              />
-              {!settings.translatorPrompt?.trim() && defaultPrompts?.translationTemplate && (
-                <DefaultPrompt label={t.defaultTemplate} content={defaultPrompts.translationTemplate} />
-              )}
-            </Card>
+            {/* 提示词 */}
+            <section>
+              <SectionTitle>{t.translatorPrompt}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden px-4 py-3">
+                <TextArea
+                  value={settings.translatorPrompt || ''}
+                  onChange={(v) => updateSettings({ translatorPrompt: v })}
+                  placeholder={t.translatorPromptHint}
+                  rows={3}
+                />
+                {!settings.translatorPrompt?.trim() && defaultPrompts?.translationTemplate && (
+                  <DefaultPrompt label={t.defaultTemplate} content={defaultPrompts.translationTemplate} />
+                )}
+              </div>
+            </section>
           </div>
         )}
 
         {/* ===== 截图设置标签页 ===== */}
         {activeTab === 'screenshot' && (
-          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {/* 截图翻译设置 */}
-            <Card>
-              <div className="flex items-center justify-between mb-4">
-                <SectionTitle icon={<Camera size={14} className="text-purple-500" strokeWidth={2} />}>
-                  {t.screenshotTranslate}
-                </SectionTitle>
-                <Toggle
-                  checked={settings.screenshotTranslation?.enabled ?? true}
-                  onChange={(v) => updateScreenshotTranslation({ enabled: v })}
-                />
-              </div>
-
-              {settings.screenshotTranslation?.enabled !== false && (
-                <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                  <div>
-                    <Label>{t.hotkey}</Label>
-                    <HotkeyInput
-                      value={settings.screenshotTranslation?.hotkey || 'CommandOrControl+Shift+A'}
-                      onChange={(v) => updateScreenshotTranslation({ hotkey: v })}
-                      placeholder="CommandOrControl+Shift+A"
-                      recording={recordingTarget === 'screenshotTranslation'}
-                      onToggleRecording={() => toggleRecording('screenshotTranslation')}
-                      recordLabel={t.hotkeyRecord}
-                      recordingLabel={t.hotkeyRecording}
-                      recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+            <section>
+              <SectionTitle>{t.screenshotTranslate}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
+                <div className="divide-y divide-black/5 dark:divide-white/5">
+                  <SettingRow label={t.enabled}>
+                    <Toggle
+                      checked={settings.screenshotTranslation?.enabled ?? true}
+                      onChange={(v) => updateScreenshotTranslation({ enabled: v })}
                     />
-                  </div>
-                  <div>
-                    <Label>{t.selectModelPair}</Label>
-                    <Select
-                      value={`${settings.screenshotTranslation.providerId}:${settings.screenshotTranslation.model}`}
-                      onChange={(v) => {
-                        const [providerId, model] = v.split(':')
-                        updateScreenshotTranslation({ providerId, model })
-                      }}
-                      options={settings.providers.flatMap(p =>
-                        p.enabledModels.map(m => ({
-                          value: `${p.id}:${m}`,
-                          label: `${p.name} - ${m}`
-                        }))
-                      )}
-                    />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between gap-3">
-                      <Label className="mb-0">{t.screenshotTranslateMode}</Label>
-                      <Toggle
-                        checked={settings.screenshotTranslation?.directTranslate ?? false}
-                        onChange={(v) => updateScreenshotTranslation({ directTranslate: v })}
-                      />
-                    </div>
-                    <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
-                      {settings.screenshotTranslation?.directTranslate
-                        ? t.screenshotTranslateModeDirect
-                        : t.screenshotTranslateModeTwoStep}
-                    </p>
-                    <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
-                      {t.screenshotTranslateModeHint}
-                    </p>
-                  </div>
+                  </SettingRow>
 
-                  {/* 自定义提示词折叠面板 */}
-                  <details className="group pt-2 border-t border-black/5 dark:border-white/5">
-                    <summary className="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none">
-                      <div className="p-0.5 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 group-open:rotate-90 transition-transform">
-                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </div>
-                      {t.customPrompts}
-                    </summary>
-                    <div className="mt-4 space-y-2 pl-1 animate-in slide-in-from-top-2 duration-200">
-                      <div>
-                        <Label>{t.screenshotTranslationPrompt}</Label>
-                        <TextArea
-                          value={settings.screenshotTranslation?.prompt || ''}
-                          onChange={(v) => updateScreenshotTranslation({ prompt: v })}
-                          placeholder={t.screenshotTranslationPromptHint}
-                          rows={3}
+                  {settings.screenshotTranslation?.enabled !== false && (
+                    <>
+                      <div className="px-4 py-3 space-y-1.5">
+                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.hotkey}</span>
+                        <HotkeyInput
+                          value={settings.screenshotTranslation?.hotkey || 'CommandOrControl+Shift+A'}
+                          placeholder="CommandOrControl+Shift+A"
+                          recording={recordingTarget === 'screenshotTranslation'}
+                          onToggleRecording={() => toggleRecording('screenshotTranslation')}
+                          recordLabel={t.hotkeyRecord}
+                          recordingLabel={t.hotkeyRecording}
+                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
                         />
-                        {!settings.screenshotTranslation?.prompt?.trim() && (defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate) && (
-                          <DefaultPrompt
-                            label={t.defaultTemplate}
-                            content={defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate || ''}
-                          />
-                        )}
                       </div>
-                    </div>
-                  </details>
+                      <SettingRow label={t.selectModelPair}>
+                        <Select
+                          className="w-52"
+                          value={`${settings.screenshotTranslation.providerId}:${settings.screenshotTranslation.model}`}
+                          onChange={(v) => {
+                            const [providerId, model] = v.split(':')
+                            updateScreenshotTranslation({ providerId, model })
+                          }}
+                          options={settings.providers.flatMap(p =>
+                            p.enabledModels.map(m => ({
+                              value: `${p.id}:${m}`,
+                              label: `${p.name} - ${m}`
+                            }))
+                          )}
+                        />
+                      </SettingRow>
+                      <SettingRow
+                        label={t.screenshotTranslateMode}
+                        description={t.screenshotTranslateModeHint}
+                      >
+                        <Toggle
+                          checked={settings.screenshotTranslation?.directTranslate ?? false}
+                          onChange={(v) => updateScreenshotTranslation({ directTranslate: v })}
+                        />
+                      </SettingRow>
+                      <details className="group">
+                        <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
+                          <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">
+                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </div>
+                          {t.customPrompts}
+                        </summary>
+                        <div className="px-4 pb-4 space-y-2">
+                          <Label>{t.screenshotTranslationPrompt}</Label>
+                          <TextArea
+                            value={settings.screenshotTranslation?.prompt || ''}
+                            onChange={(v) => updateScreenshotTranslation({ prompt: v })}
+                            placeholder={t.screenshotTranslationPromptHint}
+                            rows={3}
+                          />
+                          {!settings.screenshotTranslation?.prompt?.trim() && (defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate) && (
+                            <DefaultPrompt
+                              label={t.defaultTemplate}
+                              content={defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate || ''}
+                            />
+                          )}
+                        </div>
+                      </details>
+                    </>
+                  )}
                 </div>
-              )}
-            </Card>
+              </div>
+            </section>
 
             {/* 截图解释设置 */}
-            <Card>
-              <div className="flex items-center justify-between mb-4">
-                <SectionTitle icon={<Sparkles size={14} className="text-amber-500" strokeWidth={2} />}>
-                  {t.screenshotExplain}
-                </SectionTitle>
-                <Toggle
-                  checked={settings.screenshotExplain?.enabled !== false}
-                  onChange={(v) => updateScreenshotExplain({ enabled: v })}
-                />
-              </div>
-
-              {settings.screenshotExplain?.enabled !== false && (
-                <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                  <div>
-                    <Label>{t.hotkey}</Label>
-                    <HotkeyInput
-                      value={settings.screenshotExplain?.hotkey || 'CommandOrControl+Shift+E'}
-                      onChange={(v) => updateScreenshotExplain({ hotkey: v })}
-                      placeholder="CommandOrControl+Shift+E"
-                      recording={recordingTarget === 'screenshotExplain'}
-                      onToggleRecording={() => toggleRecording('screenshotExplain')}
-                      recordLabel={t.hotkeyRecord}
-                      recordingLabel={t.hotkeyRecording}
-                      recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                    />
-                  </div>
-                  <div>
-                    <Label>{t.responseLanguage}</Label>
-                    <Select
-                      value={settings.screenshotExplain?.defaultLanguage || 'zh'}
-                      onChange={(v) => updateScreenshotExplain({ defaultLanguage: v as 'zh' | 'en' })}
-                      options={[
-                        { value: 'zh', label: '中文' },
-                        { value: 'en', label: 'English' },
-                      ]}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Label>{t.streamEnabled}</Label>
+            <section>
+              <SectionTitle>{t.screenshotExplain}</SectionTitle>
+              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
+                <div className="divide-y divide-black/5 dark:divide-white/5">
+                  <SettingRow label={t.enabled}>
                     <Toggle
-                      checked={settings.screenshotExplain?.streamEnabled ?? false}
-                      onChange={(v) => updateScreenshotExplain({ streamEnabled: v })}
+                      checked={settings.screenshotExplain?.enabled !== false}
+                      onChange={(v) => updateScreenshotExplain({ enabled: v })}
                     />
-                  </div>
-                  <div>
-                    <Label>{t.selectModelPair}</Label>
-                    <Select
-                      value={`${settings.screenshotExplain.providerId}:${settings.screenshotExplain.model}`}
-                      onChange={(v) => {
-                        const [providerId, model] = v.split(':')
-                        updateScreenshotExplain({ providerId, model })
-                      }}
-                      options={settings.providers.flatMap(p =>
-                        p.enabledModels.map(m => ({
-                          value: `${p.id}:${m}`,
-                          label: `${p.name} - ${m}`
-                        }))
-                      )}
-                    />
-                  </div>
+                  </SettingRow>
 
-                  {/* 自定义提示词折叠面板 */}
-                  <details className="group pt-2 border-t border-black/5 dark:border-white/5">
-                    <summary className="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none">
-                      <div className="p-0.5 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 group-open:rotate-90 transition-transform">
-                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </div>
-                      {t.customPrompts}
-                    </summary>
-                    <div className="mt-4 space-y-4 pl-1 animate-in slide-in-from-top-2 duration-200">
-                      <div>
-                        <Label>{t.systemPrompt}</Label>
-                        <TextArea
-                          value={settings.screenshotExplain?.customPrompts?.systemPrompt || ''}
-                          onChange={(v) => updateCustomPrompts({ systemPrompt: v })}
-                          placeholder={t.customPromptsHint}
-                          rows={2}
+                  {settings.screenshotExplain?.enabled !== false && (
+                    <>
+                      <div className="px-4 py-3 space-y-1.5">
+                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.hotkey}</span>
+                        <HotkeyInput
+                          value={settings.screenshotExplain?.hotkey || 'CommandOrControl+Shift+E'}
+                          placeholder="CommandOrControl+Shift+E"
+                          recording={recordingTarget === 'screenshotExplain'}
+                          onToggleRecording={() => toggleRecording('screenshotExplain')}
+                          recordLabel={t.hotkeyRecord}
+                          recordingLabel={t.hotkeyRecording}
+                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
                         />
-                        {!settings.screenshotExplain?.customPrompts?.systemPrompt?.trim() && explainDefaults?.system && (
-                          <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.system} />
-                        )}
                       </div>
-                      <div>
-                        <Label>{t.summaryPrompt}</Label>
-                        <TextArea
-                          value={settings.screenshotExplain?.customPrompts?.summaryPrompt || ''}
-                          onChange={(v) => updateCustomPrompts({ summaryPrompt: v })}
-                          placeholder={t.customPromptsHint}
-                          rows={3}
+                      <SettingRow label={t.responseLanguage}>
+                        <Select
+                          className="w-36"
+                          value={settings.screenshotExplain?.defaultLanguage || 'zh'}
+                          onChange={(v) => updateScreenshotExplain({ defaultLanguage: v as 'zh' | 'en' })}
+                          options={[
+                            { value: 'zh', label: '中文' },
+                            { value: 'en', label: 'English' },
+                          ]}
                         />
-                        {!settings.screenshotExplain?.customPrompts?.summaryPrompt?.trim() && explainDefaults?.summary && (
-                          <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.summary} />
-                        )}
-                      </div>
-                      <div>
-                        <Label>{t.questionPrompt}</Label>
-                        <TextArea
-                          value={settings.screenshotExplain?.customPrompts?.questionPrompt || ''}
-                          onChange={(v) => updateCustomPrompts({ questionPrompt: v })}
-                          placeholder={t.customPromptsHint}
-                          rows={3}
+                      </SettingRow>
+                      <SettingRow label={t.streamEnabled}>
+                        <Toggle
+                          checked={settings.screenshotExplain?.streamEnabled ?? false}
+                          onChange={(v) => updateScreenshotExplain({ streamEnabled: v })}
                         />
-                        {!settings.screenshotExplain?.customPrompts?.questionPrompt?.trim() && explainDefaults?.question && (
-                          <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.question} />
-                        )}
-                      </div>
-                    </div>
-                  </details>
+                      </SettingRow>
+                      <SettingRow label={t.selectModelPair}>
+                        <Select
+                          className="w-52"
+                          value={`${settings.screenshotExplain.providerId}:${settings.screenshotExplain.model}`}
+                          onChange={(v) => {
+                            const [providerId, model] = v.split(':')
+                            updateScreenshotExplain({ providerId, model })
+                          }}
+                          options={settings.providers.flatMap(p =>
+                            p.enabledModels.map(m => ({
+                              value: `${p.id}:${m}`,
+                              label: `${p.name} - ${m}`
+                            }))
+                          )}
+                        />
+                      </SettingRow>
+                      <details className="group">
+                        <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
+                          <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">
+                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </div>
+                          {t.customPrompts}
+                        </summary>
+                        <div className="px-4 pb-4 space-y-4">
+                          <div>
+                            <Label>{t.systemPrompt}</Label>
+                            <TextArea
+                              value={settings.screenshotExplain?.customPrompts?.systemPrompt || ''}
+                              onChange={(v) => updateCustomPrompts({ systemPrompt: v })}
+                              placeholder={t.customPromptsHint}
+                              rows={2}
+                            />
+                            {!settings.screenshotExplain?.customPrompts?.systemPrompt?.trim() && explainDefaults?.system && (
+                              <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.system} />
+                            )}
+                          </div>
+                          <div>
+                            <Label>{t.summaryPrompt}</Label>
+                            <TextArea
+                              value={settings.screenshotExplain?.customPrompts?.summaryPrompt || ''}
+                              onChange={(v) => updateCustomPrompts({ summaryPrompt: v })}
+                              placeholder={t.customPromptsHint}
+                              rows={3}
+                            />
+                            {!settings.screenshotExplain?.customPrompts?.summaryPrompt?.trim() && explainDefaults?.summary && (
+                              <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.summary} />
+                            )}
+                          </div>
+                          <div>
+                            <Label>{t.questionPrompt}</Label>
+                            <TextArea
+                              value={settings.screenshotExplain?.customPrompts?.questionPrompt || ''}
+                              onChange={(v) => updateCustomPrompts({ questionPrompt: v })}
+                              placeholder={t.customPromptsHint}
+                              rows={3}
+                            />
+                            {!settings.screenshotExplain?.customPrompts?.questionPrompt?.trim() && explainDefaults?.question && (
+                              <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.question} />
+                            )}
+                          </div>
+                        </div>
+                      </details>
+                    </>
+                  )}
                 </div>
-              )}
-            </Card>
+              </div>
+            </section>
           </div>
         )}
 
         {/* ===== 模型管理标签页 ===== */}
         {activeTab === 'models' && (
-          <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {settings.providers.map((provider) => (
-              <Card key={provider.id} className="relative group">
-                <div className="absolute right-4 top-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <section key={provider.id} className="relative group">
+                <div className="absolute right-3 top-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
                     onClick={() => deleteProvider(provider.id)}
                     className="p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-all"
@@ -1543,64 +1039,77 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                   </button>
                 </div>
 
-                <div className="space-y-4">
-                  <div>
-                    <Label>{t.providerName}</Label>
-                    <Input
-                      value={provider.name}
-                      onChange={(v) => updateProvider(provider.id, { name: v })}
-                      placeholder="e.g. OpenAI / DeepSeek"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label>{t.baseUrl}</Label>
-                      <Input
-                        value={provider.baseUrl}
-                        onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
-                        placeholder="https://api.openai.com/v1"
-                      />
+                <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
+                  <div className="divide-y divide-black/5 dark:divide-white/5">
+                    {/* 名称 */}
+                    <div className="px-4 py-3">
+                      <Label>{t.providerName}</Label>
+                      <div className="mt-1.5">
+                        <Input
+                          value={provider.name}
+                          onChange={(v) => updateProvider(provider.id, { name: v })}
+                          placeholder="e.g. OpenAI / DeepSeek"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <Label>{t.apiKey}</Label>
-                      <Input
-                        type="password"
-                        value={provider.apiKey}
-                        onChange={(v) => updateProvider(provider.id, { apiKey: v })}
-                        placeholder="sk-..."
-                      />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => handleTestConnection(provider.id)}
-                      disabled={testingProviderId === provider.id}
-                      className={`text-[11px] font-medium flex items-center gap-1 px-2.5 py-1 rounded-md transition-all border ${testingProviderId === provider.id
-                        ? 'text-neutral-400 border-black/5 dark:border-white/5 cursor-not-allowed'
-                        : 'text-neutral-500 border-black/10 dark:border-white/10 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
-                        }`}
-                      data-tauri-drag-region="false"
-                    >
-                      <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
-                      {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
-                    </button>
-                    {providerTestFeedback[provider.id] && (
-                      <span className={`text-[11px] truncate ${providerTestFeedback[provider.id].ok
-                        ? 'text-emerald-600 dark:text-emerald-400'
-                        : 'text-rose-600 dark:text-rose-400'
-                        }`} title={providerTestFeedback[provider.id].message}>
-                        {providerTestFeedback[provider.id].message}
-                      </span>
-                    )}
-                  </div>
 
-                  {/* 已启用模型管理 */}
-                  <div className="space-y-3 pt-3 border-t border-black/5 dark:border-white/5">
-                    <div className="flex justify-between items-center">
-                      <Label className="mb-0">{t.registeredModels}</Label>
-                      <div className="flex gap-2">
-                        <div className="relative flex items-center gap-1">
+                    {/* Base URL + API Key */}
+                    <div className="px-4 py-3">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label>{t.baseUrl}</Label>
+                          <div className="mt-1.5">
+                            <Input
+                              value={provider.baseUrl}
+                              onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
+                              placeholder="https://api.openai.com/v1"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <Label>{t.apiKey}</Label>
+                          <div className="mt-1.5">
+                            <Input
+                              type="password"
+                              value={provider.apiKey}
+                              onChange={(v) => updateProvider(provider.id, { apiKey: v })}
+                              placeholder="sk-..."
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 连接测试 */}
+                    <div className="flex items-center justify-between gap-3 px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => handleTestConnection(provider.id)}
+                        disabled={testingProviderId === provider.id}
+                        className={`text-[11px] font-medium flex items-center gap-1 px-2.5 py-1 rounded-md transition-all border ${testingProviderId === provider.id
+                          ? 'text-neutral-400 border-black/5 dark:border-white/5 cursor-not-allowed'
+                          : 'text-neutral-500 border-black/10 dark:border-white/10 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                          }`}
+                        data-tauri-drag-region="false"
+                      >
+                        <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
+                        {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
+                      </button>
+                      {providerTestFeedback[provider.id] && (
+                        <span className={`text-[11px] truncate ${providerTestFeedback[provider.id].ok
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-rose-600 dark:text-rose-400'
+                          }`} title={providerTestFeedback[provider.id].message}>
+                          {providerTestFeedback[provider.id].message}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 已启用模型 */}
+                    <div className="px-4 py-3 space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.registeredModels}</span>
+                        <div className="flex items-center gap-1">
                           <Input
                             className="h-7 w-32 !text-[11px] !py-0"
                             placeholder={t.manualAddModel}
@@ -1624,66 +1133,66 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           </button>
                         </div>
                       </div>
+                      <div className="flex flex-wrap gap-2 min-h-[24px]">
+                        {provider.enabledModels.map(model => (
+                          <span key={model} className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-md text-[11px] text-neutral-700 dark:text-neutral-300 font-mono border border-black/5 dark:border-white/5">
+                            {model}
+                            <button
+                              onClick={() => removeEnabledModel(provider.id, model)}
+                              className="text-neutral-400 hover:text-red-500 transition-colors"
+                            >
+                              <X size={10} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                    <div className="flex flex-wrap gap-2 min-h-[24px]">
-                      {provider.enabledModels.map(model => (
-                        <span key={model} className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-md text-[11px] text-neutral-700 dark:text-neutral-300 font-mono border border-black/5 dark:border-white/5 group/tag">
-                          {model}
-                          <button
-                            onClick={() => removeEnabledModel(provider.id, model)}
-                            className="text-neutral-400 hover:text-red-500 transition-colors"
-                          >
-                            <X size={10} />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
 
-                  {/* 获取可用模型列表 */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <Label className="mb-0">{t.availableModels}</Label>
-                      <button
-                        onClick={() => fetchModels(provider.id)}
-                        disabled={fetchingProviderId === provider.id}
-                        className={`text-[11px] font-medium flex items-center gap-1 px-2 py-0.5 rounded-md transition-all ${fetchingProviderId === provider.id
-                          ? 'text-neutral-400 cursor-not-allowed'
-                          : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
-                          }`}
-                      >
-                        <RefreshCw size={10} className={fetchingProviderId === provider.id ? 'animate-spin' : ''} />
-                        {fetchingProviderId === provider.id ? t.fetching : t.fetchModels}
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
-                      {provider.availableModels.length > 0 ? (
-                        provider.availableModels.map(m => (
-                          <button
-                            key={m}
-                            onClick={() => addEnabledModel(provider.id, m)}
-                            disabled={provider.enabledModels.includes(m)}
-                            className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${provider.enabledModels.includes(m)
-                              ? 'bg-neutral-50 dark:bg-neutral-900/50 text-neutral-400 border-transparent cursor-default'
-                              : 'bg-black/5 dark:bg-white/5 text-neutral-500 border-black/5 dark:border-white/5 hover:border-neutral-300 dark:hover:border-neutral-600'
-                              }`}
-                          >
-                            {m}
-                          </button>
-                        ))
-                      ) : (
-                        <span className="text-[11px] text-neutral-400 italic">No models fetched yet</span>
-                      )}
+                    {/* 可用模型 */}
+                    <div className="px-4 py-3 space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.availableModels}</span>
+                        <button
+                          onClick={() => fetchModels(provider.id)}
+                          disabled={fetchingProviderId === provider.id}
+                          className={`text-[11px] font-medium flex items-center gap-1 px-2 py-0.5 rounded-md transition-all ${fetchingProviderId === provider.id
+                            ? 'text-neutral-400 cursor-not-allowed'
+                            : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                            }`}
+                        >
+                          <RefreshCw size={10} className={fetchingProviderId === provider.id ? 'animate-spin' : ''} />
+                          {fetchingProviderId === provider.id ? t.fetching : t.fetchModels}
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                        {provider.availableModels.length > 0 ? (
+                          provider.availableModels.map(m => (
+                            <button
+                              key={m}
+                              onClick={() => addEnabledModel(provider.id, m)}
+                              disabled={provider.enabledModels.includes(m)}
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${provider.enabledModels.includes(m)
+                                ? 'bg-neutral-50 dark:bg-neutral-900/50 text-neutral-400 border-transparent cursor-default'
+                                : 'bg-black/5 dark:bg-white/5 text-neutral-500 border-black/5 dark:border-white/5 hover:border-neutral-300 dark:hover:border-neutral-600'
+                                }`}
+                            >
+                              {m}
+                            </button>
+                          ))
+                        ) : (
+                          <span className="text-[11px] text-neutral-400 italic">No models fetched yet</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </Card>
+              </section>
             ))}
 
             {/* 添加新提供商按钮 */}
             <button
               onClick={addProvider}
-              className="w-full py-4 border-2 border-dashed border-black/5 dark:border-white/5 rounded-xl text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-black/10 dark:hover:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all flex flex-col items-center gap-2"
+              className="w-full py-4 border-2 border-dashed border-black/5 dark:border-white/5 rounded-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-black/10 dark:hover:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all flex flex-col items-center gap-2"
             >
               <Plus size={20} strokeWidth={2} />
               <span className="text-[13px] font-medium">{t.addProvider}</span>
@@ -1693,7 +1202,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       </div>
 
       {/* 底部操作栏 */}
-      <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-white dark:bg-neutral-900 rounded-b-xl">
+      <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-neutral-200 dark:bg-black rounded-b-xl">
         <div className="flex items-center gap-3 min-w-0">
           <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
           {saveError && (

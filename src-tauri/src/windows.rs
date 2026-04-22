@@ -72,12 +72,12 @@ pub fn ensure_capture_overlay_window(app: &AppHandle) -> Result<WebviewWindow, S
     WebviewUrl::App("index.html#capture".into()),
   )
   .title("Capture")
-  .fullscreen(true)
   .always_on_top(true)
   .decorations(false)
   .transparent(true)
   .skip_taskbar(true)
   .resizable(false)
+  .visible(false)
   .build()
   .map_err(|e| e.to_string())
   .map(|window| {

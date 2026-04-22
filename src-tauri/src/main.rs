@@ -722,24 +722,45 @@ fn capture_region_image(
   height: u32,
   scale_factor: f64,
 ) -> Result<PathBuf, String> {
+  // 先用前端传入的 scale factor 估算物理坐标，用于定位目标显示器
   let sf = if scale_factor.is_finite() && scale_factor > 0.0 {
     scale_factor
   } else {
     1.0
   };
+  let estimated_px = ((absolute_x as f64) * sf).round() as i32;
+  let estimated_py = ((absolute_y as f64) * sf).round() as i32;
 
-  let absolute_physical_x = ((absolute_x as f64) * sf).round() as i32;
-  let absolute_physical_y = ((absolute_y as f64) * sf).round() as i32;
+  // 定位目标显示器：优先用 from_point，失败时遍历所有显示器作为 fallback
+  let monitor = Monitor::from_point(estimated_px, estimated_py).or_else(|_| {
+    Monitor::all()
+      .map_err(|e| e.to_string())?
+      .into_iter()
+      .find(|m| {
+        let Ok(mx) = m.x() else { return false };
+        let Ok(my) = m.y() else { return false };
+        let Ok(mw) = m.width() else { return false };
+        let Ok(mh) = m.height() else { return false };
+        let right = mx + mw as i32;
+        let bottom = my + mh as i32;
+        estimated_px >= mx && estimated_px < right && estimated_py >= my && estimated_py < bottom
+      })
+      .ok_or_else(|| "No monitor found at the given position".to_string())
+  })?;
 
-  let monitor = Monitor::from_point(absolute_physical_x, absolute_physical_y)
-    .map_err(|e| e.to_string())?;
   let monitor_x = monitor.x().map_err(|e| e.to_string())?;
   let monitor_y = monitor.y().map_err(|e| e.to_string())?;
+  let monitor_scale = monitor.scale_factor().map_err(|e| e.to_string())? as f64;
+
+  // 使用显示器实际 scale factor 重新计算物理坐标
+  // 这可以修正前端 devicePixelRatio 在多屏幕不同 DPI 下可能不准确的情况
+  let absolute_physical_x = ((absolute_x as f64) * monitor_scale).round() as i32;
+  let absolute_physical_y = ((absolute_y as f64) * monitor_scale).round() as i32;
 
   let relative_x = absolute_physical_x - monitor_x;
   let relative_y = absolute_physical_y - monitor_y;
-  let region_width = ((width as f64) * sf).round() as u32;
-  let region_height = ((height as f64) * sf).round() as u32;
+  let region_width = ((width as f64) * monitor_scale).round() as u32;
+  let region_height = ((height as f64) * monitor_scale).round() as u32;
 
   let monitor_width = monitor.width().map_err(|e| e.to_string())?;
   let monitor_height = monitor.height().map_err(|e| e.to_string())?;
@@ -759,18 +780,12 @@ fn capture_region_image(
   let capture_height = region_height.min(max_height).max(1);
 
   eprintln!(
-    "capture region debug: abs_logical=({}, {}), abs_physical=({}, {}), monitor=({}, {}), logical=({}, {}, {}x{}), scale={}, physical=({}, {}, {}x{})",
+    "capture region: abs_logical=({}, {}), monitor=({}, {}), monitor_scale={}, physical=({}, {}), region={}x{}",
     absolute_x,
     absolute_y,
-    absolute_physical_x,
-    absolute_physical_y,
     monitor_x,
     monitor_y,
-    x,
-    y,
-    width,
-    height,
-    sf,
+    monitor_scale,
     relative_x,
     relative_y,
     capture_width,
@@ -867,6 +882,35 @@ fn capture_request(app: AppHandle, mode: String) -> Result<(), String> {
       return Err(err);
     }
   };
+
+  #[cfg(target_os = "windows")]
+  {
+    // 多屏幕兼容：将覆盖层窗口移动到鼠标所在的显示器
+    if let Ok(cursor) = app.cursor_position() {
+      let cursor_x = cursor.x as i32;
+      let cursor_y = cursor.y as i32;
+      if let Ok(monitors) = Monitor::all() {
+        for monitor in monitors {
+          let Ok(mx) = monitor.x() else { continue };
+          let Ok(my) = monitor.y() else { continue };
+          let Ok(mw) = monitor.width() else { continue };
+          let Ok(mh) = monitor.height() else { continue };
+          let right = mx + mw as i32;
+          let bottom = my + mh as i32;
+          if cursor_x >= mx && cursor_x < right && cursor_y >= my && cursor_y < bottom {
+            let _ = capture_window.set_position(
+              tauri::Position::Physical(tauri::PhysicalPosition::new(mx, my))
+            );
+            let _ = capture_window.set_size(
+              tauri::Size::Physical(tauri::PhysicalSize::new(mw, mh))
+            );
+            break;
+          }
+        }
+      }
+    }
+  }
+
   let _ = capture_window.eval("window.dispatchEvent(new Event('capture:reset'));\n");
   if let Err(err) = capture_window.show().map_err(|e| e.to_string()) {
     if let Ok(mut pending) = state.pending_capture_mode.lock() {
