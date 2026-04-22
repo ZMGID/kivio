@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Save, Plus, Trash2, RefreshCw,
   Settings as SettingsIcon, Languages, Camera, MessageSquare,
-  Cloud, Info
+  Cloud, Info, Palette, Keyboard, SlidersHorizontal, Globe,
+  Cpu, FileText, ShieldCheck
 } from 'lucide-react'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
 import { i18n } from './settings/i18n'
@@ -588,7 +589,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   return (
-    <div className="flex bg-[#F5F5F7] dark:bg-black text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden h-full w-full">
+    <div className="flex bg-[#f8f9fa] dark:bg-black text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden h-full w-full">
       {/* 左侧侧边栏 */}
       <div className="w-[180px] flex flex-col border-r border-black/5 dark:border-white/5 bg-white dark:bg-[#1C1C1E] shrink-0">
         {/* 标题 */}
@@ -612,43 +613,45 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${active
-                  ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white'
+                className={`relative w-full flex items-center gap-2.5 px-3 h-12 rounded-lg text-[13px] font-medium transition-all duration-150 ${active
+                  ? 'bg-[#f0f4ff] dark:bg-blue-900/20 text-[#2563eb] dark:text-blue-400'
                   : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
                   }`}
                 data-tauri-drag-region="false"
               >
-                <Icon size={16} strokeWidth={1.8} />
+                {active && (
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-[#2563eb] dark:bg-blue-400" />
+                )}
+                <Icon size={18} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={active ? 'text-[#2563eb] dark:text-blue-400' : ''} />
                 {item.label}
               </button>
             )
           })}
         </nav>
 
-        {/* 底部关闭按钮 */}
-        <div className="px-3 py-3 border-t border-black/5 dark:border-white/5">
-          <button
-            onClick={handleCloseRequest}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-all duration-150"
-            data-tauri-drag-region="false"
-          >
-            <X size={16} strokeWidth={1.8} />
-            {t.cancel}
-          </button>
-        </div>
       </div>
 
       {/* 右侧内容区域 */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* 顶部关闭按钮 */}
+        <div className="flex justify-end px-4 pt-3" data-tauri-drag-region>
+          <button
+            onClick={handleCloseRequest}
+            className="p-1.5 hover:bg-black/5 dark:hover:bg-white/10 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-all"
+            data-tauri-drag-region="false"
+          >
+            <X size={16} strokeWidth={2} />
+          </button>
+        </div>
         {/* 内容滚动区 */}
-        <div className="flex-1 overflow-auto px-5 py-4 space-y-5 custom-scrollbar">
+        <div className="flex-1 overflow-auto px-5 py-2 space-y-5 custom-scrollbar">
         {/* ===== 基础设置标签页 ===== */}
         {activeTab === 'general' && (
-          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {/* 外观 */}
             <section>
-              <SectionTitle>{lang === 'zh' ? '外观' : 'Appearance'}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden divide-y divide-black/5 dark:divide-white/5">
+              <SectionTitle icon={Palette}>{lang === 'zh' ? '外观' : 'Appearance'}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden divide-y divide-[#f0f0f0] dark:divide-white/5">
                 <SettingRow label={t.theme}>
                   <Select
                     className="w-36"
@@ -677,8 +680,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
             {/* 快捷键 */}
             <section>
-              <SectionTitle>{t.hotkey}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden px-4 py-3">
+              <SectionTitle icon={Keyboard}>{t.hotkey}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden px-4 py-3">
                 <HotkeyInput
                   value={settings.hotkey}
                   placeholder={t.hotkeyPlaceholder}
@@ -693,8 +696,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
             {/* 行为 */}
             <section>
-              <SectionTitle>{lang === 'zh' ? '行为' : 'Behavior'}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden divide-y divide-black/5 dark:divide-white/5">
+              <SectionTitle icon={SlidersHorizontal}>{lang === 'zh' ? '行为' : 'Behavior'}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden divide-y divide-[#f0f0f0] dark:divide-white/5">
                 <SettingRow label={t.retryEnabled} description={t.retryAttemptsHint}>
                   <Toggle
                     checked={settings.retryEnabled ?? true}
@@ -733,8 +736,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 权限状态（仅 macOS 显示） */}
             {permissionStatus?.platform === 'macos' && (
               <section>
-                <SectionTitle>{t.permissions}</SectionTitle>
-                <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden divide-y divide-black/5 dark:divide-white/5">
+                <SectionTitle icon={ShieldCheck}>{t.permissions}</SectionTitle>
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden divide-y divide-[#f0f0f0] dark:divide-white/5">
                   <PermissionItem
                     label={t.accessibilityPermission}
                     granted={permissionStatus.accessibility}
@@ -774,11 +777,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
         {/* ===== 翻译设置标签页 ===== */}
         {activeTab === 'translate' && (
-          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {/* 目标语言 */}
             <section>
-              <SectionTitle>{t.targetLang}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
+              <SectionTitle icon={Globe}>{t.targetLang}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
                 <SettingRow label={t.targetLang}>
                   <Select
                     className="w-40"
@@ -800,8 +803,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
             {/* 翻译引擎 */}
             <section>
-              <SectionTitle>{t.engine}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
+              <SectionTitle icon={Cpu}>{t.engine}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
                 <SettingRow label={t.selectModelPair}>
                   <Select
                     className="w-52"
@@ -823,8 +826,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
             {/* 提示词 */}
             <section>
-              <SectionTitle>{t.translatorPrompt}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden px-4 py-3">
+              <SectionTitle icon={FileText}>{t.translatorPrompt}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden px-4 py-3">
                 <TextArea
                   value={settings.translatorPrompt || ''}
                   onChange={(v) => updateSettings({ translatorPrompt: v })}
@@ -841,12 +844,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
         {/* ===== 截图设置标签页 ===== */}
         {activeTab === 'screenshot' && (
-          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {/* 截图翻译设置 */}
             <section>
-              <SectionTitle>{t.screenshotTranslate}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
-                <div className="divide-y divide-black/5 dark:divide-white/5">
+              <SectionTitle icon={Camera}>{t.screenshotTranslate}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+                <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
                   <SettingRow label={t.enabled}>
                     <Toggle
                       checked={settings.screenshotTranslation?.enabled ?? true}
@@ -929,11 +932,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
         {/* ===== 截图讲解标签页 ===== */}
         {activeTab === 'explain' && (
-          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section>
-              <SectionTitle>{t.screenshotExplain}</SectionTitle>
-              <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
-                <div className="divide-y divide-black/5 dark:divide-white/5">
+              <SectionTitle icon={MessageSquare}>{t.screenshotExplain}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+                <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
                   <SettingRow label={t.enabled}>
                     <Toggle
                       checked={settings.screenshotExplain?.enabled !== false}
@@ -1046,7 +1049,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
         {/* ===== 模型管理标签页 ===== */}
         {activeTab === 'providers' && (
-          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {settings.providers.map((provider) => (
               <section key={provider.id} className="relative group">
                 <div className="absolute right-3 top-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1058,8 +1061,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                   </button>
                 </div>
 
-                <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
-                  <div className="divide-y divide-black/5 dark:divide-white/5">
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+                  <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
                     {/* 名称 */}
                     <div className="px-4 py-3">
                       <Label>{t.providerName}</Label>
@@ -1221,7 +1224,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
         {/* ===== 关于标签页 ===== */}
         {activeTab === 'about' && (
-          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section>
               <div className="flex flex-col items-center justify-center py-10">
                 <div className="w-16 h-16 rounded-2xl bg-neutral-900 dark:bg-white flex items-center justify-center mb-4 shadow-sm">
@@ -1229,7 +1232,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 </div>
                 <h2 className="text-[16px] font-semibold text-neutral-900 dark:text-white mb-1">KeyLingo</h2>
                 <p className="text-[13px] text-neutral-500 dark:text-neutral-400 mb-6">{lang === 'zh' ? '智能翻译与 AI 视觉工具' : 'Smart Translation & AI Vision Tool'}</p>
-                <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden w-full max-w-sm">
+                <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden w-full max-w-sm">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
                     <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{lang === 'zh' ? '版本' : 'Version'}</span>
                     <span className="text-[13px] text-neutral-500 dark:text-neutral-400">v{appVersion}</span>

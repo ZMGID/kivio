@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "dev:ui": "vite",
+    "dev:ui": "vite --port 5713",
     "build": "tauri build",
     "tauri": "tauri",
     "build:ui": "vite build",

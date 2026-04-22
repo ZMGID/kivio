@@ -256,14 +256,15 @@ export function DefaultPrompt({ label, content }: { label: string; content: stri
 }
 
 /**
- * 区块标题组件（灰色小字，放在卡片外）
+ * 区块标题组件（带图标，品牌色）
  */
-export function SectionTitle({ children }: { children: ReactNode }) {
+export function SectionTitle({ children, icon: Icon }: { children: ReactNode; icon?: React.ComponentType<{ size?: number; className?: string }> }) {
   return (
-    <div className="px-1 mb-1.5">
-      <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">
+    <div className="flex items-center gap-2 mb-3 px-1">
+      {Icon && <Icon size={16} className="text-[#2563eb] dark:text-blue-400" />}
+      <h3 className="text-[14px] font-bold text-[#1a1a2e] dark:text-white">
         {children}
-      </span>
+      </h3>
     </div>
   )
 }
