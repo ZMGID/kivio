@@ -15,6 +15,7 @@ Use `npm` (lockfile is `package-lock.json`). Rust tooling is managed by Tauri.
 - `npm run dev:ui` — run the Vite UI dev server only (useful for quick UI iteration without compiling Rust).
 - `npm run build` — build the full desktop app bundle via Tauri.
 - `npm run build:ui` — build the production UI bundle only (outputs to `dist/`).
+- `npm run preview` — preview the built UI bundle locally.
 - `npm run lint` — run ESLint on `.ts` and `.tsx` files.
 
 There is no test runner configured. Manual smoke testing is required after changes.
@@ -39,7 +40,14 @@ The app uses **one main webview window** that switches views via `window.locatio
 - `'explain'` — screenshot explanation chat
 - `'capture'` — region selection overlay (fullscreen transparent)
 
-`App.tsx` reads the hash to determine the mode and resizes the window accordingly. Additional dedicated Tauri windows are created dynamically for `screenshot`, `explain`, and `capture` modes via `src-tauri/src/windows.rs`.
+`App.tsx` reads the hash to determine the mode and resizes the window accordingly. Additional dedicated Tauri windows are created dynamically for `screenshot`, `explain`, and `capture` modes via `src-tauri/src/windows.rs`. Window behavior and bundle targets are configured in **`src-tauri/tauri.conf.json`**.
+
+### Settings UI Submodules
+
+The settings panel (`src/Settings.tsx`) delegates to helpers in **`src/settings/`**:
+- `components.tsx` — reusable UI primitives (Toggle, Select, HotkeyRecorder, etc.).
+- `i18n.ts` — bilingual string table (zh/en).
+- `utils.ts` — hotkey parsing/formatting and platform detection.
 
 ### Multi-Provider System
 
@@ -74,9 +82,24 @@ Busy flags (`screenshot_translation_busy`, `screenshot_explain_busy`) prevent co
 - **`windows.rs`** — Window creation helpers (`ensure_main_window`, `ensure_screenshot_window`, `ensure_capture_overlay_window`).
 - **`utils.rs`** — Language detection, target language resolution, timestamp utility.
 
+Key crate responsibilities from `Cargo.toml`:
+- `enigo` — simulates keyboard paste after translation commit.
+- `arboard` — clipboard read/write.
+- `keyring` — secure API key storage.
+- `reqwest` — HTTP client for OpenAI-compatible APIs.
+- `xcap` — Windows region screen capture.
+
 ### Streaming
 
 Screenshot explain supports streaming responses. `stream_vision_response` in `main.rs` parses SSE chunks and emits `explain-stream` events to the frontend. The frontend (`ScreenshotExplain.tsx`) merges deltas into the current message using a `streamingRef` to track the active stream.
+
+## Release
+
+Releases are built via GitHub Actions (`.github/workflows/release.yml`). Pushing a `v*` tag triggers builds for:
+- **macOS** — DMG bundle (`--bundles dmg`)
+- **Windows** — MSI + NSIS bundles (`--bundles msi,nsis`)
+
+Manual releases are also supported via `workflow_dispatch`.
 
 ## Code Style
 
@@ -85,6 +108,7 @@ Screenshot explain supports streaming responses. `stream_vision_response` in `ma
 - Components use `PascalCase.tsx`; utilities/services use `camelCase.ts`.
 - Tailwind utility classes for UI; shared styles in `src/index.css`, component-specific in `src/App.css`.
 - Dark mode uses a `.dark` class on `document.documentElement` (configured via `@custom-variant dark` in Tailwind v4).
+- Git commits follow Conventional Commits (`feat:`, `fix:`, `refactor:`, `chore:`).
 
 ## Important Implementation Details
 

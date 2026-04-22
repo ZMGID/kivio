@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { X, Save, Plus, Trash2, RefreshCw } from 'lucide-react'
+import {
+  X, Save, Plus, Trash2, RefreshCw,
+  Settings as SettingsIcon, Languages, Camera, MessageSquare,
+  Cloud, Info
+} from 'lucide-react'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
 import { i18n } from './settings/i18n'
 import { buildHotkey } from './settings/utils'
 import {
   Toggle, Select, Input, TextArea, Label,
   SettingRow, PermissionItem, HotkeyInput, DefaultPrompt,
-  SectionTitle, TabButton,
+  SectionTitle,
 } from './settings/components'
 
 type SettingsData = SettingsType
@@ -26,7 +30,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'models'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'explain' | 'providers' | 'about'>('general')
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
@@ -584,50 +588,60 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   return (
-    <div className="flex flex-col bg-neutral-200 dark:bg-black text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden h-full w-full">
-      {/* 标题栏 */}
-      <div
-        className="flex justify-between items-center px-5 py-4 border-b border-black/5 dark:border-white/5 bg-neutral-200 dark:bg-black rounded-t-xl"
-        data-tauri-drag-region
-      >
-        <h2 className="font-semibold text-[15px] tracking-tight">{t.settings}</h2>
-        <button
-          onClick={handleCloseRequest}
-          className="p-1.5 hover:bg-black/5 dark:hover:bg-white/10 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-all duration-200"
-          data-tauri-drag-region="false"
-        >
-          <X size={18} strokeWidth={2} />
-        </button>
-      </div>
+    <div className="flex bg-[#F5F5F7] dark:bg-black text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden h-full w-full">
+      {/* 左侧侧边栏 */}
+      <div className="w-[180px] flex flex-col border-r border-black/5 dark:border-white/5 bg-white dark:bg-[#1C1C1E] shrink-0">
+        {/* 标题 */}
+        <div className="px-5 py-4" data-tauri-drag-region>
+          <h2 className="font-semibold text-[14px] tracking-tight text-neutral-800 dark:text-neutral-100">{t.settings}</h2>
+        </div>
 
-      {/* 标签页导航 — 分段控制器 */}
-      <div className="px-5 py-3 border-b border-black/5 dark:border-white/5">
-        <div className="flex bg-neutral-200/50 dark:bg-neutral-800/50 rounded-lg p-0.5">
-          <TabButton
-            active={activeTab === 'general'}
-            onClick={() => setActiveTab('general')}
-            label={t.tabGeneral}
-          />
-          <TabButton
-            active={activeTab === 'translate'}
-            onClick={() => setActiveTab('translate')}
-            label={t.tabTranslate}
-          />
-          <TabButton
-            active={activeTab === 'screenshot'}
-            onClick={() => setActiveTab('screenshot')}
-            label={t.tabScreenshot}
-          />
-          <TabButton
-            active={activeTab === 'models'}
-            onClick={() => setActiveTab('models')}
-            label={t.tabModels}
-          />
+        {/* 导航项 */}
+        <nav className="flex-1 px-3 space-y-0.5">
+          {[
+            { id: 'general' as const, label: t.tabGeneral, icon: SettingsIcon },
+            { id: 'translate' as const, label: t.tabTranslate, icon: Languages },
+            { id: 'screenshot' as const, label: t.tabScreenshot, icon: Camera },
+            { id: 'explain' as const, label: '截图讲解', icon: MessageSquare },
+            { id: 'providers' as const, label: t.tabModels, icon: Cloud },
+            { id: 'about' as const, label: '关于', icon: Info },
+          ].map((item) => {
+            const Icon = item.icon
+            const active = activeTab === item.id
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-150 ${active
+                  ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white'
+                  : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
+                  }`}
+                data-tauri-drag-region="false"
+              >
+                <Icon size={16} strokeWidth={1.8} />
+                {item.label}
+              </button>
+            )
+          })}
+        </nav>
+
+        {/* 底部关闭按钮 */}
+        <div className="px-3 py-3 border-t border-black/5 dark:border-white/5">
+          <button
+            onClick={handleCloseRequest}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-all duration-150"
+            data-tauri-drag-region="false"
+          >
+            <X size={16} strokeWidth={1.8} />
+            {t.cancel}
+          </button>
         </div>
       </div>
 
-      {/* 内容区域 */}
-      <div className="flex-1 overflow-auto px-4 py-3 space-y-5 custom-scrollbar">
+      {/* 右侧内容区域 */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* 内容滚动区 */}
+        <div className="flex-1 overflow-auto px-5 py-4 space-y-5 custom-scrollbar">
         {/* ===== 基础设置标签页 ===== */}
         {activeTab === 'general' && (
           <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -910,7 +924,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               </div>
             </section>
 
-            {/* 截图解释设置 */}
+          </div>
+        )}
+
+        {/* ===== 截图讲解标签页 ===== */}
+        {activeTab === 'explain' && (
+          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section>
               <SectionTitle>{t.screenshotExplain}</SectionTitle>
               <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden">
@@ -1026,7 +1045,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         )}
 
         {/* ===== 模型管理标签页 ===== */}
-        {activeTab === 'models' && (
+        {activeTab === 'providers' && (
           <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {settings.providers.map((provider) => (
               <section key={provider.id} className="relative group">
@@ -1199,10 +1218,35 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             </button>
           </div>
         )}
+
+        {/* ===== 关于标签页 ===== */}
+        {activeTab === 'about' && (
+          <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <section>
+              <div className="flex flex-col items-center justify-center py-10">
+                <div className="w-16 h-16 rounded-2xl bg-neutral-900 dark:bg-white flex items-center justify-center mb-4 shadow-sm">
+                  <span className="text-white dark:text-neutral-900 text-[20px] font-bold">K</span>
+                </div>
+                <h2 className="text-[16px] font-semibold text-neutral-900 dark:text-white mb-1">KeyLingo</h2>
+                <p className="text-[13px] text-neutral-500 dark:text-neutral-400 mb-6">{lang === 'zh' ? '智能翻译与 AI 视觉工具' : 'Smart Translation & AI Vision Tool'}</p>
+                <div className="bg-neutral-100 dark:bg-[#1C1C1E] rounded-[10px] overflow-hidden w-full max-w-sm">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
+                    <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{lang === 'zh' ? '版本' : 'Version'}</span>
+                    <span className="text-[13px] text-neutral-500 dark:text-neutral-400">v{appVersion}</span>
+                  </div>
+                  <div className="flex items-center justify-between px-4 py-3">
+                    <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{lang === 'zh' ? '开发者' : 'Developer'}</span>
+                    <span className="text-[13px] text-neutral-500 dark:text-neutral-400">ZM</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
 
       {/* 底部操作栏 */}
-      <div className="flex justify-between items-center px-5 py-4 border-t border-black/5 dark:border-white/5 bg-neutral-200 dark:bg-black rounded-b-xl">
+      <div className="flex justify-between items-center px-5 py-3 border-t border-black/5 dark:border-white/5 bg-white dark:bg-[#1C1C1E] shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
           {saveError && (
@@ -1272,6 +1316,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

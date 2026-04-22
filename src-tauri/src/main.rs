@@ -1025,6 +1025,11 @@ fn toggle_main_window(app: &AppHandle) {
 
   let _ = window.set_always_on_top(true);
 
+  // 重置 hash 为翻译模式，防止之前打开过设置导致显示设置界面
+  let _ = window.eval(
+    "window.location.hash = ''; window.dispatchEvent(new HashChangeEvent('hashchange'));",
+  );
+
   let pos = get_mouse_position(app)
     .map(|cursor| tauri::PhysicalPosition::new((cursor.x + 10.0) as i32, (cursor.y + 10.0) as i32));
 
