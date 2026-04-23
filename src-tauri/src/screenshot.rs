@@ -22,6 +22,8 @@ pub fn capture_screenshot() -> Result<PathBuf, String> {
     let temp_path = temp_file_path("screenshot");
     let status = std::process::Command::new("screencapture")
       .arg("-i")
+      .arg("-t")
+      .arg("png")
       .arg(&temp_path)
       .status()
       .map_err(|e| e.to_string())?;

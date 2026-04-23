@@ -439,6 +439,18 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
               provider.enabled_models.push("gpt-4o".to_string());
           }
       }
+
+      // 确保当前使用的模型确实在该 provider 的 enabled_models 中
+      // 如果不在，重置为 enabled_models 的第一个模型
+      if settings.translator_provider_id == provider.id && !provider.enabled_models.contains(&settings.translator_model) {
+          settings.translator_model = provider.enabled_models[0].clone();
+      }
+      if settings.screenshot_translation.provider_id == provider.id && !provider.enabled_models.contains(&settings.screenshot_translation.model) {
+          settings.screenshot_translation.model = provider.enabled_models[0].clone();
+      }
+      if settings.screenshot_explain.provider_id == provider.id && !provider.enabled_models.contains(&settings.screenshot_explain.model) {
+          settings.screenshot_explain.model = provider.enabled_models[0].clone();
+      }
   }
 
   // 4. 规范化快捷键字符串

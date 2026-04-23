@@ -15,7 +15,6 @@ use std::{
     atomic::{AtomicBool, Ordering},
     Mutex, RwLock,
   },
-  thread,
   time::Duration,
 };
 
@@ -63,6 +62,25 @@ struct AppState {
   screenshot_translation_busy: AtomicBool,
   screenshot_explain_busy: AtomicBool,
   http: Client,
+}
+
+impl AppState {
+  /// 安全读取设置（锁中毒时返回内部数据，不 panic）
+  fn settings_read(&self) -> std::sync::RwLockReadGuard<Settings> {
+    self.settings.read().unwrap_or_else(|e| e.into_inner())
+  }
+  /// 安全写入设置（锁中毒时返回内部数据，不 panic）
+  fn settings_write(&self) -> std::sync::RwLockWriteGuard<Settings> {
+    self.settings.write().unwrap_or_else(|e| e.into_inner())
+  }
+  /// 安全获取解释图片映射锁
+  fn images_lock(&self) -> std::sync::MutexGuard<HashMap<String, PathBuf>> {
+    self.explain_images.lock().unwrap_or_else(|e| e.into_inner())
+  }
+  /// 安全获取当前解释图片 ID 锁
+  fn current_id_lock(&self) -> std::sync::MutexGuard<Option<String>> {
+    self.current_explain_image_id.lock().unwrap_or_else(|e| e.into_inner())
+  }
 }
 
 /// 自启动参数，用于区分用户手动启动和系统自动启动
@@ -156,7 +174,7 @@ fn apply_launch_at_startup(app: &AppHandle, enabled: bool) -> Result<(), String>
 /// 获取当前应用设置
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Settings {
-  state.settings.read().expect("settings lock").clone()
+  state.settings_read().clone()
 }
 
 /// 获取默认提示词模板
@@ -186,11 +204,11 @@ fn get_default_prompt_templates() -> serde_json::Value {
 /// 如果热键注册失败，则回滚运行时设置到之前的状态
 #[tauri::command]
 fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
-  let previous_settings = state.settings.read().expect("settings lock").clone();
+  let previous_settings = state.settings_read().clone();
   let sanitized = sanitize_settings(settings);
   apply_launch_at_startup(&app, sanitized.launch_at_startup)?;
   {
-    let mut guard = state.settings.write().expect("settings lock");
+    let mut guard = state.settings_write();
     *guard = sanitized.clone();
   }
 
@@ -221,7 +239,7 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
     return Ok("".to_string());
   }
 
-  let settings = state.settings.read().expect("settings lock").clone();
+  let settings = state.settings_read().clone();
   let provider = settings.get_provider(&settings.translator_provider_id)
     .ok_or_else(|| "Translator provider not found".to_string())?;
 
@@ -251,12 +269,12 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
 /// 提交翻译结果
 /// 将翻译后的文本写入剪贴板，隐藏主窗口，如果启用了自动粘贴则发送粘贴快捷键到之前的应用
 #[tauri::command]
-fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> Result<(), String> {
+async fn commit_translation(app: AppHandle, state: State<'_, AppState>, text: String) -> Result<(), String> {
   if text.trim().is_empty() {
     return Ok(());
   }
 
-  let auto_paste = state.settings.read().expect("settings lock").auto_paste;
+  let auto_paste = state.settings_read().auto_paste;
   let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
   clipboard.set_text(text).map_err(|e| e.to_string())?;
 
@@ -276,7 +294,7 @@ fn commit_translation(app: AppHandle, state: State<AppState>, text: String) -> R
 
   if auto_paste {
     // 增加延迟以确保焦点切换完成
-    thread::sleep(Duration::from_millis(600));
+    tokio::time::sleep(Duration::from_millis(600)).await;
     send_paste_shortcut();
   }
 
@@ -302,7 +320,7 @@ async fn explain_get_initial_summary(
   state: State<'_, AppState>,
   image_id: String,
 ) -> Result<serde_json::Value, String> {
-  let settings = state.settings.read().expect("settings lock").clone();
+  let settings = state.settings_read().clone();
   let language = settings.screenshot_explain.default_language.clone();
   let retry_attempts = effective_retry_attempts(&settings);
   let stream_enabled = settings.screenshot_explain.stream_enabled;
@@ -344,7 +362,7 @@ async fn explain_ask_question(
   image_id: String,
   messages: Vec<ExplainMessage>,
 ) -> Result<serde_json::Value, String> {
-  let settings = state.settings.read().expect("settings lock").clone();
+  let settings = state.settings_read().clone();
   let language = settings.screenshot_explain.default_language.clone();
   let retry_attempts = effective_retry_attempts(&settings);
   let stream_enabled = settings.screenshot_explain.stream_enabled;
@@ -405,7 +423,7 @@ fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_
 #[tauri::command]
 fn explain_close_current(app: AppHandle, state: State<AppState>) -> Result<(), String> {
   let current_id = {
-    let current = state.current_explain_image_id.lock().expect("current id lock");
+    let current = state.current_id_lock();
     current.clone()
   };
 
@@ -424,7 +442,7 @@ fn explain_save_history(
   state: State<AppState>,
   messages: Vec<ExplainMessage>,
 ) -> Result<serde_json::Value, String> {
-  let mut settings = state.settings.write().expect("settings lock");
+  let mut settings = state.settings_write();
 
   let timestamp = current_timestamp();
   let record = ExplainHistoryRecord {
@@ -448,7 +466,7 @@ fn explain_save_history(
 /// 获取所有解释历史记录
 #[tauri::command]
 fn explain_get_history(state: State<AppState>) -> Result<serde_json::Value, String> {
-  let settings = state.settings.read().expect("settings lock");
+  let settings = state.settings_read();
   Ok(serde_json::json!({
     "success": true,
     "history": settings.explain_history
@@ -461,7 +479,7 @@ fn explain_load_history(
   state: State<AppState>,
   history_id: String,
 ) -> Result<serde_json::Value, String> {
-  let settings = state.settings.read().expect("settings lock");
+  let settings = state.settings_read();
   let record = settings.explain_history.iter().find(|h| h.id == history_id);
 
   match record {
@@ -478,7 +496,7 @@ async fn fetch_models(
   provider: Option<ProviderConnectionInput>,
 ) -> Result<Vec<String>, String> {
     println!("Fetching models for provider: {}", provider_id);
-    let settings = state.settings.read().expect("settings lock").clone();
+    let settings = state.settings_read().clone();
     let (base_url, api_key) = resolve_provider_credentials(&settings, &provider_id, provider)?;
     let retry_attempts = effective_retry_attempts(&settings);
 
@@ -529,7 +547,7 @@ async fn test_provider_connection(
   provider_id: String,
   provider: Option<ProviderConnectionInput>,
 ) -> Result<serde_json::Value, String> {
-  let settings = state.settings.read().expect("settings lock").clone();
+  let settings = state.settings_read().clone();
   let (base_url, api_key) = resolve_provider_credentials(&settings, &provider_id, provider)?;
 
   if api_key.trim().is_empty() {
@@ -610,7 +628,7 @@ fn open_permission_settings(kind: String) -> Result<(), String> {
 /// 注册全局热键
 /// 包括翻译热键、截图翻译热键、截图解释热键；会检测重复热键并给出友好错误提示
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
-  let settings = app.state::<AppState>().settings.read().expect("settings lock").clone();
+  let settings = app.state::<AppState>().settings_read().clone();
   let shortcut_manager = app.global_shortcut();
   shortcut_manager.unregister_all().map_err(|e| e.to_string())?;
   let mut errors = Vec::new();
@@ -1094,7 +1112,7 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
   }
 
   {
-    let mut guard = state.settings.write().expect("settings lock");
+    let mut guard = state.settings_write();
     *guard = previous.clone();
   }
 
@@ -1126,7 +1144,16 @@ async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
     let _ = window.hide();
   }
 
-  let temp_path = capture_screenshot()?;
+  let temp_path = match capture_screenshot() {
+    Ok(path) => path,
+    Err(err) => {
+      if let Some(window) = get_main_window(app) {
+        let _ = window.show();
+        let _ = window.set_focus();
+      }
+      return Err(err);
+    }
+  };
   process_screenshot_translation_from_path(app, temp_path).await
 }
 
@@ -1151,7 +1178,7 @@ async fn process_screenshot_translation_from_path(
   let _ = screenshot_window.show();
   let _ = screenshot_window.set_focus();
 
-  let settings = state.settings.read().expect("settings lock").clone();
+  let settings = state.settings_read().clone();
   let provider = match settings.get_provider(&settings.screenshot_translation.provider_id) {
     Some(provider) => provider,
     None => {
@@ -1288,7 +1315,16 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
     let _ = window.hide();
   }
 
-  let temp_path = capture_screenshot()?;
+  let temp_path = match capture_screenshot() {
+    Ok(path) => path,
+    Err(err) => {
+      if let Some(window) = get_main_window(app) {
+        let _ = window.show();
+        let _ = window.set_focus();
+      }
+      return Err(err);
+    }
+  };
   process_screenshot_explain_from_path(app, temp_path).await
 }
 
@@ -1309,7 +1345,7 @@ async fn process_screenshot_explain_from_path(
 
   {
     let previous_id = {
-      let mut current = state.current_explain_image_id.lock().expect("current id lock");
+      let mut current = state.current_id_lock();
       let prev = current.clone();
       *current = Some(image_id.clone());
       prev
@@ -1321,7 +1357,7 @@ async fn process_screenshot_explain_from_path(
       }
     }
 
-    let mut map = state.explain_images.lock().expect("images lock");
+    let mut map = state.images_lock();
     map.insert(image_id.clone(), temp_path);
   }
 
@@ -1372,14 +1408,11 @@ fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindo
 /// 清理解释图片：从映射中移除并删除临时文件
 fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
   let state = app.state::<AppState>();
-  let mut map = state.explain_images.lock().expect("images lock");
+  let mut map = state.images_lock();
   if let Some(path) = map.remove(image_id) {
     cleanup_temp_file(&path);
   }
-  let mut current = state
-    .current_explain_image_id
-    .lock()
-    .expect("current id lock");
+  let mut current = state.current_id_lock();
   if current.as_deref() == Some(image_id) {
     *current = None;
   }
@@ -1387,7 +1420,7 @@ fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
 
 /// 根据 image_id 解析解释图片的临时路径，并进行安全性校验（必须在 temp_dir 内且文件存在）
 fn resolve_explain_image_path(state: &State<AppState>, image_id: &str) -> Result<PathBuf, String> {
-  let map = state.explain_images.lock().expect("images lock");
+  let map = state.images_lock();
   let path = map
     .get(image_id)
     .ok_or_else(|| "Image not found".to_string())?
@@ -1570,7 +1603,7 @@ async fn call_vision_api(
   stream: bool,
   stream_kind: &str,
 ) -> Result<String, String> {
-  let settings = state.settings.read().expect("settings lock").clone();
+  let settings = state.settings_read().clone();
   let provider = settings.get_provider(&settings.screenshot_explain.provider_id)
     .ok_or_else(|| "Explain provider not found".to_string())?;
 
@@ -1875,13 +1908,19 @@ fn send_paste_shortcut() {
 }
 
 /// 打开设置窗口
-/// 调整窗口大小为 420x520，取消置顶，显示并聚焦，同时通过 hash 路由切换到设置页面
+/// 调整窗口大小为 640x520，取消置顶，显示并聚焦，同时通过 hash 路由切换到设置页面
 fn open_settings_window(app: &AppHandle) -> Result<(), String> {
   let window = ensure_main_window(app)?;
-  let _ = window.set_size(tauri::LogicalSize::new(420.0, 520.0));
   let _ = window.set_always_on_top(false);
-  let _ = window.show();
-  let _ = window.set_focus();
+  let _ = window.set_size(tauri::LogicalSize::new(640.0, 520.0));
+
+  let window_for_task = window.clone();
+  let _ = window.run_on_main_thread(move || {
+    let _ = window_for_task.center();
+    let _ = window_for_task.show();
+    let _ = window_for_task.set_focus();
+  });
+
   let _ = window.eval(
     "window.location.hash = '#settings'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
   );
@@ -1920,9 +1959,7 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
 
   let lang = app
     .state::<AppState>()
-    .settings
-    .read()
-    .expect("settings lock")
+    .settings_read()
     .settings_language
     .clone()
     .unwrap_or_else(|| "zh".to_string());

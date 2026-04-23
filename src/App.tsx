@@ -226,8 +226,6 @@ function App() {
       if (mode === 'settings') {
         console.log('[App] Resizing to settings size: 640x520')
         await api.resizeWindow(640, 520)
-        // 延迟后再次确认大小，防止 Tauri 窗口状态不同步
-        setTimeout(() => api.resizeWindow(640, 520), 100)
       } else if (mode === '' || mode === 'translator') {
         console.log('[App] Resizing to translator size: 360x120')
         await api.resizeWindow(360, 120)

@@ -499,6 +499,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         enabled: true,
         hotkey: 'CommandOrControl+Shift+A',
         providerId: 'default-ocr',
+        model: 'gpt-4o',
         directTranslate: false,
         prompt: ''
       }
@@ -516,6 +517,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         enabled: true,
         hotkey: 'CommandOrControl+Shift+E',
         providerId: 'default-explain',
+        model: 'gpt-4o',
         defaultLanguage: 'zh',
         streamEnabled: false
       }
@@ -533,6 +535,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         enabled: true,
         hotkey: 'CommandOrControl+Shift+E',
         providerId: 'default-explain',
+        model: 'gpt-4o',
         defaultLanguage: 'zh'
       }
       return {
