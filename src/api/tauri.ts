@@ -178,6 +178,10 @@ export const api = {
     const win = getCurrentWindow()
     await win.hide()
   },
+  showWindow: async () => {
+    const win = getCurrentWindow()
+    await win.show()
+  },
   startDragging: async () => {
     const win = getCurrentWindow()
     await win.startDragging()

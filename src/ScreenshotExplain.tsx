@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, X, Loader2, Image, Clock, ChevronDown, ChevronRight, Cpu, Code, Eye } from 'lucide-react'
+import { Send, X, Loader2, Clock, Code, Eye, Cpu } from 'lucide-react'
 import { api, type ExplainStreamPayload } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
@@ -12,54 +12,55 @@ interface Message {
   content: string
 }
 
+// 窗口尺寸常量
+const COMPACT_WIDTH = 480
+const COMPACT_HEIGHT = 280
+const EXPANDED_WIDTH = 520
+const EXPANDED_HEIGHT = 680
+
 /**
- * 截图解释组件
- * 提供基于截图内容的 AI 图像理解、自动总结和多轮问答功能
- * 支持流式输出和历史记录管理
+ * 截图解释组件 —— 紧凑/展开双模式
+ * 初始状态：小窗口，左侧缩略图 + 右侧总结 + 底部输入框
+ * 提问后：窗口自动展开，显示完整对话流
  */
 export default function ScreenshotExplain() {
-  // 当前截图的唯一标识
   const [imageId, setImageId] = useState('')
-  // 截图的 base64 预览数据
   const [imagePreview, setImagePreview] = useState('')
-  // 对话消息列表
   const [messages, setMessages] = useState<Message[]>([])
-  // 用户输入内容
   const [input, setInput] = useState('')
-  // 是否正在加载 AI 响应
   const [loading, setLoading] = useState(false)
-  // 是否正在初始化（获取初始总结）
   const [initializing, setInitializing] = useState(true)
-  // 是否显示截图预览
-  const [showImage, setShowImage] = useState(true)
-  // 是否显示历史记录面板
   const [showHistory, setShowHistory] = useState(false)
-  // 历史记录列表
   const [history, setHistory] = useState<Array<{ id: string; timestamp: number; messages: Message[] }>>([])
-  // 是否处于历史记录浏览模式
   const [historyMode, setHistoryMode] = useState(false)
-  // 当前使用的模型名称
-  const [modelName, setModelName] = useState('')
-  // 是否显示原始 Markdown 源码
   const [showRaw, setShowRaw] = useState(false)
-  // 是否启用流式输出
   const [streamEnabled, setStreamEnabled] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [modelName, setModelName] = useState('')
 
-  // DOM 引用
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-
-  // 使用 ref 存储最新值，避免闭包问题
   const imageIdRef = useRef('')
-  // 流式输出状态跟踪
   const streamingRef = useRef<null | { imageId: string; kind: 'summary' | 'answer'; index: number }>(null)
   const streamEnabledRef = useRef(false)
+  const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // 格式化错误信息
   const formatError = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
   /**
-   * 加载当前使用的模型信息
+   * 调整窗口尺寸（带防抖）
+   */
+  const resizeWindow = useCallback((width: number, height: number) => {
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current)
+    }
+    resizeTimeoutRef.current = setTimeout(() => {
+      void api.resizeWindow(width, height)
+    }, 50)
+  }, [])
+
+  /**
+   * 加载模型和流式配置
    */
   const loadModelInfo = useCallback(async () => {
     try {
@@ -67,23 +68,14 @@ export default function ScreenshotExplain() {
       const stream = settings.screenshotExplain.streamEnabled ?? false
       setStreamEnabled(stream)
       streamEnabledRef.current = stream
-      const providerId = settings.screenshotExplain.providerId
-      const model = settings.screenshotExplain.model
-      const provider = settings.providers.find(p => p.id === providerId)
-      // 优先显示具体模型名，如果没找到则显示 Provider 默认
-      if (model) {
-        setModelName(model)
-      } else if (provider) {
-        setModelName(provider.enabledModels[0] || provider.name)
-      } else {
-        setModelName('AI')
-      }
+      const model = settings.screenshotExplain?.model || settings.translatorModel || ''
+      setModelName(model)
       return true
     } catch (err) {
       console.error('Failed to load model info:', err)
-      setModelName('AI')
       setStreamEnabled(false)
       streamEnabledRef.current = false
+      setModelName('')
       return false
     }
   }, [])
@@ -93,7 +85,7 @@ export default function ScreenshotExplain() {
   }, [loadModelInfo])
 
   /**
-   * 加载指定截图图片的 base64 数据
+   * 加载截图图片
    */
   const loadImage = useCallback(async (id: string) => {
     try {
@@ -107,7 +99,7 @@ export default function ScreenshotExplain() {
   }, [])
 
   /**
-   * 获取图片的初始 AI 总结
+   * 获取初始 AI 总结
    */
   const getInitialSummary = useCallback(async (id: string) => {
     setInitializing(true)
@@ -160,7 +152,7 @@ export default function ScreenshotExplain() {
   }, [ensureSettings])
 
   /**
-   * 加载对话历史记录
+   * 加载历史记录
    */
   const loadHistory = useCallback(async () => {
     try {
@@ -179,33 +171,39 @@ export default function ScreenshotExplain() {
       imageIdRef.current = decodedId
       setHistoryMode(false)
       setShowHistory(false)
-      setShowImage(true)
       setImageId(decodedId)
       setImagePreview('')
       setMessages([])
+      setIsExpanded(false)
+      setInitializing(true)
       await loadModelInfo()
       loadImage(decodedId)
       getInitialSummary(decodedId)
+      // 初始紧凑窗口
+      resizeWindow(COMPACT_WIDTH, COMPACT_HEIGHT)
     }
 
-    const parseHash = () => {
+    const parseHash = async () => {
       const hash = window.location.hash
       const params = new URLSearchParams(hash.split('?')[1] || '')
       const id = params.get('imageId')
       if (id) {
-        void applyImageId(decodeURIComponent(id))
+        await applyImageId(decodeURIComponent(id))
       }
     }
 
-    window.addEventListener('hashchange', parseHash)
+    const onHashChange = () => { void parseHash() }
+    window.addEventListener('hashchange', onHashChange)
     const init = async () => {
       await loadModelInfo()
-      parseHash()
-      loadHistory()
+      await parseHash()
+      await loadHistory()
+      // 内容准备就绪后显示窗口，避免闪白
+      await api.showWindow()
     }
     void init()
-    return () => window.removeEventListener('hashchange', parseHash)
-  }, [getInitialSummary, loadHistory, loadImage, loadModelInfo])
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [getInitialSummary, loadHistory, loadImage, loadModelInfo, resizeWindow])
 
   // 监听流式输出事件
   useEffect(() => {
@@ -234,6 +232,24 @@ export default function ScreenshotExplain() {
 
   // 消息列表自动滚动到底部
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+
+  // 检测是否需要展开窗口
+  useEffect(() => {
+    const hasUserMessages = messages.some(m => m.role === 'user')
+    if (hasUserMessages && !isExpanded) {
+      setIsExpanded(true)
+      resizeWindow(EXPANDED_WIDTH, EXPANDED_HEIGHT)
+    }
+  }, [messages, isExpanded, resizeWindow])
+
+  // textarea 自动增高
+  useEffect(() => {
+    const textarea = inputRef.current
+    if (textarea) {
+      textarea.style.height = 'auto'
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`
+    }
+  }, [input])
 
   /**
    * 发送用户问题
@@ -325,6 +341,8 @@ export default function ScreenshotExplain() {
         imageIdRef.current = ''
         setImagePreview('')
         streamingRef.current = null
+        setIsExpanded(true)
+        resizeWindow(EXPANDED_WIDTH, EXPANDED_HEIGHT)
       }
     } catch (err) {
       console.error('Failed to load history record:', err)
@@ -343,88 +361,73 @@ export default function ScreenshotExplain() {
     api.closeExplainWindow()
   }
 
+  // 当前是否有对话内容（用于判断是否显示对话区域）
+  const hasConversation = messages.some(m => m.role === 'user')
+
   return (
-    <div className="h-screen w-screen flex flex-col bg-white/95 dark:bg-neutral-900/95 backdrop-blur-2xl overflow-hidden font-sans text-neutral-900 dark:text-neutral-100">
+    <div className="h-screen w-screen flex flex-col bg-white dark:bg-neutral-900 overflow-hidden font-sans text-neutral-900 dark:text-neutral-100 rounded-2xl">
       {/* 顶部工具栏 */}
       <div
-        className="flex items-center justify-between px-4 py-2 border-b border-black/5 dark:border-white/5 select-none"
+        className="flex items-center justify-between px-3 py-2 border-b border-black/5 dark:border-white/5 shrink-0 select-none"
         data-tauri-drag-region
       >
-        <div className="flex items-center gap-2">
-          {/* 显示/隐藏截图按钮 */}
-          {imagePreview && (
-            <button
-              onClick={() => setShowImage(!showImage)}
-              className="flex items-center gap-1.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
-              data-tauri-drag-region="false"
-            >
-              {showImage ? <ChevronDown size={14} strokeWidth={2} /> : <ChevronRight size={14} strokeWidth={2} />}
-              <Image size={13} strokeWidth={2} />
-              <span>{showImage ? '隐藏截图' : '显示截图'}</span>
-            </button>
-          )}
-          {/* 当前模型名称标签 */}
-          {modelName && (
-            <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 rounded-full border border-neutral-200/50 dark:border-neutral-700/50">
-              <Cpu size={10} strokeWidth={2} />{modelName}
-            </span>
-          )}
+        <div className="flex items-center gap-2" data-tauri-drag-region="false">
+          <span className="text-[12px] font-semibold text-neutral-700 dark:text-neutral-200 tracking-tight">截图解释</span>
         </div>
-        <div className="flex items-center gap-1" data-tauri-drag-region="false">
-          {/* 历史记录按钮 */}
+        <div className="flex items-center gap-0.5" data-tauri-drag-region="false">
+          <span className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 rounded-md mr-1">
+            <Cpu size={10} strokeWidth={2} />{modelName}
+          </span>
           <button
             onClick={() => setShowHistory(!showHistory)}
-            className={`p-1.5 rounded-lg transition-all duration-200 ${showHistory
+            className={`p-1.5 rounded-md transition-all duration-200 ${showHistory
               ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white'
               : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/10'
               }`}
             title="历史记录"
             data-tauri-drag-region="false"
           >
-            <Clock size={15} strokeWidth={2} />
+            <Clock size={14} strokeWidth={2} />
           </button>
-          {/* 源码/预览切换按钮 */}
           <button
             onClick={() => setShowRaw(!showRaw)}
-            className={`p-1.5 rounded-lg transition-all duration-200 flex items-center gap-1.5 ${showRaw
+            className={`p-1.5 rounded-md transition-all duration-200 flex items-center gap-1 ${showRaw
               ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-white'
               : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/10'
               }`}
             title={showRaw ? '显示预览' : '显示源码'}
             data-tauri-drag-region="false"
           >
-            {showRaw ? <Eye size={14} strokeWidth={2} /> : <Code size={14} strokeWidth={2} />}
-            <span className="text-[11px] font-medium">{showRaw ? '预览' : '源码'}</span>
+            {showRaw ? <Eye size={13} strokeWidth={2} /> : <Code size={13} strokeWidth={2} />}
+            <span className="text-[10px] font-medium">{showRaw ? '预览' : '源码'}</span>
           </button>
-          {/* 关闭按钮 */}
           <button
             onClick={handleClose}
-            className="p-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-all duration-200"
+            className="p-1.5 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-all duration-200"
+            title="关闭"
             data-tauri-drag-region="false"
           >
-            <X size={15} strokeWidth={2} />
+            <X size={14} strokeWidth={2} />
           </button>
         </div>
       </div>
 
       {/* 历史记录面板 */}
       {showHistory && (
-        <div className="border-b border-black/5 dark:border-white/5 bg-neutral-50/90 dark:bg-neutral-900/90 backdrop-blur-md max-h-56 overflow-y-auto custom-scrollbar z-10">
-          <div className="p-3 space-y-2">
-            <div className="flex items-center justify-between px-1">
-              <p className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">历史记录</p>
-            </div>
+        <div className="border-b border-black/5 dark:border-white/5 bg-neutral-50/90 dark:bg-neutral-900/90 max-h-48 overflow-y-auto custom-scrollbar z-10 shrink-0">
+          <div className="p-2.5 space-y-1.5">
+            <p className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400 px-1">历史记录</p>
             {history.length === 0 ? (
-              <p className="text-xs text-neutral-400 text-center py-6">暂无历史记录</p>
+              <p className="text-xs text-neutral-400 text-center py-4">暂无历史记录</p>
             ) : (
               <div className="space-y-1">
                 {history.map((record) => (
                   <button
                     key={record.id}
                     onClick={() => loadHistoryRecord(record.id)}
-                    className="w-full text-left p-3 rounded-xl bg-white dark:bg-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-700/50 border border-black/5 dark:border-white/5 transition-all group"
+                    className="w-full text-left p-2.5 rounded-lg bg-white dark:bg-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-700/50 border border-black/5 dark:border-white/5 transition-all group"
                   >
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start justify-between gap-2">
                       <p className="text-xs text-neutral-600 dark:text-neutral-300 line-clamp-2 flex-1 group-hover:text-neutral-900 dark:group-hover:text-white transition-colors">
                         {(record.messages[0]?.content?.slice(0, 60) ?? '')}...
                       </p>
@@ -440,71 +443,95 @@ export default function ScreenshotExplain() {
         </div>
       )}
 
-      {/* 图片预览区域 */}
-      {imagePreview && showImage && (
-        <div className="border-b border-black/5 dark:border-white/5 bg-white/50 dark:bg-neutral-900/50 backdrop-blur-sm">
-          <div className="px-4 py-3 animate-in slide-in-from-top-2 duration-200">
-            <div className="rounded-xl overflow-hidden border border-black/5 dark:border-white/5 shadow-sm bg-neutral-100/50 dark:bg-neutral-800/50">
-              <img src={imagePreview} alt="Screenshot" className="max-w-full max-h-48 mx-auto object-contain" />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 消息列表区域 */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-5 custom-scrollbar" data-tauri-drag-region="false">
-        {/* 初始化加载动画 */}
-        {initializing && (
-          <div className="flex flex-col items-center justify-center py-12 gap-4 animate-in fade-in duration-500">
-            <div className="relative">
-              <div className="w-8 h-8 border-2 border-neutral-200 dark:border-neutral-700 rounded-full" />
-              <div className="absolute top-0 left-0 w-8 h-8 border-2 border-neutral-800 dark:border-white border-t-transparent border-l-transparent border-r-transparent rounded-full animate-spin" />
-            </div>
-            <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">正在分析图片内容...</p>
-          </div>
-        )}
-
-        {/* 渲染消息列表 */}
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2 fade-in duration-300`}>
-            <div
-              className={`max-w-[85%] px-4 py-2.5 text-[13.5px] leading-relaxed shadow-sm ${msg.role === 'user'
-                ? 'bg-white dark:bg-white text-neutral-900 border border-black/5 dark:border-white/10 rounded-2xl rounded-tr-sm'
-                : 'bg-white dark:bg-neutral-800 border border-black/5 dark:border-white/5 text-neutral-700 dark:text-neutral-200 rounded-2xl rounded-tl-sm'
-                }`}
-            >
-              <div className="prose dark:prose-invert max-w-none text-[13.5px] leading-relaxed">
-                {showRaw ? (
-                  <pre className="whitespace-pre-wrap font-mono text-[12px] bg-transparent p-0 m-0 border-none shadow-none text-inherit">
-                    {msg.content}
-                  </pre>
-                ) : (
-                  <ReactMarkdown
-                    remarkPlugins={[remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                )}
+      {/* 主体内容区域 */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* 紧凑模式：图片 + 总结并排 */}
+        {!hasConversation && (
+          <div className="flex gap-3 p-4 shrink-0">
+            {/* 图片缩略图 */}
+            {imagePreview && (
+              <div className="w-20 h-14 rounded-lg overflow-hidden shrink-0 border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800">
+                <img src={imagePreview} alt="Screenshot" className="w-full h-full object-cover" />
               </div>
-            </div>
-          </div>
-        ))}
-
-        {/* 加载中指示器（非流式模式） */}
-        {loading && !initializing && !(streamEnabled && streamingRef.current) && (
-          <div className="flex justify-start animate-in fade-in duration-200">
-            <div className="bg-white dark:bg-neutral-800 px-4 py-2.5 rounded-2xl rounded-tl-sm border border-black/5 dark:border-white/5 shadow-sm">
-              <Loader2 className="animate-spin text-neutral-400" size={16} strokeWidth={2} />
+            )}
+            {/* 总结内容 */}
+            <div className="flex-1 min-w-0 overflow-y-auto custom-scrollbar max-h-[140px]">
+              {initializing ? (
+                <div className="flex items-center gap-2 py-2">
+                  <div className="w-4 h-4 border-2 border-neutral-300 dark:border-neutral-600 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-xs text-neutral-500 dark:text-neutral-400">AI 正在观察图片...</span>
+                </div>
+              ) : (
+                <div className="text-[13px] leading-6 text-neutral-800 dark:text-neutral-200">
+                  {messages[0]?.content || ''}
+                </div>
+              )}
             </div>
           </div>
         )}
-        <div ref={messagesEndRef} />
+
+        {/* 展开模式：图片小缩略图 + 对话区域 */}
+        {hasConversation && (
+          <>
+            {/* 顶部小缩略图 */}
+            {imagePreview && (
+              <div className="px-4 pt-3 pb-1 shrink-0">
+                <div className="w-16 h-11 rounded-lg overflow-hidden border border-black/5 dark:border-white/5 bg-neutral-100 dark:bg-neutral-800">
+                  <img src={imagePreview} alt="Screenshot" className="w-full h-full object-cover" />
+                </div>
+              </div>
+            )}
+            {/* 对话区域 */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 custom-scrollbar">
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  {msg.role === 'assistant' ? (
+                    <div className="max-w-[90%]">
+                      <div className="prose dark:prose-invert max-w-none text-[13.5px] leading-7 text-neutral-800 dark:text-neutral-200">
+                        {showRaw ? (
+                          <pre className="whitespace-pre-wrap font-mono text-[12px] bg-transparent p-0 m-0 border-none shadow-none text-inherit">
+                            {msg.content}
+                          </pre>
+                        ) : (
+                          <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                            {msg.content}
+                          </ReactMarkdown>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="max-w-[85%] px-3.5 py-2 bg-neutral-100 dark:bg-neutral-800/80 text-neutral-900 dark:text-neutral-100 rounded-2xl rounded-tr-sm text-[13.5px] leading-6">
+                      {msg.content}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {/* 加载中 / 流式打字指示 */}
+              {loading && !initializing && (
+                <div className="flex justify-start">
+                  <div className="px-3.5 py-2.5 bg-neutral-100 dark:bg-neutral-800/80 rounded-2xl rounded-tl-sm flex items-center gap-1">
+                    {/* 流式模式且已有内容时显示脉冲点，否则显示旋转图标 */}
+                    {streamEnabled && streamingRef.current && messages[messages.length - 1]?.content ? (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-pulse" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-pulse [animation-delay:0.2s]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-pulse [animation-delay:0.4s]" />
+                      </>
+                    ) : (
+                      <Loader2 className="animate-spin text-neutral-400" size={16} strokeWidth={2} />
+                    )}
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          </>
+        )}
       </div>
 
       {/* 输入区域 */}
-      <div className="p-4 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-md border-t border-black/5 dark:border-white/5">
-        <div className="flex gap-2.5 items-end">
+      <div className="p-3 bg-white dark:bg-neutral-900 border-t border-black/5 dark:border-white/5 shrink-0">
+        <div className="flex gap-2 items-end">
           <textarea
             ref={inputRef}
             value={input}
@@ -512,21 +539,21 @@ export default function ScreenshotExplain() {
             onKeyDown={handleKeyDown}
             placeholder={historyMode ? '历史记录为只读' : '输入问题...'}
             disabled={loading || initializing || historyMode || !imageId}
-            className="flex-1 px-4 py-3 bg-neutral-100 dark:bg-neutral-800/50 border-transparent focus:bg-white dark:focus:bg-neutral-800 border focus:border-neutral-200 dark:focus:border-neutral-700 rounded-xl resize-none focus:outline-none text-[13.5px] text-neutral-900 dark:text-white placeholder-neutral-400 dark:placeholder-neutral-500 transition-all duration-200 shadow-inner"
+            className="flex-1 px-3.5 py-2.5 bg-neutral-100 dark:bg-neutral-800/50 border border-transparent focus:bg-white dark:focus:bg-neutral-800 focus:border-neutral-200 dark:focus:border-neutral-700 rounded-xl resize-none focus:outline-none text-[13.5px] text-neutral-900 dark:text-white placeholder-neutral-400 dark:placeholder-neutral-500 transition-all duration-200"
             rows={1}
-            style={{ minHeight: '44px', maxHeight: '120px' }}
+            style={{ minHeight: '40px', maxHeight: '120px' }}
             data-tauri-drag-region="false"
           />
           <button
             onClick={handleSend}
             disabled={!input.trim() || loading || initializing || historyMode || !imageId}
-            className="p-3 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-xl hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200 shadow-sm active:scale-95"
+            className="p-2.5 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-xl hover:bg-neutral-700 dark:hover:bg-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200 active:scale-95 shrink-0"
             data-tauri-drag-region="false"
           >
-            <Send size={18} strokeWidth={2} />
+            <Send size={16} strokeWidth={2} />
           </button>
         </div>
-        <div className="flex justify-between items-center mt-2 px-1">
+        <div className="flex justify-between items-center mt-1.5 px-1">
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500">↵ 发送 · ⇧↵ 换行</p>
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500">esc 关闭</p>
         </div>

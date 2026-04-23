@@ -1298,6 +1298,21 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   capture_request(app.clone(), "explain".to_string())
 }
 
+/// macOS：激活应用到前台（即使窗口已隐藏）
+/// 确保 screencapture -i 的交互界面能正常显示
+#[cfg(target_os = "macos")]
+fn activate_app_for_screenshot() {
+  unsafe {
+    use cocoa::base::{id, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+    let ns_app: id = msg_send![class!(NSApplication), sharedApplication];
+    let _: () = msg_send![ns_app, activateIgnoringOtherApps: YES];
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_app_for_screenshot() {}
+
 /// 非 Windows 平台：处理截图解释热键
 /// 使用 BusyGuard 防止并发，直接截图后处理
 #[cfg(not(target_os = "windows"))]
@@ -1314,6 +1329,9 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   if let Some(window) = get_main_window(app) {
     let _ = window.hide();
   }
+
+  // 激活应用到前台，确保 screencapture 交互界面可见
+  activate_app_for_screenshot();
 
   let temp_path = match capture_screenshot() {
     Ok(path) => path,
@@ -1385,9 +1403,13 @@ fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindo
   let url = format!("index.html#explain?imageId={}", image_id);
   let window = WebviewWindowBuilder::new(app, "explain", WebviewUrl::App(url.into()))
     .title("Screenshot Explain")
-    .inner_size(700.0, 800.0)
+    .inner_size(480.0, 280.0)
     .visible_on_all_workspaces(true)
     .resizable(true)
+    .decorations(false)
+    .shadow(false)
+    .transparent(true)
+    .visible(false)
     .build()
     .map_err(|e| e.to_string())?;
 
