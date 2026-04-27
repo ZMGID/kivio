@@ -93,7 +93,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             providerId: 'default-explain',
             model: 'gpt-4o',
             defaultLanguage: 'zh',
-            streamEnabled: false
+            streamEnabled: false,
+            autoSummaryEnabled: true
           },
           explainHistory: [],
           settingsLanguage: 'zh'
@@ -519,7 +520,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         providerId: 'default-explain',
         model: 'gpt-4o',
         defaultLanguage: 'zh',
-        streamEnabled: false
+        streamEnabled: false,
+        autoSummaryEnabled: true
       }
       return { ...prev, screenshotExplain: { ...current, ...updates } }
     })
@@ -976,6 +978,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         <Toggle
                           checked={settings.screenshotExplain?.streamEnabled ?? false}
                           onChange={(v) => updateScreenshotExplain({ streamEnabled: v })}
+                        />
+                      </SettingRow>
+                      <SettingRow label={t.explainAutoSummary}>
+                        <Toggle
+                          checked={settings.screenshotExplain?.autoSummaryEnabled ?? true}
+                          onChange={(v) => updateScreenshotExplain({ autoSummaryEnabled: v })}
                         />
                       </SettingRow>
                       <SettingRow label={t.selectModelPair}>

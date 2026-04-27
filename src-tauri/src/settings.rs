@@ -192,6 +192,8 @@ pub struct ScreenshotExplainConfig {
   pub default_language: String,
   #[serde(default)]
   pub stream_enabled: bool,
+  #[serde(default = "default_true")]
+  pub auto_summary_enabled: bool,
   #[serde(default)]
   pub custom_prompts: Option<CustomPrompts>,
   // 旧版字段，用于迁移
@@ -208,6 +210,7 @@ impl Default for ScreenshotExplainConfig {
       model: "gpt-4o".to_string(),
       default_language: "zh".to_string(),
       stream_enabled: false,
+      auto_summary_enabled: true,
       custom_prompts: None,
       model_legacy: None,
     }
@@ -660,7 +663,18 @@ fn sanitize_custom_prompts(prompts: &mut CustomPrompts) -> bool {
 fn normalize_hotkey(value: &str) -> String {
   value
     .split('+')
-    .map(|part| part.trim())
+    .map(|part| {
+      let trimmed = part.trim();
+      match trimmed.to_lowercase().as_str() {
+        "cmd" | "command" | "commandorcontrol" => "CommandOrControl".to_string(),
+        "ctrl" | "control" => "Control".to_string(),
+        "opt" | "option" | "alt" => "Alt".to_string(),
+        "shift" => "Shift".to_string(),
+        "super" | "meta" => "Super".to_string(),
+        "plus" => "Plus".to_string(),
+        _ => trimmed.to_string(),
+      }
+    })
     .filter(|part| !part.is_empty())
     .collect::<Vec<_>>()
     .join("+")

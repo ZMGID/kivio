@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /**
  * 获取主窗口
@@ -32,29 +32,64 @@ pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 
 /**
  * 确保截图翻译结果窗口存在（不存在则创建）
+ * 风格与截图解释窗口对齐：无系统装饰、透明背景、自定义圆角；
+ * 首次创建时定位到光标附近的显示器内。
  */
 pub fn ensure_screenshot_window(app: &AppHandle) -> Result<WebviewWindow, String> {
   if let Some(window) = app.get_webview_window("screenshot") {
     return Ok(window);
   }
 
-  WebviewWindowBuilder::new(
+  let window = WebviewWindowBuilder::new(
     app,
     "screenshot",
     WebviewUrl::App("index.html#screenshot".into()),
   )
   .title("Screenshot Translation")
-  .inner_size(500.0, 400.0)
+  .inner_size(460.0, 360.0)
   .always_on_top(true)
   .visible_on_all_workspaces(true)
   .resizable(true)
+  .decorations(false)
+  .shadow(false)
+  .transparent(true)
+  .visible(false)
   .build()
-  .map_err(|e| e.to_string())
-  .map(|window| {
-    #[cfg(target_os = "macos")]
-    apply_macos_workspace_behavior(&window);
-    window
-  })
+  .map_err(|e| e.to_string())?;
+
+  #[cfg(target_os = "macos")]
+  apply_macos_workspace_behavior(&window);
+
+  // 首次创建：定位到光标附近，clamp 到光标所在显示器。
+  if let Ok(cursor) = app.cursor_position() {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let win_w = (460.0 * scale) as i32;
+    let win_h = (360.0 * scale) as i32;
+    let mut tx = cursor.x as i32 - win_w / 2;
+    let mut ty = cursor.y as i32 + (24.0 * scale) as i32;
+
+    if let Ok(monitors) = app.available_monitors() {
+      for monitor in monitors {
+        let mp = monitor.position();
+        let ms = monitor.size();
+        let mw = ms.width as i32;
+        let mh = ms.height as i32;
+        if (cursor.x as i32) >= mp.x
+          && (cursor.x as i32) < mp.x + mw
+          && (cursor.y as i32) >= mp.y
+          && (cursor.y as i32) < mp.y + mh
+        {
+          tx = tx.max(mp.x).min(mp.x + mw - win_w);
+          ty = ty.max(mp.y).min(mp.y + mh - win_h);
+          break;
+        }
+      }
+    }
+
+    let _ = window.set_position(PhysicalPosition::new(tx, ty));
+  }
+
+  Ok(window)
 }
 
 /**

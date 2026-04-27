@@ -12,7 +12,7 @@ use std::{
   future::Future,
   path::{Path, PathBuf},
   sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex, RwLock,
   },
   time::Duration,
@@ -61,6 +61,8 @@ struct AppState {
   pending_capture_mode: Mutex<Option<String>>,
   screenshot_translation_busy: AtomicBool,
   screenshot_explain_busy: AtomicBool,
+  /// 流式取消代号：每开新的流就 +1，跑流的循环检测到代号变了就立即结束。
+  explain_stream_generation: AtomicU64,
   http: Client,
 }
 
@@ -417,6 +419,17 @@ fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_
     "success": true,
     "data": format!("data:image/png;base64,{base64}")
   }))
+}
+
+/// 取消正在进行的截图解释流式输出
+/// 通过递增全局取消代号，让 `stream_vision_response` 在下一次 chunk 循环里发现代号变化并立即结束。
+/// 注意：reqwest 的 chunk 读取是阻塞等待，最坏情况要等下一个网络包到达才会真正退出。
+#[tauri::command]
+fn explain_cancel_stream(state: State<AppState>) -> Result<(), String> {
+  state
+    .explain_stream_generation
+    .fetch_add(1, Ordering::SeqCst);
+  Ok(())
 }
 
 /// 关闭当前解释会话并清理对应的临时图片
@@ -1298,21 +1311,6 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   capture_request(app.clone(), "explain".to_string())
 }
 
-/// macOS：激活应用到前台（即使窗口已隐藏）
-/// 确保 screencapture -i 的交互界面能正常显示
-#[cfg(target_os = "macos")]
-fn activate_app_for_screenshot() {
-  unsafe {
-    use cocoa::base::{id, YES};
-    use objc::{class, msg_send, sel, sel_impl};
-    let ns_app: id = msg_send![class!(NSApplication), sharedApplication];
-    let _: () = msg_send![ns_app, activateIgnoringOtherApps: YES];
-  }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn activate_app_for_screenshot() {}
-
 /// 非 Windows 平台：处理截图解释热键
 /// 使用 BusyGuard 防止并发，直接截图后处理
 #[cfg(not(target_os = "windows"))]
@@ -1329,9 +1327,6 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
   if let Some(window) = get_main_window(app) {
     let _ = window.hide();
   }
-
-  // 激活应用到前台，确保 screencapture 交互界面可见
-  activate_app_for_screenshot();
 
   let temp_path = match capture_screenshot() {
     Ok(path) => path,
@@ -1403,7 +1398,7 @@ fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindo
   let url = format!("index.html#explain?imageId={}", image_id);
   let window = WebviewWindowBuilder::new(app, "explain", WebviewUrl::App(url.into()))
     .title("Screenshot Explain")
-    .inner_size(480.0, 280.0)
+    .inner_size(440.0, 180.0)
     .visible_on_all_workspaces(true)
     .resizable(true)
     .decorations(false)
@@ -1415,6 +1410,36 @@ fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindo
 
   #[cfg(target_os = "macos")]
   apply_macos_workspace_behavior(&window);
+
+  // 首次创建：定位到光标附近（横向以光标为中心，纵向略低于光标），clamp 到光标所在的显示器范围。
+  // 复用窗口（已存在分支）保留用户上次拖动的位置。
+  if let Some(cursor) = get_mouse_position(app) {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let win_w = (440.0 * scale) as i32;
+    let win_h = (180.0 * scale) as i32;
+    let mut tx = cursor.x as i32 - win_w / 2;
+    let mut ty = cursor.y as i32 + (24.0 * scale) as i32;
+
+    if let Ok(monitors) = app.available_monitors() {
+      for monitor in monitors {
+        let mp = monitor.position();
+        let ms = monitor.size();
+        let mw = ms.width as i32;
+        let mh = ms.height as i32;
+        if (cursor.x as i32) >= mp.x
+          && (cursor.x as i32) < mp.x + mw
+          && (cursor.y as i32) >= mp.y
+          && (cursor.y as i32) < mp.y + mh
+        {
+          tx = tx.max(mp.x).min(mp.x + mw - win_w);
+          ty = ty.max(mp.y).min(mp.y + mh - win_h);
+          break;
+        }
+      }
+    }
+
+    let _ = window.set_position(tauri::PhysicalPosition::new(tx, ty));
+  }
 
   let app_handle = app.clone();
   let image_id = image_id.to_string();
@@ -1685,7 +1710,20 @@ async fn call_vision_api(
   .await?;
 
   if stream {
-    return stream_vision_response(app, response, image_id, stream_kind).await;
+    // 启动新流：递增代号，存到本流持有的快照里；后续 chunk 循环只要发现全局代号 != 自己的快照就退出。
+    let generation = state
+      .explain_stream_generation
+      .fetch_add(1, Ordering::SeqCst)
+      + 1;
+    return stream_vision_response(
+      app,
+      response,
+      image_id,
+      stream_kind,
+      &state.explain_stream_generation,
+      generation,
+    )
+    .await;
   }
 
   let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
@@ -1702,16 +1740,47 @@ async fn call_vision_api(
 
 /// 流式解析视觉 API 的 SSE 响应
 /// 逐 chunk 读取响应体，解析 "data:" 行，提取 delta 中的 content 并通过事件发送到前端
+/// 支持取消：调用方持有 `my_generation`，全局代号 `generation_atom` 一旦变化即视为被新流或外部取消作废。
 async fn stream_vision_response(
   app: &AppHandle,
   mut response: reqwest::Response,
   image_id: &str,
   kind: &str,
+  generation_atom: &AtomicU64,
+  my_generation: u64,
 ) -> Result<String, String> {
   let mut buffer = String::new();
   let mut full = String::new();
 
-  while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+  let emit_done = |reason: &str, full_text: &str| {
+    let _ = app.emit(
+      "explain-stream",
+      serde_json::json!({
+        "imageId": image_id,
+        "kind": kind,
+        "delta": "",
+        "done": true,
+        "reason": reason,
+        "full": full_text,
+      }),
+    );
+  };
+
+  loop {
+    if generation_atom.load(Ordering::SeqCst) != my_generation {
+      emit_done("cancelled", full.trim());
+      return Ok(full.trim().to_string());
+    }
+
+    let chunk = match response.chunk().await {
+      Ok(Some(c)) => c,
+      Ok(None) => break,
+      Err(e) => {
+        emit_done("error", full.trim());
+        return Err(e.to_string());
+      }
+    };
+
     let text = String::from_utf8_lossy(&chunk);
     buffer.push_str(&text);
 
@@ -1726,6 +1795,7 @@ async fn stream_vision_response(
         continue;
       }
       if data == "[DONE]" {
+        emit_done("done", full.trim());
         return Ok(full.trim().to_string());
       }
 
@@ -1751,6 +1821,7 @@ async fn stream_vision_response(
     }
   }
 
+  emit_done("done", full.trim());
   Ok(full.trim().to_string())
 }
 
@@ -1946,7 +2017,9 @@ fn open_settings_window(app: &AppHandle) -> Result<(), String> {
   let _ = window.eval(
     "window.location.hash = '#settings'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
   );
-  let _ = window.emit("open-settings", ());
+  // 仅向 main webview 发送 open-settings 事件，避免广播到 screenshot/explain 等其他 webview
+  // 导致它们也被切到设置视图（出现多个设置界面的 bug）。
+  let _ = app.emit_to("main", "open-settings", ());
   Ok(())
 }
 
@@ -2099,6 +2172,7 @@ fn main() {
         pending_capture_mode: Mutex::new(None),
         screenshot_translation_busy: AtomicBool::new(false),
         screenshot_explain_busy: AtomicBool::new(false),
+        explain_stream_generation: AtomicU64::new(0),
         http: build_http_client(),
       });
 
@@ -2135,6 +2209,7 @@ fn main() {
       open_external,
       explain_get_initial_summary,
       explain_ask_question,
+      explain_cancel_stream,
       explain_read_image,
       explain_close_current,
       explain_save_history,

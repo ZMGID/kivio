@@ -15,7 +15,15 @@ export type ExplainMessage = { role: 'user' | 'assistant'; content: string }
 export type ScreenshotResultPayload = { original: string; translated: string }
 
 // 截图解释流式输出负载
-export type ExplainStreamPayload = { imageId: string; kind: 'summary' | 'answer'; delta: string }
+// done=true 时表示流结束（自然完成 / 取消 / 出错），delta 为空字符串
+export type ExplainStreamPayload = {
+  imageId: string
+  kind: 'summary' | 'answer'
+  delta: string
+  done?: boolean
+  reason?: 'done' | 'cancelled' | 'error'
+  full?: string
+}
 
 // AI 模型提供商配置
 export type ModelProvider = {
@@ -63,6 +71,7 @@ export type Settings = {
     model: string
     defaultLanguage: 'zh' | 'en'
     streamEnabled?: boolean
+    autoSummaryEnabled?: boolean
     customPrompts?: {
       systemPrompt?: string
       summaryPrompt?: string
@@ -219,4 +228,5 @@ export const api = {
       { historyId },
     ),
   explainCloseCurrent: () => invoke<void>('explain_close_current'),
+  explainCancelStream: () => invoke<void>('explain_cancel_stream'),
 }

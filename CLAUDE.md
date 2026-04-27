@@ -42,6 +42,8 @@ The app uses **one main webview window** that switches views via `window.locatio
 
 `App.tsx` reads the hash to determine the mode and resizes the window accordingly. Additional dedicated Tauri windows are created dynamically for `screenshot`, `explain`, and `capture` modes via `src-tauri/src/windows.rs`. Window behavior and bundle targets are configured in **`src-tauri/tauri.conf.json`**.
 
+The explain window has two size states: compact (480×280, thumbnail + summary) and expanded (520×680, full chat). It receives `imageId` as a `?imageId=` URL query param; the frontend uses this to fetch the base64 image and conversation history from the Rust backend.
+
 ### Settings UI Submodules
 
 The settings panel (`src/Settings.tsx`) delegates to helpers in **`src/settings/`**:
@@ -62,7 +64,7 @@ Providers have `availableModels` (fetched from `/models` endpoint) and `enabledM
 
 - Settings are stored via `tauri-plugin-store` in `settings.json`.
 - **API keys are NOT stored in settings JSON**. They are saved to the OS keyring (via the `keyring` crate) and hydrated at runtime. The `api_key` field on `ModelProvider` is populated in-memory at load time.
-- **`sanitize_settings`** in `src-tauri/src/settings.rs` handles migration from legacy single-provider configs to the multi-provider system, validates provider existence, and normalizes hotkeys.
+- **`sanitize_settings`** in `src-tauri/src/settings.rs` handles migration from legacy single-provider configs to the multi-provider system, validates provider existence, and normalizes hotkeys. `normalize_hotkey` canonicalizes modifier aliases to `CommandOrControl`, `Control`, `Alt`, `Shift`, `Super` — use these exact strings when constructing hotkeys.
 - Saving settings is transactional: if hotkey registration fails, `restore_runtime_settings` rolls back to the previous state.
 
 ### Platform-Specific Screenshot Flows
@@ -70,7 +72,7 @@ Providers have `availableModels` (fetched from `/models` endpoint) and `enabledM
 Screenshot capture is platform-guarded with `cfg(target_os = ...)`:
 
 - **macOS**: Uses the native `screencapture -i` command for interactive region selection. The `BusyGuard` RAII pattern prevents concurrent captures.
-- **Windows**: Uses a custom `CaptureOverlay.tsx` (fullscreen transparent webview) for region selection. The frontend sends coordinates to the backend, which uses the `xcap` crate (`capture_region_image`) to capture the region. Windows also has a clipboard-based fallback in `screenshot.rs` using `ms-screenclip:`.
+- **Windows**: Uses a custom `CaptureOverlay.tsx` (fullscreen transparent webview) for region selection. The lifecycle is: `capture_request` opens the overlay → the user draws a region → `capture_commit` (with pixel coordinates) triggers `xcap` capture → `capture_cancel` dismisses without capturing. Windows also has a clipboard-based fallback in `screenshot.rs` using `ms-screenclip:`.
 
 Busy flags (`screenshot_translation_busy`, `screenshot_explain_busy`) prevent concurrent operations on both platforms.
 
