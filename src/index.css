@@ -111,3 +111,33 @@ body {
 .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background-color: rgba(255, 255, 255, 0.32);
 }
+
+/* Cowork 进入动画：淡入 + 16px 上滑 + 微缩 0.96→1。
+   用于 select 装饰栏 / ready 输入栏 / answering 答案区，
+   遮掩 Tauri set_size 那一帧的瞬移突兀感。 */
+@keyframes cowork-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-cowork-rise {
+  animation: cowork-rise 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Cowork 整窗 fade-in：避免 webview show 那一帧 backdrop-filter 未合成时
+   .window-frosted 的 fallback 白底（rgba(255,255,255,0.98)）暴露成白闪。
+   仅 opacity，不动位置/缩放——窗口已经被后端 set_position 落位，再加几何动画会"跳一下"。 */
+@keyframes cowork-frame-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-cowork-frame-fade {
+  animation: cowork-frame-fade 220ms ease-out both;
+}

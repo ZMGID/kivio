@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
+mod cowork;
 mod screenshot;
 mod settings;
 mod utils;
@@ -61,7 +62,9 @@ struct AppState {
   pending_capture_mode: Mutex<Option<String>>,
   screenshot_translation_busy: AtomicBool,
   screenshot_explain_busy: AtomicBool,
+  cowork_busy: AtomicBool,
   /// 流式取消代号：每开新的流就 +1，跑流的循环检测到代号变了就立即结束。
+  /// 同时被 explain 和 cowork 共享：用户开新流式即作废上一个。
   explain_stream_generation: AtomicU64,
   http: Client,
 }
@@ -347,6 +350,10 @@ async fn explain_get_initial_summary(
     retry_attempts,
     stream_enabled,
     "summary",
+    "explain-stream",
+    None,
+    None,
+    None,
   )
   .await
   {
@@ -401,6 +408,10 @@ async fn explain_ask_question(
     retry_attempts,
     stream_enabled,
     "answer",
+    "explain-stream",
+    None,
+    None,
+    None,
   )
   .await
   {
@@ -431,6 +442,522 @@ fn explain_cancel_stream(state: State<AppState>) -> Result<(), String> {
     .fetch_add(1, Ordering::SeqCst);
   Ok(())
 }
+
+// ====== Cowork 模式命令 ======
+
+/// 把 cowork 窗口铺满光标所在显示器（用于 select 态）。
+fn cowork_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
+  let cursor = match app.cursor_position() {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("[cowork-pos] cursor_position err: {}", e);
+      return;
+    }
+  };
+  eprintln!("[cowork-pos] cursor (physical): ({}, {})", cursor.x, cursor.y);
+
+  let monitors = match app.available_monitors() {
+    Ok(m) => m,
+    Err(e) => {
+      eprintln!("[cowork-pos] available_monitors err: {}", e);
+      return;
+    }
+  };
+  for (i, monitor) in monitors.iter().enumerate() {
+    let mp = monitor.position();
+    let ms = monitor.size();
+    let scale = monitor.scale_factor();
+    eprintln!(
+      "[cowork-pos] monitor[{}] pos=({},{}) size={}x{} scale={}",
+      i, mp.x, mp.y, ms.width, ms.height, scale
+    );
+  }
+
+  for monitor in monitors {
+    let mp = monitor.position();
+    let ms = monitor.size();
+    let scale = monitor.scale_factor();
+    let mw = ms.width as i32;
+    let mh = ms.height as i32;
+    if (cursor.x as i32) >= mp.x
+      && (cursor.x as i32) < mp.x + mw
+      && (cursor.y as i32) >= mp.y
+      && (cursor.y as i32) < mp.y + mh
+    {
+      let lx = mp.x as f64 / scale;
+      let ly = mp.y as f64 / scale;
+      let lw = ms.width as f64 / scale;
+      let lh = ms.height as f64 / scale;
+      eprintln!(
+        "[cowork-pos] -> set_position logical=({}, {}) size=({}, {})",
+        lx, ly, lw, lh
+      );
+      let _ = window.set_position(tauri::LogicalPosition::new(lx, ly));
+      let _ = window.set_size(tauri::LogicalSize::new(lw, lh));
+
+      // 验证：读回当前 outer_position
+      if let Ok(op) = window.outer_position() {
+        eprintln!("[cowork-pos] verify outer_position physical=({}, {})", op.x, op.y);
+      }
+      return;
+    }
+  }
+  eprintln!("[cowork-pos] no monitor matched cursor!");
+}
+
+/// 入口（公共底层）：打开 cowork webview 进入 select 态。
+/// `mode_hash` 决定 hash query：
+///   - "" → "#cowork"（默认 cowork 模式，commit 后进 ready 悬浮栏）
+///   - "explain" → "#cowork?mode=explain"（commit 后调 explain_open_at_anchor 打开 explain 大窗口）
+fn cowork_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
+  let state = app.state::<AppState>();
+  // 自愈：busy=true 但 cowork 窗口已不可见（外部强关 / dev 重载等异常），重置 busy
+  if state.cowork_busy.load(Ordering::SeqCst) {
+    let visible = app
+      .get_webview_window("cowork")
+      .and_then(|w| w.is_visible().ok())
+      .unwrap_or(false);
+    if !visible {
+      state.cowork_busy.store(false, Ordering::SeqCst);
+    }
+  }
+  if state.cowork_busy.swap(true, Ordering::SeqCst) {
+    return Err("Cowork already active".to_string());
+  }
+  let window = match windows::ensure_cowork_window(app) {
+    Ok(w) => w,
+    Err(e) => {
+      state.cowork_busy.store(false, Ordering::SeqCst);
+      return Err(e);
+    }
+  };
+  let hash_str = if mode.is_empty() {
+    "#cowork".to_string()
+  } else {
+    format!("#cowork?mode={}", mode)
+  };
+  let script = format!(
+    "window.location.hash = {}; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('cowork:reset'));",
+    serde_json::to_string(&hash_str).unwrap_or_else(|_| "'#cowork'".to_string()),
+  );
+  let _ = window.eval(&script);
+  // macOS 下 hidden 窗口的 set_position 常被忽略，先 show 再定位
+  let _ = window.show();
+  let _ = window.set_focus();
+  cowork_position_fullscreen(app, &window);
+  // 再调一次，处理首次 set_position 在 always_on_top + visible_on_all_workspaces 下被吃掉的情况
+  cowork_position_fullscreen(app, &window);
+  Ok(())
+}
+
+/// 默认入口：cowork 模式（commit 后进 ready 悬浮栏）
+#[tauri::command]
+fn cowork_request(app: AppHandle) -> Result<(), String> {
+  cowork_request_internal(&app, "")
+}
+
+/// Explain 模式入口：commit 后打开截图讲解窗口
+#[tauri::command]
+fn cowork_request_explain(app: AppHandle) -> Result<(), String> {
+  cowork_request_internal(&app, "explain")
+}
+
+/// 返回当前屏幕上可见应用窗口列表（macOS 实际数据；Windows 空数组）。
+#[tauri::command]
+fn cowork_list_windows() -> Vec<cowork::WindowInfo> {
+  cowork::list_windows()
+}
+
+/// 整窗截图（macOS）：先隐藏 cowork 窗口，截目标窗口，注册 image_id 返回。
+#[tauri::command]
+async fn cowork_capture_window(
+  app: AppHandle,
+  window_id: u32,
+) -> Result<serde_json::Value, String> {
+  let cowork_window = app.get_webview_window("cowork");
+  if let Some(w) = cowork_window.as_ref() {
+    let _ = w.hide();
+  }
+  // 给 hide 一点时间生效
+  tokio::time::sleep(Duration::from_millis(120)).await;
+
+  let result = cowork::capture_window(window_id);
+
+  match result {
+    Ok(path) => {
+      let image_id = Uuid::new_v4().to_string();
+      let state = app.state::<AppState>();
+      {
+        let mut map = state.images_lock();
+        map.insert(image_id.clone(), path);
+      }
+      {
+        let mut current = state.current_id_lock();
+        *current = Some(image_id.clone());
+      }
+      Ok(serde_json::json!({ "success": true, "imageId": image_id }))
+    }
+    Err(err) => {
+      // 截图失败：让 cowork 重新可见
+      if let Some(w) = cowork_window {
+        let _ = w.show();
+      }
+      Ok(serde_json::json!({ "success": false, "error": err }))
+    }
+  }
+}
+
+/// 区域截图：复用 capture_region_image 路径，注册 image_id 返回。
+#[tauri::command]
+async fn cowork_capture_region(
+  app: AppHandle,
+  absolute_x: i32,
+  absolute_y: i32,
+  x: i32,
+  y: i32,
+  width: u32,
+  height: u32,
+  scale_factor: f64,
+) -> Result<serde_json::Value, String> {
+  let cowork_window = app.get_webview_window("cowork");
+  if let Some(w) = cowork_window.as_ref() {
+    let _ = w.hide();
+  }
+  tokio::time::sleep(Duration::from_millis(120)).await;
+
+  let result = capture_region_image(absolute_x, absolute_y, x, y, width, height, scale_factor);
+  match result {
+    Ok(path) => {
+      let image_id = Uuid::new_v4().to_string();
+      let state = app.state::<AppState>();
+      {
+        let mut map = state.images_lock();
+        map.insert(image_id.clone(), path);
+      }
+      {
+        let mut current = state.current_id_lock();
+        *current = Some(image_id.clone());
+      }
+      Ok(serde_json::json!({ "success": true, "imageId": image_id }))
+    }
+    Err(err) => {
+      if let Some(w) = cowork_window {
+        let _ = w.show();
+      }
+      Ok(serde_json::json!({ "success": false, "error": err }))
+    }
+  }
+}
+
+/// 智能定位算法：候选位置（下/右/左/上）找第一个完整放下的位置。
+/// 选位时按 expanded_h 预留垂直空间，确保后续 resize 到展开态仍不被屏幕边缘裁剪。
+/// 返回逻辑坐标 (tx, ty)；如果都不完美 fit，返回"下"候选 clamp 后的值。
+fn pick_floating_anchor(
+  app: &AppHandle,
+  anchor_x: i32,
+  anchor_y: i32,
+  anchor_width: i32,
+  anchor_height: i32,
+  win_w_l: f64,
+  win_h_l: f64,
+  expanded_h: f64,
+  gap: f64,
+) -> (f64, f64) {
+  let ax = anchor_x as f64;
+  let ay = anchor_y as f64;
+  let aw = anchor_width as f64;
+  let ah = anchor_height as f64;
+  let cx = ax + aw / 2.0;
+  let cy = ay + ah / 2.0;
+
+  let mut bounds: Option<(f64, f64, f64, f64)> = None;
+  if let Ok(monitors) = app.available_monitors() {
+    for monitor in monitors {
+      let mp = monitor.position();
+      let ms = monitor.size();
+      let scale = monitor.scale_factor();
+      let mxl = mp.x as f64 / scale;
+      let myl = mp.y as f64 / scale;
+      let mwl = ms.width as f64 / scale;
+      let mhl = ms.height as f64 / scale;
+      if cx >= mxl && cx < mxl + mwl && cy >= myl && cy < myl + mhl {
+        bounds = Some((mxl, myl, mwl, mhl));
+        break;
+      }
+    }
+  }
+  let (mxl, myl, mwl, mhl) = bounds.unwrap_or((0.0, 0.0, 1920.0, 1080.0));
+
+  // 候选 (tx, ty, 该方向需要的总高度)
+  // - 下/右/左：窗口向下展开 expanded_h
+  // - 上：仅 ready 高度需放下；展开会盖回选区，但用户已截图无影响
+  let candidates: [(f64, f64, f64); 4] = [
+    (cx - win_w_l / 2.0, ay + ah + gap, expanded_h),
+    (ax + aw + gap, cy - expanded_h / 2.0, expanded_h),
+    (ax - win_w_l - gap, cy - expanded_h / 2.0, expanded_h),
+    (cx - win_w_l / 2.0, ay - win_h_l - gap, win_h_l),
+  ];
+
+  let fit = candidates.iter().find(|(tx, ty, h)| {
+    *tx >= mxl && tx + win_w_l <= mxl + mwl && *ty >= myl && ty + h <= myl + mhl
+  });
+
+  let (mut tx, mut ty) = match fit {
+    Some(c) => (c.0, c.1),
+    None => (candidates[0].0, candidates[0].1),
+  };
+
+  // 兜底 clamp：水平按 win_w_l，垂直按 expanded_h（确保展开后仍不裁剪）
+  tx = tx.max(mxl).min(mxl + mwl - win_w_l);
+  ty = ty.max(myl).min(myl + mhl - expanded_h);
+  (tx, ty)
+}
+
+/// 截图完成后：把 cowork 窗口缩到 600x72 + 智能放在选区周围（下/右/左/上 优先级）。
+/// 入参 anchor_* 是前端传的**逻辑坐标**（macOS Quartz / window.screenX-base CSS 像素）。
+/// 全程在逻辑像素空间计算 + LogicalPosition/LogicalSize 设值，避开 macOS PhysicalPosition 底左原点 quirk。
+/// 选位时会预留 answering 态 420px 高度，避免展开后被屏幕边缘裁剪。
+#[tauri::command]
+fn cowork_set_anchor(
+  app: AppHandle,
+  anchor_x: i32,
+  anchor_y: i32,
+  anchor_width: i32,
+  anchor_height: i32,
+) -> Result<(), String> {
+  let window = app
+    .get_webview_window("cowork")
+    .ok_or_else(|| "Cowork window not found".to_string())?;
+  let win_w_l: f64 = 600.0;
+  let win_h_l: f64 = 72.0;
+  let expanded_h: f64 = 420.0;
+  let gap: f64 = 16.0;
+
+  let (tx, ty) = pick_floating_anchor(
+    &app,
+    anchor_x, anchor_y, anchor_width, anchor_height,
+    win_w_l, win_h_l, expanded_h, gap,
+  );
+
+  let _ = window.set_size(tauri::LogicalSize::new(win_w_l, win_h_l));
+  let _ = window.set_position(tauri::LogicalPosition::new(tx, ty));
+  let _ = window.show();
+  let _ = window.set_focus();
+  Ok(())
+}
+
+/// 仅 resize（用于 ready→answering 扩展高度），保持当前位置不变（前端调）。
+#[tauri::command]
+fn cowork_resize(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+  let window = app
+    .get_webview_window("cowork")
+    .ok_or_else(|| "Cowork window not found".to_string())?;
+  window
+    .set_size(tauri::LogicalSize::new(width, height))
+    .map_err(|e| e.to_string())
+}
+
+/// 纯文字模式：把 cowork 从全屏 select 态收缩成 width×height 的悬浮栏，
+/// 放在光标所在显示器底部居中（Dock 上方约 dock_offset px）。
+#[tauri::command]
+fn cowork_position_bottom(
+  app: AppHandle,
+  width: f64,
+  height: f64,
+  dock_offset: f64,
+) -> Result<(), String> {
+  let window = app
+    .get_webview_window("cowork")
+    .ok_or_else(|| "Cowork window not found".to_string())?;
+  let cursor = app.cursor_position().ok();
+
+  if let Ok(monitors) = app.available_monitors() {
+    for monitor in monitors {
+      let mp = monitor.position();
+      let ms = monitor.size();
+      let scale = monitor.scale_factor();
+      let mxl = mp.x as f64 / scale;
+      let myl = mp.y as f64 / scale;
+      let mwl = ms.width as f64 / scale;
+      let mhl = ms.height as f64 / scale;
+
+      let in_monitor = match cursor {
+        Some(c) => {
+          (c.x as i32) >= mp.x
+            && (c.x as i32) < mp.x + ms.width as i32
+            && (c.y as i32) >= mp.y
+            && (c.y as i32) < mp.y + ms.height as i32
+        }
+        None => true, // 没光标信息时用第一个 monitor
+      };
+      if !in_monitor {
+        continue;
+      }
+      let tx = mxl + (mwl - width) / 2.0;
+      let ty = myl + mhl - dock_offset - height;
+      let _ = window.set_size(tauri::LogicalSize::new(width, height));
+      let _ = window.set_position(tauri::LogicalPosition::new(tx, ty));
+      let _ = window.show();
+      let _ = window.set_focus();
+      return Ok(());
+    }
+  }
+  Err("No monitor matched cursor".to_string())
+}
+
+/// 单轮提问：调用 vision API 流式发出 cowork-stream 事件。
+/// 字段独立 + 默认 fallback 到 screenshot_explain：
+///   - default_language / system_prompt / question_prompt：空字符串 → 用 explain 同名值
+///   - stream_enabled / provider_id / model：cowork 自身配置
+#[tauri::command]
+async fn cowork_ask(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  image_id: String,
+  question: String,
+) -> Result<serde_json::Value, String> {
+  let settings = state.settings_read().clone();
+  let retry_attempts = effective_retry_attempts(&settings);
+
+  let language = if settings.cowork.default_language.is_empty() {
+    settings.screenshot_explain.default_language.clone()
+  } else {
+    settings.cowork.default_language.clone()
+  };
+  let stream_enabled = settings.cowork.stream_enabled;
+
+  let provider_override = if !settings.cowork.provider_id.is_empty() {
+    Some(settings.cowork.provider_id.clone())
+  } else {
+    None
+  };
+  let model_override = if !settings.cowork.model.is_empty() {
+    Some(settings.cowork.model.clone())
+  } else {
+    None
+  };
+
+  // question_prompt：cowork 自定义 → explain 自定义 → 默认模板
+  let question_prompt = if !settings.cowork.question_prompt.is_empty() {
+    settings.cowork.question_prompt.clone()
+  } else {
+    settings
+      .screenshot_explain
+      .custom_prompts
+      .as_ref()
+      .and_then(|p| p.question_prompt.clone())
+      .unwrap_or_else(|| default_question_prompt(&language))
+  };
+
+  // system_prompt：仅当 cowork 显式自定义时传 override，否则交给 call_vision_api 走 explain 默认链
+  let system_prompt_override = if !settings.cowork.system_prompt.is_empty() {
+    Some(settings.cowork.system_prompt.clone())
+  } else {
+    None
+  };
+
+  // 把 question_prompt 注入到 user 消息（仿 explain_send_message）
+  let messages = vec![ExplainMessage {
+    role: "user".to_string(),
+    content: format!("{}\n\n用户问题：{}", question_prompt, question),
+  }];
+
+  match call_vision_api(
+    &app,
+    &state,
+    &image_id,
+    messages,
+    &language,
+    retry_attempts,
+    stream_enabled,
+    "answer",
+    "cowork-stream",
+    provider_override.as_deref(),
+    model_override.as_deref(),
+    system_prompt_override.as_deref(),
+  )
+  .await
+  {
+    Ok(response) => Ok(serde_json::json!({ "success": true, "response": response })),
+    Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
+  }
+}
+
+/// 取消正在进行的 cowork 流（复用同一代号）。
+#[tauri::command]
+fn cowork_cancel_stream(state: State<AppState>) -> Result<(), String> {
+  state
+    .explain_stream_generation
+    .fetch_add(1, Ordering::SeqCst);
+  Ok(())
+}
+
+/// 关闭 cowork：清理图片、释放 busy、隐藏窗口。
+#[tauri::command]
+fn cowork_close(app: AppHandle) -> Result<(), String> {
+  let state = app.state::<AppState>();
+  let current_id = {
+    let current = state.current_id_lock();
+    current.clone()
+  };
+  if let Some(id) = current_id {
+    cleanup_explain_image(&app, &id);
+  }
+  state.cowork_busy.store(false, Ordering::SeqCst);
+  if let Some(window) = app.get_webview_window("cowork") {
+    let _ = window.hide();
+  }
+  Ok(())
+}
+
+/// 截图讲解专用：cowork 截图完成后调用，把 explain 窗口落在选区附近（智能定位）。
+/// image_id 已由 cowork_capture_window/region 注册到 state.images_lock；这里仅设 current + 打开 explain 窗口。
+/// anchor_* 是逻辑坐标。
+#[tauri::command]
+fn explain_open_at_anchor(
+  app: AppHandle,
+  image_id: String,
+  anchor_x: i32,
+  anchor_y: i32,
+  anchor_width: i32,
+  anchor_height: i32,
+) -> Result<(), String> {
+  let state = app.state::<AppState>();
+  // 把图片设为 current（cowork_capture 已 insert 到 images_lock）
+  {
+    let mut current = state.current_id_lock();
+    *current = Some(image_id.clone());
+  }
+
+  // ensure_explain_window 第一次创建时会按光标定位，先让它创建/复用，然后我们再覆盖位置
+  let window = ensure_explain_window(&app, &image_id)?;
+
+  // 智能定位：compact 440×180，expanded 500×600。预留 expanded 高度，避免展开后裁剪。
+  let (tx, ty) = pick_floating_anchor(
+    &app,
+    anchor_x,
+    anchor_y,
+    anchor_width,
+    anchor_height,
+    500.0, // win_w：用 expanded 宽，水平方向给展开留够空间
+    180.0, // win_h：当前 compact 高
+    600.0, // expanded_h：展开总高
+    16.0,  // gap
+  );
+  let _ = window.set_position(tauri::LogicalPosition::new(tx, ty));
+
+  // 释放 cowork busy + 隐藏 cowork 窗口（图片不清理，留给 explain 用）
+  state.cowork_busy.store(false, Ordering::SeqCst);
+  if let Some(cw) = app.get_webview_window("cowork") {
+    let _ = cw.hide();
+  }
+
+  let _ = window.show();
+  let _ = window.set_focus();
+  Ok(())
+}
+
+// ====== /Cowork 模式命令 ======
 
 /// 关闭当前解释会话并清理对应的临时图片
 #[tauri::command]
@@ -729,6 +1256,29 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     }
   }
 
+  if settings.cowork.enabled {
+    let hotkey = settings.cowork.hotkey.trim().to_string();
+    if hotkey.is_empty() {
+      errors.push("Cowork hotkey is empty".to_string());
+    } else {
+      let hotkey_key = hotkey.to_lowercase();
+      if !registered.insert(hotkey_key) {
+        errors.push(format!("Duplicate hotkey \"{hotkey}\" for cowork"));
+      } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+          let handle = app.clone();
+          tauri::async_runtime::spawn(async move {
+            if let Err(err) = cowork_request(handle) {
+              eprintln!("Cowork trigger error: {err}");
+            }
+          });
+        }
+      }) {
+        errors.push(format_hotkey_error("cowork", &hotkey, &err.to_string()));
+      }
+    }
+  }
+
   if errors.is_empty() {
     Ok(())
   } else {
@@ -837,8 +1387,37 @@ fn capture_region_image(
   Ok(temp_path)
 }
 
-/// 非 Windows 平台：区域截图占位符，直接返回不支持的错误
-#[cfg(not(target_os = "windows"))]
+/// macOS 平台：区域截图，使用 `screencapture -R x,y,w,h <path>` 直接按全局逻辑坐标截。
+#[cfg(target_os = "macos")]
+fn capture_region_image(
+  absolute_x: i32,
+  absolute_y: i32,
+  _x: i32,
+  _y: i32,
+  width: u32,
+  height: u32,
+  _scale_factor: f64,
+) -> Result<PathBuf, String> {
+  let temp_path = std::env::temp_dir().join(format!("cowork-region-{}.png", Uuid::new_v4()));
+  let region = format!("{},{},{},{}", absolute_x, absolute_y, width, height);
+  let status = std::process::Command::new("screencapture")
+    .arg("-R")
+    .arg(region)
+    .arg("-o")
+    .arg("-x")
+    .arg("-t")
+    .arg("png")
+    .arg(&temp_path)
+    .status()
+    .map_err(|e| e.to_string())?;
+  if !status.success() || !temp_path.exists() {
+    return Err("Region capture failed".to_string());
+  }
+  Ok(temp_path)
+}
+
+/// 其他平台：占位
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn capture_region_image(
   _absolute_x: i32,
   _absolute_y: i32,
@@ -1312,33 +1891,15 @@ async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
 }
 
 /// 非 Windows 平台：处理截图解释热键
-/// 使用 BusyGuard 防止并发，直接截图后处理
+/// 复用 cowork 的 select 态 UI（hover 应用窗口高亮 / 单击截窗 / 拖动选区）。
+/// 截图完成后由前端走 explain_open_at_anchor 把 explain 窗口落在选区附近。
 #[cfg(not(target_os = "windows"))]
 async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
-  let state = app.state::<AppState>();
-  let _guard = match BusyGuard::new(&state.screenshot_explain_busy) {
-    Some(guard) => guard,
-    None => {
-      eprintln!("Screenshot explain already in progress");
-      return Ok(());
-    }
-  };
-
   if let Some(window) = get_main_window(app) {
     let _ = window.hide();
   }
-
-  let temp_path = match capture_screenshot() {
-    Ok(path) => path,
-    Err(err) => {
-      if let Some(window) = get_main_window(app) {
-        let _ = window.show();
-        let _ = window.set_focus();
-      }
-      return Err(err);
-    }
-  };
-  process_screenshot_explain_from_path(app, temp_path).await
+  // cowork_busy 自身做并发互斥，无需 screenshot_explain_busy guard
+  cowork_request_internal(app, "explain")
 }
 
 /// 处理截图解释：从图片路径创建解释窗口并记录图片
@@ -1638,8 +2199,9 @@ async fn call_openai_ocr(
   Ok(content.trim().to_string())
 }
 
-/// 调用视觉 API（截图解释）
-/// 支持流式输出：如果 stream 为 true，则通过 stream_vision_response 逐段返回内容
+/// 调用视觉 API（截图解释 / Cowork 共用）
+/// 支持流式输出：如果 stream 为 true，通过 stream_vision_response 逐段 emit `event_name` 事件。
+/// `provider_id_override` 非空时使用指定 provider/model（用于 cowork 选择独立模型）；空则走 explain 配置。
 async fn call_vision_api(
   app: &AppHandle,
   state: &State<'_, AppState>,
@@ -1649,48 +2211,78 @@ async fn call_vision_api(
   retry_attempts: usize,
   stream: bool,
   stream_kind: &str,
+  event_name: &str,
+  provider_id_override: Option<&str>,
+  model_override: Option<&str>,
+  system_prompt_override: Option<&str>,
 ) -> Result<String, String> {
   let settings = state.settings_read().clone();
-  let provider = settings.get_provider(&settings.screenshot_explain.provider_id)
-    .ok_or_else(|| "Explain provider not found".to_string())?;
+  let provider_id = provider_id_override
+    .filter(|s| !s.is_empty())
+    .unwrap_or(&settings.screenshot_explain.provider_id);
+  let provider = settings.get_provider(provider_id)
+    .ok_or_else(|| "Vision provider not found".to_string())?;
 
-  let image_path = resolve_explain_image_path(state, image_id)?;
-  let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
-  let base64 = general_purpose::STANDARD.encode(bytes);
-
-  let system_prompt = settings
-    .screenshot_explain
-    .custom_prompts
-    .as_ref()
-    .and_then(|p| p.system_prompt.clone())
-    .unwrap_or_else(|| default_system_prompt(language));
+  // image_id 为空 → 走纯文本对话路径（不附图）
+  let has_image = !image_id.is_empty();
 
   let mut api_messages = Vec::new();
-  api_messages.push(serde_json::json!({
-    "role": "system",
-    "content": system_prompt
-  }));
-
-  if let Some(first) = messages.first() {
+  // 优先使用调用方提供的 system_prompt_override（cowork 自定义场景）；
+  // 否则若有图片，沿用 explain 自定义/默认 system prompt（原行为）。
+  let system_prompt_to_use: Option<String> = match system_prompt_override.filter(|s| !s.is_empty()) {
+    Some(s) => Some(s.to_string()),
+    None if has_image => Some(
+      settings
+        .screenshot_explain
+        .custom_prompts
+        .as_ref()
+        .and_then(|p| p.system_prompt.clone())
+        .unwrap_or_else(|| default_system_prompt(language)),
+    ),
+    None => None,
+  };
+  if let Some(sp) = system_prompt_to_use {
     api_messages.push(serde_json::json!({
-      "role": "user",
-      "content": [
-        { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{base64}") } },
-        { "type": "text", "text": first.content }
-      ]
+      "role": "system",
+      "content": sp
     }));
+  }
 
-    for message in messages.iter().skip(1) {
+  if has_image {
+    let image_path = resolve_explain_image_path(state, image_id)?;
+    let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
+    let base64 = general_purpose::STANDARD.encode(bytes);
+    if let Some(first) = messages.first() {
+      api_messages.push(serde_json::json!({
+        "role": "user",
+        "content": [
+          { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{base64}") } },
+          { "type": "text", "text": first.content }
+        ]
+      }));
+      for message in messages.iter().skip(1) {
+        api_messages.push(serde_json::json!({
+          "role": message.role,
+          "content": message.content
+        }));
+      }
+    }
+  } else {
+    // 纯文本：每条 message 直接 push（无图）
+    for message in messages.iter() {
       api_messages.push(serde_json::json!({
         "role": message.role,
-        "content": message.content
+        "content": message.content,
       }));
     }
   }
 
+  let model = model_override
+    .filter(|s| !s.is_empty())
+    .unwrap_or(&settings.screenshot_explain.model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
   let mut body = serde_json::json!({
-    "model": settings.screenshot_explain.model,
+    "model": model,
     "messages": api_messages,
     "temperature": 0.7,
     "max_tokens": 2000
@@ -1720,6 +2312,7 @@ async fn call_vision_api(
       response,
       image_id,
       stream_kind,
+      event_name,
       &state.explain_stream_generation,
       generation,
     )
@@ -1739,13 +2332,14 @@ async fn call_vision_api(
 }
 
 /// 流式解析视觉 API 的 SSE 响应
-/// 逐 chunk 读取响应体，解析 "data:" 行，提取 delta 中的 content 并通过事件发送到前端
+/// 逐 chunk 读取响应体，解析 "data:" 行，提取 delta 中的 content 并通过 `event_name` emit。
 /// 支持取消：调用方持有 `my_generation`，全局代号 `generation_atom` 一旦变化即视为被新流或外部取消作废。
 async fn stream_vision_response(
   app: &AppHandle,
   mut response: reqwest::Response,
   image_id: &str,
   kind: &str,
+  event_name: &str,
   generation_atom: &AtomicU64,
   my_generation: u64,
 ) -> Result<String, String> {
@@ -1754,7 +2348,7 @@ async fn stream_vision_response(
 
   let emit_done = |reason: &str, full_text: &str| {
     let _ = app.emit(
-      "explain-stream",
+      event_name,
       serde_json::json!({
         "imageId": image_id,
         "kind": kind,
@@ -1814,7 +2408,7 @@ async fn stream_vision_response(
       if let Some(content) = delta {
         full.push_str(content);
         let _ = app.emit(
-          "explain-stream",
+          event_name,
           serde_json::json!({ "imageId": image_id, "kind": kind, "delta": content }),
         );
       }
@@ -2172,6 +2766,7 @@ fn main() {
         pending_capture_mode: Mutex::new(None),
         screenshot_translation_busy: AtomicBool::new(false),
         screenshot_explain_busy: AtomicBool::new(false),
+        cowork_busy: AtomicBool::new(false),
         explain_stream_generation: AtomicU64::new(0),
         http: build_http_client(),
       });
@@ -2222,6 +2817,18 @@ fn main() {
       capture_request,
       capture_commit,
       capture_cancel,
+      cowork_request,
+      cowork_request_explain,
+      cowork_list_windows,
+      cowork_capture_window,
+      cowork_capture_region,
+      cowork_set_anchor,
+      cowork_resize,
+      cowork_position_bottom,
+      cowork_ask,
+      cowork_cancel_stream,
+      cowork_close,
+      explain_open_at_anchor,
       set_always_on_top
     ])
     .run(tauri::generate_context!())

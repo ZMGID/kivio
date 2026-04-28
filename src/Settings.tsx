@@ -3,7 +3,7 @@ import {
   X, Save, Plus, Trash2, RefreshCw,
   Settings as SettingsIcon, Languages, Camera, MessageSquare,
   Cloud, Info, Palette, Keyboard, SlidersHorizontal, Globe,
-  Cpu, FileText, ShieldCheck
+  Cpu, FileText, ShieldCheck, Sparkles
 } from 'lucide-react'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
 import { i18n } from './settings/i18n'
@@ -31,11 +31,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'explain' | 'providers' | 'about'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'explain' | 'cowork' | 'providers' | 'about'>('general')
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
-  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotExplain'>(null)
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotExplain' | 'cowork'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
@@ -95,6 +95,16 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             defaultLanguage: 'zh',
             streamEnabled: false,
             autoSummaryEnabled: true
+          },
+          cowork: {
+            enabled: true,
+            hotkey: 'CommandOrControl+Shift+G',
+            providerId: '',
+            model: '',
+            defaultLanguage: '',
+            streamEnabled: true,
+            systemPrompt: '',
+            questionPrompt: ''
           },
           explainHistory: [],
           settingsLanguage: 'zh'
@@ -382,6 +392,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const translatorProvider = resolveProvider(nextProviders, settings.translatorProviderId)
     const screenshotProvider = resolveProvider(nextProviders, settings.screenshotTranslation?.providerId || '')
     const explainProvider = resolveProvider(nextProviders, settings.screenshotExplain?.providerId || '')
+    // cowork providerId 为空表示 fallback 到 explain，删除时若已设置自身 provider 才需要级联
+    const coworkHadOwnProvider = !!settings.cowork?.providerId
+    const coworkProvider = coworkHadOwnProvider
+      ? resolveProvider(nextProviders, settings.cowork?.providerId || '')
+      : undefined
 
     setSettings({
       ...settings,
@@ -397,7 +412,14 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         ...settings.screenshotExplain,
         providerId: explainProvider ? explainProvider.id : '',
         model: resolveModel(explainProvider, settings.screenshotExplain?.model || '')
-      }
+      },
+      ...(coworkHadOwnProvider ? {
+        cowork: {
+          ...settings.cowork,
+          providerId: coworkProvider ? coworkProvider.id : '',
+          model: resolveModel(coworkProvider, settings.cowork?.model || '')
+        }
+      } : {})
     })
   }
 
@@ -455,6 +477,13 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         next.screenshotExplain = {
           ...prev.screenshotExplain,
           model: resolveAfterRemoval(prev.screenshotExplain.model),
+        }
+      }
+
+      if (prev.cowork?.providerId === providerId) {
+        next.cowork = {
+          ...prev.cowork,
+          model: resolveAfterRemoval(prev.cowork.model || ''),
         }
       }
 
@@ -528,6 +557,26 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }, [])
 
   /**
+   * 更新 Cowork 配置
+   */
+  const updateCowork = useCallback((updates: Partial<SettingsData['cowork']>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const current = prev.cowork || {
+        enabled: true,
+        hotkey: 'CommandOrControl+Shift+G',
+        providerId: '',
+        model: '',
+        defaultLanguage: '',
+        streamEnabled: true,
+        systemPrompt: '',
+        questionPrompt: ''
+      }
+      return { ...prev, cowork: { ...current, ...updates } }
+    })
+  }, [])
+
+  /**
    * 更新截图解释的自定义提示词
    */
   const updateCustomPrompts = useCallback((updates: Partial<NonNullable<SettingsData['screenshotExplain']['customPrompts']>>) => {
@@ -553,7 +602,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   /**
    * 切换快捷键录制状态
    */
-  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotExplain') => {
+  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotExplain' | 'cowork') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
@@ -578,12 +627,14 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         updateScreenshotTranslation({ hotkey })
       } else if (recordingTarget === 'screenshotExplain') {
         updateScreenshotExplain({ hotkey })
+      } else if (recordingTarget === 'cowork') {
+        updateCowork({ hotkey })
       }
       setRecordingTarget(null)
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [recordingTarget, updateScreenshotExplain, updateScreenshotTranslation, updateSettings])
+  }, [recordingTarget, updateCowork, updateScreenshotExplain, updateScreenshotTranslation, updateSettings])
 
   if (loading || !settings) {
     return (
@@ -608,9 +659,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             { id: 'general' as const, label: t.tabGeneral, icon: SettingsIcon },
             { id: 'translate' as const, label: t.tabTranslate, icon: Languages },
             { id: 'screenshot' as const, label: t.tabScreenshot, icon: Camera },
-            { id: 'explain' as const, label: '截图讲解', icon: MessageSquare },
+            { id: 'explain' as const, label: lang === 'zh' ? '截图讲解' : 'Explain', icon: MessageSquare },
+            { id: 'cowork' as const, label: t.coworkTabLabel, icon: Sparkles },
             { id: 'providers' as const, label: t.tabModels, icon: Cloud },
-            { id: 'about' as const, label: '关于', icon: Info },
+            { id: 'about' as const, label: lang === 'zh' ? '关于' : 'About', icon: Info },
           ].map((item) => {
             const Icon = item.icon
             const active = activeTab === item.id
@@ -1047,6 +1099,109 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                             {!settings.screenshotExplain?.customPrompts?.questionPrompt?.trim() && explainDefaults?.question && (
                               <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.question} />
                             )}
+                          </div>
+                        </div>
+                      </details>
+                    </>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* ===== Cowork 标签页 ===== */}
+        {activeTab === 'cowork' && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <section>
+              <SectionTitle icon={Sparkles}>{t.coworkSection}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+                <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
+                  <SettingRow label={t.enabled}>
+                    <Toggle
+                      checked={settings.cowork?.enabled !== false}
+                      onChange={(v) => updateCowork({ enabled: v })}
+                    />
+                  </SettingRow>
+
+                  {settings.cowork?.enabled !== false && (
+                    <>
+                      <div className="px-4 py-3 space-y-1.5">
+                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.hotkey}</span>
+                        <HotkeyInput
+                          value={settings.cowork?.hotkey || 'CommandOrControl+Shift+G'}
+                          placeholder="CommandOrControl+Shift+G"
+                          recording={recordingTarget === 'cowork'}
+                          onToggleRecording={() => toggleRecording('cowork')}
+                          recordLabel={t.hotkeyRecord}
+                          recordingLabel={t.hotkeyRecording}
+                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                        />
+                      </div>
+                      <SettingRow label={t.coworkResponseLanguage}>
+                        <Select
+                          className="w-44"
+                          value={settings.cowork?.defaultLanguage || ''}
+                          onChange={(v) => updateCowork({ defaultLanguage: v })}
+                          options={[
+                            { value: '', label: t.coworkLanguageInherit },
+                            { value: 'zh', label: '中文' },
+                            { value: 'en', label: 'English' },
+                          ]}
+                        />
+                      </SettingRow>
+                      <SettingRow label={t.coworkStreamEnabled}>
+                        <Toggle
+                          checked={settings.cowork?.streamEnabled !== false}
+                          onChange={(v) => updateCowork({ streamEnabled: v })}
+                        />
+                      </SettingRow>
+                      <SettingRow label={t.selectModelPair}>
+                        <Select
+                          className="w-52"
+                          value={`${settings.cowork?.providerId || ''}:${settings.cowork?.model || ''}`}
+                          onChange={(v) => {
+                            const [providerId, model] = v.split(':')
+                            updateCowork({ providerId, model })
+                          }}
+                          options={[
+                            { value: ':', label: t.coworkLanguageInherit },
+                            ...settings.providers.flatMap(p =>
+                              p.enabledModels.map(m => ({
+                                value: `${p.id}:${m}`,
+                                label: `${p.name} - ${m}`
+                              }))
+                            )
+                          ]}
+                        />
+                      </SettingRow>
+                      <details className="group">
+                        <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
+                          <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">
+                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </div>
+                          {t.customPrompts}
+                        </summary>
+                        <div className="px-4 pb-4 space-y-4">
+                          <div>
+                            <Label>{t.coworkSystemPrompt}</Label>
+                            <TextArea
+                              value={settings.cowork?.systemPrompt || ''}
+                              onChange={(v) => updateCowork({ systemPrompt: v })}
+                              placeholder={t.coworkPromptHint}
+                              rows={2}
+                            />
+                          </div>
+                          <div>
+                            <Label>{t.coworkQuestionPrompt}</Label>
+                            <TextArea
+                              value={settings.cowork?.questionPrompt || ''}
+                              onChange={(v) => updateCowork({ questionPrompt: v })}
+                              placeholder={t.coworkPromptHint}
+                              rows={3}
+                            />
                           </div>
                         </div>
                       </details>

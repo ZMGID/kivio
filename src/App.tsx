@@ -4,6 +4,7 @@ import Settings from './Settings'
 import ScreenshotResult from './ScreenshotResult'
 import ScreenshotExplain from './ScreenshotExplain'
 import CaptureOverlay from './CaptureOverlay'
+import Cowork from './Cowork'
 import { api } from './api/tauri'
 import { i18n, type Lang } from './settings/i18n'
 import './index.css'
@@ -275,6 +276,7 @@ function App() {
   // 根据模式渲染对应视图
   if (mode === 'screenshot') return <ScreenshotResult />
   if (mode === 'explain') return <ScreenshotExplain />
+  if (mode === 'cowork') return <Cowork />
   if (mode === 'capture') return <CaptureOverlay />
   if (mode === 'settings') {
     return (

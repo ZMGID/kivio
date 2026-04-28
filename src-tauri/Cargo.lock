@@ -2345,6 +2345,8 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "cocoa",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
  "enigo",
  "image",
  "keyring",

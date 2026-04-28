@@ -25,6 +25,27 @@ export type ExplainStreamPayload = {
   full?: string
 }
 
+// Cowork 流式输出负载（与 ExplainStreamPayload 同结构，但事件名 cowork-stream）
+export type CoworkStreamPayload = {
+  imageId: string
+  kind: 'answer'
+  delta: string
+  done?: boolean
+  reason?: 'done' | 'cancelled' | 'error'
+  full?: string
+}
+
+// Cowork 屏幕窗口元信息（macOS 实际数据；Windows 空数组）
+export type CoworkWindowInfo = {
+  id: number
+  owner: string
+  title: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 // AI 模型提供商配置
 export type ModelProvider = {
   id: string
@@ -77,6 +98,16 @@ export type Settings = {
       summaryPrompt?: string
       questionPrompt?: string
     }
+  }
+  cowork: {
+    enabled: boolean
+    hotkey: string
+    providerId?: string
+    model?: string
+    defaultLanguage?: string
+    streamEnabled?: boolean
+    systemPrompt?: string
+    questionPrompt?: string
   }
   explainHistory: Array<{
     id: string
@@ -229,4 +260,39 @@ export const api = {
     ),
   explainCloseCurrent: () => invoke<void>('explain_close_current'),
   explainCancelStream: () => invoke<void>('explain_cancel_stream'),
+
+  // Cowork 模式
+  onCoworkStream: (listener: (payload: CoworkStreamPayload) => void) =>
+    on<CoworkStreamPayload>('cowork-stream', (payload) => listener(payload)),
+  coworkRequest: () => invoke<void>('cowork_request'),
+  coworkRequestExplain: () => invoke<void>('cowork_request_explain'),
+  coworkListWindows: () => invoke<CoworkWindowInfo[]>('cowork_list_windows'),
+  coworkCaptureWindow: (windowId: number) =>
+    invoke<{ success: boolean; imageId?: string; error?: string }>('cowork_capture_window', { windowId }),
+  coworkCaptureRegion: (params: {
+    absoluteX: number
+    absoluteY: number
+    x: number
+    y: number
+    width: number
+    height: number
+    scaleFactor: number
+  }) => invoke<{ success: boolean; imageId?: string; error?: string }>('cowork_capture_region', params),
+  coworkSetAnchor: (anchorX: number, anchorY: number, anchorWidth: number, anchorHeight: number) =>
+    invoke<void>('cowork_set_anchor', { anchorX, anchorY, anchorWidth, anchorHeight }),
+  coworkResize: (width: number, height: number) => invoke<void>('cowork_resize', { width, height }),
+  coworkPositionBottom: (width: number, height: number, dockOffset: number) =>
+    invoke<void>('cowork_position_bottom', { width, height, dockOffset }),
+  coworkAsk: (imageId: string, question: string) =>
+    invoke<{ success: boolean; response?: string; error?: string }>('cowork_ask', { imageId, question }),
+  coworkCancelStream: () => invoke<void>('cowork_cancel_stream'),
+  coworkClose: () => invoke<void>('cowork_close'),
+  // explain 复用 cowork select 态：截图完成后落位 explain 窗口（智能定位）
+  explainOpenAtAnchor: (params: {
+    imageId: string
+    anchorX: number
+    anchorY: number
+    anchorWidth: number
+    anchorHeight: number
+  }) => invoke<void>('explain_open_at_anchor', params),
 }

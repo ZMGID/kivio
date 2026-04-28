@@ -38,6 +38,8 @@ keyring = "3"
 cocoa = "0.26"
 objc = "0.2"
 libc = "0.2"
+core-graphics = "0.24"
+core-foundation = "0.10"
 
 # Windows 平台特有依赖（屏幕截图）
 [target.'cfg(target_os = "windows")'.dependencies]

@@ -93,6 +93,40 @@ pub fn ensure_screenshot_window(app: &AppHandle) -> Result<WebviewWindow, String
 }
 
 /**
+ * 确保 Cowork 窗口存在（不存在则创建）
+ * 单 webview 三态：select 全屏 / ready 悬浮 600x72 / answering 悬浮 600x420。
+ * 创建时尺寸为悬浮态默认值；后端按需要 set_size 切换。
+ */
+pub fn ensure_cowork_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+  if let Some(window) = app.get_webview_window("cowork") {
+    return Ok(window);
+  }
+
+  let window = WebviewWindowBuilder::new(
+    app,
+    "cowork",
+    WebviewUrl::App("index.html#cowork".into()),
+  )
+  .title("Cowork")
+  .inner_size(600.0, 72.0)
+  .always_on_top(true)
+  .visible_on_all_workspaces(true)
+  .resizable(true)
+  .decorations(false)
+  .shadow(false)
+  .transparent(true)
+  .skip_taskbar(true)
+  .visible(false)
+  .build()
+  .map_err(|e| e.to_string())?;
+
+  #[cfg(target_os = "macos")]
+  apply_macos_workspace_behavior(&window);
+
+  Ok(window)
+}
+
+/**
  * 确保截图区域选择覆盖层窗口存在（不存在则创建）
  * 全屏透明窗口，用于 Windows 平台的区域选择
  */

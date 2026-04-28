@@ -239,6 +239,51 @@ pub struct ExplainHistoryRecord {
 }
 
 /**
+ * Cowork 模式配置
+ * 启用后可通过热键进入：屏幕高亮选择窗口/区域 → 截图 → 在悬浮对话栏内提问。
+ */
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CoworkConfig {
+  #[serde(default = "default_true")]
+  pub enabled: bool,
+  #[serde(default = "default_cowork_hotkey")]
+  pub hotkey: String,
+  /// 复用 screenshot_explain 的 provider/model 还是单独配置：留 provider_id/model 字段空表示 fallback 到 explain
+  #[serde(default)]
+  pub provider_id: String,
+  #[serde(default)]
+  pub model: String,
+  /// 响应语言（"zh"/"en"）。空字符串表示跟随 screenshot_explain.default_language。
+  #[serde(default)]
+  pub default_language: String,
+  /// 是否流式返回。独立配置（不 fallback），默认 true。
+  #[serde(default = "default_true")]
+  pub stream_enabled: bool,
+  /// 自定义 system prompt。空字符串表示走 screenshot_explain.custom_prompts.system_prompt → 默认模板。
+  #[serde(default)]
+  pub system_prompt: String,
+  /// 自定义 question prompt。空字符串表示走 screenshot_explain.custom_prompts.question_prompt → 默认模板。
+  #[serde(default)]
+  pub question_prompt: String,
+}
+
+impl Default for CoworkConfig {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      hotkey: "CommandOrControl+Shift+G".to_string(),
+      provider_id: String::new(),
+      model: String::new(),
+      default_language: String::new(),
+      stream_enabled: true,
+      system_prompt: String::new(),
+      question_prompt: String::new(),
+    }
+  }
+}
+
+/**
  * 应用完整设置
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +313,8 @@ pub struct Settings {
   pub screenshot_translation: ScreenshotTranslationConfig,
   #[serde(default)]
   pub screenshot_explain: ScreenshotExplainConfig,
+  #[serde(default)]
+  pub cowork: CoworkConfig,
   #[serde(default)]
   pub explain_history: Vec<ExplainHistoryRecord>,
   #[serde(default = "default_settings_language")]
@@ -305,6 +352,7 @@ impl Default for Settings {
       providers: vec![],
       screenshot_translation: ScreenshotTranslationConfig::default(),
       screenshot_explain: ScreenshotExplainConfig::default(),
+      cowork: CoworkConfig::default(),
       explain_history: vec![],
       settings_language: Some("zh".to_string()),
       retry_enabled: default_retry_enabled(),
@@ -589,6 +637,10 @@ fn default_screenshot_translation_hotkey() -> String {
 
 fn default_screenshot_explain_hotkey() -> String {
   "CommandOrControl+Shift+E".to_string()
+}
+
+fn default_cowork_hotkey() -> String {
+  "CommandOrControl+Shift+G".to_string()
 }
 
 fn default_theme() -> String {
