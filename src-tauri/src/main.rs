@@ -568,20 +568,15 @@ fn cowork_list_windows() -> Vec<cowork::WindowInfo> {
   cowork::list_windows()
 }
 
-/// 整窗截图（macOS）：先隐藏 cowork 窗口，截目标窗口，注册 image_id 返回。
+/// 整窗截图（macOS）：用 `screencapture -l <id>` 按 window id 截，不会截到 cowork webview，
+/// 所以无需 hide cowork（避免 hide/show 那 ~250ms 的视觉闪烁）。
 #[tauri::command]
 async fn cowork_capture_window(
   app: AppHandle,
   window_id: u32,
 ) -> Result<serde_json::Value, String> {
-  let cowork_window = app.get_webview_window("cowork");
-  if let Some(w) = cowork_window.as_ref() {
-    let _ = w.hide();
-  }
-  // 给 hide 一点时间生效
-  tokio::time::sleep(Duration::from_millis(120)).await;
-
   let result = cowork::capture_window(window_id);
+  let _ = app; // 保留参数避免破坏现有调用签名
 
   match result {
     Ok(path) => {
@@ -597,13 +592,7 @@ async fn cowork_capture_window(
       }
       Ok(serde_json::json!({ "success": true, "imageId": image_id }))
     }
-    Err(err) => {
-      // 截图失败：让 cowork 重新可见
-      if let Some(w) = cowork_window {
-        let _ = w.show();
-      }
-      Ok(serde_json::json!({ "success": false, "error": err }))
-    }
+    Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
   }
 }
 
@@ -619,13 +608,19 @@ async fn cowork_capture_region(
   height: u32,
   scale_factor: f64,
 ) -> Result<serde_json::Value, String> {
+  // 区域截图用 `screencapture -R x,y,w,h`，会截到 cowork（全屏透明也算）→ 必须 hide。
+  // 把 sleep 缩短到 60ms（实测 macOS NSWindow.orderOut 异步生效约 30-50ms）以减小闪烁感。
   let cowork_window = app.get_webview_window("cowork");
   if let Some(w) = cowork_window.as_ref() {
     let _ = w.hide();
   }
-  tokio::time::sleep(Duration::from_millis(120)).await;
+  tokio::time::sleep(Duration::from_millis(60)).await;
 
   let result = capture_region_image(absolute_x, absolute_y, x, y, width, height, scale_factor);
+  if let Some(w) = cowork_window.as_ref() {
+    let _ = w.show();
+    let _ = w.set_focus();
+  }
   match result {
     Ok(path) => {
       let image_id = Uuid::new_v4().to_string();
@@ -640,12 +635,7 @@ async fn cowork_capture_region(
       }
       Ok(serde_json::json!({ "success": true, "imageId": image_id }))
     }
-    Err(err) => {
-      if let Some(w) = cowork_window {
-        let _ = w.show();
-      }
-      Ok(serde_json::json!({ "success": false, "error": err }))
-    }
+    Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
   }
 }
 
@@ -711,6 +701,46 @@ fn pick_floating_anchor(
   tx = tx.max(mxl).min(mxl + mwl - win_w_l);
   ty = ty.max(myl).min(myl + mhl - expanded_h);
   (tx, ty)
+}
+
+/// 仅计算智能锚点目标位置（不缩窗口）。前端 cowork 默认模式用：
+/// webview 始终全屏，对话栏靠 CSS 飞到目标屏幕坐标。
+/// 返回的 target_x/target_y 已减去 cowork webview 在屏幕上的左上角，得到 webview 内坐标。
+#[tauri::command]
+fn cowork_resolve_anchor(
+  app: AppHandle,
+  anchor_x: i32,
+  anchor_y: i32,
+  anchor_width: i32,
+  anchor_height: i32,
+) -> Result<serde_json::Value, String> {
+  // 用 ready 态尺寸算锚点：600x72 + 预留 expanded 420 + answer 区
+  let win_w_l: f64 = 600.0;
+  let win_h_l: f64 = 72.0;
+  let expanded_h: f64 = 420.0;
+  let gap: f64 = 16.0;
+  let (tx, ty) = pick_floating_anchor(
+    &app,
+    anchor_x, anchor_y, anchor_width, anchor_height,
+    win_w_l, win_h_l, expanded_h, gap,
+  );
+
+  // 把屏幕逻辑坐标转换为 cowork webview 内坐标（webview 左上角 = (web_x, web_y)）
+  let mut web_x = 0.0;
+  let mut web_y = 0.0;
+  if let Some(window) = app.get_webview_window("cowork") {
+    if let (Ok(pos), Ok(scale)) = (window.outer_position(), window.scale_factor()) {
+      let sf = if scale > 0.0 { scale } else { 1.0 };
+      web_x = pos.x as f64 / sf;
+      web_y = pos.y as f64 / sf;
+    }
+  }
+  Ok(serde_json::json!({
+    "targetX": tx - web_x,
+    "targetY": ty - web_y,
+    "screenX": tx,
+    "screenY": ty,
+  }))
 }
 
 /// 截图完成后：把 cowork 窗口缩到 600x72 + 智能放在选区周围（下/右/左/上 优先级）。
@@ -2823,6 +2853,7 @@ fn main() {
       cowork_capture_window,
       cowork_capture_region,
       cowork_set_anchor,
+      cowork_resolve_anchor,
       cowork_resize,
       cowork_position_bottom,
       cowork_ask,

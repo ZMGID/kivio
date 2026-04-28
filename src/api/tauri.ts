@@ -280,6 +280,10 @@ export const api = {
   }) => invoke<{ success: boolean; imageId?: string; error?: string }>('cowork_capture_region', params),
   coworkSetAnchor: (anchorX: number, anchorY: number, anchorWidth: number, anchorHeight: number) =>
     invoke<void>('cowork_set_anchor', { anchorX, anchorY, anchorWidth, anchorHeight }),
+  coworkResolveAnchor: (anchorX: number, anchorY: number, anchorWidth: number, anchorHeight: number) =>
+    invoke<{ targetX: number; targetY: number; screenX: number; screenY: number }>(
+      'cowork_resolve_anchor', { anchorX, anchorY, anchorWidth, anchorHeight }
+    ),
   coworkResize: (width: number, height: number) => invoke<void>('cowork_resize', { width, height }),
   coworkPositionBottom: (width: number, height: number, dockOffset: number) =>
     invoke<void>('cowork_position_bottom', { width, height, dockOffset }),
