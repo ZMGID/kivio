@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 /**
  * 解析目标语言
  * 当设置为 "auto" 时，根据文本内容自动判断：
@@ -40,13 +38,3 @@ pub fn language_name(code: &str) -> &'static str {
   }
 }
 
-/**
- * 获取当前时间戳（毫秒）
- */
-pub fn current_timestamp() -> i64 {
-  let now = std::time::SystemTime::now();
-  let since_epoch = now
-    .duration_since(std::time::UNIX_EPOCH)
-    .unwrap_or_else(|_| Duration::from_secs(0));
-  since_epoch.as_millis() as i64
-}

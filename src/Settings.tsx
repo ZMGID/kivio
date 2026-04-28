@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Save, Plus, Trash2, RefreshCw,
-  Settings as SettingsIcon, Languages, Camera, MessageSquare,
+  Settings as SettingsIcon, Languages, Camera,
   Cloud, Info, Palette, Keyboard, SlidersHorizontal, Globe,
   Cpu, FileText, ShieldCheck, Sparkles
 } from 'lucide-react'
@@ -31,11 +31,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'explain' | 'cowork' | 'providers' | 'about'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'cowork' | 'providers' | 'about'>('general')
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
-  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotExplain' | 'cowork'>(null)
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'cowork'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
@@ -75,8 +75,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           translatorPrompt: '',
           providers: [
             { id: 'default-translator', name: 'OpenAI (Translator)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
-            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
-            { id: 'default-explain', name: 'OpenAI (Explain)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
+            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
           ],
           retryEnabled: true,
           retryAttempts: 3,
@@ -85,16 +84,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             hotkey: 'CommandOrControl+Shift+A',
             providerId: 'default-ocr',
             model: 'gpt-4o',
+            directTranslate: false,
+            thinkingEnabled: false,
+            streamEnabled: true,
             prompt: ''
-          },
-          screenshotExplain: {
-            enabled: true,
-            hotkey: 'CommandOrControl+Shift+E',
-            providerId: 'default-explain',
-            model: 'gpt-4o',
-            defaultLanguage: 'zh',
-            streamEnabled: false,
-            autoSummaryEnabled: true
           },
           cowork: {
             enabled: true,
@@ -103,10 +96,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             model: '',
             defaultLanguage: '',
             streamEnabled: true,
+            thinkingEnabled: true,
             systemPrompt: '',
-            questionPrompt: ''
+            questionPrompt: '',
+            messageOrder: 'asc'
           },
-          explainHistory: [],
           settingsLanguage: 'zh'
         }
         setSettings(defaultSettings)
@@ -237,7 +231,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const handler = (e: KeyboardEvent) => {
       if (recordingTarget) return
       if (e.key === 'Escape') {
-        console.log('[Settings] ESC pressed, checking unsaved changes')
         handleCloseRequest()
       }
     }
@@ -391,8 +384,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const nextProviders = settings.providers.filter(p => p.id !== id)
     const translatorProvider = resolveProvider(nextProviders, settings.translatorProviderId)
     const screenshotProvider = resolveProvider(nextProviders, settings.screenshotTranslation?.providerId || '')
-    const explainProvider = resolveProvider(nextProviders, settings.screenshotExplain?.providerId || '')
-    // cowork providerId 为空表示 fallback 到 explain，删除时若已设置自身 provider 才需要级联
+    // cowork providerId 为空表示 fallback 到 translator，删除时若已设置自身 provider 才需要级联
     const coworkHadOwnProvider = !!settings.cowork?.providerId
     const coworkProvider = coworkHadOwnProvider
       ? resolveProvider(nextProviders, settings.cowork?.providerId || '')
@@ -407,11 +399,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         ...settings.screenshotTranslation,
         providerId: screenshotProvider ? screenshotProvider.id : '',
         model: resolveModel(screenshotProvider, settings.screenshotTranslation?.model || '')
-      },
-      screenshotExplain: {
-        ...settings.screenshotExplain,
-        providerId: explainProvider ? explainProvider.id : '',
-        model: resolveModel(explainProvider, settings.screenshotExplain?.model || '')
       },
       ...(coworkHadOwnProvider ? {
         cowork: {
@@ -473,13 +460,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         }
       }
 
-      if (prev.screenshotExplain.providerId === providerId) {
-        next.screenshotExplain = {
-          ...prev.screenshotExplain,
-          model: resolveAfterRemoval(prev.screenshotExplain.model),
-        }
-      }
-
       if (prev.cowork?.providerId === providerId) {
         next.cowork = {
           ...prev.cowork,
@@ -531,28 +511,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         providerId: 'default-ocr',
         model: 'gpt-4o',
         directTranslate: false,
+        thinkingEnabled: false,
+        streamEnabled: true,
         prompt: ''
       }
       return { ...prev, screenshotTranslation: { ...current, ...updates } }
-    })
-  }, [])
-
-  /**
-   * 更新截图解释配置
-   */
-  const updateScreenshotExplain = useCallback((updates: Partial<SettingsData['screenshotExplain']>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      const current = prev.screenshotExplain || {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+E',
-        providerId: 'default-explain',
-        model: 'gpt-4o',
-        defaultLanguage: 'zh',
-        streamEnabled: false,
-        autoSummaryEnabled: true
-      }
-      return { ...prev, screenshotExplain: { ...current, ...updates } }
     })
   }, [])
 
@@ -569,45 +532,24 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         model: '',
         defaultLanguage: '',
         streamEnabled: true,
+        thinkingEnabled: true,
         systemPrompt: '',
-        questionPrompt: ''
+        questionPrompt: '',
+        messageOrder: 'asc' as const
       }
       return { ...prev, cowork: { ...current, ...updates } }
     })
   }, [])
 
   /**
-   * 更新截图解释的自定义提示词
-   */
-  const updateCustomPrompts = useCallback((updates: Partial<NonNullable<SettingsData['screenshotExplain']['customPrompts']>>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      const current = prev.screenshotExplain || {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+E',
-        providerId: 'default-explain',
-        model: 'gpt-4o',
-        defaultLanguage: 'zh'
-      }
-      return {
-        ...prev,
-        screenshotExplain: {
-          ...current,
-          customPrompts: { ...current.customPrompts, ...updates }
-        }
-      }
-    })
-  }, [])
-
-  /**
    * 切换快捷键录制状态
    */
-  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotExplain' | 'cowork') => {
+  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'cowork') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
-  // 当前语言对应的默认解释提示词
-  const explainDefaults = defaultPrompts?.explainPrompts?.[settings?.screenshotExplain?.defaultLanguage || 'zh']
+  // 当前语言对应的默认 cowork 提示词
+  const coworkDefaults = defaultPrompts?.coworkPrompts?.[settings?.cowork?.defaultLanguage === 'en' ? 'en' : 'zh']
 
   // 快捷键录制监听
   useEffect(() => {
@@ -625,8 +567,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         updateSettings({ hotkey })
       } else if (recordingTarget === 'screenshotTranslation') {
         updateScreenshotTranslation({ hotkey })
-      } else if (recordingTarget === 'screenshotExplain') {
-        updateScreenshotExplain({ hotkey })
       } else if (recordingTarget === 'cowork') {
         updateCowork({ hotkey })
       }
@@ -634,7 +574,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [recordingTarget, updateCowork, updateScreenshotExplain, updateScreenshotTranslation, updateSettings])
+  }, [recordingTarget, updateCowork, updateScreenshotTranslation, updateSettings])
 
   if (loading || !settings) {
     return (
@@ -659,7 +599,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             { id: 'general' as const, label: t.tabGeneral, icon: SettingsIcon },
             { id: 'translate' as const, label: t.tabTranslate, icon: Languages },
             { id: 'screenshot' as const, label: t.tabScreenshot, icon: Camera },
-            { id: 'explain' as const, label: lang === 'zh' ? '截图讲解' : 'Explain', icon: MessageSquare },
             { id: 'cowork' as const, label: t.coworkTabLabel, icon: Sparkles },
             { id: 'providers' as const, label: t.tabModels, icon: Cloud },
             { id: 'about' as const, label: lang === 'zh' ? '关于' : 'About', icon: Info },
@@ -953,6 +892,24 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           onChange={(v) => updateScreenshotTranslation({ directTranslate: v })}
                         />
                       </SettingRow>
+                      <SettingRow
+                        label={t.screenshotTranslationThinking}
+                        description={t.screenshotTranslationThinkingHint}
+                      >
+                        <Toggle
+                          checked={settings.screenshotTranslation?.thinkingEnabled ?? false}
+                          onChange={(v) => updateScreenshotTranslation({ thinkingEnabled: v })}
+                        />
+                      </SettingRow>
+                      <SettingRow
+                        label={t.screenshotTranslationStream}
+                        description={t.screenshotTranslationStreamHint}
+                      >
+                        <Toggle
+                          checked={settings.screenshotTranslation?.streamEnabled !== false}
+                          onChange={(v) => updateScreenshotTranslation({ streamEnabled: v })}
+                        />
+                      </SettingRow>
                       <details className="group">
                         <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
                           <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">
@@ -984,129 +941,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               </div>
             </section>
 
-          </div>
-        )}
-
-        {/* ===== 截图讲解标签页 ===== */}
-        {activeTab === 'explain' && (
-          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <section>
-              <SectionTitle icon={MessageSquare}>{t.screenshotExplain}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
-                <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
-                  <SettingRow label={t.enabled}>
-                    <Toggle
-                      checked={settings.screenshotExplain?.enabled !== false}
-                      onChange={(v) => updateScreenshotExplain({ enabled: v })}
-                    />
-                  </SettingRow>
-
-                  {settings.screenshotExplain?.enabled !== false && (
-                    <>
-                      <div className="px-4 py-3 space-y-1.5">
-                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.hotkey}</span>
-                        <HotkeyInput
-                          value={settings.screenshotExplain?.hotkey || 'CommandOrControl+Shift+E'}
-                          placeholder="CommandOrControl+Shift+E"
-                          recording={recordingTarget === 'screenshotExplain'}
-                          onToggleRecording={() => toggleRecording('screenshotExplain')}
-                          recordLabel={t.hotkeyRecord}
-                          recordingLabel={t.hotkeyRecording}
-                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                        />
-                      </div>
-                      <SettingRow label={t.responseLanguage}>
-                        <Select
-                          className="w-36"
-                          value={settings.screenshotExplain?.defaultLanguage || 'zh'}
-                          onChange={(v) => updateScreenshotExplain({ defaultLanguage: v as 'zh' | 'en' })}
-                          options={[
-                            { value: 'zh', label: '中文' },
-                            { value: 'en', label: 'English' },
-                          ]}
-                        />
-                      </SettingRow>
-                      <SettingRow label={t.streamEnabled}>
-                        <Toggle
-                          checked={settings.screenshotExplain?.streamEnabled ?? false}
-                          onChange={(v) => updateScreenshotExplain({ streamEnabled: v })}
-                        />
-                      </SettingRow>
-                      <SettingRow label={t.explainAutoSummary}>
-                        <Toggle
-                          checked={settings.screenshotExplain?.autoSummaryEnabled ?? true}
-                          onChange={(v) => updateScreenshotExplain({ autoSummaryEnabled: v })}
-                        />
-                      </SettingRow>
-                      <SettingRow label={t.selectModelPair}>
-                        <Select
-                          className="w-52"
-                          value={`${settings.screenshotExplain.providerId}:${settings.screenshotExplain.model}`}
-                          onChange={(v) => {
-                            const [providerId, model] = v.split(':')
-                            updateScreenshotExplain({ providerId, model })
-                          }}
-                          options={settings.providers.flatMap(p =>
-                            p.enabledModels.map(m => ({
-                              value: `${p.id}:${m}`,
-                              label: `${p.name} - ${m}`
-                            }))
-                          )}
-                        />
-                      </SettingRow>
-                      <details className="group">
-                        <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
-                          <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">
-                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                              <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          </div>
-                          {t.customPrompts}
-                        </summary>
-                        <div className="px-4 pb-4 space-y-4">
-                          <div>
-                            <Label>{t.systemPrompt}</Label>
-                            <TextArea
-                              value={settings.screenshotExplain?.customPrompts?.systemPrompt || ''}
-                              onChange={(v) => updateCustomPrompts({ systemPrompt: v })}
-                              placeholder={t.customPromptsHint}
-                              rows={2}
-                            />
-                            {!settings.screenshotExplain?.customPrompts?.systemPrompt?.trim() && explainDefaults?.system && (
-                              <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.system} />
-                            )}
-                          </div>
-                          <div>
-                            <Label>{t.summaryPrompt}</Label>
-                            <TextArea
-                              value={settings.screenshotExplain?.customPrompts?.summaryPrompt || ''}
-                              onChange={(v) => updateCustomPrompts({ summaryPrompt: v })}
-                              placeholder={t.customPromptsHint}
-                              rows={3}
-                            />
-                            {!settings.screenshotExplain?.customPrompts?.summaryPrompt?.trim() && explainDefaults?.summary && (
-                              <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.summary} />
-                            )}
-                          </div>
-                          <div>
-                            <Label>{t.questionPrompt}</Label>
-                            <TextArea
-                              value={settings.screenshotExplain?.customPrompts?.questionPrompt || ''}
-                              onChange={(v) => updateCustomPrompts({ questionPrompt: v })}
-                              placeholder={t.customPromptsHint}
-                              rows={3}
-                            />
-                            {!settings.screenshotExplain?.customPrompts?.questionPrompt?.trim() && explainDefaults?.question && (
-                              <DefaultPrompt label={t.defaultTemplate} content={explainDefaults.question} />
-                            )}
-                          </div>
-                        </div>
-                      </details>
-                    </>
-                  )}
-                </div>
-              </div>
-            </section>
           </div>
         )}
 
@@ -1156,6 +990,23 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           onChange={(v) => updateCowork({ streamEnabled: v })}
                         />
                       </SettingRow>
+                      <SettingRow label={t.coworkThinkingEnabled} description={t.coworkThinkingHint}>
+                        <Toggle
+                          checked={settings.cowork?.thinkingEnabled !== false}
+                          onChange={(v) => updateCowork({ thinkingEnabled: v })}
+                        />
+                      </SettingRow>
+                      <SettingRow label={t.coworkMessageOrder}>
+                        <Select
+                          className="w-52"
+                          value={settings.cowork?.messageOrder ?? 'asc'}
+                          onChange={(v) => updateCowork({ messageOrder: v as 'asc' | 'desc' })}
+                          options={[
+                            { value: 'asc', label: t.coworkMessageOrderAsc },
+                            { value: 'desc', label: t.coworkMessageOrderDesc },
+                          ]}
+                        />
+                      </SettingRow>
                       <SettingRow label={t.selectModelPair}>
                         <Select
                           className="w-52"
@@ -1193,6 +1044,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                               placeholder={t.coworkPromptHint}
                               rows={2}
                             />
+                            {!settings.cowork?.systemPrompt?.trim() && coworkDefaults?.system && (
+                              <DefaultPrompt label={t.defaultTemplate} content={coworkDefaults.system} />
+                            )}
                           </div>
                           <div>
                             <Label>{t.coworkQuestionPrompt}</Label>
@@ -1202,6 +1056,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                               placeholder={t.coworkPromptHint}
                               rows={3}
                             />
+                            {!settings.cowork?.questionPrompt?.trim() && coworkDefaults?.question && (
+                              <DefaultPrompt label={t.defaultTemplate} content={coworkDefaults.question} />
+                            )}
                           </div>
                         </div>
                       </details>

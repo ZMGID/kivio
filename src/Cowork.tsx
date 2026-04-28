@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, Sparkles, ArrowUp, History as HistoryIcon, ChevronDown } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, Sparkles, ArrowUp, History as HistoryIcon, ChevronDown, Brain } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { api, type CoworkStreamPayload, type CoworkWindowInfo, type ExplainMessage } from './api/tauri'
+import { api, type CoworkStreamPayload, type CoworkTranslateStreamPayload, type CoworkWindowInfo, type ExplainMessage } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -10,7 +10,18 @@ import 'katex/dist/katex.min.css'
 import { i18n, type Lang } from './settings/i18n'
 import { copyToClipboard } from './utils/clipboard'
 
-type Stage = 'select' | 'ready' | 'answering'
+type Stage = 'select' | 'ready' | 'answering' | 'translating' | 'translated'
+type Mode = 'chat' | 'translate'
+
+/** 解析 webview hash query：'#cowork?mode=translate' → 'translate' */
+function readModeFromHash(): Mode {
+  if (typeof window === 'undefined') return 'chat'
+  const hash = window.location.hash || ''
+  const q = hash.indexOf('?')
+  if (q < 0) return 'chat'
+  const params = new URLSearchParams(hash.slice(q + 1))
+  return params.get('mode') === 'translate' ? 'translate' : 'chat'
+}
 type Point = { x: number; y: number }
 type BarRect = { x: number; y: number; width: number }
 type CapturedFrame = { x: number; y: number; width: number; height: number; label: string }
@@ -52,6 +63,100 @@ const computeSelectBar = (vw: number, vh: number, m: Metrics): BarRect => ({
   width: m.SELECT_W,
 })
 
+/** 估算 token 数：ASCII 按 ~4 字符/token；非 ASCII（中日韩等）按 1 字符/token */
+function estimateTokens(text: string): number {
+  let ascii = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) < 128) ascii++
+  }
+  const nonAscii = text.length - ascii
+  return Math.ceil(ascii / 4 + nonAscii)
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return `${n}`
+}
+
+/** 思维链区块（Claude Code 风格）：默认折叠，header 显示耗时 + token 估算。点击展开/收起。 */
+function ThinkingBlock({
+  reasoning,
+  active,
+  thinkingLabel,
+  thoughtLabel,
+}: {
+  reasoning: string
+  active: boolean
+  thinkingLabel: string
+  thoughtLabel: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [finalDurationMs, setFinalDurationMs] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const startRef = useRef<number | null>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+
+  // 跟踪 active：开始计时 / 停止计时并锁定最终耗时
+  useEffect(() => {
+    if (active && startRef.current === null) {
+      startRef.current = Date.now()
+      setFinalDurationMs(null)
+    } else if (!active && startRef.current !== null) {
+      setFinalDurationMs(Date.now() - startRef.current)
+      startRef.current = null
+    }
+  }, [active])
+
+  // active 期间每秒刷一次 now，header 显示走秒效果
+  useEffect(() => {
+    if (!active) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [active])
+
+  // 展开时自动滚到底，方便流式中跟读
+  useEffect(() => {
+    if (open && active && bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight
+    }
+  }, [reasoning, active, open])
+
+  const elapsedMs = active && startRef.current
+    ? now - startRef.current
+    : finalDurationMs
+  const seconds = elapsedMs !== null ? Math.max(1, Math.round(elapsedMs / 1000)) : null
+  // O(n) 字符遍历，按 reasoning 长度记忆 — 避免多轮 history 中每次 delta 重渲全部 ThinkingBlock 都重算
+  const tokens = useMemo(() => formatTokens(estimateTokens(reasoning)), [reasoning])
+
+  return (
+    <div className="not-prose mb-2 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.025] dark:bg-white/[0.03]">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
+      >
+        {active
+          ? <Loader2 className="animate-spin" size={11} />
+          : <Brain size={11} strokeWidth={1.75} />}
+        <span className="font-medium">{active ? thinkingLabel : thoughtLabel}</span>
+        <span className="text-neutral-400 dark:text-neutral-500">
+          {seconds !== null && <> · {seconds}s</>}
+          <> · ~{tokens} tokens</>
+        </span>
+        <ChevronDown size={11} strokeWidth={2} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          ref={bodyRef}
+          className="px-2.5 pb-2 max-h-[160px] overflow-y-auto custom-scrollbar text-[11.5px] leading-5 text-neutral-500 dark:text-neutral-400 italic whitespace-pre-wrap break-words"
+        >
+          {reasoning}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * Cowork 模式：单 webview 三态机，统一 DOM。
  * - select：webview 全屏 + 灰幕 + hover 应用窗口高亮 + 区域 drag + 底部对话栏（纯文字直发）
@@ -59,7 +164,6 @@ const computeSelectBar = (vw: number, vh: number, m: Metrics): BarRect => ({
  * - answering：对话栏下方展开 answer 区（透明背景，对话栏不动）
  *
  * 关键：webview 始终全屏，整个过渡靠 CSS。后端 cowork_resolve_anchor 仅算目标坐标，不缩窗口。
- * explain 模式（hash mode=explain）：截图后调 explainOpenAtAnchor 打开 explain 大窗口，本 webview 由后端 hide。
  */
 export default function Cowork() {
   const [stage, setStage] = useState<Stage>('select')
@@ -76,6 +180,15 @@ export default function Cowork() {
   const [streaming, setStreaming] = useState(false)
   const [copied, setCopied] = useState(false)
   const [lang, setLang] = useState<Lang>('zh')
+  const [messageOrder, setMessageOrder] = useState<'asc' | 'desc'>('asc')
+  const [mode, setMode] = useState<Mode>(() => readModeFromHash())
+  // translate 模式专用：OCR 原文 + 翻译结果 + 计时
+  const [translateOriginal, setTranslateOriginal] = useState('')
+  const [translateText, setTranslateText] = useState('')
+  const [translateError, setTranslateError] = useState('')
+  const [translateDurationMs, setTranslateDurationMs] = useState<number | null>(null)
+  const [translateNow, setTranslateNow] = useState(() => Date.now())
+  const translateStartRef = useRef<number | null>(null)
   // viewport 大小：监听 resize（拔显示器/系统缩放变化都会触发），所有相对尺寸由此重算
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : 1280,
@@ -91,12 +204,6 @@ export default function Cowork() {
   const [barIntro, setBarIntro] = useState(true)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
-  // mode：从 hash 读取（#cowork 或 #cowork?mode=explain）
-  const readMode = (): 'cowork' | 'explain' => {
-    const m = window.location.hash.match(/[?&]mode=([^&]+)/)
-    return m?.[1] === 'explain' ? 'explain' : 'cowork'
-  }
-  const [mode, setMode] = useState<'cowork' | 'explain'>(readMode)
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -115,19 +222,21 @@ export default function Cowork() {
   const t = i18n[lang]
   stageRef.current = stage
 
-  // 加载语言
+  // 加载设置：语言 + 消息顺序
   useEffect(() => {
     void (async () => {
       try {
         const settings = await api.getSettings()
         setLang((settings.settingsLanguage as Lang) || 'zh')
-      } catch (err) { console.error('Failed to load lang', err) }
+        setMessageOrder(settings.cowork?.messageOrder === 'desc' ? 'desc' : 'asc')
+      } catch (err) { console.error('Failed to load settings', err) }
     })()
   }, [])
 
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
   const enterSelect = useCallback(async () => {
     setStage('select')
+    setMode(readModeFromHash())
     setHovered(null)
     setDragStart(null)
     setDragCurrent(null)
@@ -137,8 +246,10 @@ export default function Cowork() {
     setInput('')
     setMessages([])
     setStreaming(false)
+    setTranslateOriginal('')
+    setTranslateText('')
+    setTranslateError('')
     imageIdRef.current = ''
-    setMode(readMode())
     {
       const w = window.innerWidth
       const h = window.innerHeight
@@ -192,7 +303,9 @@ export default function Cowork() {
 
   // 流式结束（streaming → false 且有任意 assistant 回答）时把当前会话推入历史。
   // 按 imageId 去重：同一张截图多轮对话作为单条历史持续更新到最前。
+  // translate 模式不入对话历史（OCR+翻译是一次性任务，无对话语义）。
   useEffect(() => {
+    if (mode !== 'chat') return
     if (streaming) return
     if (!imageIdRef.current || messages.length === 0) return
     const hasAssistant = messages.some(m => m.role === 'assistant' && m.content)
@@ -209,16 +322,26 @@ export default function Cowork() {
       }
       return [next, ...filtered].slice(0, HISTORY_MAX)
     })
-  }, [streaming, messages, imagePreview, appLabel, capturedFrame])
+  }, [mode, streaming, messages, imagePreview, appLabel, capturedFrame])
 
-  // 监听 cowork-stream 事件追加 delta 到最后一条 assistant 消息
+  // 监听 cowork-stream 事件：把 reasoning_delta / delta 累积到最后一条 assistant 消息
+  // StrictMode 双挂载下 listen 是 async：cleanup 时 unlisten 可能还没赋值，需要 cancelled 旗标
+  // 让 promise resolve 时立即 dispose，否则会留下"幽灵 listener"导致每个事件触发 N 次（字符重复）
   useEffect(() => {
+    let cancelled = false
     let unlisten: (() => void) | undefined
     api.onCoworkStream((payload: CoworkStreamPayload) => {
       if (payload.imageId !== imageIdRef.current) return
       if (payload.done) {
         setStreaming(false)
         return
+      }
+      if (payload.reasoningDelta) {
+        setMessages(prev => {
+          const last = prev[prev.length - 1]
+          if (!last || last.role !== 'assistant') return prev
+          return [...prev.slice(0, -1), { ...last, reasoning: (last.reasoning ?? '') + payload.reasoningDelta }]
+        })
       }
       if (payload.delta) {
         setMessages(prev => {
@@ -228,16 +351,22 @@ export default function Cowork() {
         })
       }
     }).then((dispose) => {
-      unlisten = dispose
+      if (cancelled) dispose()
+      else unlisten = dispose
     }).catch(err => console.error(err))
-    return () => { unlisten?.() }
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [])
 
-  // messages 变化时滚动到底部（追新答案 / 新提问都自动滚动）
+  // messages 变化时自动滚动：正序滚到底（看新内容），倒序滚到顶（最新在顶）
   useEffect(() => {
     const el = chatScrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages])
+    if (!el) return
+    if (messageOrder === 'desc') el.scrollTop = 0
+    else el.scrollTop = el.scrollHeight
+  }, [messages, messageOrder])
 
   // 关闭前同步重置 state，让 webview surface 在 hide 之前已经是空 select 态。
   // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 cowork:reset 覆盖 → 闪一下上次内容。
@@ -391,17 +520,90 @@ export default function Cowork() {
     if (targetX < 16) targetX = 16
     if (targetX + READY_W > vw - 16) targetX = vw - READY_W - 16
 
+    // translate 模式截完直接进 translating；chat 模式进 ready 等用户提问
+    const targetStage: Stage = mode === 'translate' ? 'translating' : 'ready'
     flushSync(() => {
       setAppLabel(label)
       setBarRect({ x: Math.round(targetX), y: Math.round(targetY), width: READY_W })
-      setStage('ready')
+      setStage(targetStage)
     })
-    setTimeout(() => inputRef.current?.focus(), TRANSITION_MS + 20)
+    if (mode === 'chat') {
+      setTimeout(() => inputRef.current?.focus(), TRANSITION_MS + 20)
+    }
   }
 
+  /** translate 模式：截完立即调 OCR + 翻译。
+   *  流式：cowork-translate-stream 事件累积 original/translated；done 事件结束并锁定耗时
+   *  非流式：API 返回完整结果一次性灌入（也通过事件，后端在两步完成后 emit 一次完整 delta） */
+  const runTranslate = useCallback(async (id: string) => {
+    setTranslateOriginal('')
+    setTranslateText('')
+    setTranslateError('')
+    setTranslateDurationMs(null)
+    translateStartRef.current = Date.now()
+    setTranslateNow(Date.now())
+    try {
+      const r = await api.coworkTranslate(id)
+      if (!r.success) {
+        // 失败兜底：done 事件应该已经带 error 了，但补一刀防止前端漏 done
+        setTranslateError(r.error || 'Failed')
+        if (translateStartRef.current !== null) {
+          setTranslateDurationMs(Date.now() - translateStartRef.current)
+          translateStartRef.current = null
+        }
+        setStage('translated')
+      }
+      // 成功路径：等 cowork-translate-stream 的 done 事件触发 stage / 计时（避免事件还没到 stage 就跳，或反之文字还没到完成态）
+    } catch (err) {
+      setTranslateError(err instanceof Error ? err.message : String(err))
+      if (translateStartRef.current !== null) {
+        setTranslateDurationMs(Date.now() - translateStartRef.current)
+        translateStartRef.current = null
+      }
+      setStage('translated')
+    }
+  }, [])
+
+  // cowork-translate-stream 事件监听（与 cowork-stream 同款 cancelled 旗标处理 StrictMode 双挂）
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    api.onCoworkTranslateStream((payload: CoworkTranslateStreamPayload) => {
+      if (payload.imageId !== imageIdRef.current) return
+      if (payload.done) {
+        if (payload.error) setTranslateError(payload.error)
+        if (translateStartRef.current !== null) {
+          setTranslateDurationMs(Date.now() - translateStartRef.current)
+          translateStartRef.current = null
+        }
+        setStage('translated')
+        return
+      }
+      if (!payload.delta) return
+      if (payload.kind === 'original') {
+        setTranslateOriginal(prev => prev + payload.delta)
+      } else if (payload.kind === 'translated') {
+        setTranslateText(prev => prev + payload.delta)
+      }
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(err => console.error(err))
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
+  // translating 期间每秒刷一次，header 走秒
+  useEffect(() => {
+    if (stage !== 'translating') return
+    const id = setInterval(() => setTranslateNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [stage])
+
   const handleCaptureWindow = async (info: CoworkWindowInfo) => {
-    // capturingRef 全程 true，覆盖到 explainOpenAtAnchor 完成（后端 hide cowork webview 会触发 blur，
-    // 期间 stage 还是 'select'，blur handler 必须跳过否则会调 coworkClose 清掉刚注册的 image_id）
+    // capturingRef 全程 true，避免 macOS screencapture 短暂让 cowork webview 失焦时触发 blur handler 误关
     capturingRef.current = true
     try {
       const result = await api.coworkCaptureWindow(info.id)
@@ -412,22 +614,6 @@ export default function Cowork() {
       }
       const newId = result.imageId
       imageIdRef.current = newId
-
-      if (mode === 'explain') {
-        try {
-          await api.explainOpenAtAnchor({
-            imageId: newId,
-            anchorX: Math.round(info.x),
-            anchorY: Math.round(info.y),
-            anchorWidth: Math.round(info.width),
-            anchorHeight: Math.round(info.height),
-          })
-        } catch (err) {
-          console.error('explainOpenAtAnchor failed', err)
-          try { await api.coworkClose() } catch { /* ignore */ }
-        }
-        return
-      }
 
       // 记录截图框（webview 内坐标）作为已截视觉标记，截完保留显示
       setCapturedFrame({
@@ -447,6 +633,7 @@ export default function Cowork() {
         Math.round(info.x), Math.round(info.y), Math.round(info.width), Math.round(info.height),
         info.owner,
       )
+      if (mode === 'translate') void runTranslate(newId)
     } finally {
       capturingRef.current = false
     }
@@ -463,7 +650,7 @@ export default function Cowork() {
       height: Math.round(rect.height),
       scaleFactor: window.devicePixelRatio || 1,
     }
-    // capturingRef 全程 true 直到 explainOpenAtAnchor / flyBarToAnchor 完成（同 handleCaptureWindow 注释）
+    // capturingRef 全程 true 直到 flyBarToAnchor 完成（同 handleCaptureWindow 注释）
     capturingRef.current = true
     try {
       const result = await api.coworkCaptureRegion(params)
@@ -474,22 +661,6 @@ export default function Cowork() {
       }
       const newId = result.imageId
       imageIdRef.current = newId
-
-      if (mode === 'explain') {
-        try {
-          await api.explainOpenAtAnchor({
-            imageId: newId,
-            anchorX: params.absoluteX,
-            anchorY: params.absoluteY,
-            anchorWidth: params.width,
-            anchorHeight: params.height,
-          })
-        } catch (err) {
-          console.error('explainOpenAtAnchor failed', err)
-          try { await api.coworkClose() } catch { /* ignore */ }
-        }
-        return
-      }
 
       setCapturedFrame({
         x: params.x,
@@ -505,6 +676,7 @@ export default function Cowork() {
         } catch (err) { console.error(err) }
       })()
       await flyBarToAnchor(params.absoluteX, params.absoluteY, params.width, params.height, '')
+      if (mode === 'translate') void runTranslate(newId)
     } finally {
       capturingRef.current = false
     }
@@ -598,8 +770,12 @@ export default function Cowork() {
   }
 
   // 点击历史项：把当前会话恢复到该 item（image / appLabel / messages / capturedFrame）
+  // 取消任何正在跑的流，避免后端继续 emit delta 灌入新恢复的 messages（如果新旧 imageId 巧合相同会污染）
   const restoreHistory = (item: HistoryItem) => {
     setHistoryOpen(false)
+    if (streaming) {
+      void api.coworkCancelStream().catch(err => console.error(err))
+    }
     imageIdRef.current = item.id
     flushSync(() => {
       setImagePreview(item.imagePreview)
@@ -644,8 +820,10 @@ export default function Cowork() {
   const showThumb = stage !== 'select' && (imagePreview || appLabel)
   // 流式期间禁止发送/输入，答完之后可对同一张截图继续问新问题（每次仍为独立 Q&A，自动入历史）
   const sendDisabled = !input.trim() || streaming
-  // 是否显示底部对话栏：cowork 默认模式始终显示；explain 模式仅 select 态隐藏（截图后由 explain 大窗口接管）
-  const showBar = mode !== 'explain'
+  // 对话栏（输入框）只在 chat 模式显示；translate 模式只渲染浮动结果卡片
+  const showBar = mode === 'chat'
+  // translate 浮动卡片：截图后在选区旁出现，加载/完成两态
+  const showTranslateCard = mode === 'translate' && (stage === 'translating' || stage === 'translated')
 
   // 答案区展开方向 + 高度自适应：
   // 1) 下方空间够 ANSWER_H → 向下，目标高
@@ -897,7 +1075,7 @@ export default function Cowork() {
 
           {/* answer 区：absolute 展开在对话栏上方或下方（自适应空间），渲染整个 chat list（多轮对话） */}
           <div
-            className="absolute left-0 right-0 rounded-2xl overflow-hidden window-frosted transition-all ease-out"
+            className="absolute left-0 right-0 rounded-2xl overflow-hidden window-frosted transition-all ease-out select-text"
             style={{
               top: answerLayout.placeAbove ? undefined : 'calc(100% + 8px)',
               bottom: answerLayout.placeAbove ? 'calc(100% + 8px)' : undefined,
@@ -907,24 +1085,61 @@ export default function Cowork() {
               pointerEvents: stage === 'answering' ? 'auto' : 'none',
             }}
           >
-            {stage === 'answering' && (
+            {stage === 'answering' && (() => {
+              // 显示顺序：desc 反转数组（新在顶）；isLast 始终基于原数组末尾索引（最新的）
+              const ordered = messageOrder === 'desc' ? messages.slice().reverse() : messages
+              const lastChronoIdx = messages.length - 1
+              const lastMsg = messages[lastChronoIdx]
+              const showActions = lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content
+              const Actions = (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => void handleCopy()}
+                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                  >
+                    {copied ? <Check size={11} /> : <Copy size={11} />}
+                    <span>{copied ? t.coworkCopied : t.coworkCopy}</span>
+                  </button>
+                  {streaming && (
+                    <button
+                      onClick={() => void handleStop()}
+                      className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-red-500 dark:text-neutral-400 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                    >
+                      <Square size={10} strokeWidth={2.5} fill="currentColor" />
+                      <span>{t.coworkStop}</span>
+                    </button>
+                  )}
+                </div>
+              )
+              return (
               <div ref={chatScrollRef} className="h-full overflow-y-auto custom-scrollbar px-3.5 py-3">
-                {messages.map((m, i) => {
+                {/* desc 模式下操作按钮放最前（贴最新答案） */}
+                {messageOrder === 'desc' && showActions && Actions}
+                {ordered.map((m, displayIdx) => {
+                  const origIdx = messageOrder === 'desc' ? messages.length - 1 - displayIdx : displayIdx
                   const isUser = m.role === 'user'
-                  const isLast = i === messages.length - 1
+                  const isLast = origIdx === lastChronoIdx
                   return (
-                    <div key={i} className={`mb-3 ${isUser ? 'flex justify-end' : ''}`}>
+                    <div key={origIdx} className={`mb-3 ${isUser ? 'flex justify-end' : ''}`}>
                       {isUser ? (
                         <div className="px-3 py-2 rounded-2xl bg-[#D97757]/15 dark:bg-[#D97757]/20 text-[13.5px] text-neutral-800 dark:text-neutral-100 max-w-[88%] whitespace-pre-wrap break-words">
                           {m.content}
                         </div>
                       ) : (
                         <div className="prose prose-sm dark:prose-invert max-w-none text-[13.5px] leading-7 text-neutral-800 dark:text-neutral-200">
+                          {m.reasoning && (
+                            <ThinkingBlock
+                              reasoning={m.reasoning}
+                              active={isLast && streaming && !m.content}
+                              thinkingLabel={t.coworkThinking}
+                              thoughtLabel={t.coworkThought}
+                            />
+                          )}
                           {m.content ? (
                             <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
                               {m.content}
                             </ReactMarkdown>
-                          ) : isLast && streaming ? (
+                          ) : isLast && streaming && !m.reasoning ? (
                             <div className="not-prose flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
                               <Loader2 className="animate-spin" size={14} />
                               <span className="text-[12px]">{t.coworkAsking}</span>
@@ -935,34 +1150,133 @@ export default function Cowork() {
                     </div>
                   )
                 })}
-                {/* 操作按钮：仅当最后一条 assistant 有内容时显示 */}
-                {(() => {
-                  const last = messages[messages.length - 1]
-                  if (!last || last.role !== 'assistant' || !last.content) return null
-                  return (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => void handleCopy()}
-                        className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-                      >
-                        {copied ? <Check size={11} /> : <Copy size={11} />}
-                        <span>{copied ? t.coworkCopied : t.coworkCopy}</span>
-                      </button>
-                      {streaming && (
-                        <button
-                          onClick={() => void handleStop()}
-                          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-red-500 dark:text-neutral-400 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-                        >
-                          <Square size={10} strokeWidth={2.5} fill="currentColor" />
-                          <span>{t.coworkStop}</span>
-                        </button>
-                      )}
-                    </div>
-                  )
-                })()}
+                {/* asc 模式下操作按钮在末尾 */}
+                {messageOrder === 'asc' && showActions && Actions}
               </div>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* translate 模式浮动结果卡：原文 + 译文，复用 barRect 锚点。
+          外层 select-none 用 select-text 覆盖，让用户可选中复制部分文本。 */}
+      {showTranslateCard && (
+        <div
+          className="absolute ease-out rounded-2xl bg-white dark:bg-neutral-900 shadow-[0_18px_50px_-12px_rgba(0,0,0,0.4)] ring-1 ring-black/[0.04] dark:ring-white/[0.06] overflow-hidden select-text"
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseMove={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            left: barRect.x,
+            top: barRect.y,
+            width: barRect.width,
+            maxHeight: Math.min(viewport.h - 32, READY_BAR_H + 8 + metrics.ANSWER_H),
+            transitionProperty: 'left, top, width, transform, opacity',
+            transitionDuration: `${TRANSITION_MS}ms`,
+            transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+            transform: barIntro ? 'scale(1)' : 'scale(0.92)',
+            opacity: barIntro ? 1 : 0,
+          }}
+          data-tauri-drag-region="false"
+        >
+          {/* 顶部缩略图 + 应用名 + 状态徽章（耗时 / token 估算） */}
+          <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-black/[0.05] dark:border-white/[0.06]">
+            <div className="shrink-0 w-8 h-8 rounded-lg overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center">
+              {imagePreview ? (
+                <img src={imagePreview} alt="snap" className="w-full h-full object-cover" />
+              ) : (
+                <ImageIcon size={12} className="text-neutral-400" />
+              )}
+            </div>
+            <span className="text-[12.5px] font-medium text-neutral-700 dark:text-neutral-300 truncate flex-1">
+              {appLabel || t.coworkScreenshotOf.replace('：', '').replace(':', '')}
+            </span>
+            {(() => {
+              const elapsedMs = stage === 'translating' && translateStartRef.current
+                ? translateNow - translateStartRef.current
+                : translateDurationMs
+              const seconds = elapsedMs !== null ? Math.max(1, Math.round(elapsedMs / 1000)) : null
+              const tokens = formatTokens(estimateTokens(translateOriginal + translateText))
+              return (
+                <span className="shrink-0 flex items-center gap-1 text-[10.5px] text-neutral-400 dark:text-neutral-500 tabular-nums">
+                  {seconds !== null && <span>{seconds}s</span>}
+                  {translateText && <span>· ~{tokens} tokens</span>}
+                </span>
+              )
+            })()}
+          </div>
+
+          {/* 内容区 */}
+          <div className="px-3.5 py-3 overflow-y-auto custom-scrollbar"
+            style={{ maxHeight: Math.min(viewport.h - 110, metrics.ANSWER_H) }}>
+            {translateError ? (
+              <div className="text-[12.5px] text-red-500 leading-6 whitespace-pre-wrap break-words">
+                {t.coworkError}: {translateError}
+              </div>
+            ) : (
+              <>
+                {/* 原文区：开始 OCR 即逐字渲染；尚未有内容时显示 shimmer 占位 */}
+                {(translateOriginal || stage === 'translating') && (
+                  <>
+                    <div className="text-[10.5px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
+                      {t.coworkOriginal}
+                    </div>
+                    {translateOriginal ? (
+                      <div className="prose prose-sm dark:prose-invert max-w-none text-[12.5px] leading-6 text-neutral-500 dark:text-neutral-400 mb-3">
+                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                          {translateOriginal}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 mb-3">
+                        <div className="h-3 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite]" />
+                        <div className="h-3 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[72%]" />
+                      </div>
+                    )}
+                    <div className="border-t border-black/[0.05] dark:border-white/[0.06] -mx-3.5 mb-3" />
+                  </>
+                )}
+                {/* 译文区：原文阶段进行中暂用 shimmer 占位；翻译开始有 delta 即渲染 */}
+                <div className="text-[10.5px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
+                  {t.coworkTranslated}
+                </div>
+                {translateText ? (
+                  <div className="prose prose-sm dark:prose-invert max-w-none text-[13.5px] leading-7 text-neutral-800 dark:text-neutral-200">
+                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                      {translateText}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite]" />
+                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[88%]" />
+                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[72%]" />
+                  </div>
+                )}
+              </>
             )}
           </div>
+
+          {/* 底部操作栏：复制译文 */}
+          {stage === 'translated' && translateText && !translateError && (
+            <div className="flex items-center gap-1 px-3 py-1.5 border-t border-black/[0.05] dark:border-white/[0.06]">
+              <button
+                onClick={async () => {
+                  if (await copyToClipboard(translateText)) {
+                    setCopied(true)
+                    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
+                    copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
+                  }
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+              >
+                {copied ? <Check size={12} /> : <Copy size={12} />}
+                <span>{copied ? t.coworkCopied : t.coworkCopy}</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

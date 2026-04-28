@@ -1,9 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import Settings from './Settings'
-import ScreenshotResult from './ScreenshotResult'
-import ScreenshotExplain from './ScreenshotExplain'
-import CaptureOverlay from './CaptureOverlay'
 import Cowork from './Cowork'
 import { api } from './api/tauri'
 import { i18n, type Lang } from './settings/i18n'
@@ -170,7 +167,7 @@ function Translator({
 
 /**
  * 应用根组件
- * 根据 URL hash 切换不同视图模式（翻译器、设置、截图结果、截图解释、区域选择）
+ * 根据 URL hash 切换不同视图模式（翻译器、设置、cowork）
  */
 function App() {
   // 从 URL hash 和查询参数解析当前模式
@@ -220,7 +217,7 @@ function App() {
 
   // 监听后端触发的打开设置事件
   // 仅 main webview（hash 为空 / translator / settings）响应；
-  // screenshot / explain / capture webview 即便误收广播也不切换视图，避免多设置界面。
+  // cowork webview 即便误收广播也不切换视图，避免多设置界面。
   useEffect(() => {
     let cleanup: (() => void) | undefined
     api.onOpenSettings(() => {
@@ -240,10 +237,8 @@ function App() {
   useEffect(() => {
     const resize = async () => {
       if (mode === 'settings') {
-        console.log('[App] Resizing to settings size: 640x520')
         await api.resizeWindow(640, 520)
       } else if (mode === '' || mode === 'translator') {
-        console.log('[App] Resizing to translator size: 360x120')
         await api.resizeWindow(360, 120)
       }
     }
@@ -261,10 +256,8 @@ function App() {
 
   // 关闭设置页，返回翻译器
   const closeSettings = async () => {
-    console.log('[App] closeSettings called')
     try {
       await api.hideWindow()
-      console.log('[App] Window hidden successfully')
     } catch (err) {
       console.error('[App] Error hiding window:', err)
     }
@@ -274,10 +267,7 @@ function App() {
   }
 
   // 根据模式渲染对应视图
-  if (mode === 'screenshot') return <ScreenshotResult />
-  if (mode === 'explain') return <ScreenshotExplain />
   if (mode === 'cowork') return <Cowork />
-  if (mode === 'capture') return <CaptureOverlay />
   if (mode === 'settings') {
     return (
       <div className="h-screen w-screen overflow-hidden">

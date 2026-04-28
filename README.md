@@ -18,13 +18,11 @@
 - **Global Hotkeys**
   - Translator: `Cmd/Ctrl+Alt+T`
   - Screenshot Translation: `Cmd/Ctrl+Shift+A`
-  - Screenshot Explain: `Cmd/Ctrl+Shift+E`
-  - Cowork (quick capture + ask): `Cmd/Ctrl+Shift+G`
-- **Cowork Mode**: Greyscale overlay highlights the hovered app window or a drag-region; capture and ask in a single floating bar that flies into the capture spot, with a streamed answer expanding underneath. Pure-text questions also work without a screenshot.
+  - Cowork (capture + multi-turn ask): `Cmd/Ctrl+Shift+G`
+- **Cowork Mode**: Hover-highlight an app window or drag a region; a single floating bar flies into the capture spot, with a streamed answer + multi-turn chat expanding underneath. Per-image history dropdown. Pure-text questions also work without a screenshot.
 - **OpenAI-Compatible Providers**: OpenAI / DeepSeek / SiliconFlow / custom compatible endpoints.
-- **Multi-Provider Routing**: Separate providers/models for Translation, OCR, Explain, and Cowork.
+- **Multi-Provider Routing**: Separate providers/models for Translation, OCR, and Cowork.
 - **Screenshot Translation**: OCR + translation pipeline with optional direct-translate mode.
-- **Screenshot Explain**: AI image understanding with follow-up Q&A, history, streaming, copy / regenerate / stop, and auto-summary toggle. On macOS the capture flow now reuses the same Cowork select overlay (hover-window or drag-region) and the explain window is placed by a smart anchor algorithm so it never gets clipped.
 - **LaTeX Math Adaptation**: Better readability for formula-heavy outputs.
 - **Auto Paste**: Enter to paste translated content back to your active app.
 - **Launch at Startup**: Optional startup toggle, default **off**.
@@ -149,11 +147,6 @@
 2. Select capture region
 3. View OCR + translated result
 
-#### Screenshot Explain
-1. Press `Cmd/Ctrl + Shift + E`
-2. On macOS the screen greys out — hover an app window for a one-click capture, or drag to crop a region.
-3. The explain window appears beside the captured area; ask follow-up questions, copy / regenerate / stop streaming as needed.
-
 #### Cowork
 1. Press `Cmd/Ctrl + Shift + G`
 2. Hover an app window (one-click capture) or drag to crop, **or** type a question directly into the bottom bar without screenshotting.
@@ -162,7 +155,7 @@
 
 #### Settings
 Click gear icon ⚙️ in translator panel:
-- Sidebar tabs: General / Translate / Screenshot / Explain / Cowork / Models / About
+- Sidebar tabs: General / Translate / Screenshot / Cowork / Models / About
 - Manage providers, models, hotkeys, prompts
 - Test provider connectivity + fetch models
 - Launch at startup toggle
@@ -198,24 +191,22 @@ npm run lint
 <a name="中文"></a>
 ## 🇨🇳 中文
 
-**KeyLingo** 是一款面向 **macOS** 与 **Windows** 的轻量化翻译与 AI 视觉工具。产品核心方向是 **小体积、低占用**，并通过全局快捷键提供即时文本翻译、截图翻译、截图讲解，以及对标 Claude Desktop 的 **Cowork** 快速提问模式。
+**KeyLingo** 是一款面向 **macOS** 与 **Windows** 的轻量化翻译与 AI 视觉工具。产品核心方向是 **小体积、低占用**，并通过全局快捷键提供即时文本翻译、截图翻译，以及对标 Claude Desktop 的 **Cowork** 快速提问 + 多轮对话模式。
 
 ### ✨ 核心功能
 
 - **全局快捷键**
   - 文本翻译：`Cmd/Ctrl+Alt+T`
   - 截图翻译：`Cmd/Ctrl+Shift+A`
-  - 截图讲解：`Cmd/Ctrl+Shift+E`
-  - Cowork（快速截图提问）：`Cmd/Ctrl+Shift+G`
-- **Cowork 模式**：屏幕变灰 + hover 应用窗口高亮 + 单击截窗 / 拖动选区，对话栏 CSS 飞入选区附近，下方展开流式答案。也支持纯文字直接提问。
+  - Cowork（截图 + 多轮提问）：`Cmd/Ctrl+Shift+G`
+- **Cowork 模式**：hover 应用窗口高亮 / 拖动选区截图，对话栏 CSS 飞入选区附近，下方展开流式答案 + 多轮 chat。每张截图独立历史 dropdown。也支持纯文字直接提问。
 - **OpenAI 兼容生态**：支持 OpenAI / DeepSeek / SiliconFlow 及兼容接口。
-- **多 Provider 路由**：翻译、OCR、讲解、Cowork 可分别指定服务商与模型。
+- **多 Provider 路由**：翻译、OCR、Cowork 可分别指定服务商与模型。
 - **截图翻译增强**：支持 OCR+翻译流程，并可切换直译模式。
-- **截图讲解**：图片理解、多轮追问、历史记录、流式输出、复制 / 重新生成 / 停止、自动总结开关。macOS 上截图入口已切换为 Cowork 同款 select 态（hover 高亮 + 区域选择），讲解窗口同样按智能锚点算法落在选区附近，避免被边缘裁剪。
 - **LaTeX 数学公式适配**：优化公式展示与可读性。
 - **自动粘贴**：回车即可回填到当前应用。
 - **开机启动**：可选开关，默认关闭。
-- **设置 UI 重构**：侧栏导航 + 卡片式模块 + 品牌橙主色 + 自定义滚动条；新增 Cowork 设置 tab。
+- **设置 UI 重构**：侧栏导航 + 卡片式模块 + 品牌橙主色 + 自定义滚动条；专属 Cowork 设置 tab。
 - **供应商诊断**：模型页支持一键“测试连接”与“获取模型列表”。
 - **权限状态面板（macOS）**：可视化查看辅助功能/屏幕录制授权并直达系统设置。
 
@@ -336,11 +327,6 @@ npm run lint
 2. 框选截图区域
 3. 查看 OCR 与译文结果
 
-#### 截图讲解
-1. 按 `Cmd/Ctrl + Shift + E`
-2. macOS 屏幕变灰：hover 任意应用窗口可一键截窗，或拖动框选区域。
-3. 讲解窗口出现在选区附近；继续追问图像内容，可复制 / 重新生成 / 停止流式。
-
 #### Cowork
 1. 按 `Cmd/Ctrl + Shift + G`
 2. hover 应用窗口（单击截窗）或拖动框选；**也可不截图，直接在底部对话栏输入纯文字提问**。
@@ -349,7 +335,7 @@ npm run lint
 
 #### 设置
 点击翻译面板右上角齿轮 ⚙️：
-- 侧栏分类：通用 / 翻译 / 截图 / 讲解 / Cowork / 模型 / 关于
+- 侧栏分类：通用 / 翻译 / 截图 / Cowork / 模型 / 关于
 - 管理 Provider / 模型 / 快捷键 / Prompt
 - 测试 Provider 连通性 + 获取模型
 - 开机启动开关

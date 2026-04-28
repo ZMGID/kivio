@@ -130,6 +130,12 @@ pub struct ScreenshotTranslationConfig {
   pub model: String,
   #[serde(default = "default_false")]
   pub direct_translate: bool,
+  /// 是否启用思考模式（OCR 模型 + 翻译模型）。默认 false：截图翻译追求快，思考通常没必要。
+  #[serde(default = "default_false")]
+  pub thinking_enabled: bool,
+  /// 是否流式输出 OCR + 翻译。默认 true：用户看着字逐步出现的体感比等"加载完"更顺。
+  #[serde(default = "default_true")]
+  pub stream_enabled: bool,
   #[serde(default)]
   pub prompt: Option<String>,
   // 旧版字段，用于迁移
@@ -145,6 +151,8 @@ impl Default for ScreenshotTranslationConfig {
       provider_id: "default-ocr".to_string(),
       model: "gpt-4o".to_string(),
       direct_translate: false,
+      thinking_enabled: false,
+      stream_enabled: true,
       prompt: None,
       openai: None,
     }
@@ -152,90 +160,13 @@ impl Default for ScreenshotTranslationConfig {
 }
 
 /**
- * 截图解释自定义提示词
- */
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CustomPrompts {
-  pub system_prompt: Option<String>,
-  pub summary_prompt: Option<String>,
-  pub question_prompt: Option<String>,
-}
-
-/**
- * 旧版截图解释模型配置（用于迁移兼容）
- */
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScreenshotExplainModel {
-  pub provider: String,
-  pub api_key: String,
-  pub base_url: String,
-  pub model_name: String,
-}
-
-/**
- * 截图解释功能配置
- */
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ScreenshotExplainConfig {
-  #[serde(default = "default_true")]
-  pub enabled: bool,
-  #[serde(default = "default_screenshot_explain_hotkey")]
-  pub hotkey: String,
-  #[serde(default)]
-  pub provider_id: String,
-  #[serde(default = "default_openai_model")]
-  pub model: String,
-  #[serde(default = "default_language_zh")]
-  pub default_language: String,
-  #[serde(default)]
-  pub stream_enabled: bool,
-  #[serde(default = "default_true")]
-  pub auto_summary_enabled: bool,
-  #[serde(default)]
-  pub custom_prompts: Option<CustomPrompts>,
-  // 旧版字段，用于迁移
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub model_legacy: Option<ScreenshotExplainModel>,
-}
-
-impl Default for ScreenshotExplainConfig {
-  fn default() -> Self {
-    Self {
-      enabled: true,
-      hotkey: "CommandOrControl+Shift+E".to_string(),
-      provider_id: "default-explain".to_string(),
-      model: "gpt-4o".to_string(),
-      default_language: "zh".to_string(),
-      stream_enabled: false,
-      auto_summary_enabled: true,
-      custom_prompts: None,
-      model_legacy: None,
-    }
-  }
-}
-
-/**
- * 对话消息
+ * 对话消息（cowork 多轮对话）
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainMessage {
   pub role: String,
   pub content: String,
-}
-
-/**
- * 历史记录条目
- */
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExplainHistoryRecord {
-  pub id: String,
-  pub timestamp: i64,
-  pub messages: Vec<ExplainMessage>,
 }
 
 /**
@@ -249,23 +180,34 @@ pub struct CoworkConfig {
   pub enabled: bool,
   #[serde(default = "default_cowork_hotkey")]
   pub hotkey: String,
-  /// 复用 screenshot_explain 的 provider/model 还是单独配置：留 provider_id/model 字段空表示 fallback 到 explain
+  /// provider/model 留空时 fallback 到 translator_provider_id / translator_model
   #[serde(default)]
   pub provider_id: String,
   #[serde(default)]
   pub model: String,
-  /// 响应语言（"zh"/"en"）。空字符串表示跟随 screenshot_explain.default_language。
+  /// 响应语言（"zh"/"en"）。空字符串表示跟随 settings.target_lang，"auto" 则用 "zh"。
   #[serde(default)]
   pub default_language: String,
-  /// 是否流式返回。独立配置（不 fallback），默认 true。
+  /// 是否流式返回，默认 true。
   #[serde(default = "default_true")]
   pub stream_enabled: bool,
-  /// 自定义 system prompt。空字符串表示走 screenshot_explain.custom_prompts.system_prompt → 默认模板。
+  /// 是否启用思考模式（推理链）。默认 true。
+  /// false 时会向请求 body 注入各家厂商关闭思考的字段并集（不认识的会被 provider 忽略）。
+  #[serde(default = "default_true")]
+  pub thinking_enabled: bool,
+  /// 自定义 system prompt。空字符串使用 default_system_prompt 模板。
   #[serde(default)]
   pub system_prompt: String,
-  /// 自定义 question prompt。空字符串表示走 screenshot_explain.custom_prompts.question_prompt → 默认模板。
+  /// 自定义 question prompt。空字符串使用 default_question_prompt 模板。
   #[serde(default)]
   pub question_prompt: String,
+  /// 消息排序："asc" 老到新（默认），"desc" 新到老
+  #[serde(default = "default_message_order")]
+  pub message_order: String,
+}
+
+fn default_message_order() -> String {
+  "asc".to_string()
 }
 
 impl Default for CoworkConfig {
@@ -277,8 +219,10 @@ impl Default for CoworkConfig {
       model: String::new(),
       default_language: String::new(),
       stream_enabled: true,
+      thinking_enabled: true,
       system_prompt: String::new(),
       question_prompt: String::new(),
+      message_order: "asc".to_string(),
     }
   }
 }
@@ -312,11 +256,7 @@ pub struct Settings {
   #[serde(default)]
   pub screenshot_translation: ScreenshotTranslationConfig,
   #[serde(default)]
-  pub screenshot_explain: ScreenshotExplainConfig,
-  #[serde(default)]
   pub cowork: CoworkConfig,
-  #[serde(default)]
-  pub explain_history: Vec<ExplainHistoryRecord>,
   #[serde(default = "default_settings_language")]
   pub settings_language: Option<String>,
   #[serde(default = "default_retry_enabled")]
@@ -351,9 +291,7 @@ impl Default for Settings {
       translator_prompt: None,
       providers: vec![],
       screenshot_translation: ScreenshotTranslationConfig::default(),
-      screenshot_explain: ScreenshotExplainConfig::default(),
       cowork: CoworkConfig::default(),
-      explain_history: vec![],
       settings_language: Some("zh".to_string()),
       retry_enabled: default_retry_enabled(),
       retry_attempts: default_retry_attempts(),
@@ -402,20 +340,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         settings.screenshot_translation.provider_id = "default-ocr".to_string();
         settings.screenshot_translation.model = old_ocr.model;
     }
-
-    // 迁移解释提供商
-    if let Some(old_explain) = settings.screenshot_explain.model_legacy.take() {
-        settings.providers.push(ModelProvider {
-            id: "default-explain".to_string(),
-            name: "OpenAI (Explain)".to_string(),
-            api_key: old_explain.api_key,
-            base_url: old_explain.base_url,
-            available_models: vec![],
-            enabled_models: vec![old_explain.model_name.clone()],
-        });
-        settings.screenshot_explain.provider_id = "default-explain".to_string();
-        settings.screenshot_explain.model = old_explain.model_name;
-    }
   }
 
   // 2. 为空字段设置默认值
@@ -425,9 +349,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   if settings.screenshot_translation.model.is_empty() {
       settings.screenshot_translation.model = "gpt-4o".to_string();
   }
-  if settings.screenshot_explain.model.is_empty() {
-      settings.screenshot_explain.model = "gpt-4o".to_string();
-  }
 
   if settings.translator_provider_id.is_empty() && !settings.providers.is_empty() {
       settings.translator_provider_id = settings.providers[0].id.clone();
@@ -435,15 +356,12 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   if settings.screenshot_translation.provider_id.is_empty() && !settings.providers.is_empty() {
       settings.screenshot_translation.provider_id = settings.providers[0].id.clone();
   }
-  if settings.screenshot_explain.provider_id.is_empty() && !settings.providers.is_empty() {
-      settings.screenshot_explain.provider_id = settings.providers[0].id.clone();
-  }
 
   let provider_exists = |id: &str| settings.providers.iter().any(|p| p.id == id);
   if settings.providers.is_empty() {
       settings.translator_provider_id.clear();
       settings.screenshot_translation.provider_id.clear();
-      settings.screenshot_explain.provider_id.clear();
+      settings.cowork.provider_id.clear();
   } else {
       if !provider_exists(&settings.translator_provider_id) {
           let first = &settings.providers[0];
@@ -459,12 +377,13 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
               settings.screenshot_translation.model = model.clone();
           }
       }
-      if !provider_exists(&settings.screenshot_explain.provider_id) {
-          let first = &settings.providers[0];
-          settings.screenshot_explain.provider_id = first.id.clone();
-          if let Some(model) = first.enabled_models.first() {
-              settings.screenshot_explain.model = model.clone();
-          }
+      // cowork provider 可空（空时 call_vision_api 走 translator_provider_id fallback）；
+      // 但若用户填了一个不存在的，重置为空让其走 fallback。
+      if !settings.cowork.provider_id.is_empty()
+        && !provider_exists(&settings.cowork.provider_id)
+      {
+          settings.cowork.provider_id.clear();
+          settings.cowork.model.clear();
       }
   }
 
@@ -475,15 +394,17 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
           if settings.translator_provider_id == provider.id {
               provider.enabled_models.push(settings.translator_model.clone());
           }
-          if settings.screenshot_translation.provider_id == provider.id {
-              if !provider.enabled_models.contains(&settings.screenshot_translation.model) {
-                  provider.enabled_models.push(settings.screenshot_translation.model.clone());
-              }
+          if settings.screenshot_translation.provider_id == provider.id
+            && !provider.enabled_models.contains(&settings.screenshot_translation.model)
+          {
+              provider.enabled_models.push(settings.screenshot_translation.model.clone());
           }
-          if settings.screenshot_explain.provider_id == provider.id {
-              if !provider.enabled_models.contains(&settings.screenshot_explain.model) {
-                  provider.enabled_models.push(settings.screenshot_explain.model.clone());
-              }
+          if !settings.cowork.provider_id.is_empty()
+            && settings.cowork.provider_id == provider.id
+            && !settings.cowork.model.is_empty()
+            && !provider.enabled_models.contains(&settings.cowork.model)
+          {
+              provider.enabled_models.push(settings.cowork.model.clone());
           }
           // 如果仍然为空，添加默认模型
           if provider.enabled_models.is_empty() {
@@ -492,15 +413,18 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
       }
 
       // 确保当前使用的模型确实在该 provider 的 enabled_models 中
-      // 如果不在，重置为 enabled_models 的第一个模型
       if settings.translator_provider_id == provider.id && !provider.enabled_models.contains(&settings.translator_model) {
           settings.translator_model = provider.enabled_models[0].clone();
       }
       if settings.screenshot_translation.provider_id == provider.id && !provider.enabled_models.contains(&settings.screenshot_translation.model) {
           settings.screenshot_translation.model = provider.enabled_models[0].clone();
       }
-      if settings.screenshot_explain.provider_id == provider.id && !provider.enabled_models.contains(&settings.screenshot_explain.model) {
-          settings.screenshot_explain.model = provider.enabled_models[0].clone();
+      if !settings.cowork.provider_id.is_empty()
+        && settings.cowork.provider_id == provider.id
+        && !settings.cowork.model.is_empty()
+        && !provider.enabled_models.contains(&settings.cowork.model)
+      {
+          settings.cowork.model = provider.enabled_models[0].clone();
       }
   }
 
@@ -508,17 +432,12 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   settings.hotkey = normalize_hotkey(&settings.hotkey);
   settings.screenshot_translation.hotkey =
     normalize_hotkey(&settings.screenshot_translation.hotkey);
-  settings.screenshot_explain.hotkey = normalize_hotkey(&settings.screenshot_explain.hotkey);
+  settings.cowork.hotkey = normalize_hotkey(&settings.cowork.hotkey);
 
   // 规范化提示词（去除首尾空白，空值转为 None）
   settings.translator_prompt = normalize_optional_prompt(settings.translator_prompt.take());
   settings.screenshot_translation.prompt =
     normalize_optional_prompt(settings.screenshot_translation.prompt.take());
-  if let Some(prompts) = &mut settings.screenshot_explain.custom_prompts {
-    if sanitize_custom_prompts(prompts) {
-      settings.screenshot_explain.custom_prompts = None;
-    }
-  }
 
   // 5. 确保必要字段不为空
   if settings.hotkey.is_empty() {
@@ -527,8 +446,11 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   if settings.screenshot_translation.hotkey.is_empty() {
     settings.screenshot_translation.hotkey = "CommandOrControl+Shift+A".to_string();
   }
-  if settings.screenshot_explain.hotkey.is_empty() {
-    settings.screenshot_explain.hotkey = "CommandOrControl+Shift+E".to_string();
+  if settings.cowork.hotkey.is_empty() {
+    settings.cowork.hotkey = "CommandOrControl+Shift+G".to_string();
+  }
+  if settings.cowork.message_order != "asc" && settings.cowork.message_order != "desc" {
+    settings.cowork.message_order = "asc".to_string();
   }
 
   settings.retry_attempts = clamp_retry_attempts(settings.retry_attempts);
@@ -581,39 +503,43 @@ pub fn load_settings(app: &AppHandle) -> Settings {
 
 /**
  * 获取默认系统提示词
+ * has_image=true 时为视觉助手；为 false 时为通用对话助手（不假设有图片）
+ * 风格统一：简短直答、无小标题、思考过程尽量精简
  */
-pub fn default_system_prompt(language: &str) -> String {
-  if language == "zh" {
-    "你是一个图片分析助手。请用自然流畅的语言回答，不要使用小标题、序号或分点列举。如果遇到数学公式，请使用 LaTeX 格式（如 $...$ 或 $$...$$）以确保正确渲染。\n\n".to_string()
-  } else {
-    "You are an image analysis assistant. Please respond naturally without headings, bullet points, or numbered lists. If you encounter mathematical formulas, please use LaTeX format (e.g., $...$ or $$...$$) to ensure they are rendered correctly.\n\n"
-      .to_string()
+pub fn default_system_prompt(language: &str, has_image: bool) -> String {
+  match (language, has_image) {
+    ("zh", true) => "你是图片分析助手。直接、简洁地回答用户关于图片的问题。回答尽量短、自然流畅，不要小标题或编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
+    ("zh", false) => "你是简洁的对话助手。直接给出答案，回答尽量短、自然流畅，不要小标题或编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
+    (_, true) => "You analyze images. Answer directly and concisely about what the user asks. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
+    (_, false) => "You are a concise assistant. Answer directly. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
   }
 }
 
 /**
- * 获取默认总结提示词
+ * 关闭思考模式时附加到系统提示词末尾的指令。
+ * 提示词层兜底：当 provider 不识别 thinking={type:"disabled"} 字段（如某些第三方代理）时，
+ * 仍可让模型按指令省略思考过程。
  */
-pub fn default_summary_prompt(language: &str) -> String {
+pub fn no_think_instruction(language: &str) -> &'static str {
   if language == "zh" {
-    "你是一个图片分析助手。请简洁地总结这张图片的主要内容，不要使用小标题、序号或分点列举。如果遇到数学公式，请使用 LaTeX 格式（如 $...$ 或 $$...$$）。\n\n要求：\n- 用1-3句话概括图片核心内容\n- 语言自然流畅，像在和朋友描述\n- 突出最重要的信息\n- 不要使用\"图片显示...\"这样的开头\n\n请用中文回复。"
-      .to_string()
+    "\n\n严格要求：直接给出最终答案，不要输出任何思考过程、推理步骤或 <think> 内容。"
   } else {
-    "You are an image analysis assistant. Please provide a concise summary of this image's main content without using headings, bullet points, or numbered lists. If you encounter mathematical formulas, please use LaTeX format (e.g., $...$ or $$...$$).\n\nRequirements:\n- Summarize in 1-3 natural sentences\n- Write conversationally as if describing to a friend\n- Highlight the most important information\n- Don't start with \"The image shows...\"\n\nPlease respond in English."
-      .to_string()
+    "\n\nStrict requirement: output only the final answer; do NOT include any thinking, reasoning steps, or <think> content."
   }
 }
 
 /**
  * 获取默认问答提示词
+ * has_image=true 时让模型聚焦图片内容；has_image=false 时返回空串（不附加前缀，直接传用户原话）
  */
-pub fn default_question_prompt(language: &str) -> String {
+pub fn default_question_prompt(language: &str, has_image: bool) -> String {
+  if !has_image {
+    return String::new();
+  }
   if language == "zh" {
-    "你是一个图片分析助手。用户正在询问关于这张图片的问题。如果回答中包含数学公式，请务必使用 LaTeX 格式（如 $...$ 或 $$...$$）。\n\n要求：\n- 直接回答问题，不要使用小标题或分点列举\n- 语言自然、简洁\n- 基于图片内容回答\n- 如果问题与图片无关，礼貌地引导回到图片内容\n\n请用中文回复。"
-      .to_string()
+    "基于这张图片回答用户问题。如果问题与图片无关，礼貌地引导回到图片内容。".to_string()
   } else {
-    "You are an image analysis assistant. The user is asking a question about this image. If your answer contains mathematical formulas, please use LaTeX format (e.g., $...$ or $$...$$).\n\nRequirements:\n- Answer directly without headings or bullet points\n- Be natural and concise\n- Base your answer on the image content\n- If the question is unrelated to the image, politely guide back\n\nPlease respond in English."
-      .to_string()
+    "Answer the user's question based on this image. If unrelated, politely steer back to the image.".to_string()
   }
 }
 
@@ -633,10 +559,6 @@ fn default_hotkey() -> String {
 
 fn default_screenshot_translation_hotkey() -> String {
   "CommandOrControl+Shift+A".to_string()
-}
-
-fn default_screenshot_explain_hotkey() -> String {
-  "CommandOrControl+Shift+E".to_string()
 }
 
 fn default_cowork_hotkey() -> String {
@@ -661,10 +583,6 @@ fn default_openai_base_url() -> String {
 
 fn default_openai_model() -> String {
   "gpt-4o".to_string()
-}
-
-fn default_language_zh() -> String {
-  "zh".to_string()
 }
 
 fn default_settings_language() -> Option<String> {
@@ -695,18 +613,6 @@ fn normalize_optional_prompt(value: Option<String>) -> Option<String> {
       Some(trimmed.to_string())
     }
   })
-}
-
-/**
- * 清理自定义提示词：如果所有提示词都为空，返回 true 表示应删除整个结构
- */
-fn sanitize_custom_prompts(prompts: &mut CustomPrompts) -> bool {
-  prompts.system_prompt = normalize_optional_prompt(prompts.system_prompt.take());
-  prompts.summary_prompt = normalize_optional_prompt(prompts.summary_prompt.take());
-  prompts.question_prompt = normalize_optional_prompt(prompts.question_prompt.take());
-  prompts.system_prompt.is_none()
-    && prompts.summary_prompt.is_none()
-    && prompts.question_prompt.is_none()
 }
 
 /**

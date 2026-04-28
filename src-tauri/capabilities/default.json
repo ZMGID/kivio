@@ -3,9 +3,7 @@
   "description": "Default capabilities for the main window",
   "windows": [
     "main",
-    "screenshot",
-    "explain",
-    "capture"
+    "cowork"
   ],
   "permissions": [
     "core:default",

@@ -112,6 +112,12 @@ body {
   background-color: rgba(255, 255, 255, 0.32);
 }
 
+/* Translate 加载态 shimmer：水平滑动的高光，比静态 spinner 显得有进度感 */
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 /* Cowork 进入动画：淡入 + 16px 上滑 + 微缩 0.96→1。
    用于 select 装饰栏 / ready 输入栏 / answering 答案区，
    遮掩 Tauri set_size 那一帧的瞬移突兀感。 */

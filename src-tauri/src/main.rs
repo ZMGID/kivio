@@ -26,47 +26,33 @@ use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
 use reqwest::{header::HeaderMap, StatusCode};
 use serde::Deserialize;
-use tauri::{
-  AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow,
-  WebviewWindowBuilder, WindowEvent,
-};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutoStartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_single_instance::init as init_single_instance;
 use uuid::Uuid;
 
-#[cfg(not(target_os = "windows"))]
-use screenshot::capture_screenshot;
 use screenshot::cleanup_temp_file;
 use settings::{
-  default_question_prompt, default_summary_prompt, default_system_prompt, load_settings,
-  persist_settings, sanitize_settings, ExplainHistoryRecord, ExplainMessage, Settings,
+  default_question_prompt, default_system_prompt, load_settings, no_think_instruction, persist_settings,
+  sanitize_settings, ExplainMessage, Settings,
 };
-use utils::{current_timestamp, language_name, resolve_target_lang};
+use utils::{language_name, resolve_target_lang};
 #[cfg(target_os = "macos")]
 use windows::apply_macos_workspace_behavior;
-use windows::{
-  ensure_capture_overlay_window, ensure_main_window, ensure_screenshot_window, get_main_window,
-};
-
-#[cfg(target_os = "windows")]
-use xcap::Monitor;
+use windows::{ensure_main_window, get_main_window};
 
 /// 应用全局状态
 /// 使用 RwLock 保护 settings，允许多读单写；
-/// Mutex 用于 explain_images 和 pending_capture_mode 等需要独占访问的数据；
-/// AtomicBool 用于标记截图翻译/解释是否正在进行，防止并发操作。
+/// Mutex 用于 explain_images 等需要独占访问的数据；
+/// AtomicBool 标记 cowork 是否正在进行，防止并发热键触发。
 struct AppState {
   settings: RwLock<Settings>,
   explain_images: Mutex<HashMap<String, PathBuf>>,
   current_explain_image_id: Mutex<Option<String>>,
-  pending_capture_mode: Mutex<Option<String>>,
-  screenshot_translation_busy: AtomicBool,
-  screenshot_explain_busy: AtomicBool,
   cowork_busy: AtomicBool,
   /// 流式取消代号：每开新的流就 +1，跑流的循环检测到代号变了就立即结束。
-  /// 同时被 explain 和 cowork 共享：用户开新流式即作废上一个。
   explain_stream_generation: AtomicU64,
   http: Client,
 }
@@ -127,31 +113,6 @@ fn resolve_provider_credentials(
   Ok((provider.base_url.clone(), provider.api_key.clone()))
 }
 
-/// 非 Windows 平台：BusyGuard 是一个 RAII 守卫，用于标记截图操作是否正在进行
-/// 如果当前已经有截图操作在执行，则返回 None，阻止新的截图操作
-#[cfg(not(target_os = "windows"))]
-struct BusyGuard<'a> {
-  flag: &'a AtomicBool,
-}
-
-#[cfg(not(target_os = "windows"))]
-impl<'a> BusyGuard<'a> {
-  fn new(flag: &'a AtomicBool) -> Option<Self> {
-    if flag.swap(true, Ordering::SeqCst) {
-      None
-    } else {
-      Some(Self { flag })
-    }
-  }
-}
-
-#[cfg(not(target_os = "windows"))]
-impl Drop for BusyGuard<'_> {
-  fn drop(&mut self) {
-    self.flag.store(false, Ordering::SeqCst);
-  }
-}
-
 /// 构建 HTTP 客户端，设置 60 秒超时
 fn build_http_client() -> Client {
   Client::builder()
@@ -185,22 +146,20 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 /// 获取默认提示词模板
-/// 返回翻译模板、截图翻译模板以及解释功能的系统/摘要/提问提示词
+/// 返回翻译模板、截图翻译模板，以及 cowork 视觉对话用的系统/提问提示词
 #[tauri::command]
 fn get_default_prompt_templates() -> serde_json::Value {
   serde_json::json!({
     "translationTemplate": DEFAULT_TRANSLATION_TEMPLATE,
     "screenshotTranslationTemplate": DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
-    "explainPrompts": {
+    "coworkPrompts": {
       "zh": {
-        "system": default_system_prompt("zh"),
-        "summary": default_summary_prompt("zh"),
-        "question": default_question_prompt("zh")
+        "system": default_system_prompt("zh", true),
+        "question": default_question_prompt("zh", true)
       },
       "en": {
-        "system": default_system_prompt("en"),
-        "summary": default_summary_prompt("en"),
-        "question": default_question_prompt("en")
+        "system": default_system_prompt("en", true),
+        "question": default_question_prompt("en", true)
       }
     }
   })
@@ -263,12 +222,14 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
   );
 
   let retry_attempts = effective_retry_attempts(&settings);
+  // 主翻译路径默认关思考：reasoning 模型对单句翻译几乎无质量收益但显著拖慢；非 reasoning 模型该字段被忽略
   call_openai_text(
     &state.http,
     provider,
     &settings.translator_model,
     prompt,
     retry_attempts,
+    false,
   )
   .await
 }
@@ -319,143 +280,16 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
   app.shell().open(url, None).map_err(|e| e.to_string())
 }
 
-/// 获取截图解释的初始摘要
-/// 调用视觉 API 对当前截图进行总结，支持流式输出
-#[tauri::command]
-async fn explain_get_initial_summary(
-  app: AppHandle,
-  state: State<'_, AppState>,
-  image_id: String,
-) -> Result<serde_json::Value, String> {
-  let settings = state.settings_read().clone();
-  let language = settings.screenshot_explain.default_language.clone();
-  let retry_attempts = effective_retry_attempts(&settings);
-  let stream_enabled = settings.screenshot_explain.stream_enabled;
-  let prompt = settings
-    .screenshot_explain
-    .custom_prompts
-    .as_ref()
-    .and_then(|p| p.summary_prompt.clone())
-    .unwrap_or_else(|| default_summary_prompt(&language));
-
-  let messages = vec![ExplainMessage {
-    role: "user".to_string(),
-    content: prompt,
-  }];
-
-  match call_vision_api(
-    &app,
-    &state,
-    &image_id,
-    messages,
-    &language,
-    retry_attempts,
-    stream_enabled,
-    "summary",
-    "explain-stream",
-    None,
-    None,
-    None,
-  )
-  .await
-  {
-    Ok(summary) => Ok(serde_json::json!({ "success": true, "summary": summary })),
-    Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
-  }
-}
-
-/// 对截图解释进行提问
-/// 将用户问题附加在 question_prompt 后发送给视觉模型
-#[tauri::command]
-async fn explain_ask_question(
-  app: AppHandle,
-  state: State<'_, AppState>,
-  image_id: String,
-  messages: Vec<ExplainMessage>,
-) -> Result<serde_json::Value, String> {
-  let settings = state.settings_read().clone();
-  let language = settings.screenshot_explain.default_language.clone();
-  let retry_attempts = effective_retry_attempts(&settings);
-  let stream_enabled = settings.screenshot_explain.stream_enabled;
-
-  if messages.is_empty() {
-    return Ok(serde_json::json!({
-      "success": false,
-      "error": "Missing messages"
-    }));
-  }
-
-  let question_prompt = settings
-    .screenshot_explain
-    .custom_prompts
-    .as_ref()
-    .and_then(|p| p.question_prompt.clone())
-    .unwrap_or_else(|| default_question_prompt(&language));
-
-  let mut api_messages = messages.clone();
-  if let Some(last) = api_messages.pop() {
-    let user_question = last.content;
-    api_messages.push(ExplainMessage {
-      role: "user".to_string(),
-      content: format!("{}\n\n用户问题：{}", question_prompt, user_question),
-    });
-  }
-
-  match call_vision_api(
-    &app,
-    &state,
-    &image_id,
-    api_messages,
-    &language,
-    retry_attempts,
-    stream_enabled,
-    "answer",
-    "explain-stream",
-    None,
-    None,
-    None,
-  )
-  .await
-  {
-    Ok(response) => Ok(serde_json::json!({ "success": true, "response": response })),
-    Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
-  }
-}
-
-/// 读取解释图片并以 Base64 数据 URL 格式返回
+/// 读取截图图片并以 Base64 数据 URL 格式返回（cowork ready 态显示缩略图用）
 #[tauri::command]
 fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_json::Value, String> {
-  match resolve_explain_image_path(&state, &image_id) {
-    Ok(image_path) => {
-      let bytes = match fs::read(&image_path) {
-        Ok(b) => b,
-        Err(e) => {
-          eprintln!("[explain_read_image] read {} failed: {}", image_path.display(), e);
-          return Err(e.to_string());
-        }
-      };
-      let base64 = general_purpose::STANDARD.encode(bytes);
-      Ok(serde_json::json!({
-        "success": true,
-        "data": format!("data:image/png;base64,{base64}")
-      }))
-    }
-    Err(e) => {
-      eprintln!("[explain_read_image] resolve failed for id={}: {}", image_id, e);
-      Err(e)
-    }
-  }
-}
-
-/// 取消正在进行的截图解释流式输出
-/// 通过递增全局取消代号，让 `stream_vision_response` 在下一次 chunk 循环里发现代号变化并立即结束。
-/// 注意：reqwest 的 chunk 读取是阻塞等待，最坏情况要等下一个网络包到达才会真正退出。
-#[tauri::command]
-fn explain_cancel_stream(state: State<AppState>) -> Result<(), String> {
-  state
-    .explain_stream_generation
-    .fetch_add(1, Ordering::SeqCst);
-  Ok(())
+  let image_path = resolve_explain_image_path(&state, &image_id)?;
+  let bytes = fs::read(&image_path).map_err(|e| e.to_string())?;
+  let base64 = general_purpose::STANDARD.encode(bytes);
+  Ok(serde_json::json!({
+    "success": true,
+    "data": format!("data:image/png;base64,{base64}")
+  }))
 }
 
 // ====== Cowork 模式命令 ======
@@ -521,9 +355,9 @@ fn cowork_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
 }
 
 /// 入口（公共底层）：打开 cowork webview 进入 select 态。
-/// `mode_hash` 决定 hash query：
-///   - "" → "#cowork"（默认 cowork 模式，commit 后进 ready 悬浮栏）
-///   - "explain" → "#cowork?mode=explain"（commit 后调 explain_open_at_anchor 打开 explain 大窗口）
+/// mode：
+///   - "chat"（默认）：截完进对话栏 ready 态
+///   - "translate"：截完直接做 OCR + 翻译，弹原文/译文浮动卡
 fn cowork_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
   // 预热 SCK SCShareableContent 缓存，摊销首次截图的 WindowServer 查询开销。
   // 用户从按热键到选目标 + 单击截图通常 ≥ 300 ms，足以盖住 30-80 ms 的 prewarm。
@@ -551,14 +385,11 @@ fn cowork_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
       return Err(e);
     }
   };
-  let hash_str = if mode.is_empty() {
-    "#cowork".to_string()
-  } else {
-    format!("#cowork?mode={}", mode)
-  };
+  // 把 mode 编码进 hash query，前端通过 location.hash 读取（'#cowork?mode=translate'）
+  let safe_mode = if mode == "translate" { "translate" } else { "chat" };
   let script = format!(
-    "window.location.hash = {}; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('cowork:reset'));",
-    serde_json::to_string(&hash_str).unwrap_or_else(|_| "'#cowork'".to_string()),
+    "window.location.hash = '#cowork?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('cowork:reset'));",
+    mode = safe_mode,
   );
   let _ = window.eval(&script);
   // macOS 下 hidden 窗口的 set_position 常被忽略，先 show 再定位
@@ -573,13 +404,13 @@ fn cowork_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
 /// 默认入口：cowork 模式（commit 后进 ready 悬浮栏）
 #[tauri::command]
 fn cowork_request(app: AppHandle) -> Result<(), String> {
-  cowork_request_internal(&app, "")
+  cowork_request_internal(&app, "chat")
 }
 
-/// Explain 模式入口：commit 后打开截图讲解窗口
+/// 截图翻译入口：cowork webview 进入 select 态，截完做 OCR + 翻译并弹结果浮卡
 #[tauri::command]
-fn cowork_request_explain(app: AppHandle) -> Result<(), String> {
-  cowork_request_internal(&app, "explain")
+fn cowork_request_translate(app: AppHandle) -> Result<(), String> {
+  cowork_request_internal(&app, "translate")
 }
 
 /// 返回当前屏幕上可见应用窗口列表（macOS 实际数据；Windows 空数组）。
@@ -671,206 +502,12 @@ async fn cowork_capture_region(
   }
 }
 
-/// 智能定位算法：候选位置（下/右/左/上）找第一个完整放下的位置。
-/// 选位时按 expanded_h 预留垂直空间，确保后续 resize 到展开态仍不被屏幕边缘裁剪。
-/// 返回逻辑坐标 (tx, ty)；如果都不完美 fit，返回"下"候选 clamp 后的值。
-fn pick_floating_anchor(
-  app: &AppHandle,
-  anchor_x: i32,
-  anchor_y: i32,
-  anchor_width: i32,
-  anchor_height: i32,
-  win_w_l: f64,
-  win_h_l: f64,
-  expanded_h: f64,
-  gap: f64,
-) -> (f64, f64) {
-  let ax = anchor_x as f64;
-  let ay = anchor_y as f64;
-  let aw = anchor_width as f64;
-  let ah = anchor_height as f64;
-  let cx = ax + aw / 2.0;
-  let cy = ay + ah / 2.0;
-
-  let mut bounds: Option<(f64, f64, f64, f64)> = None;
-  if let Ok(monitors) = app.available_monitors() {
-    for monitor in monitors {
-      let mp = monitor.position();
-      let ms = monitor.size();
-      let scale = monitor.scale_factor();
-      let mxl = mp.x as f64 / scale;
-      let myl = mp.y as f64 / scale;
-      let mwl = ms.width as f64 / scale;
-      let mhl = ms.height as f64 / scale;
-      if cx >= mxl && cx < mxl + mwl && cy >= myl && cy < myl + mhl {
-        bounds = Some((mxl, myl, mwl, mhl));
-        break;
-      }
-    }
-  }
-  let (mxl, myl, mwl, mhl) = bounds.unwrap_or((0.0, 0.0, 1920.0, 1080.0));
-
-  // 候选 (tx, ty, 该方向需要的总高度)
-  // - 下/右/左：窗口向下展开 expanded_h
-  // - 上：仅 ready 高度需放下；展开会盖回选区，但用户已截图无影响
-  let candidates: [(f64, f64, f64); 4] = [
-    (cx - win_w_l / 2.0, ay + ah + gap, expanded_h),
-    (ax + aw + gap, cy - expanded_h / 2.0, expanded_h),
-    (ax - win_w_l - gap, cy - expanded_h / 2.0, expanded_h),
-    (cx - win_w_l / 2.0, ay - win_h_l - gap, win_h_l),
-  ];
-
-  let fit = candidates.iter().find(|(tx, ty, h)| {
-    *tx >= mxl && tx + win_w_l <= mxl + mwl && *ty >= myl && ty + h <= myl + mhl
-  });
-
-  let (mut tx, mut ty) = match fit {
-    Some(c) => (c.0, c.1),
-    None => (candidates[0].0, candidates[0].1),
-  };
-
-  // 兜底 clamp：水平按 win_w_l，垂直按 expanded_h（确保展开后仍不裁剪）
-  tx = tx.max(mxl).min(mxl + mwl - win_w_l);
-  ty = ty.max(myl).min(myl + mhl - expanded_h);
-  (tx, ty)
-}
-
-/// 仅计算智能锚点目标位置（不缩窗口）。前端 cowork 默认模式用：
-/// webview 始终全屏，对话栏靠 CSS 飞到目标屏幕坐标。
-/// 返回的 target_x/target_y 已减去 cowork webview 在屏幕上的左上角，得到 webview 内坐标。
-#[tauri::command]
-fn cowork_resolve_anchor(
-  app: AppHandle,
-  anchor_x: i32,
-  anchor_y: i32,
-  anchor_width: i32,
-  anchor_height: i32,
-) -> Result<serde_json::Value, String> {
-  // 用 ready 态尺寸算锚点：600x72 + 预留 expanded 420 + answer 区
-  let win_w_l: f64 = 600.0;
-  let win_h_l: f64 = 72.0;
-  let expanded_h: f64 = 420.0;
-  let gap: f64 = 16.0;
-  let (tx, ty) = pick_floating_anchor(
-    &app,
-    anchor_x, anchor_y, anchor_width, anchor_height,
-    win_w_l, win_h_l, expanded_h, gap,
-  );
-
-  // 把屏幕逻辑坐标转换为 cowork webview 内坐标（webview 左上角 = (web_x, web_y)）
-  let mut web_x = 0.0;
-  let mut web_y = 0.0;
-  if let Some(window) = app.get_webview_window("cowork") {
-    if let (Ok(pos), Ok(scale)) = (window.outer_position(), window.scale_factor()) {
-      let sf = if scale > 0.0 { scale } else { 1.0 };
-      web_x = pos.x as f64 / sf;
-      web_y = pos.y as f64 / sf;
-    }
-  }
-  Ok(serde_json::json!({
-    "targetX": tx - web_x,
-    "targetY": ty - web_y,
-    "screenX": tx,
-    "screenY": ty,
-  }))
-}
-
-/// 截图完成后：把 cowork 窗口缩到 600x72 + 智能放在选区周围（下/右/左/上 优先级）。
-/// 入参 anchor_* 是前端传的**逻辑坐标**（macOS Quartz / window.screenX-base CSS 像素）。
-/// 全程在逻辑像素空间计算 + LogicalPosition/LogicalSize 设值，避开 macOS PhysicalPosition 底左原点 quirk。
-/// 选位时会预留 answering 态 420px 高度，避免展开后被屏幕边缘裁剪。
-#[tauri::command]
-fn cowork_set_anchor(
-  app: AppHandle,
-  anchor_x: i32,
-  anchor_y: i32,
-  anchor_width: i32,
-  anchor_height: i32,
-) -> Result<(), String> {
-  let window = app
-    .get_webview_window("cowork")
-    .ok_or_else(|| "Cowork window not found".to_string())?;
-  let win_w_l: f64 = 600.0;
-  let win_h_l: f64 = 72.0;
-  let expanded_h: f64 = 420.0;
-  let gap: f64 = 16.0;
-
-  let (tx, ty) = pick_floating_anchor(
-    &app,
-    anchor_x, anchor_y, anchor_width, anchor_height,
-    win_w_l, win_h_l, expanded_h, gap,
-  );
-
-  let _ = window.set_size(tauri::LogicalSize::new(win_w_l, win_h_l));
-  let _ = window.set_position(tauri::LogicalPosition::new(tx, ty));
-  let _ = window.show();
-  let _ = window.set_focus();
-  Ok(())
-}
-
-/// 仅 resize（用于 ready→answering 扩展高度），保持当前位置不变（前端调）。
-#[tauri::command]
-fn cowork_resize(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
-  let window = app
-    .get_webview_window("cowork")
-    .ok_or_else(|| "Cowork window not found".to_string())?;
-  window
-    .set_size(tauri::LogicalSize::new(width, height))
-    .map_err(|e| e.to_string())
-}
-
-/// 纯文字模式：把 cowork 从全屏 select 态收缩成 width×height 的悬浮栏，
-/// 放在光标所在显示器底部居中（Dock 上方约 dock_offset px）。
-#[tauri::command]
-fn cowork_position_bottom(
-  app: AppHandle,
-  width: f64,
-  height: f64,
-  dock_offset: f64,
-) -> Result<(), String> {
-  let window = app
-    .get_webview_window("cowork")
-    .ok_or_else(|| "Cowork window not found".to_string())?;
-  let cursor = app.cursor_position().ok();
-
-  if let Ok(monitors) = app.available_monitors() {
-    for monitor in monitors {
-      let mp = monitor.position();
-      let ms = monitor.size();
-      let scale = monitor.scale_factor();
-      let mxl = mp.x as f64 / scale;
-      let myl = mp.y as f64 / scale;
-      let mwl = ms.width as f64 / scale;
-      let mhl = ms.height as f64 / scale;
-
-      let in_monitor = match cursor {
-        Some(c) => {
-          (c.x as i32) >= mp.x
-            && (c.x as i32) < mp.x + ms.width as i32
-            && (c.y as i32) >= mp.y
-            && (c.y as i32) < mp.y + ms.height as i32
-        }
-        None => true, // 没光标信息时用第一个 monitor
-      };
-      if !in_monitor {
-        continue;
-      }
-      let tx = mxl + (mwl - width) / 2.0;
-      let ty = myl + mhl - dock_offset - height;
-      let _ = window.set_size(tauri::LogicalSize::new(width, height));
-      let _ = window.set_position(tauri::LogicalPosition::new(tx, ty));
-      let _ = window.show();
-      let _ = window.set_focus();
-      return Ok(());
-    }
-  }
-  Err("No monitor matched cursor".to_string())
-}
-
-/// 单轮提问：调用 vision API 流式发出 cowork-stream 事件。
-/// 字段独立 + 默认 fallback 到 screenshot_explain：
-///   - default_language / system_prompt / question_prompt：空字符串 → 用 explain 同名值
-///   - stream_enabled / provider_id / model：cowork 自身配置
+/// 多轮提问：调用 vision API 流式发出 cowork-stream 事件。
+/// 字段全部独立。空字符串使用默认值：
+///   - default_language：空 → 跟 settings.target_lang（"auto" 视为 "zh"）
+///   - system_prompt / question_prompt：空 → default_system_prompt / default_question_prompt 模板
+///   - provider_id / model：空 → fallback 到 translator_provider_id / translator_model
+///   - stream_enabled：cowork 自身配置
 #[tauri::command]
 async fn cowork_ask(
   app: AppHandle,
@@ -881,12 +518,15 @@ async fn cowork_ask(
   let settings = state.settings_read().clone();
   let retry_attempts = effective_retry_attempts(&settings);
 
-  let language = if settings.cowork.default_language.is_empty() {
-    settings.screenshot_explain.default_language.clone()
-  } else {
+  let language = if !settings.cowork.default_language.is_empty() {
     settings.cowork.default_language.clone()
+  } else if settings.target_lang == "zh" || settings.target_lang == "en" {
+    settings.target_lang.clone()
+  } else {
+    "zh".to_string()
   };
   let stream_enabled = settings.cowork.stream_enabled;
+  let thinking_enabled = settings.cowork.thinking_enabled;
 
   let provider_override = if !settings.cowork.provider_id.is_empty() {
     Some(settings.cowork.provider_id.clone())
@@ -899,19 +539,16 @@ async fn cowork_ask(
     None
   };
 
-  // question_prompt：cowork 自定义 → explain 自定义 → 默认模板
+  let has_image = !image_id.is_empty();
+
+  // question_prompt：cowork 自定义 → 默认模板（无图时返回空，不附加前缀）
   let question_prompt = if !settings.cowork.question_prompt.is_empty() {
     settings.cowork.question_prompt.clone()
   } else {
-    settings
-      .screenshot_explain
-      .custom_prompts
-      .as_ref()
-      .and_then(|p| p.question_prompt.clone())
-      .unwrap_or_else(|| default_question_prompt(&language))
+    default_question_prompt(&language, has_image)
   };
 
-  // system_prompt：仅当 cowork 显式自定义时传 override，否则交给 call_vision_api 走 explain 默认链
+  // system_prompt：cowork 显式自定义时传 override，否则交给 call_vision_api 走默认模板
   let system_prompt_override = if !settings.cowork.system_prompt.is_empty() {
     Some(settings.cowork.system_prompt.clone())
   } else {
@@ -925,12 +562,22 @@ async fn cowork_ask(
     }));
   }
 
-  // 多轮对话：保留前面所有历史，仅把最后一条用户提问注入 question_prompt（仿 explain_ask_question）
+  // 多轮对话：保留前面所有历史，仅把最后一条用户提问注入 question_prompt
+  // question_prompt 为空（纯文本对话）时直接传用户原话，不加前缀
+  // 关闭思考时在末尾追加 "/no_think"：Qwen3 hybrid 模型识别后直接关思考；其它模型当无意义文本忽略
   let mut api_messages = messages.clone();
   if let Some(last) = api_messages.pop() {
+    let mut content = if question_prompt.is_empty() {
+      last.content
+    } else {
+      format!("{}\n\n用户问题：{}", question_prompt, last.content)
+    };
+    if !thinking_enabled {
+      content.push_str(" /no_think");
+    }
     api_messages.push(ExplainMessage {
       role: "user".to_string(),
-      content: format!("{}\n\n用户问题：{}", question_prompt, last.content),
+      content,
     });
   }
 
@@ -947,6 +594,7 @@ async fn cowork_ask(
     provider_override.as_deref(),
     model_override.as_deref(),
     system_prompt_override.as_deref(),
+    thinking_enabled,
   )
   .await
   {
@@ -964,9 +612,298 @@ fn cowork_cancel_stream(state: State<AppState>) -> Result<(), String> {
   Ok(())
 }
 
+/// 截图翻译（cowork translate 模式）：对已捕获的图片做 OCR + 翻译。
+/// stream_enabled=true 时每段 token 通过 cowork-translate-stream emit
+/// （payload.kind=original|translated, payload.delta），最后 emit done=true。
+/// 否则等两步全部完成一次性返回。
+#[tauri::command]
+async fn cowork_translate(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  image_id: String,
+) -> Result<serde_json::Value, String> {
+  let temp_path = match resolve_explain_image_path(&state, &image_id) {
+    Ok(p) => p,
+    Err(e) => return Ok(serde_json::json!({ "success": false, "error": e })),
+  };
+
+  let settings = state.settings_read().clone();
+  let ocr_provider = match settings.get_provider(&settings.screenshot_translation.provider_id) {
+    Some(p) => p.clone(),
+    None => return Ok(serde_json::json!({ "success": false, "error": "OCR provider not found" })),
+  };
+  if ocr_provider.api_key.trim().is_empty() {
+    return Ok(serde_json::json!({ "success": false, "error": "Missing API Key" }));
+  }
+
+  let retry_attempts = effective_retry_attempts(&settings);
+  let direct_translate = settings.screenshot_translation.direct_translate;
+  let st_thinking = settings.screenshot_translation.thinking_enabled;
+  let st_stream = settings.screenshot_translation.stream_enabled;
+
+  let ocr_prompt = if direct_translate {
+    let target_lang = resolve_target_lang(&settings.target_lang, "");
+    let lang_name = language_name(&target_lang).to_string();
+    build_ocr_direct_translation_prompt(
+      &lang_name,
+      settings.screenshot_translation.prompt.as_deref(),
+    )
+  } else {
+    DEFAULT_OCR_PROMPT.to_string()
+  };
+
+  let emit_done_event = |success: bool, error: Option<&str>| {
+    let _ = app.emit(
+      "cowork-translate-stream",
+      serde_json::json!({
+        "imageId": image_id,
+        "done": true,
+        "success": success,
+        "error": error,
+      }),
+    );
+  };
+
+  // 取消检测：每个 stream_chat_call 内部 fetch_add(1)。如果阶段结束后代号 > 预期值，
+  // 说明外部 cowork_cancel_stream 触发过 → 不要继续走下个阶段。
+  // (BUG: stream_vision_response 取消时返回 Ok，不会冒错误，所以必须靠代号比较)
+  let pre_ocr_gen = state.explain_stream_generation.load(Ordering::SeqCst);
+
+  // ===== 阶段 1：OCR =====
+  // direct_translate 模式 OCR 输出即译文 → kind="translated"；否则 kind="original"
+  let ocr_kind = if direct_translate { "translated" } else { "original" };
+  let recognized = if st_stream {
+    match stream_chat_call(
+      &app,
+      &state,
+      &ocr_provider,
+      &settings.screenshot_translation.model,
+      build_ocr_request_body(&temp_path, &ocr_prompt, st_thinking)?,
+      retry_attempts,
+      &image_id,
+      ocr_kind,
+      "cowork-translate-stream",
+    )
+    .await
+    {
+      Ok(t) => t,
+      Err(e) => {
+        emit_done_event(false, Some(&e));
+        return Ok(serde_json::json!({ "success": false, "error": e }));
+      }
+    }
+  } else {
+    match call_openai_ocr(
+      &state.http,
+      &ocr_provider,
+      &settings.screenshot_translation.model,
+      &temp_path,
+      &ocr_prompt,
+      retry_attempts,
+      st_thinking,
+    )
+    .await
+    {
+      Ok(text) => {
+        // 非流式也 emit 一次完整 delta，保持前端代码统一
+        let _ = app.emit(
+          "cowork-translate-stream",
+          serde_json::json!({
+            "imageId": image_id, "kind": ocr_kind, "delta": text,
+          }),
+        );
+        text
+      }
+      Err(e) => {
+        emit_done_event(false, Some(&e));
+        return Ok(serde_json::json!({ "success": false, "error": e }));
+      }
+    }
+  };
+
+  // OCR 阶段后检测取消：阶段内部 fetch_add(1) 应让代号变成 pre_ocr_gen+1。
+  // 若现在 > pre_ocr_gen+1 说明 OCR 期间外部 coworkCancelStream 触发过。
+  let cancelled_after_ocr = st_stream
+    && state.explain_stream_generation.load(Ordering::SeqCst) > pre_ocr_gen + 1;
+  if cancelled_after_ocr {
+    emit_done_event(false, Some("cancelled"));
+    return Ok(serde_json::json!({ "success": false, "error": "cancelled" }));
+  }
+
+  // direct_translate / 空内容：不再走翻译步骤
+  if direct_translate {
+    emit_done_event(true, None);
+    return Ok(serde_json::json!({
+      "success": true,
+      "original": "",
+      "translated": recognized,
+    }));
+  }
+  if recognized.trim().is_empty() {
+    emit_done_event(true, None);
+    return Ok(serde_json::json!({
+      "success": true,
+      "original": recognized,
+      "translated": "",
+    }));
+  }
+
+  // ===== 阶段 2：翻译 =====
+  let target_lang = resolve_target_lang(&settings.target_lang, &recognized);
+  let lang_name = language_name(&target_lang).to_string();
+  let prompt = build_screenshot_translation_prompt(
+    &recognized,
+    &lang_name,
+    settings.screenshot_translation.prompt.as_deref(),
+  );
+  let t_provider = settings
+    .get_provider(&settings.translator_provider_id)
+    .unwrap_or(&ocr_provider)
+    .clone();
+
+  let translated = if st_stream {
+    match stream_chat_call(
+      &app,
+      &state,
+      &t_provider,
+      &settings.translator_model,
+      build_text_request_body(&prompt, st_thinking),
+      retry_attempts,
+      &image_id,
+      "translated",
+      "cowork-translate-stream",
+    )
+    .await
+    {
+      Ok(t) => t,
+      Err(e) => {
+        // 翻译阶段失败：emit 错误并退出，避免 done(success=true) 但译文区为空的"静默失败"
+        emit_done_event(false, Some(&e));
+        return Ok(serde_json::json!({ "success": false, "error": e }));
+      }
+    }
+  } else {
+    match call_openai_text(
+      &state.http,
+      &t_provider,
+      &settings.translator_model,
+      prompt,
+      retry_attempts,
+      st_thinking,
+    )
+    .await
+    {
+      Ok(text) => {
+        let _ = app.emit(
+          "cowork-translate-stream",
+          serde_json::json!({
+            "imageId": image_id, "kind": "translated", "delta": text,
+          }),
+        );
+        text
+      }
+      Err(_) => recognized.clone(),
+    }
+  };
+
+  emit_done_event(true, None);
+  Ok(serde_json::json!({
+    "success": true,
+    "original": recognized,
+    "translated": translated,
+  }))
+}
+
+/// 构造截图翻译 OCR 请求 body（与 call_openai_ocr 保持一致，stream=true）
+fn build_ocr_request_body(
+  image_path: &Path,
+  prompt: &str,
+  thinking_enabled: bool,
+) -> Result<serde_json::Value, String> {
+  let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
+  let base64 = general_purpose::STANDARD.encode(bytes);
+  let mut body = serde_json::json!({
+    "messages": [{
+      "role": "user",
+      "content": [
+        { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{base64}") } },
+        { "type": "text", "text": prompt }
+      ]
+    }],
+    "temperature": 0.2,
+    "max_tokens": 2000,
+    "stream": true
+  });
+  if !thinking_enabled {
+    body["thinking"] = serde_json::json!({ "type": "disabled" });
+  }
+  Ok(body)
+}
+
+/// 构造截图翻译第二步（翻译） body，stream=true
+fn build_text_request_body(prompt: &str, thinking_enabled: bool) -> serde_json::Value {
+  let mut body = serde_json::json!({
+    "messages": [{ "role": "user", "content": prompt }],
+    "temperature": 0.2,
+    "stream": true
+  });
+  if !thinking_enabled {
+    body["thinking"] = serde_json::json!({ "type": "disabled" });
+  }
+  body
+}
+
+/// 通用流式 chat 调用：发送 body（model 在外层注入）→ 解析 SSE → 通过 stream_vision_response emit。
+/// 复用 explain_stream_generation 作取消代号（cowork-stream / cowork-translate-stream 都共用）。
+#[allow(clippy::too_many_arguments)]
+async fn stream_chat_call(
+  app: &AppHandle,
+  state: &State<'_, AppState>,
+  provider: &settings::ModelProvider,
+  model: &str,
+  mut body: serde_json::Value,
+  retry_attempts: usize,
+  image_id: &str,
+  kind: &str,
+  event_name: &str,
+) -> Result<String, String> {
+  body["model"] = serde_json::json!(model);
+  let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
+
+  let response = send_with_retry("Stream chat", retry_attempts, || {
+    state
+      .http
+      .post(url.clone())
+      .bearer_auth(&provider.api_key)
+      .json(&body)
+      .send()
+  })
+  .await?;
+
+  let status = response.status();
+  if !status.is_success() {
+    let body_text = response.text().await.unwrap_or_default();
+    let snippet: String = body_text.chars().take(500).collect();
+    return Err(format!("Stream HTTP {}: {}", status.as_u16(), snippet));
+  }
+
+  let generation = state
+    .explain_stream_generation
+    .fetch_add(1, Ordering::SeqCst)
+    + 1;
+  stream_vision_response(
+    app,
+    response,
+    image_id,
+    kind,
+    event_name,
+    &state.explain_stream_generation,
+    generation,
+  )
+  .await
+}
+
 /// 关闭 cowork：清理图片、释放 busy、隐藏窗口。
-/// 注意：explain 模式下，截图后 image_id 已被 explain_open_at_anchor 移交给 explain 窗口。
-/// 此时 explain 窗口可见 → 图归 explain 用，cowork_close 不能清，否则 explain_read_image 拿不到图（"Image not found"）。
 #[tauri::command]
 fn cowork_close(app: AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
@@ -974,21 +911,8 @@ fn cowork_close(app: AppHandle) -> Result<(), String> {
     let current = state.current_id_lock();
     current.clone()
   };
-
-  let explain_owns_image = app
-    .get_webview_window("explain")
-    .and_then(|w| w.is_visible().ok())
-    .unwrap_or(false);
-
-  eprintln!(
-    "[cowork_close] current_id={:?} explain_owns_image={}",
-    current_id, explain_owns_image
-  );
-
   if let Some(id) = current_id {
-    if !explain_owns_image {
-      cleanup_explain_image(&app, &id);
-    }
+    cleanup_explain_image(&app, &id);
   }
   state.cowork_busy.store(false, Ordering::SeqCst);
   if let Some(window) = app.get_webview_window("cowork") {
@@ -997,127 +921,7 @@ fn cowork_close(app: AppHandle) -> Result<(), String> {
   Ok(())
 }
 
-/// 截图讲解专用：cowork 截图完成后调用，把 explain 窗口落在选区附近（智能定位）。
-/// image_id 已由 cowork_capture_window/region 注册到 state.images_lock；这里仅设 current + 打开 explain 窗口。
-/// anchor_* 是逻辑坐标。
-#[tauri::command]
-fn explain_open_at_anchor(
-  app: AppHandle,
-  image_id: String,
-  anchor_x: i32,
-  anchor_y: i32,
-  anchor_width: i32,
-  anchor_height: i32,
-) -> Result<(), String> {
-  eprintln!(
-    "[explain_open_at_anchor] image_id={} anchor=({},{},{}x{})",
-    image_id, anchor_x, anchor_y, anchor_width, anchor_height
-  );
-  let state = app.state::<AppState>();
-  // 把图片设为 current（cowork_capture 已 insert 到 images_lock）
-  {
-    let mut current = state.current_id_lock();
-    *current = Some(image_id.clone());
-  }
-
-  // ensure_explain_window 第一次创建时会按光标定位，先让它创建/复用，然后我们再覆盖位置
-  let window = ensure_explain_window(&app, &image_id)?;
-
-  // 智能定位：compact 440×180，expanded 500×600。预留 expanded 高度，避免展开后裁剪。
-  let (tx, ty) = pick_floating_anchor(
-    &app,
-    anchor_x,
-    anchor_y,
-    anchor_width,
-    anchor_height,
-    500.0, // win_w：用 expanded 宽，水平方向给展开留够空间
-    180.0, // win_h：当前 compact 高
-    600.0, // expanded_h：展开总高
-    16.0,  // gap
-  );
-  let _ = window.set_position(tauri::LogicalPosition::new(tx, ty));
-
-  // 释放 cowork busy + 隐藏 cowork 窗口（图片不清理，留给 explain 用）
-  state.cowork_busy.store(false, Ordering::SeqCst);
-  if let Some(cw) = app.get_webview_window("cowork") {
-    let _ = cw.hide();
-  }
-
-  let _ = window.show();
-  let _ = window.set_focus();
-  Ok(())
-}
-
 // ====== /Cowork 模式命令 ======
-
-/// 关闭当前解释会话并清理对应的临时图片
-#[tauri::command]
-fn explain_close_current(app: AppHandle, state: State<AppState>) -> Result<(), String> {
-  let current_id = {
-    let current = state.current_id_lock();
-    current.clone()
-  };
-
-  if let Some(id) = current_id {
-    cleanup_explain_image(&app, &id);
-  }
-
-  Ok(())
-}
-
-/// 保存解释聊天记录到历史记录
-/// 最多保留最近 5 条记录
-#[tauri::command]
-fn explain_save_history(
-  app: AppHandle,
-  state: State<AppState>,
-  messages: Vec<ExplainMessage>,
-) -> Result<serde_json::Value, String> {
-  let mut settings = state.settings_write();
-
-  let timestamp = current_timestamp();
-  let record = ExplainHistoryRecord {
-    id: timestamp.to_string(),
-    timestamp,
-    messages,
-  };
-
-  let mut history = settings.explain_history.clone();
-  history.insert(0, record);
-  history.truncate(5);
-  settings.explain_history = history;
-
-  let snapshot = settings.clone();
-  drop(settings);
-
-  persist_settings(&app, &snapshot)?;
-  Ok(serde_json::json!({ "success": true }))
-}
-
-/// 获取所有解释历史记录
-#[tauri::command]
-fn explain_get_history(state: State<AppState>) -> Result<serde_json::Value, String> {
-  let settings = state.settings_read();
-  Ok(serde_json::json!({
-    "success": true,
-    "history": settings.explain_history
-  }))
-}
-
-/// 加载指定的解释历史记录
-#[tauri::command]
-fn explain_load_history(
-  state: State<AppState>,
-  history_id: String,
-) -> Result<serde_json::Value, String> {
-  let settings = state.settings_read();
-  let record = settings.explain_history.iter().find(|h| h.id == history_id);
-
-  match record {
-    Some(record) => Ok(serde_json::json!({ "success": true, "record": record })),
-    None => Ok(serde_json::json!({ "success": false, "error": "History not found" })),
-  }
-}
 
 /// 从供应商 API 获取可用模型列表
 #[tauri::command]
@@ -1257,7 +1061,7 @@ fn open_permission_settings(kind: String) -> Result<(), String> {
 }
 
 /// 注册全局热键
-/// 包括翻译热键、截图翻译热键、截图解释热键；会检测重复热键并给出友好错误提示
+/// 包括翻译热键、截图翻译热键、cowork 热键；会检测重复热键并给出友好错误提示
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
   let settings = app.state::<AppState>().settings_read().clone();
   let shortcut_manager = app.global_shortcut();
@@ -1305,41 +1109,14 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         if event.state == ShortcutState::Pressed {
           let handle = app.clone();
           tauri::async_runtime::spawn(async move {
-            if let Err(err) = handle_screenshot_translation(&handle).await {
-              eprintln!("Screenshot translation error: {err}");
+            if let Err(err) = cowork_request_translate(handle) {
+              eprintln!("Screenshot translation trigger error: {err}");
             }
           });
         }
       }) {
         errors.push(format_hotkey_error(
           "screenshot translation",
-          &hotkey,
-          &err.to_string(),
-        ));
-      }
-    }
-  }
-
-  if settings.screenshot_explain.enabled {
-    let hotkey = settings.screenshot_explain.hotkey.trim().to_string();
-    if hotkey.is_empty() {
-      errors.push("Screenshot explain hotkey is empty".to_string());
-    } else {
-      let hotkey_key = hotkey.to_lowercase();
-      if !registered.insert(hotkey_key) {
-        errors.push(format!("Duplicate hotkey \"{hotkey}\" for screenshot explain"));
-      } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-          let handle = app.clone();
-          tauri::async_runtime::spawn(async move {
-            if let Err(err) = handle_screenshot_explain(&handle).await {
-              eprintln!("Screenshot explain error: {err}");
-            }
-          });
-        }
-      }) {
-        errors.push(format_hotkey_error(
-          "screenshot explain",
           &hotkey,
           &err.to_string(),
         ));
@@ -1516,187 +1293,6 @@ fn capture_region_image(
   Err("Region capture is not supported on this platform".to_string())
 }
 
-/// 设置截图忙碌状态
-/// 根据模式（translate/explain）分别设置对应的 AtomicBool
-fn set_capture_busy(state: &AppState, mode: &str) -> Result<(), String> {
-  match mode {
-    "translate" => {
-      if state.screenshot_translation_busy.swap(true, Ordering::SeqCst) {
-        Err("Screenshot already in progress".to_string())
-      } else {
-        Ok(())
-      }
-    }
-    "explain" => {
-      if state.screenshot_explain_busy.swap(true, Ordering::SeqCst) {
-        Err("Screenshot explain already in progress".to_string())
-      } else {
-        Ok(())
-      }
-    }
-    _ => Err("Invalid capture mode".to_string()),
-  }
-}
-
-/// 清除截图忙碌状态
-fn clear_capture_busy(state: &AppState, mode: &str) {
-  match mode {
-    "translate" => state.screenshot_translation_busy.store(false, Ordering::SeqCst),
-    "explain" => state.screenshot_explain_busy.store(false, Ordering::SeqCst),
-    _ => {}
-  }
-}
-
-/// 请求开始区域截图
-/// 创建或显示全屏透明覆盖层窗口（capture），等待用户在前端选择区域
-#[tauri::command]
-fn capture_request(app: AppHandle, mode: String) -> Result<(), String> {
-  if mode != "translate" && mode != "explain" {
-    return Err("Invalid capture mode".to_string());
-  }
-
-  let state = app.state::<AppState>();
-  {
-    let mut pending = state
-      .pending_capture_mode
-      .lock()
-      .map_err(|_| "Capture state lock failed".to_string())?;
-    if pending.is_some() {
-      return Err("Capture already pending".to_string());
-    }
-    set_capture_busy(&state, &mode)?;
-    *pending = Some(mode.clone());
-  }
-
-  let capture_window = match ensure_capture_overlay_window(&app) {
-    Ok(window) => window,
-    Err(err) => {
-      if let Ok(mut pending) = state.pending_capture_mode.lock() {
-        *pending = None;
-      }
-      clear_capture_busy(&state, &mode);
-      return Err(err);
-    }
-  };
-
-  #[cfg(target_os = "windows")]
-  {
-    // 多屏幕兼容：将覆盖层窗口移动到鼠标所在的显示器
-    if let Ok(cursor) = app.cursor_position() {
-      let cursor_x = cursor.x as i32;
-      let cursor_y = cursor.y as i32;
-      if let Ok(monitors) = Monitor::all() {
-        for monitor in monitors {
-          let Ok(mx) = monitor.x() else { continue };
-          let Ok(my) = monitor.y() else { continue };
-          let Ok(mw) = monitor.width() else { continue };
-          let Ok(mh) = monitor.height() else { continue };
-          let right = mx + mw as i32;
-          let bottom = my + mh as i32;
-          if cursor_x >= mx && cursor_x < right && cursor_y >= my && cursor_y < bottom {
-            let _ = capture_window.set_position(
-              tauri::Position::Physical(tauri::PhysicalPosition::new(mx, my))
-            );
-            let _ = capture_window.set_size(
-              tauri::Size::Physical(tauri::PhysicalSize::new(mw, mh))
-            );
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  let _ = capture_window.eval("window.dispatchEvent(new Event('capture:reset'));\n");
-  if let Err(err) = capture_window.show().map_err(|e| e.to_string()) {
-    if let Ok(mut pending) = state.pending_capture_mode.lock() {
-      *pending = None;
-    }
-    clear_capture_busy(&state, &mode);
-    return Err(err);
-  }
-  if let Err(err) = capture_window.set_focus().map_err(|e| e.to_string()) {
-    if let Ok(mut pending) = state.pending_capture_mode.lock() {
-      *pending = None;
-    }
-    clear_capture_busy(&state, &mode);
-    return Err(err);
-  }
-  Ok(())
-}
-
-/// 提交区域截图
-/// 前端完成区域选择后调用此命令，后端根据坐标截取屏幕区域并进行后续处理
-#[tauri::command]
-async fn capture_commit(
-  app: AppHandle,
-  absolute_x: i32,
-  absolute_y: i32,
-  x: i32,
-  y: i32,
-  width: u32,
-  height: u32,
-  scale_factor: f64,
-) -> Result<(), String> {
-  let state = app.state::<AppState>();
-  let mode = {
-    let mut pending = state
-      .pending_capture_mode
-      .lock()
-      .map_err(|_| "Capture state lock failed".to_string())?;
-    pending.take().ok_or_else(|| "No pending capture mode".to_string())?
-  };
-
-  if let Some(window) = app.get_webview_window("capture") {
-    let _ = window.hide();
-  }
-
-  let result = (|| async {
-    let temp_path = capture_region_image(
-      absolute_x,
-      absolute_y,
-      x,
-      y,
-      width,
-      height,
-      scale_factor,
-      None,
-    )?;
-    if mode == "translate" {
-      process_screenshot_translation_from_path(&app, temp_path).await
-    } else {
-      process_screenshot_explain_from_path(&app, temp_path).await
-    }
-  })()
-  .await;
-
-  clear_capture_busy(&state, &mode);
-  result
-}
-
-/// 取消区域截图
-/// 隐藏覆盖层窗口并清除忙碌状态
-#[tauri::command]
-fn capture_cancel(app: AppHandle) -> Result<(), String> {
-  let state = app.state::<AppState>();
-  let mode = {
-    let mut pending = state
-      .pending_capture_mode
-      .lock()
-      .map_err(|_| "Capture state lock failed".to_string())?;
-    pending.take()
-  };
-
-  if let Some(mode) = mode {
-    clear_capture_busy(&state, &mode);
-  }
-
-  if let Some(window) = app.get_webview_window("capture") {
-    let _ = window.hide();
-  }
-  Ok(())
-}
-
 /// 设置窗口置顶状态
 #[tauri::command]
 fn set_always_on_top(window: WebviewWindow, always_on_top: bool) -> Result<(), String> {
@@ -1765,24 +1361,6 @@ fn toggle_main_window(app: &AppHandle) {
   }
 }
 
-/// Windows 平台：处理截图翻译热键
-/// 隐藏主窗口并请求开始区域截图（由前端覆盖层完成区域选择）
-#[cfg(target_os = "windows")]
-async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
-  if let Some(window) = get_main_window(app) {
-    let _ = window.hide();
-  }
-
-  if let Err(err) = capture_request(app.clone(), "translate".to_string()) {
-    if let Some(window) = app.get_webview_window("screenshot") {
-      let _ = window.emit("screenshot-error", err.clone());
-    }
-    return Err(err);
-  }
-
-  Ok(())
-}
-
 /// 恢复运行时设置
 /// 当保存设置失败时，将设置、热键、托盘等回滚到之前的状态
 fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: &Settings) {
@@ -1804,310 +1382,8 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
   }
 }
 
-/// 非 Windows 平台：处理截图翻译热键
-/// 使用 BusyGuard 防止并发，直接调用系统截图命令获取图片后处理
-#[cfg(not(target_os = "windows"))]
-async fn handle_screenshot_translation(app: &AppHandle) -> Result<(), String> {
-  let state = app.state::<AppState>();
-  let _guard = match BusyGuard::new(&state.screenshot_translation_busy) {
-    Some(guard) => guard,
-    None => {
-      if let Some(window) = app.get_webview_window("screenshot") {
-        let _ = window.emit("screenshot-error", "Screenshot already in progress");
-      }
-      return Ok(());
-    }
-  };
-
-  if let Some(window) = get_main_window(app) {
-    let _ = window.hide();
-  }
-
-  let temp_path = match capture_screenshot() {
-    Ok(path) => path,
-    Err(err) => {
-      if let Some(window) = get_main_window(app) {
-        let _ = window.show();
-        let _ = window.set_focus();
-      }
-      return Err(err);
-    }
-  };
-  process_screenshot_translation_from_path(app, temp_path).await
-}
-
-/// 处理截图翻译：从图片路径读取并进行 OCR 识别和翻译
-/// 流程：显示处理中 -> OCR ->（可选直接翻译）-> 翻译 -> 发送结果事件
-async fn process_screenshot_translation_from_path(
-  app: &AppHandle,
-  temp_path: PathBuf,
-) -> Result<(), String> {
-  let state = app.state::<AppState>();
-  let screenshot_window = match ensure_screenshot_window(app) {
-    Ok(window) => window,
-    Err(err) => {
-      cleanup_temp_file(&temp_path);
-      return Err(err);
-    }
-  };
-  if let Err(err) = screenshot_window.emit("screenshot-processing", ()) {
-    cleanup_temp_file(&temp_path);
-    return Err(err.to_string());
-  }
-  let _ = screenshot_window.show();
-  let _ = screenshot_window.set_focus();
-
-  let settings = state.settings_read().clone();
-  let provider = match settings.get_provider(&settings.screenshot_translation.provider_id) {
-    Some(provider) => provider,
-    None => {
-      cleanup_temp_file(&temp_path);
-      return Err("OCR provider not found".to_string());
-    }
-  };
-
-  if provider.api_key.trim().is_empty() {
-    if let Err(err) = screenshot_window.emit("screenshot-error", "Missing API Key") {
-      cleanup_temp_file(&temp_path);
-      return Err(err.to_string());
-    }
-    cleanup_temp_file(&temp_path);
-    return Ok(());
-  }
-
-  let retry_attempts = effective_retry_attempts(&settings);
-  let direct_translate = settings.screenshot_translation.direct_translate;
-  let ocr_prompt = if direct_translate {
-    let target_lang = resolve_target_lang(&settings.target_lang, "");
-    let lang_name = language_name(&target_lang).to_string();
-    build_ocr_direct_translation_prompt(
-      &lang_name,
-      settings.screenshot_translation.prompt.as_deref(),
-    )
-  } else {
-    DEFAULT_OCR_PROMPT.to_string()
-  };
-
-  let recognized = call_openai_ocr(
-    &state.http,
-    provider,
-    &settings.screenshot_translation.model,
-    &temp_path,
-    &ocr_prompt,
-    retry_attempts,
-  )
-  .await;
-
-  let recognized = match recognized {
-    Ok(text) => text,
-    Err(err) => {
-      let _ = screenshot_window.emit("screenshot-error", &err);
-      cleanup_temp_file(&temp_path);
-      return Err(err);
-    }
-  };
-
-  if direct_translate {
-    if let Err(err) = app.emit(
-      "screenshot-result",
-      serde_json::json!({ "original": "", "translated": recognized }),
-    ) {
-      cleanup_temp_file(&temp_path);
-      return Err(err.to_string());
-    }
-    cleanup_temp_file(&temp_path);
-    return Ok(());
-  }
-
-  if let Err(err) = app.emit(
-    "screenshot-result",
-    serde_json::json!({ "original": recognized, "translated": "" }),
-  ) {
-    cleanup_temp_file(&temp_path);
-    return Err(err.to_string());
-  }
-
-  if recognized.trim().is_empty() {
-    cleanup_temp_file(&temp_path);
-    return Ok(());
-  }
-
-  let target_lang = resolve_target_lang(&settings.target_lang, &recognized);
-  let lang_name = language_name(&target_lang).to_string();
-  let prompt = build_screenshot_translation_prompt(
-    &recognized,
-    &lang_name,
-    settings.screenshot_translation.prompt.as_deref(),
-  );
-
-  let t_provider = settings
-    .get_provider(&settings.translator_provider_id)
-    .unwrap_or(provider);
-
-  let translated = call_openai_text(
-    &state.http,
-    t_provider,
-    &settings.translator_model,
-    prompt,
-    retry_attempts,
-  )
-  .await
-  .unwrap_or(recognized.clone());
-
-  if let Err(err) = app.emit(
-    "screenshot-result",
-    serde_json::json!({ "original": recognized, "translated": translated }),
-  ) {
-    cleanup_temp_file(&temp_path);
-    return Err(err.to_string());
-  }
-
-  cleanup_temp_file(&temp_path);
-  Ok(())
-}
-
-/// Windows 平台：处理截图解释热键
-/// 隐藏主窗口并请求开始区域截图
-#[cfg(target_os = "windows")]
-async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
-  if let Some(window) = get_main_window(app) {
-    let _ = window.hide();
-  }
-
-  capture_request(app.clone(), "explain".to_string())
-}
-
-/// 非 Windows 平台：处理截图解释热键
-/// 复用 cowork 的 select 态 UI（hover 应用窗口高亮 / 单击截窗 / 拖动选区）。
-/// 截图完成后由前端走 explain_open_at_anchor 把 explain 窗口落在选区附近。
-#[cfg(not(target_os = "windows"))]
-async fn handle_screenshot_explain(app: &AppHandle) -> Result<(), String> {
-  if let Some(window) = get_main_window(app) {
-    let _ = window.hide();
-  }
-  // cowork_busy 自身做并发互斥，无需 screenshot_explain_busy guard
-  cowork_request_internal(app, "explain")
-}
-
-/// 处理截图解释：从图片路径创建解释窗口并记录图片
-async fn process_screenshot_explain_from_path(
-  app: &AppHandle,
-  temp_path: PathBuf,
-) -> Result<(), String> {
-  let state = app.state::<AppState>();
-  let image_id = Uuid::new_v4().to_string();
-  let window = match ensure_explain_window(app, &image_id) {
-    Ok(window) => window,
-    Err(err) => {
-      cleanup_temp_file(&temp_path);
-      return Err(err);
-    }
-  };
-
-  {
-    let previous_id = {
-      let mut current = state.current_id_lock();
-      let prev = current.clone();
-      *current = Some(image_id.clone());
-      prev
-    };
-
-    if let Some(prev_id) = previous_id {
-      if prev_id != image_id {
-        cleanup_explain_image(app, &prev_id);
-      }
-    }
-
-    let mut map = state.images_lock();
-    map.insert(image_id.clone(), temp_path);
-  }
-
-  let _ = window.show();
-  let _ = window.set_focus();
-
-  Ok(())
-}
-
-/// 确保解释窗口存在
-/// 如果窗口已存在，则通过修改 hash 跳转并触发 hashchange 事件；否则新建窗口
-fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindow, String> {
-  if let Some(window) = app.get_webview_window("explain") {
-    let hash = format!("#explain?imageId={}", image_id);
-    let script = format!(
-      "window.location.hash = {}; window.dispatchEvent(new HashChangeEvent('hashchange'));",
-      serde_json::to_string(&hash).map_err(|e| e.to_string())?
-    );
-    if let Err(err) = window.eval(script) {
-      eprintln!("Failed to update explain window hash: {err}");
-    }
-    return Ok(window);
-  }
-
-  let url = format!("index.html#explain?imageId={}", image_id);
-  let window = WebviewWindowBuilder::new(app, "explain", WebviewUrl::App(url.into()))
-    .title("Screenshot Explain")
-    .inner_size(440.0, 180.0)
-    .visible_on_all_workspaces(true)
-    .resizable(true)
-    .decorations(false)
-    .shadow(false)
-    .transparent(true)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
-
-  #[cfg(target_os = "macos")]
-  apply_macos_workspace_behavior(&window);
-
-  // 首次创建：定位到光标附近（横向以光标为中心，纵向略低于光标），clamp 到光标所在的显示器范围。
-  // 复用窗口（已存在分支）保留用户上次拖动的位置。
-  if let Some(cursor) = get_mouse_position(app) {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let win_w = (440.0 * scale) as i32;
-    let win_h = (180.0 * scale) as i32;
-    let mut tx = cursor.x as i32 - win_w / 2;
-    let mut ty = cursor.y as i32 + (24.0 * scale) as i32;
-
-    if let Ok(monitors) = app.available_monitors() {
-      for monitor in monitors {
-        let mp = monitor.position();
-        let ms = monitor.size();
-        let mw = ms.width as i32;
-        let mh = ms.height as i32;
-        if (cursor.x as i32) >= mp.x
-          && (cursor.x as i32) < mp.x + mw
-          && (cursor.y as i32) >= mp.y
-          && (cursor.y as i32) < mp.y + mh
-        {
-          tx = tx.max(mp.x).min(mp.x + mw - win_w);
-          ty = ty.max(mp.y).min(mp.y + mh - win_h);
-          break;
-        }
-      }
-    }
-
-    let _ = window.set_position(tauri::PhysicalPosition::new(tx, ty));
-  }
-
-  let app_handle = app.clone();
-  let image_id = image_id.to_string();
-  window.on_window_event(move |event| {
-    if let WindowEvent::Destroyed = event {
-      cleanup_explain_image(&app_handle, &image_id);
-    }
-  });
-
-  Ok(window)
-}
-
-/// 清理解释图片：从映射中移除并删除临时文件
+/// 清理截图临时文件：从映射中移除并删除磁盘文件
 fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
-  // 临时诊断：截图讲解 image_id 凭空消失，看到底是谁清的
-  eprintln!(
-    "[cleanup_explain_image] id={} called from\n{:?}",
-    image_id,
-    std::backtrace::Backtrace::capture()
-  );
   let state = app.state::<AppState>();
   let mut map = state.images_lock();
   if let Some(path) = map.remove(image_id) {
@@ -2145,13 +1421,17 @@ async fn call_openai_text(
   model: &str,
   prompt: String,
   retry_attempts: usize,
+  thinking_enabled: bool,
 ) -> Result<String, String> {
   let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-  let body = serde_json::json!({
+  let mut body = serde_json::json!({
     "model": model,
     "messages": [{ "role": "user", "content": prompt }],
     "temperature": 0.2
   });
+  if !thinking_enabled {
+    body["thinking"] = serde_json::json!({ "type": "disabled" });
+  }
 
   let response = send_with_retry("OpenAI API", retry_attempts, || {
     client
@@ -2246,30 +1526,37 @@ async fn call_openai_ocr(
   image_path: &Path,
   prompt: &str,
   retry_attempts: usize,
+  thinking_enabled: bool,
 ) -> Result<String, String> {
   let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
   let base64 = general_purpose::STANDARD.encode(bytes);
   let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
-  let body = serde_json::json!({
+  // 与 cowork 的 vision body 对齐：image 在 text 前、显式 max_tokens。
+  // thinking 按调用方传入：截图翻译默认 false（节省时间），cowork 默认 true。
+  let mut body = serde_json::json!({
     "model": model,
     "messages": [
       {
         "role": "user",
         "content": [
           {
-            "type": "text",
-            "text": prompt
-          },
-          {
             "type": "image_url",
             "image_url": { "url": format!("data:image/png;base64,{base64}") }
+          },
+          {
+            "type": "text",
+            "text": prompt
           }
         ]
       }
     ],
-    "temperature": 0
+    "temperature": 0.2,
+    "max_tokens": 2000
   });
+  if !thinking_enabled {
+    body["thinking"] = serde_json::json!({ "type": "disabled" });
+  }
 
   let response = send_with_retry("OpenAI OCR", retry_attempts, || {
     client
@@ -2280,14 +1567,24 @@ async fn call_openai_ocr(
   })
   .await?;
 
-  let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+  // 显式检查 HTTP 状态：非 2xx 把原始 body 文本带回，避免后续 .json() 抛出含糊的 "error decoding response body"
+  let status = response.status();
+  if !status.is_success() {
+    let body_text = response.text().await.unwrap_or_default();
+    let snippet: String = body_text.chars().take(500).collect();
+    return Err(format!("OCR HTTP {}: {}", status.as_u16(), snippet));
+  }
+
+  let raw = response.text().await.map_err(|e| format!("OCR read body: {}", e))?;
+  let value: serde_json::Value = serde_json::from_str(&raw)
+    .map_err(|e| format!("OCR parse JSON: {} (body: {})", e, raw.chars().take(500).collect::<String>()))?;
   let content = value
     .get("choices")
     .and_then(|choices| choices.get(0))
     .and_then(|choice| choice.get("message"))
     .and_then(|message| message.get("content"))
     .and_then(|content| content.as_str())
-    .ok_or_else(|| "Invalid OCR response".to_string())?;
+    .ok_or_else(|| format!("Invalid OCR response: {}", raw.chars().take(500).collect::<String>()))?;
 
   Ok(content.trim().to_string())
 }
@@ -2308,11 +1605,12 @@ async fn call_vision_api(
   provider_id_override: Option<&str>,
   model_override: Option<&str>,
   system_prompt_override: Option<&str>,
+  thinking_enabled: bool,
 ) -> Result<String, String> {
   let settings = state.settings_read().clone();
   let provider_id = provider_id_override
     .filter(|s| !s.is_empty())
-    .unwrap_or(&settings.screenshot_explain.provider_id);
+    .unwrap_or(&settings.translator_provider_id);
   let provider = settings.get_provider(provider_id)
     .ok_or_else(|| "Vision provider not found".to_string())?;
 
@@ -2320,19 +1618,18 @@ async fn call_vision_api(
   let has_image = !image_id.is_empty();
 
   let mut api_messages = Vec::new();
-  // 优先使用调用方提供的 system_prompt_override（cowork 自定义场景）；
-  // 否则若有图片，沿用 explain 自定义/默认 system prompt（原行为）。
-  let system_prompt_to_use: Option<String> = match system_prompt_override.filter(|s| !s.is_empty()) {
-    Some(s) => Some(s.to_string()),
-    None if has_image => Some(
-      settings
-        .screenshot_explain
-        .custom_prompts
-        .as_ref()
-        .and_then(|p| p.system_prompt.clone())
-        .unwrap_or_else(|| default_system_prompt(language)),
-    ),
-    None => None,
+  // 优先用调用方传入的 system_prompt_override；否则用默认模板（区分有/无图片）
+  // 关闭思考时在 system 末尾追加显式禁止指令，作为参数层不生效时的兜底
+  let system_prompt_to_use: Option<String> = {
+    let base = match system_prompt_override.filter(|s| !s.is_empty()) {
+      Some(s) => s.to_string(),
+      None => default_system_prompt(language, has_image),
+    };
+    if !thinking_enabled {
+      Some(format!("{}{}", base, no_think_instruction(language)))
+    } else {
+      Some(base)
+    }
   };
   if let Some(sp) = system_prompt_to_use {
     api_messages.push(serde_json::json!({
@@ -2372,7 +1669,7 @@ async fn call_vision_api(
 
   let model = model_override
     .filter(|s| !s.is_empty())
-    .unwrap_or(&settings.screenshot_explain.model);
+    .unwrap_or(&settings.translator_model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
   let mut body = serde_json::json!({
     "model": model,
@@ -2382,6 +1679,14 @@ async fn call_vision_api(
   });
   if stream {
     body["stream"] = serde_json::json!(true);
+  }
+
+  // 关闭思考模式：仅塞 DeepSeek/Kimi 官方文档约定的 thinking={type:"disabled"} 字段。
+  // 不再注入 chat_template_kwargs / enable_thinking / reasoning_effort —— 这些是 vLLM/Qwen/OpenAI
+  // 私有字段，第三方代理（如 OpenRouter / 反代）做严格校验时会以 400 拒绝整个请求（实测 DeepSeek
+  // 路径上 chat_template_kwargs 直接报错）。提示词层的 no-think 指令是更稳的兜底。
+  if !thinking_enabled {
+    body["thinking"] = serde_json::json!({ "type": "disabled" });
   }
 
   let response = send_with_retry("Vision API", retry_attempts, || {
@@ -2502,14 +1807,36 @@ async fn stream_vision_response(
         Err(_) => continue,
       };
 
-      let delta = value
+      let delta_obj = value
         .get("choices")
         .and_then(|choices| choices.get(0))
-        .and_then(|choice| choice.get("delta"))
-        .and_then(|delta| delta.get("content"))
-        .and_then(|content| content.as_str());
+        .and_then(|choice| choice.get("delta"));
 
-      if let Some(content) = delta {
+      // 推理模型（DeepSeek-R1 / Kimi 等）把链路放在 delta.reasoning_content
+      // 部分实现用 delta.reasoning。两种字段都尝试取，只要有就 emit。
+      let reasoning = delta_obj
+        .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+      if let Some(r) = reasoning {
+        let _ = app.emit(
+          event_name,
+          serde_json::json!({
+            "imageId": image_id,
+            "kind": kind,
+            "delta": "",
+            "reasoningDelta": r,
+          }),
+        );
+      }
+
+      let content = delta_obj
+        .and_then(|d| d.get("content"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+      if let Some(content) = content {
         full.push_str(content);
         let _ = app.emit(
           event_name,
@@ -2834,11 +2161,7 @@ fn main() {
       match event {
         tauri::WindowEvent::CloseRequested { api, .. } => {
           api.prevent_close();
-          if window.label() == "capture" {
-            let _ = capture_cancel(window.app_handle().clone());
-          } else {
-            let _ = window.hide();
-          }
+          let _ = window.hide();
         }
         tauri::WindowEvent::Focused(true) => {
           #[cfg(target_os = "macos")]
@@ -2867,9 +2190,6 @@ fn main() {
         settings: RwLock::new(settings),
         explain_images: Mutex::new(HashMap::new()),
         current_explain_image_id: Mutex::new(None),
-        pending_capture_mode: Mutex::new(None),
-        screenshot_translation_busy: AtomicBool::new(false),
-        screenshot_explain_busy: AtomicBool::new(false),
         cowork_busy: AtomicBool::new(false),
         explain_stream_generation: AtomicU64::new(0),
         http: build_http_client(),
@@ -2906,34 +2226,20 @@ fn main() {
       translate_text,
       commit_translation,
       open_external,
-      explain_get_initial_summary,
-      explain_ask_question,
-      explain_cancel_stream,
       explain_read_image,
-      explain_close_current,
-      explain_save_history,
-      explain_get_history,
-      explain_load_history,
       fetch_models,
       test_provider_connection,
       get_permission_status,
       open_permission_settings,
-      capture_request,
-      capture_commit,
-      capture_cancel,
       cowork_request,
-      cowork_request_explain,
+      cowork_request_translate,
       cowork_list_windows,
       cowork_capture_window,
       cowork_capture_region,
-      cowork_set_anchor,
-      cowork_resolve_anchor,
-      cowork_resize,
-      cowork_position_bottom,
       cowork_ask,
+      cowork_translate,
       cowork_cancel_stream,
       cowork_close,
-      explain_open_at_anchor,
       set_always_on_top
     ])
     .run(tauri::generate_context!())

@@ -8,31 +8,31 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 
 // ========== 类型定义 ==========
 
-// 截图解释对话消息类型
-export type ExplainMessage = { role: 'user' | 'assistant'; content: string }
+// Cowork 多轮对话消息类型（视觉模型）
+// reasoning：推理模型（DeepSeek-R1 等）的思维链文本，仅本地展示，不回传后端
+export type ExplainMessage = { role: 'user' | 'assistant'; content: string; reasoning?: string }
 
-// 截图翻译结果负载
-export type ScreenshotResultPayload = { original: string; translated: string }
-
-// 截图解释流式输出负载
-// done=true 时表示流结束（自然完成 / 取消 / 出错），delta 为空字符串
-export type ExplainStreamPayload = {
+// Cowork 流式输出负载（事件名 cowork-stream）
+// reasoningDelta：思维链增量（推理模型才会有）
+export type CoworkStreamPayload = {
   imageId: string
-  kind: 'summary' | 'answer'
+  kind: 'answer'
   delta: string
+  reasoningDelta?: string
   done?: boolean
   reason?: 'done' | 'cancelled' | 'error'
   full?: string
 }
 
-// Cowork 流式输出负载（与 ExplainStreamPayload 同结构，但事件名 cowork-stream）
-export type CoworkStreamPayload = {
+// 截图翻译流式负载（事件名 cowork-translate-stream）
+// kind: 'original' = OCR 阶段；'translated' = 翻译阶段
+export type CoworkTranslateStreamPayload = {
   imageId: string
-  kind: 'answer'
-  delta: string
+  kind?: 'original' | 'translated'
+  delta?: string
   done?: boolean
-  reason?: 'done' | 'cancelled' | 'error'
-  full?: string
+  success?: boolean
+  error?: string | null
 }
 
 // Cowork 屏幕窗口元信息（macOS 实际数据；Windows 空数组）
@@ -83,21 +83,11 @@ export type Settings = {
     providerId: string
     model: string
     directTranslate?: boolean
-    prompt?: string
-  }
-  screenshotExplain: {
-    enabled: boolean
-    hotkey: string
-    providerId: string
-    model: string
-    defaultLanguage: 'zh' | 'en'
+    /** 思考模式开关（默认 false）。OCR 模型 + 翻译模型都会注入对应字段 */
+    thinkingEnabled?: boolean
+    /** 流式输出开关（默认 true）。OCR + 翻译两步都用 SSE，token 逐字到达 */
     streamEnabled?: boolean
-    autoSummaryEnabled?: boolean
-    customPrompts?: {
-      systemPrompt?: string
-      summaryPrompt?: string
-      questionPrompt?: string
-    }
+    prompt?: string
   }
   cowork: {
     enabled: boolean
@@ -106,14 +96,13 @@ export type Settings = {
     model?: string
     defaultLanguage?: string
     streamEnabled?: boolean
+    /** 思考模式开关（默认 true）。false 时 body 注入各厂商关闭思考的字段并集 */
+    thinkingEnabled?: boolean
     systemPrompt?: string
     questionPrompt?: string
+    /** 消息排序：'asc' 老到新（默认），'desc' 新到老 */
+    messageOrder?: 'asc' | 'desc'
   }
-  explainHistory: Array<{
-    id: string
-    timestamp: number
-    messages: ExplainMessage[]
-  }>
   settingsLanguage?: 'zh' | 'en'
 }
 
@@ -121,9 +110,9 @@ export type Settings = {
 export type DefaultPromptTemplates = {
   translationTemplate: string
   screenshotTranslationTemplate?: string
-  explainPrompts: {
-    zh: { system: string; summary: string; question: string }
-    en: { system: string; summary: string; question: string }
+  coworkPrompts: {
+    zh: { system: string; question: string }
+    en: { system: string; question: string }
   }
 }
 
@@ -132,17 +121,6 @@ export type PermissionStatus = {
   platform: 'macos' | 'other'
   accessibility: boolean
   screenRecording: boolean
-}
-
-// 截图区域提交数据
-export type CaptureCommitPayload = {
-  absoluteX: number
-  absoluteY: number
-  x: number
-  y: number
-  width: number
-  height: number
-  scaleFactor: number
 }
 
 // 事件取消监听函数类型
@@ -180,13 +158,6 @@ export const api = {
   openPermissionSettings: (kind: 'accessibility' | 'screen-recording') =>
     invoke<void>('open_permission_settings', { kind }),
 
-  // 截图捕获相关
-  captureRequest: (mode: 'translate' | 'explain') =>
-    invoke<void>('capture_request', { mode }),
-  captureCommit: (payload: CaptureCommitPayload) =>
-    invoke<void>('capture_commit', payload),
-  captureCancel: () => invoke<void>('capture_cancel'),
-
   // 应用信息
   getAppVersion: () => getVersion(),
 
@@ -210,14 +181,6 @@ export const api = {
     const win = getCurrentWindow()
     await win.hide()
   },
-  closeScreenshotWindow: async () => {
-    const win = getCurrentWindow()
-    await win.hide()
-  },
-  closeExplainWindow: async () => {
-    const win = getCurrentWindow()
-    await win.hide()
-  },
   showWindow: async () => {
     const win = getCurrentWindow()
     await win.show()
@@ -233,39 +196,17 @@ export const api = {
 
   // 事件监听
   onOpenSettings: (listener: () => void) => on('open-settings', () => listener()),
-  onScreenshotProcessing: (listener: () => void) => on('screenshot-processing', () => listener()),
-  onScreenshotResult: (listener: (data: ScreenshotResultPayload) => void) =>
-    on<ScreenshotResultPayload>('screenshot-result', (data) => listener(data)),
-  onScreenshotError: (listener: (errorMsg: string) => void) => on<string>('screenshot-error', (msg) => listener(msg)),
-  onExplainStream: (listener: (payload: ExplainStreamPayload) => void) =>
-    on<ExplainStreamPayload>('explain-stream', (payload) => listener(payload)),
 
-  // 截图解释相关
+  // 读取截图（cowork ready 态拉缩略图用）
   explainReadImage: (imageId: string) =>
     invoke<{ success: boolean; data?: string; error?: string }>('explain_read_image', { imageId }),
-  explainGetInitialSummary: (imageId: string) =>
-    invoke<{ success: boolean; summary?: string; error?: string }>('explain_get_initial_summary', { imageId }),
-  explainAskQuestion: (imageId: string, messages: ExplainMessage[]) =>
-    invoke<{ success: boolean; response?: string; error?: string }>('explain_ask_question', { imageId, messages }),
-  explainGetHistory: () =>
-    invoke<{ success: boolean; history?: Array<{ id: string; timestamp: number; messages: ExplainMessage[] }>; error?: string }>(
-      'explain_get_history',
-    ),
-  explainSaveHistory: (messages: ExplainMessage[]) =>
-    invoke<{ success: boolean; error?: string }>('explain_save_history', { messages }),
-  explainLoadHistory: (historyId: string) =>
-    invoke<{ success: boolean; record?: { id: string; timestamp: number; messages: ExplainMessage[] }; error?: string }>(
-      'explain_load_history',
-      { historyId },
-    ),
-  explainCloseCurrent: () => invoke<void>('explain_close_current'),
-  explainCancelStream: () => invoke<void>('explain_cancel_stream'),
 
   // Cowork 模式
   onCoworkStream: (listener: (payload: CoworkStreamPayload) => void) =>
     on<CoworkStreamPayload>('cowork-stream', (payload) => listener(payload)),
+  onCoworkTranslateStream: (listener: (payload: CoworkTranslateStreamPayload) => void) =>
+    on<CoworkTranslateStreamPayload>('cowork-translate-stream', (payload) => listener(payload)),
   coworkRequest: () => invoke<void>('cowork_request'),
-  coworkRequestExplain: () => invoke<void>('cowork_request_explain'),
   coworkListWindows: () => invoke<CoworkWindowInfo[]>('cowork_list_windows'),
   coworkCaptureWindow: (windowId: number) =>
     invoke<{ success: boolean; imageId?: string; error?: string }>('cowork_capture_window', { windowId }),
@@ -278,25 +219,13 @@ export const api = {
     height: number
     scaleFactor: number
   }) => invoke<{ success: boolean; imageId?: string; error?: string }>('cowork_capture_region', params),
-  coworkSetAnchor: (anchorX: number, anchorY: number, anchorWidth: number, anchorHeight: number) =>
-    invoke<void>('cowork_set_anchor', { anchorX, anchorY, anchorWidth, anchorHeight }),
-  coworkResolveAnchor: (anchorX: number, anchorY: number, anchorWidth: number, anchorHeight: number) =>
-    invoke<{ targetX: number; targetY: number; screenX: number; screenY: number }>(
-      'cowork_resolve_anchor', { anchorX, anchorY, anchorWidth, anchorHeight }
+  coworkRequestTranslate: () => invoke<void>('cowork_request_translate'),
+  coworkTranslate: (imageId: string) =>
+    invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
+      'cowork_translate', { imageId }
     ),
-  coworkResize: (width: number, height: number) => invoke<void>('cowork_resize', { width, height }),
-  coworkPositionBottom: (width: number, height: number, dockOffset: number) =>
-    invoke<void>('cowork_position_bottom', { width, height, dockOffset }),
   coworkAsk: (imageId: string, messages: ExplainMessage[]) =>
     invoke<{ success: boolean; response?: string; error?: string }>('cowork_ask', { imageId, messages }),
   coworkCancelStream: () => invoke<void>('cowork_cancel_stream'),
   coworkClose: () => invoke<void>('cowork_close'),
-  // explain 复用 cowork select 态：截图完成后落位 explain 窗口（智能定位）
-  explainOpenAtAnchor: (params: {
-    imageId: string
-    anchorX: number
-    anchorY: number
-    anchorWidth: number
-    anchorHeight: number
-  }) => invoke<void>('explain_open_at_anchor', params),
 }
