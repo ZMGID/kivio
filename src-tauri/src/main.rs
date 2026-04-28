@@ -43,6 +43,9 @@ use utils::{language_name, resolve_target_lang};
 use windows::apply_macos_workspace_behavior;
 use windows::{ensure_main_window, get_main_window};
 
+#[cfg(target_os = "windows")]
+use xcap::Monitor;
+
 /// 应用全局状态
 /// 使用 RwLock 保护 settings，允许多读单写；
 /// Mutex 用于 explain_images 等需要独占访问的数据；
@@ -2210,11 +2213,6 @@ fn main() {
           if let Err(err) = open_settings_window(&app.handle()) {
             eprintln!("Failed to open settings on launch: {err}");
           }
-        }
-
-        // 预创建截图覆盖层窗口并隐藏，以便后续快速显示
-        if let Ok(capture_window) = ensure_capture_overlay_window(&app.handle()) {
-          let _ = capture_window.hide();
         }
       }
       Ok(())
