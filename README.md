@@ -1,4 +1,4 @@
-# KeyLingo v2.0.5
+# KeyLingo v2.1.0
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -11,7 +11,7 @@
 <a name="english"></a>
 ## 🇬🇧 English
 
-**KeyLingo** is a lightweight translation and AI vision utility for **macOS** and **Windows**. It focuses on a **small package size** and **low runtime usage**, while providing instant translation, screenshot translation, and screenshot explanation through global shortcuts.
+**KeyLingo** is a lightweight translation and AI vision utility for **macOS** and **Windows**. It focuses on a **small package size** and **low runtime usage**, while providing instant translation, screenshot translation, screenshot explanation, and a Claude-Desktop-style **Cowork** mode through global shortcuts.
 
 ### ✨ Key Features
 
@@ -19,26 +19,54 @@
   - Translator: `Cmd/Ctrl+Alt+T`
   - Screenshot Translation: `Cmd/Ctrl+Shift+A`
   - Screenshot Explain: `Cmd/Ctrl+Shift+E`
+  - Cowork (quick capture + ask): `Cmd/Ctrl+Shift+G`
+- **Cowork Mode**: Greyscale overlay highlights the hovered app window or a drag-region; capture and ask in a single floating bar that flies into the capture spot, with a streamed answer expanding underneath. Pure-text questions also work without a screenshot.
 - **OpenAI-Compatible Providers**: OpenAI / DeepSeek / SiliconFlow / custom compatible endpoints.
-- **Multi-Provider Routing**: Separate providers/models for Translation, OCR, and Explain.
+- **Multi-Provider Routing**: Separate providers/models for Translation, OCR, Explain, and Cowork.
 - **Screenshot Translation**: OCR + translation pipeline with optional direct-translate mode.
-- **Screenshot Explain**: AI image understanding with follow-up Q&A and history.
+- **Screenshot Explain**: AI image understanding with follow-up Q&A, history, streaming, copy / regenerate / stop, and auto-summary toggle. On macOS the capture flow now reuses the same Cowork select overlay (hover-window or drag-region) and the explain window is placed by a smart anchor algorithm so it never gets clipped.
 - **LaTeX Math Adaptation**: Better readability for formula-heavy outputs.
 - **Auto Paste**: Enter to paste translated content back to your active app.
 - **Launch at Startup**: Optional startup toggle, default **off**.
-- **Safer Settings UX**:
-  - Saving settings does not auto-close the settings window.
-  - Unsaved changes trigger a 3-action close dialog.
+- **Redesigned Settings UI**: Sidebar navigation, card-based modules, brand-orange accent, custom scrollbar, and a dedicated Cowork settings tab.
 - **Provider Diagnostics**: One-click **Test Connection** + **Fetch Models**.
 - **Permission Dashboard (macOS)**: Accessibility/Screen Recording status + deep-link to System Settings.
 
-### 📦 Release Assets (v2.0.5)
+### 📦 Release Assets (v2.1.0)
 
-- **macOS (Apple Silicon)**: `KeyLingo_2.0.5_aarch64.dmg`
-- **Windows Installer (NSIS)**: `KeyLingo_2.0.5_x64-setup.exe`
-- **Windows Installer (MSI)**: `KeyLingo_2.0.5_x64_en-US.msi`
+- **macOS (Apple Silicon)**: `KeyLingo_2.1.0_aarch64.dmg`
+- **Windows Installer (NSIS)**: `KeyLingo_2.1.0_x64-setup.exe`
+- **Windows Installer (MSI)**: `KeyLingo_2.1.0_x64_en-US.msi`
 
 ### 📚 Detailed Changelog
+
+#### v2.1.0 (2026-04-28)
+
+- **Cowork Mode (new feature)** — `Cmd/Ctrl+Shift+G`
+  - Greyscale overlay with hover-highlight on app windows, click-to-capture or drag-region.
+  - Single fixed-position prompt bar that flies into the capture area via CSS transition; the captured frame keeps an orange ring + app label as a visual hint.
+  - Smart anchor positioning (below / right / left / above) so the dialog and answer area never get clipped by screen edges.
+  - Streamed answer panel with copy / stop, Esc cancels stream then closes.
+  - Pure-text quick ask without screenshot also supported from the same bottom bar.
+  - Dedicated Cowork settings tab: enable, hotkey, provider/model, response language, streaming toggle, and custom system / question prompts (each falls back to Explain when blank).
+- **Screenshot Explain reuses Cowork capture (macOS)**
+  - Triggers the same select overlay (hover-highlight + drag-region) instead of `screencapture -i`.
+  - The explain window is placed beside the captured area using the same smart anchor algorithm.
+  - Streaming on/off toggle, copy / stop / regenerate buttons, auto-summary toggle, cancellable streams.
+- **Settings UI Overhaul**
+  - Sidebar layout replaces top tabs; each module renders as a card with brand-orange accent and a custom scrollbar.
+  - New Cowork tab; Explain tab gains streaming, auto-summary, and full custom-prompt slots.
+  - Fixed a hotkey-recording state bug where the recorded value could be overwritten on re-render.
+- **Translator main window polish**
+  - Frosted-glass surface, refined shadow / corner radius, full bilingual i18n.
+- **Stability Fixes**
+  - Fixed multiple settings panes appearing when opening Settings while a screenshot/explain window was active (event broadcast → targeted emit).
+  - Fixed screenshot model not staying in sync with provider `enabledModels`; settings fallback paths hardened.
+  - Fixed Explain window blanking, sizing flicker, loading animation glitches, and model-name display.
+  - Fixed the launch white-screen and improved multi-monitor screenshot positioning.
+  - Cowork captures now keep the webview visible end-to-end (no hide/show flash for window-id capture; shorter hide for region capture).
+- **Release Engineering**
+  - GitHub Actions release workflow now supports building from a custom ref via `workflow_dispatch`.
 
 #### v2.0.5 (2026-02-07)
 
@@ -123,12 +151,19 @@
 
 #### Screenshot Explain
 1. Press `Cmd/Ctrl + Shift + E`
-2. Select capture region
-3. Ask follow-up questions on image content
+2. On macOS the screen greys out — hover an app window for a one-click capture, or drag to crop a region.
+3. The explain window appears beside the captured area; ask follow-up questions, copy / regenerate / stop streaming as needed.
+
+#### Cowork
+1. Press `Cmd/Ctrl + Shift + G`
+2. Hover an app window (one-click capture) or drag to crop, **or** type a question directly into the bottom bar without screenshotting.
+3. The prompt bar flies into the captured area; the streamed answer expands beneath it.
+4. Esc cancels the stream and closes; clicking another app auto-cancels the select state.
 
 #### Settings
 Click gear icon ⚙️ in translator panel:
-- Providers/models/hotkeys/prompts
+- Sidebar tabs: General / Translate / Screenshot / Explain / Cowork / Models / About
+- Manage providers, models, hotkeys, prompts
 - Test provider connectivity + fetch models
 - Launch at startup toggle
 - Permission status (macOS)
@@ -163,7 +198,7 @@ npm run lint
 <a name="中文"></a>
 ## 🇨🇳 中文
 
-**KeyLingo** 是一款面向 **macOS** 与 **Windows** 的轻量化翻译与 AI 视觉工具。产品核心方向是 **小体积、低占用**，并通过全局快捷键提供即时文本翻译、截图翻译与截图讲解能力。
+**KeyLingo** 是一款面向 **macOS** 与 **Windows** 的轻量化翻译与 AI 视觉工具。产品核心方向是 **小体积、低占用**，并通过全局快捷键提供即时文本翻译、截图翻译、截图讲解，以及对标 Claude Desktop 的 **Cowork** 快速提问模式。
 
 ### ✨ 核心功能
 
@@ -171,26 +206,54 @@ npm run lint
   - 文本翻译：`Cmd/Ctrl+Alt+T`
   - 截图翻译：`Cmd/Ctrl+Shift+A`
   - 截图讲解：`Cmd/Ctrl+Shift+E`
+  - Cowork（快速截图提问）：`Cmd/Ctrl+Shift+G`
+- **Cowork 模式**：屏幕变灰 + hover 应用窗口高亮 + 单击截窗 / 拖动选区，对话栏 CSS 飞入选区附近，下方展开流式答案。也支持纯文字直接提问。
 - **OpenAI 兼容生态**：支持 OpenAI / DeepSeek / SiliconFlow 及兼容接口。
-- **多 Provider 路由**：翻译、OCR、讲解可分别指定服务商与模型。
+- **多 Provider 路由**：翻译、OCR、讲解、Cowork 可分别指定服务商与模型。
 - **截图翻译增强**：支持 OCR+翻译流程，并可切换直译模式。
-- **截图讲解**：支持图片理解、多轮追问与历史记录。
+- **截图讲解**：图片理解、多轮追问、历史记录、流式输出、复制 / 重新生成 / 停止、自动总结开关。macOS 上截图入口已切换为 Cowork 同款 select 态（hover 高亮 + 区域选择），讲解窗口同样按智能锚点算法落在选区附近，避免被边缘裁剪。
 - **LaTeX 数学公式适配**：优化公式展示与可读性。
 - **自动粘贴**：回车即可回填到当前应用。
 - **开机启动**：可选开关，默认关闭。
-- **设置页安全流程**：
-  - 保存后不自动关闭设置页。
-  - 有未保存更改时，关闭弹出三选确认。
+- **设置 UI 重构**：侧栏导航 + 卡片式模块 + 品牌橙主色 + 自定义滚动条；新增 Cowork 设置 tab。
 - **供应商诊断**：模型页支持一键“测试连接”与“获取模型列表”。
 - **权限状态面板（macOS）**：可视化查看辅助功能/屏幕录制授权并直达系统设置。
 
-### 📦 安装包（v2.0.5）
+### 📦 安装包（v2.1.0）
 
-- **macOS（Apple Silicon）**：`KeyLingo_2.0.5_aarch64.dmg`
-- **Windows NSIS 安装包**：`KeyLingo_2.0.5_x64-setup.exe`
-- **Windows MSI 安装包**：`KeyLingo_2.0.5_x64_en-US.msi`
+- **macOS（Apple Silicon）**：`KeyLingo_2.1.0_aarch64.dmg`
+- **Windows NSIS 安装包**：`KeyLingo_2.1.0_x64-setup.exe`
+- **Windows MSI 安装包**：`KeyLingo_2.1.0_x64_en-US.msi`
 
 ### 📚 详细更新目录
+
+#### v2.1.0（2026-04-28）
+
+- **Cowork 模式（新功能）** — `Cmd/Ctrl+Shift+G`
+  - 屏幕变灰 + hover 应用窗口高亮（橙色描边 + 标签）+ 单击整窗截图 / 拖动选区。
+  - 单一对话栏通过 CSS transition 平滑飞入选区附近；截图框保留橙色边框 + 应用名作为已截视觉提示。
+  - 智能锚点定位（下 / 右 / 左 / 上 优先级），不被屏幕边缘遮挡。
+  - 流式答案区下展开，支持复制 / 停止；Esc 流式时取消、否则关闭。
+  - 底部对话栏支持纯文字直接提问（不截图也能用）。
+  - 完整设置 tab：启用 / 热键 / 模型 / 响应语言 / 流式开关 / 自定义 system 与 question 提示词（留空时 fallback 到截图讲解）。
+- **截图讲解复用 Cowork 截图（macOS）**
+  - 不再调用 macOS 原生 `screencapture -i`，改走 Cowork 同款 select 态（hover 高亮 + 区域选择）。
+  - 讲解窗口落位由智能锚点算法决定，紧贴选区不被裁剪。
+  - 流式输出开关、复制 / 停止 / 重新生成、自动总结开关、可中断流式。
+- **设置 UI 全面重做**
+  - 侧栏导航代替顶部 tab，每个模块独立卡片，品牌橙主色 + 自定义滚动条。
+  - 新增 Cowork tab；讲解 tab 加流式开关、自动总结、完整自定义提示词槽位。
+  - 修复热键录制 state 在重渲染时被覆盖的 bug。
+- **翻译器主窗口质感升级**
+  - 磨砂玻璃 + 阴影 / 圆角细节 + 完整中英 i18n。
+- **稳定性修复**
+  - 修复打开设置时同时弹出多个设置面板（事件广播 → 定向 emit）。
+  - 修复截图模型与 provider `enabledModels` 不同步、settings fallback 链路加固。
+  - 修复讲解窗口空白、尺寸闪烁、loading 动画、模型名显示问题。
+  - 修复启动白屏与多显示器截图位置。
+  - Cowork 截图全程窗口不闪（整窗截图不再 hide webview，区域截图缩短 hide 时长）。
+- **发布工具链**
+  - GitHub Actions release workflow 支持通过 `workflow_dispatch` 指定任意 ref 构建。
 
 #### v2.0.5（2026-02-07）
 
@@ -275,11 +338,18 @@ npm run lint
 
 #### 截图讲解
 1. 按 `Cmd/Ctrl + Shift + E`
-2. 框选截图区域
-3. 继续追问图像内容
+2. macOS 屏幕变灰：hover 任意应用窗口可一键截窗，或拖动框选区域。
+3. 讲解窗口出现在选区附近；继续追问图像内容，可复制 / 重新生成 / 停止流式。
+
+#### Cowork
+1. 按 `Cmd/Ctrl + Shift + G`
+2. hover 应用窗口（单击截窗）或拖动框选；**也可不截图，直接在底部对话栏输入纯文字提问**。
+3. 对话栏 CSS 飞到截图位置附近，下方展开流式答案。
+4. Esc：流式中取消、否则关闭；点击其他应用自动收起 select 态。
 
 #### 设置
 点击翻译面板右上角齿轮 ⚙️：
+- 侧栏分类：通用 / 翻译 / 截图 / 讲解 / Cowork / 模型 / 关于
 - 管理 Provider / 模型 / 快捷键 / Prompt
 - 测试 Provider 连通性 + 获取模型
 - 开机启动开关
