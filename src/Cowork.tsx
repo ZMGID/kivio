@@ -400,56 +400,56 @@ export default function Cowork() {
   }
 
   const handleCaptureWindow = async (info: CoworkWindowInfo) => {
+    // capturingRef 全程 true，覆盖到 explainOpenAtAnchor 完成（后端 hide cowork webview 会触发 blur，
+    // 期间 stage 还是 'select'，blur handler 必须跳过否则会调 coworkClose 清掉刚注册的 image_id）
     capturingRef.current = true
-    let result
     try {
-      result = await api.coworkCaptureWindow(info.id)
+      const result = await api.coworkCaptureWindow(info.id)
+      if (!result.success || !result.imageId) {
+        console.error('coworkCaptureWindow failed:', result.error)
+        void enterSelect()
+        return
+      }
+      const newId = result.imageId
+      imageIdRef.current = newId
+
+      if (mode === 'explain') {
+        try {
+          await api.explainOpenAtAnchor({
+            imageId: newId,
+            anchorX: Math.round(info.x),
+            anchorY: Math.round(info.y),
+            anchorWidth: Math.round(info.width),
+            anchorHeight: Math.round(info.height),
+          })
+        } catch (err) {
+          console.error('explainOpenAtAnchor failed', err)
+          try { await api.coworkClose() } catch { /* ignore */ }
+        }
+        return
+      }
+
+      // 记录截图框（webview 内坐标）作为已截视觉标记，截完保留显示
+      setCapturedFrame({
+        x: info.x - winOrigin.x,
+        y: info.y - winOrigin.y,
+        width: info.width,
+        height: info.height,
+        label: info.owner,
+      })
+      void (async () => {
+        try {
+          const img = await api.explainReadImage(newId)
+          if (img.success) setImagePreview(img.data ?? '')
+        } catch (err) { console.error(err) }
+      })()
+      await flyBarToAnchor(
+        Math.round(info.x), Math.round(info.y), Math.round(info.width), Math.round(info.height),
+        info.owner,
+      )
     } finally {
-      // 截图本身完成后释放 flag；后续 React 渲染 / resolveAnchor 不影响 blur 误判
       capturingRef.current = false
     }
-    if (!result.success || !result.imageId) {
-      console.error('coworkCaptureWindow failed:', result.error)
-      void enterSelect()
-      return
-    }
-    const newId = result.imageId
-    imageIdRef.current = newId
-
-    if (mode === 'explain') {
-      try {
-        await api.explainOpenAtAnchor({
-          imageId: newId,
-          anchorX: Math.round(info.x),
-          anchorY: Math.round(info.y),
-          anchorWidth: Math.round(info.width),
-          anchorHeight: Math.round(info.height),
-        })
-      } catch (err) {
-        console.error('explainOpenAtAnchor failed', err)
-        try { await api.coworkClose() } catch { /* ignore */ }
-      }
-      return
-    }
-
-    // 记录截图框（webview 内坐标）作为已截视觉标记，截完保留显示
-    setCapturedFrame({
-      x: info.x - winOrigin.x,
-      y: info.y - winOrigin.y,
-      width: info.width,
-      height: info.height,
-      label: info.owner,
-    })
-    void (async () => {
-      try {
-        const img = await api.explainReadImage(newId)
-        if (img.success) setImagePreview(img.data ?? '')
-      } catch (err) { console.error(err) }
-    })()
-    await flyBarToAnchor(
-      Math.round(info.x), Math.round(info.y), Math.round(info.width), Math.round(info.height),
-      info.owner,
-    )
   }
 
   const handleCaptureRegion = async (rect: { x: number; y: number; width: number; height: number }) => {
@@ -463,51 +463,51 @@ export default function Cowork() {
       height: Math.round(rect.height),
       scaleFactor: window.devicePixelRatio || 1,
     }
+    // capturingRef 全程 true 直到 explainOpenAtAnchor / flyBarToAnchor 完成（同 handleCaptureWindow 注释）
     capturingRef.current = true
-    let result
     try {
-      result = await api.coworkCaptureRegion(params)
+      const result = await api.coworkCaptureRegion(params)
+      if (!result.success || !result.imageId) {
+        console.error('coworkCaptureRegion failed:', result.error)
+        void enterSelect()
+        return
+      }
+      const newId = result.imageId
+      imageIdRef.current = newId
+
+      if (mode === 'explain') {
+        try {
+          await api.explainOpenAtAnchor({
+            imageId: newId,
+            anchorX: params.absoluteX,
+            anchorY: params.absoluteY,
+            anchorWidth: params.width,
+            anchorHeight: params.height,
+          })
+        } catch (err) {
+          console.error('explainOpenAtAnchor failed', err)
+          try { await api.coworkClose() } catch { /* ignore */ }
+        }
+        return
+      }
+
+      setCapturedFrame({
+        x: params.x,
+        y: params.y,
+        width: params.width,
+        height: params.height,
+        label: '',
+      })
+      void (async () => {
+        try {
+          const img = await api.explainReadImage(newId)
+          if (img.success) setImagePreview(img.data ?? '')
+        } catch (err) { console.error(err) }
+      })()
+      await flyBarToAnchor(params.absoluteX, params.absoluteY, params.width, params.height, '')
     } finally {
       capturingRef.current = false
     }
-    if (!result.success || !result.imageId) {
-      console.error('coworkCaptureRegion failed:', result.error)
-      void enterSelect()
-      return
-    }
-    const newId = result.imageId
-    imageIdRef.current = newId
-
-    if (mode === 'explain') {
-      try {
-        await api.explainOpenAtAnchor({
-          imageId: newId,
-          anchorX: params.absoluteX,
-          anchorY: params.absoluteY,
-          anchorWidth: params.width,
-          anchorHeight: params.height,
-        })
-      } catch (err) {
-        console.error('explainOpenAtAnchor failed', err)
-        try { await api.coworkClose() } catch { /* ignore */ }
-      }
-      return
-    }
-
-    setCapturedFrame({
-      x: params.x,
-      y: params.y,
-      width: params.width,
-      height: params.height,
-      label: '',
-    })
-    void (async () => {
-      try {
-        const img = await api.explainReadImage(newId)
-        if (img.success) setImagePreview(img.data ?? '')
-      } catch (err) { console.error(err) }
-    })()
-    await flyBarToAnchor(params.absoluteX, params.absoluteY, params.width, params.height, '')
   }
 
   const handleMouseUp = async (e: React.MouseEvent) => {
@@ -671,11 +671,11 @@ export default function Cowork() {
       onMouseUp={handleMouseUp}
       data-tauri-drag-region="false"
     >
-      {/* 灰幕：select 态显示，截图后 fade out */}
+      {/* select 态全屏覆盖层：完全透明，仅用于捕获鼠标事件，不再加黑色蒙层 */}
       <div
         className="absolute inset-0 transition-opacity ease-out pointer-events-none"
         style={{
-          backgroundColor: 'rgba(0,0,0,0.4)',
+          backgroundColor: 'transparent',
           transitionDuration: `${TRANSITION_MS}ms`,
           opacity: stage === 'select' && !hoverRect && !dragRect ? 1 : 0,
         }}
@@ -720,8 +720,7 @@ export default function Cowork() {
                   top: hoverRect.y,
                   width: hoverRect.width,
                   height: hoverRect.height,
-                  boxShadow:
-                    '0 0 0 9999px rgba(0,0,0,0.4), 0 0 16px 2px rgba(217,119,87,0.45)',
+                  boxShadow: '0 0 16px 2px rgba(217,119,87,0.45)',
                 }}
               />
               {hovered && (
@@ -745,8 +744,7 @@ export default function Cowork() {
                 top: dragRect.y,
                 width: dragRect.width,
                 height: dragRect.height,
-                boxShadow:
-                  '0 0 0 9999px rgba(0,0,0,0.5), 0 0 16px 2px rgba(217,119,87,0.45)',
+                boxShadow: '0 0 16px 2px rgba(217,119,87,0.45)',
               }}
             />
           )}

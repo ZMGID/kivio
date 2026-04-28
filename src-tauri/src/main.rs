@@ -425,13 +425,26 @@ async fn explain_ask_question(
 /// 读取解释图片并以 Base64 数据 URL 格式返回
 #[tauri::command]
 fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_json::Value, String> {
-  let image_path = resolve_explain_image_path(&state, &image_id)?;
-  let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
-  let base64 = general_purpose::STANDARD.encode(bytes);
-  Ok(serde_json::json!({
-    "success": true,
-    "data": format!("data:image/png;base64,{base64}")
-  }))
+  match resolve_explain_image_path(&state, &image_id) {
+    Ok(image_path) => {
+      let bytes = match fs::read(&image_path) {
+        Ok(b) => b,
+        Err(e) => {
+          eprintln!("[explain_read_image] read {} failed: {}", image_path.display(), e);
+          return Err(e.to_string());
+        }
+      };
+      let base64 = general_purpose::STANDARD.encode(bytes);
+      Ok(serde_json::json!({
+        "success": true,
+        "data": format!("data:image/png;base64,{base64}")
+      }))
+    }
+    Err(e) => {
+      eprintln!("[explain_read_image] resolve failed for id={}: {}", image_id, e);
+      Err(e)
+    }
+  }
 }
 
 /// 取消正在进行的截图解释流式输出
@@ -952,6 +965,8 @@ fn cowork_cancel_stream(state: State<AppState>) -> Result<(), String> {
 }
 
 /// 关闭 cowork：清理图片、释放 busy、隐藏窗口。
+/// 注意：explain 模式下，截图后 image_id 已被 explain_open_at_anchor 移交给 explain 窗口。
+/// 此时 explain 窗口可见 → 图归 explain 用，cowork_close 不能清，否则 explain_read_image 拿不到图（"Image not found"）。
 #[tauri::command]
 fn cowork_close(app: AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
@@ -959,8 +974,21 @@ fn cowork_close(app: AppHandle) -> Result<(), String> {
     let current = state.current_id_lock();
     current.clone()
   };
+
+  let explain_owns_image = app
+    .get_webview_window("explain")
+    .and_then(|w| w.is_visible().ok())
+    .unwrap_or(false);
+
+  eprintln!(
+    "[cowork_close] current_id={:?} explain_owns_image={}",
+    current_id, explain_owns_image
+  );
+
   if let Some(id) = current_id {
-    cleanup_explain_image(&app, &id);
+    if !explain_owns_image {
+      cleanup_explain_image(&app, &id);
+    }
   }
   state.cowork_busy.store(false, Ordering::SeqCst);
   if let Some(window) = app.get_webview_window("cowork") {
@@ -981,6 +1009,10 @@ fn explain_open_at_anchor(
   anchor_width: i32,
   anchor_height: i32,
 ) -> Result<(), String> {
+  eprintln!(
+    "[explain_open_at_anchor] image_id={} anchor=({},{},{}x{})",
+    image_id, anchor_x, anchor_y, anchor_width, anchor_height
+  );
   let state = app.state::<AppState>();
   // 把图片设为 current（cowork_capture 已 insert 到 images_lock）
   {
@@ -2070,6 +2102,12 @@ fn ensure_explain_window(app: &AppHandle, image_id: &str) -> Result<WebviewWindo
 
 /// 清理解释图片：从映射中移除并删除临时文件
 fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
+  // 临时诊断：截图讲解 image_id 凭空消失，看到底是谁清的
+  eprintln!(
+    "[cleanup_explain_image] id={} called from\n{:?}",
+    image_id,
+    std::backtrace::Backtrace::capture()
+  );
   let state = app.state::<AppState>();
   let mut map = state.images_lock();
   if let Some(path) = map.remove(image_id) {
