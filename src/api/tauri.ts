@@ -287,8 +287,8 @@ export const api = {
   coworkResize: (width: number, height: number) => invoke<void>('cowork_resize', { width, height }),
   coworkPositionBottom: (width: number, height: number, dockOffset: number) =>
     invoke<void>('cowork_position_bottom', { width, height, dockOffset }),
-  coworkAsk: (imageId: string, question: string) =>
-    invoke<{ success: boolean; response?: string; error?: string }>('cowork_ask', { imageId, question }),
+  coworkAsk: (imageId: string, messages: ExplainMessage[]) =>
+    invoke<{ success: boolean; response?: string; error?: string }>('cowork_ask', { imageId, messages }),
   coworkCancelStream: () => invoke<void>('cowork_cancel_stream'),
   coworkClose: () => invoke<void>('cowork_close'),
   // explain 复用 cowork select 态：截图完成后落位 explain 窗口（智能定位）

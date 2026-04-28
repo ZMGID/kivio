@@ -40,6 +40,8 @@ objc = "0.2"
 libc = "0.2"
 core-graphics = "0.24"
 core-foundation = "0.10"
+# ScreenCaptureKit 截图：macOS 14+ 走 SCScreenshotManager 取代 `screencapture` CLI
+screencapturekit = { version = "1.5", features = ["macos_14_0"] }
 
 # Windows 平台特有依赖（屏幕截图）
 [target.'cfg(target_os = "windows")'.dependencies]

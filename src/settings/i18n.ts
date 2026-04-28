@@ -149,6 +149,8 @@ export const i18n = {
     coworkQuestionPrompt: '提问提示词',
     coworkPromptHint: '留空时使用「截图讲解」对应模板',
     coworkAnchorFailed: '定位悬浮栏失败',
+    coworkHistory: '历史',
+    coworkNoHistory: '暂无历史',
   },
   en: {
     settings: 'Settings',
@@ -298,6 +300,8 @@ export const i18n = {
     coworkQuestionPrompt: 'Question prompt',
     coworkPromptHint: 'Leave blank to use the explain template',
     coworkAnchorFailed: 'Failed to position floating bar',
+    coworkHistory: 'History',
+    coworkNoHistory: 'No history yet',
   }
 } as const
 

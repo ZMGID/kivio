@@ -172,25 +172,11 @@ pub fn list_windows() -> Vec<WindowInfo> {
   Vec::new()
 }
 
-/// 单窗口截图：macOS 用 `screencapture -l <window_id> -o -x <path>`。
+/// 单窗口截图（macOS 14+）：走 ScreenCaptureKit (SCScreenshotManager)。
+/// 取代旧的 `screencapture -l` CLI 调用：消除几十–几百 ms 子进程冷启动 + 消除屏幕白闪。
 #[cfg(target_os = "macos")]
 pub fn capture_window(window_id: u32) -> Result<std::path::PathBuf, String> {
-  use uuid::Uuid;
-  let temp_path = std::env::temp_dir().join(format!("cowork-{}.png", Uuid::new_v4()));
-  let status = std::process::Command::new("screencapture")
-    .arg("-l")
-    .arg(window_id.to_string())
-    .arg("-o")
-    .arg("-x")
-    .arg("-t")
-    .arg("png")
-    .arg(&temp_path)
-    .status()
-    .map_err(|e| e.to_string())?;
-  if !status.success() || !temp_path.exists() {
-    return Err("Window capture failed".to_string());
-  }
-  Ok(temp_path)
+  crate::sck::capture_window(window_id)
 }
 
 #[cfg(not(target_os = "macos"))]

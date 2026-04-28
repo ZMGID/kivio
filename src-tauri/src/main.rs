@@ -2,6 +2,8 @@
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
 mod cowork;
+#[cfg(target_os = "macos")]
+mod sck;
 mod screenshot;
 mod settings;
 mod utils;
@@ -510,6 +512,11 @@ fn cowork_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
 ///   - "" → "#cowork"（默认 cowork 模式，commit 后进 ready 悬浮栏）
 ///   - "explain" → "#cowork?mode=explain"（commit 后调 explain_open_at_anchor 打开 explain 大窗口）
 fn cowork_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
+  // 预热 SCK SCShareableContent 缓存，摊销首次截图的 WindowServer 查询开销。
+  // 用户从按热键到选目标 + 单击截图通常 ≥ 300 ms，足以盖住 30-80 ms 的 prewarm。
+  #[cfg(target_os = "macos")]
+  crate::sck::prewarm();
+
   let state = app.state::<AppState>();
   // 自愈：busy=true 但 cowork 窗口已不可见（外部强关 / dev 重载等异常），重置 busy
   if state.cowork_busy.load(Ordering::SeqCst) {
@@ -608,19 +615,31 @@ async fn cowork_capture_region(
   height: u32,
   scale_factor: f64,
 ) -> Result<serde_json::Value, String> {
-  // 区域截图用 `screencapture -R x,y,w,h`，会截到 cowork（全屏透明也算）→ 必须 hide。
-  // 把 sleep 缩短到 60ms（实测 macOS NSWindow.orderOut 异步生效约 30-50ms）以减小闪烁感。
-  let cowork_window = app.get_webview_window("cowork");
-  if let Some(w) = cowork_window.as_ref() {
-    let _ = w.hide();
-  }
-  tokio::time::sleep(Duration::from_millis(60)).await;
+  // SCK 路径：把自己 PID 传给 capture_region_image，SCK 在 GPU compositor 排除 cowork webview，
+  // 不再需要 hide webview + sleep 60ms 等 NSWindow.orderOut 生效（旧 `screencapture -R` 会截到全屏透明 cowork 自己）。
+  // Windows 版 capture_region_image 忽略 exclude_self_pid 参数。
+  let _ = app.get_webview_window("cowork"); // 仍引用以保证 webview 存活
+  let exclude_self_pid: Option<i32> = {
+    #[cfg(target_os = "macos")]
+    {
+      Some(std::process::id() as i32)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+      None
+    }
+  };
 
-  let result = capture_region_image(absolute_x, absolute_y, x, y, width, height, scale_factor);
-  if let Some(w) = cowork_window.as_ref() {
-    let _ = w.show();
-    let _ = w.set_focus();
-  }
+  let result = capture_region_image(
+    absolute_x,
+    absolute_y,
+    x,
+    y,
+    width,
+    height,
+    scale_factor,
+    exclude_self_pid,
+  );
   match result {
     Ok(path) => {
       let image_id = Uuid::new_v4().to_string();
@@ -844,7 +863,7 @@ async fn cowork_ask(
   app: AppHandle,
   state: State<'_, AppState>,
   image_id: String,
-  question: String,
+  messages: Vec<ExplainMessage>,
 ) -> Result<serde_json::Value, String> {
   let settings = state.settings_read().clone();
   let retry_attempts = effective_retry_attempts(&settings);
@@ -886,17 +905,27 @@ async fn cowork_ask(
     None
   };
 
-  // 把 question_prompt 注入到 user 消息（仿 explain_send_message）
-  let messages = vec![ExplainMessage {
-    role: "user".to_string(),
-    content: format!("{}\n\n用户问题：{}", question_prompt, question),
-  }];
+  if messages.is_empty() {
+    return Ok(serde_json::json!({
+      "success": false,
+      "error": "Missing messages"
+    }));
+  }
+
+  // 多轮对话：保留前面所有历史，仅把最后一条用户提问注入 question_prompt（仿 explain_ask_question）
+  let mut api_messages = messages.clone();
+  if let Some(last) = api_messages.pop() {
+    api_messages.push(ExplainMessage {
+      role: "user".to_string(),
+      content: format!("{}\n\n用户问题：{}", question_prompt, last.content),
+    });
+  }
 
   match call_vision_api(
     &app,
     &state,
     &image_id,
-    messages,
+    api_messages,
     &language,
     retry_attempts,
     stream_enabled,
@@ -1332,6 +1361,7 @@ fn capture_region_image(
   width: u32,
   height: u32,
   scale_factor: f64,
+  _exclude_self_pid: Option<i32>,
 ) -> Result<PathBuf, String> {
   // 先用前端传入的 scale factor 估算物理坐标，用于定位目标显示器
   let sf = if scale_factor.is_finite() && scale_factor > 0.0 {
@@ -1417,7 +1447,9 @@ fn capture_region_image(
   Ok(temp_path)
 }
 
-/// macOS 平台：区域截图，使用 `screencapture -R x,y,w,h <path>` 直接按全局逻辑坐标截。
+/// macOS 平台：区域截图，走 ScreenCaptureKit。
+/// `exclude_self_pid` 传 `Some(pid)` 让 SCK 在 GPU compositor 阶段排除该 PID 的所有窗口
+/// （cowork webview 自己），无需 hide+sleep 60ms。
 #[cfg(target_os = "macos")]
 fn capture_region_image(
   absolute_x: i32,
@@ -1427,23 +1459,15 @@ fn capture_region_image(
   width: u32,
   height: u32,
   _scale_factor: f64,
+  exclude_self_pid: Option<i32>,
 ) -> Result<PathBuf, String> {
-  let temp_path = std::env::temp_dir().join(format!("cowork-region-{}.png", Uuid::new_v4()));
-  let region = format!("{},{},{},{}", absolute_x, absolute_y, width, height);
-  let status = std::process::Command::new("screencapture")
-    .arg("-R")
-    .arg(region)
-    .arg("-o")
-    .arg("-x")
-    .arg("-t")
-    .arg("png")
-    .arg(&temp_path)
-    .status()
-    .map_err(|e| e.to_string())?;
-  if !status.success() || !temp_path.exists() {
-    return Err("Region capture failed".to_string());
-  }
-  Ok(temp_path)
+  crate::sck::capture_region(
+    absolute_x as f64,
+    absolute_y as f64,
+    width as f64,
+    height as f64,
+    exclude_self_pid,
+  )
 }
 
 /// 其他平台：占位
@@ -1604,6 +1628,7 @@ async fn capture_commit(
       width,
       height,
       scale_factor,
+      None,
     )?;
     if mode == "translate" {
       process_screenshot_translation_from_path(&app, temp_path).await
@@ -2331,6 +2356,14 @@ async fn call_vision_api(
   })
   .await?;
 
+  // 先检查 HTTP 状态：非 2xx 直接读出 body 文本作为错误，避免后续 .json() / chunk() 拿到非预期格式时抛出含糊的 "error decoding response body"。
+  let status = response.status();
+  if !status.is_success() {
+    let body_text = response.text().await.unwrap_or_default();
+    let snippet = body_text.chars().take(500).collect::<String>();
+    return Err(format!("Vision API HTTP {}: {}", status.as_u16(), snippet));
+  }
+
   if stream {
     // 启动新流：递增代号，存到本流持有的快照里；后续 chunk 循环只要发现全局代号 != 自己的快照就退出。
     let generation = state
@@ -2349,14 +2382,17 @@ async fn call_vision_api(
     .await;
   }
 
-  let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+  // 非流式：先读 raw text，再 parse JSON，把原始 body 作为错误信息便于诊断。
+  let raw = response.text().await.map_err(|e| format!("Vision API read body: {}", e))?;
+  let value: serde_json::Value = serde_json::from_str(&raw)
+    .map_err(|e| format!("Vision API parse JSON: {} (body: {})", e, raw.chars().take(500).collect::<String>()))?;
   let content = value
     .get("choices")
     .and_then(|choices| choices.get(0))
     .and_then(|choice| choice.get("message"))
     .and_then(|message| message.get("content"))
     .and_then(|content| content.as_str())
-    .ok_or_else(|| "Invalid vision response".to_string())?;
+    .ok_or_else(|| format!("Invalid vision response: {}", raw.chars().take(500).collect::<String>()))?;
 
   Ok(content.trim().to_string())
 }
