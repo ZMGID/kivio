@@ -688,3 +688,162 @@ fn normalize_hotkey(value: &str) -> String {
     .collect::<Vec<_>>()
     .join("+")
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  // ===== normalize_hotkey =====
+
+  #[test]
+  fn normalize_hotkey_canonicalizes_aliases() {
+    // 仅规范修饰键名（cmd/ctrl/opt/super/meta），按键名 case 透传
+    assert_eq!(normalize_hotkey("cmd+shift+a"), "CommandOrControl+Shift+a");
+    assert_eq!(normalize_hotkey("Command+Alt+T"), "CommandOrControl+Alt+T");
+    assert_eq!(normalize_hotkey("ctrl+shift+G"), "Control+Shift+G");
+    assert_eq!(normalize_hotkey("opt+space"), "Alt+space");
+    assert_eq!(normalize_hotkey("option+x"), "Alt+x");
+    assert_eq!(normalize_hotkey("super+L"), "Super+L");
+    assert_eq!(normalize_hotkey("meta+L"), "Super+L");
+  }
+
+  #[test]
+  fn normalize_hotkey_preserves_key_case() {
+    // 按键名大小写不被改动（Tauri 全局快捷键大小写敏感）
+    assert_eq!(normalize_hotkey("cmd+a"), "CommandOrControl+a");
+    assert_eq!(normalize_hotkey("cmd+A"), "CommandOrControl+A");
+  }
+
+  #[test]
+  fn normalize_hotkey_trims_whitespace() {
+    assert_eq!(normalize_hotkey(" cmd + shift + a "), "CommandOrControl+Shift+a");
+  }
+
+  #[test]
+  fn normalize_hotkey_filters_empty_parts() {
+    assert_eq!(normalize_hotkey("cmd++a"), "CommandOrControl+a");
+    assert_eq!(normalize_hotkey("+cmd+a+"), "CommandOrControl+a");
+  }
+
+  #[test]
+  fn normalize_hotkey_preserves_unknown_keys_verbatim() {
+    // F1, Backspace 等键名直接透传，不做 case 转换
+    assert_eq!(normalize_hotkey("cmd+F1"), "CommandOrControl+F1");
+    assert_eq!(normalize_hotkey("ctrl+Backspace"), "Control+Backspace");
+  }
+
+  // ===== sanitize_settings =====
+
+  #[test]
+  fn sanitize_settings_clamps_retry_attempts() {
+    let mut s = Settings::default();
+    s.retry_attempts = 0;
+    let s = sanitize_settings(s);
+    assert!((1..=5).contains(&s.retry_attempts));
+
+    let mut s = Settings::default();
+    s.retry_attempts = 99;
+    let s = sanitize_settings(s);
+    assert!((1..=5).contains(&s.retry_attempts));
+  }
+
+  #[test]
+  fn sanitize_settings_normalizes_hotkeys() {
+    let mut s = Settings::default();
+    s.hotkey = "cmd+alt+T".to_string();
+    s.screenshot_translation.hotkey = "ctrl+shift+A".to_string();
+    s.lens.hotkey = "cmd+shift+G".to_string();
+    let s = sanitize_settings(s);
+    assert_eq!(s.hotkey, "CommandOrControl+Alt+T");
+    assert_eq!(s.screenshot_translation.hotkey, "Control+Shift+A");
+    assert_eq!(s.lens.hotkey, "CommandOrControl+Shift+G");
+  }
+
+  #[test]
+  fn sanitize_settings_falls_back_when_main_hotkey_empty() {
+    let mut s = Settings::default();
+    s.hotkey = String::new();
+    let s = sanitize_settings(s);
+    assert!(!s.hotkey.is_empty(), "empty hotkey should be replaced with default");
+  }
+
+  #[test]
+  fn sanitize_settings_migrates_legacy_apikey_to_apikeys() {
+    let mut s = Settings::default();
+    s.providers.push(ModelProvider {
+      id: "p".to_string(),
+      name: "P".to_string(),
+      api_keys: vec![],
+      api_key_legacy: Some("sk-legacy".to_string()),
+      base_url: "https://api.example.com/v1".to_string(),
+      available_models: vec![],
+      enabled_models: vec!["m".to_string()],
+    });
+    let s = sanitize_settings(s);
+    let p = s.get_provider("p").unwrap();
+    assert_eq!(p.api_keys, vec!["sk-legacy".to_string()]);
+    assert!(p.api_key_legacy.is_none(), "legacy field should be drained");
+  }
+
+  #[test]
+  fn sanitize_settings_dedupes_apikey_legacy_against_apikeys() {
+    let mut s = Settings::default();
+    s.providers.push(ModelProvider {
+      id: "p".to_string(),
+      name: "P".to_string(),
+      api_keys: vec!["sk-1".to_string(), "sk-2".to_string()],
+      api_key_legacy: Some("sk-1".to_string()), // 已在 api_keys 中
+      base_url: "https://api.example.com/v1".to_string(),
+      available_models: vec![],
+      enabled_models: vec!["m".to_string()],
+    });
+    let s = sanitize_settings(s);
+    let p = s.get_provider("p").unwrap();
+    assert_eq!(p.api_keys.len(), 2, "duplicate legacy key should not be inserted");
+  }
+
+  #[test]
+  fn sanitize_settings_filters_empty_apikeys() {
+    let mut s = Settings::default();
+    s.providers.push(ModelProvider {
+      id: "p".to_string(),
+      name: "P".to_string(),
+      api_keys: vec!["sk-1".to_string(), "  ".to_string(), String::new()],
+      api_key_legacy: None,
+      base_url: "https://api.example.com/v1".to_string(),
+      available_models: vec![],
+      enabled_models: vec!["m".to_string()],
+    });
+    let s = sanitize_settings(s);
+    let p = s.get_provider("p").unwrap();
+    assert_eq!(p.api_keys, vec!["sk-1".to_string()]);
+  }
+
+  #[test]
+  fn sanitize_settings_clamps_unknown_message_order() {
+    let mut s = Settings::default();
+    s.lens.message_order = "garbage".to_string();
+    let s = sanitize_settings(s);
+    assert_eq!(s.lens.message_order, "asc");
+  }
+
+  #[test]
+  fn sanitize_settings_resets_lens_provider_when_pointing_to_nonexistent() {
+    let mut s = Settings::default();
+    s.providers.push(ModelProvider {
+      id: "real".to_string(),
+      name: "Real".to_string(),
+      api_keys: vec!["sk".to_string()],
+      api_key_legacy: None,
+      base_url: "https://api.example.com/v1".to_string(),
+      available_models: vec![],
+      enabled_models: vec!["m".to_string()],
+    });
+    s.lens.provider_id = "nonexistent".to_string();
+    s.lens.model = "ghost-model".to_string();
+    let s = sanitize_settings(s);
+    // 不存在的 provider_id 应被清空 → fallback 到 translator provider/model
+    assert_eq!(s.lens.provider_id, "");
+    assert_eq!(s.lens.model, "");
+  }
+}

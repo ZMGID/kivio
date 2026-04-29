@@ -130,3 +130,111 @@ impl AppState {
     active.insert(provider_id.to_string(), idx);
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use reqwest::Client;
+
+  /// 构造一个最小可用的 AppState 用于测试 cooldown / pick_active_key 逻辑。
+  /// 不涉及网络，Client::new() 即可（不会发请求）。
+  fn test_state() -> AppState {
+    AppState {
+      settings: RwLock::new(Settings::default()),
+      explain_images: Mutex::new(HashMap::new()),
+      current_explain_image_id: Mutex::new(None),
+      lens_busy: AtomicBool::new(false),
+      explain_stream_generation: AtomicU64::new(0),
+      key_cooldowns: Mutex::new(HashMap::new()),
+      active_key_idx: Mutex::new(HashMap::new()),
+      http: Client::new(),
+    }
+  }
+
+  #[test]
+  fn pick_active_key_returns_none_when_total_zero() {
+    let st = test_state();
+    assert_eq!(st.pick_active_key("p", 0, &HashSet::new()), None);
+  }
+
+  #[test]
+  fn pick_active_key_starts_at_idx_zero_when_no_active_recorded() {
+    let st = test_state();
+    assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(0));
+  }
+
+  #[test]
+  fn pick_active_key_prefers_last_known_good_idx() {
+    let st = test_state();
+    st.mark_key_ok("p", 2);
+    assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(2));
+  }
+
+  #[test]
+  fn pick_active_key_skips_tried_indices() {
+    let st = test_state();
+    let mut tried = HashSet::new();
+    tried.insert(0);
+    // active 是 0（没记录过 ok），但 0 已 tried → 应返回 1（环绕扫描下一个）
+    assert_eq!(st.pick_active_key("p", 3, &tried), Some(1));
+  }
+
+  #[test]
+  fn pick_active_key_skips_cooled_down_indices() {
+    let st = test_state();
+    st.mark_key_failed("p", 0); // 0 进入冷却
+    // active 默认 0；0 在冷却 → 应跳到 1
+    assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(1));
+  }
+
+  #[test]
+  fn pick_active_key_falls_back_to_cooled_when_all_cooled_but_untried() {
+    let st = test_state();
+    // 三个 key 全部冷却
+    st.mark_key_failed("p", 0);
+    st.mark_key_failed("p", 1);
+    st.mark_key_failed("p", 2);
+    // 但都没试过 → 兜底返回某个 idx（不是 None），让用户至少有 key 用
+    assert!(st.pick_active_key("p", 3, &HashSet::new()).is_some());
+  }
+
+  #[test]
+  fn pick_active_key_returns_none_when_all_tried() {
+    let st = test_state();
+    let mut tried = HashSet::new();
+    tried.insert(0);
+    tried.insert(1);
+    tried.insert(2);
+    assert_eq!(st.pick_active_key("p", 3, &tried), None);
+  }
+
+  #[test]
+  fn mark_key_ok_clears_cooldown() {
+    let st = test_state();
+    st.mark_key_failed("p", 0);
+    // 此时 0 在冷却
+    assert_ne!(st.pick_active_key("p", 2, &HashSet::new()), Some(0));
+    // 标记成功后冷却被清除 + active 设为 0
+    st.mark_key_ok("p", 0);
+    assert_eq!(st.pick_active_key("p", 2, &HashSet::new()), Some(0));
+  }
+
+  #[test]
+  fn cooldowns_are_per_provider() {
+    let st = test_state();
+    st.mark_key_failed("p1", 0);
+    // p1 idx 0 冷却不影响 p2 idx 0
+    assert_eq!(st.pick_active_key("p2", 2, &HashSet::new()), Some(0));
+  }
+
+  #[test]
+  fn pick_active_key_handles_active_idx_out_of_bounds() {
+    // 用户原来有 5 个 key，active=4；删了 3 个，现在 total=2
+    // pick_active_key 应该 clamp 到 total-1，不 panic
+    let st = test_state();
+    st.mark_key_ok("p", 4);
+    let result = st.pick_active_key("p", 2, &HashSet::new());
+    assert!(result.is_some());
+    assert!(result.unwrap() < 2);
+  }
+}

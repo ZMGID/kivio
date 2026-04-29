@@ -1729,3 +1729,40 @@ fn main() {
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn is_newer_version_handles_basic_semver() {
+    assert!(is_newer_version("2.5.0", "2.4.0"));
+    assert!(is_newer_version("2.4.1", "2.4.0"));
+    assert!(is_newer_version("3.0.0", "2.99.99"));
+    assert!(!is_newer_version("2.4.0", "2.4.0"));
+    assert!(!is_newer_version("2.3.9", "2.4.0"));
+    assert!(!is_newer_version("1.99.99", "2.0.0"));
+  }
+
+  #[test]
+  fn is_newer_version_strips_prerelease_suffix() {
+    // "1.0.0-beta" 截到第一个非数字 → 1.0.0；与 1.0.0 平等
+    assert!(!is_newer_version("1.0.0-beta", "1.0.0"));
+    assert!(is_newer_version("1.0.1-beta", "1.0.0"));
+  }
+
+  #[test]
+  fn is_newer_version_handles_missing_patch() {
+    // "2.5" 视为 2.5.0
+    assert!(is_newer_version("2.5", "2.4.0"));
+    assert!(!is_newer_version("2.5", "2.5.0"));
+  }
+
+  #[test]
+  fn is_newer_version_handles_garbage_input() {
+    // 解析失败的部分都视为 0，不 panic
+    assert!(!is_newer_version("", "1.0.0"));
+    assert!(is_newer_version("1.0.0", ""));
+    assert!(!is_newer_version("garbage", "1.0.0"));
+  }
+}

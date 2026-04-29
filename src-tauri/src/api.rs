@@ -1002,3 +1002,77 @@ pub async fn stream_vision_response(
   emit_done("done", full.trim());
   Ok(full.trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  // ===== extract_status_code =====
+
+  #[test]
+  fn extract_status_code_parses_typical_send_with_retry_format() {
+    // send_with_retry 拼出来的标准格式
+    let s = "OpenAI API Error: 429 Too Many Requests - {\"error\":\"rate_limit\"}";
+    assert_eq!(extract_status_code(s), Some(429));
+  }
+
+  #[test]
+  fn extract_status_code_handles_each_failover_status() {
+    assert_eq!(extract_status_code("X Error: 401 Unauthorized - body"), Some(401));
+    assert_eq!(extract_status_code("X Error: 402 Payment Required - body"), Some(402));
+    assert_eq!(extract_status_code("X Error: 403 Forbidden - body"), Some(403));
+    assert_eq!(extract_status_code("X Error: 429 Too Many Requests - body"), Some(429));
+  }
+
+  #[test]
+  fn extract_status_code_handles_non_failover_status() {
+    assert_eq!(extract_status_code("X Error: 400 Bad Request - body"), Some(400));
+    assert_eq!(extract_status_code("X Error: 500 Internal Server Error - body"), Some(500));
+  }
+
+  #[test]
+  fn extract_status_code_returns_none_for_network_error() {
+    // reqwest::Error 路径无前导数字
+    let s = "Stream chat Error: error sending request: connection refused (attempt 3/3)";
+    assert_eq!(extract_status_code(s), None);
+  }
+
+  #[test]
+  fn extract_status_code_returns_none_when_marker_missing() {
+    assert_eq!(extract_status_code("just some message"), None);
+    assert_eq!(extract_status_code(""), None);
+  }
+
+  // ===== is_failover_error =====
+
+  #[test]
+  fn is_failover_error_only_triggers_on_auth_quota_codes() {
+    assert!(is_failover_error("X Error: 401 - body"));
+    assert!(is_failover_error("X Error: 402 - body"));
+    assert!(is_failover_error("X Error: 403 - body"));
+    assert!(is_failover_error("X Error: 429 - body"));
+  }
+
+  #[test]
+  fn is_failover_error_does_not_trigger_on_400_or_5xx() {
+    // 400 是请求 body 问题，不应换 key
+    assert!(!is_failover_error("X Error: 400 Bad Request - body"));
+    // 500 由 send_with_retry 内部退避重试，不应到 failover 层
+    assert!(!is_failover_error("X Error: 500 Internal Server Error - body"));
+    assert!(!is_failover_error("X Error: 503 Service Unavailable - body"));
+  }
+
+  #[test]
+  fn is_failover_error_does_not_trigger_on_network_failure() {
+    // 网络问题不是 key 的锅
+    assert!(!is_failover_error("Stream Error: error sending request: timed out"));
+    assert!(!is_failover_error("X Error: connection closed"));
+  }
+
+  #[test]
+  fn is_failover_error_does_not_trigger_on_body_keywords_alone() {
+    // 旧版宽泛匹配 body 含 "billing" / "quota" 会误触发；现版严格按状态码
+    assert!(!is_failover_error("X Error: 400 - {\"message\":\"billing issue\"}"));
+    assert!(!is_failover_error("X Error: 500 - {\"message\":\"quota exceeded\"}"));
+  }
+}
