@@ -8,13 +8,13 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 
 // ========== 类型定义 ==========
 
-// Cowork 多轮对话消息类型（视觉模型）
+// Lens 多轮对话消息类型（视觉模型）
 // reasoning：推理模型（DeepSeek-R1 等）的思维链文本，仅本地展示，不回传后端
 export type ExplainMessage = { role: 'user' | 'assistant'; content: string; reasoning?: string }
 
-// Cowork 流式输出负载（事件名 cowork-stream）
+// Lens 流式输出负载（事件名 lens-stream）
 // reasoningDelta：思维链增量（推理模型才会有）
-export type CoworkStreamPayload = {
+export type LensStreamPayload = {
   imageId: string
   kind: 'answer'
   delta: string
@@ -24,9 +24,9 @@ export type CoworkStreamPayload = {
   full?: string
 }
 
-// 截图翻译流式负载（事件名 cowork-translate-stream）
+// 截图翻译流式负载（事件名 lens-translate-stream）
 // kind: 'original' = OCR 阶段；'translated' = 翻译阶段
-export type CoworkTranslateStreamPayload = {
+export type LensTranslateStreamPayload = {
   imageId: string
   kind?: 'original' | 'translated'
   delta?: string
@@ -35,8 +35,8 @@ export type CoworkTranslateStreamPayload = {
   error?: string | null
 }
 
-// Cowork 屏幕窗口元信息（macOS 实际数据；Windows 空数组）
-export type CoworkWindowInfo = {
+// Lens 屏幕窗口元信息（macOS 实际数据；Windows 空数组）
+export type LensWindowInfo = {
   id: number
   owner: string
   title: string
@@ -89,7 +89,7 @@ export type Settings = {
     streamEnabled?: boolean
     prompt?: string
   }
-  cowork: {
+  lens: {
     enabled: boolean
     hotkey: string
     providerId?: string
@@ -110,7 +110,7 @@ export type Settings = {
 export type DefaultPromptTemplates = {
   translationTemplate: string
   screenshotTranslationTemplate?: string
-  coworkPrompts: {
+  lensPrompts: {
     zh: { system: string; question: string }
     en: { system: string; question: string }
   }
@@ -197,20 +197,20 @@ export const api = {
   // 事件监听
   onOpenSettings: (listener: () => void) => on('open-settings', () => listener()),
 
-  // 读取截图（cowork ready 态拉缩略图用）
+  // 读取截图（lens ready 态拉缩略图用）
   explainReadImage: (imageId: string) =>
     invoke<{ success: boolean; data?: string; error?: string }>('explain_read_image', { imageId }),
 
-  // Cowork 模式
-  onCoworkStream: (listener: (payload: CoworkStreamPayload) => void) =>
-    on<CoworkStreamPayload>('cowork-stream', (payload) => listener(payload)),
-  onCoworkTranslateStream: (listener: (payload: CoworkTranslateStreamPayload) => void) =>
-    on<CoworkTranslateStreamPayload>('cowork-translate-stream', (payload) => listener(payload)),
-  coworkRequest: () => invoke<void>('cowork_request'),
-  coworkListWindows: () => invoke<CoworkWindowInfo[]>('cowork_list_windows'),
-  coworkCaptureWindow: (windowId: number) =>
-    invoke<{ success: boolean; imageId?: string; error?: string }>('cowork_capture_window', { windowId }),
-  coworkCaptureRegion: (params: {
+  // Lens 模式
+  onLensStream: (listener: (payload: LensStreamPayload) => void) =>
+    on<LensStreamPayload>('lens-stream', (payload) => listener(payload)),
+  onLensTranslateStream: (listener: (payload: LensTranslateStreamPayload) => void) =>
+    on<LensTranslateStreamPayload>('lens-translate-stream', (payload) => listener(payload)),
+  lensRequest: () => invoke<void>('lens_request'),
+  lensListWindows: () => invoke<LensWindowInfo[]>('lens_list_windows'),
+  lensCaptureWindow: (windowId: number) =>
+    invoke<{ success: boolean; imageId?: string; error?: string }>('lens_capture_window', { windowId }),
+  lensCaptureRegion: (params: {
     absoluteX: number
     absoluteY: number
     x: number
@@ -218,14 +218,14 @@ export const api = {
     width: number
     height: number
     scaleFactor: number
-  }) => invoke<{ success: boolean; imageId?: string; error?: string }>('cowork_capture_region', params),
-  coworkRequestTranslate: () => invoke<void>('cowork_request_translate'),
-  coworkTranslate: (imageId: string) =>
+  }) => invoke<{ success: boolean; imageId?: string; error?: string }>('lens_capture_region', params),
+  lensRequestTranslate: () => invoke<void>('lens_request_translate'),
+  lensTranslate: (imageId: string) =>
     invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
-      'cowork_translate', { imageId }
+      'lens_translate', { imageId }
     ),
-  coworkAsk: (imageId: string, messages: ExplainMessage[]) =>
-    invoke<{ success: boolean; response?: string; error?: string }>('cowork_ask', { imageId, messages }),
-  coworkCancelStream: () => invoke<void>('cowork_cancel_stream'),
-  coworkClose: () => invoke<void>('cowork_close'),
+  lensAsk: (imageId: string, messages: ExplainMessage[]) =>
+    invoke<{ success: boolean; response?: string; error?: string }>('lens_ask', { imageId, messages }),
+  lensCancelStream: () => invoke<void>('lens_cancel_stream'),
+  lensClose: () => invoke<void>('lens_close'),
 }

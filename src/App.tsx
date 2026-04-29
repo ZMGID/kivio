@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import Settings from './Settings'
-import Cowork from './Cowork'
+import Lens from './Lens'
 import { api } from './api/tauri'
 import { i18n, type Lang } from './settings/i18n'
 import './index.css'
@@ -167,7 +167,7 @@ function Translator({
 
 /**
  * 应用根组件
- * 根据 URL hash 切换不同视图模式（翻译器、设置、cowork）
+ * 根据 URL hash 切换不同视图模式（翻译器、设置、lens）
  */
 function App() {
   // 从 URL hash 和查询参数解析当前模式
@@ -217,7 +217,7 @@ function App() {
 
   // 监听后端触发的打开设置事件
   // 仅 main webview（hash 为空 / translator / settings）响应；
-  // cowork webview 即便误收广播也不切换视图，避免多设置界面。
+  // lens webview 即便误收广播也不切换视图，避免多设置界面。
   useEffect(() => {
     let cleanup: (() => void) | undefined
     api.onOpenSettings(() => {
@@ -267,7 +267,7 @@ function App() {
   }
 
   // 根据模式渲染对应视图
-  if (mode === 'cowork') return <Cowork />
+  if (mode === 'lens') return <Lens />
   if (mode === 'settings') {
     return (
       <div className="h-screen w-screen overflow-hidden">

@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
-mod cowork;
+mod lens;
 #[cfg(target_os = "macos")]
 mod sck;
 mod screenshot;
@@ -49,12 +49,12 @@ use xcap::Monitor;
 /// 应用全局状态
 /// 使用 RwLock 保护 settings，允许多读单写；
 /// Mutex 用于 explain_images 等需要独占访问的数据；
-/// AtomicBool 标记 cowork 是否正在进行，防止并发热键触发。
+/// AtomicBool 标记 lens 是否正在进行，防止并发热键触发。
 struct AppState {
   settings: RwLock<Settings>,
   explain_images: Mutex<HashMap<String, PathBuf>>,
   current_explain_image_id: Mutex<Option<String>>,
-  cowork_busy: AtomicBool,
+  lens_busy: AtomicBool,
   /// 流式取消代号：每开新的流就 +1，跑流的循环检测到代号变了就立即结束。
   explain_stream_generation: AtomicU64,
   http: Client,
@@ -149,13 +149,13 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 /// 获取默认提示词模板
-/// 返回翻译模板、截图翻译模板，以及 cowork 视觉对话用的系统/提问提示词
+/// 返回翻译模板、截图翻译模板，以及 lens 视觉对话用的系统/提问提示词
 #[tauri::command]
 fn get_default_prompt_templates() -> serde_json::Value {
   serde_json::json!({
     "translationTemplate": DEFAULT_TRANSLATION_TEMPLATE,
     "screenshotTranslationTemplate": DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
-    "coworkPrompts": {
+    "lensPrompts": {
       "zh": {
         "system": default_system_prompt("zh", true),
         "question": default_question_prompt("zh", true)
@@ -283,7 +283,7 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
   app.shell().open(url, None).map_err(|e| e.to_string())
 }
 
-/// 读取截图图片并以 Base64 数据 URL 格式返回（cowork ready 态显示缩略图用）
+/// 读取截图图片并以 Base64 数据 URL 格式返回（lens ready 态显示缩略图用）
 #[tauri::command]
 fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_json::Value, String> {
   let image_path = resolve_explain_image_path(&state, &image_id)?;
@@ -295,23 +295,23 @@ fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_
   }))
 }
 
-// ====== Cowork 模式命令 ======
+// ====== Lens 模式命令 ======
 
-/// 把 cowork 窗口铺满光标所在显示器（用于 select 态）。
-fn cowork_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
+/// 把 lens 窗口铺满光标所在显示器（用于 select 态）。
+fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
   let cursor = match app.cursor_position() {
     Ok(c) => c,
     Err(e) => {
-      eprintln!("[cowork-pos] cursor_position err: {}", e);
+      eprintln!("[lens-pos] cursor_position err: {}", e);
       return;
     }
   };
-  eprintln!("[cowork-pos] cursor (physical): ({}, {})", cursor.x, cursor.y);
+  eprintln!("[lens-pos] cursor (physical): ({}, {})", cursor.x, cursor.y);
 
   let monitors = match app.available_monitors() {
     Ok(m) => m,
     Err(e) => {
-      eprintln!("[cowork-pos] available_monitors err: {}", e);
+      eprintln!("[lens-pos] available_monitors err: {}", e);
       return;
     }
   };
@@ -320,7 +320,7 @@ fn cowork_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
     let ms = monitor.size();
     let scale = monitor.scale_factor();
     eprintln!(
-      "[cowork-pos] monitor[{}] pos=({},{}) size={}x{} scale={}",
+      "[lens-pos] monitor[{}] pos=({},{}) size={}x{} scale={}",
       i, mp.x, mp.y, ms.width, ms.height, scale
     );
   }
@@ -341,7 +341,7 @@ fn cowork_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
       let lw = ms.width as f64 / scale;
       let lh = ms.height as f64 / scale;
       eprintln!(
-        "[cowork-pos] -> set_position logical=({}, {}) size=({}, {})",
+        "[lens-pos] -> set_position logical=({}, {}) size=({}, {})",
         lx, ly, lw, lh
       );
       let _ = window.set_position(tauri::LogicalPosition::new(lx, ly));
@@ -349,87 +349,87 @@ fn cowork_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
 
       // 验证：读回当前 outer_position
       if let Ok(op) = window.outer_position() {
-        eprintln!("[cowork-pos] verify outer_position physical=({}, {})", op.x, op.y);
+        eprintln!("[lens-pos] verify outer_position physical=({}, {})", op.x, op.y);
       }
       return;
     }
   }
-  eprintln!("[cowork-pos] no monitor matched cursor!");
+  eprintln!("[lens-pos] no monitor matched cursor!");
 }
 
-/// 入口（公共底层）：打开 cowork webview 进入 select 态。
+/// 入口（公共底层）：打开 lens webview 进入 select 态。
 /// mode：
 ///   - "chat"（默认）：截完进对话栏 ready 态
 ///   - "translate"：截完直接做 OCR + 翻译，弹原文/译文浮动卡
-fn cowork_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
+fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
   // 预热 SCK SCShareableContent 缓存，摊销首次截图的 WindowServer 查询开销。
   // 用户从按热键到选目标 + 单击截图通常 ≥ 300 ms，足以盖住 30-80 ms 的 prewarm。
   #[cfg(target_os = "macos")]
   crate::sck::prewarm();
 
   let state = app.state::<AppState>();
-  // 自愈：busy=true 但 cowork 窗口已不可见（外部强关 / dev 重载等异常），重置 busy
-  if state.cowork_busy.load(Ordering::SeqCst) {
+  // 自愈：busy=true 但 lens 窗口已不可见（外部强关 / dev 重载等异常），重置 busy
+  if state.lens_busy.load(Ordering::SeqCst) {
     let visible = app
-      .get_webview_window("cowork")
+      .get_webview_window("lens")
       .and_then(|w| w.is_visible().ok())
       .unwrap_or(false);
     if !visible {
-      state.cowork_busy.store(false, Ordering::SeqCst);
+      state.lens_busy.store(false, Ordering::SeqCst);
     }
   }
-  if state.cowork_busy.swap(true, Ordering::SeqCst) {
-    return Err("Cowork already active".to_string());
+  if state.lens_busy.swap(true, Ordering::SeqCst) {
+    return Err("Lens already active".to_string());
   }
-  let window = match windows::ensure_cowork_window(app) {
+  let window = match windows::ensure_lens_window(app) {
     Ok(w) => w,
     Err(e) => {
-      state.cowork_busy.store(false, Ordering::SeqCst);
+      state.lens_busy.store(false, Ordering::SeqCst);
       return Err(e);
     }
   };
-  // 把 mode 编码进 hash query，前端通过 location.hash 读取（'#cowork?mode=translate'）
+  // 把 mode 编码进 hash query，前端通过 location.hash 读取（'#lens?mode=translate'）
   let safe_mode = if mode == "translate" { "translate" } else { "chat" };
   let script = format!(
-    "window.location.hash = '#cowork?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('cowork:reset'));",
+    "window.location.hash = '#lens?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('lens:reset'));",
     mode = safe_mode,
   );
   let _ = window.eval(&script);
   // macOS 下 hidden 窗口的 set_position 常被忽略，先 show 再定位
   let _ = window.show();
   let _ = window.set_focus();
-  cowork_position_fullscreen(app, &window);
+  lens_position_fullscreen(app, &window);
   // 再调一次，处理首次 set_position 在 always_on_top + visible_on_all_workspaces 下被吃掉的情况
-  cowork_position_fullscreen(app, &window);
+  lens_position_fullscreen(app, &window);
   Ok(())
 }
 
-/// 默认入口：cowork 模式（commit 后进 ready 悬浮栏）
+/// 默认入口：lens 模式（commit 后进 ready 悬浮栏）
 #[tauri::command]
-fn cowork_request(app: AppHandle) -> Result<(), String> {
-  cowork_request_internal(&app, "chat")
+fn lens_request(app: AppHandle) -> Result<(), String> {
+  lens_request_internal(&app, "chat")
 }
 
-/// 截图翻译入口：cowork webview 进入 select 态，截完做 OCR + 翻译并弹结果浮卡
+/// 截图翻译入口：lens webview 进入 select 态，截完做 OCR + 翻译并弹结果浮卡
 #[tauri::command]
-fn cowork_request_translate(app: AppHandle) -> Result<(), String> {
-  cowork_request_internal(&app, "translate")
+fn lens_request_translate(app: AppHandle) -> Result<(), String> {
+  lens_request_internal(&app, "translate")
 }
 
 /// 返回当前屏幕上可见应用窗口列表（macOS 实际数据；Windows 空数组）。
 #[tauri::command]
-fn cowork_list_windows() -> Vec<cowork::WindowInfo> {
-  cowork::list_windows()
+fn lens_list_windows() -> Vec<lens::WindowInfo> {
+  lens::list_windows()
 }
 
-/// 整窗截图（macOS）：用 `screencapture -l <id>` 按 window id 截，不会截到 cowork webview，
-/// 所以无需 hide cowork（避免 hide/show 那 ~250ms 的视觉闪烁）。
+/// 整窗截图（macOS）：用 `screencapture -l <id>` 按 window id 截，不会截到 lens webview，
+/// 所以无需 hide lens（避免 hide/show 那 ~250ms 的视觉闪烁）。
 #[tauri::command]
-async fn cowork_capture_window(
+async fn lens_capture_window(
   app: AppHandle,
   window_id: u32,
 ) -> Result<serde_json::Value, String> {
-  let result = cowork::capture_window(window_id);
+  let result = lens::capture_window(window_id);
   let _ = app; // 保留参数避免破坏现有调用签名
 
   match result {
@@ -452,7 +452,7 @@ async fn cowork_capture_window(
 
 /// 区域截图：复用 capture_region_image 路径，注册 image_id 返回。
 #[tauri::command]
-async fn cowork_capture_region(
+async fn lens_capture_region(
   app: AppHandle,
   absolute_x: i32,
   absolute_y: i32,
@@ -462,10 +462,10 @@ async fn cowork_capture_region(
   height: u32,
   scale_factor: f64,
 ) -> Result<serde_json::Value, String> {
-  // SCK 路径：把自己 PID 传给 capture_region_image，SCK 在 GPU compositor 排除 cowork webview，
-  // 不再需要 hide webview + sleep 60ms 等 NSWindow.orderOut 生效（旧 `screencapture -R` 会截到全屏透明 cowork 自己）。
+  // SCK 路径：把自己 PID 传给 capture_region_image，SCK 在 GPU compositor 排除 lens webview，
+  // 不再需要 hide webview + sleep 60ms 等 NSWindow.orderOut 生效（旧 `screencapture -R` 会截到全屏透明 lens 自己）。
   // Windows 版 capture_region_image 忽略 exclude_self_pid 参数。
-  let _ = app.get_webview_window("cowork"); // 仍引用以保证 webview 存活
+  let _ = app.get_webview_window("lens"); // 仍引用以保证 webview 存活
   let exclude_self_pid: Option<i32> = {
     #[cfg(target_os = "macos")]
     {
@@ -505,14 +505,14 @@ async fn cowork_capture_region(
   }
 }
 
-/// 多轮提问：调用 vision API 流式发出 cowork-stream 事件。
+/// 多轮提问：调用 vision API 流式发出 lens-stream 事件。
 /// 字段全部独立。空字符串使用默认值：
 ///   - default_language：空 → 跟 settings.target_lang（"auto" 视为 "zh"）
 ///   - system_prompt / question_prompt：空 → default_system_prompt / default_question_prompt 模板
 ///   - provider_id / model：空 → fallback 到 translator_provider_id / translator_model
-///   - stream_enabled：cowork 自身配置
+///   - stream_enabled：lens 自身配置
 #[tauri::command]
-async fn cowork_ask(
+async fn lens_ask(
   app: AppHandle,
   state: State<'_, AppState>,
   image_id: String,
@@ -521,39 +521,39 @@ async fn cowork_ask(
   let settings = state.settings_read().clone();
   let retry_attempts = effective_retry_attempts(&settings);
 
-  let language = if !settings.cowork.default_language.is_empty() {
-    settings.cowork.default_language.clone()
+  let language = if !settings.lens.default_language.is_empty() {
+    settings.lens.default_language.clone()
   } else if settings.target_lang == "zh" || settings.target_lang == "en" {
     settings.target_lang.clone()
   } else {
     "zh".to_string()
   };
-  let stream_enabled = settings.cowork.stream_enabled;
-  let thinking_enabled = settings.cowork.thinking_enabled;
+  let stream_enabled = settings.lens.stream_enabled;
+  let thinking_enabled = settings.lens.thinking_enabled;
 
-  let provider_override = if !settings.cowork.provider_id.is_empty() {
-    Some(settings.cowork.provider_id.clone())
+  let provider_override = if !settings.lens.provider_id.is_empty() {
+    Some(settings.lens.provider_id.clone())
   } else {
     None
   };
-  let model_override = if !settings.cowork.model.is_empty() {
-    Some(settings.cowork.model.clone())
+  let model_override = if !settings.lens.model.is_empty() {
+    Some(settings.lens.model.clone())
   } else {
     None
   };
 
   let has_image = !image_id.is_empty();
 
-  // question_prompt：cowork 自定义 → 默认模板（无图时返回空，不附加前缀）
-  let question_prompt = if !settings.cowork.question_prompt.is_empty() {
-    settings.cowork.question_prompt.clone()
+  // question_prompt：lens 自定义 → 默认模板（无图时返回空，不附加前缀）
+  let question_prompt = if !settings.lens.question_prompt.is_empty() {
+    settings.lens.question_prompt.clone()
   } else {
     default_question_prompt(&language, has_image)
   };
 
-  // system_prompt：cowork 显式自定义时传 override，否则交给 call_vision_api 走默认模板
-  let system_prompt_override = if !settings.cowork.system_prompt.is_empty() {
-    Some(settings.cowork.system_prompt.clone())
+  // system_prompt：lens 显式自定义时传 override，否则交给 call_vision_api 走默认模板
+  let system_prompt_override = if !settings.lens.system_prompt.is_empty() {
+    Some(settings.lens.system_prompt.clone())
   } else {
     None
   };
@@ -593,7 +593,7 @@ async fn cowork_ask(
     retry_attempts,
     stream_enabled,
     "answer",
-    "cowork-stream",
+    "lens-stream",
     provider_override.as_deref(),
     model_override.as_deref(),
     system_prompt_override.as_deref(),
@@ -606,21 +606,20 @@ async fn cowork_ask(
   }
 }
 
-/// 取消正在进行的 cowork 流（复用同一代号）。
+/// 取消正在进行的 lens 流（复用同一代号）。
 #[tauri::command]
-fn cowork_cancel_stream(state: State<AppState>) -> Result<(), String> {
+fn lens_cancel_stream(state: State<AppState>) -> Result<(), String> {
   state
     .explain_stream_generation
     .fetch_add(1, Ordering::SeqCst);
   Ok(())
 }
 
-/// 截图翻译（cowork translate 模式）：对已捕获的图片做 OCR + 翻译。
-/// stream_enabled=true 时每段 token 通过 cowork-translate-stream emit
-/// （payload.kind=original|translated, payload.delta），最后 emit done=true。
-/// 否则等两步全部完成一次性返回。
+/// 截图翻译（lens translate 模式）：单次调用视觉模型，模型先输出译文 + `<<<ORIGINAL>>>` + 原文。
+/// stream_enabled=true 时通过 lens-translate-stream emit 流式 delta（kind=translated → kind=original）。
+/// `direct_translate=true` 时降级为纯翻译路径（无原文显示），保留旧行为。
 #[tauri::command]
-async fn cowork_translate(
+async fn lens_translate(
   app: AppHandle,
   state: State<'_, AppState>,
   image_id: String,
@@ -644,20 +643,24 @@ async fn cowork_translate(
   let st_thinking = settings.screenshot_translation.thinking_enabled;
   let st_stream = settings.screenshot_translation.stream_enabled;
 
-  let ocr_prompt = if direct_translate {
-    let target_lang = resolve_target_lang(&settings.target_lang, "");
-    let lang_name = language_name(&target_lang).to_string();
+  let target_lang = resolve_target_lang(&settings.target_lang, "");
+  let lang_name = language_name(&target_lang).to_string();
+
+  let prompt = if direct_translate {
     build_ocr_direct_translation_prompt(
       &lang_name,
       settings.screenshot_translation.prompt.as_deref(),
     )
   } else {
-    DEFAULT_OCR_PROMPT.to_string()
+    build_combined_translate_prompt(
+      &lang_name,
+      settings.screenshot_translation.prompt.as_deref(),
+    )
   };
 
   let emit_done_event = |success: bool, error: Option<&str>| {
     let _ = app.emit(
-      "cowork-translate-stream",
+      "lens-translate-stream",
       serde_json::json!({
         "imageId": image_id,
         "done": true,
@@ -667,53 +670,48 @@ async fn cowork_translate(
     );
   };
 
-  // 取消检测：每个 stream_chat_call 内部 fetch_add(1)。如果阶段结束后代号 > 预期值，
-  // 说明外部 cowork_cancel_stream 触发过 → 不要继续走下个阶段。
-  // (BUG: stream_vision_response 取消时返回 Ok，不会冒错误，所以必须靠代号比较)
-  let pre_ocr_gen = state.explain_stream_generation.load(Ordering::SeqCst);
-
-  // ===== 阶段 1：OCR =====
-  // direct_translate 模式 OCR 输出即译文 → kind="translated"；否则 kind="original"
-  let ocr_kind = if direct_translate { "translated" } else { "original" };
-  let recognized = if st_stream {
-    match stream_chat_call(
-      &app,
-      &state,
-      &ocr_provider,
-      &settings.screenshot_translation.model,
-      build_ocr_request_body(&temp_path, &ocr_prompt, st_thinking)?,
-      retry_attempts,
-      &image_id,
-      ocr_kind,
-      "cowork-translate-stream",
-    )
-    .await
-    {
-      Ok(t) => t,
-      Err(e) => {
-        emit_done_event(false, Some(&e));
-        return Ok(serde_json::json!({ "success": false, "error": e }));
-      }
+  // direct_translate：纯翻译，无原文。复用 stream_chat_call kind="translated"。
+  if direct_translate {
+    if st_stream {
+      let translated = match stream_chat_call(
+        &app,
+        &state,
+        &ocr_provider,
+        &settings.screenshot_translation.model,
+        build_ocr_request_body(&temp_path, &prompt, st_thinking)?,
+        retry_attempts,
+        &image_id,
+        "translated",
+        "lens-translate-stream",
+      )
+      .await
+      {
+        Ok(t) => t,
+        Err(e) => {
+          emit_done_event(false, Some(&e));
+          return Ok(serde_json::json!({ "success": false, "error": e }));
+        }
+      };
+      emit_done_event(true, None);
+      return Ok(serde_json::json!({
+        "success": true, "original": "", "translated": translated,
+      }));
     }
-  } else {
-    match call_openai_ocr(
+    let translated = match call_openai_ocr(
       &state.http,
       &ocr_provider,
       &settings.screenshot_translation.model,
       &temp_path,
-      &ocr_prompt,
+      &prompt,
       retry_attempts,
       st_thinking,
     )
     .await
     {
       Ok(text) => {
-        // 非流式也 emit 一次完整 delta，保持前端代码统一
         let _ = app.emit(
-          "cowork-translate-stream",
-          serde_json::json!({
-            "imageId": image_id, "kind": ocr_kind, "delta": text,
-          }),
+          "lens-translate-stream",
+          serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": text }),
         );
         text
       }
@@ -721,99 +719,83 @@ async fn cowork_translate(
         emit_done_event(false, Some(&e));
         return Ok(serde_json::json!({ "success": false, "error": e }));
       }
-    }
-  };
-
-  // OCR 阶段后检测取消：阶段内部 fetch_add(1) 应让代号变成 pre_ocr_gen+1。
-  // 若现在 > pre_ocr_gen+1 说明 OCR 期间外部 coworkCancelStream 触发过。
-  let cancelled_after_ocr = st_stream
-    && state.explain_stream_generation.load(Ordering::SeqCst) > pre_ocr_gen + 1;
-  if cancelled_after_ocr {
-    emit_done_event(false, Some("cancelled"));
-    return Ok(serde_json::json!({ "success": false, "error": "cancelled" }));
-  }
-
-  // direct_translate / 空内容：不再走翻译步骤
-  if direct_translate {
+    };
     emit_done_event(true, None);
     return Ok(serde_json::json!({
-      "success": true,
-      "original": "",
-      "translated": recognized,
-    }));
-  }
-  if recognized.trim().is_empty() {
-    emit_done_event(true, None);
-    return Ok(serde_json::json!({
-      "success": true,
-      "original": recognized,
-      "translated": "",
+      "success": true, "original": "", "translated": translated,
     }));
   }
 
-  // ===== 阶段 2：翻译 =====
-  let target_lang = resolve_target_lang(&settings.target_lang, &recognized);
-  let lang_name = language_name(&target_lang).to_string();
-  let prompt = build_screenshot_translation_prompt(
-    &recognized,
-    &lang_name,
-    settings.screenshot_translation.prompt.as_deref(),
-  );
-  let t_provider = settings
-    .get_provider(&settings.translator_provider_id)
-    .unwrap_or(&ocr_provider)
-    .clone();
-
-  let translated = if st_stream {
-    match stream_chat_call(
+  // 默认：合并模式 — 单次调用拿译文 + 原文
+  if st_stream {
+    let (translated, original) = match stream_translate_combined(
       &app,
       &state,
-      &t_provider,
-      &settings.translator_model,
-      build_text_request_body(&prompt, st_thinking),
+      &ocr_provider,
+      &settings.screenshot_translation.model,
+      build_ocr_request_body(&temp_path, &prompt, st_thinking)?,
       retry_attempts,
       &image_id,
-      "translated",
-      "cowork-translate-stream",
+      "lens-translate-stream",
     )
     .await
     {
-      Ok(t) => t,
+      Ok(pair) => pair,
       Err(e) => {
-        // 翻译阶段失败：emit 错误并退出，避免 done(success=true) 但译文区为空的"静默失败"
         emit_done_event(false, Some(&e));
         return Ok(serde_json::json!({ "success": false, "error": e }));
       }
-    }
-  } else {
-    match call_openai_text(
-      &state.http,
-      &t_provider,
-      &settings.translator_model,
-      prompt,
-      retry_attempts,
-      st_thinking,
-    )
-    .await
-    {
-      Ok(text) => {
-        let _ = app.emit(
-          "cowork-translate-stream",
-          serde_json::json!({
-            "imageId": image_id, "kind": "translated", "delta": text,
-          }),
-        );
-        text
-      }
-      Err(_) => recognized.clone(),
+    };
+    emit_done_event(true, None);
+    return Ok(serde_json::json!({
+      "success": true, "original": original, "translated": translated,
+    }));
+  }
+
+  // 非流式：调用一次拿到全文，按分隔符拆 translated / original
+  let full = match call_openai_ocr(
+    &state.http,
+    &ocr_provider,
+    &settings.screenshot_translation.model,
+    &temp_path,
+    &prompt,
+    retry_attempts,
+    st_thinking,
+  )
+  .await
+  {
+    Ok(text) => text,
+    Err(e) => {
+      emit_done_event(false, Some(&e));
+      return Ok(serde_json::json!({ "success": false, "error": e }));
     }
   };
-
+  let (translated, original) = match full.find(COMBINED_TRANSLATE_SEPARATOR) {
+    Some(idx) => {
+      let t = full[..idx].trim_end_matches('\n').trim().to_string();
+      let o = full[idx + COMBINED_TRANSLATE_SEPARATOR.len()..]
+        .trim_start_matches('\n')
+        .trim()
+        .to_string();
+      (t, o)
+    }
+    None => (full.trim().to_string(), String::new()),
+  };
+  if !translated.is_empty() {
+    let _ = app.emit(
+      "lens-translate-stream",
+      serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": translated }),
+    );
+  }
+  if !original.is_empty() {
+    let _ = app.emit(
+      "lens-translate-stream",
+      serde_json::json!({ "imageId": image_id, "kind": "original", "delta": original }),
+    );
+  }
   emit_done_event(true, None);
   Ok(serde_json::json!({
-    "success": true,
-    "original": recognized,
-    "translated": translated,
+    "success": true, "original": original, "translated": translated,
   }))
 }
 
@@ -843,21 +825,8 @@ fn build_ocr_request_body(
   Ok(body)
 }
 
-/// 构造截图翻译第二步（翻译） body，stream=true
-fn build_text_request_body(prompt: &str, thinking_enabled: bool) -> serde_json::Value {
-  let mut body = serde_json::json!({
-    "messages": [{ "role": "user", "content": prompt }],
-    "temperature": 0.2,
-    "stream": true
-  });
-  if !thinking_enabled {
-    body["thinking"] = serde_json::json!({ "type": "disabled" });
-  }
-  body
-}
-
 /// 通用流式 chat 调用：发送 body（model 在外层注入）→ 解析 SSE → 通过 stream_vision_response emit。
-/// 复用 explain_stream_generation 作取消代号（cowork-stream / cowork-translate-stream 都共用）。
+/// 复用 explain_stream_generation 作取消代号（lens-stream / lens-translate-stream 都共用）。
 #[allow(clippy::too_many_arguments)]
 async fn stream_chat_call(
   app: &AppHandle,
@@ -906,9 +875,219 @@ async fn stream_chat_call(
   .await
 }
 
-/// 关闭 cowork：清理图片、释放 busy、隐藏窗口。
+/// 截图翻译合并模式流：单次调用模型，按 `<<<ORIGINAL>>>` 分隔符把 SSE delta 拆成两段。
+/// 分隔符前的 chunk emit kind="translated"；分隔符后的 chunk emit kind="original"。
+/// 返回 (translated, original) 完整文本。
+///
+/// 关键点：
+/// - 分隔符可能跨 SSE chunk 边界 → 用 tail 缓冲住末尾 (SEPARATOR.len()-1) 字节防止把分隔符前缀当成译文 emit 出去
+/// - tail 切片必须落在 UTF-8 char boundary，否则 String::drain 会 panic（用户截图常含 CJK，每字 3 字节）
+async fn stream_translate_combined(
+  app: &AppHandle,
+  state: &State<'_, AppState>,
+  provider: &settings::ModelProvider,
+  model: &str,
+  mut body: serde_json::Value,
+  retry_attempts: usize,
+  image_id: &str,
+  event_name: &str,
+) -> Result<(String, String), String> {
+  body["model"] = serde_json::json!(model);
+  let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
+
+  let mut response = send_with_retry("Stream translate combined", retry_attempts, || {
+    state
+      .http
+      .post(url.clone())
+      .bearer_auth(&provider.api_key)
+      .json(&body)
+      .send()
+  })
+  .await?;
+
+  let status = response.status();
+  if !status.is_success() {
+    let body_text = response.text().await.unwrap_or_default();
+    let snippet: String = body_text.chars().take(500).collect();
+    return Err(format!("Stream HTTP {}: {}", status.as_u16(), snippet));
+  }
+
+  let my_gen = state
+    .explain_stream_generation
+    .fetch_add(1, Ordering::SeqCst)
+    + 1;
+
+  let sep = COMBINED_TRANSLATE_SEPARATOR;
+  let sep_len = sep.len();
+
+  let mut sse_buf = String::new();
+  let mut tail = String::new();
+  let mut translated = String::new();
+  let mut original = String::new();
+  let mut sep_seen = false;
+
+  let emit_done = |reason: &str| {
+    let _ = app.emit(
+      event_name,
+      serde_json::json!({
+        "imageId": image_id, "delta": "", "done": true, "reason": reason,
+      }),
+    );
+  };
+
+  loop {
+    if state.explain_stream_generation.load(Ordering::SeqCst) != my_gen {
+      // 取消：把 tail 当作 translated flush（避免末尾几个字符丢失），再 emit done
+      if !tail.is_empty() && !sep_seen {
+        translated.push_str(&tail);
+        let _ = app.emit(
+          event_name,
+          serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": tail }),
+        );
+      }
+      emit_done("cancelled");
+      return Ok((translated, original));
+    }
+
+    let chunk = match response.chunk().await {
+      Ok(Some(c)) => c,
+      Ok(None) => break,
+      Err(e) => {
+        emit_done("error");
+        return Err(e.to_string());
+      }
+    };
+
+    let text = String::from_utf8_lossy(&chunk);
+    sse_buf.push_str(&text);
+
+    while let Some(pos) = sse_buf.find('\n') {
+      let line: String = sse_buf.drain(..=pos).collect();
+      let line = line.trim();
+      if !line.starts_with("data:") {
+        continue;
+      }
+      let data = line.trim_start_matches("data:").trim();
+      if data.is_empty() {
+        continue;
+      }
+      if data == "[DONE]" {
+        // flush tail
+        if !sep_seen && !tail.is_empty() {
+          translated.push_str(&tail);
+          let _ = app.emit(
+            event_name,
+            serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": tail }),
+          );
+        }
+        emit_done("done");
+        return Ok((translated, original));
+      }
+
+      let value: serde_json::Value = match serde_json::from_str(data) {
+        Ok(val) => val,
+        Err(_) => continue,
+      };
+
+      let delta_obj = value
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("delta"));
+
+      // 推理链 emit（恒定 kind="translated"，前端在主面板渲染）
+      if let Some(r) = delta_obj
+        .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+      {
+        let _ = app.emit(
+          event_name,
+          serde_json::json!({
+            "imageId": image_id, "kind": "translated", "delta": "", "reasoningDelta": r,
+          }),
+        );
+      }
+
+      let content = delta_obj
+        .and_then(|d| d.get("content"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+      let Some(c) = content else { continue };
+
+      if sep_seen {
+        original.push_str(c);
+        let _ = app.emit(
+          event_name,
+          serde_json::json!({ "imageId": image_id, "kind": "original", "delta": c }),
+        );
+        continue;
+      }
+
+      tail.push_str(c);
+      if let Some(idx) = tail.find(sep) {
+        // 分隔符命中：拆 before / after，trim 掉分隔符相邻的换行，分别发出
+        let before: String = tail.drain(..idx).collect();
+        // 移除分隔符本身
+        tail.drain(..sep_len);
+        let after: String = std::mem::take(&mut tail);
+
+        let before_emit = before.trim_end_matches('\n').to_string();
+        if !before_emit.is_empty() {
+          translated.push_str(&before_emit);
+          let _ = app.emit(
+            event_name,
+            serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": before_emit }),
+          );
+        }
+        sep_seen = true;
+        let after_emit = after.trim_start_matches('\n').to_string();
+        if !after_emit.is_empty() {
+          original.push_str(&after_emit);
+          let _ = app.emit(
+            event_name,
+            serde_json::json!({ "imageId": image_id, "kind": "original", "delta": after_emit }),
+          );
+        }
+      } else {
+        // 没命中：emit 安全前缀（保留末尾 sep_len-1 字节防止跨 chunk 分隔符被切碎）
+        let max_emit = tail.len().saturating_sub(sep_len.saturating_sub(1));
+        if max_emit == 0 {
+          continue;
+        }
+        // 找一个合法 char boundary（CJK 字符多字节，不能切到字符中间）
+        let mut safe = max_emit;
+        while safe > 0 && !tail.is_char_boundary(safe) {
+          safe -= 1;
+        }
+        if safe == 0 {
+          continue;
+        }
+        let to_emit: String = tail.drain(..safe).collect();
+        translated.push_str(&to_emit);
+        let _ = app.emit(
+          event_name,
+          serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": to_emit }),
+        );
+      }
+    }
+  }
+
+  // SSE 流结束（连接关闭）但没收到 [DONE]：flush tail
+  if !sep_seen && !tail.is_empty() {
+    translated.push_str(&tail);
+    let _ = app.emit(
+      event_name,
+      serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": tail }),
+    );
+  }
+  emit_done("done");
+  Ok((translated, original))
+}
+
+/// 关闭 lens：清理图片、释放 busy、隐藏窗口。
 #[tauri::command]
-fn cowork_close(app: AppHandle) -> Result<(), String> {
+fn lens_close(app: AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
   let current_id = {
     let current = state.current_id_lock();
@@ -917,14 +1096,14 @@ fn cowork_close(app: AppHandle) -> Result<(), String> {
   if let Some(id) = current_id {
     cleanup_explain_image(&app, &id);
   }
-  state.cowork_busy.store(false, Ordering::SeqCst);
-  if let Some(window) = app.get_webview_window("cowork") {
+  state.lens_busy.store(false, Ordering::SeqCst);
+  if let Some(window) = app.get_webview_window("lens") {
     let _ = window.hide();
   }
   Ok(())
 }
 
-// ====== /Cowork 模式命令 ======
+// ====== /Lens 模式命令 ======
 
 /// 从供应商 API 获取可用模型列表
 #[tauri::command]
@@ -1064,7 +1243,7 @@ fn open_permission_settings(kind: String) -> Result<(), String> {
 }
 
 /// 注册全局热键
-/// 包括翻译热键、截图翻译热键、cowork 热键；会检测重复热键并给出友好错误提示
+/// 包括翻译热键、截图翻译热键、lens 热键；会检测重复热键并给出友好错误提示
 fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
   let settings = app.state::<AppState>().settings_read().clone();
   let shortcut_manager = app.global_shortcut();
@@ -1112,7 +1291,7 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         if event.state == ShortcutState::Pressed {
           let handle = app.clone();
           tauri::async_runtime::spawn(async move {
-            if let Err(err) = cowork_request_translate(handle) {
+            if let Err(err) = lens_request_translate(handle) {
               eprintln!("Screenshot translation trigger error: {err}");
             }
           });
@@ -1127,25 +1306,25 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     }
   }
 
-  if settings.cowork.enabled {
-    let hotkey = settings.cowork.hotkey.trim().to_string();
+  if settings.lens.enabled {
+    let hotkey = settings.lens.hotkey.trim().to_string();
     if hotkey.is_empty() {
-      errors.push("Cowork hotkey is empty".to_string());
+      errors.push("Lens hotkey is empty".to_string());
     } else {
       let hotkey_key = hotkey.to_lowercase();
       if !registered.insert(hotkey_key) {
-        errors.push(format!("Duplicate hotkey \"{hotkey}\" for cowork"));
+        errors.push(format!("Duplicate hotkey \"{hotkey}\" for lens"));
       } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
           let handle = app.clone();
           tauri::async_runtime::spawn(async move {
-            if let Err(err) = cowork_request(handle) {
-              eprintln!("Cowork trigger error: {err}");
+            if let Err(err) = lens_request(handle) {
+              eprintln!("Lens trigger error: {err}");
             }
           });
         }
       }) {
-        errors.push(format_hotkey_error("cowork", &hotkey, &err.to_string()));
+        errors.push(format_hotkey_error("lens", &hotkey, &err.to_string()));
       }
     }
   }
@@ -1261,7 +1440,7 @@ fn capture_region_image(
 
 /// macOS 平台：区域截图，走 ScreenCaptureKit。
 /// `exclude_self_pid` 传 `Some(pid)` 让 SCK 在 GPU compositor 阶段排除该 PID 的所有窗口
-/// （cowork webview 自己），无需 hide+sleep 60ms。
+/// （lens webview 自己），无需 hide+sleep 60ms。
 #[cfg(target_os = "macos")]
 fn capture_region_image(
   absolute_x: i32,
@@ -1465,9 +1644,9 @@ const DEFAULT_TRANSLATION_TEMPLATE: &str =
 const DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE: &str =
   "Translate the OCR text below to {lang}. Output only the translation.\n\nRules:\n- Preserve existing LaTeX formulas exactly (keep $...$ and $$...$$).\n- If formula-like plain text appears, normalize it to proper LaTeX when needed.\n- Keep paragraph and line-break structure from OCR text when possible.\n- Correct only obvious OCR character mistakes; do not invent missing content.\n- Do not add explanations.\n\n{text}";
 
-/// 默认 OCR 提示词：要求模型读取图片中的所有文本，并将数学公式转换为 LaTeX 格式
-const DEFAULT_OCR_PROMPT: &str =
-  "Read all text in this image. For mathematical formulas, use LaTeX format enclosed in $...$ for inline or $$...$$ for block math. Output only the text content, preserving original lines.";
+/// 截图翻译合并模式分隔符。模型先输出译文，再单独一行 `<<<ORIGINAL>>>`，再输出原文。
+/// 流式解析时按此切分两段，分别 emit kind="translated" / "original"。
+pub const COMBINED_TRANSLATE_SEPARATOR: &str = "<<<ORIGINAL>>>";
 
 /// 使用模板构建提示词
 /// 支持 {text} 和 {lang} 占位符；如果自定义模板为空或不含 {text}，则追加文本内容
@@ -1520,6 +1699,27 @@ fn build_ocr_direct_translation_prompt(lang_name: &str, template: Option<&str>) 
   )
 }
 
+/// 构建合并模式提示词：模型在一次调用中先输出译文、再 `<<<ORIGINAL>>>` 分隔符、再输出原文
+/// 这样译文先出现在流里（用户立即看到结果），整体只走一次 round-trip
+fn build_combined_translate_prompt(lang_name: &str, _template: Option<&str>) -> String {
+  format!(
+    "Read this screenshot. Output two sections in this exact order, separated by a line containing only `{sep}`:\n\n\
+     1. Translation in {lang}: a faithful translation of all text shown in the screenshot.\n\
+     2. Original recognized text exactly as it appears in the screenshot.\n\n\
+     Rules:\n\
+     - Preserve LaTeX formulas ($...$ inline, $$...$$ block).\n\
+     - Keep paragraph and line-break structure.\n\
+     - Correct only obvious OCR mistakes; do not invent missing content.\n\
+     - No commentary, no section headers, no labels.\n\n\
+     Output format (replace placeholders, no labels):\n\
+     <translation>\n\
+     {sep}\n\
+     <original>",
+    lang = lang_name,
+    sep = COMBINED_TRANSLATE_SEPARATOR,
+  )
+}
+
 /// 调用 OpenAI 兼容的 OCR/视觉接口
 /// 将图片转为 Base64 后作为 image_url 类型内容发送，temperature 设为 0 以提高识别稳定性
 async fn call_openai_ocr(
@@ -1535,8 +1735,8 @@ async fn call_openai_ocr(
   let base64 = general_purpose::STANDARD.encode(bytes);
   let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
-  // 与 cowork 的 vision body 对齐：image 在 text 前、显式 max_tokens。
-  // thinking 按调用方传入：截图翻译默认 false（节省时间），cowork 默认 true。
+  // 与 lens 的 vision body 对齐：image 在 text 前、显式 max_tokens。
+  // thinking 按调用方传入：截图翻译默认 false（节省时间），lens 默认 true。
   let mut body = serde_json::json!({
     "model": model,
     "messages": [
@@ -1592,9 +1792,9 @@ async fn call_openai_ocr(
   Ok(content.trim().to_string())
 }
 
-/// 调用视觉 API（截图解释 / Cowork 共用）
+/// 调用视觉 API（截图解释 / Lens 共用）
 /// 支持流式输出：如果 stream 为 true，通过 stream_vision_response 逐段 emit `event_name` 事件。
-/// `provider_id_override` 非空时使用指定 provider/model（用于 cowork 选择独立模型）；空则走 explain 配置。
+/// `provider_id_override` 非空时使用指定 provider/model（用于 lens 选择独立模型）；空则走 explain 配置。
 async fn call_vision_api(
   app: &AppHandle,
   state: &State<'_, AppState>,
@@ -2193,7 +2393,7 @@ fn main() {
         settings: RwLock::new(settings),
         explain_images: Mutex::new(HashMap::new()),
         current_explain_image_id: Mutex::new(None),
-        cowork_busy: AtomicBool::new(false),
+        lens_busy: AtomicBool::new(false),
         explain_stream_generation: AtomicU64::new(0),
         http: build_http_client(),
       });
@@ -2229,15 +2429,15 @@ fn main() {
       test_provider_connection,
       get_permission_status,
       open_permission_settings,
-      cowork_request,
-      cowork_request_translate,
-      cowork_list_windows,
-      cowork_capture_window,
-      cowork_capture_region,
-      cowork_ask,
-      cowork_translate,
-      cowork_cancel_stream,
-      cowork_close,
+      lens_request,
+      lens_request_translate,
+      lens_list_windows,
+      lens_capture_window,
+      lens_capture_region,
+      lens_ask,
+      lens_translate,
+      lens_cancel_stream,
+      lens_close,
       set_always_on_top
     ])
     .run(tauri::generate_context!())

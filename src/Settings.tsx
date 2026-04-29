@@ -3,7 +3,7 @@ import {
   X, Save, Plus, Trash2, RefreshCw,
   Settings as SettingsIcon, Languages, Camera,
   Cloud, Info, Palette, Keyboard, SlidersHorizontal, Globe,
-  Cpu, FileText, ShieldCheck, Sparkles
+  Cpu, FileText, ShieldCheck, Aperture
 } from 'lucide-react'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
 import { i18n } from './settings/i18n'
@@ -31,11 +31,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'cowork' | 'providers' | 'about'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'translate' | 'screenshot' | 'lens' | 'providers' | 'about'>('general')
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
-  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'cowork'>(null)
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'lens'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
@@ -89,7 +89,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             streamEnabled: true,
             prompt: ''
           },
-          cowork: {
+          lens: {
             enabled: true,
             hotkey: 'CommandOrControl+Shift+G',
             providerId: '',
@@ -384,10 +384,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const nextProviders = settings.providers.filter(p => p.id !== id)
     const translatorProvider = resolveProvider(nextProviders, settings.translatorProviderId)
     const screenshotProvider = resolveProvider(nextProviders, settings.screenshotTranslation?.providerId || '')
-    // cowork providerId 为空表示 fallback 到 translator，删除时若已设置自身 provider 才需要级联
-    const coworkHadOwnProvider = !!settings.cowork?.providerId
-    const coworkProvider = coworkHadOwnProvider
-      ? resolveProvider(nextProviders, settings.cowork?.providerId || '')
+    // lens providerId 为空表示 fallback 到 translator，删除时若已设置自身 provider 才需要级联
+    const lensHadOwnProvider = !!settings.lens?.providerId
+    const lensProvider = lensHadOwnProvider
+      ? resolveProvider(nextProviders, settings.lens?.providerId || '')
       : undefined
 
     setSettings({
@@ -400,11 +400,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         providerId: screenshotProvider ? screenshotProvider.id : '',
         model: resolveModel(screenshotProvider, settings.screenshotTranslation?.model || '')
       },
-      ...(coworkHadOwnProvider ? {
-        cowork: {
-          ...settings.cowork,
-          providerId: coworkProvider ? coworkProvider.id : '',
-          model: resolveModel(coworkProvider, settings.cowork?.model || '')
+      ...(lensHadOwnProvider ? {
+        lens: {
+          ...settings.lens,
+          providerId: lensProvider ? lensProvider.id : '',
+          model: resolveModel(lensProvider, settings.lens?.model || '')
         }
       } : {})
     })
@@ -460,10 +460,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         }
       }
 
-      if (prev.cowork?.providerId === providerId) {
-        next.cowork = {
-          ...prev.cowork,
-          model: resolveAfterRemoval(prev.cowork.model || ''),
+      if (prev.lens?.providerId === providerId) {
+        next.lens = {
+          ...prev.lens,
+          model: resolveAfterRemoval(prev.lens.model || ''),
         }
       }
 
@@ -520,12 +520,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }, [])
 
   /**
-   * 更新 Cowork 配置
+   * 更新 Lens 配置
    */
-  const updateCowork = useCallback((updates: Partial<SettingsData['cowork']>) => {
+  const updateLens = useCallback((updates: Partial<SettingsData['lens']>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.cowork || {
+      const current = prev.lens || {
         enabled: true,
         hotkey: 'CommandOrControl+Shift+G',
         providerId: '',
@@ -537,19 +537,19 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         questionPrompt: '',
         messageOrder: 'asc' as const
       }
-      return { ...prev, cowork: { ...current, ...updates } }
+      return { ...prev, lens: { ...current, ...updates } }
     })
   }, [])
 
   /**
    * 切换快捷键录制状态
    */
-  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'cowork') => {
+  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'lens') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
-  // 当前语言对应的默认 cowork 提示词
-  const coworkDefaults = defaultPrompts?.coworkPrompts?.[settings?.cowork?.defaultLanguage === 'en' ? 'en' : 'zh']
+  // 当前语言对应的默认 lens 提示词
+  const lensDefaults = defaultPrompts?.lensPrompts?.[settings?.lens?.defaultLanguage === 'en' ? 'en' : 'zh']
 
   // 快捷键录制监听
   useEffect(() => {
@@ -567,14 +567,14 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         updateSettings({ hotkey })
       } else if (recordingTarget === 'screenshotTranslation') {
         updateScreenshotTranslation({ hotkey })
-      } else if (recordingTarget === 'cowork') {
-        updateCowork({ hotkey })
+      } else if (recordingTarget === 'lens') {
+        updateLens({ hotkey })
       }
       setRecordingTarget(null)
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [recordingTarget, updateCowork, updateScreenshotTranslation, updateSettings])
+  }, [recordingTarget, updateLens, updateScreenshotTranslation, updateSettings])
 
   if (loading || !settings) {
     return (
@@ -599,7 +599,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             { id: 'general' as const, label: t.tabGeneral, icon: SettingsIcon },
             { id: 'translate' as const, label: t.tabTranslate, icon: Languages },
             { id: 'screenshot' as const, label: t.tabScreenshot, icon: Camera },
-            { id: 'cowork' as const, label: t.coworkTabLabel, icon: Sparkles },
+            { id: 'lens' as const, label: t.lensTabLabel, icon: Aperture },
             { id: 'providers' as const, label: t.tabModels, icon: Cloud },
             { id: 'about' as const, label: lang === 'zh' ? '关于' : 'About', icon: Info },
           ].map((item) => {
@@ -944,79 +944,79 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           </div>
         )}
 
-        {/* ===== Cowork 标签页 ===== */}
-        {activeTab === 'cowork' && (
+        {/* ===== Lens 标签页 ===== */}
+        {activeTab === 'lens' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section>
-              <SectionTitle icon={Sparkles}>{t.coworkSection}</SectionTitle>
+              <SectionTitle icon={Aperture}>{t.lensSection}</SectionTitle>
               <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
                 <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
                   <SettingRow label={t.enabled}>
                     <Toggle
-                      checked={settings.cowork?.enabled !== false}
-                      onChange={(v) => updateCowork({ enabled: v })}
+                      checked={settings.lens?.enabled !== false}
+                      onChange={(v) => updateLens({ enabled: v })}
                     />
                   </SettingRow>
 
-                  {settings.cowork?.enabled !== false && (
+                  {settings.lens?.enabled !== false && (
                     <>
                       <div className="px-4 py-3 space-y-1.5">
                         <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.hotkey}</span>
                         <HotkeyInput
-                          value={settings.cowork?.hotkey || 'CommandOrControl+Shift+G'}
+                          value={settings.lens?.hotkey || 'CommandOrControl+Shift+G'}
                           placeholder="CommandOrControl+Shift+G"
-                          recording={recordingTarget === 'cowork'}
-                          onToggleRecording={() => toggleRecording('cowork')}
+                          recording={recordingTarget === 'lens'}
+                          onToggleRecording={() => toggleRecording('lens')}
                           recordLabel={t.hotkeyRecord}
                           recordingLabel={t.hotkeyRecording}
                           recordingPlaceholder={t.hotkeyRecordingPlaceholder}
                         />
                       </div>
-                      <SettingRow label={t.coworkResponseLanguage}>
+                      <SettingRow label={t.lensResponseLanguage}>
                         <Select
                           className="w-44"
-                          value={settings.cowork?.defaultLanguage || ''}
-                          onChange={(v) => updateCowork({ defaultLanguage: v })}
+                          value={settings.lens?.defaultLanguage || ''}
+                          onChange={(v) => updateLens({ defaultLanguage: v })}
                           options={[
-                            { value: '', label: t.coworkLanguageInherit },
+                            { value: '', label: t.lensLanguageInherit },
                             { value: 'zh', label: '中文' },
                             { value: 'en', label: 'English' },
                           ]}
                         />
                       </SettingRow>
-                      <SettingRow label={t.coworkStreamEnabled}>
+                      <SettingRow label={t.lensStreamEnabled}>
                         <Toggle
-                          checked={settings.cowork?.streamEnabled !== false}
-                          onChange={(v) => updateCowork({ streamEnabled: v })}
+                          checked={settings.lens?.streamEnabled !== false}
+                          onChange={(v) => updateLens({ streamEnabled: v })}
                         />
                       </SettingRow>
-                      <SettingRow label={t.coworkThinkingEnabled} description={t.coworkThinkingHint}>
+                      <SettingRow label={t.lensThinkingEnabled} description={t.lensThinkingHint}>
                         <Toggle
-                          checked={settings.cowork?.thinkingEnabled !== false}
-                          onChange={(v) => updateCowork({ thinkingEnabled: v })}
+                          checked={settings.lens?.thinkingEnabled !== false}
+                          onChange={(v) => updateLens({ thinkingEnabled: v })}
                         />
                       </SettingRow>
-                      <SettingRow label={t.coworkMessageOrder}>
+                      <SettingRow label={t.lensMessageOrder}>
                         <Select
                           className="w-52"
-                          value={settings.cowork?.messageOrder ?? 'asc'}
-                          onChange={(v) => updateCowork({ messageOrder: v as 'asc' | 'desc' })}
+                          value={settings.lens?.messageOrder ?? 'asc'}
+                          onChange={(v) => updateLens({ messageOrder: v as 'asc' | 'desc' })}
                           options={[
-                            { value: 'asc', label: t.coworkMessageOrderAsc },
-                            { value: 'desc', label: t.coworkMessageOrderDesc },
+                            { value: 'asc', label: t.lensMessageOrderAsc },
+                            { value: 'desc', label: t.lensMessageOrderDesc },
                           ]}
                         />
                       </SettingRow>
                       <SettingRow label={t.selectModelPair}>
                         <Select
                           className="w-52"
-                          value={`${settings.cowork?.providerId || ''}:${settings.cowork?.model || ''}`}
+                          value={`${settings.lens?.providerId || ''}:${settings.lens?.model || ''}`}
                           onChange={(v) => {
                             const [providerId, model] = v.split(':')
-                            updateCowork({ providerId, model })
+                            updateLens({ providerId, model })
                           }}
                           options={[
-                            { value: ':', label: t.coworkLanguageInherit },
+                            { value: ':', label: t.lensLanguageInherit },
                             ...settings.providers.flatMap(p =>
                               p.enabledModels.map(m => ({
                                 value: `${p.id}:${m}`,
@@ -1037,27 +1037,27 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         </summary>
                         <div className="px-4 pb-4 space-y-4">
                           <div>
-                            <Label>{t.coworkSystemPrompt}</Label>
+                            <Label>{t.lensSystemPrompt}</Label>
                             <TextArea
-                              value={settings.cowork?.systemPrompt || ''}
-                              onChange={(v) => updateCowork({ systemPrompt: v })}
-                              placeholder={t.coworkPromptHint}
+                              value={settings.lens?.systemPrompt || ''}
+                              onChange={(v) => updateLens({ systemPrompt: v })}
+                              placeholder={t.lensPromptHint}
                               rows={2}
                             />
-                            {!settings.cowork?.systemPrompt?.trim() && coworkDefaults?.system && (
-                              <DefaultPrompt label={t.defaultTemplate} content={coworkDefaults.system} />
+                            {!settings.lens?.systemPrompt?.trim() && lensDefaults?.system && (
+                              <DefaultPrompt label={t.defaultTemplate} content={lensDefaults.system} />
                             )}
                           </div>
                           <div>
-                            <Label>{t.coworkQuestionPrompt}</Label>
+                            <Label>{t.lensQuestionPrompt}</Label>
                             <TextArea
-                              value={settings.cowork?.questionPrompt || ''}
-                              onChange={(v) => updateCowork({ questionPrompt: v })}
-                              placeholder={t.coworkPromptHint}
+                              value={settings.lens?.questionPrompt || ''}
+                              onChange={(v) => updateLens({ questionPrompt: v })}
+                              placeholder={t.lensPromptHint}
                               rows={3}
                             />
-                            {!settings.cowork?.questionPrompt?.trim() && coworkDefaults?.question && (
-                              <DefaultPrompt label={t.defaultTemplate} content={coworkDefaults.question} />
+                            {!settings.lens?.questionPrompt?.trim() && lensDefaults?.question && (
+                              <DefaultPrompt label={t.defaultTemplate} content={lensDefaults.question} />
                             )}
                           </div>
                         </div>

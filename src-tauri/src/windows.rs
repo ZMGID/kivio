@@ -31,21 +31,21 @@ pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 }
 
 /**
- * 确保 Cowork 窗口存在（不存在则创建）
+ * 确保 Lens 窗口存在（不存在则创建）
  * 单 webview 三态：select 全屏 / ready 悬浮 600x72 / answering 悬浮 600x420。
  * 创建时尺寸为悬浮态默认值；后端按需要 set_size 切换。
  */
-pub fn ensure_cowork_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-  if let Some(window) = app.get_webview_window("cowork") {
+pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+  if let Some(window) = app.get_webview_window("lens") {
     return Ok(window);
   }
 
   let window = WebviewWindowBuilder::new(
     app,
-    "cowork",
-    WebviewUrl::App("index.html#cowork".into()),
+    "lens",
+    WebviewUrl::App("index.html#lens".into()),
   )
-  .title("Cowork")
+  .title("Lens")
   .inner_size(600.0, 72.0)
   .always_on_top(true)
   .visible_on_all_workspaces(true)

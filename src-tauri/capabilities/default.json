@@ -3,7 +3,7 @@
   "description": "Default capabilities for the main window",
   "windows": [
     "main",
-    "cowork"
+    "lens"
   ],
   "permissions": [
     "core:default",

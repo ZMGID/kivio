@@ -2,11 +2,11 @@
 //!
 //! 取代 `screencapture` CLI。优势：
 //!   - 同步 API 直接拿 `CGImage`，省去子进程冷启动（几十–几百 ms → 个位数 ms）
-//!   - GPU 后端、原生 HiDPI、可排除指定窗口（截 cowork 区域时不必再 hide+sleep 自己）
+//!   - GPU 后端、原生 HiDPI、可排除指定窗口（截 lens 区域时不必再 hide+sleep 自己）
 //!
 //! Phase 1 (PoC): 只暴露 `capture_window`。区域截图 / prewarm 在后续 Phase 加。
 //!
-//! 接口契约：返回 `PathBuf` (写到 temp_dir 下的 PNG 文件)，与原 `cowork::capture_window` 一致 →
+//! 接口契约：返回 `PathBuf` (写到 temp_dir 下的 PNG 文件)，与原 `lens::capture_window` 一致 →
 //! 上层 `images_lock` / `resolve_explain_image_path` 等图片管线零改动。
 
 #![cfg(target_os = "macos")]
@@ -22,7 +22,7 @@ use screencapturekit::{
 };
 
 /// 异步预热 SCShareableContent 缓存：首次 `SCShareableContent::get()` 要查 WindowServer，
-/// 实测 30–80 ms。在 cowork 进入 select 态时调一次，用户瞄准目标的几百毫秒里把这块开销摊掉，
+/// 实测 30–80 ms。在 lens 进入 select 态时调一次，用户瞄准目标的几百毫秒里把这块开销摊掉，
 /// 真正按下截图时直接走快路径（实测稳定值降到 < 30 ms）。
 pub fn prewarm() {
   std::thread::spawn(|| {
@@ -34,7 +34,7 @@ pub fn prewarm() {
   });
 }
 
-/// 截取指定 windowID 的单窗口画面，写入 `temp_dir/cowork-<uuid>.png`，返回路径。
+/// 截取指定 windowID 的单窗口画面，写入 `temp_dir/lens-<uuid>.png`，返回路径。
 pub fn capture_window(window_id: u32) -> Result<PathBuf, String> {
   let started = std::time::Instant::now();
 
@@ -62,7 +62,7 @@ pub fn capture_window(window_id: u32) -> Result<PathBuf, String> {
   let image = SCScreenshotManager::capture_image(&filter, &config)
     .map_err(|e| format!("SCScreenshotManager::capture_image failed: {:?}", e))?;
 
-  let path = std::env::temp_dir().join(format!("cowork-{}.png", Uuid::new_v4()));
+  let path = std::env::temp_dir().join(format!("lens-{}.png", Uuid::new_v4()));
   let path_str = path
     .to_str()
     .ok_or_else(|| "Path contains invalid UTF-8".to_string())?;
@@ -86,7 +86,7 @@ pub fn capture_window(window_id: u32) -> Result<PathBuf, String> {
 /// 截取屏幕全局 logical 坐标 (x, y, width, height) 内的矩形区域。
 ///
 /// `exclude_self_pid`：传 `Some(pid)` 时，从截图里排除该 PID 拥有的所有窗口（典型用法：
-/// cowork webview 自己 → 这样无需先 hide+sleep 60ms 让 NSWindow.orderOut 生效再截，
+/// lens webview 自己 → 这样无需先 hide+sleep 60ms 让 NSWindow.orderOut 生效再截，
 /// SCK 在 GPU compositor 阶段直接抹掉这些 layer）。传 `None` 则不排除。
 pub fn capture_region(
   x: f64,
@@ -117,7 +117,7 @@ pub fn capture_region(
     .ok_or_else(|| "No display available".to_string())?;
   let display_frame = display.frame();
 
-  // 构造 SCWindow 排除集：拥有 self pid 的所有窗口（cowork webview 自己），保 owned 引用避免悬空
+  // 构造 SCWindow 排除集：拥有 self pid 的所有窗口（lens webview 自己），保 owned 引用避免悬空
   let windows = content.windows();
   let excluded_owned: Vec<SCWindow> = match exclude_self_pid {
     Some(pid) => windows
@@ -152,7 +152,7 @@ pub fn capture_region(
   let image = SCScreenshotManager::capture_image(&filter, &config)
     .map_err(|e| format!("SCScreenshotManager::capture_image failed: {:?}", e))?;
 
-  let path = std::env::temp_dir().join(format!("cowork-region-{}.png", Uuid::new_v4()));
+  let path = std::env::temp_dir().join(format!("lens-region-{}.png", Uuid::new_v4()));
   let path_str = path
     .to_str()
     .ok_or_else(|| "Path contains invalid UTF-8".to_string())?;

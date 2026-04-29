@@ -160,7 +160,7 @@ impl Default for ScreenshotTranslationConfig {
 }
 
 /**
- * 对话消息（cowork 多轮对话）
+ * 对话消息（Lens 多轮对话）
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,15 +170,15 @@ pub struct ExplainMessage {
 }
 
 /**
- * Cowork 模式配置
+ * Lens 模式配置
  * 启用后可通过热键进入：屏幕高亮选择窗口/区域 → 截图 → 在悬浮对话栏内提问。
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct CoworkConfig {
+pub struct LensConfig {
   #[serde(default = "default_true")]
   pub enabled: bool,
-  #[serde(default = "default_cowork_hotkey")]
+  #[serde(default = "default_lens_hotkey")]
   pub hotkey: String,
   /// provider/model 留空时 fallback 到 translator_provider_id / translator_model
   #[serde(default)]
@@ -210,7 +210,7 @@ fn default_message_order() -> String {
   "asc".to_string()
 }
 
-impl Default for CoworkConfig {
+impl Default for LensConfig {
   fn default() -> Self {
     Self {
       enabled: true,
@@ -255,8 +255,8 @@ pub struct Settings {
   pub providers: Vec<ModelProvider>,
   #[serde(default)]
   pub screenshot_translation: ScreenshotTranslationConfig,
-  #[serde(default)]
-  pub cowork: CoworkConfig,
+  #[serde(default, alias = "cowork")]
+  pub lens: LensConfig,
   #[serde(default = "default_settings_language")]
   pub settings_language: Option<String>,
   #[serde(default = "default_retry_enabled")]
@@ -291,7 +291,7 @@ impl Default for Settings {
       translator_prompt: None,
       providers: vec![],
       screenshot_translation: ScreenshotTranslationConfig::default(),
-      cowork: CoworkConfig::default(),
+      lens: LensConfig::default(),
       settings_language: Some("zh".to_string()),
       retry_enabled: default_retry_enabled(),
       retry_attempts: default_retry_attempts(),
@@ -361,7 +361,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   if settings.providers.is_empty() {
       settings.translator_provider_id.clear();
       settings.screenshot_translation.provider_id.clear();
-      settings.cowork.provider_id.clear();
+      settings.lens.provider_id.clear();
   } else {
       if !provider_exists(&settings.translator_provider_id) {
           let first = &settings.providers[0];
@@ -377,13 +377,13 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
               settings.screenshot_translation.model = model.clone();
           }
       }
-      // cowork provider 可空（空时 call_vision_api 走 translator_provider_id fallback）；
+      // lens provider 可空（空时 call_vision_api 走 translator_provider_id fallback）；
       // 但若用户填了一个不存在的，重置为空让其走 fallback。
-      if !settings.cowork.provider_id.is_empty()
-        && !provider_exists(&settings.cowork.provider_id)
+      if !settings.lens.provider_id.is_empty()
+        && !provider_exists(&settings.lens.provider_id)
       {
-          settings.cowork.provider_id.clear();
-          settings.cowork.model.clear();
+          settings.lens.provider_id.clear();
+          settings.lens.model.clear();
       }
   }
 
@@ -399,12 +399,12 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
           {
               provider.enabled_models.push(settings.screenshot_translation.model.clone());
           }
-          if !settings.cowork.provider_id.is_empty()
-            && settings.cowork.provider_id == provider.id
-            && !settings.cowork.model.is_empty()
-            && !provider.enabled_models.contains(&settings.cowork.model)
+          if !settings.lens.provider_id.is_empty()
+            && settings.lens.provider_id == provider.id
+            && !settings.lens.model.is_empty()
+            && !provider.enabled_models.contains(&settings.lens.model)
           {
-              provider.enabled_models.push(settings.cowork.model.clone());
+              provider.enabled_models.push(settings.lens.model.clone());
           }
           // 如果仍然为空，添加默认模型
           if provider.enabled_models.is_empty() {
@@ -419,12 +419,12 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
       if settings.screenshot_translation.provider_id == provider.id && !provider.enabled_models.contains(&settings.screenshot_translation.model) {
           settings.screenshot_translation.model = provider.enabled_models[0].clone();
       }
-      if !settings.cowork.provider_id.is_empty()
-        && settings.cowork.provider_id == provider.id
-        && !settings.cowork.model.is_empty()
-        && !provider.enabled_models.contains(&settings.cowork.model)
+      if !settings.lens.provider_id.is_empty()
+        && settings.lens.provider_id == provider.id
+        && !settings.lens.model.is_empty()
+        && !provider.enabled_models.contains(&settings.lens.model)
       {
-          settings.cowork.model = provider.enabled_models[0].clone();
+          settings.lens.model = provider.enabled_models[0].clone();
       }
   }
 
@@ -432,7 +432,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   settings.hotkey = normalize_hotkey(&settings.hotkey);
   settings.screenshot_translation.hotkey =
     normalize_hotkey(&settings.screenshot_translation.hotkey);
-  settings.cowork.hotkey = normalize_hotkey(&settings.cowork.hotkey);
+  settings.lens.hotkey = normalize_hotkey(&settings.lens.hotkey);
 
   // 规范化提示词（去除首尾空白，空值转为 None）
   settings.translator_prompt = normalize_optional_prompt(settings.translator_prompt.take());
@@ -446,11 +446,11 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   if settings.screenshot_translation.hotkey.is_empty() {
     settings.screenshot_translation.hotkey = "CommandOrControl+Shift+A".to_string();
   }
-  if settings.cowork.hotkey.is_empty() {
-    settings.cowork.hotkey = "CommandOrControl+Shift+G".to_string();
+  if settings.lens.hotkey.is_empty() {
+    settings.lens.hotkey = "CommandOrControl+Shift+G".to_string();
   }
-  if settings.cowork.message_order != "asc" && settings.cowork.message_order != "desc" {
-    settings.cowork.message_order = "asc".to_string();
+  if settings.lens.message_order != "asc" && settings.lens.message_order != "desc" {
+    settings.lens.message_order = "asc".to_string();
   }
 
   settings.retry_attempts = clamp_retry_attempts(settings.retry_attempts);
@@ -561,7 +561,7 @@ fn default_screenshot_translation_hotkey() -> String {
   "CommandOrControl+Shift+A".to_string()
 }
 
-fn default_cowork_hotkey() -> String {
+fn default_lens_hotkey() -> String {
   "CommandOrControl+Shift+G".to_string()
 }
 

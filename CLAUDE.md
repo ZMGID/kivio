@@ -56,7 +56,7 @@ The settings panel (`src/Settings.tsx`) delegates to helpers in **`src/settings/
 The app supports multiple OpenAI-compatible providers. Each feature can use a different provider/model:
 - **Translator** (`translatorProviderId` + `translatorModel`)
 - **Screenshot Translation/OCR** (`screenshotTranslation.providerId` + `model`)
-- **Cowork** (`cowork.providerId` + `cowork.model`; both blank ⇒ falls back to translator provider/model)
+- **Lens** (`lens.providerId` + `lens.model`; both blank ⇒ falls back to translator provider/model)
 
 Providers have `availableModels` (fetched from `/models` endpoint) and `enabledModels` (user-selected subset used in dropdowns). Model selection UI uses colon-delimited values like `providerId:modelName`.
 
@@ -74,7 +74,7 @@ Screenshot capture is platform-guarded with `cfg(target_os = ...)`:
 - **macOS**: Uses the native `screencapture -i` command for interactive region selection. The `BusyGuard` RAII pattern prevents concurrent captures.
 - **Windows**: Uses a custom `CaptureOverlay.tsx` (fullscreen transparent webview) for region selection. The lifecycle is: `capture_request` opens the overlay → the user draws a region → `capture_commit` (with pixel coordinates) triggers `xcap` capture → `capture_cancel` dismisses without capturing. Windows also has a clipboard-based fallback in `screenshot.rs` using `ms-screenclip:`.
 
-Busy flags (`screenshot_translation_busy`, `cowork_busy`) prevent concurrent operations on both platforms.
+Busy flags (`screenshot_translation_busy`, `lens_busy`) prevent concurrent operations on both platforms.
 
 ### Rust Backend Structure
 
@@ -93,7 +93,7 @@ Key crate responsibilities from `Cargo.toml`:
 
 ### Streaming
 
-Cowork supports streaming responses. `stream_vision_response` in `main.rs` parses SSE chunks and emits `cowork-stream` events to the frontend. The frontend (`Cowork.tsx`) appends deltas to the last assistant message in the chat list.
+Lens supports streaming responses. `stream_vision_response` in `main.rs` parses SSE chunks and emits `lens-stream` events to the frontend. The frontend (`Lens.tsx`) appends deltas to the last assistant message in the chat list.
 
 ## Release
 

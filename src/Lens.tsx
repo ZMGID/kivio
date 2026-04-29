@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, Sparkles, ArrowUp, History as HistoryIcon, ChevronDown, Brain } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, Aperture, ArrowUp, History as HistoryIcon, ChevronDown, Brain } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { api, type CoworkStreamPayload, type CoworkTranslateStreamPayload, type CoworkWindowInfo, type ExplainMessage } from './api/tauri'
+import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -13,7 +13,7 @@ import { copyToClipboard } from './utils/clipboard'
 type Stage = 'select' | 'ready' | 'answering' | 'translating' | 'translated'
 type Mode = 'chat' | 'translate'
 
-/** 解析 webview hash query：'#cowork?mode=translate' → 'translate' */
+/** 解析 webview hash query：'#lens?mode=translate' → 'translate' */
 function readModeFromHash(): Mode {
   if (typeof window === 'undefined') return 'chat'
   const hash = window.location.hash || ''
@@ -158,17 +158,17 @@ function ThinkingBlock({
 }
 
 /**
- * Cowork 模式：单 webview 三态机，统一 DOM。
+ * Lens 模式：单 webview 三态机，统一 DOM。
  * - select：webview 全屏 + 灰幕 + hover 应用窗口高亮 + 区域 drag + 底部对话栏（纯文字直发）
  * - ready：截图后对话栏 CSS transition 飞到选区附近，加缩略图，输入聚焦
  * - answering：对话栏下方展开 answer 区（透明背景，对话栏不动）
  *
- * 关键：webview 始终全屏，整个过渡靠 CSS。后端 cowork_resolve_anchor 仅算目标坐标，不缩窗口。
+ * 关键：webview 始终全屏，整个过渡靠 CSS。后端 lens_resolve_anchor 仅算目标坐标，不缩窗口。
  */
-export default function Cowork() {
+export default function Lens() {
   const [stage, setStage] = useState<Stage>('select')
-  const [windows, setWindows] = useState<CoworkWindowInfo[]>([])
-  const [hovered, setHovered] = useState<CoworkWindowInfo | null>(null)
+  const [windows, setWindows] = useState<LensWindowInfo[]>([])
+  const [hovered, setHovered] = useState<LensWindowInfo | null>(null)
   const [winOrigin, setWinOrigin] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [dragStart, setDragStart] = useState<Point | null>(null)
   const [dragCurrent, setDragCurrent] = useState<Point | null>(null)
@@ -213,7 +213,7 @@ export default function Cowork() {
   const stageRef = useRef<Stage>('select')
   const imageIdRef = useRef('')
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // capture 期间 macOS screencapture 可能短暂让 cowork webview 失焦 → 触发 blur 误关闭。
+  // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
   // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
   const capturingRef = useRef(false)
   // 答案区滚动容器，stream 时自动滚到底部
@@ -228,7 +228,7 @@ export default function Cowork() {
       try {
         const settings = await api.getSettings()
         setLang((settings.settingsLanguage as Lang) || 'zh')
-        setMessageOrder(settings.cowork?.messageOrder === 'desc' ? 'desc' : 'asc')
+        setMessageOrder(settings.lens?.messageOrder === 'desc' ? 'desc' : 'asc')
       } catch (err) { console.error('Failed to load settings', err) }
     })()
   }, [])
@@ -269,7 +269,7 @@ export default function Cowork() {
       setWinOrigin({ x: pos.x / sf, y: pos.y / sf })
     } catch (err) { console.error('Failed to read window origin', err) }
     try {
-      const list = await api.coworkListWindows()
+      const list = await api.lensListWindows()
       setWindows(list)
     } catch (err) {
       console.error('Failed to list windows', err)
@@ -281,8 +281,8 @@ export default function Cowork() {
   useEffect(() => {
     void enterSelect()
     const handleReset = () => { void enterSelect() }
-    window.addEventListener('cowork:reset', handleReset)
-    return () => window.removeEventListener('cowork:reset', handleReset)
+    window.addEventListener('lens:reset', handleReset)
+    return () => window.removeEventListener('lens:reset', handleReset)
   }, [enterSelect])
 
   // viewport resize（拔显示器 / 切分辨率 / DPI 变更）→ 更新 viewport state，触发 metrics 重算
@@ -324,13 +324,13 @@ export default function Cowork() {
     })
   }, [mode, streaming, messages, imagePreview, appLabel, capturedFrame])
 
-  // 监听 cowork-stream 事件：把 reasoning_delta / delta 累积到最后一条 assistant 消息
+  // 监听 lens-stream 事件：把 reasoning_delta / delta 累积到最后一条 assistant 消息
   // StrictMode 双挂载下 listen 是 async：cleanup 时 unlisten 可能还没赋值，需要 cancelled 旗标
   // 让 promise resolve 时立即 dispose，否则会留下"幽灵 listener"导致每个事件触发 N 次（字符重复）
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
-    api.onCoworkStream((payload: CoworkStreamPayload) => {
+    api.onLensStream((payload: LensStreamPayload) => {
       if (payload.imageId !== imageIdRef.current) return
       if (payload.done) {
         setStreaming(false)
@@ -369,7 +369,7 @@ export default function Cowork() {
   }, [messages, messageOrder])
 
   // 关闭前同步重置 state，让 webview surface 在 hide 之前已经是空 select 态。
-  // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 cowork:reset 覆盖 → 闪一下上次内容。
+  // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
   const resetBeforeHide = useCallback(() => {
     flushSync(() => {
       setStage('select')
@@ -394,25 +394,25 @@ export default function Cowork() {
     const handler = async (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (stageRef.current === 'answering' && streaming) {
-        try { await api.coworkCancelStream() } catch (err) { console.error(err) }
+        try { await api.lensCancelStream() } catch (err) { console.error(err) }
         setStreaming(false)
         return
       }
       resetBeforeHide()
-      try { await api.coworkClose() } catch (err) { console.error(err) }
+      try { await api.lensClose() } catch (err) { console.error(err) }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [streaming, resetBeforeHide])
 
   // select 态切到其他应用 → 自动收起灰幕。
-  // 注意：截图过程中 screencapture 可能让 cowork 短暂失焦，capturingRef 防止误关。
+  // 注意：截图过程中 screencapture 可能让 lens 短暂失焦，capturingRef 防止误关。
   useEffect(() => {
     const handleBlur = () => {
       if (capturingRef.current) return
       if (stageRef.current === 'select') {
         resetBeforeHide()
-        void api.coworkClose()
+        void api.lensClose()
       }
     }
     window.addEventListener('blur', handleBlur)
@@ -426,7 +426,7 @@ export default function Cowork() {
   })
 
   /** 命中检测：找第一个包含该全局坐标的应用窗口 */
-  const hitTest = (gp: Point): CoworkWindowInfo | null => {
+  const hitTest = (gp: Point): LensWindowInfo | null => {
     for (const w of windows) {
       if (gp.x >= w.x && gp.x < w.x + w.width && gp.y >= w.y && gp.y < w.y + w.height) {
         return w
@@ -481,7 +481,7 @@ export default function Cowork() {
     setHovered(hitTest(gp))
   }
 
-  /** 截图后 cowork 默认模式：在前端直接算 bar 位置，让对话栏飞到选区左/右侧（不再上下出现）。
+  /** 截图后 lens 默认模式：在前端直接算 bar 位置，让对话栏飞到选区左/右侧（不再上下出现）。
    *  优先右侧，右侧空间不够再放左侧；都不够时贴大空间一侧。垂直与选区中心对齐并 clamp 在 viewport 内。 */
   const flyBarToAnchor = async (
     anchorAbsX: number,
@@ -533,7 +533,7 @@ export default function Cowork() {
   }
 
   /** translate 模式：截完立即调 OCR + 翻译。
-   *  流式：cowork-translate-stream 事件累积 original/translated；done 事件结束并锁定耗时
+   *  流式：lens-translate-stream 事件累积 original/translated；done 事件结束并锁定耗时
    *  非流式：API 返回完整结果一次性灌入（也通过事件，后端在两步完成后 emit 一次完整 delta） */
   const runTranslate = useCallback(async (id: string) => {
     setTranslateOriginal('')
@@ -543,7 +543,7 @@ export default function Cowork() {
     translateStartRef.current = Date.now()
     setTranslateNow(Date.now())
     try {
-      const r = await api.coworkTranslate(id)
+      const r = await api.lensTranslate(id)
       if (!r.success) {
         // 失败兜底：done 事件应该已经带 error 了，但补一刀防止前端漏 done
         setTranslateError(r.error || 'Failed')
@@ -553,7 +553,7 @@ export default function Cowork() {
         }
         setStage('translated')
       }
-      // 成功路径：等 cowork-translate-stream 的 done 事件触发 stage / 计时（避免事件还没到 stage 就跳，或反之文字还没到完成态）
+      // 成功路径：等 lens-translate-stream 的 done 事件触发 stage / 计时（避免事件还没到 stage 就跳，或反之文字还没到完成态）
     } catch (err) {
       setTranslateError(err instanceof Error ? err.message : String(err))
       if (translateStartRef.current !== null) {
@@ -564,11 +564,11 @@ export default function Cowork() {
     }
   }, [])
 
-  // cowork-translate-stream 事件监听（与 cowork-stream 同款 cancelled 旗标处理 StrictMode 双挂）
+  // lens-translate-stream 事件监听（与 lens-stream 同款 cancelled 旗标处理 StrictMode 双挂）
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
-    api.onCoworkTranslateStream((payload: CoworkTranslateStreamPayload) => {
+    api.onLensTranslateStream((payload: LensTranslateStreamPayload) => {
       if (payload.imageId !== imageIdRef.current) return
       if (payload.done) {
         if (payload.error) setTranslateError(payload.error)
@@ -602,13 +602,13 @@ export default function Cowork() {
     return () => clearInterval(id)
   }, [stage])
 
-  const handleCaptureWindow = async (info: CoworkWindowInfo) => {
-    // capturingRef 全程 true，避免 macOS screencapture 短暂让 cowork webview 失焦时触发 blur handler 误关
+  const handleCaptureWindow = async (info: LensWindowInfo) => {
+    // capturingRef 全程 true，避免 macOS screencapture 短暂让 lens webview 失焦时触发 blur handler 误关
     capturingRef.current = true
     try {
-      const result = await api.coworkCaptureWindow(info.id)
+      const result = await api.lensCaptureWindow(info.id)
       if (!result.success || !result.imageId) {
-        console.error('coworkCaptureWindow failed:', result.error)
+        console.error('lensCaptureWindow failed:', result.error)
         void enterSelect()
         return
       }
@@ -653,9 +653,9 @@ export default function Cowork() {
     // capturingRef 全程 true 直到 flyBarToAnchor 完成（同 handleCaptureWindow 注释）
     capturingRef.current = true
     try {
-      const result = await api.coworkCaptureRegion(params)
+      const result = await api.lensCaptureRegion(params)
       if (!result.success || !result.imageId) {
-        console.error('coworkCaptureRegion failed:', result.error)
+        console.error('lensCaptureRegion failed:', result.error)
         void enterSelect()
         return
       }
@@ -724,16 +724,16 @@ export default function Cowork() {
       setStreaming(true)
     })
     try {
-      const result = await api.coworkAsk(id || '', sendMessages)
+      const result = await api.lensAsk(id || '', sendMessages)
       if (!result.success) {
-        const errText = `${t.coworkError}: ${result.error}`
+        const errText = `${t.lensError}: ${result.error}`
         setMessages(prev => {
           const last = prev[prev.length - 1]
           if (!last || last.role !== 'assistant') return prev
           return [...prev.slice(0, -1), { role: 'assistant', content: errText }]
         })
       } else if (result.response) {
-        // 非流式：把完整答案塞进占位 assistant；流式情况已在 onCoworkStream 累积，避免覆盖
+        // 非流式：把完整答案塞进占位 assistant；流式情况已在 onLensStream 累积，避免覆盖
         setMessages(prev => {
           const last = prev[prev.length - 1]
           if (!last || last.role !== 'assistant') return prev
@@ -746,7 +746,7 @@ export default function Cowork() {
       setMessages(prev => {
         const last = prev[prev.length - 1]
         if (!last || last.role !== 'assistant') return prev
-        return [...prev.slice(0, -1), { role: 'assistant', content: `${t.coworkError}: ${msg}` }]
+        return [...prev.slice(0, -1), { role: 'assistant', content: `${t.lensError}: ${msg}` }]
       })
     } finally {
       setStreaming(false)
@@ -754,7 +754,7 @@ export default function Cowork() {
   }
 
   const handleStop = async () => {
-    try { await api.coworkCancelStream() } catch (err) { console.error(err) }
+    try { await api.lensCancelStream() } catch (err) { console.error(err) }
     setStreaming(false)
   }
 
@@ -774,7 +774,7 @@ export default function Cowork() {
   const restoreHistory = (item: HistoryItem) => {
     setHistoryOpen(false)
     if (streaming) {
-      void api.coworkCancelStream().catch(err => console.error(err))
+      void api.lensCancelStream().catch(err => console.error(err))
     }
     imageIdRef.current = item.id
     flushSync(() => {
@@ -880,7 +880,7 @@ export default function Cowork() {
                 top: Math.max(28, capturedFrame.y - 8),
               }}
             >
-              {t.coworkScreenshotOf} {capturedFrame.label}
+              {t.lensScreenshotOf} {capturedFrame.label}
             </div>
           )}
         </>
@@ -909,7 +909,7 @@ export default function Cowork() {
                     top: Math.max(28, hoverRect.y - 8),
                   }}
                 >
-                  {t.coworkScreenshotOf} {hovered.owner}
+                  {t.lensScreenshotOf} {hovered.owner}
                 </div>
               )}
             </>
@@ -928,10 +928,10 @@ export default function Cowork() {
           )}
           <div className="absolute top-6 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-neutral-900/80 backdrop-blur text-white text-[12px] font-medium pointer-events-none">
             {dragging
-              ? t.coworkSelectHintDrag
+              ? t.lensSelectHintDrag
               : hovered
-                ? t.coworkSelectHintHover.replace('{app}', hovered.owner)
-                : t.coworkSelectHintIdle}
+                ? t.lensSelectHintHover.replace('{app}', hovered.owner)
+                : t.lensSelectHintIdle}
           </div>
         </>
       )}
@@ -977,7 +977,7 @@ export default function Cowork() {
                 )}
               </div>
             ) : (
-              <Sparkles size={20} strokeWidth={1.75} className="shrink-0 text-[#D97757]" />
+              <Aperture size={20} strokeWidth={1.75} className="shrink-0 text-[#D97757]" />
             )}
             <input
               ref={inputRef}
@@ -986,7 +986,7 @@ export default function Cowork() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleSend() } }}
               disabled={streaming}
-              placeholder={t.coworkAskPlaceholder}
+              placeholder={t.lensAskPlaceholder}
               className="flex-1 bg-transparent text-[16px] text-neutral-900 dark:text-white placeholder-neutral-500 dark:placeholder-neutral-400 focus:outline-none disabled:opacity-60"
             />
             {/* History dropdown：按钮 + 弹出面板（容器作为 ref，点击外部关闭） */}
@@ -995,7 +995,7 @@ export default function Cowork() {
                 type="button"
                 onClick={() => setHistoryOpen(o => !o)}
                 className="flex items-center gap-1 h-9 px-2.5 rounded-lg text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors"
-                title={t.coworkHistory}
+                title={t.lensHistory}
               >
                 <HistoryIcon size={15} strokeWidth={1.75} />
                 {history.length > 0 && (
@@ -1010,7 +1010,7 @@ export default function Cowork() {
                   <div className="max-h-[200px] overflow-y-auto custom-scrollbar py-1">
                     {history.length === 0 ? (
                       <div className="px-2.5 py-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">
-                        {t.coworkNoHistory}
+                        {t.lensNoHistory}
                       </div>
                     ) : (
                       history.map(item => {
@@ -1067,9 +1067,9 @@ export default function Cowork() {
           {/* select 态键盘提示（在对话栏卡片下方） */}
           {stage === 'select' && (
             <div className="mt-2 flex justify-center gap-3 text-[11px] text-white/70 pointer-events-none">
-              <span>↵ {t.coworkHintSend}</span>
+              <span>↵ {t.lensHintSend}</span>
               <span>·</span>
-              <span>esc {t.coworkHintEsc}</span>
+              <span>esc {t.lensHintEsc}</span>
             </div>
           )}
 
@@ -1098,7 +1098,7 @@ export default function Cowork() {
                     className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                   >
                     {copied ? <Check size={11} /> : <Copy size={11} />}
-                    <span>{copied ? t.coworkCopied : t.coworkCopy}</span>
+                    <span>{copied ? t.lensCopied : t.lensCopy}</span>
                   </button>
                   {streaming && (
                     <button
@@ -1106,7 +1106,7 @@ export default function Cowork() {
                       className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-red-500 dark:text-neutral-400 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                     >
                       <Square size={10} strokeWidth={2.5} fill="currentColor" />
-                      <span>{t.coworkStop}</span>
+                      <span>{t.lensStop}</span>
                     </button>
                   )}
                 </div>
@@ -1131,8 +1131,8 @@ export default function Cowork() {
                             <ThinkingBlock
                               reasoning={m.reasoning}
                               active={isLast && streaming && !m.content}
-                              thinkingLabel={t.coworkThinking}
-                              thoughtLabel={t.coworkThought}
+                              thinkingLabel={t.lensThinking}
+                              thoughtLabel={t.lensThought}
                             />
                           )}
                           {m.content ? (
@@ -1142,7 +1142,7 @@ export default function Cowork() {
                           ) : isLast && streaming && !m.reasoning ? (
                             <div className="not-prose flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
                               <Loader2 className="animate-spin" size={14} />
-                              <span className="text-[12px]">{t.coworkAsking}</span>
+                              <span className="text-[12px]">{t.lensAsking}</span>
                             </div>
                           ) : null}
                         </div>
@@ -1191,7 +1191,7 @@ export default function Cowork() {
               )}
             </div>
             <span className="text-[12.5px] font-medium text-neutral-700 dark:text-neutral-300 truncate flex-1">
-              {appLabel || t.coworkScreenshotOf.replace('：', '').replace(':', '')}
+              {appLabel || t.lensScreenshotOf.replace('：', '').replace(':', '')}
             </span>
             {(() => {
               const elapsedMs = stage === 'translating' && translateStartRef.current
@@ -1213,35 +1213,11 @@ export default function Cowork() {
             style={{ maxHeight: Math.min(viewport.h - 110, metrics.ANSWER_H) }}>
             {translateError ? (
               <div className="text-[12.5px] text-red-500 leading-6 whitespace-pre-wrap break-words">
-                {t.coworkError}: {translateError}
+                {t.lensError}: {translateError}
               </div>
             ) : (
               <>
-                {/* 原文区：开始 OCR 即逐字渲染；尚未有内容时显示 shimmer 占位 */}
-                {(translateOriginal || stage === 'translating') && (
-                  <>
-                    <div className="text-[10.5px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
-                      {t.coworkOriginal}
-                    </div>
-                    {translateOriginal ? (
-                      <div className="prose prose-sm dark:prose-invert max-w-none text-[12.5px] leading-6 text-neutral-500 dark:text-neutral-400 mb-3">
-                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-                          {translateOriginal}
-                        </ReactMarkdown>
-                      </div>
-                    ) : (
-                      <div className="space-y-2 mb-3">
-                        <div className="h-3 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite]" />
-                        <div className="h-3 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[72%]" />
-                      </div>
-                    )}
-                    <div className="border-t border-black/[0.05] dark:border-white/[0.06] -mx-3.5 mb-3" />
-                  </>
-                )}
-                {/* 译文区：原文阶段进行中暂用 shimmer 占位；翻译开始有 delta 即渲染 */}
-                <div className="text-[10.5px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
-                  {t.coworkTranslated}
-                </div>
+                {/* 译文区（主体）：合并模式下分隔符前的所有 delta 都属于这块，先于原文出现 */}
                 {translateText ? (
                   <div className="prose prose-sm dark:prose-invert max-w-none text-[13.5px] leading-7 text-neutral-800 dark:text-neutral-200">
                     <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
@@ -1254,6 +1230,17 @@ export default function Cowork() {
                     <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[88%]" />
                     <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[72%]" />
                   </div>
+                )}
+                {/* 原文区（参考）：分隔符之后的 delta 才到这里，置于译文下方小字灰色 */}
+                {translateOriginal && (
+                  <>
+                    <div className="border-t border-black/[0.05] dark:border-white/[0.06] -mx-3.5 my-3" />
+                    <div className="prose prose-sm dark:prose-invert max-w-none text-[12.5px] leading-6 text-neutral-500 dark:text-neutral-400">
+                      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        {translateOriginal}
+                      </ReactMarkdown>
+                    </div>
+                  </>
                 )}
               </>
             )}
@@ -1273,7 +1260,7 @@ export default function Cowork() {
                 className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
               >
                 {copied ? <Check size={12} /> : <Copy size={12} />}
-                <span>{copied ? t.coworkCopied : t.coworkCopy}</span>
+                <span>{copied ? t.lensCopied : t.lensCopy}</span>
               </button>
             </div>
           )}

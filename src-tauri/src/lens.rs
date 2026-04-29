@@ -1,4 +1,4 @@
-// Cowork 模式：枚举屏幕上可见应用窗口（hover 高亮 + 标签）+ 整窗截图。
+// Lens 模式：枚举屏幕上可见应用窗口（hover 高亮 + 标签）+ 整窗截图。
 // macOS：CGWindowListCopyWindowInfo（Quartz）；Windows MVP：返回空列表，整窗截图返回 Err。
 
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
   let array: CFArray<CFType> = unsafe { CFArray::wrap_under_create_rule(info_ref) };
 
   let total = array.len();
-  eprintln!("[cowork] CGWindowList returned {} entries", total);
+  eprintln!("[lens] CGWindowList returned {} entries", total);
 
   let mut out = Vec::new();
   let mut filtered_summary: Vec<String> = Vec::new();
@@ -110,7 +110,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
   for line in &filtered_summary {
     eprintln!("{}", line);
   }
-  eprintln!("[cowork] kept {} windows", out.len());
+  eprintln!("[lens] kept {} windows", out.len());
   out
 }
 
