@@ -884,12 +884,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         />
                       </SettingRow>
                       <SettingRow
-                        label={t.screenshotTranslateMode}
-                        description={t.screenshotTranslateModeHint}
+                        label={t.screenshotShowOriginal}
+                        description={t.screenshotShowOriginalHint}
                       >
                         <Toggle
-                          checked={settings.screenshotTranslation?.directTranslate ?? false}
-                          onChange={(v) => updateScreenshotTranslation({ directTranslate: v })}
+                          checked={!(settings.screenshotTranslation?.directTranslate ?? false)}
+                          onChange={(v) => updateScreenshotTranslation({ directTranslate: !v })}
                         />
                       </SettingRow>
                       <SettingRow

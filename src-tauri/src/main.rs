@@ -62,19 +62,19 @@ struct AppState {
 
 impl AppState {
   /// 安全读取设置（锁中毒时返回内部数据，不 panic）
-  fn settings_read(&self) -> std::sync::RwLockReadGuard<Settings> {
+  fn settings_read(&self) -> std::sync::RwLockReadGuard<'_, Settings> {
     self.settings.read().unwrap_or_else(|e| e.into_inner())
   }
   /// 安全写入设置（锁中毒时返回内部数据，不 panic）
-  fn settings_write(&self) -> std::sync::RwLockWriteGuard<Settings> {
+  fn settings_write(&self) -> std::sync::RwLockWriteGuard<'_, Settings> {
     self.settings.write().unwrap_or_else(|e| e.into_inner())
   }
   /// 安全获取解释图片映射锁
-  fn images_lock(&self) -> std::sync::MutexGuard<HashMap<String, PathBuf>> {
+  fn images_lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, PathBuf>> {
     self.explain_images.lock().unwrap_or_else(|e| e.into_inner())
   }
   /// 安全获取当前解释图片 ID 锁
-  fn current_id_lock(&self) -> std::sync::MutexGuard<Option<String>> {
+  fn current_id_lock(&self) -> std::sync::MutexGuard<'_, Option<String>> {
     self.current_explain_image_id.lock().unwrap_or_else(|e| e.into_inner())
   }
 }
@@ -1701,22 +1701,40 @@ fn build_ocr_direct_translation_prompt(lang_name: &str, template: Option<&str>) 
 
 /// 构建合并模式提示词：模型在一次调用中先输出译文、再 `<<<ORIGINAL>>>` 分隔符、再输出原文
 /// 这样译文先出现在流里（用户立即看到结果），整体只走一次 round-trip
-fn build_combined_translate_prompt(lang_name: &str, _template: Option<&str>) -> String {
+///
+/// 用户自定义 template（settings.screenshot_translation.prompt）若非空，会被作为
+/// "Translation rules" 块注入；空则使用默认规则。{lang} 占位符替换为目标语言；{text}
+/// 在合并模式不存在外部参数 → 替换为占位说明 "the recognized text"。
+fn build_combined_translate_prompt(lang_name: &str, template: Option<&str>) -> String {
+  const DEFAULT_RULES: &str = "- Preserve LaTeX formulas ($...$ inline, $$...$$ block).\n\
+     - Keep paragraph and line-break structure.\n\
+     - Correct only obvious OCR mistakes; do not invent missing content.\n\
+     - No commentary, no section headers, no labels.";
+
+  let rules = template
+    .map(str::trim)
+    .filter(|t| !t.is_empty())
+    .map(|t| {
+      t.replace("{lang}", lang_name)
+        .replace("{text}", "the recognized text")
+    })
+    .unwrap_or_else(|| DEFAULT_RULES.to_string());
+
   format!(
     "Read this screenshot. Output two sections in this exact order, separated by a line containing only `{sep}`:\n\n\
      1. Translation in {lang}: a faithful translation of all text shown in the screenshot.\n\
      2. Original recognized text exactly as it appears in the screenshot.\n\n\
-     Rules:\n\
-     - Preserve LaTeX formulas ($...$ inline, $$...$$ block).\n\
-     - Keep paragraph and line-break structure.\n\
-     - Correct only obvious OCR mistakes; do not invent missing content.\n\
-     - No commentary, no section headers, no labels.\n\n\
-     Output format (replace placeholders, no labels):\n\
+     Translation rules:\n{rules}\n\n\
+     Format guard:\n\
+     - The line `{sep}` must appear exactly once on its own line, between the two sections.\n\
+     - No commentary, no labels like 'Translation:' or 'Original:'.\n\n\
+     Output format (replace placeholders):\n\
      <translation>\n\
      {sep}\n\
      <original>",
     lang = lang_name,
     sep = COMBINED_TRANSLATE_SEPARATOR,
+    rules = rules,
   )
 }
 
