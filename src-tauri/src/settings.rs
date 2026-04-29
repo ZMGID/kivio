@@ -42,8 +42,15 @@ fn legacy_clear_keyring_api_key(provider_id: &str) {
  * 从旧版 keyring 一次性迁移 API Key 到 settings.api_keys
  * 仅在 settings.json 中没有 key 时执行（保护用户不丢 key）
  * 迁移成功后立即清理 keyring 旧条目
+ *
+ * 幂等：settings.legacy_keyring_migrated == true 时直接跳过，
+ * 防止用户在 v2.3.x ↔ v2.4 之间反复切换时每次启动都抹掉 keyring。
+ * 标记会随用户下次保存设置写盘；即使没保存就退出，下次再跑也是 no-op（keyring 已被清）。
  */
 fn migrate_legacy_keyring_keys(settings: &mut Settings) {
+  if settings.legacy_keyring_migrated {
+    return;
+  }
   for provider in &mut settings.providers {
     if !provider.api_keys.is_empty() {
       // settings.json 已有 key，无需迁移；顺手清掉钥匙串里的残留
@@ -59,6 +66,7 @@ fn migrate_legacy_keyring_keys(settings: &mut Settings) {
       );
     }
   }
+  settings.legacy_keyring_migrated = true;
 }
 
 // ========== 数据结构定义 ==========
@@ -261,6 +269,10 @@ pub struct Settings {
   pub retry_enabled: bool,
   #[serde(default = "default_retry_attempts")]
   pub retry_attempts: u8,
+  /// 一次性迁移标记：v2.3.x 钥匙串里的 key 已搬到 api_keys[0] 并清掉旧条目后置 true
+  /// 防止 v2.3.x ↔ v2.4 反复切换时重复抹掉钥匙串
+  #[serde(default)]
+  pub legacy_keyring_migrated: bool,
   // 旧版字段，用于迁移
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openai: Option<OpenAIConfig>,
@@ -293,6 +305,7 @@ impl Default for Settings {
       settings_language: Some("zh".to_string()),
       retry_enabled: default_retry_enabled(),
       retry_attempts: default_retry_attempts(),
+      legacy_keyring_migrated: false,
       openai: None,
     }
   }
@@ -489,14 +502,27 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 /**
  * 持久化设置到存储文件
  * 从 v2.4 起 API Key 直接保存在 settings.json 的 api_keys 数组中
+ *
+ * 降级兼容：写盘前把 api_keys[0] 镜像到 api_key_legacy（serde rename = "apiKey"）字段，
+ * 这样老版本（v2.3.x）反序列化时仍能从 apiKey 字段读到主 key 不丢。
+ * 新版加载时 sanitize_settings 会把 api_key_legacy.take() 合并回 api_keys 并去重，无副作用。
  */
 pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+  let mut to_persist = settings.clone();
+  for provider in &mut to_persist.providers {
+    if let Some(primary) = provider.api_keys.first() {
+      if !primary.trim().is_empty() {
+        provider.api_key_legacy = Some(primary.clone());
+      }
+    }
+  }
+
   let store = StoreBuilder::new(app, SETTINGS_STORE)
     .build()
     .map_err(|e| e.to_string())?;
   store.set(
     "settings".to_string(),
-    serde_json::to_value(settings).map_err(|e| e.to_string())?,
+    serde_json::to_value(&to_persist).map_err(|e| e.to_string())?,
   );
   store.save().map_err(|e| e.to_string())
 }

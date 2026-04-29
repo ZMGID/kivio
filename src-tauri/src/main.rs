@@ -2379,29 +2379,33 @@ fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
   delay.min(RETRY_MAX_DELAY_MS)
 }
 
-/// 判断错误信息是否触发 key failover
-/// failover 条件：429（限流）/ 401（鉴权失败）/ 402（余额不足）/ 403（权限/封禁）+
-/// body 含 quota / rate_limit / billing / credit / balance 关键字
-fn is_failover_error(err_msg: &str) -> bool {
-  // 状态码：send_with_retry 失败信息含 " Error: <STATUS>"，如 " Error: 429"
-  let status_hits = err_msg.contains(" Error: 429")
-    || err_msg.contains(" Error: 401")
-    || err_msg.contains(" Error: 402")
-    || err_msg.contains(" Error: 403");
-  if status_hits {
-    return true;
+/// 从 send_with_retry 拼接的错误信息中提取 HTTP 状态码
+/// 格式约定（main.rs 内 send_with_retry）：`"{label} Error: {status} - {body}"`，
+/// status 形如 `"429 Too Many Requests"`，第一段数字即可
+/// 网络错误（reqwest::Error 路径）格式为 `"{label} Error: <reqwest msg>"`，无前导数字 → 返回 None
+fn extract_status_code(err_msg: &str) -> Option<u16> {
+  let idx = err_msg.find(" Error: ")?;
+  let rest = &err_msg[idx + " Error: ".len()..];
+  let end = rest
+    .find(|c: char| !c.is_ascii_digit())
+    .unwrap_or(rest.len());
+  if end == 0 {
+    return None;
   }
-  let lower = err_msg.to_lowercase();
-  lower.contains("insufficient_quota")
-    || lower.contains("quota_exceeded")
-    || lower.contains("rate_limit_exceeded")
-    || lower.contains("rate-limit")
-    || lower.contains("out_of_credit")
-    || lower.contains("out of credit")
-    || lower.contains("insufficient balance")
-    || lower.contains("insufficient_balance")
-    || lower.contains("exceeded your current quota")
-    || lower.contains("billing")
+  rest[..end].parse().ok()
+}
+
+/// 判断错误信息是否触发 key failover
+/// 严格按 HTTP 状态码：401/402/403/429 才换 key —— 与 key 直接相关的错误：
+/// - 401 鉴权失败（key 被吊销 / 错误）
+/// - 402 需要付费（账户欠费）
+/// - 403 权限不足 / 被封禁
+/// - 429 限流（key 维度配额耗尽）
+/// 其它 4xx（如 400 malformed body）属于请求本身问题，换 key 也无济于事 → 不触发
+/// 5xx 由 send_with_retry 内部退避重试，不会到这里
+/// 网络错误（timeout / connect 失败）非 key 问题，extract_status_code 返回 None → 不触发
+fn is_failover_error(err_msg: &str) -> bool {
+  matches!(extract_status_code(err_msg), Some(401 | 402 | 403 | 429))
 }
 
 /// 多 key failover 包装：在 api_keys 列表上依次尝试，遇到 failover-eligible 错误自动切下一 key

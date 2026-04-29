@@ -264,6 +264,10 @@ export default function Lens() {
   const stageRef = useRef<Stage>('select')
   const imageIdRef = useRef('')
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Stream 真实结束（成功 / 错误 / 用户主动取消）后才置 true，
+  // 让历史持久化 effect 只在这一次 rerun 触发 push；restoreHistory / enterSelect / resetBeforeHide 防御性清零，
+  // 避免恢复历史时 setMessages 触发 effect 把恢复的对话又当新条目写一遍历史。
+  const justFinishedStreamRef = useRef(false)
   // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
   // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
   const capturingRef = useRef(false)
@@ -286,6 +290,9 @@ export default function Lens() {
 
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
   const enterSelect = useCallback(async () => {
+    // 防御：reset 流程会 setMessages([]) + setStreaming(false)，理论上 messages.length===0 effect 不会进
+    // 持久化分支，但显式清零更稳
+    justFinishedStreamRef.current = false
     // 用 flushSync 同步提交所有 reset 后的状态：webview show 之前 DOM 必须已经反映新位置，
     // 否则 Rust 的 show() 会先把旧 frame 露出来。
     // barNoTransition 同 frame 一起置 true → bar 从老坐标 snap 到 select 坐标，不动画。
@@ -366,11 +373,15 @@ export default function Lens() {
   // translate 模式不入对话历史（OCR+翻译是一次性任务，无对话语义）。
   // 缩略图压缩到 96x96 jpeg 再写历史，避免 localStorage 被几 MB 的 base64 撑爆。
   useEffect(() => {
+    // 只在真实"流刚结束"路径触发：handleSend / handleStop 的 finally 会先置 ref 再 setStreaming(false)。
+    // restoreHistory / enterSelect / resetBeforeHide 调用前会显式清零 ref，避免恢复历史时 effect 误触发。
+    if (!justFinishedStreamRef.current) return
     if (mode !== 'chat') return
     if (streaming) return
     if (!imageIdRef.current || messages.length === 0) return
     const hasAssistant = messages.some(m => m.role === 'assistant' && m.content)
     if (!hasAssistant) return
+    justFinishedStreamRef.current = false
 
     const id = imageIdRef.current
     let cancelled = false
@@ -456,6 +467,8 @@ export default function Lens() {
   // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
   // barNoTransition：禁用 left/top/width transition，避免 380ms 动画被 hide 暂停后下次 show 续播。
   const resetBeforeHide = useCallback(() => {
+    // 防御：和 enterSelect 同理 —— reset 路径不该走持久化
+    justFinishedStreamRef.current = false
     flushSync(() => {
       setBarNoTransition(true)
       setStage('select')
@@ -835,12 +848,16 @@ export default function Lens() {
         return [...prev.slice(0, -1), { role: 'assistant', content: `${t.lensError}: ${msg}` }]
       })
     } finally {
+      // ref 在 setStreaming(false) 之前置 true，让持久化 effect 在本次 rerun 中识别这是"流刚结束"路径
+      justFinishedStreamRef.current = true
       setStreaming(false)
     }
   }
 
   const handleStop = async () => {
     try { await api.lensCancelStream() } catch (err) { console.error(err) }
+    // 用户主动取消但已经流出部分内容，也持久化 —— 关掉再开历史能接着问
+    justFinishedStreamRef.current = true
     setStreaming(false)
   }
 
@@ -863,6 +880,8 @@ export default function Lens() {
       void api.lensCancelStream().catch(err => console.error(err))
     }
     imageIdRef.current = item.id
+    // 防御：恢复历史 setMessages 会触发持久化 effect，但本路径不是"流刚结束"，不该 push 重复条目
+    justFinishedStreamRef.current = false
     flushSync(() => {
       setImagePreview(item.imagePreview)
       setAppLabel(item.appLabel)

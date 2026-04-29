@@ -1121,8 +1121,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       <div className="mt-1.5 space-y-1.5">
                         {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
                           const total = Math.max(provider.apiKeys.length, 1)
+                          // key 含 total（apiKeys.length）：add/remove 时整列强制 remount，
+                          // 避免删除 idx 0 后 React 把旧 row 0 的 DOM（焦点 / 光标 / 浏览器自动填充状态）复用给新 idx 0
                           return (
-                            <div key={idx} className="flex items-center gap-1.5">
+                            <div key={`${provider.id}-${total}-${idx}`} className="flex items-center gap-1.5">
                               <div className="flex-1">
                                 <Input
                                   type="password"
