@@ -46,6 +46,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   // 更新检查状态：'idle' / 'checking' / 'up-to-date' / 'available'
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'available'>('idle')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
+  // （否则用户可能没察觉就 Save 把磁盘真实数据覆盖掉）
+  const [loadError, setLoadError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
   const saveSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const lang = settings?.settingsLanguage || 'zh'
@@ -54,8 +58,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const hasUnsavedChanges = settings ? JSON.stringify(settings) !== initialSettingsSnapshot : false
 
   // 初始化：加载设置、版本号、默认提示词
+  // 重试通过递增 reloadKey 触发本 effect 重跑
   useEffect(() => {
     let active = true
+    setLoading(true)
+    setLoadError('')
     api.getSettings()
       .then((data: SettingsData) => {
         if (!active) return
@@ -66,49 +73,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       .catch((err) => {
         if (!active) return
         console.error('Failed to load settings:', err)
-        // 使用默认设置以避免永远 loading
-        const defaultSettings: SettingsData = {
-          hotkey: 'CommandOrControl+Alt+T',
-          theme: 'system',
-          targetLang: 'auto',
-          source: 'openai',
-          autoPaste: true,
-          launchAtStartup: false,
-          translatorProviderId: 'default-translator',
-          translatorModel: 'gpt-4o',
-          translatorPrompt: '',
-          providers: [
-            { id: 'default-translator', name: 'OpenAI (Translator)', apiKeys: [], baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
-            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKeys: [], baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
-          ],
-          retryEnabled: true,
-          retryAttempts: 3,
-          screenshotTranslation: {
-            enabled: true,
-            hotkey: 'CommandOrControl+Shift+A',
-            providerId: 'default-ocr',
-            model: 'gpt-4o',
-            directTranslate: false,
-            thinkingEnabled: false,
-            streamEnabled: true,
-            prompt: ''
-          },
-          lens: {
-            enabled: true,
-            hotkey: 'CommandOrControl+Shift+G',
-            providerId: '',
-            model: '',
-            defaultLanguage: '',
-            streamEnabled: true,
-            thinkingEnabled: true,
-            systemPrompt: '',
-            questionPrompt: '',
-            messageOrder: 'asc'
-          },
-          settingsLanguage: 'zh'
-        }
-        setSettings(defaultSettings)
-        setInitialSettingsSnapshot(JSON.stringify(defaultSettings))
+        // 不合成默认值：避免用户在错误状态下 Save 把磁盘真实数据覆盖掉
+        // 渲染分支会根据 loadError 显示重试 UI
+        const message = err instanceof Error ? err.message : String(err)
+        setLoadError(message || 'Unknown error')
         setLoading(false)
       })
     api.getAppVersion()
@@ -129,7 +97,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     return () => {
       active = false
     }
-  }, [])
+  }, [reloadKey])
 
   /**
    * 刷新权限状态（macOS）
@@ -643,10 +611,45 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     return () => window.removeEventListener('keydown', handler, true)
   }, [recordingTarget, updateLens, updateScreenshotTranslation, updateSettings])
 
-  if (loading || !settings) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-full bg-neutral-200 dark:bg-black">
         <div className="w-6 h-6 border-2 border-neutral-300 dark:border-neutral-700 border-t-neutral-800 dark:border-t-neutral-200 rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (loadError || !settings) {
+    // 加载失败：显示错误 + 重试按钮，禁止用户在不知情的情况下用合成默认值 Save 覆盖磁盘
+    return (
+      <div className="flex items-center justify-center h-full bg-neutral-200 dark:bg-black p-6">
+        <div className="max-w-sm w-full bg-white dark:bg-[#1C1C1E] rounded-xl shadow-sm border border-black/5 dark:border-white/5 p-5 text-center">
+          <div className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100 mb-1">
+            {lang === 'zh' ? '加载设置失败' : 'Failed to load settings'}
+          </div>
+          <div className="text-[11px] text-rose-600 dark:text-rose-400 mb-4 break-all" title={loadError}>
+            {loadError}
+          </div>
+          <div className="flex gap-2 justify-center">
+            <button
+              type="button"
+              onClick={() => setReloadKey((k) => k + 1)}
+              className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-100 transition-all"
+              data-tauri-drag-region="false"
+            >
+              <RefreshCw size={12} />
+              {lang === 'zh' ? '重试' : 'Retry'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+              data-tauri-drag-region="false"
+            >
+              {t.cancel}
+            </button>
+          </div>
+        </div>
       </div>
     )
   }
@@ -1270,10 +1273,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                             value={manualInputs[provider.id] || ''}
                             onChange={(v) => setManualInputs(prev => ({ ...prev, [provider.id]: v }))}
                             onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                              if (e.key === 'Enter') {
-                                addEnabledModel(provider.id, manualInputs[provider.id] || '')
-                                setManualInputs(prev => ({ ...prev, [provider.id]: '' }))
-                              }
+                              if (e.key !== 'Enter') return
+                              // IME (拼音 / 假名等) 选词期间的 Enter 用于确认候选词，不应触发添加
+                              if (e.nativeEvent.isComposing || e.keyCode === 229) return
+                              addEnabledModel(provider.id, manualInputs[provider.id] || '')
+                              setManualInputs(prev => ({ ...prev, [provider.id]: '' }))
                             }}
                           />
                           <button
