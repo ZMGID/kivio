@@ -202,6 +202,10 @@ export default function Lens() {
   })
   // barIntro：select 态首次显示时给对话栏加一次 scale-up 进入动画；之后切换都靠 transition
   const [barIntro, setBarIntro] = useState(true)
+  // barNoTransition：reset 时临时禁用 left/top/width transition，避免上次 ready/answering 位置
+  // 残留的 380ms 动画在 window hide 时被暂停，下次 show 时从中间帧续播 → 视觉上 bar
+  // 从老位置"滑"回 select 默认位置的闪烁。
+  const [barNoTransition, setBarNoTransition] = useState(false)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
@@ -235,32 +239,41 @@ export default function Lens() {
 
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
   const enterSelect = useCallback(async () => {
-    setStage('select')
-    setMode(readModeFromHash())
-    setHovered(null)
-    setDragStart(null)
-    setDragCurrent(null)
-    setDragging(false)
-    setImagePreview('')
-    setAppLabel('')
-    setInput('')
-    setMessages([])
-    setStreaming(false)
-    setTranslateOriginal('')
-    setTranslateText('')
-    setTranslateError('')
-    imageIdRef.current = ''
-    {
+    // 用 flushSync 同步提交所有 reset 后的状态：webview show 之前 DOM 必须已经反映新位置，
+    // 否则 Rust 的 show() 会先把旧 frame 露出来。
+    // barNoTransition 同 frame 一起置 true → bar 从老坐标 snap 到 select 坐标，不动画。
+    flushSync(() => {
+      setBarNoTransition(true)
+      setStage('select')
+      setMode(readModeFromHash())
+      setHovered(null)
+      setDragStart(null)
+      setDragCurrent(null)
+      setDragging(false)
+      setImagePreview('')
+      setAppLabel('')
+      setInput('')
+      setMessages([])
+      setStreaming(false)
+      setTranslateOriginal('')
+      setTranslateText('')
+      setTranslateError('')
       const w = window.innerWidth
       const h = window.innerHeight
       setViewport({ w, h })
       setBarRect(computeSelectBar(w, h, computeMetrics(w, h)))
-    }
-    setCapturedFrame(null)
-    // 重置 intro：先关再开，下一帧让 transition 从 scale-90 到 scale-100
-    setBarIntro(false)
+      setCapturedFrame(null)
+      // 重置 intro：先关再开，下一帧让 transition 从 scale-90 到 scale-100
+      setBarIntro(false)
+    })
+    imageIdRef.current = ''
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => setBarIntro(true))
+      // 第二个 raf 同时恢复 transitions 并触发 intro：现在 bar 已经在 select 位置，
+      // 只对 transform/opacity 做缩放进入动画，不会回放历史 left/top 过渡。
+      requestAnimationFrame(() => {
+        setBarIntro(true)
+        setBarNoTransition(false)
+      })
     })
     try {
       const win = getCurrentWindow()
@@ -370,8 +383,10 @@ export default function Lens() {
 
   // 关闭前同步重置 state，让 webview surface 在 hide 之前已经是空 select 态。
   // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
+  // barNoTransition：禁用 left/top/width transition，避免 380ms 动画被 hide 暂停后下次 show 续播。
   const resetBeforeHide = useCallback(() => {
     flushSync(() => {
+      setBarNoTransition(true)
       setStage('select')
       setHovered(null)
       setDragStart(null)
@@ -951,8 +966,8 @@ export default function Lens() {
             left: barRect.x,
             top: barRect.y,
             width: barRect.width,
-            transitionProperty: 'left, top, width, transform, opacity',
-            transitionDuration: `${TRANSITION_MS}ms`,
+            transitionProperty: barNoTransition ? 'none' : 'left, top, width, transform, opacity',
+            transitionDuration: barNoTransition ? '0ms' : `${TRANSITION_MS}ms`,
             transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
             transform: barIntro ? 'scale(1)' : 'scale(0.92)',
             opacity: barIntro ? 1 : 0,
@@ -984,7 +999,13 @@ export default function Lens() {
               autoFocus
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleSend() } }}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || e.shiftKey) return
+                // IME 合成中（中/日/韩选词按回车）跳过 — isComposing 官方信号 + keyCode 229 兜底
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return
+                e.preventDefault()
+                void handleSend()
+              }}
               disabled={streaming}
               placeholder={t.lensAskPlaceholder}
               className="flex-1 bg-transparent text-[16px] text-neutral-900 dark:text-white placeholder-neutral-500 dark:placeholder-neutral-400 focus:outline-none disabled:opacity-60"
@@ -1173,8 +1194,8 @@ export default function Lens() {
             top: barRect.y,
             width: barRect.width,
             maxHeight: Math.min(viewport.h - 32, READY_BAR_H + 8 + metrics.ANSWER_H),
-            transitionProperty: 'left, top, width, transform, opacity',
-            transitionDuration: `${TRANSITION_MS}ms`,
+            transitionProperty: barNoTransition ? 'none' : 'left, top, width, transform, opacity',
+            transitionDuration: barNoTransition ? '0ms' : `${TRANSITION_MS}ms`,
             transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
             transform: barIntro ? 'scale(1)' : 'scale(0.92)',
             opacity: barIntro ? 1 : 0,

@@ -85,13 +85,15 @@ function Translator({
   }, [input])
 
   // Enter 键提交翻译结果
-  const handleKeyDown = async (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      const textToCommit = result || input
-      await api.commitTranslation(textToCommit)
-      setInput('')
-      setResult('')
-    }
+  // IME 合成中（中/日/韩输入法选词按回车）不要触发：isComposing 是组合事件官方标志，
+  // keyCode === 229 是浏览器在 IME 拦截 keydown 时的兜底信号，两个条件并查更稳。
+  const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
+    const textToCommit = result || input
+    await api.commitTranslation(textToCommit)
+    setInput('')
+    setResult('')
   }
 
   return (

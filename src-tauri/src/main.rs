@@ -395,11 +395,12 @@ fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
     mode = safe_mode,
   );
   let _ = window.eval(&script);
-  // macOS 下 hidden 窗口的 set_position 常被忽略，先 show 再定位
+  // 先在 hidden 状态下尝试定位：即便部分系统下 hidden 窗口 set_position 被忽略，也比
+  // 不调强（成功则消除"先在旧位置闪一帧再跳到全屏"的可见跳变）。
+  lens_position_fullscreen(app, &window);
   let _ = window.show();
   let _ = window.set_focus();
-  lens_position_fullscreen(app, &window);
-  // 再调一次，处理首次 set_position 在 always_on_top + visible_on_all_workspaces 下被吃掉的情况
+  // show 后再调，处理 always_on_top + visible_on_all_workspaces 把首次 set_position 吃掉的情况
   lens_position_fullscreen(app, &window);
   Ok(())
 }
@@ -1086,6 +1087,9 @@ async fn stream_translate_combined(
 }
 
 /// 关闭 lens：清理图片、释放 busy、隐藏窗口。
+///
+/// hide 前先把窗口几何复位到当前光标所在显示器的全屏，避免下次 show 出来时还停在
+/// 上一次截图后的浮动 bar 位置（先在旧位置闪一帧再跳到 select 全屏的可见跳变）。
 #[tauri::command]
 fn lens_close(app: AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
@@ -1098,6 +1102,10 @@ fn lens_close(app: AppHandle) -> Result<(), String> {
   }
   state.lens_busy.store(false, Ordering::SeqCst);
   if let Some(window) = app.get_webview_window("lens") {
+    // 先复位再隐藏：visible 状态下 set_position 比 hidden 状态更稳。
+    // 即便用户下次按热键时光标已经移到别的 monitor，lens_request_internal
+    // 还会再调一次 lens_position_fullscreen 修正，这一步只是消除"上次浮动 bar 位置"的残影。
+    lens_position_fullscreen(&app, &window);
     let _ = window.hide();
   }
   Ok(())
