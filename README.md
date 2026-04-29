@@ -1,4 +1,4 @@
-# KeyLingo v2.3.0
+# KeyLingo v2.3.1
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -30,13 +30,25 @@
 - **Provider Diagnostics**: One-click **Test Connection** + **Fetch Models**.
 - **Permission Dashboard (macOS)**: Accessibility/Screen Recording status + deep-link to System Settings.
 
-### 📦 Release Assets (v2.3.0)
+### 📦 Release Assets (v2.3.1)
 
-- **macOS (Apple Silicon)**: `KeyLingo_2.3.0_aarch64.dmg`
-- **Windows Installer (NSIS)**: `KeyLingo_2.3.0_x64-setup.exe`
-- **Windows Installer (MSI)**: `KeyLingo_2.3.0_x64_en-US.msi`
+- **macOS (Apple Silicon)**: `KeyLingo_2.3.1_aarch64.dmg`
+- **Windows Installer (NSIS)**: `KeyLingo_2.3.1_x64-setup.exe`
+- **Windows Installer (MSI)**: `KeyLingo_2.3.1_x64_en-US.msi`
 
 ### 📚 Detailed Changelog
+
+#### v2.3.1 (2026-04-29)
+
+- **Lens history persistence**: history list now serialised to `localStorage`; thumbnails downsampled to 96×96 jpeg (~3 KB each) so the 20-item cap stays within tens of KB. Restart no longer wipes the dropdown.
+- **Continuing old conversations actually works**: new `lens_commit_image_to_history` / `lens_delete_history_image` Rust commands copy the active capture to `{app_data_dir}/lens-history/{id}.png` when an item enters history, and remove it on eviction. `resolve_explain_image_path` falls back to that dir, so picking a record from history and asking a follow-up no longer fails with "Image not found".
+- **IME-safe Enter**: Translator and Lens inputs no longer commit while a CJK candidate window is open. Guarded with `e.nativeEvent.isComposing` plus the `keyCode === 229` fallback.
+- **Lens reopen no longer flashes through the previous bar position**: a `barNoTransition` flag is set in the same `flushSync` that resets bar geometry, forcing `transitionProperty: none` so the bar snaps to the select-state position instead of replaying a paused 380 ms slide on the next show.
+- **Translator card shadow renders cleanly**: window grew to 392×152 with a 16 px transparent padding shell, the rounded card moves to an inner div, and the shadow is rebalanced to two near-symmetric layers (no more bottom-heavy halo or sharp corner clip).
+- **Robust monitor selection for Lens**: `lens_position_fullscreen` falls back through cursor-monitor → primary monitor → `monitors[0]` instead of bailing on cursor failure. Lid-close + external-monitor swap or sleep/wake no longer leaves the overlay on the wrong display (or invisible).
+- **Temp PNG GC**: app startup deletes any `lens-*.png` / `lens-region-*.png` / `screenshot-*.png` older than 24 h that crashed-out sessions left in `temp_dir`.
+- **Custom translate prompt now honored** in single-call combined mode (was silently dropped via an unused `_template` argument). `Show original` toggle (formerly `Translation Mode`) is also clearer.
+- **Ollama integration confirmed working** as a custom OpenAI-compatible provider — both self-hosted (`http://host:11434/v1`) and Ollama Cloud (`https://ollama.com/v1`). No code change needed; the multi-provider pipeline already speaks it.
 
 #### v2.3.0 (2026-04-29)
 
@@ -244,13 +256,25 @@ npm run lint
 - **供应商诊断**：模型页支持一键"测试连接"与"获取模型列表"。
 - **权限状态面板（macOS）**：可视化查看辅助功能/屏幕录制授权并直达系统设置。
 
-### 📦 安装包（v2.3.0）
+### 📦 安装包（v2.3.1）
 
-- **macOS（Apple Silicon）**：`KeyLingo_2.3.0_aarch64.dmg`
-- **Windows NSIS 安装包**：`KeyLingo_2.3.0_x64-setup.exe`
-- **Windows MSI 安装包**：`KeyLingo_2.3.0_x64_en-US.msi`
+- **macOS（Apple Silicon）**：`KeyLingo_2.3.1_aarch64.dmg`
+- **Windows NSIS 安装包**：`KeyLingo_2.3.1_x64-setup.exe`
+- **Windows MSI 安装包**：`KeyLingo_2.3.1_x64_en-US.msi`
 
 ### 📚 详细更新目录
+
+#### v2.3.1（2026-04-29）
+
+- **Lens 历史持久化**：历史记录写入 `localStorage`，截图压成 96×96 jpeg 缩略图（每条 ~3 KB），20 条上限合计仅几十 KB。重启后历史 dropdown 不再清空。
+- **从历史接着聊真的能用了**：新增 `lens_commit_image_to_history` / `lens_delete_history_image` Rust 命令，进入历史时把活跃截图拷到 `{app_data_dir}/lens-history/{id}.png`，淘汰时删除。`resolve_explain_image_path` 增加该目录的 fallback，从历史里选条目问追问不再报 "Image not found"。
+- **输入法 Enter 安全**：Translator 和 Lens 的 Enter 在 CJK 输入法选词期间不再误触发提交/发送。同时检测 `e.nativeEvent.isComposing` 与 `keyCode === 229` 兜底。
+- **Lens 二次打开不再"从老位置滑回去"**：`barNoTransition` 在 reset 时同 `flushSync` 一起置 true，强制 `transitionProperty: none`，让 bar 直接 snap 到 select 位置；下次 show 不会接着播放上次被暂停的 380 ms 过渡。
+- **翻译输入卡阴影正常渲染**：窗口扩大到 392×152，外层透明 padding 16 px，圆角卡移到内层 div；阴影改为两道近对称的柔和层（不再头重脚轻、四角硬切）。
+- **Lens 显示器选择更稳**：`lens_position_fullscreen` 增加 fallback 链：光标所在显示器 → primary monitor → `monitors[0]`；合盖切外接 / 睡眠唤醒后不再因为 monitor 不匹配而落到错位置。
+- **临时文件 GC**：启动时清理 `temp_dir` 下 24 小时以前的 `lens-*.png` / `lens-region-*.png` / `screenshot-*.png`，避免崩溃 / 强杀 / 老版本残留累积。
+- **自定义翻译 prompt 在合并模式生效**（之前 `_template` 被静默丢弃）。"显示原文" 开关命名也比原 "翻译模式" 直观。
+- **Ollama 已验证可用** —— 直接当成 OpenAI 兼容 provider 配置，自托管 `http://host:11434/v1` 和 Ollama Cloud `https://ollama.com/v1` 都跑得通，零代码改动（多 provider 系统本来就吃这个协议）。
 
 #### v2.3.0（2026-04-29）
 
