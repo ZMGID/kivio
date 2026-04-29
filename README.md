@@ -24,6 +24,7 @@
 - **Screenshot Translation**: OCR + translation pipeline with token-by-token streaming, optional direct-translate mode, and a dedicated thinking-mode toggle (off by default for speed).
 - **OpenAI-Compatible Providers**: OpenAI / DeepSeek / SiliconFlow / custom compatible endpoints.
 - **Multi-Provider Routing**: Separate providers/models for Translation, OCR, and Lens.
+- **Multi-Key Failover**: Configure multiple API keys per provider; if the primary returns 401/402/403/429 or a quota/billing/balance error, the next key is used automatically (failed key cools down for 60 s before being retried).
 - **LaTeX Math Adaptation**: Better readability for formula-heavy outputs.
 - **Auto Paste**: Enter to paste translated content back to your active app.
 - **Launch at Startup**: Optional startup toggle, default **off**.
@@ -37,6 +38,12 @@
 - **Windows Installer (MSI)**: `KeyLingo_2.3.1_x64_en-US.msi`
 
 ### 📚 Detailed Changelog
+
+#### Unreleased
+
+- **Multi-key failover per provider** — every provider now stores `apiKeys: string[]` instead of a single `apiKey`. Settings → Providers shows an editable list (primary + backup rows, add/remove). Backend `send_with_failover` automatically rotates to the next key on 401/402/403/429 or quota/billing/balance errors, with a 60 s cooldown on the failed key.
+- **API keys moved out of the OS keyring**. Keys now live directly in `settings.json` (`providers[].apiKeys`). On first launch under this build, any pre-existing v2.3.x keyring entry is read once into `apiKeys[0]` and the keyring entry is deleted (`migrate_legacy_keyring_keys` in `settings.rs`). The `keyring` crate is retained only for that one-shot migration.
+- **`Test Connection`** intentionally only probes the primary key, so a misconfigured primary doesn't get masked by a working backup.
 
 #### v2.3.1 (2026-04-29)
 
@@ -250,6 +257,7 @@ npm run lint
 - **截图翻译**：OCR + 翻译两步流式（token 逐字到达），可选直译模式，独立的"思考模式"开关（默认关闭追求速度）。
 - **OpenAI 兼容生态**：支持 OpenAI / DeepSeek / SiliconFlow 及兼容接口。
 - **多 Provider 路由**：翻译、OCR、Lens 可分别指定服务商与模型。
+- **多 Key 自动切换**：单个 provider 可配置多把 API Key，主 Key 触发 401/402/403/429 或 quota/billing/balance 错误时自动切换到备用 Key（失败的 Key 进入 60 秒冷却）。
 - **LaTeX 数学公式适配**：优化公式展示与可读性。
 - **自动粘贴**：回车即可回填到当前应用。
 - **开机启动**：可选开关，默认关闭。
@@ -263,6 +271,12 @@ npm run lint
 - **Windows MSI 安装包**：`KeyLingo_2.3.1_x64_en-US.msi`
 
 ### 📚 详细更新目录
+
+#### 未发布（Unreleased）
+
+- **每个 Provider 支持多把 API Key 自动切换**——`ModelProvider.apiKey: string` 改为 `apiKeys: string[]`。设置 → 服务商 页面新增可加减的多 Key 列表（主用 + 备用，"添加 Key" / "移除"按钮）。后端 `send_with_failover` 在主 Key 失败（401/402/403/429 或 quota/billing/balance 关键字）时自动切到下一把，失败 Key 冷却 60 秒。
+- **API Key 不再存系统钥匙串**。Key 现在直接保存在 `settings.json` 的 `providers[].apiKeys` 字段里。首次升级到本版本时，旧版（v2.3.x 及之前）钥匙串里的 Key 会被一次性读入 `apiKeys[0]` 然后清掉钥匙串条目（`settings.rs` 的 `migrate_legacy_keyring_keys`）。`keyring` 依赖只剩这一个迁移路径在用，下个大版本可整个移除。
+- **"测试连接" 只测主 Key**——如果主 Key 配错，备用 Key 工作了也不会掩盖问题。
 
 #### v2.3.1（2026-04-29）
 

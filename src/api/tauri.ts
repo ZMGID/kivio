@@ -47,10 +47,12 @@ export type LensWindowInfo = {
 }
 
 // AI 模型提供商配置
+// apiKeys 支持多 key failover：第一个为主 key，其余为备用 key；
+// 当某个 key 触发限流/配额/鉴权失败时后端会自动切下一个。
 export type ModelProvider = {
   id: string
   name: string
-  apiKey: string
+  apiKeys: string[]
   baseUrl: string
   availableModels: string[]
   enabledModels: string[]
@@ -60,7 +62,7 @@ export type ModelProvider = {
 export type ProviderConnectionInput = {
   id?: string
   baseUrl: string
-  apiKey: string
+  apiKeys: string[]
 }
 
 // 应用设置数据结构

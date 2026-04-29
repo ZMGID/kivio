@@ -74,8 +74,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           translatorModel: 'gpt-4o',
           translatorPrompt: '',
           providers: [
-            { id: 'default-translator', name: 'OpenAI (Translator)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
-            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKey: '', baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
+            { id: 'default-translator', name: 'OpenAI (Translator)', apiKeys: [], baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] },
+            { id: 'default-ocr', name: 'OpenAI (OCR)', apiKeys: [], baseUrl: 'https://api.openai.com/v1', availableModels: [], enabledModels: ['gpt-4o'] }
           ],
           retryEnabled: true,
           retryAttempts: 3,
@@ -254,7 +254,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         ? {
           id: provider.id,
           baseUrl: provider.baseUrl,
-          apiKey: provider.apiKey,
+          apiKeys: provider.apiKeys,
         }
         : undefined)
       if (result.success) {
@@ -348,7 +348,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const newProvider: ModelProvider = {
       id: newId,
       name: 'New Provider',
-      apiKey: '',
+      apiKeys: [],
       baseUrl: 'https://api.openai.com/v1',
       availableModels: [],
       enabledModels: []
@@ -486,7 +486,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         ? {
           id: currentProvider.id,
           baseUrl: currentProvider.baseUrl,
-          apiKey: currentProvider.apiKey,
+          apiKeys: currentProvider.apiKeys,
         }
         : undefined)
       if (currentProvider) {
@@ -1098,31 +1098,71 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       </div>
                     </div>
 
-                    {/* Base URL + API Key */}
+                    {/* Base URL */}
                     <div className="px-4 py-3">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label>{t.baseUrl}</Label>
-                          <div className="mt-1.5">
-                            <Input
-                              value={provider.baseUrl}
-                              onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
-                              placeholder="https://api.openai.com/v1"
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <Label>{t.apiKey}</Label>
-                          <div className="mt-1.5">
-                            <Input
-                              type="password"
-                              value={provider.apiKey}
-                              onChange={(v) => updateProvider(provider.id, { apiKey: v })}
-                              placeholder="sk-..."
-                            />
-                          </div>
-                        </div>
+                      <Label>{t.baseUrl}</Label>
+                      <div className="mt-1.5">
+                        <Input
+                          value={provider.baseUrl}
+                          onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
+                          placeholder="https://api.openai.com/v1"
+                        />
                       </div>
+                    </div>
+
+                    {/* API Keys（多 key failover：第一个为主 key，后续为备用） */}
+                    <div className="px-4 py-3">
+                      <div className="flex items-center justify-between">
+                        <Label>{t.apiKey}</Label>
+                        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                          {t.apiKeysHint}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 space-y-1.5">
+                        {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
+                          const total = Math.max(provider.apiKeys.length, 1)
+                          return (
+                            <div key={idx} className="flex items-center gap-1.5">
+                              <div className="flex-1">
+                                <Input
+                                  type="password"
+                                  value={key}
+                                  onChange={(v) => {
+                                    const base = provider.apiKeys.length > 0 ? [...provider.apiKeys] : ['']
+                                    base[idx] = v
+                                    updateProvider(provider.id, { apiKeys: base })
+                                  }}
+                                  placeholder={idx === 0 ? `sk-... (${t.apiKeyPrimary})` : `sk-... (${t.apiKeyBackup})`}
+                                />
+                              </div>
+                              {total > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next = provider.apiKeys.filter((_, i) => i !== idx)
+                                    updateProvider(provider.id, { apiKeys: next })
+                                  }}
+                                  className="text-neutral-400 hover:text-red-500 transition-colors p-1"
+                                  title={t.removeKey}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const base = provider.apiKeys.length > 0 ? provider.apiKeys : ['']
+                          updateProvider(provider.id, { apiKeys: [...base, ''] })
+                        }}
+                        className="mt-2 text-[11px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 px-2 py-1 rounded bg-black/5 dark:bg-white/5 transition-all flex items-center gap-1"
+                      >
+                        <Plus size={11} />
+                        {t.addKey}
+                      </button>
                     </div>
 
                     {/* 连接测试 */}

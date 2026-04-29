@@ -18,7 +18,7 @@ use std::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex, RwLock,
   },
-  time::Duration,
+  time::{Duration, Instant},
 };
 
 use arboard::Clipboard;
@@ -57,8 +57,16 @@ struct AppState {
   lens_busy: AtomicBool,
   /// 流式取消代号：每开新的流就 +1，跑流的循环检测到代号变了就立即结束。
   explain_stream_generation: AtomicU64,
+  /// API Key 多 key failover 状态：(provider_id, key_idx) → 冷却到期时间。
+  /// 某个 key 触发 quota/rate-limit/auth 失败时进入冷却，KEY_COOLDOWN 秒内不再选用。
+  key_cooldowns: Mutex<HashMap<(String, usize), Instant>>,
+  /// 每个 provider 当前活跃 key idx：上一次成功的 key 优先继续用。
+  active_key_idx: Mutex<HashMap<String, usize>>,
   http: Client,
 }
+
+/// 单个 key 触发 failover 后的冷却时长。
+const KEY_COOLDOWN: Duration = Duration::from_secs(60);
 
 impl AppState {
   /// 安全读取设置（锁中毒时返回内部数据，不 panic）
@@ -77,43 +85,146 @@ impl AppState {
   fn current_id_lock(&self) -> std::sync::MutexGuard<'_, Option<String>> {
     self.current_explain_image_id.lock().unwrap_or_else(|e| e.into_inner())
   }
+
+  /// 选择一个可用的 API Key 索引：
+  /// 优先返回 active_key_idx 记录的 idx；若它在冷却中或已被试过，退回到下一个非冷却 idx；
+  /// 全部冷却或 tried 已穷举时返回 None（调用方决定是否报错）。
+  fn pick_active_key(
+    &self,
+    provider_id: &str,
+    total: usize,
+    tried: &HashSet<usize>,
+  ) -> Option<usize> {
+    if total == 0 {
+      return None;
+    }
+    let now = Instant::now();
+    let cooldowns = self
+      .key_cooldowns
+      .lock()
+      .unwrap_or_else(|e| e.into_inner());
+    let active = self
+      .active_key_idx
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .get(provider_id)
+      .copied()
+      .unwrap_or(0)
+      .min(total.saturating_sub(1));
+
+    let in_cooldown = |idx: usize| {
+      cooldowns
+        .get(&(provider_id.to_string(), idx))
+        .map(|until| *until > now)
+        .unwrap_or(false)
+    };
+
+    // 1) 优先 active idx（未试过 + 未冷却）
+    if !tried.contains(&active) && !in_cooldown(active) {
+      return Some(active);
+    }
+    // 2) 从 active+1 开始环绕扫描
+    for offset in 1..total {
+      let idx = (active + offset) % total;
+      if !tried.contains(&idx) && !in_cooldown(idx) {
+        return Some(idx);
+      }
+    }
+    // 3) 全部冷却 → 兜底找一个未试过的（无视冷却，避免完全无 key 可用）
+    for offset in 0..total {
+      let idx = (active + offset) % total;
+      if !tried.contains(&idx) {
+        return Some(idx);
+      }
+    }
+    None
+  }
+
+  /// 标记某个 key 失败：进入冷却 + 不变更 active_key_idx
+  fn mark_key_failed(&self, provider_id: &str, idx: usize) {
+    let mut cooldowns = self
+      .key_cooldowns
+      .lock()
+      .unwrap_or_else(|e| e.into_inner());
+    cooldowns.insert((provider_id.to_string(), idx), Instant::now() + KEY_COOLDOWN);
+  }
+
+  /// 标记某个 key 成功：清除该 idx 的冷却 + 设为 active
+  fn mark_key_ok(&self, provider_id: &str, idx: usize) {
+    let mut cooldowns = self
+      .key_cooldowns
+      .lock()
+      .unwrap_or_else(|e| e.into_inner());
+    cooldowns.remove(&(provider_id.to_string(), idx));
+    drop(cooldowns);
+    let mut active = self
+      .active_key_idx
+      .lock()
+      .unwrap_or_else(|e| e.into_inner());
+    active.insert(provider_id.to_string(), idx);
+  }
 }
 
 /// 自启动参数，用于区分用户手动启动和系统自动启动
 const AUTOSTART_ARG: &str = "--from-autostart";
 
 /// 供应商连接输入参数，用于测试连接或获取模型列表时临时传入
+/// api_keys 优先；api_key 为兼容旧前端发的单 key 字段（v2.3.x 时的 ProviderConnectionInput）
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderConnectionInput {
   id: Option<String>,
   base_url: String,
-  api_key: String,
+  #[serde(default)]
+  api_keys: Vec<String>,
+  #[serde(default)]
+  api_key: Option<String>,
 }
 
-/// 解析供应商的凭据信息
+impl ProviderConnectionInput {
+  /// 整理出非空 key 列表：优先 api_keys，回退到 api_key。
+  fn merged_keys(&self) -> Vec<String> {
+    let mut keys: Vec<String> = self
+      .api_keys
+      .iter()
+      .map(|k| k.trim().to_string())
+      .filter(|k| !k.is_empty())
+      .collect();
+    if keys.is_empty() {
+      if let Some(legacy) = self.api_key.as_deref() {
+        let trimmed = legacy.trim().to_string();
+        if !trimmed.is_empty() {
+          keys.push(trimmed);
+        }
+      }
+    }
+    keys
+  }
+}
+
+/// 解析供应商的凭据信息（base_url + 多 key 列表）
 /// 优先使用传入的 ProviderConnectionInput（如测试连接时），否则从 settings 中查找对应的供应商
 fn resolve_provider_credentials(
   settings: &Settings,
   provider_id: &str,
   provider: Option<ProviderConnectionInput>,
-) -> Result<(String, String), String> {
-  if let Some(provider) = provider {
-    let id_matches = provider
+) -> Result<(String, Vec<String>), String> {
+  if let Some(input) = provider {
+    let id_matches = input
       .id
       .as_ref()
       .map(|id| id.is_empty() || id == provider_id)
       .unwrap_or(true);
 
     if id_matches {
-      return Ok((provider.base_url, provider.api_key));
+      return Ok((input.base_url.clone(), input.merged_keys()));
     }
   }
 
   let provider = settings
     .get_provider(provider_id)
     .ok_or_else(|| "Provider not found".to_string())?;
-  Ok((provider.base_url.clone(), provider.api_key.clone()))
+  Ok((provider.base_url.clone(), provider.api_keys.clone()))
 }
 
 /// 构建 HTTP 客户端，设置 60 秒超时
@@ -212,7 +323,7 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
   let provider = settings.get_provider(&settings.translator_provider_id)
     .ok_or_else(|| "Translator provider not found".to_string())?;
 
-  if provider.api_key.trim().is_empty() {
+  if provider.api_keys.is_empty() {
     return Ok("Missing API Key".to_string());
   }
 
@@ -227,7 +338,7 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
   let retry_attempts = effective_retry_attempts(&settings);
   // 主翻译路径默认关思考：reasoning 模型对单句翻译几乎无质量收益但显著拖慢；非 reasoning 模型该字段被忽略
   call_openai_text(
-    &state.http,
+    &state,
     provider,
     &settings.translator_model,
     prompt,
@@ -667,7 +778,7 @@ async fn lens_translate(
     Some(p) => p.clone(),
     None => return Ok(serde_json::json!({ "success": false, "error": "OCR provider not found" })),
   };
-  if ocr_provider.api_key.trim().is_empty() {
+  if ocr_provider.api_keys.is_empty() {
     return Ok(serde_json::json!({ "success": false, "error": "Missing API Key" }));
   }
 
@@ -731,7 +842,7 @@ async fn lens_translate(
       }));
     }
     let translated = match call_openai_ocr(
-      &state.http,
+      &state,
       &ocr_provider,
       &settings.screenshot_translation.model,
       &temp_path,
@@ -787,7 +898,7 @@ async fn lens_translate(
 
   // 非流式：调用一次拿到全文，按分隔符拆 translated / original
   let full = match call_openai_ocr(
-    &state.http,
+    &state,
     &ocr_provider,
     &settings.screenshot_translation.model,
     &temp_path,
@@ -875,14 +986,21 @@ async fn stream_chat_call(
   body["model"] = serde_json::json!(model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
 
-  let response = send_with_retry("Stream chat", retry_attempts, || {
-    state
-      .http
-      .post(url.clone())
-      .bearer_auth(&provider.api_key)
-      .json(&body)
-      .send()
-  })
+  let response = send_with_failover(
+    state,
+    "Stream chat",
+    retry_attempts,
+    &provider.id,
+    &provider.api_keys,
+    |key| {
+      state
+        .http
+        .post(url.clone())
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+    },
+  )
   .await?;
 
   let status = response.status();
@@ -928,14 +1046,21 @@ async fn stream_translate_combined(
   body["model"] = serde_json::json!(model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
 
-  let mut response = send_with_retry("Stream translate combined", retry_attempts, || {
-    state
-      .http
-      .post(url.clone())
-      .bearer_auth(&provider.api_key)
-      .json(&body)
-      .send()
-  })
+  let mut response = send_with_failover(
+    state,
+    "Stream translate combined",
+    retry_attempts,
+    &provider.id,
+    &provider.api_keys,
+    |key| {
+      state
+        .http
+        .post(url.clone())
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+    },
+  )
   .await?;
 
   let status = response.status();
@@ -1154,22 +1279,24 @@ async fn fetch_models(
 ) -> Result<Vec<String>, String> {
     println!("Fetching models for provider: {}", provider_id);
     let settings = state.settings_read().clone();
-    let (base_url, api_key) = resolve_provider_credentials(&settings, &provider_id, provider)?;
+    let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
     let retry_attempts = effective_retry_attempts(&settings);
 
-    if api_key.trim().is_empty() {
+    if api_keys.is_empty() {
         return Err("Missing API Key".to_string());
     }
 
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     println!("Requesting URL: {}", url);
 
-    let response = send_with_retry("Models API", retry_attempts, || {
-        state.http
-            .get(url.clone())
-            .bearer_auth(&api_key)
-            .send()
-    })
+    let response = send_with_failover(
+      &state,
+      "Models API",
+      retry_attempts,
+      &provider_id,
+      &api_keys,
+      |key| state.http.get(url.clone()).bearer_auth(key).send(),
+    )
     .await?;
 
     let value: serde_json::Value = response.json().await.map_err(|e| {
@@ -1198,6 +1325,7 @@ async fn fetch_models(
 }
 
 /// 测试供应商连接是否可用
+/// 多 key：测试时只用第一个 key（避免一次连接测试遍历多 key 让用户困惑）
 #[tauri::command]
 async fn test_provider_connection(
   state: State<'_, AppState>,
@@ -1205,14 +1333,17 @@ async fn test_provider_connection(
   provider: Option<ProviderConnectionInput>,
 ) -> Result<serde_json::Value, String> {
   let settings = state.settings_read().clone();
-  let (base_url, api_key) = resolve_provider_credentials(&settings, &provider_id, provider)?;
+  let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
 
-  if api_key.trim().is_empty() {
-    return Ok(serde_json::json!({
-      "success": false,
-      "error": "Missing API Key"
-    }));
-  }
+  let api_key = match api_keys.first() {
+    Some(k) if !k.trim().is_empty() => k.clone(),
+    _ => {
+      return Ok(serde_json::json!({
+        "success": false,
+        "error": "Missing API Key"
+      }));
+    }
+  };
 
   let retry_attempts = effective_retry_attempts(&settings);
   let url = format!("{}/models", base_url.trim_end_matches('/'));
@@ -1706,7 +1837,7 @@ fn lens_delete_history_image(app: AppHandle, image_id: String) -> Result<(), Str
 /// 调用 OpenAI 兼容的文本聊天接口
 /// 发送单轮 user 消息，temperature 设为 0.2，返回模型生成的文本内容
 async fn call_openai_text(
-  client: &Client,
+  state: &State<'_, AppState>,
   config: &settings::ModelProvider,
   model: &str,
   prompt: String,
@@ -1723,13 +1854,21 @@ async fn call_openai_text(
     body["thinking"] = serde_json::json!({ "type": "disabled" });
   }
 
-  let response = send_with_retry("OpenAI API", retry_attempts, || {
-    client
-      .post(url.clone())
-      .bearer_auth(&config.api_key)
-      .json(&body)
-      .send()
-  })
+  let response = send_with_failover(
+    state,
+    "OpenAI API",
+    retry_attempts,
+    &config.id,
+    &config.api_keys,
+    |key| {
+      state
+        .http
+        .post(url.clone())
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+    },
+  )
   .await?;
 
   let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
@@ -1849,7 +1988,7 @@ fn build_combined_translate_prompt(lang_name: &str, template: Option<&str>) -> S
 /// 调用 OpenAI 兼容的 OCR/视觉接口
 /// 将图片转为 Base64 后作为 image_url 类型内容发送，temperature 设为 0 以提高识别稳定性
 async fn call_openai_ocr(
-  client: &Client,
+  state: &State<'_, AppState>,
   config: &settings::ModelProvider,
   model: &str,
   image_path: &Path,
@@ -1887,13 +2026,21 @@ async fn call_openai_ocr(
     body["thinking"] = serde_json::json!({ "type": "disabled" });
   }
 
-  let response = send_with_retry("OpenAI OCR", retry_attempts, || {
-    client
-      .post(url.clone())
-      .bearer_auth(&config.api_key)
-      .json(&body)
-      .send()
-  })
+  let response = send_with_failover(
+    state,
+    "OpenAI OCR",
+    retry_attempts,
+    &config.id,
+    &config.api_keys,
+    |key| {
+      state
+        .http
+        .post(url.clone())
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+    },
+  )
   .await?;
 
   // 显式检查 HTTP 状态：非 2xx 把原始 body 文本带回，避免后续 .json() 抛出含糊的 "error decoding response body"
@@ -2018,14 +2165,21 @@ async fn call_vision_api(
     body["thinking"] = serde_json::json!({ "type": "disabled" });
   }
 
-  let response = send_with_retry("Vision API", retry_attempts, || {
-    state
-      .http
-      .post(url.clone())
-      .bearer_auth(&provider.api_key)
-      .json(&body)
-      .send()
-  })
+  let response = send_with_failover(
+    state,
+    "Vision API",
+    retry_attempts,
+    &provider.id,
+    &provider.api_keys,
+    |key| {
+      state
+        .http
+        .post(url.clone())
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+    },
+  )
   .await?;
 
   // 先检查 HTTP 状态：非 2xx 直接读出 body 文本作为错误，避免后续 .json() / chunk() 拿到非预期格式时抛出含糊的 "error decoding response body"。
@@ -2223,6 +2377,93 @@ fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
 
   let delay = RETRY_BASE_DELAY_MS.saturating_mul(2u64.saturating_pow((attempt - 1) as u32));
   delay.min(RETRY_MAX_DELAY_MS)
+}
+
+/// 判断错误信息是否触发 key failover
+/// failover 条件：429（限流）/ 401（鉴权失败）/ 402（余额不足）/ 403（权限/封禁）+
+/// body 含 quota / rate_limit / billing / credit / balance 关键字
+fn is_failover_error(err_msg: &str) -> bool {
+  // 状态码：send_with_retry 失败信息含 " Error: <STATUS>"，如 " Error: 429"
+  let status_hits = err_msg.contains(" Error: 429")
+    || err_msg.contains(" Error: 401")
+    || err_msg.contains(" Error: 402")
+    || err_msg.contains(" Error: 403");
+  if status_hits {
+    return true;
+  }
+  let lower = err_msg.to_lowercase();
+  lower.contains("insufficient_quota")
+    || lower.contains("quota_exceeded")
+    || lower.contains("rate_limit_exceeded")
+    || lower.contains("rate-limit")
+    || lower.contains("out_of_credit")
+    || lower.contains("out of credit")
+    || lower.contains("insufficient balance")
+    || lower.contains("insufficient_balance")
+    || lower.contains("exceeded your current quota")
+    || lower.contains("billing")
+}
+
+/// 多 key failover 包装：在 api_keys 列表上依次尝试，遇到 failover-eligible 错误自动切下一 key
+/// 内层每次尝试仍走 send_with_retry（处理网络抖动 / 服务端 5xx 等通用重试）
+async fn send_with_failover<F, Fut>(
+  state: &AppState,
+  label: &str,
+  attempts: usize,
+  provider_id: &str,
+  api_keys: &[String],
+  send: F,
+) -> Result<reqwest::Response, String>
+where
+  F: Fn(&str) -> Fut,
+  Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
+{
+  let total = api_keys.len();
+  if total == 0 {
+    return Err(format!("{} Error: No API key configured", label));
+  }
+
+  let mut tried: HashSet<usize> = HashSet::new();
+  let mut last_err: Option<String> = None;
+
+  while tried.len() < total {
+    let idx = match state.pick_active_key(provider_id, total, &tried) {
+      Some(i) => i,
+      None => break,
+    };
+    tried.insert(idx);
+    let key = api_keys[idx].as_str();
+
+    match send_with_retry(label, attempts, || send(key)).await {
+      Ok(resp) => {
+        state.mark_key_ok(provider_id, idx);
+        return Ok(resp);
+      }
+      Err(err_msg) => {
+        if is_failover_error(&err_msg) && tried.len() < total {
+          state.mark_key_failed(provider_id, idx);
+          eprintln!(
+            "[failover] {} key #{}/{} failed, switching to next: {}",
+            label,
+            idx + 1,
+            total,
+            err_msg
+          );
+          last_err = Some(err_msg);
+          continue;
+        }
+        // 非 failover 错误（或已穷举所有 key）→ 直接返回
+        if is_failover_error(&err_msg) {
+          state.mark_key_failed(provider_id, idx);
+        }
+        return Err(err_msg);
+      }
+    }
+  }
+
+  Err(
+    last_err.unwrap_or_else(|| format!("{} Error: all {} keys exhausted", label, total)),
+  )
 }
 
 /// 带重试机制的 HTTP 发送函数
@@ -2524,6 +2765,8 @@ fn main() {
         current_explain_image_id: Mutex::new(None),
         lens_busy: AtomicBool::new(false),
         explain_stream_generation: AtomicU64::new(0),
+        key_cooldowns: Mutex::new(HashMap::new()),
+        active_key_idx: Mutex::new(HashMap::new()),
         http: build_http_client(),
       });
 

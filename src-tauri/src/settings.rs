@@ -15,60 +15,49 @@ fn provider_credential_name(provider_id: &str) -> String {
 }
 
 /**
- * 将提供商 API Key 保存到系统钥匙串
- * 如果 API Key 为空则删除对应条目
+ * 一次性读取旧版 keyring 中的 API Key（仅用于升级迁移）
+ * v2.3.x 及之前：API Key 存在系统钥匙串，settings.json 中 apiKey 字段留空。
+ * 从 v2.4 起：API Key 直接存 settings.json，钥匙串不再写入。
+ * 此函数仅在 settings.json 中没有 key 时用一次，迁移完成后旧条目可被清理。
  */
-fn save_provider_api_key(provider_id: &str, api_key: &str) -> Result<(), String> {
-  let entry = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id))
-    .map_err(|e| e.to_string())?;
+fn legacy_load_keyring_api_key(provider_id: &str) -> Option<String> {
+  let entry =
+    keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id)).ok()?;
+  let raw = entry.get_password().ok()?;
+  // v2.3.x 中 keyring 只存单 key（纯字符串）
+  let trimmed = raw.trim().to_string();
+  if trimmed.is_empty() { None } else { Some(trimmed) }
+}
 
-  if api_key.trim().is_empty() {
+/**
+ * 删除旧版 keyring 中的 API Key 条目（迁移完成后清理）
+ */
+fn legacy_clear_keyring_api_key(provider_id: &str) {
+  if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id)) {
     let _ = entry.delete_credential();
-    return Ok(());
   }
-
-  entry.set_password(api_key).map_err(|e| e.to_string())
 }
 
 /**
- * 从系统钥匙串加载提供商 API Key
+ * 从旧版 keyring 一次性迁移 API Key 到 settings.api_keys
+ * 仅在 settings.json 中没有 key 时执行（保护用户不丢 key）
+ * 迁移成功后立即清理 keyring 旧条目
  */
-fn load_provider_api_key(provider_id: &str) -> Option<String> {
-  let entry = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id)).ok()?;
-  entry.get_password().ok()
-}
-
-/**
- * 将所有提供商的 API Key 持久化到钥匙串
- */
-fn persist_provider_api_keys(settings: &Settings) -> Result<(), String> {
-  for provider in &settings.providers {
-    save_provider_api_key(&provider.id, &provider.api_key)?;
-  }
-  Ok(())
-}
-
-/**
- * 从钥匙串恢复所有提供商的 API Key
- * 同时处理旧版本设置中内联存储的 API Key 迁移到钥匙串
- */
-fn hydrate_provider_api_keys(settings: &mut Settings) {
+fn migrate_legacy_keyring_keys(settings: &mut Settings) {
   for provider in &mut settings.providers {
-    let inline_key = provider.api_key.trim().to_string();
-    if !inline_key.is_empty() {
-      // 如果 API Key 仍内联存储在设置中，迁移到钥匙串
-      if let Err(err) = save_provider_api_key(&provider.id, &inline_key) {
-        eprintln!(
-          "Failed to migrate API key for provider {} to keyring: {}",
-          provider.id, err
-        );
-      }
-      provider.api_key = inline_key;
+    if !provider.api_keys.is_empty() {
+      // settings.json 已有 key，无需迁移；顺手清掉钥匙串里的残留
+      legacy_clear_keyring_api_key(&provider.id);
       continue;
     }
-
-    // 从钥匙串加载
-    provider.api_key = load_provider_api_key(&provider.id).unwrap_or_default();
+    if let Some(legacy_key) = legacy_load_keyring_api_key(&provider.id) {
+      provider.api_keys.push(legacy_key);
+      legacy_clear_keyring_api_key(&provider.id);
+      eprintln!(
+        "Migrated legacy keyring API key for provider {} into settings.json",
+        provider.id
+      );
+    }
   }
 }
 
@@ -100,13 +89,22 @@ impl Default for OpenAIConfig {
 
 /**
  * AI 模型提供商配置
+ *
+ * api_keys 支持多 key failover：第一个为主 key，后续为备用 key；
+ * 当某个 key 触发配额/限流/鉴权失败时会自动切换到下一个。
+ *
+ * api_key_legacy 字段仅用于反序列化兼容旧版（v2.3.1 及之前）单 key 配置，
+ * sanitize_settings 会把它合并到 api_keys[0]。
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelProvider {
   pub id: String,
   pub name: String,
-  pub api_key: String,
+  #[serde(default)]
+  pub api_keys: Vec<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none", rename = "apiKey")]
+  pub api_key_legacy: Option<String>,
   pub base_url: String,
   #[serde(default)]
   pub available_models: Vec<String>,
@@ -315,10 +313,17 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   if settings.providers.is_empty() {
     // 迁移翻译提供商
     if let Some(old_openai) = settings.openai.take() {
+      let legacy_key = old_openai.api_key.trim().to_string();
+      let api_keys = if legacy_key.is_empty() {
+        vec![]
+      } else {
+        vec![legacy_key]
+      };
       settings.providers.push(ModelProvider {
         id: "default-translator".to_string(),
         name: "OpenAI (Translator)".to_string(),
-        api_key: old_openai.api_key,
+        api_keys,
+        api_key_legacy: None,
         base_url: old_openai.base_url,
         available_models: vec![],
         enabled_models: vec![old_openai.model.clone()],
@@ -329,17 +334,40 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
     // 迁移 OCR 提供商
     if let Some(old_ocr) = settings.screenshot_translation.openai.take() {
-        settings.providers.push(ModelProvider {
-            id: "default-ocr".to_string(),
-            name: "OpenAI (OCR)".to_string(),
-            api_key: old_ocr.api_key,
-            base_url: old_ocr.base_url,
-            available_models: vec![],
-            enabled_models: vec![old_ocr.model.clone()],
-        });
-        settings.screenshot_translation.provider_id = "default-ocr".to_string();
-        settings.screenshot_translation.model = old_ocr.model;
+      let legacy_key = old_ocr.api_key.trim().to_string();
+      let api_keys = if legacy_key.is_empty() {
+        vec![]
+      } else {
+        vec![legacy_key]
+      };
+      settings.providers.push(ModelProvider {
+        id: "default-ocr".to_string(),
+        name: "OpenAI (OCR)".to_string(),
+        api_keys,
+        api_key_legacy: None,
+        base_url: old_ocr.base_url,
+        available_models: vec![],
+        enabled_models: vec![old_ocr.model.clone()],
+      });
+      settings.screenshot_translation.provider_id = "default-ocr".to_string();
+      settings.screenshot_translation.model = old_ocr.model;
     }
+  }
+
+  // 1b. 单 key → 多 key 迁移（v2.3.1 → v2.4 升级路径）
+  for provider in &mut settings.providers {
+    if let Some(legacy) = provider.api_key_legacy.take() {
+      let trimmed = legacy.trim().to_string();
+      if !trimmed.is_empty() && !provider.api_keys.contains(&trimmed) {
+        provider.api_keys.insert(0, trimmed);
+      }
+    }
+    // 去重 + 去空
+    let mut seen = std::collections::HashSet::new();
+    provider.api_keys.retain(|k| {
+      let trimmed = k.trim();
+      !trimmed.is_empty() && seen.insert(trimmed.to_string())
+    });
   }
 
   // 2. 为空字段设置默认值
@@ -460,30 +488,22 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
 /**
  * 持久化设置到存储文件
- * API Key 会被保存到钥匙串，设置文件中只保留空的 api_key 字段
+ * 从 v2.4 起 API Key 直接保存在 settings.json 的 api_keys 数组中
  */
 pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-  persist_provider_api_keys(settings)?;
-
-  // 克隆设置并清空 API Key（避免写入文件）
-  let mut persisted_settings = settings.clone();
-  for provider in &mut persisted_settings.providers {
-    provider.api_key.clear();
-  }
-
   let store = StoreBuilder::new(app, SETTINGS_STORE)
     .build()
     .map_err(|e| e.to_string())?;
   store.set(
     "settings".to_string(),
-    serde_json::to_value(persisted_settings).map_err(|e| e.to_string())?,
+    serde_json::to_value(settings).map_err(|e| e.to_string())?,
   );
   store.save().map_err(|e| e.to_string())
 }
 
 /**
  * 从存储文件加载设置
- * 加载后会执行清理迁移并从钥匙串恢复 API Key
+ * 执行清理迁移；若 settings.json 中无 API Key，则从旧版 keyring 一次性迁移
  */
 pub fn load_settings(app: &AppHandle) -> Settings {
   let store = StoreBuilder::new(app, SETTINGS_STORE).build();
@@ -495,7 +515,7 @@ pub fn load_settings(app: &AppHandle) -> Settings {
     Err(_) => Settings::default(),
   };
   let mut sanitized = sanitize_settings(settings);
-  hydrate_provider_api_keys(&mut sanitized);
+  migrate_legacy_keyring_keys(&mut sanitized);
   sanitized
 }
 

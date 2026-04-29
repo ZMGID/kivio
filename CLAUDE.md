@@ -60,11 +60,25 @@ The app supports multiple OpenAI-compatible providers. Each feature can use a di
 
 Providers have `availableModels` (fetched from `/models` endpoint) and `enabledModels` (user-selected subset used in dropdowns). Model selection UI uses colon-delimited values like `providerId:modelName`.
 
+Each provider stores `apiKeys: string[]` (a pool of keys for failover), not a single key. The first entry is the primary; subsequent entries are backups.
+
+### Multi-Key Failover
+
+When a request fails with a quota/rate-limit/auth error, the backend automatically rotates to the next configured key for that provider. Implementation lives in `main.rs`:
+
+- `AppState.key_cooldowns` — `(provider_id, key_idx) → Instant` map; failed keys are cooled down for `KEY_COOLDOWN` (60s) before being eligible again.
+- `AppState.active_key_idx` — last-known-good idx per provider; subsequent calls start from this idx.
+- `send_with_failover(state, label, attempts, provider_id, api_keys, send)` — wraps `send_with_retry`. The `send` closure takes a `&str` (the current key) so the same body builder is reused across keys.
+- `is_failover_error(err_msg)` — pattern-matches on the error string (`Error: 401/402/403/429`) and body keywords (`insufficient_quota`, `quota_exceeded`, `rate_limit_exceeded`, `billing`, `out of credit`, `insufficient balance`).
+- Non-failover errors (timeouts, 5xx) still go through `send_with_retry` exponential backoff and don't burn keys.
+- `test_provider_connection` deliberately uses only the first key (so users see whether their primary configuration is correct without hidden fallback masking issues).
+
 ### Settings Persistence and Security
 
-- Settings are stored via `tauri-plugin-store` in `settings.json`.
-- **API keys are NOT stored in settings JSON**. They are saved to the OS keyring (via the `keyring` crate) and hydrated at runtime. The `api_key` field on `ModelProvider` is populated in-memory at load time.
-- **`sanitize_settings`** in `src-tauri/src/settings.rs` handles migration from legacy single-provider configs to the multi-provider system, validates provider existence, and normalizes hotkeys. `normalize_hotkey` canonicalizes modifier aliases to `CommandOrControl`, `Control`, `Alt`, `Shift`, `Super` — use these exact strings when constructing hotkeys.
+- Settings are stored via `tauri-plugin-store` in `settings.json`, **including API keys** (in the `providers[].apiKeys` array).
+- Older versions (≤ v2.3.x) stored keys in the OS keyring. On first launch under v2.4+, `migrate_legacy_keyring_keys` reads any leftover keyring entries into `settings.api_keys[0]` and deletes the keyring entry. From then on, the keyring is never written.
+- The `keyring` crate dependency is retained only for that one-shot migration path and can be removed once all users have upgraded.
+- **`sanitize_settings`** in `src-tauri/src/settings.rs` handles migration from legacy single-provider configs to the multi-provider system, validates provider existence, and normalizes hotkeys. It also migrates the legacy single `apiKey` field on each `ModelProvider` (read via the `api_key_legacy` field with `#[serde(rename = "apiKey")]`) into `api_keys[0]`. `normalize_hotkey` canonicalizes modifier aliases to `CommandOrControl`, `Control`, `Alt`, `Shift`, `Super` — use these exact strings when constructing hotkeys.
 - Saving settings is transactional: if hotkey registration fails, `restore_runtime_settings` rolls back to the previous state.
 
 ### Platform-Specific Screenshot Flows
@@ -78,8 +92,8 @@ Busy flags (`screenshot_translation_busy`, `lens_busy`) prevent concurrent opera
 
 ### Rust Backend Structure
 
-- **`main.rs`** — App state (`AppState`), Tauri commands, OpenAI API calling logic (`call_openai_text`, `call_openai_ocr`, `call_vision_api`), retry logic (`send_with_retry`), hotkey registration, and window lifecycle.
-- **`settings.rs`** — Settings schema, serde defaults, migration/sanitization, keyring hydration, persistence.
+- **`main.rs`** — App state (`AppState`), Tauri commands, OpenAI API calling logic (`call_openai_text`, `call_openai_ocr`, `call_vision_api`), retry logic (`send_with_retry`), multi-key failover (`send_with_failover`, `is_failover_error`), hotkey registration, and window lifecycle.
+- **`settings.rs`** — Settings schema, serde defaults, migration/sanitization, legacy keyring migration, persistence.
 - **`screenshot.rs`** — Platform-specific screenshot capture (`capture_screenshot`) and temp file cleanup.
 - **`windows.rs`** — Window creation helpers (`ensure_main_window`, `ensure_screenshot_window`, `ensure_capture_overlay_window`).
 - **`utils.rs`** — Language detection, target language resolution, timestamp utility.
@@ -87,7 +101,7 @@ Busy flags (`screenshot_translation_busy`, `lens_busy`) prevent concurrent opera
 Key crate responsibilities from `Cargo.toml`:
 - `enigo` — simulates keyboard paste after translation commit.
 - `arboard` — clipboard read/write.
-- `keyring` — secure API key storage.
+- `keyring` — legacy API key storage (read-only; v2.4+ stores keys in `settings.json`, `keyring` is retained only for one-shot migration of pre-v2.4 installs).
 - `reqwest` — HTTP client for OpenAI-compatible APIs.
 - `xcap` — Windows region screen capture.
 
