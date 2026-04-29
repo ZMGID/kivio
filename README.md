@@ -56,6 +56,10 @@ All remappable in Settings.
 
 1. **[Download the latest release](https://github.com/ZMGID/keylingo/releases/latest)** (DMG for macOS, MSI / NSIS for Windows).
 2. **Install and launch.** On macOS, grant Accessibility + Screen Recording when prompted (System Settings → Privacy & Security).
+   > **macOS note:** If you see "KeyLingo.app is damaged and can't be opened", it's Gatekeeper blocking the unsigned app. Run this in Terminal and reopen:
+   > ```bash
+   > sudo xattr -rd com.apple.quarantine /Applications/KeyLingo.app
+   > ```
 3. **Add your API key** — Settings → Providers. Works with OpenAI, DeepSeek, SiliconFlow, Ollama Cloud, or any OpenAI-compatible endpoint.
 4. **Hit a hotkey.** That's it.
 
@@ -137,6 +141,10 @@ KeyLingo 常驻菜单栏。按下热键即得答案。
 
 1. **[下载最新版](https://github.com/ZMGID/keylingo/releases/latest)**（macOS 选 DMG，Windows 选 MSI 或 NSIS）
 2. **安装并启动**。macOS 首次启动按提示授予辅助功能 + 屏幕录制权限（系统设置 → 隐私与安全性）
+   > **macOS 提示：** 如果弹出「KeyLingo.app 已损坏，无法打开」，这是 Gatekeeper 拦截了未签名应用。在终端执行以下命令后重新打开即可：
+   > ```bash
+   > sudo xattr -rd com.apple.quarantine /Applications/KeyLingo.app
+   > ```
 3. **配置 API Key** —— 设置 → 服务商。支持 OpenAI、DeepSeek、SiliconFlow、Ollama Cloud，以及任何 OpenAI 兼容接口
 4. **按热键**。就这样
 
