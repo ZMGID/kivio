@@ -35,11 +35,58 @@ type HistoryItem = {
 }
 
 const HISTORY_MAX = 20
+const HISTORY_STORAGE_KEY = 'keylingo:lens-history:v1'
+const HISTORY_THUMB_SIZE = 96     // 历史记录缩略图边长（px），原始截图压成这个尺寸再持久化
 
 const READY_BAR_H = 56            // 对话栏单行高度（与字号绑定，不随屏幕变）
 const ANCHOR_GAP = 12              // 对话栏与选区之间的水平间距
 const DRAG_THRESHOLD = 5
 const TRANSITION_MS = 380
+
+/** Canvas 缩放截图为小缩略图，避免历史记录把整张原图（几 MB）写进 localStorage */
+async function makeThumbnail(dataUrl: string, maxSize: number): Promise<string> {
+  if (!dataUrl) return ''
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const ratio = Math.min(maxSize / img.width, maxSize / img.height, 1)
+      const w = Math.max(1, Math.round(img.width * ratio))
+      const h = Math.max(1, Math.round(img.height * ratio))
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      if (!ctx) { resolve(dataUrl); return }
+      ctx.drawImage(img, 0, 0, w, h)
+      try { resolve(canvas.toDataURL('image/jpeg', 0.7)) }
+      catch { resolve(dataUrl) }
+    }
+    img.onerror = () => resolve(dataUrl)
+    img.src = dataUrl
+  })
+}
+
+/** 从 localStorage 读历史。失败 / 损坏数据 → 空数组 */
+function loadHistoryFromStorage(): HistoryItem[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.slice(0, HISTORY_MAX)
+  } catch {
+    return []
+  }
+}
+
+/** 把历史写回 localStorage。失败时只 console.error 不抛（quota 满 / 隐私模式等） */
+function saveHistoryToStorage(history: HistoryItem[]) {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history))
+  } catch (err) {
+    console.error('[lens-history] localStorage save failed:', err)
+  }
+}
 
 type Metrics = {
   READY_W: number
@@ -209,7 +256,7 @@ export default function Lens() {
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
-  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [history, setHistory] = useState<HistoryItem[]>(loadHistoryFromStorage)
   const [historyOpen, setHistoryOpen] = useState(false)
 
   const inputRef = useRef<HTMLInputElement>(null)
@@ -317,25 +364,49 @@ export default function Lens() {
   // 流式结束（streaming → false 且有任意 assistant 回答）时把当前会话推入历史。
   // 按 imageId 去重：同一张截图多轮对话作为单条历史持续更新到最前。
   // translate 模式不入对话历史（OCR+翻译是一次性任务，无对话语义）。
+  // 缩略图压缩到 96x96 jpeg 再写历史，避免 localStorage 被几 MB 的 base64 撑爆。
   useEffect(() => {
     if (mode !== 'chat') return
     if (streaming) return
     if (!imageIdRef.current || messages.length === 0) return
     const hasAssistant = messages.some(m => m.role === 'assistant' && m.content)
     if (!hasAssistant) return
-    setHistory(prev => {
-      const filtered = prev.filter(h => h.id !== imageIdRef.current)
-      const next: HistoryItem = {
-        id: imageIdRef.current,
-        imagePreview,
-        appLabel,
-        messages,
-        capturedFrame,
-        timestamp: Date.now(),
-      }
-      return [next, ...filtered].slice(0, HISTORY_MAX)
-    })
+
+    const id = imageIdRef.current
+    let cancelled = false
+    void (async () => {
+      const thumb = await makeThumbnail(imagePreview, HISTORY_THUMB_SIZE)
+      if (cancelled) return
+      // 把活跃 image 拷贝到 lens-history 持久目录（lens_close 不会再删它，下次打开历史还能继续聊）
+      api.lensCommitImageToHistory(id).catch(err => console.error('[lens-history] commit failed:', err))
+      setHistory(prev => {
+        const filtered = prev.filter(h => h.id !== id)
+        const next: HistoryItem = {
+          id,
+          imagePreview: thumb,
+          appLabel,
+          messages,
+          capturedFrame,
+          timestamp: Date.now(),
+        }
+        return [next, ...filtered].slice(0, HISTORY_MAX)
+      })
+    })()
+    return () => { cancelled = true }
   }, [mode, streaming, messages, imagePreview, appLabel, capturedFrame])
+
+  // history 任意变化：1) 同步 localStorage  2) 检测淘汰并删除磁盘上对应的 PNG
+  const prevHistoryIdsRef = useRef<Set<string>>(new Set(history.map(h => h.id)))
+  useEffect(() => {
+    saveHistoryToStorage(history)
+    const curIds = new Set(history.map(h => h.id))
+    prevHistoryIdsRef.current.forEach(id => {
+      if (!curIds.has(id)) {
+        api.lensDeleteHistoryImage(id).catch(err => console.error('[lens-history] delete failed:', err))
+      }
+    })
+    prevHistoryIdsRef.current = curIds
+  }, [history])
 
   // 监听 lens-stream 事件：把 reasoning_delta / delta 累积到最后一条 assistant 消息
   // StrictMode 双挂载下 listen 是 async：cleanup 时 unlisten 可能还没赋值，需要 cancelled 旗标

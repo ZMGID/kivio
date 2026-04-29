@@ -228,4 +228,10 @@ export const api = {
     invoke<{ success: boolean; response?: string; error?: string }>('lens_ask', { imageId, messages }),
   lensCancelStream: () => invoke<void>('lens_cancel_stream'),
   lensClose: () => invoke<void>('lens_close'),
+  // 把当前活跃 image 拷贝到 lens-history 持久目录，让重启后历史能继续提问
+  lensCommitImageToHistory: (imageId: string) =>
+    invoke<void>('lens_commit_image_to_history', { imageId }),
+  // 历史淘汰一条记录时调用，删除 lens-history 中对应 PNG 防止目录无限增长
+  lensDeleteHistoryImage: (imageId: string) =>
+    invoke<void>('lens_delete_history_image', { imageId }),
 }

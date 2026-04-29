@@ -33,7 +33,7 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_single_instance::init as init_single_instance;
 use uuid::Uuid;
 
-use screenshot::cleanup_temp_file;
+use screenshot::{cleanup_orphan_temp_files, cleanup_temp_file};
 use settings::{
   default_question_prompt, default_system_prompt, load_settings, no_think_instruction, persist_settings,
   sanitize_settings, ExplainMessage, Settings,
@@ -285,8 +285,8 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
 
 /// 读取截图图片并以 Base64 数据 URL 格式返回（lens ready 态显示缩略图用）
 #[tauri::command]
-fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_json::Value, String> {
-  let image_path = resolve_explain_image_path(&state, &image_id)?;
+fn explain_read_image(app: AppHandle, state: State<AppState>, image_id: String) -> Result<serde_json::Value, String> {
+  let image_path = resolve_explain_image_path(&app, &state, &image_id)?;
   let bytes = fs::read(&image_path).map_err(|e| e.to_string())?;
   let base64 = general_purpose::STANDARD.encode(bytes);
   Ok(serde_json::json!({
@@ -297,19 +297,30 @@ fn explain_read_image(state: State<AppState>, image_id: String) -> Result<serde_
 
 // ====== Lens 模式命令 ======
 
-/// 把 lens 窗口铺满光标所在显示器（用于 select 态）。
+/// 把 lens 窗口铺满目标显示器（用于 select 态）。
+///
+/// 显示器选择优先级：
+///   1. 光标所在显示器（正常路径）
+///   2. primary monitor（cursor_position 失败 / 无 monitor 匹配光标 — 罕见但
+///      合盖切外接、睡眠唤醒后 monitor 列表暂时不一致时会发生）
+///   3. 第一个 monitor（极端兜底，primary 也拿不到时）
+///
+/// 任何兜底都比"什么都不做"强 —— 之前的实现这种情况下窗口停留在上次几何，
+/// 用户看到的就是 ready 浮条 / 旧位置，体验远差于跳到 primary。
 fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
-  let cursor = match app.cursor_position() {
-    Ok(c) => c,
-    Err(e) => {
-      eprintln!("[lens-pos] cursor_position err: {}", e);
-      return;
-    }
-  };
-  eprintln!("[lens-pos] cursor (physical): ({}, {})", cursor.x, cursor.y);
+  let cursor_opt = app.cursor_position().ok();
+  if let Some(c) = &cursor_opt {
+    eprintln!("[lens-pos] cursor (physical): ({}, {})", c.x, c.y);
+  } else {
+    eprintln!("[lens-pos] cursor_position unavailable, will fall back to primary monitor");
+  }
 
   let monitors = match app.available_monitors() {
-    Ok(m) => m,
+    Ok(m) if !m.is_empty() => m,
+    Ok(_) => {
+      eprintln!("[lens-pos] available_monitors returned empty list");
+      return;
+    }
     Err(e) => {
       eprintln!("[lens-pos] available_monitors err: {}", e);
       return;
@@ -325,36 +336,57 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
     );
   }
 
-  for monitor in monitors {
-    let mp = monitor.position();
-    let ms = monitor.size();
-    let scale = monitor.scale_factor();
-    let mw = ms.width as i32;
-    let mh = ms.height as i32;
-    if (cursor.x as i32) >= mp.x
-      && (cursor.x as i32) < mp.x + mw
-      && (cursor.y as i32) >= mp.y
-      && (cursor.y as i32) < mp.y + mh
-    {
-      let lx = mp.x as f64 / scale;
-      let ly = mp.y as f64 / scale;
-      let lw = ms.width as f64 / scale;
-      let lh = ms.height as f64 / scale;
-      eprintln!(
-        "[lens-pos] -> set_position logical=({}, {}) size=({}, {})",
-        lx, ly, lw, lh
-      );
-      let _ = window.set_position(tauri::LogicalPosition::new(lx, ly));
-      let _ = window.set_size(tauri::LogicalSize::new(lw, lh));
+  // 1. 找光标所在的 monitor
+  let target = cursor_opt.as_ref().and_then(|cursor| {
+    monitors.iter().find(|monitor| {
+      let mp = monitor.position();
+      let ms = monitor.size();
+      let mw = ms.width as i32;
+      let mh = ms.height as i32;
+      (cursor.x as i32) >= mp.x
+        && (cursor.x as i32) < mp.x + mw
+        && (cursor.y as i32) >= mp.y
+        && (cursor.y as i32) < mp.y + mh
+    })
+  });
 
-      // 验证：读回当前 outer_position
-      if let Ok(op) = window.outer_position() {
-        eprintln!("[lens-pos] verify outer_position physical=({}, {})", op.x, op.y);
+  // 2-3. fallback: primary monitor，再不行第一个 monitor
+  let target = target
+    .or_else(|| {
+      let p = app.primary_monitor().ok().flatten();
+      if p.is_some() {
+        eprintln!("[lens-pos] no monitor matched cursor, falling back to primary");
       }
-      return;
-    }
+      // primary_monitor 返回 Option<Monitor> 而 monitors iter 给的是 &Monitor，
+      // 这里需要从 monitors 里按 name 找回相同的 monitor 引用，避免类型不一致
+      p.and_then(|prim| monitors.iter().find(|m| m.name() == prim.name()))
+    })
+    .or_else(|| {
+      eprintln!("[lens-pos] primary unavailable, falling back to monitors[0]");
+      monitors.first()
+    });
+
+  let Some(monitor) = target else {
+    eprintln!("[lens-pos] no usable monitor found");
+    return;
+  };
+
+  let mp = monitor.position();
+  let ms = monitor.size();
+  let scale = monitor.scale_factor();
+  let lx = mp.x as f64 / scale;
+  let ly = mp.y as f64 / scale;
+  let lw = ms.width as f64 / scale;
+  let lh = ms.height as f64 / scale;
+  eprintln!(
+    "[lens-pos] -> set_position logical=({}, {}) size=({}, {})",
+    lx, ly, lw, lh
+  );
+  let _ = window.set_position(tauri::LogicalPosition::new(lx, ly));
+  let _ = window.set_size(tauri::LogicalSize::new(lw, lh));
+  if let Ok(op) = window.outer_position() {
+    eprintln!("[lens-pos] verify outer_position physical=({}, {})", op.x, op.y);
   }
-  eprintln!("[lens-pos] no monitor matched cursor!");
 }
 
 /// 入口（公共底层）：打开 lens webview 进入 select 态。
@@ -625,7 +657,7 @@ async fn lens_translate(
   state: State<'_, AppState>,
   image_id: String,
 ) -> Result<serde_json::Value, String> {
-  let temp_path = match resolve_explain_image_path(&state, &image_id) {
+  let temp_path = match resolve_explain_image_path(&app, &state, &image_id) {
     Ok(p) => p,
     Err(e) => return Ok(serde_json::json!({ "success": false, "error": e })),
   };
@@ -1585,22 +1617,90 @@ fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
   }
 }
 
-/// 根据 image_id 解析解释图片的临时路径，并进行安全性校验（必须在 temp_dir 内且文件存在）
-fn resolve_explain_image_path(state: &State<AppState>, image_id: &str) -> Result<PathBuf, String> {
-  let map = state.images_lock();
-  let path = map
-    .get(image_id)
-    .ok_or_else(|| "Image not found".to_string())?
-    .clone();
+/// `{app_data_dir}/lens-history/` —— 历史记录引用的截图持久化目录。
+/// 区别于 temp_dir：temp_dir 系统会清，且 lens_close 会立即删；这里只在用户从历史里淘汰条目时才删。
+fn lens_history_dir(app: &AppHandle) -> Result<PathBuf, String> {
+  let base = app
+    .path()
+    .app_data_dir()
+    .map_err(|e| format!("app_data_dir unavailable: {e}"))?;
+  let dir = base.join("lens-history");
+  if !dir.exists() {
+    fs::create_dir_all(&dir).map_err(|e| format!("create lens-history dir: {e}"))?;
+  }
+  Ok(dir)
+}
 
-  let temp_dir = std::env::temp_dir();
-  if !path.starts_with(&temp_dir) {
-    return Err("Invalid image path".to_string());
+/// 根据 image_id 解析图片实际路径。
+///
+/// 解析顺序：
+///   1. 内存 HashMap（当前活跃截图）→ 必须落在 temp_dir，文件存在
+///   2. `lens-history/{image_id}.png`（历史记录从 temp 拷贝过来的持久副本）
+///
+/// 1 失败时退到 2，使得用户重启后从历史里恢复对话仍能继续提问。
+fn resolve_explain_image_path(
+  app: &AppHandle,
+  state: &State<AppState>,
+  image_id: &str,
+) -> Result<PathBuf, String> {
+  // 1. 活跃截图
+  {
+    let map = state.images_lock();
+    if let Some(path) = map.get(image_id).cloned() {
+      let temp_dir = std::env::temp_dir();
+      if !path.starts_with(&temp_dir) {
+        return Err("Invalid image path".to_string());
+      }
+      if path.exists() {
+        return Ok(path);
+      }
+    }
   }
-  if !path.exists() {
-    return Err("Image missing".to_string());
+  // 2. 历史持久副本
+  let history_path = lens_history_dir(app)?.join(format!("{image_id}.png"));
+  if history_path.exists() {
+    return Ok(history_path);
   }
-  Ok(path)
+  Err("Image not found".to_string())
+}
+
+/// 把当前活跃图片复制到 `lens-history/{image_id}.png`，让它在 temp 文件被
+/// lens_close 清理后仍能被历史记录引用。前端在 history-add 完成后调一次。
+#[tauri::command]
+fn lens_commit_image_to_history(
+  app: AppHandle,
+  state: State<AppState>,
+  image_id: String,
+) -> Result<(), String> {
+  let src = {
+    let map = state.images_lock();
+    map.get(&image_id).cloned()
+  };
+  let Some(src) = src else {
+    // 已经被 lens_close 清掉 → 大概率前端在我们之前已经把图存过了，直接当成幂等成功返回
+    return Ok(());
+  };
+  if !src.exists() {
+    return Ok(());
+  }
+  let dst = lens_history_dir(&app)?.join(format!("{image_id}.png"));
+  if dst.exists() {
+    return Ok(()); // 幂等
+  }
+  fs::copy(&src, &dst).map_err(|e| format!("commit image to history: {e}"))?;
+  Ok(())
+}
+
+/// 从历史持久目录删除指定 image_id 对应的 PNG。
+/// 前端 history 淘汰一条记录时调用，避免目录无限增长。
+#[tauri::command]
+fn lens_delete_history_image(app: AppHandle, image_id: String) -> Result<(), String> {
+  let dir = lens_history_dir(&app)?;
+  let path = dir.join(format!("{image_id}.png"));
+  if path.exists() {
+    fs::remove_file(&path).map_err(|e| format!("remove history image: {e}"))?;
+  }
+  Ok(())
 }
 
 /// 调用 OpenAI 兼容的文本聊天接口
@@ -1868,7 +1968,7 @@ async fn call_vision_api(
   }
 
   if has_image {
-    let image_path = resolve_explain_image_path(state, image_id)?;
+    let image_path = resolve_explain_image_path(app, state, image_id)?;
     let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
     let base64 = general_purpose::STANDARD.encode(bytes);
     if let Some(first) = messages.first() {
@@ -2410,6 +2510,9 @@ fn main() {
           .set_activation_policy(tauri::ActivationPolicy::Accessory);
       }
 
+      // 清理上次崩溃 / 强杀 / 旧版本遗留的截图 PNG（24h 之前的，避免误删并发实例的活文件）
+      cleanup_orphan_temp_files();
+
       let settings = load_settings(&app.handle());
       if let Err(err) = apply_launch_at_startup(&app.handle(), settings.launch_at_startup) {
         eprintln!("Failed to apply launch-at-startup setting: {err}");
@@ -2464,6 +2567,8 @@ fn main() {
       lens_translate,
       lens_cancel_stream,
       lens_close,
+      lens_commit_image_to_history,
+      lens_delete_history_image,
       set_always_on_top
     ])
     .run(tauri::generate_context!())
