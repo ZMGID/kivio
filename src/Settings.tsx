@@ -1077,6 +1077,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           ]}
                         />
                       </SettingRow>
+                      <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
+                        <Toggle
+                          checked={settings.lens?.keepFullscreenAfterCapture !== false}
+                          onChange={(v) => updateLens({ keepFullscreenAfterCapture: v })}
+                        />
+                      </SettingRow>
                       <SettingRow label={t.selectModelPair}>
                         <Select
                           className="w-52"

@@ -154,6 +154,8 @@ export const i18n = {
     lensMessageOrder: '消息顺序',
     lensMessageOrderAsc: '正序（旧 → 新）',
     lensMessageOrderDesc: '倒序（新 → 旧）',
+    lensKeepFullscreen: '截图后保持全屏覆盖',
+    lensKeepFullscreenHint: '关闭后截图完成时窗口缩小为浮动，可在 Lens UI 外操作桌面',
   },
   en: {
     settings: 'Settings',
@@ -308,6 +310,8 @@ export const i18n = {
     lensMessageOrder: 'Message order',
     lensMessageOrderAsc: 'Ascending (old → new)',
     lensMessageOrderDesc: 'Descending (new → old)',
+    lensKeepFullscreen: 'Keep fullscreen after capture',
+    lensKeepFullscreenHint: 'When off, Lens shrinks to a floating window after capture so you can interact with the desktop',
   }
 } as const
 

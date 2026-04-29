@@ -853,6 +853,27 @@ fn lens_close(app: AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+/// 将 lens 窗口缩小为浮动尺寸（截图后非全屏模式用）
+/// x/y 为可选，不传则只改尺寸不改位置
+#[derive(serde::Deserialize)]
+struct FloatingRect {
+  x: Option<f64>,
+  y: Option<f64>,
+  width: f64,
+  height: f64,
+}
+
+#[tauri::command]
+fn lens_set_floating(app: AppHandle, rect: FloatingRect) -> Result<(), String> {
+  if let Some(window) = app.get_webview_window("lens") {
+    if let (Some(x), Some(y)) = (rect.x, rect.y) {
+      let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+    }
+    let _ = window.set_size(tauri::LogicalSize::new(rect.width, rect.height));
+  }
+  Ok(())
+}
+
 // ====== /Lens 模式命令 ======
 
 /// 从供应商 API 获取可用模型列表
@@ -1722,6 +1743,7 @@ fn main() {
       lens_translate,
       lens_cancel_stream,
       lens_close,
+      lens_set_floating,
       lens_commit_image_to_history,
       lens_delete_history_image,
       check_github_latest_release

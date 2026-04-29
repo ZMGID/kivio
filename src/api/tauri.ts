@@ -104,6 +104,8 @@ export type Settings = {
     questionPrompt?: string
     /** 消息排序：'asc' 老到新（默认），'desc' 新到老 */
     messageOrder?: 'asc' | 'desc'
+    /** 截图后是否保持全屏覆盖（默认 true）。false 时截图后窗口缩小为浮动 */
+    keepFullscreenAfterCapture?: boolean
   }
   settingsLanguage?: 'zh' | 'en'
   /** 启动时静默检查 GH Releases 是否有新版（默认 true） */
@@ -252,6 +254,8 @@ export const api = {
   // 历史淘汰一条记录时调用，删除 lens-history 中对应 PNG 防止目录无限增长
   lensDeleteHistoryImage: (imageId: string) =>
     invoke<void>('lens_delete_history_image', { imageId }),
+  lensSetFloating: (rect: { x?: number; y?: number; width: number; height: number }) =>
+    invoke<void>('lens_set_floating', { rect }),
 
   // ========== 自动更新（仅检查 + 跳转，不做自动下载安装） ==========
 
