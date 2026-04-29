@@ -1,4 +1,4 @@
-# KeyLingo v2.2.0
+# KeyLingo v2.3.0
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -30,13 +30,23 @@
 - **Provider Diagnostics**: One-click **Test Connection** + **Fetch Models**.
 - **Permission Dashboard (macOS)**: Accessibility/Screen Recording status + deep-link to System Settings.
 
-### 📦 Release Assets (v2.2.0)
+### 📦 Release Assets (v2.3.0)
 
-- **macOS (Apple Silicon)**: `KeyLingo_2.2.0_aarch64.dmg`
-- **Windows Installer (NSIS)**: `KeyLingo_2.2.0_x64-setup.exe`
-- **Windows Installer (MSI)**: `KeyLingo_2.2.0_x64_en-US.msi`
+- **macOS (Apple Silicon)**: `KeyLingo_2.3.0_aarch64.dmg`
+- **Windows Installer (NSIS)**: `KeyLingo_2.3.0_x64-setup.exe`
+- **Windows Installer (MSI)**: `KeyLingo_2.3.0_x64_en-US.msi`
 
 ### 📚 Detailed Changelog
+
+#### v2.3.0 (2026-04-29)
+
+- **Renamed Cowork → Lens** across the codebase, settings tab, file names, Tauri commands (`lens_*`), event names (`lens-stream` / `lens-translate-stream`), CSS animations, capabilities whitelist, and UI strings. Existing `settings.json` migrates automatically via `#[serde(alias = "cowork")]`. Tab icon swapped from `Sparkles` to `Aperture` (semantic photographic-lens metaphor).
+- **Screenshot translation: single-call combined prompt.** The vision model now reads the screenshot, outputs the translation, a `<<<ORIGINAL>>>` separator, then the original text — all in one API round-trip. Translation streams immediately (no longer blocks behind a finished OCR phase). UI reordered: translation on top, original below as small grey reference. New `stream_translate_combined` parses the separator across SSE chunks (UTF-8 safe, 13-byte tail buffer) so partial-marker boundaries don't bleed.
+- **"Show original" toggle**: `screenshotTranslateMode` ("Translation Mode") reframed as `Show original` (default on). Backend field `direct_translate` unchanged; UI binding inverted, no migration needed.
+- **Custom translate prompt now honored** in combined mode (was silently dropped via an unused `_template` arg).
+- **Translator card shadow fix**: card filled the Tauri window edge-to-edge so `box-shadow` was clipped at every corner (no halo). Window 360×120 → 392×152, `.window-container` becomes a 16px transparent padding shell, `.window-frosted` drops to an inner div with a softer near-symmetric shadow (no more bottom-heavy halo). Border radius bumped 16 → 18px.
+- **Translate result UI cleanup**: removed the "原文 / 译文" labels (font size + divider already convey hierarchy).
+- **Cleanup**: dropped 8 dead i18n keys, removed `build_text_request_body` + `DEFAULT_OCR_PROMPT`, fixed 4 rustc lifetime warnings — `cargo check` now warning-free.
 
 #### v2.2.0 (2026-04-29)
 
@@ -234,13 +244,23 @@ npm run lint
 - **供应商诊断**：模型页支持一键"测试连接"与"获取模型列表"。
 - **权限状态面板（macOS）**：可视化查看辅助功能/屏幕录制授权并直达系统设置。
 
-### 📦 安装包（v2.2.0）
+### 📦 安装包（v2.3.0）
 
-- **macOS（Apple Silicon）**：`KeyLingo_2.2.0_aarch64.dmg`
-- **Windows NSIS 安装包**：`KeyLingo_2.2.0_x64-setup.exe`
-- **Windows MSI 安装包**：`KeyLingo_2.2.0_x64_en-US.msi`
+- **macOS（Apple Silicon）**：`KeyLingo_2.3.0_aarch64.dmg`
+- **Windows NSIS 安装包**：`KeyLingo_2.3.0_x64-setup.exe`
+- **Windows MSI 安装包**：`KeyLingo_2.3.0_x64_en-US.msi`
 
 ### 📚 详细更新目录
+
+#### v2.3.0（2026-04-29）
+
+- **Cowork 重命名为 Lens**：覆盖代码、设置 tab、文件名、Tauri 命令（`lens_*`）、事件名（`lens-stream` / `lens-translate-stream`）、CSS 动画、capabilities 白名单和 UI 文案。旧 `settings.json` 通过 `#[serde(alias = "cowork")]` 自动迁移，不需要重配置。tab 图标 `Sparkles` → `Aperture`，更贴近"取景看屏"的语义。
+- **截图翻译改为单次调用合并模式**：视觉模型一次性输出译文 + `<<<ORIGINAL>>>` 分隔符 + 原文，省一次 round-trip。译文先流出来（不再等 OCR 整段输出），UI 顺序也调整为译文在上、原文小字灰色作参考在下。新增 `stream_translate_combined` 在 SSE 分片边界做 UTF-8 安全的分隔符切分（13 字节 tail buffer 防止跨片误判）。
+- **"显示原文" 开关**：`screenshotTranslateMode`（"翻译模式"）改名 "显示原文"，默认开。后端字段 `direct_translate` 不变，UI 绑定取反，无需迁移。
+- **自定义翻译 prompt 在合并模式生效**（之前 `_template` 参数没人读，用户配的 prompt 被静默丢弃）。
+- **翻译输入卡四角阴影修复**：之前卡片贴满 Tauri window 边缘，`box-shadow` 没空间向外渲染，四角看起来被硬切。窗口 360×120 → 392×152，`.window-container` 改为 16px 透明 padding 外壳，`.window-frosted` 移到内层 div，阴影换成两道近对称的柔和层（不再头重脚轻）。圆角 16 → 18px。
+- **翻译结果卡 UI 简化**：去掉"原文 / 译文"标签（字号 + 分隔线已经能区分）。
+- **代码清理**：删 8 个死 i18n key、`build_text_request_body` + `DEFAULT_OCR_PROMPT`、修 4 个 rustc lifetime warning，`cargo check` 现在零 warning。
 
 #### v2.2.0（2026-04-29）
 
