@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "KeyLingo",
-        "width": 360,
-        "height": 120,
+        "width": 392,
+        "height": 152,
         "resizable": true,
         "decorations": false,
         "transparent": true,

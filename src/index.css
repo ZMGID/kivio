@@ -24,42 +24,39 @@ body {
   background: transparent;
 }
 
-/* 透明窗口容器：占满窗口，避免额外 margin 暴露系统边框/阴影边缘 */
+/* 透明窗口外壳：填满 Tauri window，但内边留 16px 给卡片阴影"散开"用。
+   不留这层 padding 的话，box-shadow 会被 window 矩形边缘裁掉 → 四个角无光晕。 */
 .window-container {
   margin: 0;
   height: 100%;
   width: 100%;
-  background-color: rgb(255 255 255);
+  background: transparent;
+  padding: 16px;
+  box-sizing: border-box;
 }
 
-.dark .window-container {
-  background-color: rgb(23 23 23);
-}
-
-/* 磨砂玻璃悬浮窗：用于翻译器主窗口。
-   半透明白底 + 大模糊背景 + 微差异内描边 + 顶光/底光双重微高光，避免单调。
-   依赖 Tauri 端 transparent(true) + decorations(false)。 */
+/* 磨砂玻璃悬浮卡：作为 .window-container 的子元素填满 padding 内区域。
+   半透明白底 + 大模糊背景 + hairline 描边 + 一道柔和近对称阴影。
+   阴影偏置只 2-3px（浮起感而非下坠感），靠 blur 散开整圈光晕。 */
 .window-frosted {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(252, 252, 253, 0.94) 100%);
   -webkit-backdrop-filter: saturate(160%) blur(28px);
   backdrop-filter: saturate(160%) blur(28px);
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 18px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.7) inset,
-    0 0 0 0.5px rgba(0, 0, 0, 0.06),
-    0 8px 24px -8px rgba(0, 0, 0, 0.18),
-    0 2px 8px -2px rgba(0, 0, 0, 0.08);
+    0 0 0 0.5px rgba(0, 0, 0, 0.05),
+    0 2px 6px rgba(0, 0, 0, 0.06),
+    0 6px 20px rgba(0, 0, 0, 0.08);
 }
 
 .dark .window-frosted {
   background: linear-gradient(180deg, rgba(28, 28, 30, 0.92) 0%, rgba(22, 22, 24, 0.88) 100%);
   border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 0 0 0.5px rgba(255, 255, 255, 0.04),
-    0 8px 24px -8px rgba(0, 0, 0, 0.5),
-    0 2px 8px -2px rgba(0, 0, 0, 0.3);
+    0 0 0 0.5px rgba(255, 255, 255, 0.05),
+    0 2px 6px rgba(0, 0, 0, 0.35),
+    0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
 /* 自定义滚动条 — 悬浮胶囊式 */

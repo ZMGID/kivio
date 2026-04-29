@@ -95,24 +95,26 @@ function Translator({
   }
 
   return (
-    <div className="window-container window-frosted flex flex-col select-none overflow-hidden relative group">
-      {/* 顶部隐形 drag bar */}
-      <div
-        className="absolute top-0 left-0 right-0 h-6 z-10"
-        data-tauri-drag-region
-      />
+    <div className="window-container">
+      {/* 卡片：填满外壳 padding 内区域；圆角 + 阴影都在这层 */}
+      <div className="window-frosted h-full w-full flex flex-col select-none overflow-hidden relative group">
+        {/* 顶部隐形 drag bar */}
+        <div
+          className="absolute top-0 left-0 right-0 h-6 z-10"
+          data-tauri-drag-region
+        />
 
-      {/* 设置按钮（悬浮右上角） */}
-      <button
-        onClick={onOpenSettings}
-        className="absolute top-1.5 right-2 z-20 p-1 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200 rounded-md hover:bg-black/5 dark:hover:bg-white/10 opacity-60 hover:opacity-100 transition-all duration-150"
-        title={t.translatorSettings}
-      >
-        <SettingsIcon size={13} strokeWidth={1.75} />
-      </button>
+        {/* 设置按钮（悬浮右上角） */}
+        <button
+          onClick={onOpenSettings}
+          className="absolute top-1.5 right-2 z-20 p-1 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200 rounded-md hover:bg-black/5 dark:hover:bg-white/10 opacity-60 hover:opacity-100 transition-all duration-150"
+          title={t.translatorSettings}
+        >
+          <SettingsIcon size={13} strokeWidth={1.75} />
+        </button>
 
-      {/* 主内容区 */}
-      <div className="relative z-0 flex-1 flex flex-col justify-center px-3.5 pt-3 pb-2.5">
+        {/* 主内容区 */}
+        <div className="relative z-0 flex-1 flex flex-col justify-center px-3.5 pt-3 pb-2.5">
         {/* 翻译结果展示（微渐变背景 + 柔光内描边） */}
         {(result || loading) && (
           <div
@@ -159,6 +161,7 @@ function Translator({
               <span className="truncate">{translateSource}</span>
             </span>
           )}
+        </div>
         </div>
       </div>
     </div>
@@ -239,7 +242,7 @@ function App() {
       if (mode === 'settings') {
         await api.resizeWindow(640, 520)
       } else if (mode === '' || mode === 'translator') {
-        await api.resizeWindow(360, 120)
+        await api.resizeWindow(392, 152)
       }
     }
     resize()
@@ -263,7 +266,7 @@ function App() {
     }
     window.location.hash = ''
     setMode('')
-    await api.resizeWindow(360, 120)
+    await api.resizeWindow(392, 152)
   }
 
   // 根据模式渲染对应视图
