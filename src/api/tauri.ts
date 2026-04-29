@@ -106,6 +106,22 @@ export type Settings = {
     messageOrder?: 'asc' | 'desc'
   }
   settingsLanguage?: 'zh' | 'en'
+  /** 启动时静默检查 GH Releases 是否有新版（默认 true） */
+  autoCheckUpdate?: boolean
+}
+
+/** 更新检查结果（来自后端 GitHub Releases API 调用） */
+export type UpdateInfo = {
+  available: boolean
+  /** 最新版本号（剥掉 v 前缀的 semver，如 "2.5.0"） */
+  version?: string
+  /** GitHub release tag (含 v 前缀，如 "v2.5.0") */
+  tag?: string
+  /** GH release 页面 URL，用于"去 GitHub 下载"按钮 */
+  htmlUrl?: string
+  /** Release notes / changelog (markdown) */
+  body?: string
+  publishedAt?: string
 }
 
 // 默认提示词模板
@@ -236,4 +252,13 @@ export const api = {
   // 历史淘汰一条记录时调用，删除 lens-history 中对应 PNG 防止目录无限增长
   lensDeleteHistoryImage: (imageId: string) =>
     invoke<void>('lens_delete_history_image', { imageId }),
+
+  // ========== 自动更新（仅检查 + 跳转，不做自动下载安装） ==========
+
+  /** 调后端 GitHub Releases API 检查最新版本 */
+  checkUpdate: () => invoke<UpdateInfo>('check_github_latest_release'),
+
+  /** 启动时若发现新版，后端 emit 此事件让 Settings UI 自动展示更新提示 */
+  onUpdateAvailable: (listener: (info: UpdateInfo) => void) =>
+    on<UpdateInfo>('update-available', (payload) => listener(payload)),
 }

@@ -3,9 +3,10 @@ import {
   X, Save, Plus, Trash2, RefreshCw,
   Settings as SettingsIcon, Languages, Camera,
   Cloud, Info, Palette, Keyboard, SlidersHorizontal, Globe,
-  Cpu, FileText, ShieldCheck, Aperture
+  Cpu, FileText, ShieldCheck, Aperture, ExternalLink, Download
 } from 'lucide-react'
-import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus } from './api/tauri'
+import ReactMarkdown from 'react-markdown'
+import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus, type UpdateInfo } from './api/tauri'
 import { i18n } from './settings/i18n'
 import { buildHotkey } from './settings/utils'
 import {
@@ -42,6 +43,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [permissionsLoading, setPermissionsLoading] = useState(false)
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
   const [providerTestFeedback, setProviderTestFeedback] = useState<Record<string, { ok: boolean; message: string }>>({})
+  // 更新检查状态：'idle' / 'checking' / 'up-to-date' / 'available'
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'available'>('idle')
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const saveSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const lang = settings?.settingsLanguage || 'zh'
@@ -145,6 +149,69 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   useEffect(() => {
     refreshPermissions()
   }, [refreshPermissions])
+
+  // 监听后端启动时的 update-available 事件，发现新版立即在 About 区块展开提示
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    api.onUpdateAvailable((info) => {
+      if (cancelled) return
+      setUpdateInfo(info)
+      setUpdateStatus('available')
+    }).then((u) => {
+      if (cancelled) u()
+      else unlisten = u
+    })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
+  // Settings 打开时静默 check 一次（覆盖启动事件用户当时没开 Settings 的场景）
+  useEffect(() => {
+    if (!settings) return
+    if (settings.autoCheckUpdate === false) return
+    if (updateStatus === 'available' || updateStatus === 'checking') return
+    let cancelled = false
+    api.checkUpdate().then((info) => {
+      if (cancelled) return
+      if (info.available) {
+        setUpdateInfo(info)
+        setUpdateStatus('available')
+      }
+    }).catch(() => {})
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.autoCheckUpdate, !!settings])
+
+  /** 用户点 "检查更新" 按钮 */
+  const handleCheckUpdate = useCallback(async () => {
+    setUpdateStatus('checking')
+    try {
+      const info = await api.checkUpdate()
+      if (info.available) {
+        setUpdateInfo(info)
+        setUpdateStatus('available')
+      } else {
+        setUpdateStatus('up-to-date')
+        // 5s 后自动复位回 idle，避免"已是最新"标签长期占位
+        setTimeout(() => setUpdateStatus((s) => (s === 'up-to-date' ? 'idle' : s)), 5000)
+      }
+    } catch (err) {
+      console.error('Check update failed:', err)
+      setUpdateStatus('idle')
+    }
+  }, [])
+
+  const handleOpenReleasePage = useCallback(async () => {
+    if (!updateInfo?.htmlUrl) return
+    try {
+      await api.openExternal(updateInfo.htmlUrl)
+    } catch (err) {
+      console.error('Open release page failed:', err)
+    }
+  }, [updateInfo])
 
   useEffect(() => {
     setProviderTestFeedback({})
@@ -1289,9 +1356,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
         {/* ===== 关于标签页 ===== */}
         {activeTab === 'about' && (
-          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section>
-              <div className="flex flex-col items-center justify-center py-10">
+              <div className="flex flex-col items-center justify-center py-8">
                 <div className="w-16 h-16 rounded-2xl bg-neutral-900 dark:bg-white flex items-center justify-center mb-4 shadow-sm">
                   <span className="text-white dark:text-neutral-900 text-[20px] font-bold">K</span>
                 </div>
@@ -1299,14 +1366,88 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 <p className="text-[13px] text-neutral-500 dark:text-neutral-400 mb-6">{lang === 'zh' ? '智能翻译与 AI 视觉工具' : 'Smart Translation & AI Vision Tool'}</p>
                 <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden w-full max-w-sm">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
-                    <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{lang === 'zh' ? '版本' : 'Version'}</span>
-                    <span className="text-[13px] text-neutral-500 dark:text-neutral-400">v{appVersion}</span>
+                    <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{t.currentVersion}</span>
+                    <span className="text-[13px] text-neutral-500 dark:text-neutral-400 font-mono">v{appVersion}</span>
                   </div>
                   <div className="flex items-center justify-between px-4 py-3">
                     <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{lang === 'zh' ? '开发者' : 'Developer'}</span>
                     <span className="text-[13px] text-neutral-500 dark:text-neutral-400">ZM</span>
                   </div>
                 </div>
+              </div>
+            </section>
+
+            {/* 自动更新检查（仅检查 + 跳转 GH 下载，不做自动安装） */}
+            <section>
+              <SectionTitle icon={Download}>{t.checkUpdate}</SectionTitle>
+              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+                <SettingRow
+                  label={t.autoCheckUpdate}
+                  description={t.autoCheckUpdateHint}
+                >
+                  <Toggle
+                    checked={settings?.autoCheckUpdate ?? true}
+                    onChange={(v) => updateSettings({ autoCheckUpdate: v })}
+                  />
+                </SettingRow>
+
+                {/* 检查按钮 + 状态 */}
+                <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-black/5 dark:border-white/5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{t.checkUpdate}</span>
+                    {updateStatus === 'up-to-date' && (
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400">{t.upToDate}</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCheckUpdate}
+                    disabled={updateStatus === 'checking'}
+                    className={`flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-md border transition-all ${
+                      updateStatus === 'checking'
+                        ? 'text-neutral-400 border-black/5 dark:border-white/5 cursor-not-allowed'
+                        : 'text-neutral-600 dark:text-neutral-300 border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5'
+                    }`}
+                    data-tauri-drag-region="false"
+                  >
+                    <RefreshCw size={11} className={updateStatus === 'checking' ? 'animate-spin' : ''} />
+                    {updateStatus === 'checking' ? t.checkingUpdate : t.checkUpdate}
+                  </button>
+                </div>
+
+                {/* 发现新版本 panel */}
+                {updateStatus === 'available' && updateInfo && (
+                  <div className="px-4 py-4 border-t border-black/5 dark:border-white/5 bg-emerald-50/50 dark:bg-emerald-500/5">
+                    <div className="flex items-baseline gap-2 mb-2">
+                      <span className="text-[13px] font-semibold text-emerald-700 dark:text-emerald-300">{t.updateAvailable}</span>
+                      <span className="text-[12px] font-mono text-emerald-600 dark:text-emerald-400">v{updateInfo.version}</span>
+                    </div>
+                    {updateInfo.body && (
+                      <div className="prose prose-sm dark:prose-invert max-w-none text-[12px] leading-relaxed text-neutral-700 dark:text-neutral-300 max-h-40 overflow-y-auto mb-3 px-2 py-1.5 bg-white/60 dark:bg-black/20 rounded-md">
+                        <ReactMarkdown>{updateInfo.body}</ReactMarkdown>
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleOpenReleasePage}
+                        className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-all"
+                        data-tauri-drag-region="false"
+                      >
+                        <ExternalLink size={12} />
+                        {t.downloadFromGithub}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setUpdateStatus('idle')}
+                        className="text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+                        data-tauri-drag-region="false"
+                      >
+                        {t.updateLater}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
           </div>

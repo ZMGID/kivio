@@ -215,6 +215,69 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
   app.shell().open(url, None).map_err(|e| e.to_string())
 }
 
+/// 调 GitHub Releases API 检查最新版本
+/// 发现新版只返回提示信息，让前端弹"去 GitHub 下载"按钮（不做自动下载安装，避免引入签名密钥那套）
+/// 网络失败 / API 限流时返回 available=false 静默处理，不打扰用户
+#[tauri::command]
+async fn check_github_latest_release(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+  const REPO: &str = "ZMGID/keylingo";
+  let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+
+  let response = state
+    .http
+    .get(&url)
+    // GitHub API 要求显式 User-Agent
+    .header("User-Agent", format!("KeyLingo/{}", env!("CARGO_PKG_VERSION")))
+    .header("Accept", "application/vnd.github+json")
+    .send()
+    .await;
+
+  let response = match response {
+    Ok(r) => r,
+    Err(_) => return Ok(serde_json::json!({ "available": false })),
+  };
+
+  if !response.status().is_success() {
+    return Ok(serde_json::json!({ "available": false }));
+  }
+
+  let value: serde_json::Value = match response.json().await {
+    Ok(v) => v,
+    Err(_) => return Ok(serde_json::json!({ "available": false })),
+  };
+
+  let tag = value.get("tag_name").and_then(|v| v.as_str()).unwrap_or("");
+  let html_url = value.get("html_url").and_then(|v| v.as_str()).unwrap_or("");
+  let body = value.get("body").and_then(|v| v.as_str()).unwrap_or("");
+  let published_at = value.get("published_at").and_then(|v| v.as_str()).unwrap_or("");
+
+  // tag_name 通常是 "v2.5.0"，剥掉前缀 v 再比较
+  let latest = tag.trim_start_matches('v');
+  let current = env!("CARGO_PKG_VERSION");
+
+  Ok(serde_json::json!({
+    "available": is_newer_version(latest, current),
+    "version": latest,
+    "tag": tag,
+    "htmlUrl": html_url,
+    "body": body,
+    "publishedAt": published_at,
+  }))
+}
+
+/// 朴素 semver 比较：把 "x.y.z" 拆成数字三元组按字典序比较
+/// 不处理 prerelease (-beta) / build metadata (+abc)；返回 latest > current
+fn is_newer_version(latest: &str, current: &str) -> bool {
+  let parse = |s: &str| -> (u32, u32, u32) {
+    let mut it = s.split('.').map(|p| {
+      // 截断到第一个非数字（兼容 "1.0.0-beta" 这类）
+      p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().unwrap_or(0)
+    });
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+  };
+  parse(latest) > parse(current)
+}
+
 /// 读取截图图片并以 Base64 数据 URL 格式返回（lens ready 态显示缩略图用）
 #[tauri::command]
 fn explain_read_image(app: AppHandle, state: State<AppState>, image_id: String) -> Result<serde_json::Value, String> {
@@ -1609,6 +1672,23 @@ fn main() {
         eprintln!("Failed to setup tray: {err}");
       }
 
+      // 启动后 5s 静默检查更新（settings.auto_check_update 控制）
+      // 发现新版 → emit "update-available" 事件，前端 Settings 打开时会展示提示
+      // 失败 / 限流 / 网络问题全部静默，不打扰用户
+      let app_handle = app.handle().clone();
+      tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let state: State<AppState> = app_handle.state();
+        if !state.settings_read().auto_check_update {
+          return;
+        }
+        if let Ok(value) = check_github_latest_release(state).await {
+          if value.get("available").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let _ = app_handle.emit("update-available", value);
+          }
+        }
+      });
+
       #[cfg(target_os = "windows")]
       {
         // Windows 平台：如果不是通过自启动启动的，则默认打开设置窗口
@@ -1643,7 +1723,8 @@ fn main() {
       lens_cancel_stream,
       lens_close,
       lens_commit_image_to_history,
-      lens_delete_history_image
+      lens_delete_history_image,
+      check_github_latest_release
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

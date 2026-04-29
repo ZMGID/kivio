@@ -273,6 +273,10 @@ pub struct Settings {
   /// 防止 v2.3.x ↔ v2.4 反复切换时重复抹掉钥匙串
   #[serde(default)]
   pub legacy_keyring_migrated: bool,
+  /// 启动时静默检查 GitHub Releases 是否有新版（默认 true）
+  /// 仅做"提示 + 跳转 GH 下载页"，不集成 auto-installer，避免签名密钥那套
+  #[serde(default = "default_true")]
+  pub auto_check_update: bool,
   // 旧版字段，用于迁移
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openai: Option<OpenAIConfig>,
@@ -306,6 +310,7 @@ impl Default for Settings {
       retry_enabled: default_retry_enabled(),
       retry_attempts: default_retry_attempts(),
       legacy_keyring_migrated: false,
+      auto_check_update: true,
       openai: None,
     }
   }
