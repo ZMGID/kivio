@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-KeyLingo is a lightweight desktop translation and AI vision utility built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows and provides global hotkey-triggered text translation, screenshot OCR/translation, and screenshot explanation via OpenAI-compatible APIs.
+KeyLingo is a lightweight desktop translation and AI vision utility built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows and provides global hotkey-triggered text translation, screenshot OCR/translation, and a Lens overlay for capture-then-ask vision Q&A — all via OpenAI-compatible APIs.
 
 ## Common Commands
 
@@ -29,20 +29,15 @@ All Tauri `invoke` calls and event listeners are centralized in **`src/api/tauri
 Key patterns:
 - `api.translateText(text)` — debounced 600ms in `App.tsx`.
 - `api.commitTranslation(text)` — copies to clipboard, hides window, optionally sends paste shortcut to the previous app.
-- Window "close" methods (`closeWindow`, `closeScreenshotWindow`, `closeExplainWindow`) actually call `win.hide()` — windows are reused, never destroyed.
+- `api.closeWindow()` — calls `win.hide()` rather than destroying the window; both `main` and `lens` windows are reused across hotkey triggers.
 
 ### Window Modes and Routing
 
-The app uses **one main webview window** that switches views via `window.location.hash`:
-- `''` or `'translator'` — main translation input (360x120)
-- `'settings'` — settings panel (420x520)
-- `'screenshot'` — screenshot translation result
-- `'explain'` — screenshot explanation chat
-- `'capture'` — region selection overlay (fullscreen transparent)
+The app uses **two webview windows**:
+- **`main`** — translator (default, `392×152`) and Settings panel; switches view via `window.location.hash` (`''` → translator, `'#settings'` → Settings).
+- **`lens`** — fullscreen transparent overlay for capture + chat. Created on first hotkey trigger via `ensure_lens_window` in `src-tauri/src/windows.rs`. Subroute via hash query: `#lens` (chat mode, default) vs `#lens?mode=translate` (screenshot translate mode); both modes share the same component (`Lens.tsx`) which reads the query in `readModeFromHash`.
 
-`App.tsx` reads the hash to determine the mode and resizes the window accordingly. Additional dedicated Tauri windows are created dynamically for `screenshot`, `explain`, and `capture` modes via `src-tauri/src/windows.rs`. Window behavior and bundle targets are configured in **`src-tauri/tauri.conf.json`**.
-
-The explain window has two size states: compact (480×280, thumbnail + summary) and expanded (520×680, full chat). It receives `imageId` as a `?imageId=` URL query param; the frontend uses this to fetch the base64 image and conversation history from the Rust backend.
+`App.tsx` reads the hash to determine the mode and resizes the main window accordingly. Window behavior and bundle targets are configured in **`src-tauri/tauri.conf.json`**. The capabilities allowlist (`src-tauri/capabilities/default.json`) must contain every webview label any plugin permission applies to (currently `["main", "lens"]`).
 
 ### Settings UI Submodules
 
@@ -81,33 +76,42 @@ When a request fails with a quota/rate-limit/auth error, the backend automatical
 - **`sanitize_settings`** in `src-tauri/src/settings.rs` handles migration from legacy single-provider configs to the multi-provider system, validates provider existence, and normalizes hotkeys. It also migrates the legacy single `apiKey` field on each `ModelProvider` (read via the `api_key_legacy` field with `#[serde(rename = "apiKey")]`) into `api_keys[0]`. `normalize_hotkey` canonicalizes modifier aliases to `CommandOrControl`, `Control`, `Alt`, `Shift`, `Super` — use these exact strings when constructing hotkeys.
 - Saving settings is transactional: if hotkey registration fails, `restore_runtime_settings` rolls back to the previous state.
 
-### Platform-Specific Screenshot Flows
+### Screenshot Capture (macOS / Windows)
 
-Screenshot capture is platform-guarded with `cfg(target_os = ...)`:
+Capture is platform-guarded with `cfg(target_os = ...)`:
 
-- **macOS**: Uses the native `screencapture -i` command for interactive region selection. The `BusyGuard` RAII pattern prevents concurrent captures.
-- **Windows**: Uses a custom `CaptureOverlay.tsx` (fullscreen transparent webview) for region selection. The lifecycle is: `capture_request` opens the overlay → the user draws a region → `capture_commit` (with pixel coordinates) triggers `xcap` capture → `capture_cancel` dismisses without capturing. Windows also has a clipboard-based fallback in `screenshot.rs` using `ms-screenclip:`.
+- **macOS** — `src-tauri/src/sck.rs` uses ScreenCaptureKit (`screencapturekit` crate, `macos_14_0` feature). No `screencapture` shell-out.
+- **Windows** — `xcap` crate captures full-screen / window content (the dependency is `cfg`-gated to Windows in `Cargo.toml`).
 
-Busy flags (`screenshot_translation_busy`, `lens_busy`) prevent concurrent operations on both platforms.
+Both platforms route through the **Lens overlay** (`Lens.tsx`): the overlay presents hover-highlighted app windows or a draggable region; user click / drag commits via `lens_capture_window` / `lens_capture_region` Tauri commands. The capture commands receive logical-pixel coordinates from the overlay and call the platform-specific module to produce a PNG in `temp_dir`.
+
+A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent overlays. `lens_request_internal` swaps it true on entry; `lens_close` resets it. A reactive self-heal in `lens_request_internal` clears a stale flag if the previous run leaked it (e.g. on panic).
 
 ### Rust Backend Structure
 
-- **`main.rs`** — App state (`AppState`), Tauri commands, OpenAI API calling logic (`call_openai_text`, `call_openai_ocr`, `call_vision_api`), retry logic (`send_with_retry`), multi-key failover (`send_with_failover`, `is_failover_error`), hotkey registration, and window lifecycle.
-- **`settings.rs`** — Settings schema, serde defaults, migration/sanitization, legacy keyring migration, persistence.
-- **`screenshot.rs`** — Platform-specific screenshot capture (`capture_screenshot`) and temp file cleanup.
-- **`windows.rs`** — Window creation helpers (`ensure_main_window`, `ensure_screenshot_window`, `ensure_capture_overlay_window`).
-- **`utils.rs`** — Language detection, target language resolution, timestamp utility.
+- **`main.rs`** — App state (`AppState`), Tauri commands, OpenAI API calling logic (`call_openai_text`, `call_openai_ocr`, `call_vision_api`), retry logic (`send_with_retry`), multi-key failover (`send_with_failover`, `is_failover_error`, `extract_status_code`), hotkey registration, and window lifecycle.
+- **`settings.rs`** — Settings schema, serde defaults, `sanitize_settings` migration/validation, one-shot `migrate_legacy_keyring_keys` (gated by `legacy_keyring_migrated` flag), `persist_settings` (mirrors `apiKeys[0]` to legacy `apiKey` field for downgrade compat).
+- **`screenshot.rs`** — Temp PNG cleanup helpers (`cleanup_temp_file` for one-shot, `cleanup_orphan_temp_files` for app-startup GC of stale `lens-*.png` / `screenshot-*.png` older than 24 h).
+- **`sck.rs`** — macOS-only ScreenCaptureKit wrapper invoked by `lens_capture_window` / `lens_capture_region`.
+- **`lens.rs`** — Lens overlay state machine support: `lens_list_windows` (macOS only; Windows returns `[]`), capture coord helpers.
+- **`windows.rs`** — Window helpers: `ensure_main_window`, `ensure_lens_window`, `get_main_window`, plus `apply_macos_workspace_behavior` for `visibleOnAllWorkspaces`.
+- **`utils.rs`** — Language detection, target language resolution, timestamp helper.
 
 Key crate responsibilities from `Cargo.toml`:
 - `enigo` — simulates keyboard paste after translation commit.
 - `arboard` — clipboard read/write.
 - `keyring` — legacy API key storage (read-only; v2.4+ stores keys in `settings.json`, `keyring` is retained only for one-shot migration of pre-v2.4 installs).
 - `reqwest` — HTTP client for OpenAI-compatible APIs.
-- `xcap` — Windows region screen capture.
+- `screencapturekit` — macOS ScreenCaptureKit binding (used by `sck.rs`).
+- `xcap` — Windows screen / window capture.
 
 ### Streaming
 
-Lens supports streaming responses. `stream_vision_response` in `main.rs` parses SSE chunks and emits `lens-stream` events to the frontend. The frontend (`Lens.tsx`) appends deltas to the last assistant message in the chat list.
+Lens supports streaming responses via two SSE-relay event channels emitted by `stream_vision_response` in `main.rs`:
+- `lens-stream` — chat answers; deltas accumulate into the last assistant message in `Lens.tsx`. Supports `delta.reasoning_content` for reasoning-mode models.
+- `lens-translate-stream` — screenshot translate; emits `kind="translated"` deltas, then a `<<<ORIGINAL>>>` separator, then `kind="original"` deltas. Frontend splits the stream into translation (top) + original (small grey reference, bottom).
+
+Cancellation is via `AppState.explain_stream_generation` (`AtomicU64`) — each new stream snapshots its generation; the inner chunk loop bails when the global moves past it.
 
 ## Release
 

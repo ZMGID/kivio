@@ -1,4 +1,4 @@
-# KeyLingo v2.3.1
+# KeyLingo v2.4.0
 
 <p align="center">
   <img src="public/icon.png" width="128" height="128" alt="KeyLingo Icon">
@@ -31,19 +31,22 @@
 - **Provider Diagnostics**: One-click **Test Connection** + **Fetch Models**.
 - **Permission Dashboard (macOS)**: Accessibility/Screen Recording status + deep-link to System Settings.
 
-### 📦 Release Assets (v2.3.1)
+### 📦 Release Assets (v2.4.0)
 
-- **macOS (Apple Silicon)**: `KeyLingo_2.3.1_aarch64.dmg`
-- **Windows Installer (NSIS)**: `KeyLingo_2.3.1_x64-setup.exe`
-- **Windows Installer (MSI)**: `KeyLingo_2.3.1_x64_en-US.msi`
+- **macOS (Apple Silicon)**: `KeyLingo_2.4.0_aarch64.dmg`
+- **Windows Installer (NSIS)**: `KeyLingo_2.4.0_x64-setup.exe`
+- **Windows Installer (MSI)**: `KeyLingo_2.4.0_x64_en-US.msi`
 
 ### 📚 Detailed Changelog
 
-#### Unreleased
+#### v2.4.0 (2026-04-29)
 
-- **Multi-key failover per provider** — every provider now stores `apiKeys: string[]` instead of a single `apiKey`. Settings → Providers shows an editable list (primary + backup rows, add/remove). Backend `send_with_failover` automatically rotates to the next key on 401/402/403/429 or quota/billing/balance errors, with a 60 s cooldown on the failed key.
-- **API keys moved out of the OS keyring**. Keys now live directly in `settings.json` (`providers[].apiKeys`). On first launch under this build, any pre-existing v2.3.x keyring entry is read once into `apiKeys[0]` and the keyring entry is deleted (`migrate_legacy_keyring_keys` in `settings.rs`). The `keyring` crate is retained only for that one-shot migration.
+- **Multi-key failover per provider** — every provider now stores `apiKeys: string[]` instead of a single `apiKey`. Settings → Providers shows an editable list (primary + backup rows, add / remove). Backend `send_with_failover` rotates to the next key when the primary returns 401 / 402 / 403 / 429, with a 60 s cooldown on the failed key. Failover is strictly status-code gated (not body-keyword heuristics), so a 400 with a benign error message no longer burns through every key.
+- **API keys moved out of the OS keyring**. Keys now live directly in `settings.json` (`providers[].apiKeys`). On first launch any pre-existing v2.3.x keyring entry is read once into `apiKeys[0]` and the keyring entry is deleted (`migrate_legacy_keyring_keys` in `settings.rs`). The migration is gated by a one-shot `legacyKeyringMigrated` flag so users who alternate between v2.3.x and v2.4 don't lose keys on every launch. `persist_settings` mirrors `apiKeys[0]` back to the legacy `apiKey` field on disk for downgrade compatibility. The `keyring` crate is retained only for that one-shot migration.
 - **`Test Connection`** intentionally only probes the primary key, so a misconfigured primary doesn't get masked by a working backup.
+- **Lens history no longer duplicates entries on `restoreHistory`** — opening an old conversation from the history dropdown used to push a duplicate entry (and re-commit the screenshot) once the persistence effect re-fired. Now gated on a `justFinishedStreamRef` set only on real stream completion.
+- **Multi-key password row stable identity** — the per-row `key` in Settings → Providers now includes the list length, so deleting a row no longer makes React reuse the deleted row's DOM (focus / cursor / autofill state) for a different key slot.
+- **Internal cleanup** — removed an orphan `set_always_on_top` Tauri command (frontend uses the JS plugin path); added the corresponding `core:window:allow-set-always-on-top` capability so the JS path doesn't silently fail.
 
 #### v2.3.1 (2026-04-29)
 
@@ -264,19 +267,22 @@ npm run lint
 - **供应商诊断**：模型页支持一键"测试连接"与"获取模型列表"。
 - **权限状态面板（macOS）**：可视化查看辅助功能/屏幕录制授权并直达系统设置。
 
-### 📦 安装包（v2.3.1）
+### 📦 安装包（v2.4.0）
 
-- **macOS（Apple Silicon）**：`KeyLingo_2.3.1_aarch64.dmg`
-- **Windows NSIS 安装包**：`KeyLingo_2.3.1_x64-setup.exe`
-- **Windows MSI 安装包**：`KeyLingo_2.3.1_x64_en-US.msi`
+- **macOS（Apple Silicon）**：`KeyLingo_2.4.0_aarch64.dmg`
+- **Windows NSIS 安装包**：`KeyLingo_2.4.0_x64-setup.exe`
+- **Windows MSI 安装包**：`KeyLingo_2.4.0_x64_en-US.msi`
 
 ### 📚 详细更新目录
 
-#### 未发布（Unreleased）
+#### v2.4.0（2026-04-29）
 
-- **每个 Provider 支持多把 API Key 自动切换**——`ModelProvider.apiKey: string` 改为 `apiKeys: string[]`。设置 → 服务商 页面新增可加减的多 Key 列表（主用 + 备用，"添加 Key" / "移除"按钮）。后端 `send_with_failover` 在主 Key 失败（401/402/403/429 或 quota/billing/balance 关键字）时自动切到下一把，失败 Key 冷却 60 秒。
-- **API Key 不再存系统钥匙串**。Key 现在直接保存在 `settings.json` 的 `providers[].apiKeys` 字段里。首次升级到本版本时，旧版（v2.3.x 及之前）钥匙串里的 Key 会被一次性读入 `apiKeys[0]` 然后清掉钥匙串条目（`settings.rs` 的 `migrate_legacy_keyring_keys`）。`keyring` 依赖只剩这一个迁移路径在用，下个大版本可整个移除。
+- **每个 Provider 支持多把 API Key 自动切换**——`ModelProvider.apiKey: string` 改为 `apiKeys: string[]`。设置 → 服务商 页面新增可加减的多 Key 列表（主用 + 备用，"添加 Key" / "移除"按钮）。后端 `send_with_failover` 在主 Key 触发 401 / 402 / 403 / 429 时自动切到下一把，失败 Key 冷却 60 秒。Failover 严格按状态码判定（不再宽泛匹配 body 关键字），所以一个 400 加上含 "billing" 的错误体不会再把所有 Key 全部冷却。
+- **API Key 不再存系统钥匙串**。Key 现在直接保存在 `settings.json` 的 `providers[].apiKeys` 字段里。首次启动时旧版（v2.3.x 及之前）钥匙串里的 Key 会被一次性读入 `apiKeys[0]` 然后清掉钥匙串条目（`settings.rs` 的 `migrate_legacy_keyring_keys`）。迁移由一次性 `legacyKeyringMigrated` 标记守护，避免在 v2.3.x ↔ v2.4 切换的用户每次启动都被抹掉。`persist_settings` 写盘时把 `apiKeys[0]` 镜像回旧 `apiKey` 字段，方便老版本回滚不丢主 Key。`keyring` 依赖只剩这一个迁移路径在用，下个大版本可整个移除。
 - **"测试连接" 只测主 Key**——如果主 Key 配错，备用 Key 工作了也不会掩盖问题。
+- **Lens 历史不再因为 `restoreHistory` 重复**——以前从历史 dropdown 打开旧对话会让持久化 effect 再 fire 一次，把同一条对话又 push 进历史（且重新 commit 一遍截图）。现已加 `justFinishedStreamRef` 守护，仅在真实流结束路径触发持久化。
+- **多 Key 密码框稳定身份**——设置 → 服务商 多 Key 列表的每行 `key` 现在含列表长度，删除某行后 React 不会再把旧行的 DOM（焦点 / 光标 / 自动填充状态）复用给另一把 Key 槽位。
+- **内部清理**——删除一个孤儿 `set_always_on_top` Tauri 命令（前端走 JS 插件路径，不需要 invoke）；同步在 capability 加上 `core:window:allow-set-always-on-top`，防止 JS 路径静默失败。
 
 #### v2.3.1（2026-04-29）
 

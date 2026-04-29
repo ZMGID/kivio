@@ -1646,12 +1646,6 @@ fn capture_region_image(
   Err("Region capture is not supported on this platform".to_string())
 }
 
-/// 设置窗口置顶状态
-#[tauri::command]
-fn set_always_on_top(window: WebviewWindow, always_on_top: bool) -> Result<(), String> {
-  window.set_always_on_top(always_on_top).map_err(|e| e.to_string())
-}
-
 /// 切换主窗口显示/隐藏
 /// 隐藏时直接隐藏；显示时窗口跟随鼠标位置偏移 (10,10) 弹出，翻译器保持置顶
 fn toggle_main_window(app: &AppHandle) {
@@ -2815,8 +2809,7 @@ fn main() {
       lens_cancel_stream,
       lens_close,
       lens_commit_image_to_history,
-      lens_delete_history_image,
-      set_always_on_top
+      lens_delete_history_image
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
