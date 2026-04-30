@@ -301,14 +301,17 @@ export default function Lens() {
   const t = i18n[lang]
   stageRef.current = stage
 
-  // 加载设置：语言 + 消息顺序
+  // 加载设置：语言 + 消息顺序。keepFullscreen 按当前 mode 读对应配置:
+  // chat 模式读 settings.lens.keepFullscreenAfterCapture，translate 模式读 settings.screenshotTranslation.keepFullscreenAfterCapture。
   useEffect(() => {
     void (async () => {
       try {
         const settings = await api.getSettings()
         setLang((settings.settingsLanguage as Lang) || 'zh')
         setMessageOrder(settings.lens?.messageOrder === 'desc' ? 'desc' : 'asc')
-        setKeepFullscreen(settings.lens?.keepFullscreenAfterCapture !== false)
+        const curMode = readModeFromHash()
+        const cfg = curMode === 'translate' ? settings.screenshotTranslation : settings.lens
+        setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
       } catch (err) { console.error('Failed to load settings', err) }
     })()
   }, [])
@@ -320,10 +323,12 @@ export default function Lens() {
       floatingRebaseTimerRef.current = null
     }
     fullscreenMetricsRef.current = null
-    // 重新加载设置：用户在设置面板修改后关闭再打开 Lens，需要读到最新值
+    // 重新加载设置：用户在设置面板修改后关闭再打开 Lens，需要读到最新值。按当前 mode 选 lens / screenshotTranslation 配置。
     try {
       const settings = await api.getSettings()
-      setKeepFullscreen(settings.lens?.keepFullscreenAfterCapture !== false)
+      const curMode = readModeFromHash()
+      const cfg = curMode === 'translate' ? settings.screenshotTranslation : settings.lens
+      setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
     } catch (err) { console.error('Failed to reload settings', err) }
     // 防御：reset 流程会 setMessages([]) + setStreaming(false)，理论上 messages.length===0 effect 不会进
     // 持久化分支，但显式清零更稳
@@ -689,11 +694,11 @@ export default function Lens() {
     const targetStage: Stage = mode === 'translate' ? 'translating' : 'ready'
 
     if (!keepFullscreen) {
-      // 浮动模式：从 capture 瞬间起，"缩窗"和"bar CSS 飞到 (0,0)"同步进行。
-      // - bar 的 CSS 走 380ms cubic-bezier(0.22,1,0.36,1) transition：(selectX,selectY) → (FLOATING_PADDING, FLOATING_PADDING)
-      // - 同时 JS raf 循环逐帧 lerp 调 lensSetFloating，把窗口从 fullscreen 缩到 (floatX,floatY,floatW,floatH)
-      // 关键：用 requestAnimationFrame 驱动窗口 lerp（与 CSS transition 同 vsync），并用同款 cubic-bezier 缓动，
-      // 两者同 duration + 同曲线 → bar 屏幕位置 = window_origin + bar_css 全程平滑过渡，不闪不抖。
+      // 浮动模式：从 capture 瞬间起，"缩窗"和 chat 模式的"bar CSS 飞到 (0,0)"同步进行。
+      // - chat 模式：bar 从 select 位置 cubic-bezier(0.22,1,0.36,1) lerp 到 (FLOATING_PADDING, FLOATING_PADDING)
+      // - translate 模式：卡片本来就没有"起始位置"(选区阶段不渲染)，不要 fly，否则会随 window 漂移成"伪 fly"。
+      //   所以 mount 时 barIntro=false（透明 + scale-0.92 隐身），window 动画结束后 setBarIntro(true) → CSS 缓动 fade-in。
+      // 关键：raf 驱动 lensSetFloating 与 CSS transition 同 vsync，cubic-bezier 与全屏模式同曲线。
       fullscreenMetricsRef.current = metrics
       const floatX = winOrigin.x + targetX - FLOATING_PADDING
       const floatY = winOrigin.y + targetY - FLOATING_PADDING
@@ -705,12 +710,24 @@ export default function Lens() {
       const startY = winOrigin.y
       const startW = window.innerWidth
       const startH = window.innerHeight
+      const isTranslateMode = mode === 'translate'
       flushSync(() => {
         setAppLabel(label)
         setFloatingRebased(false)
         setBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: READY_W })
         setStage(targetStage)
+        if (isTranslateMode) {
+          // 卡片 mount 在隐身状态 + 禁用 transition（避免 (selectX,selectY) → (0,0) 的瞬时 left/top 跳动触发动画）
+          setBarIntro(false)
+          setBarNoTransition(true)
+        }
       })
+      if (isTranslateMode) {
+        // 隔两帧再恢复 transition，让 window 动画结束时 setBarIntro(true) 能走 CSS 缓动 fade-in
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => setBarNoTransition(false))
+        })
+      }
       if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
       const animStart = performance.now()
       const animateFrame = () => {
@@ -730,6 +747,7 @@ export default function Lens() {
           requestAnimationFrame(animateFrame)
         } else {
           setFloatingRebased(true)
+          if (isTranslateMode) setBarIntro(true)
         }
       }
       requestAnimationFrame(animateFrame)

@@ -980,6 +980,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           onChange={(v) => updateScreenshotTranslation({ streamEnabled: v })}
                         />
                       </SettingRow>
+                      <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
+                        <Toggle
+                          checked={settings.screenshotTranslation?.keepFullscreenAfterCapture !== false}
+                          onChange={(v) => updateScreenshotTranslation({ keepFullscreenAfterCapture: v })}
+                        />
+                      </SettingRow>
                       <details className="group">
                         <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
                           <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">

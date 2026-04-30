@@ -142,6 +142,9 @@ pub struct ScreenshotTranslationConfig {
   /// 是否流式输出 OCR + 翻译。默认 true：用户看着字逐步出现的体感比等"加载完"更顺。
   #[serde(default = "default_true")]
   pub stream_enabled: bool,
+  /// 截图后是否保留 lens 全屏覆盖。默认 true：选区高亮 + 译文卡同屏；false → lens 缩成浮动小窗，不挡下层 app。
+  #[serde(default = "default_true")]
+  pub keep_fullscreen_after_capture: bool,
   #[serde(default)]
   pub prompt: Option<String>,
   // 旧版字段，用于迁移
@@ -159,6 +162,7 @@ impl Default for ScreenshotTranslationConfig {
       direct_translate: false,
       thinking_enabled: false,
       stream_enabled: true,
+      keep_fullscreen_after_capture: true,
       prompt: None,
       openai: None,
     }

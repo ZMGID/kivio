@@ -89,6 +89,8 @@ export type Settings = {
     thinkingEnabled?: boolean
     /** 流式输出开关（默认 true）。OCR + 翻译两步都用 SSE，token 逐字到达 */
     streamEnabled?: boolean
+    /** 截图后是否保持全屏覆盖（默认 true）。false 时截图后窗口缩小为浮动 */
+    keepFullscreenAfterCapture?: boolean
     prompt?: string
   }
   lens: {
