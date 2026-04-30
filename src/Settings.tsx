@@ -9,6 +9,7 @@ import ReactMarkdown from 'react-markdown'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus, type UpdateInfo } from './api/tauri'
 import { i18n } from './settings/i18n'
 import { buildHotkey } from './settings/utils'
+import { PROVIDER_PRESETS, type ProviderPreset } from './settings/providerPresets'
 import {
   Toggle, Select, Input, TextArea, Label,
   SettingRow, PermissionItem, HotkeyInput, DefaultPrompt,
@@ -428,6 +429,24 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       baseUrl: 'https://api.openai.com/v1',
       availableModels: [],
       enabledModels: []
+    }
+    setSettings({
+      ...settings,
+      providers: [...settings.providers, newProvider]
+    })
+  }
+
+  /** 用预设一键添加 provider —— baseUrl 和默认模型已填好，用户只需填 API key */
+  const addProviderFromPreset = (preset: ProviderPreset) => {
+    if (!settings) return
+    const newId = `provider-${Date.now()}`
+    const newProvider: ModelProvider = {
+      id: newId,
+      name: preset.name,
+      apiKeys: [],
+      baseUrl: preset.baseUrl,
+      availableModels: [...preset.defaultModels],
+      enabledModels: [...preset.defaultModels],
     }
     setSettings({
       ...settings,
@@ -1400,14 +1419,29 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               </section>
             ))}
 
-            {/* 添加新提供商按钮 */}
-            <button
-              onClick={addProvider}
-              className="w-full py-4 border-2 border-dashed border-black/5 dark:border-white/5 rounded-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-black/10 dark:hover:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all flex flex-col items-center gap-2"
-            >
-              <Plus size={20} strokeWidth={2} />
-              <span className="text-[13px] font-medium">{t.addProvider}</span>
-            </button>
+            {/* 快速预设 chip + 自定义按钮 */}
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {PROVIDER_PRESETS.map(preset => (
+                  <button
+                    key={preset.name}
+                    type="button"
+                    onClick={() => addProviderFromPreset(preset)}
+                    className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-white dark:bg-[#1C1C1E] text-neutral-700 dark:text-neutral-200 border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 hover:border-black/20 dark:hover:border-white/20 transition-all"
+                  >
+                    <Plus size={12} strokeWidth={2.25} />
+                    {preset.name}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={addProvider}
+                className="w-full py-3 border-2 border-dashed border-black/5 dark:border-white/5 rounded-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-black/10 dark:hover:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all flex items-center justify-center gap-2"
+              >
+                <Plus size={16} strokeWidth={2} />
+                <span className="text-[12px] font-medium">{t.addProvider}</span>
+              </button>
+            </div>
           </div>
         )}
 
