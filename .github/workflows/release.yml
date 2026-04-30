@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release tag to publish to (e.g. v2.0.5)'
         required: true
-        default: 'v2.4.2'
+        default: 'v2.4.4'
       ref:
         description: 'Git ref to build from (branch/tag/commit)'
         required: true
@@ -28,7 +28,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-14
+          # macos-26 = Tahoe runner with Xcode 17 + macOS 26 SDK,需要它来编译
+          # Apple Intelligence sidecar(import FoundationModels)。低版本 macOS runner SDK 没这个 framework。
+          - platform: macos-26
             args: "--bundles dmg"
           - platform: windows-latest
             args: "--bundles msi,nsis"
@@ -52,6 +54,10 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Build Apple Intelligence sidecar (macOS only)
+        if: runner.os == 'macOS'
+        run: npm run build:swift
 
       - name: Build and publish release assets
         uses: tauri-apps/tauri-action@v0
