@@ -82,6 +82,7 @@ Open from the menu bar icon. The important bits:
 
 ## Changelog
 
+- **v2.4.2** — Floating Lens mode now stops flickering when the bar lands at the target. Screenshot translation gets its own "keep fullscreen" toggle and a tailored fade-in (no fake fly). Updates can be downloaded and installed in-app — no more bouncing to the GitHub release page.
 - **v2.4.1** — Fixes Lens input focus on Windows after an answer completes and removes the heavy shadow halo around the floating Lens bar.
 
 See [GitHub Releases](https://github.com/ZMGID/keylingo/releases) for the full history. Auto-update checks for new versions on launch and points you here.
@@ -169,6 +170,7 @@ KeyLingo 常驻菜单栏。按下热键即得答案。
 
 ## 更新日志
 
+- **v2.4.2** —— 浮动模式 Lens 飞到目标位置不再闪烁。截图翻译有了独立的"保持全屏"开关和定制的淡入(不再假飞)。更新可在应用内直接下载并安装,不用再跳到 GitHub release 页。
 - **v2.4.1** —— 修复 Windows 上 Lens 回答结束后输入光标丢失的问题，并减轻浮动 Lens 输入栏周围突兀的阴影。
 
 完整历史见 [GitHub Releases](https://github.com/ZMGID/keylingo/releases)。应用启动时会自动检查更新，发现新版会指向这里。
