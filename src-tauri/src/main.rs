@@ -15,6 +15,7 @@ mod windows;
 use std::{
   collections::{HashMap, HashSet},
   fs,
+  io::Write,
   path::PathBuf,
   sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -276,6 +277,178 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
   };
   parse(latest) > parse(current)
+}
+
+/// 从 release JSON 的 assets 数组里挑出当前平台 + 架构的安装包。
+/// 匹配规则：
+///   - macOS aarch64 → `.dmg` 文件名包含 aarch64 / arm64
+///   - macOS x86_64  → `.dmg` 包含 x64 / x86_64
+///   - Windows       → `-setup.exe` 结尾（NSIS，覆盖升级体验比 MSI 顺）
+fn pick_release_asset(assets: &[serde_json::Value]) -> Option<(String, String)> {
+  let arch = std::env::consts::ARCH;
+  for asset in assets {
+    let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let url = asset.get("browser_download_url").and_then(|v| v.as_str()).unwrap_or("");
+    if name.is_empty() || url.is_empty() { continue; }
+    let lower = name.to_ascii_lowercase();
+    let matched = if cfg!(target_os = "macos") {
+      lower.ends_with(".dmg") && match arch {
+        "aarch64" => lower.contains("aarch64") || lower.contains("arm64"),
+        _ => lower.contains("x64") || lower.contains("x86_64"),
+      }
+    } else if cfg!(target_os = "windows") {
+      lower.ends_with("-setup.exe")
+    } else {
+      false
+    };
+    if matched {
+      return Some((name.to_string(), url.to_string()));
+    }
+  }
+  None
+}
+
+/// 下载新版本安装包到 OS temp dir，边下边 emit "update-download-progress" 事件。
+/// 返回本地文件绝对路径。失败 Err 含详细原因（前端显示）。
+#[tauri::command]
+async fn download_update_asset(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  version: String,
+) -> Result<String, String> {
+  const REPO: &str = "ZMGID/keylingo";
+  let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+  let resp = state.http
+    .get(&url)
+    .header("User-Agent", format!("KeyLingo/{}", env!("CARGO_PKG_VERSION")))
+    .header("Accept", "application/vnd.github+json")
+    .send()
+    .await
+    .map_err(|e| format!("查询 release 失败: {e}"))?;
+  if !resp.status().is_success() {
+    return Err(format!("GitHub API 返回 {}", resp.status()));
+  }
+  let value: serde_json::Value = resp.json().await.map_err(|e| format!("解析 release JSON 失败: {e}"))?;
+  let assets = value.get("assets").and_then(|v| v.as_array())
+    .ok_or_else(|| "release 没有 assets".to_string())?;
+  let (name, asset_url) = pick_release_asset(assets)
+    .ok_or_else(|| format!("没有匹配当前平台({}/{})的安装包", std::env::consts::OS, std::env::consts::ARCH))?;
+
+  // 决定本地文件名：保留原扩展名（.dmg / .exe）便于 install 流程根据扩展名判断行为
+  let ext = std::path::Path::new(&name).extension()
+    .and_then(|e| e.to_str()).unwrap_or("bin");
+  let safe_version = version.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-').collect::<String>();
+  let dest = std::env::temp_dir().join(format!("keylingo-update-{safe_version}.{ext}"));
+
+  let mut resp = state.http
+    .get(&asset_url)
+    .header("User-Agent", format!("KeyLingo/{}", env!("CARGO_PKG_VERSION")))
+    .send()
+    .await
+    .map_err(|e| format!("下载失败: {e}"))?;
+  if !resp.status().is_success() {
+    return Err(format!("下载返回 {}", resp.status()));
+  }
+  let total = resp.content_length().unwrap_or(0);
+  let mut file = fs::File::create(&dest).map_err(|e| format!("创建文件失败: {e}"))?;
+  let mut downloaded: u64 = 0;
+  let mut last_emitted_pct: i32 = -1;
+  while let Some(chunk) = resp.chunk().await.map_err(|e| format!("读取下载流失败: {e}"))? {
+    file.write_all(&chunk).map_err(|e| format!("写入失败: {e}"))?;
+    downloaded += chunk.len() as u64;
+    let pct = if total > 0 { (downloaded * 100 / total) as i32 } else { 0 };
+    // 节流：百分比变化才 emit，避免事件洪水（小 chunk 时容易刷爆）
+    if pct != last_emitted_pct {
+      last_emitted_pct = pct;
+      let _ = app.emit("update-download-progress", serde_json::json!({
+        "percent": pct,
+        "downloadedBytes": downloaded,
+        "totalBytes": total,
+      }));
+    }
+  }
+  // 收尾再 emit 一次确保 100% 落地
+  let _ = app.emit("update-download-progress", serde_json::json!({
+    "percent": 100,
+    "downloadedBytes": downloaded,
+    "totalBytes": total.max(downloaded),
+  }));
+  Ok(dest.to_string_lossy().to_string())
+}
+
+/// 启动安装包并退出当前应用。
+/// - macOS（.dmg）：hdiutil 挂载 → cp KeyLingo.app 到 /Applications → 卸载 → open 新版 → app.exit(0)
+/// - Windows（.exe）：spawn NSIS installer，立即 exit 让 installer 能写 exe
+#[tauri::command]
+fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
+  let p = std::path::Path::new(&path);
+  if !p.exists() { return Err(format!("安装包不存在: {path}")); }
+
+  #[cfg(target_os = "macos")]
+  {
+    use std::process::Command;
+    // 挂载 DMG，-nobrowse 不在 Finder 显示。注意：不能加 -quiet，否则 stdout 不输出挂载表，没法 parse 出 /Volumes 路径。
+    let attach = Command::new("hdiutil")
+      .args(["attach", "-nobrowse", &path])
+      .output()
+      .map_err(|e| format!("hdiutil attach 失败: {e}"))?;
+    if !attach.status.success() {
+      return Err(format!("挂载 DMG 失败: {}", String::from_utf8_lossy(&attach.stderr)));
+    }
+    // 输出形如 "/dev/disk4s1     Apple_HFS     /Volumes/KeyLingo"，行内可能用 tab 或空格分隔
+    let stdout = String::from_utf8_lossy(&attach.stdout);
+    let mount_point = stdout.lines()
+      .find_map(|line| {
+        line.split_whitespace()
+          .find(|s| s.starts_with("/Volumes/"))
+          .map(str::to_string)
+      })
+      .ok_or_else(|| format!("解析挂载点失败 (stdout={:?})", stdout))?;
+    // 找挂载点下第一个 .app
+    let app_in_dmg = fs::read_dir(&mount_point)
+      .map_err(|e| format!("读取挂载点失败: {e}"))?
+      .filter_map(|e| e.ok())
+      .find(|e| e.path().extension().and_then(|s| s.to_str()) == Some("app"))
+      .ok_or_else(|| "DMG 内未找到 .app".to_string())?
+      .path();
+    let app_name = app_in_dmg.file_name()
+      .and_then(|s| s.to_str())
+      .ok_or_else(|| "解析 .app 名失败".to_string())?
+      .to_string();
+    let target = PathBuf::from("/Applications").join(&app_name);
+    // 删除旧 app 并 cp 新的（rm -rf 失败也忽略，cp 会用 -R 覆盖）
+    let _ = Command::new("rm").args(["-rf", &target.to_string_lossy()]).status();
+    let cp = Command::new("cp")
+      .args(["-R", &app_in_dmg.to_string_lossy(), &target.to_string_lossy()])
+      .status()
+      .map_err(|e| format!("cp 失败: {e}"))?;
+    if !cp.success() {
+      let _ = Command::new("hdiutil").args(["detach", "-quiet", &mount_point]).status();
+      return Err("cp 新版本到 /Applications 失败".to_string());
+    }
+    let _ = Command::new("hdiutil").args(["detach", "-quiet", &mount_point]).status();
+    // open -n 强制开新实例
+    let _ = Command::new("open").args(["-n", &target.to_string_lossy()]).spawn()
+      .map_err(|e| format!("open 新版本失败: {e}"))?;
+    app.exit(0);
+    return Ok(());
+  }
+
+  #[cfg(target_os = "windows")]
+  {
+    use std::process::Command;
+    Command::new(&path)
+      .spawn()
+      .map_err(|e| format!("启动 installer 失败: {e}"))?;
+    app.exit(0);
+    return Ok(());
+  }
+
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+  {
+    let _ = app;
+    Err("当前平台不支持自动安装".to_string())
+  }
 }
 
 /// 读取截图图片并以 Base64 数据 URL 格式返回（lens ready 态显示缩略图用）
@@ -1746,7 +1919,9 @@ fn main() {
       lens_set_floating,
       lens_commit_image_to_history,
       lens_delete_history_image,
-      check_github_latest_release
+      check_github_latest_release,
+      download_update_asset,
+      install_update_and_quit
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

@@ -264,6 +264,20 @@ export const api = {
   /** 调后端 GitHub Releases API 检查最新版本 */
   checkUpdate: () => invoke<UpdateInfo>('check_github_latest_release'),
 
+  /** 下载新版本安装包到 OS temp 目录，返回本地文件路径。下载进度通过 onUpdateDownloadProgress 派发 */
+  downloadUpdate: (version: string) => invoke<string>('download_update_asset', { version }),
+
+  /** 启动安装包并退出当前应用（macOS：cp 新 .app 到 /Applications + open；Windows：spawn NSIS installer） */
+  installUpdate: (path: string) => invoke<void>('install_update_and_quit', { path }),
+
+  /** 下载进度事件：每次百分比变化派发一次 */
+  onUpdateDownloadProgress: (
+    listener: (p: { percent: number; downloadedBytes: number; totalBytes: number }) => void,
+  ) => on<{ percent: number; downloadedBytes: number; totalBytes: number }>(
+    'update-download-progress',
+    (payload) => listener(payload),
+  ),
+
   /** 启动时若发现新版，后端 emit 此事件让 Settings UI 自动展示更新提示 */
   onUpdateAvailable: (listener: (info: UpdateInfo) => void) =>
     on<UpdateInfo>('update-available', (payload) => listener(payload)),

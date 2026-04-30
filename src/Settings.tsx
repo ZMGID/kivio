@@ -46,6 +46,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   // 更新检查状态：'idle' / 'checking' / 'up-to-date' / 'available'
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'available'>('idle')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  // 下载/安装两段式状态机:idle → downloading(进度条) → downloaded(显示安装按钮) → 用户点击 → 应用退出
+  // failed 时显示错误 + 重试 + 跳 GitHub 兜底
+  const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'downloaded' | 'failed'>('idle')
+  const [downloadPercent, setDownloadPercent] = useState(0)
+  const [downloadedPath, setDownloadedPath] = useState('')
+  const [downloadError, setDownloadError] = useState('')
   // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
   // （否则用户可能没察觉就 Save 把磁盘真实数据覆盖掉）
   const [loadError, setLoadError] = useState('')
@@ -180,6 +186,41 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       console.error('Open release page failed:', err)
     }
   }, [updateInfo])
+
+  /** 下载新版安装包到 temp dir,期间监听 update-download-progress 事件刷新进度条 */
+  const handleDownloadAndInstall = useCallback(async () => {
+    if (!updateInfo?.version) return
+    setDownloadState('downloading')
+    setDownloadPercent(0)
+    setDownloadError('')
+    let unlisten: (() => void) | undefined
+    try {
+      unlisten = await api.onUpdateDownloadProgress((p) => {
+        setDownloadPercent(Math.max(0, Math.min(100, Math.round(p.percent))))
+      })
+      const path = await api.downloadUpdate(updateInfo.version)
+      setDownloadedPath(path)
+      setDownloadState('downloaded')
+    } catch (err) {
+      console.error('Download update failed:', err)
+      setDownloadError(typeof err === 'string' ? err : (err instanceof Error ? err.message : String(err)))
+      setDownloadState('failed')
+    } finally {
+      unlisten?.()
+    }
+  }, [updateInfo])
+
+  /** 启动 installer 并退出当前应用。Rust 端会在 macOS 上 cp 新 .app + open,在 Windows spawn NSIS exe */
+  const handleInstall = useCallback(async () => {
+    if (!downloadedPath) return
+    try {
+      await api.installUpdate(downloadedPath)
+    } catch (err) {
+      console.error('Install update failed:', err)
+      setDownloadError(typeof err === 'string' ? err : (err instanceof Error ? err.message : String(err)))
+      setDownloadState('failed')
+    }
+  }, [downloadedPath])
 
   useEffect(() => {
     setProviderTestFeedback({})
@@ -1443,19 +1484,104 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         <ReactMarkdown>{updateInfo.body}</ReactMarkdown>
                       </div>
                     )}
-                    <div className="flex gap-2">
+
+                    {/* 下载进度条:downloading 时显示 */}
+                    {downloadState === 'downloading' && (
+                      <div className="mb-3">
+                        <div className="flex items-center justify-between text-[11px] text-neutral-600 dark:text-neutral-400 mb-1">
+                          <span>{t.downloading}</span>
+                          <span className="font-mono tabular-nums">{downloadPercent}%</span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-500 dark:bg-emerald-400 transition-[width] duration-150 ease-out"
+                            style={{ width: `${downloadPercent}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 错误显示 */}
+                    {downloadState === 'failed' && downloadError && (
+                      <div className="mb-3 px-2 py-1.5 rounded-md bg-red-50 dark:bg-red-500/10 text-[11px] text-red-600 dark:text-red-400 break-words">
+                        {t.downloadFailed}: {downloadError}
+                      </div>
+                    )}
+
+                    <div className="flex gap-2 flex-wrap">
+                      {downloadState === 'idle' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleDownloadAndInstall}
+                            className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-all"
+                            data-tauri-drag-region="false"
+                          >
+                            <Download size={12} />
+                            {t.downloadAndInstall}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleOpenReleasePage}
+                            className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+                            data-tauri-drag-region="false"
+                          >
+                            <ExternalLink size={12} />
+                            {t.downloadFromGithub}
+                          </button>
+                        </>
+                      )}
+                      {downloadState === 'downloading' && (
+                        <button
+                          type="button"
+                          disabled
+                          className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-emerald-600/60 text-white cursor-not-allowed"
+                        >
+                          <RefreshCw size={12} className="animate-spin" />
+                          {t.downloading}
+                        </button>
+                      )}
+                      {downloadState === 'downloaded' && (
+                        <button
+                          type="button"
+                          onClick={handleInstall}
+                          className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-all"
+                          data-tauri-drag-region="false"
+                        >
+                          <Download size={12} />
+                          {t.installAndRestart}
+                        </button>
+                      )}
+                      {downloadState === 'failed' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleDownloadAndInstall}
+                            className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-all"
+                            data-tauri-drag-region="false"
+                          >
+                            <RefreshCw size={12} />
+                            {t.retryDownload}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleOpenReleasePage}
+                            className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+                            data-tauri-drag-region="false"
+                          >
+                            <ExternalLink size={12} />
+                            {t.downloadFromGithub}
+                          </button>
+                        </>
+                      )}
                       <button
                         type="button"
-                        onClick={handleOpenReleasePage}
-                        className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-all"
-                        data-tauri-drag-region="false"
-                      >
-                        <ExternalLink size={12} />
-                        {t.downloadFromGithub}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setUpdateStatus('idle')}
+                        onClick={() => {
+                          setUpdateStatus('idle')
+                          setDownloadState('idle')
+                          setDownloadPercent(0)
+                          setDownloadError('')
+                        }}
                         className="text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 transition-all"
                         data-tauri-drag-region="false"
                       >
