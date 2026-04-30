@@ -6,11 +6,12 @@
   "author": "ZM",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "(npm run build:swift || true) && tauri dev",
     "dev:ui": "vite --port 5713",
-    "build": "tauri build",
+    "build": "(npm run build:swift || true) && tauri build",
     "tauri": "tauri",
     "build:ui": "vite build",
+    "build:swift": "node scripts/build-swift-sidecar.js",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

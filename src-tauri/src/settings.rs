@@ -145,6 +145,12 @@ pub struct ScreenshotTranslationConfig {
   /// 截图后是否保留 lens 全屏覆盖。默认 true：选区高亮 + 译文卡同屏；false → lens 缩成浮动小窗，不挡下层 app。
   #[serde(default = "default_true")]
   pub keep_fullscreen_after_capture: bool,
+  /// 用 Apple Vision 框架做本地 OCR，把识别出的文字喂给翻译模型。
+  /// true → 系统 OCR + provider 文字翻译（provider 可是任意 OpenAI 兼容 endpoint 或 Apple Intelligence）
+  /// false → provider 必须是多模态模型，一次完成 OCR+翻译
+  /// Apple Intelligence 选作 provider 时强制视为 true（Foundation Models 暂未开放图像输入）。
+  #[serde(default = "default_false")]
+  pub use_system_ocr: bool,
   #[serde(default)]
   pub prompt: Option<String>,
   // 旧版字段，用于迁移
@@ -163,6 +169,7 @@ impl Default for ScreenshotTranslationConfig {
       thinking_enabled: false,
       stream_enabled: true,
       keep_fullscreen_after_capture: true,
+      use_system_ocr: false,
       prompt: None,
       openai: None,
     }

@@ -25,6 +25,7 @@ use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
 use crate::prompts::COMBINED_TRANSLATE_SEPARATOR;
 use crate::resolve_explain_image_path;
 use crate::settings::{
@@ -312,6 +313,11 @@ pub async fn call_openai_text(
   retry_attempts: usize,
   thinking_enabled: bool,
 ) -> Result<String, String> {
+  // Apple Intelligence(端上)路由：跳过 HTTP，直接调 sidecar。model/retry/thinking 三个参数全部忽略。
+  if config.base_url == APPLE_INTELLIGENCE_BASE_URL {
+    let _ = (model, retry_attempts, thinking_enabled);
+    return state.apple_intelligence.call_text(&prompt).await;
+  }
   let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
   let mut body = serde_json::json!({
     "model": model,
@@ -362,6 +368,10 @@ pub async fn call_openai_ocr(
   retry_attempts: usize,
   thinking_enabled: bool,
 ) -> Result<String, String> {
+  if config.base_url == APPLE_INTELLIGENCE_BASE_URL {
+    let _ = (state, model, image_path, prompt, retry_attempts, thinking_enabled);
+    return Err("Apple Intelligence 暂不支持图像输入,请为截图/视觉功能配置云端 provider".into());
+  }
   let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
   let base64 = general_purpose::STANDARD.encode(bytes);
   let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
@@ -456,6 +466,9 @@ pub async fn call_vision_api(
     .unwrap_or(&settings.translator_provider_id);
   let provider = settings.get_provider(provider_id)
     .ok_or_else(|| "Vision provider not found".to_string())?;
+  if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
+    return Err("Apple Intelligence 暂不支持图像输入,请为 Lens / 截图视觉功能配置云端 provider".into());
+  }
 
   // image_id 为空 → 走纯文本对话路径（不附图）
   let has_image = !image_id.is_empty();
@@ -632,6 +645,10 @@ pub async fn stream_chat_call(
   kind: &str,
   event_name: &str,
 ) -> Result<String, String> {
+  if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
+    let _ = (app, state, model, &mut body, retry_attempts, image_id, kind, event_name);
+    return Err("Apple Intelligence 暂不支持图像输入,请为截图翻译配置云端 provider".into());
+  }
   body["model"] = serde_json::json!(model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
 
@@ -693,6 +710,10 @@ pub async fn stream_translate_combined(
   image_id: &str,
   event_name: &str,
 ) -> Result<(String, String), String> {
+  if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
+    let _ = (app, state, model, &mut body, retry_attempts, image_id, event_name);
+    return Err("Apple Intelligence 暂不支持图像输入,请为截图翻译配置云端 provider".into());
+  }
   body["model"] = serde_json::json!(model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
 

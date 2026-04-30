@@ -2,6 +2,7 @@
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
 mod api;
+mod apple_intelligence;
 mod lens;
 mod prompts;
 #[cfg(target_os = "macos")]
@@ -214,6 +215,13 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
   }
 
   app.shell().open(url, None).map_err(|e| e.to_string())
+}
+
+/// 查询 Apple Intelligence(端上 Foundation Models) 是否可用。
+/// 不可用条件：非 macOS、非 macOS 26、Apple Intelligence 未启用、sidecar 二进制缺失等。
+#[tauri::command]
+fn apple_intelligence_available(state: State<AppState>) -> bool {
+  state.apple_intelligence.available()
 }
 
 /// 调 GitHub Releases API 检查最新版本
@@ -847,6 +855,28 @@ async fn lens_translate(
   let target_lang = resolve_target_lang(&settings.target_lang, "");
   let lang_name = language_name(&target_lang).to_string();
 
+  // 系统 OCR 路由：触发条件 = 用户开了 use_system_ocr,或者 provider 是 Apple Intelligence(没视觉 API,只能这条路)。
+  // 走 Vision OCR(本地免费) → 配置的 provider 做纯文本翻译,翻译 provider 可以是任意文字模型。
+  let use_system_ocr = settings.screenshot_translation.use_system_ocr
+    || ocr_provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
+  if use_system_ocr {
+    return system_ocr_then_translate(
+      &app,
+      &state,
+      &temp_path,
+      &image_id,
+      &lang_name,
+      direct_translate,
+      st_stream,
+      st_thinking,
+      &ocr_provider,
+      &settings.screenshot_translation.model,
+      retry_attempts,
+      settings.translator_prompt.as_deref(),
+    )
+    .await;
+  }
+
   let prompt = if direct_translate {
     build_ocr_direct_translation_prompt(
       &lang_name,
@@ -1000,6 +1030,156 @@ async fn lens_translate(
   }))
 }
 
+/// 系统 OCR + 任意 provider 翻译的两步本地链路。
+/// OCR 总是走 Apple Vision(sidecar);翻译可以是 Apple FoundationModels 或任意 OpenAI 兼容 cloud provider。
+/// 与 cloud vision 单次 OCR+translate 调用相比,这里手动 emit lens-translate-stream 事件维持前端契约。
+#[allow(clippy::too_many_arguments)]
+async fn system_ocr_then_translate(
+  app: &AppHandle,
+  state: &State<'_, AppState>,
+  image_path: &std::path::Path,
+  image_id: &str,
+  lang_name: &str,
+  direct_translate: bool,
+  st_stream: bool,
+  st_thinking: bool,
+  translate_provider: &settings::ModelProvider,
+  translate_model: &str,
+  retry_attempts: usize,
+  translator_template: Option<&str>,
+) -> Result<serde_json::Value, String> {
+  let emit_done = |success: bool, error: Option<&str>| {
+    let _ = app.emit(
+      "lens-translate-stream",
+      serde_json::json!({
+        "imageId": image_id, "done": true, "success": success, "error": error,
+      }),
+    );
+  };
+
+  // 1) OCR via Apple Vision(sidecar)
+  if !state.apple_intelligence.available() {
+    let msg = "系统 OCR 不可用：需要 macOS 26+ Apple Silicon 且 Apple Intelligence 已启用".to_string();
+    emit_done(false, Some(&msg));
+    return Ok(serde_json::json!({ "success": false, "error": msg }));
+  }
+  let original = match state
+    .apple_intelligence
+    .ocr_image(&image_path.to_string_lossy())
+    .await
+  {
+    Ok(text) => text,
+    Err(err) => {
+      emit_done(false, Some(&err));
+      return Ok(serde_json::json!({ "success": false, "error": err }));
+    }
+  };
+  if original.trim().is_empty() {
+    let msg = "OCR 未识别到文字".to_string();
+    emit_done(false, Some(&msg));
+    return Ok(serde_json::json!({ "success": false, "error": msg }));
+  }
+
+  // 2) 翻译 prompt：用主翻译那套 (build_translation_prompt) — screenshot 那个模板是给 vision 模型设计的不适用
+  let translate_prompt = build_translation_prompt(&original, lang_name, translator_template);
+
+  // 3) Translate via configured provider —— Apple 走 sidecar,其它走 cloud OpenAI 兼容接口
+  let is_apple_translate = translate_provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
+  let translated = if st_stream {
+    if is_apple_translate {
+      let app_for_emit = app.clone();
+      let image_id_for_emit = image_id.to_string();
+      let mut accumulated = String::new();
+      if let Err(err) = state
+        .apple_intelligence
+        .stream_text(&translate_prompt, |delta| {
+          accumulated.push_str(delta);
+          let _ = app_for_emit.emit(
+            "lens-translate-stream",
+            serde_json::json!({
+              "imageId": image_id_for_emit, "kind": "translated", "delta": delta,
+            }),
+          );
+        })
+        .await
+      {
+        emit_done(false, Some(&err));
+        return Ok(serde_json::json!({ "success": false, "error": err }));
+      }
+      accumulated
+    } else {
+      // Cloud streaming: 用 stream_chat_call + 文字消息（不带 image）
+      let mut body = serde_json::json!({
+        "messages": [{ "role": "user", "content": translate_prompt }],
+        "stream": true,
+        "temperature": 0.2,
+      });
+      if !st_thinking { body["thinking"] = serde_json::json!({ "type": "disabled" }); }
+      match stream_chat_call(
+        app,
+        state,
+        translate_provider,
+        translate_model,
+        body,
+        retry_attempts,
+        image_id,
+        "translated",
+        "lens-translate-stream",
+      )
+      .await
+      {
+        Ok(t) => t,
+        Err(err) => {
+          emit_done(false, Some(&err));
+          return Ok(serde_json::json!({ "success": false, "error": err }));
+        }
+      }
+    }
+  } else {
+    let result = if is_apple_translate {
+      state.apple_intelligence.call_text(&translate_prompt).await
+    } else {
+      call_openai_text(
+        state,
+        translate_provider,
+        translate_model,
+        translate_prompt,
+        retry_attempts,
+        st_thinking,
+      )
+      .await
+    };
+    match result {
+      Ok(t) => {
+        let _ = app.emit(
+          "lens-translate-stream",
+          serde_json::json!({ "imageId": image_id, "kind": "translated", "delta": t }),
+        );
+        t
+      }
+      Err(err) => {
+        emit_done(false, Some(&err));
+        return Ok(serde_json::json!({ "success": false, "error": err }));
+      }
+    }
+  };
+
+  // 4) 非 direct 模式发原文 delta（cloud combined 是 <<<ORIGINAL>>> 分隔在一段流里给原文,
+  //    系统 OCR 路径是分两步,所以翻译完才发原文,前端两个 kind 都能收到）
+  if !direct_translate {
+    let _ = app.emit(
+      "lens-translate-stream",
+      serde_json::json!({ "imageId": image_id, "kind": "original", "delta": original }),
+    );
+  }
+
+  emit_done(true, None);
+  Ok(serde_json::json!({
+    "success": true,
+    "original": if direct_translate { String::new() } else { original.clone() },
+    "translated": translated,
+  }))
+}
 
 /// 关闭 lens：清理图片、释放 busy、隐藏窗口。
 ///
@@ -1857,6 +2037,7 @@ fn main() {
         key_cooldowns: Mutex::new(HashMap::new()),
         active_key_idx: Mutex::new(HashMap::new()),
         http: build_http_client(),
+        apple_intelligence: apple_intelligence::AppleIntelligenceClient::new(&app.handle()),
       });
 
       if let Err(err) = register_hotkeys(&app.handle()) {
@@ -1921,7 +2102,8 @@ fn main() {
       lens_delete_history_image,
       check_github_latest_release,
       download_update_asset,
-      install_update_and_quit
+      install_update_and_quit,
+      apple_intelligence_available
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

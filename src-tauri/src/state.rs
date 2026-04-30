@@ -3,13 +3,14 @@ use std::{
   path::PathBuf,
   sync::{
     atomic::{AtomicBool, AtomicU64},
-    Mutex, RwLock,
+    Arc, Mutex, RwLock,
   },
   time::{Duration, Instant},
 };
 
 use reqwest::Client;
 
+use crate::apple_intelligence::AppleIntelligenceClient;
 use crate::settings::Settings;
 
 /// 应用全局状态
@@ -29,6 +30,9 @@ pub struct AppState {
   /// 每个 provider 当前活跃 key idx：上一次成功的 key 优先继续用。
   pub active_key_idx: Mutex<HashMap<String, usize>>,
   pub http: Client,
+  /// Apple Intelligence sidecar 客户端。app 启动时 spawn 一次，所有走 Apple provider 的请求复用。
+  /// 不可用时 client.available()=false，路由层立即报错。
+  pub apple_intelligence: Arc<AppleIntelligenceClient>,
 }
 
 /// 单个 key 触发 failover 后的冷却时长。
@@ -148,6 +152,7 @@ mod tests {
       key_cooldowns: Mutex::new(HashMap::new()),
       active_key_idx: Mutex::new(HashMap::new()),
       http: Client::new(),
+      apple_intelligence: AppleIntelligenceClient::disabled(),
     }
   }
 

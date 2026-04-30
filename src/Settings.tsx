@@ -53,6 +53,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [downloadPercent, setDownloadPercent] = useState(0)
   const [downloadedPath, setDownloadedPath] = useState('')
   const [downloadError, setDownloadError] = useState('')
+  // Apple Intelligence sidecar 可用性：mount 时查一次,unavailable 就把 onDevice 预设 chip 隐藏
+  const [appleIntelligenceAvailable, setAppleIntelligenceAvailable] = useState(false)
   // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
   // （否则用户可能没察觉就 Save 把磁盘真实数据覆盖掉）
   const [loadError, setLoadError] = useState('')
@@ -124,6 +126,15 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   useEffect(() => {
     refreshPermissions()
   }, [refreshPermissions])
+
+  // 查 Apple Intelligence 可用性(macOS 26 + Apple Silicon + 已开启 → true)，决定预设 chip 是否露出
+  useEffect(() => {
+    let cancelled = false
+    api.appleIntelligenceAvailable()
+      .then(v => { if (!cancelled) setAppleIntelligenceAvailable(v) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // 监听后端启动时的 update-available 事件，发现新版立即在 About 区块展开提示
   useEffect(() => {
@@ -443,7 +454,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     const newProvider: ModelProvider = {
       id: newId,
       name: preset.name,
-      apiKeys: [],
+      // 端上 provider(Apple Intelligence)不需 API key,填一个哨兵字符串绕开"Missing API Key"检查
+      apiKeys: preset.onDevice ? ['__on_device__'] : [],
       baseUrl: preset.baseUrl,
       availableModels: [...preset.defaultModels],
       enabledModels: [...preset.defaultModels],
@@ -1040,6 +1052,15 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           onChange={(v) => updateScreenshotTranslation({ streamEnabled: v })}
                         />
                       </SettingRow>
+                      <SettingRow
+                        label={t.useSystemOcr}
+                        description={t.useSystemOcrHint}
+                      >
+                        <Toggle
+                          checked={settings.screenshotTranslation?.useSystemOcr ?? false}
+                          onChange={(v) => updateScreenshotTranslation({ useSystemOcr: v })}
+                        />
+                      </SettingRow>
                       <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
                         <Toggle
                           checked={settings.screenshotTranslation?.keepFullscreenAfterCapture !== false}
@@ -1215,7 +1236,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         {/* ===== 模型管理标签页 ===== */}
         {activeTab === 'providers' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            {settings.providers.map((provider) => (
+            {settings.providers.map((provider) => {
+              // 端上 provider(Apple Intelligence)：不需 baseURL/API Key/连接测试/可用模型 fetch，
+              // 这些字段对用户毫无意义,渲染时全部隐藏。
+              const isOnDevice = provider.baseUrl === 'applefoundation://local'
+              return (
               <section key={provider.id} className="relative group">
                 <div className="absolute right-3 top-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
@@ -1240,7 +1265,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       </div>
                     </div>
 
-                    {/* Base URL */}
+                    {/* Base URL — 端上 provider(Apple Intelligence)用哨兵 baseURL,无展示价值,隐藏 */}
+                    {!isOnDevice && (
                     <div className="px-4 py-3">
                       <Label>{t.baseUrl}</Label>
                       <div className="mt-1.5">
@@ -1251,8 +1277,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         />
                       </div>
                     </div>
+                    )}
 
-                    {/* API Keys（多 key failover：第一个为主 key，后续为备用） */}
+                    {/* API Keys — 端上 provider 不需 key,隐藏 */}
+                    {!isOnDevice && (
                     <div className="px-4 py-3">
                       <div className="flex items-center justify-between">
                         <Label>{t.apiKey}</Label>
@@ -1308,8 +1336,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         {t.addKey}
                       </button>
                     </div>
+                    )}
 
-                    {/* 连接测试 */}
+                    {/* 连接测试 — 端上 provider 不走 HTTP,无连接可测,隐藏 */}
+                    {!isOnDevice && (
                     <div className="flex items-center justify-between gap-3 px-4 py-3">
                       <button
                         type="button"
@@ -1333,6 +1363,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         </span>
                       )}
                     </div>
+                    )}
 
                     {/* 已启用模型 */}
                     <div className="px-4 py-3 space-y-3">
@@ -1378,7 +1409,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       </div>
                     </div>
 
-                    {/* 可用模型 */}
+                    {/* 可用模型 — 端上 provider 没有 /models 端点,fetch 无意义,隐藏 */}
+                    {!isOnDevice && (
                     <div className="px-4 py-3 space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.availableModels}</span>
@@ -1414,15 +1446,19 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         )}
                       </div>
                     </div>
+                    )}
                   </div>
                 </div>
               </section>
-            ))}
+              )
+            })}
 
             {/* 快速预设 chip + 自定义按钮 */}
             <div className="space-y-2">
               <div className="flex flex-wrap gap-2">
-                {PROVIDER_PRESETS.map(preset => (
+                {PROVIDER_PRESETS
+                  .filter(preset => !preset.onDevice || appleIntelligenceAvailable)
+                  .map(preset => (
                   <button
                     key={preset.name}
                     type="button"
@@ -1431,6 +1467,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                   >
                     <Plus size={12} strokeWidth={2.25} />
                     {preset.name}
+                    {preset.onDevice && (
+                      <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 ml-0.5">· 本地</span>
+                    )}
                   </button>
                 ))}
               </div>

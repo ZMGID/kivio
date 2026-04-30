@@ -30,3 +30,7 @@ src-tauri/target
 # Local build artifacts (OCR helper)
 resources/ocr
 .cache/swift
+
+# Swift sidecar 编译产物 (npm run build:swift / CI 生成,不入库)
+src-tauri/binaries/
+src-tauri/swift/keylingo-ai-helper/.build/

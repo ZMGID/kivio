@@ -8,6 +8,8 @@ export type ProviderPreset = {
   baseUrl: string
   /** 默认启用 + 加入 availableModels 的几个典型模型，让用户填完 key 就能直接选 */
   defaultModels: string[]
+  /** 端上 provider（不需 API key、需运行时可用性检查）。当前仅 Apple Intelligence */
+  onDevice?: boolean
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -35,5 +37,13 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     name: 'Ollama',
     baseUrl: 'https://ollama.com/v1',
     defaultModels: ['gpt-oss:120b', 'llama3.3:70b'],
+  },
+  {
+    // Apple 端上 LLM (macOS 26+ Apple Silicon),通过 Tauri sidecar 调 FoundationModels framework。
+    // baseUrl 是哨兵值,Rust 路由层识别它后跳过 HTTP 直接调 sidecar；不需 API key。
+    name: 'Apple Intelligence',
+    baseUrl: 'applefoundation://local',
+    defaultModels: ['apple-foundation'],
+    onDevice: true,
   },
 ]

@@ -35,6 +35,9 @@
       "msi",
       "nsis"
     ],
+    "externalBin": [
+      "binaries/keylingo-ai-helper"
+    ],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico"

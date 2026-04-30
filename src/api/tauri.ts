@@ -91,6 +91,10 @@ export type Settings = {
     streamEnabled?: boolean
     /** 截图后是否保持全屏覆盖（默认 true）。false 时截图后窗口缩小为浮动 */
     keepFullscreenAfterCapture?: boolean
+    /** 使用系统 OCR(Apple Vision) 做文字识别,然后让 provider 翻译纯文本(默认 false)。
+     *  true 时 provider 可以是任意文字模型;false 时 provider 必须是多模态视觉模型。
+     *  Apple Intelligence 作为 provider 时自动等同于 true(其 SDK 不支持图像)。 */
+    useSystemOcr?: boolean
     prompt?: string
   }
   lens: {
@@ -263,6 +267,9 @@ export const api = {
 
   /** 调后端 GitHub Releases API 检查最新版本 */
   checkUpdate: () => invoke<UpdateInfo>('check_github_latest_release'),
+
+  /** Apple Intelligence(端上 Foundation Models) 是否可用。仅 macOS 26+ Apple Silicon 且用户已开 Apple Intelligence 时返回 true */
+  appleIntelligenceAvailable: () => invoke<boolean>('apple_intelligence_available'),
 
   /** 下载新版本安装包到 OS temp 目录，返回本地文件路径。下载进度通过 onUpdateDownloadProgress 派发 */
   downloadUpdate: (version: string) => invoke<string>('download_update_asset', { version }),
