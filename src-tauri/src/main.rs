@@ -395,23 +395,28 @@ fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
   #[cfg(target_os = "macos")]
   {
     use std::process::Command;
-    // 挂载 DMG，-nobrowse 不在 Finder 显示。注意：不能加 -quiet，否则 stdout 不输出挂载表，没法 parse 出 /Volumes 路径。
+    // 显式指定挂载点（用 UUID 避免与同名 volume 已挂载时的名字冲突）。比解析 `hdiutil attach` 的
+    // 默认表格输出鲁棒很多 —— 那个输出列用空格 padding,VolumeName 含空格(如重复挂载产生的
+    // "KeyLingo 1")会被 split_whitespace 截断。
+    let mount_id = Uuid::new_v4().to_string();
+    let mount_point = std::env::temp_dir().join(format!("keylingo-mount-{mount_id}"));
+    fs::create_dir_all(&mount_point).map_err(|e| format!("创建挂载目录失败: {e}"))?;
+    let mount_str = mount_point.to_string_lossy().to_string();
     let attach = Command::new("hdiutil")
-      .args(["attach", "-nobrowse", &path])
+      .args([
+        "attach",
+        "-nobrowse",
+        "-readonly",
+        "-mountpoint",
+        &mount_str,
+        &path,
+      ])
       .output()
       .map_err(|e| format!("hdiutil attach 失败: {e}"))?;
     if !attach.status.success() {
+      let _ = fs::remove_dir(&mount_point);
       return Err(format!("挂载 DMG 失败: {}", String::from_utf8_lossy(&attach.stderr)));
     }
-    // 输出形如 "/dev/disk4s1     Apple_HFS     /Volumes/KeyLingo"，行内可能用 tab 或空格分隔
-    let stdout = String::from_utf8_lossy(&attach.stdout);
-    let mount_point = stdout.lines()
-      .find_map(|line| {
-        line.split_whitespace()
-          .find(|s| s.starts_with("/Volumes/"))
-          .map(str::to_string)
-      })
-      .ok_or_else(|| format!("解析挂载点失败 (stdout={:?})", stdout))?;
     // 找挂载点下第一个 .app
     let app_in_dmg = fs::read_dir(&mount_point)
       .map_err(|e| format!("读取挂载点失败: {e}"))?
@@ -431,10 +436,19 @@ fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
       .status()
       .map_err(|e| format!("cp 失败: {e}"))?;
     if !cp.success() {
-      let _ = Command::new("hdiutil").args(["detach", "-quiet", &mount_point]).status();
+      let _ = Command::new("hdiutil").args(["detach", "-force", &mount_str]).status();
+      let _ = fs::remove_dir(&mount_point);
       return Err("cp 新版本到 /Applications 失败".to_string());
     }
-    let _ = Command::new("hdiutil").args(["detach", "-quiet", &mount_point]).status();
+    // 卸载 + 删除空挂载目录
+    let _ = Command::new("hdiutil").args(["detach", "-force", &mount_str]).status();
+    let _ = fs::remove_dir(&mount_point);
+    // 剥掉 quarantine 属性 —— DMG 文件本身带 com.apple.quarantine,挂载后 .app 继承这个属性,
+    // cp 到 /Applications 后 Gatekeeper 看到 quarantine + 未公证 → 静默拦截启动。
+    // xattr -rd 递归剥掉,与 README 里那条手动命令等效。
+    let _ = Command::new("xattr")
+      .args(["-rd", "com.apple.quarantine", &target.to_string_lossy()])
+      .status();
     // open -n 强制开新实例
     let _ = Command::new("open").args(["-n", &target.to_string_lossy()]).spawn()
       .map_err(|e| format!("open 新版本失败: {e}"))?;
