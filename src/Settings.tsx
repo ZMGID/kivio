@@ -3,7 +3,7 @@ import {
   X, Save, Plus, Trash2, RefreshCw,
   Settings as SettingsIcon, Languages, Camera,
   Cloud, Info, Palette, Keyboard, SlidersHorizontal, Globe,
-  Cpu, FileText, ShieldCheck, Aperture, ExternalLink, Download
+  Cpu, FileText, ShieldCheck, Aperture, ExternalLink, Download, ChevronRight
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus, type UpdateInfo } from './api/tauri'
@@ -727,16 +727,16 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   }
 
   return (
-    <div className="flex bg-[#f8f9fa] dark:bg-black text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden h-full w-full">
+    <div className="flex bg-[#fafafa] dark:bg-black text-neutral-900 dark:text-neutral-100 font-sans rounded-xl border border-black/5 dark:border-white/10 shadow-none overflow-hidden h-full w-full">
       {/* 左侧侧边栏 */}
-      <div className="w-[180px] flex flex-col border-r border-black/5 dark:border-white/5 bg-white dark:bg-[#1C1C1E] shrink-0">
+      <div className="w-[180px] flex flex-col border-r border-black/[0.04] dark:border-white/[0.05] bg-white dark:bg-[#1C1C1E] shrink-0">
         {/* 标题 */}
         <div className="px-5 py-4" data-tauri-drag-region>
-          <h2 className="font-semibold text-[14px] tracking-tight text-neutral-800 dark:text-neutral-100">{t.settings}</h2>
+          <h2 className="font-semibold text-[14px] tracking-tight text-neutral-900 dark:text-neutral-100">{t.settings}</h2>
         </div>
 
         {/* 导航项 */}
-        <nav className="flex-1 px-3 space-y-0.5">
+        <nav className="flex-1 px-2.5 space-y-0.5">
           {[
             { id: 'general' as const, label: t.tabGeneral, icon: SettingsIcon },
             { id: 'translate' as const, label: t.tabTranslate, icon: Languages },
@@ -751,16 +751,13 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`relative w-full flex items-center gap-2.5 px-3 h-12 rounded-lg text-[13px] font-medium transition-all duration-150 ${active
-                  ? 'bg-[#f0f4ff] dark:bg-blue-900/20 text-[#2563eb] dark:text-blue-400'
-                  : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
+                className={`w-full flex items-center gap-2.5 px-2.5 h-9 rounded-md text-[13px] font-medium transition-colors duration-150 ${active
+                  ? 'bg-[#2563eb]/[0.09] dark:bg-blue-400/[0.12] text-[#2563eb] dark:text-blue-300'
+                  : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/[0.035] dark:hover:bg-white/[0.04]'
                   }`}
                 data-tauri-drag-region="false"
               >
-                {active && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-[#2563eb] dark:bg-blue-400" />
-                )}
-                <Icon size={18} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={active ? 'text-[#2563eb] dark:text-blue-400' : ''} />
+                <Icon size={15} strokeWidth={1.75} />
                 {item.label}
               </button>
             )
@@ -775,7 +772,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         <div className="flex justify-end px-4 pt-3" data-tauri-drag-region>
           <button
             onClick={handleCloseRequest}
-            className="p-1.5 hover:bg-black/5 dark:hover:bg-white/10 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-all"
+            className="p-1.5 hover:bg-black/[0.06] dark:hover:bg-white/[0.08] rounded-md text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
             data-tauri-drag-region="false"
           >
             <X size={16} strokeWidth={2} />
@@ -789,7 +786,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 外观 */}
             <section>
               <SectionTitle icon={Palette}>{lang === 'zh' ? '外观' : 'Appearance'}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden divide-y divide-[#f0f0f0] dark:divide-white/5">
+              <div className="settings-card overflow-hidden divide-y divide-black/[0.04] dark:divide-white/[0.05]">
                 <SettingRow label={t.theme}>
                   <Select
                     className="w-36"
@@ -819,7 +816,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 快捷键 */}
             <section>
               <SectionTitle icon={Keyboard}>{t.hotkey}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden px-4 py-3">
+              <div className="settings-card overflow-hidden px-4 py-3">
                 <HotkeyInput
                   value={settings.hotkey}
                   placeholder={t.hotkeyPlaceholder}
@@ -835,7 +832,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 行为 */}
             <section>
               <SectionTitle icon={SlidersHorizontal}>{lang === 'zh' ? '行为' : 'Behavior'}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden divide-y divide-[#f0f0f0] dark:divide-white/5">
+              <div className="settings-card overflow-hidden divide-y divide-black/[0.04] dark:divide-white/[0.05]">
                 <SettingRow label={t.retryEnabled} description={t.retryAttemptsHint}>
                   <Toggle
                     checked={settings.retryEnabled ?? true}
@@ -875,7 +872,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {permissionStatus?.platform === 'macos' && (
               <section>
                 <SectionTitle icon={ShieldCheck}>{t.permissions}</SectionTitle>
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden divide-y divide-[#f0f0f0] dark:divide-white/5">
+                <div className="settings-card overflow-hidden divide-y divide-black/[0.04] dark:divide-white/[0.05]">
                   <PermissionItem
                     label={t.accessibilityPermission}
                     granted={permissionStatus.accessibility}
@@ -919,7 +916,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 目标语言 */}
             <section>
               <SectionTitle icon={Globe}>{t.targetLang}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+              <div className="settings-card overflow-hidden">
                 <SettingRow label={t.targetLang}>
                   <Select
                     className="w-40"
@@ -942,7 +939,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 翻译引擎 */}
             <section>
               <SectionTitle icon={Cpu}>{t.engine}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+              <div className="settings-card overflow-hidden">
                 <SettingRow label={t.selectModelPair}>
                   <Select
                     className="w-52"
@@ -965,7 +962,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 提示词 */}
             <section>
               <SectionTitle icon={FileText}>{t.translatorPrompt}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden px-4 py-3">
+              <div className="settings-card overflow-hidden px-4 py-3">
                 <TextArea
                   value={settings.translatorPrompt || ''}
                   onChange={(v) => updateSettings({ translatorPrompt: v })}
@@ -986,8 +983,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 截图翻译设置 */}
             <section>
               <SectionTitle icon={Camera}>{t.screenshotTranslate}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
-                <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
+              <div className="settings-card overflow-hidden">
+                <div className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
                   <SettingRow label={t.enabled}>
                     <Toggle
                       checked={settings.screenshotTranslation?.enabled ?? true}
@@ -1067,13 +1064,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           onChange={(v) => updateScreenshotTranslation({ keepFullscreenAfterCapture: v })}
                         />
                       </SettingRow>
-                      <details className="group">
-                        <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
-                          <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">
-                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                              <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          </div>
+                      <details className="group border-t border-black/[0.04] dark:border-white/[0.05]">
+                        <summary className="flex items-center gap-1.5 cursor-pointer text-[12px] font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/[0.02] dark:hover:bg-white/[0.025] transition-colors list-none px-4 py-3">
+                          <ChevronRight size={13} className="text-neutral-400 dark:text-neutral-500 group-open:rotate-90 transition-transform duration-200" strokeWidth={2.25} />
                           {t.customPrompts}
                         </summary>
                         <div className="px-4 pb-4 space-y-2">
@@ -1106,8 +1099,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section>
               <SectionTitle icon={Aperture}>{t.lensSection}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
-                <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
+              <div className="settings-card overflow-hidden">
+                <div className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
                   <SettingRow label={t.enabled}>
                     <Toggle
                       checked={settings.lens?.enabled !== false}
@@ -1189,13 +1182,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           ]}
                         />
                       </SettingRow>
-                      <details className="group">
-                        <summary className="flex items-center gap-2 cursor-pointer text-[12px] font-medium text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 transition-colors list-none px-4 py-3">
-                          <div className="p-0.5 rounded text-neutral-400 group-open:rotate-90 transition-transform">
-                            <svg width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                              <path d="M2.5 1.5L5.5 4L2.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          </div>
+                      <details className="group border-t border-black/[0.04] dark:border-white/[0.05]">
+                        <summary className="flex items-center gap-1.5 cursor-pointer text-[12px] font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/[0.02] dark:hover:bg-white/[0.025] transition-colors list-none px-4 py-3">
+                          <ChevronRight size={13} className="text-neutral-400 dark:text-neutral-500 group-open:rotate-90 transition-transform duration-200" strokeWidth={2.25} />
                           {t.customPrompts}
                         </summary>
                         <div className="px-4 pb-4 space-y-4">
@@ -1241,30 +1230,38 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               // 这些字段对用户毫无意义,渲染时全部隐藏。
               const isOnDevice = provider.baseUrl === 'applefoundation://local'
               return (
-              <section key={provider.id} className="relative group">
-                <div className="absolute right-3 top-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={() => deleteProvider(provider.id)}
-                    className="p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-all"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
+              <section key={provider.id} className="relative">
+                <div className="settings-card overflow-hidden">
+                  {/* 卡头：状态点 + 名称输入 + 删除按钮（始终可见） */}
+                  <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-black/[0.04] dark:border-white/[0.05] bg-black/[0.012] dark:bg-white/[0.018]">
+                    <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${
+                      isOnDevice
+                        ? 'bg-emerald-500'
+                        : provider.apiKeys.some(k => k.trim()) ? 'bg-[#2563eb] dark:bg-blue-400' : 'bg-neutral-300 dark:bg-neutral-600'
+                    }`} />
+                    <input
+                      value={provider.name}
+                      onChange={(e) => updateProvider(provider.id, { name: e.target.value })}
+                      placeholder="Provider name"
+                      className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[13.5px] font-semibold text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:placeholder-neutral-300"
+                      data-tauri-drag-region="false"
+                    />
+                    {isOnDevice && (
+                      <span className="shrink-0 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded bg-emerald-500/10">
+                        {lang === 'zh' ? '本地' : 'Local'}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => deleteProvider(provider.id)}
+                      className="shrink-0 p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-500/10 rounded-md transition-colors"
+                      title={t.deleteProvider}
+                      data-tauri-drag-region="false"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
 
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
-                  <div className="divide-y divide-[#f0f0f0] dark:divide-white/5">
-                    {/* 名称 */}
-                    <div className="px-4 py-3">
-                      <Label>{t.providerName}</Label>
-                      <div className="mt-1.5">
-                        <Input
-                          value={provider.name}
-                          onChange={(v) => updateProvider(provider.id, { name: v })}
-                          placeholder="e.g. OpenAI / DeepSeek"
-                        />
-                      </div>
-                    </div>
-
+                  <div className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
                     {/* Base URL — 端上 provider(Apple Intelligence)用哨兵 baseURL,无展示价值,隐藏 */}
                     {!isOnDevice && (
                     <div className="px-4 py-3">
@@ -1274,6 +1271,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           value={provider.baseUrl}
                           onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
                           placeholder="https://api.openai.com/v1"
+                          mono
                         />
                       </div>
                     </div>
@@ -1283,12 +1281,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     {!isOnDevice && (
                     <div className="px-4 py-3">
                       <div className="flex items-center justify-between">
-                        <Label>{t.apiKey}</Label>
+                        <Label className="!mb-0">{t.apiKey}</Label>
                         <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
                           {t.apiKeysHint}
                         </span>
                       </div>
-                      <div className="mt-1.5 space-y-1.5">
+                      <div className="mt-2 space-y-1.5">
                         {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
                           const total = Math.max(provider.apiKeys.length, 1)
                           // key 含 total（apiKeys.length）：add/remove 时整列强制 remount，
@@ -1299,6 +1297,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                                 <Input
                                   type="password"
                                   value={key}
+                                  mono
                                   onChange={(v) => {
                                     const base = provider.apiKeys.length > 0 ? [...provider.apiKeys] : ['']
                                     base[idx] = v
@@ -1330,7 +1329,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           const base = provider.apiKeys.length > 0 ? provider.apiKeys : ['']
                           updateProvider(provider.id, { apiKeys: [...base, ''] })
                         }}
-                        className="mt-2 text-[11px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 px-2 py-1 rounded bg-black/5 dark:bg-white/5 transition-all flex items-center gap-1"
+                        className="mt-2 text-[11px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 px-2 py-1 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.06] dark:hover:bg-white/[0.06] transition-colors flex items-center gap-1"
                       >
                         <Plus size={11} />
                         {t.addKey}
@@ -1345,9 +1344,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         type="button"
                         onClick={() => handleTestConnection(provider.id)}
                         disabled={testingProviderId === provider.id}
-                        className={`text-[11px] font-medium flex items-center gap-1 px-2.5 py-1 rounded-md transition-all border ${testingProviderId === provider.id
+                        className={`text-[11px] font-medium flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors border ${testingProviderId === provider.id
                           ? 'text-neutral-400 border-black/5 dark:border-white/5 cursor-not-allowed'
-                          : 'text-neutral-500 border-black/10 dark:border-white/10 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                          : 'text-neutral-600 dark:text-neutral-300 border-black/[0.08] dark:border-white/[0.08] hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/[0.04] dark:hover:bg-white/[0.04]'
                           }`}
                         data-tauri-drag-region="false"
                       >
@@ -1366,13 +1365,14 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     )}
 
                     {/* 已启用模型 */}
-                    <div className="px-4 py-3 space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.registeredModels}</span>
+                    <div className="px-4 py-3 space-y-2.5">
+                      <div className="flex justify-between items-center gap-2">
+                        <Label className="!mb-0">{t.registeredModels}</Label>
                         <div className="flex items-center gap-1">
                           <Input
                             className="h-7 w-32 !text-[11px] !py-0"
                             placeholder={t.manualAddModel}
+                            mono
                             value={manualInputs[provider.id] || ''}
                             onChange={(v) => setManualInputs(prev => ({ ...prev, [provider.id]: v }))}
                             onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1388,19 +1388,24 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                               addEnabledModel(provider.id, manualInputs[provider.id] || '')
                               setManualInputs(prev => ({ ...prev, [provider.id]: '' }))
                             }}
-                            className="text-[10px] text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 px-2 py-1 rounded bg-black/5 dark:bg-white/5 transition-all text-nowrap"
+                            className="text-[10px] text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 px-2 py-1 rounded-md bg-black/[0.04] dark:bg-white/[0.04] hover:bg-black/[0.06] dark:hover:bg-white/[0.06] transition-colors text-nowrap"
                           >
                             {t.addModel}
                           </button>
                         </div>
                       </div>
-                      <div className="flex flex-wrap gap-2 min-h-[24px]">
+                      <div className="flex flex-wrap gap-1.5 min-h-[24px]">
+                        {provider.enabledModels.length === 0 && (
+                          <span className="text-[11px] text-neutral-400 italic">
+                            {lang === 'zh' ? '暂无模型，从下方"可用模型"挑选或手动添加' : 'No models yet — pick from below or add manually'}
+                          </span>
+                        )}
                         {provider.enabledModels.map(model => (
-                          <span key={model} className="flex items-center gap-1.5 px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-md text-[11px] text-neutral-700 dark:text-neutral-300 font-mono border border-black/5 dark:border-white/5">
+                          <span key={model} className="flex items-center gap-1.5 pl-2 pr-1 py-0.5 bg-[#2563eb]/[0.08] dark:bg-blue-400/[0.12] rounded-md text-[11px] text-[#2563eb] dark:text-blue-300 font-mono">
                             {model}
                             <button
                               onClick={() => removeEnabledModel(provider.id, model)}
-                              className="text-neutral-400 hover:text-red-500 transition-colors"
+                              className="text-[#2563eb]/50 dark:text-blue-300/60 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                             >
                               <X size={10} />
                             </button>
@@ -1413,29 +1418,29 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     {!isOnDevice && (
                     <div className="px-4 py-3 space-y-2">
                       <div className="flex justify-between items-center">
-                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.availableModels}</span>
+                        <Label className="!mb-0">{t.availableModels}</Label>
                         <button
                           onClick={() => fetchModels(provider.id)}
                           disabled={fetchingProviderId === provider.id}
-                          className={`text-[11px] font-medium flex items-center gap-1 px-2 py-0.5 rounded-md transition-all ${fetchingProviderId === provider.id
+                          className={`text-[11px] font-medium flex items-center gap-1 px-2 py-0.5 rounded-md transition-colors ${fetchingProviderId === provider.id
                             ? 'text-neutral-400 cursor-not-allowed'
-                            : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5'
+                            : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/[0.04] dark:hover:bg-white/[0.04]'
                             }`}
                         >
                           <RefreshCw size={10} className={fetchingProviderId === provider.id ? 'animate-spin' : ''} />
                           {fetchingProviderId === provider.id ? t.fetching : t.fetchModels}
                         </button>
                       </div>
-                      <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                      <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
                         {provider.availableModels.length > 0 ? (
                           provider.availableModels.map(m => (
                             <button
                               key={m}
                               onClick={() => addEnabledModel(provider.id, m)}
                               disabled={provider.enabledModels.includes(m)}
-                              className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${provider.enabledModels.includes(m)
-                                ? 'bg-neutral-50 dark:bg-neutral-900/50 text-neutral-400 border-transparent cursor-default'
-                                : 'bg-black/5 dark:bg-white/5 text-neutral-500 border-black/5 dark:border-white/5 hover:border-neutral-300 dark:hover:border-neutral-600'
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${provider.enabledModels.includes(m)
+                                ? 'bg-transparent text-neutral-400 cursor-default'
+                                : 'bg-black/[0.04] dark:bg-white/[0.04] text-neutral-600 dark:text-neutral-300 hover:bg-[#2563eb]/[0.08] dark:hover:bg-blue-400/[0.12] hover:text-[#2563eb] dark:hover:text-blue-300'
                                 }`}
                             >
                               {m}
@@ -1454,33 +1459,39 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             })}
 
             {/* 快速预设 chip + 自定义按钮 */}
-            <div className="space-y-2">
-              <div className="flex flex-wrap gap-2">
-                {PROVIDER_PRESETS
-                  .filter(preset => !preset.onDevice || appleIntelligenceAvailable)
-                  .map(preset => (
-                  <button
-                    key={preset.name}
-                    type="button"
-                    onClick={() => addProviderFromPreset(preset)}
-                    className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-white dark:bg-[#1C1C1E] text-neutral-700 dark:text-neutral-200 border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 hover:border-black/20 dark:hover:border-white/20 transition-all"
-                  >
-                    <Plus size={12} strokeWidth={2.25} />
-                    {preset.name}
-                    {preset.onDevice && (
-                      <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 ml-0.5">· 本地</span>
-                    )}
-                  </button>
-                ))}
+            <section>
+              <SectionTitle icon={Plus}>{lang === 'zh' ? '添加提供商' : 'Add Provider'}</SectionTitle>
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {PROVIDER_PRESETS
+                    .filter(preset => !preset.onDevice || appleIntelligenceAvailable)
+                    .map(preset => (
+                    <button
+                      key={preset.name}
+                      type="button"
+                      onClick={() => addProviderFromPreset(preset)}
+                      className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-white dark:bg-[#1C1C1E] text-neutral-700 dark:text-neutral-200 border border-black/[0.06] dark:border-white/[0.07] hover:border-[#2563eb]/30 dark:hover:border-blue-400/30 hover:text-[#2563eb] dark:hover:text-blue-300 hover:bg-[#2563eb]/[0.04] dark:hover:bg-blue-400/[0.06] transition-colors"
+                      style={{ boxShadow: '0 1px 1px rgba(0,0,0,0.02)' }}
+                    >
+                      <Plus size={11} strokeWidth={2.25} />
+                      {preset.name}
+                      {preset.onDevice && (
+                        <span className="text-[9px] font-medium text-emerald-600 dark:text-emerald-400 px-1 py-0.5 rounded bg-emerald-500/10">
+                          {lang === 'zh' ? '本地' : 'Local'}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={addProvider}
+                  className="w-full py-2.5 border border-dashed border-black/[0.08] dark:border-white/[0.08] rounded-md text-neutral-500 dark:text-neutral-400 hover:text-[#2563eb] dark:hover:text-blue-300 hover:border-[#2563eb]/40 dark:hover:border-blue-400/40 hover:bg-[#2563eb]/[0.03] dark:hover:bg-blue-400/[0.05] transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <Plus size={13} strokeWidth={2} />
+                  <span className="text-[12px] font-medium">{t.addProvider}</span>
+                </button>
               </div>
-              <button
-                onClick={addProvider}
-                className="w-full py-3 border-2 border-dashed border-black/5 dark:border-white/5 rounded-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:border-black/10 dark:hover:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-all flex items-center justify-center gap-2"
-              >
-                <Plus size={16} strokeWidth={2} />
-                <span className="text-[12px] font-medium">{t.addProvider}</span>
-              </button>
-            </div>
+            </section>
           </div>
         )}
 
@@ -1488,20 +1499,25 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         {activeTab === 'about' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <section>
-              <div className="flex flex-col items-center justify-center py-8">
-                <div className="w-16 h-16 rounded-2xl bg-neutral-900 dark:bg-white flex items-center justify-center mb-4 shadow-sm">
-                  <span className="text-white dark:text-neutral-900 text-[20px] font-bold">K</span>
+              <div className="flex flex-col items-center justify-center py-6">
+                <div
+                  className="w-16 h-16 rounded-[18px] flex items-center justify-center mb-4 overflow-hidden"
+                  style={{
+                    boxShadow: '0 12px 28px -10px rgba(37,99,235,0.45), 0 2px 6px rgba(37,99,235,0.14)',
+                  }}
+                >
+                  <img src="/icon.png" alt="Kivio" className="w-full h-full object-contain" />
                 </div>
-                <h2 className="text-[16px] font-semibold text-neutral-900 dark:text-white mb-1">KeyLingo</h2>
-                <p className="text-[13px] text-neutral-500 dark:text-neutral-400 mb-6">{lang === 'zh' ? '智能翻译与 AI 视觉工具' : 'Smart Translation & AI Vision Tool'}</p>
-                <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden w-full max-w-sm">
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
-                    <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{t.currentVersion}</span>
-                    <span className="text-[13px] text-neutral-500 dark:text-neutral-400 font-mono">v{appVersion}</span>
+                <h2 className="text-[16px] font-semibold text-neutral-900 dark:text-white mb-1 tracking-tight">Kivio</h2>
+                <p className="text-[12px] text-neutral-500 dark:text-neutral-400 mb-5">{lang === 'zh' ? '屏幕级 AI 助手' : 'Screen-level AI Assistant'}</p>
+                <div className="settings-card overflow-hidden w-full max-w-sm">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-black/[0.04] dark:border-white/[0.05]">
+                    <span className="text-[13px] text-neutral-700 dark:text-neutral-200">{t.currentVersion}</span>
+                    <span className="text-[12px] text-neutral-500 dark:text-neutral-400 font-mono">v{appVersion}</span>
                   </div>
                   <div className="flex items-center justify-between px-4 py-3">
-                    <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{lang === 'zh' ? '开发者' : 'Developer'}</span>
-                    <span className="text-[13px] text-neutral-500 dark:text-neutral-400">ZM</span>
+                    <span className="text-[13px] text-neutral-700 dark:text-neutral-200">{lang === 'zh' ? '开发者' : 'Developer'}</span>
+                    <span className="text-[12px] text-neutral-500 dark:text-neutral-400">ZM</span>
                   </div>
                 </div>
               </div>
@@ -1510,7 +1526,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             {/* 自动更新检查（仅检查 + 跳转 GH 下载，不做自动安装） */}
             <section>
               <SectionTitle icon={Download}>{t.checkUpdate}</SectionTitle>
-              <div className="bg-white dark:bg-[#1C1C1E] rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+              <div className="settings-card overflow-hidden">
                 <SettingRow
                   label={t.autoCheckUpdate}
                   description={t.autoCheckUpdateHint}
@@ -1522,7 +1538,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 </SettingRow>
 
                 {/* 检查按钮 + 状态 */}
-                <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-black/5 dark:border-white/5">
+                <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-black/[0.04] dark:border-white/[0.05]">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-[13px] text-neutral-900 dark:text-neutral-100">{t.checkUpdate}</span>
                     {updateStatus === 'up-to-date' && (
@@ -1547,7 +1563,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
                 {/* 发现新版本 panel */}
                 {updateStatus === 'available' && updateInfo && (
-                  <div className="px-4 py-4 border-t border-black/5 dark:border-white/5 bg-emerald-50/50 dark:bg-emerald-500/5">
+                  <div className="px-4 py-4 border-t border-black/[0.04] dark:border-white/[0.05] bg-emerald-50/50 dark:bg-emerald-500/5">
                     <div className="flex items-baseline gap-2 mb-2">
                       <span className="text-[13px] font-semibold text-emerald-700 dark:text-emerald-300">{t.updateAvailable}</span>
                       <span className="text-[12px] font-mono text-emerald-600 dark:text-emerald-400">v{updateInfo.version}</span>
@@ -1670,7 +1686,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       </div>
 
       {/* 底部操作栏 */}
-      <div className="flex justify-between items-center px-5 py-3 border-t border-black/5 dark:border-white/5 bg-white dark:bg-[#1C1C1E] shrink-0">
+      <div className="flex justify-between items-center px-5 py-3 border-t border-black/[0.04] dark:border-white/[0.05] bg-white dark:bg-[#1C1C1E] shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
           {saveError && (
@@ -1682,15 +1698,16 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
             </span>
           )}
           {saveSuccess && !saveError && (
-            <span className="text-[11px] text-emerald-600 dark:text-emerald-400">
+            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+              <span className="w-1 h-1 rounded-full bg-emerald-500" />
               {t.saved}
             </span>
           )}
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-2">
           <button
             onClick={handleCloseRequest}
-            className="px-4 py-2 text-[13px] font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-all duration-200"
+            className="px-3.5 py-1.5 text-[12.5px] font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/[0.04] dark:hover:bg-white/[0.05] rounded-md transition-colors"
             data-tauri-drag-region="false"
           >
             {t.cancel}
@@ -1698,10 +1715,11 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-5 py-2 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 rounded-lg text-[13px] font-medium shadow-sm hover:shadow hover:bg-neutral-800 dark:hover:bg-neutral-100 disabled:opacity-60 disabled:cursor-not-allowed transition-all duration-200 active:scale-95"
+            className="flex items-center gap-1.5 px-4 py-1.5 bg-[#2563eb] hover:bg-[#1d4ed8] dark:bg-blue-500 dark:hover:bg-blue-400 text-white rounded-md text-[12.5px] font-medium disabled:opacity-60 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
+            style={{ boxShadow: '0 1px 2px rgba(37,99,235,0.25), 0 0 0 1px rgba(37,99,235,0.18)' }}
             data-tauri-drag-region="false"
           >
-            <Save size={14} strokeWidth={2} />
+            <Save size={13} strokeWidth={2.25} />
             {saving ? t.saving : t.save}
           </button>
         </div>

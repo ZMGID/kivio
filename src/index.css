@@ -109,6 +109,58 @@ body {
   background-color: rgba(255, 255, 255, 0.32);
 }
 
+/* ===== Settings 卡片 / 控件统一令牌 =====
+   单点定义阴影/边框/底色，避免内联 box-shadow 在每个 section 重复，
+   也让 light/dark 切换的视觉层级一致。 */
+.settings-card {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-radius: 12px;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 6px 16px -8px rgba(15, 23, 42, 0.08);
+}
+
+.dark .settings-card {
+  background: #1c1c1e;
+  border-color: rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 6px 18px -6px rgba(0, 0, 0, 0.5);
+}
+
+/* Settings 内的 input/select/textarea 统一"凹陷"底色，让控件从卡片里浮出 */
+.settings-control {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  color: rgb(15, 23, 42);
+  border-radius: 6px;
+  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+.settings-control::placeholder { color: rgb(163, 163, 163); }
+.settings-control:hover { background: rgba(0, 0, 0, 0.04); }
+.settings-control:focus,
+.settings-control:focus-visible {
+  outline: none;
+  background: #ffffff;
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.dark .settings-control {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.07);
+  color: rgb(245, 245, 245);
+}
+.dark .settings-control::placeholder { color: rgb(115, 115, 115); }
+.dark .settings-control:hover { background: rgba(255, 255, 255, 0.06); }
+.dark .settings-control:focus,
+.dark .settings-control:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
+}
+
 /* Translate 加载态 shimmer：水平滑动的高光，比静态 spinner 显得有进度感 */
 @keyframes shimmer {
   0% { background-position: 200% 0; }
