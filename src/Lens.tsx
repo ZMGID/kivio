@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, Aperture, ArrowUp, History as HistoryIcon, ChevronDown, Brain } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, Brain } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
@@ -1074,7 +1074,10 @@ export default function Lens() {
   const showBar = mode === 'chat'
   // translate 浮动卡片：截图后在选区旁出现，加载/完成两态
   const showTranslateCard = mode === 'translate' && (stage === 'translating' || stage === 'translated')
-  const stableAnswerHeight = !keepFullscreen && stage !== 'select'
+  // 浮动布局生效条件：用户关了"保持全屏覆盖" 且 已经真的截过图（窗口被缩成浮动模式）。
+  // 没截图就直接提问的场景下，window 还是全屏 overlay、bar 还在底部居中，此时仍按全屏布局走。
+  const isFloatingLayout = !keepFullscreen && capturedFrame !== null && stage !== 'select'
+  const stableAnswerHeight = isFloatingLayout
     ? fullscreenMetricsRef.current?.ANSWER_H || metrics.ANSWER_H
     : metrics.ANSWER_H
 
@@ -1083,7 +1086,7 @@ export default function Lens() {
   // 2) 上方空间够 → 向上，目标高
   // 3) 都不够 → 选大的那侧，高度收缩为该侧可用空间（最少 180，避免太矮）
   const answerLayout = useMemo(() => {
-    if (!keepFullscreen && stage !== 'select') {
+    if (isFloatingLayout) {
       return { placeAbove: false, height: stableAnswerHeight }
     }
     const target = stableAnswerHeight
@@ -1095,7 +1098,7 @@ export default function Lens() {
       return { placeAbove: true, height: Math.max(180, spaceAbove) }
     }
     return { placeAbove: false, height: Math.max(180, spaceBelow) }
-  }, [barRect, keepFullscreen, stableAnswerHeight, stage, viewport.h])
+  }, [barRect, isFloatingLayout, stableAnswerHeight, viewport.h])
 
   // 浮动模式下：stage / 布局变化时动态调整窗口尺寸
   useEffect(() => {
@@ -1256,7 +1259,12 @@ export default function Lens() {
                 )}
               </div>
             ) : (
-              <Aperture size={20} strokeWidth={1.75} className="shrink-0 text-[#D97757]" />
+              <img
+                src="/logo-mark.png"
+                alt=""
+                className="shrink-0 w-7 h-7 object-contain dark:invert"
+                draggable={false}
+              />
             )}
             <input
               ref={inputRef}
