@@ -252,6 +252,9 @@ export default function Lens() {
   const [imagePreview, setImagePreview] = useState('')
   const [appLabel, setAppLabel] = useState('')
   const [input, setInput] = useState('')
+  // Lens 启动前 Rust 端抓到的选中文本：作为本次会话的上下文前缀
+  // 仅在首轮 chat 消息发送时拼接进 prompt；徽章静态显示行数；次轮不再注入。
+  const [selectionText, setSelectionText] = useState('')
   const [messages, setMessages] = useState<ExplainMessage[]>([])
   const [streaming, setStreaming] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -304,6 +307,9 @@ export default function Lens() {
   // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
   // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
   const capturingRef = useRef(false)
+  // selectionText 异步 take 的重入 token：每次 enterSelect / resetBeforeHide / restoreHistory 都 +1，
+  // 老请求看到 myReq !== current 直接丢弃，避免 take 完成时已经进入新会话被错误注入。
+  const selectionReqIdRef = useRef(0)
   // 答案区滚动容器，stream 时自动滚到底部
   const chatScrollRef = useRef<HTMLDivElement>(null)
   // 浮动模式下保存截图时的全屏 metrics，避免窗口缩小后 answerLayout 被压缩得太小
@@ -311,6 +317,13 @@ export default function Lens() {
 
   const t = i18n[lang]
   stageRef.current = stage
+
+  // 选中文本行数：translate 模式不计；空 / 仅空白 → 0（驱动徽章是否显示）
+  const selectionLineCount = useMemo(() => {
+    if (mode !== 'chat') return 0
+    if (!selectionText.trim()) return 0
+    return selectionText.split(/\r?\n/).length
+  }, [selectionText, mode])
 
   // 加载设置：语言 + 消息顺序。keepFullscreen 按当前 mode 读对应配置:
   // chat 模式读 settings.lens.keepFullscreenAfterCapture，translate 模式读 settings.screenshotTranslation.keepFullscreenAfterCapture。
@@ -359,6 +372,7 @@ export default function Lens() {
       setImagePreview('')
       setAppLabel('')
       setInput('')
+      setSelectionText('')
       setMessages([])
       setStreaming(false)
       setTranslateOriginal('')
@@ -373,6 +387,22 @@ export default function Lens() {
       setBarIntro(false)
     })
     imageIdRef.current = ''
+    // 异步 take 走 Rust 端在 lens_request_internal 中暂存的选中文本。
+    // token 防御：take 期间用户再开一次 Lens / 关闭，老 promise 落地时 myReq 已过期，丢弃。
+    // 仅 chat 模式注入；> 200KB 直接丢弃避免上下文爆炸；trim 后非空才 setSelectionText。
+    const myReq = ++selectionReqIdRef.current
+    if (readModeFromHash() === 'chat') {
+      void (async () => {
+        try {
+          const text = await api.takeLensSelection()
+          if (myReq !== selectionReqIdRef.current) return
+          if (text.length > 200_000) return
+          if (text.trim()) setSelectionText(text)
+        } catch (err) {
+          console.warn('[lens] take selection failed:', err)
+        }
+      })()
+    }
     requestAnimationFrame(() => {
       // 第二个 raf 同时恢复 transitions 并触发 intro：现在 bar 已经在 select 位置，
       // 只对 transform/opacity 做缩放进入动画，不会回放历史 left/top 过渡。
@@ -561,6 +591,7 @@ export default function Lens() {
       setImagePreview('')
       setAppLabel('')
       setInput('')
+      setSelectionText('')
       setMessages([])
       setStreaming(false)
       setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
@@ -568,6 +599,8 @@ export default function Lens() {
       setBarIntro(false)
     })
     imageIdRef.current = ''
+    // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
+    selectionReqIdRef.current++
   }, [viewport, metrics])
 
   // 全局 Esc：流式时取消流 / 否则关闭
@@ -957,7 +990,16 @@ export default function Lens() {
     setHistoryOpen(false)
     setInput('')
 
-    const userMsg: ExplainMessage = { role: 'user', content: question }
+    // 首轮 chat 注入：把启动时抓到的选中文本作为 [已选文本] 段前置到 user prompt；
+    // 后续轮次（messages.length>0）严格不重复注入。translate 模式不到这里。
+    const isFirstTurn = messages.length === 0
+    const ctx = (isFirstTurn && mode === 'chat') ? selectionText.trim() : ''
+    const userContent = ctx
+      ? (lang === 'zh'
+          ? `[已选文本]\n${ctx}\n\n[用户问题]\n${question}`
+          : `[Selected Text]\n${ctx}\n\n[Question]\n${question}`)
+      : question
+    const userMsg: ExplainMessage = { role: 'user', content: userContent }
     const placeholder: ExplainMessage = { role: 'assistant', content: '' }
     // sendMessages：发给后端的 history（保留前面对话上下文 + 本次提问，最后一条是 user 提问）
     const sendMessages: ExplainMessage[] = [...messages, userMsg]
@@ -1030,11 +1072,14 @@ export default function Lens() {
       setImagePreview(item.imagePreview)
       setAppLabel(item.appLabel)
       setInput('')
+      setSelectionText('')
       setMessages(item.messages)
       setCapturedFrame(item.capturedFrame)
       setStreaming(false)
       setStage('answering')
     })
+    // 老 takeLensSelection promise 失效，避免恢复历史后被新 take 文本污染
+    selectionReqIdRef.current++
     setTimeout(() => inputRef.current?.focus(), 50)
   }
 
@@ -1245,27 +1290,37 @@ export default function Lens() {
             className="flex items-center gap-3 pl-4 pr-2 py-2 rounded-[18px] bg-white dark:bg-neutral-900 shadow-[0_10px_28px_-20px_rgba(0,0,0,0.28)] ring-1 ring-black/[0.04] dark:ring-white/[0.06] cursor-default"
             data-tauri-drag-region="false"
           >
-            {showThumb ? (
-              <div className="shrink-0 flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center shadow-sm">
-                  {imagePreview ? (
-                    <img src={imagePreview} alt="snap" className="w-full h-full object-cover" />
-                  ) : (
-                    <ImageIcon size={14} className="text-neutral-400" />
+            <div className="shrink-0 flex items-center gap-2">
+              {showThumb ? (
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center shadow-sm">
+                    {imagePreview ? (
+                      <img src={imagePreview} alt="snap" className="w-full h-full object-cover" />
+                    ) : (
+                      <ImageIcon size={14} className="text-neutral-400" />
+                    )}
+                  </div>
+                  {appLabel && (
+                    <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 max-w-[100px] truncate">{appLabel}</span>
                   )}
                 </div>
-                {appLabel && (
-                  <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 max-w-[100px] truncate">{appLabel}</span>
-                )}
-              </div>
-            ) : (
-              <img
-                src="/logo-mark.png"
-                alt=""
-                className="shrink-0 w-7 h-7 object-contain dark:invert"
-                draggable={false}
-              />
-            )}
+              ) : (
+                <img
+                  src="/logo-mark.png"
+                  alt=""
+                  className="w-7 h-7 object-contain dark:invert"
+                  draggable={false}
+                />
+              )}
+              {selectionLineCount > 0 && (
+                <span
+                  title={lang === 'zh' ? `已选中 ${selectionLineCount} 行` : `${selectionLineCount} lines selected`}
+                  className="select-none px-1.5 py-0.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-[11px] font-medium tabular-nums text-neutral-600 dark:text-neutral-400 ring-1 ring-black/[0.04] dark:ring-white/[0.06]"
+                >
+                  {selectionLineCount}
+                </span>
+              )}
+            </div>
             <input
               ref={inputRef}
               autoFocus
@@ -1308,7 +1363,18 @@ export default function Lens() {
                       </div>
                     ) : (
                       history.map(item => {
-                        const firstUserQ = item.messages.find(m => m.role === 'user')?.content ?? ''
+                        // 首条 user 消息可能含 [已选文本]\n...\n\n[用户问题]\n... 的拼接形式（chat 启动注入），
+                        // 历史预览只显示问题原文，剥掉 marker 段
+                        const firstUserRaw = item.messages.find(m => m.role === 'user')?.content ?? ''
+                        const zhMarker = '[用户问题]\n'
+                        const enMarker = '[Question]\n'
+                        const zhIdx = firstUserRaw.indexOf(zhMarker)
+                        const enIdx = firstUserRaw.indexOf(enMarker)
+                        const firstUserQ = zhIdx >= 0
+                          ? firstUserRaw.slice(zhIdx + zhMarker.length)
+                          : enIdx >= 0
+                            ? firstUserRaw.slice(enIdx + enMarker.length)
+                            : firstUserRaw
                         const turns = item.messages.filter(m => m.role === 'user').length
                         return (
                           <button

@@ -206,6 +206,258 @@ async fn commit_translation(app: AppHandle, state: State<'_, AppState>, text: St
   Ok(())
 }
 
+/// 模拟一次 Cmd+C(macOS)/Ctrl+C(Windows)。
+/// 用于 Lens 启动时把前台 App 的选中文本拷进剪贴板。
+/// macOS：直接走 CGEvent（不走 AppleScript），用 Private state source 避免与用户当前
+/// 仍按住的热键修饰键(Cmd/Shift/Option)合并出 Cmd+Shift+C 之类的组合。
+fn send_copy_shortcut() {
+  #[cfg(target_os = "macos")]
+  {
+    if !check_accessibility(true) {
+      eprintln!("[lens-capture] Accessibility permission missing for copy shortcut");
+      return;
+    }
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    let source = match CGEventSource::new(CGEventSourceStateID::Private) {
+      Ok(s) => s,
+      Err(_) => {
+        eprintln!("[lens-capture] CGEventSource::new(Private) failed");
+        return;
+      }
+    };
+
+    // ANSI 'c' = keycode 8
+    const KEY_C: core_graphics::event::CGKeyCode = 8;
+    eprintln!("[lens-capture] sending Cmd+C via CGEvent (Private source)...");
+
+    let down = match CGEvent::new_keyboard_event(source.clone(), KEY_C, true) {
+      Ok(ev) => ev,
+      Err(_) => {
+        eprintln!("[lens-capture] CGEvent::new_keyboard_event(down) failed");
+        return;
+      }
+    };
+    down.set_flags(CGEventFlags::CGEventFlagCommand);
+    down.post(CGEventTapLocation::HID);
+
+    let up = match CGEvent::new_keyboard_event(source, KEY_C, false) {
+      Ok(ev) => ev,
+      Err(_) => {
+        eprintln!("[lens-capture] CGEvent::new_keyboard_event(up) failed");
+        return;
+      }
+    };
+    up.set_flags(CGEventFlags::CGEventFlagCommand);
+    up.post(CGEventTapLocation::HID);
+    eprintln!("[lens-capture] CGEvent posted");
+  }
+  #[cfg(target_os = "windows")]
+  {
+    use enigo::{Enigo, Key, KeyboardControllable};
+    let mut enigo = Enigo::new();
+    enigo.key_down(Key::Control);
+    enigo.key_click(Key::Layout('c'));
+    enigo.key_up(Key::Control);
+  }
+}
+
+/// macOS: 直接从当前前台控件读取 Accessibility selected text。
+/// 这条路径不碰剪贴板，也不受 Lens 热键仍按住的 Cmd/Shift/G 干扰。
+#[cfg(target_os = "macos")]
+fn read_accessibility_selected_text() -> Option<String> {
+  if !check_accessibility(false) {
+    return None;
+  }
+
+  use core_foundation::{
+    base::{CFRelease, CFType, CFTypeRef, TCFType},
+    string::{CFString, CFStringRef},
+  };
+
+  type AXUIElementRef = *const libc::c_void;
+  type AXError = i32;
+
+  #[link(name = "ApplicationServices", kind = "framework")]
+  extern "C" {
+    fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+    fn AXUIElementCopyAttributeValue(
+      element: AXUIElementRef,
+      attribute: CFStringRef,
+      value: *mut CFTypeRef,
+    ) -> AXError;
+  }
+
+  const AX_ERROR_SUCCESS: AXError = 0;
+
+  unsafe {
+    let system = AXUIElementCreateSystemWide();
+    if system.is_null() {
+      return None;
+    }
+
+    let focused_attr = CFString::new("AXFocusedUIElement");
+    let mut focused_ref: CFTypeRef = std::ptr::null();
+    let focused_err = AXUIElementCopyAttributeValue(
+      system,
+      focused_attr.as_concrete_TypeRef(),
+      &mut focused_ref,
+    );
+    CFRelease(system as CFTypeRef);
+    if focused_err != AX_ERROR_SUCCESS || focused_ref.is_null() {
+      return None;
+    }
+    let focused = CFType::wrap_under_create_rule(focused_ref);
+
+    let selected_attr = CFString::new("AXSelectedText");
+    let mut selected_ref: CFTypeRef = std::ptr::null();
+    let selected_err = AXUIElementCopyAttributeValue(
+      focused.as_CFTypeRef() as AXUIElementRef,
+      selected_attr.as_concrete_TypeRef(),
+      &mut selected_ref,
+    );
+    if selected_err != AX_ERROR_SUCCESS || selected_ref.is_null() {
+      return None;
+    }
+
+    let selected = CFType::wrap_under_create_rule(selected_ref);
+    let text = selected.downcast_into::<CFString>()?.to_string();
+    if text.trim().is_empty() {
+      None
+    } else {
+      Some(text)
+    }
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_accessibility_selected_text() -> Option<String> {
+  None
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn clipboard_change_count() -> Option<i64> {
+  use cocoa::{
+    appkit::NSPasteboard,
+    base::{id, nil},
+  };
+  unsafe {
+    let pasteboard = <id as NSPasteboard>::generalPasteboard(nil);
+    if pasteboard == nil {
+      None
+    } else {
+      Some(pasteboard.changeCount() as i64)
+    }
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clipboard_change_count() -> Option<i64> {
+  None
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
+  use core_graphics::{event::CGEventFlags, event_source::CGEventSourceStateID};
+  #[link(name = "CoreGraphics", kind = "framework")]
+  extern "C" {
+    fn CGEventSourceFlagsState(state_id: CGEventSourceStateID) -> u64;
+  }
+
+  let mask = CGEventFlags::CGEventFlagShift.bits()
+    | CGEventFlags::CGEventFlagControl.bits()
+    | CGEventFlags::CGEventFlagAlternate.bits()
+    | CGEventFlags::CGEventFlagCommand.bits();
+  let start = std::time::Instant::now();
+  while start.elapsed() < timeout {
+    let flags = unsafe { CGEventSourceFlagsState(CGEventSourceStateID::CombinedSessionState) };
+    if flags & mask == 0 {
+      return;
+    }
+    std::thread::sleep(Duration::from_millis(20));
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
+  std::thread::sleep(timeout.min(Duration::from_millis(120)));
+}
+
+/// 在前一个 App 仍持焦点时把选中文本读出来，失败时才模拟 Cmd+C/Ctrl+C 兜底。
+/// 失败/Accessibility 权限缺失/剪贴板为非文本格式 → 一律静默降级返回 None。
+/// 调用方负责确保此函数在 Lens 窗口 show() 之前执行。
+fn capture_active_selection() -> Option<String> {
+  if let Some(text) = read_accessibility_selected_text() {
+    eprintln!(
+      "[lens-capture] selected text captured via Accessibility len={}",
+      text.len()
+    );
+    return Some(text);
+  }
+
+  // snapshot 原剪贴板文本(仅 text)。若是图片/文件/空，snapshot=None，事后不还原。
+  let snapshot: Option<String> = Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok());
+  let before_change_count = clipboard_change_count();
+  eprintln!(
+    "[lens-capture] snapshot present={} len={} change_count={:?}",
+    snapshot.is_some(),
+    snapshot.as_ref().map(|s| s.len()).unwrap_or(0),
+    before_change_count,
+  );
+
+  // 等用户松开 Lens 热键修饰键，避免 Cmd+C 与残留 Shift 等组合成 Cmd+Shift+C。
+  wait_for_copy_shortcut_modifiers_to_clear(Duration::from_millis(450));
+  send_copy_shortcut();
+  std::thread::sleep(Duration::from_millis(150));
+
+  let captured: Option<String> = Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok());
+  let text_changed = match (&snapshot, &captured) {
+    (Some(a), Some(b)) => a != b,
+    (None, Some(_)) => true,
+    _ => false,
+  };
+  let after_change_count = clipboard_change_count();
+  let pasteboard_changed = match (before_change_count, after_change_count) {
+    (Some(before), Some(after)) => before != after,
+    _ => false,
+  };
+  eprintln!(
+    "[lens-capture] captured present={} len={} text_changed={} pasteboard_changed={} change_count={:?}",
+    captured.is_some(),
+    captured.as_ref().map(|s| s.len()).unwrap_or(0),
+    text_changed,
+    pasteboard_changed,
+    after_change_count,
+  );
+
+  if let Some(orig) = &snapshot {
+    if let Ok(mut cb) = Clipboard::new() {
+      let _ = cb.set_text(orig.clone());
+    }
+  }
+
+  // pasteboard changeCount 覆盖"选中文本与原剪贴板文本完全相同"的情况。
+  if !text_changed && !pasteboard_changed {
+    return None;
+  }
+  match captured {
+    Some(t) if !t.trim().is_empty() => Some(t),
+    _ => None,
+  }
+}
+
+/// 取走 Rust 端在 lens_request_internal 中暂存的 selection 文本。
+/// 取一次清一次：前端 enterSelect 调用，第二次调用立即返回空串。
+#[tauri::command]
+fn take_lens_selection(state: State<'_, AppState>) -> Result<String, String> {
+  match state.pending_selection.lock() {
+    Ok(mut guard) => Ok(guard.take().unwrap_or_default()),
+    Err(_) => Ok(String::new()),
+  }
+}
+
 /// 使用系统默认浏览器打开外部链接（仅限 https）
 #[tauri::command]
 #[allow(deprecated)]
@@ -603,6 +855,15 @@ fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
   if state.lens_busy.swap(true, Ordering::SeqCst) {
     return Err("Lens already active".to_string());
   }
+
+  // 必须在 ensure_lens_window/show/set_focus 之前抓取。创建隐藏 webview 在 macOS 上也可能
+  // 改变当前 focused UI element，导致 Cmd+C/AXSelectedText 读到 Lens 自己而不是前台 App。
+  let pending_selection = if mode == "chat" {
+    capture_active_selection()
+  } else {
+    None
+  };
+
   let window = match windows::ensure_lens_window(app) {
     Ok(w) => w,
     Err(e) => {
@@ -610,6 +871,10 @@ fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
       return Err(e);
     }
   };
+  // 结果暂存在 state.pending_selection，等前端 take 走。translate 模式写 None，避免遗留旧值。
+  if let Ok(mut guard) = state.pending_selection.lock() {
+    *guard = pending_selection;
+  }
   // 把 mode 编码进 hash query，前端通过 location.hash 读取（'#lens?mode=translate'）
   let safe_mode = if mode == "translate" { "translate" } else { "chat" };
   let script = format!(
@@ -2051,6 +2316,7 @@ fn main() {
         current_explain_image_id: Mutex::new(None),
         lens_busy: AtomicBool::new(false),
         explain_stream_generation: AtomicU64::new(0),
+        pending_selection: Mutex::new(None),
         key_cooldowns: Mutex::new(HashMap::new()),
         active_key_idx: Mutex::new(HashMap::new()),
         http: build_http_client(),
@@ -2115,6 +2381,7 @@ fn main() {
       lens_cancel_stream,
       lens_close,
       lens_set_floating,
+      take_lens_selection,
       lens_commit_image_to_history,
       lens_delete_history_image,
       check_github_latest_release,

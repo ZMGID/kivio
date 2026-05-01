@@ -263,6 +263,9 @@ export const api = {
   lensSetFloating: (rect: { x?: number; y?: number; width: number; height: number }) =>
     invoke<void>('lens_set_floating', { rect }),
 
+  // 取走 Rust 端在 lens_request_internal 中抓到的选中文本（take 一次清一次）
+  takeLensSelection: () => invoke<string>('take_lens_selection'),
+
   // ========== 自动更新（仅检查 + 跳转，不做自动下载安装） ==========
 
   /** 调后端 GitHub Releases API 检查最新版本 */
