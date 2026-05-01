@@ -129,6 +129,10 @@ PRs welcome. See `CLAUDE.md` and `AGENTS.md` for architecture notes.
 
 MIT © ZM
 
+## Friends
+
+- [LINUX DO](https://linux.do)
+
 ---
 
 <a name="中文"></a>
@@ -251,3 +255,7 @@ npm run dev   # 启动完整 Tauri 应用（Rust 后端 + Vite UI）
 ## 许可证
 
 MIT © ZM
+
+## 友链
+
+- [LINUX DO](https://linux.do)
