@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-KeyLingo is a lightweight desktop translation and AI vision utility built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows and provides global hotkey-triggered text translation, screenshot OCR/translation, and a Lens overlay for capture-then-ask vision Q&A — all via OpenAI-compatible APIs.
+Kivio (formerly KeyLingo through v2.4.4) is a lightweight desktop **screen-level AI assistant** built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows and provides global hotkey-triggered text translation, screenshot OCR/translation, and a Lens overlay for capture-then-ask vision Q&A — all via OpenAI-compatible APIs.
 
 ## Common Commands
 

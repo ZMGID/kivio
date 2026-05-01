@@ -26,6 +26,8 @@ dist-ssr
 dist-electron
 release
 src-tauri/target
+# rust-analyzer 在 workspace 根生成的 cache,不是 cargo 用户产物
+/target
 
 # Local build artifacts (OCR helper)
 resources/ocr
@@ -33,4 +35,4 @@ resources/ocr
 
 # Swift sidecar 编译产物 (npm run build:swift / CI 生成,不入库)
 src-tauri/binaries/
-src-tauri/swift/keylingo-ai-helper/.build/
+src-tauri/swift/kivio-ai-helper/.build/

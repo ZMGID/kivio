@@ -1,8 +1,8 @@
 {
-  "name": "keylingo",
+  "name": "kivio",
   "private": true,
   "version": "2.4.5",
-  "description": "KeyLingo - Smart Translation & AI Vision Tool for macOS",
+  "description": "Kivio - Screen-level AI assistant for macOS and Windows",
   "author": "ZM",
   "type": "module",
   "scripts": {

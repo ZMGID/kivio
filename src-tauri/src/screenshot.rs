@@ -19,7 +19,7 @@ pub fn cleanup_temp_file(path: &Path) {
 ///   - 历史记录引用的旧 image_id（应用重启后历史里指针还在但文件不再被 active 引用）
 ///   - 之前版本（v2.2 及更早）的旧文件
 ///
-/// 这里只删 24 小时之前的文件，避免误删可能正在被另一个 KeyLingo 实例使用的新文件。
+/// 这里只删 24 小时之前的文件，避免误删可能正在被另一个 Kivio 实例使用的新文件。
 pub fn cleanup_orphan_temp_files() {
   const PREFIXES: &[&str] = &["lens-", "lens-region-", "screenshot-"];
   const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);

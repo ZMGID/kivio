@@ -1,8 +1,8 @@
-# KeyLingo Rust 后端 Cargo 配置
+# Kivio Rust 后端 Cargo 配置
 [package]
-name = "keylingo"
+name = "kivio"
 version = "2.4.5"
-description = "KeyLingo - Smart Translation & AI Vision Tool for macOS/Windows"
+description = "Kivio - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 edition = "2021"
 

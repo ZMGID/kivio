@@ -1,6 +1,6 @@
-# KeyLingo Agent Guidelines
+# Kivio Agent Guidelines
 
-KeyLingo is a lightweight desktop translation and AI vision utility for macOS and Windows. Its core focus is a small package size and low runtime footprint, providing instant text translation, screenshot translation, and AI-powered visual Q&A through global shortcuts.
+Kivio (formerly KeyLingo through v2.4.4) is a lightweight desktop screen-level AI assistant for macOS and Windows. Its core focus is a small package size and low runtime footprint, providing instant text translation, screenshot translation, and AI-powered visual Q&A through global shortcuts.
 
 ## Tech Stack & Architecture
 

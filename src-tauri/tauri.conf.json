@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "KeyLingo",
+  "productName": "Kivio",
   "version": "2.4.5",
-  "identifier": "com.zmair.keylingo",
+  "identifier": "com.zmair.kivio",
   "build": {
     "beforeDevCommand": "npm run dev:ui",
     "beforeBuildCommand": "npm run build:ui",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "KeyLingo",
+        "title": "Kivio",
         "width": 392,
         "height": 152,
         "resizable": true,
@@ -36,7 +36,7 @@
       "nsis"
     ],
     "externalBin": [
-      "binaries/keylingo-ai-helper"
+      "binaries/kivio-ai-helper"
     ],
     "windows": {
       "nsis": {

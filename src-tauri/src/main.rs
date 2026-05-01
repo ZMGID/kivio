@@ -229,14 +229,14 @@ fn apple_intelligence_available(state: State<AppState>) -> bool {
 /// 网络失败 / API 限流时返回 available=false 静默处理，不打扰用户
 #[tauri::command]
 async fn check_github_latest_release(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-  const REPO: &str = "ZMGID/keylingo";
+  const REPO: &str = "ZMGID/kivio";
   let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
 
   let response = state
     .http
     .get(&url)
     // GitHub API 要求显式 User-Agent
-    .header("User-Agent", format!("KeyLingo/{}", env!("CARGO_PKG_VERSION")))
+    .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
     .header("Accept", "application/vnd.github+json")
     .send()
     .await;
@@ -324,11 +324,11 @@ async fn download_update_asset(
   state: State<'_, AppState>,
   version: String,
 ) -> Result<String, String> {
-  const REPO: &str = "ZMGID/keylingo";
+  const REPO: &str = "ZMGID/kivio";
   let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
   let resp = state.http
     .get(&url)
-    .header("User-Agent", format!("KeyLingo/{}", env!("CARGO_PKG_VERSION")))
+    .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
     .header("Accept", "application/vnd.github+json")
     .send()
     .await
@@ -346,11 +346,11 @@ async fn download_update_asset(
   let ext = std::path::Path::new(&name).extension()
     .and_then(|e| e.to_str()).unwrap_or("bin");
   let safe_version = version.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-').collect::<String>();
-  let dest = std::env::temp_dir().join(format!("keylingo-update-{safe_version}.{ext}"));
+  let dest = std::env::temp_dir().join(format!("kivio-update-{safe_version}.{ext}"));
 
   let mut resp = state.http
     .get(&asset_url)
-    .header("User-Agent", format!("KeyLingo/{}", env!("CARGO_PKG_VERSION")))
+    .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
     .send()
     .await
     .map_err(|e| format!("下载失败: {e}"))?;
@@ -385,7 +385,7 @@ async fn download_update_asset(
 }
 
 /// 启动安装包并退出当前应用。
-/// - macOS（.dmg）：hdiutil 挂载 → cp KeyLingo.app 到 /Applications → 卸载 → open 新版 → app.exit(0)
+/// - macOS（.dmg）：hdiutil 挂载 → cp Kivio.app 到 /Applications → 卸载 → open 新版 → app.exit(0)
 /// - Windows（.exe）：spawn NSIS installer，立即 exit 让 installer 能写 exe
 #[tauri::command]
 fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
@@ -397,9 +397,9 @@ fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
     use std::process::Command;
     // 显式指定挂载点（用 UUID 避免与同名 volume 已挂载时的名字冲突）。比解析 `hdiutil attach` 的
     // 默认表格输出鲁棒很多 —— 那个输出列用空格 padding,VolumeName 含空格(如重复挂载产生的
-    // "KeyLingo 1")会被 split_whitespace 截断。
+    // "Kivio 1")会被 split_whitespace 截断。
     let mount_id = Uuid::new_v4().to_string();
-    let mount_point = std::env::temp_dir().join(format!("keylingo-mount-{mount_id}"));
+    let mount_point = std::env::temp_dir().join(format!("kivio-mount-{mount_id}"));
     fs::create_dir_all(&mount_point).map_err(|e| format!("创建挂载目录失败: {e}"))?;
     let mount_str = mount_point.to_string_lossy().to_string();
     let attach = Command::new("hdiutil")
@@ -1944,13 +1944,16 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
     return Ok(());
   }
 
-  let icon_bytes = include_bytes!("../icons/icon.png");
+  let icon_bytes = include_bytes!("../icons/tray-icon.png");
   let icon_image = image::load_from_memory(icon_bytes)
     .map_err(|e| e.to_string())?
     .to_rgba8();
   let (width, height) = icon_image.dimensions();
   let tray = TrayIconBuilder::<tauri::Wry>::with_id("main")
     .icon(tauri::image::Image::new_owned(icon_image.into_raw(), width, height))
+    // macOS template image：纯黑透明 PNG,系统按 light/dark 主题自动反色为白
+    // (Windows/Linux 上 ignore 此 flag,直接显示原图)
+    .icon_as_template(true)
     .menu(&menu)
     .on_menu_event(|app, event| match event.id().as_ref() {
       "show" => {
@@ -1976,7 +1979,7 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
     .build(app)
     .map_err(|e| e.to_string())?;
 
-  tray.set_tooltip(Some("KeyLingo".to_string())).map_err(|e| e.to_string())?;
+  tray.set_tooltip(Some("Kivio".to_string())).map_err(|e| e.to_string())?;
   Ok(())
 }
 

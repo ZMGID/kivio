@@ -1,4 +1,4 @@
-// KeyLingo AI Helper —— Tauri sidecar，把 Apple Foundation Models 暴露成 stdin/stdout JSON 行协议。
+// Kivio AI Helper —— Tauri sidecar，把 Apple Foundation Models 暴露成 stdin/stdout JSON 行协议。
 // 协议(每行一条 JSON):
 //   启动:    { "type": "ready", "available": Bool, "reason": String? }
 //   请求:    { "id": Int, "action": "text" | "stream" | "ocr",
@@ -89,7 +89,7 @@ func handleOCR(id: Int, imagePath: String) async {
   }
   let request = VNRecognizeTextRequest()
   request.recognitionLevel = .accurate
-  // 多语言识别（Vision 自动选最匹配的）— 覆盖 KeyLingo 的主要使用场景
+  // 多语言识别（Vision 自动选最匹配的）— 覆盖 Kivio 的主要使用场景
   request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US", "ja-JP", "ko-KR", "fr-FR", "de-DE"]
   request.usesLanguageCorrection = true
   let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
@@ -138,7 +138,7 @@ func dispatch(_ raw: String) {
 }
 
 @main
-struct KeyLingoAIHelper {
+struct KivioAIHelper {
   static func main() async {
     sendReady()
     while let line = readLine(strippingNewline: true) {

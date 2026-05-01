@@ -1,7 +1,7 @@
-// Apple Intelligence 客户端：以 Tauri sidecar 形式运行 Swift `keylingo-ai-helper`，
+// Apple Intelligence 客户端：以 Tauri sidecar 形式运行 Swift `kivio-ai-helper`，
 // 通过 stdin/stdout JSON 行协议把 Foundation Models 的 text/stream 调用桥接到 Rust。
 //
-// 协议见 src-tauri/swift/keylingo-ai-helper/Sources/main.swift。
+// 协议见 src-tauri/swift/kivio-ai-helper/Sources/main.swift。
 // 单例：app 启动时 spawn 一次，所有请求复用同一个进程；按递增 id 路由响应到对应 channel。
 // 不可用场景（Windows / 非 Apple Silicon / macOS 25 之前 / 用户没开 Apple Intelligence）：
 //   sidecar 二进制不存在或 ready 报 unavailable → available=false，后续 call_* 直接 Err。
@@ -69,7 +69,7 @@ impl AppleIntelligenceClient {
       child: Mutex::new(None),
     });
 
-    let sidecar = match app.shell().sidecar("keylingo-ai-helper") {
+    let sidecar = match app.shell().sidecar("kivio-ai-helper") {
       Ok(c) => c,
       Err(err) => {
         eprintln!("[apple-intelligence] sidecar 不存在或未配置: {err}");

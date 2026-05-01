@@ -35,7 +35,8 @@ type HistoryItem = {
 }
 
 const HISTORY_MAX = 20
-const HISTORY_STORAGE_KEY = 'keylingo:lens-history:v1'
+const HISTORY_STORAGE_KEY = 'kivio:lens-history:v1'
+const HISTORY_STORAGE_KEY_LEGACY = 'keylingo:lens-history:v1'  // v2.4.5 之前的 key,启动时一次性迁移
 const HISTORY_THUMB_SIZE = 96     // 历史记录缩略图边长（px），原始截图压成这个尺寸再持久化
 
 const READY_BAR_H = 56            // 对话栏单行高度（与字号绑定，不随屏幕变）
@@ -84,11 +85,21 @@ async function makeThumbnail(dataUrl: string, maxSize: number): Promise<string> 
   })
 }
 
-/** 从 localStorage 读历史。失败 / 损坏数据 → 空数组 */
+/** 从 localStorage 读历史。失败 / 损坏数据 → 空数组。
+    一次性迁移：keylingo:lens-history:v1 → kivio:lens-history:v1 */
 function loadHistoryFromStorage(): HistoryItem[] {
   try {
-    const raw = localStorage.getItem(HISTORY_STORAGE_KEY)
-    if (!raw) return []
+    let raw = localStorage.getItem(HISTORY_STORAGE_KEY)
+    if (!raw) {
+      const legacy = localStorage.getItem(HISTORY_STORAGE_KEY_LEGACY)
+      if (legacy) {
+        localStorage.setItem(HISTORY_STORAGE_KEY, legacy)
+        localStorage.removeItem(HISTORY_STORAGE_KEY_LEGACY)
+        raw = legacy
+      } else {
+        return []
+      }
+    }
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
     return parsed.slice(0, HISTORY_MAX)

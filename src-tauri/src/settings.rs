@@ -5,7 +5,9 @@ use tauri_plugin_store::StoreBuilder;
 // 设置存储文件名
 const SETTINGS_STORE: &str = "settings.json";
 // 系统钥匙串服务名（用于安全存储 API Key）
-const KEYRING_SERVICE: &str = "com.zmair.keylingo";
+const KEYRING_SERVICE: &str = "com.zmair.kivio";
+// 旧版 service 名（v2.4.5 之前为 com.zmair.keylingo），仅用于 legacy 读 + 清理
+const KEYRING_SERVICE_LEGACY: &str = "com.zmair.keylingo";
 
 /**
  * 生成提供商 API Key 在钥匙串中的条目名称
@@ -18,23 +20,33 @@ fn provider_credential_name(provider_id: &str) -> String {
  * 一次性读取旧版 keyring 中的 API Key（仅用于升级迁移）
  * v2.3.x 及之前：API Key 存在系统钥匙串，settings.json 中 apiKey 字段留空。
  * 从 v2.4 起：API Key 直接存 settings.json，钥匙串不再写入。
+ * v2.4.5 (Kivio 重命名) 起：service 名从 com.zmair.keylingo → com.zmair.kivio，
+ *   读取时同时尝试两个 service，确保从 KeyLingo 升级上来的用户 key 不丢。
  * 此函数仅在 settings.json 中没有 key 时用一次，迁移完成后旧条目可被清理。
  */
 fn legacy_load_keyring_api_key(provider_id: &str) -> Option<String> {
-  let entry =
-    keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id)).ok()?;
-  let raw = entry.get_password().ok()?;
-  // v2.3.x 中 keyring 只存单 key（纯字符串）
-  let trimmed = raw.trim().to_string();
-  if trimmed.is_empty() { None } else { Some(trimmed) }
+  let cred = provider_credential_name(provider_id);
+  for svc in [KEYRING_SERVICE, KEYRING_SERVICE_LEGACY] {
+    let Ok(entry) = keyring::Entry::new(svc, &cred) else { continue };
+    let Ok(raw) = entry.get_password() else { continue };
+    let trimmed = raw.trim().to_string();
+    if !trimmed.is_empty() {
+      return Some(trimmed);
+    }
+  }
+  None
 }
 
 /**
  * 删除旧版 keyring 中的 API Key 条目（迁移完成后清理）
+ * 同时清理新旧 service 名下的条目，避免有残留。
  */
 fn legacy_clear_keyring_api_key(provider_id: &str) {
-  if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &provider_credential_name(provider_id)) {
-    let _ = entry.delete_credential();
+  let cred = provider_credential_name(provider_id);
+  for svc in [KEYRING_SERVICE, KEYRING_SERVICE_LEGACY] {
+    if let Ok(entry) = keyring::Entry::new(svc, &cred) {
+      let _ = entry.delete_credential();
+    }
   }
 }
 
@@ -548,10 +560,71 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
 }
 
 /**
+ * 一次性数据迁移：v2.4.5 把 identifier 从 com.zmair.keylingo 改为 com.zmair.kivio。
+ * Tauri 的 app_data_dir 直接由 identifier 派生，改名后新目录是空的，
+ * 老用户升级会丢失 settings.json / lens-history。这里在新目录还没数据时，
+ * 把同级的旧目录整个递归拷贝过来。
+ *
+ * 幂等：新目录已存在 settings.json → 跳过；旧目录不存在 → 跳过（全新安装）。
+ */
+fn migrate_legacy_app_data(app: &AppHandle) {
+  use tauri::Manager;
+  let new_dir = match app.path().app_data_dir() {
+    Ok(d) => d,
+    Err(err) => {
+      eprintln!("[migrate-app-data] app_data_dir unavailable: {err}");
+      return;
+    }
+  };
+  if new_dir.join(SETTINGS_STORE).exists() {
+    return;
+  }
+
+  let Some(parent) = new_dir.parent() else { return };
+  // 旧 identifier 的目录名就是 identifier 本身（macOS / Windows / Linux 都一致）
+  let legacy_dir = parent.join("com.zmair.keylingo");
+  if !legacy_dir.is_dir() {
+    return;
+  }
+
+  if let Err(err) = std::fs::create_dir_all(&new_dir) {
+    eprintln!("[migrate-app-data] mkdir new dir failed: {err}");
+    return;
+  }
+
+  match copy_dir_recursive(&legacy_dir, &new_dir) {
+    Ok(()) => eprintln!(
+      "[migrate-app-data] copied legacy app data: {} → {}",
+      legacy_dir.display(),
+      new_dir.display()
+    ),
+    Err(err) => eprintln!("[migrate-app-data] copy failed: {err}"),
+  }
+}
+
+fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+  std::fs::create_dir_all(to)?;
+  for entry in std::fs::read_dir(from)? {
+    let entry = entry?;
+    let src = entry.path();
+    let dst = to.join(entry.file_name());
+    if src.is_dir() {
+      copy_dir_recursive(&src, &dst)?;
+    } else if src.is_file() && !dst.exists() {
+      // 不覆盖已有目标文件：避免与用户在新路径下手动建/写过的内容冲突
+      std::fs::copy(&src, &dst)?;
+    }
+  }
+  Ok(())
+}
+
+/**
  * 从存储文件加载设置
  * 执行清理迁移；若 settings.json 中无 API Key，则从旧版 keyring 一次性迁移
  */
 pub fn load_settings(app: &AppHandle) -> Settings {
+  // 入口先把旧 identifier 目录的数据搬到新目录（幂等）
+  migrate_legacy_app_data(app);
   let store = StoreBuilder::new(app, SETTINGS_STORE).build();
   let settings = match store {
     Ok(store) => store

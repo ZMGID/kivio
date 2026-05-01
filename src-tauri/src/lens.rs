@@ -75,7 +75,8 @@ pub fn list_windows() -> Vec<WindowInfo> {
       reason = Some("layer!=0");
     } else if alpha < 0.05 {
       reason = Some("alpha~0");
-    } else if owner == "KeyLingo" || owner == "keylingo" {
+    } else if owner == "Kivio" || owner == "kivio" || owner == "KeyLingo" || owner == "keylingo" {
+      // 同时匹配新名 Kivio 和旧名 KeyLingo —— 旧版本仍在运行的 macOS 实例可能 owner 是 KeyLingo
       reason = Some("self");
     } else if bw < 60.0 || bh < 40.0 {
       reason = Some("too-small");
