@@ -2392,6 +2392,7 @@ dependencies = [
  "tauri-plugin-store",
  "tokio",
  "uuid",
+ "windows 0.61.3",
  "xcap",
 ]
 

@@ -331,7 +331,64 @@ fn read_accessibility_selected_text() -> Option<String> {
   }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: 通过 UI Automation TextPattern 直接读取当前前台控件的选区。
+/// 这条路径不碰剪贴板；不支持 TextPattern 的控件会自动降级到 Ctrl+C fallback。
+#[cfg(target_os = "windows")]
+fn read_accessibility_selected_text() -> Option<String> {
+  use windows::{
+    core::Interface,
+    Win32::{
+      Foundation::RPC_E_CHANGED_MODE,
+      System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED},
+      UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId},
+    },
+  };
+
+  unsafe {
+    let init_result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    if init_result.is_err() && init_result != RPC_E_CHANGED_MODE {
+      eprintln!("[lens-capture] CoInitializeEx failed: {init_result:?}");
+      return None;
+    }
+    let should_uninitialize = init_result.is_ok();
+
+    let result = (|| {
+      let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+      let focused = automation.GetFocusedElement().ok()?;
+      let pattern: IUIAutomationTextPattern = focused
+        .GetCurrentPattern(UIA_TextPatternId)
+        .ok()?
+        .cast()
+        .ok()?;
+      let ranges = pattern.GetSelection().ok()?;
+      let count = ranges.Length().ok()?.max(0);
+      let mut parts = Vec::new();
+
+      for index in 0..count {
+        let range = ranges.GetElement(index).ok()?;
+        let text = range.GetText(-1).ok()?;
+        let text = String::from_utf16_lossy(&text);
+        if !text.trim().is_empty() {
+          parts.push(text);
+        }
+      }
+
+      if parts.is_empty() {
+        None
+      } else {
+        Some(parts.join("\n"))
+      }
+    })();
+
+    if should_uninitialize {
+      CoUninitialize();
+    }
+
+    result
+  }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn read_accessibility_selected_text() -> Option<String> {
   None
 }
@@ -353,7 +410,18 @@ fn clipboard_change_count() -> Option<i64> {
   }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn clipboard_change_count() -> Option<i64> {
+  use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
+  let count = unsafe { GetClipboardSequenceNumber() };
+  if count == 0 {
+    None
+  } else {
+    Some(i64::from(count))
+  }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn clipboard_change_count() -> Option<i64> {
   None
 }
@@ -380,7 +448,26 @@ fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
   }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
+  use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+  };
+
+  let keys = [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN];
+  let start = std::time::Instant::now();
+  while start.elapsed() < timeout {
+    let pressed = keys.iter().any(|key| unsafe {
+      (GetAsyncKeyState(key.0 as i32) as u16 & 0x8000) != 0
+    });
+    if !pressed {
+      return;
+    }
+    std::thread::sleep(Duration::from_millis(20));
+  }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
   std::thread::sleep(timeout.min(Duration::from_millis(120)));
 }
