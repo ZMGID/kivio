@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// 一次性脚本：把源 icon (1254x1254 方形) 处理成 macOS-style squircle 圆角图标，
+// 一次性脚本：把源 icon (public/icon.png) 处理成 macOS-style squircle 圆角图标，
 // 输出到 src-tauri/icons/source-rounded.png，由调用方继续跑 `tauri icon` 生成各平台尺寸。
 //
-// 处理：
-//   1. 把源图缩到 824x824（macOS HIG 推荐：1024 容器内留 100px padding）
-//   2. 居中放到 1024x1024 透明 canvas
-//   3. 应用圆角矩形 mask（半径 230px ≈ 22.5%，接近 macOS squircle）
-//
-// 为什么不直接做 squircle (superellipse)：圆角矩形够用，肉眼几乎分辨不出差别，
-// 实现简单。如果以后想精确 squircle 再说。
+// 修复历史：早期版本把源图 contain 到 824×824 居中放进 1024 透明画布，再做圆角 mask。
+// 结果圆角 mask 削的是外围透明 padding，从未切到中央的白底——macOS / Windows 上看起来
+// 还是个无圆角的方形白块。现在的逻辑：
+//   1. 源图 resize 到 1024×1024（保持原 squircle 设计的视觉比例）
+//   2. 底下铺纯白 1024×1024 画布（合成时四角透明会被白色透出）
+//   3. 对 1024 边缘应用半径 230 的圆角 mask（≈22.5%，macOS squircle 视觉等效半径）
+// 这样圆角才真正切到白底，得到完整的应用图标 squircle。
 
 import { Jimp } from 'jimp'
 import { resolve, dirname } from 'node:path'
@@ -17,24 +17,21 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 
-const SRC = resolve(ROOT, 'public/icon.png')             // 当前的 1254x1254 方形图
+const SRC = resolve(ROOT, 'public/icon.png')
 const DST = resolve(ROOT, 'src-tauri/icons/source-rounded.png')
 
 const SIZE = 1024
-const PADDING = 100  // 内容区四边各留 100px
-const RADIUS = 230   // ~22.5% of 1024，macOS squircle 视觉等效半径
+const RADIUS = 230
 
 async function main() {
   const src = await Jimp.read(SRC)
-  src.contain({ w: SIZE - PADDING * 2, h: SIZE - PADDING * 2 })
+  src.resize({ w: SIZE, h: SIZE })
 
-  const canvas = new Jimp({ width: SIZE, height: SIZE, color: 0x00000000 })
-  // 居中合成
-  const offsetX = Math.floor((SIZE - src.bitmap.width) / 2)
-  const offsetY = Math.floor((SIZE - src.bitmap.height) / 2)
-  canvas.composite(src, offsetX, offsetY)
+  // 纯白底，1024×1024 全填满
+  const canvas = new Jimp({ width: SIZE, height: SIZE, color: 0xffffffff })
+  canvas.composite(src, 0, 0)
 
-  // 圆角 mask：4 个角 radius 内的像素，距离圆心 > radius 的设为透明
+  // 圆角 mask：1024 四角 RADIUS 内、距离圆心 > RADIUS 的像素设为透明，边缘 1px 抗锯齿
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
       let cx = -1, cy = -1
@@ -47,10 +44,8 @@ async function main() {
       const d2 = dx * dx + dy * dy
       const r2 = RADIUS * RADIUS
       if (d2 > r2) {
-        // 完全透明
         canvas.setPixelColor(0x00000000, x, y)
       } else if (d2 > (RADIUS - 1) * (RADIUS - 1)) {
-        // 边缘 1px 抗锯齿：alpha 按距离线性插值
         const d = Math.sqrt(d2)
         const alpha = Math.max(0, Math.min(1, RADIUS - d))
         const px = canvas.getPixelColor(x, y)
