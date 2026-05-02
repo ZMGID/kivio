@@ -2017,13 +2017,23 @@ fn lens_register_annotated_image(
   state: State<AppState>,
   base64_png: String,
 ) -> Result<serde_json::Value, String> {
-  let bytes = general_purpose::STANDARD
-    .decode(base64_png.as_bytes())
-    .map_err(|e| format!("base64 decode failed: {e}"))?;
+  let bytes = match general_purpose::STANDARD.decode(base64_png.as_bytes()) {
+    Ok(b) => b,
+    Err(e) => {
+      return Ok(serde_json::json!({
+        "success": false,
+        "error": format!("base64 decode failed: {e}")
+      }));
+    }
+  };
 
   let temp_path = std::env::temp_dir().join(format!("lens-{}.png", Uuid::new_v4()));
-  std::fs::write(&temp_path, &bytes)
-    .map_err(|e| format!("write png failed: {e}"))?;
+  if let Err(e) = std::fs::write(&temp_path, &bytes) {
+    return Ok(serde_json::json!({
+      "success": false,
+      "error": format!("write png failed: {e}")
+    }));
+  }
 
   let image_id = Uuid::new_v4().to_string();
   archive_captured_image(&app, &temp_path, &image_id);
