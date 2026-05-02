@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, type LucideIcon } from 'lucide-react'
 import { formatHotkey, getPlatform } from './utils'
 
 /**
@@ -290,7 +290,7 @@ export function DefaultPrompt({ label, content }: { label: string; content: stri
  * 区块标题 — 小号灰 uppercase + 左侧 brand 细色条
  * 让标题谦逊，把视觉重心交给卡片本身
  */
-export function SectionTitle({ children, icon: Icon }: { children: ReactNode; icon?: React.ComponentType<{ size?: number; className?: string }> }) {
+export function SectionTitle({ children, icon: Icon }: { children: ReactNode; icon?: LucideIcon }) {
   return (
     <div className="flex items-center gap-2 mb-2.5 pl-0.5">
       <span className="w-[3px] h-3 rounded-full bg-[#2563eb] dark:bg-blue-400" />

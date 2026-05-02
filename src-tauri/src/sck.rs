@@ -26,18 +26,14 @@ use screencapturekit::{
 /// 真正按下截图时直接走快路径（实测稳定值降到 < 30 ms）。
 pub fn prewarm() {
   std::thread::spawn(|| {
-    let started = std::time::Instant::now();
-    match SCShareableContent::get() {
-      Ok(_) => eprintln!("[sck] prewarm done in {}ms", started.elapsed().as_millis()),
-      Err(e) => eprintln!("[sck] prewarm failed: {:?}", e),
+    if let Err(e) = SCShareableContent::get() {
+      eprintln!("[sck] prewarm failed: {:?}", e);
     }
   });
 }
 
 /// 截取指定 windowID 的单窗口画面，写入 `temp_dir/lens-<uuid>.png`，返回路径。
 pub fn capture_window(window_id: u32) -> Result<PathBuf, String> {
-  let started = std::time::Instant::now();
-
   let content = SCShareableContent::get()
     .map_err(|e| format!("SCShareableContent::get failed: {:?}", e))?;
 
@@ -71,15 +67,6 @@ pub fn capture_window(window_id: u32) -> Result<PathBuf, String> {
     .save_png(path_str)
     .map_err(|e| format!("save_png failed: {:?}", e))?;
 
-  let elapsed = started.elapsed();
-  eprintln!(
-    "[sck] capture_window id={} {}x{} took {}ms",
-    window_id,
-    pixel_w,
-    pixel_h,
-    elapsed.as_millis()
-  );
-
   Ok(path)
 }
 
@@ -98,8 +85,6 @@ pub fn capture_region(
   if width <= 0.0 || height <= 0.0 {
     return Err(format!("Invalid region size {width}x{height}"));
   }
-  let started = std::time::Instant::now();
-
   let content = SCShareableContent::get()
     .map_err(|e| format!("SCShareableContent::get failed: {:?}", e))?;
 
@@ -159,20 +144,6 @@ pub fn capture_region(
   image
     .save_png(path_str)
     .map_err(|e| format!("save_png failed: {:?}", e))?;
-
-  let elapsed = started.elapsed();
-  eprintln!(
-    "[sck] capture_region rect=({},{},{}x{}) display={} excluded={} {}x{} took {}ms",
-    x as i32,
-    y as i32,
-    width as i32,
-    height as i32,
-    display.display_id(),
-    excluded_owned.len(),
-    pixel_w,
-    pixel_h,
-    elapsed.as_millis()
-  );
 
   Ok(path)
 }

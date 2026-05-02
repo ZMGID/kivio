@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef } from 'react'
 import { Settings as SettingsIcon, Cpu } from 'lucide-react'
-import Settings from './Settings'
-import Lens from './Lens'
 import { api } from './api/tauri'
 import { i18n, type Lang } from './settings/i18n'
 import './index.css'
+
+const Settings = lazy(() => import('./Settings'))
+const Lens = lazy(() => import('./Lens'))
 
 /**
  * 翻译器主组件
@@ -272,11 +273,19 @@ function App() {
   }
 
   // 根据模式渲染对应视图
-  if (mode === 'lens') return <Lens />
+  if (mode === 'lens') {
+    return (
+      <Suspense fallback={null}>
+        <Lens />
+      </Suspense>
+    )
+  }
   if (mode === 'settings') {
     return (
       <div className="h-screen w-screen overflow-hidden">
-        <Settings onClose={closeSettings} onSettingsChange={applyTheme} />
+        <Suspense fallback={null}>
+          <Settings onClose={closeSettings} onSettingsChange={applyTheme} />
+        </Suspense>
       </div>
     )
   }

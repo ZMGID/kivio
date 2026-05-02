@@ -13,6 +13,7 @@
     "build:ui": "vite build",
     "build:swift": "node scripts/build-swift-sidecar.js",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview"
   },
   "dependencies": {

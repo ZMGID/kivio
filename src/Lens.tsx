@@ -1299,13 +1299,6 @@ export default function Lens() {
               }}
             />
           )}
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-neutral-900/80 backdrop-blur text-white text-[12px] font-medium pointer-events-none">
-            {dragging
-              ? t.lensSelectHintDrag
-              : hovered
-                ? t.lensSelectHintHover.replace('{app}', hovered.owner)
-                : t.lensSelectHintIdle}
-          </div>
         </>
       )}
 
@@ -1578,7 +1571,7 @@ export default function Lens() {
             left: barRect.x,
             top: barRect.y,
             width: barRect.width,
-            maxHeight: !keepFullscreen && stage !== 'select'
+            maxHeight: !keepFullscreen
               ? READY_BAR_H + 8 + stableAnswerHeight
               : Math.min(viewport.h - 32, READY_BAR_H + 8 + stableAnswerHeight),
             transitionProperty: barNoTransition ? 'none' : 'left, top, width, transform, opacity',
@@ -1619,7 +1612,7 @@ export default function Lens() {
           {/* 内容区 */}
           <div className="px-3.5 py-3 overflow-y-auto custom-scrollbar"
             style={{
-              maxHeight: !keepFullscreen && stage !== 'select'
+              maxHeight: !keepFullscreen
                 ? stableAnswerHeight
                 : Math.min(viewport.h - 110, stableAnswerHeight)
             }}>

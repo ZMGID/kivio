@@ -38,11 +38,7 @@ pub fn list_windows() -> Vec<WindowInfo> {
   // 数组元素类型为 untyped CFType；每个元素本身是一个 CFDictionary。
   let array: CFArray<CFType> = unsafe { CFArray::wrap_under_create_rule(info_ref) };
 
-  let total = array.len();
-  eprintln!("[lens] CGWindowList returned {} entries", total);
-
   let mut out = Vec::new();
-  let mut filtered_summary: Vec<String> = Vec::new();
   for item in array.iter() {
     let dict_ref = item.as_CFTypeRef() as CFDictionaryRef;
     if dict_ref.is_null() {
@@ -82,18 +78,6 @@ pub fn list_windows() -> Vec<WindowInfo> {
       reason = Some("too-small");
     }
 
-    filtered_summary.push(format!(
-      "  layer={} alpha={:.2} id={} {}x{} owner={:?} title={:?} -> {}",
-      layer,
-      alpha,
-      id,
-      bw as i32,
-      bh as i32,
-      owner,
-      title,
-      reason.unwrap_or("KEEP"),
-    ));
-
     if reason.is_some() {
       continue;
     }
@@ -107,11 +91,6 @@ pub fn list_windows() -> Vec<WindowInfo> {
       height: bh,
     });
   }
-  // 打印每个候选窗口的最终归类，方便调试
-  for line in &filtered_summary {
-    eprintln!("{}", line);
-  }
-  eprintln!("[lens] kept {} windows", out.len());
   out
 }
 

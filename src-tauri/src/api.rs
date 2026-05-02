@@ -153,20 +153,35 @@ fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
   delay.min(RETRY_MAX_DELAY_MS)
 }
 
-/// 从 send_with_retry 拼接的错误信息中提取 HTTP 状态码
-/// 格式约定：`"{label} Error: {status} - {body}"`，
-/// status 形如 `"429 Too Many Requests"`，第一段数字即可
-/// 网络错误（reqwest::Error 路径）格式为 `"{label} Error: <reqwest msg>"`，无前导数字 → 返回 None
-pub fn extract_status_code(err_msg: &str) -> Option<u16> {
-  let idx = err_msg.find(" Error: ")?;
-  let rest = &err_msg[idx + " Error: ".len()..];
-  let end = rest
+fn parse_leading_status_code(value: &str) -> Option<u16> {
+  let end = value
     .find(|c: char| !c.is_ascii_digit())
-    .unwrap_or(rest.len());
+    .unwrap_or(value.len());
   if end == 0 {
     return None;
   }
-  rest[..end].parse().ok()
+  value[..end].parse().ok()
+}
+
+/// 从 HTTP 错误信息中提取状态码
+/// 格式约定：`"{label} Error: {status} - {body}"`，
+/// status 形如 `"429 Too Many Requests"`，第一段数字即可
+/// 兼容少数防御性分支使用的 `"{label} HTTP {status}: {body}"`。
+/// 网络错误（reqwest::Error 路径）格式为 `"{label} Error: <reqwest msg>"`，无前导数字 → 返回 None
+pub fn extract_status_code(err_msg: &str) -> Option<u16> {
+  if let Some(idx) = err_msg.find(" Error: ") {
+    let rest = &err_msg[idx + " Error: ".len()..];
+    if let Some(code) = parse_leading_status_code(rest) {
+      return Some(code);
+    }
+  }
+
+  if let Some(idx) = err_msg.find(" HTTP ") {
+    let rest = &err_msg[idx + " HTTP ".len()..];
+    return parse_leading_status_code(rest);
+  }
+
+  None
 }
 
 /// 判断错误信息是否触发 key failover
@@ -1046,6 +1061,13 @@ mod tests {
   }
 
   #[test]
+  fn extract_status_code_handles_defensive_http_format() {
+    assert_eq!(extract_status_code("Stream HTTP 429: rate limited"), Some(429));
+    assert_eq!(extract_status_code("Stream HTTP 401: unauthorized"), Some(401));
+    assert_eq!(extract_status_code("Vision API HTTP 403: forbidden"), Some(403));
+  }
+
+  #[test]
   fn extract_status_code_handles_non_failover_status() {
     assert_eq!(extract_status_code("X Error: 400 Bad Request - body"), Some(400));
     assert_eq!(extract_status_code("X Error: 500 Internal Server Error - body"), Some(500));
@@ -1072,12 +1094,15 @@ mod tests {
     assert!(is_failover_error("X Error: 402 - body"));
     assert!(is_failover_error("X Error: 403 - body"));
     assert!(is_failover_error("X Error: 429 - body"));
+    assert!(is_failover_error("Stream HTTP 429: rate limited"));
+    assert!(is_failover_error("Stream HTTP 401: unauthorized"));
   }
 
   #[test]
   fn is_failover_error_does_not_trigger_on_400_or_5xx() {
     // 400 是请求 body 问题，不应换 key
     assert!(!is_failover_error("X Error: 400 Bad Request - body"));
+    assert!(!is_failover_error("Stream HTTP 400: bad request"));
     // 500 由 send_with_retry 内部退避重试，不应到 failover 层
     assert!(!is_failover_error("X Error: 500 Internal Server Error - body"));
     assert!(!is_failover_error("X Error: 503 Service Unavailable - body"));

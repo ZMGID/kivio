@@ -17,8 +17,10 @@ Use `npm` (lockfile is `package-lock.json`). Rust tooling is managed by Tauri.
 - `npm run build:ui` — build the production UI bundle only (outputs to `dist/`).
 - `npm run preview` — preview the built UI bundle locally.
 - `npm run lint` — run ESLint on `.ts` and `.tsx` files.
+- `npm run typecheck` — run `tsc --noEmit` for strict TypeScript checks.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — run Rust unit tests.
 
-There is no test runner configured. Manual smoke testing is required after changes.
+There is no frontend unit/e2e test runner configured. Manual smoke testing is required after changes that affect app flows.
 
 ## Architecture
 
@@ -59,12 +61,12 @@ Each provider stores `apiKeys: string[]` (a pool of keys for failover), not a si
 
 ### Multi-Key Failover
 
-When a request fails with a quota/rate-limit/auth error, the backend automatically rotates to the next configured key for that provider. Implementation lives in `main.rs`:
+When a request fails with a quota/rate-limit/auth error, the backend automatically rotates to the next configured key for that provider. Implementation lives across `src-tauri/src/api.rs` and `src-tauri/src/state.rs`:
 
 - `AppState.key_cooldowns` — `(provider_id, key_idx) → Instant` map; failed keys are cooled down for `KEY_COOLDOWN` (60s) before being eligible again.
 - `AppState.active_key_idx` — last-known-good idx per provider; subsequent calls start from this idx.
 - `send_with_failover(state, label, attempts, provider_id, api_keys, send)` — wraps `send_with_retry`. The `send` closure takes a `&str` (the current key) so the same body builder is reused across keys.
-- `is_failover_error(err_msg)` — pattern-matches on the error string (`Error: 401/402/403/429`) and body keywords (`insufficient_quota`, `quota_exceeded`, `rate_limit_exceeded`, `billing`, `out of credit`, `insufficient balance`).
+- `is_failover_error(err_msg)` — pattern-matches on HTTP status parsed from the error string. Only 401/402/403/429 trigger key rotation; malformed requests and server/network failures do not burn backup keys.
 - Non-failover errors (timeouts, 5xx) still go through `send_with_retry` exponential backoff and don't burn keys.
 - `test_provider_connection` deliberately uses only the first key (so users see whether their primary configuration is correct without hidden fallback masking issues).
 
@@ -89,7 +91,9 @@ A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent over
 
 ### Rust Backend Structure
 
-- **`main.rs`** — App state (`AppState`), Tauri commands, OpenAI API calling logic (`call_openai_text`, `call_openai_ocr`, `call_vision_api`), retry logic (`send_with_retry`), multi-key failover (`send_with_failover`, `is_failover_error`, `extract_status_code`), hotkey registration, and window lifecycle.
+- **`main.rs`** — Tauri commands, update flow, hotkey registration, tray setup, window lifecycle, capture orchestration, and app startup.
+- **`api.rs`** — HTTP client setup, provider credential resolution, retry/failover, OpenAI-compatible text/OCR/vision calls, and SSE stream parsing.
+- **`state.rs`** — `AppState`, lock helpers, Lens runtime state, and multi-key cooldown / active-key selection.
 - **`settings.rs`** — Settings schema, serde defaults, `sanitize_settings` migration/validation, one-shot `migrate_legacy_keyring_keys` (gated by `legacy_keyring_migrated` flag), `persist_settings` (mirrors `apiKeys[0]` to legacy `apiKey` field for downgrade compat).
 - **`screenshot.rs`** — Temp PNG cleanup helpers (`cleanup_temp_file` for one-shot, `cleanup_orphan_temp_files` for app-startup GC of stale `lens-*.png` / `screenshot-*.png` older than 24 h).
 - **`sck.rs`** — macOS-only ScreenCaptureKit wrapper invoked by `lens_capture_window` / `lens_capture_region`.
@@ -107,7 +111,7 @@ Key crate responsibilities from `Cargo.toml`:
 
 ### Streaming
 
-Lens supports streaming responses via two SSE-relay event channels emitted by `stream_vision_response` in `main.rs`:
+Lens supports streaming responses via two SSE-relay event channels emitted by stream helpers in `api.rs`:
 - `lens-stream` — chat answers; deltas accumulate into the last assistant message in `Lens.tsx`. Supports `delta.reasoning_content` for reasoning-mode models.
 - `lens-translate-stream` — screenshot translate; emits `kind="translated"` deltas, then a `<<<ORIGINAL>>>` separator, then `kind="original"` deltas. Frontend splits the stream into translation (top) + original (small grey reference, bottom).
 
@@ -135,4 +139,4 @@ Manual releases are also supported via `workflow_dispatch`.
 - **macOS**: The app hides its Dock icon (`ActivationPolicy::Accessory`) and uses `visibleOnAllWorkspaces` for all windows.
 - **Windows**: Manual launch opens settings by default. Autostart uses a dedicated `--from-autostart` arg to avoid popping up settings. Single-instance guard ensures clicking the app icon focuses the existing instance.
 - **LaTeX math**: Both screenshot result and explain use `react-markdown` + `remark-math` + `rehype-katex` for rendering LaTeX formulas.
-- **Prompt templates**: Default prompts are defined in Rust (`main.rs`) and exposed via `get_default_prompt_templates`. Custom prompts support `{lang}` and `{text}` placeholders.
+- **Prompt templates**: Default prompts and prompt composition live in Rust (`prompts.rs` plus defaults exposed through `get_default_prompt_templates`). Custom prompts support `{lang}` and `{text}` placeholders.

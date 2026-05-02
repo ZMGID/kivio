@@ -230,8 +230,6 @@ fn send_copy_shortcut() {
 
     // ANSI 'c' = keycode 8
     const KEY_C: core_graphics::event::CGKeyCode = 8;
-    eprintln!("[lens-capture] sending Cmd+C via CGEvent (Private source)...");
-
     let down = match CGEvent::new_keyboard_event(source.clone(), KEY_C, true) {
       Ok(ev) => ev,
       Err(_) => {
@@ -251,7 +249,6 @@ fn send_copy_shortcut() {
     };
     up.set_flags(CGEventFlags::CGEventFlagCommand);
     up.post(CGEventTapLocation::HID);
-    eprintln!("[lens-capture] CGEvent posted");
   }
   #[cfg(target_os = "windows")]
   {
@@ -838,12 +835,6 @@ fn explain_read_image(app: AppHandle, state: State<AppState>, image_id: String) 
 /// 用户看到的就是 ready 浮条 / 旧位置，体验远差于跳到 primary。
 fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
   let cursor_opt = app.cursor_position().ok();
-  if let Some(c) = &cursor_opt {
-    eprintln!("[lens-pos] cursor (physical): ({}, {})", c.x, c.y);
-  } else {
-    eprintln!("[lens-pos] cursor_position unavailable, will fall back to primary monitor");
-  }
-
   let monitors = match app.available_monitors() {
     Ok(m) if !m.is_empty() => m,
     Ok(_) => {
@@ -855,15 +846,6 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
       return;
     }
   };
-  for (i, monitor) in monitors.iter().enumerate() {
-    let mp = monitor.position();
-    let ms = monitor.size();
-    let scale = monitor.scale_factor();
-    eprintln!(
-      "[lens-pos] monitor[{}] pos=({},{}) size={}x{} scale={}",
-      i, mp.x, mp.y, ms.width, ms.height, scale
-    );
-  }
 
   // 1. 找光标所在的 monitor
   let target = cursor_opt.as_ref().and_then(|cursor| {
@@ -883,17 +865,11 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
   let target = target
     .or_else(|| {
       let p = app.primary_monitor().ok().flatten();
-      if p.is_some() {
-        eprintln!("[lens-pos] no monitor matched cursor, falling back to primary");
-      }
       // primary_monitor 返回 Option<Monitor> 而 monitors iter 给的是 &Monitor，
       // 这里需要从 monitors 里按 name 找回相同的 monitor 引用，避免类型不一致
       p.and_then(|prim| monitors.iter().find(|m| m.name() == prim.name()))
     })
-    .or_else(|| {
-      eprintln!("[lens-pos] primary unavailable, falling back to monitors[0]");
-      monitors.first()
-    });
+    .or_else(|| monitors.first());
 
   let Some(monitor) = target else {
     eprintln!("[lens-pos] no usable monitor found");
@@ -907,15 +883,8 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
   let ly = mp.y as f64 / scale;
   let lw = ms.width as f64 / scale;
   let lh = ms.height as f64 / scale;
-  eprintln!(
-    "[lens-pos] -> set_position logical=({}, {}) size=({}, {})",
-    lx, ly, lw, lh
-  );
   let _ = window.set_position(tauri::LogicalPosition::new(lx, ly));
   let _ = window.set_size(tauri::LogicalSize::new(lw, lh));
-  if let Ok(op) = window.outer_position() {
-    eprintln!("[lens-pos] verify outer_position physical=({}, {})", op.x, op.y);
-  }
 }
 
 /// 入口（公共底层）：打开 lens webview 进入 select 态。
@@ -1610,7 +1579,6 @@ async fn fetch_models(
   provider_id: String,
   provider: Option<ProviderConnectionInput>,
 ) -> Result<Vec<String>, String> {
-    println!("Fetching models for provider: {}", provider_id);
     let settings = state.settings_read().clone();
     let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
     let retry_attempts = effective_retry_attempts(&settings);
@@ -1620,7 +1588,6 @@ async fn fetch_models(
     }
 
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    println!("Requesting URL: {}", url);
 
     let response = send_with_failover(
       &state,
@@ -1633,14 +1600,12 @@ async fn fetch_models(
     .await?;
 
     let value: serde_json::Value = response.json().await.map_err(|e| {
-        println!("Json parsing failed: {}", e);
-        e.to_string()
+        format!("Failed to parse models response JSON: {e}")
     })?;
 
     let models = value.get("data")
         .and_then(|data| data.as_array())
         .ok_or_else(|| {
-            println!("Invalid response structure: {:?}", value);
             "Invalid response format: expected 'data' array".to_string()
         })?
         .iter()
@@ -1653,7 +1618,6 @@ async fn fetch_models(
         })
         .collect::<Vec<String>>();
 
-    println!("Fetched {} models", models.len());
     Ok(models)
 }
 
@@ -1915,19 +1879,6 @@ fn capture_region_image(
   let capture_width = region_width.min(max_width).max(1);
   let capture_height = region_height.min(max_height).max(1);
 
-  eprintln!(
-    "capture region: abs_logical=({}, {}), monitor=({}, {}), monitor_scale={}, physical=({}, {}), region={}x{}",
-    absolute_x,
-    absolute_y,
-    monitor_x,
-    monitor_y,
-    monitor_scale,
-    relative_x,
-    relative_y,
-    capture_width,
-    capture_height
-  );
-
   let image = monitor
     .capture_region(
       relative_x as u32,
@@ -2013,8 +1964,6 @@ fn toggle_main_window(app: &AppHandle) {
       if let Some(pos) = pos {
         if let Err(e) = window_for_task.set_position(pos) {
           eprintln!("Failed to set window position: {}", e);
-        } else {
-          eprintln!("Window position set to: {}, {}", pos.x, pos.y);
         }
       } else {
         eprintln!("Failed to get mouse position");
@@ -2030,8 +1979,6 @@ fn toggle_main_window(app: &AppHandle) {
     if let Some(pos) = pos {
       if let Err(e) = window.set_position(pos) {
         eprintln!("Failed to set window position: {}", e);
-      } else {
-        eprintln!("Window position set to: {}, {}", pos.x, pos.y);
       }
     } else {
       eprintln!("Failed to get mouse position");
@@ -2292,6 +2239,30 @@ fn open_settings_window(app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+fn lens_is_active(app: &AppHandle) -> bool {
+  let busy = app
+    .try_state::<AppState>()
+    .map(|state| state.lens_busy.load(Ordering::SeqCst))
+    .unwrap_or(false);
+  if busy {
+    return true;
+  }
+
+  app
+    .get_webview_window("lens")
+    .and_then(|window| window.is_visible().ok())
+    .unwrap_or(false)
+}
+
+/// 自动激活 app（单实例二次启动 / Windows 普通启动默认设置页）时使用。
+/// 如果用户正在拉起 Lens，就不要再抢 main 窗口到设置页。
+fn open_settings_window_for_activation(app: &AppHandle) -> Result<(), String> {
+  if lens_is_active(app) {
+    return Ok(());
+  }
+  open_settings_window(app)
+}
+
 /// 根据语言返回托盘菜单的标签文本
 fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str) {
   match lang {
@@ -2395,7 +2366,7 @@ fn main() {
 
   tauri::Builder::default()
     .plugin(init_single_instance(|app, _args, _cwd| {
-      if let Err(err) = open_settings_window(app) {
+      if let Err(err) = open_settings_window_for_activation(app) {
         eprintln!("Single-instance activation failed: {err}");
       }
     }))
@@ -2479,9 +2450,13 @@ fn main() {
         // Windows 平台：如果不是通过自启动启动的，则默认打开设置窗口
         let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
         if !launched_from_autostart {
-          if let Err(err) = open_settings_window(&app.handle()) {
-            eprintln!("Failed to open settings on launch: {err}");
-          }
+          let app_handle = app.handle().clone();
+          tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Err(err) = open_settings_window_for_activation(&app_handle) {
+              eprintln!("Failed to open settings on launch: {err}");
+            }
+          });
         }
       }
       Ok(())

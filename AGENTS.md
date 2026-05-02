@@ -29,7 +29,11 @@ src/                          # Frontend React + TypeScript source
 
 src-tauri/
   src/                        # Rust backend source
-    main.rs                   # App main entry: state, commands, hotkeys, tray, API calls
+    main.rs                   # App entry, Tauri commands, hotkeys, tray, window lifecycle
+    api.rs                    # HTTP client, retry/failover, OpenAI-compatible calls, SSE
+    state.rs                  # AppState and key failover runtime state helpers
+    prompts.rs                # Default and composed prompt templates
+    apple_intelligence.rs     # macOS Apple Intelligence sidecar client
     lens.rs                   # Lens window enumeration and screenshot capture
     screenshot.rs             # Screenshot capture utilities and temp file cleanup
     sck.rs                    # ScreenCaptureKit integration (macOS 14+)
@@ -56,7 +60,7 @@ public/                       # Static assets (icons, SVGs)
 
 ### Rust Backend State (`AppState`)
 
-Defined in `main.rs`, the global shared state includes:
+Defined in `state.rs`, the global shared state includes:
 
 - `settings: RwLock<Settings>` — App settings (multiple readers, single writer)
 - `explain_images: Mutex<HashMap<String, PathBuf>>` — Temporary image map for Lens
@@ -88,7 +92,7 @@ Each `ModelProvider` has `id`, `name`, `base_url`, `api_keys`, `available_models
 
 - Each provider stores multiple API keys (`api_keys: string[]`)
 - Primary key is `api_keys[0]`, backups follow
-- Backend `send_with_failover` automatically rotates to next key on 401/402/403/429 or quota/billing/balance errors
+- Backend `send_with_failover` automatically rotates to next key on 401/402/403/429 responses
 - Failed key enters 60-second cooldown before retry
 - **Test Connection intentionally only probes the primary key**
 
@@ -102,10 +106,8 @@ Each `ModelProvider` has `id`, `name`, `base_url`, `api_keys`, `available_models
   - Dock icon is hidden (`ActivationPolicy::Accessory`)
   - `sck.rs` handles SCScreenshotManager integration with prewarming for performance
 - **Windows**:
-  - Screenshots use the `ms-screenclip:` system tool + clipboard polling
-  - Region capture uses the `xcap` library's `Monitor::capture_region`, with a fullscreen transparent overlay for frontend region selection
+  - Region capture uses the `xcap` library's `Monitor::capture_region`, with the Lens fullscreen transparent overlay for frontend region selection
   - Auto-paste uses `enigo` to simulate `Ctrl+V`
-  - The `capture` window is pre-created at startup for faster subsequent captures
 
 ### HTTP API & Retry Logic
 
@@ -121,27 +123,18 @@ Each `ModelProvider` has `id`, `name`, `base_url`, `api_keys`, `available_models
 3. User clicks a window or drags a region → capture screenshot
 4. Generate `image_id`, store temp image in `explain_images` map
 5. Open / reuse the `lens` window; frontend reads the image via `explain_read_image`
-6. Call `explain_get_initial_summary` for the initial summary (supports streaming)
-7. User can ask follow-up questions via `explain_ask_question` (multi-turn conversation)
-8. History keeps the most recent 5 records, persisted via `explain_save_history`
+6. User asks a question via `lens_ask` (streaming supported through `lens-stream`)
+7. Follow-up questions reuse the same `image_id` and recent messages
+8. History keeps the most recent 20 records, with thumbnails in `localStorage` and images in `lens-history`
 9. Supports pure-text questions without screenshot
 
 ### Screenshot Translation Flow
 
-1. Hotkey triggered (`Cmd/Ctrl+Shift+A`) → hide main window
-2. **macOS**: call `capture_screenshot()` directly; **Windows**: open `capture_request` overlay and wait for user selection
-3. After image submission → OCR (call vision model to recognize text)
-4. If `direct_translate` mode is on, OCR returns translated text directly, skipping the second translation step
-5. Otherwise: OCR result → text translation → emit `screenshot-result` event to the Lens window
-
-### Screenshot Explain Flow
-
-1. Hotkey triggered (`Cmd/Ctrl+Shift+G`) → capture image (same as above)
-2. Generate `image_id`, store temp image in `explain_images` map
-3. Open / reuse the `explain` window; frontend reads the image via `explain_read_image`
-4. Call `explain_get_initial_summary` for the initial summary (supports streaming)
-5. User can ask follow-up questions via `explain_ask_question` (multi-turn conversation)
-6. History keeps the most recent 5 records, persisted via `explain_save_history`
+1. Hotkey triggered (`Cmd/Ctrl+Shift+A`) → enter Lens `translate` select mode
+2. User clicks a window or drags a region → capture screenshot and register `image_id`
+3. `lens_translate` handles OCR/translation and emits `lens-translate-stream`
+4. If `use_system_ocr` is enabled, Apple Vision OCR runs locally and the configured provider translates text
+5. If `direct_translate` is on, only translated output is shown; otherwise the card shows translated text plus original text
 
 ## Build & Development Commands
 
@@ -163,6 +156,12 @@ npm run build:ui
 
 # Lint (ESLint)
 npm run lint
+
+# Type-check TypeScript without emitting files
+npm run typecheck
+
+# Rust unit tests
+cargo test --manifest-path src-tauri/Cargo.toml
 
 # Preview built frontend bundle
 npm run preview
@@ -189,7 +188,8 @@ Rust dependencies are managed by `cargo`; the Tauri CLI coordinates frontend and
 
 ## Testing Strategy
 
-- No automated test runner is configured
+- No frontend unit/e2e test runner is configured
+- Always run `npm run lint`, `npm run typecheck`, and `cargo test --manifest-path src-tauri/Cargo.toml` for code changes when practical
 - Manual smoke-test checklist after changes:
   1. `npm run dev` — verify the app launches
   2. Global hotkeys (translator, screenshot translation, Lens)
@@ -214,8 +214,8 @@ Rust dependencies are managed by `cargo`; the Tauri CLI coordinates frontend and
 - **Never commit API keys or base URLs**; they are configured through the app settings UI
 - API Keys are stored directly in `settings.json` (as of v2.4.0); the `keyring` crate is only used for one-time migration from legacy keyring storage
 - External URLs are validated to start with `https://` before opening (`open_external` command)
-- Explain image paths are validated to reside inside the system temp directory (`resolve_explain_image_path`)
-- If you add new Tauri permissions or capabilities, update `src-tauri/tauri.conf.json` and document defaults
+- Active explain image paths are validated to reside inside the system temp directory; history images are resolved from the app data `lens-history` directory (`resolve_explain_image_path`)
+- If you add new Tauri JS permissions or capabilities, update `src-tauri/capabilities/default.json` and document defaults
 
 ## Commit & Pull Request Guidelines
 

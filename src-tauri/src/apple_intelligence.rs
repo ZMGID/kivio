@@ -25,7 +25,7 @@ pub const APPLE_INTELLIGENCE_BASE_URL: &str = "applefoundation://local";
 #[serde(tag = "type")]
 enum SidecarEvent {
   #[serde(rename = "ready")]
-  Ready { available: bool, reason: Option<String> },
+  Ready { available: bool },
   #[serde(rename = "chunk")]
   Chunk { id: u64, delta: String },
   #[serde(rename = "done")]
@@ -129,13 +129,8 @@ impl AppleIntelligenceClient {
 
   fn dispatch(&self, ev: SidecarEvent) {
     match ev {
-      SidecarEvent::Ready { available, reason } => {
+      SidecarEvent::Ready { available, .. } => {
         self.available.store(available, Ordering::SeqCst);
-        if available {
-          println!("[apple-intelligence] ready: available=true");
-        } else {
-          println!("[apple-intelligence] ready: available=false reason={:?}", reason);
-        }
       }
       SidecarEvent::Chunk { id, delta } => {
         let sender = self.pending.lock().unwrap().get(&id).cloned();
