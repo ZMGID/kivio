@@ -438,8 +438,6 @@ export default function Lens() {
   const [drawMode, setDrawMode] = useState(false)
   const [arrows, setArrows] = useState<Arrow[]>([])
   const [draftArrow, setDraftArrow] = useState<Arrow | null>(null)
-  // suppressed-unused: composeAnnotatedImage is wired into handleSend in the next commit
-  void composeAnnotatedImage
   // 任何 stage 切换时强制清掉 draw 子模式 + 已落箭头
   useEffect(() => {
     if (stage !== 'ready') {
@@ -1215,12 +1213,37 @@ export default function Lens() {
   const handleSend = async () => {
     if (!input.trim() || streaming) return
     const question = input.trim()
-    const id = imageIdRef.current
     setHistoryOpen(false)
     setInput('')
 
-    // 首轮 chat 注入：把启动时抓到的选中文本作为 [已选文本] 段前置到 user prompt；
-    // 后续轮次（messages.length>0）严格不重复注入。translate 模式不到这里。
+    // 默认沿用当前 image_id;若有箭头则先合成 + 注册新图,把后续 ask 切到合成版
+    let effectiveImageId = imageIdRef.current
+    if (arrows.length > 0 && imagePreview && capturedFrame) {
+      try {
+        const base64 = await composeAnnotatedImage(
+          imagePreview,
+          arrows,
+          capturedFrame.width,
+          capturedFrame.height,
+        )
+        const result = await api.lensRegisterAnnotatedImage(base64)
+        if (result.success && result.imageId) {
+          effectiveImageId = result.imageId
+          imageIdRef.current = result.imageId
+          setImagePreview(`data:image/png;base64,${base64}`)
+          setArrows([])
+          setDraftArrow(null)
+          setDrawMode(false)
+        } else {
+          console.warn('[lens-arrow] register annotated image failed:', result.error)
+        }
+      } catch (err) {
+        console.warn('[lens-arrow] compose failed, fallback to original:', err)
+      }
+    }
+
+    // 首轮 chat 注入:把启动时抓到的选中文本作为 [已选文本] 段前置到 user prompt;
+    // 后续轮次(messages.length>0)严格不重复注入.translate 模式不到这里.
     const isFirstTurn = messages.length === 0
     const ctx = (isFirstTurn && mode === 'chat') ? selectionText.trim() : ''
     const userContent = ctx
@@ -1230,7 +1253,6 @@ export default function Lens() {
       : question
     const userMsg: ExplainMessage = { role: 'user', content: userContent }
     const placeholder: ExplainMessage = { role: 'assistant', content: '' }
-    // sendMessages：发给后端的 history（保留前面对话上下文 + 本次提问，最后一条是 user 提问）
     const sendMessages: ExplainMessage[] = [...messages, userMsg]
     flushSync(() => {
       setMessages([...sendMessages, placeholder])
@@ -1238,7 +1260,7 @@ export default function Lens() {
       setStreaming(true)
     })
     try {
-      const result = await api.lensAsk(id || '', sendMessages)
+      const result = await api.lensAsk(effectiveImageId || '', sendMessages)
       if (!result.success) {
         const errText = `${t.lensError}: ${result.error}`
         setMessages(prev => {
@@ -1247,7 +1269,7 @@ export default function Lens() {
           return [...prev.slice(0, -1), { role: 'assistant', content: errText }]
         })
       } else if (result.response) {
-        // 非流式：把完整答案塞进占位 assistant；流式情况已在 onLensStream 累积，避免覆盖
+        // 非流式:把完整答案塞进占位 assistant;流式情况已在 onLensStream 累积,避免覆盖
         setMessages(prev => {
           const last = prev[prev.length - 1]
           if (!last || last.role !== 'assistant') return prev
@@ -1263,7 +1285,7 @@ export default function Lens() {
         return [...prev.slice(0, -1), { role: 'assistant', content: `${t.lensError}: ${msg}` }]
       })
     } finally {
-      // ref 在 setStreaming(false) 之前置 true，让持久化 effect 在本次 rerun 中识别这是"流刚结束"路径
+      // ref 在 setStreaming(false) 之前置 true,让持久化 effect 在本次 rerun 中识别这是"流刚结束"路径
       justFinishedStreamRef.current = true
       setStreaming(false)
     }
