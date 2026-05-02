@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, Brain } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, Brain, MousePointer2 } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
@@ -823,6 +823,31 @@ export default function Lens() {
     return () => window.removeEventListener('keydown', handler)
   }, [streaming, resetBeforeHide])
 
+  // drawMode 键盘:Cmd+Z 撤销最后一支箭头,Esc 退出 drawMode(arrows 保留)
+  useEffect(() => {
+    if (!drawMode) return
+    const onKey = (e: KeyboardEvent) => {
+      // 输入框聚焦时不拦截,让用户继续打字
+      const target = e.target as HTMLElement | null
+      const isInput = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
+
+      if (e.key === 'Escape' && !isInput) {
+        e.preventDefault()
+        e.stopPropagation()
+        setDrawMode(false)
+        setDraftArrow(null)
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !isInput) {
+        e.preventDefault()
+        e.stopPropagation()
+        setArrows(prev => prev.slice(0, -1))
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [drawMode])
+
   // select 态切到其他应用 → 自动收起灰幕。
   // 注意：截图过程中 screencapture 可能让 lens 短暂失焦，capturingRef 防止误关。
   useEffect(() => {
@@ -1440,23 +1465,25 @@ export default function Lens() {
               backgroundRepeat: 'no-repeat',
               cursor: 'crosshair',
               zIndex: 11,
+              touchAction: 'none',
             }}
-            onMouseDown={(e) => {
+            onPointerDown={(e) => {
               e.stopPropagation()
-              const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+              ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+              const rect = e.currentTarget.getBoundingClientRect()
               const x = e.clientX - rect.left
               const y = e.clientY - rect.top
               setDraftArrow({ x1: x, y1: y, x2: x, y2: y })
             }}
-            onMouseMove={(e) => {
+            onPointerMove={(e) => {
               if (!draftArrow) return
               e.stopPropagation()
-              const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+              const rect = e.currentTarget.getBoundingClientRect()
               const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
               const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top))
               setDraftArrow(d => (d ? { ...d, x2: x, y2: y } : d))
             }}
-            onMouseUp={(e) => {
+            onPointerUp={(e) => {
               e.stopPropagation()
               if (!draftArrow) return
               const dx = draftArrow.x2 - draftArrow.x1
@@ -1465,6 +1492,13 @@ export default function Lens() {
                 setArrows(prev => [...prev, draftArrow])
               }
               setDraftArrow(null)
+              ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
+            }}
+            onPointerCancel={(e) => {
+              // 浏览器主动释放捕获(例如系统对话框打断),清掉 draft
+              e.stopPropagation()
+              setDraftArrow(null)
+              try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId) } catch { /* 已被释放,忽略 */ }
             }}
           >
             <svg
@@ -1581,6 +1615,23 @@ export default function Lens() {
                 >
                   {selectionLineCount}
                 </span>
+              )}
+              {stage === 'ready' && (
+                <button
+                  type="button"
+                  onClick={() => setDrawMode(m => !m)}
+                  disabled={!imagePreview}
+                  title={imagePreview
+                    ? (drawMode ? t.lensArrowToggleOff : t.lensArrowToggle)
+                    : t.lensArrowDisabledHint}
+                  className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                    drawMode
+                      ? 'bg-blue-500 text-white hover:bg-blue-600'
+                      : 'text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.06]'
+                  } ${!imagePreview ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  <MousePointer2 size={15} strokeWidth={1.75} />
+                </button>
               )}
             </div>
             <input
