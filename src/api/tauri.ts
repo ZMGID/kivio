@@ -249,6 +249,10 @@ export const api = {
     height: number
     scaleFactor: number
   }) => invoke<{ success: boolean; imageId?: string; error?: string }>('lens_capture_region', params),
+  lensRegisterAnnotatedImage: (base64Png: string) =>
+    invoke<{ success: boolean; imageId?: string; error?: string }>(
+      'lens_register_annotated_image', { base64Png }
+    ),
   lensRequestTranslate: () => invoke<void>('lens_request_translate'),
   lensTranslate: (imageId: string) =>
     invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(

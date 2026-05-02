@@ -2009,6 +2009,37 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
   }
 }
 
+/// 接收前端合成的带箭头标注 PNG（base64 编码），落盘到 temp_dir、归档、注册新 image_id。
+/// 原 image_id 对应的临时文件保留（由 lens_close / 下次截图 cleanup 路径回收）。
+#[tauri::command]
+fn lens_register_annotated_image(
+  app: AppHandle,
+  state: State<AppState>,
+  base64_png: String,
+) -> Result<serde_json::Value, String> {
+  let bytes = general_purpose::STANDARD
+    .decode(base64_png.as_bytes())
+    .map_err(|e| format!("base64 decode failed: {e}"))?;
+
+  let temp_path = std::env::temp_dir().join(format!("lens-{}.png", Uuid::new_v4()));
+  std::fs::write(&temp_path, &bytes)
+    .map_err(|e| format!("write png failed: {e}"))?;
+
+  let image_id = Uuid::new_v4().to_string();
+  archive_captured_image(&app, &temp_path, &image_id);
+
+  {
+    let mut map = state.images_lock();
+    map.insert(image_id.clone(), temp_path);
+  }
+  {
+    let mut current = state.current_id_lock();
+    *current = Some(image_id.clone());
+  }
+
+  Ok(serde_json::json!({ "success": true, "imageId": image_id }))
+}
+
 /// 清理截图临时文件：从映射中移除并删除磁盘文件
 /// 把截图自动归档到用户指定目录（best-effort，失败不阻塞主流程）
 fn archive_captured_image(app: &AppHandle, temp_path: &std::path::Path, image_id: &str) {
@@ -2478,6 +2509,7 @@ fn main() {
       lens_list_windows,
       lens_capture_window,
       lens_capture_region,
+      lens_register_annotated_image,
       lens_ask,
       lens_translate,
       lens_cancel_stream,
