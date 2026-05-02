@@ -296,9 +296,12 @@ export default function Lens() {
   const inputRef = useRef<HTMLInputElement>(null)
   const historyPanelRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<Stage>('select')
+  const modeRef = useRef<Mode>(mode)
+  const historyOpenRef = useRef(false)
   const imageIdRef = useRef('')
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const floatingRebaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const focusReqIdRef = useRef(0)
   const prevStreamingRef = useRef(false)
   // Stream 真实结束（成功 / 错误 / 用户主动取消）后才置 true，
   // 让历史持久化 effect 只在这一次 rerun 触发 push；restoreHistory / enterSelect / resetBeforeHide 防御性清零，
@@ -317,6 +320,8 @@ export default function Lens() {
 
   const t = i18n[lang]
   stageRef.current = stage
+  modeRef.current = mode
+  historyOpenRef.current = historyOpen
 
   // 选中文本行数：translate 模式不计；空 / 仅空白 → 0（驱动徽章是否显示）
   const selectionLineCount = useMemo(() => {
@@ -338,6 +343,33 @@ export default function Lens() {
         setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
       } catch (err) { console.error('Failed to load settings', err) }
     })()
+  }, [])
+
+  const focusLensInput = useCallback((delays: number[] = [0, 40, 120, 240, 420]) => {
+    const requestId = ++focusReqIdRef.current
+    const canFocus = () => (
+      requestId === focusReqIdRef.current
+      && modeRef.current === 'chat'
+      && !historyOpenRef.current
+      && !capturingRef.current
+      && (stageRef.current === 'select' || stageRef.current === 'ready' || stageRef.current === 'answering')
+    )
+
+    const run = async () => {
+      if (!canFocus()) return
+      try {
+        await getCurrentWindow().setFocus()
+      } catch {
+        // Native focus can fail briefly while the window is still becoming visible.
+      }
+      if (!canFocus()) return
+      inputRef.current?.focus({ preventScroll: true })
+      requestAnimationFrame(() => {
+        if (canFocus()) inputRef.current?.focus({ preventScroll: true })
+      })
+    }
+
+    delays.forEach(delay => window.setTimeout(() => { void run() }, delay))
   }, [])
 
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
@@ -397,7 +429,10 @@ export default function Lens() {
           const text = await api.takeLensSelection()
           if (myReq !== selectionReqIdRef.current) return
           if (text.length > 200_000) return
-          if (text.trim()) setSelectionText(text)
+          if (text.trim()) {
+            setSelectionText(text)
+            focusLensInput([0, 60, 180])
+          }
         } catch (err) {
           console.warn('[lens] take selection failed:', err)
         }
@@ -424,8 +459,9 @@ export default function Lens() {
       console.error('Failed to list windows', err)
       setWindows([])
     }
-    void api.showWindow()
-  }, [])
+    await api.showWindow()
+    focusLensInput()
+  }, [focusLensInput])
 
   useEffect(() => {
     void enterSelect()
@@ -433,6 +469,21 @@ export default function Lens() {
     window.addEventListener('lens:reset', handleReset)
     return () => window.removeEventListener('lens:reset', handleReset)
   }, [enterSelect])
+
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) focusLensInput([0, 40, 120])
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(err => console.error('[lens-focus] listen failed:', err))
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [focusLensInput])
 
   // viewport resize（拔显示器 / 切分辨率 / DPI 变更，以及浮动模式下 raf 同步动画的逐帧缩放）
   // 都触发 'resize' 事件 → 更新 viewport state，让相对尺寸 metrics 重算。
@@ -557,17 +608,10 @@ export default function Lens() {
     if (stageRef.current !== 'answering' && stageRef.current !== 'ready') return
 
     const id = setTimeout(() => {
-      void (async () => {
-        try {
-          await getCurrentWindow().setFocus()
-        } catch (err) {
-          console.error('[lens-focus] setFocus failed:', err)
-        }
-        inputRef.current?.focus({ preventScroll: true })
-      })()
+      focusLensInput([0, 60, 160])
     }, 30)
     return () => clearTimeout(id)
-  }, [streaming, mode, historyOpen])
+  }, [streaming, mode, historyOpen, focusLensInput])
 
   // 关闭前同步重置 state，让 webview surface 在 hide 之前已经是空 select 态。
   // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
@@ -601,6 +645,7 @@ export default function Lens() {
     imageIdRef.current = ''
     // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
     selectionReqIdRef.current++
+    focusReqIdRef.current++
   }, [viewport, metrics])
 
   // 全局 Esc：流式时取消流 / 否则关闭
@@ -804,7 +849,7 @@ export default function Lens() {
       })
     }
     if (mode === 'chat') {
-      setTimeout(() => inputRef.current?.focus(), TRANSITION_MS + 20)
+      focusLensInput([TRANSITION_MS + 20, TRANSITION_MS + 120, TRANSITION_MS + 260])
     }
   }
 
@@ -1080,7 +1125,7 @@ export default function Lens() {
     })
     // 老 takeLensSelection promise 失效，避免恢复历史后被新 take 文本污染
     selectionReqIdRef.current++
-    setTimeout(() => inputRef.current?.focus(), 50)
+    focusLensInput([50, 140, 260])
   }
 
   // 相对时间字符串（"刚刚" / "3 分钟前"）
@@ -1097,6 +1142,7 @@ export default function Lens() {
   useEffect(() => () => {
     if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
     if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
+    focusReqIdRef.current++
   }, [])
 
   // 点击 history 面板外部 → 关闭
