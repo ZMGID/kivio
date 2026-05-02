@@ -304,6 +304,12 @@ pub struct Settings {
   /// 仅做"提示 + 跳转 GH 下载页"，不集成 auto-installer，避免签名密钥那套
   #[serde(default = "default_true")]
   pub auto_check_update: bool,
+  /// 截图自动归档开关（默认 false）
+  #[serde(default = "default_false")]
+  pub image_archive_enabled: bool,
+  /// 自动归档目标目录路径（空字符串表示未设置）
+  #[serde(default)]
+  pub image_archive_path: String,
   // 旧版字段，用于迁移
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openai: Option<OpenAIConfig>,
@@ -338,6 +344,8 @@ impl Default for Settings {
       retry_attempts: default_retry_attempts(),
       legacy_keyring_migrated: false,
       auto_check_update: true,
+      image_archive_enabled: false,
+      image_archive_path: String::new(),
       openai: None,
     }
   }
@@ -526,6 +534,9 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.lens.message_order = "asc".to_string();
   }
 
+  // 清理归档目录路径（去除首尾空白）
+  settings.image_archive_path = settings.image_archive_path.trim().to_string();
+
   settings.retry_attempts = clamp_retry_attempts(settings.retry_attempts);
 
   settings
@@ -646,11 +657,11 @@ pub fn load_settings(app: &AppHandle) -> Settings {
  * 风格统一：简短直答、无小标题、思考过程尽量精简
  */
 pub fn default_system_prompt(language: &str, has_image: bool) -> String {
-  match (language, has_image) {
-    ("zh", true) => "你是图片分析助手。直接、简洁地回答用户关于图片的问题。回答尽量短、自然流畅，不要小标题或编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
-    ("zh", false) => "你是简洁的对话助手。直接给出答案，回答尽量短、自然流畅，不要小标题或编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
-    (_, true) => "You analyze images. Answer directly and concisely about what the user asks. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
-    (_, false) => "You are a concise assistant. Answer directly. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
+  match (language.starts_with("zh"), has_image) {
+    (true, true) => "你是一位智能助手，能够看到用户分享的截图。请将其作为视觉上下文来理解和回答，可以涉及信息提取、概念解释、操作协助或任何相关话题。保持回答简洁直接，自然流畅，不用小标题和编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
+    (true, false) => "你是一位智能助手。直接给出答案，回答简洁、自然流畅，不要小标题或编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
+    (_, true) => "You are a helpful assistant that can see the user's screenshot. Use it as visual context to understand and answer — whether extracting information, explaining concepts, assisting with tasks, or any relevant topic. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
+    (_, false) => "You are a helpful assistant. Answer directly. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
   }
 }
 
@@ -660,7 +671,7 @@ pub fn default_system_prompt(language: &str, has_image: bool) -> String {
  * 仍可让模型按指令省略思考过程。
  */
 pub fn no_think_instruction(language: &str) -> &'static str {
-  if language == "zh" {
+  if language.starts_with("zh") {
     "\n\n严格要求：直接给出最终答案，不要输出任何思考过程、推理步骤或 <think> 内容。"
   } else {
     "\n\nStrict requirement: output only the final answer; do NOT include any thinking, reasoning steps, or <think> content."
@@ -675,10 +686,10 @@ pub fn default_question_prompt(language: &str, has_image: bool) -> String {
   if !has_image {
     return String::new();
   }
-  if language == "zh" {
-    "基于这张图片回答用户问题。如果问题与图片无关，礼貌地引导回到图片内容。".to_string()
+  if language.starts_with("zh") {
+    "用户分享了这张截图，请结合其中的视觉信息来理解和回答：".to_string()
   } else {
-    "Answer the user's question based on this image. If unrelated, politely steer back to the image.".to_string()
+    "The user shared this screenshot. Use the visual context to understand and answer:".to_string()
   }
 }
 

@@ -1400,7 +1400,7 @@ export default function Lens() {
               </button>
               {historyOpen && (
                 <div
-                  className="absolute right-0 bottom-full mb-2 w-[240px] rounded-xl bg-white dark:bg-neutral-900 shadow-[0_18px_44px_-12px_rgba(0,0,0,0.4)] ring-1 ring-black/[0.06] dark:ring-white/[0.08] overflow-hidden"
+                  className="absolute right-0 bottom-full mb-2 w-[240px] rounded-xl bg-white dark:bg-neutral-900 shadow-[0_18px_44px_-12px_rgba(0,0,0,0.4)] ring-1 ring-black/[0.06] dark:ring-white/[0.08] overflow-hidden z-50"
                 >
                   <div className="max-h-[200px] overflow-y-auto custom-scrollbar py-1">
                     {history.length === 0 ? (

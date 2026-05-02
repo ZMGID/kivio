@@ -5,6 +5,7 @@ import {
   Cloud, Info, Palette, Keyboard, SlidersHorizontal, Globe,
   Cpu, FileText, ShieldCheck, Aperture, ExternalLink, Download, ChevronRight
 } from 'lucide-react'
+import { open } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus, type UpdateInfo } from './api/tauri'
 import { i18n } from './settings/i18n'
@@ -868,6 +869,49 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               </div>
             </section>
 
+            {/* 截图自动归档 */}
+            <section>
+              <SectionTitle icon={Camera}>{t.imageArchive}</SectionTitle>
+              <div className="settings-card overflow-hidden divide-y divide-black/[0.04] dark:divide-white/[0.05]">
+                <SettingRow label={t.imageArchive} description={t.imageArchiveHint}>
+                  <Toggle
+                    checked={settings.imageArchiveEnabled ?? false}
+                    onChange={(v) => updateSettings({ imageArchiveEnabled: v })}
+                  />
+                </SettingRow>
+                {settings.imageArchiveEnabled && (
+                  <div className="px-4 py-3 space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                    <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.imageArchivePath}</span>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={settings.imageArchivePath || ''}
+                        onChange={(v) => updateSettings({ imageArchivePath: v })}
+                        placeholder={t.imageArchivePathPlaceholder}
+                        className="flex-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const selected = await open({ directory: true, multiple: false })
+                            if (typeof selected === 'string') {
+                              updateSettings({ imageArchivePath: selected })
+                            }
+                          } catch (err) {
+                            console.error('Failed to pick directory:', err)
+                          }
+                        }}
+                        className="px-3 h-[36px] rounded-md text-[12px] font-medium border border-black/10 dark:border-white/10 text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+                        data-tauri-drag-region="false"
+                      >
+                        {t.imageArchiveBrowse}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+
             {/* 权限状态（仅 macOS 显示） */}
             {permissionStatus?.platform === 'macos' && (
               <section>
@@ -926,6 +970,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       { value: 'auto', label: t.langAuto },
                       { value: 'en', label: t.langEn },
                       { value: 'zh', label: t.langZh },
+                      { value: 'zh-Hant', label: t.langZhTw },
                       { value: 'ja', label: t.langJa },
                       { value: 'ko', label: t.langKo },
                       { value: 'fr', label: t.langFr },
@@ -1130,6 +1175,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           options={[
                             { value: '', label: t.lensLanguageInherit },
                             { value: 'zh', label: '中文' },
+                            { value: 'zh-Hant', label: '繁體中文' },
                             { value: 'en', label: 'English' },
                           ]}
                         />

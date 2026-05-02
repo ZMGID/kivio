@@ -116,6 +116,10 @@ export type Settings = {
   settingsLanguage?: 'zh' | 'en'
   /** 启动时静默检查 GH Releases 是否有新版（默认 true） */
   autoCheckUpdate?: boolean
+  /** 截图自动归档开关（默认 false） */
+  imageArchiveEnabled?: boolean
+  /** 自动归档目标目录路径 */
+  imageArchivePath?: string
 }
 
 /** 更新检查结果（来自后端 GitHub Releases API 调用） */

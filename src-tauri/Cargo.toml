@@ -20,6 +20,8 @@ tauri-plugin-store = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+chrono = "0.4"
 
 # HTTP 客户端与异步运行时
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }

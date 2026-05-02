@@ -1011,6 +1011,10 @@ async fn lens_capture_window(
     Ok(path) => {
       let image_id = Uuid::new_v4().to_string();
       let state = app.state::<AppState>();
+
+      // 自动归档（在 insert 前直接用 path，避免二次加锁）
+      archive_captured_image(&app, &path, &image_id);
+
       {
         let mut map = state.images_lock();
         map.insert(image_id.clone(), path);
@@ -1066,6 +1070,10 @@ async fn lens_capture_region(
     Ok(path) => {
       let image_id = Uuid::new_v4().to_string();
       let state = app.state::<AppState>();
+
+      // 自动归档（在 insert 前直接用 path，避免二次加锁）
+      archive_captured_image(&app, &path, &image_id);
+
       {
         let mut map = state.images_lock();
         map.insert(image_id.clone(), path);
@@ -1098,7 +1106,7 @@ async fn lens_ask(
 
   let language = if !settings.lens.default_language.is_empty() {
     settings.lens.default_language.clone()
-  } else if settings.target_lang == "zh" || settings.target_lang == "en" {
+  } else if settings.target_lang.starts_with("zh") || settings.target_lang == "en" {
     settings.target_lang.clone()
   } else {
     "zh".to_string()
@@ -2055,6 +2063,37 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
 }
 
 /// 清理截图临时文件：从映射中移除并删除磁盘文件
+/// 把截图自动归档到用户指定目录（best-effort，失败不阻塞主流程）
+fn archive_captured_image(app: &AppHandle, temp_path: &std::path::Path, image_id: &str) {
+  let settings = app.state::<AppState>().settings_read().clone();
+  if !settings.image_archive_enabled || settings.image_archive_path.is_empty() {
+    return;
+  }
+
+  let archive_dir = std::path::Path::new(&settings.image_archive_path);
+  if !archive_dir.exists() {
+    if let Err(e) = std::fs::create_dir_all(archive_dir) {
+      eprintln!("[image-archive] failed to create dir {}: {}", archive_dir.display(), e);
+      return;
+    }
+  }
+  if !archive_dir.is_dir() {
+    eprintln!("[image-archive] archive path is not a directory: {}", archive_dir.display());
+    return;
+  }
+
+  let now = chrono::Local::now();
+  let short_uuid = &image_id[..image_id.len().min(8)];
+  let filename = format!("kivio-{}-{}.png", now.format("%Y-%m-%d-%H%M%S"), short_uuid);
+  let dest = archive_dir.join(&filename);
+
+  if let Err(e) = std::fs::copy(temp_path, &dest) {
+    eprintln!("[image-archive] failed to copy {} -> {}: {}", temp_path.display(), dest.display(), e);
+  } else {
+    eprintln!("[image-archive] archived to {}", dest.display());
+  }
+}
+
 fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
   let state = app.state::<AppState>();
   let mut map = state.images_lock();
@@ -2364,6 +2403,7 @@ fn main() {
     .plugin(tauri_plugin_clipboard_manager::init())
     .plugin(tauri_plugin_store::Builder::default().build())
     .plugin(tauri_plugin_shell::init())
+    .plugin(tauri_plugin_dialog::init())
     .plugin(autostart_plugin)
     .on_window_event(|window, event| {
       match event {

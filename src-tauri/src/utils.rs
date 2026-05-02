@@ -29,6 +29,7 @@ pub fn has_chinese(text: &str) -> bool {
 pub fn language_name(code: &str) -> &'static str {
   match code {
     "zh" | "zh-Hans" => "Simplified Chinese",
+    "zh-Hant" => "Traditional Chinese",
     "en" => "English",
     "ja" => "Japanese",
     "ko" => "Korean",
