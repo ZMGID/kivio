@@ -335,7 +335,7 @@ fn read_accessibility_selected_text() -> Option<String> {
 /// 这条路径不碰剪贴板；不支持 TextPattern 的控件会自动降级到 Ctrl+C fallback。
 #[cfg(target_os = "windows")]
 fn read_accessibility_selected_text() -> Option<String> {
-  use windows::{
+  use ::windows::{
     core::Interface,
     Win32::{
       Foundation::RPC_E_CHANGED_MODE,
@@ -412,7 +412,7 @@ fn clipboard_change_count() -> Option<i64> {
 
 #[cfg(target_os = "windows")]
 fn clipboard_change_count() -> Option<i64> {
-  use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
+  use ::windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
   let count = unsafe { GetClipboardSequenceNumber() };
   if count == 0 {
     None
@@ -450,7 +450,7 @@ fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
 
 #[cfg(target_os = "windows")]
 fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
-  use windows::Win32::UI::Input::KeyboardAndMouse::{
+  use ::windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
   };
 
