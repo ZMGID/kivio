@@ -25,6 +25,16 @@ function readModeFromHash(): Mode {
 type Point = { x: number; y: number }
 type BarRect = { x: number; y: number; width: number }
 type CapturedFrame = { x: number; y: number; width: number; height: number; label: string }
+type Arrow = {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+const ARROW_COLOR = '#ff3b30'
+const ARROW_MIN_DRAG_PX = 8
+const ARROW_HEAD_ANGLE_DEG = 30
 type HistoryItem = {
   id: string                   // imageId（恢复时复用，重新提问会用同一张图）
   imagePreview: string         // base64 data URL
@@ -83,6 +93,140 @@ async function makeThumbnail(dataUrl: string, maxSize: number): Promise<string> 
     img.onerror = () => resolve(dataUrl)
     img.src = dataUrl
   })
+}
+
+function drawArrow(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  lineWidth: number,
+) {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len = Math.hypot(dx, dy)
+  if (len < 1) return
+
+  const headSize = lineWidth * 4
+  const angle = Math.atan2(dy, dx)
+  const headAngle = (ARROW_HEAD_ANGLE_DEG * Math.PI) / 180
+
+  // 箭杆终点回退一格,避免三角覆盖时尾端有缺口
+  const shaftEndX = x2 - Math.cos(angle) * (headSize * 0.6)
+  const shaftEndY = y2 - Math.sin(angle) * (headSize * 0.6)
+
+  ctx.save()
+  ctx.strokeStyle = ARROW_COLOR
+  ctx.fillStyle = ARROW_COLOR
+  ctx.lineWidth = lineWidth
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+
+  ctx.beginPath()
+  ctx.moveTo(x1, y1)
+  ctx.lineTo(shaftEndX, shaftEndY)
+  ctx.stroke()
+
+  // 三角箭头
+  const wing1X = x2 - Math.cos(angle - headAngle) * headSize
+  const wing1Y = y2 - Math.sin(angle - headAngle) * headSize
+  const wing2X = x2 - Math.cos(angle + headAngle) * headSize
+  const wing2Y = y2 - Math.sin(angle + headAngle) * headSize
+  ctx.beginPath()
+  ctx.moveTo(x2, y2)
+  ctx.lineTo(wing1X, wing1Y)
+  ctx.lineTo(wing2X, wing2Y)
+  ctx.closePath()
+  ctx.fill()
+
+  ctx.restore()
+}
+
+async function composeAnnotatedImage(
+  imageDataUrl: string,
+  arrows: Arrow[],
+  frameWidth: number,
+  frameHeight: number,
+): Promise<string> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image()
+    el.onload = () => resolve(el)
+    el.onerror = () => reject(new Error('failed to load image for compose'))
+    el.src = imageDataUrl
+  })
+
+  const canvas = new OffscreenCanvas(img.naturalWidth, img.naturalHeight)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('OffscreenCanvas 2d context unavailable')
+
+  ctx.drawImage(img, 0, 0)
+
+  // 逻辑像素 → 物理像素的等比缩放
+  // capturedFrame.width 是逻辑像素;PNG 是物理像素 → naturalWidth 大于等于 width
+  const scaleX = frameWidth > 0 ? img.naturalWidth / frameWidth : 1
+  const scaleY = frameHeight > 0 ? img.naturalHeight / frameHeight : 1
+  const lineWidth = Math.max(3, img.naturalWidth / 400)
+
+  for (const a of arrows) {
+    drawArrow(
+      ctx,
+      a.x1 * scaleX,
+      a.y1 * scaleY,
+      a.x2 * scaleX,
+      a.y2 * scaleY,
+      lineWidth,
+    )
+  }
+
+  const blob = await canvas.convertToBlob({ type: 'image/png' })
+  const buf = await blob.arrayBuffer()
+  let binary = ''
+  const bytes = new Uint8Array(buf)
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
+}
+
+function ArrowSvg({ arrow }: { arrow: Arrow }) {
+  const { x1, y1, x2, y2 } = arrow
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len = Math.hypot(dx, dy)
+  if (len < 1) return null
+
+  // SVG 在逻辑像素坐标系下渲染 → 线宽用屏幕粗细,合成时再按 PNG 物理像素重算
+  const lineWidth = 4
+  const headSize = lineWidth * 4
+  const angle = Math.atan2(dy, dx)
+  const headAngle = (ARROW_HEAD_ANGLE_DEG * Math.PI) / 180
+
+  const shaftEndX = x2 - Math.cos(angle) * (headSize * 0.6)
+  const shaftEndY = y2 - Math.sin(angle) * (headSize * 0.6)
+  const wing1X = x2 - Math.cos(angle - headAngle) * headSize
+  const wing1Y = y2 - Math.sin(angle - headAngle) * headSize
+  const wing2X = x2 - Math.cos(angle + headAngle) * headSize
+  const wing2Y = y2 - Math.sin(angle + headAngle) * headSize
+
+  return (
+    <g>
+      <line
+        x1={x1}
+        y1={y1}
+        x2={shaftEndX}
+        y2={shaftEndY}
+        stroke={ARROW_COLOR}
+        strokeWidth={lineWidth}
+        strokeLinecap="round"
+      />
+      <polygon
+        points={`${x2},${y2} ${wing1X},${wing1Y} ${wing2X},${wing2Y}`}
+        fill={ARROW_COLOR}
+      />
+    </g>
+  )
 }
 
 /** 从 localStorage 读历史。失败 / 损坏数据 → 空数组。
@@ -289,6 +433,21 @@ export default function Lens() {
   const [barNoTransition, setBarNoTransition] = useState(false)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
+  // 箭头标注:仅 stage==='ready' 子模式
+  // arrows / draftArrow 坐标系 = capturedFrame 逻辑像素 (左上角为原点)
+  const [drawMode, setDrawMode] = useState(false)
+  const [arrows, setArrows] = useState<Arrow[]>([])
+  const [draftArrow, setDraftArrow] = useState<Arrow | null>(null)
+  // suppressed-unused: composeAnnotatedImage is wired into handleSend in the next commit
+  void composeAnnotatedImage
+  // 任何 stage 切换时强制清掉 draw 子模式 + 已落箭头
+  useEffect(() => {
+    if (stage !== 'ready') {
+      setDrawMode(false)
+      setArrows([])
+      setDraftArrow(null)
+    }
+  }, [stage])
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
   const [history, setHistory] = useState<HistoryItem[]>(loadHistoryFromStorage)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -1256,6 +1415,70 @@ export default function Lens() {
               {t.lensScreenshotOf} {capturedFrame.label}
             </div>
           )}
+        </>
+      )}
+
+      {/* drawMode:在 capturedFrame 矩形内画箭头.frozen background = imagePreview;
+          用 SVG 叠加 + 自带 mousedown/move/up,pointer-events 仅在 drawMode 启用 */}
+      {capturedFrame && stage === 'ready' && keepFullscreen && drawMode && (
+        <>
+          {/* 截图框外加深(dim),让用户聚焦在截图区) */}
+          <div
+            className="absolute inset-0 pointer-events-none bg-black/40"
+            style={{ zIndex: 10 }}
+          />
+          {/* capturedFrame 内:背景填充冻结 PNG + SVG 收事件 */}
+          <div
+            className="absolute"
+            style={{
+              left: capturedFrame.x,
+              top: capturedFrame.y,
+              width: capturedFrame.width,
+              height: capturedFrame.height,
+              backgroundImage: imagePreview ? `url("${imagePreview}")` : undefined,
+              backgroundSize: '100% 100%',
+              backgroundRepeat: 'no-repeat',
+              cursor: 'crosshair',
+              zIndex: 11,
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+              const x = e.clientX - rect.left
+              const y = e.clientY - rect.top
+              setDraftArrow({ x1: x, y1: y, x2: x, y2: y })
+            }}
+            onMouseMove={(e) => {
+              if (!draftArrow) return
+              e.stopPropagation()
+              const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+              const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
+              const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top))
+              setDraftArrow(d => (d ? { ...d, x2: x, y2: y } : d))
+            }}
+            onMouseUp={(e) => {
+              e.stopPropagation()
+              if (!draftArrow) return
+              const dx = draftArrow.x2 - draftArrow.x1
+              const dy = draftArrow.y2 - draftArrow.y1
+              if (Math.hypot(dx, dy) >= ARROW_MIN_DRAG_PX) {
+                setArrows(prev => [...prev, draftArrow])
+              }
+              setDraftArrow(null)
+            }}
+          >
+            <svg
+              width={capturedFrame.width}
+              height={capturedFrame.height}
+              className="absolute inset-0 pointer-events-none"
+              style={{ overflow: 'visible' }}
+            >
+              {arrows.map((a, i) => (
+                <ArrowSvg key={i} arrow={a} />
+              ))}
+              {draftArrow && <ArrowSvg arrow={draftArrow} />}
+            </svg>
+          </div>
         </>
       )}
 
