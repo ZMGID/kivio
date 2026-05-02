@@ -36,3 +36,5 @@ resources/ocr
 # Swift sidecar 编译产物 (npm run build:swift / CI 生成,不入库)
 src-tauri/binaries/
 src-tauri/swift/kivio-ai-helper/.build/
+
+.superpowers/
