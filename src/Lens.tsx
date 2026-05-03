@@ -829,9 +829,12 @@ export default function Lens() {
       const target = e.target as HTMLElement | null
       const isInput = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
 
-      if (e.key === 'Escape' && !isInput) {
+      // Esc:无论焦点在哪都退出 drawMode,并阻止全局 Esc 关掉 Lens
+      // (输入栏 autoFocus 时 isInput=true,但 Esc 在输入框里没有合法语义,直接接管)
+      if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
+        e.stopImmediatePropagation()
         setDrawMode(false)
         setDraftArrow(null)
         return
