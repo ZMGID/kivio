@@ -2009,11 +2009,11 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
   }
 }
 
-/// 接收前端合成的带箭头标注 PNG（base64 编码），落盘到 temp_dir、归档、注册新 image_id。
+/// 接收前端合成的带箭头标注 PNG（base64 编码），落盘到 temp_dir、注册新 image_id。
+/// 不再次归档:归档目录里只保留 capture 时的原图,合成版只活在 temp_dir。
 /// 原 image_id 对应的临时文件保留（24h 后由 cleanup_orphan_temp_files GC，lens_close 仅清理 current_id）。
 #[tauri::command]
 fn lens_register_annotated_image(
-  app: AppHandle,
   state: State<AppState>,
   base64_png: String,
 ) -> Result<serde_json::Value, String> {
@@ -2035,8 +2035,8 @@ fn lens_register_annotated_image(
     }));
   }
 
+  // 不归档:归档目录只保留 capture 时的原图,合成版只活在 temp_dir + history。
   let image_id = Uuid::new_v4().to_string();
-  archive_captured_image(&app, &temp_path, &image_id);
 
   {
     let mut map = state.images_lock();
