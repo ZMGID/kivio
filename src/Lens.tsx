@@ -1638,7 +1638,7 @@ export default function Lens() {
                   {selectionLineCount}
                 </span>
               )}
-              {stage === 'ready' && (
+              {stage === 'ready' && keepFullscreen && (
                 <button
                   type="button"
                   onClick={() => setDrawMode(m => !m)}

@@ -2010,7 +2010,7 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
 }
 
 /// 接收前端合成的带箭头标注 PNG（base64 编码），落盘到 temp_dir、归档、注册新 image_id。
-/// 原 image_id 对应的临时文件保留（由 lens_close / 下次截图 cleanup 路径回收）。
+/// 原 image_id 对应的临时文件保留（24h 后由 cleanup_orphan_temp_files GC，lens_close 仅清理 current_id）。
 #[tauri::command]
 fn lens_register_annotated_image(
   app: AppHandle,
