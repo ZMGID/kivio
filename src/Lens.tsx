@@ -1489,77 +1489,66 @@ export default function Lens() {
         </svg>
       )}
 
-      {/* drawMode:在 capturedFrame 矩形内画箭头.frozen background = imagePreview;
-          用 SVG 叠加 + 自带 mousedown/move/up,pointer-events 仅在 drawMode 启用 */}
+      {/* drawMode:在 capturedFrame 矩形内画箭头.透明 div 收事件、SVG 渲染,
+          不加 dim、不再贴 imagePreview 背景,直接显示原画面 */}
       {capturedFrame && stage === 'ready' && keepFullscreen && drawMode && (
-        <>
-          {/* 截图框外加深(dim),让用户聚焦在截图区) */}
-          <div
-            className="absolute inset-0 pointer-events-none bg-black/40"
-            style={{ zIndex: 10 }}
-          />
-          {/* capturedFrame 内:背景填充冻结 PNG + SVG 收事件 */}
-          <div
-            className="absolute"
-            style={{
-              left: capturedFrame.x,
-              top: capturedFrame.y,
-              width: capturedFrame.width,
-              height: capturedFrame.height,
-              backgroundImage: imagePreview ? `url("${imagePreview}")` : undefined,
-              backgroundSize: '100% 100%',
-              backgroundRepeat: 'no-repeat',
-              cursor: 'crosshair',
-              zIndex: 11,
-              touchAction: 'none',
-            }}
-            onPointerDown={(e) => {
-              e.stopPropagation()
-              ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
-              const rect = e.currentTarget.getBoundingClientRect()
-              const x = e.clientX - rect.left
-              const y = e.clientY - rect.top
-              setDraftArrow({ x1: x, y1: y, x2: x, y2: y })
-            }}
-            onPointerMove={(e) => {
-              if (!draftArrow) return
-              e.stopPropagation()
-              const rect = e.currentTarget.getBoundingClientRect()
-              const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
-              const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top))
-              setDraftArrow(d => (d ? { ...d, x2: x, y2: y } : d))
-            }}
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              if (!draftArrow) return
-              const dx = draftArrow.x2 - draftArrow.x1
-              const dy = draftArrow.y2 - draftArrow.y1
-              if (Math.hypot(dx, dy) >= ARROW_MIN_DRAG_PX) {
-                setArrows(prev => [...prev, draftArrow])
-              }
-              setDraftArrow(null)
-              ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
-            }}
-            onPointerCancel={(e) => {
-              // 浏览器主动释放捕获(例如系统对话框打断),清掉 draft
-              e.stopPropagation()
-              setDraftArrow(null)
-              try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId) } catch { /* 已被释放,忽略 */ }
-            }}
+        <div
+          className="absolute"
+          style={{
+            left: capturedFrame.x,
+            top: capturedFrame.y,
+            width: capturedFrame.width,
+            height: capturedFrame.height,
+            cursor: 'crosshair',
+            zIndex: 11,
+            touchAction: 'none',
+          }}
+          onPointerDown={(e) => {
+            e.stopPropagation()
+            ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+            const rect = e.currentTarget.getBoundingClientRect()
+            const x = e.clientX - rect.left
+            const y = e.clientY - rect.top
+            setDraftArrow({ x1: x, y1: y, x2: x, y2: y })
+          }}
+          onPointerMove={(e) => {
+            if (!draftArrow) return
+            e.stopPropagation()
+            const rect = e.currentTarget.getBoundingClientRect()
+            const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
+            const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top))
+            setDraftArrow(d => (d ? { ...d, x2: x, y2: y } : d))
+          }}
+          onPointerUp={(e) => {
+            e.stopPropagation()
+            if (!draftArrow) return
+            const dx = draftArrow.x2 - draftArrow.x1
+            const dy = draftArrow.y2 - draftArrow.y1
+            if (Math.hypot(dx, dy) >= ARROW_MIN_DRAG_PX) {
+              setArrows(prev => [...prev, draftArrow])
+            }
+            setDraftArrow(null)
+            ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
+          }}
+          onPointerCancel={(e) => {
+            // 浏览器主动释放捕获(例如系统对话框打断),清掉 draft
+            e.stopPropagation()
+            setDraftArrow(null)
+            try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId) } catch { /* 已被释放,忽略 */ }
+          }}
+        >
+          <svg
+            width={capturedFrame.width}
+            height={capturedFrame.height}
+            className="absolute inset-0 pointer-events-none"
+            style={{ overflow: 'visible' }}
           >
-            <svg
-              width={capturedFrame.width}
-              height={capturedFrame.height}
-              className="absolute inset-0 pointer-events-none"
-              style={{ overflow: 'visible' }}
-            >
-              {arrows.map((a, i) => (
-                <ArrowSvg key={i} arrow={a} />
-              ))}
-              {draftArrow && <ArrowSvg arrow={draftArrow} />}
-            </svg>
-          </div>
-        </>
+            {arrows.map((a, i) => (
+              <ArrowSvg key={i} arrow={a} />
+            ))}
+            {draftArrow && <ArrowSvg arrow={draftArrow} />}
+          </svg>
+        </div>
       )}
 
       {/* select-only：hover 高亮 / drag 选区 / 顶部 hint */}
