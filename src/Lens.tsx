@@ -1468,6 +1468,27 @@ export default function Lens() {
         </>
       )}
 
+      {/* drawMode 关闭时也持续显示已落下的箭头 */}
+      {capturedFrame && stage === 'ready' && keepFullscreen && !drawMode && arrows.length > 0 && (
+        <svg
+          className="absolute pointer-events-none"
+          style={{
+            left: capturedFrame.x,
+            top: capturedFrame.y,
+            width: capturedFrame.width,
+            height: capturedFrame.height,
+            overflow: 'visible',
+            zIndex: 9,
+          }}
+          width={capturedFrame.width}
+          height={capturedFrame.height}
+        >
+          {arrows.map((a, i) => (
+            <ArrowSvg key={i} arrow={a} />
+          ))}
+        </svg>
+      )}
+
       {/* drawMode:在 capturedFrame 矩形内画箭头.frozen background = imagePreview;
           用 SVG 叠加 + 自带 mousedown/move/up,pointer-events 仅在 drawMode 启用 */}
       {capturedFrame && stage === 'ready' && keepFullscreen && drawMode && (
