@@ -19,6 +19,8 @@
   <a href="https://github.com/ZMGID/kivio/releases/latest"><strong>Download</strong></a>
   &nbsp;·&nbsp;
   <a href="#中文">中文</a>
+  &nbsp;·&nbsp;
+  QQ Group: <strong>1104450740</strong>
 </p>
 
 ---
@@ -151,6 +153,8 @@ MIT © ZM
   <a href="https://github.com/ZMGID/kivio/releases/latest"><strong>下载</strong></a>
   &nbsp;·&nbsp;
   <a href="#kivio">English</a>
+  &nbsp;·&nbsp;
+  QQ 群：<strong>1104450740</strong>
 </p>
 
 ---
