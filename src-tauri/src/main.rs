@@ -2011,7 +2011,7 @@ fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>, previous: 
 
 /// 接收前端合成的带箭头标注 PNG（base64 编码），落盘到 temp_dir、注册新 image_id。
 /// 不再次归档:归档目录里只保留 capture 时的原图,合成版只活在 temp_dir。
-/// 原 image_id 对应的临时文件保留（24h 后由 cleanup_orphan_temp_files GC，lens_close 仅清理 current_id）。
+/// 原 image_id 对应的临时文件在切到新 image_id 后立即清理，避免同一会话里堆积 orphan。
 #[tauri::command]
 fn lens_register_annotated_image(
   state: State<AppState>,
@@ -2037,6 +2037,10 @@ fn lens_register_annotated_image(
 
   // 不归档:归档目录只保留 capture 时的原图,合成版只活在 temp_dir + history。
   let image_id = Uuid::new_v4().to_string();
+  let previous_image_id = {
+    let current = state.current_id_lock();
+    current.clone()
+  };
 
   {
     let mut map = state.images_lock();
@@ -2045,6 +2049,14 @@ fn lens_register_annotated_image(
   {
     let mut current = state.current_id_lock();
     *current = Some(image_id.clone());
+  }
+  if let Some(previous_image_id) = previous_image_id {
+    if previous_image_id != image_id {
+      let mut map = state.images_lock();
+      if let Some(previous_path) = map.remove(&previous_image_id) {
+        cleanup_temp_file(&previous_path);
+      }
+    }
   }
 
   Ok(serde_json::json!({ "success": true, "imageId": image_id }))
@@ -2281,12 +2293,17 @@ fn open_settings_window(app: &AppHandle) -> Result<(), String> {
 }
 
 fn lens_is_active(app: &AppHandle) -> bool {
-  let busy = app
-    .try_state::<AppState>()
-    .map(|state| state.lens_busy.load(Ordering::SeqCst))
-    .unwrap_or(false);
-  if busy {
-    return true;
+  if let Some(state) = app.try_state::<AppState>() {
+    if state.lens_busy.load(Ordering::SeqCst) {
+      let visible = app
+        .get_webview_window("lens")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+      if visible {
+        return true;
+      }
+      state.lens_busy.store(false, Ordering::SeqCst);
+    }
   }
 
   app
@@ -2295,10 +2312,23 @@ fn lens_is_active(app: &AppHandle) -> bool {
     .unwrap_or(false)
 }
 
+fn focus_lens_window(app: &AppHandle) -> bool {
+  let Some(window) = app.get_webview_window("lens") else {
+    return false;
+  };
+  if !window.is_visible().ok().unwrap_or(false) {
+    return false;
+  }
+  let _ = window.show();
+  let _ = window.set_focus();
+  true
+}
+
 /// 自动激活 app（单实例二次启动 / Windows 普通启动默认设置页）时使用。
 /// 如果用户正在拉起 Lens，就不要再抢 main 窗口到设置页。
 fn open_settings_window_for_activation(app: &AppHandle) -> Result<(), String> {
   if lens_is_active(app) {
+    let _ = focus_lens_window(app);
     return Ok(());
   }
   open_settings_window(app)

@@ -460,6 +460,7 @@ export default function Lens() {
   const floatingRebaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const focusReqIdRef = useRef(0)
   const prevStreamingRef = useRef(false)
+  const preparingSendRef = useRef(false)
   // Stream 真实结束（成功 / 错误 / 用户主动取消）后才置 true，
   // 让历史持久化 effect 只在这一次 rerun 触发 push；restoreHistory / enterSelect / resetBeforeHide 防御性清零，
   // 避免恢复历史时 setMessages 触发 effect 把恢复的对话又当新条目写一遍历史。
@@ -809,6 +810,7 @@ export default function Lens() {
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      if (preparingSendRef.current) return
       if (stageRef.current === 'answering' && streaming) {
         try { await api.lensCancelStream() } catch (err) { console.error(err) }
         setStreaming(false)
@@ -1219,34 +1221,7 @@ export default function Lens() {
     setHistoryOpen(false)
     setInput('')
 
-    // 默认沿用当前 image_id;若有箭头则先合成 + 注册新图,把后续 ask 切到合成版
-    let effectiveImageId = imageIdRef.current
-    if (arrows.length > 0 && imagePreview && capturedFrame) {
-      try {
-        const base64 = await composeAnnotatedImage(
-          imagePreview,
-          arrows,
-          capturedFrame.width,
-          capturedFrame.height,
-        )
-        const result = await api.lensRegisterAnnotatedImage(base64)
-        if (result.success && result.imageId) {
-          effectiveImageId = result.imageId
-          imageIdRef.current = result.imageId
-          setImagePreview(`data:image/png;base64,${base64}`)
-          setArrows([])
-          setDraftArrow(null)
-          setDrawMode(false)
-        } else {
-          console.warn('[lens-arrow] register annotated image failed:', result.error)
-        }
-      } catch (err) {
-        console.warn('[lens-arrow] compose failed, fallback to original:', err)
-      }
-    }
-
-    // 首轮 chat 注入:把启动时抓到的选中文本作为 [已选文本] 段前置到 user prompt;
-    // 后续轮次(messages.length>0)严格不重复注入.translate 模式不到这里.
+    // 先进入 sending UI，再做合成/注册，避免这段异步窗口被 Esc 关闭掉。
     const isFirstTurn = messages.length === 0
     const ctx = (isFirstTurn && mode === 'chat') ? selectionText.trim() : ''
     const userContent = ctx
@@ -1262,7 +1237,35 @@ export default function Lens() {
       setStage('answering')
       setStreaming(true)
     })
+    preparingSendRef.current = true
+
+    // 默认沿用当前 image_id;若有箭头则先合成 + 注册新图,把后续 ask 切到合成版
     try {
+      let effectiveImageId = imageIdRef.current
+      if (arrows.length > 0 && imagePreview && capturedFrame) {
+        try {
+          const base64 = await composeAnnotatedImage(
+            imagePreview,
+            arrows,
+            capturedFrame.width,
+            capturedFrame.height,
+          )
+          const result = await api.lensRegisterAnnotatedImage(base64)
+          if (result.success && result.imageId) {
+            effectiveImageId = result.imageId
+            imageIdRef.current = result.imageId
+            setImagePreview(`data:image/png;base64,${base64}`)
+            setArrows([])
+            setDraftArrow(null)
+            setDrawMode(false)
+          } else {
+            console.warn('[lens-arrow] register annotated image failed:', result.error)
+          }
+        } catch (err) {
+          console.warn('[lens-arrow] compose failed, fallback to original:', err)
+        }
+      }
+      preparingSendRef.current = false
       const result = await api.lensAsk(effectiveImageId || '', sendMessages)
       if (!result.success) {
         const errText = `${t.lensError}: ${result.error}`
@@ -1288,6 +1291,7 @@ export default function Lens() {
         return [...prev.slice(0, -1), { role: 'assistant', content: `${t.lensError}: ${msg}` }]
       })
     } finally {
+      preparingSendRef.current = false
       // ref 在 setStreaming(false) 之前置 true,让持久化 effect 在本次 rerun 中识别这是"流刚结束"路径
       justFinishedStreamRef.current = true
       setStreaming(false)
