@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, Brain, MousePointer2 } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, Brain, MousePointer2, Code, Eye } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
@@ -437,6 +437,8 @@ export default function Lens() {
   // arrows / draftArrow 坐标系 = capturedFrame 逻辑像素 (左上角为原点)
   const [drawMode, setDrawMode] = useState(false)
   const [arrows, setArrows] = useState<Arrow[]>([])
+  // 源码/渲染切换：false=渲染模式(ReactMarkdown)，true=源码模式(原始文本)
+  const [sourceMode, setSourceMode] = useState(false)
   const [draftArrow, setDraftArrow] = useState<Arrow | null>(null)
   // 任何 stage 切换时强制清掉 draw 子模式 + 已落箭头
   useEffect(() => {
@@ -1215,11 +1217,9 @@ export default function Lens() {
     }
   }
 
-  const handleSend = async () => {
-    if (!input.trim() || streaming) return
-    const question = input.trim()
+  const doSend = async (question: string) => {
+    if (streaming) return
     setHistoryOpen(false)
-    setInput('')
 
     // 先进入 sending UI，再做合成/注册，避免这段异步窗口被 Esc 关闭掉。
     const isFirstTurn = messages.length === 0
@@ -1298,6 +1298,13 @@ export default function Lens() {
     }
   }
 
+  const handleSend = async () => {
+    if (streaming) return
+    const question = input.trim()
+    setInput('')
+    await doSend(question)
+  }
+
   const handleStop = async () => {
     try { await api.lensCancelStream() } catch (err) { console.error(err) }
     // 用户主动取消但已经流出部分内容，也持久化 —— 关掉再开历史能接着问
@@ -1373,7 +1380,7 @@ export default function Lens() {
   // ====== 单一渲染 ======
   const showThumb = stage !== 'select' && (imagePreview || appLabel)
   // 流式期间禁止发送/输入，答完之后可对同一张截图继续问新问题（每次仍为独立 Q&A，自动入历史）
-  const sendDisabled = !input.trim() || streaming
+  const sendDisabled = streaming
   // 对话栏（输入框）只在 chat 模式显示；translate 模式只渲染浮动结果卡片
   const showBar = mode === 'chat'
   // translate 浮动卡片：截图后在选区旁出现，加载/完成两态
@@ -1743,8 +1750,8 @@ export default function Lens() {
                               )}
                             </div>
                             <div className="min-w-0 flex-1">
-                              <div className="text-[11.5px] text-neutral-800 dark:text-neutral-200 truncate leading-tight">
-                                {firstUserQ}
+                              <div className={`text-[11.5px] truncate leading-tight ${firstUserQ ? 'text-neutral-800 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500 italic'}`}>
+                                {firstUserQ || (lang === 'zh' ? '（纯图片提问）' : '(image-only question)')}
                               </div>
                               <div className="text-[9.5px] text-neutral-400 dark:text-neutral-500 mt-0.5 truncate leading-tight">
                                 {item.appLabel ? `${item.appLabel} · ` : ''}{turns > 1 ? `${turns} 轮 · ` : ''}{relTime(item.timestamp)}
@@ -1812,6 +1819,14 @@ export default function Lens() {
                     {copied ? <Check size={11} /> : <Copy size={11} />}
                     <span>{copied ? t.lensCopied : t.lensCopy}</span>
                   </button>
+                  <button
+                    onClick={() => setSourceMode(v => !v)}
+                    title={sourceMode ? t.lensRenderMode : t.lensSourceMode}
+                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                  >
+                    {sourceMode ? <Eye size={11} /> : <Code size={11} />}
+                    <span>{sourceMode ? t.lensRenderMode : t.lensSourceMode}</span>
+                  </button>
                   {streaming && (
                     <button
                       onClick={() => void handleStop()}
@@ -1848,9 +1863,15 @@ export default function Lens() {
                             />
                           )}
                           {m.content ? (
-                            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
-                              {m.content}
-                            </ReactMarkdown>
+                            sourceMode ? (
+                              <pre className="not-prose whitespace-pre-wrap break-words text-[12.5px] leading-6 font-mono bg-neutral-100 dark:bg-neutral-800/60 rounded-lg p-3">
+                                {m.content}
+                              </pre>
+                            ) : (
+                              <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                {m.content}
+                              </ReactMarkdown>
+                            )
                           ) : isLast && streaming && !m.reasoning ? (
                             <div className="not-prose flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
                               <Loader2 className="animate-spin" size={14} />

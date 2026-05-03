@@ -33,8 +33,8 @@ pub struct AppState {
   /// 每个 provider 当前活跃 key idx：上一次成功的 key 优先继续用。
   pub active_key_idx: Mutex<HashMap<String, usize>>,
   pub http: Client,
-  /// Apple Intelligence sidecar 客户端。app 启动时 spawn 一次，所有走 Apple provider 的请求复用。
-  /// 不可用时 client.available()=false，路由层立即报错。
+  /// Apple Intelligence sidecar 客户端。首次真正用到 Apple 路由时 spawn，启动后所有请求复用。
+  /// 不可用时 ensure_started() 返回 Err，路由层直接报错。
   pub apple_intelligence: Arc<AppleIntelligenceClient>,
 }
 

@@ -9,7 +9,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
 import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus, type UpdateInfo } from './api/tauri'
 import { i18n } from './settings/i18n'
-import { buildHotkey } from './settings/utils'
+import { buildHotkey, getPlatform } from './settings/utils'
 import { PROVIDER_PRESETS, type ProviderPreset } from './settings/providerPresets'
 import {
   Toggle, Select, Input, TextArea, Label,
@@ -54,8 +54,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [downloadPercent, setDownloadPercent] = useState(0)
   const [downloadedPath, setDownloadedPath] = useState('')
   const [downloadError, setDownloadError] = useState('')
-  // Apple Intelligence sidecar 可用性：mount 时查一次,unavailable 就把 onDevice 预设 chip 隐藏
-  const [appleIntelligenceAvailable, setAppleIntelligenceAvailable] = useState(false)
+  const isMac = getPlatform() === 'macos'
   // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
   // （否则用户可能没察觉就 Save 把磁盘真实数据覆盖掉）
   const [loadError, setLoadError] = useState('')
@@ -127,15 +126,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   useEffect(() => {
     refreshPermissions()
   }, [refreshPermissions])
-
-  // 查 Apple Intelligence 可用性(macOS 26 + Apple Silicon + 已开启 → true)，决定预设 chip 是否露出
-  useEffect(() => {
-    let cancelled = false
-    api.appleIntelligenceAvailable()
-      .then(v => { if (!cancelled) setAppleIntelligenceAvailable(v) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [])
 
   // 监听后端启动时的 update-available 事件，发现新版立即在 About 区块展开提示
   useEffect(() => {
@@ -1510,7 +1500,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               <div className="space-y-2">
                 <div className="flex flex-wrap gap-1.5">
                   {PROVIDER_PRESETS
-                    .filter(preset => !preset.onDevice || appleIntelligenceAvailable)
+                    .filter(preset => !preset.onDevice || isMac)
                     .map(preset => (
                     <button
                       key={preset.name}

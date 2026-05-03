@@ -553,11 +553,33 @@ fn open_external(app: AppHandle, url: String) -> Result<(), String> {
   app.shell().open(url, None).map_err(|e| e.to_string())
 }
 
-/// 查询 Apple Intelligence(端上 Foundation Models) 是否可用。
-/// 不可用条件：非 macOS、非 macOS 26、Apple Intelligence 未启用、sidecar 二进制缺失等。
+/// 查询 Apple Intelligence 预设是否应在设置页中显示。
+/// 为避免打开设置页时就拉起 sidecar，这里只做轻量本地判断：
+/// - 非 macOS → false
+/// - sidecar 资源二进制不存在 → false
+/// - 其余情况 → true（真正可用性在首次调用时由 sidecar ready 结果决定）
 #[tauri::command]
 fn apple_intelligence_available(state: State<AppState>) -> bool {
-  state.apple_intelligence.available()
+  #[cfg(not(target_os = "macos"))]
+  {
+    let _ = state;
+    return false;
+  }
+  #[cfg(target_os = "macos")]
+  {
+    if let Some(app) = state.apple_intelligence.app_handle() {
+      let path = app.path().resource_dir().ok().map(|dir| {
+        let name = if cfg!(target_os = "windows") {
+          "binaries/kivio-ai-helper.exe"
+        } else {
+          "binaries/kivio-ai-helper"
+        };
+        dir.join(name)
+      });
+      return path.map(|p| p.exists()).unwrap_or(false);
+    }
+    false
+  }
 }
 
 /// 调 GitHub Releases API 检查最新版本
@@ -1401,11 +1423,6 @@ async fn system_ocr_then_translate(
   };
 
   // 1) OCR via Apple Vision(sidecar)
-  if !state.apple_intelligence.available() {
-    let msg = "系统 OCR 不可用：需要 macOS 26+ Apple Silicon 且 Apple Intelligence 已启用".to_string();
-    emit_done(false, Some(&msg));
-    return Ok(serde_json::json!({ "success": false, "error": msg }));
-  }
   let original = match state
     .apple_intelligence
     .ocr_image(&image_path.to_string_lossy())
@@ -2361,7 +2378,7 @@ fn build_tray_menu(
 /// 设置系统托盘图标和菜单
 /// 如果托盘已存在则只更新菜单；否则创建新的托盘图标并绑定菜单事件
 fn setup_tray(app: &AppHandle) -> Result<(), String> {
-  use tauri::tray::TrayIconBuilder;
+  use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
   let lang = app
     .state::<AppState>()
@@ -2388,6 +2405,7 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
     // (Windows/Linux 上 ignore 此 flag,直接显示原图)
     .icon_as_template(true)
     .menu(&menu)
+    .show_menu_on_left_click(false)
     .on_menu_event(|app, event| match event.id().as_ref() {
       "show" => {
         match ensure_main_window(app) {
@@ -2408,6 +2426,21 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
         app.exit(0);
       }
       _ => {}
+    })
+    .on_tray_icon_event(|tray, event| {
+      if let TrayIconEvent::Click {
+        button: MouseButton::Left,
+        button_state: MouseButtonState::Up,
+        ..
+      } = event
+      {
+        let app = tray.app_handle().clone();
+        tauri::async_runtime::spawn(async move {
+          if let Err(err) = lens_request_internal(&app, "chat") {
+            eprintln!("Tray click lens trigger error: {}", err);
+          }
+        });
+      }
     })
     .build(app)
     .map_err(|e| e.to_string())?;
