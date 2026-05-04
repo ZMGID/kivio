@@ -454,6 +454,7 @@ export default function Lens() {
 
   const inputRef = useRef<HTMLInputElement>(null)
   const historyPanelRef = useRef<HTMLDivElement>(null)
+  const barRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<Stage>('select')
   const modeRef = useRef<Mode>(mode)
   const historyOpenRef = useRef(false)
@@ -906,6 +907,13 @@ export default function Lens() {
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (stage !== 'select') return
+    // 点击在对话栏内部时不开始拖动，让输入框/按钮等正常交互
+    if (barRef.current?.contains(e.target as Node)) return
+    // 历史面板展开时点击外层只关闭面板，不开始拖动/截图
+    if (historyOpenRef.current) {
+      setHistoryOpen(false)
+      return
+    }
     const p: Point = { x: e.clientX, y: e.clientY }
     setDragStart(p)
     setDragCurrent(p)
@@ -923,6 +931,11 @@ export default function Lens() {
         setDragging(true)
         setHovered(null)
       }
+      return
+    }
+    // 鼠标在对话栏（含历史面板）上方时清除 hover，避免高亮/误截图背后窗口
+    if (barRef.current?.contains(e.target as Node)) {
+      setHovered(null)
       return
     }
     const gp = clientToGlobal(p)
@@ -1209,6 +1222,14 @@ export default function Lens() {
       return
     }
 
+    // 在对话栏区域松开时不触发截图（避免点击历史按钮/条目时误截图）
+    if (barRef.current?.contains(e.target as Node)) {
+      setDragStart(null)
+      setDragCurrent(null)
+      setDragging(false)
+      return
+    }
+
     setDragStart(null)
     setDragCurrent(null)
     setDragging(false)
@@ -1339,7 +1360,7 @@ export default function Lens() {
       setInput('')
       setSelectionText('')
       setMessages(item.messages)
-      setCapturedFrame(item.capturedFrame)
+      setCapturedFrame(null)
       setStreaming(false)
       setStage('answering')
     })
@@ -1611,11 +1632,12 @@ export default function Lens() {
           - answering：在对话栏下方 absolute 展开 answer 区（固定 360 高） */}
       {showBar && (
         <div
+          ref={barRef}
           className="absolute ease-out"
-          onMouseDown={(e) => e.stopPropagation()}
-          onMouseMove={(e) => e.stopPropagation()}
-          onMouseUp={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => { if (stage !== 'select') e.stopPropagation() }}
+          onMouseMove={(e) => { if (stage !== 'select') e.stopPropagation() }}
+          onMouseUp={(e) => { if (stage !== 'select') e.stopPropagation() }}
+          onClick={(e) => { if (stage !== 'select') e.stopPropagation() }}
           style={{
             left: barRect.x,
             top: barRect.y,
