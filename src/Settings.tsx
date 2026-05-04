@@ -804,22 +804,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               </div>
             </section>
 
-            {/* 快捷键 */}
-            <section>
-              <SectionTitle icon={Keyboard}>{t.hotkey}</SectionTitle>
-              <div className="settings-card overflow-hidden px-4 py-3">
-                <HotkeyInput
-                  value={settings.hotkey}
-                  placeholder={t.hotkeyPlaceholder}
-                  recording={recordingTarget === 'main'}
-                  onToggleRecording={() => toggleRecording('main')}
-                  recordLabel={t.hotkeyRecord}
-                  recordingLabel={t.hotkeyRecording}
-                  recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                />
-              </div>
-            </section>
-
             {/* 行为 */}
             <section>
               <SectionTitle icon={SlidersHorizontal}>{lang === 'zh' ? '行为' : 'Behavior'}</SectionTitle>
@@ -947,6 +931,22 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         {/* ===== 翻译设置标签页 ===== */}
         {activeTab === 'translate' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            {/* 快捷键 */}
+            <section>
+              <SectionTitle icon={Keyboard}>{t.hotkey}</SectionTitle>
+              <div className="settings-card overflow-hidden px-4 py-3">
+                <HotkeyInput
+                  value={settings.hotkey}
+                  placeholder={t.hotkeyPlaceholder}
+                  recording={recordingTarget === 'main'}
+                  onToggleRecording={() => toggleRecording('main')}
+                  recordLabel={t.hotkeyRecord}
+                  recordingLabel={t.hotkeyRecording}
+                  recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                />
+              </div>
+            </section>
+
             {/* 目标语言 */}
             <section>
               <SectionTitle icon={Globe}>{t.targetLang}</SectionTitle>
