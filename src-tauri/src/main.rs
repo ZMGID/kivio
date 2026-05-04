@@ -1774,12 +1774,17 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         errors.push(format!("Duplicate hotkey \"{hotkey}\" for screenshot translation"));
       } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
-          let handle = app.clone();
-          tauri::async_runtime::spawn(async move {
-            if let Err(err) = lens_request_translate(handle) {
-              eprintln!("Screenshot translation trigger error: {err}");
-            }
-          });
+          // 切换行为：Lens 可见时关闭，不可见时打开截图翻译
+          if lens_is_active(app) {
+            let _ = lens_close(app.clone());
+          } else {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+              if let Err(err) = lens_request_translate(handle) {
+                eprintln!("Screenshot translation trigger error: {err}");
+              }
+            });
+          }
         }
       }) {
         errors.push(format_hotkey_error(
@@ -1801,12 +1806,17 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         errors.push(format!("Duplicate hotkey \"{hotkey}\" for lens"));
       } else if let Err(err) = shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
         if event.state == ShortcutState::Pressed {
-          let handle = app.clone();
-          tauri::async_runtime::spawn(async move {
-            if let Err(err) = lens_request(handle) {
-              eprintln!("Lens trigger error: {err}");
-            }
-          });
+          // 切换行为：Lens 可见时关闭，不可见时打开
+          if lens_is_active(app) {
+            let _ = lens_close(app.clone());
+          } else {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+              if let Err(err) = lens_request(handle) {
+                eprintln!("Lens trigger error: {err}");
+              }
+            });
+          }
         }
       }) {
         errors.push(format_hotkey_error("lens", &hotkey, &err.to_string()));
@@ -2435,11 +2445,16 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
       } = event
       {
         let app = tray.app_handle().clone();
-        tauri::async_runtime::spawn(async move {
-          if let Err(err) = lens_request_internal(&app, "chat") {
-            eprintln!("Tray click lens trigger error: {}", err);
-          }
-        });
+        // 切换行为：Lens 可见时关闭，不可见时打开
+        if lens_is_active(&app) {
+          let _ = lens_close(app);
+        } else {
+          tauri::async_runtime::spawn(async move {
+            if let Err(err) = lens_request_internal(&app, "chat") {
+              eprintln!("Tray click lens trigger error: {}", err);
+            }
+          });
+        }
       }
     })
     .build(app)
