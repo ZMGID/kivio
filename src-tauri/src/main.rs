@@ -40,9 +40,9 @@ use api::{
   stream_chat_call, stream_translate_combined, ProviderConnectionInput,
 };
 use prompts::{
-  build_combined_translate_prompt, build_ocr_direct_translation_prompt, build_translation_prompt,
-  COMBINED_TRANSLATE_SEPARATOR, DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
-  DEFAULT_TRANSLATION_TEMPLATE,
+  build_combined_translate_prompt, build_ocr_direct_translation_prompt,
+  build_screenshot_translation_prompt, build_translation_prompt, COMBINED_TRANSLATE_SEPARATOR,
+  DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE, DEFAULT_TRANSLATION_TEMPLATE,
 };
 use screenshot::{cleanup_orphan_temp_files, cleanup_temp_file};
 use settings::{
@@ -909,15 +909,59 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
   let _ = window.set_size(tauri::LogicalSize::new(lw, lh));
 }
 
+fn lens_position_text_floating(app: &AppHandle, window: &WebviewWindow) {
+  const WIDTH: f64 = 640.0;
+  const HEIGHT: f64 = 320.0;
+  const GAP: f64 = 12.0;
+
+  let _ = window.set_size(tauri::LogicalSize::new(WIDTH, HEIGHT));
+
+  let Some(cursor) = get_mouse_position(app) else {
+    let _ = window.center();
+    return;
+  };
+
+  let mut x = cursor.x + GAP;
+  let mut y = cursor.y + GAP;
+
+  if let Ok(monitors) = app.available_monitors() {
+    if let Some(monitor) = monitors.iter().find(|monitor| {
+      let mp = monitor.position();
+      let ms = monitor.size();
+      cursor.x >= mp.x as f64
+        && cursor.x < (mp.x + ms.width as i32) as f64
+        && cursor.y >= mp.y as f64
+        && cursor.y < (mp.y + ms.height as i32) as f64
+    }) {
+      let mp = monitor.position();
+      let ms = monitor.size();
+      let scale = monitor.scale_factor();
+      let width = WIDTH * scale;
+      let height = HEIGHT * scale;
+      let min_x = mp.x as f64 + GAP;
+      let min_y = mp.y as f64 + GAP;
+      let max_x = (mp.x + ms.width as i32) as f64 - width - GAP;
+      let max_y = (mp.y + ms.height as i32) as f64 - height - GAP;
+      x = x.max(min_x).min(max_x.max(min_x));
+      y = y.max(min_y).min(max_y.max(min_y));
+    }
+  }
+
+  let _ = window.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
 /// 入口（公共底层）：打开 lens webview 进入 select 态。
 /// mode：
 ///   - "chat"（默认）：截完进对话栏 ready 态
 ///   - "translate"：截完直接做 OCR + 翻译，弹原文/译文浮动卡
+///   - "translateText"：直接翻译当前选中文本，复用截图翻译结果卡
 fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
   // 预热 SCK SCShareableContent 缓存，摊销首次截图的 WindowServer 查询开销。
   // 用户从按热键到选目标 + 单击截图通常 ≥ 300 ms，足以盖住 30-80 ms 的 prewarm。
   #[cfg(target_os = "macos")]
-  crate::sck::prewarm();
+  if mode != "translateText" {
+    crate::sck::prewarm();
+  }
 
   let state = app.state::<AppState>();
   // 自愈：busy=true 但 lens 窗口已不可见（外部强关 / dev 重载等异常），重置 busy
@@ -936,11 +980,18 @@ fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
 
   // 必须在 ensure_lens_window/show/set_focus 之前抓取。创建隐藏 webview 在 macOS 上也可能
   // 改变当前 focused UI element，导致 Cmd+C/AXSelectedText 读到 Lens 自己而不是前台 App。
-  let pending_selection = if mode == "chat" {
+  let pending_selection = if mode == "chat" || mode == "translateText" {
     capture_active_selection()
   } else {
     None
   };
+  if mode == "translateText" && pending_selection.is_none() {
+    if let Ok(mut guard) = state.pending_selection.lock() {
+      *guard = None;
+    }
+    state.lens_busy.store(false, Ordering::SeqCst);
+    return Ok(());
+  }
 
   let window = match windows::ensure_lens_window(app) {
     Ok(w) => w,
@@ -954,19 +1005,31 @@ fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
     *guard = pending_selection;
   }
   // 把 mode 编码进 hash query，前端通过 location.hash 读取（'#lens?mode=translate'）
-  let safe_mode = if mode == "translate" { "translate" } else { "chat" };
+  let safe_mode = match mode {
+    "translate" => "translate",
+    "translateText" => "translateText",
+    _ => "chat",
+  };
   let script = format!(
     "window.location.hash = '#lens?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('lens:reset'));",
     mode = safe_mode,
   );
   let _ = window.eval(&script);
-  // 先在 hidden 状态下尝试定位：即便部分系统下 hidden 窗口 set_position 被忽略，也比
-  // 不调强（成功则消除"先在旧位置闪一帧再跳到全屏"的可见跳变）。
-  lens_position_fullscreen(app, &window);
+  if safe_mode == "translateText" {
+    lens_position_text_floating(app, &window);
+  } else {
+    // 先在 hidden 状态下尝试定位：即便部分系统下 hidden 窗口 set_position 被忽略，也比
+    // 不调强（成功则消除"先在旧位置闪一帧再跳到全屏"的可见跳变）。
+    lens_position_fullscreen(app, &window);
+  }
   let _ = window.show();
   let _ = window.set_focus();
-  // show 后再调，处理 always_on_top + visible_on_all_workspaces 把首次 set_position 吃掉的情况
-  lens_position_fullscreen(app, &window);
+  if safe_mode == "translateText" {
+    lens_position_text_floating(app, &window);
+  } else {
+    // show 后再调，处理 always_on_top + visible_on_all_workspaces 把首次 set_position 吃掉的情况
+    lens_position_fullscreen(app, &window);
+  }
   Ok(())
 }
 
@@ -980,6 +1043,11 @@ fn lens_request(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn lens_request_translate(app: AppHandle) -> Result<(), String> {
   lens_request_internal(&app, "translate")
+}
+
+#[tauri::command]
+fn lens_request_translate_text(app: AppHandle) -> Result<(), String> {
+  lens_request_internal(&app, "translateText")
 }
 
 /// 返回当前屏幕上可见应用窗口列表（macOS 实际数据；Windows 空数组）。
@@ -1395,6 +1463,153 @@ async fn lens_translate(
   }))
 }
 
+#[tauri::command]
+async fn lens_translate_text(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  text: String,
+  request_id: String,
+) -> Result<serde_json::Value, String> {
+  let original = text.trim().to_string();
+  let emit_done = |success: bool, error: Option<&str>| {
+    let _ = app.emit(
+      "lens-translate-stream",
+      serde_json::json!({
+        "imageId": request_id.clone(),
+        "done": true,
+        "success": success,
+        "error": error,
+      }),
+    );
+  };
+
+  if original.is_empty() {
+    let msg = "No selected text".to_string();
+    emit_done(false, Some(&msg));
+    return Ok(serde_json::json!({ "success": false, "error": msg }));
+  }
+
+  let settings = state.settings_read().clone();
+  let provider = match settings.get_provider(&settings.screenshot_translation.provider_id) {
+    Some(p) => p.clone(),
+    None => {
+      let msg = "Translation provider not found".to_string();
+      emit_done(false, Some(&msg));
+      return Ok(serde_json::json!({ "success": false, "error": msg }));
+    }
+  };
+  if provider.base_url != apple_intelligence::APPLE_INTELLIGENCE_BASE_URL && provider.api_keys.is_empty() {
+    let msg = "Missing API Key".to_string();
+    emit_done(false, Some(&msg));
+    return Ok(serde_json::json!({ "success": false, "error": msg }));
+  }
+
+  let retry_attempts = effective_retry_attempts(&settings);
+  let direct_translate = settings.screenshot_translation.direct_translate;
+  let st_thinking = settings.screenshot_translation.thinking_enabled;
+  let st_stream = settings.screenshot_translation.stream_enabled;
+  let target_lang = resolve_target_lang(&settings.target_lang, &original);
+  let lang_name = language_name(&target_lang).to_string();
+  let prompt = build_screenshot_translation_prompt(
+    &original,
+    &lang_name,
+    settings.screenshot_translation.prompt.as_deref(),
+  );
+
+  let is_apple = provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
+  let translated = if st_stream {
+    if is_apple {
+      let app_for_emit = app.clone();
+      let request_id_for_emit = request_id.clone();
+      let mut accumulated = String::new();
+      if let Err(err) = state
+        .apple_intelligence
+        .stream_text(&prompt, |delta| {
+          accumulated.push_str(delta);
+          let _ = app_for_emit.emit(
+            "lens-translate-stream",
+            serde_json::json!({
+              "imageId": request_id_for_emit.clone(),
+              "kind": "translated",
+              "delta": delta,
+            }),
+          );
+        })
+        .await
+      {
+        emit_done(false, Some(&err));
+        return Ok(serde_json::json!({ "success": false, "error": err }));
+      }
+      accumulated
+    } else {
+      let mut body = serde_json::json!({
+        "messages": [{ "role": "user", "content": prompt }],
+        "stream": true,
+        "temperature": 0.2,
+      });
+      if !st_thinking {
+        body["thinking"] = serde_json::json!({ "type": "disabled" });
+      }
+      match stream_chat_call(
+        &app,
+        &state,
+        &provider,
+        &settings.screenshot_translation.model,
+        body,
+        retry_attempts,
+        &request_id,
+        "translated",
+        "lens-translate-stream",
+      )
+      .await
+      {
+        Ok(text) => text,
+        Err(err) => {
+          emit_done(false, Some(&err));
+          return Ok(serde_json::json!({ "success": false, "error": err }));
+        }
+      }
+    }
+  } else {
+    let result = call_openai_text(
+      &state,
+      &provider,
+      &settings.screenshot_translation.model,
+      prompt,
+      retry_attempts,
+      st_thinking,
+    )
+    .await;
+    match result {
+      Ok(text) => {
+        let _ = app.emit(
+          "lens-translate-stream",
+          serde_json::json!({ "imageId": request_id.clone(), "kind": "translated", "delta": text }),
+        );
+        text
+      }
+      Err(err) => {
+        emit_done(false, Some(&err));
+        return Ok(serde_json::json!({ "success": false, "error": err }));
+      }
+    }
+  };
+
+  if !direct_translate {
+    let _ = app.emit(
+      "lens-translate-stream",
+      serde_json::json!({ "imageId": request_id.clone(), "kind": "original", "delta": original.clone() }),
+    );
+  }
+
+  emit_done(true, None);
+  Ok(serde_json::json!({
+    "success": true,
+    "original": if direct_translate { String::new() } else { original.clone() },
+    "translated": translated,
+  }))
+}
+
 /// 系统 OCR + 任意 provider 翻译的两步本地链路。
 /// OCR 总是走 Apple Vision(sidecar);翻译可以是 Apple FoundationModels 或任意 OpenAI 兼容 cloud provider。
 /// 与 cloud vision 单次 OCR+translate 调用相比,这里手动 emit lens-translate-stream 事件维持前端契约。
@@ -1548,6 +1763,9 @@ async fn system_ocr_then_translate(
 #[tauri::command]
 fn lens_close(app: AppHandle) -> Result<(), String> {
   let state = app.state::<AppState>();
+  state
+    .explain_stream_generation
+    .fetch_add(1, Ordering::SeqCst);
   let current_id = {
     let current = state.current_id_lock();
     current.clone()
@@ -1790,6 +2008,35 @@ fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         errors.push(format_hotkey_error(
           "screenshot translation",
           &hotkey,
+          &err.to_string(),
+        ));
+      }
+    }
+
+    let text_hotkey = settings.screenshot_translation.text_hotkey.trim().to_string();
+    if text_hotkey.is_empty() {
+      errors.push("Selected text screenshot translation hotkey is empty".to_string());
+    } else {
+      let hotkey_key = text_hotkey.to_lowercase();
+      if !registered.insert(hotkey_key) {
+        errors.push(format!("Duplicate hotkey \"{text_hotkey}\" for selected text screenshot translation"));
+      } else if let Err(err) = shortcut_manager.on_shortcut(text_hotkey.as_str(), move |app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+          if lens_is_active(app) {
+            let _ = lens_close(app.clone());
+          } else {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+              if let Err(err) = lens_request_translate_text(handle) {
+                eprintln!("Selected text screenshot translation trigger error: {err}");
+              }
+            });
+          }
+        }
+      }) {
+        errors.push(format_hotkey_error(
+          "selected text screenshot translation",
+          &text_hotkey,
           &err.to_string(),
         ));
       }
@@ -2594,12 +2841,14 @@ fn main() {
       open_permission_settings,
       lens_request,
       lens_request_translate,
+      lens_request_translate_text,
       lens_list_windows,
       lens_capture_window,
       lens_capture_region,
       lens_register_annotated_image,
       lens_ask,
       lens_translate,
+      lens_translate_text,
       lens_cancel_stream,
       lens_close,
       lens_set_floating,

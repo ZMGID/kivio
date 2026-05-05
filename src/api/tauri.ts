@@ -82,6 +82,7 @@ export type Settings = {
   screenshotTranslation: {
     enabled: boolean
     hotkey: string
+    textHotkey: string
     providerId: string
     model: string
     directTranslate?: boolean
@@ -254,9 +255,14 @@ export const api = {
       'lens_register_annotated_image', { base64Png }
     ),
   lensRequestTranslate: () => invoke<void>('lens_request_translate'),
+  lensRequestTranslateText: () => invoke<void>('lens_request_translate_text'),
   lensTranslate: (imageId: string) =>
     invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
       'lens_translate', { imageId }
+    ),
+  lensTranslateText: (text: string, requestId: string) =>
+    invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
+      'lens_translate_text', { text, requestId }
     ),
   lensAsk: (imageId: string, messages: ExplainMessage[]) =>
     invoke<{ success: boolean; response?: string; error?: string }>('lens_ask', { imageId, messages }),

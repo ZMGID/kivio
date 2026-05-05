@@ -11,7 +11,7 @@ import { i18n, type Lang } from './settings/i18n'
 import { copyToClipboard } from './utils/clipboard'
 
 type Stage = 'select' | 'ready' | 'answering' | 'translating' | 'translated'
-type Mode = 'chat' | 'translate'
+type Mode = 'chat' | 'translate' | 'translateText'
 
 /** 解析 webview hash query：'#lens?mode=translate' → 'translate' */
 function readModeFromHash(): Mode {
@@ -20,8 +20,13 @@ function readModeFromHash(): Mode {
   const q = hash.indexOf('?')
   if (q < 0) return 'chat'
   const params = new URLSearchParams(hash.slice(q + 1))
-  return params.get('mode') === 'translate' ? 'translate' : 'chat'
+  const mode = params.get('mode')
+  if (mode === 'translate') return 'translate'
+  if (mode === 'translateText') return 'translateText'
+  return 'chat'
 }
+
+const makeTextRequestId = () => `text-${Date.now()}-${Math.random().toString(36).slice(2)}`
 type Point = { x: number; y: number }
 type BarRect = { x: number; y: number; width: number }
 type CapturedFrame = { x: number; y: number; width: number; height: number; label: string }
@@ -535,6 +540,7 @@ export default function Lens() {
 
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
   const enterSelect = useCallback(async () => {
+    const curMode = readModeFromHash()
     if (floatingRebaseTimerRef.current) {
       clearTimeout(floatingRebaseTimerRef.current)
       floatingRebaseTimerRef.current = null
@@ -543,8 +549,7 @@ export default function Lens() {
     // 重新加载设置：用户在设置面板修改后关闭再打开 Lens，需要读到最新值。按当前 mode 选 lens / screenshotTranslation 配置。
     try {
       const settings = await api.getSettings()
-      const curMode = readModeFromHash()
-      const cfg = curMode === 'translate' ? settings.screenshotTranslation : settings.lens
+      const cfg = curMode === 'translate' || curMode === 'translateText' ? settings.screenshotTranslation : settings.lens
       setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
     } catch (err) { console.error('Failed to reload settings', err) }
     // 防御：reset 流程会 setMessages([]) + setStreaming(false)，理论上 messages.length===0 effect 不会进
@@ -555,8 +560,8 @@ export default function Lens() {
     // barNoTransition 同 frame 一起置 true → bar 从老坐标 snap 到 select 坐标，不动画。
     flushSync(() => {
       setBarNoTransition(true)
-      setStage('select')
-      setMode(readModeFromHash())
+      setStage(curMode === 'translateText' ? 'translating' : 'select')
+      setMode(curMode)
       setFloatingRebased(false)
       setHovered(null)
       setDragStart(null)
@@ -574,7 +579,9 @@ export default function Lens() {
       const w = window.innerWidth
       const h = window.innerHeight
       setViewport({ w, h })
-      setBarRect(computeSelectBar(w, h, computeMetrics(w, h)))
+      setBarRect(curMode === 'translateText'
+        ? { x: 0, y: 0, width: w }
+        : computeSelectBar(w, h, computeMetrics(w, h)))
       setCapturedFrame(null)
       // 重置 intro：先关再开，下一帧让 transition 从 scale-90 到 scale-100
       setBarIntro(false)
@@ -584,7 +591,52 @@ export default function Lens() {
     // token 防御：take 期间用户再开一次 Lens / 关闭，老 promise 落地时 myReq 已过期，丢弃。
     // 仅 chat 模式注入；> 200KB 直接丢弃避免上下文爆炸；trim 后非空才 setSelectionText。
     const myReq = ++selectionReqIdRef.current
-    if (readModeFromHash() === 'chat') {
+    if (curMode === 'translateText') {
+      void (async () => {
+        try {
+          const text = await api.takeLensSelection()
+          if (myReq !== selectionReqIdRef.current) return
+          if (text.length > 200_000 || !text.trim()) {
+            void api.lensClose()
+            return
+          }
+          const requestId = makeTextRequestId()
+          imageIdRef.current = requestId
+          setSelectionText(text)
+          setBarIntro(true)
+          setBarNoTransition(false)
+          setTranslateOriginal('')
+          setTranslateText('')
+          setTranslateError('')
+          setTranslateDurationMs(null)
+          translateStartRef.current = Date.now()
+          setTranslateNow(Date.now())
+          try {
+            const result = await api.lensTranslateText(text, requestId)
+            if (!result.success) {
+              setTranslateError(result.error || 'Failed')
+              if (translateStartRef.current !== null) {
+                setTranslateDurationMs(Date.now() - translateStartRef.current)
+                translateStartRef.current = null
+              }
+              setStage('translated')
+            }
+          } catch (err) {
+            setTranslateError(err instanceof Error ? err.message : String(err))
+            if (translateStartRef.current !== null) {
+              setTranslateDurationMs(Date.now() - translateStartRef.current)
+              translateStartRef.current = null
+            }
+            setStage('translated')
+          }
+        } catch (err) {
+          console.warn('[lens] take selection failed:', err)
+          void api.lensClose()
+        }
+      })()
+      return
+    }
+    if (curMode === 'chat') {
       void (async () => {
         try {
           const text = await api.takeLensSelection()
@@ -1405,10 +1457,10 @@ export default function Lens() {
   // 对话栏（输入框）只在 chat 模式显示；translate 模式只渲染浮动结果卡片
   const showBar = mode === 'chat'
   // translate 浮动卡片：截图后在选区旁出现，加载/完成两态
-  const showTranslateCard = mode === 'translate' && (stage === 'translating' || stage === 'translated')
+  const showTranslateCard = (mode === 'translate' || mode === 'translateText') && (stage === 'translating' || stage === 'translated')
   // 浮动布局生效条件：用户关了"保持全屏覆盖" 且 已经真的截过图（窗口被缩成浮动模式）。
   // 没截图就直接提问的场景下，window 还是全屏 overlay、bar 还在底部居中，此时仍按全屏布局走。
-  const isFloatingLayout = !keepFullscreen && capturedFrame !== null && stage !== 'select'
+  const isFloatingLayout = mode === 'translateText' || (!keepFullscreen && capturedFrame !== null && stage !== 'select')
   const stableAnswerHeight = isFloatingLayout
     ? fullscreenMetricsRef.current?.ANSWER_H || metrics.ANSWER_H
     : metrics.ANSWER_H
@@ -1434,9 +1486,9 @@ export default function Lens() {
 
   // 浮动模式下：stage / 布局变化时动态调整窗口尺寸
   useEffect(() => {
-    if (keepFullscreen) return
+    if (keepFullscreen && mode !== 'translateText') return
     if (stage === 'select') return
-    if (!floatingRebased) return
+    if (!floatingRebased && mode !== 'translateText') return
 
     const w = barRect.width + FLOATING_PADDING * 2
     let h = READY_BAR_H + FLOATING_PADDING * 2
@@ -1446,7 +1498,7 @@ export default function Lens() {
     }
 
     // translate 卡片预留空间
-    if ((stage === 'translating' || stage === 'translated') && mode === 'translate') {
+    if ((stage === 'translating' || stage === 'translated') && (mode === 'translate' || mode === 'translateText')) {
       h = Math.max(h, READY_BAR_H + FLOATING_GAP + stableAnswerHeight + FLOATING_PADDING * 2)
     }
 
@@ -1927,7 +1979,7 @@ export default function Lens() {
             left: barRect.x,
             top: barRect.y,
             width: barRect.width,
-            maxHeight: !keepFullscreen
+            maxHeight: mode === 'translateText' || !keepFullscreen
               ? READY_BAR_H + 8 + stableAnswerHeight
               : Math.min(viewport.h - 32, READY_BAR_H + 8 + stableAnswerHeight),
             transitionProperty: barNoTransition ? 'none' : 'left, top, width, transform, opacity',
@@ -1939,16 +1991,23 @@ export default function Lens() {
           data-tauri-drag-region="false"
         >
           {/* 顶部缩略图 + 应用名 + 状态徽章（耗时 / token 估算） */}
-          <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-black/[0.05] dark:border-white/[0.06]">
-            <div className="shrink-0 w-8 h-8 rounded-lg overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center">
-              {imagePreview ? (
-                <img src={imagePreview} alt="snap" className="w-full h-full object-cover" />
-              ) : (
-                <ImageIcon size={12} className="text-neutral-400" />
-              )}
-            </div>
+          <div
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 border-b border-black/[0.05] dark:border-white/[0.06] ${mode === 'translateText' ? 'cursor-move select-none' : ''}`}
+            onMouseDown={() => {
+              if (mode === 'translateText') void api.startDragging()
+            }}
+          >
+            {mode !== 'translateText' && (
+              <div className="shrink-0 w-8 h-8 rounded-lg overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center">
+                {imagePreview ? (
+                  <img src={imagePreview} alt="snap" className="w-full h-full object-cover" />
+                ) : (
+                  <ImageIcon size={12} className="text-neutral-400" />
+                )}
+              </div>
+            )}
             <span className="text-[12.5px] font-medium text-neutral-700 dark:text-neutral-300 truncate flex-1">
-              {appLabel || t.lensScreenshotOf.replace('：', '').replace(':', '')}
+              {mode === 'translateText' ? t.selectedText : (appLabel || t.lensScreenshotOf.replace('：', '').replace(':', ''))}
             </span>
             {(() => {
               const elapsedMs = stage === 'translating' && translateStartRef.current
@@ -1968,7 +2027,7 @@ export default function Lens() {
           {/* 内容区 */}
           <div className="px-3.5 py-3 overflow-y-auto custom-scrollbar"
             style={{
-              maxHeight: !keepFullscreen
+              maxHeight: mode === 'translateText' || !keepFullscreen
                 ? stableAnswerHeight
                 : Math.min(viewport.h - 110, stableAnswerHeight)
             }}>

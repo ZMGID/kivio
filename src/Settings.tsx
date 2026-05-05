@@ -38,7 +38,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [saveError, setSaveError] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
-  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'lens'>(null)
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'lens'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
@@ -606,6 +606,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       const current = prev.screenshotTranslation || {
         enabled: true,
         hotkey: 'CommandOrControl+Shift+A',
+        textHotkey: 'CommandOrControl+Shift+T',
         providerId: 'default-ocr',
         model: 'gpt-4o',
         directTranslate: false,
@@ -642,7 +643,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   /**
    * 切换快捷键录制状态
    */
-  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'lens') => {
+  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'lens') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
@@ -665,6 +666,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         updateSettings({ hotkey })
       } else if (recordingTarget === 'screenshotTranslation') {
         updateScreenshotTranslation({ hotkey })
+      } else if (recordingTarget === 'screenshotTranslationText') {
+        updateScreenshotTranslation({ textHotkey: hotkey })
       } else if (recordingTarget === 'lens') {
         updateLens({ hotkey })
       }
@@ -1030,12 +1033,24 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                   {settings.screenshotTranslation?.enabled !== false && (
                     <>
                       <div className="px-4 py-3 space-y-1.5">
-                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.hotkey}</span>
+                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.screenshotHotkey}</span>
                         <HotkeyInput
                           value={settings.screenshotTranslation?.hotkey || 'CommandOrControl+Shift+A'}
                           placeholder="CommandOrControl+Shift+A"
                           recording={recordingTarget === 'screenshotTranslation'}
                           onToggleRecording={() => toggleRecording('screenshotTranslation')}
+                          recordLabel={t.hotkeyRecord}
+                          recordingLabel={t.hotkeyRecording}
+                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                        />
+                      </div>
+                      <div className="px-4 py-3 space-y-1.5">
+                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.screenshotTextHotkey}</span>
+                        <HotkeyInput
+                          value={settings.screenshotTranslation?.textHotkey || 'CommandOrControl+Shift+T'}
+                          placeholder="CommandOrControl+Shift+T"
+                          recording={recordingTarget === 'screenshotTranslationText'}
+                          onToggleRecording={() => toggleRecording('screenshotTranslationText')}
                           recordLabel={t.hotkeyRecord}
                           recordingLabel={t.hotkeyRecording}
                           recordingPlaceholder={t.hotkeyRecordingPlaceholder}

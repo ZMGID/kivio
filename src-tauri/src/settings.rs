@@ -142,6 +142,8 @@ pub struct ScreenshotTranslationConfig {
   pub enabled: bool,
   #[serde(default = "default_screenshot_translation_hotkey")]
   pub hotkey: String,
+  #[serde(default = "default_screenshot_translation_text_hotkey")]
+  pub text_hotkey: String,
   #[serde(default)]
   pub provider_id: String,
   #[serde(default = "default_openai_model")]
@@ -175,6 +177,7 @@ impl Default for ScreenshotTranslationConfig {
     Self {
       enabled: true,
       hotkey: "CommandOrControl+Shift+A".to_string(),
+      text_hotkey: "CommandOrControl+Shift+T".to_string(),
       provider_id: "default-ocr".to_string(),
       model: "gpt-4o".to_string(),
       direct_translate: false,
@@ -513,6 +516,8 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   settings.hotkey = normalize_hotkey(&settings.hotkey);
   settings.screenshot_translation.hotkey =
     normalize_hotkey(&settings.screenshot_translation.hotkey);
+  settings.screenshot_translation.text_hotkey =
+    normalize_hotkey(&settings.screenshot_translation.text_hotkey);
   settings.lens.hotkey = normalize_hotkey(&settings.lens.hotkey);
 
   // 规范化提示词（去除首尾空白，空值转为 None）
@@ -526,6 +531,9 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
   }
   if settings.screenshot_translation.hotkey.is_empty() {
     settings.screenshot_translation.hotkey = "CommandOrControl+Shift+A".to_string();
+  }
+  if settings.screenshot_translation.text_hotkey.is_empty() {
+    settings.screenshot_translation.text_hotkey = "CommandOrControl+Shift+T".to_string();
   }
   if settings.lens.hotkey.is_empty() {
     settings.lens.hotkey = "CommandOrControl+Shift+G".to_string();
@@ -711,6 +719,10 @@ fn default_screenshot_translation_hotkey() -> String {
   "CommandOrControl+Shift+A".to_string()
 }
 
+fn default_screenshot_translation_text_hotkey() -> String {
+  "CommandOrControl+Shift+T".to_string()
+}
+
 fn default_lens_hotkey() -> String {
   "CommandOrControl+Shift+G".to_string()
 }
@@ -851,10 +863,12 @@ mod tests {
     let mut s = Settings::default();
     s.hotkey = "cmd+alt+T".to_string();
     s.screenshot_translation.hotkey = "ctrl+shift+A".to_string();
+    s.screenshot_translation.text_hotkey = "cmd+shift+T".to_string();
     s.lens.hotkey = "cmd+shift+G".to_string();
     let s = sanitize_settings(s);
     assert_eq!(s.hotkey, "CommandOrControl+Alt+T");
     assert_eq!(s.screenshot_translation.hotkey, "Control+Shift+A");
+    assert_eq!(s.screenshot_translation.text_hotkey, "CommandOrControl+Shift+T");
     assert_eq!(s.lens.hotkey, "CommandOrControl+Shift+G");
   }
 
