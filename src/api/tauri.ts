@@ -94,8 +94,17 @@ export type Settings = {
     keepFullscreenAfterCapture?: boolean
     /** 使用系统 OCR(macOS Apple Vision / Windows OCR) 做文字识别,然后让 provider 翻译纯文本(默认 false)。
      *  true 时 provider 可以是任意文字模型;false 时 provider 必须是多模态视觉模型。
-     *  Apple Intelligence 作为 provider 时自动等同于 true(其 SDK 不支持图像)。 */
+     *  Apple Intelligence 作为 provider 时自动等同于 true(其 SDK 不支持图像)。
+     *  从 vNext 起作 ocrMode 的降级镜像保留:System→true，其它→false。新代码应读 ocrMode。 */
     useSystemOcr?: boolean
+    /** OCR 引擎选择(vNext+):
+     *  - 'cloud_vision': 现有云端多模态 provider 一次完成 OCR+翻译
+     *  - 'system': macOS Apple Vision / Windows.Media.Ocr 识别后交 provider 翻译
+     *  - 'tesseract': 本地 Tesseract 5 离线引擎识别后交 provider 翻译
+     *  缺省时由后端 sanitize_settings 按 useSystemOcr 自动迁移。 */
+    ocrMode?: 'cloud_vision' | 'system' | 'tesseract'
+    /** Tesseract 模式使用的语言代码(如 'eng')。仅 ocrMode='tesseract' 时生效。 */
+    tesseractLanguage?: string
     prompt?: string
   }
   lens: {
@@ -135,6 +144,26 @@ export type UpdateInfo = {
   /** Release notes / changelog (markdown) */
   body?: string
   publishedAt?: string
+}
+
+/** Tesseract 离线 OCR 状态(简化版:只探测系统 PATH 上是否有 tesseract) */
+export type TesseractStatus = {
+  /** PATH 或标准 brew/Apple Silicon 位置上能否找到并运行 `tesseract --version` */
+  binaryAvailable: boolean
+  /** `tesseract --version` 第一行(用于展示),不可用时为 undefined */
+  version?: string
+  /** 找到的 tesseract 绝对路径(用于展示) */
+  binaryPath?: string
+  /** 当前平台可用于一键安装的包管理器名(brew/winget/scoop/choco)。
+   *  undefined 表示当前平台没探测到任何受支持的包管理器,前端 disable "一键安装"按钮。 */
+  packageManager?: string
+}
+
+/** Tesseract 一键安装结果 */
+export type TesseractInstallResult = {
+  success: boolean
+  /** 成功时是状态信息("Tesseract 安装完成"),失败时是错误片段 */
+  message: string
 }
 
 // 默认提示词模板
@@ -305,4 +334,13 @@ export const api = {
   /** 启动时若发现新版，后端 emit 此事件让 Settings UI 自动展示更新提示 */
   onUpdateAvailable: (listener: (info: UpdateInfo) => void) =>
     on<UpdateInfo>('update-available', (payload) => listener(payload)),
+
+  // ========== Tesseract 离线 OCR(简化版) ==========
+
+  /** 查询 Tesseract 是否可用(系统 PATH 或 brew 标准位置) + 当前平台支持的包管理器 */
+  tesseractStatus: () => invoke<TesseractStatus>('tesseract_status'),
+
+  /** 一键安装 tesseract:macOS 调 brew install tesseract,Windows 优先 winget。
+   *  阻塞到包管理器跑完返回(~1-3 分钟),前端转圈圈等。 */
+  tesseractInstall: () => invoke<TesseractInstallResult>('tesseract_install'),
 }

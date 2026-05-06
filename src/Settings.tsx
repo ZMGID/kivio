@@ -54,6 +54,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [downloadPercent, setDownloadPercent] = useState(0)
   const [downloadedPath, setDownloadedPath] = useState('')
   const [downloadError, setDownloadError] = useState('')
+  // Tesseract 离线 OCR 状态:简化版只查 binary 是否在系统 PATH 上,语言包/下载/删除全交给用户。
+  const [tesseractStatus, setTesseractStatus] = useState<import('./api/tauri').TesseractStatus | null>(null)
+  // 一键安装的临时状态:'idle' / 'installing' / 'failed'(success 后会自动 refresh status 到已安装,
+  // 没有专门的 success 终态)
+  const [tesseractInstallState, setTesseractInstallState] = useState<'idle' | 'installing' | 'failed'>('idle')
+  const [tesseractInstallError, setTesseractInstallError] = useState('')
   const platform = getPlatform()
   const isMac = platform === 'macos'
   const hasSystemOcr = isMac || platform === 'windows'
@@ -236,6 +242,43 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       setDownloadState('failed')
     }
   }, [downloadedPath])
+
+  /** 拉一次 Tesseract 状态(系统 PATH 上是否有 tesseract + version 字符串)。
+   *  挂载时 + 切换到 Tesseract 引擎时调一下。 */
+  const refreshTesseractStatus = useCallback(async () => {
+    if (!hasSystemOcr) return
+    try {
+      const status = await api.tesseractStatus()
+      setTesseractStatus(status)
+    } catch (err) {
+      console.error('tesseractStatus failed:', err)
+    }
+  }, [hasSystemOcr])
+
+  /** 一键安装 tesseract:阻塞 1-3 分钟到包管理器跑完,完成后 refresh status。 */
+  const handleInstallTesseract = useCallback(async () => {
+    setTesseractInstallState('installing')
+    setTesseractInstallError('')
+    try {
+      const result = await api.tesseractInstall()
+      if (result.success) {
+        setTesseractInstallState('idle')
+        await refreshTesseractStatus()
+      } else {
+        setTesseractInstallError(result.message)
+        setTesseractInstallState('failed')
+      }
+    } catch (err) {
+      const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err)
+      setTesseractInstallError(msg)
+      setTesseractInstallState('failed')
+    }
+  }, [refreshTesseractStatus])
+
+  // 挂载时拉一次状态
+  useEffect(() => {
+    refreshTesseractStatus()
+  }, [refreshTesseractStatus])
 
   useEffect(() => {
     setProviderTestFeedback({})
@@ -1102,15 +1145,111 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                         />
                       </SettingRow>
                       {hasSystemOcr && (
-                        <SettingRow
-                          label={t.useSystemOcr}
-                          description={t.useSystemOcrHint}
-                        >
-                          <Toggle
-                            checked={settings.screenshotTranslation?.useSystemOcr ?? false}
-                            onChange={(v) => updateScreenshotTranslation({ useSystemOcr: v })}
-                          />
-                        </SettingRow>
+                        <>
+                          <SettingRow
+                            label={t.ocrEngine}
+                            description={t.ocrEngineHint}
+                          >
+                            <Select
+                              value={settings.screenshotTranslation?.ocrMode ?? 'cloud_vision'}
+                              onChange={(v) =>
+                                updateScreenshotTranslation({
+                                  ocrMode: v as 'cloud_vision' | 'system' | 'tesseract',
+                                })
+                              }
+                              options={[
+                                { value: 'cloud_vision', label: t.ocrEngineCloudVision },
+                                { value: 'system', label: t.ocrEngineSystem },
+                                { value: 'tesseract', label: t.ocrEngineTesseract },
+                              ]}
+                              className="w-44"
+                            />
+                          </SettingRow>
+                          {(settings.screenshotTranslation?.ocrMode ?? 'cloud_vision') === 'system' && (
+                            <div className="px-4 py-2 text-[11px] text-neutral-500 dark:text-neutral-400 border-t border-black/[0.04] dark:border-white/[0.05]">
+                              {isMac ? t.ocrEngineMacHint : t.ocrEngineWindowsHint}
+                            </div>
+                          )}
+                          {settings.screenshotTranslation?.ocrMode === 'tesseract' && (
+                            <div className="border-t border-black/[0.04] dark:border-white/[0.05] px-4 py-3 space-y-2 text-[12px]">
+                              {tesseractStatus?.binaryAvailable ? (
+                                <div className="flex items-start gap-2">
+                                  <span className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                  <div className="flex-1">
+                                    <div className="text-neutral-700 dark:text-neutral-200">
+                                      {t.tesseractFound}
+                                    </div>
+                                    {tesseractStatus.version && (
+                                      <div className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5 font-mono">
+                                        {tesseractStatus.version}
+                                      </div>
+                                    )}
+                                    {tesseractStatus.binaryPath && (
+                                      <div className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-0.5 font-mono">
+                                        {tesseractStatus.binaryPath}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    onClick={refreshTesseractStatus}
+                                    className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                                    title={t.tesseractRefresh}
+                                  >
+                                    <RefreshCw size={12} strokeWidth={2.25} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="space-y-2.5">
+                                  <div className="flex items-start gap-2">
+                                    <span className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                    <div className="flex-1 text-neutral-700 dark:text-neutral-200">
+                                      {t.tesseractNotFound}
+                                    </div>
+                                    <button
+                                      onClick={refreshTesseractStatus}
+                                      disabled={tesseractInstallState === 'installing'}
+                                      className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40"
+                                      title={t.tesseractRefresh}
+                                    >
+                                      <RefreshCw size={12} strokeWidth={2.25} />
+                                    </button>
+                                  </div>
+                                  {tesseractInstallState === 'installing' ? (
+                                    <div className="pl-3.5 flex items-center gap-2 text-[11px] text-neutral-600 dark:text-neutral-300">
+                                      <RefreshCw size={12} strokeWidth={2.25} className="animate-spin" />
+                                      <span>{t.tesseractInstalling}</span>
+                                    </div>
+                                  ) : tesseractStatus?.packageManager ? (
+                                    <div className="pl-3.5">
+                                      <button
+                                        onClick={handleInstallTesseract}
+                                        className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white inline-flex items-center gap-1"
+                                      >
+                                        <Download size={12} strokeWidth={2.5} />
+                                        {t.tesseractInstallButton} ({tesseractStatus.packageManager})
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="pl-3.5 text-[11px] text-amber-700 dark:text-amber-300 leading-5">
+                                      {t.tesseractNoPackageManager}
+                                    </div>
+                                  )}
+                                  {tesseractInstallState === 'failed' && tesseractInstallError && (
+                                    <div className="pl-3.5 text-[11px] text-red-500 break-words">
+                                      {t.tesseractInstallFailed}: {tesseractInstallError}
+                                    </div>
+                                  )}
+                                  <div className="text-[11px] text-neutral-600 dark:text-neutral-300 leading-5 pl-3.5">
+                                    <div className="mb-0.5">{t.tesseractInstallHint}</div>
+                                    <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-[11px]">
+                                      {isMac ? 'brew install tesseract' : 'choco install tesseract'}
+                                    </code>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </>
                       )}
                       <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
                         <Toggle

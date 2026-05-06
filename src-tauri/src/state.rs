@@ -14,6 +14,7 @@ use crate::apple_intelligence::AppleIntelligenceClient;
 #[cfg(target_os = "macos")]
 use crate::macos_ocr::MacOcrClient;
 use crate::settings::Settings;
+use crate::tesseract::TesseractClient;
 
 /// 应用全局状态
 /// 使用 RwLock 保护 settings，允许多读单写；
@@ -41,6 +42,9 @@ pub struct AppState {
   /// macOS Apple Vision OCR sidecar 客户端。独立于 Apple Intelligence，只有系统 OCR 路径会拉起。
   #[cfg(target_os = "macos")]
   pub macos_ocr: Arc<MacOcrClient>,
+  /// Tesseract 离线 OCR 客户端。每次 OCR 现 spawn 一次系统 PATH 上的 tesseract 命令,
+  /// 没装就让 `tesseract_status` 返回 binaryAvailable=false 让前端引导用户安装。
+  pub tesseract: Arc<TesseractClient>,
 }
 
 /// 单个 key 触发 failover 后的冷却时长。
@@ -164,6 +168,7 @@ mod tests {
       apple_intelligence: AppleIntelligenceClient::disabled(),
       #[cfg(target_os = "macos")]
       macos_ocr: MacOcrClient::disabled(),
+      tesseract: TesseractClient::new(),
     }
   }
 

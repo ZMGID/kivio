@@ -2104,9 +2104,15 @@ export default function Lens() {
                 : Math.min(viewport.h - 110, stableAnswerHeight)
             }}>
             {translateError ? (
-              <div className="text-[12.5px] text-red-500 leading-6 whitespace-pre-wrap break-words">
-                {t.lensError}: {translateError}
-              </div>
+              translateError === 'tesseract_binary_missing' ? (
+                <div className="text-[12.5px] text-amber-700 dark:text-amber-300 leading-6 whitespace-pre-wrap break-words">
+                  {t.tesseractBinaryMissing}
+                </div>
+              ) : (
+                <div className="text-[12.5px] text-red-500 leading-6 whitespace-pre-wrap break-words">
+                  {t.lensError}: {translateError}
+                </div>
+              )
             ) : (
               <>
                 {/* 译文区（主体）：合并模式下分隔符前的所有 delta 都属于这块，先于原文出现 */}

@@ -135,6 +135,35 @@ pub struct ModelProvider {
 }
 
 /**
+ * OCR 引擎模式（截图翻译用）
+ *
+ * - CloudVision：发图给多模态 provider 一次完成 OCR+翻译（旧 use_system_ocr=false 等价行为）
+ * - System：调用 macOS Apple Vision 或 Windows.Media.Ocr 识别文字，再交 provider 翻译
+ * - Tesseract：本地 Tesseract 5 离线引擎识别文字（语言包按需下载），再交 provider 翻译
+ *
+ * 字段在 sanitize_settings 中由 use_system_ocr 自动迁移：true→System，false→CloudVision。
+ * persist_settings 写盘时反向镜像到 use_system_ocr 维持降级到 v2.5.x 的兼容性。
+ * Tesseract 模式降级会落回 CloudVision（use_system_ocr=false），可接受。
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrMode {
+  CloudVision,
+  System,
+  Tesseract,
+}
+
+impl Default for OcrMode {
+  fn default() -> Self {
+    OcrMode::CloudVision
+  }
+}
+
+fn default_tesseract_language() -> String {
+  "eng".to_string()
+}
+
+/**
  * 截图翻译功能配置
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,8 +194,19 @@ pub struct ScreenshotTranslationConfig {
   /// true → 系统 OCR + provider 文字翻译（provider 可是任意 OpenAI 兼容 endpoint 或 Apple Intelligence）
   /// false → provider 必须是多模态模型，一次完成 OCR+翻译
   /// Apple Intelligence 选作 provider 时强制视为 true（Foundation Models 暂未开放图像输入）。
+  ///
+  /// 从 vNext 起，截图翻译路由实际走 ocr_mode 字段；本字段仅作降级镜像保留：
+  /// - persist_settings 写盘时根据 ocr_mode 反向镜像到这里（System→true，其它→false），
+  ///   让降级到 v2.5.x 的版本仍能从 useSystemOcr 字段读到对应行为。
+  /// - sanitize_settings 在 ocr_mode 缺省时会从这里反推迁移。
   #[serde(default = "default_false")]
   pub use_system_ocr: bool,
+  /// OCR 引擎选择（vNext+）。None 表示老版本数据，会在 sanitize_settings 中按 use_system_ocr 迁移。
+  #[serde(default)]
+  pub ocr_mode: Option<OcrMode>,
+  /// Tesseract 模式使用的语言代码（如 "eng"）。仅在 ocr_mode = Tesseract 时生效。
+  #[serde(default = "default_tesseract_language")]
+  pub tesseract_language: String,
   #[serde(default)]
   pub prompt: Option<String>,
   // 旧版字段，用于迁移
@@ -187,6 +227,8 @@ impl Default for ScreenshotTranslationConfig {
       stream_enabled: true,
       keep_fullscreen_after_capture: true,
       use_system_ocr: false,
+      ocr_mode: Some(OcrMode::CloudVision),
+      tesseract_language: default_tesseract_language(),
       prompt: None,
       openai: None,
     }
@@ -603,6 +645,33 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.screenshot_translation.use_system_ocr = false;
   }
 
+  // OCR 引擎模式迁移（vNext+）：
+  // 1. 若 ocr_mode 缺省（老版本数据），按 use_system_ocr 反推：true→System，false→CloudVision
+  // 2. Linux 不支持 System / Tesseract，强制落回 CloudVision
+  // 3. tesseract_language 规范化（去空白，空字符串 fallback 到 "eng"）
+  if settings.screenshot_translation.ocr_mode.is_none() {
+    settings.screenshot_translation.ocr_mode = Some(if settings.screenshot_translation.use_system_ocr {
+      OcrMode::System
+    } else {
+      OcrMode::CloudVision
+    });
+  }
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+  {
+    if matches!(
+      settings.screenshot_translation.ocr_mode,
+      Some(OcrMode::System) | Some(OcrMode::Tesseract)
+    ) {
+      settings.screenshot_translation.ocr_mode = Some(OcrMode::CloudVision);
+    }
+  }
+  let trimmed_lang = settings.screenshot_translation.tesseract_language.trim();
+  settings.screenshot_translation.tesseract_language = if trimmed_lang.is_empty() {
+    default_tesseract_language()
+  } else {
+    trimmed_lang.to_string()
+  };
+
   settings
 }
 
@@ -623,6 +692,12 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
       }
     }
   }
+
+  // 降级镜像：把 ocr_mode 投影回 use_system_ocr，让降级到 v2.5.x 的版本仍能从 useSystemOcr 字段
+  // 读到对应行为。Tesseract 模式镜像为 false（v2.5.x 没有 Tesseract 概念，落回 CloudVision）。
+  let ocr_mode = to_persist.screenshot_translation.ocr_mode.unwrap_or(OcrMode::CloudVision);
+  to_persist.screenshot_translation.use_system_ocr = matches!(ocr_mode, OcrMode::System);
+  to_persist.screenshot_translation.ocr_mode = Some(ocr_mode);
 
   let store = StoreBuilder::new(app, SETTINGS_STORE)
     .build()
@@ -940,9 +1015,67 @@ mod tests {
   #[test]
   fn sanitize_settings_disables_system_ocr_on_unsupported_platforms() {
     let mut s = Settings::default();
-    s.screenshot_translation.use_system_ocr = true;
+    s.screenshot_translation.ocr_mode = Some(OcrMode::System);
     let s = sanitize_settings(s);
-    assert!(!s.screenshot_translation.use_system_ocr);
+    assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::CloudVision));
+  }
+
+  #[test]
+  fn sanitize_settings_migrates_use_system_ocr_true_to_system_mode() {
+    // 老版本数据：useSystemOcr=true 但没有 ocr_mode 字段
+    let mut s = Settings::default();
+    s.screenshot_translation.use_system_ocr = true;
+    s.screenshot_translation.ocr_mode = None;
+    let s = sanitize_settings(s);
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::System));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::CloudVision));
+  }
+
+  #[test]
+  fn sanitize_settings_migrates_use_system_ocr_false_to_cloud_vision_mode() {
+    let mut s = Settings::default();
+    s.screenshot_translation.use_system_ocr = false;
+    s.screenshot_translation.ocr_mode = None;
+    let s = sanitize_settings(s);
+    assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::CloudVision));
+  }
+
+  #[cfg(any(target_os = "macos", target_os = "windows"))]
+  #[test]
+  fn sanitize_settings_preserves_tesseract_mode() {
+    let mut s = Settings::default();
+    s.screenshot_translation.ocr_mode = Some(OcrMode::Tesseract);
+    let s = sanitize_settings(s);
+    assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::Tesseract));
+  }
+
+  #[test]
+  fn sanitize_settings_normalizes_tesseract_language() {
+    let mut s = Settings::default();
+    s.screenshot_translation.tesseract_language = "  ".to_string();
+    let s = sanitize_settings(s);
+    assert_eq!(s.screenshot_translation.tesseract_language, "eng");
+
+    let mut s = Settings::default();
+    s.screenshot_translation.tesseract_language = "  chi_sim  ".to_string();
+    let s = sanitize_settings(s);
+    assert_eq!(s.screenshot_translation.tesseract_language, "chi_sim");
+  }
+
+  #[test]
+  fn ocr_mode_serializes_with_snake_case() {
+    // ocrMode 在 settings.json 里是 snake_case 字符串(cloud_vision / system / tesseract)。
+    // 前端 union type 'cloud_vision' | 'system' | 'tesseract' 直接对齐。
+    let modes = [
+      (OcrMode::CloudVision, "\"cloud_vision\""),
+      (OcrMode::System, "\"system\""),
+      (OcrMode::Tesseract, "\"tesseract\""),
+    ];
+    for (mode, expected) in modes {
+      assert_eq!(serde_json::to_string(&mode).unwrap(), expected);
+    }
   }
 
   #[cfg(not(target_os = "macos"))]

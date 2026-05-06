@@ -25,7 +25,7 @@ chrono = "0.4"
 
 # HTTP 客户端与异步运行时
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "process"] }
 
 # 工具库
 base64 = "0.22"

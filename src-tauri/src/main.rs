@@ -12,6 +12,7 @@ mod sck;
 mod screenshot;
 mod settings;
 mod state;
+mod tesseract;
 mod utils;
 mod windows;
 #[cfg(target_os = "windows")]
@@ -51,7 +52,7 @@ use prompts::{
 use screenshot::{cleanup_orphan_temp_files, cleanup_temp_file};
 use settings::{
   default_question_prompt, default_system_prompt, load_settings, persist_settings,
-  sanitize_settings, ExplainMessage, Settings,
+  sanitize_settings, ExplainMessage, OcrMode, Settings,
 };
 use state::AppState;
 use utils::{language_name, resolve_target_lang};
@@ -587,6 +588,26 @@ fn apple_intelligence_available(state: State<AppState>) -> bool {
     }
     false
   }
+}
+
+// ===== Tesseract 离线 OCR 命令 =====
+//
+// status: 探测 PATH/标准位置上有没有 tesseract,返回版本 + 路径 + 可用包管理器名。
+// install: 调平台包管理器(brew/winget/scoop/choco)一键装 tesseract,~1-3 分钟。
+
+/// 查询 Tesseract 是否可用 + 当前平台支持的包管理器。
+#[tauri::command]
+fn tesseract_status(state: State<AppState>) -> tesseract::TesseractStatus {
+  state.tesseract.status()
+}
+
+/// 一键安装 tesseract。阻塞到包管理器跑完(成功或失败),前端转圈圈等返回。
+#[tauri::command]
+async fn tesseract_install(
+  state: State<'_, AppState>,
+) -> Result<tesseract::TesseractInstallResult, String> {
+  let client = state.tesseract.clone();
+  Ok(client.install().await)
 }
 
 /// 调 GitHub Releases API 检查最新版本
@@ -1296,9 +1317,9 @@ async fn lens_translate(
   let target_lang = resolve_target_lang(&settings.target_lang, "");
   let lang_name = language_name(&target_lang).to_string();
 
-  // 系统 OCR 路由：macOS 走 Apple Vision，Windows 走 Windows.Media.Ocr。
-  // Apple provider 只允许 macOS；其它平台即使旧配置里残留 use_system_ocr=true，
-  // 也必须走普通多模态 OCR+翻译链路。
+  // OCR 引擎路由：System / Tesseract 走 local_ocr_then_translate（先识别再翻译两步）
+  // CloudVision 落到下方 call_openai_ocr 单次完成 OCR+翻译的多模态路径。
+  // Apple provider 在 macOS 强制走 System：Foundation Models 没视觉,只能识别后再让它翻文字。
   let system_ocr_available = cfg!(any(target_os = "macos", target_os = "windows"));
   if provider_is_apple && !cfg!(target_os = "macos") {
     return Ok(serde_json::json!({
@@ -1306,11 +1327,19 @@ async fn lens_translate(
       "error": "Apple Intelligence is not available on this platform"
     }));
   }
-  let use_system_ocr = system_ocr_available
-    && (settings.screenshot_translation.use_system_ocr
-      || (provider_is_apple && cfg!(target_os = "macos")));
-  if use_system_ocr {
-    return system_ocr_then_translate(
+  let mut effective_mode = settings
+    .screenshot_translation
+    .ocr_mode
+    .unwrap_or(OcrMode::CloudVision);
+  if provider_is_apple && cfg!(target_os = "macos") && effective_mode == OcrMode::CloudVision {
+    effective_mode = OcrMode::System;
+  }
+  // 平台不支持 System / Tesseract 时(理论上 sanitize 已经处理掉,这里防御性兜底)
+  if !system_ocr_available && matches!(effective_mode, OcrMode::System | OcrMode::Tesseract) {
+    effective_mode = OcrMode::CloudVision;
+  }
+  if matches!(effective_mode, OcrMode::System | OcrMode::Tesseract) {
+    return local_ocr_then_translate(
       &app,
       &state,
       &temp_path,
@@ -1323,6 +1352,8 @@ async fn lens_translate(
       &settings.screenshot_translation.model,
       retry_attempts,
       settings.translator_prompt.as_deref(),
+      effective_mode,
+      &settings.screenshot_translation.tesseract_language,
     )
     .await;
   }
@@ -1652,12 +1683,27 @@ async fn run_system_ocr(
   }
 }
 
-/// 系统 OCR + 任意 provider 翻译的两步本地链路。
-/// OCR 走系统本地引擎（macOS Apple Vision / Windows.Media.Ocr）；
+/// Tesseract 5 离线 OCR：dispatch 到 TesseractClient.ocr_image。
+/// `lang` 是语言代码(如 "eng")。binary 不在或语言包未下载时返回错误,
+/// 路由层会在调用前先 precheck,这里是双层保险。
+async fn run_tesseract_ocr(
+  state: &State<'_, AppState>,
+  image_path: &std::path::Path,
+  lang: &str,
+) -> Result<String, String> {
+  state.tesseract.ocr_image(image_path, lang).await
+}
+
+/// 本地 OCR + 任意 provider 翻译的两步链路。
+/// `engine` 决定 OCR 来源:`OcrMode::System`(macOS Apple Vision / Windows.Media.Ocr) 或
+/// `OcrMode::Tesseract`(本地 Tesseract 5)。`OcrMode::CloudVision` 走另一条单步路径,
+/// 不进这里。
 /// 翻译可以是 Apple FoundationModels 或任意 OpenAI 兼容 cloud provider。
 /// 与 cloud vision 单次 OCR+translate 调用相比,这里手动 emit lens-translate-stream 事件维持前端契约。
+///
+/// Tesseract 预检:binary 不在 / 语言包未下载时返回结构化错误,前端 lens 据此渲染下载按钮。
 #[allow(clippy::too_many_arguments)]
-async fn system_ocr_then_translate(
+async fn local_ocr_then_translate(
   app: &AppHandle,
   state: &State<'_, AppState>,
   image_path: &std::path::Path,
@@ -1670,6 +1716,8 @@ async fn system_ocr_then_translate(
   translate_model: &str,
   retry_attempts: usize,
   translator_template: Option<&str>,
+  engine: OcrMode,
+  tesseract_language: &str,
 ) -> Result<serde_json::Value, String> {
   let emit_done = |success: bool, error: Option<&str>| {
     let _ = app.emit(
@@ -1680,8 +1728,17 @@ async fn system_ocr_then_translate(
     );
   };
 
-  // 1) OCR via platform-local engine
-  let original = match run_system_ocr(state, image_path).await {
+  // 1) OCR via selected local engine
+  // Tesseract 找不到 binary 时 ocr_image 自己会返回 "tesseract_binary_missing",
+  // 走下面统一 error 分支 emit 给前端,Lens 据此渲染安装提示——不再做单独 precheck。
+  let ocr_result = match engine {
+    OcrMode::System => run_system_ocr(state, image_path).await,
+    OcrMode::Tesseract => run_tesseract_ocr(state, image_path, tesseract_language).await,
+    // 路由层只把 System / Tesseract 派发到这里，CloudVision 走另一条单步路径。
+    // 仍留 runtime 兜底，防止后续重构时漏掉某个分支。
+    OcrMode::CloudVision => Err("internal: CloudVision in local OCR path".to_string()),
+  };
+  let original = match ocr_result {
     Ok(text) => text,
     Err(err) => {
       emit_done(false, Some(&err));
@@ -2823,6 +2880,7 @@ fn main() {
         apple_intelligence: apple_intelligence::AppleIntelligenceClient::new(&app.handle()),
         #[cfg(target_os = "macos")]
         macos_ocr: macos_ocr::MacOcrClient::new(&app.handle()),
+        tesseract: tesseract::TesseractClient::new(),
       });
 
       if let Err(err) = register_hotkeys(&app.handle()) {
@@ -2896,7 +2954,9 @@ fn main() {
       check_github_latest_release,
       download_update_asset,
       install_update_and_quit,
-      apple_intelligence_available
+      apple_intelligence_available,
+      tesseract_status,
+      tesseract_install
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
