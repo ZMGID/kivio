@@ -1,7 +1,7 @@
 {
   "name": "kivio",
   "private": true,
-  "version": "2.5.5",
+  "version": "2.5.6",
   "description": "Kivio - Screen-level AI assistant for macOS and Windows",
   "author": "ZM",
   "type": "module",

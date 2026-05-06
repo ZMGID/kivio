@@ -108,6 +108,7 @@ If you ran v2.4.4 or earlier under the old name **KeyLingo**, your settings, API
 
 ## Changelog
 
+- **v2.5.6** — Fixed Lens white flash on first show (Windows) and stutter when the answer bar flies into position on the second capture. Local OCR output now collapses blank-line padding before translation, producing tighter result cards.
 - **v2.5.5** — Screenshot translation now uses native system OCR: Apple Vision on macOS and `Windows.Media.Ocr` on Windows. macOS OCR runs through a lightweight helper and no longer depends on Apple Intelligence.
 - **v2.5.4** — Added selected-text screenshot translation: highlight text and press `⌘⇧T` / `Ctrl+Shift+T` to open the translation card directly.
 - **v2.5.3** — Fixed Lens selection edge cases around the chat bar, history panel, and restored capture frames.
@@ -239,6 +240,7 @@ Kivio 常驻菜单栏，只在你按下热键时出现。
 
 ## 更新日志
 
+- **v2.5.6** —— 修复 Windows 上首次打开 Lens 偶发的白屏闪烁，以及第二次截图时悬浮栏飞入抽搐的问题。本地 OCR 输出在送翻译前会先压缩多余空行，结果卡更紧凑。
 - **v2.5.5** —— 截图翻译改用平台系统 OCR：macOS Apple Vision，Windows `Windows.Media.Ocr`。macOS OCR 独立 helper，不再依赖 Apple Intelligence。
 - **v2.5.4** —— 新增选中文本翻译：选中文字后按 `⌘⇧T` / `Ctrl+Shift+T`，不用截图即可打开翻译卡片。
 - **v2.5.3** —— 修复 Lens 选区、历史面板和恢复截图时的几个边界问题。
