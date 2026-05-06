@@ -9,11 +9,21 @@ on:
       tag:
         description: 'Release tag to publish to (e.g. v2.0.5)'
         required: true
-        default: 'v2.5.4'
+        default: 'v2.5.5'
       ref:
         description: 'Git ref to build from (branch/tag/commit)'
         required: true
         default: 'main'
+      platform:
+        description: 'Platform to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - macos-arm64
+          - macos-intel
+          - windows
 
 permissions:
   contents: write
@@ -30,35 +40,46 @@ jobs:
         include:
           # macos-26 = Tahoe runner with Xcode 17 + macOS 26 SDK,需要它来编译
           # Apple Intelligence sidecar(import FoundationModels)。低版本 macOS runner SDK 没这个 framework。
-          - platform: macos-26
+          - id: macos-arm64
+            platform: macos-26
             args: "--bundles dmg"
-          - platform: windows-latest
+          - id: macos-intel
+            platform: macos-26-intel
+            args: "--bundles dmg"
+          - id: windows
+            platform: windows-latest
             args: "--bundles msi,nsis"
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - name: Checkout
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         uses: actions/checkout@v4
         with:
           ref: ${{ env.BUILD_REF }}
 
       - name: Setup Node.js
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
 
       - name: Setup Rust
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install frontend dependencies
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         run: npm ci
 
       - name: Build Swift sidecars (or stubs on non-macOS)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         run: npm run build:swift
 
       - name: Build and publish release assets
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -68,7 +89,7 @@ jobs:
           releaseBody: |
             Automated build artifacts for ${{ env.RELEASE_TAG }}.
             Built from: ${{ env.BUILD_REF }}
-            - macOS: DMG
+            - macOS: DMG (Apple Silicon + Intel)
             - Windows: MSI + NSIS (.exe)
           releaseDraft: false
           prerelease: false
