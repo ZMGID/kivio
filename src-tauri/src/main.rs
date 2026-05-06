@@ -1905,7 +1905,7 @@ fn lens_set_floating(app: AppHandle, rect: FloatingRect) -> Result<(), String> {
   // 改成单次 SetWindowPos 把每帧成本砍一半。其它平台仍走 Tauri 默认 API。
   #[cfg(target_os = "windows")]
   {
-    use windows::Win32::UI::WindowsAndMessaging::{
+    use ::windows::Win32::UI::WindowsAndMessaging::{
       SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
     };
 
