@@ -108,6 +108,7 @@ If you ran v2.4.4 or earlier under the old name **KeyLingo**, your settings, API
 
 ## Changelog
 
+- **v2.5.8** — Restored the smooth per-frame fly animation in floating-mode Lens (the v2.5.7 snap-at-end approach reintroduced a pre-existing flicker bug). To keep cumulative jitter under control, `lens_set_floating` on Windows now uses a single atomic `SetWindowPos` call instead of separate position+size calls, halving the DWM/WebView2 resize coordination work per frame.
 - **v2.5.7** — Fixed cumulative jitter in floating-mode Lens (the path used when "Keep fullscreen after capture" is OFF): the answer bar's fly to the screenshot used to call SetWindowPos every frame and degraded after many open/close cycles. Now the bar flies inside the still-fullscreen overlay and the window snaps to floating in a single step at the end.
 - **v2.5.6** — Fixed Lens white flash on first show (Windows) and stutter when the answer bar flies into position on the second capture. Local OCR output now collapses blank-line padding before translation, producing tighter result cards.
 - **v2.5.5** — Screenshot translation now uses native system OCR: Apple Vision on macOS and `Windows.Media.Ocr` on Windows. macOS OCR runs through a lightweight helper and no longer depends on Apple Intelligence.
@@ -241,6 +242,7 @@ Kivio 常驻菜单栏，只在你按下热键时出现。
 
 ## 更新日志
 
+- **v2.5.8** —— 恢复浮动模式 Lens 的逐帧平滑飞入动画（v2.5.7 的"末尾一次性 snap"方案重新引入了之前修过的"到位后闪一下"老毛病）。为防止累积抖动重现，Windows 上的 `lens_set_floating` 改成单次原子 `SetWindowPos`，把每帧的 DWM/WebView2 resize 协调工作砍一半。
 - **v2.5.7** —— 修复浮动模式 Lens（关闭"截图后保持全屏覆盖"时走的那条路径）多次打开后悬浮栏飞入累积抖动的问题：以前 fly 期间每帧都调一次 SetWindowPos，多次开关 Lens 后 DWM 状态退化越发明显。改为 fly 期间窗口保持全屏、bar 在 webview 内 CSS 平滑飞入，fly 结束后一次性 snap 窗口到浮动尺寸。
 - **v2.5.6** —— 修复 Windows 上首次打开 Lens 偶发的白屏闪烁，以及第二次截图时悬浮栏飞入抽搐的问题。本地 OCR 输出在送翻译前会先压缩多余空行，结果卡更紧凑。
 - **v2.5.5** —— 截图翻译改用平台系统 OCR：macOS Apple Vision，Windows `Windows.Media.Ocr`。macOS OCR 独立 helper，不再依赖 Apple Intelligence。
