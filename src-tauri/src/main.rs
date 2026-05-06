@@ -4,6 +4,8 @@
 mod api;
 mod apple_intelligence;
 mod lens;
+#[cfg(target_os = "macos")]
+mod macos_ocr;
 mod prompts;
 #[cfg(target_os = "macos")]
 mod sck;
@@ -12,6 +14,8 @@ mod settings;
 mod state;
 mod utils;
 mod windows;
+#[cfg(target_os = "windows")]
+mod windows_ocr;
 
 use std::{
   collections::{HashMap, HashSet},
@@ -576,7 +580,10 @@ fn apple_intelligence_available(state: State<AppState>) -> bool {
         };
         dir.join(name)
       });
-      return path.map(|p| p.exists()).unwrap_or(false);
+      return path
+        .and_then(|p| p.metadata().ok())
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false);
     }
     false
   }
@@ -1276,7 +1283,8 @@ async fn lens_translate(
     Some(p) => p.clone(),
     None => return Ok(serde_json::json!({ "success": false, "error": "OCR provider not found" })),
   };
-  if ocr_provider.api_keys.is_empty() {
+  let provider_is_apple = ocr_provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
+  if !provider_is_apple && ocr_provider.api_keys.is_empty() {
     return Ok(serde_json::json!({ "success": false, "error": "Missing API Key" }));
   }
 
@@ -1288,10 +1296,19 @@ async fn lens_translate(
   let target_lang = resolve_target_lang(&settings.target_lang, "");
   let lang_name = language_name(&target_lang).to_string();
 
-  // 系统 OCR 路由：触发条件 = 用户开了 use_system_ocr,或者 provider 是 Apple Intelligence(没视觉 API,只能这条路)。
-  // 走 Vision OCR(本地免费) → 配置的 provider 做纯文本翻译,翻译 provider 可以是任意文字模型。
-  let use_system_ocr = settings.screenshot_translation.use_system_ocr
-    || ocr_provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
+  // 系统 OCR 路由：macOS 走 Apple Vision，Windows 走 Windows.Media.Ocr。
+  // Apple provider 只允许 macOS；其它平台即使旧配置里残留 use_system_ocr=true，
+  // 也必须走普通多模态 OCR+翻译链路。
+  let system_ocr_available = cfg!(any(target_os = "macos", target_os = "windows"));
+  if provider_is_apple && !cfg!(target_os = "macos") {
+    return Ok(serde_json::json!({
+      "success": false,
+      "error": "Apple Intelligence is not available on this platform"
+    }));
+  }
+  let use_system_ocr = system_ocr_available
+    && (settings.screenshot_translation.use_system_ocr
+      || (provider_is_apple && cfg!(target_os = "macos")));
   if use_system_ocr {
     return system_ocr_then_translate(
       &app,
@@ -1610,8 +1627,34 @@ async fn lens_translate_text(
   }))
 }
 
+async fn run_system_ocr(
+  state: &State<'_, AppState>,
+  image_path: &std::path::Path,
+) -> Result<String, String> {
+  #[cfg(target_os = "macos")]
+  {
+    return state
+      .macos_ocr
+      .ocr_image(&image_path.to_string_lossy())
+      .await;
+  }
+
+  #[cfg(target_os = "windows")]
+  {
+    let _ = state;
+    return windows_ocr::ocr_image(image_path).await;
+  }
+
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+  {
+    let _ = (state, image_path);
+    Err("System OCR is not available on this platform".to_string())
+  }
+}
+
 /// 系统 OCR + 任意 provider 翻译的两步本地链路。
-/// OCR 总是走 Apple Vision(sidecar);翻译可以是 Apple FoundationModels 或任意 OpenAI 兼容 cloud provider。
+/// OCR 走系统本地引擎（macOS Apple Vision / Windows.Media.Ocr）；
+/// 翻译可以是 Apple FoundationModels 或任意 OpenAI 兼容 cloud provider。
 /// 与 cloud vision 单次 OCR+translate 调用相比,这里手动 emit lens-translate-stream 事件维持前端契约。
 #[allow(clippy::too_many_arguments)]
 async fn system_ocr_then_translate(
@@ -1637,12 +1680,8 @@ async fn system_ocr_then_translate(
     );
   };
 
-  // 1) OCR via Apple Vision(sidecar)
-  let original = match state
-    .apple_intelligence
-    .ocr_image(&image_path.to_string_lossy())
-    .await
-  {
+  // 1) OCR via platform-local engine
+  let original = match run_system_ocr(state, image_path).await {
     Ok(text) => text,
     Err(err) => {
       emit_done(false, Some(&err));
@@ -2785,6 +2824,8 @@ fn main() {
         active_key_idx: Mutex::new(HashMap::new()),
         http: build_http_client(),
         apple_intelligence: apple_intelligence::AppleIntelligenceClient::new(&app.handle()),
+        #[cfg(target_os = "macos")]
+        macos_ocr: macos_ocr::MacOcrClient::new(&app.handle()),
       });
 
       if let Err(err) = register_hotkeys(&app.handle()) {

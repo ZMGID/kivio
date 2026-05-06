@@ -56,20 +56,31 @@ pub struct AppleIntelligenceClient {
 }
 
 impl AppleIntelligenceClient {
-  /// 不带 sidecar 的纯客户端实例：available=false，所有调用立即 Err。仅测试用。
-  #[cfg(test)]
-  pub fn disabled() -> Arc<Self> {
+  #[cfg(any(test, not(target_os = "macos")))]
+  fn unavailable(app: Option<AppHandle>) -> Arc<Self> {
     Arc::new(Self {
       available: AtomicBool::new(false),
       permanently_unavailable: AtomicBool::new(true),
       next_id: AtomicU64::new(1),
       pending: Mutex::new(HashMap::new()),
       child: Mutex::new(None),
-      app: None,
+      app,
     })
   }
 
+  /// 不带 sidecar 的纯客户端实例：available=false，所有调用立即 Err。仅测试用。
+  #[cfg(test)]
+  pub fn disabled() -> Arc<Self> {
+    Self::unavailable(None)
+  }
+
   pub fn new(app: &AppHandle) -> Arc<Self> {
+    #[cfg(not(target_os = "macos"))]
+    {
+      let _ = app;
+      return Self::unavailable(None);
+    }
+    #[cfg(target_os = "macos")]
     Arc::new(Self {
       available: AtomicBool::new(false),
       permanently_unavailable: AtomicBool::new(false),
@@ -235,21 +246,4 @@ impl AppleIntelligenceClient {
     Err("sidecar 通道意外关闭".into())
   }
 
-  /// Apple Vision 端上 OCR：把图像中的文字按行识别拼接返回。Vision 框架不依赖 FoundationModels，
-  /// 首次调用时 ensure_started() 自动拉起 sidecar；sidecar 缺失或 spawn 失败时返回 Err。
-  pub async fn ocr_image(self: &Arc<Self>, image_path: &str) -> Result<String, String> {
-    self.ensure_started()?;
-    let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-    let mut rx = self.register(id);
-    let body = serde_json::json!({ "id": id, "action": "ocr", "imagePath": image_path });
-    self.write_line(format!("{body}\n"))?;
-    while let Some(ev) = rx.recv().await {
-      match ev {
-        RequestEvent::Done(content) => return Ok(content.unwrap_or_default()),
-        RequestEvent::Error(msg) => return Err(msg),
-        RequestEvent::Chunk(_) => {}
-      }
-    }
-    Err("sidecar 通道意外关闭".into())
-  }
 }

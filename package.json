@@ -1,14 +1,14 @@
 {
   "name": "kivio",
   "private": true,
-  "version": "2.5.4",
+  "version": "2.5.5",
   "description": "Kivio - Screen-level AI assistant for macOS and Windows",
   "author": "ZM",
   "type": "module",
   "scripts": {
     "dev": "(npm run build:swift || true) && tauri dev",
     "dev:ui": "vite --port 5713",
-    "build": "(npm run build:swift || true) && tauri build",
+    "build": "npm run build:swift && tauri build",
     "tauri": "tauri",
     "build:ui": "vite build",
     "build:swift": "node scripts/build-swift-sidecar.js",

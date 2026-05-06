@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// 构建 Apple Intelligence sidecar 二进制：
-//   - macOS: swift build -c release 编译 src-tauri/swift/kivio-ai-helper,产物 cp 到
-//     src-tauri/binaries/kivio-ai-helper-<rustc-target-triple>(Tauri externalBin 命名规则)
-//   - 非 macOS(Windows/Linux): 写一个空 stub 占位,让 Tauri 的 externalBin 文件存在校验通过。
-//     运行时 AppleIntelligenceClient::new 尝试 spawn 会失败,available=false,UI 自动隐藏 Apple chip。
+// 构建 Swift sidecar 二进制：
+//   - kivio-ai-helper: Apple Foundation Models 文本/流式调用，只有 macOS 26+ 才可用。
+//   - kivio-ocr-helper: Apple Vision OCR，独立于 Apple Intelligence。
+//   - 非 macOS(Windows/Linux): 写空 stub 占位,让 Tauri 的 externalBin 文件存在校验通过。
+//     运行时对应 client 会按平台直接禁用,不会 spawn 这些 stub。
 //     这是 Tauri externalBin 的设计限制——配置是全平台的,无法仅 macOS 启用。
-// 失败不阻塞 dev：调用方用 `|| true` 兜底。
+// dev 可用 `|| true` 兜底；正式 build 必须让必需 helper 构建失败直接中止。
 
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, copyFileSync, writeFileSync } from 'node:fs'
@@ -14,8 +14,19 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
-const SWIFT_PKG = resolve(ROOT, 'src-tauri/swift/kivio-ai-helper')
 const BIN_DIR = resolve(ROOT, 'src-tauri/binaries')
+const HELPERS = [
+  {
+    name: 'kivio-ai-helper',
+    pkg: resolve(ROOT, 'src-tauri/swift/kivio-ai-helper'),
+    optional: true,
+  },
+  {
+    name: 'kivio-ocr-helper',
+    pkg: resolve(ROOT, 'src-tauri/swift/kivio-ocr-helper'),
+    optional: false,
+  },
+]
 
 function detectRustTriple() {
   try {
@@ -31,32 +42,60 @@ function detectRustTriple() {
 
 const triple = detectRustTriple()
 const exeSuffix = process.platform === 'win32' ? '.exe' : ''
-const destName = `kivio-ai-helper-${triple}${exeSuffix}`
-const dest = resolve(BIN_DIR, destName)
 
 if (!existsSync(BIN_DIR)) mkdirSync(BIN_DIR, { recursive: true })
 
-if (process.platform !== 'darwin') {
-  // 非 macOS:写空 stub 让 Tauri externalBin 校验通过。运行时 sidecar 不会真正被 spawn 使用。
+function makeDestName(name) {
+  return `${name}-${triple}${exeSuffix}`
+}
+
+function makeExecutable(file) {
+  if (process.platform !== 'win32') {
+    execSync(`chmod +x "${file}"`)
+  }
+}
+
+function ensureStub(name) {
+  const dest = resolve(BIN_DIR, makeDestName(name))
   if (!existsSync(dest)) {
     writeFileSync(dest, '')
-    console.log(`[build-swift-sidecar] non-macOS: 写空 stub → ${dest}`)
+    makeExecutable(dest)
+    console.log(`[build-swift-sidecar] 写空 stub → ${dest}`)
   } else {
-    console.log(`[build-swift-sidecar] non-macOS: stub 已存在 → ${dest}`)
+    console.log(`[build-swift-sidecar] stub 已存在 → ${dest}`)
   }
+}
+
+if (process.platform !== 'darwin') {
+  for (const helper of HELPERS) ensureStub(helper.name)
   process.exit(0)
 }
 
 console.log(`[build-swift-sidecar] target triple = ${triple}`)
-console.log('[build-swift-sidecar] swift build -c release')
-execSync('swift build -c release', { cwd: SWIFT_PKG, stdio: 'inherit' })
 
-const builtPath = resolve(SWIFT_PKG, '.build/release/kivio-ai-helper')
-if (!existsSync(builtPath)) {
-  console.error(`[build-swift-sidecar] 编译产物不存在: ${builtPath}`)
-  process.exit(1)
+let failedRequired = false
+for (const helper of HELPERS) {
+  const dest = resolve(BIN_DIR, makeDestName(helper.name))
+  console.log(`[build-swift-sidecar] ${helper.name}: swift build -c release`)
+  try {
+    execSync('swift build -c release', { cwd: helper.pkg, stdio: 'inherit' })
+    const builtPath = resolve(helper.pkg, `.build/release/${helper.name}`)
+    if (!existsSync(builtPath)) {
+      throw new Error(`编译产物不存在: ${builtPath}`)
+    }
+    copyFileSync(builtPath, dest)
+    makeExecutable(dest)
+    console.log(`[build-swift-sidecar] ${helper.name} → ${dest}`)
+  } catch (err) {
+    console.error(`[build-swift-sidecar] ${helper.name} 构建失败: ${err.message}`)
+    if (!helper.optional) {
+      failedRequired = true
+      continue
+    }
+    ensureStub(helper.name)
+  }
 }
 
-copyFileSync(builtPath, dest)
-execSync(`chmod +x "${dest}"`)
-console.log(`[build-swift-sidecar] → ${dest}`)
+if (failedRequired) {
+  process.exit(1)
+}

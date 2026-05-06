@@ -1,7 +1,7 @@
 # Kivio Rust 后端 Cargo 配置
 [package]
 name = "kivio"
-version = "2.5.4"
+version = "2.5.5"
 description = "Kivio - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 edition = "2021"
@@ -49,12 +49,21 @@ screencapturekit = { version = "1.5", features = ["macos_14_0"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 xcap = "0.8"
 windows = { version = "0.61.3", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage",
+  "Storage_Streams",
   "Win32_Foundation",
   "Win32_System_Com",
   "Win32_System_DataExchange",
+  "Win32_System_WinRT",
   "Win32_UI_Accessibility",
   "Win32_UI_Input_KeyboardAndMouse",
 ] }
+windows-future = "0.2.1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

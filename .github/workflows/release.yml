@@ -55,7 +55,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Apple Intelligence sidecar (or stub on non-macOS)
+      - name: Build Swift sidecars (or stubs on non-macOS)
         run: npm run build:swift
 
       - name: Build and publish release assets

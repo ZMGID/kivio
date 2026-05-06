@@ -11,6 +11,8 @@ use std::{
 use reqwest::Client;
 
 use crate::apple_intelligence::AppleIntelligenceClient;
+#[cfg(target_os = "macos")]
+use crate::macos_ocr::MacOcrClient;
 use crate::settings::Settings;
 
 /// 应用全局状态
@@ -36,6 +38,9 @@ pub struct AppState {
   /// Apple Intelligence sidecar 客户端。首次真正用到 Apple 路由时 spawn，启动后所有请求复用。
   /// 不可用时 ensure_started() 返回 Err，路由层直接报错。
   pub apple_intelligence: Arc<AppleIntelligenceClient>,
+  /// macOS Apple Vision OCR sidecar 客户端。独立于 Apple Intelligence，只有系统 OCR 路径会拉起。
+  #[cfg(target_os = "macos")]
+  pub macos_ocr: Arc<MacOcrClient>,
 }
 
 /// 单个 key 触发 failover 后的冷却时长。
@@ -157,6 +162,8 @@ mod tests {
       active_key_idx: Mutex::new(HashMap::new()),
       http: Client::new(),
       apple_intelligence: AppleIntelligenceClient::disabled(),
+      #[cfg(target_os = "macos")]
+      macos_ocr: MacOcrClient::disabled(),
     }
   }
 

@@ -92,7 +92,7 @@ export type Settings = {
     streamEnabled?: boolean
     /** 截图后是否保持全屏覆盖（默认 true）。false 时截图后窗口缩小为浮动 */
     keepFullscreenAfterCapture?: boolean
-    /** 使用系统 OCR(Apple Vision) 做文字识别,然后让 provider 翻译纯文本(默认 false)。
+    /** 使用系统 OCR(macOS Apple Vision / Windows OCR) 做文字识别,然后让 provider 翻译纯文本(默认 false)。
      *  true 时 provider 可以是任意文字模型;false 时 provider 必须是多模态视觉模型。
      *  Apple Intelligence 作为 provider 时自动等同于 true(其 SDK 不支持图像)。 */
     useSystemOcr?: boolean

@@ -54,7 +54,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [downloadPercent, setDownloadPercent] = useState(0)
   const [downloadedPath, setDownloadedPath] = useState('')
   const [downloadError, setDownloadError] = useState('')
-  const isMac = getPlatform() === 'macos'
+  const platform = getPlatform()
+  const isMac = platform === 'macos'
+  const hasSystemOcr = isMac || platform === 'windows'
   // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
   // （否则用户可能没察觉就 Save 把磁盘真实数据覆盖掉）
   const [loadError, setLoadError] = useState('')
@@ -63,6 +65,16 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
+  const isOnDeviceProvider = (provider: ModelProvider) => provider.baseUrl === 'applefoundation://local'
+  const selectableProviders = (providers: ModelProvider[]) =>
+    providers.filter(provider => isMac || !isOnDeviceProvider(provider))
+  const modelPairOptions = (providers: ModelProvider[]) =>
+    selectableProviders(providers).flatMap(p =>
+      p.enabledModels.map(m => ({
+        value: `${p.id}:${m}`,
+        label: `${p.name} - ${m}`
+      }))
+    )
   // 判断是否有未保存的更改
   const hasUnsavedChanges = settings ? JSON.stringify(settings) !== initialSettingsSnapshot : false
 
@@ -986,12 +998,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       const [providerId, model] = v.split(':')
                       updateSettings({ translatorProviderId: providerId, translatorModel: model })
                     }}
-                    options={settings.providers.flatMap(p =>
-                      p.enabledModels.map(m => ({
-                        value: `${p.id}:${m}`,
-                        label: `${p.name} - ${m}`
-                      }))
-                    )}
+                    options={modelPairOptions(settings.providers)}
                   />
                 </SettingRow>
               </div>
@@ -1064,12 +1071,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                             const [providerId, model] = v.split(':')
                             updateScreenshotTranslation({ providerId, model })
                           }}
-                          options={settings.providers.flatMap(p =>
-                            p.enabledModels.map(m => ({
-                              value: `${p.id}:${m}`,
-                              label: `${p.name} - ${m}`
-                            }))
-                          )}
+                          options={modelPairOptions(settings.providers)}
                         />
                       </SettingRow>
                       <SettingRow
@@ -1099,15 +1101,17 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           onChange={(v) => updateScreenshotTranslation({ streamEnabled: v })}
                         />
                       </SettingRow>
-                      <SettingRow
-                        label={t.useSystemOcr}
-                        description={t.useSystemOcrHint}
-                      >
-                        <Toggle
-                          checked={settings.screenshotTranslation?.useSystemOcr ?? false}
-                          onChange={(v) => updateScreenshotTranslation({ useSystemOcr: v })}
-                        />
-                      </SettingRow>
+                      {hasSystemOcr && (
+                        <SettingRow
+                          label={t.useSystemOcr}
+                          description={t.useSystemOcrHint}
+                        >
+                          <Toggle
+                            checked={settings.screenshotTranslation?.useSystemOcr ?? false}
+                            onChange={(v) => updateScreenshotTranslation({ useSystemOcr: v })}
+                          />
+                        </SettingRow>
+                      )}
                       <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
                         <Toggle
                           checked={settings.screenshotTranslation?.keepFullscreenAfterCapture !== false}
@@ -1224,12 +1228,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           }}
                           options={[
                             { value: ':', label: t.lensLanguageInherit },
-                            ...settings.providers.flatMap(p =>
-                              p.enabledModels.map(m => ({
-                                value: `${p.id}:${m}`,
-                                label: `${p.name} - ${m}`
-                              }))
-                            )
+                            ...modelPairOptions(settings.providers)
                           ]}
                         />
                       </SettingRow>
