@@ -6,15 +6,53 @@
 
 /// 默认翻译提示词模板
 pub const DEFAULT_TRANSLATION_TEMPLATE: &str =
-  "Translate the following text to {lang}. Output only the translation.\n\nRules:\n- Preserve existing LaTeX formulas exactly (keep $...$ and $$...$$).\n- If formula-like plain text appears, normalize it to proper LaTeX when needed.\n- Keep the original line breaks and list structure when possible.\n- Do not add explanations.\n\n{text}";
+  "Translate the text below to {lang}. Output only the translation, no commentary.\n\n\
+   Rules:\n\
+   - Preserve LaTeX formulas exactly (keep $...$ and $$...$$). Normalize formula-like plain text to LaTeX where natural.\n\
+   - Keep paragraph structure but compact: at most one blank line between paragraphs, no trailing spaces.\n\
+   - If the input looks like OCR output (broken words, garbled chars, scattered artifacts), use surrounding context to fix obvious errors before translating; for clearly unreadable fragments, omit them rather than guess.\n\
+   - Do not add headings, labels, or explanations.\n\n\
+   {text}";
 
 /// 默认截图翻译提示词模板
 pub const DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE: &str =
-  "Translate the OCR text below to {lang}. Output only the translation.\n\nRules:\n- Preserve existing LaTeX formulas exactly (keep $...$ and $$...$$).\n- If formula-like plain text appears, normalize it to proper LaTeX when needed.\n- Keep paragraph and line-break structure from OCR text when possible.\n- Correct only obvious OCR character mistakes; do not invent missing content.\n- Do not add explanations.\n\n{text}";
+  "Translate the OCR text below to {lang}. Output only the translation, no commentary.\n\n\
+   Rules:\n\
+   - Preserve LaTeX formulas exactly (keep $...$ and $$...$$). Normalize formula-like plain text to LaTeX where natural.\n\
+   - Compact output: collapse runs of blank lines into a single break, no trailing spaces. The result should be tight, not sparse.\n\
+   - The input is OCR output and may contain errors (broken words, character confusions like \"rn\"↔\"m\" / \"0\"↔\"O\" / \"1\"↔\"l\", scattered artifacts). Use surrounding context to fix obvious mistakes; for unreadable fragments, omit them rather than translate gibberish.\n\
+   - Do not invent missing content. Do not add headings, labels, or explanations.\n\n\
+   {text}";
 
 /// 截图翻译合并模式分隔符。模型先输出译文，再单独一行 `<<<ORIGINAL>>>`，再输出原文。
 /// 流式解析时按此切分两段，分别 emit kind="translated" / "original"。
 pub const COMBINED_TRANSLATE_SEPARATOR: &str = "<<<ORIGINAL>>>";
+
+/// 折叠 OCR 输出里的多余空行 + 行尾空白。
+///
+/// 系统 OCR 引擎(尤其 Apple Vision / Tesseract 这种带版式分析的)经常在段落之间塞 N 个空行,
+/// 这些空行直接送翻译模型会被一字不漏 echo 进译文,显示时占很多空间(用户看到的就是大段大段空白)。
+/// 这里把连续多个空行/纯空白行折成最多一个,行尾空格也顺手剥掉。
+pub fn compact_ocr_text(text: &str) -> String {
+  let mut out: Vec<&str> = Vec::new();
+  let mut prev_blank = false;
+  for line in text.lines() {
+    let trimmed = line.trim_end();
+    if trimmed.is_empty() {
+      if !prev_blank && !out.is_empty() {
+        out.push("");
+      }
+      prev_blank = true;
+    } else {
+      out.push(trimmed);
+      prev_blank = false;
+    }
+  }
+  while out.last().map(|s| s.is_empty()).unwrap_or(false) {
+    out.pop();
+  }
+  out.join("\n")
+}
 
 /// 使用模板构建提示词
 /// 支持 {text} 和 {lang} 占位符；如果自定义模板为空或不含 {text}，则追加文本内容
@@ -74,9 +112,9 @@ pub fn build_ocr_direct_translation_prompt(lang_name: &str, template: Option<&st
 /// "Translation rules" 块注入；空则使用默认规则。{lang} 占位符替换为目标语言；{text}
 /// 在合并模式不存在外部参数 → 替换为占位说明 "the recognized text"。
 pub fn build_combined_translate_prompt(lang_name: &str, template: Option<&str>) -> String {
-  const DEFAULT_RULES: &str = "- Preserve LaTeX formulas ($...$ inline, $$...$$ block).\n\
-     - Keep paragraph and line-break structure.\n\
-     - Correct only obvious OCR mistakes; do not invent missing content.\n\
+  const DEFAULT_RULES: &str = "- Preserve LaTeX formulas exactly ($...$ inline, $$...$$ block).\n\
+     - Compact output: collapse runs of blank lines into a single break, no trailing spaces.\n\
+     - Correct obvious OCR mistakes using context; for unreadable fragments omit rather than guess.\n\
      - No commentary, no section headers, no labels.";
 
   let rules = template
@@ -104,4 +142,36 @@ pub fn build_combined_translate_prompt(lang_name: &str, template: Option<&str>) 
     sep = COMBINED_TRANSLATE_SEPARATOR,
     rules = rules,
   )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn compact_ocr_text_collapses_blank_runs() {
+    // 段落间多个空行 → 单个空行
+    let input = "first para\n\n\n\n\nsecond para\n\n\n\nthird";
+    assert_eq!(compact_ocr_text(input), "first para\n\nsecond para\n\nthird");
+  }
+
+  #[test]
+  fn compact_ocr_text_strips_trailing_whitespace_per_line() {
+    // 行尾空格 / tab(OCR 经常带)被剥掉,纯空白行视作空行
+    let input = "line one   \nline two\t\n   \n\nline three";
+    assert_eq!(compact_ocr_text(input), "line one\nline two\n\nline three");
+  }
+
+  #[test]
+  fn compact_ocr_text_trims_leading_and_trailing_blanks() {
+    let input = "\n\n\nactual content\n\n\n";
+    assert_eq!(compact_ocr_text(input), "actual content");
+  }
+
+  #[test]
+  fn compact_ocr_text_preserves_single_blank_lines() {
+    // 单个空行(段落分隔)保留
+    let input = "para 1\n\npara 2";
+    assert_eq!(compact_ocr_text(input), "para 1\n\npara 2");
+  }
 }

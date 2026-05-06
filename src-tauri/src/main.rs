@@ -46,8 +46,9 @@ use api::{
 };
 use prompts::{
   build_combined_translate_prompt, build_ocr_direct_translation_prompt,
-  build_screenshot_translation_prompt, build_translation_prompt, COMBINED_TRANSLATE_SEPARATOR,
-  DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE, DEFAULT_TRANSLATION_TEMPLATE,
+  build_screenshot_translation_prompt, build_translation_prompt, compact_ocr_text,
+  COMBINED_TRANSLATE_SEPARATOR, DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
+  DEFAULT_TRANSLATION_TEMPLATE,
 };
 use screenshot::{cleanup_orphan_temp_files, cleanup_temp_file};
 use settings::{
@@ -1750,6 +1751,8 @@ async fn local_ocr_then_translate(
     emit_done(false, Some(&msg));
     return Ok(serde_json::json!({ "success": false, "error": msg }));
   }
+  // 折叠 OCR 引擎产生的多余空行,避免被翻译模型一字不漏 echo 进译文占空间。
+  let original = compact_ocr_text(&original);
   if !direct_translate {
     let _ = app.emit(
       "lens-translate-stream",
@@ -1757,7 +1760,8 @@ async fn local_ocr_then_translate(
     );
   }
 
-  // 2) 翻译 prompt：用主翻译那套 (build_translation_prompt) — screenshot 那个模板是给 vision 模型设计的不适用
+  // 2) 翻译 prompt：用主翻译模板。新版默认模板已经加了"输入像 OCR 输出时用上下文修错 + 压缩空行"的规则,
+  // 跟纯文本翻译共用一份模板;用户在 Settings 里改 translator_prompt 同样会作用到这条路径。
   let translate_prompt = build_translation_prompt(&original, lang_name, translator_template);
 
   // 3) Translate via configured provider —— Apple 走 sidecar,其它走 cloud OpenAI 兼容接口
