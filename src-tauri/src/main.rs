@@ -1693,6 +1693,12 @@ async fn system_ocr_then_translate(
     emit_done(false, Some(&msg));
     return Ok(serde_json::json!({ "success": false, "error": msg }));
   }
+  if !direct_translate {
+    let _ = app.emit(
+      "lens-translate-stream",
+      serde_json::json!({ "imageId": image_id, "kind": "original", "delta": original.clone() }),
+    );
+  }
 
   // 2) 翻译 prompt：用主翻译那套 (build_translation_prompt) — screenshot 那个模板是给 vision 模型设计的不适用
   let translate_prompt = build_translation_prompt(&original, lang_name, translator_template);
@@ -1777,15 +1783,6 @@ async fn system_ocr_then_translate(
       }
     }
   };
-
-  // 4) 非 direct 模式发原文 delta（cloud combined 是 <<<ORIGINAL>>> 分隔在一段流里给原文,
-  //    系统 OCR 路径是分两步,所以翻译完才发原文,前端两个 kind 都能收到）
-  if !direct_translate {
-    let _ = app.emit(
-      "lens-translate-stream",
-      serde_json::json!({ "imageId": image_id, "kind": "original", "delta": original }),
-    );
-  }
 
   emit_done(true, None);
   Ok(serde_json::json!({
