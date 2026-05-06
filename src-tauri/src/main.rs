@@ -2890,6 +2890,18 @@ fn main() {
         eprintln!("Failed to setup tray: {err}");
       }
 
+      // 预创建 lens webview（隐藏），让 WebView2 提前完成首次绘制 + 加载 React
+      // 资源。第一次按热键时只走 show()，避免"窗口创建 → WebView2 首帧默认背景
+      // 渲染白色 → CSS 把 html/body/#root 设成 transparent"这个时序里的全屏白闪。
+      // 仅 Windows 启用：macOS 创建隐藏 webview 可能影响前台应用 focus，进而干扰
+      // chat 模式的 Cmd+C/AXSelectedText 选区捕获（lens_request_internal 已有
+      // 应对，但预创建会把这层风险提前到 setup 之外的代码路径），且 macOS 上
+      // WKWebView 默认不会有 WebView2 这种白闪。
+      #[cfg(target_os = "windows")]
+      if let Err(err) = windows::ensure_lens_window(&app.handle()) {
+        eprintln!("Failed to pre-create lens window: {err}");
+      }
+
       // 启动后 5s 静默检查更新（settings.auto_check_update 控制）
       // 发现新版 → emit "update-available" 事件，前端 Settings 打开时会展示提示
       // 失败 / 限流 / 网络问题全部静默，不打扰用户

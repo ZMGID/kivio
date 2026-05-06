@@ -1,4 +1,6 @@
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+  window::Color, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 /**
  * 获取主窗口
@@ -53,6 +55,11 @@ pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
   .decorations(false)
   .shadow(false)
   .transparent(true)
+  // 把 WebView2 / WKWebView 的默认背景设成全透明。Windows 上 WebView2 控件
+  // 在 HTML/CSS 把 html、body、#root 设为 transparent 之前会用系统主题色（白）
+  // 渲染首帧，导致全屏白闪 —— 设了 (0,0,0,0) 后默认背景本身就是透明的。
+  // 文档：Windows 8+ 上 webview 层的 alpha=0 被尊重；macOS 上此调用是 no-op。
+  .background_color(Color(0, 0, 0, 0))
   .skip_taskbar(true)
   .visible(false)
   .build()

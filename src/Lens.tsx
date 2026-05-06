@@ -438,6 +438,12 @@ export default function Lens() {
   // 残留的 380ms 动画在 window hide 时被暂停，下次 show 时从中间帧续播 → 视觉上 bar
   // 从老位置"滑"回 select 默认位置的闪烁。
   const [barNoTransition, setBarNoTransition] = useState(false)
+  // flyDelta：keepFullscreen 模式下 fly 动画用 transform translate 取代 left/top 过渡。
+  // left/top 不是 GPU 合成属性，每帧都要走 layout/reflow；Windows 上 webview hide→show 后
+  // 合成器刚被唤醒、首个大幅 left/top 过渡极易卡顿（"乱跳"）。改为：left/top 立即 snap 到
+  // 最终位置，用 transform: translate(dx, dy) 把视觉位置拉回起点，下一帧再把 delta 过渡到 (0,0)。
+  // transform 走合成层，不阻塞主线程，多窗口会话间稳定。
+  const [flyDelta, setFlyDelta] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [translateCardDragging, setTranslateCardDragging] = useState(false)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
@@ -587,6 +593,7 @@ export default function Lens() {
       setBarRect(curMode === 'translateText'
         ? { x: 0, y: 0, width: w }
         : computeSelectBar(w, h, computeMetrics(w, h)))
+      setFlyDelta({ x: 0, y: 0 })
       setCapturedFrame(null)
       // 重置 intro：先关再开，下一帧让 transition 从 scale-90 到 scale-100
       setBarIntro(false)
@@ -858,6 +865,7 @@ export default function Lens() {
       setMessages([])
       setStreaming(false)
       setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
+      setFlyDelta({ x: 0, y: 0 })
       setCapturedFrame(null)
       setBarIntro(false)
     })
@@ -1064,6 +1072,7 @@ export default function Lens() {
         setAppLabel(label)
         setFloatingRebased(false)
         setBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: READY_W })
+        setFlyDelta({ x: 0, y: 0 })
         setStage(targetStage)
         if (isTranslateMode) {
           // 卡片 mount 在隐身状态 + 禁用 transition（避免 (selectX,selectY) → (0,0) 的瞬时 left/top 跳动触发动画）
@@ -1101,11 +1110,28 @@ export default function Lens() {
       }
       requestAnimationFrame(animateFrame)
     } else {
-      // 全屏模式：保持现有逻辑
+      // 全屏模式：left/top 立即 snap 到最终位置（snap 时 barNoTransition=true 抑制 transition），
+      // 视觉上的"起点"由 transform: translate(startDelta) 提供，再于下一帧把 delta 过渡到 (0,0)。
+      // 用 transform 取代 left/top 动画，避免 Windows webview hide→show 后合成器刚唤醒、
+      // left/top reflow 卡顿造成的"乱跳"——transform 走 GPU 合成层，与主线程 layout 解耦。
+      const startX = barRect.x
+      const startY = barRect.y
+      const finalX = Math.round(targetX)
+      const finalY = Math.round(targetY)
       flushSync(() => {
         setAppLabel(label)
-        setBarRect({ x: Math.round(targetX), y: Math.round(targetY), width: READY_W })
+        setBarNoTransition(true)
+        setBarRect({ x: finalX, y: finalY, width: READY_W })
+        setFlyDelta({ x: startX - finalX, y: startY - finalY })
         setStage(targetStage)
+      })
+      // 两个 raf：第一个让浏览器先 commit 上面的 snap + delta，第二个解禁 transition 并把
+      // delta 归零，transform 进入过渡。等价于 enterSelect 里 intro 的双 raf 模式。
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setBarNoTransition(false)
+          setFlyDelta({ x: 0, y: 0 })
+        })
       })
     }
     if (mode === 'chat') {
@@ -1769,8 +1795,9 @@ export default function Lens() {
             transitionProperty: barNoTransition ? 'none' : 'left, top, width, transform, opacity',
             transitionDuration: barNoTransition ? '0ms' : `${TRANSITION_MS}ms`,
             transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
-            transform: barIntro ? 'scale(1)' : 'scale(0.92)',
+            transform: `translate3d(${flyDelta.x}px, ${flyDelta.y}px, 0) scale(${barIntro ? 1 : 0.92})`,
             opacity: barIntro ? 1 : 0,
+            willChange: 'transform, opacity',
           }}
         >
           {/* 输入栏卡片 */}
