@@ -1,7 +1,7 @@
 # Kivio Rust 后端 Cargo 配置
 [package]
 name = "kivio"
-version = "2.5.7"
+version = "2.5.8"
 description = "Kivio - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 edition = "2021"
@@ -62,6 +62,7 @@ windows = { version = "0.61.3", features = [
   "Win32_System_WinRT",
   "Win32_UI_Accessibility",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 windows-future = "0.2.1"
 

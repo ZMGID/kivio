@@ -1893,12 +1893,48 @@ struct FloatingRect {
 
 #[tauri::command]
 fn lens_set_floating(app: AppHandle, rect: FloatingRect) -> Result<(), String> {
-  if let Some(window) = app.get_webview_window("lens") {
+  let Some(window) = app.get_webview_window("lens") else {
+    return Ok(());
+  };
+
+  // Windows: 用一次原子 SetWindowPos 同时改位置 + 尺寸,代替 Tauri set_position + set_size
+  // 那样的两次独立 SetWindowPos。
+  // 浮动模式 fly 期间 RAF 每帧都调一次本命令(380ms 内 ~23 次),原版每帧产生 2 次
+  // SetWindowPos → DWM/WebView2 resize 协调工作累计两倍;多次 lens 会话后 WebView2 内部
+  // 状态退化 → 出现"前几次顺、后几次抖"的累积型 jitter(用户在 v2.5.5 / v2.5.6 见到的)。
+  // 改成单次 SetWindowPos 把每帧成本砍一半。其它平台仍走 Tauri 默认 API。
+  #[cfg(target_os = "windows")]
+  {
+    use windows::Win32::UI::WindowsAndMessaging::{
+      SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    };
+
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let phys_w = (rect.width * scale).round() as i32;
+    let phys_h = (rect.height * scale).round() as i32;
+    let (phys_x, phys_y, flags) = match (rect.x, rect.y) {
+      (Some(x), Some(y)) => (
+        (x * scale).round() as i32,
+        (y * scale).round() as i32,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+      ),
+      // 只调尺寸不动位置:用 SWP_NOMOVE,x/y 会被 Win32 忽略
+      _ => (0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE),
+    };
+    unsafe {
+      let _ = SetWindowPos(hwnd, None, phys_x, phys_y, phys_w, phys_h, flags);
+    }
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  {
     if let (Some(x), Some(y)) = (rect.x, rect.y) {
       let _ = window.set_position(tauri::LogicalPosition::new(x, y));
     }
     let _ = window.set_size(tauri::LogicalSize::new(rect.width, rect.height));
   }
+
   Ok(())
 }
 
