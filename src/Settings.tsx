@@ -54,12 +54,12 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [downloadPercent, setDownloadPercent] = useState(0)
   const [downloadedPath, setDownloadedPath] = useState('')
   const [downloadError, setDownloadError] = useState('')
-  // Tesseract 离线 OCR 状态:简化版只查 binary 是否在系统 PATH 上,语言包/下载/删除全交给用户。
-  const [tesseractStatus, setTesseractStatus] = useState<import('./api/tauri').TesseractStatus | null>(null)
-  // 一键安装的临时状态:'idle' / 'installing' / 'failed'(success 后会自动 refresh status 到已安装,
+  // RapidOCR 离线 OCR 状态:检查 app data 目录里 dylib + 模型 4 个文件齐不齐。
+  const [rapidOcrStatus, setRapidOcrStatus] = useState<import('./api/tauri').RapidOcrStatus | null>(null)
+  // 下载临时状态:'idle' / 'downloading' / 'failed'(success 后自动 refresh status 到已就绪,
   // 没有专门的 success 终态)
-  const [tesseractInstallState, setTesseractInstallState] = useState<'idle' | 'installing' | 'failed'>('idle')
-  const [tesseractInstallError, setTesseractInstallError] = useState('')
+  const [rapidOcrDownloadState, setRapidOcrDownloadState] = useState<'idle' | 'downloading' | 'failed'>('idle')
+  const [rapidOcrDownloadError, setRapidOcrDownloadError] = useState('')
   const platform = getPlatform()
   const isMac = platform === 'macos'
   const hasSystemOcr = isMac || platform === 'windows'
@@ -243,42 +243,42 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
     }
   }, [downloadedPath])
 
-  /** 拉一次 Tesseract 状态(系统 PATH 上是否有 tesseract + version 字符串)。
-   *  挂载时 + 切换到 Tesseract 引擎时调一下。 */
-  const refreshTesseractStatus = useCallback(async () => {
+  /** 拉一次 RapidOCR 状态(app data 里 dylib + 模型 4 个文件齐不齐)。
+   *  挂载时 + 切换到 RapidOCR 引擎时调一下。 */
+  const refreshRapidOcrStatus = useCallback(async () => {
     if (!hasSystemOcr) return
     try {
-      const status = await api.tesseractStatus()
-      setTesseractStatus(status)
+      const status = await api.rapidOcrStatus()
+      setRapidOcrStatus(status)
     } catch (err) {
-      console.error('tesseractStatus failed:', err)
+      console.error('rapidOcrStatus failed:', err)
     }
   }, [hasSystemOcr])
 
-  /** 一键安装 tesseract:阻塞 1-3 分钟到包管理器跑完,完成后 refresh status。 */
-  const handleInstallTesseract = useCallback(async () => {
-    setTesseractInstallState('installing')
-    setTesseractInstallError('')
+  /** 下载 RapidOCR 包(dylib + 模型,~30-50MB):阻塞 ~15-30s,完成后 refresh status。 */
+  const handleDownloadRapidOcr = useCallback(async () => {
+    setRapidOcrDownloadState('downloading')
+    setRapidOcrDownloadError('')
     try {
-      const result = await api.tesseractInstall()
+      const result = await api.rapidOcrInstall()
       if (result.success) {
-        setTesseractInstallState('idle')
-        await refreshTesseractStatus()
+        setRapidOcrDownloadState('idle')
+        await refreshRapidOcrStatus()
       } else {
-        setTesseractInstallError(result.message)
-        setTesseractInstallState('failed')
+        setRapidOcrDownloadError(result.message)
+        setRapidOcrDownloadState('failed')
       }
     } catch (err) {
       const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err)
-      setTesseractInstallError(msg)
-      setTesseractInstallState('failed')
+      setRapidOcrDownloadError(msg)
+      setRapidOcrDownloadState('failed')
     }
-  }, [refreshTesseractStatus])
+  }, [refreshRapidOcrStatus])
 
   // 挂载时拉一次状态
   useEffect(() => {
-    refreshTesseractStatus()
-  }, [refreshTesseractStatus])
+    refreshRapidOcrStatus()
+  }, [refreshRapidOcrStatus])
 
   useEffect(() => {
     setProviderTestFeedback({})
@@ -667,6 +667,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         directTranslate: false,
         thinkingEnabled: false,
         streamEnabled: true,
+        ocrMode: 'cloud_vision',
         prompt: ''
       }
       return { ...prev, screenshotTranslation: { ...current, ...updates } }
@@ -1154,13 +1155,13 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                               value={settings.screenshotTranslation?.ocrMode ?? 'cloud_vision'}
                               onChange={(v) =>
                                 updateScreenshotTranslation({
-                                  ocrMode: v as 'cloud_vision' | 'system' | 'tesseract',
+                                  ocrMode: v as 'cloud_vision' | 'system' | 'rapid_ocr',
                                 })
                               }
                               options={[
                                 { value: 'cloud_vision', label: t.ocrEngineCloudVision },
                                 { value: 'system', label: t.ocrEngineSystem },
-                                { value: 'tesseract', label: t.ocrEngineTesseract },
+                                { value: 'rapid_ocr', label: t.ocrEngineRapidOcr },
                               ]}
                               className="w-44"
                             />
@@ -1170,30 +1171,25 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                               {isMac ? t.ocrEngineMacHint : t.ocrEngineWindowsHint}
                             </div>
                           )}
-                          {settings.screenshotTranslation?.ocrMode === 'tesseract' && (
+                          {settings.screenshotTranslation?.ocrMode === 'rapid_ocr' && (
                             <div className="border-t border-black/[0.04] dark:border-white/[0.05] px-4 py-3 space-y-2 text-[12px]">
-                              {tesseractStatus?.binaryAvailable ? (
+                              {rapidOcrStatus?.modelsAvailable ? (
                                 <div className="flex items-start gap-2">
                                   <span className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
                                   <div className="flex-1">
                                     <div className="text-neutral-700 dark:text-neutral-200">
-                                      {t.tesseractFound}
+                                      {t.rapidOcrModelsFound}
                                     </div>
-                                    {tesseractStatus.version && (
-                                      <div className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5 font-mono">
-                                        {tesseractStatus.version}
-                                      </div>
-                                    )}
-                                    {tesseractStatus.binaryPath && (
-                                      <div className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-0.5 font-mono">
-                                        {tesseractStatus.binaryPath}
+                                    {rapidOcrStatus.modelDir && (
+                                      <div className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-0.5 font-mono break-all">
+                                        {rapidOcrStatus.modelDir}
                                       </div>
                                     )}
                                   </div>
                                   <button
-                                    onClick={refreshTesseractStatus}
+                                    onClick={refreshRapidOcrStatus}
                                     className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                                    title={t.tesseractRefresh}
+                                    title={t.rapidOcrRefresh}
                                   >
                                     <RefreshCw size={12} strokeWidth={2.25} />
                                   </button>
@@ -1203,47 +1199,40 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                                   <div className="flex items-start gap-2">
                                     <span className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
                                     <div className="flex-1 text-neutral-700 dark:text-neutral-200">
-                                      {t.tesseractNotFound}
+                                      {t.rapidOcrModelsNotFound}
                                     </div>
                                     <button
-                                      onClick={refreshTesseractStatus}
-                                      disabled={tesseractInstallState === 'installing'}
+                                      onClick={refreshRapidOcrStatus}
+                                      disabled={rapidOcrDownloadState === 'downloading'}
                                       className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40"
-                                      title={t.tesseractRefresh}
+                                      title={t.rapidOcrRefresh}
                                     >
                                       <RefreshCw size={12} strokeWidth={2.25} />
                                     </button>
                                   </div>
-                                  {tesseractInstallState === 'installing' ? (
+                                  {rapidOcrDownloadState === 'downloading' ? (
                                     <div className="pl-3.5 flex items-center gap-2 text-[11px] text-neutral-600 dark:text-neutral-300">
                                       <RefreshCw size={12} strokeWidth={2.25} className="animate-spin" />
-                                      <span>{t.tesseractInstalling}</span>
+                                      <span>{t.rapidOcrDownloading}</span>
                                     </div>
-                                  ) : tesseractStatus?.packageManager ? (
+                                  ) : (
                                     <div className="pl-3.5">
                                       <button
-                                        onClick={handleInstallTesseract}
+                                        onClick={handleDownloadRapidOcr}
                                         className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white inline-flex items-center gap-1"
                                       >
                                         <Download size={12} strokeWidth={2.5} />
-                                        {t.tesseractInstallButton} ({tesseractStatus.packageManager})
+                                        {t.rapidOcrDownloadButton}
                                       </button>
                                     </div>
-                                  ) : (
-                                    <div className="pl-3.5 text-[11px] text-amber-700 dark:text-amber-300 leading-5">
-                                      {t.tesseractNoPackageManager}
-                                    </div>
                                   )}
-                                  {tesseractInstallState === 'failed' && tesseractInstallError && (
+                                  {rapidOcrDownloadState === 'failed' && rapidOcrDownloadError && (
                                     <div className="pl-3.5 text-[11px] text-red-500 break-words">
-                                      {t.tesseractInstallFailed}: {tesseractInstallError}
+                                      {t.rapidOcrDownloadFailed}: {rapidOcrDownloadError}
                                     </div>
                                   )}
-                                  <div className="text-[11px] text-neutral-600 dark:text-neutral-300 leading-5 pl-3.5">
-                                    <div className="mb-0.5">{t.tesseractInstallHint}</div>
-                                    <code className="font-mono bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-[11px]">
-                                      {isMac ? 'brew install tesseract' : 'choco install tesseract'}
-                                    </code>
+                                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-5 pl-3.5">
+                                    {t.rapidOcrHint}
                                   </div>
                                 </div>
                               )}

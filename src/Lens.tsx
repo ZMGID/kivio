@@ -2138,9 +2138,9 @@ export default function Lens() {
                 : Math.min(viewport.h - 110, stableAnswerHeight)
             }}>
             {translateError ? (
-              translateError === 'tesseract_binary_missing' ? (
+              translateError === 'rapidocr_models_missing' ? (
                 <div className="text-[12.5px] text-amber-700 dark:text-amber-300 leading-6 whitespace-pre-wrap break-words">
-                  {t.tesseractBinaryMissing}
+                  {t.rapidOcrModelsMissing}
                 </div>
               ) : (
                 <div className="text-[12.5px] text-red-500 leading-6 whitespace-pre-wrap break-words">

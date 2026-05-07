@@ -100,11 +100,10 @@ export type Settings = {
     /** OCR 引擎选择(vNext+):
      *  - 'cloud_vision': 现有云端多模态 provider 一次完成 OCR+翻译
      *  - 'system': macOS Apple Vision / Windows.Media.Ocr 识别后交 provider 翻译
-     *  - 'tesseract': 本地 Tesseract 5 离线引擎识别后交 provider 翻译
+     *  - 'rapid_ocr': 本地 RapidOCR (PaddleOCR ONNX) 识别后交 provider 翻译。
+     *    模型文件 + onnxruntime dylib 由用户在设置页面下载,安装包不带。
      *  缺省时由后端 sanitize_settings 按 useSystemOcr 自动迁移。 */
-    ocrMode?: 'cloud_vision' | 'system' | 'tesseract'
-    /** Tesseract 模式使用的语言代码(如 'eng')。仅 ocrMode='tesseract' 时生效。 */
-    tesseractLanguage?: string
+    ocrMode?: 'cloud_vision' | 'system' | 'rapid_ocr'
     prompt?: string
   }
   lens: {
@@ -146,23 +145,18 @@ export type UpdateInfo = {
   publishedAt?: string
 }
 
-/** Tesseract 离线 OCR 状态(简化版:只探测系统 PATH 上是否有 tesseract) */
-export type TesseractStatus = {
-  /** PATH 或标准 brew/Apple Silicon 位置上能否找到并运行 `tesseract --version` */
-  binaryAvailable: boolean
-  /** `tesseract --version` 第一行(用于展示),不可用时为 undefined */
-  version?: string
-  /** 找到的 tesseract 绝对路径(用于展示) */
-  binaryPath?: string
-  /** 当前平台可用于一键安装的包管理器名(brew/winget/scoop/choco)。
-   *  undefined 表示当前平台没探测到任何受支持的包管理器,前端 disable "一键安装"按钮。 */
-  packageManager?: string
+/** RapidOCR 离线 OCR 状态:检查 app data 目录里 dylib + det + rec + keys 4 个文件齐不齐 */
+export type RapidOcrStatus = {
+  /** 4 个必备文件全在才返回 true,有一个缺都返回 false */
+  modelsAvailable: boolean
+  /** app data 目录下的模型文件夹路径(用于 UI 展示) */
+  modelDir?: string
 }
 
-/** Tesseract 一键安装结果 */
-export type TesseractInstallResult = {
+/** RapidOCR 一键下载结果 */
+export type RapidOcrInstallResult = {
   success: boolean
-  /** 成功时是状态信息("Tesseract 安装完成"),失败时是错误片段 */
+  /** 成功时是状态信息("RapidOCR 包下载完成"),失败时是错误片段 */
   message: string
 }
 
@@ -335,12 +329,12 @@ export const api = {
   onUpdateAvailable: (listener: (info: UpdateInfo) => void) =>
     on<UpdateInfo>('update-available', (payload) => listener(payload)),
 
-  // ========== Tesseract 离线 OCR(简化版) ==========
+  // ========== RapidOCR 离线 OCR ==========
 
-  /** 查询 Tesseract 是否可用(系统 PATH 或 brew 标准位置) + 当前平台支持的包管理器 */
-  tesseractStatus: () => invoke<TesseractStatus>('tesseract_status'),
+  /** 查询 RapidOCR 模型 + onnxruntime dylib 是否就绪(app data 里 4 个文件齐不齐) */
+  rapidOcrStatus: () => invoke<RapidOcrStatus>('rapidocr_status'),
 
-  /** 一键安装 tesseract:macOS 调 brew install tesseract,Windows 优先 winget。
-   *  阻塞到包管理器跑完返回(~1-3 分钟),前端转圈圈等。 */
-  tesseractInstall: () => invoke<TesseractInstallResult>('tesseract_install'),
+  /** 下载 RapidOCR 包(onnxruntime dylib + 模型 + 字典)到 app data 目录。
+   *  阻塞到全部完成返回(~15-30s,共 ~30-50MB),前端转圈圈等。 */
+  rapidOcrInstall: () => invoke<RapidOcrInstallResult>('rapidocr_install'),
 }

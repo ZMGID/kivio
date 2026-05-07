@@ -30,10 +30,18 @@ tokio = { version = "1", features = ["time", "process"] }
 # 工具库
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 arboard = "3"
 enigo = "0.1.3"
 keyring = "3"
+
+# RapidOCR 离线识别：用 oar-ocr 封装好的 PaddleOCR pipeline。
+# default-features = false 关掉 download-binaries，避免 cargo build 时下载 onnxruntime。
+# 直接依赖 ort 并启用 load-dynamic，运行时通过 ort::init_from(dylib_path) 加载用户在
+# 设置页面下载到 app data 目录的 dylib，安装包不带任何 ONNX Runtime 二进制。
+oar-ocr = { version = "0.6.3", default-features = false }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+ndarray = "0.17"
 
 # macOS 平台特有依赖（系统 API 调用）
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -42,12 +50,15 @@ objc = "0.2"
 libc = "0.2"
 core-graphics = "0.24"
 core-foundation = "0.10"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
 # ScreenCaptureKit 截图：macOS 14+ 走 SCScreenshotManager 取代 `screencapture` CLI
 screencapturekit = { version = "1.5", features = ["macos_14_0"] }
 
 # Windows 平台特有依赖（屏幕截图、选中文本捕获）
 [target.'cfg(target_os = "windows")'.dependencies]
 xcap = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 windows = { version = "0.61.3", features = [
   "Foundation",
   "Foundation_Collections",
