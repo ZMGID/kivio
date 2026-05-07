@@ -76,6 +76,7 @@ function cubicBezier(t: number, x1: number, y1: number, x2: number, y2: number):
 }
 
 const TRANSITION_MS = 380
+const SELECT_REVEAL_DELAY_MS = 80
 const FLOATING_PADDING = 0
 const FLOATING_GAP = 8
 
@@ -433,11 +434,11 @@ export default function Lens() {
     return computeSelectBar(w, h, computeMetrics(w, h))
   })
   // barIntro：select 态首次显示时给对话栏加一次 scale-up 进入动画；之后切换都靠 transition
-  const [barIntro, setBarIntro] = useState(true)
+  const [barIntro, setBarIntro] = useState(false)
   // barNoTransition：reset 时临时禁用 left/top/width transition，避免上次 ready/answering 位置
   // 残留的 380ms 动画在 window hide 时被暂停，下次 show 时从中间帧续播 → 视觉上 bar
   // 从老位置"滑"回 select 默认位置的闪烁。
-  const [barNoTransition, setBarNoTransition] = useState(false)
+  const [barNoTransition, setBarNoTransition] = useState(true)
   // flyDelta：keepFullscreen 模式下 fly 动画用 transform translate 取代 left/top 过渡。
   // left/top 不是 GPU 合成属性，每帧都要走 layout/reflow；Windows 上 webview hide→show 后
   // 合成器刚被唤醒、首个大幅 left/top 过渡极易卡顿（"乱跳"）。改为：left/top 立即 snap 到
@@ -447,7 +448,7 @@ export default function Lens() {
   const [translateCardDragging, setTranslateCardDragging] = useState(false)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
-  const [showCaptureHint, setShowCaptureHint] = useState(true)
+  const [showCaptureHint, setShowCaptureHint] = useState(false)
   // 箭头标注:仅 stage==='ready' 子模式
   // arrows / draftArrow 坐标系 = capturedFrame 逻辑像素 (左上角为原点)
   const [drawMode, setDrawMode] = useState(false)
@@ -477,6 +478,10 @@ export default function Lens() {
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const floatingRebaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const focusReqIdRef = useRef(0)
+  const motionSeqRef = useRef(0)
+  const selectRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const selectRevealedRef = useRef(false)
+  const captureHintEnabledRef = useRef(true)
   const prevStreamingRef = useRef(false)
   const preparingSendRef = useRef(false)
   const answerFinishedRef = useRef(false)
@@ -509,6 +514,18 @@ export default function Lens() {
     setStreaming(false)
   }, [])
 
+  const cancelPendingMotion = useCallback(() => {
+    motionSeqRef.current++
+    if (selectRevealTimerRef.current) {
+      clearTimeout(selectRevealTimerRef.current)
+      selectRevealTimerRef.current = null
+    }
+    if (floatingRebaseTimerRef.current) {
+      clearTimeout(floatingRebaseTimerRef.current)
+      floatingRebaseTimerRef.current = null
+    }
+  }, [])
+
   // 选中文本行数：translate 模式不计；空 / 仅空白 → 0（驱动徽章是否显示）
   const selectionLineCount = useMemo(() => {
     if (mode !== 'chat') return 0
@@ -527,7 +544,7 @@ export default function Lens() {
         const curMode = readModeFromHash()
         const cfg = curMode === 'translate' ? settings.screenshotTranslation : settings.lens
         setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
-        setShowCaptureHint(settings.lens?.showCaptureHint !== false)
+        captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
       } catch (err) { console.error('Failed to load settings', err) }
     })()
   }, [])
@@ -562,18 +579,9 @@ export default function Lens() {
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
   const enterSelect = useCallback(async () => {
     const curMode = readModeFromHash()
-    if (floatingRebaseTimerRef.current) {
-      clearTimeout(floatingRebaseTimerRef.current)
-      floatingRebaseTimerRef.current = null
-    }
+    cancelPendingMotion()
+    const motionSeq = motionSeqRef.current
     fullscreenMetricsRef.current = null
-    // 重新加载设置：用户在设置面板修改后关闭再打开 Lens，需要读到最新值。按当前 mode 选 lens / screenshotTranslation 配置。
-    try {
-      const settings = await api.getSettings()
-      const cfg = curMode === 'translate' || curMode === 'translateText' ? settings.screenshotTranslation : settings.lens
-      setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
-      setShowCaptureHint(settings.lens?.showCaptureHint !== false)
-    } catch (err) { console.error('Failed to reload settings', err) }
     // 防御：reset 流程会 setMessages([]) + setStreaming(false)，理论上 messages.length===0 effect 不会进
     // 持久化分支，但显式清零更稳
     justFinishedStreamRef.current = false
@@ -609,9 +617,25 @@ export default function Lens() {
       setCapturedFrame(null)
       // 重置 intro：先关再开，下一帧让 transition 从 scale-90 到 scale-100
       setBarIntro(false)
+      setShowCaptureHint(false)
     })
+    selectRevealedRef.current = false
     imageIdRef.current = ''
     translateCardDragRef.current = null
+    // 重新加载设置：用户在设置面板修改后关闭再打开 Lens，需要读到最新值。按当前 mode 选 lens / screenshotTranslation 配置。
+    // 必须放在 reset DOM 之后，避免 await 期间 Rust 已 show 导致旧 ready/answering surface 露出首帧。
+    void (async () => {
+      try {
+        const settings = await api.getSettings()
+        if (motionSeq !== motionSeqRef.current) return
+        const cfg = curMode === 'translate' || curMode === 'translateText' ? settings.screenshotTranslation : settings.lens
+        setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
+        captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
+        if (stageRef.current === 'select' && selectRevealedRef.current) {
+          setShowCaptureHint(captureHintEnabledRef.current)
+        }
+      } catch (err) { console.error('Failed to reload settings', err) }
+    })()
     // 异步 take 走 Rust 端在 lens_request_internal 中暂存的选中文本。
     // token 防御：take 期间用户再开一次 Lens / 关闭，老 promise 落地时 myReq 已过期，丢弃。
     // 仅 chat 模式注入；> 200KB 直接丢弃避免上下文爆炸；trim 后非空才 setSelectionText。
@@ -628,8 +652,17 @@ export default function Lens() {
           const requestId = makeTextRequestId()
           imageIdRef.current = requestId
           setSelectionText(text)
-          setBarIntro(true)
-          setBarNoTransition(false)
+          if (motionSeq === motionSeqRef.current) {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                if (motionSeq !== motionSeqRef.current) return
+                selectRevealedRef.current = true
+                setShowCaptureHint(false)
+                setBarIntro(true)
+                setBarNoTransition(false)
+              })
+            })
+          }
           setTranslateOriginal('')
           setTranslateText('')
           setTranslateError('')
@@ -665,7 +698,7 @@ export default function Lens() {
       void (async () => {
         try {
           const text = await api.takeLensSelection()
-          if (myReq !== selectionReqIdRef.current) return
+          if (myReq !== selectionReqIdRef.current || motionSeq !== motionSeqRef.current) return
           if (text.length > 200_000) return
           if (text.trim()) {
             setSelectionText(text)
@@ -676,37 +709,47 @@ export default function Lens() {
         }
       })()
     }
-    requestAnimationFrame(() => {
-      // 第二个 raf 同时恢复 transitions 并触发 intro：现在 bar 已经在 select 位置，
-      // 只对 transform/opacity 做缩放进入动画，不会回放历史 left/top 过渡。
+    selectRevealTimerRef.current = setTimeout(() => {
+      selectRevealTimerRef.current = null
       requestAnimationFrame(() => {
-        setBarIntro(true)
-        setBarNoTransition(false)
+        requestAnimationFrame(() => {
+          if (motionSeq !== motionSeqRef.current) return
+          // 第二个 raf 同时恢复 transitions 并触发 intro：现在 bar 已经在 select 位置，
+          // 只对 transform/opacity 做缩放进入动画，不会回放历史 left/top 过渡。
+          selectRevealedRef.current = true
+          setShowCaptureHint(captureHintEnabledRef.current)
+          setBarIntro(true)
+          setBarNoTransition(false)
+        })
       })
-    })
+    }, SELECT_REVEAL_DELAY_MS)
     try {
       const win = getCurrentWindow()
       const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()])
       const sf = scale || 1
-      setWinOrigin({ x: pos.x / sf, y: pos.y / sf })
+      if (motionSeq === motionSeqRef.current) {
+        setWinOrigin({ x: pos.x / sf, y: pos.y / sf })
+      }
     } catch (err) { console.error('Failed to read window origin', err) }
     try {
       const list = await api.lensListWindows()
-      setWindows(list)
+      if (motionSeq === motionSeqRef.current) setWindows(list)
     } catch (err) {
       console.error('Failed to list windows', err)
-      setWindows([])
+      if (motionSeq === motionSeqRef.current) setWindows([])
     }
-    await api.showWindow()
     focusLensInput()
-  }, [focusLensInput])
+  }, [cancelPendingMotion, focusLensInput])
 
   useEffect(() => {
     void enterSelect()
     const handleReset = () => { void enterSelect() }
     window.addEventListener('lens:reset', handleReset)
-    return () => window.removeEventListener('lens:reset', handleReset)
-  }, [enterSelect])
+    return () => {
+      window.removeEventListener('lens:reset', handleReset)
+      cancelPendingMotion()
+    }
+  }, [enterSelect, cancelPendingMotion])
 
   useEffect(() => {
     let cancelled = false
@@ -738,6 +781,8 @@ export default function Lens() {
   useEffect(() => {
     if (stageRef.current === 'select') {
       setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
+    } else if (modeRef.current === 'translateText' && stageRef.current === 'translating') {
+      setBarRect({ x: 0, y: 0, width: viewport.w })
     }
   }, [viewport, metrics])
 
@@ -855,10 +900,7 @@ export default function Lens() {
   // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
   // barNoTransition：禁用 left/top/width transition，避免 380ms 动画被 hide 暂停后下次 show 续播。
   const resetBeforeHide = useCallback(() => {
-    if (floatingRebaseTimerRef.current) {
-      clearTimeout(floatingRebaseTimerRef.current)
-      floatingRebaseTimerRef.current = null
-    }
+    cancelPendingMotion()
     fullscreenMetricsRef.current = null
     // 防御：和 enterSelect 同理 —— reset 路径不该走持久化
     justFinishedStreamRef.current = false
@@ -880,12 +922,14 @@ export default function Lens() {
       setFlyDelta({ x: 0, y: 0 })
       setCapturedFrame(null)
       setBarIntro(false)
+      setShowCaptureHint(false)
     })
+    selectRevealedRef.current = false
     imageIdRef.current = ''
     // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
     selectionReqIdRef.current++
     focusReqIdRef.current++
-  }, [viewport, metrics])
+  }, [cancelPendingMotion, viewport, metrics])
 
   // 全局 Esc：流式时取消流 / 否则关闭
   useEffect(() => {
@@ -1035,6 +1079,8 @@ export default function Lens() {
     anchorH: number,
     label: string,
   ) => {
+    cancelPendingMotion()
+    const motionSeq = motionSeqRef.current
     const ax = anchorAbsX - winOrigin.x
     const ay = anchorAbsY - winOrigin.y
     const vw = window.innerWidth
@@ -1103,17 +1149,23 @@ export default function Lens() {
           // translate 卡片截图前不渲染 → 没"起点位置"，禁 transition 避免 (selectX,selectY) → (0,0) 瞬时跳动触发动画
           setBarIntro(false)
           setBarNoTransition(true)
+        } else {
+          setBarIntro(true)
+          setBarNoTransition(false)
         }
       })
       if (isTranslateMode) {
         // 隔两帧再恢复 transition，让 window 动画结束时 setBarIntro(true) 走 CSS 缓动 fade-in
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => setBarNoTransition(false))
+          requestAnimationFrame(() => {
+            if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
+          })
         })
       }
       if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
       const animStart = performance.now()
       const animateFrame = () => {
+        if (motionSeq !== motionSeqRef.current) return
         if (stageRef.current === 'select') return
         const elapsed = performance.now() - animStart
         const tLinear = Math.min(elapsed / TRANSITION_MS, 1)
@@ -1129,6 +1181,7 @@ export default function Lens() {
         if (tLinear < 1) {
           requestAnimationFrame(animateFrame)
         } else {
+          if (motionSeq !== motionSeqRef.current) return
           setFloatingRebased(true)
           if (isTranslateMode) setBarIntro(true)
         }
@@ -1148,12 +1201,14 @@ export default function Lens() {
         setBarNoTransition(true)
         setBarRect({ x: finalX, y: finalY, width: READY_W })
         setFlyDelta({ x: startX - finalX, y: startY - finalY })
+        setBarIntro(true)
         setStage(targetStage)
       })
       // 两个 raf：第一个让浏览器先 commit 上面的 snap + delta，第二个解禁 transition 并把
       // delta 归零，transform 进入过渡。等价于 enterSelect 里 intro 的双 raf 模式。
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+          if (motionSeq !== motionSeqRef.current) return
           setBarNoTransition(false)
           setFlyDelta({ x: 0, y: 0 })
         })
@@ -1491,9 +1546,9 @@ export default function Lens() {
 
   useEffect(() => () => {
     if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
-    if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
+    cancelPendingMotion()
     focusReqIdRef.current++
-  }, [])
+  }, [cancelPendingMotion])
 
   // 点击 history 面板外部 → 关闭
   useEffect(() => {
