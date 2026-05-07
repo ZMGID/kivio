@@ -92,7 +92,7 @@ jobs:
             - macOS: DMG (Apple Silicon + Intel)
             - Windows: MSI + NSIS (.exe)
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'rc') }}
           includeUpdaterJson: false
           tauriScript: npx tauri
           args: ${{ matrix.args }}
