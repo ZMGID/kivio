@@ -40,6 +40,9 @@
       "binaries/kivio-ocr-helper"
     ],
     "windows": {
+      "wix": {
+        "version": "2.5.9"
+      },
       "nsis": {
         "installerIcon": "icons/icon.ico"
       }
