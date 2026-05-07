@@ -1,7 +1,33 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, ExternalLink, type LucideIcon } from 'lucide-react'
 import { formatHotkey, getPlatform } from './utils'
+
+function useSelectMenuRect(
+  open: boolean,
+  value: string,
+  optionsLength: number,
+  triggerRef: RefObject<HTMLButtonElement | null>,
+) {
+  const [menuRect, setMenuRect] = useState({ left: 0, top: 0, width: 0 })
+
+  const updateMenuRect = useCallback(() => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+    const rect = trigger.getBoundingClientRect()
+    setMenuRect({
+      left: rect.left,
+      top: rect.bottom + 6,
+      width: rect.width,
+    })
+  }, [triggerRef])
+
+  useLayoutEffect(() => {
+    if (open) updateMenuRect()
+  }, [open, value, optionsLength, updateMenuRect])
+
+  return { menuRect, updateMenuRect }
+}
 
 /**
  * 开关切换组件 — on 态用 brand 蓝，slider 加双层阴影
@@ -40,27 +66,12 @@ export function Select({ value, onChange, options, className = '' }: {
   className?: string
 }) {
   const [open, setOpen] = useState(false)
-  const [menuRect, setMenuRect] = useState({ left: 0, top: 0, width: 0 })
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const selected = options.find(opt => opt.value === value)
   const displayLabel = selected?.label || value
   const disabled = options.length === 0
-
-  const updateMenuRect = () => {
-    const trigger = triggerRef.current
-    if (!trigger) return
-    const rect = trigger.getBoundingClientRect()
-    setMenuRect({
-      left: rect.left,
-      top: rect.bottom + 6,
-      width: rect.width,
-    })
-  }
-
-  useLayoutEffect(() => {
-    if (open) updateMenuRect()
-  }, [open, value, options.length])
+  const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef)
 
   useEffect(() => {
     if (!open) return
@@ -87,7 +98,7 @@ export function Select({ value, onChange, options, className = '' }: {
       window.removeEventListener('resize', handleLayoutChange)
       window.removeEventListener('scroll', handleLayoutChange, true)
     }
-  }, [open])
+  }, [open, updateMenuRect])
 
   return (
     <div className={`relative ${className}`}>

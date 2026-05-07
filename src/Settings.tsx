@@ -11,6 +11,8 @@ import { api, type Settings as SettingsType, type ModelProvider, type DefaultPro
 import { i18n } from './settings/i18n'
 import { buildHotkey, getPlatform } from './settings/utils'
 import { PROVIDER_PRESETS, type ProviderPreset } from './settings/providerPresets'
+import { ModelPairSelect } from './settings/ModelPairSelect'
+import { ScreenshotTranslationSettings } from './settings/ScreenshotTranslationSettings'
 import {
   Toggle, Select, Input, TextArea, Label,
   SettingRow, PermissionItem, HotkeyInput, DefaultPrompt,
@@ -18,23 +20,6 @@ import {
 } from './settings/components'
 
 type SettingsData = SettingsType
-
-const modelPairValue = (providerId: string, model: string) =>
-  JSON.stringify([providerId, model])
-
-const parseModelPairValue = (value: string): [string, string] => {
-  try {
-    const parsed = JSON.parse(value)
-    if (Array.isArray(parsed) && parsed.length >= 2) {
-      return [String(parsed[0] || ''), String(parsed[1] || '')]
-    }
-  } catch {
-    // Backward-compatible fallback for old select values.
-  }
-  const separator = value.indexOf(':')
-  if (separator < 0) return [value, '']
-  return [value.slice(0, separator), value.slice(separator + 1)]
-}
 
 interface SettingsProps {
   onClose: () => void
@@ -88,16 +73,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
-  const isOnDeviceProvider = (provider: ModelProvider) => provider.baseUrl === 'applefoundation://local'
-  const selectableProviders = (providers: ModelProvider[]) =>
-    providers.filter(provider => isMac || !isOnDeviceProvider(provider))
-  const modelPairOptions = (providers: ModelProvider[]) =>
-    selectableProviders(providers).flatMap(p =>
-      p.enabledModels.map(m => ({
-        value: modelPairValue(p.id, m),
-        label: `${p.name} - ${m}`
-      }))
-    )
   // 判断是否有未保存的更改
   const hasUnsavedChanges = settings ? JSON.stringify(settings) !== initialSettingsSnapshot : false
 
@@ -831,6 +806,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
           })}
         </nav>
 
+        <div className="px-5 py-3">
+          <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
+        </div>
+
       </div>
 
       {/* 右侧内容区域 */}
@@ -1052,14 +1031,14 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
               <SectionTitle icon={Cpu}>{t.engine}</SectionTitle>
               <div className="settings-card overflow-hidden">
                 <SettingRow label={t.selectModelPair}>
-                  <Select
-                    className="w-52"
-                    value={modelPairValue(settings.translatorProviderId, settings.translatorModel)}
-                    onChange={(v) => {
-                      const [providerId, model] = parseModelPairValue(v)
+                  <ModelPairSelect
+                    providerId={settings.translatorProviderId}
+                    model={settings.translatorModel}
+                    providers={settings.providers}
+                    platform={platform}
+                    onChange={(providerId, model) => {
                       updateSettings({ translatorProviderId: providerId, translatorModel: model })
                     }}
-                    options={modelPairOptions(settings.providers)}
                   />
                 </SettingRow>
               </div>
@@ -1086,209 +1065,22 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         {/* ===== 截图设置标签页 ===== */}
         {activeTab === 'screenshot' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            {/* 截图翻译设置 */}
-            <section>
-              <SectionTitle icon={Camera}>{t.screenshotTranslate}</SectionTitle>
-              <div className="settings-card overflow-hidden">
-                <div className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
-                  <SettingRow label={t.enabled}>
-                    <Toggle
-                      checked={settings.screenshotTranslation?.enabled ?? true}
-                      onChange={(v) => updateScreenshotTranslation({ enabled: v })}
-                    />
-                  </SettingRow>
-
-                  {settings.screenshotTranslation?.enabled !== false && (
-                    <>
-                      <div className="px-4 py-3 space-y-1.5">
-                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.screenshotHotkey}</span>
-                        <HotkeyInput
-                          value={settings.screenshotTranslation?.hotkey || 'CommandOrControl+Shift+A'}
-                          placeholder="CommandOrControl+Shift+A"
-                          recording={recordingTarget === 'screenshotTranslation'}
-                          onToggleRecording={() => toggleRecording('screenshotTranslation')}
-                          recordLabel={t.hotkeyRecord}
-                          recordingLabel={t.hotkeyRecording}
-                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                        />
-                      </div>
-                      <div className="px-4 py-3 space-y-1.5">
-                        <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">{t.screenshotTextHotkey}</span>
-                        <HotkeyInput
-                          value={settings.screenshotTranslation?.textHotkey || 'CommandOrControl+Shift+T'}
-                          placeholder="CommandOrControl+Shift+T"
-                          recording={recordingTarget === 'screenshotTranslationText'}
-                          onToggleRecording={() => toggleRecording('screenshotTranslationText')}
-                          recordLabel={t.hotkeyRecord}
-                          recordingLabel={t.hotkeyRecording}
-                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                        />
-                      </div>
-                      <SettingRow label={t.selectModelPair}>
-                        <Select
-                          className="w-52"
-                          value={modelPairValue(settings.screenshotTranslation.providerId, settings.screenshotTranslation.model)}
-                          onChange={(v) => {
-                            const [providerId, model] = parseModelPairValue(v)
-                            updateScreenshotTranslation({ providerId, model })
-                          }}
-                          options={modelPairOptions(settings.providers)}
-                        />
-                      </SettingRow>
-                      <SettingRow
-                        label={t.screenshotShowOriginal}
-                        description={t.screenshotShowOriginalHint}
-                      >
-                        <Toggle
-                          checked={!(settings.screenshotTranslation?.directTranslate ?? false)}
-                          onChange={(v) => updateScreenshotTranslation({ directTranslate: !v })}
-                        />
-                      </SettingRow>
-                      <SettingRow
-                        label={t.screenshotTranslationThinking}
-                        description={t.screenshotTranslationThinkingHint}
-                      >
-                        <Toggle
-                          checked={settings.screenshotTranslation?.thinkingEnabled ?? false}
-                          onChange={(v) => updateScreenshotTranslation({ thinkingEnabled: v })}
-                        />
-                      </SettingRow>
-                      <SettingRow
-                        label={t.screenshotTranslationStream}
-                        description={t.screenshotTranslationStreamHint}
-                      >
-                        <Toggle
-                          checked={settings.screenshotTranslation?.streamEnabled !== false}
-                          onChange={(v) => updateScreenshotTranslation({ streamEnabled: v })}
-                        />
-                      </SettingRow>
-                      {hasSystemOcr && (
-                        <>
-                          <SettingRow
-                            label={t.ocrEngine}
-                            description={t.ocrEngineHint}
-                          >
-                            <Select
-                              value={settings.screenshotTranslation?.ocrMode ?? 'cloud_vision'}
-                              onChange={(v) =>
-                                updateScreenshotTranslation({
-                                  ocrMode: v as 'cloud_vision' | 'system' | 'rapid_ocr',
-                                })
-                              }
-                              options={[
-                                { value: 'cloud_vision', label: t.ocrEngineCloudVision },
-                                { value: 'system', label: t.ocrEngineSystem },
-                                { value: 'rapid_ocr', label: t.ocrEngineRapidOcr },
-                              ]}
-                              className="w-44"
-                            />
-                          </SettingRow>
-                          {(settings.screenshotTranslation?.ocrMode ?? 'cloud_vision') === 'system' && (
-                            <div className="px-4 py-2 text-[11px] text-neutral-500 dark:text-neutral-400 border-t border-black/[0.04] dark:border-white/[0.05]">
-                              {isMac ? t.ocrEngineMacHint : t.ocrEngineWindowsHint}
-                            </div>
-                          )}
-                          {settings.screenshotTranslation?.ocrMode === 'rapid_ocr' && (
-                            <div className="border-t border-black/[0.04] dark:border-white/[0.05] px-4 py-3 space-y-2 text-[12px]">
-                              {rapidOcrStatus?.modelsAvailable ? (
-                                <div className="flex items-start gap-2">
-                                  <span className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                                  <div className="flex-1">
-                                    <div className="text-neutral-700 dark:text-neutral-200">
-                                      {t.rapidOcrModelsFound}
-                                    </div>
-                                    {rapidOcrStatus.modelDir && (
-                                      <div className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-0.5 font-mono break-all">
-                                        {rapidOcrStatus.modelDir}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <button
-                                    onClick={refreshRapidOcrStatus}
-                                    className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-                                    title={t.rapidOcrRefresh}
-                                  >
-                                    <RefreshCw size={12} strokeWidth={2.25} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="space-y-2.5">
-                                  <div className="flex items-start gap-2">
-                                    <span className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
-                                    <div className="flex-1 text-neutral-700 dark:text-neutral-200">
-                                      {t.rapidOcrModelsNotFound}
-                                    </div>
-                                    <button
-                                      onClick={refreshRapidOcrStatus}
-                                      disabled={rapidOcrDownloadState === 'downloading'}
-                                      className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 disabled:opacity-40"
-                                      title={t.rapidOcrRefresh}
-                                    >
-                                      <RefreshCw size={12} strokeWidth={2.25} />
-                                    </button>
-                                  </div>
-                                  {rapidOcrDownloadState === 'downloading' ? (
-                                    <div className="pl-3.5 flex items-center gap-2 text-[11px] text-neutral-600 dark:text-neutral-300">
-                                      <RefreshCw size={12} strokeWidth={2.25} className="animate-spin" />
-                                      <span>{t.rapidOcrDownloading}</span>
-                                    </div>
-                                  ) : (
-                                    <div className="pl-3.5">
-                                      <button
-                                        onClick={handleDownloadRapidOcr}
-                                        className="text-[12px] px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white inline-flex items-center gap-1"
-                                      >
-                                        <Download size={12} strokeWidth={2.5} />
-                                        {t.rapidOcrDownloadButton}
-                                      </button>
-                                    </div>
-                                  )}
-                                  {rapidOcrDownloadState === 'failed' && rapidOcrDownloadError && (
-                                    <div className="pl-3.5 text-[11px] text-red-500 break-words">
-                                      {t.rapidOcrDownloadFailed}: {rapidOcrDownloadError}
-                                    </div>
-                                  )}
-                                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-5 pl-3.5">
-                                    {t.rapidOcrHint}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </>
-                      )}
-                      <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
-                        <Toggle
-                          checked={settings.screenshotTranslation?.keepFullscreenAfterCapture !== false}
-                          onChange={(v) => updateScreenshotTranslation({ keepFullscreenAfterCapture: v })}
-                        />
-                      </SettingRow>
-                      <details className="group border-t border-black/[0.04] dark:border-white/[0.05]">
-                        <summary className="flex items-center gap-1.5 cursor-pointer text-[12px] font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-black/[0.02] dark:hover:bg-white/[0.025] transition-colors list-none px-4 py-3">
-                          <ChevronRight size={13} className="text-neutral-400 dark:text-neutral-500 group-open:rotate-90 transition-transform duration-200" strokeWidth={2.25} />
-                          {t.customPrompts}
-                        </summary>
-                        <div className="px-4 pb-4 space-y-2">
-                          <Label>{t.screenshotTranslationPrompt}</Label>
-                          <TextArea
-                            value={settings.screenshotTranslation?.prompt || ''}
-                            onChange={(v) => updateScreenshotTranslation({ prompt: v })}
-                            placeholder={t.screenshotTranslationPromptHint}
-                            rows={3}
-                          />
-                          {!settings.screenshotTranslation?.prompt?.trim() && (defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate) && (
-                            <DefaultPrompt
-                              label={t.defaultTemplate}
-                              content={defaultPrompts?.screenshotTranslationTemplate || defaultPrompts?.translationTemplate || ''}
-                            />
-                          )}
-                        </div>
-                      </details>
-                    </>
-                  )}
-                </div>
-              </div>
-            </section>
+            <ScreenshotTranslationSettings
+              settings={settings}
+              platform={platform}
+              isMac={isMac}
+              hasSystemOcr={hasSystemOcr}
+              recordingTarget={recordingTarget}
+              defaultPrompts={defaultPrompts}
+              rapidOcrStatus={rapidOcrStatus}
+              rapidOcrDownloadState={rapidOcrDownloadState}
+              rapidOcrDownloadError={rapidOcrDownloadError}
+              t={t}
+              onUpdate={updateScreenshotTranslation}
+              onToggleRecording={toggleRecording}
+              onRefreshRapidOcrStatus={refreshRapidOcrStatus}
+              onDownloadRapidOcr={handleDownloadRapidOcr}
+            />
 
           </div>
         )}
@@ -1363,18 +1155,22 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                           onChange={(v) => updateLens({ keepFullscreenAfterCapture: v })}
                         />
                       </SettingRow>
+                      <SettingRow label={t.lensShowCaptureHint} description={t.lensShowCaptureHintHint}>
+                        <Toggle
+                          checked={settings.lens?.showCaptureHint !== false}
+                          onChange={(v) => updateLens({ showCaptureHint: v })}
+                        />
+                      </SettingRow>
                       <SettingRow label={t.selectModelPair}>
-                        <Select
-                          className="w-52"
-                          value={modelPairValue(settings.lens?.providerId || '', settings.lens?.model || '')}
-                          onChange={(v) => {
-                            const [providerId, model] = parseModelPairValue(v)
+                        <ModelPairSelect
+                          providerId={settings.lens?.providerId || ''}
+                          model={settings.lens?.model || ''}
+                          providers={settings.providers}
+                          platform={platform}
+                          inheritLabel={t.lensLanguageInherit}
+                          onChange={(providerId, model) => {
                             updateLens({ providerId, model })
                           }}
-                          options={[
-                            { value: modelPairValue('', ''), label: t.lensLanguageInherit },
-                            ...modelPairOptions(settings.providers)
-                          ]}
                         />
                       </SettingRow>
                       <details className="group border-t border-black/[0.04] dark:border-white/[0.05]">
@@ -1883,7 +1679,6 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       {/* 底部操作栏 */}
       <div className="flex justify-between items-center px-5 py-3 border-t border-black/[0.04] dark:border-white/[0.05] bg-white dark:bg-[#1C1C1E] shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <span className="text-[10px] font-medium text-neutral-400 dark:text-neutral-500 tracking-wide">v{appVersion}</span>
           {saveError && (
             <span
               className="text-[11px] text-red-500 dark:text-red-400 truncate max-w-[240px]"

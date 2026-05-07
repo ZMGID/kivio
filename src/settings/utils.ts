@@ -1,3 +1,7 @@
+import { type ModelProvider } from '../api/tauri'
+
+export type Platform = 'macos' | 'windows' | 'linux'
+
 // 修饰键集合（录制快捷键时忽略）
 const modifierKeys = new Set(['Shift', 'Meta', 'Control', 'Alt', 'AltGraph'])
 
@@ -55,7 +59,7 @@ export const buildHotkey = (event: KeyboardEvent) => {
 /**
  * 平台检测（用于快捷键可视化）
  */
-export const getPlatform = () => {
+export const getPlatform = (): Platform => {
   if (navigator.platform.startsWith('Mac')) return 'macos'
   if (navigator.platform.startsWith('Win')) return 'windows'
   return 'linux'
@@ -95,3 +99,33 @@ export const formatHotkey = (hotkey: string, platform: 'macos' | 'windows' | 'li
     }
   })
 }
+
+export const modelPairValue = (providerId: string, model: string) =>
+  JSON.stringify([providerId, model])
+
+export const parseModelPairValue = (value: string): [string, string] => {
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed) && parsed.length >= 2) {
+      return [String(parsed[0] || ''), String(parsed[1] || '')]
+    }
+  } catch {
+    // 兼容旧版本用 "provider:model" 拼接的下拉值。
+  }
+  const separator = value.indexOf(':')
+  if (separator < 0) return [value, '']
+  return [value.slice(0, separator), value.slice(separator + 1)]
+}
+
+export const isProviderAvailableOnPlatform = (provider: ModelProvider, platform: Platform) =>
+  platform === 'macos' || provider.baseUrl !== 'applefoundation://local'
+
+export const buildModelPairOptions = (providers: ModelProvider[], platform: Platform) =>
+  providers
+    .filter(provider => isProviderAvailableOnPlatform(provider, platform))
+    .flatMap(provider =>
+      provider.enabledModels.map(model => ({
+        value: modelPairValue(provider.id, model),
+        label: `${provider.name} - ${model}`,
+      }))
+    )

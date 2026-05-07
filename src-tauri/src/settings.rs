@@ -284,6 +284,9 @@ pub struct LensConfig {
     /// 截图后是否保持全屏覆盖。默认 true（保持现有行为）；false 时截图后窗口缩小为浮动。
     #[serde(default = "default_true")]
     pub keep_fullscreen_after_capture: bool,
+    /// 进入截图选择态时是否显示顶部提示。默认 true，避免用户按下快捷键后看不出已进入截图模式。
+    #[serde(default = "default_true")]
+    pub show_capture_hint: bool,
 }
 
 fn default_message_order() -> String {
@@ -304,6 +307,7 @@ impl Default for LensConfig {
             question_prompt: String::new(),
             message_order: "asc".to_string(),
             keep_fullscreen_after_capture: true,
+            show_capture_hint: true,
         }
     }
 }
@@ -819,10 +823,10 @@ pub fn load_settings(app: &AppHandle) -> Settings {
  */
 pub fn default_system_prompt(language: &str, has_image: bool) -> String {
     match (language.starts_with("zh"), has_image) {
-    (true, true) => "你是一位智能助手，能够看到用户分享的截图。请将其作为视觉上下文来理解和回答，可以涉及信息提取、概念解释、操作协助或任何相关话题。保持回答简洁直接，自然流畅，不用小标题和编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
-    (true, false) => "你是一位智能助手。直接给出答案，回答简洁、自然流畅，不要小标题或编号。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
-    (_, true) => "You are a helpful assistant that can see the user's screenshot. Use it as visual context to understand and answer — whether extracting information, explaining concepts, assisting with tasks, or any relevant topic. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
-    (_, false) => "You are a helpful assistant. Answer directly. Keep responses short and natural — no headings or bullet points. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
+    (true, true) => "你是一位智能助手，能够看到用户分享的截图。请将其作为视觉上下文来理解和回答，可以涉及信息提取、概念解释、操作协助或任何相关话题。保持回答简洁直接，自然流畅，不用小标题和编号。输出必须紧凑：不要输出空行；只有在真正需要分隔段落、列表项、表格行、代码块或数学公式时才换行；列表项之间不要留空行。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
+    (true, false) => "你是一位智能助手。直接给出答案，回答简洁、自然流畅，不要小标题或编号。输出必须紧凑：不要输出空行；只有在真正需要分隔段落、列表项、表格行、代码块或数学公式时才换行；列表项之间不要留空行。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁，避免反复重述。".to_string(),
+    (_, true) => "You are a helpful assistant that can see the user's screenshot. Use it as visual context to understand and answer, whether extracting information, explaining concepts, assisting with tasks, or any relevant topic. Keep responses short and natural, with no headings or bullet points unless a list is genuinely useful. Keep output compact: do not output blank lines; use a single newline only when needed for clear paragraph boundaries, list items, table rows, code blocks, or math; never put empty lines between list items. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
+    (_, false) => "You are a helpful assistant. Answer directly. Keep responses short and natural, with no headings or bullet points unless a list is genuinely useful. Keep output compact: do not output blank lines; use a single newline only when needed for clear paragraph boundaries, list items, table rows, code blocks, or math; never put empty lines between list items. Use LaTeX ($...$ or $$...$$) for math. Think briefly; avoid repeating yourself.".to_string(),
   }
 }
 
@@ -833,9 +837,9 @@ pub fn default_system_prompt(language: &str, has_image: bool) -> String {
  */
 pub fn no_think_instruction(language: &str) -> &'static str {
     if language.starts_with("zh") {
-        "\n\n严格要求：直接给出最终答案，不要输出任何思考过程、推理步骤或 <think> 内容。"
+        "\n\n严格要求：直接给出最终答案，不要输出任何思考过程、推理步骤或 <think> 内容。保持输出紧凑，不要输出空行。"
     } else {
-        "\n\nStrict requirement: output only the final answer; do NOT include any thinking, reasoning steps, or <think> content."
+        "\n\nStrict requirement: output only the final answer; do NOT include any thinking, reasoning steps, or <think> content. Keep output compact; do not output blank lines."
     }
 }
 
@@ -1221,6 +1225,15 @@ mod tests {
         s.lens.message_order = "garbage".to_string();
         let s = sanitize_settings(s);
         assert_eq!(s.lens.message_order, "asc");
+    }
+
+    #[test]
+    fn lens_capture_hint_defaults_to_enabled() {
+        let s = Settings::default();
+        assert!(s.lens.show_capture_hint);
+
+        let cfg: LensConfig = serde_json::from_str("{}").expect("empty lens config should load");
+        assert!(cfg.show_capture_hint);
     }
 
     #[test]

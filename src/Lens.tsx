@@ -447,6 +447,7 @@ export default function Lens() {
   const [translateCardDragging, setTranslateCardDragging] = useState(false)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
+  const [showCaptureHint, setShowCaptureHint] = useState(true)
   // 箭头标注:仅 stage==='ready' 子模式
   // arrows / draftArrow 坐标系 = capturedFrame 逻辑像素 (左上角为原点)
   const [drawMode, setDrawMode] = useState(false)
@@ -478,6 +479,7 @@ export default function Lens() {
   const focusReqIdRef = useRef(0)
   const prevStreamingRef = useRef(false)
   const preparingSendRef = useRef(false)
+  const answerFinishedRef = useRef(false)
   // Stream 真实结束（成功 / 错误 / 用户主动取消）后才置 true，
   // 让历史持久化 effect 只在这一次 rerun 触发 push；restoreHistory / enterSelect / resetBeforeHide 防御性清零，
   // 避免恢复历史时 setMessages 触发 effect 把恢复的对话又当新条目写一遍历史。
@@ -499,6 +501,14 @@ export default function Lens() {
   modeRef.current = mode
   historyOpenRef.current = historyOpen
 
+  const finishAnswering = useCallback(() => {
+    if (answerFinishedRef.current) return
+    answerFinishedRef.current = true
+    // 必须在 setStreaming(false) 前置 true：历史持久化 effect 依赖 streaming 变化触发。
+    justFinishedStreamRef.current = true
+    setStreaming(false)
+  }, [])
+
   // 选中文本行数：translate 模式不计；空 / 仅空白 → 0（驱动徽章是否显示）
   const selectionLineCount = useMemo(() => {
     if (mode !== 'chat') return 0
@@ -517,6 +527,7 @@ export default function Lens() {
         const curMode = readModeFromHash()
         const cfg = curMode === 'translate' ? settings.screenshotTranslation : settings.lens
         setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
+        setShowCaptureHint(settings.lens?.showCaptureHint !== false)
       } catch (err) { console.error('Failed to load settings', err) }
     })()
   }, [])
@@ -561,6 +572,7 @@ export default function Lens() {
       const settings = await api.getSettings()
       const cfg = curMode === 'translate' || curMode === 'translateText' ? settings.screenshotTranslation : settings.lens
       setKeepFullscreen(cfg?.keepFullscreenAfterCapture !== false)
+      setShowCaptureHint(settings.lens?.showCaptureHint !== false)
     } catch (err) { console.error('Failed to reload settings', err) }
     // 防御：reset 流程会 setMessages([]) + setStreaming(false)，理论上 messages.length===0 effect 不会进
     // 持久化分支，但显式清零更稳
@@ -789,7 +801,7 @@ export default function Lens() {
     api.onLensStream((payload: LensStreamPayload) => {
       if (payload.imageId !== imageIdRef.current) return
       if (payload.done) {
-        setStreaming(false)
+        finishAnswering()
         return
       }
       if (payload.reasoningDelta) {
@@ -814,7 +826,7 @@ export default function Lens() {
       cancelled = true
       unlisten?.()
     }
-  }, [])
+  }, [finishAnswering])
 
   // messages 变化时自动滚动：正序滚到底（看新内容），倒序滚到顶（最新在顶）
   useEffect(() => {
@@ -970,6 +982,12 @@ export default function Lens() {
       height: hovered.height,
     }
   }, [hovered, dragging, winOrigin])
+
+  const captureHintText = useMemo(() => {
+    if (dragging) return t.lensSelectHintDrag
+    if (hovered) return t.lensSelectHintHover.replace('{app}', hovered.owner)
+    return t.lensSelectHintIdle
+  }, [dragging, hovered, t])
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (stage !== 'select') return
@@ -1332,10 +1350,12 @@ export default function Lens() {
   const doSend = async (question: string) => {
     if (streaming) return
     setHistoryOpen(false)
+    answerFinishedRef.current = false
 
     // 先进入 sending UI，再做合成/注册，避免这段异步窗口被 Esc 关闭掉。
     const isFirstTurn = messages.length === 0
-    const ctx = (isFirstTurn && mode === 'chat') ? selectionText.trim() : ''
+    const hasScreenshot = !!imageIdRef.current
+    const ctx = (isFirstTurn && mode === 'chat' && !hasScreenshot) ? selectionText.trim() : ''
     const userContent = ctx
       ? (lang === 'zh'
           ? `[已选文本]\n${ctx}\n\n[用户问题]\n${question}`
@@ -1404,9 +1424,7 @@ export default function Lens() {
       })
     } finally {
       preparingSendRef.current = false
-      // ref 在 setStreaming(false) 之前置 true,让持久化 effect 在本次 rerun 中识别这是"流刚结束"路径
-      justFinishedStreamRef.current = true
-      setStreaming(false)
+      finishAnswering()
     }
   }
 
@@ -1420,8 +1438,7 @@ export default function Lens() {
   const handleStop = async () => {
     try { await api.lensCancelStream() } catch (err) { console.error(err) }
     // 用户主动取消但已经流出部分内容，也持久化 —— 关掉再开历史能接着问
-    justFinishedStreamRef.current = true
-    setStreaming(false)
+    finishAnswering()
   }
 
   const handleCopy = async () => {
@@ -1743,6 +1760,13 @@ export default function Lens() {
       {/* select-only：hover 高亮 / drag 选区 / 顶部 hint */}
       {stage === 'select' && (
         <>
+          {showCaptureHint && (
+            <div className="absolute top-[calc(env(safe-area-inset-top,0px)+36px)] left-0 right-0 flex justify-center pointer-events-none z-30">
+              <div className="px-3 py-1.5 rounded-full bg-neutral-950/80 text-white text-[12px] font-medium shadow-[0_8px_24px_rgba(0,0,0,0.24)] ring-1 ring-white/10 backdrop-blur-md">
+                {captureHintText}
+              </div>
+            </div>
+          )}
           {hoverRect && (
             <>
               <div

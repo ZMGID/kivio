@@ -187,6 +187,8 @@ export const i18n = {
     lensMessageOrderDesc: '倒序（新 → 旧）',
     lensKeepFullscreen: '截图后保持全屏覆盖',
     lensKeepFullscreenHint: '关闭后截图完成时窗口缩小为浮动，可在 Lens UI 外操作桌面',
+    lensShowCaptureHint: '截图选择提示',
+    lensShowCaptureHintHint: '进入截图模式时在顶部显示提示，避免按下快捷键后看不出状态变化',
     lensArrowToggle: '画箭头',
     lensArrowToggleOff: '退出画箭头',
     lensArrowDisabledHint: '截图后可用',
@@ -377,10 +379,12 @@ export const i18n = {
     lensMessageOrderDesc: 'Descending (new → old)',
     lensKeepFullscreen: 'Keep fullscreen after capture',
     lensKeepFullscreenHint: 'When off, Lens shrinks to a floating window after capture so you can interact with the desktop',
+    lensShowCaptureHint: 'Capture selection hint',
+    lensShowCaptureHintHint: 'Show a top hint while selecting a screenshot so the mode change is visible',
     lensArrowToggle: 'Draw arrow',
     lensArrowToggleOff: 'Exit draw mode',
     lensArrowDisabledHint: 'Available after capture',
   }
 } as const
 
-export type I18n = typeof i18n.zh
+export type I18n = typeof i18n[Lang]

@@ -121,6 +121,8 @@ export type Settings = {
     messageOrder?: 'asc' | 'desc'
     /** 截图后是否保持全屏覆盖（默认 true）。false 时截图后窗口缩小为浮动 */
     keepFullscreenAfterCapture?: boolean
+    /** 进入截图选择态时是否显示顶部提示（默认 true） */
+    showCaptureHint?: boolean
   }
   settingsLanguage?: 'zh' | 'en'
   /** 启动时静默检查 GH Releases 是否有新版（默认 true） */
