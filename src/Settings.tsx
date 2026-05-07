@@ -19,6 +19,23 @@ import {
 
 type SettingsData = SettingsType
 
+const modelPairValue = (providerId: string, model: string) =>
+  JSON.stringify([providerId, model])
+
+const parseModelPairValue = (value: string): [string, string] => {
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed) && parsed.length >= 2) {
+      return [String(parsed[0] || ''), String(parsed[1] || '')]
+    }
+  } catch {
+    // Backward-compatible fallback for old select values.
+  }
+  const separator = value.indexOf(':')
+  if (separator < 0) return [value, '']
+  return [value.slice(0, separator), value.slice(separator + 1)]
+}
+
 interface SettingsProps {
   onClose: () => void
   onSettingsChange: () => void
@@ -77,7 +94,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const modelPairOptions = (providers: ModelProvider[]) =>
     selectableProviders(providers).flatMap(p =>
       p.enabledModels.map(m => ({
-        value: `${p.id}:${m}`,
+        value: modelPairValue(p.id, m),
         label: `${p.name} - ${m}`
       }))
     )
@@ -1037,9 +1054,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                 <SettingRow label={t.selectModelPair}>
                   <Select
                     className="w-52"
-                    value={`${settings.translatorProviderId}:${settings.translatorModel}`}
+                    value={modelPairValue(settings.translatorProviderId, settings.translatorModel)}
                     onChange={(v) => {
-                      const [providerId, model] = v.split(':')
+                      const [providerId, model] = parseModelPairValue(v)
                       updateSettings({ translatorProviderId: providerId, translatorModel: model })
                     }}
                     options={modelPairOptions(settings.providers)}
@@ -1110,9 +1127,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       <SettingRow label={t.selectModelPair}>
                         <Select
                           className="w-52"
-                          value={`${settings.screenshotTranslation.providerId}:${settings.screenshotTranslation.model}`}
+                          value={modelPairValue(settings.screenshotTranslation.providerId, settings.screenshotTranslation.model)}
                           onChange={(v) => {
-                            const [providerId, model] = v.split(':')
+                            const [providerId, model] = parseModelPairValue(v)
                             updateScreenshotTranslation({ providerId, model })
                           }}
                           options={modelPairOptions(settings.providers)}
@@ -1349,13 +1366,13 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                       <SettingRow label={t.selectModelPair}>
                         <Select
                           className="w-52"
-                          value={`${settings.lens?.providerId || ''}:${settings.lens?.model || ''}`}
+                          value={modelPairValue(settings.lens?.providerId || '', settings.lens?.model || '')}
                           onChange={(v) => {
-                            const [providerId, model] = v.split(':')
+                            const [providerId, model] = parseModelPairValue(v)
                             updateLens({ providerId, model })
                           }}
                           options={[
-                            { value: ':', label: t.lensLanguageInherit },
+                            { value: modelPairValue('', ''), label: t.lensLanguageInherit },
                             ...modelPairOptions(settings.providers)
                           ]}
                         />

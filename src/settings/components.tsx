@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
-import { ExternalLink, type LucideIcon } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { Check, ChevronDown, ExternalLink, type LucideIcon } from 'lucide-react'
 import { formatHotkey, getPlatform } from './utils'
 
 /**
@@ -30,7 +31,7 @@ export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: 
 }
 
 /**
- * 下拉选择 — 使用 .settings-control 统一控件样式
+ * 下拉选择 — 自绘菜单，避免 macOS 原生 select 的系统高亮/勾选反馈和受控状态不同步。
  */
 export function Select({ value, onChange, options, className = '' }: {
   value: string
@@ -38,21 +39,124 @@ export function Select({ value, onChange, options, className = '' }: {
   options: { value: string; label: string }[]
   className?: string
 }) {
+  const [open, setOpen] = useState(false)
+  const [menuRect, setMenuRect] = useState({ left: 0, top: 0, width: 0 })
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const selected = options.find(opt => opt.value === value)
+  const displayLabel = selected?.label || value
+  const disabled = options.length === 0
+
+  const updateMenuRect = () => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+    const rect = trigger.getBoundingClientRect()
+    setMenuRect({
+      left: rect.left,
+      top: rect.bottom + 6,
+      width: rect.width,
+    })
+  }
+
+  useLayoutEffect(() => {
+    if (open) updateMenuRect()
+  }, [open, value, options.length])
+
+  useEffect(() => {
+    if (!open) return
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        triggerRef.current?.focus()
+      }
+    }
+    const handleLayoutChange = () => updateMenuRect()
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', handleLayoutChange)
+    window.addEventListener('scroll', handleLayoutChange, true)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', handleLayoutChange)
+      window.removeEventListener('scroll', handleLayoutChange, true)
+    }
+  }, [open])
+
   return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`settings-control w-full appearance-none px-3 py-1.5 pr-8 text-[13px] font-medium ${className}`}
+    <div className={`relative ${className}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen(v => !v)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            setOpen(true)
+          }
+        }}
+        className="settings-control w-full h-[32px] px-3 py-1.5 pr-8 text-[13px] font-medium text-left disabled:opacity-50 disabled:cursor-not-allowed"
+        aria-haspopup="listbox"
+        aria-expanded={open}
         data-tauri-drag-region="false"
       >
-        {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-      </select>
-      <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400 dark:text-neutral-500">
-        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </div>
+        <span className="block truncate">{displayLabel}</span>
+        <ChevronDown
+          size={14}
+          strokeWidth={2.25}
+          className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          role="listbox"
+          className="fixed z-[1000] max-h-[260px] overflow-y-auto rounded-lg border border-black/10 dark:border-white/10 bg-white/95 dark:bg-neutral-900/95 shadow-[0_12px_36px_rgba(0,0,0,0.18)] backdrop-blur-xl custom-scrollbar p-1"
+          style={{ left: menuRect.left, top: menuRect.top, width: menuRect.width }}
+          data-tauri-drag-region="false"
+        >
+          {options.map(opt => {
+            const active = opt.value === value
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => {
+                  onChange(opt.value)
+                  setOpen(false)
+                  triggerRef.current?.focus()
+                }}
+                className={`relative flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 pr-8 text-left text-[13px] leading-5 transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white'
+                    : 'text-neutral-800 dark:text-neutral-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'
+                }`}
+                data-tauri-drag-region="false"
+              >
+                <span className="min-w-0 flex-1 truncate">{opt.label}</span>
+                {active && (
+                  <Check
+                    size={14}
+                    strokeWidth={2.5}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2"
+                  />
+                )}
+              </button>
+            )
+          })}
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }
