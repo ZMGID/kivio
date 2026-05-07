@@ -1,7 +1,7 @@
 //! RapidOCR 离线 OCR：跨平台 PaddleOCR ONNX pipeline。
 //!
 //! 设计原则:用户责任挂在「点一下下载」按钮上,代码这边只负责:
-//! 1. 检测 4 个文件齐不齐(dylib + det + rec + keys)
+//! 1. 检测必备文件齐不齐(runtime + det + rec + keys；Windows 另需 provider shared DLL)
 //! 2. 不齐就 install():逐个 HTTP GET 到 .tmp 后 atomic rename
 //! 3. 齐了就在首次 OCR 时一次性 ort::init_from + OAROCRBuilder.build,缓存 pipeline
 //!
@@ -12,9 +12,12 @@
 //! 安装包不带任何 ONNX Runtime 二进制。
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::collections::HashMap;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 use flate2::read::GzDecoder;
@@ -22,6 +25,16 @@ use oar_ocr::oarocr::{OAROCR, OAROCRBuilder};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tokio::sync::{Mutex, OnceCell};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
+use windows::{
+    core::PCWSTR,
+    Win32::System::LibraryLoader::{
+        LoadLibraryExW, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    },
+};
 
 /// 当前平台 dylib 在 app data 目录里的本地文件名。下载完落到 model_dir/DYLIB_NAME。
 #[cfg(target_os = "macos")]
@@ -44,6 +57,12 @@ const DYLIB_URL: &str =
 const DYLIB_ARCHIVE_PATH: &str = "lib/libonnxruntime.dylib";
 #[cfg(target_os = "windows")]
 const DYLIB_ARCHIVE_PATH: &str = "lib/onnxruntime.dll";
+#[cfg(target_os = "windows")]
+const PROVIDERS_SHARED_NAME: &str = "onnxruntime_providers_shared.dll";
+#[cfg(target_os = "windows")]
+const PROVIDERS_SHARED_ARCHIVE_PATH: &str = "lib/onnxruntime_providers_shared.dll";
+
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 // PP-OCRv5 mobile zh+en——覆盖中英主场景,模型最小(det ~5MB + rec ~10MB + dict ~5KB)。
 const DET_URL: &str =
@@ -63,22 +82,14 @@ enum DownloadSource {
     },
 }
 
-impl DownloadSource {
-    fn url(&self) -> &'static str {
-        match self {
-            Self::File { url } | Self::Archive { url, .. } => url,
-        }
-    }
-}
-
 struct DownloadFile {
     name: &'static str,
     source: DownloadSource,
 }
 
-/// 4 个必备文件:本地名 + 下载 URL。任一缺失则视为「未就绪」。
-fn download_files() -> [DownloadFile; 4] {
-    [
+/// 必备文件:本地名 + 下载 URL。任一缺失则视为「未就绪」。
+fn download_files() -> Vec<DownloadFile> {
+    let mut files = vec![
         DownloadFile {
             name: DYLIB_NAME,
             source: DownloadSource::Archive {
@@ -86,6 +97,20 @@ fn download_files() -> [DownloadFile; 4] {
                 entry_suffix: DYLIB_ARCHIVE_PATH,
             },
         },
+    ];
+
+    // Windows 官方 CPU 包会带 shared provider 运行时。ONNX Runtime 会从
+    // onnxruntime.dll 同目录查 provider shared libs,所以跟主 DLL 放在一起。
+    #[cfg(target_os = "windows")]
+    files.push(DownloadFile {
+        name: PROVIDERS_SHARED_NAME,
+        source: DownloadSource::Archive {
+            url: DYLIB_URL,
+            entry_suffix: PROVIDERS_SHARED_ARCHIVE_PATH,
+        },
+    });
+
+    files.extend([
         DownloadFile {
             name: "det.onnx",
             source: DownloadSource::File { url: DET_URL },
@@ -98,7 +123,8 @@ fn download_files() -> [DownloadFile; 4] {
             name: "keys.txt",
             source: DownloadSource::File { url: KEYS_URL },
         },
-    ]
+    ]);
+    files
 }
 
 /// 前端拉状态用:模型是否就绪 + 模型目录(供 UI 显示)。
@@ -159,7 +185,7 @@ impl RapidOcrClient {
         Ok(base.join("rapidocr-models"))
     }
 
-    /// 4 个文件全在才算就绪。任一缺失 → 前端渲染下载按钮。
+    /// 必备文件全在才算就绪。任一缺失 → 前端渲染下载按钮。
     pub fn status(&self) -> RapidOcrStatus {
         let Ok(dir) = self.model_dir() else {
             return RapidOcrStatus {
@@ -169,7 +195,7 @@ impl RapidOcrClient {
         };
         let all_present = download_files()
             .iter()
-            .all(|file| dir.join(file.name).is_file());
+            .all(|file| file_is_ready(&dir.join(file.name)));
         RapidOcrStatus {
             models_available: all_present,
             model_dir: Some(dir.to_string_lossy().into_owned()),
@@ -188,33 +214,38 @@ impl RapidOcrClient {
             return fail(format!("mkdir failed: {e}"));
         }
 
+        let mut archive_cache: HashMap<&'static str, Arc<Vec<u8>>> = HashMap::new();
         for file in download_files() {
             let name = file.name;
             let final_path = dir.join(name);
-            if final_path.is_file() {
+            if file_is_ready(&final_path) {
                 continue;
             }
             let tmp_path = dir.join(format!("{name}.tmp"));
-            let url = file.source.url();
-            let bytes = match self.http.get(url).send().await {
-                Ok(resp) => match resp.error_for_status() {
-                    Ok(r) => match r.bytes().await {
-                        Ok(b) => b,
-                        Err(e) => return fail(format!("read {name}: {e}")),
-                    },
-                    Err(e) => return fail(format!("HTTP {name}: {e}")),
-                },
-                Err(e) => return fail(format!("connect {name}: {e}")),
-            };
             let write_result = match file.source {
-                DownloadSource::File { .. } => tokio::fs::write(&tmp_path, &bytes)
-                    .await
-                    .map_err(|e| format!("write {name}: {e}")),
-                DownloadSource::Archive { entry_suffix, .. } => {
-                    let bytes = bytes.to_vec();
+                DownloadSource::File { url } => {
+                    match download_bytes(&self.http, name, url).await {
+                        Ok(bytes) => tokio::fs::write(&tmp_path, bytes)
+                            .await
+                            .map_err(|e| format!("write {name}: {e}")),
+                        Err(e) => Err(e),
+                    }
+                }
+                DownloadSource::Archive { url, entry_suffix } => {
+                    let bytes = match archive_cache.get(url) {
+                        Some(bytes) => Arc::clone(bytes),
+                        None => match download_bytes(&self.http, name, url).await {
+                            Ok(bytes) => {
+                                let bytes = Arc::new(bytes);
+                                archive_cache.insert(url, Arc::clone(&bytes));
+                                bytes
+                            }
+                            Err(e) => return fail(e),
+                        },
+                    };
                     let tmp_path = tmp_path.clone();
                     tokio::task::spawn_blocking(move || {
-                        extract_archive_entry(&bytes, entry_suffix, &tmp_path)
+                        extract_archive_entry(bytes.as_slice(), entry_suffix, &tmp_path)
                     })
                     .await
                     .map_err(|e| format!("extract {name}: {e}"))
@@ -224,6 +255,14 @@ impl RapidOcrClient {
             if let Err(e) = write_result {
                 let _ = tokio::fs::remove_file(&tmp_path).await;
                 return fail(e);
+            }
+            if final_path.exists() {
+                if final_path.is_file() {
+                    let _ = tokio::fs::remove_file(&final_path).await;
+                } else {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    return fail(format!("{name} path exists but is not a file"));
+                }
             }
             if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
                 return fail(format!("rename {name}: {e}"));
@@ -246,7 +285,7 @@ impl RapidOcrClient {
         let dir = self.model_dir()?;
         if !download_files()
             .iter()
-            .all(|file| dir.join(file.name).is_file())
+            .all(|file| file_is_ready(&dir.join(file.name)))
         {
             return Err("rapidocr_models_missing".into());
         }
@@ -255,6 +294,7 @@ impl RapidOcrClient {
             .pipeline
             .get_or_try_init(|| async {
                 // 必须在所有其他 ort API 之前调用,且全进程一次。
+                prepare_onnxruntime_dll_dir(&dir)?;
                 ort::init_from(dir.join(DYLIB_NAME))
                     .map_err(|e| format!("ort init_from failed: {e}"))?
                     .commit();
@@ -286,11 +326,55 @@ impl RapidOcrClient {
     }
 }
 
+async fn download_bytes(
+    http: &reqwest::Client,
+    name: &str,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    match http.get(url).timeout(DOWNLOAD_TIMEOUT).send().await {
+        Ok(resp) => match resp.error_for_status() {
+            Ok(r) => r
+                .bytes()
+                .await
+                .map(|b| b.to_vec())
+                .map_err(|e| format!("read {name}: {e}")),
+            Err(e) => Err(format!("HTTP {name}: {e}")),
+        },
+        Err(e) => Err(format!("connect {name}: {e}")),
+    }
+}
+
 fn fail(msg: String) -> RapidOcrInstallResult {
     RapidOcrInstallResult {
         success: false,
         message: msg,
     }
+}
+
+fn file_is_ready(path: &Path) -> bool {
+    path.is_file() && path.metadata().is_ok_and(|m| m.len() > 0)
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_onnxruntime_dll_dir(dir: &Path) -> Result<(), String> {
+    unsafe {
+        for dll in [DYLIB_NAME, PROVIDERS_SHARED_NAME] {
+            let mut path: Vec<u16> = dir.join(dll).as_os_str().encode_wide().collect();
+            path.push(0);
+            let _ = LoadLibraryExW(
+                PCWSTR::from_raw(path.as_ptr()),
+                None,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+            .map_err(|e| format!("preload {dll} failed: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn prepare_onnxruntime_dll_dir(_dir: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
