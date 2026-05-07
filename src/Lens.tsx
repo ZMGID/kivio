@@ -1356,6 +1356,7 @@ export default function Lens() {
     const isFirstTurn = messages.length === 0
     const hasScreenshot = !!imageIdRef.current
     const ctx = (isFirstTurn && mode === 'chat' && !hasScreenshot) ? selectionText.trim() : ''
+    if (!hasScreenshot && !ctx && !question.trim()) return
     const userContent = ctx
       ? (lang === 'zh'
           ? `[已选文本]\n${ctx}\n\n[用户问题]\n${question}`
@@ -1954,9 +1955,11 @@ export default function Lens() {
                               )}
                             </div>
                             <div className="min-w-0 flex-1">
-                              <div className={`text-[11.5px] truncate leading-tight ${firstUserQ ? 'text-neutral-800 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500 italic'}`}>
-                                {firstUserQ || (lang === 'zh' ? '（纯图片提问）' : '(image-only question)')}
-                              </div>
+                              {firstUserQ && (
+                                <div className="text-[11.5px] truncate leading-tight text-neutral-800 dark:text-neutral-200">
+                                  {firstUserQ}
+                                </div>
+                              )}
                               <div className="text-[9.5px] text-neutral-400 dark:text-neutral-500 mt-0.5 truncate leading-tight">
                                 {item.appLabel ? `${item.appLabel} · ` : ''}{turns > 1 ? `${turns} 轮 · ` : ''}{relTime(item.timestamp)}
                               </div>
@@ -2049,6 +2052,7 @@ export default function Lens() {
                 {ordered.map((m, displayIdx) => {
                   const origIdx = messageOrder === 'desc' ? messages.length - 1 - displayIdx : displayIdx
                   const isUser = m.role === 'user'
+                  if (isUser && !m.content.trim()) return null
                   const isLast = origIdx === lastChronoIdx
                   return (
                     <div key={origIdx} className={`mb-3 ${isUser ? 'flex justify-end' : ''}`}>
