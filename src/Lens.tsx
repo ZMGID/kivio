@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { flushSync } from 'react-dom'
 import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, Brain, MousePointer2, Code, Eye } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -62,6 +62,27 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 const TRANSITION_MS = 380
 const SELECT_REVEAL_DELAY_MS = 80
 const FLOATING_PADDING = 0
+// macOS 上 lens_set_floating 走的是 set_position + set_size,会真的把 OS 窗口搬到 (x, y)。
+// Windows 上走 SetWindowRgn 只裁剪可见区域,窗口本身始终全屏。
+// 两边对 barRect 的语义因此不同:macOS rebase 后 barRect 必须是窗口内坐标 (0,0),
+// Windows 仍然是屏幕(全屏窗口本地)坐标 (finalX, finalY)。
+const isMacPlatform = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
+
+/** Approximate CSS cubic-bezier(x1,y1,x2,y2): given linear time t in [0,1] return eased progress.
+ *  用 bisection 解 bezier_x(u)=t 求出参数 u,再求 bezier_y(u)。30 次足够单像素精度。 */
+function cubicBezier(t: number, x1: number, y1: number, x2: number, y2: number): number {
+  if (t <= 0) return 0
+  if (t >= 1) return 1
+  let lo = 0, hi = 1
+  for (let i = 0; i < 30; i++) {
+    const u = (lo + hi) / 2
+    const x = 3 * (1 - u) * (1 - u) * u * x1 + 3 * (1 - u) * u * u * x2 + u * u * u
+    if (x < t) lo = u
+    else hi = u
+  }
+  const u = (lo + hi) / 2
+  return 3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u * u * u
+}
 const FLOATING_GAP = 8
 
 /** Canvas 缩放截图为小缩略图，避免历史记录把整张原图（几 MB）写进 localStorage */
@@ -451,9 +472,11 @@ export default function Lens() {
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
   const [history, setHistory] = useState<HistoryItem[]>(loadHistoryFromStorage)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyPanelH, setHistoryPanelH] = useState(0)
 
   const inputRef = useRef<HTMLInputElement>(null)
   const historyPanelRef = useRef<HTMLDivElement>(null)
+  const historyContentRef = useRef<HTMLDivElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<Stage>('select')
   const modeRef = useRef<Mode>(mode)
@@ -1099,8 +1122,6 @@ export default function Lens() {
     const targetStage: Stage = mode === 'translate' ? 'translating' : 'ready'
 
     if (!keepFullscreen) {
-      // Keep the same visual path as fullscreen mode: the native WebView stays
-      // fullscreen, while Rust clips the window region to the floating card area.
       fullscreenMetricsRef.current = metrics
       const finalX = Math.round(targetX)
       const finalY = Math.round(targetY)
@@ -1112,54 +1133,117 @@ export default function Lens() {
         : READY_BAR_H + FLOATING_GAP + metrics.ANSWER_H + FLOATING_PADDING * 2
       const isTranslateMode = mode === 'translate'
 
-      flushSync(() => {
-        setAppLabel(label)
-        setFloatingRebased(false)
-        setBarNoTransition(true)
-        setBarRect({ x: finalX, y: finalY, width: READY_W })
-        setFlyDelta({ x: startX - finalX, y: startY - finalY })
-        setStage(targetStage)
-        setBarIntro(!isTranslateMode)
-      })
+      if (isMacPlatform) {
+        // macOS:窗口逐帧缩放,bar 始终锚在窗口 (0, 0)。
+        // 这样窗口的视觉移动 + 缩小 = bar 的视觉飞入,两者天然同步,不存在 OS 窗口和 React state
+        // 的中间不一致状态。
+        // 不走 Windows 的 SetWindowRgn 那条路是因为 macOS 没有等价 API,只能 set_frame 实搬窗口;
+        // 而实搬窗口 + 静态 rebase 会有一帧 race(OS 已搬过去但 React barRect 没更新)→ 闪烁。
+        const floatX = winOrigin.x + finalX - FLOATING_PADDING
+        const floatY = winOrigin.y + finalY - FLOATING_PADDING
+        const animStartX = winOrigin.x
+        const animStartY = winOrigin.y
+        const animStartW = window.innerWidth
+        const animStartH = window.innerHeight
 
-      if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (motionSeq !== motionSeqRef.current) return
-          setBarNoTransition(false)
+        flushSync(() => {
+          setAppLabel(label)
+          setFloatingRebased(false)
+          setBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: READY_W })
           setFlyDelta({ x: 0, y: 0 })
-
-          floatingRebaseTimerRef.current = window.setTimeout(() => {
-            floatingRebaseTimerRef.current = null
-            if (motionSeq !== motionSeqRef.current || stageRef.current === 'select') return
-
-            void api.lensSetFloating({ x: finalX - FLOATING_PADDING, y: finalY - FLOATING_PADDING, width: floatW, height: floatH })
-              .then(() => {
-                if (motionSeq !== motionSeqRef.current || stageRef.current === 'select') return
-                flushSync(() => {
-                  setFloatingRebased(true)
-                  setBarIntro(true)
-                })
-                requestAnimationFrame(() => {
-                  if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
-                })
-              })
-              .catch((err: unknown) => {
-                console.error('[lens] lensSetFloating rebase failed:', err)
-                if (motionSeq !== motionSeqRef.current) return
-                flushSync(() => {
-                  setFloatingRebased(false)
-                  setBarNoTransition(true)
-                  setBarRect({ x: finalX, y: finalY, width: READY_W })
-                  setBarIntro(true)
-                })
-                requestAnimationFrame(() => {
-                  if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
-                })
-              })
-          }, isTranslateMode ? 0 : TRANSITION_MS + 40)
+          setStage(targetStage)
+          if (isTranslateMode) {
+            // translate 卡片截图前不渲染 → 没"起点位置",禁 transition 避免 (selectX,selectY) → (0,0) 瞬时跳动触发动画
+            setBarIntro(false)
+            setBarNoTransition(true)
+          } else {
+            setBarIntro(true)
+            setBarNoTransition(false)
+          }
         })
-      })
+        if (isTranslateMode) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
+            })
+          })
+        }
+
+        if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
+        const animStart = performance.now()
+        const animateFrame = () => {
+          if (motionSeq !== motionSeqRef.current) return
+          if (stageRef.current === 'select') return
+          const elapsed = performance.now() - animStart
+          const tLinear = Math.min(elapsed / TRANSITION_MS, 1)
+          const t = cubicBezier(tLinear, 0.22, 1, 0.36, 1)
+          const curX = animStartX + (floatX - animStartX) * t
+          const curY = animStartY + (floatY - animStartY) * t
+          const curW = animStartW + (floatW - animStartW) * t
+          const curH = animStartH + (floatH - animStartH) * t
+          void api.lensSetFloating({ x: curX, y: curY, width: curW, height: curH })
+            .catch((err: unknown) => console.error('[lens] lensSetFloating frame failed:', err))
+          if (tLinear < 1) {
+            requestAnimationFrame(animateFrame)
+          } else {
+            if (motionSeq !== motionSeqRef.current) return
+            setFloatingRebased(true)
+            if (isTranslateMode) setBarIntro(true)
+          }
+        }
+        requestAnimationFrame(animateFrame)
+      } else {
+        // Windows: WebView 始终保持全屏,Rust 用 SetWindowRgn 把窗口可见区域裁剪到 bar 矩形。
+        // 不走 macOS 的逐帧实搬窗口路线是因为多次 lens 会话后 WebView2 内部状态会退化导致累积型 jitter。
+        flushSync(() => {
+          setAppLabel(label)
+          setFloatingRebased(false)
+          setBarNoTransition(true)
+          setBarRect({ x: finalX, y: finalY, width: READY_W })
+          setFlyDelta({ x: startX - finalX, y: startY - finalY })
+          setStage(targetStage)
+          setBarIntro(!isTranslateMode)
+        })
+
+        if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (motionSeq !== motionSeqRef.current) return
+            setBarNoTransition(false)
+            setFlyDelta({ x: 0, y: 0 })
+
+            floatingRebaseTimerRef.current = window.setTimeout(() => {
+              floatingRebaseTimerRef.current = null
+              if (motionSeq !== motionSeqRef.current || stageRef.current === 'select') return
+
+              void api.lensSetFloating({ x: finalX - FLOATING_PADDING, y: finalY - FLOATING_PADDING, width: floatW, height: floatH })
+                .then(() => {
+                  if (motionSeq !== motionSeqRef.current || stageRef.current === 'select') return
+                  flushSync(() => {
+                    setFloatingRebased(true)
+                    setBarIntro(true)
+                  })
+                  requestAnimationFrame(() => {
+                    if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
+                  })
+                })
+                .catch((err: unknown) => {
+                  console.error('[lens] lensSetFloating rebase failed:', err)
+                  if (motionSeq !== motionSeqRef.current) return
+                  flushSync(() => {
+                    setFloatingRebased(false)
+                    setBarNoTransition(true)
+                    setBarRect({ x: finalX, y: finalY, width: READY_W })
+                    setBarIntro(true)
+                  })
+                  requestAnimationFrame(() => {
+                    if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
+                  })
+                })
+            }, isTranslateMode ? 0 : TRANSITION_MS + 40)
+          })
+        })
+      }
     } else {
       // 全屏模式：left/top 立即 snap 到最终位置（snap 时 barNoTransition=true 抑制 transition），
       // 视觉上的"起点"由 transform: translate(startDelta) 提供，再于下一帧把 delta 过渡到 (0,0)。
@@ -1535,6 +1619,17 @@ export default function Lens() {
     return () => document.removeEventListener('mousedown', onDown, true)
   }, [historyOpen])
 
+  // 测量 history 面板实际高度,供浮动模式 resize 副作用按需扩窗(不然面板上方/下方溢出会被 OS 裁掉)。
+  // useLayoutEffect 确保在浏览器 paint 之前同步算出高度并 setState,resize 副作用立刻拿到新值扩窗,
+  // 不会出现"面板已渲染但窗口没扩"的中间帧。
+  useLayoutEffect(() => {
+    if (historyOpen && historyContentRef.current) {
+      setHistoryPanelH(historyContentRef.current.offsetHeight)
+    } else {
+      setHistoryPanelH(0)
+    }
+  }, [historyOpen, history])
+
   // ====== 单一渲染 ======
   const showThumb = stage !== 'select' && (imagePreview || appLabel)
   // 流式期间禁止发送/输入，答完之后可对同一张截图继续问新问题（每次仍为独立 Q&A，自动入历史）
@@ -1545,7 +1640,9 @@ export default function Lens() {
   const showTranslateCard = (mode === 'translate' || mode === 'translateText') && (stage === 'translating' || stage === 'translated')
   // 浮动布局生效条件：用户关了"保持全屏覆盖" 且 已经真的截过图（窗口被缩成浮动模式）。
   // 没截图就直接提问的场景下，window 还是全屏 overlay、bar 还在底部居中，此时仍按全屏布局走。
-  const isFloatingLayout = mode === 'translateText' || (!keepFullscreen && capturedFrame !== null && stage !== 'select')
+  // capturedFrame 只在最近一次截图后非空,而 restoreHistory 会清掉它(历史项的选区不再相关);
+  // 但此时 lens 窗口仍是浮动小尺寸 → 必须叠加 floatingRebased 才能正确反映"窗口当前在浮动态"。
+  const isFloatingLayout = mode === 'translateText' || (!keepFullscreen && (capturedFrame !== null || floatingRebased) && stage !== 'select')
   const stableAnswerHeight = isFloatingLayout
     ? fullscreenMetricsRef.current?.ANSWER_H || metrics.ANSWER_H
     : metrics.ANSWER_H
@@ -1655,8 +1752,22 @@ export default function Lens() {
       h = Math.max(h, READY_BAR_H + FLOATING_GAP + stableAnswerHeight + FLOATING_PADDING * 2)
     }
 
-    api.lensSetFloating({ x, y, width: w, height: h }).catch(err => console.error('[lens-floating] resize failed:', err))
-  }, [stage, answerLayout, barRect, floatingRebased, keepFullscreen, mode, stableAnswerHeight])
+    // history 面板:浮动模式下面板渲染在 bar 下方(top: 100%+18 = bar bottom + 8),
+    // 窗口必须扩到 bar bottom + 8 + 面板高度,否则面板被 OS 裁掉。
+    // 全屏模式不需要扩,面板渲染在 bar 上方已有空间。
+    if (isFloatingLayout && historyOpen && historyPanelH > 0) {
+      h = Math.max(h, READY_BAR_H + FLOATING_GAP + historyPanelH + FLOATING_PADDING * 2)
+    }
+
+    // macOS 上窗口已经在 rebase 时搬到屏幕锚点,barRect 是窗口内坐标 (0, 0)。
+    // 这里若再传 x/y 会把窗口搬到屏幕 (0, 0)。只传 width/height,让 OS 保持当前 origin。
+    // Windows 走 SetWindowRgn 必须传 x/y 才能更新裁剪区。
+    if (isMacPlatform) {
+      api.lensSetFloating({ width: w, height: h }).catch(err => console.error('[lens-floating] resize failed:', err))
+    } else {
+      api.lensSetFloating({ x, y, width: w, height: h }).catch(err => console.error('[lens-floating] resize failed:', err))
+    }
+  }, [stage, answerLayout, barRect, floatingRebased, keepFullscreen, mode, stableAnswerHeight, historyOpen, historyPanelH, isFloatingLayout])
 
   return (
     <div
@@ -1947,7 +2058,15 @@ export default function Lens() {
               </button>
               {historyOpen && (
                 <div
-                  className="absolute right-0 bottom-full mb-2 w-[240px] rounded-xl bg-white dark:bg-neutral-900 shadow-[0_18px_44px_-12px_rgba(0,0,0,0.4)] ring-1 ring-black/[0.06] dark:ring-white/[0.08] overflow-hidden z-50"
+                  ref={historyContentRef}
+                  className={`absolute right-0 w-[240px] rounded-xl bg-white dark:bg-neutral-900 shadow-[0_18px_44px_-12px_rgba(0,0,0,0.4)] ring-1 ring-black/[0.06] dark:ring-white/[0.08] overflow-hidden z-50 ${
+                    isFloatingLayout ? '' : 'bottom-full mb-2'
+                  }`}
+                  style={isFloatingLayout
+                    // 浮动模式下 lens 窗口只覆盖 bar 矩形,面板若按 bottom-full 渲染到 bar 上方会被 OS 裁掉。
+                    // 改为渲染到 bar 下方:从 trigger 容器向下偏移 8 (gap) + 10 (bar 内 trigger 顶部的 padding) = 18 = bar bottom + 8。
+                    ? { top: 'calc(100% + 18px)' }
+                    : undefined}
                 >
                   <div className="max-h-[200px] overflow-y-auto custom-scrollbar py-1">
                     {history.length === 0 ? (
