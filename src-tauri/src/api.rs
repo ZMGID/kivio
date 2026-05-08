@@ -333,6 +333,9 @@ pub async fn call_openai_text(
     let _ = (model, retry_attempts, thinking_enabled);
     return state.apple_intelligence.call_text(&prompt).await;
   }
+  if model.trim().is_empty() {
+    return Err("Please select a model first".to_string());
+  }
   let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
   let mut body = serde_json::json!({
     "model": model,
@@ -386,6 +389,9 @@ pub async fn call_openai_ocr(
   if config.base_url == APPLE_INTELLIGENCE_BASE_URL {
     let _ = (state, model, image_path, prompt, retry_attempts, thinking_enabled);
     return Err("Apple Intelligence 暂不支持图像输入,请为截图/视觉功能配置云端 provider".into());
+  }
+  if model.trim().is_empty() {
+    return Err("Please select a model first".to_string());
   }
   let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
   let base64 = general_purpose::STANDARD.encode(bytes);
@@ -541,6 +547,9 @@ pub async fn call_vision_api(
   let model = model_override
     .filter(|s| !s.is_empty())
     .unwrap_or(&settings.translator_model);
+  if model.trim().is_empty() {
+    return Err("Please select a model first".to_string());
+  }
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
   let mut body = serde_json::json!({
     "model": model,
@@ -664,6 +673,9 @@ pub async fn stream_chat_call(
     let _ = (app, state, model, &mut body, retry_attempts, image_id, kind, event_name);
     return Err("Apple Intelligence 暂不支持图像输入,请为截图翻译配置云端 provider".into());
   }
+  if model.trim().is_empty() {
+    return Err("Please select a model first".to_string());
+  }
   body["model"] = serde_json::json!(model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
 
@@ -728,6 +740,9 @@ pub async fn stream_translate_combined(
   if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
     let _ = (app, state, model, &mut body, retry_attempts, image_id, event_name);
     return Err("Apple Intelligence 暂不支持图像输入,请为截图翻译配置云端 provider".into());
+  }
+  if model.trim().is_empty() {
+    return Err("Please select a model first".to_string());
   }
   body["model"] = serde_json::json!(model);
   let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));

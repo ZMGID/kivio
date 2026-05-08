@@ -495,8 +495,8 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       // 端上 provider(Apple Intelligence)不需 API key,填一个哨兵字符串绕开"Missing API Key"检查
       apiKeys: preset.onDevice ? ['__on_device__'] : [],
       baseUrl: preset.baseUrl,
-      availableModels: [...preset.defaultModels],
-      enabledModels: [...preset.defaultModels],
+      availableModels: [],
+      enabledModels: [],
     }
     setSettings({
       ...settings,
@@ -655,7 +655,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         hotkey: 'CommandOrControl+Shift+A',
         textHotkey: 'CommandOrControl+Shift+T',
         providerId: 'default-ocr',
-        model: 'gpt-4o',
+        model: '',
         directTranslate: false,
         thinkingEnabled: false,
         streamEnabled: true,

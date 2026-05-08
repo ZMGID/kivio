@@ -123,9 +123,15 @@ export const isProviderAvailableOnPlatform = (provider: ModelProvider, platform:
 export const buildModelPairOptions = (providers: ModelProvider[], platform: Platform) =>
   providers
     .filter(provider => isProviderAvailableOnPlatform(provider, platform))
-    .flatMap(provider =>
-      provider.enabledModels.map(model => ({
+    .flatMap(provider => {
+      if (provider.baseUrl === 'applefoundation://local') {
+        return [{
+          value: modelPairValue(provider.id, ''),
+          label: provider.name,
+        }]
+      }
+      return provider.enabledModels.map(model => ({
         value: modelPairValue(provider.id, model),
         label: `${provider.name} - ${model}`,
       }))
-    )
+    })

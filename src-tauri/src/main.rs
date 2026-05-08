@@ -156,6 +156,11 @@ async fn translate_text(state: State<'_, AppState>, text: String) -> Result<Stri
     if provider.api_keys.is_empty() {
         return Ok("Missing API Key".to_string());
     }
+    if provider.base_url != apple_intelligence::APPLE_INTELLIGENCE_BASE_URL
+        && settings.translator_model.trim().is_empty()
+    {
+        return Ok("Please select a model first".to_string());
+    }
 
     let target_lang = resolve_target_lang(&settings.target_lang, trimmed);
     let lang_name = language_name(&target_lang).to_string();
@@ -1457,6 +1462,12 @@ async fn lens_translate(
         ocr_provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
     if !provider_is_apple && ocr_provider.api_keys.is_empty() {
         return Ok(serde_json::json!({ "success": false, "error": "Missing API Key" }));
+    }
+    if !provider_is_apple && settings.screenshot_translation.model.trim().is_empty() {
+        return Ok(serde_json::json!({
+          "success": false,
+          "error": "Please select a model first"
+        }));
     }
 
     let retry_attempts = effective_retry_attempts(&settings);

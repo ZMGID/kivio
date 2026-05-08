@@ -408,8 +408,8 @@ impl Default for Settings {
  *
  * 执行以下操作：
  * 1. 从旧版单提供商配置迁移到多提供商体系
- * 2. 确保空字段有默认值
- * 3. 确保当前使用的模型在 enabled_models 中
+ * 2. 确保空 provider 字段有默认值
+ * 3. 如果当前模型不在 enabled_models 中则清空或切到第一个启用模型
  * 4. 规范化快捷键字符串
  * 5. 确保必要字段不为空
  */
@@ -436,7 +436,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
             settings.translator_provider_id = "default-translator".to_string();
             settings.translator_model = old_openai.model;
         }
-
         // 迁移 OCR 提供商
         if let Some(old_ocr) = settings.screenshot_translation.openai.take() {
             let legacy_key = old_ocr.api_key.trim().to_string();
@@ -476,13 +475,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
 
     // 2. 为空字段设置默认值
-    if settings.translator_model.is_empty() {
-        settings.translator_model = "gpt-4o".to_string();
-    }
-    if settings.screenshot_translation.model.is_empty() {
-        settings.screenshot_translation.model = "gpt-4o".to_string();
-    }
-
     if settings.translator_provider_id.is_empty() && !settings.providers.is_empty() {
         settings.translator_provider_id = settings.providers[0].id.clone();
     }
@@ -518,56 +510,29 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         }
     }
 
-    // 3. 确保当前使用的模型在 enabled_models 列表中
+    // 3. 确保当前使用的模型确实在该 provider 的 enabled_models 中。
+    // enabled_models 可以为空：预设 provider 不再自带模型。
     for provider in &mut settings.providers {
-        if provider.enabled_models.is_empty() {
-            // 如果该提供商被某个功能使用，添加对应模型
-            if settings.translator_provider_id == provider.id {
-                provider
-                    .enabled_models
-                    .push(settings.translator_model.clone());
-            }
-            if settings.screenshot_translation.provider_id == provider.id
-                && !provider
-                    .enabled_models
-                    .contains(&settings.screenshot_translation.model)
-            {
-                provider
-                    .enabled_models
-                    .push(settings.screenshot_translation.model.clone());
-            }
-            if !settings.lens.provider_id.is_empty()
-                && settings.lens.provider_id == provider.id
-                && !settings.lens.model.is_empty()
-                && !provider.enabled_models.contains(&settings.lens.model)
-            {
-                provider.enabled_models.push(settings.lens.model.clone());
-            }
-            // 如果仍然为空，添加默认模型
-            if provider.enabled_models.is_empty() {
-                provider.enabled_models.push("gpt-4o".to_string());
-            }
-        }
-
-        // 确保当前使用的模型确实在该 provider 的 enabled_models 中
         if settings.translator_provider_id == provider.id
             && !provider.enabled_models.contains(&settings.translator_model)
         {
-            settings.translator_model = provider.enabled_models[0].clone();
+            settings.translator_model =
+                provider.enabled_models.first().cloned().unwrap_or_default();
         }
         if settings.screenshot_translation.provider_id == provider.id
             && !provider
                 .enabled_models
                 .contains(&settings.screenshot_translation.model)
         {
-            settings.screenshot_translation.model = provider.enabled_models[0].clone();
+            settings.screenshot_translation.model =
+                provider.enabled_models.first().cloned().unwrap_or_default();
         }
         if !settings.lens.provider_id.is_empty()
             && settings.lens.provider_id == provider.id
             && !settings.lens.model.is_empty()
             && !provider.enabled_models.contains(&settings.lens.model)
         {
-            settings.lens.model = provider.enabled_models[0].clone();
+            settings.lens.model = provider.enabled_models.first().cloned().unwrap_or_default();
         }
     }
 
@@ -588,10 +553,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
             .map(|p| {
                 (
                     p.id.clone(),
-                    p.enabled_models
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| "gpt-4o".to_string()),
+                    p.enabled_models.first().cloned().unwrap_or_default(),
                 )
             });
 
@@ -1108,10 +1070,7 @@ mod tests {
         let mut s = Settings::default();
         s.screenshot_translation.ocr_mode = Some(OcrMode::Legacy);
         let s = sanitize_settings(s);
-        assert_eq!(
-            s.screenshot_translation.ocr_mode,
-            Some(OcrMode::RapidOcr)
-        );
+        assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::RapidOcr));
     }
 
     #[test]
@@ -1217,6 +1176,29 @@ mod tests {
         let s = sanitize_settings(s);
         let p = s.get_provider("p").unwrap();
         assert_eq!(p.api_keys, vec!["sk-1".to_string()]);
+    }
+
+    #[test]
+    fn sanitize_settings_keeps_empty_models_for_unfetched_provider() {
+        let mut s = Settings::default();
+        s.providers.push(ModelProvider {
+            id: "p".to_string(),
+            name: "P".to_string(),
+            api_keys: vec!["sk".to_string()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".to_string(),
+            available_models: vec![],
+            enabled_models: vec![],
+        });
+        s.translator_provider_id = "p".to_string();
+        s.screenshot_translation.provider_id = "p".to_string();
+
+        let s = sanitize_settings(s);
+        let p = s.get_provider("p").unwrap();
+        assert!(p.available_models.is_empty());
+        assert!(p.enabled_models.is_empty());
+        assert!(s.translator_model.is_empty());
+        assert!(s.screenshot_translation.model.is_empty());
     }
 
     #[test]
