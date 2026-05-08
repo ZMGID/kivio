@@ -68,6 +68,7 @@ windows = { version = "0.61.3", features = [
   "Storage",
   "Storage_Streams",
   "Win32_Foundation",
+  "Win32_Graphics_Gdi",
   "Win32_System_Com",
   "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
