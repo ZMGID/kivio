@@ -108,6 +108,7 @@ If you ran v2.4.4 or earlier under the old name **KeyLingo**, your settings, API
 
 ## Changelog
 
+- **v2.6.0** — Smoother Lens floating-window animation on macOS. The capture → fly-to-anchor transition no longer drives ~23 IPC calls per 380ms via `requestAnimationFrame` (each one doing two separate AppKit position+size calls, causing coalescing-induced frame drops). It's now a single Tauri command that schedules `NSAnimationContext` + `[window.animator setFrame:display:NO]`, and Core Animation drives the rest on the compositor thread at the display's native refresh rate. The `cubic-bezier(0.22, 1, 0.36, 1)` timing curve is preserved; Windows path is untouched.
 - **v2.5.9** — Stable RapidOCR screenshot-translation release. Windows RapidOCR installation is hardened by extracting `onnxruntime_providers_shared.dll`, preloading ONNX Runtime DLLs from the model directory, replacing invalid zero-byte files on reinstall, and avoiding duplicate downloads of the same runtime archive. Provider presets now leave model selection empty until you fetch and enable models from the provider.
 - **v2.5.8** — Restored the smooth per-frame fly animation in floating-mode Lens (the v2.5.7 snap-at-end approach reintroduced a pre-existing flicker bug). To keep cumulative jitter under control, `lens_set_floating` on Windows now uses a single atomic `SetWindowPos` call instead of separate position+size calls, halving the DWM/WebView2 resize coordination work per frame.
 - **v2.5.7** — Fixed cumulative jitter in floating-mode Lens (the path used when "Keep fullscreen after capture" is OFF): the answer bar's fly to the screenshot used to call SetWindowPos every frame and degraded after many open/close cycles. Now the bar flies inside the still-fullscreen overlay and the window snaps to floating in a single step at the end.
@@ -243,6 +244,7 @@ Kivio 常驻菜单栏，只在你按下热键时出现。
 
 ## 更新日志
 
+- **v2.6.0** —— macOS 浮窗 Lens 飞入动画更顺滑。截图后对话栏飞向选区附近的过渡不再走 `requestAnimationFrame` 每帧打 IPC（380ms 内 ~23 次,且每帧底层是两次独立的 AppKit 位/尺寸调用,被 dispatcher coalescing 后掉帧明显）;改为单次 Tauri 命令派发 `NSAnimationContext` + `[window.animator setFrame:display:NO]`,余下的帧由 Core Animation 在合成器线程按显示器原生刷新率插值。时间曲线 `cubic-bezier(0.22, 1, 0.36, 1)` 与原 CSS transition 完全一致;Windows 路径未改动。
 - **v2.5.9** —— RapidOCR 截图翻译引擎正式版。强化 Windows 下载安装流程：补齐 `onnxruntime_providers_shared.dll`，从模型目录预加载 ONNX Runtime DLL，重新安装时替换 0 字节无效文件，并避免同一个 runtime 压缩包重复下载。服务商预设不再默认指定模型，需先获取模型列表并手动启用。
 - **v2.5.8** —— 恢复浮动模式 Lens 的逐帧平滑飞入动画（v2.5.7 的"末尾一次性 snap"方案重新引入了之前修过的"到位后闪一下"老毛病）。为防止累积抖动重现，Windows 上的 `lens_set_floating` 改成单次原子 `SetWindowPos`，把每帧的 DWM/WebView2 resize 协调工作砍一半。
 - **v2.5.7** —— 修复浮动模式 Lens（关闭"截图后保持全屏覆盖"时走的那条路径）多次打开后悬浮栏飞入累积抖动的问题：以前 fly 期间每帧都调一次 SetWindowPos，多次开关 Lens 后 DWM 状态退化越发明显。改为 fly 期间窗口保持全屏、bar 在 webview 内 CSS 平滑飞入，fly 结束后一次性 snap 窗口到浮动尺寸。
