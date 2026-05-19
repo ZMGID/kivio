@@ -124,8 +124,11 @@ pub fn capture_region(
     .build();
 
   // SCStreamConfiguration source_rect: relative to source content (display frame origin) in logical points
+  // macOS 屏幕坐标系原点在左下角，前端传来的是左上角原点，需要翻转 Y 轴
   let scale = filter.point_pixel_scale().max(1.0) as f64;
-  let local = CGRect::new(x - display_frame.x, y - display_frame.y, width, height);
+  let relative_x = x - display_frame.x;
+  let relative_y = y - display_frame.y;
+  let local = CGRect::new(relative_x, display_frame.height - relative_y - height, width, height);
   let pixel_w = ((width * scale).round() as u32).max(1);
   let pixel_h = ((height * scale).round() as u32).max(1);
 

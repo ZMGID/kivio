@@ -1123,11 +1123,12 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
     }
     state.lens_busy.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("lens") {
-        // 先复位再隐藏：visible 状态下 set_position 比 hidden 状态更稳。
-        // 即便用户下次按热键时光标已经移到别的 monitor，lens_request_internal
-        // 还会再调一次 lens_position_fullscreen 修正，这一步只是消除"上次浮动 bar 位置"的残影。
-        lens_position_fullscreen(&app, &window);
+        // 先隐藏再复位：避免 visible 状态下从浮动尺寸 resize 到全屏时用户看到闪屏
+        // （尤其是 Windows 上 translateText 浮动弹窗点击外部关闭时）。
+        // hidden 状态下 set_position 在部分系统下可能被忽略，但 lens_request_internal
+        // 打开时会在 show 前后各调一次 lens_position_fullscreen 修正，足够兜底。
         let _ = window.hide();
+        lens_position_fullscreen(&app, &window);
     }
     Ok(())
 }
