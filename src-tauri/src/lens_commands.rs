@@ -31,6 +31,24 @@ use crate::windows;
 #[cfg(target_os = "windows")]
 use crate::windows_ocr;
 
+#[derive(Debug, Clone, Copy)]
+struct LensFrame {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+pub(crate) fn request_lens_close(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("lens") {
+        if window.is_visible().ok().unwrap_or(false) {
+            let _ = app.emit_to("lens", "lens-close-request", ());
+            return Ok(());
+        }
+    }
+    lens_close(app.clone())
+}
+
 #[tauri::command]
 pub(crate) fn explain_read_image(
     app: AppHandle,
@@ -58,17 +76,30 @@ pub(crate) fn explain_read_image(
 ///
 /// 任何兜底都比"什么都不做"强 —— 之前的实现这种情况下窗口停留在上次几何，
 /// 用户看到的就是 ready 浮条 / 旧位置，体验远差于跳到 primary。
-fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
+fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) -> Option<LensFrame> {
+    #[cfg(target_os = "macos")]
+    {
+        match lens_position_fullscreen_macos(window) {
+            Ok(frame) => {
+                lens_clear_interactive_region(window);
+                return Some(frame);
+            }
+            Err(err) => {
+                eprintln!("[lens-pos] AppKit fullscreen positioning failed: {err}");
+            }
+        }
+    }
+
     let cursor_opt = app.cursor_position().ok();
     let monitors = match app.available_monitors() {
         Ok(m) if !m.is_empty() => m,
         Ok(_) => {
             eprintln!("[lens-pos] available_monitors returned empty list");
-            return;
+            return None;
         }
         Err(e) => {
             eprintln!("[lens-pos] available_monitors err: {}", e);
-            return;
+            return None;
         }
     };
 
@@ -98,7 +129,7 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
 
     let Some(monitor) = target else {
         eprintln!("[lens-pos] no usable monitor found");
-        return;
+        return None;
     };
 
     let mp = monitor.position();
@@ -108,9 +139,110 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) {
     let ly = mp.y as f64 / scale;
     let lw = ms.width as f64 / scale;
     let lh = ms.height as f64 / scale;
-    let _ = window.set_position(tauri::LogicalPosition::new(lx, ly));
-    let _ = window.set_size(tauri::LogicalSize::new(lw, lh));
+    let _ = window.set_position(tauri::PhysicalPosition::new(mp.x, mp.y));
+    let _ = window.set_size(tauri::PhysicalSize::new(ms.width, ms.height));
     lens_clear_interactive_region(window);
+    Some(LensFrame {
+        x: lx,
+        y: ly,
+        width: lw,
+        height: lh,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn lens_position_fullscreen_macos(window: &WebviewWindow) -> Result<LensFrame, String> {
+    if macos_is_main_thread() {
+        return unsafe { run_lens_position_fullscreen_macos(window) };
+    }
+
+    let window_for_task = window.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    window
+        .run_on_main_thread(move || {
+            let result = unsafe { run_lens_position_fullscreen_macos(&window_for_task) };
+            let _ = tx.send(result);
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv_timeout(std::time::Duration::from_millis(250))
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(target_os = "macos")]
+fn macos_is_main_thread() -> bool {
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let is_main: bool = msg_send![class!(NSThread), isMainThread];
+        is_main
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+unsafe fn run_lens_position_fullscreen_macos(window: &WebviewWindow) -> Result<LensFrame, String> {
+    use cocoa::base::{id, nil, NO};
+    use cocoa::foundation::{NSPoint, NSRect};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let ns_window_ptr = match window.ns_window() {
+        Ok(ptr) if !ptr.is_null() => ptr as id,
+        _ => return Err("Lens NSWindow is unavailable".to_string()),
+    };
+
+    let screens: id = msg_send![class!(NSScreen), screens];
+    if screens == nil {
+        return Err("NSScreen.screens returned nil".to_string());
+    }
+    let count: usize = msg_send![screens, count];
+    if count == 0 {
+        return Err("No NSScreen available".to_string());
+    }
+
+    let mouse: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+    let mut target: id = nil;
+    for idx in 0..count {
+        let screen: id = msg_send![screens, objectAtIndex: idx];
+        if screen == nil {
+            continue;
+        }
+        let frame: NSRect = msg_send![screen, frame];
+        if mouse.x >= frame.origin.x
+            && mouse.x < frame.origin.x + frame.size.width
+            && mouse.y >= frame.origin.y
+            && mouse.y < frame.origin.y + frame.size.height
+        {
+            target = screen;
+            break;
+        }
+    }
+    if target == nil {
+        target = msg_send![class!(NSScreen), mainScreen];
+    }
+    if target == nil {
+        target = msg_send![screens, objectAtIndex: 0usize];
+    }
+    if target == nil {
+        return Err("No target NSScreen available".to_string());
+    }
+
+    let target_frame: NSRect = msg_send![target, frame];
+    let primary: id = msg_send![screens, objectAtIndex: 0usize];
+    if primary == nil {
+        return Err("No primary NSScreen available".to_string());
+    }
+    let primary_frame: NSRect = msg_send![primary, frame];
+    let top_left_y = primary_frame.origin.y + primary_frame.size.height
+        - (target_frame.origin.y + target_frame.size.height);
+
+    let _: () = msg_send![ns_window_ptr, setFrame: target_frame display: NO];
+
+    Ok(LensFrame {
+        x: target_frame.origin.x,
+        y: top_left_y,
+        width: target_frame.size.width,
+        height: target_frame.size.height,
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -247,6 +379,9 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     if state.lens_busy.swap(true, Ordering::SeqCst) {
         return Err("Lens already active".to_string());
     }
+    state
+        .explain_stream_generation
+        .fetch_add(1, Ordering::SeqCst);
 
     // 必须在 ensure_lens_window/show/set_focus 之前抓取。创建隐藏 webview 在 macOS 上也可能
     // 改变当前 focused UI element，导致 Cmd+C/AXSelectedText 读到 Lens 自己而不是前台 App。
@@ -280,26 +415,41 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         "translateText" => "translateText",
         _ => "chat",
     };
-    let script = format!(
-    "window.location.hash = '#lens?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('lens:reset'));",
-    mode = safe_mode,
-  );
-    let _ = window.eval(&script);
     if safe_mode == "translateText" {
         lens_position_text_floating(app, &window);
     } else {
         // 先在 hidden 状态下尝试定位：即便部分系统下 hidden 窗口 set_position 被忽略，也比
         // 不调强（成功则消除"先在旧位置闪一帧再跳到全屏"的可见跳变）。
-        lens_position_fullscreen(app, &window);
+        let _ = lens_position_fullscreen(app, &window);
     }
     let _ = window.show();
     let _ = window.set_focus();
-    if safe_mode == "translateText" {
+    let frame = if safe_mode == "translateText" {
         lens_position_text_floating(app, &window);
+        None
     } else {
         // show 后再调，处理 always_on_top + visible_on_all_workspaces 把首次 set_position 吃掉的情况
-        lens_position_fullscreen(app, &window);
-    }
+        lens_position_fullscreen(app, &window)
+    };
+    let reset_detail = frame
+        .map(|frame| {
+            serde_json::json!({
+                "frame": {
+                    "x": frame.x,
+                    "y": frame.y,
+                    "width": frame.width,
+                    "height": frame.height,
+                }
+            })
+        })
+        .unwrap_or_else(|| serde_json::json!({}));
+    let reset_detail = serde_json::to_string(&reset_detail).unwrap_or_else(|_| "{}".to_string());
+    let script = format!(
+        "window.location.hash = '#lens?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('lens:reset', {{ detail: {detail} }}));",
+        mode = safe_mode,
+        detail = reset_detail,
+    );
+    let _ = window.eval(&script);
     Ok(())
 }
 

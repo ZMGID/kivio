@@ -33,6 +33,38 @@ function readModeFromHash(): Mode {
 
 const makeTextRequestId = () => `text-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
+type LensResetFrame = {
+  x: number
+  y: number
+  width?: number
+  height?: number
+}
+
+function readLensResetFrame(detail: unknown): LensResetFrame | undefined {
+  if (!detail || typeof detail !== 'object') return undefined
+  const frame = (detail as { frame?: unknown }).frame
+  if (!frame || typeof frame !== 'object') return undefined
+  const { x, y, width, height } = frame as Partial<LensResetFrame>
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined
+  return {
+    x: x as number,
+    y: y as number,
+    width: Number.isFinite(width) ? width : undefined,
+    height: Number.isFinite(height) ? height : undefined,
+  }
+}
+
+const waitForFrames = (frames: number) => new Promise<void>((resolve) => {
+  const step = (remaining: number) => {
+    if (remaining <= 0) {
+      resolve()
+      return
+    }
+    requestAnimationFrame(() => step(remaining - 1))
+  }
+  step(frames)
+})
+
 /**
  * Lens 模式：单 webview 三态机，统一 DOM。
  * - select：webview 全屏 + 灰幕 + hover 应用窗口高亮 + 区域 drag + 底部对话栏（纯文字直发）
@@ -227,7 +259,7 @@ export default function Lens() {
   }, [])
 
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
-  const enterSelect = useCallback(async () => {
+  const enterSelect = useCallback(async (resetFrame?: LensResetFrame) => {
     const curMode = readModeFromHash()
     cancelPendingMotion()
     const motionSeq = motionSeqRef.current
@@ -257,8 +289,8 @@ export default function Lens() {
       setTranslateOriginal('')
       setTranslateText('')
       setTranslateError('')
-      const w = window.innerWidth
-      const h = window.innerHeight
+      const w = resetFrame?.width ?? window.innerWidth
+      const h = resetFrame?.height ?? window.innerHeight
       setViewport({ w, h })
       const m = computeMetrics(w, h)
       setBarRect(curMode === 'translateText'
@@ -269,6 +301,7 @@ export default function Lens() {
       // 重置 intro：先关再开，下一帧让 transition 从 scale-90 到 scale-100
       setBarIntro(false)
       setShowCaptureHint(false)
+      if (resetFrame) setWinOrigin({ x: resetFrame.x, y: resetFrame.y })
     })
     selectRevealedRef.current = false
     imageIdRef.current = ''
@@ -374,14 +407,17 @@ export default function Lens() {
         })
       })
     }, SELECT_REVEAL_DELAY_MS)
-    try {
-      const win = getCurrentWindow()
-      const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()])
-      const sf = scale || 1
-      if (motionSeq === motionSeqRef.current) {
-        setWinOrigin({ x: pos.x / sf, y: pos.y / sf })
-      }
-    } catch (err) { console.error('Failed to read window origin', err) }
+    if (!resetFrame) {
+      await waitForFrames(2)
+      try {
+        const win = getCurrentWindow()
+        const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()])
+        const sf = scale || 1
+        if (motionSeq === motionSeqRef.current) {
+          setWinOrigin({ x: pos.x / sf, y: pos.y / sf })
+        }
+      } catch (err) { console.error('Failed to read window origin', err) }
+    }
     try {
       const list = await api.lensListWindows()
       if (motionSeq === motionSeqRef.current) setWindows(list)
@@ -394,7 +430,9 @@ export default function Lens() {
 
   useEffect(() => {
     void enterSelect()
-    const handleReset = () => { void enterSelect() }
+    const handleReset = (event: Event) => {
+      void enterSelect(readLensResetFrame((event as CustomEvent).detail))
+    }
     window.addEventListener('lens:reset', handleReset)
     return () => {
       window.removeEventListener('lens:reset', handleReset)
@@ -589,6 +627,14 @@ export default function Lens() {
     focusReqIdRef.current++
   }, [cancelPendingMotion, viewport, metrics])
 
+  const closeAfterReset = useCallback(async () => {
+    resetBeforeHide()
+    const closeMotionSeq = motionSeqRef.current
+    await waitForFrames(2)
+    if (closeMotionSeq !== motionSeqRef.current) return
+    try { await api.lensClose() } catch (err) { console.error(err) }
+  }, [resetBeforeHide])
+
   // 全局 Esc：流式时取消流 / 否则关闭
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
@@ -599,12 +645,27 @@ export default function Lens() {
         setStreaming(false)
         return
       }
-      resetBeforeHide()
-      try { await api.lensClose() } catch (err) { console.error(err) }
+      await closeAfterReset()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [streaming, resetBeforeHide])
+  }, [streaming, closeAfterReset])
+
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    api.onLensCloseRequest(() => {
+      if (cancelled) return
+      void closeAfterReset()
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(err => console.error(err))
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [closeAfterReset])
 
   // drawMode 键盘:Cmd+Z 撤销最后一支箭头,Esc 退出 drawMode(arrows 保留)
   useEffect(() => {
@@ -640,13 +701,12 @@ export default function Lens() {
     const handleBlur = () => {
       if (capturingRef.current) return
       if (stageRef.current === 'select') {
-        resetBeforeHide()
-        void api.lensClose()
+        void closeAfterReset()
       }
     }
     window.addEventListener('blur', handleBlur)
     return () => window.removeEventListener('blur', handleBlur)
-  }, [resetBeforeHide])
+  }, [closeAfterReset])
 
   /** webview client 坐标 → 全局逻辑坐标（与 CGWindow bounds 同坐标系） */
   const clientToGlobal = (p: Point): Point => ({

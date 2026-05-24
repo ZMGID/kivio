@@ -262,6 +262,8 @@ export const api = {
     on<LensStreamPayload>('lens-stream', (payload) => listener(payload)),
   onLensTranslateStream: (listener: (payload: LensTranslateStreamPayload) => void) =>
     on<LensTranslateStreamPayload>('lens-translate-stream', (payload) => listener(payload)),
+  onLensCloseRequest: (listener: () => void) =>
+    on('lens-close-request', () => listener()),
   lensRequest: () => invoke<void>('lens_request'),
   lensListWindows: () => invoke<LensWindowInfo[]>('lens_list_windows'),
   lensCaptureWindow: (windowId: number) =>

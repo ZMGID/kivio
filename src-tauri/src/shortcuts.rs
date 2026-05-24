@@ -6,8 +6,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::commands::apply_launch_at_startup;
 use crate::lens_commands::{
-    lens_close, lens_request, lens_request_internal, lens_request_translate,
-    lens_request_translate_text,
+    lens_request, lens_request_internal, lens_request_translate, lens_request_translate_text,
+    request_lens_close,
 };
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -395,9 +395,9 @@ pub(crate) fn display_hotkey_errors(json_str: &str) -> String {
             let hotkey = e.get("hotkey").and_then(|v| v.as_str()).unwrap_or("");
             let raw = e.get("raw").and_then(|v| v.as_str()).unwrap_or("");
             match kind {
-                "conflict" => format!(
-                    "Hotkey conflict for {scope}: \"{hotkey}\" is already in use"
-                ),
+                "conflict" => {
+                    format!("Hotkey conflict for {scope}: \"{hotkey}\" is already in use")
+                }
                 "duplicate" => format!("Duplicate hotkey \"{hotkey}\" for {scope}"),
                 "empty" => format!("{scope} hotkey is empty"),
                 _ => format!("Failed to register {scope} hotkey \"{hotkey}\": {raw}"),
@@ -484,7 +484,7 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
                     if event.state == ShortcutState::Pressed {
                         // 切换行为：Lens 可见时关闭，不可见时打开截图翻译
                         if lens_is_active(app) {
-                            let _ = lens_close(app.clone());
+                            let _ = request_lens_close(app);
                         } else {
                             let handle = app.clone();
                             tauri::async_runtime::spawn(async move {
@@ -529,7 +529,7 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
                 shortcut_manager.on_shortcut(text_hotkey.as_str(), move |app, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
                         if lens_is_active(app) {
-                            let _ = lens_close(app.clone());
+                            let _ = request_lens_close(app);
                         } else {
                             let handle = app.clone();
                             tauri::async_runtime::spawn(async move {
@@ -575,7 +575,7 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
                     if event.state == ShortcutState::Pressed {
                         // 切换行为：Lens 可见时关闭，不可见时打开
                         if lens_is_active(app) {
-                            let _ = lens_close(app.clone());
+                            let _ = request_lens_close(app);
                         } else {
                             let handle = app.clone();
                             tauri::async_runtime::spawn(async move {
@@ -686,7 +686,10 @@ pub(crate) fn restore_runtime_settings(
     }
 
     if let Err(err) = register_hotkeys(app) {
-        eprintln!("Failed to rollback hotkeys: {}", display_hotkey_errors(&err));
+        eprintln!(
+            "Failed to rollback hotkeys: {}",
+            display_hotkey_errors(&err)
+        );
     }
 
     if let Err(err) = setup_tray(app) {
@@ -928,7 +931,7 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                 let app = tray.app_handle().clone();
                 // 切换行为：Lens 可见时关闭，不可见时打开
                 if lens_is_active(&app) {
-                    let _ = lens_close(app);
+                    let _ = request_lens_close(&app);
                 } else {
                     tauri::async_runtime::spawn(async move {
                         if let Err(err) = lens_request_internal(&app, "chat") {
