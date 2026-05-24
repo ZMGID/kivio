@@ -21,6 +21,8 @@ use screencapturekit::{
   stream::{configuration::SCStreamConfiguration, content_filter::SCContentFilter},
 };
 
+use crate::capture_geometry::{source_rect_for_region, CaptureDisplay, CaptureRect};
+
 /// 异步预热 SCShareableContent 缓存：首次 `SCShareableContent::get()` 要查 WindowServer，
 /// 实测 30–80 ms。在 lens 进入 select 态时调一次，用户瞄准目标的几百毫秒里把这块开销摊掉，
 /// 真正按下截图时直接走快路径（实测稳定值降到 < 30 ms）。
@@ -88,19 +90,30 @@ pub fn capture_region(
   let content = SCShareableContent::get()
     .map_err(|e| format!("SCShareableContent::get failed: {:?}", e))?;
 
-  // 找包含选区中心点的 display
-  let center_x = x + width / 2.0;
-  let center_y = y + height / 2.0;
   let displays = content.displays();
-  let display = displays
+  let display_geometry = displays
     .iter()
-    .find(|d| {
-      let f = d.frame();
-      center_x >= f.x && center_x < f.x + f.width && center_y >= f.y && center_y < f.y + f.height
+    .map(|display| {
+      let frame = display.frame();
+      CaptureDisplay {
+        x: frame.x,
+        y: frame.y,
+        width: frame.width,
+        height: frame.height,
+      }
     })
-    .or_else(|| displays.first())
-    .ok_or_else(|| "No display available".to_string())?;
-  let display_frame = display.frame();
+    .collect::<Vec<_>>();
+  let region = CaptureRect {
+    x,
+    y,
+    width,
+    height,
+  };
+  let mapped = source_rect_for_region(region, &display_geometry)
+    .ok_or_else(|| "No display found for capture region".to_string())?;
+  let display = displays
+    .get(mapped.display_index)
+    .ok_or_else(|| "Mapped display index is out of range".to_string())?;
 
   // 构造 SCWindow 排除集：拥有 self pid 的所有窗口（lens webview 自己），保 owned 引用避免悬空
   let windows = content.windows();
@@ -123,14 +136,18 @@ pub fn capture_region(
     .with_excluding_windows(&excluded_refs)
     .build();
 
-  // SCStreamConfiguration source_rect: relative to source content (display frame origin) in logical points
-  // macOS 屏幕坐标系原点在左下角，前端传来的是左上角原点，需要翻转 Y 轴
+  // SCK source_rect is display-local in logical points; the Lens selection is already
+  // in the same top-left desktop space as SCDisplay frames, so do not flip Y.
   let scale = filter.point_pixel_scale().max(1.0) as f64;
-  let relative_x = x - display_frame.x;
-  let relative_y = y - display_frame.y;
-  let local = CGRect::new(relative_x, display_frame.height - relative_y - height, width, height);
-  let pixel_w = ((width * scale).round() as u32).max(1);
-  let pixel_h = ((height * scale).round() as u32).max(1);
+  let source_rect = mapped.source_rect;
+  let local = CGRect::new(
+    source_rect.x,
+    source_rect.y,
+    source_rect.width,
+    source_rect.height,
+  );
+  let pixel_w = ((source_rect.width * scale).round() as u32).max(1);
+  let pixel_h = ((source_rect.height * scale).round() as u32).max(1);
 
   let config = SCStreamConfiguration::new()
     .with_source_rect(local)

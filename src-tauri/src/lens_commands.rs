@@ -12,6 +12,10 @@ use crate::api::{
     effective_retry_attempts, stream_chat_call, stream_translate_combined,
 };
 use crate::apple_intelligence;
+#[cfg(target_os = "windows")]
+use crate::capture_geometry::{
+    monitor_for_region, windows_monitor_region, CaptureMonitor, CaptureRect,
+};
 use crate::lens;
 use crate::prompts::{
     build_combined_translate_prompt, build_ocr_direct_translation_prompt,
@@ -1292,72 +1296,38 @@ fn capture_region_image(
     scale_factor: f64,
     _exclude_self_pid: Option<i32>,
 ) -> Result<PathBuf, String> {
-    // 先用前端传入的 scale factor 估算物理坐标，用于定位目标显示器
-    let sf = if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
-    } else {
-        1.0
-    };
-    let estimated_px = ((absolute_x as f64) * sf).round() as i32;
-    let estimated_py = ((absolute_y as f64) * sf).round() as i32;
-
-    // 定位目标显示器：优先用 from_point，失败时遍历所有显示器作为 fallback
-    let monitor = Monitor::from_point(estimated_px, estimated_py).or_else(|_| {
-        Monitor::all()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|m| {
-                let Ok(mx) = m.x() else { return false };
-                let Ok(my) = m.y() else { return false };
-                let Ok(mw) = m.width() else { return false };
-                let Ok(mh) = m.height() else { return false };
-                let right = mx + mw as i32;
-                let bottom = my + mh as i32;
-                estimated_px >= mx
-                    && estimated_px < right
-                    && estimated_py >= my
-                    && estimated_py < bottom
+    let _ = (x, y, scale_factor);
+    let monitors = Monitor::all().map_err(|e| e.to_string())?;
+    let monitor_geometry = monitors
+        .iter()
+        .map(|m| {
+            Ok(CaptureMonitor {
+                x: m.x().map_err(|e| e.to_string())?,
+                y: m.y().map_err(|e| e.to_string())?,
+                width: m.width().map_err(|e| e.to_string())?,
+                height: m.height().map_err(|e| e.to_string())?,
+                scale_factor: m.scale_factor().map_err(|e| e.to_string())? as f64,
             })
-            .ok_or_else(|| "No monitor found at the given position".to_string())
-    })?;
-
-    let monitor_x = monitor.x().map_err(|e| e.to_string())?;
-    let monitor_y = monitor.y().map_err(|e| e.to_string())?;
-    let monitor_scale = monitor.scale_factor().map_err(|e| e.to_string())? as f64;
-
-    // 使用显示器实际 scale factor 重新计算物理坐标
-    // 这可以修正前端 devicePixelRatio 在多屏幕不同 DPI 下可能不准确的情况
-    let absolute_physical_x = ((absolute_x as f64) * monitor_scale).round() as i32;
-    let absolute_physical_y = ((absolute_y as f64) * monitor_scale).round() as i32;
-
-    let relative_x = absolute_physical_x - monitor_x;
-    let relative_y = absolute_physical_y - monitor_y;
-    let region_width = ((width as f64) * monitor_scale).round() as u32;
-    let region_height = ((height as f64) * monitor_scale).round() as u32;
-
-    let monitor_width = monitor.width().map_err(|e| e.to_string())?;
-    let monitor_height = monitor.height().map_err(|e| e.to_string())?;
-    if relative_x < 0
-        || relative_y < 0
-        || region_width == 0
-        || region_height == 0
-        || (relative_x as u32) >= monitor_width
-        || (relative_y as u32) >= monitor_height
-    {
-        return Err("Invalid capture region".to_string());
-    }
-
-    let max_width = monitor_width.saturating_sub(relative_x as u32);
-    let max_height = monitor_height.saturating_sub(relative_y as u32);
-    let capture_width = region_width.min(max_width).max(1);
-    let capture_height = region_height.min(max_height).max(1);
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let region = CaptureRect {
+        x: absolute_x as f64,
+        y: absolute_y as f64,
+        width: width as f64,
+        height: height as f64,
+    };
+    let monitor_index = monitor_for_region(region, &monitor_geometry)
+        .ok_or_else(|| "No monitor found for capture region".to_string())?;
+    let capture_region = windows_monitor_region(region, monitor_geometry[monitor_index])
+        .ok_or_else(|| "Invalid capture region".to_string())?;
+    let monitor = &monitors[monitor_index];
 
     let image = monitor
         .capture_region(
-            relative_x as u32,
-            relative_y as u32,
-            capture_width,
-            capture_height,
+            capture_region.x,
+            capture_region.y,
+            capture_region.width,
+            capture_region.height,
         )
         .map_err(|e| e.to_string())?;
 

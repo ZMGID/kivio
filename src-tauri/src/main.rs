@@ -3,6 +3,7 @@
 
 mod api;
 mod apple_intelligence;
+mod capture_geometry;
 mod commands;
 mod lens;
 mod lens_commands;
