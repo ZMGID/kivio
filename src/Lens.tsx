@@ -129,11 +129,9 @@ export default function Lens() {
   })
   // barIntro：select 态首次显示时给对话栏加一次 scale-up 进入动画；之后切换都靠 transition
   const [barIntro, setBarIntro] = useState(false)
-  // barNoTransition：reset 时临时禁用 left/top/width transition，避免上次 ready/answering 位置
-  // 残留的 380ms 动画在 window hide 时被暂停，下次 show 时从中间帧续播 → 视觉上 bar
-  // 从老位置"滑"回 select 默认位置的闪烁。
+  // barNoTransition：reset/drag/窗口裁剪切换时临时禁用 transition，避免上次动画在 hide 后续播。
   const [barNoTransition, setBarNoTransition] = useState(true)
-  // flyDelta：keepFullscreen 模式下 fly 动画用 transform translate 取代 left/top 过渡。
+  // flyDelta：全屏覆盖模式下 fly 动画用 transform translate 取代 left/top 过渡。
   // left/top 不是 GPU 合成属性，每帧都要走 layout/reflow；Windows 上 webview hide→show 后
   // 合成器刚被唤醒、首个大幅 left/top 过渡极易卡顿（"乱跳"）。改为：left/top 立即 snap 到
   // 最终位置，用 transform: translate(dx, dy) 把视觉位置拉回起点，下一帧再把 delta 过渡到 (0,0)。
@@ -285,7 +283,7 @@ export default function Lens() {
     justFinishedStreamRef.current = false
     // 用 flushSync 同步提交所有 reset 后的状态：webview show 之前 DOM 必须已经反映新位置，
     // 否则 Rust 的 show() 会先把旧 frame 露出来。
-    // barNoTransition 同 frame 一起置 true → bar 从老坐标 snap 到 select 坐标，不动画。
+    // barNoTransition 同 frame 一起置 true → bar 从老坐标 snap 到 select 坐标，不回放动画。
     flushSync(() => {
       setBarNoTransition(true)
       setStage(curMode === 'translateText' ? 'translating' : 'select')
@@ -625,7 +623,7 @@ export default function Lens() {
 
   // 关闭前同步重置 state，让 webview surface 在 hide 之前已经是空 select 态。
   // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
-  // barNoTransition：禁用 left/top/width transition，避免 380ms 动画被 hide 暂停后下次 show 续播。
+  // barNoTransition：禁用 transition，避免 380ms 动画被 hide 暂停后下次 show 续播。
   const resetBeforeHide = useCallback(() => {
     cancelPendingMotion()
     fullscreenMetricsRef.current = null
@@ -821,8 +819,37 @@ export default function Lens() {
     setHovered(hitTest(gp))
   }
 
-  /** 截图后 lens 默认模式：在前端直接算 bar 位置，让对话栏飞到选区左/右侧（不再上下出现）。
-   *  优先右侧，右侧空间不够再放左侧；都不够时贴大空间一侧。垂直与选区中心对齐并 clamp 在 viewport 内。 */
+  const animateFullscreenBarToAnchor = useCallback((
+    targetRect: BarRect,
+    targetStage: Stage,
+    label: string,
+    motionSeq: number,
+  ) => {
+    const startX = barRect.x
+    const startY = barRect.y
+
+    flushSync(() => {
+      setAppLabel(label)
+      setBarNoTransition(true)
+      setBarRect(targetRect)
+      setFlyDelta({ x: startX - targetRect.x, y: startY - targetRect.y })
+      setBarIntro(true)
+      setStage(targetStage)
+    })
+
+    // Commit the snap+offset first, then allow only transform/opacity to transition.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (motionSeq !== motionSeqRef.current) return
+        if (stageRef.current === 'select') return
+        setBarNoTransition(false)
+        setFlyDelta({ x: 0, y: 0 })
+      })
+    })
+  }, [barRect])
+
+  /** 截图后在前端直接算 bar 位置，让对话栏飞到选区左/右侧。
+   *  优先右侧，右侧空间不够再放左侧；都不够时贴大空间一侧。 */
   const flyBarToAnchor = async (
     anchorAbsX: number,
     anchorAbsY: number,
@@ -979,31 +1006,12 @@ export default function Lens() {
         })
       }
     } else {
-      // 全屏模式：left/top 立即 snap 到最终位置（snap 时 barNoTransition=true 抑制 transition），
-      // 视觉上的"起点"由 transform: translate(startDelta) 提供，再于下一帧把 delta 过渡到 (0,0)。
-      // 用 transform 取代 left/top 动画，避免 Windows webview hide→show 后合成器刚唤醒、
-      // left/top reflow 卡顿造成的"乱跳"——transform 走 GPU 合成层，与主线程 layout 解耦。
-      const startX = barRect.x
-      const startY = barRect.y
-      const finalX = Math.round(targetX)
-      const finalY = Math.round(targetY)
-      flushSync(() => {
-        setAppLabel(label)
-        setBarNoTransition(true)
-        setBarRect({ x: finalX, y: finalY, width: READY_W })
-        setFlyDelta({ x: startX - finalX, y: startY - finalY })
-        setBarIntro(true)
-        setStage(targetStage)
-      })
-      // 两个 raf：第一个让浏览器先 commit 上面的 snap + delta，第二个解禁 transition 并把
-      // delta 归零，transform 进入过渡。等价于 enterSelect 里 intro 的双 raf 模式。
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (motionSeq !== motionSeqRef.current) return
-          setBarNoTransition(false)
-          setFlyDelta({ x: 0, y: 0 })
-        })
-      })
+      animateFullscreenBarToAnchor(
+        { x: Math.round(targetX), y: Math.round(targetY), width: READY_W },
+        targetStage,
+        label,
+        motionSeq,
+      )
     }
     if (mode === 'chat') {
       focusLensInput([TRANSITION_MS + 20, TRANSITION_MS + 120, TRANSITION_MS + 260])
@@ -1375,8 +1383,8 @@ export default function Lens() {
   const showBar = mode === 'chat'
   // translate 浮动卡片：截图后在选区旁出现，加载/完成两态
   const showTranslateCard = (mode === 'translate' || mode === 'translateText') && (stage === 'translating' || stage === 'translated')
-  // 浮动布局生效条件：用户关了"保持全屏覆盖" 且 已经真的截过图（窗口被缩成浮动模式）。
-  // 没截图就直接提问的场景下，window 还是全屏 overlay、bar 还在底部居中，此时仍按全屏布局走。
+  // 浮动布局仅用于截图翻译关闭全屏覆盖、或 translateText 文本翻译卡。
+  // 普通 Lens 截图后固定保持全屏 overlay，只移动输入栏。
   // capturedFrame 只在最近一次截图后非空,而 restoreHistory 会清掉它(历史项的选区不再相关);
   // 但此时 lens 窗口仍是浮动小尺寸 → 必须叠加 floatingRebased 才能正确反映"窗口当前在浮动态"。
   const isFloatingLayout = mode === 'translateText' || (!keepFullscreen && (capturedFrame !== null || floatingRebased) && stage !== 'select')
@@ -1386,6 +1394,15 @@ export default function Lens() {
   const translateCardMaxHeight = mode === 'translateText' || !keepFullscreen
     ? READY_BAR_H + 8 + stableAnswerHeight
     : Math.min(viewport.h - 32, READY_BAR_H + 8 + stableAnswerHeight)
+  const translateCardUsesFullscreenMotion = mode === 'translate' && keepFullscreen && !isFloatingLayout
+  const translateCardTransitionProperty = barNoTransition || translateCardDragging
+    ? 'none'
+    : translateCardUsesFullscreenMotion
+      ? 'transform, opacity'
+      : 'left, top, width, transform, opacity'
+  const translateCardTransform = translateCardUsesFullscreenMotion
+    ? `translate3d(${flyDelta.x}px, ${flyDelta.y}px, 0) scale(${barIntro ? 1 : 0.92})`
+    : barIntro ? 'scale(1)' : 'scale(0.92)'
 
   const handleTranslateCardDragStart = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
@@ -1469,7 +1486,7 @@ export default function Lens() {
     return { placeAbove: false, height: Math.max(180, spaceBelow) }
   }, [barRect, isFloatingLayout, stableAnswerHeight, viewport.h])
 
-  // 浮动模式下：stage / 布局变化时动态调整窗口尺寸
+  // 浮动模式下：截图翻译 / 文本翻译的 stage 或布局变化时动态调整窗口尺寸
   useEffect(() => {
     if (keepFullscreen && mode !== 'translateText') return
     if (stage === 'select') return
@@ -1694,7 +1711,7 @@ export default function Lens() {
         </>
       )}
 
-      {/* 对话栏 + 答案区：始终渲染，CSS transition 处理位置 / 大小变化。
+      {/* 对话栏 + 答案区：始终渲染，输入栏移动只用 transform，位置/尺寸直接 snap。
           - select：底部居中 680，缩略图槽位用 sparkle 占位
           - ready：飞到选区附近 600，左侧切换为缩略图 + 应用名
           - answering：在对话栏下方 absolute 展开 answer 区（固定 360 高） */}
@@ -1710,7 +1727,7 @@ export default function Lens() {
             left: barRect.x,
             top: barRect.y,
             width: barRect.width,
-            transitionProperty: barNoTransition ? 'none' : 'left, top, width, transform, opacity',
+            transitionProperty: barNoTransition ? 'none' : 'transform, opacity',
             transitionDuration: barNoTransition ? '0ms' : `${TRANSITION_MS}ms`,
             transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
             transform: `translate3d(${flyDelta.x}px, ${flyDelta.y}px, 0) scale(${barIntro ? 1 : 0.92})`,
@@ -2008,10 +2025,10 @@ export default function Lens() {
             top: barRect.y,
             width: barRect.width,
             maxHeight: translateCardMaxHeight,
-            transitionProperty: barNoTransition || translateCardDragging ? 'none' : 'left, top, width, transform, opacity',
+            transitionProperty: translateCardTransitionProperty,
             transitionDuration: barNoTransition || translateCardDragging ? '0ms' : `${TRANSITION_MS}ms`,
             transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
-            transform: barIntro ? 'scale(1)' : 'scale(0.92)',
+            transform: translateCardTransform,
             opacity: barIntro ? 1 : 0,
           }}
           data-tauri-drag-region="false"
