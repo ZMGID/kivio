@@ -761,9 +761,45 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
         questionPrompt: '',
         messageOrder: 'asc' as const,
         showCaptureHint: true,
-        windowsFreezeFrameSelection: false
+        windowsFreezeFrameSelection: false,
+        webSearch: {
+          enabled: false,
+          provider: 'tavily' as const,
+          tavilyApiKey: '',
+          exaApiKey: '',
+          maxResults: 5,
+          searchDepth: 'basic' as const,
+        },
       }
       return { ...prev, lens: { ...current, ...updates } }
+    })
+  }, [])
+
+  const updateLensWebSearch = useCallback((updates: Partial<NonNullable<SettingsData['lens']['webSearch']>>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const currentLens = prev.lens || {
+        enabled: true,
+        hotkey: 'CommandOrControl+Shift+G',
+      }
+      const currentWebSearch = currentLens.webSearch || {
+        enabled: false,
+        provider: 'tavily' as const,
+        tavilyApiKey: '',
+        exaApiKey: '',
+        maxResults: 5,
+        searchDepth: 'basic' as const,
+      }
+      return {
+        ...prev,
+        lens: {
+          ...currentLens,
+          webSearch: {
+            ...currentWebSearch,
+            ...updates,
+          },
+        },
+      }
     })
   }, [])
 
@@ -1268,6 +1304,74 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                             onChange={(v) => updateLens({ windowsFreezeFrameSelection: v })}
                           />
                         </SettingRow>
+                      )}
+                    </SettingsGroup>
+
+                    <SettingsGroup title={t.lensWebSearch}>
+                      <SettingRow label={t.enabled} description={t.lensWebSearchHint}>
+                        <Toggle
+                          checked={settings.lens?.webSearch?.enabled === true}
+                          onChange={(v) => updateLensWebSearch({ enabled: v })}
+                        />
+                      </SettingRow>
+                      {settings.lens?.webSearch?.enabled === true && (
+                        <>
+                          <SettingRow label={t.lensWebSearchProvider}>
+                            <Select
+                              className="w-44"
+                              value={settings.lens?.webSearch?.provider || 'tavily'}
+                              onChange={(v) => updateLensWebSearch({ provider: v as 'tavily' | 'exa' })}
+                              options={[
+                                { value: 'tavily', label: 'Tavily' },
+                                { value: 'exa', label: 'Exa' },
+                              ]}
+                            />
+                          </SettingRow>
+                          <SettingRow label={t.lensWebSearchApiKey}>
+                            <Input
+                              type="password"
+                              value={settings.lens?.webSearch?.provider === 'exa'
+                                ? settings.lens?.webSearch?.exaApiKey || ''
+                                : settings.lens?.webSearch?.tavilyApiKey || ''}
+                              onChange={(value) => {
+                                if (settings.lens?.webSearch?.provider === 'exa') {
+                                  updateLensWebSearch({ exaApiKey: value })
+                                } else {
+                                  updateLensWebSearch({ tavilyApiKey: value })
+                                }
+                              }}
+                              placeholder={settings.lens?.webSearch?.provider === 'exa' ? 'exa-...' : 'tvly-...'}
+                              mono
+                            />
+                          </SettingRow>
+                          <SettingRow label={t.lensWebSearchMaxResults}>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={10}
+                              className="w-24"
+                              value={String(settings.lens?.webSearch?.maxResults ?? 5)}
+                              onChange={(value) => updateLensWebSearch({
+                                maxResults: Math.min(10, Math.max(1, Number.parseInt(value, 10) || 1)),
+                              })}
+                            />
+                          </SettingRow>
+                          {settings.lens?.webSearch?.provider !== 'exa' && (
+                            <SettingRow label={t.lensWebSearchDepth}>
+                              <Select
+                                className="w-44"
+                                value={settings.lens?.webSearch?.searchDepth || 'basic'}
+                                onChange={(v) => updateLensWebSearch({ searchDepth: v as 'ultra-fast' | 'fast' | 'basic' | 'advanced' })}
+                                options={[
+                                  { value: 'ultra-fast', label: 'Ultra fast' },
+                                  { value: 'fast', label: 'Fast' },
+                                  { value: 'basic', label: 'Basic' },
+                                  { value: 'advanced', label: 'Advanced' },
+                                ]}
+                              />
+                            </SettingRow>
+                          )}
+                        </>
                       )}
                     </SettingsGroup>
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, Globe } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
@@ -104,6 +104,8 @@ export default function Lens() {
   const [copied, setCopied] = useState(false)
   const [lang, setLang] = useState<Lang>('zh')
   const [messageOrder, setMessageOrder] = useState<'asc' | 'desc'>('asc')
+  const [webSearchAvailable, setWebSearchAvailable] = useState(false)
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false)
   const [keepFullscreen, setKeepFullscreen] = useState(() => readModeFromHash() !== 'translateText')
   const [floatingRebased, setFloatingRebased] = useState(false)
   const [mode, setMode] = useState<Mode>(() => readModeFromHash())
@@ -180,6 +182,7 @@ export default function Lens() {
   const prevStreamingRef = useRef(false)
   const preparingSendRef = useRef(false)
   const answerFinishedRef = useRef(false)
+  const lastLensStreamEventRef = useRef('')
   // Stream 真实结束（成功 / 错误 / 用户主动取消）后才置 true，
   // 让历史持久化 effect 只在这一次 rerun 触发 push；restoreHistory / enterSelect / resetBeforeHide 防御性清零，
   // 避免恢复历史时 setMessages 触发 effect 把恢复的对话又当新条目写一遍历史。
@@ -228,20 +231,28 @@ export default function Lens() {
     return selectionText.split(/\r?\n/).length
   }, [selectionText, mode])
 
+  const loadLensSettings = useCallback(async (curMode: Mode = readModeFromHash()) => {
+    try {
+      const settings = await api.getSettings()
+      setLang((settings.settingsLanguage as Lang) || 'zh')
+      setMessageOrder(settings.lens?.messageOrder === 'desc' ? 'desc' : 'asc')
+      const webSearch = settings.lens?.webSearch
+      const hasWebSearchKey = webSearch?.provider === 'exa'
+        ? !!webSearch.exaApiKey?.trim()
+        : !!webSearch?.tavilyApiKey?.trim()
+      const canUseWebSearch = webSearch?.enabled === true && hasWebSearchKey
+      setWebSearchAvailable(canUseWebSearch)
+      setWebSearchEnabled(canUseWebSearch && curMode === 'chat')
+      screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
+      setKeepFullscreen(curMode === 'chat' || (curMode === 'translate' && screenshotKeepFullscreenRef.current))
+      captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
+    } catch (err) { console.error('Failed to load settings', err) }
+  }, [])
+
   // 加载设置：普通 Lens 截图后固定保持全屏覆盖；截图翻译仍读自己的保留全屏配置。
   useEffect(() => {
-    void (async () => {
-      try {
-        const settings = await api.getSettings()
-        setLang((settings.settingsLanguage as Lang) || 'zh')
-        setMessageOrder(settings.lens?.messageOrder === 'desc' ? 'desc' : 'asc')
-        const curMode = readModeFromHash()
-        screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
-        setKeepFullscreen(curMode === 'chat' || (curMode === 'translate' && screenshotKeepFullscreenRef.current))
-        captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
-      } catch (err) { console.error('Failed to load settings', err) }
-    })()
-  }, [])
+    void loadLensSettings()
+  }, [loadLensSettings])
 
   const focusLensInput = useCallback((delays: number[] = [0, 40, 120, 240, 420]) => {
     const requestId = ++focusReqIdRef.current
@@ -273,6 +284,7 @@ export default function Lens() {
   // select 态进入：刷新所有 state、重算对话栏位置、播放 intro 动画
   const enterSelect = useCallback(async (resetPayload: LensResetPayload = {}) => {
     const curMode = readModeFromHash()
+    await loadLensSettings(curMode)
     const resetFrame = resetPayload.frame
     const resetFreezeFrameImageId = resetPayload.freezeFrameImageId ?? ''
     cancelPendingMotion()
@@ -455,7 +467,7 @@ export default function Lens() {
       if (motionSeq === motionSeqRef.current) setWindows([])
     }
     focusLensInput()
-  }, [cancelPendingMotion, focusLensInput])
+  }, [cancelPendingMotion, focusLensInput, loadLensSettings])
 
   useEffect(() => {
     void enterSelect()
@@ -571,9 +583,18 @@ export default function Lens() {
     api.onLensStream((payload: LensStreamPayload) => {
       if (payload.imageId !== imageIdRef.current) return
       if (payload.done) {
+        lastLensStreamEventRef.current = ''
         finishAnswering()
         return
       }
+      const eventKey = [
+        payload.imageId,
+        payload.kind,
+        payload.delta ?? '',
+        payload.reasoningDelta ?? '',
+      ].join('\u0000')
+      if (eventKey === lastLensStreamEventRef.current) return
+      lastLensStreamEventRef.current = eventKey
       if (payload.reasoningDelta) {
         setMessages(prev => {
           const last = prev[prev.length - 1]
@@ -1227,6 +1248,7 @@ export default function Lens() {
       setStage('answering')
       setStreaming(true)
     })
+    lastLensStreamEventRef.current = ''
     preparingSendRef.current = true
 
     // 默认沿用当前 image_id;若有箭头则先合成 + 注册新图,把后续 ask 切到合成版
@@ -1256,7 +1278,9 @@ export default function Lens() {
         }
       }
       preparingSendRef.current = false
-      const result = await api.lensAsk(effectiveImageId || '', sendMessages)
+      const result = await api.lensAsk(effectiveImageId || '', sendMessages, {
+        webSearch: mode === 'chat' && webSearchEnabled && webSearchAvailable,
+      })
       if (!result.success) {
         const errText = `${t.lensError}: ${result.error}`
         setMessages(prev => {
@@ -1805,6 +1829,24 @@ export default function Lens() {
               placeholder={t.lensAskPlaceholder}
               className={`flex-1 bg-transparent text-[16px] text-neutral-900 dark:text-white placeholder-neutral-500 dark:placeholder-neutral-400 focus:outline-none ${streaming ? 'opacity-60' : ''}`}
             />
+            {mode === 'chat' && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!webSearchAvailable || streaming) return
+                  setWebSearchEnabled(v => !v)
+                }}
+                disabled={!webSearchAvailable || streaming}
+                title={webSearchAvailable ? t.lensWebSearchToggle : t.lensWebSearchUnavailable}
+                className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
+                  webSearchEnabled && webSearchAvailable
+                    ? 'bg-blue-500 text-white hover:bg-blue-600'
+                    : 'text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.06]'
+                } ${(!webSearchAvailable || streaming) ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >
+                <Globe size={15} strokeWidth={1.9} />
+              </button>
+            )}
             {/* History dropdown：按钮 + 弹出面板（容器作为 ref，点击外部关闭） */}
             <div ref={historyPanelRef} className="relative shrink-0">
               <button

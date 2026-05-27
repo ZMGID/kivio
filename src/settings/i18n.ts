@@ -206,6 +206,14 @@ export const i18n = {
     lensArrowToggle: '画箭头',
     lensArrowToggleOff: '退出画箭头',
     lensArrowDisabledHint: '截图后可用',
+    lensWebSearch: '联网搜索',
+    lensWebSearchHint: '在 Lens 提问时手动开启搜索，把来源片段作为上下文交给模型。',
+    lensWebSearchProvider: '搜索服务',
+    lensWebSearchApiKey: 'API Key',
+    lensWebSearchMaxResults: '结果数量',
+    lensWebSearchDepth: '搜索深度',
+    lensWebSearchToggle: '联网搜索',
+    lensWebSearchUnavailable: '请先在设置里启用并填写搜索 API Key',
   },
   en: {
     settings: 'Settings',
@@ -412,6 +420,14 @@ export const i18n = {
     lensArrowToggle: 'Draw arrow',
     lensArrowToggleOff: 'Exit draw mode',
     lensArrowDisabledHint: 'Available after capture',
+    lensWebSearch: 'Web search',
+    lensWebSearchHint: 'Manually search the web for a Lens question and pass source snippets to the model.',
+    lensWebSearchProvider: 'Search provider',
+    lensWebSearchApiKey: 'API Key',
+    lensWebSearchMaxResults: 'Result count',
+    lensWebSearchDepth: 'Search depth',
+    lensWebSearchToggle: 'Web search',
+    lensWebSearchUnavailable: 'Enable web search and add a search API key in Settings first',
   }
 } as const
 

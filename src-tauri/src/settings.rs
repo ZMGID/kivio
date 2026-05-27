@@ -247,6 +247,65 @@ pub struct ExplainMessage {
 }
 
 /**
+ * Lens 联网搜索提供商。
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProvider {
+    Tavily,
+    Exa,
+}
+
+impl Default for WebSearchProvider {
+    fn default() -> Self {
+        WebSearchProvider::Tavily
+    }
+}
+
+/**
+ * Lens 联网搜索配置。
+ *
+ * 手动模式由前端在单次提问时传 web_search=true；后端仍会检查 enabled 和 key。
+ */
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LensWebSearchConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: WebSearchProvider,
+    #[serde(default)]
+    pub tavily_api_key: String,
+    #[serde(default)]
+    pub exa_api_key: String,
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: u8,
+    #[serde(default = "default_web_search_depth")]
+    pub search_depth: String,
+}
+
+impl Default for LensWebSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: WebSearchProvider::Tavily,
+            tavily_api_key: String::new(),
+            exa_api_key: String::new(),
+            max_results: default_web_search_max_results(),
+            search_depth: default_web_search_depth(),
+        }
+    }
+}
+
+fn default_web_search_max_results() -> u8 {
+    5
+}
+
+fn default_web_search_depth() -> String {
+    "basic".to_string()
+}
+
+/**
  * Lens 模式配置
  * 启用后可通过热键进入：屏幕高亮选择窗口/区域 → 截图 → 在悬浮对话栏内提问。
  */
@@ -288,6 +347,8 @@ pub struct LensConfig {
     /// 默认 false，保留实时透明覆盖层行为；用于规避浏览器视频在透明置顶 WebView2 下变黑。
     #[serde(default = "default_false")]
     pub windows_freeze_frame_selection: bool,
+    #[serde(default)]
+    pub web_search: LensWebSearchConfig,
 }
 
 fn default_message_order() -> String {
@@ -309,6 +370,7 @@ impl Default for LensConfig {
             message_order: "asc".to_string(),
             show_capture_hint: true,
             windows_freeze_frame_selection: false,
+            web_search: LensWebSearchConfig::default(),
         }
     }
 }
@@ -612,6 +674,16 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
     if settings.lens.message_order != "asc" && settings.lens.message_order != "desc" {
         settings.lens.message_order = "asc".to_string();
+    }
+    settings.lens.web_search.tavily_api_key =
+        settings.lens.web_search.tavily_api_key.trim().to_string();
+    settings.lens.web_search.exa_api_key = settings.lens.web_search.exa_api_key.trim().to_string();
+    settings.lens.web_search.max_results = settings.lens.web_search.max_results.clamp(1, 10);
+    if !matches!(
+        settings.lens.web_search.search_depth.as_str(),
+        "ultra-fast" | "fast" | "basic" | "advanced"
+    ) {
+        settings.lens.web_search.search_depth = default_web_search_depth();
     }
 
     // 清理归档目录路径（去除首尾空白）

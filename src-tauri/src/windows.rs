@@ -33,6 +33,36 @@ pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 }
 
 /**
+ * 确保主窗口以设置页路由创建。
+ *
+ * settings 从托盘 / 单实例激活打开时，如果先创建默认 main 再 show，首帧会短暂显示
+ * translator，再由 hash 切到 settings。这里在窗口不存在时直接用 #settings URL 创建，
+ * 避免输入翻译窗口闪一下。
+ */
+pub fn ensure_settings_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+  if let Some(window) = get_main_window(app) {
+    return Ok(window);
+  }
+
+  WebviewWindowBuilder::new(
+    app,
+    "main",
+    WebviewUrl::App("index.html#settings".into()),
+  )
+  .title("Kivio")
+  .inner_size(640.0, 520.0)
+  .resizable(true)
+  .decorations(false)
+  .transparent(true)
+  .shadow(false)
+  .visible_on_all_workspaces(true)
+  .skip_taskbar(true)
+  .visible(false)
+  .build()
+  .map_err(|e| e.to_string())
+}
+
+/**
  * 确保 Lens 窗口存在（不存在则创建）
  * 单 webview 三态：select 全屏 / ready 悬浮 600x72 / answering 悬浮 600x420。
  * 创建时尺寸为悬浮态默认值；后端按需要 set_size 切换。

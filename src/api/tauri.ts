@@ -123,6 +123,15 @@ export type Settings = {
     showCaptureHint?: boolean
     /** Windows 兼容模式：进入选择态前冻结当前画面，再从冻结帧裁剪（默认 false） */
     windowsFreezeFrameSelection?: boolean
+    /** Lens 联网搜索配置 */
+    webSearch?: {
+      enabled: boolean
+      provider: 'tavily' | 'exa'
+      tavilyApiKey: string
+      exaApiKey: string
+      maxResults: number
+      searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
+    }
   }
   settingsLanguage?: 'zh' | 'en'
   /** 启动时静默检查 GH Releases 是否有新版（默认 true） */
@@ -292,8 +301,12 @@ export const api = {
     invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
       'lens_translate_text', { text, requestId }
     ),
-  lensAsk: (imageId: string, messages: ExplainMessage[]) =>
-    invoke<{ success: boolean; response?: string; error?: string }>('lens_ask', { imageId, messages }),
+  lensAsk: (imageId: string, messages: ExplainMessage[], options?: { webSearch?: boolean }) =>
+    invoke<{ success: boolean; response?: string; error?: string }>('lens_ask', {
+      imageId,
+      messages,
+      webSearch: options?.webSearch,
+    }),
   lensCancelStream: () => invoke<void>('lens_cancel_stream'),
   lensClose: () => invoke<void>('lens_close'),
   // 把当前活跃 image 拷贝到 lens-history 持久目录，让重启后历史能继续提问

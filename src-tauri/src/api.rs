@@ -664,8 +664,19 @@ pub async fn call_vision_api(
 
   // 非流式：先读 raw text，再 parse JSON，把原始 body 作为错误信息便于诊断。
   let raw = response.text().await.map_err(|e| format!("Vision API read body: {}", e))?;
-  let value: serde_json::Value = serde_json::from_str(&raw)
-    .map_err(|e| format!("Vision API parse JSON: {} (body: {})", e, raw.chars().take(500).collect::<String>()))?;
+  let value: serde_json::Value = match serde_json::from_str(&raw) {
+    Ok(value) => value,
+    Err(err) => {
+      if let Some(content) = parse_sse_chat_content(&raw) {
+        return Ok(content);
+      }
+      return Err(format!(
+        "Vision API parse JSON: {} (body: {})",
+        err,
+        raw.chars().take(500).collect::<String>()
+      ));
+    }
+  };
   let content = value
     .get("choices")
     .and_then(|choices| choices.get(0))
@@ -675,6 +686,46 @@ pub async fn call_vision_api(
     .ok_or_else(|| format!("Invalid vision response: {}", raw.chars().take(500).collect::<String>()))?;
 
   Ok(content.trim().to_string())
+}
+
+fn parse_sse_chat_content(raw: &str) -> Option<String> {
+  let mut full = String::new();
+  for line in raw.lines() {
+    let line = line.trim();
+    if !line.starts_with("data:") {
+      continue;
+    }
+    let data = line.trim_start_matches("data:").trim();
+    if data.is_empty() || data == "[DONE]" {
+      continue;
+    }
+    let value: serde_json::Value = match serde_json::from_str(data) {
+      Ok(value) => value,
+      Err(_) => continue,
+    };
+    let content = value
+      .get("choices")
+      .and_then(|choices| choices.get(0))
+      .and_then(|choice| {
+        choice
+          .get("delta")
+          .and_then(|delta| delta.get("content"))
+          .or_else(|| {
+            choice
+              .get("message")
+              .and_then(|message| message.get("content"))
+          })
+      })
+      .and_then(|content| content.as_str())
+      .unwrap_or_default();
+    full.push_str(content);
+  }
+  let full = full.trim();
+  if full.is_empty() {
+    None
+  } else {
+    Some(full.to_string())
+  }
 }
 
 fn build_apple_text_prompt(system_prompt: &str, messages: &[ExplainMessage]) -> String {

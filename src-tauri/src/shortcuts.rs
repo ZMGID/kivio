@@ -11,7 +11,7 @@ use crate::lens_commands::{
 };
 use crate::settings::Settings;
 use crate::state::AppState;
-use crate::windows::ensure_main_window;
+use crate::windows::{ensure_main_window, ensure_settings_window};
 
 /// 模拟一次 Cmd+C(macOS)/Ctrl+C(Windows)。
 /// 用于 Lens 启动时把前台 App 的选中文本拷进剪贴板。
@@ -785,9 +785,16 @@ pub(crate) fn send_paste_shortcut() {
 /// 打开设置窗口
 /// 调整窗口大小为 640x520，取消置顶，显示并聚焦，同时通过 hash 路由切换到设置页面
 pub(crate) fn open_settings_window(app: &AppHandle) -> Result<(), String> {
-    let window = ensure_main_window(app)?;
+    let window = ensure_settings_window(app)?;
     let _ = window.set_always_on_top(false);
     let _ = window.set_size(tauri::LogicalSize::new(640.0, 520.0));
+
+    let _ = window.eval(
+    "window.location.hash = '#settings'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
+  );
+    // 仅向 main webview 发送 open-settings 事件，避免广播到 screenshot/explain 等其他 webview
+    // 导致它们也被切到设置视图（出现多个设置界面的 bug）。
+    let _ = app.emit_to("main", "open-settings", ());
 
     let window_for_task = window.clone();
     let _ = window.run_on_main_thread(move || {
@@ -796,12 +803,6 @@ pub(crate) fn open_settings_window(app: &AppHandle) -> Result<(), String> {
         let _ = window_for_task.set_focus();
     });
 
-    let _ = window.eval(
-    "window.location.hash = '#settings'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
-  );
-    // 仅向 main webview 发送 open-settings 事件，避免广播到 screenshot/explain 等其他 webview
-    // 导致它们也被切到设置视图（出现多个设置界面的 bug）。
-    let _ = app.emit_to("main", "open-settings", ());
     Ok(())
 }
 

@@ -19,6 +19,7 @@ mod shortcuts;
 mod state;
 mod updates;
 mod utils;
+mod web_search;
 mod windows;
 #[cfg(target_os = "windows")]
 mod windows_ocr;

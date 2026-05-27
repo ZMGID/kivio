@@ -31,6 +31,7 @@ use crate::settings::{self, default_question_prompt, ExplainMessage, OcrMode};
 use crate::shortcuts::{capture_active_selection, get_mouse_position};
 use crate::state::AppState;
 use crate::utils::{language_name, resolve_target_lang};
+use crate::web_search::{format_web_context, search_web};
 use crate::windows;
 #[cfg(target_os = "windows")]
 use crate::windows_ocr;
@@ -622,6 +623,7 @@ pub(crate) async fn lens_ask(
     state: State<'_, AppState>,
     image_id: String,
     messages: Vec<ExplainMessage>,
+    web_search: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let settings = state.settings_read().clone();
     let retry_attempts = effective_retry_attempts(&settings);
@@ -670,15 +672,111 @@ pub(crate) async fn lens_ask(
         }));
     }
 
+    let web_search_requested = web_search.unwrap_or(false);
+    let web_context = if web_search_requested && settings.lens.web_search.enabled {
+        let user_question = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.trim())
+            .unwrap_or_default();
+        let explicit_search = explicitly_requests_web_search(user_question);
+        let mut plan = plan_lens_web_search_tool_call(
+            &app,
+            &state,
+            &image_id,
+            user_question,
+            &language,
+            retry_attempts,
+            provider_override.as_deref(),
+            model_override.as_deref(),
+        )
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("[lens-web-search] tool planning failed: {}", err);
+            WebSearchToolPlan {
+                should_search: false,
+                query: String::new(),
+                reason: format!("tool planning failed: {err}"),
+            }
+        });
+        if explicit_search && (!plan.should_search || plan.query.trim().is_empty()) {
+            plan = WebSearchToolPlan {
+                should_search: true,
+                query: cleanup_explicit_search_query(user_question),
+                reason: "User explicitly requested web search".to_string(),
+            };
+        }
+        if !plan.should_search {
+            eprintln!(
+                "[lens-web-search] ai_tool=none reason={:?}",
+                plan.reason
+            );
+            String::new()
+        } else if plan.query.trim().is_empty() {
+            eprintln!("[lens-web-search] ai_tool=web_search but query is empty");
+            String::new()
+        } else {
+            let now = chrono::Local::now();
+            let runtime_context = format!(
+                "Runtime context:\nCurrent local date/time: {}",
+                now.format("%Y-%m-%d %H:%M:%S %:z")
+            );
+            eprintln!(
+                "[lens-web-search] ai_tool=web_search provider={:?} query={:?} reason={:?}",
+                settings.lens.web_search.provider,
+                plan.query,
+                plan.reason
+            );
+            match search_web(&state, &settings.lens.web_search, &plan.query, retry_attempts).await {
+                Ok(results) => {
+                    let tool_result = if results.is_empty() {
+                        "Web search was requested, but the search provider returned no results. Do not claim current web facts from search."
+                            .to_string()
+                    } else {
+                        format_web_context(&results)
+                    };
+                    let context = format!(
+                        "{}\n\nTool call:\nweb_search(query: {:?})\n\nTool result:\n{}\n\nUse this tool result when it is relevant. Cite sources with [1], [2], etc. Do not invent sources.",
+                        runtime_context,
+                        plan.query,
+                        tool_result
+                    );
+                    eprintln!(
+                        "[lens-web-search] results={} context_chars={}",
+                        results.len(),
+                        context.chars().count()
+                    );
+                    context
+                }
+                Err(err) => {
+                    eprintln!("[lens-web-search] error={}", err);
+                    return Ok(serde_json::json!({
+                      "success": false,
+                      "error": err
+                    }));
+                }
+            }
+        }
+    } else {
+        if web_search_requested {
+            eprintln!(
+                "[lens-web-search] requested=true but disabled in settings"
+            );
+        }
+        String::new()
+    };
+
     // 多轮对话：保留前面所有历史，仅把最后一条用户提问注入 question_prompt
     // question_prompt 为空（纯文本对话）时直接传用户原话，不加前缀
     // 关闭思考时在末尾追加 "/no_think"：Qwen3 hybrid 模型识别后直接关思考；其它模型当无意义文本忽略
     let mut api_messages = messages.clone();
     if let Some(last) = api_messages.pop() {
+        let original_question = last.content.clone();
         let mut content = if question_prompt.is_empty() {
             last.content
         } else {
-            format!("{}\n\n用户问题：{}", question_prompt, last.content)
+            format!("{}\n\n用户问题：{}", question_prompt, original_question)
         };
         if !thinking_enabled {
             content.push_str(" /no_think");
@@ -687,6 +785,20 @@ pub(crate) async fn lens_ask(
             role: "user".to_string(),
             content,
         });
+        if !web_context.is_empty() {
+            api_messages.push(ExplainMessage {
+                role: "assistant".to_string(),
+                content: "I will call the web_search tool before answering.".to_string(),
+            });
+            api_messages.push(ExplainMessage {
+                role: "user".to_string(),
+                content: format!(
+                    "Original user question:\n{}\n\nTool result from web_search:\n{}\n\nNow answer the original user question using the tool result when relevant. If the tool result is insufficient or irrelevant, say so clearly. Cite sources with [1], [2], etc. when using search results.",
+                    original_question,
+                    web_context
+                ),
+            });
+        }
     }
 
     match call_vision_api(
@@ -709,6 +821,174 @@ pub(crate) async fn lens_ask(
         Ok(response) => Ok(serde_json::json!({ "success": true, "response": response })),
         Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
     }
+}
+
+fn explicitly_requests_web_search(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    lowered.contains("搜索")
+        || lowered.contains("搜一下")
+        || lowered.contains("查一下")
+        || lowered.contains("联网")
+        || lowered.contains("上网查")
+        || lowered.contains("web search")
+        || lowered.contains("search web")
+        || lowered.contains("search the web")
+        || lowered.contains("look up")
+        || lowered.contains("google")
+}
+
+fn cleanup_explicit_search_query(text: &str) -> String {
+    let mut query = text.trim().to_string();
+    for marker in [
+        "帮我", "请", "搜索一下", "搜索", "搜一下", "查一下", "联网查一下", "联网查", "上网查一下",
+        "上网查", "web search", "search the web", "search web", "look up", "google",
+    ] {
+        query = query.replace(marker, " ");
+    }
+    let query = query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .trim_matches(['"', '\'', '`', '，', '。', '？', '?', '！', '!'])
+        .chars()
+        .take(180)
+        .collect::<String>();
+    if query.trim().is_empty() {
+        text.trim().chars().take(180).collect()
+    } else {
+        query
+    }
+}
+
+struct WebSearchToolPlan {
+    should_search: bool,
+    query: String,
+    reason: String,
+}
+
+async fn plan_lens_web_search_tool_call(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    image_id: &str,
+    user_question: &str,
+    language: &str,
+    retry_attempts: usize,
+    provider_override: Option<&str>,
+    model_override: Option<&str>,
+) -> Result<WebSearchToolPlan, String> {
+    let user_question = user_question.trim();
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z");
+    let prompt = format!(
+        "You may call exactly one tool before answering the user.\n\n\
+         Current local date/time: {}\n\n\
+         Available tool:\n\
+         - web_search(query): search the web for current, external, or identifying information.\n\n\
+         Decide whether to call web_search after inspecting the screenshot and the user question.\n\
+         If the user explicitly asks to search, look up, google, use the web, 联网, 搜索, 搜一下, or 查一下, you must call web_search.\n\
+         Call web_search when the answer depends on current facts, public web knowledge, identifying a visible product/person/place/page/error, prices, docs, news, release info, or anything not fully knowable from the screenshot alone.\n\
+         Do not call it for simple OCR, translation, summarization, UI explanation, or questions answerable directly from the screenshot.\n\n\
+         Output strict JSON only, no markdown:\n\
+         {{\"tool\":\"web_search\",\"query\":\"concise search query including visible names/text\",\"reason\":\"short reason\"}}\n\
+         or\n\
+         {{\"tool\":\"none\",\"query\":\"\",\"reason\":\"short reason\"}}\n\n\
+         User question: {}",
+        now,
+        user_question
+    );
+    let system_prompt = if language.starts_with("zh") {
+        "你是 Lens 的工具调用规划器。先看截图和用户问题，只输出严格 JSON，决定是否调用 web_search。"
+    } else {
+        "You are Lens's tool-call planner. Inspect the screenshot and user question. Output strict JSON only."
+    };
+
+    let raw = call_vision_api(
+        app,
+        state,
+        image_id,
+        vec![ExplainMessage {
+            role: "user".to_string(),
+            content: prompt,
+        }],
+        language,
+        retry_attempts,
+        false,
+        "answer",
+        "lens-stream",
+        provider_override,
+        model_override,
+        Some(system_prompt),
+        false,
+    )
+    .await?;
+
+    parse_web_search_tool_plan(&raw)
+}
+
+fn parse_web_search_tool_plan(raw: &str) -> Result<WebSearchToolPlan, String> {
+    let json_text = extract_first_json_object(raw)
+        .ok_or_else(|| format!("tool planner returned non-JSON: {}", raw.chars().take(300).collect::<String>()))?;
+    let value: serde_json::Value = serde_json::from_str(&json_text)
+        .map_err(|err| format!("tool planner JSON parse failed: {err}; body: {}", raw.chars().take(300).collect::<String>()))?;
+    let tool = value.get("tool").and_then(|v| v.as_str()).unwrap_or("none");
+    let query = value
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_matches(['"', '\'', '`'])
+        .chars()
+        .take(180)
+        .collect::<String>();
+    let reason = value
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(240)
+        .collect::<String>();
+
+    Ok(WebSearchToolPlan {
+        should_search: tool == "web_search",
+        query,
+        reason,
+    })
+}
+
+fn extract_first_json_object(raw: &str) -> Option<String> {
+    let start = raw.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in raw[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                let end = start + offset + ch.len_utf8();
+                return Some(raw[start..end].to_string());
+            }
+        }
+    }
+    None
 }
 
 /// 取消正在进行的 lens 流（复用同一代号）。
