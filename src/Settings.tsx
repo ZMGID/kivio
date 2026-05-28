@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
-import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus, type UpdateInfo } from './api/tauri'
+import { api, type Settings as SettingsType, type ModelProvider, type DefaultPromptTemplates, type PermissionStatus, type UpdateInfo, type LensQuickAction } from './api/tauri'
 import { i18n } from './settings/i18n'
 import { buildHotkey, formatHotkeyError, getPlatform, stableStringify } from './settings/utils'
 import { PROVIDER_PRESETS, type ProviderPreset } from './settings/providerPresets'
@@ -835,6 +835,19 @@ export default function Settings({ onClose, onSettingsChange, onReady }: Setting
     })
   }, [])
 
+  const updateLensQuickActions = useCallback((actions: LensQuickAction[]) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        lens: {
+          ...prev.lens,
+          quickActions: actions,
+        },
+      }
+    })
+  }, [])
+
   /**
    * 切换快捷键录制状态
    */
@@ -1462,6 +1475,87 @@ export default function Settings({ onClose, onSettingsChange, onReady }: Setting
                           </div>
                         </div>
                       </details>
+                    </SettingsGroup>
+
+                    <SettingsGroup title={t.lensQuickActions}>
+                      <div className="space-y-3">
+                        {(settings.lens?.quickActions || []).map((qa, idx) => (
+                          <div key={qa.id} className="rounded-lg border border-black/[0.06] dark:border-white/[0.08] p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex-1">
+                                <Label>{t.lensQuickActionLabel}</Label>
+                                <Input
+                                  value={qa.label}
+                                  onChange={(v) => {
+                                    const next = [...(settings.lens?.quickActions || [])]
+                                    next[idx] = { ...next[idx], label: v }
+                                    updateLensQuickActions(next)
+                                  }}
+                                  placeholder={t.lensQuickActionLabel}
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const next = (settings.lens?.quickActions || []).filter((_, i) => i !== idx)
+                                  updateLensQuickActions(next)
+                                }}
+                                className="kv-icon-btn danger mt-5"
+                                data-tauri-drag-region="false"
+                                title={t.lensQuickActionDelete}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                            <div>
+                              <Label>{t.lensQuickActionPrompt}</Label>
+                              <TextArea
+                                value={qa.prompt}
+                                onChange={(v) => {
+                                  const next = [...(settings.lens?.quickActions || [])]
+                                  next[idx] = { ...next[idx], prompt: v }
+                                  updateLensQuickActions(next)
+                                }}
+                                placeholder={t.lensQuickActionPrompt}
+                                rows={2}
+                              />
+                            </div>
+                            <SettingRow label={t.selectModelPair} description={lang === 'zh' ? '留空时使用 Lens 默认模型。' : 'Leave empty to use the default Lens model.'}>
+                              <ModelPairSelect
+                                providerId={qa.providerId || ''}
+                                model={qa.model || ''}
+                                providers={settings.providers}
+                                platform={platform}
+                                inheritLabel={t.lensLanguageInherit}
+                                onChange={(providerId, model) => {
+                                  const next = [...(settings.lens?.quickActions || [])]
+                                  next[idx] = { ...next[idx], providerId, model }
+                                  updateLensQuickActions(next)
+                                }}
+                              />
+                            </SettingRow>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const current = settings.lens?.quickActions || []
+                            const newAction: LensQuickAction = {
+                              id: `qa-${Date.now()}`,
+                              label: '',
+                              prompt: '',
+                              providerId: '',
+                              model: '',
+                            }
+                            updateLensQuickActions([...current, newAction])
+                          }}
+                          className="kv-btn sm"
+                          data-tauri-drag-region="false"
+                        >
+                          <Plus size={11} />
+                          {t.lensQuickActionAdd}
+                        </button>
+                      </div>
                     </SettingsGroup>
                   </>
                 )}

@@ -624,6 +624,9 @@ pub(crate) async fn lens_ask(
     image_id: String,
     messages: Vec<ExplainMessage>,
     web_search: Option<bool>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    quick_action: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let settings = state.settings_read().clone();
     let retry_attempts = effective_retry_attempts(&settings);
@@ -638,21 +641,31 @@ pub(crate) async fn lens_ask(
     let stream_enabled = settings.lens.stream_enabled;
     let thinking_enabled = settings.lens.thinking_enabled;
 
-    let provider_override = if !settings.lens.provider_id.is_empty() {
-        Some(settings.lens.provider_id.clone())
-    } else {
-        None
-    };
-    let model_override = if !settings.lens.model.is_empty() {
-        Some(settings.lens.model.clone())
-    } else {
-        None
-    };
+    let provider_override = provider_id
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if !settings.lens.provider_id.is_empty() {
+                Some(settings.lens.provider_id.clone())
+            } else {
+                None
+            }
+        });
+    let model_override = model
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if !settings.lens.model.is_empty() {
+                Some(settings.lens.model.clone())
+            } else {
+                None
+            }
+        });
 
     let has_image = !image_id.is_empty();
 
-    // question_prompt：lens 自定义 → 默认模板（无图时返回空，不附加前缀）
-    let question_prompt = if !settings.lens.question_prompt.is_empty() {
+    let is_quick_action = quick_action.unwrap_or(false);
+    let question_prompt = if is_quick_action {
+        String::new()
+    } else if !settings.lens.question_prompt.is_empty() {
         settings.lens.question_prompt.clone()
     } else {
         default_question_prompt(&language, has_image)

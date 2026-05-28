@@ -96,6 +96,14 @@ export type ProviderConnectionInput = {
   apiKeys: string[]
 }
 
+export type LensQuickAction = {
+  id: string
+  label: string
+  prompt: string
+  providerId?: string
+  model?: string
+}
+
 // 应用设置数据结构
 export type Settings = {
   hotkey: string
@@ -163,6 +171,7 @@ export type Settings = {
       maxResults: number
       searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
     }
+    quickActions?: LensQuickAction[]
   }
   settingsLanguage?: 'zh' | 'en'
   /** 启动时静默检查 GH Releases 是否有新版（默认 true） */
@@ -342,11 +351,14 @@ export const api = {
     invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
       'lens_translate_text', { text, requestId }
     ),
-  lensAsk: (imageId: string, messages: ExplainMessage[], options?: { webSearch?: boolean }) =>
+  lensAsk: (imageId: string, messages: ExplainMessage[], options?: { webSearch?: boolean; providerId?: string; model?: string; quickAction?: boolean }) =>
     invoke<{ success: boolean; response?: string; error?: string; webSearchResults?: LensWebSearchResult[] }>('lens_ask', {
       imageId,
       messages,
       webSearch: options?.webSearch,
+      providerId: options?.providerId,
+      model: options?.model,
+      quickAction: options?.quickAction,
     }),
   lensCancelStream: () => invoke<void>('lens_cancel_stream'),
   lensClose: () => invoke<void>('lens_close'),
