@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react'
 import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import { api } from './api/tauri'
 import { i18n, type Lang } from './settings/i18n'
@@ -193,6 +193,8 @@ function App() {
   const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system')
   const [translateSource, setTranslateSource] = useState<string>('')
   const [lang, setLang] = useState<Lang>('zh')
+  const settingsOpenPendingRef = useRef(mode === 'settings')
+  const settingsReadyRef = useRef(false)
 
   // 应用主题设置
   const applyTheme = async () => {
@@ -222,9 +224,27 @@ function App() {
 
   // 监听 hash 变化切换模式
   useEffect(() => {
-    const handler = () => setMode(getMode())
+    const handler = () => {
+      const nextMode = getMode()
+      if (nextMode === 'settings') {
+        settingsOpenPendingRef.current = true
+      }
+      setMode(nextMode)
+    }
     window.addEventListener('hashchange', handler)
     return () => window.removeEventListener('hashchange', handler)
+  }, [])
+
+  const revealSettingsWindow = useCallback(async () => {
+    if (!settingsOpenPendingRef.current) return
+    settingsOpenPendingRef.current = false
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    try {
+      await api.showWindow()
+      await api.focusWindow()
+    } catch (err) {
+      console.error('[App] Error showing settings window:', err)
+    }
   }, [])
 
   // 监听后端触发的打开设置事件
@@ -235,15 +255,19 @@ function App() {
     api.onOpenSettings(() => {
       const currentHash = window.location.hash.replace('#', '').split('?')[0]
       if (currentHash !== '' && currentHash !== 'translator' && currentHash !== 'settings') return
+      settingsOpenPendingRef.current = true
       window.location.hash = '#settings'
       setMode('settings')
+      if (currentHash === 'settings' && settingsReadyRef.current) {
+        void revealSettingsWindow()
+      }
     }).then((unlisten) => {
       cleanup = unlisten
     })
     return () => {
       cleanup?.()
     }
-  }, [])
+  }, [revealSettingsWindow])
 
   // 根据当前模式调整窗口大小
   useEffect(() => {
@@ -259,15 +283,23 @@ function App() {
 
   // 打开设置页
   const openSettings = async () => {
+    settingsOpenPendingRef.current = true
+    settingsReadyRef.current = false
+    try {
+      await api.hideWindow()
+      await api.setAlwaysOnTop(false)
+      await api.resizeWindow(640, 520)
+      await api.centerWindow()
+    } catch (err) {
+      console.error('[App] Error preparing settings window:', err)
+    }
     window.location.hash = '#settings'
     setMode('settings')
-    // 确保窗口大小正确，设置页不置顶
-    await api.resizeWindow(640, 520)
-    await api.setAlwaysOnTop(false)
   }
 
   // 关闭设置页，返回翻译器
   const closeSettings = async () => {
+    settingsReadyRef.current = false
     try {
       await api.hideWindow()
     } catch (err) {
@@ -290,7 +322,14 @@ function App() {
     return (
       <div className="h-screen w-screen overflow-hidden">
         <Suspense fallback={null}>
-          <Settings onClose={closeSettings} onSettingsChange={applyTheme} />
+          <Settings
+            onClose={closeSettings}
+            onSettingsChange={applyTheme}
+            onReady={() => {
+              settingsReadyRef.current = true
+              void revealSettingsWindow()
+            }}
+          />
         </Suspense>
       </div>
     )

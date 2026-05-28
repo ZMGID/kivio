@@ -269,6 +269,10 @@ export const api = {
     const win = getCurrentWindow()
     await win.setSize(new LogicalSize(width, height))
   },
+  centerWindow: async () => {
+    const win = getCurrentWindow()
+    await win.center()
+  },
   hideWindow: async () => {
     const win = getCurrentWindow()
     await win.hide()
@@ -280,6 +284,10 @@ export const api = {
   showWindow: async () => {
     const win = getCurrentWindow()
     await win.show()
+  },
+  focusWindow: async () => {
+    const win = getCurrentWindow()
+    await win.setFocus()
   },
   startDragging: async () => {
     const win = getCurrentWindow()

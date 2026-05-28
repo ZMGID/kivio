@@ -23,13 +23,36 @@ type SettingsData = SettingsType
 interface SettingsProps {
   onClose: () => void
   onSettingsChange: () => void
+  onReady?: () => void
+}
+
+function FieldBlock({
+  label,
+  description,
+  children,
+  className = '',
+}: {
+  label: React.ReactNode
+  description?: string
+  children: React.ReactNode
+  className?: string
+}) {
+  return (
+    <div className={`py-2 ${className}`}>
+      <div className="mb-2">
+        <div className="kv-row-label">{label}</div>
+        {description && <p className="kv-row-desc">{description}</p>}
+      </div>
+      {children}
+    </div>
+  )
 }
 
 /**
  * 设置面板主组件
  * 提供基础设置、翻译设置、截图设置、模型管理四大标签页
  */
-export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
+export default function Settings({ onClose, onSettingsChange, onReady }: SettingsProps) {
   const [settings, setSettings] = useState<SettingsData | null>(null)
   const [initialSettingsSnapshot, setInitialSettingsSnapshot] = useState('')
   const [loading, setLoading] = useState(true)
@@ -71,6 +94,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   const [loadError, setLoadError] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const saveSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const readyEmittedRef = useRef(false)
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
@@ -133,6 +157,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
   // 重试通过递增 reloadKey 触发本 effect 重跑
   useEffect(() => {
     let active = true
+    readyEmittedRef.current = false
     setLoading(true)
     setLoadError('')
     api.getSettings()
@@ -170,6 +195,13 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       active = false
     }
   }, [reloadKey])
+
+  useEffect(() => {
+    if (!loading && !readyEmittedRef.current && (settings || loadError)) {
+      readyEmittedRef.current = true
+      onReady?.()
+    }
+  }, [loadError, loading, onReady, settings])
 
   /**
    * 刷新权限状态（macOS）
@@ -937,7 +969,9 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
       <div className="kv-body">
         <aside className="kv-sidebar">
           <div className="kv-sidebar-brand" onMouseDown={handleSettingsDragMouseDown}>
-            <div className="kv-sidebar-brand-mark">K</div>
+            <div className="kv-sidebar-brand-mark">
+              <img src="/icon.png" alt="" aria-hidden="true" />
+            </div>
             <div className="kv-sidebar-brand-name">Kivio</div>
             <div className="kv-sidebar-brand-ver">v{appVersion}</div>
           </div>
@@ -1471,113 +1505,117 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                     const isOnDevice = provider.baseUrl === 'applefoundation://local'
                     return (
                       <>
-                        <SettingsGroup title={t.providerName} className="!pt-0">
-                          <SettingRow label={t.providerName} description={lang === 'zh' ? '显示在模型选择器中的名称。' : 'Displayed in model selectors.'}>
-                            <Input
-                              value={provider.name}
-                              onChange={(v) => updateProvider(provider.id, { name: v })}
-                              placeholder="Provider name"
-                            />
-                          </SettingRow>
-                          <SettingRow label={lang === 'zh' ? '状态' : 'Status'} description={isOnDevice ? (lang === 'zh' ? '端上模型，不需要 API Key。' : 'On-device provider; no API key required.') : t.apiKeysHint}>
-                            <span className={`kv-tag ${isOnDevice || provider.apiKeys.some((key) => key.trim()) ? 'ok' : 'warn'}`}>
+                        <SettingsGroup title={lang === 'zh' ? '供应商' : 'Provider'} className="!pt-0">
+                          <div className="py-2 flex items-end gap-2.5">
+                            <div className="min-w-0 flex-1">
+                              <div className="kv-row-label mb-1.5">{t.providerName}</div>
+                              <Input
+                                value={provider.name}
+                                onChange={(v) => updateProvider(provider.id, { name: v })}
+                                placeholder="Provider name"
+                              />
+                            </div>
+                            <span className={`kv-tag mb-0.5 ${isOnDevice || provider.apiKeys.some((key) => key.trim()) ? 'ok' : 'warn'}`}>
                               {isOnDevice ? (lang === 'zh' ? '本地' : 'Local') : provider.apiKeys.some((key) => key.trim()) ? t.connectionOk : t.permissionMissing}
                             </span>
-                          </SettingRow>
-                          <div className="flex justify-end py-2">
                             <button
                               type="button"
                               onClick={() => setConfirmDeleteProviderId(provider.id)}
-                              className="kv-btn danger sm"
+                              className="kv-icon-btn danger mb-1"
                               data-tauri-drag-region="false"
+                              title={t.deleteProvider}
+                              aria-label={t.deleteProvider}
                             >
                               <Trash2 size={12} />
-                              {t.deleteProvider}
                             </button>
                           </div>
                         </SettingsGroup>
 
-                        {!isOnDevice && (
-                          <SettingsGroup title={t.baseUrl}>
-                            <SettingRow label={t.baseUrl} description={lang === 'zh' ? 'OpenAI 兼容接口地址。' : 'OpenAI-compatible endpoint.'} stack>
-                              <Input
-                                value={provider.baseUrl}
-                                onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
-                                placeholder="https://api.openai.com/v1"
-                                mono
-                              />
-                            </SettingRow>
-                          </SettingsGroup>
-                        )}
+                        <SettingsGroup title={lang === 'zh' ? '配置' : 'Configuration'}>
+                          {!isOnDevice && (
+                            <>
+                              <FieldBlock label={t.baseUrl} description={lang === 'zh' ? 'OpenAI 兼容接口地址。' : 'OpenAI-compatible endpoint.'}>
+                                <Input
+                                  value={provider.baseUrl}
+                                  onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
+                                  placeholder="https://api.openai.com/v1"
+                                  mono
+                                />
+                              </FieldBlock>
 
-                        {!isOnDevice && (
-                          <SettingsGroup title={t.apiKey}>
-                            <SettingRow label={t.apiKey} description={t.apiKeysHint} stack>
-                              <div className="space-y-1.5">
-                                {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
-                                  const total = Math.max(provider.apiKeys.length, 1)
-                                  return (
-                                    <div key={`${provider.id}-${total}-${idx}`} className="flex items-center gap-1.5">
-                                      <Input
-                                        type="password"
-                                        value={key}
-                                        mono
-                                        onChange={(v) => {
-                                          const base = provider.apiKeys.length > 0 ? [...provider.apiKeys] : ['']
-                                          base[idx] = v
-                                          updateProvider(provider.id, { apiKeys: base })
-                                        }}
-                                        placeholder={idx === 0 ? `sk-... (${t.apiKeyPrimary})` : `sk-... (${t.apiKeyBackup})`}
-                                      />
-                                      {total > 1 && (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            const next = provider.apiKeys.filter((_, i) => i !== idx)
-                                            updateProvider(provider.id, { apiKeys: next })
+                              <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
+                                <div className="space-y-1.5">
+                                  {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
+                                    const total = Math.max(provider.apiKeys.length, 1)
+                                    return (
+                                      <div key={`${provider.id}-${total}-${idx}`} className="flex items-center gap-1.5">
+                                        <Input
+                                          type="password"
+                                          value={key}
+                                          mono
+                                          onChange={(v) => {
+                                            const base = provider.apiKeys.length > 0 ? [...provider.apiKeys] : ['']
+                                            base[idx] = v
+                                            updateProvider(provider.id, { apiKeys: base })
                                           }}
-                                          className="kv-icon-btn danger"
-                                          title={t.removeKey}
-                                          data-tauri-drag-region="false"
-                                        >
-                                          <Trash2 size={12} />
-                                        </button>
-                                      )}
-                                    </div>
-                                  )
-                                })}
+                                          placeholder={idx === 0 ? `sk-... (${t.apiKeyPrimary})` : `sk-... (${t.apiKeyBackup})`}
+                                        />
+                                        {total > 1 && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const next = provider.apiKeys.filter((_, i) => i !== idx)
+                                              updateProvider(provider.id, { apiKeys: next })
+                                            }}
+                                            className="kv-icon-btn danger"
+                                            title={t.removeKey}
+                                            data-tauri-drag-region="false"
+                                          >
+                                            <Trash2 size={12} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const base = provider.apiKeys.length > 0 ? provider.apiKeys : ['']
+                                    updateProvider(provider.id, { apiKeys: [...base, ''] })
+                                  }}
+                                  className="kv-btn sm mt-2"
+                                  data-tauri-drag-region="false"
+                                >
+                                  <Plus size={11} />
+                                  {t.addKey}
+                                </button>
+                              </FieldBlock>
+
+                              <div className="kv-row">
+                                <div className="kv-row-text">
+                                  <span className="kv-row-label">{t.testConnection}</span>
+                                  {providerTestFeedback[provider.id]?.message && (
+                                    <p className="kv-row-desc">{providerTestFeedback[provider.id]?.message}</p>
+                                  )}
+                                </div>
+                                <div className="kv-row-control">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleTestConnection(provider.id)}
+                                    disabled={testingProviderId === provider.id}
+                                    className="kv-btn sm"
+                                    data-tauri-drag-region="false"
+                                  >
+                                    <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
+                                    {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
+                                  </button>
+                                </div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const base = provider.apiKeys.length > 0 ? provider.apiKeys : ['']
-                                  updateProvider(provider.id, { apiKeys: [...base, ''] })
-                                }}
-                                className="kv-btn sm mt-2"
-                                data-tauri-drag-region="false"
-                              >
-                                <Plus size={11} />
-                                {t.addKey}
-                              </button>
-                            </SettingRow>
+                            </>
+                          )}
 
-                            <SettingRow label={t.testConnection} description={providerTestFeedback[provider.id]?.message}>
-                              <button
-                                type="button"
-                                onClick={() => handleTestConnection(provider.id)}
-                                disabled={testingProviderId === provider.id}
-                                className="kv-btn sm"
-                                data-tauri-drag-region="false"
-                              >
-                                <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
-                                {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
-                              </button>
-                            </SettingRow>
-                          </SettingsGroup>
-                        )}
-
-                        <SettingsGroup title={t.registeredModels}>
-                          <SettingRow label={t.registeredModels} description={lang === 'zh' ? '这些模型会出现在各功能的模型选择器中。' : 'These models appear in feature model selectors.'} stack>
+                          <FieldBlock label={t.registeredModels} description={lang === 'zh' ? '这些模型会出现在各功能的模型选择器中。' : 'These models appear in feature model selectors.'}>
                             <div className="flex items-center gap-1.5">
                               <Input
                                 className="h-7 !text-[11px]"
@@ -1625,10 +1663,10 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                                 </span>
                               ))}
                             </div>
-                          </SettingRow>
+                          </FieldBlock>
 
                           {!isOnDevice && (
-                            <SettingRow label={t.availableModels} description={lang === 'zh' ? '从供应商接口拉取模型列表。' : 'Fetch models from the provider endpoint.'} stack>
+                            <FieldBlock label={t.availableModels} description={lang === 'zh' ? '从供应商接口拉取模型列表。' : 'Fetch models from the provider endpoint.'}>
                               <div className="flex justify-end mb-2">
                                 <button
                                   type="button"
@@ -1659,7 +1697,7 @@ export default function Settings({ onClose, onSettingsChange }: SettingsProps) {
                                   <span className="kv-row-desc italic">{lang === 'zh' ? '尚未获取模型。' : 'No models fetched yet.'}</span>
                                 )}
                               </div>
-                            </SettingRow>
+                            </FieldBlock>
                           )}
                         </SettingsGroup>
 

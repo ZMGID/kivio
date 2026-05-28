@@ -783,9 +783,10 @@ pub(crate) fn send_paste_shortcut() {
 }
 
 /// 打开设置窗口
-/// 调整窗口大小为 640x520，取消置顶，显示并聚焦，同时通过 hash 路由切换到设置页面
+/// 调整窗口大小为 640x520 并切到设置页；实际 show/focus 等前端 Settings 加载完成后执行。
 pub(crate) fn open_settings_window(app: &AppHandle) -> Result<(), String> {
     let window = ensure_settings_window(app)?;
+    let _ = window.hide();
     let _ = window.set_always_on_top(false);
     let _ = window.set_size(tauri::LogicalSize::new(640.0, 520.0));
 
@@ -799,8 +800,6 @@ pub(crate) fn open_settings_window(app: &AppHandle) -> Result<(), String> {
     let window_for_task = window.clone();
     let _ = window.run_on_main_thread(move || {
         let _ = window_for_task.center();
-        let _ = window_for_task.show();
-        let _ = window_for_task.set_focus();
     });
 
     Ok(())

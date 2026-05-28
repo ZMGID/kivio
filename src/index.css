@@ -345,14 +345,19 @@ body {
   width: 18px;
   height: 18px;
   border-radius: 5px;
-  background: var(--accent);
+  background: #ffffff;
+  border: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-onaccent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+.kv-sidebar-brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .kv-sidebar-brand-name {
   font-size: 12.5px;
