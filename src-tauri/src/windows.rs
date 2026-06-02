@@ -1,12 +1,10 @@
-use tauri::{
-  window::Color, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{window::Color, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /**
  * 获取主窗口
  */
 pub fn get_main_window(app: &AppHandle) -> Option<WebviewWindow> {
-  app.get_webview_window("main")
+    app.get_webview_window("main")
 }
 
 /**
@@ -14,22 +12,22 @@ pub fn get_main_window(app: &AppHandle) -> Option<WebviewWindow> {
  * 从 tauri.conf.json 中读取主窗口配置进行创建
  */
 pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-  if let Some(window) = get_main_window(app) {
-    return Ok(window);
-  }
+    if let Some(window) = get_main_window(app) {
+        return Ok(window);
+    }
 
-  let config = app
-    .config()
-    .app
-    .windows
-    .iter()
-    .find(|w| w.label == "main")
-    .ok_or_else(|| "Main window config not found".to_string())?;
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .ok_or_else(|| "Main window config not found".to_string())?;
 
-  WebviewWindowBuilder::from_config(app, config)
-    .map_err(|e| e.to_string())?
-    .build()
-    .map_err(|e| e.to_string())
+    WebviewWindowBuilder::from_config(app, config)
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 /**
@@ -40,26 +38,45 @@ pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
  * 避免输入翻译窗口闪一下。
  */
 pub fn ensure_settings_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-  if let Some(window) = get_main_window(app) {
-    return Ok(window);
-  }
+    if let Some(window) = get_main_window(app) {
+        return Ok(window);
+    }
 
-  WebviewWindowBuilder::new(
-    app,
-    "main",
-    WebviewUrl::App("index.html#settings".into()),
-  )
-  .title("Kivio")
-  .inner_size(640.0, 520.0)
-  .resizable(true)
-  .decorations(false)
-  .transparent(true)
-  .shadow(false)
-  .visible_on_all_workspaces(true)
-  .skip_taskbar(true)
-  .visible(false)
-  .build()
-  .map_err(|e| e.to_string())
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html#settings".into()))
+        .title("Kivio")
+        .inner_size(640.0, 520.0)
+        .resizable(true)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/**
+ * 确保主窗口以 Chat 路由创建。
+ */
+pub fn ensure_chat_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = get_main_window(app) {
+        return Ok(window);
+    }
+
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html#chat".into()))
+        .title("Kivio")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(860.0, 560.0)
+        .resizable(true)
+        .decorations(false)
+        .transparent(false)
+        .shadow(true)
+        .visible_on_all_workspaces(false)
+        .skip_taskbar(false)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 /**
@@ -68,37 +85,33 @@ pub fn ensure_settings_window(app: &AppHandle) -> Result<WebviewWindow, String> 
  * 创建时尺寸为悬浮态默认值；后端按需要 set_size 切换。
  */
 pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-  if let Some(window) = app.get_webview_window("lens") {
-    return Ok(window);
-  }
+    if let Some(window) = app.get_webview_window("lens") {
+        return Ok(window);
+    }
 
-  let window = WebviewWindowBuilder::new(
-    app,
-    "lens",
-    WebviewUrl::App("index.html#lens".into()),
-  )
-  .title("Lens")
-  .inner_size(600.0, 72.0)
-  .always_on_top(true)
-  .visible_on_all_workspaces(true)
-  .resizable(true)
-  .decorations(false)
-  .shadow(false)
-  .transparent(true)
-  // 把 WebView2 / WKWebView 的默认背景设成全透明。Windows 上 WebView2 控件
-  // 在 HTML/CSS 把 html、body、#root 设为 transparent 之前会用系统主题色（白）
-  // 渲染首帧，导致全屏白闪 —— 设了 (0,0,0,0) 后默认背景本身就是透明的。
-  // 文档：Windows 8+ 上 webview 层的 alpha=0 被尊重；macOS 上此调用是 no-op。
-  .background_color(Color(0, 0, 0, 0))
-  .skip_taskbar(true)
-  .visible(false)
-  .build()
-  .map_err(|e| e.to_string())?;
+    let window = WebviewWindowBuilder::new(app, "lens", WebviewUrl::App("index.html#lens".into()))
+        .title("Lens")
+        .inner_size(600.0, 72.0)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .resizable(true)
+        .decorations(false)
+        .shadow(false)
+        .transparent(true)
+        // 把 WebView2 / WKWebView 的默认背景设成全透明。Windows 上 WebView2 控件
+        // 在 HTML/CSS 把 html、body、#root 设为 transparent 之前会用系统主题色（白）
+        // 渲染首帧，导致全屏白闪 —— 设了 (0,0,0,0) 后默认背景本身就是透明的。
+        // 文档：Windows 8+ 上 webview 层的 alpha=0 被尊重；macOS 上此调用是 no-op。
+        .background_color(Color(0, 0, 0, 0))
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
 
-  #[cfg(target_os = "macos")]
-  apply_macos_workspace_behavior(&window);
+    #[cfg(target_os = "macos")]
+    apply_macos_workspace_behavior(&window);
 
-  Ok(window)
+    Ok(window)
 }
 
 /**
@@ -107,10 +120,10 @@ pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
  */
 #[cfg(target_os = "macos")]
 pub fn apply_macos_workspace_behavior(window: &WebviewWindow) {
-  let window_for_task = window.clone();
-  let _ = window.run_on_main_thread(move || {
-    let _ = window_for_task.set_visible_on_all_workspaces(true);
-  });
+    let window_for_task = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let _ = window_for_task.set_visible_on_all_workspaces(true);
+    });
 }
 
 #[allow(dead_code)]

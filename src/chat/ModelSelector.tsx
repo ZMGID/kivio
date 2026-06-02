@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ChevronDown } from 'lucide-react'
-import { api } from '../api/tauri'
+import { api, type ModelProvider } from '../api/tauri'
 
 interface ModelSelectorProps {
   currentProviderId: string
@@ -14,7 +14,7 @@ export function ModelSelector({
   onModelChange,
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false)
-  const [providers, setProviders] = useState<any[]>([])
+  const [providers, setProviders] = useState<ModelProvider[]>([])
 
   useEffect(() => {
     loadProviders()
@@ -30,7 +30,7 @@ export function ModelSelector({
   }
 
   const currentProvider = providers.find((p) => p.id === currentProviderId)
-  const displayName = currentModel || 'GPT-4'
+  const displayName = currentModel || currentProvider?.enabledModels[0] || '选择模型'
 
   return (
     <div className="relative">
@@ -60,20 +60,23 @@ export function ModelSelector({
                 <div className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 px-3 py-2">
                   {provider.name}
                 </div>
-                {provider.models?.map((model: any) => (
+                {(provider.enabledModels.length > 0
+                  ? provider.enabledModels
+                  : provider.availableModels
+                ).map((model) => (
                   <button
-                    key={model.id}
+                    key={model}
                     onClick={() => {
-                      onModelChange(provider.id, model.id)
+                      onModelChange(provider.id, model)
                       setOpen(false)
                     }}
                     className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                      currentProviderId === provider.id && currentModel === model.id
+                      currentProviderId === provider.id && currentModel === model
                         ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
                         : 'hover:bg-neutral-100 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
                     }`}
                   >
-                    {model.name || model.id}
+                    {model}
                   </button>
                 ))}
               </div>

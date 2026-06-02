@@ -11,7 +11,7 @@ use crate::lens_commands::{
 };
 use crate::settings::Settings;
 use crate::state::AppState;
-use crate::windows::{ensure_main_window, ensure_settings_window};
+use crate::windows::{ensure_chat_window, ensure_main_window, ensure_settings_window};
 
 /// 模拟一次 Cmd+C(macOS)/Ctrl+C(Windows)。
 /// 用于 Lens 启动时把前台 App 的选中文本拷进剪贴板。
@@ -784,6 +784,29 @@ pub(crate) fn open_settings_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 打开 AI 客户端主窗口。
+pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
+    let window = ensure_chat_window(app)?;
+    let _ = window.set_always_on_top(false);
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.set_size(tauri::LogicalSize::new(1280.0, 800.0));
+    let _ = window.eval(
+        "window.location.hash = '#chat'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
+    );
+
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+    let window_for_task = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let _ = window_for_task.center();
+    });
+    let _ = window.show();
+    let _ = window.set_focus();
+
+    Ok(())
+}
+
 fn lens_is_active(app: &AppHandle) -> bool {
     if let Some(state) = app.try_state::<AppState>() {
         if state.lens_busy.load(Ordering::SeqCst) {
@@ -822,28 +845,30 @@ pub(crate) fn open_settings_window_for_activation(app: &AppHandle) -> Result<(),
         let _ = focus_lens_window(app);
         return Ok(());
     }
-    open_settings_window(app)
+    open_chat_window(app)
 }
 
 /// 根据语言返回托盘菜单的标签文本
-fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str) {
+fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str, &'static str) {
     match lang {
-        "en" => ("Show Translator", "Settings", "Quit"),
-        _ => ("显示翻译器", "设置", "退出"),
+        "en" => ("Open AI Client", "Show Translator", "Settings", "Quit"),
+        _ => ("打开 AI 客户端", "显示翻译器", "设置", "退出"),
     }
 }
 
 /// 构建托盘菜单
 fn build_tray_menu(app: &AppHandle, lang: &str) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     use tauri::menu::{Menu, MenuItem};
-    let (show_label, settings_label, quit_label) = tray_labels(lang);
+    let (chat_label, show_label, settings_label, quit_label) = tray_labels(lang);
+    let chat = MenuItem::with_id(app, "chat", chat_label, true, None::<&str>)
+        .map_err(|e| e.to_string())?;
     let show = MenuItem::with_id(app, "show", show_label, true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let settings = MenuItem::with_id(app, "settings", settings_label, true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let quit = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    Menu::with_items(app, &[&show, &settings, &quit]).map_err(|e| e.to_string())
+    Menu::with_items(app, &[&chat, &show, &settings, &quit]).map_err(|e| e.to_string())
 }
 
 /// 设置系统托盘图标和菜单
@@ -882,9 +907,17 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "chat" => {
+                if let Err(err) = open_chat_window(app) {
+                    eprintln!("Failed to open chat window: {}", err);
+                }
+            }
             "show" => match ensure_main_window(app) {
                 Ok(window) => {
                     let _ = window.set_always_on_top(true);
+                    let _ = window.eval(
+                        "window.location.hash = '#translator'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
+                    );
                     let _ = window.show();
                     let _ = window.set_focus();
                 }

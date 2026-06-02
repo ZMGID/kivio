@@ -2,7 +2,7 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::api::call_vision_api;
-use crate::settings::ExplainMessage;
+use crate::settings::{persist_settings, ExplainMessage};
 use crate::state::AppState;
 
 use super::storage::{
@@ -52,7 +52,9 @@ pub(crate) fn chat_create_conversation(
 
     // 使用提供的 provider/model，或者回退到默认配置
     let provider_id = provider_id.unwrap_or_else(|| {
-        if !settings.lens.provider_id.is_empty() {
+        if !settings.chat_provider_id.is_empty() {
+            settings.chat_provider_id.clone()
+        } else if !settings.lens.provider_id.is_empty() {
             settings.lens.provider_id.clone()
         } else {
             settings.translator_provider_id.clone()
@@ -60,7 +62,9 @@ pub(crate) fn chat_create_conversation(
     });
 
     let model = model.unwrap_or_else(|| {
-        if !settings.lens.model.is_empty() {
+        if !settings.chat_model.is_empty() {
+            settings.chat_model.clone()
+        } else if !settings.lens.model.is_empty() {
             settings.lens.model.clone()
         } else {
             settings.translator_model.clone()
@@ -95,7 +99,7 @@ pub(crate) async fn chat_send_message(
     state: State<'_, AppState>,
     conversation_id: String,
     content: String,
-    attachments: Vec<String>, // attachment IDs
+    _attachments: Vec<String>, // attachment IDs; Phase 2 will wire image/file handling.
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
     let settings = state.settings_read().clone();
@@ -206,10 +210,13 @@ pub(crate) fn chat_delete_conversation(
 #[tauri::command]
 pub(crate) fn chat_update_conversation(
     app: AppHandle,
+    state: State<AppState>,
     conversation_id: String,
     title: Option<String>,
     pinned: Option<bool>,
     folder: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
 
@@ -222,9 +229,26 @@ pub(crate) fn chat_update_conversation(
     if folder.is_some() {
         conversation.folder = folder;
     }
+    let provider_model_changed = provider_id.is_some() || model.is_some();
+    if let Some(provider_id) = provider_id {
+        conversation.provider_id = provider_id;
+    }
+    if let Some(model) = model {
+        conversation.model = model;
+    }
 
     conversation.updated_at = chrono::Local::now().timestamp();
     save_conversation(&app, &conversation)?;
+
+    if provider_model_changed {
+        let updated_settings = {
+            let mut settings = state.settings_write();
+            settings.chat_provider_id = conversation.provider_id.clone();
+            settings.chat_model = conversation.model.clone();
+            settings.clone()
+        };
+        persist_settings(&app, &updated_settings)?;
+    }
 
     Ok(serde_json::json!({
         "success": true,

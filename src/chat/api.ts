@@ -80,6 +80,8 @@ export const chatApi = {
       title?: string
       pinned?: boolean
       folder?: string
+      providerId?: string
+      model?: string
     }
   ): Promise<Conversation> {
     const result = await invoke<{ success: boolean; conversation: Conversation }>(
@@ -89,6 +91,8 @@ export const chatApi = {
         title: updates.title,
         pinned: updates.pinned,
         folder: updates.folder,
+        providerId: updates.providerId,
+        model: updates.model,
       }
     )
     if (!result.success) {

@@ -45,6 +45,16 @@ export type LensStreamPayload = {
   full?: string
 }
 
+export type ChatStreamPayload = {
+  imageId: string
+  kind: 'answer'
+  delta: string
+  reasoningDelta?: string
+  done?: boolean
+  reason?: 'done' | 'cancelled' | 'error'
+  full?: string
+}
+
 // Lens 联网搜索状态/结果负载（事件名 lens-web-search）
 export type LensWebSearchPayload = {
   imageId: string
@@ -106,6 +116,8 @@ export type Settings = {
   launchAtStartup: boolean
   translatorProviderId: string
   translatorModel: string
+  chatProviderId: string
+  chatModel: string
   translatorPrompt?: string
   providers: ModelProvider[]
   retryEnabled: boolean
@@ -308,6 +320,8 @@ export const api = {
   // Lens 模式
   onLensStream: (listener: (payload: LensStreamPayload) => void) =>
     on<LensStreamPayload>('lens-stream', (payload) => listener(payload)),
+  onChatStream: (listener: (payload: ChatStreamPayload) => void) =>
+    on<ChatStreamPayload>('chat-stream', (payload) => listener(payload)),
   onLensWebSearch: (listener: (payload: LensWebSearchPayload) => void) =>
     on<LensWebSearchPayload>('lens-web-search', (payload) => listener(payload)),
   onLensTranslateStream: (listener: (payload: LensTranslateStreamPayload) => void) =>

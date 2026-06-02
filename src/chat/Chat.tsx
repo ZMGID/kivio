@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Sidebar } from './Sidebar'
 import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
@@ -13,27 +13,65 @@ interface ChatProps {
 
 export default function Chat({ onOpenSettings }: ChatProps) {
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const sidebarCollapsed = false
   const [streaming, setStreaming] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
+  const [streamingReasoning, setStreamingReasoning] = useState('')
+  const [streamError, setStreamError] = useState('')
+  const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
+  const currentConversationIdRef = useRef<string | null>(null)
+
+  const getRouteConversationId = useCallback(() => {
+    const hash = window.location.hash.replace('#', '').split('?')[0]
+    if (!hash.startsWith('chat/')) return null
+    return decodeURIComponent(hash.slice('chat/'.length))
+  }, [])
+
+  const syncRoute = useCallback((conversationId: string | null) => {
+    const nextHash = conversationId ? `#chat/${encodeURIComponent(conversationId)}` : '#chat'
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash
+    }
+  }, [])
+
+  const refreshSidebar = useCallback(() => {
+    setSidebarRefreshKey((key) => key + 1)
+  }, [])
+
+  // 重新加载对话
+  const reloadConversation = useCallback(async (conversationId: string) => {
+    try {
+      const conv = await chatApi.getConversation(conversationId)
+      setCurrentConversation(conv)
+    } catch (err) {
+      console.error('Failed to reload conversation:', err)
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '对话加载失败')
+    }
+  }, [])
 
   // 监听流式响应事件
   useEffect(() => {
     let unlisten: (() => void) | undefined
 
     const setupListener = async () => {
-      const { listen } = await import('@tauri-apps/api/event')
-      unlisten = await listen<any>('chat-stream', (event) => {
-        const { kind, text } = event.payload
-
-        if (kind === 'chunk') {
-          setStreamingContent((prev) => prev + text)
-        } else if (kind === 'done' || kind === 'error') {
+      unlisten = await api.onChatStream((payload) => {
+        if (payload.reasoningDelta) {
+          setStreamingReasoning((prev) => prev + payload.reasoningDelta)
+        }
+        if (payload.delta) {
+          setStreamingContent((prev) => prev + payload.delta)
+        }
+        if (payload.done) {
           setStreaming(false)
           setStreamingContent('')
-          // 重新加载对话以获取完整消息
-          if (currentConversation) {
-            reloadConversation(currentConversation.id)
+          setStreamingReasoning('')
+          if (payload.reason === 'error') {
+            setStreamError('回复生成失败，请稍后重试。')
+          }
+          const conversationId = currentConversationIdRef.current
+          if (conversationId && payload.reason !== 'cancelled') {
+            void reloadConversation(conversationId)
+            refreshSidebar()
           }
         }
       })
@@ -43,25 +81,36 @@ export default function Chat({ onOpenSettings }: ChatProps) {
     return () => {
       unlisten?.()
     }
-  }, [currentConversation])
+  }, [refreshSidebar, reloadConversation])
 
-  // 重新加载对话
-  const reloadConversation = async (conversationId: string) => {
-    try {
-      const conv = await chatApi.getConversation(conversationId)
-      setCurrentConversation(conv)
-    } catch (err) {
-      console.error('Failed to reload conversation:', err)
+  useEffect(() => {
+    currentConversationIdRef.current = currentConversation?.id ?? null
+  }, [currentConversation?.id])
+
+  useEffect(() => {
+    const loadFromRoute = () => {
+      const conversationId = getRouteConversationId()
+      if (!conversationId) {
+        setCurrentConversation(null)
+        return
+      }
+      void reloadConversation(conversationId)
     }
-  }
+    loadFromRoute()
+    window.addEventListener('hashchange', loadFromRoute)
+    return () => window.removeEventListener('hashchange', loadFromRoute)
+  }, [getRouteConversationId, reloadConversation])
 
   // 选择对话
   const handleSelectConversation = async (conversationId: string) => {
     try {
       const conv = await chatApi.getConversation(conversationId)
       setCurrentConversation(conv)
+      syncRoute(conversationId)
+      setStreamError('')
     } catch (err) {
       console.error('Failed to load conversation:', err)
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '对话加载失败')
     }
   }
 
@@ -70,8 +119,12 @@ export default function Chat({ onOpenSettings }: ChatProps) {
     try {
       const conv = await chatApi.createConversation()
       setCurrentConversation(conv)
+      syncRoute(conv.id)
+      refreshSidebar()
+      setStreamError('')
     } catch (err) {
       console.error('Failed to create conversation:', err)
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '创建对话失败')
     }
   }
 
@@ -81,13 +134,19 @@ export default function Chat({ onOpenSettings }: ChatProps) {
 
     setStreaming(true)
     setStreamingContent('')
+    setStreamingReasoning('')
+    setStreamError('')
 
     try {
       const updatedConv = await chatApi.sendMessage(currentConversation.id, content)
       setCurrentConversation(updatedConv)
+      refreshSidebar()
     } catch (err) {
       console.error('Failed to send message:', err)
       setStreaming(false)
+      setStreamingContent('')
+      setStreamingReasoning('')
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '发送失败')
     }
   }
 
@@ -96,17 +155,15 @@ export default function Chat({ onOpenSettings }: ChatProps) {
     if (!currentConversation) return
 
     try {
-      // 更新当前对话的模型配置
-      const updatedConv = {
-        ...currentConversation,
-        provider_id: providerId,
-        model: model,
-      }
+      const updatedConv = await chatApi.updateConversation(currentConversation.id, {
+        providerId,
+        model,
+      })
       setCurrentConversation(updatedConv)
-
-      // TODO: 保存到后端
+      refreshSidebar()
     } catch (err) {
       console.error('Failed to change model:', err)
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '模型切换失败')
     }
   }
 
@@ -128,6 +185,7 @@ export default function Chat({ onOpenSettings }: ChatProps) {
         onNewConversation={handleNewConversation}
         onOpenSettings={onOpenSettings}
         collapsed={sidebarCollapsed}
+        refreshKey={sidebarRefreshKey}
       />
 
       {/* 主内容区 */}
@@ -153,6 +211,9 @@ export default function Chat({ onOpenSettings }: ChatProps) {
         <MessageList
           messages={currentConversation?.messages || []}
           streaming={streaming}
+          streamingContent={streamingContent}
+          streamingReasoning={streamingReasoning}
+          error={streamError}
         />
 
         {/* 输入栏 */}

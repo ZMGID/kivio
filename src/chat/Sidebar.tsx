@@ -11,6 +11,7 @@ interface SidebarProps {
   onNewConversation: () => void
   onOpenSettings: () => void
   collapsed: boolean
+  refreshKey: number
 }
 
 export function Sidebar({
@@ -19,6 +20,7 @@ export function Sidebar({
   onNewConversation,
   onOpenSettings,
   collapsed,
+  refreshKey,
 }: SidebarProps) {
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -27,7 +29,7 @@ export function Sidebar({
   // 加载对话列表
   useEffect(() => {
     loadConversations()
-  }, [])
+  }, [refreshKey])
 
   const loadConversations = async () => {
     setLoading(true)
@@ -42,11 +44,12 @@ export function Sidebar({
   }
 
   // 搜索过滤
-  const filteredConversations = searchQuery
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase()
+  const filteredConversations = normalizedSearchQuery
     ? conversations.filter(
         (c) =>
-          c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          c.preview.toLowerCase().includes(searchQuery.toLowerCase())
+          c.title.toLowerCase().includes(normalizedSearchQuery) ||
+          c.preview.toLowerCase().includes(normalizedSearchQuery)
       )
     : conversations
 

@@ -398,6 +398,10 @@ pub struct Settings {
     #[serde(default = "default_openai_model")]
     pub translator_model: String,
     #[serde(default)]
+    pub chat_provider_id: String,
+    #[serde(default)]
+    pub chat_model: String,
+    #[serde(default)]
     pub translator_prompt: Option<String>,
     #[serde(default)]
     pub providers: Vec<ModelProvider>,
@@ -450,6 +454,8 @@ impl Default for Settings {
             launch_at_startup: false,
             translator_provider_id: "default-translator".to_string(),
             translator_model: "gpt-4o".to_string(),
+            chat_provider_id: String::new(),
+            chat_model: String::new(),
             translator_prompt: None,
             providers: vec![],
             screenshot_translation: ScreenshotTranslationConfig::default(),
@@ -544,10 +550,20 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     if settings.screenshot_translation.provider_id.is_empty() && !settings.providers.is_empty() {
         settings.screenshot_translation.provider_id = settings.providers[0].id.clone();
     }
+    if settings.chat_provider_id.is_empty() {
+        if !settings.lens.provider_id.is_empty() {
+            settings.chat_provider_id = settings.lens.provider_id.clone();
+            settings.chat_model = settings.lens.model.clone();
+        } else {
+            settings.chat_provider_id = settings.translator_provider_id.clone();
+            settings.chat_model = settings.translator_model.clone();
+        }
+    }
 
     let provider_exists = |id: &str| settings.providers.iter().any(|p| p.id == id);
     if settings.providers.is_empty() {
         settings.translator_provider_id.clear();
+        settings.chat_provider_id.clear();
         settings.screenshot_translation.provider_id.clear();
         settings.lens.provider_id.clear();
     } else {
@@ -563,6 +579,16 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
             settings.screenshot_translation.provider_id = first.id.clone();
             if let Some(model) = first.enabled_models.first() {
                 settings.screenshot_translation.model = model.clone();
+            }
+        }
+        if !provider_exists(&settings.chat_provider_id) {
+            if !settings.lens.provider_id.is_empty() && provider_exists(&settings.lens.provider_id)
+            {
+                settings.chat_provider_id = settings.lens.provider_id.clone();
+                settings.chat_model = settings.lens.model.clone();
+            } else {
+                settings.chat_provider_id = settings.translator_provider_id.clone();
+                settings.chat_model = settings.translator_model.clone();
             }
         }
         // lens provider 可空（空时 call_vision_api 走 translator_provider_id fallback）；
@@ -597,6 +623,11 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         {
             settings.lens.model = provider.enabled_models.first().cloned().unwrap_or_default();
         }
+        if settings.chat_provider_id == provider.id
+            && !provider.enabled_models.contains(&settings.chat_model)
+        {
+            settings.chat_model = provider.enabled_models.first().cloned().unwrap_or_default();
+        }
     }
 
     // 非 macOS 上 Apple Intelligence provider 可能来自跨平台同步的 settings.json。
@@ -627,6 +658,15 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
             } else {
                 settings.translator_provider_id.clear();
                 settings.translator_model.clear();
+            }
+        }
+        if apple_provider_ids.contains(&settings.chat_provider_id) {
+            if let Some((id, model)) = fallback.as_ref() {
+                settings.chat_provider_id = id.clone();
+                settings.chat_model = model.clone();
+            } else {
+                settings.chat_provider_id.clear();
+                settings.chat_model.clear();
             }
         }
         if apple_provider_ids.contains(&settings.screenshot_translation.provider_id) {
@@ -1263,6 +1303,57 @@ mod tests {
         assert!(p.enabled_models.is_empty());
         assert!(s.translator_model.is_empty());
         assert!(s.screenshot_translation.model.is_empty());
+    }
+
+    #[test]
+    fn sanitize_settings_defaults_chat_to_lens_then_translator() {
+        let mut s = Settings::default();
+        s.providers.push(ModelProvider {
+            id: "translator".to_string(),
+            name: "Translator".to_string(),
+            api_keys: vec!["sk".to_string()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".to_string(),
+            available_models: vec![],
+            enabled_models: vec!["gpt-4o".to_string()],
+        });
+        s.providers.push(ModelProvider {
+            id: "lens".to_string(),
+            name: "Lens".to_string(),
+            api_keys: vec!["sk".to_string()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".to_string(),
+            available_models: vec![],
+            enabled_models: vec!["vision-model".to_string()],
+        });
+        s.translator_provider_id = "translator".to_string();
+        s.translator_model = "gpt-4o".to_string();
+        s.lens.provider_id = "lens".to_string();
+        s.lens.model = "vision-model".to_string();
+
+        let s = sanitize_settings(s);
+        assert_eq!(s.chat_provider_id, "lens");
+        assert_eq!(s.chat_model, "vision-model");
+    }
+
+    #[test]
+    fn sanitize_settings_keeps_valid_chat_model() {
+        let mut s = Settings::default();
+        s.providers.push(ModelProvider {
+            id: "chat".to_string(),
+            name: "Chat".to_string(),
+            api_keys: vec!["sk".to_string()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".to_string(),
+            available_models: vec![],
+            enabled_models: vec!["m1".to_string(), "m2".to_string()],
+        });
+        s.chat_provider_id = "chat".to_string();
+        s.chat_model = "m2".to_string();
+
+        let s = sanitize_settings(s);
+        assert_eq!(s.chat_provider_id, "chat");
+        assert_eq!(s.chat_model, "m2");
     }
 
     #[test]

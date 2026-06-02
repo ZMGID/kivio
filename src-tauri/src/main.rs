@@ -44,7 +44,8 @@ use commands::apply_launch_at_startup;
 use screenshot::cleanup_orphan_temp_files;
 use settings::load_settings;
 use shortcuts::{
-    display_hotkey_errors, open_settings_window_for_activation, register_hotkeys, setup_tray,
+    display_hotkey_errors, open_chat_window, open_settings_window_for_activation, register_hotkeys,
+    setup_tray,
 };
 use state::AppState;
 use updates::check_github_latest_release;
@@ -89,6 +90,12 @@ fn main() {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
+                #[cfg(target_os = "macos")]
+                if window.label() == "main" {
+                    let _ = window
+                        .app_handle()
+                        .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
             }
             tauri::WindowEvent::Focused(true) => {
                 #[cfg(target_os = "macos")]
@@ -134,7 +141,10 @@ fn main() {
             });
 
             if let Err(err) = register_hotkeys(&app.handle()) {
-                eprintln!("Failed to register hotkeys: {}", display_hotkey_errors(&err));
+                eprintln!(
+                    "Failed to register hotkeys: {}",
+                    display_hotkey_errors(&err)
+                );
             }
             if let Err(err) = setup_tray(&app.handle()) {
                 eprintln!("Failed to setup tray: {err}");
@@ -173,19 +183,16 @@ fn main() {
                 }
             });
 
-            #[cfg(target_os = "windows")]
-            {
-                // Windows 平台：如果不是通过自启动启动的，则默认打开设置窗口
-                let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
-                if !launched_from_autostart {
-                    let app_handle = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        if let Err(err) = open_settings_window_for_activation(&app_handle) {
-                            eprintln!("Failed to open settings on launch: {err}");
-                        }
-                    });
-                }
+            // 如果不是通过自启动启动的，则默认打开 AI 客户端。
+            let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
+            if !launched_from_autostart {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Err(err) = open_chat_window(&app_handle) {
+                        eprintln!("Failed to open chat on launch: {err}");
+                    }
+                });
             }
             Ok(())
         })
