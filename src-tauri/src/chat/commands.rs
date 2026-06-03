@@ -120,14 +120,6 @@ pub(crate) async fn chat_send_message(
     active_skill_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
-    if let Some(skill_id) = active_skill_id.as_deref() {
-        let trimmed = skill_id.trim();
-        conversation.active_skill_id = if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        };
-    }
     let message_attachments = save_message_attachments(&app, &conversation_id, attachments)?;
     let api_content = compose_user_content_for_api(&content, &message_attachments);
     let title_source = title_source_for_user_message(&content, &message_attachments);
@@ -151,9 +143,10 @@ pub(crate) async fn chat_send_message(
     conversation.updated_at = chrono::Local::now().timestamp();
     save_conversation(&app, &conversation)?;
 
-    let selected_skill_id = active_skill_id
+    let forced_skill_id = active_skill_id
         .as_deref()
-        .or(conversation.active_skill_id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
         .map(str::to_string);
 
     match complete_assistant_reply(
@@ -163,7 +156,7 @@ pub(crate) async fn chat_send_message(
         Some(title_source.as_str()),
         Some(api_content.as_str()),
         &last_user_image_paths,
-        selected_skill_id.as_deref(),
+        forced_skill_id.as_deref(),
     )
     .await
     {
@@ -539,7 +532,7 @@ async fn complete_assistant_reply(
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
     let skill_registry =
         skills::build_registry(app, &settings.chat_tools.skill_scan_paths).unwrap_or_default();
-    let skill_id = resolve_chat_active_skill_id(
+    let skill_id = resolve_forced_skill_id(
         &settings.chat_tools,
         &skill_registry,
         active_skill_id,
@@ -648,6 +641,7 @@ async fn complete_assistant_reply(
             tools.retain(|tool| {
                 tool.source == "skill"
                     || is_native_skill_tool_name(&tool.name)
+                    || is_kivio_builtin_tool(tool)
                     || skill
                         .allowed_tools
                         .iter()
@@ -1060,29 +1054,26 @@ fn chat_tools_capable(
         && (chat_tools.enabled || crate::settings::chat_native_tools_enabled(chat_tools))
 }
 
-fn resolve_chat_active_skill_id(
+fn resolve_forced_skill_id(
     chat_tools: &crate::settings::ChatToolsConfig,
     registry: &skills::SkillRegistry,
     requested: Option<&str>,
 ) -> Option<String> {
-    let enabled_ids: Vec<String> = registry
+    let requested = requested.map(str::trim).filter(|id| !id.is_empty())?;
+    let enabled = registry
         .records
         .iter()
         .filter(|record| crate::settings::is_skill_enabled(chat_tools, &record.meta.id))
-        .map(|record| record.meta.id.clone())
-        .collect();
-
-    if let Some(requested) = requested.map(str::trim).filter(|id| !id.is_empty()) {
-        if enabled_ids.iter().any(|id| id == requested) {
-            return Some(requested.to_string());
-        }
+        .any(|record| {
+            record.meta.id == requested
+                || record.meta.name == requested
+                || skills::slugify(requested) == record.meta.id
+        });
+    if enabled {
+        Some(requested.to_string())
+    } else {
+        None
     }
-
-    if enabled_ids.len() == 1 {
-        return Some(enabled_ids[0].clone());
-    }
-
-    None
 }
 
 fn build_chat_system_prompt(
@@ -1141,15 +1132,27 @@ fn build_chat_system_prompt(
 
     let fallback = chat_tools.skill_fallback_mode.as_str();
     if let Some(skill_id) = active_skill_id.filter(|id| !id.trim().is_empty()) {
-        prompt.push_str("\n\nUser explicitly selected skill: ");
+        prompt.push_str("\n\nUser pinned skill for this message: ");
         prompt.push_str(skill_id);
         if tools_available {
-            prompt.push_str(". You MUST call skill_activate with this name first, then follow the returned instructions. Do NOT describe the steps—actually call the tools.");
+            prompt.push_str(
+                ". Call skill_activate with this name only because the user pinned it; otherwise prefer Kivio built-in tools when they fit.",
+            );
         } else if matches!(fallback, "skill_md_only" | "legacy_full_body") {
             prompt.push_str(". Follow the Active Skill instructions below.");
         } else {
             prompt.push_str(
                 ". Progressive skill loading requires tool support; switch provider or set fallback to SKILL.md only.",
+            );
+        }
+    } else if tools_available && chat_tools.skill_auto_match {
+        if language.starts_with("zh") {
+            prompt.push_str(
+                "\n\nSkill 目录仅供参考：仅当用户明确需要某个 Skill 的能力（或点名 Skill 名称）时才 skill_activate。泛泛的「用 Python」「写代码」「搜一下」等应优先使用 Kivio 内置工具（如 run_python、read_file、web_search、web_fetch），不要只因 Skill 描述里提到 Python/脚本就激活无关 Skill。",
+            );
+        } else {
+            prompt.push_str(
+                "\n\nThe skill catalog is optional: call skill_activate only when the user clearly needs that skill (or names it). For generic requests like \"use Python\", coding, or web lookup, prefer Kivio built-in tools (run_python, read_file, web_search, web_fetch) instead of activating an unrelated skill just because its description mentions Python or scripts.",
             );
         }
     }
@@ -1191,6 +1194,10 @@ fn is_native_skill_tool_name(name: &str) -> bool {
     )
 }
 
+fn is_kivio_builtin_tool(tool: &ChatToolDefinition) -> bool {
+    tool.source == "native" && !is_native_skill_tool_name(&tool.name)
+}
+
 /// Kivio 内置工具（Skill 三件套 + 只读联网）始终自动执行，不走审批弹窗。
 fn builtin_tool_bypasses_approval(tool: &ChatToolDefinition) -> bool {
     (tool.source == "skill" && is_native_skill_tool_name(&tool.name))
@@ -1230,13 +1237,13 @@ fn append_native_tools_prompt(prompt: &mut String, chat_tools: &crate::settings:
         prompt.push_str("\n\nKivio 内置工具（已启用）：");
         prompt.push_str(&list);
         prompt.push_str(
-            "。文件路径须在用户主目录内；可选工作区根目录进一步收紧。write_file、edit_file、run_command 会请求用户确认；run_python 在 Pyodide 沙盒中运行。",
+            "。文件路径须在用户主目录内；可选工作区根目录进一步收紧。write_file、edit_file、run_command 会请求用户确认；run_python 在 Pyodide 沙盒中运行。用户要用 Python 跑代码/计算时优先 run_python，不要用 skill_run_script，除非用户点名某个 Skill。",
         );
     } else {
         prompt.push_str("\n\nKivio built-in tools enabled: ");
         prompt.push_str(&list);
         prompt.push_str(
-            ". Paths must stay under the user home directory (optional workspace roots further restrict). write_file, edit_file, and run_command require user approval; run_python runs in a Pyodide sandbox.",
+            ". Paths must stay under the user home directory (optional workspace roots further restrict). write_file, edit_file, and run_command require user approval; run_python runs in a Pyodide sandbox. For generic Python requests, use run_python—not skill_run_script—unless the user named a specific skill.",
         );
     }
 }
@@ -2450,8 +2457,6 @@ pub(crate) async fn chat_regenerate_message(
         })
         .transpose()?
         .unwrap_or_default();
-    let selected_skill_id = conversation.active_skill_id.clone();
-
     match complete_assistant_reply(
         &app,
         &state,
@@ -2459,7 +2464,7 @@ pub(crate) async fn chat_regenerate_message(
         None,
         last_user_api_content.as_deref(),
         &last_user_image_paths,
-        selected_skill_id.as_deref(),
+        None,
     )
     .await
     {

@@ -136,7 +136,6 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     [disabledSkillIds, skills],
   )
   const effectiveSkillId = useMemo(() => {
-    if (enabledSkills.length === 1) return enabledSkills[0].id
     if (
       storedActiveSkillId
       && enabledSkills.some((skill) => skill.id === storedActiveSkillId)
@@ -692,12 +691,11 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         syncConversationRoute(conversation.id)
       }
 
-      const selectedSkillId = effectiveSkillId || null
       const updatedConv = await chatApi.sendMessage(
         conversation!.id,
         trimmed,
         attachments,
-        selectedSkillId,
+        null,
       )
       applyAssistantStreamStats(updatedConv)
       setCurrentConversation(updatedConv)
