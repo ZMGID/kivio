@@ -5,6 +5,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { normalizeMarkdownForRender } from './markdownUtils'
+import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 
 interface ChatMarkdownProps {
   content: string
@@ -40,13 +41,15 @@ export function ChatMarkdown({ content }: ChatMarkdownProps) {
   const normalized = normalizeMarkdownForRender(content)
   return (
     <div className={proseClass}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        components={markdownComponents}
-      >
-        {normalized}
-      </ReactMarkdown>
+      <MarkdownErrorBoundary fallbackText={content}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeKatex]}
+          components={markdownComponents}
+        >
+          {normalized}
+        </ReactMarkdown>
+      </MarkdownErrorBoundary>
     </div>
   )
 }

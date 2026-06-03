@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { PanelLeftOpen, Wrench, X } from 'lucide-react'
+import { Wrench, X } from 'lucide-react'
 import { Sidebar } from './Sidebar'
+import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { MessageList, type AssistantStreamStats } from './MessageList'
 import { InputBar } from './InputBar'
 import { ModelSelector } from './ModelSelector'
 import { WindowControls } from './WindowControls'
 import { chatApi } from './api'
-import { chatTitlebarMacInsetClass, chatTitlebarModelClass, chatTitlebarRowClass, usesNativeTitlebar } from './platform'
+import { chatTitlebarMacInsetClass, chatTitlebarRowClass, usesNativeTitlebar } from './platform'
 import type { ChatMessage, Conversation, PendingAttachment, SkillMeta, ToolCallRecord } from './types'
 import { api, type ChatToolConfirmPayload, type ChatToolDefinition, type ChatToolProgressPayload } from '../api/tauri'
 import { SettingsShell, type SettingsShellHandle, type SettingsTab } from '../settings/SettingsShell'
@@ -95,6 +96,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [cancellingStream, setCancellingStream] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
   const [streamingReasoning, setStreamingReasoning] = useState('')
+  const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [streamError, setStreamError] = useState('')
   /** 发送中待显示的用户消息（与 conversation 分离，避免 route reload 冲掉） */
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null)
@@ -161,11 +163,25 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     }
     try {
       const settings = await api.getSettings()
-      setDisabledSkillIds(settings.chatTools.disabledSkillIds ?? [])
+      const chatTools = settings.chatTools
+      const nextDisabledSkillIds = chatTools?.disabledSkillIds ?? []
+      setDisabledSkillIds((prev) =>
+        prev.length === nextDisabledSkillIds.length
+        && prev.every((id, index) => id === nextDisabledSkillIds[index])
+          ? prev
+          : nextDisabledSkillIds,
+      )
+      if (!chatTools) {
+        setEnabledTools([])
+        setEnabledToolCount(null)
+        setToolsDisabledReason('')
+        setToolsRequested(false)
+        return
+      }
       const provider = settings.providers.find((item) => item.id === activeProviderId)
-      const anyMcpEnabled = settings.chatTools.enabled && settings.chatTools.servers.some((server) => server.enabled)
-      const anyNativeEnabled = Boolean(settings.chatTools.nativeTools?.webSearch)
-      const skillRuntimeEnabled = Boolean(settings.chatTools.nativeTools?.skillRuntime)
+      const anyMcpEnabled = chatTools.enabled && chatTools.servers.some((server) => server.enabled)
+      const anyNativeEnabled = Boolean(chatTools.nativeTools?.webSearch)
+      const skillRuntimeEnabled = Boolean(chatTools.nativeTools?.skillRuntime)
       const requested = anyMcpEnabled || anyNativeEnabled || skillRuntimeEnabled
       setToolsRequested(requested)
       if (!requested) {
@@ -349,6 +365,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setCancellingStream(false)
       setStreamingContent('')
       setStreamingReasoning('')
+      setReasoningStreaming(false)
       setStreamingToolCalls([])
       activeRunIdRef.current = null
       streamStartedAtRef.current = null
@@ -388,10 +405,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
           activeRunIdRef.current = payload.runId
         }
         if (payload.reasoningDelta) {
+          setReasoningStreaming(true)
           streamingReasoningRef.current += payload.reasoningDelta
           setStreamingReasoning((prev) => prev + payload.reasoningDelta)
         }
         if (payload.delta) {
+          setReasoningStreaming(false)
           streamingContentRef.current += payload.delta
           setStreamingContent((prev) => prev + payload.delta)
         }
@@ -434,6 +453,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
           activeRunIdRef.current = payload.runId
         }
         setStreaming(true)
+        setReasoningStreaming(false)
         const record = toolEventToRecord(payload)
         setStreamingToolCalls((prev) => {
           const index = prev.findIndex((item) => item.id === record.id)
@@ -626,6 +646,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     setCancellingStream(false)
     setStreamingContent('')
     setStreamingReasoning('')
+    setReasoningStreaming(false)
     setStreamingToolCalls([])
     setStreamError('')
     activeRunIdRef.current = null
@@ -660,6 +681,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setCancellingStream(false)
       setStreamingContent('')
       setStreamingReasoning('')
+      setReasoningStreaming(false)
       setStreamingToolCalls([])
       activeRunIdRef.current = null
       streamStartedAtRef.current = null
@@ -673,6 +695,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setCancellingStream(false)
       setStreamingContent('')
       setStreamingReasoning('')
+      setReasoningStreaming(false)
       setStreamingToolCalls([])
       activeRunIdRef.current = null
       streamStartedAtRef.current = null
@@ -738,6 +761,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setCancellingStream(false)
       setStreamingContent('')
       setStreamingReasoning('')
+      setReasoningStreaming(false)
       setStreamingToolCalls([])
       setStreamError('')
       activeRunIdRef.current = null
@@ -761,6 +785,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         setCancellingStream(false)
         setStreamingContent('')
         setStreamingReasoning('')
+        setReasoningStreaming(false)
         setStreamingToolCalls([])
         activeRunIdRef.current = null
         streamStartedAtRef.current = null
@@ -860,56 +885,43 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         />
 
         {chatView === 'settings' ? (
-          <SettingsShell
-            ref={settingsRef}
-            variant="embedded"
-            initialTab={settingsInitialTab}
-            reserveTrafficLightSpace={sidebarCollapsed && usesNativeTitlebar}
-            onClose={handleSettingsClose}
-            onSettingsChange={handleSettingsChange}
-          />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <SettingsShell
+              ref={settingsRef}
+              variant="embedded"
+              initialTab={settingsInitialTab}
+              reserveTrafficLightSpace={sidebarCollapsed && usesNativeTitlebar}
+              onClose={handleSettingsClose}
+              onSettingsChange={handleSettingsChange}
+            />
+          </div>
         ) : (
           <div className="relative flex min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
-            {sidebarCollapsed ? (
-              <div
-                className={`${chatTitlebarRowClass} ${chatTitlebarMacInsetClass} pr-4`}
-                data-tauri-drag-region
-              >
-                {!usesNativeTitlebar && <WindowControls />}
-                <button
-                  type="button"
-                  onClick={() => setSidebarCollapsed(false)}
-                  className="rounded-md p-2 text-neutral-500 transition-colors hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
-                  title="展开侧栏"
-                  aria-label="展开侧栏"
-                  data-tauri-drag-region="false"
-                >
-                  <PanelLeftOpen size={17} strokeWidth={1.75} />
-                </button>
-                <div className={chatTitlebarModelClass} data-tauri-drag-region="false">
-                  <ModelSelector
-                    currentProviderId={activeProviderId}
-                    currentModel={activeModel}
-                    onModelChange={(providerId, model) => void handleModelChange(providerId, model)}
-                  />
-                </div>
-                <div className="min-w-0 flex-1" data-tauri-drag-region />
+            <header
+              className={`${chatTitlebarRowClass} gap-2 ${
+                sidebarCollapsed && usesNativeTitlebar ? chatTitlebarMacInsetClass : 'px-6'
+              } ${sidebarCollapsed ? 'pr-4' : ''}`}
+              data-tauri-drag-region
+            >
+              {!usesNativeTitlebar && <WindowControls />}
+              {sidebarCollapsed && (
+                <ChatTitlebarActions
+                  sidebarExpanded={false}
+                  onToggleSidebar={() => setSidebarCollapsed(false)}
+                  onNewConversation={() => {
+                    runAfterLeavingSettings(() => void handleNewConversation())
+                  }}
+                />
+              )}
+              <div data-tauri-drag-region="false">
+                <ModelSelector
+                  currentProviderId={activeProviderId}
+                  currentModel={activeModel}
+                  onModelChange={(providerId, model) => void handleModelChange(providerId, model)}
+                />
               </div>
-            ) : (
-              <header
-                className={`${chatTitlebarRowClass} px-6`}
-                data-tauri-drag-region
-              >
-                <div className={chatTitlebarModelClass} data-tauri-drag-region="false">
-                  <ModelSelector
-                    currentProviderId={activeProviderId}
-                    currentModel={activeModel}
-                    onModelChange={(providerId, model) => void handleModelChange(providerId, model)}
-                  />
-                </div>
-                <div className="min-w-0 flex-1" data-tauri-drag-region />
-              </header>
-            )}
+              <div className="min-w-0 flex-1" data-tauri-drag-region />
+            </header>
 
             <div className="flex min-h-0 flex-1 flex-col">
               {showEmptyHero ? (
@@ -943,6 +955,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     streaming={streaming}
                     streamingContent={streamingContent}
                     streamingReasoning={streamingReasoning}
+                    reasoningStreaming={reasoningStreaming}
                     streamingToolCalls={streamingToolCalls}
                     error={streamError}
                     lastAssistantStreamStats={lastAssistantStreamStats}

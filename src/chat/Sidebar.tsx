@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Download,
   FolderPlus,
   LayoutGrid,
   MoreHorizontal,
-  PanelLeftClose,
   Search,
   Settings as SettingsIcon,
   SquarePen,
@@ -14,6 +12,7 @@ import { ConversationList } from './ConversationList'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { WindowControls } from './WindowControls'
 import { chatApi } from './api'
+import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { chatTitlebarMacInsetClass, chatTitlebarRowClass, isMac } from './platform'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 
@@ -181,26 +180,12 @@ export function Sidebar({
         data-tauri-drag-region
       >
         {!isMac && <WindowControls />}
+        <ChatTitlebarActions
+          sidebarExpanded
+          onToggleSidebar={onToggleCollapsed}
+          onNewConversation={onNewConversation}
+        />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
-        <div className="flex items-center gap-0.5" data-tauri-drag-region="false">
-          <button
-            type="button"
-            className="rounded-md p-2 text-neutral-500 transition-colors hover:bg-black/[0.05] hover:text-neutral-800 dark:hover:bg-white/[0.08] dark:hover:text-neutral-200"
-            title="导出"
-            aria-label="导出"
-          >
-            <Download size={17} strokeWidth={1.75} />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleCollapsed}
-            className="rounded-md p-2 text-neutral-500 transition-colors hover:bg-black/[0.05] hover:text-neutral-800 dark:hover:bg-white/[0.08] dark:hover:text-neutral-200"
-            title="收起侧栏"
-            aria-label="收起侧栏"
-          >
-            <PanelLeftClose size={17} strokeWidth={1.75} />
-          </button>
-        </div>
       </div>
 
       <nav className="shrink-0 space-y-0.5 px-2 pb-2" data-tauri-drag-region="false">

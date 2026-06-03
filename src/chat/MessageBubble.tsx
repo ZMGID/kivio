@@ -9,8 +9,8 @@ import type { Attachment, ChatMessage } from './types'
 interface MessageBubbleProps {
   message: ChatMessage
   tokensPerSec?: number
-  /** 思维链仍在流式写入 */
-  reasoningActive?: boolean
+  /** 思维链正在流式写入 */
+  reasoningStreaming?: boolean
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
@@ -50,7 +50,7 @@ function AttachmentList({
 export function MessageBubble({
   message,
   tokensPerSec,
-  reasoningActive = false,
+  reasoningStreaming = false,
   onUpdateMessage,
   onRegenerateMessage,
   onDeleteMessage,
@@ -116,7 +116,7 @@ export function MessageBubble({
         )}
 
         {message.reasoning && !isEditing && (
-          <ReasoningBlock reasoning={message.reasoning} active={reasoningActive} />
+          <ReasoningBlock reasoning={message.reasoning} streaming={reasoningStreaming} />
         )}
 
         {isEditing ? (

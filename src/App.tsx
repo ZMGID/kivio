@@ -14,6 +14,7 @@ import {
   rememberChatSize,
   rememberCurrentChatRoute,
 } from './chat/persistence'
+import { ChatErrorBoundary } from './chat/ChatErrorBoundary'
 import './index.css'
 
 const Settings = lazy(() => import('./Settings'))
@@ -443,8 +444,16 @@ function App() {
   if (mode === 'chat') {
     return (
       <div className={usesNativeTitlebar ? 'h-full w-full' : 'window-container h-full w-full'}>
-        <Suspense fallback={null}>
-          <Chat onSettingsChange={applyTheme} />
+        <Suspense
+          fallback={
+            <div className="flex h-full w-full items-center justify-center bg-white dark:bg-[#212121]">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
+            </div>
+          }
+        >
+          <ChatErrorBoundary>
+            <Chat onSettingsChange={applyTheme} />
+          </ChatErrorBoundary>
         </Suspense>
       </div>
     )

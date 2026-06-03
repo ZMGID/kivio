@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { api, type ModelProvider } from '../api/tauri'
+import { chatTitlebarPillButtonClass } from './platform'
 
 interface ModelSelectorProps {
   currentProviderId: string
@@ -49,7 +50,7 @@ export function ModelSelector({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200/90 bg-white px-3 py-1.5 text-sm shadow-sm transition-colors hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:bg-neutral-800"
+        className={chatTitlebarPillButtonClass}
       >
         <span className="max-w-[200px] truncate font-medium text-neutral-800 dark:text-neutral-200">
           {displayName}

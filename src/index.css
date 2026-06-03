@@ -59,6 +59,19 @@ body {
     0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
+@keyframes reasoning-tail-pulse {
+  from {
+    opacity: 0.72;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.reasoning-stream-tail {
+  animation: reasoning-tail-pulse 0.22s ease-out;
+}
+
 /* 自定义滚动条 — 悬浮胶囊式 */
 .custom-scrollbar {
   scrollbar-width: thin;

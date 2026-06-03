@@ -12,6 +12,7 @@ interface MessageListProps {
   streaming?: boolean
   streamingContent?: string
   streamingReasoning?: string
+  reasoningStreaming?: boolean
   streamingToolCalls?: ToolCallRecord[]
   error?: string
   lastAssistantStreamStats?: AssistantStreamStats | null
@@ -25,6 +26,7 @@ export function MessageList({
   streaming,
   streamingContent = '',
   streamingReasoning = '',
+  reasoningStreaming = false,
   streamingToolCalls = [],
   error,
   lastAssistantStreamStats = null,
@@ -45,7 +47,7 @@ export function MessageList({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, streaming, streamingContent, streamingReasoning, streamingToolCalls, error])
+  }, [messages, streaming, streamingContent, streamingReasoning, reasoningStreaming, streamingToolCalls, error])
 
   return (
     <div ref={scrollRef} className="custom-scrollbar flex-1 overflow-y-auto">
@@ -77,7 +79,7 @@ export function MessageList({
               tool_calls: streamingToolCalls,
               timestamp: Math.floor(Date.now() / 1000),
             }}
-            reasoningActive={Boolean(streamingReasoning)}
+            reasoningStreaming={reasoningStreaming}
           />
         )}
 
