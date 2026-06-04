@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Folder,
   FolderPlus,
@@ -73,7 +73,7 @@ function NavRow({ icon, label, shortcut, onClick, disabled, active }: NavRowProp
   )
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   currentConversationId,
   selectedProject = null,
   onSelectProject,
@@ -147,7 +147,10 @@ export function Sidebar({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [settingsActive])
 
-  const projectFolders = projects.map((project) => project.name)
+  const projectFolders = useMemo(
+    () => projects.map((project) => project.name),
+    [projects],
+  )
 
   const handleRenameConversation = async (id: string, title: string) => {
     try {
@@ -255,14 +258,15 @@ export function Sidebar({
     }
   }
 
-  const normalizedSearchQuery = searchQuery.trim().toLowerCase()
-  const filteredConversations = normalizedSearchQuery
-    ? conversations.filter(
-        (c) =>
-          c.title.toLowerCase().includes(normalizedSearchQuery) ||
-          c.preview.toLowerCase().includes(normalizedSearchQuery)
-      )
-    : conversations
+  const filteredConversations = useMemo(() => {
+    const normalizedSearchQuery = searchQuery.trim().toLowerCase()
+    if (!normalizedSearchQuery) return conversations
+    return conversations.filter(
+      (c) =>
+        c.title.toLowerCase().includes(normalizedSearchQuery) ||
+        c.preview.toLowerCase().includes(normalizedSearchQuery),
+    )
+  }, [conversations, searchQuery])
 
   const menuProject = projectMenuState
     ? projects.find((project) => project.id === projectMenuState.projectId)
@@ -492,4 +496,4 @@ export function Sidebar({
       )}
     </aside>
   )
-}
+})

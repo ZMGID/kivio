@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { MoreHorizontal } from 'lucide-react'
 import type { ConversationListItem } from './types'
 import {
@@ -17,7 +17,7 @@ interface ConversationListProps {
   onMoveConversationToFolder: (id: string, folder: string | undefined) => Promise<void>
 }
 
-export function ConversationList({
+export const ConversationList = memo(function ConversationList({
   conversations,
   currentConversationId,
   projectFolders,
@@ -168,4 +168,4 @@ export function ConversationList({
       )}
     </>
   )
-}
+})

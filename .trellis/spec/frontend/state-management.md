@@ -42,6 +42,26 @@ Questions to answer:
 
 (To be filled by the team)
 
+### Convention: Isolate high-frequency stream state from server-state loaders
+
+**What**: Chat streaming state (`streamingContent`, `streamingReasoning`, tool progress, token deltas) is high-frequency UI state. It must not change props or effect dependencies for components that load server state, such as `Sidebar` and `ConversationList`.
+
+**Why**: A token delta can arrive many times per second. If those updates recreate callback props consumed by a data-loading component, downstream `useEffect` hooks can rerun repeatedly and call commands like `chatApi.getConversations`, making the conversation list visibly flicker between loading and rendered states.
+
+**Example**:
+```tsx
+const handleSidebarSelectConversation = useCallback((id: string) => {
+  runAfterLeavingSettings(() => void handleSelectConversation(id))
+}, [handleSelectConversation, runAfterLeavingSettings])
+
+<Sidebar
+  onSelectConversation={handleSidebarSelectConversation}
+  refreshKey={sidebarRefreshKey}
+/>
+```
+
+**Rule**: Pass stable callbacks (`useCallback`) and stable derived arrays (`useMemo`) into sidebar/list components. Refresh conversation lists through explicit signals such as `refreshKey`, not by letting token-level render churn alter loader dependencies.
+
 ---
 
 ## Common Mistakes
@@ -49,3 +69,5 @@ Questions to answer:
 <!-- State management mistakes your team has made -->
 
 (To be filled by the team)
+
+- Defining inline callbacks for sidebar/list props inside `Chat` while token streaming updates live in the same parent component. This can recreate loader dependencies on every token and cause repeated list reloads.

@@ -904,7 +904,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     return () => window.removeEventListener('hashchange', loadFromRoute)
   }, [applyConversation, getRouteConversationId, reloadConversation, restoreStreamingPreview])
 
-  const handleSelectConversation = async (conversationId: string) => {
+  const handleSelectConversation = useCallback(async (conversationId: string) => {
     setLastAssistantStreamStats(null)
     try {
       const conv = await chatApi.getConversation(conversationId)
@@ -917,7 +917,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       console.error('Failed to load conversation:', err)
       setStreamError(typeof err === 'string' ? err : (err as Error).message || '对话加载失败')
     }
-  }
+  }, [applyConversation, restoreStreamingPreview, syncConversationRoute])
 
   const handleNewConversation = useCallback(async () => {
     setLastAssistantStreamStats(null)
@@ -1309,6 +1309,41 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     [emptyHeroGreetingKey],
   ).text
 
+  const handleCollapseSidebar = useCallback(() => {
+    setSidebarCollapsed(true)
+  }, [])
+
+  const handleSidebarSelectProject = useCallback((project: ChatProject | null) => {
+    runAfterLeavingSettings(() => handleSelectProject(project))
+  }, [handleSelectProject, runAfterLeavingSettings])
+
+  const handleSidebarSelectConversation = useCallback((id: string) => {
+    runAfterLeavingSettings(() => void handleSelectConversation(id))
+  }, [handleSelectConversation, runAfterLeavingSettings])
+
+  const handleSidebarNewConversation = useCallback(() => {
+    runAfterLeavingSettings(() => void handleNewConversation())
+  }, [handleNewConversation, runAfterLeavingSettings])
+
+  const handleSidebarConversationDeleted = useCallback(() => {
+    forgetRememberedChatRoute()
+    applyConversation(null)
+    syncConversationRoute(null)
+    refreshSidebar()
+  }, [applyConversation, refreshSidebar, syncConversationRoute])
+
+  const handleSidebarOpenSettings = useCallback(() => {
+    openEmbeddedSettings('chat')
+  }, [openEmbeddedSettings])
+
+  const handleSidebarSearchOpenChange = useCallback((open: boolean) => {
+    if (open) {
+      runAfterLeavingSettings(() => setSearchOpen(true))
+      return
+    }
+    setSearchOpen(false)
+  }, [runAfterLeavingSettings])
+
   return (
     <div
       className={`chat-window-shell${usesNativeTitlebar ? ' chat-window-shell--native-titlebar' : ''}`}
@@ -1320,36 +1355,19 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         <Sidebar
           currentConversationId={currentConversation?.id}
           selectedProject={selectedProject}
-          onSelectProject={(project) => {
-            runAfterLeavingSettings(() => handleSelectProject(project))
-          }}
-          onSelectConversation={(id) => {
-            runAfterLeavingSettings(() => void handleSelectConversation(id))
-          }}
-          onNewConversation={() => {
-            runAfterLeavingSettings(() => void handleNewConversation())
-          }}
-          onConversationDeleted={() => {
-            forgetRememberedChatRoute()
-            applyConversation(null)
-            syncConversationRoute(null)
-            refreshSidebar()
-          }}
+          onSelectProject={handleSidebarSelectProject}
+          onSelectConversation={handleSidebarSelectConversation}
+          onNewConversation={handleSidebarNewConversation}
+          onConversationDeleted={handleSidebarConversationDeleted}
           onOpenAssistantCenter={openAssistantCenter}
-          onOpenSettings={() => openEmbeddedSettings('chat')}
+          onOpenSettings={handleSidebarOpenSettings}
           settingsActive={chatView === 'settings'}
           assistantCenterActive={chatView === 'assistants'}
           collapsed={sidebarCollapsed}
-          onToggleCollapsed={() => setSidebarCollapsed(true)}
+          onToggleCollapsed={handleCollapseSidebar}
           refreshKey={sidebarRefreshKey}
           searchOpen={searchOpen}
-          onSearchOpenChange={(open) => {
-            if (open) {
-              runAfterLeavingSettings(() => setSearchOpen(true))
-              return
-            }
-            setSearchOpen(false)
-          }}
+          onSearchOpenChange={handleSidebarSearchOpenChange}
         />
 
         {chatView === 'settings' ? (
