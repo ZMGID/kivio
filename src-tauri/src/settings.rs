@@ -305,6 +305,45 @@ fn default_web_search_depth() -> String {
     "basic".to_string()
 }
 
+/// Lens 快捷操作按钮
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LensQuickAction {
+    pub id: String,
+    pub label: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+fn default_quick_actions() -> Vec<LensQuickAction> {
+    vec![
+        LensQuickAction {
+            id: "translate".to_string(),
+            label: "快速翻译".to_string(),
+            prompt: "请将以下内容翻译成中文，只输出翻译结果，不要解释：".to_string(),
+            provider_id: String::new(),
+            model: String::new(),
+        },
+        LensQuickAction {
+            id: "explain".to_string(),
+            label: "内容解释".to_string(),
+            prompt: "请解释以下内容的含义，用简洁易懂的语言：".to_string(),
+            provider_id: String::new(),
+            model: String::new(),
+        },
+        LensQuickAction {
+            id: "table".to_string(),
+            label: "表格提取".to_string(),
+            prompt: "请从以下内容中提取数据并以 Markdown 表格的形式输出：".to_string(),
+            provider_id: String::new(),
+            model: String::new(),
+        },
+    ]
+}
+
 /**
  * Lens 模式配置
  * 启用后可通过热键进入：屏幕高亮选择窗口/区域 → 截图 → 在悬浮对话栏内提问。
@@ -349,6 +388,8 @@ pub struct LensConfig {
     pub windows_freeze_frame_selection: bool,
     #[serde(default)]
     pub web_search: LensWebSearchConfig,
+    #[serde(default = "default_quick_actions")]
+    pub quick_actions: Vec<LensQuickAction>,
 }
 
 fn default_message_order() -> String {
@@ -371,6 +412,7 @@ impl Default for LensConfig {
             show_capture_hint: true,
             windows_freeze_frame_selection: false,
             web_search: LensWebSearchConfig::default(),
+            quick_actions: default_quick_actions(),
         }
     }
 }

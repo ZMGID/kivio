@@ -220,6 +220,12 @@ export const i18n = {
     lensWebSearchNoResults: '未找到搜索结果',
     lensWebSearchError: '搜索失败',
     lensWebSearchSkipped: '未使用搜索',
+    lensQuickActions: '快捷操作',
+    lensQuickActionsHint: '截图后在输入栏下方显示的操作按钮，点击即可用预设 prompt 提问。',
+    lensQuickActionLabel: '按钮名称',
+    lensQuickActionPrompt: '提示词',
+    lensQuickActionAdd: '添加操作',
+    lensQuickActionDelete: '删除',
   },
   en: {
     settings: 'Settings',
@@ -440,6 +446,12 @@ export const i18n = {
     lensWebSearchNoResults: 'No search results',
     lensWebSearchError: 'Search failed',
     lensWebSearchSkipped: 'Search not used',
+    lensQuickActions: 'Quick Actions',
+    lensQuickActionsHint: 'Action buttons below the input bar after capture. Click to ask with a preset prompt.',
+    lensQuickActionLabel: 'Button Label',
+    lensQuickActionPrompt: 'Prompt',
+    lensQuickActionAdd: 'Add Action',
+    lensQuickActionDelete: 'Delete',
   }
 } as const
 

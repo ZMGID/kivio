@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, Globe } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, Globe, X } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
+import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload, type LensQuickAction } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -164,6 +164,8 @@ export default function Lens() {
   const [history, setHistory] = useState<HistoryItem[]>(loadHistoryFromStorage)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyPanelH, setHistoryPanelH] = useState(0)
+  const [quickActions, setQuickActions] = useState<LensQuickAction[]>([])
+  const pendingQuickActionRef = useRef<LensQuickAction | null>(null)
 
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -252,6 +254,7 @@ export default function Lens() {
       screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
       setKeepFullscreen(curMode === 'chat' || (curMode === 'translate' && screenshotKeepFullscreenRef.current))
       captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
+      setQuickActions(settings.lens?.quickActions || [])
     } catch (err) { console.error('Failed to load settings', err) }
   }, [])
 
@@ -370,6 +373,7 @@ export default function Lens() {
         if (stageRef.current === 'select' && selectRevealedRef.current) {
           setShowCaptureHint(captureHintEnabledRef.current)
         }
+        setQuickActions(settings.lens?.quickActions || [])
       } catch (err) { console.error('Failed to reload settings', err) }
     })()
     // 异步 take 走 Rust 端在 lens_request_internal 中暂存的选中文本。
@@ -1333,8 +1337,11 @@ export default function Lens() {
         }
       }
       preparingSendRef.current = false
+      const qa = pendingQuickActionRef.current
+      pendingQuickActionRef.current = null
       const result = await api.lensAsk(effectiveImageId || '', sendMessages, {
         webSearch: mode === 'chat' && webSearchEnabled && webSearchAvailable,
+        ...(qa ? { providerId: qa.providerId || undefined, model: qa.model || undefined, quickAction: true } : {}),
       })
       if (!result.success) {
         const errText = `${t.lensError}: ${result.error}`
@@ -1387,6 +1394,13 @@ export default function Lens() {
     const question = input.trim()
     setInput('')
     await doSend(question)
+  }
+
+  const handleQuickAction = async (qa: LensQuickAction) => {
+    if (streaming) return
+    if (!imageIdRef.current) return
+    pendingQuickActionRef.current = qa
+    await doSend(qa.prompt)
   }
 
   const handleStop = async () => {
@@ -1602,6 +1616,12 @@ export default function Lens() {
       h = Math.max(h, READY_BAR_H + FLOATING_GAP + stableAnswerHeight + FLOATING_PADDING * 2)
     }
 
+    // quick action buttons below input bar in ready stage
+    if (stage === 'ready' && quickActions.length > 0 && !keepFullscreen) {
+      const qaH = Math.ceil(quickActions.length / 3) * 36 + 8
+      h += qaH
+    }
+
     // history 面板:浮动模式下面板渲染在 bar 下方(top: 100%+18 = bar bottom + 8),
     // 窗口必须扩到 bar bottom + 8 + 面板高度,否则面板被 OS 裁掉。
     // 全屏模式不需要扩,面板渲染在 bar 上方已有空间。
@@ -1617,7 +1637,7 @@ export default function Lens() {
     } else {
       api.lensSetFloating({ x, y, width: w, height: h }).catch(err => console.error('[lens-floating] resize failed:', err))
     }
-  }, [stage, answerLayout, barRect, floatingRebased, keepFullscreen, mode, stableAnswerHeight, historyOpen, historyPanelH, isFloatingLayout])
+  }, [stage, answerLayout, barRect, floatingRebased, keepFullscreen, mode, stableAnswerHeight, historyOpen, historyPanelH, isFloatingLayout, quickActions])
 
   return (
     <div
@@ -2018,7 +2038,42 @@ export default function Lens() {
                 className={!sendDisabled ? 'text-white' : 'text-neutral-400 dark:text-neutral-500'}
               />
             </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); api.lensClose() }}
+              className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center
+                text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300
+                hover:bg-black/[0.06] dark:hover:bg-white/[0.08]
+                transition-colors duration-150 ml-0.5"
+              title="Esc"
+            >
+              <X size={15} strokeWidth={2} />
+            </button>
           </div>
+
+          {/* quick action buttons */}
+          {stage === 'ready' && quickActions.length > 0 && imageIdRef.current && (
+            <div className="mt-2 flex flex-wrap justify-center gap-1.5 px-2">
+              {quickActions.map((qa) => (
+                <button
+                  key={qa.id}
+                  type="button"
+                  onClick={() => void handleQuickAction(qa)}
+                  disabled={streaming}
+                  className="px-3 py-1.5 rounded-full text-[12px] font-medium
+                    bg-white/90 dark:bg-neutral-800/90 text-neutral-700 dark:text-neutral-200
+                    hover:bg-[#D97757]/15 dark:hover:bg-[#D97757]/20
+                    ring-1 ring-black/[0.06] dark:ring-white/[0.08]
+                    hover:ring-[#D97757]/30 dark:hover:ring-[#D97757]/30
+                    transition-all duration-150 backdrop-blur-sm
+                    disabled:opacity-40 disabled:cursor-not-allowed
+                    shadow-[0_2px_8px_-2px_rgba(0,0,0,0.12)]"
+                >
+                  {qa.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* select 态键盘提示（在对话栏卡片下方） */}
           {stage === 'select' && (
