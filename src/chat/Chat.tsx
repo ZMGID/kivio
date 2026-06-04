@@ -32,6 +32,7 @@ import { useWindowInteractionFocus } from '../utils/windowFocus'
 import { estimateTokens } from '../lens/markdown'
 import { forgetRememberedChatRoute } from './persistence'
 import { runPythonInSandbox } from './pyodideRunner'
+import { pickRandomChatEmptyGreeting } from './utils'
 
 type ChatView = 'conversation' | 'settings' | 'assistants'
 
@@ -1287,6 +1288,15 @@ export default function Chat({ onSettingsChange }: ChatProps) {
 
   const hasMessages = displayMessages.length > 0
   const showEmptyHero = chatView === 'conversation' && !hasMessages && !streaming && !streamError
+  const emptyHeroGreetingKey = showEmptyHero ? currentConversation?.id : null
+
+  const emptyHeroGreeting = useMemo(
+    () => ({
+      key: emptyHeroGreetingKey,
+      text: pickRandomChatEmptyGreeting(),
+    }),
+    [emptyHeroGreetingKey],
+  ).text
 
   return (
     <div
@@ -1421,12 +1431,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
               {showEmptyHero ? (
                 <div className="flex flex-1 flex-col items-center justify-center px-6 pb-16">
                   <div className="w-full max-w-3xl space-y-8">
-                    <h2 className="text-center text-[1.75rem] font-semibold leading-snug tracking-tight text-neutral-900 dark:text-neutral-50 sm:text-[2rem]">
+                    <h2 className="chat-empty-hero-title text-center text-[1.75rem] leading-snug tracking-tight text-neutral-900 dark:text-neutral-50 sm:text-[2rem]">
                       {currentAssistantSnapshot
                         ? currentAssistantSnapshot.name
                         : selectedProject
                           ? `开始「${selectedProject.name}」`
-                          : '今天我能为您做些什么？'}
+                          : emptyHeroGreeting}
                     </h2>
                     {(currentAssistantSnapshot?.greeting || currentAssistantSnapshot?.conversation_starters?.length) && (
                       <div className="space-y-3 text-center">

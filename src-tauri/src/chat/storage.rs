@@ -385,7 +385,10 @@ pub fn get_projects(app: &AppHandle) -> Result<Vec<ChatProject>, String> {
     Ok(project_index.projects)
 }
 
-pub fn get_assistants(app: &AppHandle, include_archived: bool) -> Result<Vec<ChatAssistant>, String> {
+pub fn get_assistants(
+    app: &AppHandle,
+    include_archived: bool,
+) -> Result<Vec<ChatAssistant>, String> {
     let index = load_assistant_index(app)?;
     let mut assistants = index.assistants;
     if !include_archived {
@@ -408,7 +411,10 @@ pub fn get_assistant(app: &AppHandle, assistant_id: &str) -> Result<ChatAssistan
         .ok_or_else(|| "助手不存在".to_string())
 }
 
-pub fn create_assistant(app: &AppHandle, mut assistant: ChatAssistant) -> Result<ChatAssistant, String> {
+pub fn create_assistant(
+    app: &AppHandle,
+    mut assistant: ChatAssistant,
+) -> Result<ChatAssistant, String> {
     validate_assistant_id(&assistant.id)?;
     normalize_assistant(&mut assistant)?;
     let mut index = load_assistant_index(app)?;
@@ -427,7 +433,10 @@ pub fn create_assistant(app: &AppHandle, mut assistant: ChatAssistant) -> Result
     Ok(assistant)
 }
 
-pub fn update_assistant(app: &AppHandle, assistant: ChatAssistant) -> Result<ChatAssistant, String> {
+pub fn update_assistant(
+    app: &AppHandle,
+    assistant: ChatAssistant,
+) -> Result<ChatAssistant, String> {
     validate_assistant_id(&assistant.id)?;
     let mut next = assistant;
     normalize_assistant(&mut next)?;
@@ -570,7 +579,10 @@ fn normalize_project_name(name: &str) -> Result<String, String> {
     Ok(normalized.to_string())
 }
 
-pub fn assistant_snapshot(app: &AppHandle, assistant_id: &str) -> Result<ChatAssistantSnapshot, String> {
+pub fn assistant_snapshot(
+    app: &AppHandle,
+    assistant_id: &str,
+) -> Result<ChatAssistantSnapshot, String> {
     let assistant = get_assistant(app, assistant_id)?;
     if assistant.archived || !assistant.enabled {
         return Err("助手不可用".to_string());
@@ -653,9 +665,11 @@ fn ensure_default_assistants(index: &mut ChatAssistantIndex) {
         changed = true;
     }
     if changed {
-        index
-            .assistants
-            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.name.cmp(&b.name)));
+        index.assistants.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.name.cmp(&b.name))
+        });
     }
 }
 

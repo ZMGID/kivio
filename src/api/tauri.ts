@@ -471,8 +471,14 @@ function normalizeProvider(provider: ModelProvider): ModelProvider {
     enabledModels: Array.isArray(provider.enabledModels) ? provider.enabledModels : [],
     supportsTools: provider.supportsTools !== false,
     enabled: provider.enabled !== false,
-    apiFormat: provider.apiFormat || 'openai',
+    apiFormat: normalizeProviderApiFormat(provider.apiFormat),
   }
+}
+
+export function normalizeProviderApiFormat(apiFormat?: string): string {
+  if (apiFormat === 'anthropic' || apiFormat === 'anthropic_messages') return 'anthropic_messages'
+  if (apiFormat === 'apple' || apiFormat === 'apple_local') return 'apple_local'
+  return 'openai_chat'
 }
 
 function normalizeChatTools(config?: Partial<ChatToolsConfig> | null): ChatToolsConfig {

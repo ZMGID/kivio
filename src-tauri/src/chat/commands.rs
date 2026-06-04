@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -11,16 +12,23 @@ use tauri_plugin_shell::ShellExt;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-use crate::api::{extract_status_code, send_with_failover};
+use crate::api::extract_status_code;
 use crate::apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
+use crate::chat::model::{
+    generate_request_from_openai_messages, model_messages_from_openai_messages,
+    openai_messages_from_model_messages, pending_tool_calls_from_openai_message,
+    AnthropicMessagesProvider, AppleLocalProvider, GenerateOptions, GenerateOutput,
+    LanguageModelProvider, MessagePart, ModelError, ModelMessage, ModelRole, OpenAiChatProvider,
+    PendingToolCall, StreamPart, StreamSink,
+};
 use crate::mcp::types::ChatToolArtifact;
 use crate::mcp::{self, ChatToolDefinition};
 use crate::settings::{
-    chat_no_think_instruction, default_chat_system_prompt, persist_settings, Settings,
+    chat_no_think_instruction, default_chat_system_prompt, persist_settings, ProviderApiFormat,
+    Settings,
 };
 use crate::skills;
 use crate::state::AppState;
-use crate::utils;
 
 use super::storage::{
     archive_assistant, assistant_snapshot, conversation_attachments_dir, create_assistant,
@@ -117,7 +125,9 @@ pub(crate) fn chat_create_conversation(
         active_skill_id: assistant_snapshot
             .as_ref()
             .and_then(|assistant| assistant.skill_id.clone()),
-        assistant_id: assistant_snapshot.as_ref().map(|assistant| assistant.id.clone()),
+        assistant_id: assistant_snapshot
+            .as_ref()
+            .map(|assistant| assistant.id.clone()),
         assistant_snapshot,
         created_at: now,
         updated_at: now,
@@ -324,6 +334,7 @@ pub(crate) async fn chat_send_message(
         reasoning: None,
         tool_calls: Vec::new(),
         api_messages: Vec::new(),
+        model_messages: Vec::new(),
         active_skill_id: None,
         timestamp: chrono::Local::now().timestamp(),
     };
@@ -1266,10 +1277,15 @@ async fn push_assistant_message(
     conversation.messages.push(ChatMessage {
         id: message_id,
         role: "assistant".to_string(),
-        content,
+        content: content.clone(),
         attachments: vec![],
-        reasoning,
+        reasoning: reasoning.clone(),
         tool_calls,
+        model_messages: assistant_model_messages_for_storage(
+            &content,
+            reasoning.as_deref(),
+            &api_messages,
+        ),
         api_messages,
         active_skill_id: active_skill_id.map(|id| id.to_string()),
         timestamp: chrono::Local::now().timestamp(),
@@ -1292,6 +1308,40 @@ async fn push_assistant_message(
     conversation.updated_at = chrono::Local::now().timestamp();
     save_conversation(app, conversation)?;
     Ok(())
+}
+
+fn assistant_model_messages_for_storage(
+    content: &str,
+    reasoning: Option<&str>,
+    api_messages: &[Value],
+) -> Vec<ModelMessage> {
+    if !api_messages.is_empty() {
+        let canonical = model_messages_from_openai_messages(api_messages.to_vec());
+        if !canonical.is_empty() {
+            return canonical;
+        }
+    }
+
+    let mut parts = Vec::new();
+    if !content.trim().is_empty() {
+        parts.push(MessagePart::Text {
+            text: content.to_string(),
+        });
+    }
+    if let Some(reasoning) = reasoning.map(str::trim).filter(|value| !value.is_empty()) {
+        parts.push(MessagePart::Reasoning {
+            text: reasoning.to_string(),
+        });
+    }
+
+    if parts.is_empty() {
+        Vec::new()
+    } else {
+        vec![ModelMessage {
+            role: ModelRole::Assistant,
+            content: parts,
+        }]
+    }
 }
 
 async fn resolve_conversation_title(
@@ -1709,7 +1759,10 @@ fn append_context_segment(
 fn assistant_prompt_segment(assistant: &ChatAssistantSnapshot) -> String {
     let mut parts = vec![format!("Active assistant: {}", assistant.name)];
     if !assistant.description.trim().is_empty() {
-        parts.push(format!("Assistant purpose: {}", assistant.description.trim()));
+        parts.push(format!(
+            "Assistant purpose: {}",
+            assistant.description.trim()
+        ));
     }
     if !assistant.system_prompt.trim().is_empty() {
         parts.push(format!(
@@ -2448,8 +2501,7 @@ fn disabled_builtin_tool_feedback(function_name: &str) -> Option<String> {
 
 /// Kivio 内置工具始终自动执行，不走审批弹窗。
 fn builtin_tool_bypasses_approval(tool: &ChatToolDefinition) -> bool {
-    (tool.source == "skill" && is_native_skill_tool_name(&tool.name))
-        || tool.source == "native"
+    (tool.source == "skill" && is_native_skill_tool_name(&tool.name)) || tool.source == "native"
 }
 
 fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Option<String> {
@@ -2577,9 +2629,21 @@ fn build_chat_api_messages(
                 "content": sanitized_content,
             }));
         }
-        if message.role == "assistant" && !message.api_messages.is_empty() {
+        if message.role == "assistant" && !message.model_messages.is_empty() {
             messages.pop();
-            messages.extend(message.api_messages.iter().map(sanitize_api_message_for_model));
+            messages.extend(
+                openai_messages_from_model_messages(&message.model_messages)
+                    .iter()
+                    .map(sanitize_api_message_for_model),
+            );
+        } else if message.role == "assistant" && !message.api_messages.is_empty() {
+            messages.pop();
+            messages.extend(
+                message
+                    .api_messages
+                    .iter()
+                    .map(sanitize_api_message_for_model),
+            );
         }
     }
 
@@ -2639,187 +2703,19 @@ async fn call_chat_completion_message(
     thinking_enabled: bool,
     label: &str,
 ) -> Result<Value, String> {
-    if provider.api_format == "anthropic" {
-        return call_anthropic_message(
-            state,
-            provider,
-            model,
-            messages,
-            tools,
-            retry_attempts,
-            label,
-        )
-        .await;
-    }
-
-    let url = format!(
-        "{}/chat/completions",
-        provider.base_url.trim_end_matches('/')
+    let request = generate_request_from_openai_messages(
+        model,
+        messages,
+        tools,
+        GenerateOptions {
+            thinking_enabled,
+            ..GenerateOptions::default()
+        },
+        label,
     );
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 2000,
-    });
-    if let Some(tools) = tools.filter(|tools| !tools.is_empty()) {
-        body["tools"] = Value::Array(
-            tools
-                .iter()
-                .map(ChatToolDefinition::to_openai_tool)
-                .collect(),
-        );
-    }
-    if !thinking_enabled && utils::provider_supports_thinking_field(&provider.base_url) {
-        body["thinking"] = serde_json::json!({ "type": "disabled" });
-    }
-
-    let response = send_with_failover(
-        state,
-        label,
-        retry_attempts,
-        &provider.id,
-        &provider.api_keys,
-        |key| {
-            state
-                .http
-                .post(url.clone())
-                .bearer_auth(key)
-                .json(&body)
-                .send()
-        },
-    )
-    .await?;
-    let raw = response
-        .text()
-        .await
-        .map_err(|err| format!("{label} read body: {err}"))?;
-    let value: Value = serde_json::from_str(&raw).map_err(|err| {
-        format!(
-            "{label} parse JSON: {} (body: {})",
-            err,
-            raw.chars().take(500).collect::<String>()
-        )
-    })?;
-    value
-        .get("choices")
-        .and_then(|choices| choices.get(0))
-        .and_then(|choice| choice.get("message"))
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "Invalid {label} response: {}",
-                raw.chars().take(500).collect::<String>()
-            )
-        })
-}
-
-/// Anthropic Messages API 非流式调用（用于工具规划轮次）。
-/// 将 OpenAI 格式的消息和工具转换为 Anthropic 格式，发送请求，再将响应转回 OpenAI 兼容格式。
-async fn call_anthropic_message(
-    state: &State<'_, AppState>,
-    provider: &crate::settings::ModelProvider,
-    model: &str,
-    messages: Vec<Value>,
-    tools: Option<&[ChatToolDefinition]>,
-    retry_attempts: usize,
-    label: &str,
-) -> Result<Value, String> {
-    use crate::anthropic_adapter;
-
-    let (system_prompt, anthropic_messages) =
-        anthropic_adapter::convert_messages_to_anthropic(&messages);
-
-    let url = anthropic_adapter::build_anthropic_url(&provider.base_url);
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": anthropic_messages,
-        "max_tokens": 2000,
-    });
-    if !system_prompt.is_empty() {
-        body["system"] = Value::String(system_prompt);
-    }
-    if let Some(tools) = tools.filter(|t| !t.is_empty()) {
-        let openai_tools: Vec<Value> = tools
-            .iter()
-            .map(ChatToolDefinition::to_openai_tool)
-            .collect();
-        let anthropic_tools = anthropic_adapter::convert_tools_to_anthropic(&openai_tools);
-        if !anthropic_tools.is_empty() {
-            body["tools"] = Value::Array(anthropic_tools);
-        }
-    }
-
-    let response = send_with_failover(
-        state,
-        label,
-        retry_attempts,
-        &provider.id,
-        &provider.api_keys,
-        |key| {
-            let headers = anthropic_adapter::build_anthropic_headers(key).unwrap_or_default();
-            state
-                .http
-                .post(url.clone())
-                .headers(headers)
-                .json(&body)
-                .send()
-        },
-    )
-    .await?;
-
-    let raw = response
-        .text()
-        .await
-        .map_err(|err| format!("{label} read body: {err}"))?;
-    let anthropic_response: Value = serde_json::from_str(&raw).map_err(|err| {
-        format!(
-            "{label} parse JSON: {} (body: {})",
-            err,
-            raw.chars().take(500).collect::<String>()
-        )
-    })?;
-
-    // 检查 Anthropic 错误
-    if let Some(error) = anthropic_response.get("error") {
-        let msg = error
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("Unknown Anthropic error");
-        return Err(format!("{label}: {msg}"));
-    }
-
-    // 将 Anthropic 响应转换为 OpenAI 兼容格式
-    let parsed = anthropic_adapter::parse_anthropic_response(&anthropic_response);
-
-    let mut message = serde_json::json!({
-        "role": "assistant",
-        "content": if parsed.content.is_empty() { Value::Null } else { Value::String(parsed.content) },
-        "finish_reason": parsed.finish_reason,
-    });
-    if let Some(reasoning) = parsed.reasoning {
-        message["reasoning_content"] = Value::String(reasoning);
-    }
-    if !parsed.tool_calls.is_empty() {
-        message["tool_calls"] = Value::Array(
-            parsed
-                .tool_calls
-                .iter()
-                .map(|tc| {
-                    serde_json::json!({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function_name,
-                            "arguments": tc.arguments_raw,
-                        }
-                    })
-                })
-                .collect(),
-        );
-    }
-
-    Ok(message)
+    let output =
+        generate_with_chat_provider(state.inner(), provider, retry_attempts, request).await?;
+    Ok(output.to_openai_compatible_message())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2836,444 +2732,206 @@ async fn stream_scoped_chat_completion(
     message_id: &str,
     generation: u64,
 ) -> Result<ChatStreamOutput, String> {
-    if provider.api_format == "anthropic" {
-        return stream_anthropic_completion(
-            app,
-            state,
-            provider,
-            model,
-            messages,
-            retry_attempts,
-            conversation_id,
-            run_id,
-            message_id,
-            generation,
-        )
-        .await;
-    }
-
-    let url = format!(
-        "{}/chat/completions",
-        provider.base_url.trim_end_matches('/')
+    let request = generate_request_from_openai_messages(
+        model,
+        messages,
+        None,
+        GenerateOptions {
+            stream: true,
+            thinking_enabled,
+            ..GenerateOptions::default()
+        },
+        "Chat stream",
     );
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 2000,
-        "stream": true,
-    });
-    if !thinking_enabled && utils::provider_supports_thinking_field(&provider.base_url) {
-        body["thinking"] = serde_json::json!({ "type": "disabled" });
-    }
-    let mut response = tokio::select! {
-        result = send_with_failover(
-            state,
-            "Chat stream",
+    let accumulator = Arc::new(Mutex::new(ChatStreamAccumulator::default()));
+    let mut sink = ChatTauriStreamSink::new(
+        app.clone(),
+        conversation_id,
+        run_id,
+        message_id,
+        accumulator.clone(),
+    );
+    let output = tokio::select! {
+        result = stream_with_chat_provider(
+            state.inner(),
+            provider,
             retry_attempts,
-            &provider.id,
-            &provider.api_keys,
-            |key| {
-                state
-                    .http
-                    .post(url.clone())
-                    .bearer_auth(key)
-                    .json(&body)
-                    .send()
-            },
+            request,
+            &mut sink,
         ) => result?,
         _ = wait_for_chat_cancel(state.inner(), conversation_id, generation) => {
+            let snapshot = chat_stream_snapshot(&accumulator);
             emit_chat_stream_done(
                 app,
                 conversation_id,
                 run_id,
                 message_id,
                 "cancelled",
-                "",
-            );
-            return Ok(ChatStreamOutput::new(String::new(), String::new(), true));
-        }
-    };
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Chat stream HTTP {}: {}",
-            status.as_u16(),
-            text.chars().take(500).collect::<String>()
-        ));
-    }
-
-    let mut buffer = String::new();
-    let mut full = String::new();
-    let mut reasoning_full = String::new();
-    loop {
-        if !state.is_chat_generation_active(conversation_id, generation) {
-            emit_chat_stream_done(
-                app,
-                conversation_id,
-                run_id,
-                message_id,
-                "cancelled",
-                full.trim(),
+                snapshot.content.trim(),
             );
             return Ok(ChatStreamOutput::new(
-                full.trim().to_string(),
-                reasoning_full.trim().to_string(),
+                snapshot.content.trim().to_string(),
+                snapshot.reasoning.trim().to_string(),
                 true,
             ));
         }
-        let chunk = match tokio::select! {
-            result = response.chunk() => result,
-            _ = wait_for_chat_cancel(state.inner(), conversation_id, generation) => {
-                emit_chat_stream_done(
-                    app,
-                    conversation_id,
-                    run_id,
-                    message_id,
-                    "cancelled",
-                    full.trim(),
-                );
-                return Ok(ChatStreamOutput::new(
-                    full.trim().to_string(),
-                    reasoning_full.trim().to_string(),
-                    true,
-                ));
-            }
-        } {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => break,
-            Err(err) => {
-                emit_chat_stream_done(
-                    app,
-                    conversation_id,
-                    run_id,
-                    message_id,
-                    "error",
-                    full.trim(),
-                );
-                return Err(err.to_string());
-            }
-        };
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(pos) = buffer.find('\n') {
-            let line: String = buffer.drain(..=pos).collect();
-            let line = line.trim();
-            if !line.starts_with("data:") {
-                continue;
-            }
-            let data = line.trim_start_matches("data:").trim();
-            if data.is_empty() {
-                continue;
-            }
-            if data == "[DONE]" {
-                let cleaned = sanitize_assistant_text_response(full.trim());
-                if cleaned.trim().is_empty() {
-                    emit_chat_stream_done(app, conversation_id, run_id, message_id, "error", "");
-                    return Err(empty_assistant_response_error("Chat stream"));
-                }
-                emit_chat_stream_done(app, conversation_id, run_id, message_id, "done", &cleaned);
-                return Ok(ChatStreamOutput::new(
-                    cleaned,
-                    reasoning_full.trim().to_string(),
-                    false,
-                ));
-            }
-            let value: Value = match serde_json::from_str(data) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            if let Some((reasoning, mode)) = extract_chat_stream_reasoning(&value) {
-                if let Some(reasoning_delta) =
-                    append_chat_stream_text(&mut reasoning_full, reasoning, mode)
-                {
-                    emit_chat_stream_delta(
-                        app,
-                        conversation_id,
-                        run_id,
-                        message_id,
-                        "",
-                        Some(&reasoning_delta),
-                    );
-                }
-            }
-            if let Some((content, mode)) = extract_chat_stream_text(&value) {
-                if let Some(content_delta) = append_chat_stream_text(&mut full, content, mode) {
-                    emit_chat_stream_delta(
-                        app,
-                        conversation_id,
-                        run_id,
-                        message_id,
-                        &content_delta,
-                        None,
-                    );
-                }
-            }
-        }
-    }
-    let cleaned = sanitize_assistant_text_response(full.trim());
+    };
+    let snapshot = chat_stream_snapshot(&accumulator);
+    let content = if output.text.trim().is_empty() {
+        snapshot.content
+    } else {
+        output.text
+    };
+    let cleaned = sanitize_assistant_text_response(content.trim());
     if cleaned.trim().is_empty() {
         emit_chat_stream_done(app, conversation_id, run_id, message_id, "error", "");
         return Err(empty_assistant_response_error("Chat stream"));
     }
     emit_chat_stream_done(app, conversation_id, run_id, message_id, "done", &cleaned);
-    Ok(ChatStreamOutput::new(
-        cleaned,
-        reasoning_full.trim().to_string(),
-        false,
-    ))
+    let reasoning = output.reasoning.unwrap_or(snapshot.reasoning);
+    Ok(ChatStreamOutput::new(cleaned, reasoning, false))
 }
 
-/// Anthropic Messages API 流式调用（用于最终回复）。
-/// 解析 Anthropic SSE 事件格式，转换为 OpenAI 兼容的流式输出。
-#[allow(clippy::too_many_arguments)]
-async fn stream_anthropic_completion(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
+async fn generate_with_chat_provider(
+    state: &AppState,
     provider: &crate::settings::ModelProvider,
-    model: &str,
-    messages: Vec<Value>,
     retry_attempts: usize,
-    conversation_id: &str,
-    run_id: &str,
-    message_id: &str,
-    generation: u64,
-) -> Result<ChatStreamOutput, String> {
-    use crate::anthropic_adapter;
-
-    let (system_prompt, anthropic_messages) =
-        anthropic_adapter::convert_messages_to_anthropic(&messages);
-
-    let url = anthropic_adapter::build_anthropic_url(&provider.base_url);
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": anthropic_messages,
-        "max_tokens": 2000,
-        "stream": true,
-    });
-    if !system_prompt.is_empty() {
-        body["system"] = Value::String(system_prompt);
-    }
-
-    let mut response = tokio::select! {
-        result = send_with_failover(
-            state,
-            "Anthropic stream",
-            retry_attempts,
-            &provider.id,
-            &provider.api_keys,
-            |key| {
-                let headers = anthropic_adapter::build_anthropic_headers(key).unwrap_or_default();
-                state
-                    .http
-                    .post(url.clone())
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-            },
-        ) => result?,
-        _ = wait_for_chat_cancel(state.inner(), conversation_id, generation) => {
-            emit_chat_stream_done(
-                app,
-                conversation_id,
-                run_id,
-                message_id,
-                "cancelled",
-                "",
-            );
-            return Ok(ChatStreamOutput::new(String::new(), String::new(), true));
+    request: crate::chat::model::GenerateRequest,
+) -> Result<GenerateOutput, String> {
+    match provider.api_format_kind() {
+        ProviderApiFormat::OpenAiChat => {
+            OpenAiChatProvider::new(state, provider, retry_attempts)
+                .generate(request)
+                .await
         }
-    };
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "Anthropic stream HTTP {}: {}",
-            status.as_u16(),
-            text.chars().take(500).collect::<String>()
-        ));
-    }
-
-    let mut buffer = String::new();
-    let mut full = String::new();
-    let mut reasoning_full = String::new();
-    // 用于追踪当前 tool_use 块
-    let mut current_tool_id = String::new();
-    let mut current_tool_name = String::new();
-    let mut current_tool_input_parts: Vec<String> = Vec::new();
-
-    loop {
-        if !state.is_chat_generation_active(conversation_id, generation) {
-            emit_chat_stream_done(
-                app,
-                conversation_id,
-                run_id,
-                message_id,
-                "cancelled",
-                full.trim(),
-            );
-            return Ok(ChatStreamOutput::new(
-                full.trim().to_string(),
-                reasoning_full.trim().to_string(),
-                true,
-            ));
+        ProviderApiFormat::AnthropicMessages => {
+            AnthropicMessagesProvider::new(state, provider, retry_attempts)
+                .generate(request)
+                .await
         }
+        ProviderApiFormat::AppleLocal => {
+            AppleLocalProvider::new(state.apple_intelligence.clone())
+                .generate(request)
+                .await
+        }
+    }
+    .map_err(|err| err.to_string())
+}
 
-        let chunk = match tokio::select! {
-            result = response.chunk() => result,
-            _ = wait_for_chat_cancel(state.inner(), conversation_id, generation) => {
-                emit_chat_stream_done(
-                    app,
-                    conversation_id,
-                    run_id,
-                    message_id,
-                    "cancelled",
-                    full.trim(),
+async fn stream_with_chat_provider(
+    state: &AppState,
+    provider: &crate::settings::ModelProvider,
+    retry_attempts: usize,
+    request: crate::chat::model::GenerateRequest,
+    sink: &mut (dyn StreamSink + Send),
+) -> Result<GenerateOutput, String> {
+    match provider.api_format_kind() {
+        ProviderApiFormat::OpenAiChat => {
+            OpenAiChatProvider::new(state, provider, retry_attempts)
+                .stream(request, sink)
+                .await
+        }
+        ProviderApiFormat::AnthropicMessages => {
+            AnthropicMessagesProvider::new(state, provider, retry_attempts)
+                .stream(request, sink)
+                .await
+        }
+        ProviderApiFormat::AppleLocal => {
+            AppleLocalProvider::new(state.apple_intelligence.clone())
+                .stream(request, sink)
+                .await
+        }
+    }
+    .map_err(|err| err.to_string())
+}
+
+#[derive(Default)]
+struct ChatStreamAccumulator {
+    content: String,
+    reasoning: String,
+}
+
+struct ChatStreamSnapshot {
+    content: String,
+    reasoning: String,
+}
+
+fn chat_stream_snapshot(accumulator: &Arc<Mutex<ChatStreamAccumulator>>) -> ChatStreamSnapshot {
+    let guard = accumulator.lock().unwrap_or_else(|err| err.into_inner());
+    ChatStreamSnapshot {
+        content: guard.content.clone(),
+        reasoning: guard.reasoning.clone(),
+    }
+}
+
+struct ChatTauriStreamSink {
+    app: AppHandle,
+    conversation_id: String,
+    run_id: String,
+    message_id: String,
+    accumulator: Arc<Mutex<ChatStreamAccumulator>>,
+}
+
+impl ChatTauriStreamSink {
+    fn new(
+        app: AppHandle,
+        conversation_id: &str,
+        run_id: &str,
+        message_id: &str,
+        accumulator: Arc<Mutex<ChatStreamAccumulator>>,
+    ) -> Self {
+        Self {
+            app,
+            conversation_id: conversation_id.to_string(),
+            run_id: run_id.to_string(),
+            message_id: message_id.to_string(),
+            accumulator,
+        }
+    }
+}
+
+impl StreamSink for ChatTauriStreamSink {
+    fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
+        match part {
+            StreamPart::TextDelta { delta } => {
+                self.accumulator
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .content
+                    .push_str(&delta);
+                emit_chat_stream_delta(
+                    &self.app,
+                    &self.conversation_id,
+                    &self.run_id,
+                    &self.message_id,
+                    &delta,
+                    None,
                 );
-                return Ok(ChatStreamOutput::new(
-                    full.trim().to_string(),
-                    reasoning_full.trim().to_string(),
-                    true,
-                ));
             }
-        } {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => break,
-            Err(err) => {
-                emit_chat_stream_done(
-                    app,
-                    conversation_id,
-                    run_id,
-                    message_id,
-                    "error",
-                    full.trim(),
+            StreamPart::ReasoningDelta { delta } => {
+                self.accumulator
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .reasoning
+                    .push_str(&delta);
+                emit_chat_stream_delta(
+                    &self.app,
+                    &self.conversation_id,
+                    &self.run_id,
+                    &self.message_id,
+                    "",
+                    Some(&delta),
                 );
-                return Err(err.to_string());
             }
-        };
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-        while let Some(pos) = buffer.find('\n') {
-            let line: String = buffer.drain(..=pos).collect();
-            let event = anthropic_adapter::parse_anthropic_sse_event(&line);
-            match event {
-                Some(anthropic_adapter::AnthropicSseEvent::TextDelta(text)) => {
-                    full.push_str(&text);
-                    emit_chat_stream_delta(app, conversation_id, run_id, message_id, &text, None);
-                }
-                Some(anthropic_adapter::AnthropicSseEvent::ThinkingDelta(thinking)) => {
-                    reasoning_full.push_str(&thinking);
-                    emit_chat_stream_delta(
-                        app,
-                        conversation_id,
-                        run_id,
-                        message_id,
-                        "",
-                        Some(&thinking),
-                    );
-                }
-                Some(anthropic_adapter::AnthropicSseEvent::ToolUseStart { id, name }) => {
-                    current_tool_id = id;
-                    current_tool_name = name;
-                    current_tool_input_parts.clear();
-                }
-                Some(anthropic_adapter::AnthropicSseEvent::ToolInputDelta(json)) => {
-                    current_tool_input_parts.push(json);
-                }
-                Some(anthropic_adapter::AnthropicSseEvent::ContentBlockStop) => {
-                    // tool_use 块结束，但我们不在流式中处理 tool calls
-                    // tool calls 在非流式 planning 路径中处理
-                    current_tool_id.clear();
-                    current_tool_name.clear();
-                    current_tool_input_parts.clear();
-                }
-                Some(anthropic_adapter::AnthropicSseEvent::MessageStop) => {
-                    if full.trim().is_empty() {
-                        emit_chat_stream_done(
-                            app,
-                            conversation_id,
-                            run_id,
-                            message_id,
-                            "error",
-                            "",
-                        );
-                        return Err(empty_assistant_response_error("Anthropic stream"));
-                    }
-                    emit_chat_stream_done(
-                        app,
-                        conversation_id,
-                        run_id,
-                        message_id,
-                        "done",
-                        full.trim(),
-                    );
-                    return Ok(ChatStreamOutput::new(
-                        full.trim().to_string(),
-                        reasoning_full.trim().to_string(),
-                        false,
-                    ));
-                }
-                Some(anthropic_adapter::AnthropicSseEvent::MessageStopWithReason(_)) => {
-                    if full.trim().is_empty() {
-                        emit_chat_stream_done(
-                            app,
-                            conversation_id,
-                            run_id,
-                            message_id,
-                            "error",
-                            "",
-                        );
-                        return Err(empty_assistant_response_error("Anthropic stream"));
-                    }
-                    emit_chat_stream_done(
-                        app,
-                        conversation_id,
-                        run_id,
-                        message_id,
-                        "done",
-                        full.trim(),
-                    );
-                    return Ok(ChatStreamOutput::new(
-                        full.trim().to_string(),
-                        reasoning_full.trim().to_string(),
-                        false,
-                    ));
-                }
-                Some(anthropic_adapter::AnthropicSseEvent::Error(err)) => {
-                    emit_chat_stream_done(
-                        app,
-                        conversation_id,
-                        run_id,
-                        message_id,
-                        "error",
-                        full.trim(),
-                    );
-                    return Err(format!("Anthropic stream error: {err}"));
-                }
-                None => {}
-            }
+            StreamPart::Error { message } => return Err(ModelError::new(message)),
+            StreamPart::Finish { .. }
+            | StreamPart::ToolCallStart { .. }
+            | StreamPart::ToolCallDelta { .. }
+            | StreamPart::ToolCallDone { .. }
+            | StreamPart::ToolResult { .. } => {}
         }
+        Ok(())
     }
-
-    if full.trim().is_empty() {
-        emit_chat_stream_done(app, conversation_id, run_id, message_id, "error", "");
-        return Err(empty_assistant_response_error("Anthropic stream"));
-    }
-
-    emit_chat_stream_done(
-        app,
-        conversation_id,
-        run_id,
-        message_id,
-        "done",
-        full.trim(),
-    );
-    Ok(ChatStreamOutput::new(
-        full.trim().to_string(),
-        reasoning_full.trim().to_string(),
-        false,
-    ))
 }
 
 struct ChatStreamOutput {
@@ -3327,15 +2985,6 @@ fn merge_reasoning(planning_parts: &[String], final_reasoning: Option<String>) -
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct PendingToolCall {
-    pub(crate) id: String,
-    pub(crate) function_name: String,
-    pub(crate) arguments: Value,
-    pub(crate) arguments_raw: String,
-    pub(crate) arguments_parse_error: Option<String>,
-}
-
 fn extract_tool_calls(message: &Value) -> Vec<PendingToolCall> {
     let from_api = extract_openai_tool_calls(message);
     if !from_api.is_empty() {
@@ -3346,53 +2995,7 @@ fn extract_tool_calls(message: &Value) -> Vec<PendingToolCall> {
 }
 
 fn extract_openai_tool_calls(message: &Value) -> Vec<PendingToolCall> {
-    message
-        .get("tool_calls")
-        .and_then(|value| value.as_array())
-        .map(|calls| {
-            calls
-                .iter()
-                .filter_map(|call| {
-                    let function = call.get("function")?;
-                    let name = function.get("name")?.as_str()?.to_string();
-                    let arguments_raw = function
-                        .get("arguments")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("{}")
-                        .to_string();
-                    let (arguments, arguments_parse_error) = parse_tool_arguments(&arguments_raw);
-                    Some(PendingToolCall {
-                        id: call
-                            .get("id")
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| format!("tool_{}", Uuid::new_v4())),
-                        function_name: name,
-                        arguments,
-                        arguments_raw,
-                        arguments_parse_error,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-pub(crate) fn parse_tool_arguments(arguments_raw: &str) -> (Value, Option<String>) {
-    let raw = if arguments_raw.trim().is_empty() {
-        "{}"
-    } else {
-        arguments_raw
-    };
-    match serde_json::from_str(raw) {
-        Ok(arguments) => (arguments, None),
-        Err(err) => (
-            Value::Null,
-            Some(format!(
-                "Tool arguments JSON is invalid or incomplete: {err}"
-            )),
-        ),
-    }
+    pending_tool_calls_from_openai_message(message)
 }
 
 fn pending_tool_calls_from_dsml(content: &str) -> Vec<PendingToolCall> {
@@ -3515,9 +3118,11 @@ fn strip_image_data_urls_for_model(content: &str) -> String {
 }
 
 fn looks_like_inline_image_base64(value: &str) -> bool {
-    if value.len() < 128 || !value.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
-    }) {
+    if value.len() < 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+    {
         return false;
     }
     value.starts_with("iVBORw0KGgo")
@@ -4963,6 +4568,7 @@ mod tests {
             reasoning: None,
             tool_calls: Vec::new(),
             api_messages: Vec::new(),
+            model_messages: Vec::new(),
             active_skill_id: None,
             timestamp,
         }
@@ -5089,6 +4695,7 @@ mod tests {
                     reasoning: None,
                     tool_calls: Vec::new(),
                     api_messages: Vec::new(),
+                    model_messages: Vec::new(),
                     active_skill_id: None,
                     timestamp: 1,
                 },
@@ -5124,6 +4731,7 @@ mod tests {
                             "reasoning_content": "final"
                         }),
                     ],
+                    model_messages: Vec::new(),
                     active_skill_id: Some("doc".to_string()),
                     timestamp: 2,
                 },
@@ -5178,7 +4786,9 @@ mod tests {
 
         let sanitized = sanitize_image_payloads_for_model(content);
 
-        assert!(sanitized.contains("[image data URL omitted; image is available as a tool artifact]"));
+        assert!(
+            sanitized.contains("[image data URL omitted; image is available as a tool artifact]")
+        );
         assert!(!sanitized.contains("data:image/png;base64"));
         assert!(!sanitized.contains("iVBORw0KGgo"));
     }
@@ -5227,6 +4837,7 @@ mod tests {
                             )
                         }),
                     ],
+                    model_messages: Vec::new(),
                     active_skill_id: None,
                     timestamp: 2,
                 },
@@ -5245,8 +4856,12 @@ mod tests {
             .expect("messages should build");
         let serialized = serde_json::to_string(&messages).expect("messages serialize");
 
-        assert!(serialized.contains("[image data URL omitted; image is available as a tool artifact]"));
-        assert!(serialized.contains("[image base64 omitted; image is available as a tool artifact]"));
+        assert!(
+            serialized.contains("[image data URL omitted; image is available as a tool artifact]")
+        );
+        assert!(
+            serialized.contains("[image base64 omitted; image is available as a tool artifact]")
+        );
         assert!(!serialized.contains("data:image/png;base64"));
         assert!(!serialized.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"));
     }

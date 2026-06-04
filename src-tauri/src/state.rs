@@ -14,8 +14,8 @@ use tokio::sync::oneshot;
 use crate::apple_intelligence::AppleIntelligenceClient;
 #[cfg(target_os = "macos")]
 use crate::macos_ocr::MacOcrClient;
-use crate::mcp::ChatToolDefinition;
 use crate::mcp::types::PythonRunResult;
+use crate::mcp::ChatToolDefinition;
 use crate::rapidocr::RapidOcrClient;
 use crate::settings::Settings;
 

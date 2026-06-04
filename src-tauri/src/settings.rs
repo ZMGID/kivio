@@ -141,12 +141,47 @@ pub struct ModelProvider {
     /// 关闭后该供应商不会出现在模型选择器中，已引用它的功能会在保存时切到第一个启用的供应商。
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// API 格式："openai"（默认）或 "anthropic"
+    /// API 格式：`openai_chat`、`anthropic_messages` 或 `apple_local`。
+    /// 旧值 `openai` / `anthropic` 会在 `sanitize_settings` 中归一化。
     #[serde(default = "default_api_format")]
     pub api_format: String,
     /// 用户自定义的模型参数覆盖（仅持久化用户显式修改的字段）
     #[serde(default)]
     pub model_overrides: std::collections::HashMap<String, ModelInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderApiFormat {
+    OpenAiChat,
+    AnthropicMessages,
+    AppleLocal,
+}
+
+impl ProviderApiFormat {
+    pub fn from_raw(raw: &str, base_url: &str) -> Self {
+        if base_url == APPLE_INTELLIGENCE_BASE_URL {
+            return Self::AppleLocal;
+        }
+        match raw.trim() {
+            "anthropic" | "anthropic_messages" => Self::AnthropicMessages,
+            "apple" | "apple_local" => Self::AppleLocal,
+            _ => Self::OpenAiChat,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiChat => "openai_chat",
+            Self::AnthropicMessages => "anthropic_messages",
+            Self::AppleLocal => "apple_local",
+        }
+    }
+}
+
+impl ModelProvider {
+    pub fn api_format_kind(&self) -> ProviderApiFormat {
+        ProviderApiFormat::from_raw(&self.api_format, &self.base_url)
+    }
 }
 
 /**
@@ -960,6 +995,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
             provider.supports_tools = false;
         }
+        provider.api_format = provider.api_format_kind().as_str().to_string();
         if let Some(legacy) = provider.api_key_legacy.take() {
             let trimmed = legacy.trim().to_string();
             if !trimmed.is_empty() && !provider.api_keys.contains(&trimmed) {
@@ -975,12 +1011,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
 
     let provider_exists = |id: &str| settings.providers.iter().any(|p| p.id == id);
-    let provider_selectable = |id: &str| {
-        settings
-            .providers
-            .iter()
-            .any(|p| p.id == id && p.enabled)
-    };
+    let provider_selectable = |id: &str| settings.providers.iter().any(|p| p.id == id && p.enabled);
     let first_selectable_provider = || settings.providers.iter().find(|p| p.enabled);
 
     // 2. 为空字段设置默认值
@@ -1606,7 +1637,7 @@ fn default_false() -> bool {
 }
 
 fn default_api_format() -> String {
-    "openai".to_string()
+    "openai_chat".to_string()
 }
 
 fn default_hotkey() -> String {

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::chat::model::ModelMessage;
 use crate::mcp::types::ChatToolArtifact;
 
 fn default_context_usage_status() -> String {
@@ -121,6 +122,12 @@ pub struct ChatMessage {
     /// and matching `role: tool` results replayed in later requests.
     #[serde(default)]
     pub api_messages: Vec<Value>,
+    /// Canonical provider-agnostic transcript messages produced while answering this UI message.
+    ///
+    /// New replay paths prefer this field. `api_messages` stays readable for legacy
+    /// conversations and OpenAI-compatible debugging.
+    #[serde(default)]
+    pub model_messages: Vec<ModelMessage>,
     #[serde(default)]
     pub active_skill_id: Option<String>,
     pub timestamp: i64,
@@ -316,7 +323,10 @@ impl From<&Conversation> for ConversationListItem {
             pinned: conv.pinned,
             folder: conv.folder.clone(),
             assistant_id: conv.assistant_id.clone(),
-            assistant_name: conv.assistant_snapshot.as_ref().map(|snapshot| snapshot.name.clone()),
+            assistant_name: conv
+                .assistant_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.name.clone()),
         }
     }
 }

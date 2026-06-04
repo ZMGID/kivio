@@ -34,7 +34,7 @@ export function ModelSelector({
           enabledModels: currentModel ? [currentModel] : ['dev-model'],
           supportsTools: true,
           enabled: true,
-          apiFormat: 'openai',
+          apiFormat: 'openai_chat',
         },
       ])
     }

@@ -103,6 +103,8 @@ export interface ChatMessage {
   toolCalls?: ToolCallRecord[]
   api_messages?: unknown[]
   apiMessages?: unknown[]
+  model_messages?: unknown[]
+  modelMessages?: unknown[]
   active_skill_id?: string | null
   activeSkillId?: string | null
   timestamp: number

@@ -116,6 +116,84 @@ api.onChatStream((payload) => {
 })
 ```
 
+## Scenario: Chat Runtime Provider Contract
+
+### 1. Scope / Trigger
+- Trigger: Chat model calls span Rust request construction, provider adapters, streaming events, conversation JSON replay, settings provider format, and frontend provider settings.
+- Apply this contract whenever changing `src-tauri/src/chat/model/**`, `build_chat_api_messages`, `chat_send_message`, provider `api_format`, streaming conversion, or hidden transcript persistence.
+
+### 2. Signatures
+- `LanguageModelProvider::generate(request: GenerateRequest) -> Result<GenerateOutput, ModelError>`
+- `LanguageModelProvider::stream(request: GenerateRequest, sink: StreamSink) -> Result<GenerateOutput, ModelError>`
+- `GenerateRequest { model, system, messages: Vec<ModelMessage>, tools: Vec<ModelTool>, options, metadata }`
+- `GenerateOutput { text, reasoning, tool_calls, usage, finish_reason, provider_messages, cancelled }`
+- `StreamPart::{TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallDone, ToolResult, Finish, Error}`
+- Provider `api_format` values are normalized to `openai_chat | anthropic_messages | apple_local`; legacy `openai` and `anthropic` must still load.
+
+### 3. Contracts
+- Runtime and tool-loop code call provider-agnostic model APIs. It must not build `/chat/completions` or `/messages` JSON bodies directly.
+- Provider-specific wire details stay inside provider adapters: `OpenAiChatProvider` owns OpenAI chat JSON/SSE/tool calls; `AnthropicMessagesProvider` owns Claude Messages content blocks/SSE/tool_use/tool_result; `AppleLocalProvider` owns local text-only calls.
+- Conversation JSON may keep legacy `api_messages`, but new assistant replies should also persist canonical `model_messages`. Replay prefers `model_messages`; old conversations missing it fall back to `api_messages`.
+- `api_messages` remains an OpenAI-compatible compatibility mirror for older replay/debug paths. It is not the internal runtime contract.
+- `supports_tools` is only a settings compatibility flag. Runtime capability decisions should use provider capabilities when that path is available, especially for tools, vision, streaming, and reasoning.
+- Existing Tauri event payloads remain stable: provider stream parts are converted into current `chat-stream`, `chat-tool`, and `chat-context` payloads at the runtime/event boundary.
+
+### 4. Validation & Error Matrix
+- Legacy provider `api_format: "anthropic"` -> sanitize/load as `anthropic_messages`.
+- Legacy provider `api_format: "openai"` or unknown string -> sanitize/load as `openai_chat` unless the base URL is Apple local.
+- Apple local provider selected with tools or vision -> tools are not sent; plain text flow remains usable.
+- Old assistant message missing `model_messages` but containing `api_messages` -> replay from sanitized `api_messages`.
+- Provider stream emits an error part -> backend emits/returns a Chat stream error without corrupting conversation history.
+- Provider rejects tools -> existing provider-without-tools fallback behavior is preserved for plain Chat and prompt-only Skill use.
+
+### 5. Good/Base/Bad Cases
+- Good: `commands.rs` builds a `GenerateRequest`, dispatches by `provider.api_format_kind()`, and consumes `GenerateOutput`.
+- Good: Anthropic image input becomes Claude `content` image blocks; Claude tool calls become `tool_use` / `tool_result` blocks inside `AnthropicMessagesProvider`.
+- Base: an OpenAI-compatible provider with no tools behaves as before through `OpenAiChatProvider`.
+- Bad: adding `if provider.api_format == "anthropic"` branches in `commands.rs` that manually assemble Claude JSON.
+- Bad: storing only visible assistant text after a tool loop; strict providers need canonical or compatibility transcript replay.
+
+### 6. Tests Required
+- Rust provider adapter tests must cover OpenAI text/tool/stream chunks and Anthropic text/image/tool_use/tool_result/stream events.
+- Rust compatibility tests must cover legacy `api_messages` replay and legacy provider `api_format` normalization.
+- `npm run typecheck` must cover frontend provider format fields and `ChatMessage.model_messages` compatibility fields.
+- `npm run lint` and `cargo test --manifest-path src-tauri/Cargo.toml` must pass after provider/runtime changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```rust
+// Runtime code should not know Claude's wire shape.
+if provider.api_format == "anthropic" {
+    body["messages"] = convert_messages_to_anthropic(&messages);
+    body["tools"] = convert_tools_to_anthropic(&tools);
+}
+```
+
+#### Correct
+```rust
+let request = generate_request_from_openai_messages(model, messages, tools, options, "Chat API");
+let output = generate_with_chat_provider(state, provider, retry_attempts, request).await?;
+let message = output.to_openai_compatible_message();
+```
+
+#### Wrong
+```rust
+// Drops the canonical replay path for newer conversations.
+if !message.api_messages.is_empty() {
+    messages.extend(message.api_messages.iter().map(sanitize_api_message_for_model));
+}
+```
+
+#### Correct
+```rust
+if !message.model_messages.is_empty() {
+    messages.extend(openai_messages_from_model_messages(&message.model_messages));
+} else if !message.api_messages.is_empty() {
+    messages.extend(message.api_messages.iter().map(sanitize_api_message_for_model));
+}
+```
+
 ## Scenario: Chat MCP + Skill Cross-Layer Contract
 
 ### 1. Scope / Trigger

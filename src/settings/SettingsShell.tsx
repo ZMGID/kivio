@@ -20,6 +20,7 @@ import {
   type ChatNativeToolsConfig,
   type ChatToolDefinition,
   defaultNativeTools,
+  normalizeProviderApiFormat,
   type SkillMeta,
   type SkillDetail,
 } from '../api/tauri'
@@ -1012,7 +1013,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       enabledModels: [],
       supportsTools: true,
       enabled: true,
-      apiFormat: 'openai',
+      apiFormat: 'openai_chat',
     }
     setSettings({
       ...settings,
@@ -1035,7 +1036,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       enabledModels: [],
       supportsTools: !preset.onDevice,
       enabled: true,
-      apiFormat: 'openai',
+      apiFormat: preset.onDevice ? 'apple_local' : 'openai_chat',
     }
     setSettings({
       ...settings,
@@ -3063,11 +3064,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                 description={lang === 'zh' ? '选择该供应商使用的 API 协议格式。代理/中转服务可能需要 Anthropic 格式。' : 'Select the API protocol format for this provider. Proxy services may require Anthropic format.'}
                               >
                                 <Select
-                                  value={provider.apiFormat || 'openai'}
+                                  value={normalizeProviderApiFormat(provider.apiFormat)}
                                   onChange={(apiFormat) => updateProvider(provider.id, { apiFormat })}
                                   options={[
-                                    { value: 'openai', label: 'OpenAI Chat API' },
-                                    { value: 'anthropic', label: 'Anthropic Messages API' },
+                                    { value: 'openai_chat', label: 'OpenAI Chat API' },
+                                    { value: 'anthropic_messages', label: 'Anthropic Messages API' },
+                                    { value: 'apple_local', label: 'Apple Local' },
                                   ]}
                                 />
                               </SettingRow>

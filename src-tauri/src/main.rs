@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
-mod anthropic_adapter;
 mod api;
 mod apple_intelligence;
 mod capture_geometry;

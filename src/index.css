@@ -3,6 +3,11 @@
 /* 导入 TailwindCSS 排版插件 */
 @plugin "@tailwindcss/typography";
 
+/* 应用内嵌字体：Noto Serif SC（由 main.tsx 引入 @fontsource-variable，构建时打入 dist） */
+@theme {
+  --font-sans: "Noto Serif SC Variable", "Noto Serif SC", serif;
+  --font-serif: "Noto Serif SC Variable", "Noto Serif SC", serif;
+}
 
 /* 自定义 dark 变体：通过 .dark 类启用深色模式 */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -12,14 +17,18 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  font-family: var(--font-sans);
   /* macOS 透明窗口需要明确透明背景 */
   background-color: transparent;
   background: transparent;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #root {
   height: 100%;
   margin: 0;
+  font-family: inherit;
   background-color: transparent;
   background: transparent;
 }
@@ -246,6 +255,12 @@ body {
 
 .chat-main-pane {
   overflow: hidden;
+}
+
+.chat-empty-hero-title {
+  font-family: inherit;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .chat-window-shell button:focus {
@@ -907,7 +922,7 @@ body {
   --radius-sm: 5px;
   color: var(--text);
   background: var(--bg);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;

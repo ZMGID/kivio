@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { ArrowUp, Plus, SlidersHorizontal, Square } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
 import type { ChatToolDefinition } from '../api/tauri'
@@ -162,6 +163,34 @@ export function InputBar({
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus()
   }, [autoFocus])
+
+  useEffect(() => {
+    if (!autoFocus || !isTauriRuntime()) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused || cancelled) return
+      requestAnimationFrame(() => {
+        if (!cancelled && !disabled) {
+          textareaRef.current?.focus({ preventScroll: true })
+        }
+      })
+    }).then((handler) => {
+      if (cancelled) {
+        handler()
+      } else {
+        unlisten = handler
+      }
+    }).catch((err) => {
+      console.error('Failed to listen for chat input focus changes:', err)
+    })
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [autoFocus, disabled])
 
   useEffect(() => {
     if (!toolPanelOpen) return
