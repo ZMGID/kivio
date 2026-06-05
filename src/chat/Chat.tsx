@@ -211,6 +211,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [enabledToolCount, setEnabledToolCount] = useState<number | null>(null)
   const [toolsDisabledReason, setToolsDisabledReason] = useState('')
   const [toolsRequested, setToolsRequested] = useState(false)
+  const [mixerStatus, setMixerStatus] = useState<{
+    enabled: boolean
+    laneCount: number
+    validLaneCount: number
+    synthesize: boolean
+  } | null>(null)
   const [pendingToolConfirm, setPendingToolConfirm] = useState<ChatToolConfirmPayload | null>(null)
   const [contextState, setContextState] = useState<ConversationContextState | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
@@ -392,10 +398,19 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setEnabledToolCount(null)
       setToolsDisabledReason('')
       setToolsRequested(false)
+      setMixerStatus(null)
       return
     }
     try {
       const settings = await api.getSettings()
+      const mixerLanes = settings.chatMixer?.lanes ?? []
+      const enabledMixerLanes = mixerLanes.filter((lane) => lane.enabled !== false)
+      setMixerStatus({
+        enabled: settings.chatMixer?.enabled === true,
+        laneCount: enabledMixerLanes.length,
+        validLaneCount: enabledMixerLanes.filter((lane) => Boolean(lane.providerId && lane.model)).length,
+        synthesize: settings.chatMixer?.synthesize !== false,
+      })
       const chatTools = settings.chatTools
       const nextDisabledSkillIds = chatTools?.disabledSkillIds ?? []
       setDisabledSkillIds((prev) =>
@@ -444,6 +459,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setEnabledTools([])
       setToolsRequested(false)
       setEnabledToolCount(null)
+      setMixerStatus(null)
       setToolsDisabledReason(err instanceof Error ? err.message : String(err))
     }
   }, [activeProviderId, effectiveSkillId])
@@ -1613,6 +1629,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       sendDisabledReason={sendDisabledReason}
                       enabledSkills={enabledSkills.map((skill) => ({ id: skill.id, name: skill.name }))}
                       onOpenSkillSettings={() => openEmbeddedSettings('skill')}
+                      mixerStatus={mixerStatus ?? undefined}
+                      onOpenMixerSettings={() => openEmbeddedSettings('mixer')}
                       autoFocus
                     />
                   </div>
@@ -1646,6 +1664,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     sendDisabledReason={sendDisabledReason}
                     enabledSkills={enabledSkills.map((skill) => ({ id: skill.id, name: skill.name }))}
                     onOpenSkillSettings={() => openEmbeddedSettings('skill')}
+                    mixerStatus={mixerStatus ?? undefined}
+                    onOpenMixerSettings={() => openEmbeddedSettings('mixer')}
                     autoFocus
                   />
                 </>

@@ -219,6 +219,90 @@ if !message.model_messages.is_empty() {
 }
 ```
 
+## Scenario: Chat Mixer Cross-Layer Contract
+
+### 1. Scope / Trigger
+- Trigger: Chat Mixer spans settings JSON, Rust sanitization, model orchestration, `chat_send_message`, conversation JSON persistence, and React Chat/Settings rendering.
+- Apply this contract whenever changing `chatMixer`, `mixer_runs`, Mixer lane execution, aggregator synthesis, or Mixer UI.
+
+### 2. Signatures
+- Settings JSON adds `chatMixer: ChatMixerConfig` with camelCase fields in `src/api/tauri.ts`.
+- Rust settings stores `Settings.chat_mixer: ChatMixerConfig` with `#[serde(rename_all = "camelCase")]`.
+- Conversation JSON stores assistant message `mixer_runs: ChatMixerRunRecord[]` in snake_case.
+- `chat_send_message(conversationId, content, attachments, activeSkillId?)` keeps the same command signature; Mixer is selected from settings, not from a new send argument.
+- Existing `chat-stream` still streams only the final assistant answer for MVP.
+
+### 3. Contracts
+- Mixer off must preserve normal Chat behavior, including tools, Skill runtime, Apple-local shortcut, hidden transcript replay, stream events, and title generation.
+- Mixer on requires at least two enabled lanes with non-empty `providerId/provider_id` and `model`. Fewer valid lanes must fall back to normal Chat rather than blocking all sends.
+- Mixer lanes are prompt-only in MVP: no MCP tools, no native tools, no approval flow, no lane-side tool records.
+- Lane and aggregator model calls must go through the provider abstraction (`generate_with_chat_provider` / `GenerateRequest`), not direct OpenAI/Anthropic wire JSON.
+- Lane failures are isolated. Missing API key, provider failure, rate limit, timeout, unsupported Apple-local image input, or empty model output marks only that lane failed.
+- Aggregator unset means inherit the conversation provider/model. Aggregator failure persists its error and falls back to unsynthesized successful lane content.
+- Persisted assistant `content` is the final synthesized answer when synthesis succeeds; otherwise it is an unsynthesized lane/failure fallback. Persisted `mixer_runs` carry lane/aggregator provenance.
+- Settings UI and Tauri bridge use camelCase (`defaultEnabled`, `minSuccessfulLanes`, `providerId`). Conversation records use snake_case (`min_successful_lanes`, `provider_id`, `duration_ms`), with frontend types accepting both camelCase and snake_case for compatibility.
+- Mixer has its own first-level Settings tab (`SettingsTab = 'mixer'`) and Chat composer Mixer settings links must open that tab instead of burying Mixer under the Chat page.
+
+### 4. Validation & Error Matrix
+- Deleted/disabled provider referenced by a lane -> settings sanitization removes that lane.
+- Deleted provider referenced by aggregator -> aggregator resets to inherit current chat model.
+- Deleted enabled model referenced by lane -> Settings UI removes that lane; backend sanitization also drops invalid lanes.
+- `laneTimeoutMs` outside `15000..300000` -> clamp during frontend normalization and backend sanitization.
+- `maxLaneOutputChars` outside `1000..50000` -> clamp during frontend normalization and backend sanitization.
+- `minSuccessfulLanes` above valid enabled lane count -> backend clamps to enabled lane count for the run.
+- All lanes fail -> do not call aggregator; persist failed lanes and show a visible failure answer.
+- User cancellation -> unfinished lane/aggregator path emits `chat-stream` done `cancelled` with the active run id and does not persist a partial assistant reply.
+
+### 5. Good/Base/Bad Cases
+- Good: Settings deletes a provider and also filters `chatMixer.lanes` plus resets matching `chatMixer.aggregator`.
+- Good: `MessageBubble` renders persisted `mixer_runs` below the final answer, with lane status, provider/model, duration, content, and error.
+- Good: Chat composer displays the current Mixer state by reading normalized settings but does not invent a separate per-send payload.
+- Good: the Settings sidebar lists Mixer as its own item and `onOpenMixerSettings` opens `openEmbeddedSettings('mixer')`.
+- Base: `chatMixer.enabled=false` with configured lanes behaves exactly like normal Chat.
+- Bad: adding a new `chat_send_message(..., mixerLanes)` parameter without updating backend command and browser mock contracts.
+- Bad: storing lane responses only inside visible assistant Markdown; reload would lose status, errors, timing, and provider provenance.
+- Bad: letting Mixer lanes receive `tools` just because normal Chat tools are enabled.
+- Bad: hiding Mixer controls at the bottom of the Chat Settings tab so users cannot discover the feature from the Settings sidebar.
+
+### 6. Tests Required
+- `npm run typecheck` must cover `ChatMixerConfig`, persisted `ChatMixerRunRecord`, and Settings/MessageBubble props.
+- `npm run lint` must pass without `any` event listeners or unsafe field access.
+- `cargo test --manifest-path src-tauri/Cargo.toml` must pass after settings sanitization, conversation storage, or Mixer runner changes.
+- Rust settings tests should cover invalid provider/model cleanup, timeout/output clamps, aggregator inherit reset, and minimum successful lane clamping when Mixer settings behavior changes.
+- Manual smoke should cover Mixer off normal Chat, Mixer on with two valid lanes, one lane failing, all lanes failing, aggregator failure, reload after persisted `mixer_runs`, and cancellation.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```rust
+// Mixer lanes must not reuse the normal tool loop.
+let result = run_agent_loop(config_with_tools, host, executor).await?;
+```
+
+#### Correct
+```rust
+let request = generate_request_from_openai_messages(
+    &lane.model,
+    lane_messages,
+    None,
+    lane_options,
+    "Chat Mixer lane",
+);
+let output = generate_with_chat_provider(state, &provider, retry_attempts, request).await?;
+```
+
+#### Wrong
+```tsx
+// Loses lane failures and provenance after reload.
+assistant.content += `\n\n${lane.model}\n${lane.content}`
+```
+
+#### Correct
+```tsx
+const mixerRuns = message.mixerRuns ?? message.mixer_runs ?? []
+mixerRuns.map((run) => <MixerRunBlock key={run.id} run={run} />)
+```
+
 ## Scenario: Chat Agent Runtime
 
 > **Product spec**: [docs/CHAT_AGENT_RUNTIME_PRD.md](../../../docs/CHAT_AGENT_RUNTIME_PRD.md) (v1.1). State machine and lifecycle: PRD §6.1. Implement `src-tauri/src/chat/agent/` per that PRD.

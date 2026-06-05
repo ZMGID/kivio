@@ -7,7 +7,14 @@ import { ChatMarkdown } from './ChatMarkdown'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
-import type { ChatMessage, ChatToolArtifact } from './types'
+import type {
+  ChatMessage,
+  ChatMixerAggregatorRecord,
+  ChatMixerLaneRecord,
+  ChatMixerRunRecord,
+  ChatMixerStatus,
+  ChatToolArtifact,
+} from './types'
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -84,6 +91,165 @@ function GeneratedImageArtifacts({ artifacts }: { artifacts: ChatToolArtifact[] 
   )
 }
 
+function mixerDurationMs(record: {
+  duration_ms?: number | null
+  durationMs?: number | null
+}): number | null {
+  return record.durationMs ?? record.duration_ms ?? null
+}
+
+function formatMixerDuration(value: number | null): string {
+  if (value == null) return ''
+  if (value < 1000) return `${value} ms`
+  return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)} s`
+}
+
+function mixerProviderName(record: ChatMixerLaneRecord | ChatMixerAggregatorRecord): string {
+  return record.providerName ?? record.provider_name ?? record.providerId ?? record.provider_id ?? ''
+}
+
+function mixerStatusLabel(status: ChatMixerStatus): string {
+  switch (status) {
+    case 'completed':
+      return '完成'
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '已取消'
+    case 'running':
+      return '运行中'
+    case 'queued':
+    default:
+      return '等待中'
+  }
+}
+
+function mixerStatusClass(status: ChatMixerStatus): string {
+  switch (status) {
+    case 'completed':
+      return 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300'
+    case 'failed':
+      return 'bg-red-500/10 text-red-700 dark:bg-red-400/15 dark:text-red-300'
+    case 'cancelled':
+      return 'bg-neutral-200/70 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'
+    case 'running':
+      return 'bg-blue-500/10 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300'
+    case 'queued':
+    default:
+      return 'bg-neutral-200/70 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'
+  }
+}
+
+function MixerLaneBlock({ lane }: { lane: ChatMixerLaneRecord }) {
+  const providerName = mixerProviderName(lane)
+  const duration = formatMixerDuration(mixerDurationMs(lane))
+  const content = lane.content?.trim() ?? ''
+  const reasoning = lane.reasoning?.trim() ?? ''
+  const error = lane.error?.trim() ?? ''
+
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950/40">
+      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+        <span className="min-w-0 truncate text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">
+          {lane.label || lane.model}
+        </span>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${mixerStatusClass(lane.status)}`}>
+          {mixerStatusLabel(lane.status)}
+        </span>
+        {duration && <span className="text-[10px] text-neutral-400 dark:text-neutral-500">{duration}</span>}
+      </div>
+      <div className="mb-2 truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+        {[providerName, lane.model].filter(Boolean).join(' / ')}
+      </div>
+      {reasoning && (
+        <div className="mb-2 rounded-md bg-neutral-100 px-2 py-1 text-[11px] leading-4 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+          {reasoning}
+        </div>
+      )}
+      {content ? (
+        <div className="text-[13px] leading-relaxed">
+          <ChatMarkdown content={content} />
+        </div>
+      ) : error ? (
+        <div className="text-[12px] leading-5 text-red-600 dark:text-red-300">{error}</div>
+      ) : (
+        <div className="text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">无输出</div>
+      )}
+    </div>
+  )
+}
+
+function MixerAggregatorBlock({ aggregator }: { aggregator: ChatMixerAggregatorRecord }) {
+  const providerName = mixerProviderName(aggregator)
+  const duration = formatMixerDuration(mixerDurationMs(aggregator))
+  const error = aggregator.error?.trim() ?? ''
+
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900/70">
+      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+        <span className="text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">聚合模型</span>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${mixerStatusClass(aggregator.status)}`}>
+          {mixerStatusLabel(aggregator.status)}
+        </span>
+        {duration && <span className="text-[10px] text-neutral-400 dark:text-neutral-500">{duration}</span>}
+      </div>
+      <div className="truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+        {[providerName, aggregator.model].filter(Boolean).join(' / ')}
+      </div>
+      {aggregator.status !== 'completed' && error && (
+        <div className="mt-1 text-[12px] leading-5 text-red-600 dark:text-red-300">{error}</div>
+      )}
+    </div>
+  )
+}
+
+function MixerRunBlock({ run }: { run: ChatMixerRunRecord }) {
+  const [expanded, setExpanded] = useState(false)
+  const successCount = run.lanes.filter((lane) => lane.status === 'completed').length
+  const failedCount = run.lanes.filter((lane) => lane.status === 'failed').length
+  const minSuccessful = run.minSuccessfulLanes ?? run.min_successful_lanes ?? 1
+  const duration = formatMixerDuration(mixerDurationMs(run))
+  const summary = [
+    `${successCount}/${run.lanes.length} lane`,
+    `min ${minSuccessful}`,
+    duration,
+    run.synthesized ? '已合成' : '未合成',
+    failedCount > 0 ? `${failedCount} 失败` : '',
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <section className="mt-3 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50/70 dark:border-neutral-800 dark:bg-neutral-900/55">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+        aria-expanded={expanded}
+        data-tauri-drag-region="false"
+      >
+        <span className="rounded-full bg-neutral-900 px-2 py-0.5 text-[10px] font-semibold text-white dark:bg-neutral-100 dark:text-neutral-900">
+          Mixer
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+          {summary}
+        </span>
+        <ChevronDown
+          size={13}
+          strokeWidth={2}
+          className={`shrink-0 text-neutral-400 transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`}
+        />
+      </button>
+      <div className={`chat-motion-reveal ${expanded ? 'is-open' : ''}`}>
+        <div className="space-y-2 border-t border-neutral-200 px-3 py-3 dark:border-neutral-800">
+          {run.aggregator && <MixerAggregatorBlock aggregator={run.aggregator} />}
+          {run.lanes.map((lane) => (
+            <MixerLaneBlock key={lane.id} lane={lane} />
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function MessageBubbleComponent({
   message,
   conversationId,
@@ -97,6 +263,7 @@ function MessageBubbleComponent({
   const canMutate = Boolean(onUpdateMessage && onDeleteMessage && onRegenerateMessage)
   const attachments = message.attachments ?? []
   const toolCalls = message.tool_calls ?? message.toolCalls ?? []
+  const mixerRuns = message.mixerRuns ?? message.mixer_runs ?? []
   const toolArtifacts = toolCalls.flatMap((toolCall) => toolCall.artifacts ?? [])
   const unreferencedToolArtifacts = toolArtifacts.filter(
     (artifact) => !artifactIsReferenced(message.content, artifact),
@@ -287,6 +454,14 @@ function MessageBubbleComponent({
               )}
             </section>
           )
+        )}
+
+        {!isEditing && mixerRuns.length > 0 && (
+          <div>
+            {mixerRuns.map((run) => (
+              <MixerRunBlock key={run.id} run={run} />
+            ))}
+          </div>
         )}
 
         {!isEditing && message.content.trim().length > 0 && (

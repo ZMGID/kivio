@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat::model::ModelMessage;
+use crate::chat::model::{ModelMessage, ModelUsage};
 use crate::mcp::types::ChatToolArtifact;
 
 fn default_context_usage_status() -> String {
@@ -103,6 +103,81 @@ pub struct ToolCallRecord {
     pub artifacts: Vec<ChatToolArtifact>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMixerStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMixerLaneRecord {
+    pub id: String,
+    pub label: String,
+    pub provider_id: String,
+    #[serde(default)]
+    pub provider_name: Option<String>,
+    pub model: String,
+    pub status: ChatMixerStatus,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub usage: Option<ModelUsage>,
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub completed_at: Option<i64>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMixerAggregatorRecord {
+    pub provider_id: String,
+    #[serde(default)]
+    pub provider_name: Option<String>,
+    pub model: String,
+    pub status: ChatMixerStatus,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub usage: Option<ModelUsage>,
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub completed_at: Option<i64>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMixerRunRecord {
+    pub id: String,
+    pub enabled: bool,
+    pub synthesized: bool,
+    pub min_successful_lanes: u8,
+    pub started_at: i64,
+    #[serde(default)]
+    pub completed_at: Option<i64>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub lanes: Vec<ChatMixerLaneRecord>,
+    #[serde(default)]
+    pub aggregator: Option<ChatMixerAggregatorRecord>,
+}
+
 /// 对话消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -128,6 +203,8 @@ pub struct ChatMessage {
     /// conversations and OpenAI-compatible debugging.
     #[serde(default)]
     pub model_messages: Vec<ModelMessage>,
+    #[serde(default)]
+    pub mixer_runs: Vec<ChatMixerRunRecord>,
     #[serde(default)]
     pub active_skill_id: Option<String>,
     pub timestamp: i64,

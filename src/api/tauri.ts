@@ -252,6 +252,47 @@ export type ChatToolsConfig = {
   nativeTools: ChatNativeToolsConfig
 }
 
+export type ChatMixerLaneConfig = {
+  id: string
+  enabled: boolean
+  label: string
+  providerId: string
+  model: string
+  temperature?: number | null
+}
+
+export type ChatMixerAggregatorConfig = {
+  providerId: string
+  model: string
+  temperature?: number | null
+}
+
+export type ChatMixerConfig = {
+  enabled: boolean
+  defaultEnabled: boolean
+  lanes: ChatMixerLaneConfig[]
+  aggregator: ChatMixerAggregatorConfig
+  minSuccessfulLanes: number
+  laneTimeoutMs: number
+  maxLaneOutputChars: number
+  streamLanes: boolean
+  synthesize: boolean
+}
+
+export function defaultChatMixer(): ChatMixerConfig {
+  return {
+    enabled: false,
+    defaultEnabled: false,
+    lanes: [],
+    aggregator: { providerId: '', model: '', temperature: null },
+    minSuccessfulLanes: 1,
+    laneTimeoutMs: 120_000,
+    maxLaneOutputChars: 24_000,
+    streamLanes: true,
+    synthesize: true,
+  }
+}
+
 export type SkillMeta = {
   id: string
   name: string
@@ -369,6 +410,7 @@ export type Settings = {
   translatorPrompt?: string
   providers: ModelProvider[]
   chatTools: ChatToolsConfig
+  chatMixer: ChatMixerConfig
   retryEnabled: boolean
   retryAttempts: number
   screenshotTranslation: {
@@ -507,6 +549,42 @@ function normalizeChatTools(config?: Partial<ChatToolsConfig> | null): ChatTools
   }
 }
 
+function normalizeTemperature(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(2, value))
+    : null
+}
+
+function normalizeChatMixer(config?: Partial<ChatMixerConfig> | null): ChatMixerConfig {
+  const current = config ?? {}
+  const lanes = Array.isArray(current.lanes)
+    ? current.lanes.map((lane) => ({
+      id: lane.id || '',
+      enabled: lane.enabled !== false,
+      label: lane.label || '',
+      providerId: lane.providerId || '',
+      model: lane.model || '',
+      temperature: normalizeTemperature(lane.temperature),
+    }))
+    : []
+
+  return {
+    enabled: current.enabled ?? false,
+    defaultEnabled: current.defaultEnabled ?? false,
+    lanes,
+    aggregator: {
+      providerId: current.aggregator?.providerId || '',
+      model: current.aggregator?.model || '',
+      temperature: normalizeTemperature(current.aggregator?.temperature),
+    },
+    minSuccessfulLanes: Math.max(1, Math.min(6, current.minSuccessfulLanes ?? 1)),
+    laneTimeoutMs: Math.max(15_000, Math.min(300_000, current.laneTimeoutMs ?? 120_000)),
+    maxLaneOutputChars: Math.max(1_000, Math.min(50_000, current.maxLaneOutputChars ?? 24_000)),
+    streamLanes: current.streamLanes ?? true,
+    synthesize: current.synthesize ?? true,
+  }
+}
+
 function normalizeDefaultModelSelection(selection?: Partial<DefaultModelSelection> | null): DefaultModelSelection {
   return {
     providerId: selection?.providerId ?? '',
@@ -539,6 +617,7 @@ function prepareSettingsForSave(settings: Settings): Settings {
   return {
     ...settings,
     defaultModels,
+    chatMixer: normalizeChatMixer(current.chatMixer),
     chatProviderId: defaultModels.chat.providerId,
     chatModel: defaultModels.chat.model,
   }
@@ -580,6 +659,7 @@ function normalizeSettings(settings: Settings): Settings {
     },
     providers: Array.isArray(current.providers) ? current.providers.map(normalizeProvider) : [],
     chatTools: normalizeChatTools(current.chatTools),
+    chatMixer: normalizeChatMixer(current.chatMixer),
     retryEnabled: current.retryEnabled ?? true,
     retryAttempts: current.retryAttempts ?? 3,
     screenshotTranslation: {

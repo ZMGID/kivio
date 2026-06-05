@@ -664,6 +664,9 @@ fn default_chat_max_tool_rounds() -> u8 {
 pub const CHAT_TOOL_MIN_TIMEOUT_MS: u64 = 1_000;
 pub const CHAT_TOOL_MAX_TIMEOUT_MS: u64 = 300_000;
 pub const SKILL_SCRIPT_MIN_TIMEOUT_MS: u64 = 120_000;
+pub const CHAT_MIXER_MIN_LANE_TIMEOUT_MS: u64 = 15_000;
+pub const CHAT_MIXER_MAX_LANE_TIMEOUT_MS: u64 = 300_000;
+pub const CHAT_MIXER_MAX_LANES: usize = 6;
 
 fn default_chat_tool_timeout_ms() -> u64 {
     60_000
@@ -725,6 +728,87 @@ impl Default for ChatToolsConfig {
     }
 }
 
+fn default_chat_mixer_min_successful_lanes() -> u8 {
+    1
+}
+
+fn default_chat_mixer_lane_timeout_ms() -> u64 {
+    120_000
+}
+
+fn default_chat_mixer_max_lane_output_chars() -> usize {
+    24_000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChatMixerLaneConfig {
+    pub id: String,
+    pub enabled: bool,
+    pub label: String,
+    pub provider_id: String,
+    pub model: String,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+}
+
+impl Default for ChatMixerLaneConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            enabled: true,
+            label: String::new(),
+            provider_id: String::new(),
+            model: String::new(),
+            temperature: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChatMixerAggregatorConfig {
+    pub provider_id: String,
+    pub model: String,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChatMixerConfig {
+    pub enabled: bool,
+    pub default_enabled: bool,
+    pub lanes: Vec<ChatMixerLaneConfig>,
+    pub aggregator: ChatMixerAggregatorConfig,
+    #[serde(default = "default_chat_mixer_min_successful_lanes")]
+    pub min_successful_lanes: u8,
+    #[serde(default = "default_chat_mixer_lane_timeout_ms")]
+    pub lane_timeout_ms: u64,
+    #[serde(default = "default_chat_mixer_max_lane_output_chars")]
+    pub max_lane_output_chars: usize,
+    #[serde(default = "default_true")]
+    pub stream_lanes: bool,
+    #[serde(default = "default_true")]
+    pub synthesize: bool,
+}
+
+impl Default for ChatMixerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_enabled: false,
+            lanes: Vec::new(),
+            aggregator: ChatMixerAggregatorConfig::default(),
+            min_successful_lanes: default_chat_mixer_min_successful_lanes(),
+            lane_timeout_ms: default_chat_mixer_lane_timeout_ms(),
+            max_lane_output_chars: default_chat_mixer_max_lane_output_chars(),
+            stream_lanes: true,
+            synthesize: true,
+        }
+    }
+}
+
 /**
  * 应用完整设置
  */
@@ -765,6 +849,8 @@ pub struct Settings {
     pub chat: ChatConfig,
     #[serde(default)]
     pub chat_tools: ChatToolsConfig,
+    #[serde(default)]
+    pub chat_mixer: ChatMixerConfig,
     /// 一次性：将 Lens 的流式/思考开关复制到独立的 Chat 配置（旧版共用 Lens 行为）。
     #[serde(default)]
     pub chat_behavior_migrated_from_lens: bool,
@@ -858,6 +944,7 @@ impl Default for Settings {
             lens: LensConfig::default(),
             chat: ChatConfig::default(),
             chat_tools: ChatToolsConfig::default(),
+            chat_mixer: ChatMixerConfig::default(),
             chat_behavior_migrated_from_lens: false,
             settings_language: Some("zh".to_string()),
             retry_enabled: default_retry_enabled(),
@@ -919,6 +1006,83 @@ fn sanitize_default_model_selection(
     if !provider.enabled_models.is_empty() && !provider.enabled_models.contains(&selection.model) {
         selection.model = provider.enabled_models.first().cloned().unwrap_or_default();
     }
+}
+
+fn sanitize_chat_mixer_config(config: &mut ChatMixerConfig, providers: &[ModelProvider]) {
+    config.lane_timeout_ms = config.lane_timeout_ms.clamp(
+        CHAT_MIXER_MIN_LANE_TIMEOUT_MS,
+        CHAT_MIXER_MAX_LANE_TIMEOUT_MS,
+    );
+    config.max_lane_output_chars = config.max_lane_output_chars.clamp(1_000, 50_000);
+
+    config.aggregator.provider_id = config.aggregator.provider_id.trim().to_string();
+    config.aggregator.model = config.aggregator.model.trim().to_string();
+    config.aggregator.temperature = config
+        .aggregator
+        .temperature
+        .map(|value| value.clamp(0.0, 2.0));
+    if !config.aggregator.provider_id.is_empty() {
+        if let Some(provider) = providers
+            .iter()
+            .find(|provider| provider.id == config.aggregator.provider_id && provider.enabled)
+        {
+            if config.aggregator.model.is_empty() {
+                config.aggregator.model =
+                    provider.enabled_models.first().cloned().unwrap_or_default();
+            }
+            if !provider.enabled_models.is_empty()
+                && !provider.enabled_models.contains(&config.aggregator.model)
+            {
+                config.aggregator.model =
+                    provider.enabled_models.first().cloned().unwrap_or_default();
+            }
+            if config.aggregator.model.is_empty() {
+                config.aggregator.provider_id.clear();
+                config.aggregator.temperature = None;
+            }
+        } else {
+            config.aggregator.provider_id.clear();
+            config.aggregator.model.clear();
+            config.aggregator.temperature = None;
+        }
+    } else {
+        config.aggregator.model.clear();
+        config.aggregator.temperature = None;
+    }
+
+    for lane in &mut config.lanes {
+        lane.id = lane.id.trim().to_string();
+        if lane.id.is_empty() {
+            lane.id = format!("mix-lane-{}", uuid::Uuid::new_v4());
+        }
+        lane.label = lane.label.trim().to_string();
+        lane.provider_id = lane.provider_id.trim().to_string();
+        lane.model = lane.model.trim().to_string();
+        lane.temperature = lane.temperature.map(|value| value.clamp(0.0, 2.0));
+    }
+    let mut seen_lane_ids = std::collections::HashSet::new();
+    config.lanes.retain(|lane| {
+        if lane.provider_id.is_empty() || lane.model.is_empty() {
+            return false;
+        }
+        if !seen_lane_ids.insert(lane.id.clone()) {
+            return false;
+        }
+        let Some(provider) = providers
+            .iter()
+            .find(|provider| provider.id == lane.provider_id && provider.enabled)
+        else {
+            return false;
+        };
+        provider.enabled_models.is_empty() || provider.enabled_models.contains(&lane.model)
+    });
+    if config.lanes.len() > CHAT_MIXER_MAX_LANES {
+        config.lanes.truncate(CHAT_MIXER_MAX_LANES);
+    }
+
+    let enabled_lane_count = config.lanes.iter().filter(|lane| lane.enabled).count() as u8;
+    let upper = enabled_lane_count.max(1);
+    config.min_successful_lanes = config.min_successful_lanes.clamp(1, upper);
 }
 
 fn sync_legacy_chat_model_fields(settings: &mut Settings) {
@@ -1216,6 +1380,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         settings.chat.default_language.clear();
     }
     settings.chat.system_prompt = settings.chat.system_prompt.trim().to_string();
+    sanitize_chat_mixer_config(&mut settings.chat_mixer, &settings.providers);
 
     settings.chat_tools.max_tool_rounds = settings.chat_tools.max_tool_rounds.clamp(1, 30);
     settings.chat_tools.tool_timeout_ms = settings
