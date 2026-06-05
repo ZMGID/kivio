@@ -150,12 +150,17 @@ function getToolName(toolCall: ToolCallRecord): string {
   if (raw === 'run_python') return 'Python'
   if (raw === 'web_search') return '联网搜索'
   if (raw === 'web_fetch') return '网页抓取'
+  if (raw === 'mixer_vision') return '混音器视觉分析'
   return raw
 }
 
 function getSource(toolCall: ToolCallRecord): string {
   if (toolCall.source === 'skill') return 'Skill'
   if (toolCall.source === 'native') return 'Kivio'
+  if (toolCall.source === 'mixer') {
+    const model = toolCall.server_id || toolCall.serverId || ''
+    return model ? `混音器 · ${model}` : '混音器'
+  }
   return (
     toolCall.server_name ||
     toolCall.serverName ||
@@ -167,6 +172,18 @@ function getSource(toolCall: ToolCallRecord): string {
 }
 
 function getArgumentPreview(toolCall: ToolCallRecord): string {
+  const rawName = toolCall.tool_name || toolCall.toolName || toolCall.name || ''
+  const args = parsedArguments(toolCall)
+  if (rawName === 'mixer_vision') {
+    const imageCount = typeof args?.images === 'number' ? args.images : null
+    const provider = typeof args?.provider === 'string' ? args.provider : ''
+    const model = typeof args?.model === 'string' ? args.model : ''
+    const imageLabel = imageCount == null
+      ? '图片'
+      : `图片 ${imageCount} 张`
+    const modelLabel = [provider, model].filter(Boolean).join(' / ')
+    return modelLabel ? `${imageLabel} · ${modelLabel}` : imageLabel
+  }
   return (
     toolCall.argument_preview ||
     toolCall.argumentPreview ||
@@ -198,6 +215,9 @@ function getRunningPreview(toolCall: ToolCallRecord): string {
   const raw = toolCall.tool_name || toolCall.toolName || toolCall.name || ''
   if (raw === 'run_python') {
     return '正在加载 Python 环境…'
+  }
+  if (raw === 'mixer_vision') {
+    return '正在分析图片并提取视觉信息…'
   }
   return ''
 }

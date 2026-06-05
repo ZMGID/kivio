@@ -93,73 +93,6 @@ export interface ChatToolArtifact {
   sizeBytes?: number | null
 }
 
-export interface ModelUsage {
-  input_tokens?: number | null
-  inputTokens?: number | null
-  output_tokens?: number | null
-  outputTokens?: number | null
-  total_tokens?: number | null
-  totalTokens?: number | null
-}
-
-export type ChatMixerStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
-
-export interface ChatMixerLaneRecord {
-  id: string
-  label: string
-  provider_id?: string
-  providerId?: string
-  provider_name?: string | null
-  providerName?: string | null
-  model: string
-  status: ChatMixerStatus
-  content?: string | null
-  reasoning?: string | null
-  error?: string | null
-  usage?: ModelUsage | null
-  started_at?: number | null
-  startedAt?: number | null
-  completed_at?: number | null
-  completedAt?: number | null
-  duration_ms?: number | null
-  durationMs?: number | null
-}
-
-export interface ChatMixerAggregatorRecord {
-  provider_id?: string
-  providerId?: string
-  provider_name?: string | null
-  providerName?: string | null
-  model: string
-  status: ChatMixerStatus
-  content?: string | null
-  reasoning?: string | null
-  error?: string | null
-  usage?: ModelUsage | null
-  started_at?: number | null
-  startedAt?: number | null
-  completed_at?: number | null
-  completedAt?: number | null
-  duration_ms?: number | null
-  durationMs?: number | null
-}
-
-export interface ChatMixerRunRecord {
-  id: string
-  enabled: boolean
-  synthesized: boolean
-  min_successful_lanes?: number
-  minSuccessfulLanes?: number
-  started_at?: number
-  startedAt?: number
-  completed_at?: number | null
-  completedAt?: number | null
-  duration_ms?: number | null
-  durationMs?: number | null
-  lanes: ChatMixerLaneRecord[]
-  aggregator?: ChatMixerAggregatorRecord | null
-}
-
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -172,8 +105,6 @@ export interface ChatMessage {
   apiMessages?: unknown[]
   model_messages?: unknown[]
   modelMessages?: unknown[]
-  mixer_runs?: ChatMixerRunRecord[]
-  mixerRuns?: ChatMixerRunRecord[]
   active_skill_id?: string | null
   activeSkillId?: string | null
   timestamp: number

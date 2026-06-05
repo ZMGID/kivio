@@ -3017,7 +3017,6 @@ dependencies = [
  "core-graphics 0.24.0",
  "enigo",
  "flate2",
- "futures",
  "image",
  "keyring",
  "libc",

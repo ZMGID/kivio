@@ -32,6 +32,7 @@ Kivio stays in the menu bar and appears only when you press a hotkey.
 - 🌐 **Translate text anywhere** — type, translate, press Enter to paste back.
 - 📸 **Translate screenshots or selected text** — capture a window/region, or highlight text and use the selected-text hotkey.
 - 🔍 **Ask Lens about your screen** — capture visual context, optionally search the web, and chat in a focused floating window.
+- 🎛️ **Mixer auxiliary models** — route vision, title summary, and compression tasks to dedicated models while keeping your main chat model unchanged.
 
 Small bundle, low memory, no telemetry, and native system OCR where available.
 
@@ -91,6 +92,7 @@ All remappable in Settings.
 - **Real system OCR.** Apple Vision on macOS, `Windows.Media.Ocr` on Windows.
 - **Web-aware Lens.** Optional Tavily / Exa search helps answer current or ambiguous screen questions with visible sources.
 - **Bring your own model.** Pick different OpenAI-compatible providers for translation, screenshot translation, and Lens.
+- **Auxiliary model routing.** Use the Mixer to assign a vision model for image pre-analysis, then pass the extracted text back to your normal chat model.
 - **Multi-key failover.** Add backup keys and Kivio rotates when a key is rate-limited or out of quota.
 - **Quiet and light.** No telemetry, small installer, low idle footprint.
 
@@ -100,6 +102,7 @@ Open from the menu bar icon. The important bits:
 
 - **Providers** — multi-provider, multi-key, with a one-click test-connection.
 - **Per-feature routing** — translate / screenshot OCR / Lens each pick their own model.
+- **Mixer** — set auxiliary models for vision, title summary, and context compression. If your chat model is text-only, the Mixer vision model can analyze image attachments first and feed the result to the main chat model as text; when unset, Kivio keeps the original direct-image behavior.
 - **Lens web search** — optional Tavily / Exa search with result count, inline sources, and collapsible details in chat.
 - **Prompts** — every feature has an editable template with `{lang}` and `{text}` placeholders.
 - **Streaming + reasoning** — togglable per feature; off by default for screenshot translate (speed wins).
@@ -173,6 +176,7 @@ Kivio 常驻菜单栏，只在你按下热键时出现。
 - 🌐 **随处翻译文本** —— 输入、翻译、回车粘回原应用
 - 📸 **截图或选中文本翻译** —— 截窗口/选区，也能直接翻译已选文字
 - 🔍 **用 Lens 问屏幕内容** —— 截取视觉上下文，可选联网搜索，在浮窗里和模型对话
+- 🎛️ **混音器辅助模型** —— 把视觉、标题总结、上下文压缩等副任务交给专用模型，主对话模型保持不变
 
 安装包小、内存占用低、无遥测，并优先使用系统 OCR。
 
@@ -232,6 +236,7 @@ Kivio 常驻菜单栏，只在你按下热键时出现。
 - **真正系统 OCR**。macOS 用 Apple Vision，Windows 用 `Windows.Media.Ocr`
 - **Lens 可联网**。可选 Tavily / Exa 搜索，用来源结果回答实时或含糊的屏幕问题
 - **模型自己选**。翻译、截图翻译、Lens 可分别配置 OpenAI 兼容服务商
+- **副任务模型路由**。混音器可以单独指定视觉模型先分析图片，再把提取出的文本交回你原本的对话模型
 - **多 Key 容灾**。限流或额度耗尽时自动切到备用 Key
 - **安静轻量**。无遥测，小安装包，低空闲占用
 
@@ -241,6 +246,7 @@ Kivio 常驻菜单栏，只在你按下热键时出现。
 
 - **服务商** —— 多服务商、多 Key、一键测试连接
 - **按功能分配** —— 翻译 / OCR / Lens 各自选自己的模型
+- **混音器** —— 单独设置视觉、标题总结、上下文压缩模型。如果主对话模型不支持图片，可以让混音器视觉模型先分析图片，再把结果以文本形式交给主模型；未设置时继续沿用原来的直接传图逻辑
 - **Lens 联网搜索** —— 可选 Tavily / Exa，在对话里展示搜索数量、来源和默认折叠的详情
 - **提示词** —— 每个功能都有可编辑的模板，支持 `{lang}` 和 `{text}` 占位符
 - **流式 + 思考模式** —— 按功能开关；截图翻译默认关闭思考（速度优先）

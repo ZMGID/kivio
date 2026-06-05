@@ -18,11 +18,8 @@ import {
   type ChatMcpServer,
   type ChatToolsConfig,
   type ChatNativeToolsConfig,
-  type ChatMixerConfig,
-  type ChatMixerLaneConfig,
   type ChatToolDefinition,
   defaultNativeTools,
-  defaultChatMixer,
   normalizeProviderApiFormat,
   type SkillMeta,
   type SkillDetail,
@@ -105,48 +102,6 @@ function defaultChatTools(): ChatToolsConfig {
     maxToolOutputChars: 12_000,
     approvalPolicy: 'readonly_auto_sensitive_confirm',
     nativeTools: defaultNativeTools(),
-  }
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  if (!Number.isFinite(value)) return min
-  return Math.min(max, Math.max(min, value))
-}
-
-function parsePositiveInt(value: string, fallback: number, min: number, max: number) {
-  const parsed = Number.parseInt(value, 10)
-  return Number.isNaN(parsed) ? fallback : clampNumber(parsed, min, max)
-}
-
-function newMixerLane(providers: ModelProvider[], platform: ReturnType<typeof getPlatform>): ChatMixerLaneConfig {
-  const provider = providers.find((item) => isProviderEnabled(item) && (platform === 'macos' || item.baseUrl !== 'applefoundation://local'))
-  return {
-    id: `mix-lane-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    enabled: true,
-    label: '',
-    providerId: provider?.id ?? '',
-    model: provider?.enabledModels?.[0] ?? '',
-    temperature: null,
-  }
-}
-
-function filterMixerProvider(config: ChatMixerConfig, providerId: string): ChatMixerConfig {
-  return {
-    ...config,
-    lanes: config.lanes.filter((lane) => lane.providerId !== providerId),
-    aggregator: config.aggregator.providerId === providerId
-      ? { providerId: '', model: '', temperature: null }
-      : config.aggregator,
-  }
-}
-
-function filterMixerModel(config: ChatMixerConfig, providerId: string, model: string): ChatMixerConfig {
-  return {
-    ...config,
-    lanes: config.lanes.filter((lane) => !(lane.providerId === providerId && lane.model === model)),
-    aggregator: config.aggregator.providerId === providerId && config.aggregator.model === model
-      ? { providerId: '', model: '', temperature: null }
-      : config.aggregator,
   }
 }
 
@@ -302,6 +257,7 @@ function SkillListSection({
 function defaultDefaultModels(chatProviderId = '', chatModel = ''): SettingsData['defaultModels'] {
   return {
     chat: { providerId: chatProviderId, model: chatModel },
+    vision: { providerId: '', model: '' },
     titleSummary: { providerId: '', model: '' },
     compression: { providerId: '', model: '' },
   }
@@ -313,6 +269,9 @@ function clearDefaultModelProvider(
 ): SettingsData['defaultModels'] {
   return {
     chat: defaultModels.chat.providerId === providerId ? { providerId: '', model: '' } : defaultModels.chat,
+    vision: defaultModels.vision.providerId === providerId
+      ? { providerId: '', model: '' }
+      : defaultModels.vision,
     titleSummary: defaultModels.titleSummary.providerId === providerId
       ? { providerId: '', model: '' }
       : defaultModels.titleSummary,
@@ -331,6 +290,9 @@ function resolveDefaultModelsAfterModelRemoval(
     chat: defaultModels.chat.providerId === providerId
       ? { ...defaultModels.chat, model: resolveAfterRemoval(defaultModels.chat.model) }
       : defaultModels.chat,
+    vision: defaultModels.vision.providerId === providerId
+      ? { ...defaultModels.vision, model: resolveAfterRemoval(defaultModels.vision.model) }
+      : defaultModels.vision,
     titleSummary: defaultModels.titleSummary.providerId === providerId
       ? { ...defaultModels.titleSummary, model: resolveAfterRemoval(defaultModels.titleSummary.model) }
       : defaultModels.titleSummary,
@@ -454,7 +416,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
   const chatTools = settings?.chatTools || defaultChatTools()
-  const chatMixer = settings?.chatMixer || defaultChatMixer()
   // 判断是否有未保存的更改
   const hasUnsavedChanges = settings ? stableStringify(settings) !== initialSettingsSnapshot : false
 
@@ -994,44 +955,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [])
 
-  const updateChatMixer = useCallback((updates: Partial<ChatMixerConfig>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      const current = prev.chatMixer || defaultChatMixer()
-      return { ...prev, chatMixer: { ...current, ...updates } }
-    })
-  }, [])
-
-  const updateChatMixerLane = useCallback((laneId: string, updates: Partial<ChatMixerLaneConfig>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      const current = prev.chatMixer || defaultChatMixer()
-      return {
-        ...prev,
-        chatMixer: {
-          ...current,
-          lanes: current.lanes.map((lane) =>
-            lane.id === laneId ? { ...lane, ...updates } : lane,
-          ),
-        },
-      }
-    })
-  }, [])
-
-  const removeChatMixerLane = useCallback((laneId: string) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      const current = prev.chatMixer || defaultChatMixer()
-      return {
-        ...prev,
-        chatMixer: {
-          ...current,
-          lanes: current.lanes.filter((lane) => lane.id !== laneId),
-        },
-      }
-    })
-  }, [])
-
   const updateNativeTools = useCallback((updates: Partial<ChatNativeToolsConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -1340,7 +1263,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       chatProviderId: settings.defaultModels.chat.providerId === id ? '' : settings.chatProviderId,
       chatModel: settings.defaultModels.chat.providerId === id ? '' : settings.chatModel,
       defaultModels: clearDefaultModelProvider(settings.defaultModels, id),
-      chatMixer: filterMixerProvider(settings.chatMixer || defaultChatMixer(), id),
       screenshotTranslation: {
         ...settings.screenshotTranslation,
         providerId: screenshotProvider ? screenshotProvider.id : '',
@@ -1406,7 +1328,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       next.defaultModels = defaultModels
       next.chatProviderId = defaultModels.chat.providerId
       next.chatModel = defaultModels.chat.model
-      next.chatMixer = filterMixerModel(prev.chatMixer || defaultChatMixer(), providerId, model)
 
       if (prev.screenshotTranslation.providerId === providerId) {
         next.screenshotTranslation = {
@@ -1672,7 +1593,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'screenshot' as const, label: t.tabScreenshot, icon: Camera },
     { id: 'lens' as const, label: t.lensTabLabel, icon: Aperture },
     { id: 'chat' as const, label: t.tabChatClient, icon: MessageSquare },
-    { id: 'mixer' as const, label: lang === 'zh' ? '混音器' : 'Mixer', icon: SlidersHorizontal },
+    { id: 'mixer' as const, label: t.tabMixer, icon: SlidersHorizontal },
     { id: 'mcp' as const, label: 'MCP', icon: Wrench },
     { id: 'skill' as const, label: 'Skill', icon: Sparkles },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: Globe },
@@ -1698,14 +1619,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     chat: {
       title: t.tabChatClient,
       subtitle: lang === 'zh'
-        ? '对话客户端默认模型、流式/思考行为、系统提示词；工具见 MCP / Skill。'
-        : 'Default model, streaming/thinking, and system prompt for Chat; tools live under MCP / Skill.',
+        ? '主对话模型、流式/思考行为、系统提示词；副任务模型见混音器。'
+        : 'Main chat model, streaming/thinking, and system prompt; side-task models live under Mixer.',
     },
     mixer: {
-      title: lang === 'zh' ? '混音器' : 'Mixer',
+      title: t.tabMixer,
       subtitle: lang === 'zh'
-        ? '把同一个问题并行发送给多个模型，再可选合成最终回答。'
-        : 'Send one prompt to multiple models in parallel, then optionally synthesize the final answer.',
+        ? '按副任务路由模型：视觉、标题总结、上下文压缩。'
+        : 'Route models by side task: vision, title summaries, and context compression.',
     },
     mcp: {
       title: 'MCP',
@@ -1735,203 +1656,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     ?? settings.providers.find((provider) => provider.id === settings.lens?.providerId)
     ?? settings.providers.find((provider) => provider.id === settings.translatorProviderId)
   const chatProviderSupportsTools = chatProvider?.supportsTools !== false
-  const enabledMixerLanes = chatMixer.lanes.filter((lane) => lane.enabled)
-  const validMixerLaneCount = enabledMixerLanes.filter((lane) => lane.providerId && lane.model).length
-  const mixerMinSuccessMax = Math.max(1, validMixerLaneCount || enabledMixerLanes.length || 1)
   const disabledSkillIds = chatTools.disabledSkillIds ?? []
   const builtinSkills = skills.filter(isBuiltinSkill)
   const userSkills = skills.filter((skill) => !isBuiltinSkill(skill))
   const enabledSkillCount = skills.filter((skill) => !disabledSkillIds.includes(skill.id)).length
-  const mixerSettingsGroup = (
-    <SettingsGroup title={lang === 'zh' ? '混音器' : 'Mixer'}>
-      <p className="kv-row-desc mb-3">
-        {lang === 'zh'
-          ? '把同一个问题并行发送给多个模型，再可选由聚合模型合成最终回答。Mixer lane 不会执行 MCP、Skill 或本地工具。'
-          : 'Send one prompt to multiple models in parallel, then optionally synthesize the final answer. Mixer lanes do not execute MCP, Skill, or native tools.'}
-      </p>
-      <SettingRow
-        label={lang === 'zh' ? '启用 Mixer' : 'Enable Mixer'}
-        description={
-          lang === 'zh'
-            ? `当前有效 lane: ${validMixerLaneCount} 个。至少需要 2 个有效且启用的 lane 才会接管 Chat 回复。`
-            : `${validMixerLaneCount} valid lane(s). At least 2 valid enabled lanes are required before Mixer handles Chat replies.`
-        }
-      >
-        <Toggle
-          checked={chatMixer.enabled}
-          onChange={(enabled) => updateChatMixer({ enabled })}
-        />
-      </SettingRow>
-      <SettingRow
-        label={lang === 'zh' ? '新对话默认开启' : 'Default for new chats'}
-        description={lang === 'zh' ? '预留给会话级开关；当前 MVP 使用全局启用状态。' : 'Reserved for conversation-level defaults; this MVP uses the global enabled state.'}
-      >
-        <Toggle
-          checked={chatMixer.defaultEnabled}
-          onChange={(defaultEnabled) => updateChatMixer({ defaultEnabled })}
-        />
-      </SettingRow>
-      <SettingRow
-        label={lang === 'zh' ? '合成最终回答' : 'Synthesize answer'}
-        description={lang === 'zh' ? '关闭后，助手消息会直接按 lane 展示各模型答案。' : 'When off, the assistant answer lists lane outputs directly.'}
-      >
-        <Toggle
-          checked={chatMixer.synthesize !== false}
-          onChange={(synthesize) => updateChatMixer({ synthesize })}
-        />
-      </SettingRow>
-      <SettingRow
-        label={lang === 'zh' ? '聚合模型' : 'Aggregator model'}
-        description={lang === 'zh' ? '未设置时继承当前对话模型。' : 'Unset inherits the current conversation model.'}
-      >
-        <ModelPairSelect
-          providerId={chatMixer.aggregator.providerId || ''}
-          model={chatMixer.aggregator.model || ''}
-          providers={settings.providers}
-          platform={platform}
-          inheritLabel={lang === 'zh' ? '继承当前对话模型' : 'Inherit chat model'}
-          onChange={(providerId, model) => {
-            updateChatMixer({
-              aggregator: {
-                ...chatMixer.aggregator,
-                providerId,
-                model,
-              },
-            })
-          }}
-        />
-      </SettingRow>
-      <div className="grid grid-cols-1 gap-3 py-2 sm:grid-cols-3">
-        <FieldBlock label={lang === 'zh' ? '最少成功 lane' : 'Min successful lanes'}>
-          <Input
-            type="number"
-            min={1}
-            max={mixerMinSuccessMax}
-            value={String(chatMixer.minSuccessfulLanes ?? 1)}
-            onChange={(value) => updateChatMixer({
-              minSuccessfulLanes: parsePositiveInt(value, chatMixer.minSuccessfulLanes ?? 1, 1, mixerMinSuccessMax),
-            })}
-          />
-        </FieldBlock>
-        <FieldBlock label={lang === 'zh' ? 'lane 超时 ms' : 'Lane timeout ms'}>
-          <Input
-            type="number"
-            min={15_000}
-            max={300_000}
-            value={String(chatMixer.laneTimeoutMs ?? 120_000)}
-            onChange={(value) => updateChatMixer({
-              laneTimeoutMs: parsePositiveInt(value, chatMixer.laneTimeoutMs ?? 120_000, 15_000, 300_000),
-            })}
-          />
-        </FieldBlock>
-        <FieldBlock label={lang === 'zh' ? 'lane 截断字符' : 'Lane output chars'}>
-          <Input
-            type="number"
-            min={1_000}
-            max={50_000}
-            value={String(chatMixer.maxLaneOutputChars ?? 24_000)}
-            onChange={(value) => updateChatMixer({
-              maxLaneOutputChars: parsePositiveInt(value, chatMixer.maxLaneOutputChars ?? 24_000, 1_000, 50_000),
-            })}
-          />
-        </FieldBlock>
-      </div>
-      <div className="flex items-center justify-between gap-2 py-2">
-        <div>
-          <div className="kv-row-label">{lang === 'zh' ? 'Mixer lanes' : 'Mixer lanes'}</div>
-          <p className="kv-row-desc">
-            {lang === 'zh' ? '配置 2-6 个启用模型；失败的 lane 会保存在回复详情里。' : 'Configure 2-6 enabled models; failed lanes are preserved in reply details.'}
-          </p>
-        </div>
-        <button
-          type="button"
-          className="kv-btn sm shrink-0"
-          disabled={chatMixer.lanes.length >= 6}
-          onClick={() => updateChatMixer({ lanes: [...chatMixer.lanes, newMixerLane(settings.providers, platform)] })}
-          data-tauri-drag-region="false"
-        >
-          <Plus size={11} />
-          {lang === 'zh' ? '添加 lane' : 'Add lane'}
-        </button>
-      </div>
-      {chatMixer.enabled && validMixerLaneCount < 2 && (
-        <p className="mb-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">
-          {lang === 'zh'
-            ? 'Mixer 已启用，但还没有 2 个有效 lane；发送时会回落到普通 Chat。'
-            : 'Mixer is enabled but has fewer than 2 valid lanes; sends will fall back to normal Chat.'}
-        </p>
-      )}
-      {chatMixer.lanes.length === 0 ? (
-        <div className="kv-panel">
-          <div className="kv-panel-title">{lang === 'zh' ? '暂无 lane' : 'No lanes'}</div>
-          <div className="kv-panel-body">
-            {lang === 'zh'
-              ? '添加至少两个 lane 后，Mixer 才会开始并行调用模型。'
-              : 'Add at least two lanes before Mixer can call models in parallel.'}
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-2 py-1">
-          {chatMixer.lanes.map((lane, index) => (
-            <div
-              key={lane.id}
-              className="rounded-lg border border-neutral-200 bg-white px-3 py-2 shadow-sm dark:border-neutral-800 dark:bg-neutral-950/40"
-            >
-              <div className="mb-2 flex items-center gap-2">
-                <span className={`kv-tag ${lane.enabled ? 'ok' : ''}`}>
-                  {lang === 'zh' ? `Lane ${index + 1}` : `Lane ${index + 1}`}
-                </span>
-                <Input
-                  className="min-w-0 flex-1"
-                  value={lane.label}
-                  onChange={(label) => updateChatMixerLane(lane.id, { label })}
-                  placeholder={lang === 'zh' ? '可选标签' : 'Optional label'}
-                />
-                <Toggle
-                  checked={lane.enabled}
-                  onChange={(enabled) => updateChatMixerLane(lane.id, { enabled })}
-                />
-                <button
-                  type="button"
-                  className="kv-btn sm shrink-0"
-                  onClick={() => removeChatMixerLane(lane.id)}
-                  data-tauri-drag-region="false"
-                  title={lang === 'zh' ? '删除 lane' : 'Remove lane'}
-                  aria-label={lang === 'zh' ? '删除 lane' : 'Remove lane'}
-                >
-                  <Minus size={11} />
-                </button>
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_96px]">
-                <ModelPairSelect
-                  className="w-full"
-                  providerId={lane.providerId || ''}
-                  model={lane.model || ''}
-                  providers={settings.providers}
-                  platform={platform}
-                  onChange={(providerId, model) => updateChatMixerLane(lane.id, { providerId, model })}
-                />
-                <Input
-                  type="number"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={lane.temperature == null ? '' : String(lane.temperature)}
-                  onChange={(value) => {
-                    const trimmed = value.trim()
-                    updateChatMixerLane(lane.id, {
-                      temperature: trimmed === '' ? null : clampNumber(Number.parseFloat(trimmed), 0, 2),
-                    })
-                  }}
-                  placeholder="temp"
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </SettingsGroup>
-  )
 
   const categoryNav =
     variant === 'embedded' ? (
@@ -2420,36 +2148,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       }}
                     />
                   </SettingRow>
-                  <SettingRow
-                    label={t.defaultTitleSummaryModel}
-                    description={t.defaultTitleSummaryModelHint}
-                  >
-                    <ModelPairSelect
-                      providerId={settings.defaultModels.titleSummary.providerId || ''}
-                      model={settings.defaultModels.titleSummary.model || ''}
-                      providers={settings.providers}
-                      platform={platform}
-                      inheritLabel={t.defaultModelsUnset}
-                      onChange={(providerId, model) => {
-                        updateDefaultModel('titleSummary', providerId, model)
-                      }}
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    label={t.defaultCompressionModel}
-                    description={t.defaultCompressionModelHint}
-                  >
-                    <ModelPairSelect
-                      providerId={settings.defaultModels.compression.providerId || ''}
-                      model={settings.defaultModels.compression.model || ''}
-                      providers={settings.providers}
-                      platform={platform}
-                      inheritLabel={t.defaultModelsUnset}
-                      onChange={(providerId, model) => {
-                        updateDefaultModel('compression', providerId, model)
-                      }}
-                    />
-                  </SettingRow>
                   {!chatProvider && (
                     <p className="kv-row-desc px-0 pb-2">
                       {lang === 'zh' ? '请先在「模型」中添加并配置供应商。' : 'Add and configure a provider under Models first.'}
@@ -2582,7 +2280,77 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             )}
 
             {/* ===== 混音器标签页 ===== */}
-            {activeTab === 'mixer' && mixerSettingsGroup}
+            {activeTab === 'mixer' && (
+              <>
+                <SettingsGroup title={t.mixerSection}>
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <p className="kv-row-desc max-w-[560px]">{t.mixerSectionHint}</p>
+                    <button
+                      type="button"
+                      className="kv-btn sm shrink-0"
+                      onClick={() => {
+                        updateDefaultModel('vision', '', '')
+                        updateDefaultModel('titleSummary', '', '')
+                        updateDefaultModel('compression', '', '')
+                      }}
+                      data-tauri-drag-region="false"
+                    >
+                      {t.mixerResetAuto}
+                    </button>
+                  </div>
+                  <SettingRow
+                    label={t.auxiliaryVisionModel}
+                    description={t.auxiliaryVisionModelHint}
+                  >
+                    <ModelPairSelect
+                      providerId={settings.defaultModels.vision.providerId || ''}
+                      model={settings.defaultModels.vision.model || ''}
+                      providers={settings.providers}
+                      platform={platform}
+                      inheritLabel={t.mixerAutoModel}
+                      onChange={(providerId, model) => {
+                        updateDefaultModel('vision', providerId, model)
+                      }}
+                    />
+                  </SettingRow>
+                  <SettingRow
+                    label={t.defaultTitleSummaryModel}
+                    description={t.defaultTitleSummaryModelHint}
+                  >
+                    <ModelPairSelect
+                      providerId={settings.defaultModels.titleSummary.providerId || ''}
+                      model={settings.defaultModels.titleSummary.model || ''}
+                      providers={settings.providers}
+                      platform={platform}
+                      inheritLabel={t.mixerAutoModel}
+                      onChange={(providerId, model) => {
+                        updateDefaultModel('titleSummary', providerId, model)
+                      }}
+                    />
+                  </SettingRow>
+                  <SettingRow
+                    label={t.defaultCompressionModel}
+                    description={t.defaultCompressionModelHint}
+                  >
+                    <ModelPairSelect
+                      providerId={settings.defaultModels.compression.providerId || ''}
+                      model={settings.defaultModels.compression.model || ''}
+                      providers={settings.providers}
+                      platform={platform}
+                      inheritLabel={t.mixerAutoModel}
+                      onChange={(providerId, model) => {
+                        updateDefaultModel('compression', providerId, model)
+                      }}
+                    />
+                  </SettingRow>
+                  {!chatProvider && (
+                    <p className="kv-row-desc px-0 pb-2">
+                      {lang === 'zh' ? '请先在「模型」中添加并配置供应商。' : 'Add and configure a provider under Models first.'}
+                    </p>
+                  )}
+                </SettingsGroup>
+              </>
+            )}
 
             {/* ===== MCP 标签页 ===== */}
             {activeTab === 'mcp' && (

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { ArrowUp, Blend, Plus, SlidersHorizontal, Square } from 'lucide-react'
+import { ArrowUp, Plus, SlidersHorizontal, Square } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
 import type { ChatToolDefinition } from '../api/tauri'
 import type { PendingAttachment } from './types'
@@ -40,13 +40,6 @@ interface InputBarProps {
   sendDisabledReason?: string
   enabledSkills?: { id: string; name: string }[]
   onOpenSkillSettings?: () => void
-  mixerStatus?: {
-    enabled: boolean
-    laneCount: number
-    validLaneCount: number
-    synthesize: boolean
-  }
-  onOpenMixerSettings?: () => void
   autoFocus?: boolean
   /** footer：贴底（有消息时）；inline：嵌入居中区域（空对话欢迎页） */
   layout?: 'footer' | 'inline'
@@ -65,8 +58,6 @@ export function InputBar({
   sendDisabledReason,
   enabledSkills = [],
   onOpenSkillSettings,
-  mixerStatus,
-  onOpenMixerSettings,
   autoFocus,
   layout = 'footer',
 }: InputBarProps) {
@@ -296,8 +287,6 @@ export function InputBar({
   const externalMcpTools = enabledTools.filter(isExternalMcpTool)
   const hasToolProblem = Boolean(toolsDisabledReason || toolStatusHint || sendDisabledReason)
   const showMcpSection = externalMcpTools.length > 0 || Boolean(toolsDisabledReason)
-  const mixerEnabled = mixerStatus?.enabled === true
-  const mixerNeedsLanes = mixerEnabled && (mixerStatus?.validLaneCount ?? 0) < 2
   const mcpStatusLine = toolsDisabledReason
     || (externalMcpTools.length > 0 ? `MCP ${externalMcpTools.length}` : '')
 
@@ -352,48 +341,6 @@ export function InputBar({
                   <p className="rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">
                     {sendDisabledReason || toolStatusHint}
                   </p>
-                )}
-
-                {mixerStatus && (
-                  <div className="border-t border-neutral-200/80 pt-1.5 dark:border-neutral-800">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">
-                          <Blend size={12} strokeWidth={1.8} />
-                          <span>Mixer</span>
-                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-                            mixerEnabled
-                              ? 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300'
-                              : 'bg-neutral-200/70 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
-                          }`}
-                          >
-                            {mixerEnabled ? 'On' : 'Off'}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 text-[11px] leading-4 text-neutral-500 dark:text-neutral-400">
-                          {mixerStatus.validLaneCount}/{mixerStatus.laneCount} lanes
-                          {mixerEnabled && mixerStatus.synthesize ? ' · synthesize' : ''}
-                        </div>
-                      </div>
-                      {onOpenMixerSettings && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setToolPanelOpen(false)
-                            onOpenMixerSettings()
-                          }}
-                          className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                        >
-                          设置
-                        </button>
-                      )}
-                    </div>
-                    {mixerNeedsLanes && (
-                      <p className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">
-                        Mixer 需要至少 2 个有效 lane；当前会回落到普通 Chat。
-                      </p>
-                    )}
-                  </div>
                 )}
               </div>
             </div>
@@ -453,7 +400,7 @@ export function InputBar({
                 disabled={disabled}
                 tabIndex={-1}
                 className={`mb-0.5 shrink-0 rounded-full p-2 transition-colors disabled:opacity-40 ${
-                  toolPanelOpen || hasToolProblem || enabledSkills.length > 0 || externalMcpTools.length > 0 || mixerEnabled
+                  toolPanelOpen || hasToolProblem || enabledSkills.length > 0 || externalMcpTools.length > 0
                     ? 'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-100'
                     : 'text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800'
                 }`}

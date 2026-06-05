@@ -6,7 +6,6 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use futures::future::join_all;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_shell::ShellExt;
@@ -34,8 +33,7 @@ use super::storage::{
     load_conversation, save_conversation, update_assistant, update_project,
 };
 use super::{
-    Attachment, ChatAssistant, ChatMessage, ChatMixerAggregatorRecord, ChatMixerLaneRecord,
-    ChatMixerRunRecord, ChatMixerStatus, ContextUsageSegment, Conversation,
+    Attachment, ChatAssistant, ChatMessage, ContextUsageSegment, Conversation,
     ConversationContextState, ConversationContextSummary, ToolCallRecord, ToolCallStatus,
 };
 
@@ -358,7 +356,6 @@ pub(crate) async fn chat_send_message(
         tool_calls: Vec::new(),
         api_messages: Vec::new(),
         model_messages: Vec::new(),
-        mixer_runs: Vec::new(),
         active_skill_id: None,
         timestamp: chrono::Local::now().timestamp(),
     };
@@ -882,27 +879,15 @@ async fn complete_assistant_reply(
     entry: crate::chat::agent::AgentRunEntry,
 ) -> Result<(), String> {
     let settings = state.settings_read().clone();
-    let mixer_enabled = mixer_enabled_for_settings(&settings);
     let provider = settings
         .get_provider(&conversation.provider_id)
-        .cloned()
-        .or_else(|| {
-            mixer_enabled
-                .then(|| {
-                    settings
-                        .providers
-                        .iter()
-                        .find(|provider| provider.enabled)
-                        .cloned()
-                })
-                .flatten()
-        })
-        .ok_or_else(|| "Chat provider not found".to_string())?;
+        .ok_or_else(|| "Chat provider not found".to_string())?
+        .clone();
     let provider_is_apple = provider.base_url == APPLE_INTELLIGENCE_BASE_URL;
-    if !mixer_enabled && !provider_is_apple && provider.api_keys.is_empty() {
+    if !provider_is_apple && provider.api_keys.is_empty() {
         return Err(format_chat_missing_api_key_error(&provider.name));
     }
-    if !mixer_enabled && conversation.model.trim().is_empty() {
+    if conversation.model.trim().is_empty() {
         return Err(chat_missing_model_error());
     }
 
@@ -918,6 +903,102 @@ async fn complete_assistant_reply(
     let run_generation = state.next_chat_generation(&conversation.id);
     let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
+    let use_auxiliary_vision =
+        !last_user_image_paths.is_empty() && settings.has_explicit_vision_model();
+    let mut auxiliary_tool_records = Vec::new();
+    let auxiliary_vision_result = if use_auxiliary_vision {
+        let mut record = auxiliary_vision_tool_record(&settings, last_user_image_paths.len());
+        let started = Instant::now();
+        emit_chat_tool_record(
+            app,
+            &conversation.id,
+            &run_id,
+            &assistant_message_id,
+            &record,
+        );
+        let analysis = tokio::select! {
+            result = analyze_chat_images_with_auxiliary_model(
+                state,
+                &settings,
+                last_user_api_content,
+                last_user_image_paths,
+                retry_attempts,
+                &language,
+            ) => result,
+            _ = wait_for_chat_cancel(state.inner(), &conversation.id, run_generation) => {
+                finish_auxiliary_vision_tool_record(
+                    &mut record,
+                    ToolCallStatus::Cancelled,
+                    started,
+                    None,
+                    Some("Mixer vision analysis cancelled".to_string()),
+                );
+                emit_chat_tool_record(app, &conversation.id, &run_id, &assistant_message_id, &record);
+                auxiliary_tool_records.push(record);
+                emit_chat_stream_done(
+                    app,
+                    &conversation.id,
+                    &run_id,
+                    &assistant_message_id,
+                    "cancelled",
+                    "",
+                );
+                return Err("cancelled".to_string());
+            }
+        };
+        match analysis {
+            Ok(result) => {
+                finish_auxiliary_vision_tool_record(
+                    &mut record,
+                    ToolCallStatus::Success,
+                    started,
+                    Some(truncate_chars(result.content.trim(), 1000)),
+                    None,
+                );
+                emit_chat_tool_record(
+                    app,
+                    &conversation.id,
+                    &run_id,
+                    &assistant_message_id,
+                    &record,
+                );
+                auxiliary_tool_records.push(record);
+                Some(result)
+            }
+            Err(err) => {
+                finish_auxiliary_vision_tool_record(
+                    &mut record,
+                    ToolCallStatus::Error,
+                    started,
+                    None,
+                    Some(err.clone()),
+                );
+                emit_chat_tool_record(
+                    app,
+                    &conversation.id,
+                    &run_id,
+                    &assistant_message_id,
+                    &record,
+                );
+                auxiliary_tool_records.push(record);
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
+    let empty_image_paths: &[PathBuf] = &[];
+    let main_image_paths = if auxiliary_vision_result.is_some() {
+        empty_image_paths
+    } else {
+        last_user_image_paths
+    };
+    let augmented_last_user_content = auxiliary_vision_result.as_ref().map(|result| {
+        user_content_with_auxiliary_vision_result(last_user_api_content, result, &language)
+    });
+    let last_user_content_for_main = augmented_last_user_content
+        .as_deref()
+        .or(last_user_api_content);
     let skill_registry =
         skills::build_registry(app, &settings.chat_tools.skill_scan_paths).unwrap_or_default();
     let requested_skill_id = active_skill_id
@@ -948,24 +1029,19 @@ async fn complete_assistant_reply(
         agent_prepare::apply_active_skill_tool_filter(&mut tools, skill);
     }
     let tools_available = tools_capable && !tools.is_empty();
-    let prompt_tools_available = !mixer_enabled && tools_available;
     agent_prepare::apply_skill_fallback_when_tools_unavailable(
         &mut effective_chat_tools,
         skill_id.as_deref(),
-        prompt_tools_available,
+        tools_available,
     );
-    let available_builtin_tools = if prompt_tools_available {
-        agent_prepare::available_builtin_tool_names(&tools)
-    } else {
-        Vec::new()
-    };
+    let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
     let system_prompt = agent_prepare::build_chat_system_prompt(
         &language,
-        !last_user_image_paths.is_empty(),
+        !main_image_paths.is_empty(),
         thinking_enabled,
         &skill_registry,
         &effective_chat_tools,
-        prompt_tools_available,
+        tools_available,
         &available_builtin_tools,
         skill_id.as_deref(),
         active_skill_detail.as_ref(),
@@ -973,8 +1049,8 @@ async fn complete_assistant_reply(
         settings.chat.system_prompt.as_str(),
     );
 
-    if !mixer_enabled && provider_is_apple {
-        if !last_user_image_paths.is_empty() {
+    if provider_is_apple {
+        if !main_image_paths.is_empty() {
             return Err(
                 "Apple Intelligence 暂不支持图片附件，请为 AI 对话配置云端视觉 provider".into(),
             );
@@ -983,7 +1059,7 @@ async fn complete_assistant_reply(
             &system_prompt,
             conversation,
             last_user_idx,
-            last_user_api_content,
+            last_user_content_for_main,
         );
         let response = tokio::select! {
             result = state.apple_intelligence.call_text(&prompt) => result?,
@@ -1023,8 +1099,7 @@ async fn complete_assistant_reply(
             assistant_message_id,
             response,
             None,
-            Vec::new(),
-            Vec::new(),
+            auxiliary_tool_records,
             Vec::new(),
             skill_id.as_deref(),
             title_from_first_user,
@@ -1037,48 +1112,16 @@ async fn complete_assistant_reply(
         &system_prompt,
         conversation,
         last_user_idx,
-        last_user_api_content,
-        last_user_image_paths,
+        last_user_content_for_main,
+        main_image_paths,
     )?;
-    if mixer_enabled {
-        let result = run_chat_mixer(
-            app,
-            state,
-            &settings,
-            conversation,
-            runtime_messages,
-            run_id.clone(),
-            assistant_message_id.clone(),
-            run_generation,
-            thinking_enabled,
-            retry_attempts,
-            !last_user_image_paths.is_empty(),
-        )
-        .await?;
-        push_assistant_message(
-            app,
-            state,
-            &settings,
-            conversation,
-            assistant_message_id,
-            result.content,
-            result.reasoning,
-            Vec::new(),
-            result.api_messages,
-            vec![result.record],
-            skill_id.as_deref(),
-            title_from_first_user,
-        )
-        .await?;
-        return Ok(());
-    }
     let mut fallback_chat_tools = effective_chat_tools.clone();
     if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
         fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
     }
     let provider_tools_fallback_system_prompt = agent_prepare::build_chat_system_prompt(
         &language,
-        !last_user_image_paths.is_empty(),
+        !main_image_paths.is_empty(),
         thinking_enabled,
         &skill_registry,
         &fallback_chat_tools,
@@ -1113,7 +1156,7 @@ async fn complete_assistant_reply(
             settings: settings.clone(),
             effective_chat_tools,
             language,
-            has_image: !last_user_image_paths.is_empty(),
+            has_image: !main_image_paths.is_empty(),
             thinking_enabled,
             stream_enabled,
             retry_attempts,
@@ -1129,6 +1172,8 @@ async fn complete_assistant_reply(
     )
     .await?;
 
+    let mut tool_records = auxiliary_tool_records;
+    tool_records.extend(result.tool_records);
     push_assistant_message(
         app,
         state,
@@ -1137,9 +1182,8 @@ async fn complete_assistant_reply(
         assistant_message_id,
         result.content,
         result.reasoning,
-        result.tool_records,
+        tool_records,
         result.api_messages,
-        Vec::new(),
         skill_id.as_deref(),
         title_from_first_user,
     )
@@ -1157,7 +1201,6 @@ async fn push_assistant_message(
     reasoning: Option<String>,
     tool_calls: Vec<ToolCallRecord>,
     api_messages: Vec<Value>,
-    mixer_runs: Vec<ChatMixerRunRecord>,
     active_skill_id: Option<&str>,
     title_from_first_user: Option<&str>,
 ) -> Result<(), String> {
@@ -1185,7 +1228,6 @@ async fn push_assistant_message(
         ),
         tool_calls,
         api_messages,
-        mixer_runs,
         active_skill_id: active_skill_id.map(|id| id.to_string()),
         timestamp: chrono::Local::now().timestamp(),
     });
@@ -2059,6 +2101,187 @@ fn build_chat_api_messages(
     Ok(messages)
 }
 
+struct AuxiliaryVisionResult {
+    provider_name: String,
+    model: String,
+    content: String,
+}
+
+fn auxiliary_vision_tool_record(settings: &Settings, image_count: usize) -> ToolCallRecord {
+    let (provider_id, model) = settings.effective_vision_model();
+    let provider_name = settings
+        .get_provider(&provider_id)
+        .map(|provider| provider.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| provider_id.clone());
+    ToolCallRecord {
+        id: format!("call_mixer_vision_{}", Uuid::new_v4()),
+        name: "mixer_vision".to_string(),
+        source: "mixer".to_string(),
+        server_id: Some(format!("{provider_name} / {model}")),
+        arguments: serde_json::json!({
+            "task": "vision",
+            "provider": provider_name,
+            "model": model,
+            "images": image_count,
+        })
+        .to_string(),
+        status: ToolCallStatus::Running,
+        result_preview: None,
+        error: None,
+        duration_ms: None,
+        started_at: Some(chrono::Local::now().timestamp()),
+        completed_at: None,
+        round: 0,
+        sensitive: false,
+        artifacts: Vec::new(),
+    }
+}
+
+fn finish_auxiliary_vision_tool_record(
+    record: &mut ToolCallRecord,
+    status: ToolCallStatus,
+    started: Instant,
+    result_preview: Option<String>,
+    error: Option<String>,
+) {
+    record.status = status;
+    record.duration_ms = Some(started.elapsed().as_millis() as u64);
+    record.completed_at = Some(chrono::Local::now().timestamp());
+    record.result_preview = result_preview;
+    record.error = error;
+}
+
+async fn analyze_chat_images_with_auxiliary_model(
+    state: &State<'_, AppState>,
+    settings: &Settings,
+    last_user_api_content: Option<&str>,
+    image_paths: &[PathBuf],
+    retry_attempts: usize,
+    language: &str,
+) -> Result<AuxiliaryVisionResult, String> {
+    if image_paths.is_empty() {
+        return Err("No image attachments to analyze".to_string());
+    }
+    let (provider_id, model) = settings.effective_vision_model();
+    let provider = settings
+        .get_provider(&provider_id)
+        .ok_or_else(|| "Vision auxiliary provider not found".to_string())?
+        .clone();
+    if provider.api_format_kind() == ProviderApiFormat::AppleLocal {
+        return Err(
+            "Apple Intelligence 暂不支持图片附件，请在「混音器」里为视觉副任务选择云端视觉模型。"
+                .to_string(),
+        );
+    }
+    if provider.api_keys.is_empty() {
+        return Err(format_chat_missing_api_key_error(&provider.name));
+    }
+    if model.trim().is_empty() {
+        return Err(chat_missing_model_error());
+    }
+
+    let mut parts = image_paths
+        .iter()
+        .map(image_content_part)
+        .collect::<Result<Vec<_>, _>>()?;
+    parts.push(serde_json::json!({
+        "type": "text",
+        "text": auxiliary_vision_user_prompt(last_user_api_content, language),
+    }));
+    let messages = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": auxiliary_vision_system_prompt(language),
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": parts,
+        }),
+    ];
+    let message = call_chat_completion_message(
+        state,
+        &provider,
+        &model,
+        messages,
+        None,
+        retry_attempts,
+        false,
+        "Chat auxiliary vision analysis",
+    )
+    .await?;
+    let content = agent_stop::assistant_content_from_api_message(&message);
+    if content.trim().is_empty() {
+        return Err("Vision auxiliary model returned an empty analysis".to_string());
+    }
+    Ok(AuxiliaryVisionResult {
+        provider_name: provider.name,
+        model,
+        content,
+    })
+}
+
+fn auxiliary_vision_system_prompt(language: &str) -> &'static str {
+    if language.starts_with("zh") {
+        "你是 Kivio 的视觉副任务模型。你的任务是读取用户提供的图片，并输出给另一个主对话模型使用的客观文字观察。只描述图片中可见的信息、文字、结构、对象、界面状态和与用户问题相关的细节；不要回答最终问题，不要编造不可见内容。"
+    } else {
+        "You are Kivio's auxiliary vision model. Read the user's images and produce objective textual observations for another main chat model. Describe visible information, text, layout, objects, UI state, and details relevant to the user's request. Do not answer the final question and do not invent unseen content."
+    }
+}
+
+fn auxiliary_vision_user_prompt(last_user_api_content: Option<&str>, language: &str) -> String {
+    let content = last_user_api_content
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    if language.starts_with("zh") {
+        if content.is_empty() {
+            "请分析这些图片，输出主对话模型回答用户时需要知道的视觉事实。".to_string()
+        } else {
+            format!(
+                "用户原始消息如下。请结合图片提取主对话模型回答时需要知道的视觉事实。\n\n{content}"
+            )
+        }
+    } else if content.is_empty() {
+        "Analyze these images and output the visual facts the main chat model needs.".to_string()
+    } else {
+        format!(
+            "The user's original message is below. Extract the visual facts the main chat model needs to answer it.\n\n{content}"
+        )
+    }
+}
+
+fn user_content_with_auxiliary_vision_result(
+    last_user_api_content: Option<&str>,
+    result: &AuxiliaryVisionResult,
+    language: &str,
+) -> String {
+    let original = last_user_api_content
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    let aux_block = if language.starts_with("zh") {
+        format!(
+            "[混音器视觉副任务结果]\n图片附件已由视觉模型（{} - {}）预先分析。主对话模型不能直接访问图片，请基于以下视觉观察回答用户：\n{}",
+            result.provider_name,
+            result.model,
+            result.content.trim()
+        )
+    } else {
+        format!(
+            "[Mixer vision auxiliary result]\nThe image attachments were pre-analyzed by the vision model ({} - {}). The main chat model cannot access the images directly; answer using the visual observations below:\n{}",
+            result.provider_name,
+            result.model,
+            result.content.trim()
+        )
+    };
+    if original.is_empty() {
+        aux_block
+    } else {
+        format!("{original}\n\n{aux_block}")
+    }
+}
+
 fn build_apple_chat_prompt(
     system_prompt: &str,
     conversation: &Conversation,
@@ -2100,648 +2323,6 @@ fn build_apple_chat_prompt(
     }
     parts.push("Assistant:".to_string());
     parts.join("\n\n")
-}
-
-struct ChatMixerRunResult {
-    content: String,
-    reasoning: Option<String>,
-    api_messages: Vec<Value>,
-    record: ChatMixerRunRecord,
-}
-
-fn mixer_enabled_for_settings(settings: &Settings) -> bool {
-    settings.chat_mixer.enabled
-        && settings
-            .chat_mixer
-            .lanes
-            .iter()
-            .filter(|lane| {
-                lane.enabled && !lane.provider_id.trim().is_empty() && !lane.model.trim().is_empty()
-            })
-            .count()
-            >= 2
-}
-
-async fn run_chat_mixer(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    settings: &Settings,
-    conversation: &Conversation,
-    runtime_messages: Vec<Value>,
-    run_id: String,
-    message_id: String,
-    generation: u64,
-    thinking_enabled: bool,
-    retry_attempts: usize,
-    has_image: bool,
-) -> Result<ChatMixerRunResult, String> {
-    let run_started_at = chrono::Local::now().timestamp();
-    let run_started = Instant::now();
-    let enabled_lanes = settings
-        .chat_mixer
-        .lanes
-        .iter()
-        .filter(|lane| lane.enabled)
-        .filter_map(|lane| {
-            let provider = settings
-                .get_provider(&lane.provider_id)
-                .filter(|provider| provider.enabled)?
-                .clone();
-            Some((lane.clone(), provider))
-        })
-        .collect::<Vec<_>>();
-    if enabled_lanes.len() < 2 {
-        return Err("Mixer 至少需要 2 个启用且有效的 lane。".to_string());
-    }
-
-    let min_successful = settings
-        .chat_mixer
-        .min_successful_lanes
-        .clamp(1, enabled_lanes.len() as u8);
-    let lane_timeout_ms = settings.chat_mixer.lane_timeout_ms;
-    let max_lane_output_chars = settings.chat_mixer.max_lane_output_chars;
-    let lane_futures = enabled_lanes
-        .into_iter()
-        .map(|(lane, provider)| {
-            run_chat_mixer_lane(
-                state.inner(),
-                conversation.id.clone(),
-                generation,
-                runtime_messages.clone(),
-                lane,
-                provider,
-                retry_attempts,
-                thinking_enabled,
-                lane_timeout_ms,
-                max_lane_output_chars,
-                has_image,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut lane_records = join_all(lane_futures).await;
-    if !state
-        .inner()
-        .is_chat_generation_active(&conversation.id, generation)
-    {
-        emit_chat_stream_done(app, &conversation.id, &run_id, &message_id, "cancelled", "");
-        return Err("cancelled".to_string());
-    }
-
-    let successful = lane_records
-        .iter()
-        .filter(|lane| lane.status == ChatMixerStatus::Completed)
-        .filter(|lane| {
-            lane.content
-                .as_deref()
-                .map(|content| !content.trim().is_empty())
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-    let mut aggregator = None;
-    let mut final_content: String;
-    let mut final_reasoning = None;
-    let mut api_messages = Vec::new();
-    let mut synthesized = false;
-
-    if successful.len() < min_successful as usize {
-        final_content = format_mixer_failure_answer(&lane_records);
-        api_messages.push(agent_stop::final_assistant_api_message(
-            &final_content,
-            None,
-        ));
-    } else if settings.chat_mixer.synthesize {
-        let aggregator_result = run_chat_mixer_aggregator(
-            state.inner(),
-            settings,
-            conversation,
-            &runtime_messages,
-            &lane_records,
-            retry_attempts,
-            thinking_enabled,
-            lane_timeout_ms,
-            generation,
-        )
-        .await;
-        if !state
-            .inner()
-            .is_chat_generation_active(&conversation.id, generation)
-        {
-            emit_chat_stream_done(app, &conversation.id, &run_id, &message_id, "cancelled", "");
-            return Err("cancelled".to_string());
-        }
-        match aggregator_result {
-            Some((record, output)) if record.status == ChatMixerStatus::Completed => {
-                final_content = agent_stop::sanitize_assistant_text_response(&output.text);
-                final_reasoning = output.reasoning.clone();
-                api_messages.push(output.to_openai_compatible_message());
-                synthesized = !final_content.trim().is_empty();
-                aggregator = Some(record);
-                if final_content.trim().is_empty() {
-                    final_content = format_unsynthesized_mixer_answer(&lane_records);
-                    api_messages.clear();
-                    api_messages.push(agent_stop::final_assistant_api_message(
-                        &final_content,
-                        final_reasoning.as_deref(),
-                    ));
-                }
-            }
-            Some((record, _)) => {
-                aggregator = Some(record);
-                final_content = format_unsynthesized_mixer_answer(&lane_records);
-                api_messages.push(agent_stop::final_assistant_api_message(
-                    &final_content,
-                    None,
-                ));
-            }
-            None => {
-                final_content = format_unsynthesized_mixer_answer(&lane_records);
-                api_messages.push(agent_stop::final_assistant_api_message(
-                    &final_content,
-                    None,
-                ));
-            }
-        }
-    } else {
-        final_content = format_unsynthesized_mixer_answer(&lane_records);
-        api_messages.push(agent_stop::final_assistant_api_message(
-            &final_content,
-            None,
-        ));
-    }
-
-    if final_content.trim().is_empty() {
-        final_content = format_mixer_failure_answer(&lane_records);
-        api_messages.clear();
-        api_messages.push(agent_stop::final_assistant_api_message(
-            &final_content,
-            None,
-        ));
-    }
-
-    let completed_at = chrono::Local::now().timestamp();
-    let duration_ms = run_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    let record = ChatMixerRunRecord {
-        id: format!("mix_{}", Uuid::new_v4()),
-        enabled: true,
-        synthesized,
-        min_successful_lanes: min_successful,
-        started_at: run_started_at,
-        completed_at: Some(completed_at),
-        duration_ms: Some(duration_ms),
-        lanes: {
-            lane_records.sort_by(|left, right| left.label.cmp(&right.label));
-            lane_records
-        },
-        aggregator,
-    };
-
-    emit_chat_stream_delta(
-        app,
-        &conversation.id,
-        &run_id,
-        &message_id,
-        &final_content,
-        final_reasoning.as_deref(),
-    );
-    emit_chat_stream_done(
-        app,
-        &conversation.id,
-        &run_id,
-        &message_id,
-        "done",
-        &final_content,
-    );
-
-    Ok(ChatMixerRunResult {
-        content: final_content,
-        reasoning: final_reasoning,
-        api_messages,
-        record,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_chat_mixer_lane(
-    state: &AppState,
-    conversation_id: String,
-    generation: u64,
-    base_messages: Vec<Value>,
-    lane: crate::settings::ChatMixerLaneConfig,
-    provider: crate::settings::ModelProvider,
-    retry_attempts: usize,
-    thinking_enabled: bool,
-    timeout_ms: u64,
-    max_output_chars: usize,
-    has_image: bool,
-) -> ChatMixerLaneRecord {
-    let started_at = chrono::Local::now().timestamp();
-    let started = Instant::now();
-    let label = mixer_lane_label(&lane, &provider);
-    let mut record = ChatMixerLaneRecord {
-        id: lane.id.clone(),
-        label: label.clone(),
-        provider_id: provider.id.clone(),
-        provider_name: Some(provider.name.clone()),
-        model: lane.model.clone(),
-        status: ChatMixerStatus::Running,
-        content: None,
-        reasoning: None,
-        error: None,
-        usage: None,
-        started_at: Some(started_at),
-        completed_at: None,
-        duration_ms: None,
-    };
-
-    if !state.is_chat_generation_active(&conversation_id, generation) {
-        finalize_mixer_lane_record(&mut record, ChatMixerStatus::Cancelled, Some("cancelled"));
-        return record;
-    }
-    if has_image && provider.api_format_kind() == ProviderApiFormat::AppleLocal {
-        finalize_mixer_lane_record(
-            &mut record,
-            ChatMixerStatus::Failed,
-            Some("This lane does not support image attachments."),
-        );
-        return record;
-    }
-    if provider.api_format_kind() != ProviderApiFormat::AppleLocal && provider.api_keys.is_empty() {
-        let message = format_chat_missing_api_key_error(&provider.name);
-        finalize_mixer_lane_record(&mut record, ChatMixerStatus::Failed, Some(&message));
-        return record;
-    }
-    if lane.model.trim().is_empty() {
-        let message = chat_missing_model_error();
-        finalize_mixer_lane_record(&mut record, ChatMixerStatus::Failed, Some(&message));
-        return record;
-    }
-
-    let mut messages = base_messages;
-    patch_chat_mixer_system_message(&mut messages, Some(&label), false);
-    let request = generate_request_from_openai_messages(
-        &lane.model,
-        messages,
-        None,
-        GenerateOptions {
-            temperature: lane.temperature.unwrap_or(0.7),
-            thinking_enabled,
-            ..GenerateOptions::default()
-        },
-        &format!("Chat Mixer lane {label}"),
-    );
-    let generation_result = tokio::select! {
-        result = timeout(
-            Duration::from_millis(timeout_ms),
-            generate_with_chat_provider(state, &provider, retry_attempts, request),
-        ) => result,
-        _ = wait_for_chat_cancel(state, &conversation_id, generation) => {
-            finalize_mixer_lane_record(&mut record, ChatMixerStatus::Cancelled, Some("cancelled"));
-            return record;
-        }
-    };
-    match generation_result {
-        Ok(Ok(output)) => {
-            let content = agent_stop::sanitize_assistant_text_response(&output.text);
-            if content.trim().is_empty() {
-                finalize_mixer_lane_record(
-                    &mut record,
-                    ChatMixerStatus::Failed,
-                    Some("Lane returned an empty response."),
-                );
-            } else {
-                record.content = Some(truncate_chars(&content, max_output_chars));
-                record.reasoning = output.reasoning;
-                record.usage = output.usage;
-                finalize_mixer_lane_record(&mut record, ChatMixerStatus::Completed, None);
-            }
-        }
-        Ok(Err(err)) => {
-            finalize_mixer_lane_record(&mut record, ChatMixerStatus::Failed, Some(&err));
-        }
-        Err(_) => {
-            finalize_mixer_lane_record(
-                &mut record,
-                ChatMixerStatus::Failed,
-                Some("Lane timed out."),
-            );
-        }
-    }
-
-    record.duration_ms = Some(started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
-    record
-}
-
-async fn run_chat_mixer_aggregator(
-    state: &AppState,
-    settings: &Settings,
-    conversation: &Conversation,
-    runtime_messages: &[Value],
-    lane_records: &[ChatMixerLaneRecord],
-    retry_attempts: usize,
-    thinking_enabled: bool,
-    timeout_ms: u64,
-    generation: u64,
-) -> Option<(ChatMixerAggregatorRecord, GenerateOutput)> {
-    let (provider, model, temperature) = resolve_chat_mixer_aggregator(settings, conversation)?;
-    let started_at = chrono::Local::now().timestamp();
-    let started = Instant::now();
-    let mut record = ChatMixerAggregatorRecord {
-        provider_id: provider.id.clone(),
-        provider_name: Some(provider.name.clone()),
-        model: model.clone(),
-        status: ChatMixerStatus::Running,
-        content: None,
-        reasoning: None,
-        error: None,
-        usage: None,
-        started_at: Some(started_at),
-        completed_at: None,
-        duration_ms: None,
-    };
-
-    if provider.api_format_kind() != ProviderApiFormat::AppleLocal && provider.api_keys.is_empty() {
-        let message = format_chat_missing_api_key_error(&provider.name);
-        finalize_mixer_aggregator_record(&mut record, ChatMixerStatus::Failed, Some(&message));
-        return Some((
-            record,
-            GenerateOutput::text(String::new(), None, Value::Null),
-        ));
-    }
-
-    let messages = build_chat_mixer_aggregator_messages(runtime_messages, lane_records);
-    let request = generate_request_from_openai_messages(
-        &model,
-        messages,
-        None,
-        GenerateOptions {
-            temperature,
-            thinking_enabled,
-            ..GenerateOptions::default()
-        },
-        "Chat Mixer aggregator",
-    );
-    let generation_result = tokio::select! {
-        result = timeout(
-            Duration::from_millis(timeout_ms),
-            generate_with_chat_provider(state, &provider, retry_attempts, request),
-        ) => result,
-        _ = wait_for_chat_cancel(state, &conversation.id, generation) => {
-            finalize_mixer_aggregator_record(&mut record, ChatMixerStatus::Cancelled, Some("cancelled"));
-            return Some((record, GenerateOutput::cancelled(String::new(), None)));
-        }
-    };
-    match generation_result {
-        Ok(Ok(output)) => {
-            let content = agent_stop::sanitize_assistant_text_response(&output.text);
-            if content.trim().is_empty() {
-                finalize_mixer_aggregator_record(
-                    &mut record,
-                    ChatMixerStatus::Failed,
-                    Some("Aggregator returned an empty response."),
-                );
-                Some((record, output))
-            } else {
-                record.content = Some(content);
-                record.reasoning = output.reasoning.clone();
-                record.usage = output.usage.clone();
-                finalize_mixer_aggregator_record(&mut record, ChatMixerStatus::Completed, None);
-                record.duration_ms =
-                    Some(started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
-                Some((record, output))
-            }
-        }
-        Ok(Err(err)) => {
-            finalize_mixer_aggregator_record(&mut record, ChatMixerStatus::Failed, Some(&err));
-            Some((
-                record,
-                GenerateOutput::text(String::new(), None, Value::Null),
-            ))
-        }
-        Err(_) => {
-            finalize_mixer_aggregator_record(
-                &mut record,
-                ChatMixerStatus::Failed,
-                Some("Aggregator timed out."),
-            );
-            Some((
-                record,
-                GenerateOutput::text(String::new(), None, Value::Null),
-            ))
-        }
-    }
-}
-
-fn resolve_chat_mixer_aggregator(
-    settings: &Settings,
-    conversation: &Conversation,
-) -> Option<(crate::settings::ModelProvider, String, f32)> {
-    let configured = &settings.chat_mixer.aggregator;
-    let (provider_id, model, temperature) = if configured.provider_id.trim().is_empty() {
-        (
-            conversation.provider_id.clone(),
-            conversation.model.clone(),
-            configured.temperature.unwrap_or(0.4),
-        )
-    } else {
-        (
-            configured.provider_id.clone(),
-            configured.model.clone(),
-            configured.temperature.unwrap_or(0.4),
-        )
-    };
-    let provider = settings
-        .get_provider(&provider_id)
-        .filter(|provider| provider.enabled)?
-        .clone();
-    let model = model.trim().to_string();
-    if model.is_empty() {
-        return None;
-    }
-    Some((provider, model, temperature))
-}
-
-fn patch_chat_mixer_system_message(
-    messages: &mut [Value],
-    lane_label: Option<&str>,
-    aggregator: bool,
-) {
-    let instruction = if aggregator {
-        "You are synthesizing multiple model responses into one final answer. Compare the responses critically, preserve correct details, resolve conflicts, remove duplication, and produce the best answer for the user's original request. Do not mention unavailable information unless it affects the answer. If responses disagree, explain the resolution briefly."
-    } else if let Some(label) = lane_label {
-        return agent_stop::patch_system_message(
-            messages,
-            &format!(
-                "{}\n\nMixer lane instruction: You are lane `{label}` in a multi-model Mixer run. Answer independently using only the conversation context. Tools, file access, web access, and approval flows are not available in this lane; do not claim to have used them.",
-                messages
-                    .first()
-                    .and_then(|message| message.get("content"))
-                    .and_then(|content| content.as_str())
-                    .unwrap_or_default()
-            ),
-        );
-    } else {
-        "You are a prompt-only Mixer lane. Answer independently. Tools, file access, web access, and approval flows are not available."
-    };
-    agent_stop::patch_system_message(messages, instruction);
-}
-
-fn build_chat_mixer_aggregator_messages(
-    runtime_messages: &[Value],
-    lane_records: &[ChatMixerLaneRecord],
-) -> Vec<Value> {
-    let original_request = latest_user_text_from_runtime_messages(runtime_messages);
-    let successful = lane_records
-        .iter()
-        .filter(|lane| lane.status == ChatMixerStatus::Completed)
-        .filter_map(|lane| Some((lane, lane.content.as_deref()?.trim())))
-        .filter(|(_, content)| !content.is_empty())
-        .collect::<Vec<_>>();
-    let failed = lane_records
-        .iter()
-        .filter(|lane| lane.status != ChatMixerStatus::Completed)
-        .filter_map(|lane| {
-            lane.error
-                .as_deref()
-                .map(|error| format!("- {} ({}): {}", lane.label, lane.model, error))
-        })
-        .collect::<Vec<_>>();
-    let lane_text = successful
-        .iter()
-        .enumerate()
-        .map(|(idx, (lane, content))| {
-            format!(
-                "Response {} — {} / {}:\n{}",
-                idx + 1,
-                lane.label,
-                lane.model,
-                content
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
-    let failed_text = if failed.is_empty() {
-        "None".to_string()
-    } else {
-        failed.join("\n")
-    };
-    let user_prompt = format!(
-        "Original user request:\n{}\n\nSuccessful lane responses:\n{}\n\nFailed lanes (provenance only, not source content):\n{}",
-        original_request.trim(),
-        lane_text,
-        failed_text
-    );
-    vec![
-        serde_json::json!({
-            "role": "system",
-            "content": "You are synthesizing multiple model responses into one final answer. Compare the responses critically, preserve correct details, resolve conflicts, remove duplication, and produce the best answer for the user's original request. Do not mention unavailable information unless it affects the answer. If responses disagree, explain the resolution briefly.",
-        }),
-        serde_json::json!({
-            "role": "user",
-            "content": user_prompt,
-        }),
-    ]
-}
-
-fn latest_user_text_from_runtime_messages(messages: &[Value]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.get("role").and_then(|role| role.as_str()) == Some("user"))
-        .and_then(openai_message_text_content_for_display)
-        .unwrap_or_default()
-}
-
-fn openai_message_text_content_for_display(message: &Value) -> Option<String> {
-    match message.get("content")? {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(parts) => {
-            let texts = parts
-                .iter()
-                .filter_map(|part| {
-                    part.get("text").and_then(|text| text.as_str()).or_else(|| {
-                        (part.get("type").and_then(|kind| kind.as_str()) == Some("image_url"))
-                            .then_some("[image attachment]")
-                    })
-                })
-                .collect::<Vec<_>>();
-            (!texts.is_empty()).then(|| texts.join("\n"))
-        }
-        _ => None,
-    }
-}
-
-fn format_unsynthesized_mixer_answer(lanes: &[ChatMixerLaneRecord]) -> String {
-    let successful = lanes
-        .iter()
-        .filter(|lane| lane.status == ChatMixerStatus::Completed)
-        .filter_map(|lane| Some((lane, lane.content.as_deref()?.trim())))
-        .filter(|(_, content)| !content.is_empty())
-        .collect::<Vec<_>>();
-    if successful.is_empty() {
-        return format_mixer_failure_answer(lanes);
-    }
-    successful
-        .iter()
-        .map(|(lane, content)| format!("### {}\n\n{}", lane.label, content))
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n")
-}
-
-fn format_mixer_failure_answer(lanes: &[ChatMixerLaneRecord]) -> String {
-    let errors = lanes
-        .iter()
-        .map(|lane| {
-            format!(
-                "- {} / {}: {}",
-                lane.label,
-                lane.model,
-                lane.error.as_deref().unwrap_or("failed")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if errors.is_empty() {
-        "Mixer 没有可用 lane。请到设置中添加至少 2 个启用模型。".to_string()
-    } else {
-        format!("Mixer 没有 lane 成功完成。\n\n{errors}")
-    }
-}
-
-fn mixer_lane_label(
-    lane: &crate::settings::ChatMixerLaneConfig,
-    provider: &crate::settings::ModelProvider,
-) -> String {
-    if !lane.label.trim().is_empty() {
-        return lane.label.trim().to_string();
-    }
-    if !provider.name.trim().is_empty() {
-        return format!("{} · {}", provider.name.trim(), lane.model.trim());
-    }
-    lane.model.trim().to_string()
-}
-
-fn finalize_mixer_lane_record(
-    record: &mut ChatMixerLaneRecord,
-    status: ChatMixerStatus,
-    error: Option<&str>,
-) {
-    record.status = status;
-    record.completed_at = Some(chrono::Local::now().timestamp());
-    if let Some(error) = error.map(str::trim).filter(|error| !error.is_empty()) {
-        record.error = Some(error.to_string());
-    }
-}
-
-fn finalize_mixer_aggregator_record(
-    record: &mut ChatMixerAggregatorRecord,
-    status: ChatMixerStatus,
-    error: Option<&str>,
-) {
-    record.status = status;
-    record.completed_at = Some(chrono::Local::now().timestamp());
-    if let Some(error) = error.map(str::trim).filter(|error| !error.is_empty()) {
-        record.error = Some(error.to_string());
-    }
 }
 
 struct ChatAgentHost<'a> {
@@ -3725,7 +3306,6 @@ mod tests {
             tool_calls: Vec::new(),
             api_messages: Vec::new(),
             model_messages: Vec::new(),
-            mixer_runs: Vec::new(),
             active_skill_id: None,
             timestamp,
         }
@@ -3805,6 +3385,44 @@ mod tests {
     }
 
     #[test]
+    fn auxiliary_vision_result_becomes_text_for_main_chat_model() {
+        let conversation = Conversation {
+            id: "conv_test".to_string(),
+            title: "test".to_string(),
+            provider_id: "provider".to_string(),
+            model: "text-model".to_string(),
+            messages: vec![test_chat_message("msg_user_1", "user", "这是什么？", 1)],
+            active_skill_id: None,
+            assistant_id: None,
+            assistant_snapshot: None,
+            created_at: 1,
+            updated_at: 1,
+            pinned: false,
+            folder: None,
+            context_state: ConversationContextState::default(),
+        };
+        let result = AuxiliaryVisionResult {
+            provider_name: "Vision Provider".to_string(),
+            model: "vision-model".to_string(),
+            content: "图片里是一张 Kivio 设置页截图。".to_string(),
+        };
+        let augmented =
+            user_content_with_auxiliary_vision_result(Some("这是什么？"), &result, "zh");
+
+        let messages =
+            build_chat_api_messages("system", &conversation, Some(0), Some(&augmented), &[])
+                .expect("messages should build");
+        let content = &messages[1]["content"];
+
+        assert!(content.is_string());
+        assert!(content.as_str().unwrap().contains("[混音器视觉副任务结果]"));
+        assert!(content.as_str().unwrap().contains("Kivio 设置页截图"));
+        assert!(!serde_json::to_string(&messages)
+            .expect("messages serialize")
+            .contains("image_url"));
+    }
+
+    #[test]
     fn mark_summary_stale_if_boundary_or_older_message_changes() {
         let mut after_boundary = test_conversation_with_summary(false);
         mark_summary_stale_if_needed(&mut after_boundary, 2);
@@ -3846,7 +3464,6 @@ mod tests {
                     tool_calls: Vec::new(),
                     api_messages: Vec::new(),
                     model_messages: Vec::new(),
-                    mixer_runs: Vec::new(),
                     active_skill_id: None,
                     timestamp: 1,
                 },
@@ -3883,7 +3500,6 @@ mod tests {
                         }),
                     ],
                     model_messages: Vec::new(),
-                    mixer_runs: Vec::new(),
                     active_skill_id: Some("doc".to_string()),
                     timestamp: 2,
                 },
@@ -3990,7 +3606,6 @@ mod tests {
                         }),
                     ],
                     model_messages: Vec::new(),
-                    mixer_runs: Vec::new(),
                     active_skill_id: None,
                     timestamp: 2,
                 },

@@ -512,14 +512,17 @@ impl DefaultModelSelection {
  * 默认模型配置。
  *
  * chat：新建 Chat 对话的全局默认模型；为空时沿用 Lens → 输入翻译的兜底链路。
- * title_summary：未来标题总结调用使用；为空时继承有效 Chat 默认模型。
- * compression：未来上下文/历史对话压缩调用使用；为空时继承有效 Chat 默认模型。
+ * vision：图片附件分析副任务使用；为空时保持 Chat 主模型直接处理图片。
+ * title_summary：标题总结副任务使用；为空时继承有效 Chat 默认模型。
+ * compression：上下文/历史对话压缩副任务使用；为空时继承有效 Chat 默认模型。
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DefaultModelsConfig {
     #[serde(default)]
     pub chat: DefaultModelSelection,
+    #[serde(default)]
+    pub vision: DefaultModelSelection,
     #[serde(default)]
     pub title_summary: DefaultModelSelection,
     #[serde(default)]
@@ -530,6 +533,7 @@ impl Default for DefaultModelsConfig {
     fn default() -> Self {
         Self {
             chat: DefaultModelSelection::default(),
+            vision: DefaultModelSelection::default(),
             title_summary: DefaultModelSelection::default(),
             compression: DefaultModelSelection::default(),
         }
@@ -664,9 +668,6 @@ fn default_chat_max_tool_rounds() -> u8 {
 pub const CHAT_TOOL_MIN_TIMEOUT_MS: u64 = 1_000;
 pub const CHAT_TOOL_MAX_TIMEOUT_MS: u64 = 300_000;
 pub const SKILL_SCRIPT_MIN_TIMEOUT_MS: u64 = 120_000;
-pub const CHAT_MIXER_MIN_LANE_TIMEOUT_MS: u64 = 15_000;
-pub const CHAT_MIXER_MAX_LANE_TIMEOUT_MS: u64 = 300_000;
-pub const CHAT_MIXER_MAX_LANES: usize = 6;
 
 fn default_chat_tool_timeout_ms() -> u64 {
     60_000
@@ -728,87 +729,6 @@ impl Default for ChatToolsConfig {
     }
 }
 
-fn default_chat_mixer_min_successful_lanes() -> u8 {
-    1
-}
-
-fn default_chat_mixer_lane_timeout_ms() -> u64 {
-    120_000
-}
-
-fn default_chat_mixer_max_lane_output_chars() -> usize {
-    24_000
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ChatMixerLaneConfig {
-    pub id: String,
-    pub enabled: bool,
-    pub label: String,
-    pub provider_id: String,
-    pub model: String,
-    #[serde(default)]
-    pub temperature: Option<f32>,
-}
-
-impl Default for ChatMixerLaneConfig {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            enabled: true,
-            label: String::new(),
-            provider_id: String::new(),
-            model: String::new(),
-            temperature: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ChatMixerAggregatorConfig {
-    pub provider_id: String,
-    pub model: String,
-    #[serde(default)]
-    pub temperature: Option<f32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ChatMixerConfig {
-    pub enabled: bool,
-    pub default_enabled: bool,
-    pub lanes: Vec<ChatMixerLaneConfig>,
-    pub aggregator: ChatMixerAggregatorConfig,
-    #[serde(default = "default_chat_mixer_min_successful_lanes")]
-    pub min_successful_lanes: u8,
-    #[serde(default = "default_chat_mixer_lane_timeout_ms")]
-    pub lane_timeout_ms: u64,
-    #[serde(default = "default_chat_mixer_max_lane_output_chars")]
-    pub max_lane_output_chars: usize,
-    #[serde(default = "default_true")]
-    pub stream_lanes: bool,
-    #[serde(default = "default_true")]
-    pub synthesize: bool,
-}
-
-impl Default for ChatMixerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            default_enabled: false,
-            lanes: Vec::new(),
-            aggregator: ChatMixerAggregatorConfig::default(),
-            min_successful_lanes: default_chat_mixer_min_successful_lanes(),
-            lane_timeout_ms: default_chat_mixer_lane_timeout_ms(),
-            max_lane_output_chars: default_chat_mixer_max_lane_output_chars(),
-            stream_lanes: true,
-            synthesize: true,
-        }
-    }
-}
-
 /**
  * 应用完整设置
  */
@@ -849,8 +769,6 @@ pub struct Settings {
     pub chat: ChatConfig,
     #[serde(default)]
     pub chat_tools: ChatToolsConfig,
-    #[serde(default)]
-    pub chat_mixer: ChatMixerConfig,
     /// 一次性：将 Lens 的流式/思考开关复制到独立的 Chat 配置（旧版共用 Lens 行为）。
     #[serde(default)]
     pub chat_behavior_migrated_from_lens: bool,
@@ -913,6 +831,20 @@ impl Settings {
         self.effective_chat_model()
     }
 
+    pub fn has_explicit_vision_model(&self) -> bool {
+        self.default_models.vision.is_configured()
+    }
+
+    pub fn effective_vision_model(&self) -> (String, String) {
+        if self.default_models.vision.is_configured() {
+            return (
+                self.default_models.vision.provider_id.clone(),
+                self.default_models.vision.model.clone(),
+            );
+        }
+        self.effective_chat_model()
+    }
+
     pub fn effective_compression_model(&self) -> (String, String) {
         if self.default_models.compression.is_configured() {
             return (
@@ -944,7 +876,6 @@ impl Default for Settings {
             lens: LensConfig::default(),
             chat: ChatConfig::default(),
             chat_tools: ChatToolsConfig::default(),
-            chat_mixer: ChatMixerConfig::default(),
             chat_behavior_migrated_from_lens: false,
             settings_language: Some("zh".to_string()),
             retry_enabled: default_retry_enabled(),
@@ -1006,83 +937,6 @@ fn sanitize_default_model_selection(
     if !provider.enabled_models.is_empty() && !provider.enabled_models.contains(&selection.model) {
         selection.model = provider.enabled_models.first().cloned().unwrap_or_default();
     }
-}
-
-fn sanitize_chat_mixer_config(config: &mut ChatMixerConfig, providers: &[ModelProvider]) {
-    config.lane_timeout_ms = config.lane_timeout_ms.clamp(
-        CHAT_MIXER_MIN_LANE_TIMEOUT_MS,
-        CHAT_MIXER_MAX_LANE_TIMEOUT_MS,
-    );
-    config.max_lane_output_chars = config.max_lane_output_chars.clamp(1_000, 50_000);
-
-    config.aggregator.provider_id = config.aggregator.provider_id.trim().to_string();
-    config.aggregator.model = config.aggregator.model.trim().to_string();
-    config.aggregator.temperature = config
-        .aggregator
-        .temperature
-        .map(|value| value.clamp(0.0, 2.0));
-    if !config.aggregator.provider_id.is_empty() {
-        if let Some(provider) = providers
-            .iter()
-            .find(|provider| provider.id == config.aggregator.provider_id && provider.enabled)
-        {
-            if config.aggregator.model.is_empty() {
-                config.aggregator.model =
-                    provider.enabled_models.first().cloned().unwrap_or_default();
-            }
-            if !provider.enabled_models.is_empty()
-                && !provider.enabled_models.contains(&config.aggregator.model)
-            {
-                config.aggregator.model =
-                    provider.enabled_models.first().cloned().unwrap_or_default();
-            }
-            if config.aggregator.model.is_empty() {
-                config.aggregator.provider_id.clear();
-                config.aggregator.temperature = None;
-            }
-        } else {
-            config.aggregator.provider_id.clear();
-            config.aggregator.model.clear();
-            config.aggregator.temperature = None;
-        }
-    } else {
-        config.aggregator.model.clear();
-        config.aggregator.temperature = None;
-    }
-
-    for lane in &mut config.lanes {
-        lane.id = lane.id.trim().to_string();
-        if lane.id.is_empty() {
-            lane.id = format!("mix-lane-{}", uuid::Uuid::new_v4());
-        }
-        lane.label = lane.label.trim().to_string();
-        lane.provider_id = lane.provider_id.trim().to_string();
-        lane.model = lane.model.trim().to_string();
-        lane.temperature = lane.temperature.map(|value| value.clamp(0.0, 2.0));
-    }
-    let mut seen_lane_ids = std::collections::HashSet::new();
-    config.lanes.retain(|lane| {
-        if lane.provider_id.is_empty() || lane.model.is_empty() {
-            return false;
-        }
-        if !seen_lane_ids.insert(lane.id.clone()) {
-            return false;
-        }
-        let Some(provider) = providers
-            .iter()
-            .find(|provider| provider.id == lane.provider_id && provider.enabled)
-        else {
-            return false;
-        };
-        provider.enabled_models.is_empty() || provider.enabled_models.contains(&lane.model)
-    });
-    if config.lanes.len() > CHAT_MIXER_MAX_LANES {
-        config.lanes.truncate(CHAT_MIXER_MAX_LANES);
-    }
-
-    let enabled_lane_count = config.lanes.iter().filter(|lane| lane.enabled).count() as u8;
-    let upper = enabled_lane_count.max(1);
-    config.min_successful_lanes = config.min_successful_lanes.clamp(1, upper);
 }
 
 fn sync_legacy_chat_model_fields(settings: &mut Settings) {
@@ -1235,6 +1089,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         }
 
         sanitize_default_model_selection(&mut settings.default_models.chat, &settings.providers);
+        sanitize_default_model_selection(&mut settings.default_models.vision, &settings.providers);
         sanitize_default_model_selection(
             &mut settings.default_models.title_summary,
             &settings.providers,
@@ -1318,6 +1173,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         }
         for selection in [
             &mut settings.default_models.chat,
+            &mut settings.default_models.vision,
             &mut settings.default_models.title_summary,
             &mut settings.default_models.compression,
         ] {
@@ -1380,7 +1236,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         settings.chat.default_language.clear();
     }
     settings.chat.system_prompt = settings.chat.system_prompt.trim().to_string();
-    sanitize_chat_mixer_config(&mut settings.chat_mixer, &settings.providers);
 
     settings.chat_tools.max_tool_rounds = settings.chat_tools.max_tool_rounds.clamp(1, 30);
     settings.chat_tools.tool_timeout_ms = settings
@@ -2289,7 +2144,7 @@ mod tests {
     }
 
     #[test]
-    fn unset_title_summary_and_compression_models_inherit_effective_chat_model() {
+    fn unset_auxiliary_models_inherit_effective_chat_model() {
         let mut s = Settings::default();
         s.providers.push(ModelProvider {
             id: "translator".to_string(),
@@ -2328,8 +2183,11 @@ mod tests {
             s.effective_chat_model(),
             ("lens".to_string(), "vision-model".to_string())
         );
+        assert!(!s.has_explicit_vision_model());
+        assert_eq!(s.effective_vision_model(), s.effective_chat_model());
         assert_eq!(s.effective_title_summary_model(), s.effective_chat_model());
         assert_eq!(s.effective_compression_model(), s.effective_chat_model());
+        assert!(s.default_models.vision.provider_id.is_empty());
         assert!(s.default_models.title_summary.provider_id.is_empty());
         assert!(s.default_models.compression.provider_id.is_empty());
     }
@@ -2377,6 +2235,19 @@ mod tests {
             model_overrides: std::collections::HashMap::new(),
         });
         s.providers.push(ModelProvider {
+            id: "vision".to_string(),
+            name: "Vision".to_string(),
+            api_keys: vec!["sk".to_string()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".to_string(),
+            available_models: vec![],
+            enabled_models: vec!["vision-model".to_string()],
+            supports_tools: true,
+            api_format: "openai".to_string(),
+            enabled: true,
+            model_overrides: std::collections::HashMap::new(),
+        });
+        s.providers.push(ModelProvider {
             id: "title".to_string(),
             name: "Title".to_string(),
             api_keys: vec!["sk".to_string()],
@@ -2406,6 +2277,8 @@ mod tests {
         s.translator_model = "chat-model".to_string();
         s.default_models.chat.provider_id = "chat".to_string();
         s.default_models.chat.model = "chat-model".to_string();
+        s.default_models.vision.provider_id = "vision".to_string();
+        s.default_models.vision.model = "vision-model".to_string();
         s.default_models.title_summary.provider_id = "title".to_string();
         s.default_models.title_summary.model = "title-model".to_string();
         s.default_models.compression.provider_id = "compression".to_string();
@@ -2420,6 +2293,11 @@ mod tests {
         assert_eq!(
             s.effective_title_summary_model(),
             ("title".to_string(), "title-model".to_string())
+        );
+        assert!(s.has_explicit_vision_model());
+        assert_eq!(
+            s.effective_vision_model(),
+            ("vision".to_string(), "vision-model".to_string())
         );
         assert_eq!(
             s.effective_compression_model(),
@@ -2447,6 +2325,8 @@ mod tests {
         s.translator_model = "m1".to_string();
         s.default_models.chat.provider_id = "chat".to_string();
         s.default_models.chat.model = "removed".to_string();
+        s.default_models.vision.provider_id = "chat".to_string();
+        s.default_models.vision.model = String::new();
         s.default_models.title_summary.provider_id = "deleted-provider".to_string();
         s.default_models.title_summary.model = "ghost".to_string();
         s.default_models.compression.provider_id = "chat".to_string();
@@ -2456,6 +2336,8 @@ mod tests {
 
         assert_eq!(s.default_models.chat.provider_id, "chat");
         assert_eq!(s.default_models.chat.model, "m1");
+        assert_eq!(s.default_models.vision.provider_id, "chat");
+        assert_eq!(s.default_models.vision.model, "m1");
         assert!(s.default_models.title_summary.provider_id.is_empty());
         assert!(s.default_models.title_summary.model.is_empty());
         assert_eq!(s.default_models.compression.provider_id, "chat");
@@ -2513,10 +2395,17 @@ mod tests {
     #[test]
     fn default_models_serialize_as_structured_camel_case_settings() {
         let mut s = Settings::default();
+        s.default_models.vision.provider_id = "vision-provider".to_string();
+        s.default_models.vision.model = "vision-model".to_string();
         s.default_models.title_summary.provider_id = "title-provider".to_string();
         s.default_models.title_summary.model = "title-model".to_string();
         let value = serde_json::to_value(&s).expect("settings should serialize");
 
+        assert_eq!(
+            value["defaultModels"]["vision"]["providerId"],
+            "vision-provider"
+        );
+        assert_eq!(value["defaultModels"]["vision"]["model"], "vision-model");
         assert_eq!(
             value["defaultModels"]["titleSummary"]["providerId"],
             "title-provider"
