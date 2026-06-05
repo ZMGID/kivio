@@ -658,7 +658,7 @@ fn default_skill_script_allowlist() -> Vec<String> {
 }
 
 fn default_chat_max_tool_rounds() -> u8 {
-    30
+    10
 }
 
 pub const CHAT_TOOL_MIN_TIMEOUT_MS: u64 = 1_000;
@@ -2042,6 +2042,15 @@ mod tests {
         let s = sanitize_settings(s);
         let p = s.get_provider("p").unwrap();
         assert_eq!(p.api_keys, vec!["sk-1".to_string()]);
+    }
+
+    #[test]
+    fn chat_tools_default_max_rounds_is_ten() {
+        assert_eq!(ChatToolsConfig::default().max_tool_rounds, 10);
+
+        let cfg: ChatToolsConfig =
+            serde_json::from_str("{}").expect("empty chat tools config should load");
+        assert_eq!(cfg.max_tool_rounds, 10);
     }
 
     #[test]
