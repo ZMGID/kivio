@@ -3,6 +3,8 @@
   "description": "Default capabilities for the main window",
   "windows": [
     "main",
+    "chat",
+    "settings",
     "lens"
   ],
   "permissions": [
