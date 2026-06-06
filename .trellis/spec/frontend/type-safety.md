@@ -76,6 +76,7 @@ Questions to answer:
 - `defaultModels.vision` is a pre-processing route, not an answer lane. When explicitly configured and the user sends images, Chat first sends the images to that vision model, converts the result to text, then sends only text to the main chat model for the final answer. When unset, images continue to be sent directly to the main chat model.
 - New Chat conversation titles are generated after the first assistant reply using `defaultModels.titleSummary` when configured, or the effective Chat default when unset. Title generation is best effort: provider errors, timeouts, missing keys, or invalid title output must fall back to local first-user-message truncation and must not fail `chat_send_message`.
 - Model providers expose `enabledModels` and `availableModels`; do not read a `models` array in Chat UI.
+- Chat context usage uses model metadata for `context_window_tokens`: provider `modelOverrides[model].contextWindow` wins, then the shared built-in `src/data/modelDatabase.json` match, then backend name heuristics. Explicit metadata must set `context_window_estimated=false`; heuristic fallbacks may remain estimated.
 - Streaming payload fields: `{ imageId, kind: 'answer', delta, reasoningDelta?, done?, reason?, full? }`.
 
 ### 4. Validation & Error Matrix
@@ -94,6 +95,7 @@ Questions to answer:
 - Bad: implementing Mixer as multiple simultaneous answer lanes, voting, synthesis, or aggregator records. Mixer is per-task model routing only.
 - Good: multiple quick clicks on "新建聊天" settle on one blank `Conversation` until the user sends a message or switches to a different provider/model/folder/assistant scope.
 - Base: `#chat` shows the empty Chat shell; `#chat/{id}` loads the referenced conversation.
+- Good: `deepseek-v4-flash` without a manual override resolves its context window from the built-in model database, so Settings and Chat context usage agree on 1,048,576 tokens.
 - Bad: listening for `{ kind: 'chunk', text }` on `chat-stream`; backend emits `delta` and `done`, not `text`.
 - Bad: creating a new blank conversation on every click just because the current route is `#chat`; this floods storage and sidebar with empty "新对话" rows.
 

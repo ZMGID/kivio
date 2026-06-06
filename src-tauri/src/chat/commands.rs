@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -22,7 +23,7 @@ use crate::chat::model::{
 };
 use crate::mcp::types::ChatToolArtifact;
 use crate::mcp::{self, ChatToolDefinition};
-use crate::settings::{persist_settings, ModelProvider, ProviderApiFormat, Settings};
+use crate::settings::{persist_settings, ModelInfo, ModelProvider, ProviderApiFormat, Settings};
 use crate::skills;
 use crate::state::AppState;
 
@@ -1461,7 +1462,79 @@ fn resolve_forced_skill_id(
     }
 }
 
-fn context_window_for_model(model: &str) -> (usize, bool) {
+fn context_window_from_model_info(info: Option<&ModelInfo>) -> Option<usize> {
+    info.and_then(|info| info.context_window)
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+}
+
+fn model_database_entries() -> Option<&'static serde_json::Map<String, Value>> {
+    static MODEL_DATABASE: OnceLock<Value> = OnceLock::new();
+    MODEL_DATABASE
+        .get_or_init(|| {
+            serde_json::from_str(include_str!("../../../src/data/modelDatabase.json"))
+                .unwrap_or(Value::Null)
+        })
+        .as_object()
+}
+
+fn model_database_context_window(model: &str) -> Option<usize> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+
+    let entries = model_database_entries()?;
+    let name = model.to_ascii_lowercase();
+    let stripped = name.rsplit('/').next().unwrap_or(&name);
+
+    if let Some(tokens) = context_window_from_database_entry(entries.get(stripped)) {
+        return Some(tokens);
+    }
+
+    entries
+        .iter()
+        .filter_map(|(key, entry)| {
+            if key == "_meta" || !stripped.starts_with(key) || key.len() >= stripped.len() {
+                return None;
+            }
+            context_window_from_database_entry(Some(entry)).map(|tokens| (key.len(), tokens))
+        })
+        .max_by_key(|(key_len, _)| *key_len)
+        .map(|(_, tokens)| tokens)
+        .or_else(|| {
+            entries
+                .iter()
+                .filter_map(|(key, entry)| {
+                    if key == "_meta" || key == stripped || !stripped.contains(key) {
+                        return None;
+                    }
+                    context_window_from_database_entry(Some(entry))
+                        .map(|tokens| (key.len(), tokens))
+                })
+                .max_by_key(|(key_len, _)| *key_len)
+                .map(|(_, tokens)| tokens)
+        })
+}
+
+fn context_window_from_database_entry(entry: Option<&Value>) -> Option<usize> {
+    entry?
+        .get("contextWindow")
+        .and_then(Value::as_u64)
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+}
+
+fn context_window_for_model(provider: Option<&ModelProvider>, model: &str) -> (usize, bool) {
+    if let Some(tokens) = context_window_from_model_info(
+        provider.and_then(|provider| provider.model_overrides.get(model)),
+    ) {
+        return (tokens, false);
+    }
+    if let Some(tokens) = model_database_context_window(model) {
+        return (tokens, false);
+    }
+
     let lower = model.to_ascii_lowercase();
     let known = [
         ("1m", 1_000_000usize),
@@ -1941,7 +2014,7 @@ async fn compute_context_state(
         .map(|segment| segment.estimated_tokens)
         .sum::<usize>();
     let (context_window_tokens, context_window_estimated) =
-        context_window_for_model(&conversation.model);
+        context_window_for_model(provider.as_ref(), &conversation.model);
     let usage_ratio = if context_window_tokens == 0 {
         None
     } else {
@@ -3294,6 +3367,23 @@ fn generate_title(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn test_provider_with_overrides(model_overrides: HashMap<String, ModelInfo>) -> ModelProvider {
+        ModelProvider {
+            id: "provider".to_string(),
+            name: "Provider".to_string(),
+            api_keys: vec!["sk-test".to_string()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".to_string(),
+            available_models: Vec::new(),
+            enabled_models: Vec::new(),
+            supports_tools: true,
+            enabled: true,
+            api_format: "openai_chat".to_string(),
+            model_overrides,
+        }
+    }
 
     #[test]
     fn attachment_type_detects_images_case_insensitively() {
@@ -3307,6 +3397,44 @@ mod tests {
     fn sanitize_attachment_name_removes_path_like_characters() {
         assert_eq!(sanitize_attachment_name("../secret?.png"), "secret_.png");
         assert_eq!(sanitize_attachment_name("   "), "attachment");
+    }
+
+    #[test]
+    fn context_window_uses_model_override_before_name_heuristic() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "deepseek-v4-flash".to_string(),
+            ModelInfo {
+                context_window: Some(1_048_576),
+                ..ModelInfo::default()
+            },
+        );
+        let provider = test_provider_with_overrides(overrides);
+
+        assert_eq!(
+            context_window_for_model(Some(&provider), "deepseek-v4-flash"),
+            (1_048_576, false)
+        );
+    }
+
+    #[test]
+    fn context_window_uses_builtin_model_database_defaults() {
+        assert_eq!(
+            context_window_for_model(None, "deepseek-v4-flash"),
+            (1_048_576, false)
+        );
+    }
+
+    #[test]
+    fn context_window_keeps_name_heuristic_when_metadata_missing() {
+        assert_eq!(
+            context_window_for_model(None, "custom-200k"),
+            (200_000, false)
+        );
+        assert_eq!(
+            context_window_for_model(None, "custom-deepseek-model"),
+            (128_000, true)
+        );
     }
 
     #[test]
