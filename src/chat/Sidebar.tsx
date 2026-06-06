@@ -6,7 +6,6 @@ import {
   MoreHorizontal,
   Search,
   Settings as SettingsIcon,
-  SquarePen,
 } from 'lucide-react'
 import type { ChatProject, ConversationListItem } from './types'
 import { ConversationList } from './ConversationList'
@@ -49,29 +48,26 @@ interface NavRowProps {
   iconMotion?: string
 }
 
-function NavRow({ icon, label, shortcut, onClick, disabled, active, iconMotion }: NavRowProps) {
+function ActionButton({ icon, label, shortcut, onClick, disabled, active, iconMotion }: NavRowProps) {
+  const title = shortcut ? `${label} (${shortcut})` : label
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] transition-colors disabled:cursor-default disabled:opacity-40 ${
+      className={`group flex h-9 min-w-0 items-center justify-center rounded-lg transition-colors disabled:cursor-default disabled:opacity-40 ${
         active
           ? 'bg-black/[0.06] font-medium text-neutral-900 dark:bg-white/[0.1] dark:text-neutral-50'
           : 'text-neutral-800 hover:bg-black/[0.04] dark:text-neutral-200 dark:hover:bg-white/[0.06]'
       }`}
+      title={title}
+      aria-label={title}
     >
       <span
         className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out will-change-transform group-hover:text-neutral-800 group-active:scale-90 dark:text-neutral-400 dark:group-hover:text-neutral-200 ${iconMotion ?? ''}`}
       >
         {icon}
       </span>
-      <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-      {shortcut && (
-        <span className="shrink-0 text-[11px] text-neutral-400 opacity-0 transition-opacity group-hover:opacity-100 dark:text-neutral-500">
-          {shortcut}
-        </span>
-      )}
     </button>
   )
 }
@@ -274,6 +270,7 @@ export const Sidebar = memo(function Sidebar({
   const menuProject = projectMenuState
     ? projects.find((project) => project.id === projectMenuState.projectId)
     : undefined
+  const showProjectSection = projects.length > 0 || !!selectedProject
 
   if (collapsed) {
     return null
@@ -293,36 +290,29 @@ export const Sidebar = memo(function Sidebar({
         <div className="min-w-0 flex-1" data-tauri-drag-region />
       </div>
 
-      <nav className="shrink-0 space-y-0.5 px-2 pb-2" data-tauri-drag-region="false">
-        <NavRow
-          icon={<SquarePen size={17} strokeWidth={1.75} />}
-          label="新建聊天"
-          shortcut={`${modLabel}N`}
-          onClick={onNewConversation}
-          iconMotion="group-hover:-rotate-6 group-hover:scale-110"
-        />
-        <NavRow
+      <nav className="grid shrink-0 grid-cols-4 gap-1.5 px-2 pb-2" data-tauri-drag-region="false">
+        <ActionButton
           icon={<FolderPlus size={17} strokeWidth={1.75} />}
           label="新建项目"
           shortcut={`${modLabel}P`}
           onClick={openCreateProjectDialog}
           iconMotion="group-hover:-translate-y-px group-hover:scale-110"
         />
-        <NavRow
+        <ActionButton
           icon={<Search size={17} strokeWidth={1.75} />}
           label="搜索"
           shortcut={`${modLabel}K`}
           onClick={() => onSearchOpenChange(!searchOpen)}
           iconMotion="group-hover:rotate-[10deg] group-hover:scale-110"
         />
-        <NavRow
+        <ActionButton
           icon={<LayoutGrid size={17} strokeWidth={1.75} />}
           label="助手中心"
           active={assistantCenterActive}
           onClick={onOpenAssistantCenter}
           iconMotion="group-hover:rotate-3 group-hover:scale-110"
         />
-        <NavRow
+        <ActionButton
           icon={<SettingsIcon size={17} strokeWidth={1.75} />}
           label="设置"
           active={settingsActive}
@@ -331,84 +321,81 @@ export const Sidebar = memo(function Sidebar({
         />
       </nav>
 
-      <div className="mx-3 border-t border-neutral-200/90 dark:border-neutral-800" />
-
       <div className="custom-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto" data-tauri-drag-region="false">
-        <div className="px-2 pt-2">
-          <div className="px-3 py-2 text-[13px] font-medium text-neutral-500 dark:text-neutral-400">
-            项目
-          </div>
-          <button
-            type="button"
-            onClick={() => onSelectProject(null)}
-            className={`chat-motion-row flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${
-              !selectedProject
-                ? 'bg-black/[0.06] font-medium text-neutral-900 dark:bg-white/[0.1] dark:text-neutral-100'
-                : 'text-neutral-700 hover:bg-black/[0.04] dark:text-neutral-300 dark:hover:bg-white/[0.06]'
-            }`}
-          >
-            <Folder size={16} strokeWidth={1.75} className="shrink-0 text-neutral-500" />
-            <span className="min-w-0 flex-1 truncate">全部聊天</span>
-          </button>
+        {showProjectSection && (
+          <div className="px-2 pt-1">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-neutral-400 dark:text-neutral-500">
+              项目
+            </div>
+            <div className="space-y-0.5">
+              <button
+                type="button"
+                onClick={() => onSelectProject(null)}
+                className={`chat-motion-row flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-[13px] transition-colors ${
+                  !selectedProject
+                    ? 'bg-black/[0.06] font-medium text-neutral-900 dark:bg-white/[0.1] dark:text-neutral-100'
+                    : 'text-neutral-700 hover:bg-black/[0.04] dark:text-neutral-300 dark:hover:bg-white/[0.06]'
+                }`}
+              >
+                <Folder size={15} strokeWidth={1.75} className="shrink-0 text-neutral-500" />
+                <span className="min-w-0 flex-1 truncate">全部</span>
+              </button>
 
-          <div className="mt-1 space-y-0.5">
-            {projects.map((project, index) => {
-              const active = selectedProject?.id === project.id
-              return (
-                <div
-                  key={project.id}
-                  className={`chat-motion-row group flex min-w-0 items-center rounded-lg ${
-                    active
-                      ? 'bg-black/[0.06] dark:bg-white/[0.1]'
-                      : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
-                  }`}
-                  style={{
-                    ['--chat-motion-delay' as string]: `${Math.min(index + 1, 12) * 18}ms`,
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onSelectProject(project)}
-                    className={`min-w-0 flex-1 truncate px-3 py-2 text-left text-[13px] ${
+              {projects.map((project, index) => {
+                const active = selectedProject?.id === project.id
+                return (
+                  <div
+                    key={project.id}
+                    className={`chat-motion-row group flex min-w-0 items-center rounded-lg ${
                       active
-                        ? 'font-medium text-neutral-900 dark:text-neutral-100'
-                        : 'text-neutral-700 dark:text-neutral-300'
+                        ? 'bg-black/[0.06] dark:bg-white/[0.1]'
+                        : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
                     }`}
-                    title={project.name}
-                  >
-                    {project.name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      openProjectMenu(project.id, e.currentTarget)
+                    style={{
+                      ['--chat-motion-delay' as string]: `${Math.min(index + 1, 12) * 18}ms`,
                     }}
-                    className={`mr-1 shrink-0 rounded-md p-1 text-neutral-400 transition-opacity hover:bg-black/[0.06] hover:text-neutral-600 dark:hover:bg-white/[0.1] dark:hover:text-neutral-200 ${
-                      projectMenuState?.projectId === project.id
-                        ? 'opacity-100'
-                        : 'opacity-0 group-hover:opacity-100'
-                    }`}
-                    aria-label="项目操作"
                   >
-                    <MoreHorizontal size={16} />
-                  </button>
-                </div>
-              )
-            })}
-            {projects.length === 0 && (
-              <div className="px-3 py-2 text-[13px] text-neutral-400 dark:text-neutral-500">
-                暂无项目
-              </div>
-            )}
+                    <button
+                      type="button"
+                      onClick={() => onSelectProject(project)}
+                      className={`min-w-0 flex-1 truncate px-3 py-1.5 text-left text-[13px] ${
+                        active
+                          ? 'font-medium text-neutral-900 dark:text-neutral-100'
+                          : 'text-neutral-700 dark:text-neutral-300'
+                      }`}
+                      title={project.name}
+                    >
+                      {project.name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        openProjectMenu(project.id, e.currentTarget)
+                      }}
+                      className={`mr-1 shrink-0 rounded-md p-1 text-neutral-400 transition-opacity hover:bg-black/[0.06] hover:text-neutral-600 dark:hover:bg-white/[0.1] dark:hover:text-neutral-200 ${
+                        projectMenuState?.projectId === project.id
+                          ? 'opacity-100'
+                          : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                      aria-label="项目操作"
+                    >
+                      <MoreHorizontal size={15} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className="mx-3 mt-3 border-t border-neutral-200/90 dark:border-neutral-800" />
+        {showProjectSection && (
+          <div className="mx-3 mt-2 border-t border-neutral-200/90 dark:border-neutral-800" />
+        )}
 
-        <div className="flex min-h-0 flex-col pt-2">
+        <div className="flex min-h-0 flex-col pt-1">
           <div className="flex min-w-0 items-center rounded-lg px-2 pb-1">
-            <span className="min-w-0 flex-1 px-3 py-2 text-[13px] font-medium text-neutral-500 dark:text-neutral-400">
+            <span className="min-w-0 flex-1 truncate px-3 py-1.5 text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
               {selectedProject ? selectedProject.name : '聊天'}
             </span>
             <button
