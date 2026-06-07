@@ -300,7 +300,7 @@ pub fn native_run_python_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__run_python".to_string(),
         name: "run_python".to_string(),
-        description: "Execute Python code in a Pyodide sandbox with no direct host filesystem access. Use for calculation, statistics, basic ML, chart/data code, document analysis, and sandbox-compatible package installs. Common Pyodide packages such as numpy, matplotlib, pandas, scipy, sympy, scikit-learn, statsmodels, pillow, seaborn, and micropip are auto-loaded when imported; missing compatible packages may be installed inside the sandbox with micropip. To analyze local documents or Kivio attachments, pass readable file paths in files; Kivio copies them into the Pyodide filesystem for this run. stdout/stderr are returned.".to_string(),
+        description: "Execute Python code in a Pyodide sandbox with no direct host filesystem access. Use for calculation, statistics, basic ML, chart/data code, document analysis, and sandbox-compatible package installs. Common Pyodide packages such as numpy, matplotlib, pandas, scipy, sympy, scikit-learn, statsmodels, pillow, seaborn, and micropip are auto-loaded when imported; missing compatible packages may be installed inside the sandbox with micropip. To analyze local documents or chat attachments, pass readable file paths in files; the app copies them into the Pyodide filesystem for this run. stdout/stderr are returned.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),

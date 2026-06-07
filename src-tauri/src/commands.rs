@@ -226,7 +226,8 @@ pub(crate) fn open_external(app: AppHandle, url: String) -> Result<(), String> {
 #[tauri::command]
 #[allow(deprecated)]
 pub(crate) fn open_html_preview(app: AppHandle, html: String) -> Result<(), String> {
-    let path = std::env::temp_dir().join(format!("kivio-html-preview-{}.html", uuid::Uuid::new_v4()));
+    let path =
+        std::env::temp_dir().join(format!("kivio-html-preview-{}.html", uuid::Uuid::new_v4()));
     std::fs::write(&path, html).map_err(|e| format!("Write HTML preview failed: {e}"))?;
     let path_str = path
         .to_str()

@@ -14,7 +14,7 @@ import type { Arrow, BarRect, CapturedFrame, HistoryItem, Metrics, Mode, Point, 
 import { ArrowSvg } from './lens/ArrowSvg'
 import { ARROW_MIN_DRAG_PX, composeAnnotatedImage } from './lens/annotation'
 import { HISTORY_MAX, HISTORY_THUMB_SIZE, loadHistoryFromStorage, makeThumbnail, saveHistoryToStorage } from './lens/history'
-import { ANCHOR_GAP, DRAG_THRESHOLD, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
+import { ANCHOR_GAP, DRAG_THRESHOLD, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
 import { estimateTokens, formatTokens } from './lens/markdown'
 import { ThinkingBlock } from './lens/ThinkingBlock'
 import { WebSearchBlock } from './lens/WebSearchBlock'
@@ -182,6 +182,7 @@ export default function Lens() {
   const selectRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectRevealedRef = useRef(false)
   const captureHintEnabledRef = useRef(true)
+  const sendToChatRef = useRef(true)
   const screenshotKeepFullscreenRef = useRef(true)
   const prevStreamingRef = useRef(false)
   const preparingSendRef = useRef(false)
@@ -252,6 +253,7 @@ export default function Lens() {
       screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
       setKeepFullscreen(curMode === 'chat' || (curMode === 'translate' && screenshotKeepFullscreenRef.current))
       captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
+      sendToChatRef.current = settings.lens?.sendToChat !== false
     } catch (err) { console.error('Failed to load settings', err) }
   }, [])
 
@@ -937,7 +939,7 @@ export default function Lens() {
     const ay = anchorAbsY - winOrigin.y
     const vw = window.innerWidth
     const vh = window.innerHeight
-    const READY_W = metrics.READY_W
+    const barW = mode === 'chat' ? computeChatBarWidth(metrics) : metrics.READY_W
     const ANSWER_H = metrics.ANSWER_H
 
     const rightStart = ax + anchorW + ANCHOR_GAP
@@ -945,13 +947,13 @@ export default function Lens() {
     const spaceLeft = ax - ANCHOR_GAP - 16
 
     let targetX: number
-    if (spaceRight >= READY_W) {
+    if (spaceRight >= barW) {
       targetX = rightStart
-    } else if (spaceLeft >= READY_W) {
-      targetX = ax - READY_W - ANCHOR_GAP
+    } else if (spaceLeft >= barW) {
+      targetX = ax - barW - ANCHOR_GAP
     } else {
       // 左右都放不下完整 bar：贴空间更大的一侧屏幕边
-      targetX = spaceRight >= spaceLeft ? vw - READY_W - 16 : 16
+      targetX = spaceRight >= spaceLeft ? vw - barW - 16 : 16
     }
 
     // 垂直：与选区中心对齐；总高度需容纳 bar + 8 + answer 区
@@ -961,7 +963,7 @@ export default function Lens() {
     if (targetY < 16) targetY = 16
 
     if (targetX < 16) targetX = 16
-    if (targetX + READY_W > vw - 16) targetX = vw - READY_W - 16
+    if (targetX + barW > vw - 16) targetX = vw - barW - 16
 
     // translate 模式截完直接进 translating；chat 模式进 ready 等用户提问
     const targetStage: Stage = mode === 'translate' ? 'translating' : 'ready'
@@ -972,7 +974,7 @@ export default function Lens() {
       const finalY = Math.round(targetY)
       const startX = barRect.x
       const startY = barRect.y
-      const floatW = READY_W + FLOATING_PADDING * 2
+      const floatW = barW + FLOATING_PADDING * 2
       const floatH = targetStage === 'ready'
         ? READY_BAR_H + FLOATING_PADDING * 2
         : READY_BAR_H + FLOATING_GAP + metrics.ANSWER_H + FLOATING_PADDING * 2
@@ -989,7 +991,7 @@ export default function Lens() {
         flushSync(() => {
           setAppLabel(label)
           setFloatingRebased(false)
-          setBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: READY_W })
+          setBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: barW })
           setFlyDelta({ x: 0, y: 0 })
           setStage(targetStage)
           if (isTranslateMode) {
@@ -1034,7 +1036,7 @@ export default function Lens() {
           setAppLabel(label)
           setFloatingRebased(false)
           setBarNoTransition(true)
-          setBarRect({ x: finalX, y: finalY, width: READY_W })
+          setBarRect({ x: finalX, y: finalY, width: barW })
           setFlyDelta({ x: startX - finalX, y: startY - finalY })
           setStage(targetStage)
           setBarIntro(!isTranslateMode)
@@ -1068,7 +1070,7 @@ export default function Lens() {
                   flushSync(() => {
                     setFloatingRebased(false)
                     setBarNoTransition(true)
-                    setBarRect({ x: finalX, y: finalY, width: READY_W })
+                    setBarRect({ x: finalX, y: finalY, width: barW })
                     setBarIntro(true)
                   })
                   requestAnimationFrame(() => {
@@ -1081,7 +1083,7 @@ export default function Lens() {
       }
     } else {
       animateFullscreenBarToAnchor(
-        { x: Math.round(targetX), y: Math.round(targetY), width: READY_W },
+        { x: Math.round(targetX), y: Math.round(targetY), width: barW },
         targetStage,
         label,
         motionSeq,
@@ -1295,6 +1297,55 @@ export default function Lens() {
           ? `[已选文本]\n${ctx}\n\n[用户问题]\n${question}`
           : `[Selected Text]\n${ctx}\n\n[Question]\n${question}`)
       : question
+
+    const transferToChat = mode === 'chat' && sendToChatRef.current !== false
+    if (transferToChat) {
+      setStage('answering')
+      setStreaming(true)
+      preparingSendRef.current = true
+      try {
+        let effectiveImageId = imageIdRef.current
+        if (arrows.length > 0 && imagePreview && capturedFrame) {
+          try {
+            const base64 = await composeAnnotatedImage(
+              imagePreview,
+              arrows,
+              capturedFrame.width,
+              capturedFrame.height,
+            )
+            const result = await api.lensRegisterAnnotatedImage(base64)
+            if (result.success && result.imageId) {
+              effectiveImageId = result.imageId
+              imageIdRef.current = result.imageId
+              setImagePreview(`data:image/png;base64,${base64}`)
+              setArrows([])
+              setDraftArrow(null)
+              setDrawMode(false)
+            } else {
+              console.warn('[lens-arrow] register annotated image failed:', result.error)
+            }
+          } catch (err) {
+            console.warn('[lens-arrow] compose failed, fallback to original:', err)
+          }
+        }
+        const result = await api.lensSendToChat(effectiveImageId || '', userContent)
+        if (!result.success) {
+          console.error('[lens-chat] send failed:', result.error)
+          setStreaming(false)
+          setStage('ready')
+          return
+        }
+        await api.lensClose()
+      } catch (err) {
+        console.error('[lens-chat] handoff failed:', err)
+        setStreaming(false)
+        setStage('ready')
+      } finally {
+        preparingSendRef.current = false
+      }
+      return
+    }
+
     const userMsg: ExplainMessage = { role: 'user', content: userContent }
     const placeholder: ExplainMessage = { role: 'assistant', content: '' }
     const sendMessages: ExplainMessage[] = [...messages, userMsg]
@@ -1838,10 +1889,10 @@ export default function Lens() {
         >
           {/* 输入栏卡片 */}
           <div
-            className="flex items-center gap-3 pl-4 pr-2 py-2 rounded-[18px] bg-white dark:bg-neutral-900 shadow-[0_10px_28px_-20px_rgba(0,0,0,0.28)] ring-1 ring-black/[0.04] dark:ring-white/[0.06] cursor-default"
+            className="flex w-full min-w-0 items-center gap-2.5 pl-4 pr-2 py-2 rounded-[18px] bg-white dark:bg-neutral-900 shadow-[0_10px_28px_-20px_rgba(0,0,0,0.28)] ring-1 ring-black/[0.04] dark:ring-white/[0.06] cursor-default overflow-hidden"
             data-tauri-drag-region="false"
           >
-            <div className="shrink-0 flex items-center gap-2">
+            <div className="flex min-w-0 shrink items-center gap-2">
               {showThumb ? (
                 <div className="flex items-center gap-2.5">
                   <div className="w-10 h-10 rounded-xl overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center shadow-sm">
@@ -1852,7 +1903,7 @@ export default function Lens() {
                     )}
                   </div>
                   {appLabel && (
-                    <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 max-w-[100px] truncate">{appLabel}</span>
+                    <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 max-w-[72px] truncate">{appLabel}</span>
                   )}
                 </div>
               ) : (
@@ -1904,7 +1955,7 @@ export default function Lens() {
               readOnly={streaming}
               aria-disabled={streaming}
               placeholder={t.lensAskPlaceholder}
-              className={`flex-1 bg-transparent text-[16px] text-neutral-900 dark:text-white placeholder-neutral-500 dark:placeholder-neutral-400 focus:outline-none ${streaming ? 'opacity-60' : ''}`}
+              className={`min-w-0 flex-1 bg-transparent text-[16px] text-neutral-900 dark:text-white placeholder-neutral-500 dark:placeholder-neutral-400 focus:outline-none ${streaming ? 'opacity-60' : ''}`}
             />
             {mode === 'chat' && (
               <button

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react'
+import { lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { api } from './api/tauri'
@@ -7,12 +7,13 @@ import { useWindowInteractionFocus } from './utils/windowFocus'
 import { ChatWindowHost } from './chat/ChatWindowHost'
 import {
   getRememberedChatRoute,
-  getRememberedChatSize,
   hashPath,
   isChatPath,
   isChatSettingsPath,
-  rememberChatSize,
+  rememberChatGeometry,
   rememberCurrentChatRoute,
+  restoreChatWindowGeometry,
+  snapshotChatWindowGeometry,
 } from './chat/persistence'
 import { ChatErrorBoundary } from './chat/ChatErrorBoundary'
 import './index.css'
@@ -314,47 +315,83 @@ function App() {
     }
   }, [])
 
+  const persistChatWindowGeometry = useCallback(async () => {
+    if (!isTauriRuntime()) return
+    try {
+      const win = (await import('@tauri-apps/api/window')).getCurrentWindow()
+      const geometry = await snapshotChatWindowGeometry(win)
+      if (geometry) rememberChatGeometry(geometry)
+    } catch (err) {
+      console.error('[App] Failed to remember chat window geometry:', err)
+    }
+  }, [])
+
+  const revealChatWindow = useCallback(async () => {
+    if (!isTauriRuntime()) return
+    try {
+      const win = (await import('@tauri-apps/api/window')).getCurrentWindow()
+      const visible = await win.isVisible()
+      if (!visible) {
+        await restoreChatWindowGeometry(win)
+        await api.showWindow()
+        await api.focusWindow()
+      }
+      await persistChatWindowGeometry()
+    } catch (err) {
+      console.error('[App] Failed to reveal chat window:', err)
+    }
+  }, [persistChatWindowGeometry])
+
+  useLayoutEffect(() => {
+    if (mode !== 'chat') return
+    if (!isTauriRuntime()) return
+    void revealChatWindow()
+  }, [mode, revealChatWindow])
+
   useEffect(() => {
     if (mode !== 'chat') return
     if (!isTauriRuntime()) return
     let cancelled = false
-    let unlisten: (() => void) | undefined
+    let unlistenResize: (() => void) | undefined
+    let unlistenMove: (() => void) | undefined
     let readyToRemember = false
 
     const setup = async () => {
       try {
         const win = (await import('@tauri-apps/api/window')).getCurrentWindow()
-        const rememberedSize = getRememberedChatSize()
-        await api.resizeWindow(rememberedSize.width, rememberedSize.height)
-        const scaleFactor = await win.scaleFactor()
         await new Promise(resolve => window.setTimeout(resolve, 0))
-        const size = await win.innerSize()
-        if (!cancelled) {
-          const logical = size.toLogical(scaleFactor)
-          rememberChatSize(logical.width, logical.height)
-          readyToRemember = true
+        if (!cancelled) readyToRemember = true
+
+        const persistIfReady = () => {
+          if (!readyToRemember || cancelled) return
+          void persistChatWindowGeometry()
         }
-        const handler = await win.onResized(({ payload }) => {
-          if (!readyToRemember) return
-          const logical = payload.toLogical(scaleFactor)
-          rememberChatSize(logical.width, logical.height)
+
+        const resizeHandler = await win.onResized(() => {
+          persistIfReady()
+        })
+        const moveHandler = await win.onMoved(() => {
+          persistIfReady()
         })
         if (cancelled) {
-          handler()
+          resizeHandler()
+          moveHandler()
         } else {
-          unlisten = handler
+          unlistenResize = resizeHandler
+          unlistenMove = moveHandler
         }
       } catch (err) {
-        console.error('[App] Failed to remember chat window size:', err)
+        console.error('[App] Failed to track chat window geometry:', err)
       }
     }
 
     void setup()
     return () => {
       cancelled = true
-      unlisten?.()
+      unlistenResize?.()
+      unlistenMove?.()
     }
-  }, [mode])
+  }, [mode, persistChatWindowGeometry])
 
   const revealSettingsWindow = useCallback(async () => {
     if (!settingsOpenPendingRef.current) return

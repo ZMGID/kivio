@@ -31,7 +31,7 @@ pub fn format_catalog(
     skills.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
 
     let header = if tools_available {
-        "The following Agent Skills are optional specialized playbooks—not the default for every request. Only call skill_activate when the user clearly needs that skill or names it. Prefer enabled Kivio built-in tools for tasks they cover. After skill_activate: use skill_read_file / skill_run_script for that skill's bundled files and scripts only.\n\n"
+        "The following Agent Skills are optional specialized playbooks—not the default for every request. Only call skill_activate when the user clearly needs that skill or names it. Prefer enabled built-in tools for tasks they cover. After skill_activate: use skill_read_file / skill_run_script for that skill's bundled files and scripts only.\n\n"
     } else {
         "The following Agent Skills are available for reference. The current model does not support tools, so skill_activate, skill_read_file, and skill_run_script are unavailable. Use the catalog only as guidance, switch to a tools-capable provider for progressive loading, or set Skill fallback to SKILL.md only when a skill is selected.\n\n"
     };

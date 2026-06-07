@@ -16,6 +16,7 @@ const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS
 const mockStorageKey = 'kivio-chat-dev-conversations'
 const mockProjectsStorageKey = 'kivio-chat-dev-projects'
 const mockAssistantsStorageKey = 'kivio-chat-dev-assistants'
+const legacyGeneralAssistantSystemPrompt = '你是 Kivio 的通用助手。回答要清晰、直接，并在信息不足时主动说明假设。'
 
 const nowSeconds = () => Math.floor(Date.now() / 1000)
 
@@ -111,7 +112,7 @@ function defaultMockAssistants(): ChatAssistant[] {
       version: '1.0.0',
       category: 'general',
       tags: ['通用', '效率'],
-      system_prompt: '你是 Kivio 的通用助手。回答要清晰、直接，并在信息不足时主动说明假设。',
+      system_prompt: '',
       provider_id: '',
       model: '',
       skill_id: null,
@@ -286,6 +287,11 @@ function defaultMockAssistants(): ChatAssistant[] {
 function hydrateBuiltinMockAssistant(existing: ChatAssistant, defaults: ChatAssistant): boolean {
   if ((existing.built_in ?? existing.builtIn) !== true && existing.source !== 'builtin') return false
   let changed = false
+  if (existing.id === 'asst_builtin_general' && (existing.system_prompt ?? existing.systemPrompt ?? '').trim() === legacyGeneralAssistantSystemPrompt) {
+    existing.system_prompt = ''
+    existing.systemPrompt = ''
+    changed = true
+  }
   const fill = <K extends keyof ChatAssistant>(key: K, value: ChatAssistant[K]) => {
     const current = existing[key]
     const emptyArray = Array.isArray(current) && current.length === 0

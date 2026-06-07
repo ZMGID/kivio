@@ -91,6 +91,29 @@ pub(crate) fn chat_create_conversation(
     folder: Option<String>,
     assistant_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let conversation = create_chat_conversation_internal(
+        &app,
+        state.inner(),
+        provider_id,
+        model,
+        folder,
+        assistant_id,
+    )?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "conversation": conversation,
+    }))
+}
+
+pub(crate) fn create_chat_conversation_internal(
+    app: &AppHandle,
+    state: &AppState,
+    provider_id: Option<String>,
+    model: Option<String>,
+    folder: Option<String>,
+    assistant_id: Option<String>,
+) -> Result<Conversation, String> {
     let settings = state.settings_read().clone();
     let assistant_snapshot = assistant_id
         .as_deref()
@@ -169,10 +192,7 @@ pub(crate) fn chat_create_conversation(
         }
     };
 
-    Ok(serde_json::json!({
-        "success": true,
-        "conversation": conversation,
-    }))
+    Ok(conversation)
 }
 
 fn non_empty_string(value: String) -> Option<String> {
@@ -336,6 +356,25 @@ pub(crate) async fn chat_compress_context(
         "success": true,
         "contextState": context_state,
         "conversation": conversation,
+    }))
+}
+
+/// 取走外部入口排队给 Chat 前端发送的消息。
+#[tauri::command]
+pub(crate) fn chat_take_external_sends(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let requests = {
+        let mut pending = state
+            .pending_chat_external_sends
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *pending)
+    };
+
+    Ok(serde_json::json!({
+        "success": true,
+        "requests": requests,
     }))
 }
 
@@ -618,8 +657,8 @@ pub(crate) fn chat_save_pasted_image(
         }));
     }
 
-    let (path, saved_name) =
-        write_pasted_attachment_bytes(&safe_name, &bytes).map_err(|e| format!("保存剪贴板图片失败: {e}"))?;
+    let (path, saved_name) = write_pasted_attachment_bytes(&safe_name, &bytes)
+        .map_err(|e| format!("保存剪贴板图片失败: {e}"))?;
 
     Ok(serde_json::json!({
         "success": true,

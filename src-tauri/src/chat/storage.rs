@@ -12,6 +12,8 @@ use super::{
 };
 
 const WRITE_RETRY_ATTEMPTS: usize = 3;
+const LEGACY_GENERAL_ASSISTANT_SYSTEM_PROMPT: &str =
+    "你是 Kivio 的通用助手。回答要清晰、直接，并在信息不足时主动说明假设。";
 
 fn validate_conversation_id(id: &str) -> Result<(), String> {
     let valid = id.starts_with("conv_")
@@ -908,6 +910,12 @@ fn hydrate_builtin_assistant(existing: &mut ChatAssistant, default: &ChatAssista
         return false;
     }
     let mut changed = false;
+    if existing.id == "asst_builtin_general"
+        && existing.system_prompt.trim() == LEGACY_GENERAL_ASSISTANT_SYSTEM_PROMPT
+    {
+        existing.system_prompt.clear();
+        changed = true;
+    }
     if existing.source.trim().is_empty() {
         existing.source = default.source.clone();
         changed = true;
@@ -965,7 +973,7 @@ fn default_assistants() -> Vec<ChatAssistant> {
             version: "1.0.0".to_string(),
             category: "general".to_string(),
             tags: vec!["通用".to_string(), "效率".to_string()],
-            system_prompt: "你是 Kivio 的通用助手。回答要清晰、直接，并在信息不足时主动说明假设。".to_string(),
+            system_prompt: String::new(),
             provider_id: String::new(),
             model: String::new(),
             skill_id: None,

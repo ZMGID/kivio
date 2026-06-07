@@ -1619,6 +1619,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         thinkingEnabled: true,
         systemPrompt: '',
         questionPrompt: '',
+        sendToChat: true,
         messageOrder: 'asc' as const,
         showCaptureHint: true,
         windowsFreezeFrameSelection: false,
@@ -2313,6 +2314,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 {settings.lens?.enabled !== false && (
                   <>
                     <SettingsGroup title={lang === 'zh' ? '对话' : 'Conversation'}>
+                      <SettingRow label={t.lensSendToChat} description={t.lensSendToChatHint}>
+                        <Toggle
+                          checked={settings.lens?.sendToChat !== false}
+                          onChange={(v) => updateLens({ sendToChat: v })}
+                        />
+                      </SettingRow>
                       <SettingRow label={t.lensMessageOrder} description={lang === 'zh' ? '控制 Lens 历史消息的排列顺序。' : 'Controls the order of Lens history messages.'}>
                         <Select
                           className="w-52"

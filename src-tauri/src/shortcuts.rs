@@ -810,21 +810,20 @@ pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
              }",
         );
         let _ = app.emit_to("chat", "chat-open-request", ());
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let _ = window.show();
+        let _ = window.set_focus();
+        #[cfg(target_os = "macos")]
+        apply_macos_traffic_light_position(&window);
     } else {
-        let window_for_task = window.clone();
-        let _ = window.run_on_main_thread(move || {
-            let _ = window_for_task.center();
-        });
+        // 首次创建保持 hidden：前端在 useLayoutEffect 里恢复几何后再 show，避免默认尺寸闪一下。
+        #[cfg(target_os = "macos")]
+        {
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            apply_macos_traffic_light_position(&window);
+        }
     }
-
-    #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-
-    let _ = window.show();
-    let _ = window.set_focus();
-
-    #[cfg(target_os = "macos")]
-    apply_macos_traffic_light_position(&window);
 
     Ok(())
 }

@@ -148,7 +148,7 @@ impl Default for GenerateOptions {
     fn default() -> Self {
         Self {
             temperature: 0.7,
-            max_tokens: 2000,
+            max_tokens: 8192,
             stream: false,
             thinking_enabled: true,
             provider_options: Value::Object(Default::default()),

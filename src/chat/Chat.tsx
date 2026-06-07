@@ -26,13 +26,21 @@ import type {
   SkillMeta,
   ToolCallRecord,
 } from './types'
-import { api, type ChatToolConfirmPayload, type ChatToolDefinition, type ChatToolProgressPayload } from '../api/tauri'
+import {
+  api,
+  type ChatExternalSendRequest,
+  type ChatToolConfirmPayload,
+  type ChatToolDefinition,
+  type ChatToolProgressPayload,
+} from '../api/tauri'
 import type { SettingsShellHandle, SettingsTab } from '../settings/SettingsShell'
 import { estimateTokens } from '../utils/tokens'
 import {
   CHAT_MIN_SIZE_COLLAPSED,
   CHAT_MIN_SIZE_EXPANDED,
   forgetRememberedChatRoute,
+  getRememberedChatSidebarCollapsed,
+  rememberChatSidebarCollapsed,
   rememberChatSize,
 } from './persistence'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
@@ -235,6 +243,10 @@ function conversationUsesModel(
   return conversation.provider_id === providerId && conversation.model === model
 }
 
+type SendMessageOptions = {
+  forceNewConversation?: boolean
+}
+
 export default function Chat({ onSettingsChange }: ChatProps) {
   const [chatView, setChatView] = useState<ChatView>(() => {
     const path = hashPath()
@@ -245,7 +257,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [currentConversation, setCurrentConversation] = useState<Awaited<
     ReturnType<typeof chatApi.getConversation>
   > | null>(null)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => getRememberedChatSidebarCollapsed())
   const [searchOpen, setSearchOpen] = useState(false)
   const [selectedProject, setSelectedProject] = useState<ChatProject | null>(null)
   const [streaming, setStreaming] = useState(false)
@@ -284,6 +296,10 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const locallyCancelledConversationIdRef = useRef<string | null>(null)
   const locallyCancelledRunIdRef = useRef<string | null>(null)
   const sendInFlightRef = useRef(false)
+  const streamingRef = useRef(false)
+  const externalSendQueueRef = useRef<ChatExternalSendRequest[]>([])
+  const externalSendDrainProcessingRef = useRef(false)
+  const externalSendDrainRequestedRef = useRef(false)
   const inFlightConversationIdRef = useRef<string | null>(null)
   const pendingStreamDoneRef = useRef<(() => void) | null>(null)
   const streamSnapshotsRef = useRef<Record<string, ConversationStreamSnapshot>>({})
@@ -297,6 +313,10 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const pendingAfterSettingsCloseRef = useRef<(() => void) | null>(null)
 
   useEffect(() => onChatImageViewerOpen(setImageViewerItem), [])
+
+  useEffect(() => {
+    streamingRef.current = streaming
+  }, [streaming])
 
   const applyConversation = useCallback((conversation: Conversation | null) => {
     setCurrentConversation(conversation)
@@ -317,6 +337,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   }, [])
 
   const clearStreamingPreview = useCallback(() => {
+    streamingRef.current = false
     setStreaming(false)
     setCancellingStream(false)
     setStreamingContent('')
@@ -355,6 +376,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     if (!snapshot) {
       clearStreamingPreview()
     } else {
+      streamingRef.current = snapshot.streaming
       setStreaming(snapshot.streaming)
       setCancellingStream(false)
       setStreamingContent(snapshot.content)
@@ -374,6 +396,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     snapshot: ConversationStreamSnapshot,
   ) => {
     if (currentConversationIdRef.current !== conversationId) return
+    streamingRef.current = snapshot.streaming
     setStreaming(snapshot.streaming)
     setCancellingStream(false)
     setStreamingContent(snapshot.content)
@@ -1076,6 +1099,29 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     return () => window.removeEventListener('hashchange', loadFromRoute)
   }, [applyConversation, getRouteConversationId, reloadConversation, restoreStreamingPreview])
 
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+
+    api.onChatOpenConversation((payload) => {
+      if (cancelled || !payload.conversationId) return
+      setChatView('conversation')
+      syncConversationRoute(payload.conversationId)
+      if (payload.reload !== false) {
+        void reloadConversation(payload.conversationId, { force: true })
+      }
+      refreshSidebar()
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(err => console.error(err))
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [refreshSidebar, reloadConversation, syncConversationRoute])
+
   const handleSelectConversation = useCallback(async (conversationId: string) => {
     setLastAssistantStreamStats(null)
     try {
@@ -1271,14 +1317,18 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     })
   }, [])
 
-  const handleSendMessage = async (content: string, attachments: PendingAttachment[] = []) => {
-    if (streaming || sendInFlightRef.current) return
+  const handleSendMessage = useCallback(async (
+    content: string,
+    attachments: PendingAttachment[] = [],
+    options: SendMessageOptions = {},
+  ) => {
+    if (streamingRef.current || sendInFlightRef.current) return false
 
     const trimmed = content.trim()
-    if (!trimmed && attachments.length === 0) return
-    if (sendDisabledReason) {
+    if (!trimmed && attachments.length === 0) return false
+    if (!options.forceNewConversation && sendDisabledReason) {
       setStreamError(sendDisabledReason)
-      return
+      return false
     }
 
     const pendingUserId = `pending-user-${Date.now()}`
@@ -1296,6 +1346,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     }
 
     resetLocalCancellation()
+    streamingRef.current = true
     setStreaming(true)
     setCancellingStream(false)
     setStreamingContent('')
@@ -1311,7 +1362,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     sendInFlightRef.current = true
     let conversationIdForRun: string | null = null
     try {
-      let conversation = currentConversation
+      let conversation = options.forceNewConversation ? null : currentConversation
       if (
         conversation
         && isPlainBlankConversation(conversation)
@@ -1331,8 +1382,9 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       }
 
       const conversationId = conversation!.id
-      const attachmentSkillId = effectiveSkillId
-        ?? inferSingleAttachmentSkillId(attachments, enabledSkills)
+      const attachmentSkillId = options.forceNewConversation
+        ? inferSingleAttachmentSkillId(attachments, enabledSkills)
+        : effectiveSkillId ?? inferSingleAttachmentSkillId(attachments, enabledSkills)
       conversationIdForRun = conversationId
       inFlightConversationIdRef.current = conversationId
       const snapshot = ensureStreamSnapshot(conversationId)
@@ -1377,7 +1429,117 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       sendInFlightRef.current = false
       inFlightConversationIdRef.current = null
     }
-  }
+    return true
+  }, [
+    activeModel,
+    activeProviderId,
+    applyAssistantStreamStats,
+    applyConversation,
+    clearStreamSnapshot,
+    clearStreamingPreview,
+    currentConversation,
+    effectiveSkillId,
+    enabledSkills,
+    ensureStreamSnapshot,
+    flushPendingStreamDone,
+    refreshSidebar,
+    resetLocalCancellation,
+    selectedProject?.name,
+    sendDisabledReason,
+    syncConversationRoute,
+  ])
+
+  const drainExternalSends = useCallback(async () => {
+    if (externalSendDrainProcessingRef.current) {
+      externalSendDrainRequestedRef.current = true
+      return
+    }
+
+    externalSendDrainProcessingRef.current = true
+    try {
+      do {
+        externalSendDrainRequestedRef.current = false
+        if (streamingRef.current || sendInFlightRef.current) {
+          externalSendDrainRequestedRef.current = true
+          break
+        }
+
+        const result = await api.chatTakeExternalSends()
+        if (!result.success) {
+          const error = 'error' in result && typeof result.error === 'string'
+            ? result.error
+            : ''
+          throw new Error(error || 'Failed to take external Chat messages')
+        }
+        const requests = result.requests ?? []
+        if (requests.length > 0) {
+          externalSendQueueRef.current.push(...requests)
+        }
+
+        const request = externalSendQueueRef.current[0]
+        if (!request) continue
+        setChatView('conversation')
+        const attachments = (request.attachments ?? [])
+          .filter((attachment) => attachment.path)
+          .map<PendingAttachment>((attachment, index) => ({
+            id: attachment.id || `external-${request.id}-${index}`,
+            type: attachment.type === 'file' ? 'file' : 'image',
+            name: attachment.name || (attachment.type === 'file' ? 'Attachment' : 'Image'),
+            path: attachment.path,
+          }))
+        const accepted = await handleSendMessage(
+          request.content ?? '',
+          attachments,
+          { forceNewConversation: true },
+        )
+        if (accepted) {
+          externalSendQueueRef.current.shift()
+        } else {
+          externalSendDrainRequestedRef.current = true
+          break
+        }
+      } while (externalSendDrainRequestedRef.current || externalSendQueueRef.current.length > 0)
+    } catch (err) {
+      console.error('Failed to process external Chat message:', err)
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '外部消息发送失败')
+    } finally {
+      externalSendDrainProcessingRef.current = false
+      if (
+        externalSendDrainRequestedRef.current
+        && !streamingRef.current
+        && !sendInFlightRef.current
+      ) {
+        window.setTimeout(() => {
+          void drainExternalSends()
+        }, 0)
+      }
+    }
+  }, [handleSendMessage])
+
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+
+    void drainExternalSends()
+    api.onChatExternalSendReady(() => {
+      if (cancelled) return
+      void drainExternalSends()
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(err => console.error(err))
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [drainExternalSends])
+
+  useEffect(() => {
+    if (!streaming && externalSendDrainRequestedRef.current) {
+      void drainExternalSends()
+    }
+  }, [drainExternalSends, streaming])
 
   const handleUpdateMessage = useCallback(
     async (messageId: string, content: string) => {
@@ -1539,9 +1701,14 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     [emptyHeroGreetingKey],
   )
 
-  const handleCollapseSidebar = useCallback(() => {
-    setSidebarCollapsed(true)
+  const setSidebarCollapsedPersisted = useCallback((collapsed: boolean) => {
+    setSidebarCollapsed(collapsed)
+    rememberChatSidebarCollapsed(collapsed)
   }, [])
+
+  const handleCollapseSidebar = useCallback(() => {
+    setSidebarCollapsedPersisted(true)
+  }, [setSidebarCollapsedPersisted])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return
@@ -1685,7 +1852,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
               {sidebarCollapsed && (
                 <ChatTitlebarActions
                   sidebarExpanded={false}
-                  onToggleSidebar={() => setSidebarCollapsed(false)}
+                  onToggleSidebar={() => setSidebarCollapsedPersisted(false)}
                   onNewConversation={() => {
                     runAfterLeavingSettings(() => void handleNewConversation())
                   }}

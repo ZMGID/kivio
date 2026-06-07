@@ -60,6 +60,19 @@ export type ChatStreamPayload = {
   full?: string
 }
 
+export type ChatExternalSendAttachment = {
+  id: string
+  type: 'image' | 'file'
+  name: string
+  path: string
+}
+
+export type ChatExternalSendRequest = {
+  id: string
+  content: string
+  attachments: ChatExternalSendAttachment[]
+}
+
 export type ChatContextUsageSegment = {
   id: string
   label: string
@@ -453,6 +466,8 @@ export type Settings = {
     thinkingEnabled?: boolean
     systemPrompt?: string
     questionPrompt?: string
+    /** 默认把 Lens 提问发送到 AI 客户端；关闭后使用旧的 Lens 浮窗内回答 */
+    sendToChat?: boolean
     /** 消息排序：'asc' 老到新（默认），'desc' 新到老 */
     messageOrder?: 'asc' | 'desc'
     /** 进入截图选择态时是否显示顶部提示（默认 true） */
@@ -664,6 +679,7 @@ function normalizeSettings(settings: Settings): Settings {
       thinkingEnabled: current.lens?.thinkingEnabled ?? true,
       systemPrompt: current.lens?.systemPrompt ?? '',
       questionPrompt: current.lens?.questionPrompt ?? '',
+      sendToChat: current.lens?.sendToChat ?? true,
       messageOrder: current.lens?.messageOrder === 'desc' ? 'desc' : 'asc',
       showCaptureHint: current.lens?.showCaptureHint ?? true,
       windowsFreezeFrameSelection: current.lens?.windowsFreezeFrameSelection ?? false,
@@ -821,6 +837,20 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<ChatToolConfirmPayload>('chat-tool-confirm', (payload) => listener(payload))
   },
+  onChatOpenConversation: (listener: (payload: { conversationId: string; reload?: boolean | null; error?: string | null }) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<{ conversationId: string; reload?: boolean | null; error?: string | null }>('chat-open-conversation', (payload) => listener(payload))
+  },
+  onChatExternalSendReady: (listener: () => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<unknown>('chat-external-send-ready', () => listener())
+  },
+  chatTakeExternalSends: () => {
+    if (!isTauriRuntime()) {
+      return Promise.resolve({ success: true, requests: [] as ChatExternalSendRequest[] })
+    }
+    return invoke<{ success: boolean; requests: ChatExternalSendRequest[]; error?: string | null }>('chat_take_external_sends')
+  },
   chatMcpListTools: () =>
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null }>('chat_mcp_list_tools'),
   chatMcpTestServer: (server: ChatMcpServer, timeoutMs?: number) =>
@@ -920,6 +950,11 @@ export const api = {
       imageId,
       messages,
       webSearch: options?.webSearch,
+    }),
+  lensSendToChat: (imageId: string, question: string) =>
+    invoke<{ success: boolean; requestId?: string; error?: string }>('lens_send_to_chat', {
+      imageId,
+      question,
     }),
   lensCancelStream: () => invoke<void>('lens_cancel_stream'),
   lensClose: () => invoke<void>('lens_close'),

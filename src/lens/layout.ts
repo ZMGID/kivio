@@ -40,6 +40,9 @@ export const computeMetrics = (vw: number, vh: number): Metrics => ({
   SELECT_BOTTOM_OFFSET: Math.round(Math.max(80, Math.min(160, vh * 0.13))),
 })
 
+/** chat 模式截图后输入栏宽度：与 select 态一致，避免缩略图/应用名挤占后发送按钮溢出。 */
+export const computeChatBarWidth = (m: Metrics) => m.SELECT_W
+
 /** 计算 select 态对话栏在 webview 内的位置（webview 全屏，所以用 viewport 大小） */
 export const computeSelectBar = (vw: number, vh: number, m: Metrics): BarRect => ({
   x: Math.round(vw / 2 - m.SELECT_W / 2),

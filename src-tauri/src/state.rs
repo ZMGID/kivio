@@ -9,6 +9,7 @@ use std::{
 };
 
 use reqwest::Client;
+use serde::Serialize;
 use tokio::sync::oneshot;
 
 use crate::apple_intelligence::AppleIntelligenceClient;
@@ -18,6 +19,23 @@ use crate::mcp::types::PythonRunResult;
 use crate::mcp::ChatToolDefinition;
 use crate::rapidocr::RapidOcrClient;
 use crate::settings::Settings;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingChatExternalAttachment {
+    pub id: String,
+    pub r#type: String,
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingChatExternalSend {
+    pub id: String,
+    pub content: String,
+    pub attachments: Vec<PendingChatExternalAttachment>,
+}
 
 /// 应用全局状态
 /// 使用 RwLock 保护 settings，允许多读单写；
@@ -40,6 +58,9 @@ pub struct AppState {
     pub chat_create_conversation_lock: Mutex<()>,
     /// Chat MCP/native tool 列表缓存。key 由工具相关 settings 生成，避免每轮对话重复冷启动 server。
     pub chat_tool_list_cache: Mutex<HashMap<String, (Instant, Vec<ChatToolDefinition>)>>,
+    /// 外部入口（例如 Lens）交给 Chat 前端发送的待处理消息。
+    /// 后端只负责保存请求和打开窗口，实际发送必须走 Chat 前端的手动发送状态机。
+    pub pending_chat_external_sends: Mutex<Vec<PendingChatExternalSend>>,
     /// Lens 启动前抓到的选中文本：放在这里等前端 enterSelect 来取走。
     /// 取一次清一次（take 语义）。无选中 / 取过 / translate 模式 = None。
     pub pending_selection: Mutex<Option<String>>,
@@ -244,6 +265,7 @@ mod tests {
             pending_python_runs: Mutex::new(HashMap::new()),
             chat_create_conversation_lock: Mutex::new(()),
             chat_tool_list_cache: Mutex::new(HashMap::new()),
+            pending_chat_external_sends: Mutex::new(Vec::new()),
             pending_selection: Mutex::new(None),
             lens_freeze_frame_image_id: Mutex::new(None),
             key_cooldowns: Mutex::new(HashMap::new()),

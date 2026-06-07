@@ -415,6 +415,9 @@ pub struct LensConfig {
     /// 自定义 question prompt。空字符串使用 default_question_prompt 模板。
     #[serde(default)]
     pub question_prompt: String,
+    /// Lens 提问默认发送到 AI 客户端。关闭后保留旧的 Lens 浮窗内回答。
+    #[serde(default = "default_true")]
+    pub send_to_chat: bool,
     /// 消息排序："asc" 老到新（默认），"desc" 新到老
     #[serde(default = "default_message_order")]
     pub message_order: String,
@@ -453,6 +456,7 @@ impl Default for LensConfig {
             thinking_enabled: true,
             system_prompt: String::new(),
             question_prompt: String::new(),
+            send_to_chat: true,
             message_order: "asc".to_string(),
             show_capture_hint: true,
             windows_freeze_frame_selection: false,
@@ -1680,10 +1684,10 @@ pub fn default_lens_system_prompt(language: &str, has_image: bool) -> String {
 /// Chat 客户端默认系统提示：允许正常 Markdown（含表格），不强制「不要空行」。
 pub fn default_chat_system_prompt(language: &str, has_image: bool) -> String {
     match (language.starts_with("zh"), has_image) {
-        (true, true) => "你是一位智能助手，可结合用户提供的图片作答。回答清晰、有条理；可使用 Markdown（表格、列表、代码块等，表格每行单独一行）。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁。".to_string(),
-        (true, false) => "你是一位智能助手。直接、清晰地回答用户问题；可使用 Markdown（表格、列表、代码块等，表格每行单独一行）。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁。".to_string(),
-        (_, true) => "You are a helpful assistant that can use images the user provides. Answer clearly; Markdown is welcome (tables, lists, code blocks—each table row on its own line). Use LaTeX ($...$ or $$...$$) for math. Think briefly.".to_string(),
-        (_, false) => "You are a helpful assistant. Answer clearly and directly; Markdown is welcome (tables, lists, code blocks—each table row on its own line). Use LaTeX ($...$ or $$...$$) for math. Think briefly.".to_string(),
+        (true, true) => "你是 Kivio 里的 AI 助手，可以帮用户写作、分析文档/数据、查网页、运行代码计算、修改文件和解答问题。你可结合用户提供的图片作答。回答清晰、有条理；可使用 Markdown（表格、列表、代码块等，表格每行单独一行）。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁。".to_string(),
+        (true, false) => "你是 Kivio 里的 AI 助手，可以帮用户写作、分析文档/数据、查网页、运行代码计算、修改文件和解答问题。直接、清晰地回答用户问题；可使用 Markdown（表格、列表、代码块等，表格每行单独一行）。数学公式用 LaTeX（$...$ 或 $$...$$）。思考保持简洁。".to_string(),
+        (_, true) => "You are the AI assistant inside Kivio. You can help users write, analyze documents/data, search the web, run code for calculations, edit files, and answer questions. You can use images the user provides. Answer clearly; Markdown is welcome (tables, lists, code blocks—each table row on its own line). Use LaTeX ($...$ or $$...$$) for math. Think briefly.".to_string(),
+        (_, false) => "You are the AI assistant inside Kivio. You can help users write, analyze documents/data, search the web, run code for calculations, edit files, and answer questions. Answer clearly and directly; Markdown is welcome (tables, lists, code blocks—each table row on its own line). Use LaTeX ($...$ or $$...$$) for math. Think briefly.".to_string(),
     }
 }
 
@@ -2647,6 +2651,15 @@ mod tests {
 
         let cfg: LensConfig = serde_json::from_str("{}").expect("empty lens config should load");
         assert!(cfg.show_capture_hint);
+    }
+
+    #[test]
+    fn lens_send_to_chat_defaults_to_enabled() {
+        let s = Settings::default();
+        assert!(s.lens.send_to_chat);
+
+        let cfg: LensConfig = serde_json::from_str("{}").expect("empty lens config should load");
+        assert!(cfg.send_to_chat);
     }
 
     #[test]

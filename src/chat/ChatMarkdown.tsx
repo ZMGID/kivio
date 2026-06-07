@@ -25,11 +25,39 @@ function codeChildrenToString(children: unknown): string {
   return typeof children === 'string' ? children : String(children ?? '')
 }
 
+function htmlPreviewSrcDoc(html: string): string {
+  const trimmed = html.trim()
+  if (!trimmed) return html
+
+  if (/^(?:<!doctype\s+html[^>]*>\s*)?<html[\s>]/i.test(trimmed)) {
+    let repaired = trimmed
+    if (/<style[\s>]/i.test(repaired) && !/<\/style>/i.test(repaired)) {
+      repaired += '\n</style>'
+    }
+    if (/<head[\s>]/i.test(repaired) && !/<\/head>/i.test(repaired)) {
+      repaired += '\n</head>'
+    }
+    if (!/<body[\s>]/i.test(repaired)) {
+      repaired += '\n<body></body>'
+    }
+    if (!/<\/body>/i.test(repaired)) {
+      repaired += '\n</body>'
+    }
+    if (!/<\/html>/i.test(repaired)) {
+      repaired += '\n</html>'
+    }
+    return repaired
+  }
+
+  return html
+}
+
 function HtmlCodePreview({ html }: { html: string }) {
   const [view, setView] = useState<'preview' | 'source'>('preview')
+  const previewHtml = useMemo(() => htmlPreviewSrcDoc(html), [html])
 
   const openInBrowser = () => {
-    void api.openHtmlPreview(html).catch((err) => {
+    void api.openHtmlPreview(previewHtml).catch((err) => {
       console.error('Failed to open HTML preview:', err)
     })
   }
@@ -40,7 +68,7 @@ function HtmlCodePreview({ html }: { html: string }) {
         {view === 'preview' ? (
           <iframe
             title="HTML 预览"
-            srcDoc={html}
+            srcDoc={previewHtml}
             className="h-[520px] w-full border-0 bg-white"
           />
         ) : (
