@@ -22,6 +22,7 @@ import type {
   ChatAssistant,
   Conversation,
   ConversationContextState,
+  AgentTodoState,
   PendingAttachment,
   SkillMeta,
   ToolCallRecord,
@@ -360,6 +361,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     setContextState(nextState)
     setCurrentConversation((prev) => prev
       ? { ...prev, context_state: nextState, contextState: nextState }
+      : prev)
+  }, [])
+
+  const patchAgentTodoState = useCallback((nextState: AgentTodoState) => {
+    setCurrentConversation((prev) => prev
+      ? { ...prev, agent_todo_state: nextState, agentTodoState: nextState }
       : prev)
   }, [])
 
@@ -949,6 +956,31 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       unlisten?.()
     }
   }, [patchContextState])
+
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+
+    const setupListener = async () => {
+      unlisten = await api.onChatTodo((payload) => {
+        if (cancelled) return
+        const currentConversationId = currentConversationIdRef.current
+        if (!currentConversationId || payload.conversationId !== currentConversationId) {
+          return
+        }
+        patchAgentTodoState(payload.todoState)
+      })
+      if (cancelled) {
+        unlisten()
+      }
+    }
+
+    setupListener()
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [patchAgentTodoState])
 
   useEffect(() => {
     let cancelled = false
@@ -2034,6 +2066,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     <MessageList
                       conversationId={currentConversation?.id}
                       messages={displayMessages}
+                      agentTodoState={currentConversation?.agent_todo_state ?? currentConversation?.agentTodoState ?? null}
                       streaming={streaming}
                       streamingContent={streamingContent}
                       streamingReasoning={streamingReasoning}

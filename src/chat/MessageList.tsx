@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ChatMessage, ToolCallRecord } from './types'
+import type { AgentTodoState, ChatMessage, ToolCallRecord } from './types'
 import { MessageBubble } from './MessageBubble'
 
 const INITIAL_VISIBLE_MESSAGES = 60
@@ -18,6 +18,7 @@ interface MessageListProps {
   streamingReasoning?: string
   reasoningStreaming?: boolean
   streamingToolCalls?: ToolCallRecord[]
+  agentTodoState?: AgentTodoState | null
   error?: string
   lastAssistantStreamStats?: AssistantStreamStats | null
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
@@ -33,6 +34,7 @@ export function MessageList({
   streamingReasoning = '',
   reasoningStreaming = false,
   streamingToolCalls = [],
+  agentTodoState = null,
   error,
   lastAssistantStreamStats = null,
   onUpdateMessage,
@@ -130,6 +132,8 @@ export function MessageList({
   return (
     <div ref={scrollRef} onScroll={handleScroll} onWheel={handleWheel} className="custom-scrollbar flex-1 overflow-y-auto">
       <div className="chat-message-list-inner mx-auto w-full max-w-3xl space-y-0.5 px-6 py-4">
+        <AgentTodoPanel todoState={agentTodoState} />
+
         {hiddenMessageCount > 0 && (
           <div className="flex justify-center py-2">
             <button
@@ -192,4 +196,56 @@ export function MessageList({
       </div>
     </div>
   )
+}
+
+function AgentTodoPanel({ todoState }: { todoState?: AgentTodoState | null }) {
+  const items = todoState?.items ?? []
+  if (items.length === 0) return null
+
+  return (
+    <div className="chat-motion-fade-up sticky top-0 z-10 pb-3 pt-1">
+      <section className="border-b border-neutral-200/70 bg-white/95 pb-3 backdrop-blur dark:border-neutral-800/80 dark:bg-[#212121]/95">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="text-[11px] font-medium uppercase tracking-normal text-neutral-500 dark:text-neutral-400">
+            Agent todo
+          </div>
+          <div className="text-[11px] text-neutral-400 dark:text-neutral-500">
+            {items.filter((item) => item.status === 'completed').length}/{items.length}
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          {items.map((item) => (
+            <div key={item.id} className="grid grid-cols-[14px_1fr] gap-2 text-[12px] leading-relaxed">
+              <span className={`mt-1 h-2.5 w-2.5 rounded-full ${todoStatusDotClass(item.status)}`} />
+              <span className={todoStatusTextClass(item.status)}>
+                {item.content}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function todoStatusDotClass(status: string): string {
+  switch (status) {
+    case 'completed':
+      return 'bg-emerald-500'
+    case 'in_progress':
+      return 'bg-amber-500'
+    default:
+      return 'bg-neutral-300 dark:bg-neutral-600'
+  }
+}
+
+function todoStatusTextClass(status: string): string {
+  switch (status) {
+    case 'completed':
+      return 'text-neutral-400 line-through decoration-neutral-300 dark:text-neutral-500 dark:decoration-neutral-600'
+    case 'in_progress':
+      return 'font-medium text-neutral-900 dark:text-neutral-100'
+    default:
+      return 'text-neutral-600 dark:text-neutral-300'
+  }
 }

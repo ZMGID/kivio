@@ -61,6 +61,36 @@ pub struct ConversationContextState {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl Default for AgentTodoStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct AgentTodoItem {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub status: AgentTodoStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct AgentTodoState {
+    #[serde(default)]
+    pub items: Vec<AgentTodoItem>,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
 /// 工具调用状态（保存在 assistant message metadata 中）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -173,6 +203,8 @@ pub struct Conversation {
     pub folder: Option<String>,
     #[serde(default)]
     pub context_state: ConversationContextState,
+    #[serde(default)]
+    pub agent_todo_state: AgentTodoState,
 }
 
 /// 对话列表项（index.json 中的元数据）

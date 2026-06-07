@@ -312,6 +312,20 @@ export interface ConversationContextState {
   warningMessage?: string | null
 }
 
+export type AgentTodoStatus = 'pending' | 'in_progress' | 'completed'
+
+export interface AgentTodoItem {
+  id: string
+  content: string
+  status: AgentTodoStatus
+}
+
+export interface AgentTodoState {
+  items?: AgentTodoItem[]
+  updated_at?: number
+  updatedAt?: number
+}
+
 export interface Conversation {
   id: string
   title: string
@@ -330,6 +344,8 @@ export interface Conversation {
   folder?: string
   context_state?: ConversationContextState
   contextState?: ConversationContextState
+  agent_todo_state?: AgentTodoState
+  agentTodoState?: AgentTodoState
 }
 
 export interface ConversationListItem {

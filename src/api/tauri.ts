@@ -127,6 +127,25 @@ export type ChatContextPayload = {
   contextState: ChatContextState
 }
 
+export type ChatTodoStatus = 'pending' | 'in_progress' | 'completed'
+
+export type ChatTodoItem = {
+  id: string
+  content: string
+  status: ChatTodoStatus
+}
+
+export type ChatTodoState = {
+  items?: ChatTodoItem[]
+  updated_at?: number
+  updatedAt?: number
+}
+
+export type ChatTodoPayload = {
+  conversationId: string
+  todoState: ChatTodoState
+}
+
 export type ChatToolStatus =
   | 'pending'
   | 'running'
@@ -844,6 +863,10 @@ export const api = {
   onChatContext: (listener: (payload: ChatContextPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<ChatContextPayload>('chat-context', (payload) => listener(payload))
+  },
+  onChatTodo: (listener: (payload: ChatTodoPayload) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<ChatTodoPayload>('chat-todo', (payload) => listener(payload))
   },
   onChatTool: (listener: (payload: ChatToolProgressPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})

@@ -103,3 +103,79 @@ This can ask the user to approve a payload that will never execute and makes gua
 ```
 
 Keep provider-side multiple tool-call support separate from local execution concurrency.
+
+## Scenario: Agent Todo Runtime State
+
+### 1. Scope / Trigger
+
+- Trigger: changes that add or modify agent-owned conversation state maintained by model tools, especially `agent_todo_state`, `todo_write`, `todo_update`, prompt injection, or `chat-todo` events.
+- This is agent runtime state, not a user task manager. Users may observe it in the Chat UI, but they must not manually edit it.
+
+### 2. Signatures
+
+- Persistent model: `Conversation.agent_todo_state: AgentTodoState` with `#[serde(default)]` for old conversation JSON.
+- State shape: `AgentTodoState { items: Vec<AgentTodoItem>, updated_at: i64 }`.
+- Item shape: `AgentTodoItem { id: String, content: String, status: AgentTodoStatus }`.
+- Status enum: `pending | in_progress | completed`.
+- Native tools: `todo_write({ todos })` replaces the full list; `todo_update({ id, content?, status? })` updates one existing item.
+- Tauri event: `chat-todo` payload `{ conversationId, todoState }`.
+
+### 3. Contracts
+
+- Canonical todo state lives on `Conversation`, not only in tool records or message metadata.
+- Current todo state must be injected into the model system/runtime prompt before `build_chat_api_messages`, and `compute_context_state` must include the same prompt segment for token estimates.
+- Todo tools are appended by the Chat runtime when the provider supports tool calls; they are not governed by user MCP/native-tool settings, assistant tool presets, or data connector filters.
+- Todo tools are serial state writes. They bypass approval but must not be added to the native parallel-safe set.
+- Tool results must include `structured_content` with the latest `todoState`.
+- The frontend treats todo state as read-only conversation data and updates it from `chat-todo`.
+- If a tool writes conversation state during `run_agent_loop`, `complete_assistant_reply` must reload/merge the latest todo state before saving the assistant message, otherwise the older in-memory `Conversation` can overwrite the tool update.
+
+### 4. Validation & Error Matrix
+
+| Condition | Runtime behavior |
+|---|---|
+| Old conversation lacks `agent_todo_state` | Deserialize to an empty default state. |
+| `todo_write.todos` contains empty `id` or `content` | Return a tool error; do not save state. |
+| `todo_write.todos` contains duplicate ids | Return a tool error; do not save state. |
+| More than one item is `in_progress` | Normalize to at most one `in_progress`; demote extras to `pending`. |
+| `todo_update.id` is missing or unknown | Return a tool error; do not save state. |
+| `todo_update` provides neither `content` nor `status` | Return a tool error; do not save state. |
+| Provider does not support tools or is Apple local | Inject todo context as read-only; do not expose todo tools. |
+
+### 5. Good/Base/Bad Cases
+
+- Good: model calls `todo_write` at the start of a multi-step task, then `todo_update` as work advances; UI receives `chat-todo` and later turns see the persisted state in context.
+- Base: conversation has no todos; prompt says there are no current todos and UI renders no panel.
+- Bad: storing todo only in `ToolCallRecord.structured_content`; next turn loses the working state after reload or compaction.
+- Bad: appending todo tools before assistant/data-connector filters; `tool_preset: none` can accidentally remove agent housekeeping.
+- Bad: saving the old in-memory conversation after tool execution without merging latest `agent_todo_state`.
+
+### 6. Tests Required
+
+- Serde compatibility: old conversation JSON without `agent_todo_state` loads with an empty state.
+- Normalization: multiple `in_progress` items collapse to one.
+- Update behavior: setting a new item to `in_progress` demotes the previous active item.
+- Prompt/context: todo prompt segment appears in both request construction and context estimates.
+- Tool trace: successful todo tools persist `structured_content.todoState`.
+- Frontend type/build: `npm run typecheck` verifies `chat-todo` payload and read-only panel wiring.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let result = run_agent_loop(...).await?;
+push_assistant_message(app, state, settings, conversation, ..., result.tool_records, ...).await?;
+```
+
+This can overwrite todo changes that a tool already saved to disk during the run.
+
+#### Correct
+
+```rust
+let result = run_agent_loop(...).await?;
+merge_latest_agent_todo_state(app, conversation);
+push_assistant_message(app, state, settings, conversation, ..., result.tool_records, ...).await?;
+```
+
+Tool-owned conversation state must be merged back before the final conversation save.

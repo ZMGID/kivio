@@ -34,7 +34,7 @@ use super::storage::{
     load_conversation, save_conversation, update_assistant, update_project,
 };
 use super::{
-    Attachment, ChatAssistant, ChatMessage, ContextUsageSegment, Conversation,
+    AgentTodoState, Attachment, ChatAssistant, ChatMessage, ContextUsageSegment, Conversation,
     ConversationContextState, ConversationContextSummary, ToolCallRecord, ToolCallStatus,
 };
 
@@ -206,6 +206,7 @@ pub(crate) fn create_chat_conversation_internal(
                 pinned: false,
                 folder,
                 context_state: ConversationContextState::default(),
+                agent_todo_state: AgentTodoState::default(),
             };
 
             save_conversation(&app, &conversation)?;
@@ -1327,26 +1328,34 @@ async fn complete_assistant_reply(
         agent_prepare::apply_active_skill_tool_filter(&mut tools, skill);
     }
     apply_inline_code_request_tool_filter(&mut tools, last_user_api_content);
-    let tools_available = tools_capable && !tools.is_empty();
+    let user_tools_available = tools_capable && !tools.is_empty();
     agent_prepare::apply_skill_fallback_when_tools_unavailable(
         &mut effective_chat_tools,
         skill_id.as_deref(),
-        tools_available,
+        user_tools_available,
     );
+    let todo_tools_available =
+        append_agent_todo_tools(&mut tools, provider.supports_tools && !provider_is_apple);
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
+    let agent_todo_prompt = crate::chat::todo::format_prompt(
+        &conversation.agent_todo_state,
+        &language,
+        todo_tools_available,
+    );
     let system_prompt = agent_prepare::build_chat_system_prompt(
         &language,
         !main_image_paths.is_empty(),
         thinking_enabled,
         &skill_registry,
         &effective_chat_tools,
-        tools_available,
+        user_tools_available,
         &available_builtin_tools,
         skill_id.as_deref(),
         active_skill_detail.as_ref(),
         conversation.assistant_snapshot.as_ref(),
         settings.chat.system_prompt.as_str(),
         memory_prompt.as_deref(),
+        Some(&agent_todo_prompt),
     );
 
     if provider_is_apple {
@@ -1433,6 +1442,11 @@ async fn complete_assistant_reply(
         conversation.assistant_snapshot.as_ref(),
         settings.chat.system_prompt.as_str(),
         memory_prompt.as_deref(),
+        Some(&crate::chat::todo::format_prompt(
+            &conversation.agent_todo_state,
+            &language,
+            false,
+        )),
     );
 
     let host = ChatAgentHost {
@@ -1480,6 +1494,7 @@ async fn complete_assistant_reply(
     )
     .await?;
 
+    merge_latest_agent_todo_state(app, conversation);
     let mut tool_records = auxiliary_tool_records;
     tool_records.extend(result.tool_records);
     push_assistant_message(
@@ -1705,6 +1720,17 @@ async fn push_assistant_message(
     conversation.updated_at = chrono::Local::now().timestamp();
     save_conversation(app, conversation)?;
     Ok(())
+}
+
+fn merge_latest_agent_todo_state(app: &AppHandle, conversation: &mut Conversation) {
+    match load_conversation(app, &conversation.id) {
+        Ok(latest) => {
+            conversation.agent_todo_state = latest.agent_todo_state;
+        }
+        Err(err) => {
+            eprintln!("Failed to reload latest agent todo state before saving reply: {err}");
+        }
+    }
 }
 
 fn assistant_model_messages_for_storage(
@@ -2618,13 +2644,15 @@ async fn compute_context_state(
         agent_prepare::apply_active_skill_tool_filter(&mut tools, skill);
     }
     apply_inline_code_request_tool_filter(&mut tools, last_user_api_content);
-    let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
-    let tools_available = tools_capable && !tools.is_empty();
+    let user_tools_available = tools_capable && !tools.is_empty();
     agent_prepare::apply_skill_fallback_when_tools_unavailable(
         &mut effective_chat_tools,
         active_skill_id.as_deref(),
-        tools_available,
+        user_tools_available,
     );
+    let todo_tools_available =
+        append_agent_todo_tools(&mut tools, provider_supports_tools && !provider_is_apple);
+    let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
 
     let route_images_through_auxiliary_vision = auxiliary_vision_model_for_images(
         &settings,
@@ -2651,13 +2679,18 @@ async fn compute_context_state(
         thinking_enabled,
         &skill_registry,
         &effective_chat_tools,
-        tools_available,
+        user_tools_available,
         &available_builtin_tools,
         active_skill_id.as_deref(),
         active_skill_detail.as_ref(),
         conversation.assistant_snapshot.as_ref(),
         settings.chat.system_prompt.as_str(),
         memory_prompt.as_deref(),
+        Some(&crate::chat::todo::format_prompt(
+            &conversation.agent_todo_state,
+            &language,
+            todo_tools_available,
+        )),
     );
     let last_user_idx = conversation.messages.iter().rposition(|m| m.role == "user");
     let request_messages = build_chat_api_messages(
@@ -2673,7 +2706,7 @@ async fn compute_context_state(
         attachment_tokens,
     ));
 
-    if tools_available {
+    if !tools.is_empty() {
         segments.extend(estimate_tool_segments(&tools));
     }
 
@@ -2955,6 +2988,16 @@ fn emit_chat_context_state(
     );
 }
 
+fn emit_chat_todo_state(app: &AppHandle, conversation_id: &str, todo_state: &AgentTodoState) {
+    let _ = app.emit(
+        "chat-todo",
+        serde_json::json!({
+            "conversationId": conversation_id,
+            "todoState": todo_state,
+        }),
+    );
+}
+
 fn context_status(
     usage_ratio: Option<f32>,
     summary: Option<&ConversationContextSummary>,
@@ -2993,6 +3036,17 @@ async fn list_tools_for_chat(
     mcp::registry::list_enabled_tool_defs(state)
         .await
         .unwrap_or_default()
+}
+
+fn append_agent_todo_tools(
+    tools: &mut Vec<ChatToolDefinition>,
+    provider_supports_tools: bool,
+) -> bool {
+    if !provider_supports_tools {
+        return false;
+    }
+    crate::chat::todo::append_tool_definitions(tools);
+    true
 }
 
 fn apply_inline_code_request_tool_filter(
@@ -3446,12 +3500,25 @@ struct RegistryToolExecutor<'a> {
 impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
     fn call<'a>(
         &'a self,
-        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
         skill_cache: Option<&'a mut skills::SkillRunCache>,
     ) -> crate::chat::agent::ToolExecutorFuture<'a> {
         Box::pin(async move {
+            if tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name) {
+                let mut conversation = load_conversation(&self.app, ctx.conversation_id)?;
+                let next_state = crate::chat::todo::apply_tool(
+                    &conversation.agent_todo_state,
+                    &tool.name,
+                    arguments,
+                )?;
+                conversation.agent_todo_state = next_state.clone();
+                conversation.updated_at = chrono::Local::now().timestamp();
+                save_conversation(&self.app, &conversation)?;
+                emit_chat_todo_state(&self.app, &conversation.id, &next_state);
+                return Ok(crate::chat::todo::tool_result(&next_state));
+            }
             mcp::registry::call_tool(&self.app, self.state, tool, arguments, skill_cache).await
         })
     }
@@ -4618,6 +4685,7 @@ mod tests {
                 }),
                 ..ConversationContextState::default()
             },
+            agent_todo_state: AgentTodoState::default(),
         }
     }
 
@@ -4665,6 +4733,7 @@ mod tests {
             pinned: false,
             folder: None,
             context_state: ConversationContextState::default(),
+            agent_todo_state: AgentTodoState::default(),
         };
         let result = AuxiliaryVisionResult {
             provider_name: "Vision Provider".to_string(),
@@ -4779,6 +4848,7 @@ mod tests {
             pinned: false,
             folder: None,
             context_state: ConversationContextState::default(),
+            agent_todo_state: AgentTodoState::default(),
         };
 
         let messages = build_chat_api_messages("system", &conversation, None, None, &[])
@@ -4886,6 +4956,7 @@ mod tests {
             pinned: false,
             folder: None,
             context_state: ConversationContextState::default(),
+            agent_todo_state: AgentTodoState::default(),
         };
 
         let messages = build_chat_api_messages("system", &conversation, None, None, &[])

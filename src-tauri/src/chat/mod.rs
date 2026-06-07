@@ -6,6 +6,7 @@ pub mod image_generation;
 pub mod memory;
 pub mod model;
 pub mod storage;
+pub mod todo;
 pub mod types;
 
 pub use types::*;

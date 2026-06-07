@@ -541,6 +541,8 @@ const mockChatApi = {
       updated_at: now,
       pinned: false,
       folder,
+      agent_todo_state: { items: [], updated_at: 0 },
+      agentTodoState: { items: [], updated_at: 0 },
     }
     const withContext = withMockContext(conversation)
     saveMockConversations([withContext, ...loadMockConversations()])

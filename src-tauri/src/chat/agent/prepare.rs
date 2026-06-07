@@ -167,6 +167,8 @@ pub fn disabled_builtin_tool_feedback(function_name: &str) -> Option<String> {
         "memory_read",
         "memory_modify",
         "mixer_generate_image",
+        "todo_write",
+        "todo_update",
     ];
     if BUILTIN_NAMES.contains(&function_name) {
         Some(format!(
@@ -185,11 +187,16 @@ pub fn is_native_skill_tool_name(name: &str) -> bool {
 }
 
 pub fn is_kivio_builtin_tool(tool: &ChatToolDefinition) -> bool {
-    matches!(tool.source.as_str(), "native" | "mixer") && !is_native_skill_tool_name(&tool.name)
+    matches!(tool.source.as_str(), "native" | "mixer")
+        && !is_native_skill_tool_name(&tool.name)
+        && !crate::chat::todo::is_agent_todo_tool_name(&tool.name)
 }
 
 pub fn builtin_tool_bypasses_approval(tool: &ChatToolDefinition) -> bool {
     if tool.source == "skill" && is_native_skill_tool_name(&tool.name) {
+        return true;
+    }
+    if tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name) {
         return true;
     }
     tool.source == "native" && matches!(tool.name.as_str(), "memory_read" | "memory_modify")
@@ -208,6 +215,7 @@ pub fn build_chat_system_prompt(
     assistant_snapshot: Option<&ChatAssistantSnapshot>,
     custom_system_prompt: &str,
     memory_prompt: Option<&str>,
+    agent_todo_prompt: Option<&str>,
 ) -> String {
     build_chat_system_prompt_with_segments(
         language,
@@ -222,6 +230,7 @@ pub fn build_chat_system_prompt(
         assistant_snapshot,
         custom_system_prompt,
         memory_prompt,
+        agent_todo_prompt,
     )
     .0
 }
@@ -239,6 +248,7 @@ pub fn build_chat_system_prompt_with_segments(
     assistant_snapshot: Option<&ChatAssistantSnapshot>,
     custom_system_prompt: &str,
     memory_prompt: Option<&str>,
+    agent_todo_prompt: Option<&str>,
 ) -> (String, Vec<ContextUsageSegment>) {
     let mut prompt = String::new();
     let mut segments = Vec::new();
@@ -285,6 +295,13 @@ pub fn build_chat_system_prompt_with_segments(
             "Memory / L1",
             memory,
         );
+    }
+
+    if let Some(todo) = agent_todo_prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        append_context_segment(&mut prompt, &mut segments, "agent_todo", "Agent todo", todo);
     }
 
     if tools_available {
@@ -627,6 +644,7 @@ pub fn context_segment_color(id: &str) -> Option<&'static str> {
         "assistant" => Some("#8A6FBD"),
         "runtime_context" => Some("#3E8B60"),
         "memory_l1" => Some("#4F9A9A"),
+        "agent_todo" => Some("#5F7C5A"),
         "tool_definitions" => Some("#7553CF"),
         "skills" => Some("#BD8A3E"),
         "mcp" => Some("#B04B8D"),
@@ -808,6 +826,7 @@ mod tests {
             None,
             "",
             None,
+            None,
         );
 
         assert!(prompt.contains("run_python"));
@@ -833,6 +852,7 @@ mod tests {
             None,
             None,
             "",
+            None,
             None,
         );
 
@@ -863,6 +883,7 @@ mod tests {
             None,
             Some(&assistant),
             "你",
+            None,
             None,
         );
 
