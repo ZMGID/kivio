@@ -298,9 +298,9 @@ export type ChatToolsConfig = {
   skillScriptAllowlist?: string[]
   /** Skill ids turned off in Settings; omitted ids are enabled. */
   disabledSkillIds?: string[]
-  maxToolRounds: number
+  maxToolRounds: number | null
   toolTimeoutMs: number
-  maxToolOutputChars: number
+  maxToolOutputChars: number | null
   approvalPolicy: 'readonly_auto_sensitive_confirm' | 'always_confirm' | 'auto' | string
   nativeTools: ChatNativeToolsConfig
 }
@@ -552,9 +552,9 @@ function normalizeChatTools(config?: Partial<ChatToolsConfig> | null): ChatTools
       ? current.skillScriptAllowlist
       : ['python3', 'bash', 'sh', 'node'],
     disabledSkillIds: Array.isArray(current.disabledSkillIds) ? current.disabledSkillIds : [],
-    maxToolRounds: current.maxToolRounds ?? 10,
+    maxToolRounds: null,
     toolTimeoutMs: current.toolTimeoutMs ?? 60_000,
-    maxToolOutputChars: current.maxToolOutputChars ?? 12_000,
+    maxToolOutputChars: null,
     approvalPolicy: current.approvalPolicy || 'readonly_auto_sensitive_confirm',
     nativeTools: {
       ...defaultNativeTools(),

@@ -2,7 +2,8 @@ use serde_json::Value;
 
 use crate::chat::model::{
     generate_request_from_openai_messages, AnthropicMessagesProvider, AppleLocalProvider,
-    GenerateOptions, GenerateOutput, LanguageModelProvider, OpenAiChatProvider, PendingToolCall,
+    GenerateOptions, GenerateOutput, LanguageModelProvider, ModelError, OpenAiChatProvider,
+    PendingToolCall,
 };
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 use crate::mcp::ChatToolDefinition;
@@ -19,7 +20,7 @@ use super::stop::{
     assistant_api_message_for_tool_calls, empty_assistant_response_error,
     extract_reasoning_content, extract_tool_calls, final_assistant_api_message,
     final_response_from_planning_message, is_tools_unsupported_error, merge_reasoning,
-    patch_system_message, sanitize_assistant_text_response, step_limit_system_message,
+    patch_system_message, sanitize_assistant_text_response,
 };
 use super::stream::{should_emit_done, validate_stream_output, AgentStreamSink, ChatStreamOutput};
 use super::types::{
@@ -38,7 +39,7 @@ struct ToolRoundContext<'a> {
     run_id: &'a str,
     message_id: &'a str,
     generation: u64,
-    round: u8,
+    round: u32,
 }
 
 struct ToolRoundResult {
@@ -68,10 +69,7 @@ pub async fn run_agent_loop(
     let mut generated_api_messages = Vec::new();
     let mut tool_records = Vec::new();
     let mut planning_reasoning_parts: Vec<String> = Vec::new();
-    let max_rounds = config.settings.chat_tools.max_tool_rounds.max(1);
     let mut provider_tools_unsupported = false;
-    let mut tool_planning_finished = false;
-    let mut tool_round_limit_reached = false;
     let mut planning_final_message: Option<Value> = None;
     let mut planning_final_already_streamed = false;
     let mut steps = Vec::new();
@@ -80,7 +78,9 @@ pub async fn run_agent_loop(
     if !tools.is_empty() {
         let mut tried_skill_only_tools = false;
         let mut skill_cache = skills::SkillRunCache::default();
-        for round in 0..max_rounds {
+        let mut round = 0u32;
+        loop {
+            round = round.saturating_add(1);
             step_number = step_number.saturating_add(1);
             if !host.is_generation_active(&config.conversation_id, config.generation) {
                 host.emit_stream_done(
@@ -129,7 +129,29 @@ pub async fn run_agent_loop(
                             streamed: true,
                         })
                     }
-                    Err(err) => Err(err),
+                    Err(err) if err.is_stream_read_interrupted() => {
+                        eprintln!(
+                            "Chat tools planning stream interrupted; retrying once without streaming: {}",
+                            err
+                        );
+                        call_chat_completion_message(
+                            config.state,
+                            &config.provider,
+                            &config.model,
+                            prepared.runtime_messages.clone(),
+                            Some(&prepared.active_tools),
+                            config.retry_attempts,
+                            config.thinking_enabled,
+                            config.max_output_tokens,
+                            "Chat tools planning",
+                        )
+                        .await
+                        .map(|message| ChatPlanningStep {
+                            message,
+                            streamed: false,
+                        })
+                    }
+                    Err(err) => Err(err.to_string()),
                 }
             } else {
                 tokio::select! {
@@ -201,7 +223,6 @@ pub async fn run_agent_loop(
             };
             let tool_calls = extract_tool_calls(&message);
             if tool_calls.is_empty() {
-                tool_planning_finished = true;
                 planning_final_message = Some(message.clone());
                 steps.push(AgentStepResult {
                     step_number,
@@ -241,7 +262,7 @@ pub async fn run_agent_loop(
                     run_id: &config.run_id,
                     message_id: &config.message_id,
                     generation: config.generation,
-                    round: round + 1,
+                    round,
                 },
                 &tools,
                 tool_calls,
@@ -282,18 +303,6 @@ pub async fn run_agent_loop(
                     steps,
                 ));
             }
-        }
-        if !provider_tools_unsupported && !tool_planning_finished {
-            tool_round_limit_reached = true;
-            runtime_messages.push(step_limit_system_message());
-            steps.push(AgentStepResult {
-                step_number: step_number.saturating_add(1),
-                phase: AgentPhase::ToolLoop,
-                response_messages: vec![runtime_messages.last().cloned().unwrap_or(Value::Null)],
-                tool_records: Vec::new(),
-                streamed: false,
-                stop_reason: Some(AgentStopReason::StepLimit),
-            });
         }
     }
 
@@ -354,8 +363,7 @@ pub async fn run_agent_loop(
         AgentStreamPolicy::SynthesisDeferEmpty
     };
 
-    let stream_synthesis = config.stream_enabled && !tool_round_limit_reached;
-    let (response, reasoning) = if stream_synthesis {
+    let (response, reasoning) = if config.stream_enabled {
         let stream = stream_scoped_chat_completion_inner(
             config.state,
             host,
@@ -373,7 +381,8 @@ pub async fn run_agent_loop(
             "Chat stream",
             synthesis_stream_policy,
         )
-        .await?;
+        .await
+        .map_err(|err| err.to_string())?;
         if stream.cancelled {
             if !tool_records.is_empty() {
                 let stored_content = if stream.content.trim().is_empty() {
@@ -473,53 +482,7 @@ pub async fn run_agent_loop(
             &planning_reasoning_parts,
             extract_reasoning_content(&message),
         );
-        if tool_round_limit_reached && !extract_tool_calls(&message).is_empty() {
-            let fallback = tool_round_limit_fallback_response(&config.language);
-            host.emit_stream_delta(
-                &config.conversation_id,
-                &config.run_id,
-                &config.message_id,
-                &fallback,
-                None,
-            );
-            host.emit_stream_done(
-                &config.conversation_id,
-                &config.run_id,
-                &config.message_id,
-                "done",
-                &fallback,
-            );
-            if !generated_api_messages.is_empty() {
-                generated_api_messages.push(final_assistant_api_message(
-                    &fallback,
-                    extract_reasoning_content(&message).as_deref(),
-                ));
-            }
-            (fallback, reasoning)
-        } else if response.trim().is_empty() && tool_round_limit_reached {
-            let fallback = tool_round_limit_fallback_response(&config.language);
-            host.emit_stream_delta(
-                &config.conversation_id,
-                &config.run_id,
-                &config.message_id,
-                &fallback,
-                None,
-            );
-            host.emit_stream_done(
-                &config.conversation_id,
-                &config.run_id,
-                &config.message_id,
-                "done",
-                &fallback,
-            );
-            if !generated_api_messages.is_empty() {
-                generated_api_messages.push(final_assistant_api_message(
-                    &fallback,
-                    extract_reasoning_content(&message).as_deref(),
-                ));
-            }
-            (fallback, reasoning)
-        } else if response.trim().is_empty() && !tool_records.is_empty() {
+        if response.trim().is_empty() && !tool_records.is_empty() {
             eprintln!(
                 "Chat agent empty synthesis fallback: conversation_id={} run_id={} provider_id={} model={} phase={:?} stream=false tool_records={} finish_reason={}",
                 config.conversation_id,
@@ -1101,7 +1064,9 @@ async fn call_chat_completion_message(
         },
         label,
     );
-    let output = generate_with_chat_provider(state, provider, retry_attempts, request).await?;
+    let output = generate_with_chat_provider(state, provider, retry_attempts, request)
+        .await
+        .map_err(|err| err.to_string())?;
     Ok(output.to_openai_compatible_message())
 }
 
@@ -1122,7 +1087,7 @@ async fn stream_scoped_chat_completion_inner(
     generation: u64,
     label: &str,
     policy: AgentStreamPolicy,
-) -> Result<ChatStreamOutput, String> {
+) -> Result<ChatStreamOutput, ModelError> {
     let request = generate_request_from_openai_messages(
         model,
         messages,
@@ -1174,7 +1139,7 @@ async fn stream_scoped_chat_completion_inner(
     );
     validate_stream_output(label, policy, &stream_output).map_err(|err| {
         host.emit_stream_done(conversation_id, run_id, message_id, "error", "");
-        err
+        ModelError::new(err)
     })?;
     if should_emit_done(policy, &stream_output) {
         sink.flush_pending_text();
@@ -1194,14 +1159,6 @@ fn empty_synthesis_fallback_response(language: &str) -> String {
         "工具调用已经完成，但模型没有返回最终总结。上方工具结果已保存在本轮回复中，你可以继续追问，或让我重新生成总结。".to_string()
     } else {
         "The tool calls completed, but the model did not return a final summary. The tool results above were saved with this reply; you can continue from them or regenerate the summary.".to_string()
-    }
-}
-
-fn tool_round_limit_fallback_response(language: &str) -> String {
-    if language.starts_with("zh") {
-        "已达到本轮最大工具调用次数，模型仍尝试继续调用工具。已停止继续调用工具；请基于上方已有工具结果继续追问，或提高工具轮次上限后重新生成。".to_string()
-    } else {
-        "The maximum tool-call rounds were reached and the model still tried to call more tools. Tool execution has stopped; continue from the saved tool results above, or raise the tool-round limit and regenerate.".to_string()
     }
 }
 
@@ -1260,7 +1217,7 @@ async fn generate_with_chat_provider(
     provider: &crate::settings::ModelProvider,
     retry_attempts: usize,
     request: crate::chat::model::GenerateRequest,
-) -> Result<GenerateOutput, String> {
+) -> Result<GenerateOutput, ModelError> {
     match provider.api_format_kind() {
         ProviderApiFormat::OpenAiChat => {
             OpenAiChatProvider::new(state, provider, retry_attempts)
@@ -1278,7 +1235,6 @@ async fn generate_with_chat_provider(
                 .await
         }
     }
-    .map_err(|err| err.to_string())
 }
 
 async fn stream_with_chat_provider(
@@ -1287,7 +1243,7 @@ async fn stream_with_chat_provider(
     retry_attempts: usize,
     request: crate::chat::model::GenerateRequest,
     sink: &mut (dyn crate::chat::model::StreamSink + Send),
-) -> Result<GenerateOutput, String> {
+) -> Result<GenerateOutput, ModelError> {
     match provider.api_format_kind() {
         ProviderApiFormat::OpenAiChat => {
             OpenAiChatProvider::new(state, provider, retry_attempts)
@@ -1305,7 +1261,6 @@ async fn stream_with_chat_provider(
                 .await
         }
     }
-    .map_err(|err| err.to_string())
 }
 
 #[cfg(test)]

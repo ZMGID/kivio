@@ -292,17 +292,54 @@ pub enum StreamPart {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelErrorKind {
+    Other,
+    StreamReadInterrupted,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelError {
     pub message: String,
+    pub kind: ModelErrorKind,
 }
 
 impl ModelError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: ModelErrorKind::Other,
         }
     }
+
+    pub fn with_kind(message: impl Into<String>, kind: ModelErrorKind) -> Self {
+        Self {
+            message: message.into(),
+            kind,
+        }
+    }
+
+    pub fn is_stream_read_interrupted(&self) -> bool {
+        self.kind == ModelErrorKind::StreamReadInterrupted
+    }
+}
+
+pub fn stream_read_error(label: &str, err: &reqwest::Error) -> ModelError {
+    let reason = if err.is_timeout() {
+        "the provider stream timed out"
+    } else if err.is_connect() {
+        "the provider connection was interrupted"
+    } else if err.is_decode() {
+        "the provider sent an incomplete or invalid encoded stream chunk"
+    } else {
+        "the provider stream ended unexpectedly"
+    };
+    ModelError::with_kind(
+        format!(
+            "{label} 流式响应读取中断：{reason}。这通常是临时的网络、代理或模型服务流式断包问题，请重试。"
+        ),
+        ModelErrorKind::StreamReadInterrupted,
+    )
 }
 
 impl std::fmt::Display for ModelError {
@@ -677,4 +714,21 @@ fn parse_data_image_url(url: &str) -> Option<(String, String)> {
     let rest = url.strip_prefix("data:")?;
     let (mime, data) = rest.split_once(";base64,")?;
     Some((mime.to_string(), data.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_error_kind_marks_stream_read_interrupts_without_message_matching() {
+        let stream_error = ModelError::with_kind(
+            "temporary stream failure",
+            ModelErrorKind::StreamReadInterrupted,
+        );
+        let generic_error = ModelError::new("temporary stream failure");
+
+        assert!(stream_error.is_stream_read_interrupted());
+        assert!(!generic_error.is_stream_read_interrupted());
+    }
 }

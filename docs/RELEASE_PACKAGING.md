@@ -101,10 +101,14 @@ Required local package wheels:
 - `xlrd`
 - `et_xmlfile`
 
+Required local Python font assets:
+
+- `NotoSansCJKsc-Regular.otf` for CJK text rendering in Python-generated matplotlib / Pillow images
+
 Implementation requirement:
 
 - Run `npm run prepare:pyodide` before the frontend build. It creates the reproducible local cache in `.cache/pyodide/`.
-- Update the Vite Pyodide asset plugin in `vite.config.ts` so it emits both the core runtime files and the required local wheels into `dist/pyodide/`.
+- Update the Vite Pyodide asset plugin in `vite.config.ts` so it emits the core runtime files, required local wheels, and required local font assets into `dist/pyodide/`.
 - Update `src/chat/pyodideRunner.ts` so `run_python` package loading prefers the bundled local `dist/pyodide/` package index and wheels.
 - CDN package loading may remain as a fallback, but the app must be able to run normal `pdf` / `docx` / `xlsx` analysis without downloading those common packages at runtime.
 - Do not package a host machine virtual environment or host `site-packages` as a substitute for Pyodide wheels. The runtime used by `run_python` is Pyodide in the WebView sandbox.

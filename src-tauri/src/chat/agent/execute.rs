@@ -35,7 +35,7 @@ pub struct ToolExecutionContext<'a> {
     pub run_id: &'a str,
     pub message_id: &'a str,
     pub generation: u64,
-    pub round: u8,
+    pub round: u32,
 }
 
 pub fn match_tool_call<'a>(
@@ -47,7 +47,7 @@ pub fn match_tool_call<'a>(
         .find(|tool| tool.openai_tool_name() == function_name || tool.name == function_name)
 }
 
-pub fn unknown_tool_record(call: &PendingToolCall, round: u8, error: String) -> ToolCallRecord {
+pub fn unknown_tool_record(call: &PendingToolCall, round: u32, error: String) -> ToolCallRecord {
     let now = chrono::Local::now().timestamp();
     ToolCallRecord {
         id: call.id.clone(),
@@ -70,7 +70,7 @@ pub fn unknown_tool_record(call: &PendingToolCall, round: u8, error: String) -> 
 pub fn invalid_tool_arguments_record(
     call: &PendingToolCall,
     tool: &ChatToolDefinition,
-    round: u8,
+    round: u32,
     error: String,
 ) -> ToolCallRecord {
     let now = chrono::Local::now().timestamp();
@@ -159,21 +159,21 @@ pub async fn execute_tool_call(
         Ok(Ok(output)) if !output.is_error => {
             record.status = ToolCallStatus::Success;
             record.artifacts = output.artifacts.clone();
-            record.result_preview = Some(truncate_chars(
+            record.result_preview = Some(limit_tool_text_for_model(
                 &format_tool_result_preview(&output.content),
                 max_tool_output_chars,
             ));
-            truncate_tool_content_for_model(&output.content, max_tool_output_chars)
+            limit_tool_text_for_model(&output.content, max_tool_output_chars)
         }
         Ok(Ok(output)) => {
             record.status = ToolCallStatus::Error;
             record.error = Some(truncate_chars(&output.content, 1000));
-            truncate_tool_content_for_model(&output.content, max_tool_output_chars)
+            limit_tool_text_for_model(&output.content, max_tool_output_chars)
         }
         Ok(Err(err)) => {
             record.status = ToolCallStatus::Error;
             record.error = Some(err.clone());
-            truncate_tool_content_for_model(&err, max_tool_output_chars)
+            limit_tool_text_for_model(&err, max_tool_output_chars)
         }
         Err(_) => {
             record.status = ToolCallStatus::Error;
@@ -234,6 +234,13 @@ pub fn truncate_chars(value: &str, max_chars: usize) -> String {
         out.push_str("...");
     }
     out
+}
+
+fn limit_tool_text_for_model(value: &str, max_chars: Option<usize>) -> String {
+    match max_chars {
+        Some(max_chars) => truncate_tool_content_for_model(value, max_chars),
+        None => value.to_string(),
+    }
 }
 
 fn truncate_tool_content_for_model(value: &str, max_chars: usize) -> String {

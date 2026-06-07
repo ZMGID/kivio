@@ -21,6 +21,8 @@ function contentTypeForPyodideAsset(fileName: string): string {
   if (fileName.endsWith('.wasm')) return 'application/wasm'
   if (fileName.endsWith('.zip') || fileName.endsWith('.whl')) return 'application/zip'
   if (fileName.endsWith('.tar')) return 'application/x-tar'
+  if (fileName.endsWith('.otf')) return 'font/otf'
+  if (fileName.endsWith('.ttf')) return 'font/ttf'
   if (fileName.endsWith('.json')) return 'application/json; charset=utf-8'
   return 'text/javascript; charset=utf-8'
 }
@@ -46,6 +48,8 @@ function listPyodideAssetFiles(sourceDir: string): string[] {
       || fileName.endsWith('.whl')
       || fileName.endsWith('.zip')
       || fileName.endsWith('.tar')
+      || fileName.endsWith('.otf')
+      || fileName.endsWith('.ttf')
     ))
     .sort()
   if (sourceDir === pyodideDir) {

@@ -7,9 +7,9 @@ use crate::state::AppState;
 use crate::utils;
 
 use super::{
-    openai_messages_from_generate_request, pending_tool_calls_from_openai_message, GenerateOutput,
-    GenerateRequest, LanguageModelProvider, ModelError, ModelFuture, ModelUsage, PendingToolCall,
-    ProviderCapabilities, StreamPart, StreamSink,
+    openai_messages_from_generate_request, pending_tool_calls_from_openai_message,
+    stream_read_error, GenerateOutput, GenerateRequest, LanguageModelProvider, ModelError,
+    ModelFuture, ModelUsage, PendingToolCall, ProviderCapabilities, StreamPart, StreamSink,
 };
 
 pub struct OpenAiChatProvider<'a> {
@@ -124,7 +124,7 @@ impl OpenAiChatProvider<'_> {
             let chunk = response
                 .chunk()
                 .await
-                .map_err(|err| ModelError::new(format!("{label} read stream body: {err}")))?;
+                .map_err(|err| stream_read_error(&label, &err))?;
             let Some(chunk) = chunk else {
                 break;
             };

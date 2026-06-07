@@ -235,9 +235,9 @@ function defaultChatTools(): ChatToolsConfig {
     skillFallbackMode: 'progressive',
     skillScriptAllowlist: ['python3', 'bash', 'sh', 'node'],
     disabledSkillIds: [],
-    maxToolRounds: 10,
+    maxToolRounds: null,
     toolTimeoutMs: 60_000,
-    maxToolOutputChars: 12_000,
+    maxToolOutputChars: null,
     approvalPolicy: 'readonly_auto_sensitive_confirm',
     nativeTools: defaultNativeTools(),
   }
@@ -3029,15 +3029,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </SettingRow>
                   <div className="grid grid-cols-1 gap-3 py-2 sm:grid-cols-3">
                     <FieldBlock label={lang === 'zh' ? '最大工具轮次' : 'Max tool rounds'}>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={30}
-                        value={String(chatTools.maxToolRounds ?? 10)}
-                        onChange={(value) => updateChatTools({
-                          maxToolRounds: Math.min(30, Math.max(1, Number.parseInt(value, 10) || 1)),
-                        })}
-                      />
+                      <div className="kv-input flex h-10 items-center text-[13px] text-neutral-500 dark:text-neutral-400">
+                        {lang === 'zh' ? '无限制' : 'Unlimited'}
+                      </div>
                     </FieldBlock>
                     <FieldBlock label={lang === 'zh' ? '工具超时 ms' : 'Tool timeout ms'}>
                       <Input
@@ -3051,15 +3045,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       />
                     </FieldBlock>
                     <FieldBlock label={lang === 'zh' ? '结果截断字符' : 'Output chars'}>
-                      <Input
-                        type="number"
-                        min={1000}
-                        max={50000}
-                        value={String(chatTools.maxToolOutputChars ?? 12_000)}
-                        onChange={(value) => updateChatTools({
-                          maxToolOutputChars: Math.min(50_000, Math.max(1_000, Number.parseInt(value, 10) || 1_000)),
-                        })}
-                      />
+                      <div className="kv-input flex h-10 items-center text-[13px] text-neutral-500 dark:text-neutral-400">
+                        {lang === 'zh' ? '无限制' : 'Unlimited'}
+                      </div>
                     </FieldBlock>
                   </div>
                 </SettingsGroup>

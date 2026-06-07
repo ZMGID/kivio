@@ -96,7 +96,7 @@ pub struct ToolCallRecord {
     #[serde(default)]
     pub completed_at: Option<i64>,
     #[serde(default)]
-    pub round: u8,
+    pub round: u32,
     #[serde(default)]
     pub sensitive: bool,
     #[serde(default)]

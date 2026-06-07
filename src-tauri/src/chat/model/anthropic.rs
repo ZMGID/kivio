@@ -6,9 +6,9 @@ use crate::settings::ModelProvider;
 use crate::state::AppState;
 
 use super::{
-    parse_tool_arguments, GenerateOutput, GenerateRequest, LanguageModelProvider, MessagePart,
-    ModelError, ModelFuture, ModelMessage, ModelRole, ModelTool, ModelUsage, PendingToolCall,
-    ProviderCapabilities, StreamPart, StreamSink,
+    parse_tool_arguments, stream_read_error, GenerateOutput, GenerateRequest,
+    LanguageModelProvider, MessagePart, ModelError, ModelFuture, ModelMessage, ModelRole,
+    ModelTool, ModelUsage, PendingToolCall, ProviderCapabilities, StreamPart, StreamSink,
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -128,7 +128,7 @@ impl AnthropicMessagesProvider<'_> {
             let chunk = response
                 .chunk()
                 .await
-                .map_err(|err| ModelError::new(format!("{label} read stream body: {err}")))?;
+                .map_err(|err| stream_read_error(&label, &err))?;
             let Some(chunk) = chunk else {
                 break;
             };

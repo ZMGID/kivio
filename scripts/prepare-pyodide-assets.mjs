@@ -62,6 +62,15 @@ const PYPI_WHEELS = [
   },
 ]
 
+const PYTHON_FONT_FILES = [
+  {
+    fileName: 'NotoSansCJKsc-Regular.otf',
+    family: 'Noto Sans CJK SC',
+    url: 'https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf',
+    sha256: '2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b',
+  },
+]
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
 }
@@ -173,6 +182,22 @@ async function downloadPypiWheel(spec) {
   return { fileName: info.fileName, status: 'downloaded' }
 }
 
+async function downloadFontFile(spec) {
+  const dest = join(CACHE_DIR, spec.fileName)
+  if (fileMatches(dest, spec.sha256)) {
+    return { fileName: spec.fileName, status: 'cached' }
+  }
+  const bytes = await download(spec.url, spec.fileName)
+  const actualHash = sha256(bytes)
+  if (actualHash !== spec.sha256) {
+    throw new Error(`Checksum mismatch for ${spec.fileName}: expected ${spec.sha256}, got ${actualHash}`)
+  }
+  const tmp = `${dest}.tmp`
+  writeFileSync(tmp, bytes)
+  renameSync(tmp, dest)
+  return { fileName: spec.fileName, status: 'downloaded' }
+}
+
 async function main() {
   if (!existsSync(PYODIDE_DIR)) {
     throw new Error('node_modules/pyodide is missing. Run npm install first.')
@@ -199,6 +224,7 @@ async function main() {
     pyodideVersion: pyodidePackage.version,
     coreFiles: CORE_FILES,
     requiredPyodidePackages: [...selected].sort(),
+    fontFiles: PYTHON_FONT_FILES.map(({ fileName, family, sha256 }) => ({ fileName, family, sha256 })),
     pypiWheels: {},
   }
   for (const wheel of PYPI_WHEELS) {
@@ -210,13 +236,16 @@ async function main() {
       pyodideDeps: wheel.pyodideDeps,
     }
   }
+  for (const font of PYTHON_FONT_FILES) {
+    downloaded.push(await downloadFontFile(font))
+  }
 
   writeFileSync(join(CACHE_DIR, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`)
   rmSync(join(CACHE_DIR, '.download-failed'), { force: true })
   const downloadedCount = downloaded.filter((item) => item.status === 'downloaded').length
   const cachedCount = downloaded.filter((item) => item.status === 'cached').length
   console.log(
-    `[prepare-pyodide-assets] Ready: ${CORE_FILES.length} core files, ${downloaded.length} package files (${downloadedCount} downloaded, ${cachedCount} cached).`,
+    `[prepare-pyodide-assets] Ready: ${CORE_FILES.length} core files, ${downloaded.length} package/font files (${downloadedCount} downloaded, ${cachedCount} cached).`,
   )
 }
 

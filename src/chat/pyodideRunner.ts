@@ -27,6 +27,11 @@ const PYTHON_SANDBOX_FAILURE_GUIDANCE =
   '不要使用 run_command/pip 安装或修改本机 Python 环境来绕过沙盒；请直接基于已有数据用文本/表格回答，除非用户明确要求修改本机环境。'
 const PYTHON_IMAGE_ARTIFACT_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'])
 const PYTHON_ARTIFACT_SCAN_ROOTS = ['/home/pyodide', '/tmp']
+const PYTHON_FONT_VIRTUAL_DIR = '/home/pyodide/.kivio/fonts'
+const PYTHON_DEFAULT_CJK_FONT = {
+  fileName: 'NotoSansCJKsc-Regular.otf',
+  family: 'Noto Sans CJK SC',
+}
 const MAX_PYTHON_IMAGE_ARTIFACT_BYTES = 12 * 1024 * 1024
 const MAX_PYTHON_IMAGE_ARTIFACTS = 12
 const MAX_PYTHON_INPUT_FILE_BYTES = 100 * 1024 * 1024
@@ -76,16 +81,28 @@ type PyodideSource = {
   indexURL: string
 }
 type PyodidePackageManifest = {
+  fontFiles?: Array<{
+    fileName?: string
+    family?: string
+    sha256?: string
+  }>
   pypiWheels?: Record<string, {
     fileName?: string
     pyodideDeps?: string[]
   }>
+}
+type PythonFontAsset = {
+  fileName: string
+  family: string
+  bytes: Uint8Array
 }
 
 let localPyodidePromise: Promise<PyodideInterface> | null = null
 let packagePyodidePromise: Promise<PyodideInterface> | null = null
 let packagePyodideLoadedPackages = new Set<string>()
 let packageManifestPromise: Promise<PyodidePackageManifest | null> | null = null
+let pythonCjkFontAssetPromise: Promise<PythonFontAsset | null> | null = null
+const fontConfiguredRuntimes = new WeakSet<PyodideInterface>()
 
 function localPyodideIndexUrl(): string {
   return new URL(`${import.meta.env.BASE_URL}pyodide/`, window.location.href).toString()
@@ -149,6 +166,82 @@ async function loadPackageManifest(): Promise<PyodidePackageManifest | null> {
       .catch(() => null)
   }
   return packageManifestPromise
+}
+
+async function fetchPythonCjkFontAsset(): Promise<PythonFontAsset | null> {
+  if (!pythonCjkFontAssetPromise) {
+    pythonCjkFontAssetPromise = (async () => {
+      const manifest = await loadPackageManifest()
+      const fontEntry = manifest?.fontFiles?.find((entry) => entry.fileName) ?? PYTHON_DEFAULT_CJK_FONT
+      const fileName = fontEntry.fileName ?? PYTHON_DEFAULT_CJK_FONT.fileName
+      const family = fontEntry.family ?? PYTHON_DEFAULT_CJK_FONT.family
+      const response = await fetch(localPyodideAssetUrl(fileName))
+      if (!response.ok) return null
+      return {
+        fileName,
+        family,
+        bytes: new Uint8Array(await response.arrayBuffer()),
+      }
+    })().catch(() => null)
+  }
+  return pythonCjkFontAssetPromise
+}
+
+async function ensurePythonFontSupport(pyodide: PyodideInterface): Promise<void> {
+  if (fontConfiguredRuntimes.has(pyodide)) return
+  fontConfiguredRuntimes.add(pyodide)
+
+  const fs = pyodide.FS as PyodideFs
+  const font = await fetchPythonCjkFontAsset()
+  const fontPath = font ? `${PYTHON_FONT_VIRTUAL_DIR}/${font.fileName}` : ''
+  if (font) {
+    try {
+      fs.mkdirTree?.(PYTHON_FONT_VIRTUAL_DIR)
+    } catch {
+      // Directory may already exist.
+    }
+    fs.writeFile(fontPath, font.bytes)
+  }
+
+  await pyodide.runPythonAsync(`
+import os as _kivio_font_os
+
+KIVIO_CJK_FONT_PATH = ${pythonStringLiteral(fontPath)}
+KIVIO_CJK_FONT_FAMILY = ${pythonStringLiteral(font?.family ?? '')}
+if KIVIO_CJK_FONT_PATH:
+    _kivio_font_os.environ["KIVIO_CJK_FONT_PATH"] = KIVIO_CJK_FONT_PATH
+    _kivio_font_os.environ["KIVIO_CJK_FONT_FAMILY"] = KIVIO_CJK_FONT_FAMILY
+
+def _kivio_configure_matplotlib_fonts():
+    if not KIVIO_CJK_FONT_PATH:
+        return None
+    try:
+        import matplotlib as _kivio_matplotlib
+        from matplotlib import font_manager as _kivio_font_manager
+        _kivio_font_manager.fontManager.addfont(KIVIO_CJK_FONT_PATH)
+        _kivio_font_name = _kivio_font_manager.FontProperties(fname=KIVIO_CJK_FONT_PATH).get_name()
+        _kivio_font_candidates = [
+            _kivio_font_name,
+            KIVIO_CJK_FONT_FAMILY,
+            "Noto Sans CJK SC",
+            "Noto Sans CJK JP",
+            "Noto Sans CJK KR",
+            "DejaVu Sans",
+        ]
+        _kivio_matplotlib.rcParams["font.family"] = [
+            _kivio_name for _kivio_name in _kivio_font_candidates if _kivio_name
+        ]
+        _kivio_matplotlib.rcParams["axes.unicode_minus"] = False
+        return _kivio_font_name
+    except Exception:
+        return None
+
+def kivio_cjk_font(size=24):
+    if not KIVIO_CJK_FONT_PATH:
+        raise RuntimeError("KIVIO_CJK_FONT_PATH is unavailable in this Python sandbox.")
+    from PIL import ImageFont as _kivio_image_font
+    return _kivio_image_font.truetype(KIVIO_CJK_FONT_PATH, size)
+`.trim())
 }
 
 async function installLocalWheelPackage(
@@ -383,6 +476,10 @@ import os
 os.environ["MPLBACKEND"] = "Agg"
 import matplotlib
 matplotlib.use("Agg", force=True)
+try:
+    _kivio_configure_matplotlib_fonts()
+except NameError:
+    pass
 import matplotlib.pyplot as _kivio_matplotlib_pyplot
 _kivio_matplotlib_pyplot.ioff()
 
@@ -430,6 +527,7 @@ import os
 os.environ["MPLBACKEND"] = "Agg"
 import matplotlib
 matplotlib.use("Agg", force=True)
+_kivio_configure_matplotlib_fonts()
 import matplotlib.pyplot as _kivio_matplotlib_warmup_pyplot
 _kivio_matplotlib_warmup_pyplot.figure()
 _kivio_matplotlib_warmup_pyplot.close("all")
@@ -875,6 +973,7 @@ export async function runPythonInSandbox(
 
   let mountedFiles: string[] = []
   try {
+    await ensurePythonFontSupport(pyodide)
     mountedFiles = await mountPythonInputFiles(pyodide, files)
     if (codeUsesMatplotlib(code)) {
       await warmMatplotlib(pyodide)
