@@ -7,6 +7,7 @@ import {
   Archive,
   CircleHelp,
   Eraser,
+  ListChecks,
   MessageSquarePlus,
   Paperclip,
   Play,
@@ -88,7 +89,15 @@ const APPROVAL_POLICY_OPTIONS = [
   },
 ]
 
-type SlashCommandId = 'help' | 'new' | 'compact' | 'clear' | 'settings' | 'tools' | 'attach'
+type SlashCommandId =
+  | 'help'
+  | 'plan'
+  | 'new'
+  | 'compact'
+  | 'clear'
+  | 'settings'
+  | 'tools'
+  | 'attach'
 
 interface SlashCommandDefinition {
   id: SlashCommandId
@@ -113,6 +122,14 @@ const LOCAL_SLASH_COMMANDS: SlashCommandDefinition[] = [
     description: 'Show commands',
     category: 'Local',
     keywords: ['help', 'commands', '帮助', '命令'],
+  },
+  {
+    id: 'plan',
+    slash: '/plan',
+    title: '/plan',
+    description: 'Enter plan mode',
+    category: 'Local',
+    keywords: ['plan', 'act', 'mode', '计划', '模式', '切换'],
   },
   {
     id: 'new',
@@ -168,6 +185,8 @@ function slashCommandIcon(commandId: SlashCommandId) {
   switch (commandId) {
     case 'help':
       return CircleHelp
+    case 'plan':
+      return ListChecks
     case 'new':
       return MessageSquarePlus
     case 'compact':
@@ -320,6 +339,9 @@ export function InputBar({
   const [slashPanelLeft, setSlashPanelLeft] = useState(0)
   const innerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const agentPlanMode = agentPlanState?.mode ?? 'act'
+  const agentPlanText = agentPlanState?.plan?.trim() ?? ''
+  const agentPlanActive = agentPlanMode === 'plan'
 
   const attachmentsFromPaths = useCallback(
     (paths: string[]) =>
@@ -441,6 +463,22 @@ export function InputBar({
     [],
   )
 
+  const setAgentPlanMode = useCallback(async (mode: AgentPlanMode) => {
+    if (disabled || !onAgentPlanModeChange) return
+    setSlashPanelOpen(false)
+    setToolPanelOpen(false)
+    if (agentPlanMode !== mode) {
+      await onAgentPlanModeChange(mode)
+    }
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus({ preventScroll: true })
+    })
+  }, [agentPlanMode, disabled, onAgentPlanModeChange])
+
+  const toggleAgentPlanMode = useCallback(async () => {
+    await setAgentPlanMode(agentPlanMode === 'plan' ? 'act' : 'plan')
+  }, [agentPlanMode, setAgentPlanMode])
+
   const openAttachmentPicker = useCallback(async () => {
     if (disabled) return
     setToolPanelOpen(false)
@@ -486,6 +524,9 @@ export function InputBar({
     setSlashPanelOpen(false)
 
     switch (command.id) {
+      case 'plan':
+        await setAgentPlanMode('plan')
+        return
       case 'new':
         setInput('')
         setAttachments([])
@@ -526,6 +567,7 @@ export function InputBar({
     onOpenTools,
     openAttachmentPicker,
     removeActiveSlashToken,
+    setAgentPlanMode,
     updateTextareaHeight,
   ])
 
@@ -545,6 +587,12 @@ export function InputBar({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
+
+    if (e.key === 'Tab' && e.shiftKey && onAgentPlanModeChange && !disabled) {
+      e.preventDefault()
+      void toggleAgentPlanMode()
+      return
+    }
 
     if (slashPanelOpen) {
       if (e.key === 'ArrowDown') {
@@ -883,8 +931,6 @@ export function InputBar({
   const mcpStatusLine = toolsDisabledReason
     || (externalMcpTools.length > 0 ? `MCP ${externalMcpTools.length}` : '')
   const approvalOption = approvalPolicyOption(approvalPolicy)
-  const agentPlanMode = agentPlanState?.mode ?? 'act'
-  const agentPlanText = agentPlanState?.plan?.trim() ?? ''
 
   return (
     <div className={wrapperClass}>
@@ -1035,7 +1081,9 @@ export function InputBar({
           className={`chat-composer-shell rounded-[28px] border bg-white px-3 py-2.5 transition-[box-shadow,border-color] duration-200 dark:bg-neutral-900 ${
             dragActive
               ? 'border-[#e8a090] shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[#e8a090]/25 dark:border-[#e8a090] dark:shadow-none'
-              : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:border-neutral-700 dark:shadow-none dark:focus-within:border-neutral-600'
+              : agentPlanActive
+                ? 'border-emerald-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-emerald-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_18px_44px_-16px_rgba(16,185,129,0.22)] dark:border-emerald-400 dark:shadow-none dark:focus-within:border-emerald-400'
+                : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:border-neutral-700 dark:shadow-none dark:focus-within:border-neutral-600'
           }`}
         >
           {dragActive && (
@@ -1094,32 +1142,6 @@ export function InputBar({
               >
                 <SlidersHorizontal size={18} strokeWidth={1.75} />
               </button>
-            )}
-
-            {onAgentPlanModeChange && (
-              <div className="mb-0.5 flex h-8 shrink-0 items-center rounded-full bg-neutral-100 p-0.5 dark:bg-neutral-800">
-                {(['act', 'plan'] as const).map((mode) => {
-                  const selected = agentPlanMode === mode
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => void onAgentPlanModeChange(mode)}
-                      disabled={disabled || selected}
-                      tabIndex={-1}
-                      className={`flex h-7 min-w-[44px] items-center justify-center rounded-full px-2 text-[12px] font-medium transition-colors disabled:cursor-default ${
-                        selected
-                          ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-neutral-50'
-                          : 'text-neutral-500 hover:text-neutral-800 disabled:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100 dark:disabled:text-neutral-50'
-                      }`}
-                      title={mode === 'plan' ? 'Plan mode' : 'Act mode'}
-                      aria-label={mode === 'plan' ? 'Plan mode' : 'Act mode'}
-                    >
-                      {mode === 'plan' ? 'Plan' : 'Act'}
-                    </button>
-                  )
-                })}
-              </div>
             )}
 
             {onExecuteAgentPlan && agentPlanText && (
