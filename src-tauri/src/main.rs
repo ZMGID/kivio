@@ -21,6 +21,7 @@ mod shortcuts;
 mod skills;
 mod state;
 mod updates;
+mod usage;
 mod utils;
 mod web_search;
 mod windows;
@@ -151,6 +152,10 @@ fn main() {
             if let Err(err) = apply_launch_at_startup(&app.handle(), settings.launch_at_startup) {
                 eprintln!("Failed to apply launch-at-startup setting: {err}");
             }
+            let usage_dir = usage::usage_dir(&app.handle()).unwrap_or_else(|err| {
+                eprintln!("Failed to initialize usage ledger dir: {err}");
+                std::env::temp_dir().join("kivio-usage")
+            });
 
             app.manage(AppState {
                 settings: RwLock::new(settings),
@@ -170,6 +175,7 @@ fn main() {
                 lens_freeze_frame_image_id: Mutex::new(None),
                 key_cooldowns: Mutex::new(HashMap::new()),
                 active_key_idx: Mutex::new(HashMap::new()),
+                usage_dir,
                 http: build_http_client(),
                 #[cfg(target_os = "macos")]
                 macos_ocr: macos_ocr::MacOcrClient::new(&app.handle()),
@@ -270,6 +276,8 @@ fn main() {
             updates::install_update_and_quit,
             commands::rapidocr_status,
             commands::rapidocr_install,
+            usage::usage_get_stats,
+            usage::usage_clear,
             // Chat 模块命令
             chat::commands::chat_get_conversations,
             chat::commands::chat_get_conversation,

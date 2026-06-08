@@ -35,6 +35,7 @@ const extensionSubItems: Array<{ id: ExtensionsNavItem; label: string }> = [
 interface SidebarProps {
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
+  optimisticConversations?: ConversationListItem[]
   selectedProject?: ChatProject | null
   onSelectProject: (project: ChatProject | null) => void
   onSelectConversation: (id: string) => void
@@ -202,6 +203,7 @@ function ExtensionsNav({
 export const Sidebar = memo(function Sidebar({
   currentConversationId,
   generatingConversationIds = new Set(),
+  optimisticConversations = [],
   selectedProject = null,
   onSelectProject,
   onSelectConversation,
@@ -413,15 +415,30 @@ export const Sidebar = memo(function Sidebar({
     }
   }
 
+  const visibleConversations = useMemo(() => {
+    if (optimisticConversations.length === 0) return conversations
+    const realConversationIds = new Set(conversations.map((item) => item.id))
+    const visibleOptimisticConversations = optimisticConversations.filter((item) => {
+      if (selectedProject && item.folder !== selectedProject.name) return false
+      return generatingConversationIds.has(item.id) || !realConversationIds.has(item.id)
+    })
+    if (visibleOptimisticConversations.length === 0) return conversations
+    const optimisticIds = new Set(visibleOptimisticConversations.map((item) => item.id))
+    return [
+      ...visibleOptimisticConversations,
+      ...conversations.filter((item) => !optimisticIds.has(item.id)),
+    ]
+  }, [conversations, generatingConversationIds, optimisticConversations, selectedProject])
+
   const filteredConversations = useMemo(() => {
     const normalizedSearchQuery = searchQuery.trim().toLowerCase()
-    if (!normalizedSearchQuery) return conversations
-    return conversations.filter(
+    if (!normalizedSearchQuery) return visibleConversations
+    return visibleConversations.filter(
       (c) =>
         c.title.toLowerCase().includes(normalizedSearchQuery) ||
         c.preview.toLowerCase().includes(normalizedSearchQuery),
     )
-  }, [conversations, searchQuery])
+  }, [searchQuery, visibleConversations])
 
   const menuProject = projectMenuState
     ? projects.find((project) => project.id === projectMenuState.projectId)

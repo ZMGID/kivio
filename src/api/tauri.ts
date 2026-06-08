@@ -599,6 +599,101 @@ export type Settings = {
   imageArchivePath?: string
 }
 
+export type UsageRange = '7d' | '30d' | '90d' | 'all'
+
+export type UsageStatsQuery = {
+  range?: UsageRange
+  source?: string
+  status?: string
+  providerSearch?: string
+  modelSearch?: string
+  limit?: number
+  offset?: number
+}
+
+export type UsageRecord = {
+  id: string
+  createdAt: number
+  completedAt: number
+  durationMs: number
+  source: string
+  operation: string
+  providerId: string
+  providerName: string
+  model: string
+  apiFormat: string
+  status: string
+  statusCode?: number | null
+  usageSource: string
+  inputTokens?: number | null
+  outputTokens?: number | null
+  totalTokens?: number | null
+  cachedInputTokens?: number | null
+  cacheCreationInputTokens?: number | null
+  reasoningTokens?: number | null
+  costUsd?: number | null
+  costSource: string
+  conversationId?: string | null
+  messageId?: string | null
+  errorKind?: string | null
+}
+
+export type UsageSummary = {
+  totalRequests: number
+  successfulRequests: number
+  failedRequests: number
+  missingUsageRequests: number
+  providerReportedRequests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  cacheCreationInputTokens: number
+  reasoningTokens: number
+  totalCostUsd: number
+  averageDurationMs?: number | null
+}
+
+export type UsageTrendPoint = {
+  date: string
+  label: string
+  requests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  cacheCreationInputTokens: number
+  costUsd: number
+}
+
+export type UsageGroupStats = {
+  id: string
+  label: string
+  providerId?: string | null
+  providerName?: string | null
+  model?: string | null
+  requestCount: number
+  successCount: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  cacheCreationInputTokens: number
+  costUsd: number
+  averageDurationMs?: number | null
+  lastUsedAt?: number | null
+}
+
+export type UsageStatsResponse = {
+  summary: UsageSummary
+  trend: UsageTrendPoint[]
+  logs: UsageRecord[]
+  providerStats: UsageGroupStats[]
+  modelStats: UsageGroupStats[]
+  totalLogs: number
+  skippedRecords: number
+}
+
 /** 更新检查结果（来自后端 GitHub Releases API 调用） */
 export type UpdateInfo = {
   available: boolean
@@ -860,6 +955,9 @@ export const api = {
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   saveSettings: async (settings: Settings) =>
     normalizeSettings(await invoke<Settings>('save_settings', { settings: prepareSettingsForSave(settings) })),
+  usageGetStats: (query?: UsageStatsQuery) =>
+    invoke<UsageStatsResponse>('usage_get_stats', { query }),
+  usageClear: () => invoke<void>('usage_clear'),
 
   // 提供商相关
   fetchModels: (providerId: string, provider?: ProviderConnectionInput) =>

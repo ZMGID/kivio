@@ -155,6 +155,8 @@ pub(crate) async fn translate_text(
         prompt,
         retry_attempts,
         false,
+        "translator",
+        "translate_text",
     )
     .await
 }

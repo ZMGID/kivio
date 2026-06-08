@@ -3,7 +3,7 @@ import {
   X, Check, Plus, Minus, Trash2, RefreshCw,
   Settings as SettingsIcon, Languages, Zap,
   Cloud, Info, Aperture, ExternalLink, Download, ChevronRight, Wrench, Sparkles, FolderOpen,
-  MessageSquare, Globe, SlidersHorizontal, Brain,
+  MessageSquare, Globe, SlidersHorizontal, Brain, BarChart3,
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
@@ -32,6 +32,7 @@ import { ModelPairSelect } from './ModelPairSelect'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
 import { ProviderSortableList } from './ProviderSortableList'
 import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
+import { UsageStatsPanel } from './UsageStatsPanel'
 import { ModelDetailDrawer } from '../components/ModelDetailDrawer'
 import { resolveModelInfo } from '../data/modelMatching'
 import { useWindowInteractionFocus } from '../utils/windowFocus'
@@ -42,7 +43,7 @@ import {
   SettingsGroup,
 } from './components'
 
-export type SettingsTab = 'general' | 'translate' | 'screenshot' | 'lens' | 'chat' | 'memory' | 'mixer' | 'mcp' | 'skill' | 'webSearch' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'translate' | 'screenshot' | 'lens' | 'chat' | 'memory' | 'mixer' | 'mcp' | 'skill' | 'webSearch' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 type MemoryLayerKey = 'l1' | 'l2'
@@ -52,6 +53,8 @@ const CHAT_MAX_OUTPUT_TOKEN_OPTIONS = [2048, 8192, 16384, 32768]
 const CHAT_TOOL_DEFAULT_ROUNDS = 20
 const CHAT_TOOL_MIN_ROUNDS = 1
 const CHAT_TOOL_MAX_ROUNDS = 100
+const CHAT_TOOL_ROUND_PRESETS = [5, 10, 20, 50, 100]
+const CHAT_TOOL_TIMEOUT_PRESETS_MS = [30_000, 60_000, 120_000, 300_000]
 const textEncoder = new TextEncoder()
 
 function utf8ByteLength(value: string): number {
@@ -62,6 +65,28 @@ function clampToolRounds(value: string | number | null | undefined): number {
   const parsed = Number(value ?? CHAT_TOOL_DEFAULT_ROUNDS)
   if (!Number.isFinite(parsed)) return CHAT_TOOL_DEFAULT_ROUNDS
   return Math.min(CHAT_TOOL_MAX_ROUNDS, Math.max(CHAT_TOOL_MIN_ROUNDS, Math.round(parsed)))
+}
+
+function clampToolTimeoutMs(value: string | number | null | undefined): number {
+  const parsed = Number(value ?? 60_000)
+  if (!Number.isFinite(parsed)) return 60_000
+  return Math.min(300_000, Math.max(1_000, Math.round(parsed)))
+}
+
+function formatToolRoundsLabel(rounds: number, lang: string): string {
+  return lang === 'zh' ? `${rounds} 轮` : `${rounds} rounds`
+}
+
+function formatToolTimeoutLabel(ms: number, lang: string): string {
+  if (ms % 60_000 === 0) {
+    const minutes = ms / 60_000
+    return lang === 'zh' ? `${minutes} 分钟` : `${minutes} min`
+  }
+  if (ms % 1000 === 0) {
+    const seconds = ms / 1000
+    return lang === 'zh' ? `${seconds} 秒` : `${seconds} sec`
+  }
+  return `${ms} ms`
 }
 
 export interface SettingsShellProps {
@@ -1898,6 +1923,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'mcp' as const, label: 'MCP', icon: Wrench },
     { id: 'skill' as const, label: 'Skill', icon: Sparkles },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: Globe },
+    { id: 'usage' as const, label: lang === 'zh' ? '用量统计' : 'Usage', icon: BarChart3 },
     { id: 'providers' as const, label: t.tabModels, icon: Cloud },
   ]
   const pageMeta: Record<typeof activeTab, { title: string; subtitle: string; right?: string }> = {
@@ -1948,6 +1974,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       subtitle: lang === 'zh'
         ? 'Tavily/Exa 密钥与参数；分别开启 Lens 与 Chat 的联网搜索。'
         : 'Tavily/Exa keys and parameters; enable web search for Lens and Chat separately.',
+    },
+    usage: {
+      title: lang === 'zh' ? '用量统计' : 'Usage',
+      subtitle: lang === 'zh'
+        ? '查看本地模型请求、Token、成本估算和来源分布。'
+        : 'Inspect local model requests, tokens, estimated cost, and usage distribution.',
     },
     providers: {
       title: t.tabModels,
@@ -3028,91 +3060,100 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 </SettingsGroup>
 
                 <SettingsGroup title={lang === 'zh' ? '工具运行' : 'Tool Runtime'}>
-                  <SettingRow
-                    label={lang === 'zh' ? '启用 MCP' : 'Enable MCP'}
-                    description={
-                      chatProviderSupportsTools
-                        ? (lang === 'zh' ? '开启后，Chat 会向支持 tools 的模型暴露已启用的 MCP 工具。' : 'When enabled, Chat exposes enabled MCP tools to models that support tools.')
-                        : (lang === 'zh' ? '当前 Chat 模型供应商标记为不支持 tools；Skill 仍会作为提示词生效。' : 'The current Chat provider is marked as not supporting tools; Skills still work as prompt injection.')
-                    }
-                  >
-                    <Toggle
-                      checked={chatTools.enabled}
-                      onChange={(enabled) => {
-                        if (!chatProviderSupportsTools) {
-                          setSaveError(lang === 'zh' ? '当前 Chat 模型供应商不支持 tools，无法启用 MCP。' : 'The current Chat provider does not support tools, so MCP cannot be enabled.')
-                          return
-                        }
-                        updateChatTools({ enabled })
-                      }}
-                    />
-                  </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '审批策略' : 'Approval policy'}>
-                    <Select
-                      className="w-56"
-                      value={chatTools.approvalPolicy || 'readonly_auto_sensitive_confirm'}
-                      onChange={(approvalPolicy) => updateChatTools({ approvalPolicy })}
-                      options={[
-                        {
-                          value: 'readonly_auto_sensitive_confirm',
-                          label: lang === 'zh' ? '读类自动，敏感确认' : 'Read auto, sensitive confirm',
-                        },
-                        { value: 'always_confirm', label: lang === 'zh' ? '每次确认' : 'Always confirm' },
-                        { value: 'auto', label: lang === 'zh' ? '全部自动' : 'Auto approve' },
-                      ]}
-                    />
-                  </SettingRow>
-                  <div className="grid grid-cols-1 gap-3 py-2 sm:grid-cols-3">
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-4 py-3">
+                    <div className="flex min-w-0 items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="kv-row-label">{lang === 'zh' ? '启用 MCP' : 'Enable MCP'}</div>
+                        <p className="kv-row-desc">
+                          {chatProviderSupportsTools
+                            ? (lang === 'zh' ? '向支持 tools 的模型暴露已启用的 MCP 工具。' : 'Expose enabled MCP tools to models that support tools.')
+                            : (lang === 'zh' ? '当前 Chat 模型供应商不支持 tools；Skill 仍会作为提示词生效。' : 'The current Chat provider does not support tools; Skills still work as prompt injection.')}
+                        </p>
+                      </div>
+                      <Toggle
+                        checked={chatTools.enabled}
+                        onChange={(enabled) => {
+                          if (!chatProviderSupportsTools) {
+                            setSaveError(lang === 'zh' ? '当前 Chat 模型供应商不支持 tools，无法启用 MCP。' : 'The current Chat provider does not support tools, so MCP cannot be enabled.')
+                            return
+                          }
+                          updateChatTools({ enabled })
+                        }}
+                      />
+                    </div>
+                    <FieldBlock label={lang === 'zh' ? '审批策略' : 'Approval policy'} className="py-0">
+                      <Select
+                        className="w-full"
+                        value={chatTools.approvalPolicy || 'readonly_auto_sensitive_confirm'}
+                        onChange={(approvalPolicy) => updateChatTools({ approvalPolicy })}
+                        options={[
+                          {
+                            value: 'readonly_auto_sensitive_confirm',
+                            label: lang === 'zh' ? '读类自动，敏感确认' : 'Read auto, sensitive confirm',
+                          },
+                          { value: 'always_confirm', label: lang === 'zh' ? '每次确认' : 'Always confirm' },
+                          { value: 'auto', label: lang === 'zh' ? '全部自动' : 'Auto approve' },
+                        ]}
+                      />
+                      <p className="kv-row-desc">
+                        {lang === 'zh' ? '控制工具调用是否需要人工确认。' : 'Controls whether tool calls require manual approval.'}
+                      </p>
+                    </FieldBlock>
+                  </div>
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-4 border-t border-[var(--divider)] py-3">
                     <FieldBlock
                       label={lang === 'zh' ? '最大工具轮次' : 'Max tool rounds'}
                       description={lang === 'zh'
                         ? '达到上限后会停止继续调用工具，并基于已有工具结果生成最终回复。'
                         : 'After the limit, Chat stops calling tools and synthesizes a final answer from existing tool results.'}
                     >
-                      <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-2">
-                        <Select
-                          value={chatTools.maxToolRounds === null ? 'unlimited' : 'limited'}
-                          onChange={(value) => updateChatTools({
-                            maxToolRounds: value === 'unlimited'
-                              ? null
-                              : clampToolRounds(chatTools.maxToolRounds),
-                          })}
-                          options={[
-                            { value: 'limited', label: lang === 'zh' ? '限制' : 'Limited' },
-                            { value: 'unlimited', label: lang === 'zh' ? '无限制' : 'Unlimited' },
-                          ]}
-                        />
-                        {chatTools.maxToolRounds === null ? (
-                          <div className="kv-input flex h-[30px] items-center text-[13px] text-neutral-500 dark:text-neutral-400">
-                            {lang === 'zh' ? '无限' : '∞'}
-                          </div>
-                        ) : (
-                          <Input
-                            type="number"
-                            min={CHAT_TOOL_MIN_ROUNDS}
-                            max={CHAT_TOOL_MAX_ROUNDS}
-                            value={String(clampToolRounds(chatTools.maxToolRounds))}
-                            onChange={(value) => updateChatTools({
-                              maxToolRounds: clampToolRounds(value),
-                            })}
-                          />
-                        )}
-                      </div>
+                      <Select
+                        className="w-full"
+                        value={chatTools.maxToolRounds === null ? 'unlimited' : String(clampToolRounds(chatTools.maxToolRounds))}
+                        onChange={(value) => updateChatTools({
+                          maxToolRounds: value === 'unlimited' ? null : clampToolRounds(value),
+                        })}
+                        options={[
+                          ...(chatTools.maxToolRounds !== null && !CHAT_TOOL_ROUND_PRESETS.includes(clampToolRounds(chatTools.maxToolRounds))
+                            ? [{
+                                value: String(clampToolRounds(chatTools.maxToolRounds)),
+                                label: lang === 'zh'
+                                  ? `当前 ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`
+                                  : `Current ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`,
+                              }]
+                            : []),
+                          ...CHAT_TOOL_ROUND_PRESETS.map((rounds) => ({
+                            value: String(rounds),
+                            label: formatToolRoundsLabel(rounds, lang),
+                          })),
+                          { value: 'unlimited', label: lang === 'zh' ? '无限制' : 'Unlimited' },
+                        ]}
+                      />
                     </FieldBlock>
                     <FieldBlock label={lang === 'zh' ? '工具超时 ms' : 'Tool timeout ms'}>
-                      <Input
-                        type="number"
-                        min={1000}
-                        max={300000}
-                        value={String(chatTools.toolTimeoutMs ?? 60_000)}
-                        onChange={(value) => updateChatTools({
-                          toolTimeoutMs: Math.min(300_000, Math.max(1_000, Number.parseInt(value, 10) || 1_000)),
-                        })}
+                      <Select
+                        className="w-full"
+                        value={String(clampToolTimeoutMs(chatTools.toolTimeoutMs))}
+                        onChange={(value) => updateChatTools({ toolTimeoutMs: clampToolTimeoutMs(value) })}
+                        options={[
+                          ...(!CHAT_TOOL_TIMEOUT_PRESETS_MS.includes(clampToolTimeoutMs(chatTools.toolTimeoutMs))
+                            ? [{
+                                value: String(clampToolTimeoutMs(chatTools.toolTimeoutMs)),
+                                label: lang === 'zh'
+                                  ? `当前 ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`
+                                  : `Current ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`,
+                              }]
+                            : []),
+                          ...CHAT_TOOL_TIMEOUT_PRESETS_MS.map((ms) => ({
+                            value: String(ms),
+                            label: formatToolTimeoutLabel(ms, lang),
+                          })),
+                        ]}
                       />
                     </FieldBlock>
                     <FieldBlock label={lang === 'zh' ? '结果截断字符' : 'Output chars'}>
-                      <div className="kv-input flex h-10 items-center text-[13px] text-neutral-500 dark:text-neutral-400">
-                        {lang === 'zh' ? '无限制' : 'Unlimited'}
+                      <div className="flex h-[30px] items-center rounded-md border border-[var(--border)] bg-[var(--bg-input-subtle)] px-2.5 text-[12.5px] text-[var(--text-muted)]">
+                        {lang === 'zh' ? '无限制输出' : 'Unlimited output'}
                       </div>
                     </FieldBlock>
                   </div>
@@ -3574,6 +3615,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     : 'Chat web_search / web_fetch toggles live under MCP → Kivio built-in tools.'}
                 </p>
               </>
+            )}
+
+            {/* ===== 用量统计标签页 ===== */}
+            {activeTab === 'usage' && (
+              <UsageStatsPanel lang={lang} />
             )}
 
             {/* ===== 模型管理标签页 ===== */}

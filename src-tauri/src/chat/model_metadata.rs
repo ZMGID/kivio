@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::settings::{ModelInfo, ModelProvider};
+use crate::settings::{ModelInfo, ModelPricing, ModelProvider};
 
 const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 200_000;
 
@@ -131,6 +131,19 @@ fn model_database_image_generation(model: &str) -> Option<bool> {
         .and_then(Value::as_bool)
 }
 
+fn model_pricing_from_model_info(info: Option<&ModelInfo>) -> Option<ModelPricing> {
+    info.and_then(|info| info.pricing.clone())
+}
+
+fn model_database_pricing(model: &str) -> Option<ModelPricing> {
+    let pricing = model_database_entry(model)?.get("pricing")?;
+    Some(ModelPricing {
+        input: pricing.get("input").and_then(Value::as_f64),
+        output: pricing.get("output").and_then(Value::as_f64),
+        cached_input: pricing.get("cachedInput").and_then(Value::as_f64),
+    })
+}
+
 pub(crate) fn model_supports_vision(provider: Option<&ModelProvider>, model: &str) -> Option<bool> {
     let provider = provider?;
     model_vision_from_model_info(provider.model_overrides.get(model))
@@ -236,6 +249,18 @@ pub(crate) fn chat_max_output_tokens_for_model(
     max_output_from_model_info(provider.and_then(|provider| provider.model_overrides.get(model)))
         .or_else(|| model_database_max_output(model))
         .unwrap_or(fallback)
+}
+
+pub(crate) fn pricing_for_model(
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> Option<(ModelPricing, String)> {
+    if let Some(pricing) = model_pricing_from_model_info(
+        provider.and_then(|provider| provider.model_overrides.get(model)),
+    ) {
+        return Some((pricing, "user_override".to_string()));
+    }
+    model_database_pricing(model).map(|pricing| (pricing, "model_pricing".to_string()))
 }
 
 #[cfg(test)]

@@ -50,6 +50,12 @@ Questions to answer:
 - Tailwind Typography adds visual backticks around inline `code` via pseudo-elements by default. Chat Markdown containers must disable `code::before` and `code::after` content and use explicit inline-code styling instead.
 - Render fenced code blocks with a Chat-specific `not-prose` component instead of Tailwind Typography's default dark `pre`. Code blocks should use a light card surface, compact inline language label, copy action, horizontal overflow, and lightweight syntax coloring without adding a large highlighting dependency unless the product explicitly accepts the bundle cost.
 
+### Chat agent todo UI
+
+- Render the persistent agent todo state as a compact Chat titlebar indicator with a popover for the full list.
+- Do not render agent todo state as a sticky panel inside the message list. The message stream should remain the chronological conversation, not the assistant's current workspace dashboard.
+- Keep `todo_write` and `todo_update` tool calls in the assistant timeline as historical trace entries, but summarize their arguments/results compactly instead of showing the full todo state payload by default.
+
 ### Tauri window lifecycle
 
 - Keep Tauri window labels scoped to one user-facing surface: `main` is the input translator, `chat` is the AI client, `settings` is the standalone settings page, and `lens` is the capture/vision overlay.

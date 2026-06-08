@@ -8,7 +8,7 @@ import {
   Wrench,
   XCircle,
 } from 'lucide-react'
-import type { ToolCallRecord, ToolCallStatus } from './types'
+import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ToolCallRecord, ToolCallStatus } from './types'
 import { formatToolResultPreview } from './toolResultPreview'
 import { AskUserBlock } from './AskUserBlock'
 
@@ -78,6 +78,85 @@ function parsedArguments(toolCall: ToolCallRecord): Record<string, unknown> | nu
   }
 }
 
+function toolRawName(toolCall: ToolCallRecord): string {
+  return toolCall.tool_name || toolCall.toolName || toolCall.name || ''
+}
+
+function isTodoTool(toolCall: ToolCallRecord): boolean {
+  const rawName = toolRawName(toolCall)
+  return rawName === 'todo_write' || rawName === 'todo_update'
+}
+
+function isAskUserTool(toolCall: ToolCallRecord): boolean {
+  return toolRawName(toolCall) === 'ask_user'
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function todoStatusLabel(status?: string): string {
+  switch (status) {
+    case 'completed':
+      return '已完成'
+    case 'in_progress':
+      return '进行中'
+    case 'pending':
+      return '待处理'
+    default:
+      return status ? compactText(status, 24) : ''
+  }
+}
+
+function normalizeTodoItem(value: unknown): AgentTodoItem | null {
+  const item = objectValue(value)
+  if (!item) return null
+  const id = typeof item.id === 'string' ? item.id.trim() : ''
+  const content = typeof item.content === 'string' ? item.content.trim() : ''
+  const status = typeof item.status === 'string' ? item.status : ''
+  if (!id && !content) return null
+  return {
+    id,
+    content,
+    status: (status === 'completed' || status === 'in_progress' || status === 'pending'
+      ? status
+      : 'pending') as AgentTodoStatus,
+  }
+}
+
+function normalizeTodoItems(value: unknown): AgentTodoItem[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => normalizeTodoItem(item))
+    .filter((item): item is AgentTodoItem => Boolean(item))
+}
+
+function todoCounts(items?: AgentTodoItem[]): { completed: number; total: number } | null {
+  if (!items?.length) return null
+  return {
+    completed: items.filter((item) => item.status === 'completed').length,
+    total: items.length,
+  }
+}
+
+function formatTodoCounts(items?: AgentTodoItem[]): string {
+  const counts = todoCounts(items)
+  return counts ? `${counts.completed}/${counts.total}` : ''
+}
+
+function structuredTodoState(toolCall: ToolCallRecord): AgentTodoState | null {
+  const structured = objectValue(toolCall.structured_content ?? toolCall.structuredContent)
+  const todoState = objectValue(structured?.todoState)
+  if (!todoState) return null
+  return {
+    items: normalizeTodoItems(todoState.items),
+    updated_at: typeof todoState.updated_at === 'number' ? todoState.updated_at : undefined,
+    updatedAt: typeof todoState.updatedAt === 'number' ? todoState.updatedAt : undefined,
+  }
+}
+
 function normalizeStatus(status?: string): ToolCallStatus {
   switch (status) {
     case 'running':
@@ -124,7 +203,7 @@ function getDuration(toolCall: ToolCallRecord): number | undefined {
 }
 
 function getToolName(toolCall: ToolCallRecord): string {
-  const raw = toolCall.tool_name || toolCall.toolName || toolCall.name || 'Tool'
+  const raw = toolRawName(toolCall) || 'Tool'
   const args = parsedArguments(toolCall)
   const command = typeof args?.command === 'string' ? args.command : ''
   const relativePath = typeof args?.relative_path === 'string'
@@ -153,10 +232,12 @@ function getToolName(toolCall: ToolCallRecord): string {
   if (raw === 'web_fetch') return '网页抓取'
   if (raw === 'mixer_vision') return '混音器视觉分析'
   if (raw === 'mixer_generate_image') return '混音器生图'
+  if (raw === 'todo_write' || raw === 'todo_update') return '更新 Todo'
   return raw
 }
 
 function getSource(toolCall: ToolCallRecord): string {
+  if (isTodoTool(toolCall)) return ''
   if (toolCall.source === 'skill') return 'Skill'
   if (toolCall.source === 'native') return 'Kivio'
   if (toolCall.source === 'mixer') {
@@ -174,8 +255,20 @@ function getSource(toolCall: ToolCallRecord): string {
 }
 
 function getArgumentPreview(toolCall: ToolCallRecord): string {
-  const rawName = toolCall.tool_name || toolCall.toolName || toolCall.name || ''
+  const rawName = toolRawName(toolCall)
   const args = parsedArguments(toolCall)
+  if (rawName === 'todo_write') {
+    const todos = normalizeTodoItems(args?.todos)
+    const counts = formatTodoCounts(todos)
+    return counts ? `清单 ${counts}` : todos.length ? `清单 ${todos.length} 项` : '替换 Todo 清单'
+  }
+  if (rawName === 'todo_update') {
+    const content = typeof args?.content === 'string' ? compactText(args.content, 120) : ''
+    const status = typeof args?.status === 'string' ? todoStatusLabel(args.status) : ''
+    const id = typeof args?.id === 'string' ? compactText(args.id, 80) : ''
+    const target = content || id
+    return ['更新条目', status, target].filter(Boolean).join(' · ')
+  }
   if (rawName === 'mixer_vision') {
     const imageCount = typeof args?.images === 'number' ? args.images : null
     const provider = typeof args?.provider === 'string' ? args.provider : ''
@@ -202,7 +295,7 @@ function getArgumentPreview(toolCall: ToolCallRecord): string {
 }
 
 function getResultPreview(toolCall: ToolCallRecord): string {
-  const rawName = toolCall.tool_name || toolCall.toolName || toolCall.name || ''
+  const rawName = toolRawName(toolCall)
   const args = parsedArguments(toolCall)
   const relativePath = typeof args?.relative_path === 'string'
     ? args.relative_path
@@ -211,6 +304,11 @@ function getResultPreview(toolCall: ToolCallRecord): string {
       : ''
   if (rawName === 'skill_run_script' && relativePath.endsWith('pdf_extract_digest.py')) {
     return '已提取 PDF 文本并生成摘要上下文'
+  }
+  if (rawName === 'todo_write' || rawName === 'todo_update') {
+    if (normalizeStatus(toolCall.status) !== 'completed') return ''
+    const counts = formatTodoCounts(structuredTodoState(toolCall)?.items)
+    return counts ? `已同步 ${counts}` : '已同步'
   }
   const raw =
     toolCall.result_preview ||
@@ -221,7 +319,10 @@ function getResultPreview(toolCall: ToolCallRecord): string {
 }
 
 function getRunningPreview(toolCall: ToolCallRecord): string {
-  const raw = toolCall.tool_name || toolCall.toolName || toolCall.name || ''
+  const raw = toolRawName(toolCall)
+  if (raw === 'todo_write' || raw === 'todo_update') {
+    return '正在同步 Todo…'
+  }
   if (raw === 'run_python') {
     return '正在加载 Python 环境…'
   }
@@ -316,7 +417,11 @@ function StatusIcon({ status }: { status: ToolCallStatus }) {
   return <Wrench className="shrink-0" size={12} strokeWidth={1.85} />
 }
 
-function DefaultToolCallBlock({ toolCall, defaultOpen = false, labels }: ToolCallBlockProps) {
+function DefaultToolCallBlock({
+  toolCall,
+  defaultOpen = false,
+  labels,
+}: ToolCallBlockProps) {
   const mergedLabels = { ...defaultLabels, ...labels }
   const status = normalizeStatus(toolCall.status)
   const [open, setOpen] = useState(defaultOpen)
@@ -415,8 +520,7 @@ function DefaultToolCallBlock({ toolCall, defaultOpen = false, labels }: ToolCal
 }
 
 export function ToolCallBlock(props: ToolCallBlockProps) {
-  const rawName = props.toolCall.tool_name || props.toolCall.toolName || props.toolCall.name || ''
-  if (rawName === 'ask_user') {
+  if (isAskUserTool(props.toolCall)) {
     return <AskUserBlock toolCall={props.toolCall} />
   }
   return <DefaultToolCallBlock {...props} />

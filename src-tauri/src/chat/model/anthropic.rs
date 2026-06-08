@@ -4,6 +4,10 @@ use serde_json::Value;
 use crate::api::send_with_failover;
 use crate::settings::ModelProvider;
 use crate::state::AppState;
+use crate::usage::{
+    chat_usage_source_for_label, error_kind_from_message, model_usage_from_anthropic_value,
+    operation_from_label, record_model_call, UsageRecordInput,
+};
 
 use super::{
     parse_tool_arguments, stream_read_error, GenerateOutput, GenerateRequest,
@@ -55,6 +59,8 @@ impl LanguageModelProvider for AnthropicMessagesProvider<'_> {
 impl AnthropicMessagesProvider<'_> {
     async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
         let label = request_label(&request, "Anthropic Messages API");
+        let started_at = chrono::Local::now().timestamp();
+        let started = std::time::Instant::now();
         let body = self.request_body(&request, false);
         let response = send_with_failover(
             self.state,
@@ -73,20 +79,34 @@ impl AnthropicMessagesProvider<'_> {
             },
         )
         .await
-        .map_err(ModelError::new)?;
+        .map_err(|err| {
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+            ModelError::new(err)
+        })?;
 
-        let raw = response
-            .text()
-            .await
-            .map_err(|err| ModelError::new(format!("{label} read body: {err}")))?;
+        let raw = response.text().await.map_err(|err| {
+            let message = format!("{label} read body: {err}");
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
+            ModelError::new(message)
+        })?;
         let value: Value = serde_json::from_str(&raw).map_err(|err| {
-            ModelError::new(format!(
+            let message = format!(
                 "{label} parse JSON: {} (body: {})",
                 err,
                 raw.chars().take(500).collect::<String>()
-            ))
+            );
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
+            ModelError::new(message)
         })?;
-        output_from_anthropic_message(&value, &label)
+        let output = output_from_anthropic_message(&value, &label)?;
+        self.record_usage_success(
+            &request,
+            &label,
+            started_at,
+            started.elapsed(),
+            output.usage.clone(),
+        );
+        Ok(output)
     }
 
     async fn stream_inner(
@@ -95,6 +115,8 @@ impl AnthropicMessagesProvider<'_> {
         sink: &mut (dyn StreamSink + Send),
     ) -> Result<GenerateOutput, ModelError> {
         let label = request_label(&request, "Anthropic stream");
+        let started_at = chrono::Local::now().timestamp();
+        let started = std::time::Instant::now();
         let body = self.request_body(&request, true);
         let mut response = send_with_failover(
             self.state,
@@ -113,7 +135,10 @@ impl AnthropicMessagesProvider<'_> {
             },
         )
         .await
-        .map_err(ModelError::new)?;
+        .map_err(|err| {
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+            ModelError::new(err)
+        })?;
 
         let mut buffer = String::new();
         let mut full = String::new();
@@ -123,12 +148,20 @@ impl AnthropicMessagesProvider<'_> {
         let mut current_tool_name = String::new();
         let mut current_tool_input_parts: Vec<String> = Vec::new();
         let mut finish_reason = "stop".to_string();
+        let mut usage: Option<ModelUsage> = None;
 
         loop {
-            let chunk = response
-                .chunk()
-                .await
-                .map_err(|err| stream_read_error(&label, &err))?;
+            let chunk = response.chunk().await.map_err(|err| {
+                let model_error = stream_read_error(&label, &err);
+                self.record_usage_failure(
+                    &request,
+                    &label,
+                    started_at,
+                    started.elapsed(),
+                    &model_error.to_string(),
+                );
+                model_error
+            })?;
             let Some(chunk) = chunk else {
                 break;
             };
@@ -182,25 +215,39 @@ impl AnthropicMessagesProvider<'_> {
                             reason: finish_reason.clone(),
                             full: full.clone(),
                         })?;
-                        return Ok(stream_output(
-                            full,
-                            reasoning_full,
-                            tool_calls,
-                            finish_reason,
-                        ));
+                        let output =
+                            stream_output(full, reasoning_full, tool_calls, finish_reason, usage);
+                        self.record_usage_success(
+                            &request,
+                            &label,
+                            started_at,
+                            started.elapsed(),
+                            output.usage.clone(),
+                        );
+                        return Ok(output);
                     }
-                    Some(AnthropicSseEvent::MessageStopWithReason(reason)) => {
+                    Some(AnthropicSseEvent::MessageStopWithReason {
+                        reason,
+                        usage: next_usage,
+                    }) => {
                         finish_reason = finish_reason_from_anthropic_stop_reason(&reason);
+                        if next_usage.is_some() {
+                            usage = next_usage;
+                        }
                         sink.emit(StreamPart::Finish {
                             reason: finish_reason.clone(),
                             full: full.clone(),
                         })?;
-                        return Ok(stream_output(
-                            full,
-                            reasoning_full,
-                            tool_calls,
-                            finish_reason,
-                        ));
+                        let output =
+                            stream_output(full, reasoning_full, tool_calls, finish_reason, usage);
+                        self.record_usage_success(
+                            &request,
+                            &label,
+                            started_at,
+                            started.elapsed(),
+                            output.usage.clone(),
+                        );
+                        return Ok(output);
                     }
                     Some(AnthropicSseEvent::Error(err)) => {
                         sink.emit(StreamPart::Error {
@@ -222,6 +269,7 @@ impl AnthropicMessagesProvider<'_> {
             reasoning_full,
             tool_calls,
             finish_reason,
+            usage,
         ))
     }
 
@@ -251,6 +299,82 @@ impl AnthropicMessagesProvider<'_> {
             }
         }
         body
+    }
+
+    fn record_usage_success(
+        &self,
+        request: &GenerateRequest,
+        label: &str,
+        started_at: i64,
+        duration: std::time::Duration,
+        usage: Option<ModelUsage>,
+    ) {
+        let source = request
+            .metadata
+            .usage_source
+            .clone()
+            .unwrap_or_else(|| chat_usage_source_for_label(label));
+        let operation = request
+            .metadata
+            .usage_operation
+            .clone()
+            .unwrap_or_else(|| operation_from_label(label));
+        record_model_call(
+            self.state,
+            UsageRecordInput {
+                provider: self.provider,
+                model: &request.model,
+                source: &source,
+                operation: &operation,
+                status: "success",
+                status_code: Some(200),
+                usage,
+                usage_source: "provider_reported",
+                started_at,
+                duration_ms: duration.as_millis() as u64,
+                conversation_id: request.metadata.conversation_id.clone(),
+                message_id: request.metadata.message_id.clone(),
+                error_kind: None,
+            },
+        );
+    }
+
+    fn record_usage_failure(
+        &self,
+        request: &GenerateRequest,
+        label: &str,
+        started_at: i64,
+        duration: std::time::Duration,
+        error: &str,
+    ) {
+        let source = request
+            .metadata
+            .usage_source
+            .clone()
+            .unwrap_or_else(|| chat_usage_source_for_label(label));
+        let operation = request
+            .metadata
+            .usage_operation
+            .clone()
+            .unwrap_or_else(|| operation_from_label(label));
+        record_model_call(
+            self.state,
+            UsageRecordInput {
+                provider: self.provider,
+                model: &request.model,
+                source: &source,
+                operation: &operation,
+                status: "error",
+                status_code: crate::api::extract_status_code(error),
+                usage: None,
+                usage_source: "missing",
+                started_at,
+                duration_ms: duration.as_millis() as u64,
+                conversation_id: request.metadata.conversation_id.clone(),
+                message_id: request.metadata.message_id.clone(),
+                error_kind: Some(error_kind_from_message(error)),
+            },
+        );
     }
 }
 
@@ -434,11 +558,17 @@ fn parse_anthropic_response(response: &Value) -> AnthropicParsedResponse {
 enum AnthropicSseEvent {
     TextDelta(String),
     ThinkingDelta(String),
-    ToolUseStart { id: String, name: String },
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
     ToolInputDelta(String),
     ContentBlockStop,
     MessageStop,
-    MessageStopWithReason(String),
+    MessageStopWithReason {
+        reason: String,
+        usage: Option<ModelUsage>,
+    },
     Error(String),
 }
 
@@ -503,11 +633,18 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
             }
         }
         "content_block_stop" => Some(AnthropicSseEvent::ContentBlockStop),
-        "message_delta" => value
-            .get("delta")
-            .and_then(|delta| delta.get("stop_reason"))
-            .and_then(|value| value.as_str())
-            .map(|reason| AnthropicSseEvent::MessageStopWithReason(reason.to_string())),
+        "message_delta" => {
+            let reason = value
+                .get("delta")
+                .and_then(|delta| delta.get("stop_reason"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("end_turn")
+                .to_string();
+            Some(AnthropicSseEvent::MessageStopWithReason {
+                reason,
+                usage: model_usage_from_anthropic_value(&value),
+            })
+        }
         "message_stop" => Some(AnthropicSseEvent::MessageStop),
         "error" => Some(AnthropicSseEvent::Error(
             value
@@ -688,14 +825,7 @@ fn normalize_anthropic_schema(schema: Value) -> Value {
 }
 
 fn anthropic_usage(value: &Value) -> Option<ModelUsage> {
-    let usage = value.get("usage")?;
-    let input = usage.get("input_tokens").and_then(|value| value.as_u64());
-    let output = usage.get("output_tokens").and_then(|value| value.as_u64());
-    Some(ModelUsage {
-        input_tokens: input,
-        output_tokens: output,
-        total_tokens: input.zip(output).map(|(a, b)| a + b),
-    })
+    model_usage_from_anthropic_value(value)
 }
 
 fn openai_compatible_message(
@@ -739,6 +869,7 @@ fn stream_output(
     reasoning: String,
     tool_calls: Vec<PendingToolCall>,
     finish_reason: String,
+    usage: Option<ModelUsage>,
 ) -> GenerateOutput {
     let reasoning = non_empty(reasoning);
     let provider_message = openai_compatible_message(
@@ -751,7 +882,7 @@ fn stream_output(
         text,
         reasoning,
         tool_calls,
-        usage: None,
+        usage,
         finish_reason: Some(finish_reason),
         provider_messages: vec![provider_message],
         cancelled: false,
@@ -914,7 +1045,7 @@ mod tests {
         ));
         assert!(matches!(
             parse_anthropic_sse_event(events[6]),
-            Some(AnthropicSseEvent::MessageStopWithReason(reason)) if reason == "tool_use"
+            Some(AnthropicSseEvent::MessageStopWithReason { reason, .. }) if reason == "tool_use"
         ));
 
         let input_parts = events[3..=4]

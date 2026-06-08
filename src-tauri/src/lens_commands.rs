@@ -916,6 +916,8 @@ pub(crate) async fn lens_ask(
         model_override.as_deref(),
         system_prompt_override.as_deref(),
         thinking_enabled,
+        "lens",
+        "ask",
     )
     .await
     {
@@ -1129,6 +1131,8 @@ async fn plan_lens_web_search_tool_call(
         model_override,
         Some(system_prompt),
         false,
+        "lens",
+        "web_search_planner",
     )
     .await?;
 
@@ -1324,6 +1328,8 @@ pub(crate) async fn lens_translate(
                 &image_id,
                 "translated",
                 "lens-translate-stream",
+                "screenshot_translation",
+                "image_direct_stream",
             )
             .await
             {
@@ -1346,6 +1352,8 @@ pub(crate) async fn lens_translate(
             &prompt,
             retry_attempts,
             st_thinking,
+            "screenshot_translation",
+            "image_direct",
         )
         .await
         {
@@ -1378,6 +1386,8 @@ pub(crate) async fn lens_translate(
             retry_attempts,
             &image_id,
             "lens-translate-stream",
+            "screenshot_translation",
+            "image_combined_stream",
         )
         .await
         {
@@ -1402,6 +1412,8 @@ pub(crate) async fn lens_translate(
         &prompt,
         retry_attempts,
         st_thinking,
+        "screenshot_translation",
+        "image_combined",
     )
     .await
     {
@@ -1512,6 +1524,8 @@ pub(crate) async fn lens_translate_text(
             &request_id,
             "translated",
             "lens-translate-stream",
+            "screenshot_translation",
+            "text_selection_stream",
         )
         .await
         {
@@ -1529,6 +1543,8 @@ pub(crate) async fn lens_translate_text(
             prompt,
             retry_attempts,
             st_thinking,
+            "screenshot_translation",
+            "text_selection",
         )
         .await;
         match result {
@@ -1688,6 +1704,8 @@ async fn local_ocr_then_translate(
             image_id,
             "translated",
             "lens-translate-stream",
+            "screenshot_translation",
+            "local_ocr_translate_stream",
         )
         .await
         {
@@ -1705,6 +1723,8 @@ async fn local_ocr_then_translate(
             translate_prompt,
             retry_attempts,
             st_thinking,
+            "screenshot_translation",
+            "local_ocr_translate",
         )
         .await;
         match result {

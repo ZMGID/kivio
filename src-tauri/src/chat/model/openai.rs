@@ -4,6 +4,10 @@ use serde_json::Value;
 use crate::api::send_with_failover;
 use crate::settings::ModelProvider;
 use crate::state::AppState;
+use crate::usage::{
+    chat_usage_source_for_label, error_kind_from_message, model_usage_from_openai_value,
+    model_usage_from_stream_value, operation_from_label, record_model_call, UsageRecordInput,
+};
 use crate::utils;
 
 use super::{
@@ -54,6 +58,8 @@ impl LanguageModelProvider for OpenAiChatProvider<'_> {
 impl OpenAiChatProvider<'_> {
     async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
         let label = request_label(&request, "Chat API");
+        let started_at = chrono::Local::now().timestamp();
+        let started = std::time::Instant::now();
         let body = self.request_body(&request, false);
         let response = send_with_failover(
             self.state,
@@ -72,20 +78,34 @@ impl OpenAiChatProvider<'_> {
             },
         )
         .await
-        .map_err(ModelError::new)?;
+        .map_err(|err| {
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+            ModelError::new(err)
+        })?;
 
-        let raw = response
-            .text()
-            .await
-            .map_err(|err| ModelError::new(format!("{label} read body: {err}")))?;
+        let raw = response.text().await.map_err(|err| {
+            let message = format!("{label} read body: {err}");
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
+            ModelError::new(message)
+        })?;
         let value: Value = serde_json::from_str(&raw).map_err(|err| {
-            ModelError::new(format!(
+            let message = format!(
                 "{label} parse JSON: {} (body: {})",
                 err,
                 raw.chars().take(500).collect::<String>()
-            ))
+            );
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
+            ModelError::new(message)
         })?;
-        output_from_chat_completion(&value, &raw, &label)
+        let output = output_from_chat_completion(&value, &raw, &label)?;
+        self.record_usage_success(
+            &request,
+            &label,
+            started_at,
+            started.elapsed(),
+            output.usage.clone(),
+        );
+        Ok(output)
     }
 
     async fn stream_inner(
@@ -94,6 +114,8 @@ impl OpenAiChatProvider<'_> {
         sink: &mut (dyn StreamSink + Send),
     ) -> Result<GenerateOutput, ModelError> {
         let label = request_label(&request, "Chat stream");
+        let started_at = chrono::Local::now().timestamp();
+        let started = std::time::Instant::now();
         let body = self.request_body(&request, true);
         let mut response = send_with_failover(
             self.state,
@@ -112,19 +134,30 @@ impl OpenAiChatProvider<'_> {
             },
         )
         .await
-        .map_err(ModelError::new)?;
+        .map_err(|err| {
+            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+            ModelError::new(err)
+        })?;
 
         let mut buffer = String::new();
         let mut full = String::new();
         let mut reasoning_full = String::new();
         let mut tool_partials: Vec<PartialToolCall> = Vec::new();
         let mut finish_reason: Option<String> = None;
+        let mut usage: Option<ModelUsage> = None;
 
         loop {
-            let chunk = response
-                .chunk()
-                .await
-                .map_err(|err| stream_read_error(&label, &err))?;
+            let chunk = response.chunk().await.map_err(|err| {
+                let model_error = stream_read_error(&label, &err);
+                self.record_usage_failure(
+                    &request,
+                    &label,
+                    started_at,
+                    started.elapsed(),
+                    &model_error.to_string(),
+                );
+                model_error
+            })?;
             let Some(chunk) = chunk else {
                 break;
             };
@@ -146,20 +179,31 @@ impl OpenAiChatProvider<'_> {
                         reason: reason.clone(),
                         full: full.clone(),
                     })?;
-                    return Ok(GenerateOutput {
+                    let output = GenerateOutput {
                         text: full,
                         reasoning: non_empty(reasoning_full),
                         tool_calls,
-                        usage: None,
+                        usage,
                         finish_reason: Some(reason),
                         provider_messages: Vec::new(),
                         cancelled: false,
-                    });
+                    };
+                    self.record_usage_success(
+                        &request,
+                        &label,
+                        started_at,
+                        started.elapsed(),
+                        output.usage.clone(),
+                    );
+                    return Ok(output);
                 }
                 let value: Value = match serde_json::from_str(data) {
                     Ok(value) => value,
                     Err(_) => continue,
                 };
+                if let Some(next_usage) = model_usage_from_stream_value(&value) {
+                    usage = Some(next_usage);
+                }
                 if let Some(reason) = openai_stream_finish_reason(&value) {
                     finish_reason = Some(reason.to_string());
                 }
@@ -185,15 +229,23 @@ impl OpenAiChatProvider<'_> {
             reason: reason.clone(),
             full: full.clone(),
         })?;
-        Ok(GenerateOutput {
+        let output = GenerateOutput {
             text: full,
             reasoning: non_empty(reasoning_full),
             tool_calls,
-            usage: None,
+            usage,
             finish_reason: Some(reason),
             provider_messages: Vec::new(),
             cancelled: false,
-        })
+        };
+        self.record_usage_success(
+            &request,
+            &label,
+            started_at,
+            started.elapsed(),
+            output.usage.clone(),
+        );
+        Ok(output)
     }
 
     fn chat_completions_url(&self) -> String {
@@ -233,6 +285,82 @@ impl OpenAiChatProvider<'_> {
             }
         }
         body
+    }
+
+    fn record_usage_success(
+        &self,
+        request: &GenerateRequest,
+        label: &str,
+        started_at: i64,
+        duration: std::time::Duration,
+        usage: Option<ModelUsage>,
+    ) {
+        let source = request
+            .metadata
+            .usage_source
+            .clone()
+            .unwrap_or_else(|| chat_usage_source_for_label(label));
+        let operation = request
+            .metadata
+            .usage_operation
+            .clone()
+            .unwrap_or_else(|| operation_from_label(label));
+        record_model_call(
+            self.state,
+            UsageRecordInput {
+                provider: self.provider,
+                model: &request.model,
+                source: &source,
+                operation: &operation,
+                status: "success",
+                status_code: Some(200),
+                usage,
+                usage_source: "provider_reported",
+                started_at,
+                duration_ms: duration.as_millis() as u64,
+                conversation_id: request.metadata.conversation_id.clone(),
+                message_id: request.metadata.message_id.clone(),
+                error_kind: None,
+            },
+        );
+    }
+
+    fn record_usage_failure(
+        &self,
+        request: &GenerateRequest,
+        label: &str,
+        started_at: i64,
+        duration: std::time::Duration,
+        error: &str,
+    ) {
+        let source = request
+            .metadata
+            .usage_source
+            .clone()
+            .unwrap_or_else(|| chat_usage_source_for_label(label));
+        let operation = request
+            .metadata
+            .usage_operation
+            .clone()
+            .unwrap_or_else(|| operation_from_label(label));
+        record_model_call(
+            self.state,
+            UsageRecordInput {
+                provider: self.provider,
+                model: &request.model,
+                source: &source,
+                operation: &operation,
+                status: "error",
+                status_code: crate::api::extract_status_code(error),
+                usage: None,
+                usage_source: "missing",
+                started_at,
+                duration_ms: duration.as_millis() as u64,
+                conversation_id: request.metadata.conversation_id.clone(),
+                message_id: request.metadata.message_id.clone(),
+                error_kind: Some(error_kind_from_message(error)),
+            },
+        );
     }
 }
 
@@ -315,18 +443,7 @@ fn reasoning_from_openai_message(message: &Value) -> Option<String> {
 }
 
 fn model_usage_from_openai_response(value: &Value) -> Option<ModelUsage> {
-    let usage = value.get("usage")?;
-    Some(ModelUsage {
-        input_tokens: usage
-            .get("prompt_tokens")
-            .and_then(|value| value.as_u64())
-            .or_else(|| usage.get("input_tokens").and_then(|value| value.as_u64())),
-        output_tokens: usage
-            .get("completion_tokens")
-            .and_then(|value| value.as_u64())
-            .or_else(|| usage.get("output_tokens").and_then(|value| value.as_u64())),
-        total_tokens: usage.get("total_tokens").and_then(|value| value.as_u64()),
-    })
+    model_usage_from_openai_value(value)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

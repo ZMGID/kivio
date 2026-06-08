@@ -8,6 +8,7 @@ import { InputBar } from './InputBar'
 import { ModelSelector } from './ModelSelector'
 import { WindowControls } from './WindowControls'
 import { ContextIndicator } from './ContextIndicator'
+import { AgentTodoIndicator } from './AgentTodoIndicator'
 import { chatApi } from './api'
 import {
   chatTitlebarMacInsetClass,
@@ -21,6 +22,7 @@ import type {
   ChatMessage,
   ChatAssistant,
   Conversation,
+  ConversationListItem,
   ConversationContextState,
   AgentPlanMode,
   AgentPlanState,
@@ -338,6 +340,44 @@ function conversationUsesModel(
   return conversation.provider_id === providerId && conversation.model === model
 }
 
+function optimisticConversationTitle(content: string): string {
+  const compact = content.replace(/\s+/g, ' ').trim()
+  if (!compact) return '新对话'
+  return compact.length > 30 ? `${compact.slice(0, 30)}...` : compact
+}
+
+function optimisticConversationListItem(
+  conversation: Conversation,
+  content: string,
+): ConversationListItem {
+  const preview = content.replace(/\s+/g, ' ').trim()
+  const title = conversation.title === '新对话'
+    ? optimisticConversationTitle(content)
+    : conversation.title
+  return {
+    id: conversation.id,
+    title,
+    preview: preview.length > 100 ? `${preview.slice(0, 100)}...` : preview,
+    provider_id: conversation.provider_id,
+    model: conversation.model,
+    message_count: Math.max(1, conversation.messages.length),
+    created_at: conversation.created_at,
+    updated_at: Math.floor(Date.now() / 1000),
+    pinned: conversation.pinned,
+    folder: conversation.folder,
+    assistant_id: conversation.assistant_id ?? conversation.assistantId ?? null,
+    assistantId: conversation.assistant_id ?? conversation.assistantId ?? null,
+    assistant_name:
+      conversation.assistant_snapshot?.name
+      ?? conversation.assistantSnapshot?.name
+      ?? null,
+    assistantName:
+      conversation.assistant_snapshot?.name
+      ?? conversation.assistantSnapshot?.name
+      ?? null,
+  }
+}
+
 type SendMessageOptions = {
   forceNewConversation?: boolean
   conversationOverride?: Conversation | null
@@ -369,6 +409,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [lastAssistantStreamStats, setLastAssistantStreamStats] =
     useState<AssistantStreamStats | null>(null)
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
+  const [optimisticSidebarConversations, setOptimisticSidebarConversations] =
+    useState<ConversationListItem[]>([])
   const [generatingConversationIds, setGeneratingConversationIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   )
@@ -1643,6 +1685,10 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setStreamErrorForConversation(conversationId, '该对话正在生成中，请稍后再试')
       return false
     }
+    setOptimisticSidebarConversations((items) => [
+      optimisticConversationListItem(conversation, trimmed),
+      ...items.filter((item) => item.id !== conversationId),
+    ])
 
     const pendingUserId = `pending-user-${Date.now()}`
     const optimisticUserMessage: ChatMessage = {
@@ -1706,6 +1752,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         applyAssistantStreamStats(updatedConv)
         setPendingUserMessage(null)
         setPendingUserMessageConversationId(null)
+        setOptimisticSidebarConversations((items) => items.filter((item) => item.id !== conversationId))
         applyConversation(updatedConv)
         refreshSidebar()
         if (!locallyCancelledConversationIdRef.current) {
@@ -1720,6 +1767,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         setPendingUserMessage(null)
         setPendingUserMessageConversationId(null)
       }
+      setOptimisticSidebarConversations((items) => items.filter((item) => item.id !== conversationId))
       clearStreamSnapshot(conversationId)
       const message = typeof err === 'string' ? err : (err as Error).message || '发送失败'
       setStreamErrorForConversation(conversationId, message)
@@ -2150,6 +2198,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         <Sidebar
           currentConversationId={currentConversation?.id}
           generatingConversationIds={generatingConversationIds}
+          optimisticConversations={optimisticSidebarConversations}
           selectedProject={selectedProject}
           onSelectProject={handleSidebarSelectProject}
           onSelectConversation={handleSidebarSelectConversation}
@@ -2265,6 +2314,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     onCompress={() => void handleCompressContext()}
                   />
                 </div>
+                <AgentTodoIndicator todoState={currentConversation?.agent_todo_state ?? currentConversation?.agentTodoState ?? null} />
               </div>
               <div className="min-w-5 flex-1" data-tauri-drag-region />
                 </header>
@@ -2354,7 +2404,6 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       conversationId={currentConversation?.id}
                       messages={displayMessages}
                       agentPlanState={currentConversation?.agent_plan_state ?? currentConversation?.agentPlanState ?? null}
-                      agentTodoState={currentConversation?.agent_todo_state ?? currentConversation?.agentTodoState ?? null}
                       streaming={streaming}
                       streamingContent={streamingContent}
                       streamingReasoning={streamingReasoning}

@@ -347,7 +347,8 @@ body {
     max-width: 6.5rem;
   }
 
-  .chat-titlebar-context-label {
+  .chat-titlebar-context-label,
+  .chat-titlebar-todo-current {
     display: none;
   }
 

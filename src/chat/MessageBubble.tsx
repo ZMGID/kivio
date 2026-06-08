@@ -352,7 +352,7 @@ function MessageBubbleComponent({
 
   return (
     <div className="chat-motion-fade-up flex justify-start py-3">
-      <div className={`${isDirectImageGenerationPending ? 'w-full' : 'max-w-[85%]'} min-w-0`}>
+      <div className="w-full min-w-0">
         {toolCalls.length > 0 && !isEditing && !hasTimelineSegments && (
           <section
             aria-label="工具调用"

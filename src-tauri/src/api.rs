@@ -17,7 +17,7 @@ use std::{
     future::Future,
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose, Engine as _};
@@ -25,12 +25,17 @@ use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::chat::model::ModelUsage;
 use crate::lens_commands::resolve_explain_image_path;
 use crate::prompts::COMBINED_TRANSLATE_SEPARATOR;
 use crate::settings::{
     self, default_lens_system_prompt, no_think_instruction, ExplainMessage, Settings,
 };
 use crate::state::AppState;
+use crate::usage::{
+    error_kind_from_message, model_usage_from_openai_value, model_usage_from_stream_value,
+    record_model_call, UsageRecordInput,
+};
 use crate::utils::provider_supports_thinking_field;
 
 // ===== Provider 凭据 =====
@@ -354,6 +359,96 @@ where
         .unwrap_or_else(|| format!("{} Error: exceeded retry attempts ({})", label, attempts)))
 }
 
+fn record_api_usage_success(
+    state: &AppState,
+    provider: &settings::ModelProvider,
+    model: &str,
+    source: &str,
+    operation: &str,
+    started_at: i64,
+    started: Instant,
+    usage: Option<ModelUsage>,
+) {
+    record_model_call(
+        state,
+        UsageRecordInput {
+            provider,
+            model,
+            source,
+            operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: started.elapsed().as_millis() as u64,
+            conversation_id: None,
+            message_id: None,
+            error_kind: None,
+        },
+    );
+}
+
+fn record_api_usage_failure(
+    state: &AppState,
+    provider: &settings::ModelProvider,
+    model: &str,
+    source: &str,
+    operation: &str,
+    started_at: i64,
+    started: Instant,
+    error: &str,
+) {
+    record_model_call(
+        state,
+        UsageRecordInput {
+            provider,
+            model,
+            source,
+            operation,
+            status: "error",
+            status_code: extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: started.elapsed().as_millis() as u64,
+            conversation_id: None,
+            message_id: None,
+            error_kind: Some(error_kind_from_message(error)),
+        },
+    );
+}
+
+fn record_api_usage_cancelled(
+    state: &AppState,
+    provider: &settings::ModelProvider,
+    model: &str,
+    source: &str,
+    operation: &str,
+    started_at: i64,
+    started: Instant,
+    usage: Option<ModelUsage>,
+) {
+    record_model_call(
+        state,
+        UsageRecordInput {
+            provider,
+            model,
+            source,
+            operation,
+            status: "cancelled",
+            status_code: None,
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: started.elapsed().as_millis() as u64,
+            conversation_id: None,
+            message_id: None,
+            error_kind: Some("cancelled".to_string()),
+        },
+    );
+}
+
 // ===== Chat completion 调用 =====
 
 /// 调用 OpenAI 兼容的文本聊天接口
@@ -365,10 +460,14 @@ pub async fn call_openai_text(
     prompt: String,
     retry_attempts: usize,
     thinking_enabled: bool,
+    usage_source: &str,
+    usage_operation: &str,
 ) -> Result<String, String> {
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
+    let started_at = chrono::Local::now().timestamp();
+    let started = Instant::now();
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let mut body = serde_json::json!({
       "model": model,
@@ -394,17 +493,67 @@ pub async fn call_openai_text(
                 .send()
         },
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        record_api_usage_failure(
+            state.inner(),
+            config,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
 
-    let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let value: serde_json::Value = response.json().await.map_err(|e| {
+        let err = e.to_string();
+        record_api_usage_failure(
+            state.inner(),
+            config,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
+    let usage = model_usage_from_openai_value(&value);
     let content = value
         .get("choices")
         .and_then(|choices| choices.get(0))
         .and_then(|choice| choice.get("message"))
         .and_then(|message| message.get("content"))
         .and_then(|content| content.as_str())
-        .ok_or_else(|| "Invalid response".to_string())?;
+        .ok_or_else(|| {
+            let err = "Invalid response".to_string();
+            record_api_usage_failure(
+                state.inner(),
+                config,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                &err,
+            );
+            err
+        })?;
 
+    record_api_usage_success(
+        state.inner(),
+        config,
+        model,
+        usage_source,
+        usage_operation,
+        started_at,
+        started,
+        usage,
+    );
     Ok(content.trim().to_string())
 }
 
@@ -418,10 +567,14 @@ pub async fn call_openai_ocr(
     prompt: &str,
     retry_attempts: usize,
     thinking_enabled: bool,
+    usage_source: &str,
+    usage_operation: &str,
 ) -> Result<String, String> {
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
+    let started_at = chrono::Local::now().timestamp();
+    let started = Instant::now();
     let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
     let base64 = general_purpose::STANDARD.encode(bytes);
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
@@ -467,27 +620,73 @@ pub async fn call_openai_ocr(
                 .send()
         },
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        record_api_usage_failure(
+            state.inner(),
+            config,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
 
     // 显式检查 HTTP 状态：非 2xx 把原始 body 文本带回，避免后续 .json() 抛出含糊的 "error decoding response body"
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
         let snippet: String = body_text.chars().take(500).collect();
-        return Err(format!("OCR HTTP {}: {}", status.as_u16(), snippet));
+        let err = format!("OCR HTTP {}: {}", status.as_u16(), snippet);
+        record_api_usage_failure(
+            state.inner(),
+            config,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        return Err(err);
     }
 
-    let raw = response
-        .text()
-        .await
-        .map_err(|e| format!("OCR read body: {}", e))?;
+    let raw = response.text().await.map_err(|e| {
+        let err = format!("OCR read body: {}", e);
+        record_api_usage_failure(
+            state.inner(),
+            config,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
     let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        format!(
+        let err = format!(
             "OCR parse JSON: {} (body: {})",
             e,
             raw.chars().take(500).collect::<String>()
-        )
+        );
+        record_api_usage_failure(
+            state.inner(),
+            config,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
     })?;
+    let usage = model_usage_from_openai_value(&value);
     let content = value
         .get("choices")
         .and_then(|choices| choices.get(0))
@@ -495,12 +694,33 @@ pub async fn call_openai_ocr(
         .and_then(|message| message.get("content"))
         .and_then(|content| content.as_str())
         .ok_or_else(|| {
-            format!(
+            let err = format!(
                 "Invalid OCR response: {}",
                 raw.chars().take(500).collect::<String>()
-            )
+            );
+            record_api_usage_failure(
+                state.inner(),
+                config,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                &err,
+            );
+            err
         })?;
 
+    record_api_usage_success(
+        state.inner(),
+        config,
+        model,
+        usage_source,
+        usage_operation,
+        started_at,
+        started,
+        usage,
+    );
     Ok(content.trim().to_string())
 }
 
@@ -522,6 +742,8 @@ pub async fn call_vision_api(
     model_override: Option<&str>,
     system_prompt_override: Option<&str>,
     thinking_enabled: bool,
+    usage_source: &str,
+    usage_operation: &str,
 ) -> Result<String, String> {
     let settings = state.settings_read().clone();
     let provider_id = provider_id_override
@@ -589,6 +811,8 @@ pub async fn call_vision_api(
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
+    let started_at = chrono::Local::now().timestamp();
+    let started = Instant::now();
     let url = format!(
         "{}/chat/completions",
         provider.base_url.trim_end_matches('/')
@@ -626,14 +850,38 @@ pub async fn call_vision_api(
                 .send()
         },
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
 
     // 先检查 HTTP 状态：非 2xx 直接读出 body 文本作为错误，避免后续 .json() / chunk() 拿到非预期格式时抛出含糊的 "error decoding response body"。
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
         let snippet = body_text.chars().take(500).collect::<String>();
-        return Err(format!("Vision API HTTP {}: {}", status.as_u16(), snippet));
+        let err = format!("Vision API HTTP {}: {}", status.as_u16(), snippet);
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        return Err(err);
     }
 
     if stream {
@@ -642,7 +890,7 @@ pub async fn call_vision_api(
             .explain_stream_generation
             .fetch_add(1, Ordering::SeqCst)
             + 1;
-        return stream_vision_response(
+        let stream_result = stream_vision_response(
             app,
             response,
             image_id,
@@ -651,27 +899,96 @@ pub async fn call_vision_api(
             &state.explain_stream_generation,
             generation,
         )
-        .await;
+        .await
+        .map_err(|err| {
+            record_api_usage_failure(
+                state.inner(),
+                provider,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                &err,
+            );
+            err
+        })?;
+        if stream_result.cancelled {
+            record_api_usage_cancelled(
+                state.inner(),
+                provider,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                stream_result.usage,
+            );
+        } else {
+            record_api_usage_success(
+                state.inner(),
+                provider,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                stream_result.usage,
+            );
+        }
+        return Ok(stream_result.text);
     }
 
     // 非流式：先读 raw text，再 parse JSON，把原始 body 作为错误信息便于诊断。
-    let raw = response
-        .text()
-        .await
-        .map_err(|e| format!("Vision API read body: {}", e))?;
+    let raw = response.text().await.map_err(|e| {
+        let err = format!("Vision API read body: {}", e);
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
     let value: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(value) => value,
         Err(err) => {
             if let Some(content) = parse_sse_chat_content(&raw) {
+                record_api_usage_success(
+                    state.inner(),
+                    provider,
+                    model,
+                    usage_source,
+                    usage_operation,
+                    started_at,
+                    started,
+                    None,
+                );
                 return Ok(content);
             }
-            return Err(format!(
+            let err = format!(
                 "Vision API parse JSON: {} (body: {})",
                 err,
                 raw.chars().take(500).collect::<String>()
-            ));
+            );
+            record_api_usage_failure(
+                state.inner(),
+                provider,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                &err,
+            );
+            return Err(err);
         }
     };
+    let usage = model_usage_from_openai_value(&value);
     let content = value
         .get("choices")
         .and_then(|choices| choices.get(0))
@@ -679,12 +996,33 @@ pub async fn call_vision_api(
         .and_then(|message| message.get("content"))
         .and_then(|content| content.as_str())
         .ok_or_else(|| {
-            format!(
+            let err = format!(
                 "Invalid vision response: {}",
                 raw.chars().take(500).collect::<String>()
-            )
+            );
+            record_api_usage_failure(
+                state.inner(),
+                provider,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                &err,
+            );
+            err
         })?;
 
+    record_api_usage_success(
+        state.inner(),
+        provider,
+        model,
+        usage_source,
+        usage_operation,
+        started_at,
+        started,
+        usage,
+    );
     Ok(content.trim().to_string())
 }
 
@@ -692,6 +1030,13 @@ pub async fn call_vision_api(
 enum StreamTextMode {
     Delta,
     Snapshot,
+}
+
+#[derive(Debug, Clone)]
+struct StreamCallResult {
+    text: String,
+    usage: Option<ModelUsage>,
+    cancelled: bool,
 }
 
 fn extract_sse_chat_text(value: &serde_json::Value) -> Option<(&str, StreamTextMode)> {
@@ -810,10 +1155,14 @@ pub async fn stream_chat_call(
     image_id: &str,
     kind: &str,
     event_name: &str,
+    usage_source: &str,
+    usage_operation: &str,
 ) -> Result<String, String> {
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
+    let started_at = chrono::Local::now().timestamp();
+    let started = Instant::now();
     body["model"] = serde_json::json!(model);
     let url = format!(
         "{}/chat/completions",
@@ -835,20 +1184,44 @@ pub async fn stream_chat_call(
                 .send()
         },
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
 
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
         let snippet: String = body_text.chars().take(500).collect();
-        return Err(format!("Stream HTTP {}: {}", status.as_u16(), snippet));
+        let err = format!("Stream HTTP {}: {}", status.as_u16(), snippet);
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        return Err(err);
     }
 
     let generation = state
         .explain_stream_generation
         .fetch_add(1, Ordering::SeqCst)
         + 1;
-    stream_vision_response(
+    let stream_result = stream_vision_response(
         app,
         response,
         image_id,
@@ -858,6 +1231,43 @@ pub async fn stream_chat_call(
         generation,
     )
     .await
+    .map_err(|err| {
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
+    if stream_result.cancelled {
+        record_api_usage_cancelled(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            stream_result.usage,
+        );
+    } else {
+        record_api_usage_success(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            stream_result.usage,
+        );
+    }
+    Ok(stream_result.text)
 }
 
 /// 截图翻译合并模式流：单次调用模型，按 `<<<ORIGINAL>>>` 分隔符把 SSE delta 拆成两段。
@@ -877,10 +1287,14 @@ pub async fn stream_translate_combined(
     retry_attempts: usize,
     image_id: &str,
     event_name: &str,
+    usage_source: &str,
+    usage_operation: &str,
 ) -> Result<(String, String), String> {
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
+    let started_at = chrono::Local::now().timestamp();
+    let started = Instant::now();
     body["model"] = serde_json::json!(model);
     let url = format!(
         "{}/chat/completions",
@@ -902,13 +1316,37 @@ pub async fn stream_translate_combined(
                 .send()
         },
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        err
+    })?;
 
     let status = response.status();
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
         let snippet: String = body_text.chars().take(500).collect();
-        return Err(format!("Stream HTTP {}: {}", status.as_u16(), snippet));
+        let err = format!("Stream HTTP {}: {}", status.as_u16(), snippet);
+        record_api_usage_failure(
+            state.inner(),
+            provider,
+            model,
+            usage_source,
+            usage_operation,
+            started_at,
+            started,
+            &err,
+        );
+        return Err(err);
     }
 
     let my_gen = state
@@ -925,6 +1363,7 @@ pub async fn stream_translate_combined(
     let mut translated = String::new();
     let mut original = String::new();
     let mut sep_seen = false;
+    let mut usage: Option<ModelUsage> = None;
 
     let emit_done = |reason: &str| {
         let _ = app.emit(
@@ -946,6 +1385,16 @@ pub async fn stream_translate_combined(
                 );
             }
             emit_done("cancelled");
+            record_api_usage_cancelled(
+                state.inner(),
+                provider,
+                model,
+                usage_source,
+                usage_operation,
+                started_at,
+                started,
+                usage,
+            );
             return Ok((translated, original));
         }
 
@@ -954,7 +1403,18 @@ pub async fn stream_translate_combined(
             Ok(None) => break,
             Err(e) => {
                 emit_done("error");
-                return Err(e.to_string());
+                let err = e.to_string();
+                record_api_usage_failure(
+                    state.inner(),
+                    provider,
+                    model,
+                    usage_source,
+                    usage_operation,
+                    started_at,
+                    started,
+                    &err,
+                );
+                return Err(err);
             }
         };
 
@@ -981,6 +1441,16 @@ pub async fn stream_translate_combined(
           );
                 }
                 emit_done("done");
+                record_api_usage_success(
+                    state.inner(),
+                    provider,
+                    model,
+                    usage_source,
+                    usage_operation,
+                    started_at,
+                    started,
+                    usage,
+                );
                 return Ok((translated, original));
             }
 
@@ -988,6 +1458,9 @@ pub async fn stream_translate_combined(
                 Ok(val) => val,
                 Err(_) => continue,
             };
+            if let Some(next_usage) = model_usage_from_stream_value(&value) {
+                usage = Some(next_usage);
+            }
 
             let delta_obj = value
                 .get("choices")
@@ -1084,13 +1557,23 @@ pub async fn stream_translate_combined(
         );
     }
     emit_done("done");
+    record_api_usage_success(
+        state.inner(),
+        provider,
+        model,
+        usage_source,
+        usage_operation,
+        started_at,
+        started,
+        usage,
+    );
     Ok((translated, original))
 }
 
 /// 流式解析视觉 API 的 SSE 响应
 /// 逐 chunk 读取响应体，解析 "data:" 行，提取 delta 中的 content 并通过 `event_name` emit。
 /// 支持取消：调用方持有 `my_generation`，全局代号 `generation_atom` 一旦变化即视为被新流或外部取消作废。
-pub async fn stream_vision_response(
+async fn stream_vision_response(
     app: &AppHandle,
     mut response: reqwest::Response,
     image_id: &str,
@@ -1098,10 +1581,11 @@ pub async fn stream_vision_response(
     event_name: &str,
     generation_atom: &AtomicU64,
     my_generation: u64,
-) -> Result<String, String> {
+) -> Result<StreamCallResult, String> {
     let mut buffer = String::new();
     let mut full = String::new();
     let mut reasoning_full = String::new();
+    let mut usage: Option<ModelUsage> = None;
 
     let emit_done = |reason: &str, full_text: &str| {
         let _ = app.emit(
@@ -1120,7 +1604,11 @@ pub async fn stream_vision_response(
     loop {
         if generation_atom.load(Ordering::SeqCst) != my_generation {
             emit_done("cancelled", full.trim());
-            return Ok(full.trim().to_string());
+            return Ok(StreamCallResult {
+                text: full.trim().to_string(),
+                usage,
+                cancelled: true,
+            });
         }
 
         let chunk = match response.chunk().await {
@@ -1147,13 +1635,20 @@ pub async fn stream_vision_response(
             }
             if data == "[DONE]" {
                 emit_done("done", full.trim());
-                return Ok(full.trim().to_string());
+                return Ok(StreamCallResult {
+                    text: full.trim().to_string(),
+                    usage,
+                    cancelled: false,
+                });
             }
 
             let value: serde_json::Value = match serde_json::from_str(data) {
                 Ok(val) => val,
                 Err(_) => continue,
             };
+            if let Some(next_usage) = model_usage_from_stream_value(&value) {
+                usage = Some(next_usage);
+            }
 
             let delta_obj = value
                 .get("choices")
@@ -1197,7 +1692,11 @@ pub async fn stream_vision_response(
     }
 
     emit_done("done", full.trim());
-    Ok(full.trim().to_string())
+    Ok(StreamCallResult {
+        text: full.trim().to_string(),
+        usage,
+        cancelled: false,
+    })
 }
 
 #[cfg(test)]

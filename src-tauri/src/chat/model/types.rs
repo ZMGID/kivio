@@ -159,6 +159,14 @@ impl Default for GenerateOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RequestMetadata {
     pub label: String,
+    #[serde(default)]
+    pub usage_source: Option<String>,
+    #[serde(default)]
+    pub usage_operation: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +184,12 @@ pub struct ModelUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub reasoning_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -440,6 +454,7 @@ pub fn generate_request_from_openai_messages(
         options,
         metadata: RequestMetadata {
             label: label.to_string(),
+            ..RequestMetadata::default()
         },
     }
 }

@@ -75,6 +75,9 @@ pub struct AppState {
     pub key_cooldowns: Mutex<HashMap<(String, usize), Instant>>,
     /// 每个 provider 当前活跃 key idx：上一次成功的 key 优先继续用。
     pub active_key_idx: Mutex<HashMap<String, usize>>,
+    /// Token usage ledger directory under app data. Model providers can append records
+    /// without needing an AppHandle threaded through every call path.
+    pub usage_dir: PathBuf,
     pub http: Client,
     /// macOS Apple Vision OCR sidecar 客户端。只有系统 OCR 路径会拉起。
     #[cfg(target_os = "macos")]
@@ -294,6 +297,7 @@ mod tests {
             lens_freeze_frame_image_id: Mutex::new(None),
             key_cooldowns: Mutex::new(HashMap::new()),
             active_key_idx: Mutex::new(HashMap::new()),
+            usage_dir: std::env::temp_dir().join("kivio-test-usage"),
             http: Client::new(),
             #[cfg(target_os = "macos")]
             macos_ocr: MacOcrClient::disabled(),

@@ -1,0 +1,144 @@
+import { CheckCircle2, ListTodo, X } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import type { AgentTodoItem, AgentTodoState } from './types'
+
+interface AgentTodoIndicatorProps {
+  todoState?: AgentTodoState | null
+}
+
+const EMPTY_TODO_ITEMS: AgentTodoItem[] = []
+
+function statusLabel(status: AgentTodoItem['status']): string {
+  switch (status) {
+    case 'completed':
+      return 'Done'
+    case 'in_progress':
+      return 'Now'
+    default:
+      return 'Next'
+  }
+}
+
+function dotClass(status: AgentTodoItem['status']): string {
+  switch (status) {
+    case 'completed':
+      return 'bg-emerald-500'
+    case 'in_progress':
+      return 'bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.16)]'
+    default:
+      return 'bg-neutral-300 dark:bg-neutral-600'
+  }
+}
+
+function textClass(status: AgentTodoItem['status']): string {
+  switch (status) {
+    case 'completed':
+      return 'text-neutral-400 line-through decoration-neutral-300 dark:text-neutral-500 dark:decoration-neutral-600'
+    case 'in_progress':
+      return 'font-medium text-neutral-900 dark:text-neutral-100'
+    default:
+      return 'text-neutral-600 dark:text-neutral-300'
+  }
+}
+
+function formatUpdatedAt(todoState?: AgentTodoState | null): string {
+  const seconds = todoState?.updated_at ?? todoState?.updatedAt
+  if (!seconds) return ''
+  return new Date(seconds * 1000).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+export function AgentTodoIndicator({ todoState }: AgentTodoIndicatorProps) {
+  const [open, setOpen] = useState(false)
+  const items = todoState?.items ?? EMPTY_TODO_ITEMS
+  const completedCount = items.filter((item) => item.status === 'completed').length
+  const currentItem = useMemo(
+    () =>
+      items.find((item) => item.status === 'in_progress') ??
+      items.find((item) => item.status === 'pending') ??
+      items[items.length - 1],
+    [items],
+  )
+  const updatedAt = formatUpdatedAt(todoState)
+  const allDone = items.length > 0 && completedCount === items.length
+
+  if (items.length === 0) return null
+
+  return (
+    <div className="relative min-w-0" data-tauri-drag-region="false">
+      <button
+        type="button"
+        className={`flex h-8 min-w-0 max-w-[18rem] shrink items-center gap-1.5 rounded-md px-1.5 text-[12px] font-medium transition ${
+          allDone
+            ? 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100'
+            : 'text-neutral-700 hover:bg-neutral-100 hover:text-neutral-950 dark:text-neutral-200 dark:hover:bg-neutral-800 dark:hover:text-neutral-50'
+        }`}
+        aria-label="Agent todo"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {allDone ? (
+          <CheckCircle2 size={14} strokeWidth={2} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <ListTodo size={14} strokeWidth={2} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+        )}
+        <span className="shrink-0 tabular-nums">
+          {allDone ? 'Done' : 'Todo'} {completedCount}/{items.length}
+        </span>
+        {!allDone && currentItem && (
+          <span className="chat-titlebar-todo-current min-w-0 truncate text-neutral-400 dark:text-neutral-500">
+            · {currentItem.content}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="chat-motion-popover absolute left-0 top-9 z-40 w-[21rem] max-w-[calc(100vw-2rem)] rounded-xl border border-neutral-200/90 bg-white p-3 shadow-xl dark:border-neutral-700 dark:bg-neutral-900">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="text-[13px] font-semibold leading-none text-neutral-900 dark:text-neutral-50">
+                  Agent todo
+                </span>
+                <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-[2px] text-[10px] font-medium leading-none text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                  {completedCount}/{items.length}
+                </span>
+              </div>
+              {updatedAt && (
+                <div className="mt-1 text-[10.5px] leading-none text-neutral-400 dark:text-neutral-500">
+                  Updated {updatedAt}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className="-mr-1 -mt-1 rounded-md p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+              aria-label="Close todo panel"
+              onClick={() => setOpen(false)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+
+          <div className="max-h-72 space-y-2 overflow-auto pr-1">
+            {items.map((item) => (
+              <div key={item.id} className="grid grid-cols-[14px_1fr] gap-2 text-[12px] leading-relaxed">
+                <span className={`mt-[7px] size-2.5 rounded-full ${dotClass(item.status)}`} />
+                <div className="min-w-0">
+                  <div className="mb-0.5 text-[10px] font-medium uppercase leading-none tracking-normal text-neutral-400 dark:text-neutral-500">
+                    {statusLabel(item.status)}
+                  </div>
+                  <div className={textClass(item.status)}>
+                    {item.content}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
