@@ -1,5 +1,5 @@
-import { isValidElement, memo, useMemo, useState } from 'react'
-import { Check, Code2, Copy, ExternalLink, Eye } from 'lucide-react'
+import { isValidElement, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Check, Code2, Copy, ExternalLink, Eye, Loader2 } from 'lucide-react'
 import type { Components, UrlTransform } from 'react-markdown'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -51,6 +51,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
   jsx: 'JavaScript',
   markdown: 'Markdown',
   md: 'Markdown',
+  mermaid: 'Mermaid',
   py: 'Python',
   python: 'Python',
   rs: 'Rust',
@@ -275,6 +276,109 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   )
 }
 
+let mermaidRenderCounter = 0
+
+function MermaidBlock({ code }: { code: string }) {
+  const normalizedCode = useMemo(() => normalizeCodeBlockText(code), [code])
+  const renderBaseId = useRef('')
+  const renderSeq = useRef(0)
+  const [view, setView] = useState<'diagram' | 'source'>('diagram')
+  const [svg, setSvg] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  if (!renderBaseId.current) {
+    mermaidRenderCounter += 1
+    renderBaseId.current = `chat-mermaid-${mermaidRenderCounter}`
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    renderSeq.current += 1
+    const renderId = `${renderBaseId.current}-${renderSeq.current}`
+
+    setLoading(true)
+    setError('')
+    setSvg('')
+
+    const render = async () => {
+      try {
+        const { default: mermaid } = await import('mermaid')
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: 'strict',
+          theme: 'base',
+          themeVariables: {
+            background: 'transparent',
+            primaryColor: '#f8fafc',
+            primaryBorderColor: '#94a3b8',
+            primaryTextColor: '#111827',
+            lineColor: '#64748b',
+            secondaryColor: '#f1f5f9',
+            tertiaryColor: '#ffffff',
+            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+          },
+        })
+        const result = await mermaid.render(renderId, normalizedCode)
+        if (cancelled) return
+        setSvg(result.svg)
+      } catch (err) {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void render()
+    return () => {
+      cancelled = true
+    }
+  }, [normalizedCode])
+
+  return (
+    <figure className="not-prose my-3 overflow-hidden rounded-lg border border-neutral-200/80 bg-white text-neutral-950 shadow-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100">
+      <div className="flex items-center gap-2 border-b border-neutral-200/70 px-4 py-2.5 dark:border-neutral-800">
+        <Code2 size={15} strokeWidth={2.4} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+        <figcaption className="text-[13px] font-semibold leading-5">
+          Mermaid
+        </figcaption>
+        {!error && (
+          <button
+            type="button"
+            onClick={() => setView((current) => (current === 'diagram' ? 'source' : 'diagram'))}
+            className="-mr-1 ml-auto rounded-md p-1.5 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            title={view === 'diagram' ? '查看源码' : '查看图表'}
+            aria-label={view === 'diagram' ? '查看源码' : '查看图表'}
+          >
+            {view === 'diagram' ? <Code2 size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
+          </button>
+        )}
+      </div>
+      {view === 'source' ? (
+        <CodeBlock code={normalizedCode} language="mermaid" />
+      ) : loading ? (
+        <div className="flex min-h-28 items-center justify-center gap-2 px-4 py-8 text-[13px] text-neutral-400 dark:text-neutral-500">
+          <Loader2 size={15} className="animate-spin" />
+          正在渲染图表
+        </div>
+      ) : error ? (
+        <>
+          <div className="border-b border-red-100 bg-red-50 px-4 py-2 text-[12px] leading-5 text-red-600 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+            Mermaid 渲染失败：{error}
+          </div>
+          <CodeBlock code={normalizedCode} language="mermaid" />
+        </>
+      ) : (
+        <div
+          className="max-w-full overflow-auto bg-white px-4 py-4 dark:bg-neutral-950 [&>svg]:mx-auto [&>svg]:max-w-none"
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      )}
+    </figure>
+  )
+}
+
 function htmlPreviewSrcDoc(html: string): string {
   const trimmed = html.trim()
   if (!trimmed) return html
@@ -357,6 +461,9 @@ const markdownComponents: Components = {
       const code = codeChildrenToString(child.props.children)
       if (language === 'html') {
         return <HtmlCodePreview html={code} />
+      }
+      if (language === 'mermaid') {
+        return <MermaidBlock code={code} />
       }
       return <CodeBlock code={code} language={language} />
     }
