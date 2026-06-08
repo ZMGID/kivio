@@ -60,6 +60,7 @@ import {
   isConversationInFlight,
   type ConversationStreamSnapshot,
 } from './conversationRuns'
+import { compareTimelineSegments, segmentStepNumber, segmentToolCallId } from './segments'
 
 const AssistantCenter = lazy(() => import('./AssistantCenter').then((module) => ({
   default: module.AssistantCenter,
@@ -153,14 +154,6 @@ function toolEventToRecord(payload: ChatToolProgressPayload): ToolCallRecord {
   }
 }
 
-function segmentToolCallId(segment: ChatMessageSegment): string {
-  return segment.tool_call_id ?? segment.toolCallId ?? ''
-}
-
-function segmentStepNumber(segment: ChatMessageSegment): number | null | undefined {
-  return segment.step_number ?? segment.stepNumber
-}
-
 function streamPayloadToSegment(payload: ChatStreamPayload): ChatMessageSegment | null {
   const raw = payload.segment ?? null
   const id = payload.segmentId ?? raw?.id
@@ -220,7 +213,7 @@ function upsertStreamSegment(
   const next = index < 0
     ? [...segments, nextSegment]
     : segments.map((segment, i) => (i === index ? nextSegment : segment))
-  return next.sort((a, b) => a.order - b.order)
+  return next.sort(compareTimelineSegments)
 }
 
 function normalizeSkill(skill: import('../api/tauri').SkillMeta): SkillMeta {

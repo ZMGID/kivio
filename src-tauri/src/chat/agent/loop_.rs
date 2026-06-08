@@ -210,19 +210,19 @@ pub async fn run_agent_loop(
                 tools: &tools,
                 phase: AgentPhase::ToolLoop,
             });
-            let planning_text_segment = segment_builder.reserve(
-                ChatMessageSegmentKind::Text,
-                ChatMessageSegmentPhase::ToolLoop,
-                Some(step_number),
-                Some(round),
-                &format!("step_{step_number}_text"),
-            );
             let planning_reasoning_segment = segment_builder.reserve(
                 ChatMessageSegmentKind::Reasoning,
                 ChatMessageSegmentPhase::ToolLoop,
                 Some(step_number),
                 Some(round),
                 &format!("step_{step_number}_reasoning"),
+            );
+            let planning_text_segment = segment_builder.reserve(
+                ChatMessageSegmentKind::Text,
+                ChatMessageSegmentPhase::ToolLoop,
+                Some(step_number),
+                Some(round),
+                &format!("step_{step_number}_text"),
             );
             let planning_result = if config.stream_enabled {
                 match stream_scoped_chat_completion_inner(
@@ -580,19 +580,19 @@ pub async fn run_agent_loop(
         AgentStreamPolicy::SynthesisDeferEmpty
     };
     let response_phase = segment_phase_for_agent_phase(phase);
-    let response_segment = segment_builder.reserve(
-        ChatMessageSegmentKind::Text,
-        response_phase.clone(),
-        Some(step_number),
-        None,
-        &format!("step_{step_number}_text"),
-    );
     let response_reasoning_segment = segment_builder.reserve(
         ChatMessageSegmentKind::Reasoning,
         response_phase.clone(),
         Some(step_number),
         None,
         &format!("step_{step_number}_reasoning"),
+    );
+    let response_segment = segment_builder.reserve(
+        ChatMessageSegmentKind::Text,
+        response_phase.clone(),
+        Some(step_number),
+        None,
+        &format!("step_{step_number}_text"),
     );
 
     let (response, reasoning, response_reasoning) = if config.stream_enabled {
@@ -1802,6 +1802,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["call_read", "call_blocked", "call_unknown"]
         );
+    }
+
+    #[test]
+    fn reasoning_segment_order_precedes_text_in_same_step() {
+        let mut builder = SegmentBuilder::new();
+        let reasoning = builder.reserve(
+            ChatMessageSegmentKind::Reasoning,
+            ChatMessageSegmentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_reasoning",
+        );
+        let text = builder.reserve(
+            ChatMessageSegmentKind::Text,
+            ChatMessageSegmentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_text",
+        );
+
+        assert!(reasoning.order < text.order);
     }
 
     fn test_mcp_tool(name: &str, annotations: Value) -> ChatToolDefinition {

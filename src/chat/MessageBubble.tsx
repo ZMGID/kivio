@@ -10,6 +10,7 @@ import { ReasoningBlock } from './ReasoningBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { ChatMessage, ChatMessageSegment, ChatToolArtifact, ToolCallRecord } from './types'
+import { compareTimelineSegments, segmentToolCallId } from './segments'
 
 const DIRECT_IMAGE_GENERATION_PENDING = '[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]'
 
@@ -120,16 +121,12 @@ function ImageGenerationPending() {
   )
 }
 
-function segmentToolCallId(segment: ChatMessageSegment): string {
-  return segment.tool_call_id ?? segment.toolCallId ?? ''
-}
-
 function toolRecordId(toolCall: ToolCallRecord): string {
   return toolCall.id || toolCall.toolCallId || toolCall.call_id || toolCall.callId || ''
 }
 
 function orderedSegments(segments?: ChatMessageSegment[]): ChatMessageSegment[] {
-  return [...(segments ?? [])].sort((a, b) => a.order - b.order)
+  return [...(segments ?? [])].sort(compareTimelineSegments)
 }
 
 function segmentText(segment: ChatMessageSegment): string {

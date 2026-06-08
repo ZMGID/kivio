@@ -127,7 +127,7 @@ Keep provider-side multiple tool-call support separate from local execution conc
 - The backend is the source of truth for segment order. The frontend must not synthesize guessed tool segments from `chat-tool` progress events.
 - `SegmentBuilder` starts assistant-runtime segment ordering at `1000`. Auxiliary tool segments may use lower orders such as `100`.
 - Planning/tool-loop narration uses `kind = text`, `phase = tool_loop`. Final answer text uses `phase = synthesis` when tools are involved, otherwise `plain`.
-- Reasoning is represented by `kind = reasoning` segments and may appear during tool loop or synthesis.
+- Reasoning is represented by `kind = reasoning` segments and may appear during tool loop or synthesis. Within the same model step, reasoning must display before that step's text; reserve reasoning segments before text segments and keep frontend rendering compatible with older persisted messages that had the reverse order.
 - Tool calls must get `kind = tool` segments before or alongside visible tool progress. Visible skipped, cancelled, blocked, auxiliary, unknown, and invalid tool calls still need tool segments so the timeline has no holes.
 - Hidden disabled built-in feedback such as disabled `web_search` retry hints must not create visible tool segments when it does not create a visible `ToolCallRecord`.
 - Persisted legacy fields are derived by `push_assistant_message` / edit helpers:
