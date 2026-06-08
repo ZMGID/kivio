@@ -110,8 +110,7 @@ In `src-tauri/src/main.rs`, the `tauri::generate_handler![]` block starts at lin
       lens_delete_history_image,
       check_github_latest_release,
       download_update_asset,
-      install_update_and_quit,
-      apple_intelligence_available
+      install_update_and_quit
     ])
 ```
 

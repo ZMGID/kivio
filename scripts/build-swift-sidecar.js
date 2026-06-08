@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // 构建 Swift sidecar 二进制：
-//   - kivio-ai-helper: Apple Foundation Models 文本/流式调用，只有 macOS 26+ 才可用。
-//   - kivio-ocr-helper: Apple Vision OCR，独立于 Apple Intelligence。
+//   - kivio-ocr-helper: Apple Vision OCR。
 //   - 非 macOS(Windows/Linux): 写空 stub 占位,让 Tauri 的 externalBin 文件存在校验通过。
 //     运行时对应 client 会按平台直接禁用,不会 spawn 这些 stub。
 //     这是 Tauri externalBin 的设计限制——配置是全平台的,无法仅 macOS 启用。
@@ -16,11 +15,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const BIN_DIR = resolve(ROOT, 'src-tauri/binaries')
 const HELPERS = [
-  {
-    name: 'kivio-ai-helper',
-    pkg: resolve(ROOT, 'src-tauri/swift/kivio-ai-helper'),
-    optional: true,
-  },
   {
     name: 'kivio-ocr-helper',
     pkg: resolve(ROOT, 'src-tauri/swift/kivio-ocr-helper'),

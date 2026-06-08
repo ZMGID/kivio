@@ -9,7 +9,7 @@ const SETTINGS_STORE: &str = "settings.json";
 const KEYRING_SERVICE: &str = "com.zmair.kivio";
 // 旧版 service 名（v2.4.5 之前为 com.zmair.keylingo），仅用于 legacy 读 + 清理
 const KEYRING_SERVICE_LEGACY: &str = "com.zmair.keylingo";
-const APPLE_INTELLIGENCE_BASE_URL: &str = "applefoundation://local";
+const LEGACY_APPLE_INTELLIGENCE_BASE_URL: &str = "applefoundation://local";
 
 /**
  * 生成提供商 API Key 在钥匙串中的条目名称
@@ -141,7 +141,7 @@ pub struct ModelProvider {
     /// 关闭后该供应商不会出现在模型选择器中，已引用它的功能会在保存时切到第一个启用的供应商。
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// API 格式：`openai_chat`、`anthropic_messages` 或 `apple_local`。
+    /// API 格式：`openai_chat` 或 `anthropic_messages`。
     /// 旧值 `openai` / `anthropic` 会在 `sanitize_settings` 中归一化。
     #[serde(default = "default_api_format")]
     pub api_format: String,
@@ -154,17 +154,12 @@ pub struct ModelProvider {
 pub enum ProviderApiFormat {
     OpenAiChat,
     AnthropicMessages,
-    AppleLocal,
 }
 
 impl ProviderApiFormat {
-    pub fn from_raw(raw: &str, base_url: &str) -> Self {
-        if base_url == APPLE_INTELLIGENCE_BASE_URL {
-            return Self::AppleLocal;
-        }
+    pub fn from_raw(raw: &str) -> Self {
         match raw.trim() {
             "anthropic" | "anthropic_messages" => Self::AnthropicMessages,
-            "apple" | "apple_local" => Self::AppleLocal,
             _ => Self::OpenAiChat,
         }
     }
@@ -173,14 +168,13 @@ impl ProviderApiFormat {
         match self {
             Self::OpenAiChat => "openai_chat",
             Self::AnthropicMessages => "anthropic_messages",
-            Self::AppleLocal => "apple_local",
         }
     }
 }
 
 impl ModelProvider {
     pub fn api_format_kind(&self) -> ProviderApiFormat {
-        ProviderApiFormat::from_raw(&self.api_format, &self.base_url)
+        ProviderApiFormat::from_raw(&self.api_format)
     }
 }
 
@@ -274,9 +268,8 @@ pub struct ScreenshotTranslationConfig {
     #[serde(default = "default_true")]
     pub keep_fullscreen_after_capture: bool,
     /// 用平台本地 OCR 做文字识别，把识别出的文字喂给翻译模型（macOS Apple Vision / Windows OCR）。
-    /// true → 系统 OCR + provider 文字翻译（provider 可是任意 OpenAI 兼容 endpoint 或 Apple Intelligence）
+    /// true → 系统 OCR + provider 文字翻译（provider 可是任意 OpenAI 兼容 endpoint）
     /// false → provider 必须是多模态模型，一次完成 OCR+翻译
-    /// Apple Intelligence 选作 provider 时强制视为 true（Foundation Models 暂未开放图像输入）。
     ///
     /// 从 vNext 起，截图翻译路由实际走 ocr_mode 字段；本字段仅作降级镜像保留：
     /// - persist_settings 写盘时根据 ocr_mode 反向镜像到这里（System→true，其它→false），
@@ -1087,11 +1080,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
     // 1b. 单 key → 多 key 迁移（v2.3.1 → v2.4 升级路径）
     for provider in &mut settings.providers {
-        if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
-            provider.supports_tools = false;
-        } else {
-            provider.supports_tools = true;
-        }
+        provider.supports_tools = true;
         provider.api_format = provider.api_format_kind().as_str().to_string();
         if let Some(legacy) = provider.api_key_legacy.take() {
             let trimmed = legacy.trim().to_string();
@@ -1105,6 +1094,76 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
             let trimmed = k.trim();
             !trimmed.is_empty() && seen.insert(trimmed.to_string())
         });
+    }
+
+    let removed_legacy_local_provider_ids: std::collections::HashSet<String> = settings
+        .providers
+        .iter()
+        .filter(|provider| provider.base_url == LEGACY_APPLE_INTELLIGENCE_BASE_URL)
+        .map(|provider| provider.id.clone())
+        .collect();
+    if !removed_legacy_local_provider_ids.is_empty() {
+        settings
+            .providers
+            .retain(|provider| provider.base_url != LEGACY_APPLE_INTELLIGENCE_BASE_URL);
+        let fallback = settings.providers.iter().find(|p| p.enabled).map(|p| {
+            (
+                p.id.clone(),
+                p.enabled_models.first().cloned().unwrap_or_default(),
+            )
+        });
+
+        if removed_legacy_local_provider_ids.contains(&settings.chat_provider_id) {
+            if let Some((id, model)) = fallback.as_ref() {
+                settings.chat_provider_id = id.clone();
+                settings.chat_model = model.clone();
+            } else {
+                settings.chat_provider_id.clear();
+                settings.chat_model.clear();
+            }
+        }
+        if removed_legacy_local_provider_ids.contains(&settings.translator_provider_id) {
+            if let Some((id, model)) = fallback.as_ref() {
+                settings.translator_provider_id = id.clone();
+                settings.translator_model = model.clone();
+            } else {
+                settings.translator_provider_id.clear();
+                settings.translator_model.clear();
+            }
+        }
+        if removed_legacy_local_provider_ids.contains(&settings.screenshot_translation.provider_id)
+        {
+            if let Some((id, model)) = fallback.as_ref() {
+                settings.screenshot_translation.provider_id = id.clone();
+                settings.screenshot_translation.model = model.clone();
+            } else {
+                settings.screenshot_translation.provider_id.clear();
+                settings.screenshot_translation.model.clear();
+            }
+        }
+        if !settings.lens.provider_id.is_empty()
+            && removed_legacy_local_provider_ids.contains(&settings.lens.provider_id)
+        {
+            settings.lens.provider_id.clear();
+            settings.lens.model.clear();
+        }
+        for selection in [
+            &mut settings.default_models.chat,
+            &mut settings.default_models.vision,
+            &mut settings.default_models.title_summary,
+            &mut settings.default_models.compression,
+            &mut settings.default_models.image_generation,
+        ] {
+            if removed_legacy_local_provider_ids.contains(&selection.provider_id) {
+                if let Some((id, model)) = fallback.as_ref() {
+                    selection.provider_id = id.clone();
+                    selection.model = model.clone();
+                } else {
+                    selection.provider_id.clear();
+                    selection.model.clear();
+                }
+            }
+        }
     }
 
     let provider_exists = |id: &str| settings.providers.iter().any(|p| p.id == id);
@@ -1206,70 +1265,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
             && !provider.enabled_models.contains(&settings.lens.model)
         {
             settings.lens.model = provider.enabled_models.first().cloned().unwrap_or_default();
-        }
-    }
-
-    // 非 macOS 上 Apple Intelligence provider 可能来自跨平台同步的 settings.json。
-    // 保留 provider 记录本身，但当前功能不能继续选中它，否则运行时会尝试走端上 Apple 路由。
-    #[cfg(not(target_os = "macos"))]
-    {
-        let apple_provider_ids: std::collections::HashSet<String> = settings
-            .providers
-            .iter()
-            .filter(|p| p.base_url == APPLE_INTELLIGENCE_BASE_URL)
-            .map(|p| p.id.clone())
-            .collect();
-        let fallback = settings
-            .providers
-            .iter()
-            .find(|p| p.enabled && p.base_url != APPLE_INTELLIGENCE_BASE_URL)
-            .map(|p| {
-                (
-                    p.id.clone(),
-                    p.enabled_models.first().cloned().unwrap_or_default(),
-                )
-            });
-
-        if apple_provider_ids.contains(&settings.translator_provider_id) {
-            if let Some((id, model)) = fallback.as_ref() {
-                settings.translator_provider_id = id.clone();
-                settings.translator_model = model.clone();
-            } else {
-                settings.translator_provider_id.clear();
-                settings.translator_model.clear();
-            }
-        }
-        if apple_provider_ids.contains(&settings.screenshot_translation.provider_id) {
-            if let Some((id, model)) = fallback.as_ref() {
-                settings.screenshot_translation.provider_id = id.clone();
-                settings.screenshot_translation.model = model.clone();
-            } else {
-                settings.screenshot_translation.provider_id.clear();
-                settings.screenshot_translation.model.clear();
-            }
-        }
-        if !settings.lens.provider_id.is_empty()
-            && apple_provider_ids.contains(&settings.lens.provider_id)
-        {
-            settings.lens.provider_id.clear();
-            settings.lens.model.clear();
-        }
-        for selection in [
-            &mut settings.default_models.chat,
-            &mut settings.default_models.vision,
-            &mut settings.default_models.title_summary,
-            &mut settings.default_models.compression,
-            &mut settings.default_models.image_generation,
-        ] {
-            if apple_provider_ids.contains(&selection.provider_id) {
-                if let Some((id, model)) = fallback.as_ref() {
-                    selection.provider_id = id.clone();
-                    selection.model = model.clone();
-                } else {
-                    selection.provider_id.clear();
-                    selection.model.clear();
-                }
-            }
         }
     }
 
@@ -2017,16 +2012,15 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn sanitize_settings_unselects_apple_provider_on_non_macos() {
+    fn sanitize_settings_removes_legacy_apple_local_provider() {
         let mut s = Settings::default();
         s.providers.push(ModelProvider {
             id: "apple".to_string(),
-            name: "Apple Intelligence".to_string(),
+            name: "Legacy Apple Local".to_string(),
             api_keys: vec!["__on_device__".to_string()],
             api_key_legacy: None,
-            base_url: APPLE_INTELLIGENCE_BASE_URL.to_string(),
+            base_url: LEGACY_APPLE_INTELLIGENCE_BASE_URL.to_string(),
             available_models: vec![],
             enabled_models: vec!["apple-foundation".to_string()],
             supports_tools: false,
@@ -2053,45 +2047,33 @@ mod tests {
         s.screenshot_translation.model = "apple-foundation".to_string();
         s.lens.provider_id = "apple".to_string();
         s.lens.model = "apple-foundation".to_string();
+        s.chat_provider_id = "apple".to_string();
+        s.chat_model = "apple-foundation".to_string();
+        s.default_models.chat.provider_id = "apple".to_string();
+        s.default_models.chat.model = "apple-foundation".to_string();
+        s.default_models.vision.provider_id = "apple".to_string();
+        s.default_models.vision.model = "apple-foundation".to_string();
+        s.default_models.title_summary.provider_id = "apple".to_string();
+        s.default_models.title_summary.model = "apple-foundation".to_string();
+        s.default_models.compression.provider_id = "apple".to_string();
+        s.default_models.compression.model = "apple-foundation".to_string();
+        s.default_models.image_generation.provider_id = "apple".to_string();
+        s.default_models.image_generation.model = "apple-foundation".to_string();
 
         let s = sanitize_settings(s);
+        assert!(s.providers.iter().all(|provider| provider.id != "apple"));
         assert_eq!(s.translator_provider_id, "cloud");
+        assert_eq!(s.translator_model, "gpt-4o");
         assert_eq!(s.screenshot_translation.provider_id, "cloud");
+        assert_eq!(s.screenshot_translation.model, "gpt-4o");
         assert_eq!(s.lens.provider_id, "");
-        assert_eq!(
-            s.providers
-                .iter()
-                .find(|provider| provider.id == "apple")
-                .map(|provider| provider.supports_tools),
-            Some(false),
-        );
-    }
-
-    #[test]
-    fn sanitize_settings_forces_apple_provider_tools_off() {
-        let mut s = Settings::default();
-        s.providers.push(ModelProvider {
-            id: "apple".to_string(),
-            name: "Apple Intelligence".to_string(),
-            api_keys: vec!["__on_device__".to_string()],
-            api_key_legacy: None,
-            base_url: APPLE_INTELLIGENCE_BASE_URL.to_string(),
-            available_models: vec![],
-            enabled_models: vec!["apple-foundation".to_string()],
-            supports_tools: true,
-            api_format: "openai".to_string(),
-            enabled: true,
-            model_overrides: std::collections::HashMap::new(),
-        });
-
-        let s = sanitize_settings(s);
-        assert_eq!(
-            s.providers
-                .iter()
-                .find(|provider| provider.id == "apple")
-                .map(|provider| provider.supports_tools),
-            Some(false),
-        );
+        assert_eq!(s.lens.model, "");
+        assert_eq!(s.default_models.chat.provider_id, "cloud");
+        assert_eq!(s.default_models.chat.model, "gpt-4o");
+        assert_eq!(s.default_models.vision.provider_id, "cloud");
+        assert_eq!(s.default_models.title_summary.provider_id, "cloud");
+        assert_eq!(s.default_models.compression.provider_id, "cloud");
+        assert_eq!(s.default_models.image_generation.provider_id, "cloud");
     }
 
     #[test]

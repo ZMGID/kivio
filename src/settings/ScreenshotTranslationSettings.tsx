@@ -12,7 +12,6 @@ import {
   Toggle,
 } from './components'
 import { type I18n } from './i18n'
-import { type Platform } from './utils'
 
 type ScreenshotTranslation = Settings['screenshotTranslation']
 type RecordingTarget = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'lens'
@@ -20,7 +19,6 @@ type RapidOcrDownloadState = 'idle' | 'downloading' | 'failed'
 
 interface ScreenshotTranslationSettingsProps {
   settings: Settings
-  platform: Platform
   isMac: boolean
   hasSystemOcr: boolean
   recordingTarget: RecordingTarget | null
@@ -40,7 +38,6 @@ interface ScreenshotTranslationSettingsProps {
 
 export function ScreenshotTranslationSettings({
   settings,
-  platform,
   isMac,
   hasSystemOcr,
   recordingTarget,
@@ -191,7 +188,6 @@ export function ScreenshotTranslationSettings({
                   providerId={screenshot.providerId}
                   model={screenshot.model}
                   providers={settings.providers}
-                  platform={platform}
                   onChange={(providerId, model) => onUpdate({ providerId, model })}
                 />
               </SettingRow>

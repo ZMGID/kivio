@@ -1,9 +1,8 @@
 use serde_json::Value;
 
 use crate::chat::model::{
-    generate_request_from_openai_messages, AnthropicMessagesProvider, AppleLocalProvider,
-    GenerateOptions, GenerateOutput, LanguageModelProvider, ModelError, OpenAiChatProvider,
-    PendingToolCall,
+    generate_request_from_openai_messages, AnthropicMessagesProvider, GenerateOptions,
+    GenerateOutput, LanguageModelProvider, ModelError, OpenAiChatProvider, PendingToolCall,
 };
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 use crate::mcp::ChatToolDefinition;
@@ -1303,11 +1302,6 @@ async fn generate_with_chat_provider(
                 .generate(request)
                 .await
         }
-        ProviderApiFormat::AppleLocal => {
-            AppleLocalProvider::new(state.apple_intelligence.clone())
-                .generate(request)
-                .await
-        }
     }
 }
 
@@ -1326,11 +1320,6 @@ async fn stream_with_chat_provider(
         }
         ProviderApiFormat::AnthropicMessages => {
             AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
-        }
-        ProviderApiFormat::AppleLocal => {
-            AppleLocalProvider::new(state.apple_intelligence.clone())
                 .stream(request, sink)
                 .await
         }

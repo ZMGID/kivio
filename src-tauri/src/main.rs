@@ -2,7 +2,6 @@
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
 mod api;
-mod apple_intelligence;
 mod capture_geometry;
 mod chat;
 mod commands;
@@ -171,7 +170,6 @@ fn main() {
                 key_cooldowns: Mutex::new(HashMap::new()),
                 active_key_idx: Mutex::new(HashMap::new()),
                 http: build_http_client(),
-                apple_intelligence: apple_intelligence::AppleIntelligenceClient::new(&app.handle()),
                 #[cfg(target_os = "macos")]
                 macos_ocr: macos_ocr::MacOcrClient::new(&app.handle()),
                 rapidocr: rapidocr::RapidOcrClient::new(&app.handle(), build_http_client()),
@@ -269,7 +267,6 @@ fn main() {
             updates::check_github_latest_release,
             updates::download_update_asset,
             updates::install_update_and_quit,
-            commands::apple_intelligence_available,
             commands::rapidocr_status,
             commands::rapidocr_install,
             // Chat 模块命令

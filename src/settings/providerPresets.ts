@@ -5,8 +5,6 @@ export type ProviderPreset = {
   name: string
   /** OpenAI-compatible base URL, usually including /v1. */
   baseUrl: string
-  /** On-device provider. Currently only Apple Intelligence. */
-  onDevice?: boolean
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -29,10 +27,5 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     name: 'Ollama',
     baseUrl: 'https://ollama.com/v1',
-  },
-  {
-    name: 'Apple Intelligence',
-    baseUrl: 'applefoundation://local',
-    onDevice: true,
   },
 ]

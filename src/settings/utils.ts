@@ -118,26 +118,17 @@ export const parseModelPairValue = (value: string): [string, string] => {
   return [value.slice(0, separator), value.slice(separator + 1)]
 }
 
-export const isProviderAvailableOnPlatform = (provider: ModelProvider, platform: Platform) =>
-  platform === 'macos' || provider.baseUrl !== 'applefoundation://local'
-
 export const isProviderEnabled = (provider: ModelProvider) => provider.enabled !== false
 
-export const buildModelPairOptions = (providers: ModelProvider[], platform: Platform) =>
+export const buildModelPairOptions = (providers: ModelProvider[]) =>
   providers
-    .filter(provider => isProviderEnabled(provider) && isProviderAvailableOnPlatform(provider, platform))
-    .flatMap(provider => {
-      if (provider.baseUrl === 'applefoundation://local') {
-        return [{
-          value: modelPairValue(provider.id, ''),
-          label: provider.name,
-        }]
-      }
-      return provider.enabledModels.map(model => ({
+    .filter(provider => isProviderEnabled(provider))
+    .flatMap(provider =>
+      provider.enabledModels.map(model => ({
         value: modelPairValue(provider.id, model),
         label: `${provider.name} - ${model}`,
-      }))
-    })
+      })),
+    )
 
 /**
  * 与 JSON.stringify 等价但对对象 key 做递归排序,用于 dirty diff:

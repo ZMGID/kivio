@@ -12,7 +12,6 @@ use tauri_plugin_shell::ShellExt;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
-use crate::apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
 use crate::chat::agent::{prepare as agent_prepare, stop as agent_stop};
 use crate::chat::attachments::{
     compose_user_content_for_api, is_attachable_file_name, read_attachment_as_data_url,
@@ -22,8 +21,8 @@ use crate::chat::attachments::{
 };
 use crate::chat::model::{
     generate_request_from_openai_messages, model_messages_from_openai_messages,
-    openai_messages_from_model_messages, AnthropicMessagesProvider, AppleLocalProvider,
-    GenerateOptions, GenerateOutput, LanguageModelProvider, MessagePart, ModelMessage, ModelRole,
+    openai_messages_from_model_messages, AnthropicMessagesProvider, GenerateOptions,
+    GenerateOutput, LanguageModelProvider, MessagePart, ModelMessage, ModelRole,
     OpenAiChatProvider,
 };
 use crate::chat::model_metadata::{
@@ -789,8 +788,7 @@ async fn complete_assistant_reply(
         .get_provider(&conversation.provider_id)
         .ok_or_else(|| "Chat provider not found".to_string())?
         .clone();
-    let provider_is_apple = provider.base_url == APPLE_INTELLIGENCE_BASE_URL;
-    if !provider_is_apple && provider.api_keys.is_empty() {
+    if provider.api_keys.is_empty() {
         return Err(format_chat_missing_api_key_error(&provider.name));
     }
     if conversation.model.trim().is_empty() {
@@ -983,8 +981,7 @@ async fn complete_assistant_reply(
         skill_id.as_deref(),
         user_tools_available,
     );
-    let todo_tools_available =
-        append_agent_todo_tools(&mut tools, provider.supports_tools && !provider_is_apple);
+    let todo_tools_available = append_agent_todo_tools(&mut tools, provider.supports_tools);
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
     let agent_todo_prompt = crate::chat::todo::format_prompt(
         &conversation.agent_todo_state,
@@ -1009,68 +1006,6 @@ async fn complete_assistant_reply(
         Some(&agent_plan_prompt),
         Some(&agent_todo_prompt),
     );
-
-    if provider_is_apple {
-        if !main_image_paths.is_empty() {
-            return Err(
-                "Apple Intelligence 暂不支持图片附件，请为 AI 对话配置云端视觉 provider".into(),
-            );
-        }
-        let prompt = build_apple_chat_prompt(
-            &system_prompt,
-            conversation,
-            last_user_idx,
-            last_user_content_for_main,
-        );
-        let response = tokio::select! {
-            result = state.apple_intelligence.call_text(&prompt) => result?,
-            _ = wait_for_chat_cancel(state.inner(), &conversation.id, run_generation) => {
-                emit_chat_stream_done(
-                    app,
-                    &conversation.id,
-                    &run_id,
-                    &assistant_message_id,
-                    "cancelled",
-                    "",
-                );
-                return Err("cancelled".to_string());
-            }
-        };
-        emit_chat_stream_delta(
-            app,
-            &conversation.id,
-            &run_id,
-            &assistant_message_id,
-            &response,
-            None,
-        );
-        emit_chat_stream_done(
-            app,
-            &conversation.id,
-            &run_id,
-            &assistant_message_id,
-            "done",
-            &response,
-        );
-        merge_latest_agent_plan_state(app, conversation);
-        capture_agent_plan_draft_if_needed(app, conversation, plan_mode, &response);
-        push_assistant_message(
-            app,
-            state,
-            &settings,
-            conversation,
-            assistant_message_id,
-            response.clone(),
-            None,
-            Vec::new(),
-            auxiliary_tool_records,
-            Vec::new(),
-            skill_id.as_deref(),
-            title_from_first_user,
-        )
-        .await?;
-        return Ok(());
-    }
 
     let runtime_messages = build_chat_api_messages(
         &system_prompt,
@@ -1512,8 +1447,7 @@ async fn generate_title_with_model(
 ) -> Option<String> {
     let (provider_id, model) = settings.effective_title_summary_model();
     let provider = settings.get_provider(&provider_id)?.clone();
-    let provider_is_apple = provider.base_url == APPLE_INTELLIGENCE_BASE_URL;
-    if !provider_is_apple && (provider.api_keys.is_empty() || model.trim().is_empty()) {
+    if provider.api_keys.is_empty() || model.trim().is_empty() {
         return None;
     }
     if model_can_generate_images_directly(&provider, &model) {
@@ -1522,38 +1456,34 @@ async fn generate_title_with_model(
 
     let language = crate::settings::resolve_chat_language(settings);
     let prompt = build_title_summary_prompt(user_content, assistant_content, &language);
-    let raw = if provider_is_apple {
-        state.apple_intelligence.call_text(&prompt).await.ok()?
+    let retry_attempts = if settings.retry_enabled {
+        settings.retry_attempts as usize
     } else {
-        let retry_attempts = if settings.retry_enabled {
-            settings.retry_attempts as usize
-        } else {
-            1
-        };
-        let messages = vec![
-            serde_json::json!({
-                "role": "system",
-                "content": title_summary_system_prompt(&language),
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": prompt,
-            }),
-        ];
-        let message = call_chat_completion_message(
-            state,
-            &provider,
-            &model,
-            messages,
-            None,
-            retry_attempts,
-            false,
-            "Chat title summary",
-        )
-        .await
-        .ok()?;
-        agent_stop::assistant_content_from_api_message(&message)
+        1
     };
+    let messages = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": title_summary_system_prompt(&language),
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": prompt,
+        }),
+    ];
+    let message = call_chat_completion_message(
+        state,
+        &provider,
+        &model,
+        messages,
+        None,
+        retry_attempts,
+        false,
+        "Chat title summary",
+    )
+    .await
+    .ok()?;
+    let raw = agent_stop::assistant_content_from_api_message(&message);
 
     sanitize_generated_title(&raw)
 }
@@ -2056,10 +1986,6 @@ async fn compute_context_state(
         .as_ref()
         .map(|provider| provider.supports_tools)
         .unwrap_or(false);
-    let provider_is_apple = provider
-        .as_ref()
-        .map(|provider| provider.base_url == APPLE_INTELLIGENCE_BASE_URL)
-        .unwrap_or(false);
     let language = crate::settings::resolve_chat_language(&settings);
     let thinking_enabled = settings.chat.thinking_enabled;
     let skill_registry =
@@ -2080,13 +2006,12 @@ async fn compute_context_state(
     let tools_capable = provider
         .as_ref()
         .map(|provider| {
-            !provider_is_apple
-                && agent_prepare::chat_tools_capable(
-                    provider,
-                    &effective_chat_tools,
-                    settings.chat_memory.enabled,
-                    crate::settings::chat_image_generation_enabled(&settings),
-                )
+            agent_prepare::chat_tools_capable(
+                provider,
+                &effective_chat_tools,
+                settings.chat_memory.enabled,
+                crate::settings::chat_image_generation_enabled(&settings),
+            )
         })
         .unwrap_or(false);
     let mut tools = list_tools_for_chat(state.inner(), &settings, provider_supports_tools).await;
@@ -2113,8 +2038,7 @@ async fn compute_context_state(
         active_skill_id.as_deref(),
         user_tools_available,
     );
-    let todo_tools_available =
-        append_agent_todo_tools(&mut tools, provider_supports_tools && !provider_is_apple);
+    let todo_tools_available = append_agent_todo_tools(&mut tools, provider_supports_tools);
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
 
     let route_images_through_auxiliary_vision = auxiliary_vision_model_for_images(
@@ -2286,8 +2210,7 @@ async fn compress_conversation_context(
         .get_provider(&provider_id)
         .ok_or_else(|| "Compression provider not found".to_string())?
         .clone();
-    let provider_is_apple = provider.base_url == APPLE_INTELLIGENCE_BASE_URL;
-    if !provider_is_apple && provider.api_keys.is_empty() {
+    if provider.api_keys.is_empty() {
         return Err(format_chat_missing_api_key_error(&provider.name));
     }
     if model.trim().is_empty() {
@@ -2302,32 +2225,28 @@ async fn compress_conversation_context(
     } else {
         1
     };
-    let raw_summary = if provider_is_apple {
-        state.apple_intelligence.call_text(&prompt).await?
-    } else {
-        let messages = vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "You compress chat history into dense factual memory for future assistant requests. Output only the summary.",
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": prompt,
-            }),
-        ];
-        let message = call_chat_completion_message(
-            state,
-            &provider,
-            &model,
-            messages,
-            None,
-            retry_attempts,
-            false,
-            "Chat context compression",
-        )
-        .await?;
-        agent_stop::assistant_content_from_api_message(&message)
-    };
+    let messages = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": "You compress chat history into dense factual memory for future assistant requests. Output only the summary.",
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": prompt,
+        }),
+    ];
+    let message = call_chat_completion_message(
+        state,
+        &provider,
+        &model,
+        messages,
+        None,
+        retry_attempts,
+        false,
+        "Chat context compression",
+    )
+    .await?;
+    let raw_summary = agent_stop::assistant_content_from_api_message(&message);
     let summary_content = sanitize_context_summary(&raw_summary);
     if summary_content.trim().is_empty() {
         return Err("Compression model returned an empty summary".to_string());
@@ -2763,12 +2682,6 @@ async fn analyze_chat_images_with_auxiliary_model(
         .get_provider(&auxiliary_model.provider_id)
         .ok_or_else(|| "Vision auxiliary provider not found".to_string())?
         .clone();
-    if provider.api_format_kind() == ProviderApiFormat::AppleLocal {
-        return Err(
-            "Apple Intelligence 暂不支持图片附件，请在「混音器」里为视觉副任务选择云端视觉模型。"
-                .to_string(),
-        );
-    }
     if provider.api_keys.is_empty() {
         return Err(format_chat_missing_api_key_error(&provider.name));
     }
@@ -2875,49 +2788,6 @@ fn user_content_with_auxiliary_vision_result(
     } else {
         format!("{original}\n\n{aux_block}")
     }
-}
-
-fn build_apple_chat_prompt(
-    system_prompt: &str,
-    conversation: &Conversation,
-    last_user_idx: Option<usize>,
-    last_user_api_content: Option<&str>,
-) -> String {
-    let mut parts = Vec::new();
-    if !system_prompt.trim().is_empty() {
-        parts.push(format!("System:\n{}", system_prompt.trim()));
-    }
-    let start_idx = if let Some(summary) = active_summary(conversation) {
-        parts.push(format!(
-            "System:\nPrevious conversation summary:\n{}",
-            summary.content.trim()
-        ));
-        summary_boundary_index(conversation)
-            .map(|idx| idx + 1)
-            .unwrap_or_default()
-    } else {
-        0
-    };
-    for (idx, message) in conversation.messages.iter().enumerate() {
-        if idx < start_idx {
-            continue;
-        }
-        let role = match message.role.as_str() {
-            "assistant" => "Assistant",
-            _ => "User",
-        };
-        let content = if Some(idx) == last_user_idx {
-            last_user_api_content.unwrap_or(message.content.as_str())
-        } else {
-            message.content.as_str()
-        };
-        let content = sanitize_image_payloads_for_model(content);
-        if !content.trim().is_empty() {
-            parts.push(format!("{role}:\n{}", content.trim()));
-        }
-    }
-    parts.push("Assistant:".to_string());
-    parts.join("\n\n")
 }
 
 struct ChatAgentHost<'a> {
@@ -3071,11 +2941,6 @@ async fn generate_with_chat_provider(
         }
         ProviderApiFormat::AnthropicMessages => {
             AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-        ProviderApiFormat::AppleLocal => {
-            AppleLocalProvider::new(state.apple_intelligence.clone())
                 .generate(request)
                 .await
         }

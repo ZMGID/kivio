@@ -110,7 +110,7 @@ Kivio Chat 已完成 **Model 层** 的 Provider 抽象（`chat/model`：`Languag
 
 | 能力 | 代码位置 | 说明 |
 |------|----------|------|
-| Provider 抽象 | `src-tauri/src/chat/model/` | `OpenAiChatProvider`、`AnthropicMessagesProvider`、`AppleLocalProvider` |
+| Provider 抽象 | `src-tauri/src/chat/model/` | `OpenAiChatProvider`、`AnthropicMessagesProvider` |
 | 跨层契约 | `.trellis/spec/frontend/type-safety.md` | Provider + MCP/Skill + **Chat Agent Runtime** 场景 |
 | 架构文档 | `docs/CHAT_ARCHITECTURE.md` v1.1 | Model/Agent 分层、消息流已更新 |
 | 工具注册/调用 | `src-tauri/src/mcp/registry.rs` | `list_enabled_tool_defs`、`call_tool`（native/skill/mcp） |
@@ -270,9 +270,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> CheckProvider
-  CheckProvider --> AppleLocal: apple_foundation
-  AppleLocal --> [*]: 单次本地文本无 tools
-  CheckProvider --> CheckTools: 云端 provider
+  CheckProvider --> CheckTools: provider
   CheckTools --> PlainSynthesis: tools 为空
   CheckTools --> ToolLoop: tools 非空
   state ToolLoop {
@@ -298,7 +296,6 @@ stateDiagram-v2
 | ToolLoop 内无 tool_calls | NaturalEnd | **不** 再 Synthesis（场景 5） |
 | `round >= max` 且无 Natural | StepLimit → Synthesis | 多一次无 tools 请求 |
 | `provider_tools_unsupported` | ProviderFallback → Synthesis | 改 system 后 Synthesis |
-| Apple | AppleLocal | 无 Agent |
 
 ---
 

@@ -108,8 +108,7 @@ export function ProviderSortableList({
   return (
     <div className={`kv-provider-list-items custom-scrollbar${draggingId ? ' is-sorting' : ''}`}>
       {providers.map((provider, index) => {
-        const isOnDevice = provider.baseUrl === 'applefoundation://local'
-        const configured = isOnDevice || provider.apiKeys.some((key) => key.trim())
+        const configured = provider.apiKeys.some((key) => key.trim())
         const isDragging = draggingId === provider.id
         const transform = getItemTransform(index)
 

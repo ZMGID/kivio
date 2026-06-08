@@ -16,7 +16,6 @@ use crate::api::{
     build_ocr_request_body, call_openai_ocr, call_openai_text, call_vision_api,
     effective_retry_attempts, stream_chat_call, stream_translate_combined,
 };
-use crate::apple_intelligence;
 #[cfg(target_os = "windows")]
 use crate::capture_geometry::{
     monitor_for_region, windows_monitor_region, CaptureMonitor, CaptureRect,
@@ -1240,12 +1239,10 @@ pub(crate) async fn lens_translate(
             return Ok(serde_json::json!({ "success": false, "error": "OCR provider not found" }))
         }
     };
-    let provider_is_apple =
-        ocr_provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
-    if !provider_is_apple && ocr_provider.api_keys.is_empty() {
+    if ocr_provider.api_keys.is_empty() {
         return Ok(serde_json::json!({ "success": false, "error": "Missing API Key" }));
     }
-    if !provider_is_apple && settings.screenshot_translation.model.trim().is_empty() {
+    if settings.screenshot_translation.model.trim().is_empty() {
         return Ok(serde_json::json!({
           "success": false,
           "error": "Please select a model first"
@@ -1262,21 +1259,11 @@ pub(crate) async fn lens_translate(
 
     // OCR 引擎路由：System / RapidOcr 走 local_ocr_then_translate（先识别再翻译两步）
     // CloudVision 落到下方 call_openai_ocr 单次完成 OCR+翻译的多模态路径。
-    // Apple provider 在 macOS 强制走 System：Foundation Models 没视觉,只能识别后再让它翻文字。
     let system_ocr_available = cfg!(any(target_os = "macos", target_os = "windows"));
-    if provider_is_apple && !cfg!(target_os = "macos") {
-        return Ok(serde_json::json!({
-          "success": false,
-          "error": "Apple Intelligence is not available on this platform"
-        }));
-    }
     let mut effective_mode = settings
         .screenshot_translation
         .ocr_mode
         .unwrap_or(OcrMode::CloudVision);
-    if provider_is_apple && cfg!(target_os = "macos") && effective_mode == OcrMode::CloudVision {
-        effective_mode = OcrMode::System;
-    }
     // 平台不支持 System / RapidOcr 时(理论上 sanitize 已经处理掉,这里防御性兜底)
     if !system_ocr_available && matches!(effective_mode, OcrMode::System | OcrMode::RapidOcr) {
         effective_mode = OcrMode::CloudVision;
@@ -1488,9 +1475,7 @@ pub(crate) async fn lens_translate_text(
             return Ok(serde_json::json!({ "success": false, "error": msg }));
         }
     };
-    if provider.base_url != apple_intelligence::APPLE_INTELLIGENCE_BASE_URL
-        && provider.api_keys.is_empty()
-    {
+    if provider.api_keys.is_empty() {
         let msg = "Missing API Key".to_string();
         emit_done(false, Some(&msg));
         return Ok(serde_json::json!({ "success": false, "error": msg }));
@@ -1508,58 +1493,32 @@ pub(crate) async fn lens_translate_text(
         settings.screenshot_translation.prompt.as_deref(),
     );
 
-    let is_apple = provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
     let translated = if st_stream {
-        if is_apple {
-            let app_for_emit = app.clone();
-            let request_id_for_emit = request_id.clone();
-            let mut accumulated = String::new();
-            if let Err(err) = state
-                .apple_intelligence
-                .stream_text(&prompt, |delta| {
-                    accumulated.push_str(delta);
-                    let _ = app_for_emit.emit(
-                        "lens-translate-stream",
-                        serde_json::json!({
-                          "imageId": request_id_for_emit.clone(),
-                          "kind": "translated",
-                          "delta": delta,
-                        }),
-                    );
-                })
-                .await
-            {
+        let mut body = serde_json::json!({
+          "messages": [{ "role": "user", "content": prompt }],
+          "stream": true,
+          "temperature": 0.2,
+        });
+        if !st_thinking && provider_supports_thinking_field(&provider.base_url) {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+        match stream_chat_call(
+            &app,
+            &state,
+            &provider,
+            &settings.screenshot_translation.model,
+            body,
+            retry_attempts,
+            &request_id,
+            "translated",
+            "lens-translate-stream",
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(err) => {
                 emit_done(false, Some(&err));
                 return Ok(serde_json::json!({ "success": false, "error": err }));
-            }
-            accumulated
-        } else {
-            let mut body = serde_json::json!({
-              "messages": [{ "role": "user", "content": prompt }],
-              "stream": true,
-              "temperature": 0.2,
-            });
-            if !st_thinking && provider_supports_thinking_field(&provider.base_url) {
-                body["thinking"] = serde_json::json!({ "type": "disabled" });
-            }
-            match stream_chat_call(
-                &app,
-                &state,
-                &provider,
-                &settings.screenshot_translation.model,
-                body,
-                retry_attempts,
-                &request_id,
-                "translated",
-                "lens-translate-stream",
-            )
-            .await
-            {
-                Ok(text) => text,
-                Err(err) => {
-                    emit_done(false, Some(&err));
-                    return Ok(serde_json::json!({ "success": false, "error": err }));
-                }
             }
         }
     } else {
@@ -1641,7 +1600,7 @@ async fn run_rapidocr_ocr(
 /// `engine` 决定 OCR 来源:`OcrMode::System`(macOS Apple Vision / Windows.Media.Ocr) 或
 /// `OcrMode::RapidOcr`(本地 RapidOCR PaddleOCR ONNX)。`OcrMode::CloudVision` 走另一条单步路径,
 /// 不进这里。
-/// 翻译可以是 Apple FoundationModels 或任意 OpenAI 兼容 cloud provider。
+/// 翻译使用配置的 OpenAI 兼容 cloud provider。
 /// 与 cloud vision 单次 OCR+translate 调用相比,这里手动 emit lens-translate-stream 事件维持前端契约。
 ///
 /// RapidOCR 预检:dylib / 模型文件未下载时返回结构化错误,前端 lens 据此渲染下载按钮。
@@ -1708,75 +1667,46 @@ async fn local_ocr_then_translate(
     // 跟纯文本翻译共用一份模板;用户在 Settings 里改 translator_prompt 同样会作用到这条路径。
     let translate_prompt = build_translation_prompt(&original, lang_name, translator_template);
 
-    // 3) Translate via configured provider —— Apple 走 sidecar,其它走 cloud OpenAI 兼容接口
-    let is_apple_translate =
-        translate_provider.base_url == apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
+    // 3) Translate via configured provider.
     let translated = if st_stream {
-        if is_apple_translate {
-            let app_for_emit = app.clone();
-            let image_id_for_emit = image_id.to_string();
-            let mut accumulated = String::new();
-            if let Err(err) = state
-                .apple_intelligence
-                .stream_text(&translate_prompt, |delta| {
-                    accumulated.push_str(delta);
-                    let _ = app_for_emit.emit(
-                        "lens-translate-stream",
-                        serde_json::json!({
-                          "imageId": image_id_for_emit, "kind": "translated", "delta": delta,
-                        }),
-                    );
-                })
-                .await
-            {
+        // Cloud streaming: 用 stream_chat_call + 文字消息（不带 image）
+        let mut body = serde_json::json!({
+          "messages": [{ "role": "user", "content": translate_prompt }],
+          "stream": true,
+          "temperature": 0.2,
+        });
+        if !st_thinking && provider_supports_thinking_field(&translate_provider.base_url) {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+        match stream_chat_call(
+            app,
+            state,
+            translate_provider,
+            translate_model,
+            body,
+            retry_attempts,
+            image_id,
+            "translated",
+            "lens-translate-stream",
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(err) => {
                 emit_done(false, Some(&err));
                 return Ok(serde_json::json!({ "success": false, "error": err }));
             }
-            accumulated
-        } else {
-            // Cloud streaming: 用 stream_chat_call + 文字消息（不带 image）
-            let mut body = serde_json::json!({
-              "messages": [{ "role": "user", "content": translate_prompt }],
-              "stream": true,
-              "temperature": 0.2,
-            });
-            if !st_thinking && provider_supports_thinking_field(&translate_provider.base_url) {
-                body["thinking"] = serde_json::json!({ "type": "disabled" });
-            }
-            match stream_chat_call(
-                app,
-                state,
-                translate_provider,
-                translate_model,
-                body,
-                retry_attempts,
-                image_id,
-                "translated",
-                "lens-translate-stream",
-            )
-            .await
-            {
-                Ok(t) => t,
-                Err(err) => {
-                    emit_done(false, Some(&err));
-                    return Ok(serde_json::json!({ "success": false, "error": err }));
-                }
-            }
         }
     } else {
-        let result = if is_apple_translate {
-            state.apple_intelligence.call_text(&translate_prompt).await
-        } else {
-            call_openai_text(
-                state,
-                translate_provider,
-                translate_model,
-                translate_prompt,
-                retry_attempts,
-                st_thinking,
-            )
-            .await
-        };
+        let result = call_openai_text(
+            state,
+            translate_provider,
+            translate_model,
+            translate_prompt,
+            retry_attempts,
+            st_thinking,
+        )
+        .await;
         match result {
             Ok(t) => {
                 let _ = app.emit(

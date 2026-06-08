@@ -33,7 +33,6 @@ src-tauri/
     api.rs                    # HTTP client, retry/failover, OpenAI-compatible calls, SSE
     state.rs                  # AppState and key failover runtime state helpers
     prompts.rs                # Default and composed prompt templates
-    apple_intelligence.rs     # macOS Apple Intelligence sidecar client
     lens.rs                   # Lens window enumeration and screenshot capture
     screenshot.rs             # Screenshot capture utilities and temp file cleanup
     sck.rs                    # ScreenCaptureKit integration (macOS 14+)

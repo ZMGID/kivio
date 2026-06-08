@@ -14,7 +14,7 @@ Use `npm` (lockfile is `package-lock.json`). Rust tooling is managed by Tauri.
 - `npm run dev` — run the full Tauri app (Rust backend + Vite UI). Automatically builds Swift sidecars on macOS. This is the standard dev command.
 - `npm run dev:ui` — run the Vite UI dev server only (useful for quick UI iteration without compiling Rust).
 - `npm run build` — build the full desktop app bundle via Tauri.
-- `npm run build:swift` — build Swift sidecar binaries (`kivio-ocr-helper` for Apple Vision OCR, `kivio-ai-helper` for Apple Intelligence). macOS only; other platforms generate empty stubs to satisfy Tauri's `externalBin` validation.
+- `npm run build:swift` — build the Swift sidecar binary (`kivio-ocr-helper` for Apple Vision OCR). macOS only; other platforms generate an empty stub to satisfy Tauri's `externalBin` validation.
 - `npm run build:ui` — build the production UI bundle only (outputs to `dist/`).
 - `npm run preview` — preview the built UI bundle locally.
 - `npm run lint` — run ESLint on `.ts` and `.tsx` files.
@@ -116,7 +116,6 @@ A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent over
 - **`macos_ocr.rs`** — macOS Apple Vision OCR via Swift sidecar (`kivio-ocr-helper`). Persistent subprocess with JSON stdin/stdout protocol.
 - **`windows_ocr.rs`** — Windows system OCR via `Windows.Media.Ocr` APIs.
 - **`rapidocr.rs`** — Cross-platform offline OCR using PaddleOCR ONNX models. Downloads ONNX Runtime + models on user-initiated install.
-- **`apple_intelligence.rs`** — (macOS 26+) Apple Foundation Models integration via Swift sidecar (`kivio-ai-helper`). Optional feature.
 - **`capture_geometry.rs`** — Coordinate transformation helpers for multi-monitor screenshot capture.
 
 Key crate responsibilities from `Cargo.toml`:
@@ -158,9 +157,8 @@ Bundled document Skills require their execution runtime in the installer. If `pd
 
 ## Important Implementation Details
 
-- **Swift sidecars**: macOS uses two Swift helper binaries built via `scripts/build-swift-sidecar.js`:
+- **Swift sidecars**: macOS uses a Swift helper binary built via `scripts/build-swift-sidecar.js`:
   - `kivio-ocr-helper` — Apple Vision OCR (required for macOS system OCR).
-  - `kivio-ai-helper` — Apple Foundation Models integration (optional, macOS 26+ only).
   - Non-macOS platforms generate empty stubs to satisfy Tauri's `externalBin` validation.
 - **macOS**: The app hides its Dock icon (`ActivationPolicy::Accessory`) and uses `visibleOnAllWorkspaces` for all windows.
 - **Windows**: Manual launch opens settings by default. Autostart uses a dedicated `--from-autostart` arg to avoid popping up settings. Single-instance guard ensures clicking the app icon focuses the existing instance.

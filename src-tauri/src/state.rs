@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64},
-        Arc, Mutex, RwLock,
+        Mutex, RwLock,
     },
     time::{Duration, Instant},
 };
@@ -12,7 +12,6 @@ use reqwest::Client;
 use serde::Serialize;
 use tokio::sync::oneshot;
 
-use crate::apple_intelligence::AppleIntelligenceClient;
 #[cfg(target_os = "macos")]
 use crate::macos_ocr::MacOcrClient;
 use crate::mcp::types::PythonRunResult;
@@ -74,15 +73,12 @@ pub struct AppState {
     /// 每个 provider 当前活跃 key idx：上一次成功的 key 优先继续用。
     pub active_key_idx: Mutex<HashMap<String, usize>>,
     pub http: Client,
-    /// Apple Intelligence sidecar 客户端。首次真正用到 Apple 路由时 spawn，启动后所有请求复用。
-    /// 不可用时 ensure_started() 返回 Err，路由层直接报错。
-    pub apple_intelligence: Arc<AppleIntelligenceClient>,
-    /// macOS Apple Vision OCR sidecar 客户端。独立于 Apple Intelligence，只有系统 OCR 路径会拉起。
+    /// macOS Apple Vision OCR sidecar 客户端。只有系统 OCR 路径会拉起。
     #[cfg(target_os = "macos")]
-    pub macos_ocr: Arc<MacOcrClient>,
+    pub macos_ocr: std::sync::Arc<MacOcrClient>,
     /// RapidOCR 离线 OCR 客户端。模型 + onnxruntime dylib 都由用户在设置页面下载到 app data 目录,
     /// 安装包不带任何 ONNX Runtime 二进制。`status()` 检查 4 个文件齐不齐, 不齐让前端引导下载。
-    pub rapidocr: Arc<RapidOcrClient>,
+    pub rapidocr: std::sync::Arc<RapidOcrClient>,
 }
 
 /// 单个 key 触发 failover 后的冷却时长。
@@ -295,7 +291,6 @@ mod tests {
             key_cooldowns: Mutex::new(HashMap::new()),
             active_key_idx: Mutex::new(HashMap::new()),
             http: Client::new(),
-            apple_intelligence: AppleIntelligenceClient::disabled(),
             #[cfg(target_os = "macos")]
             macos_ocr: MacOcrClient::disabled(),
             rapidocr: RapidOcrClient::disabled(),

@@ -25,7 +25,6 @@ use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::apple_intelligence::APPLE_INTELLIGENCE_BASE_URL;
 use crate::lens_commands::resolve_explain_image_path;
 use crate::prompts::COMBINED_TRANSLATE_SEPARATOR;
 use crate::settings::{
@@ -367,11 +366,6 @@ pub async fn call_openai_text(
     retry_attempts: usize,
     thinking_enabled: bool,
 ) -> Result<String, String> {
-    // Apple Intelligence(端上)路由：跳过 HTTP，直接调 sidecar。model/retry/thinking 三个参数全部忽略。
-    if config.base_url == APPLE_INTELLIGENCE_BASE_URL {
-        let _ = (model, retry_attempts, thinking_enabled);
-        return state.apple_intelligence.call_text(&prompt).await;
-    }
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
@@ -425,19 +419,6 @@ pub async fn call_openai_ocr(
     retry_attempts: usize,
     thinking_enabled: bool,
 ) -> Result<String, String> {
-    if config.base_url == APPLE_INTELLIGENCE_BASE_URL {
-        let _ = (
-            state,
-            model,
-            image_path,
-            prompt,
-            retry_attempts,
-            thinking_enabled,
-        );
-        return Err(
-            "Apple Intelligence 暂不支持图像输入,请为截图/视觉功能配置云端 provider".into(),
-        );
-    }
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
@@ -566,28 +547,6 @@ pub async fn call_vision_api(
             base
         }
     };
-
-    if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
-        if has_image {
-            return Err(
-                "Apple Intelligence 暂不支持图像输入,请为 Lens / 截图视觉功能配置云端 provider"
-                    .into(),
-            );
-        }
-        let prompt = build_apple_text_prompt(&system_prompt_to_use, &messages);
-        if stream {
-            return stream_apple_text_response(
-                app,
-                state,
-                &prompt,
-                image_id,
-                stream_kind,
-                event_name,
-            )
-            .await;
-        }
-        return state.apple_intelligence.call_text(&prompt).await;
-    }
 
     let mut api_messages = Vec::new();
     api_messages.push(serde_json::json!({
@@ -809,87 +768,6 @@ fn parse_sse_chat_content(raw: &str) -> Option<String> {
     }
 }
 
-fn build_apple_text_prompt(system_prompt: &str, messages: &[ExplainMessage]) -> String {
-    let mut parts = Vec::new();
-    let system_prompt = system_prompt.trim();
-    if !system_prompt.is_empty() {
-        parts.push(format!("System:\n{}", system_prompt));
-    }
-
-    for message in messages {
-        let role = match message.role.as_str() {
-            "assistant" => "Assistant",
-            "system" => "System",
-            _ => "User",
-        };
-        let content = message.content.trim();
-        if !content.is_empty() {
-            parts.push(format!("{}:\n{}", role, content));
-        }
-    }
-
-    parts.push("Assistant:".to_string());
-    parts.join("\n\n")
-}
-
-async fn stream_apple_text_response(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    prompt: &str,
-    image_id: &str,
-    kind: &str,
-    event_name: &str,
-) -> Result<String, String> {
-    let generation = state
-        .explain_stream_generation
-        .fetch_add(1, Ordering::SeqCst)
-        + 1;
-    let generation_atom = &state.explain_stream_generation;
-    let apple = state.apple_intelligence.clone();
-    let app_for_emit = app.clone();
-    let image_id_for_emit = image_id.to_string();
-    let kind_for_emit = kind.to_string();
-    let event_name_for_emit = event_name.to_string();
-    let mut full = String::new();
-
-    let result = apple
-        .stream_text(prompt, |delta| {
-            if generation_atom.load(Ordering::SeqCst) != generation {
-                return;
-            }
-            full.push_str(delta);
-            let _ = app_for_emit.emit(
-                &event_name_for_emit,
-                serde_json::json!({
-                  "imageId": image_id_for_emit.clone(),
-                  "kind": kind_for_emit.clone(),
-                  "delta": delta,
-                }),
-            );
-        })
-        .await;
-
-    let full = full.trim().to_string();
-    let reason = match result {
-        Ok(_) if generation_atom.load(Ordering::SeqCst) != generation => "cancelled",
-        Ok(_) => "done",
-        Err(_) => "error",
-    };
-    let _ = app.emit(
-        event_name,
-        serde_json::json!({
-          "imageId": image_id,
-          "kind": kind,
-          "delta": "",
-          "done": true,
-          "reason": reason,
-          "full": full.clone(),
-        }),
-    );
-
-    result.map(|_| full)
-}
-
 // ===== SSE 流 =====
 
 /// 构造带 image 的 OCR/视觉请求 body（model 由调用方注入），开启 stream
@@ -933,19 +811,6 @@ pub async fn stream_chat_call(
     kind: &str,
     event_name: &str,
 ) -> Result<String, String> {
-    if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
-        let _ = (
-            app,
-            state,
-            model,
-            &mut body,
-            retry_attempts,
-            image_id,
-            kind,
-            event_name,
-        );
-        return Err("Apple Intelligence 暂不支持图像输入,请为截图翻译配置云端 provider".into());
-    }
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
@@ -1013,18 +878,6 @@ pub async fn stream_translate_combined(
     image_id: &str,
     event_name: &str,
 ) -> Result<(String, String), String> {
-    if provider.base_url == APPLE_INTELLIGENCE_BASE_URL {
-        let _ = (
-            app,
-            state,
-            model,
-            &mut body,
-            retry_attempts,
-            image_id,
-            event_name,
-        );
-        return Err("Apple Intelligence 暂不支持图像输入,请为截图翻译配置云端 provider".into());
-    }
     if model.trim().is_empty() {
         return Err("Please select a model first".to_string());
     }
@@ -1477,28 +1330,6 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR
         ));
         assert!(is_retryable_status_for_failover(StatusCode::BAD_GATEWAY));
-    }
-
-    #[test]
-    fn build_apple_text_prompt_keeps_system_and_conversation_roles() {
-        let prompt = build_apple_text_prompt(
-            "System prompt",
-            &[
-                ExplainMessage {
-                    role: "user".to_string(),
-                    content: "Question".to_string(),
-                },
-                ExplainMessage {
-                    role: "assistant".to_string(),
-                    content: "Earlier answer".to_string(),
-                },
-            ],
-        );
-
-        assert!(prompt.contains("System:\nSystem prompt"));
-        assert!(prompt.contains("User:\nQuestion"));
-        assert!(prompt.contains("Assistant:\nEarlier answer"));
-        assert!(prompt.ends_with("Assistant:"));
     }
 
     #[test]

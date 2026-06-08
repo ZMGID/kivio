@@ -534,7 +534,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
   const [modelPickerProviderId, setModelPickerProviderId] = useState<string | null>(null)
   const [drawerModel, setDrawerModel] = useState<{ providerId: string; model: string } | null>(null)
-  const [onDeviceManualModel, setOnDeviceManualModel] = useState('')
   const [providerTestFeedback, setProviderTestFeedback] = useState<Record<string, { ok: boolean; message: string }>>({})
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [testingMcpServerId, setTestingMcpServerId] = useState<string | null>(null)
@@ -1386,14 +1385,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     const newProvider: ModelProvider = {
       id: newId,
       name: preset.name,
-      // 端上 provider(Apple Intelligence)不需 API key,填一个哨兵字符串绕开"Missing API Key"检查
-      apiKeys: preset.onDevice ? ['__on_device__'] : [],
+      apiKeys: [],
       baseUrl: preset.baseUrl,
       availableModels: [],
       enabledModels: [],
-      supportsTools: !preset.onDevice,
+      supportsTools: true,
       enabled: true,
-      apiFormat: preset.onDevice ? 'apple_local' : 'openai_chat',
+      apiFormat: 'openai_chat',
     }
     setSettings({
       ...settings,
@@ -1612,7 +1610,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const openModelPicker = (providerId: string) => {
     if (!settings) return
     const provider = settings.providers.find((p) => p.id === providerId)
-    if (!provider || provider.baseUrl === 'applefoundation://local') return
+    if (!provider) return
     setModelPickerProviderId(providerId)
     if (provider.availableModels.length === 0 && fetchingProviderId !== providerId) {
       void fetchModels(providerId)
@@ -2246,7 +2244,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       providerId={settings.translatorProviderId}
                       model={settings.translatorModel}
                       providers={settings.providers}
-                      platform={platform}
                       onChange={(providerId, model) => {
                         updateSettings({ translatorProviderId: providerId, translatorModel: model })
                       }}
@@ -2274,7 +2271,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {activeTab === 'screenshot' && (
               <ScreenshotTranslationSettings
                 settings={settings}
-                platform={platform}
                 isMac={isMac}
                 hasSystemOcr={hasSystemOcr}
                 recordingTarget={recordingTarget}
@@ -2391,7 +2387,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                           providerId={settings.lens?.providerId || ''}
                           model={settings.lens?.model || ''}
                           providers={settings.providers}
-                          platform={platform}
                           inheritLabel={t.lensLanguageInherit}
                           onChange={(providerId, model) => {
                             updateLens({ providerId, model })
@@ -2480,7 +2475,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       providerId={settings.defaultModels.chat.providerId || ''}
                       model={settings.defaultModels.chat.model || ''}
                       providers={settings.providers}
-                      platform={platform}
                       inheritLabel={t.defaultModelsUnset}
                       onChange={(providerId, model) => {
                         updateDefaultModel('chat', providerId, model)
@@ -2815,7 +2809,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       providerId={settings.defaultModels.vision.providerId || ''}
                       model={settings.defaultModels.vision.model || ''}
                       providers={settings.providers}
-                      platform={platform}
                       inheritLabel={t.mixerAutoVisionModel}
                       onChange={(providerId, model) => {
                         updateDefaultModel('vision', providerId, model)
@@ -2830,7 +2823,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       providerId={settings.defaultModels.titleSummary.providerId || ''}
                       model={settings.defaultModels.titleSummary.model || ''}
                       providers={settings.providers}
-                      platform={platform}
                       inheritLabel={t.mixerAutoModel}
                       onChange={(providerId, model) => {
                         updateDefaultModel('titleSummary', providerId, model)
@@ -2845,7 +2837,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       providerId={settings.defaultModels.compression.providerId || ''}
                       model={settings.defaultModels.compression.model || ''}
                       providers={settings.providers}
-                      platform={platform}
                       inheritLabel={t.mixerAutoModel}
                       onChange={(providerId, model) => {
                         updateDefaultModel('compression', providerId, model)
@@ -2860,7 +2851,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       providerId={settings.defaultModels.imageGeneration.providerId || ''}
                       model={settings.defaultModels.imageGeneration.model || ''}
                       providers={settings.providers}
-                      platform={platform}
                       inheritLabel={t.mixerNoImageGenerationModel}
                       onChange={(providerId, model) => {
                         updateDefaultModel('imageGeneration', providerId, model)
@@ -3614,23 +3604,18 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       {lang === 'zh' ? '快速预设' : 'Quick presets'}
                     </div>
                     <div className="kv-provider-list-preset-grid">
-                      {PROVIDER_PRESETS
-                        .filter(preset => !preset.onDevice || isMac)
-                        .map(preset => (
-                          <button
-                            key={preset.name}
-                            type="button"
-                            onClick={() => addProviderFromPreset(preset)}
-                            className="kv-provider-preset-btn"
-                            data-tauri-drag-region="false"
-                          >
-                            <Plus size={11} strokeWidth={2.25} />
-                            <span className="min-w-0 truncate">{preset.name}</span>
-                            {preset.onDevice && (
-                              <span className="kv-tag ok shrink-0">{lang === 'zh' ? '本地' : 'Local'}</span>
-                            )}
-                          </button>
-                        ))}
+                      {PROVIDER_PRESETS.map(preset => (
+                        <button
+                          key={preset.name}
+                          type="button"
+                          onClick={() => addProviderFromPreset(preset)}
+                          className="kv-provider-preset-btn"
+                          data-tauri-drag-region="false"
+                        >
+                          <Plus size={11} strokeWidth={2.25} />
+                          <span className="min-w-0 truncate">{preset.name}</span>
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -3639,8 +3624,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   <SettingsGroup title={lang === 'zh' ? '供应商' : 'Provider'} className="!pt-0 kv-provider-section">
                     {selectedProvider ? (() => {
                       const provider = selectedProvider
-                      const isOnDevice = provider.baseUrl === 'applefoundation://local'
-                      const configured = isOnDevice || provider.apiKeys.some((key) => key.trim())
+                      const configured = provider.apiKeys.some((key) => key.trim())
                       return (
                         <div className="kv-provider-header">
                           <div className="kv-provider-header-toolbar">
@@ -3656,7 +3640,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               <span className={`kv-tag ${!isProviderEnabled(provider) ? 'warn' : configured ? 'ok' : 'warn'}`}>
                                 {!isProviderEnabled(provider)
                                   ? (lang === 'zh' ? '已禁用' : 'Disabled')
-                                  : isOnDevice ? (lang === 'zh' ? '本地' : 'Local') : configured ? t.connectionOk : t.permissionMissing}
+                                  : configured ? t.connectionOk : t.permissionMissing}
                               </span>
                               <button
                                 type="button"
@@ -3686,219 +3670,151 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
                   {selectedProvider ? (() => {
                     const provider = selectedProvider
-                    const isOnDevice = provider.baseUrl === 'applefoundation://local'
                     return (
                         <SettingsGroup title={lang === 'zh' ? '配置' : 'Configuration'}>
-                          {!isOnDevice && (
-                            <>
-                              <FieldBlock label={t.baseUrl}>
-                                <div className="kv-provider-endpoint-row">
-                                  <Input
-                                    className="min-w-0 flex-1"
-                                    value={provider.baseUrl}
-                                    onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
-                                    placeholder="https://api.openai.com/v1"
-                                    mono
-                                  />
-                                  <Select
-                                    className="w-[11.5rem] shrink-0"
-                                    value={normalizeProviderApiFormat(provider.apiFormat)}
-                                    onChange={(apiFormat) => updateProvider(provider.id, { apiFormat })}
-                                    options={[
-                                      { value: 'openai_chat', label: 'OpenAI Chat' },
-                                      { value: 'anthropic_messages', label: 'Anthropic' },
-                                    ]}
-                                  />
-                                </div>
-                              </FieldBlock>
+                          <FieldBlock label={t.baseUrl}>
+                            <div className="kv-provider-endpoint-row">
+                              <Input
+                                className="min-w-0 flex-1"
+                                value={provider.baseUrl}
+                                onChange={(v) => updateProvider(provider.id, { baseUrl: v })}
+                                placeholder="https://api.openai.com/v1"
+                                mono
+                              />
+                              <Select
+                                className="w-[11.5rem] shrink-0"
+                                value={normalizeProviderApiFormat(provider.apiFormat)}
+                                onChange={(apiFormat) => updateProvider(provider.id, { apiFormat })}
+                                options={[
+                                  { value: 'openai_chat', label: 'OpenAI Chat' },
+                                  { value: 'anthropic_messages', label: 'Anthropic' },
+                                ]}
+                              />
+                            </div>
+                          </FieldBlock>
 
-                              <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
-                                <div className="space-y-1.5">
-                                  {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
-                                    const total = Math.max(provider.apiKeys.length, 1)
-                                    return (
-                                      <div key={`${provider.id}-${total}-${idx}`} className="flex items-center gap-1.5">
-                                        <Input
-                                          type="password"
-                                          value={key}
-                                          mono
-                                          onChange={(v) => {
-                                            const base = provider.apiKeys.length > 0 ? [...provider.apiKeys] : ['']
-                                            base[idx] = v
-                                            updateProvider(provider.id, { apiKeys: base })
-                                          }}
-                                          placeholder={idx === 0 ? `sk-... (${t.apiKeyPrimary})` : `sk-... (${t.apiKeyBackup})`}
-                                        />
-                                        {total > 1 && (
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              const next = provider.apiKeys.filter((_, i) => i !== idx)
-                                              updateProvider(provider.id, { apiKeys: next })
-                                            }}
-                                            className="kv-icon-btn danger"
-                                            title={t.removeKey}
-                                            data-tauri-drag-region="false"
-                                          >
-                                            <Trash2 size={12} />
-                                          </button>
-                                        )}
-                                      </div>
-                                    )
-                                  })}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const base = provider.apiKeys.length > 0 ? provider.apiKeys : ['']
-                                    updateProvider(provider.id, { apiKeys: [...base, ''] })
-                                  }}
-                                  className="kv-btn sm mt-2"
-                                  data-tauri-drag-region="false"
-                                >
-                                  <Plus size={11} />
-                                  {t.addKey}
-                                </button>
-                              </FieldBlock>
-
-                              <div className="kv-row">
-                                <div className="kv-row-text">
-                                  <span className="kv-row-label">{t.testConnection}</span>
-                                  {providerTestFeedback[provider.id]?.message && (
-                                    <p className="kv-row-desc">{providerTestFeedback[provider.id]?.message}</p>
-                                  )}
-                                </div>
-                                <div className="kv-row-control kv-row-control-cluster">
-                                  <button
-                                    type="button"
-                                    onClick={() => openModelPicker(provider.id)}
-                                    className="kv-btn sm"
-                                    data-tauri-drag-region="false"
-                                  >
-                                    <RefreshCw size={10} className={fetchingProviderId === provider.id ? 'animate-spin' : ''} />
-                                    {provider.availableModels.length > 0
-                                      ? (lang === 'zh' ? '管理模型' : 'Models')
-                                      : t.fetchModels}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleTestConnection(provider.id)}
-                                    disabled={testingProviderId === provider.id}
-                                    className="kv-btn sm"
-                                    data-tauri-drag-region="false"
-                                  >
-                                    <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
-                                    {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
-                                  </button>
-                                </div>
-                              </div>
-
-                            </>
-                          )}
-
-                          {isOnDevice ? (
-                            <FieldBlock label={t.registeredModels} description={lang === 'zh' ? '这些模型会出现在各功能的模型选择器中。' : 'These models appear in feature model selectors.'}>
-                              <div className="flex items-center gap-1.5">
-                                <Input
-                                  className="h-7 !text-[11px]"
-                                  placeholder={t.manualAddModel}
-                                  mono
-                                  value={onDeviceManualModel}
-                                  onChange={setOnDeviceManualModel}
-                                  onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                                    if (e.key !== 'Enter') return
-                                    if (e.nativeEvent.isComposing || e.keyCode === 229) return
-                                    addEnabledModel(provider.id, onDeviceManualModel)
-                                    setOnDeviceManualModel('')
-                                  }}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    addEnabledModel(provider.id, onDeviceManualModel)
-                                    setOnDeviceManualModel('')
-                                  }}
-                                  className="kv-btn sm"
-                                  data-tauri-drag-region="false"
-                                >
-                                  {t.addModel}
-                                </button>
-                              </div>
-                              <ul className="kv-enabled-model-list">
-                                {provider.enabledModels.length === 0 && (
-                                  <li className="kv-enabled-model-empty">
-                                    {lang === 'zh' ? '手动添加本地可用模型名称。' : 'Add local model names manually.'}
-                                  </li>
-                                )}
-                                {provider.enabledModels.map(model => {
-                                  const modelInfo = resolveModelInfo(model, provider.modelOverrides)
-                                  const caps = modelInfo.capabilities
-                                  return (
-                                    <li key={model} className="kv-enabled-model-row" onClick={() => setDrawerModel({ providerId: provider.id, model })}>
-                                      <span className="kv-enabled-model-name" title={model}>{modelInfo.displayName || model}</span>
-                                      <span className="kv-enabled-model-badges">
-                                        {caps?.vision && <span className="kv-badge-mini">V</span>}
-                                        {caps?.functionCalling && <span className="kv-badge-mini">T</span>}
-                                        {caps?.reasoning && <span className="kv-badge-mini">R</span>}
-                                        {caps?.imageGeneration && <span className="kv-badge-mini">G</span>}
-                                      </span>
+                          <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
+                            <div className="space-y-1.5">
+                              {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
+                                const total = Math.max(provider.apiKeys.length, 1)
+                                return (
+                                  <div key={`${provider.id}-${total}-${idx}`} className="flex items-center gap-1.5">
+                                    <Input
+                                      type="password"
+                                      value={key}
+                                      mono
+                                      onChange={(v) => {
+                                        const base = provider.apiKeys.length > 0 ? [...provider.apiKeys] : ['']
+                                        base[idx] = v
+                                        updateProvider(provider.id, { apiKeys: base })
+                                      }}
+                                      placeholder={idx === 0 ? `sk-... (${t.apiKeyPrimary})` : `sk-... (${t.apiKeyBackup})`}
+                                    />
+                                    {total > 1 && (
                                       <button
                                         type="button"
-                                        onClick={(e) => { e.stopPropagation(); removeEnabledModel(provider.id, model) }}
-                                        className="kv-enabled-model-remove"
+                                        onClick={() => {
+                                          const next = provider.apiKeys.filter((_, i) => i !== idx)
+                                          updateProvider(provider.id, { apiKeys: next })
+                                        }}
+                                        className="kv-icon-btn danger"
+                                        title={t.removeKey}
                                         data-tauri-drag-region="false"
-                                        aria-label={t.removeModel}
                                       >
-                                        <Minus size={14} />
+                                        <Trash2 size={12} />
                                       </button>
-                                    </li>
-                                  )
-                                })}
-                              </ul>
-                            </FieldBlock>
-                          ) : (
-                            <FieldBlock
-                              label={(
-                                <span className="inline-flex items-center gap-2">
-                                  <span>{lang === 'zh' ? '模型' : 'Models'}</span>
-                                  <span className="kv-tag">{provider.enabledModels.length}</span>
-                                </span>
-                              )}
-                              description={lang === 'zh' ? '这些模型会出现在各功能的模型选择器中。' : 'These models appear in feature model selectors.'}
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const base = provider.apiKeys.length > 0 ? provider.apiKeys : ['']
+                                updateProvider(provider.id, { apiKeys: [...base, ''] })
+                              }}
+                              className="kv-btn sm mt-2"
+                              data-tauri-drag-region="false"
                             >
-                              <ul className="kv-enabled-model-list">
-                                {provider.enabledModels.length === 0 && (
-                                  <li className="kv-enabled-model-empty">
-                                    {lang === 'zh' ? '点击上方「获取模型列表」拉取并添加模型。' : 'Use "Fetch Models" above to load and add models.'}
+                              <Plus size={11} />
+                              {t.addKey}
+                            </button>
+                          </FieldBlock>
+
+                          <div className="kv-row">
+                            <div className="kv-row-text">
+                              <span className="kv-row-label">{t.testConnection}</span>
+                              {providerTestFeedback[provider.id]?.message && (
+                                <p className="kv-row-desc">{providerTestFeedback[provider.id]?.message}</p>
+                              )}
+                            </div>
+                            <div className="kv-row-control kv-row-control-cluster">
+                              <button
+                                type="button"
+                                onClick={() => openModelPicker(provider.id)}
+                                className="kv-btn sm"
+                                data-tauri-drag-region="false"
+                              >
+                                <RefreshCw size={10} className={fetchingProviderId === provider.id ? 'animate-spin' : ''} />
+                                {provider.availableModels.length > 0
+                                  ? (lang === 'zh' ? '管理模型' : 'Models')
+                                  : t.fetchModels}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleTestConnection(provider.id)}
+                                disabled={testingProviderId === provider.id}
+                                className="kv-btn sm"
+                                data-tauri-drag-region="false"
+                              >
+                                <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
+                                {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
+                              </button>
+                            </div>
+                          </div>
+
+                          <FieldBlock
+                            label={(
+                              <span className="inline-flex items-center gap-2">
+                                <span>{lang === 'zh' ? '模型' : 'Models'}</span>
+                                <span className="kv-tag">{provider.enabledModels.length}</span>
+                              </span>
+                            )}
+                            description={lang === 'zh' ? '这些模型会出现在各功能的模型选择器中。' : 'These models appear in feature model selectors.'}
+                          >
+                            <ul className="kv-enabled-model-list">
+                              {provider.enabledModels.length === 0 && (
+                                <li className="kv-enabled-model-empty">
+                                  {lang === 'zh' ? '点击上方「获取模型列表」拉取并添加模型。' : 'Use "Fetch Models" above to load and add models.'}
+                                </li>
+                              )}
+                              {provider.enabledModels.map(model => {
+                                const modelInfo = resolveModelInfo(model, provider.modelOverrides)
+                                const caps = modelInfo.capabilities
+                                return (
+                                  <li key={model} className="kv-enabled-model-row" onClick={() => setDrawerModel({ providerId: provider.id, model })}>
+                                    <span className="kv-enabled-model-name" title={model}>{modelInfo.displayName || model}</span>
+                                    <span className="kv-enabled-model-badges">
+                                      {caps?.vision && <span className="kv-badge-mini">V</span>}
+                                      {caps?.functionCalling && <span className="kv-badge-mini">T</span>}
+                                      {caps?.reasoning && <span className="kv-badge-mini">R</span>}
+                                      {caps?.imageGeneration && <span className="kv-badge-mini">G</span>}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); removeEnabledModel(provider.id, model) }}
+                                      className="kv-enabled-model-remove"
+                                      data-tauri-drag-region="false"
+                                      aria-label={t.removeModel}
+                                    >
+                                      <Minus size={14} />
+                                    </button>
                                   </li>
-                                )}
-                                {provider.enabledModels.map(model => {
-                                  const modelInfo = resolveModelInfo(model, provider.modelOverrides)
-                                  const caps = modelInfo.capabilities
-                                  return (
-                                    <li key={model} className="kv-enabled-model-row" onClick={() => setDrawerModel({ providerId: provider.id, model })}>
-                                      <span className="kv-enabled-model-name" title={model}>{modelInfo.displayName || model}</span>
-                                      <span className="kv-enabled-model-badges">
-                                        {caps?.vision && <span className="kv-badge-mini">V</span>}
-                                        {caps?.functionCalling && <span className="kv-badge-mini">T</span>}
-                                        {caps?.reasoning && <span className="kv-badge-mini">R</span>}
-                                        {caps?.imageGeneration && <span className="kv-badge-mini">G</span>}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => { e.stopPropagation(); removeEnabledModel(provider.id, model) }}
-                                        className="kv-enabled-model-remove"
-                                        data-tauri-drag-region="false"
-                                        aria-label={t.removeModel}
-                                      >
-                                        <Minus size={14} />
-                                      </button>
-                                    </li>
-                                  )
-                                })}
-                              </ul>
-                            </FieldBlock>
-                          )}
+                                )
+                              })}
+                            </ul>
+                          </FieldBlock>
                         </SettingsGroup>
                     )
                   })() : null}

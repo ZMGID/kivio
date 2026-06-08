@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use arboard::Clipboard;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_shell::ShellExt;
 
@@ -9,7 +9,6 @@ use crate::api::{
     call_openai_text, effective_retry_attempts, resolve_provider_credentials, send_with_failover,
     send_with_retry, ProviderConnectionInput,
 };
-use crate::apple_intelligence;
 use crate::prompts::{
     build_translation_prompt, DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE, DEFAULT_TRANSLATION_TEMPLATE,
 };
@@ -138,9 +137,7 @@ pub(crate) async fn translate_text(
     if provider.api_keys.is_empty() {
         return Ok("Missing API Key".to_string());
     }
-    if provider.base_url != apple_intelligence::APPLE_INTELLIGENCE_BASE_URL
-        && settings.translator_model.trim().is_empty()
-    {
+    if settings.translator_model.trim().is_empty() {
         return Ok("Please select a model first".to_string());
     }
 
@@ -233,38 +230,6 @@ pub(crate) fn open_html_preview(app: AppHandle, html: String) -> Result<(), Stri
         .to_str()
         .ok_or_else(|| "Invalid HTML preview path".to_string())?;
     app.shell().open(path_str, None).map_err(|e| e.to_string())
-}
-
-/// 查询 Apple Intelligence 预设是否应在设置页中显示。
-/// 为避免打开设置页时就拉起 sidecar，这里只做轻量本地判断：
-/// - 非 macOS → false
-/// - sidecar 资源二进制不存在 → false
-/// - 其余情况 → true（真正可用性在首次调用时由 sidecar ready 结果决定）
-#[tauri::command]
-pub(crate) fn apple_intelligence_available(state: State<AppState>) -> bool {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = state;
-        return false;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(app) = state.apple_intelligence.app_handle() {
-            let path = app.path().resource_dir().ok().map(|dir| {
-                let name = if cfg!(target_os = "windows") {
-                    "binaries/kivio-ai-helper.exe"
-                } else {
-                    "binaries/kivio-ai-helper"
-                };
-                dir.join(name)
-            });
-            return path
-                .and_then(|p| p.metadata().ok())
-                .map(|m| m.is_file() && m.len() > 0)
-                .unwrap_or(false);
-        }
-        false
-    }
 }
 
 // ===== RapidOCR 离线 OCR 命令 =====

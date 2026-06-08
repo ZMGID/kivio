@@ -181,9 +181,6 @@ fn validate_provider(provider: &ModelProvider) -> Result<(), String> {
         ProviderApiFormat::AnthropicMessages => {
             return Err("Mixer image generation requires an OpenAI-compatible provider".to_string())
         }
-        ProviderApiFormat::AppleLocal => {
-            return Err("Apple Intelligence cannot generate images for Chat Mixer".to_string())
-        }
     }
     if provider.api_keys.is_empty() {
         return Err(format!(

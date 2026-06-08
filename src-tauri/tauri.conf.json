@@ -36,7 +36,6 @@
       "nsis"
     ],
     "externalBin": [
-      "binaries/kivio-ai-helper",
       "binaries/kivio-ocr-helper"
     ],
     "resources": {

@@ -235,11 +235,11 @@ if (tab === 'installed' && assistant.installed === false) return false
 - `GenerateRequest { model, system, messages: Vec<ModelMessage>, tools: Vec<ModelTool>, options, metadata }`
 - `GenerateOutput { text, reasoning, tool_calls, usage, finish_reason, provider_messages, cancelled }`
 - `StreamPart::{TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallDone, ToolResult, Finish, Error}`
-- Provider `api_format` values are normalized to `openai_chat | anthropic_messages | apple_local`; legacy `openai` and `anthropic` must still load.
+- Provider `api_format` values are normalized to `openai_chat | anthropic_messages`; legacy `openai` and `anthropic` must still load.
 
 ### 3. Contracts
 - Runtime and tool-loop code call provider-agnostic model APIs. It must not build `/chat/completions` or `/messages` JSON bodies directly.
-- Provider-specific wire details stay inside provider adapters: `OpenAiChatProvider` owns OpenAI chat JSON/SSE/tool calls; `AnthropicMessagesProvider` owns Claude Messages content blocks/SSE/tool_use/tool_result; `AppleLocalProvider` owns local text-only calls.
+- Provider-specific wire details stay inside provider adapters: `OpenAiChatProvider` owns OpenAI chat JSON/SSE/tool calls; `AnthropicMessagesProvider` owns Claude Messages content blocks/SSE/tool_use/tool_result.
 - Conversation JSON may keep legacy `api_messages`, but new assistant replies should also persist canonical `model_messages`. Replay prefers `model_messages`; old conversations missing it fall back to `api_messages`.
 - `api_messages` remains an OpenAI-compatible compatibility mirror for older replay/debug paths. It is not the internal runtime contract.
 - `supports_tools` is only a settings compatibility flag. Runtime capability decisions should use provider capabilities when that path is available, especially for tools, vision, streaming, and reasoning.
