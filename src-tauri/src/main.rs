@@ -44,6 +44,7 @@ use tauri_plugin_single_instance::init as init_single_instance;
 
 use api::build_http_client;
 use commands::apply_launch_at_startup;
+use native_tools::cleanup_stale_sandbox_exports;
 use screenshot::cleanup_orphan_temp_files;
 use settings::load_settings;
 use shortcuts::{
@@ -147,6 +148,7 @@ fn main() {
 
             // 清理上次崩溃 / 强杀 / 旧版本遗留的截图 PNG（24h 之前的，避免误删并发实例的活文件）
             cleanup_orphan_temp_files();
+            cleanup_stale_sandbox_exports();
 
             let settings = load_settings(&app.handle());
             if let Err(err) = apply_launch_at_startup(&app.handle(), settings.launch_at_startup) {

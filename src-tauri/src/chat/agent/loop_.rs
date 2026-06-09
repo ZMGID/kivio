@@ -2,7 +2,8 @@ use serde_json::Value;
 
 use crate::chat::model::{
     generate_request_from_openai_messages, AnthropicMessagesProvider, GenerateOptions,
-    GenerateOutput, LanguageModelProvider, ModelError, OpenAiChatProvider, PendingToolCall,
+    GenerateOutput, GenerateRequestContext, LanguageModelProvider, ModelError, OpenAiChatProvider,
+    PendingToolCall,
 };
 use crate::chat::types::{
     ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase, ToolCallRecord,
@@ -269,6 +270,8 @@ pub async fn run_agent_loop(
                             config.retry_attempts,
                             config.thinking_enabled,
                             config.max_output_tokens,
+                            &config.conversation_id,
+                            &config.message_id,
                             "Chat tools planning",
                         )
                         .await
@@ -290,6 +293,8 @@ pub async fn run_agent_loop(
                         config.retry_attempts,
                         config.thinking_enabled,
                         config.max_output_tokens,
+                        &config.conversation_id,
+                        &config.message_id,
                         "Chat tools planning",
                     ) => result.map(|message| ChatPlanningStep {
                         message,
@@ -558,6 +563,7 @@ pub async fn run_agent_loop(
             segments: segment_builder.all(),
             api_messages: generated_api_messages,
             steps,
+            stream_outcome: "completed".to_string(),
         });
     }
 
@@ -643,6 +649,7 @@ pub async fn run_agent_loop(
                     },
                     api_messages: generated_api_messages,
                     steps,
+                    stream_outcome: "cancelled".to_string(),
                 });
             }
             return Err("cancelled".to_string());
@@ -699,6 +706,8 @@ pub async fn run_agent_loop(
                 config.retry_attempts,
                 config.thinking_enabled,
                 config.max_output_tokens,
+                &config.conversation_id,
+                &config.message_id,
                 "Chat API",
             ) => result?,
             _ = host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
@@ -828,6 +837,7 @@ pub async fn run_agent_loop(
         segments: segment_builder.all(),
         api_messages: generated_api_messages,
         steps,
+        stream_outcome: "completed".to_string(),
     })
 }
 
@@ -1366,7 +1376,16 @@ fn tool_call_parallel_eligible(settings: &Settings, tool: &ChatToolDefinition) -
         return false;
     }
     if tool.source == "native" {
-        return matches!(tool.name.as_str(), "web_search" | "web_fetch" | "read_file");
+        return matches!(
+            tool.name.as_str(),
+            "web_search"
+                | "web_fetch"
+                | "read_file"
+                | "list_dir"
+                | "search_files"
+                | "glob_files"
+                | "stat_path"
+        );
     }
     tool.source == "mcp" && tool.is_read_only_tool()
 }
@@ -1380,6 +1399,8 @@ async fn call_chat_completion_message(
     retry_attempts: usize,
     thinking_enabled: bool,
     max_output_tokens: u32,
+    conversation_id: &str,
+    message_id: &str,
     label: &str,
 ) -> Result<Value, String> {
     let request = generate_request_from_openai_messages(
@@ -1392,6 +1413,7 @@ async fn call_chat_completion_message(
             ..GenerateOptions::default()
         },
         label,
+        GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
     );
     let output = generate_with_chat_provider(state, provider, retry_attempts, request)
         .await
@@ -1430,6 +1452,7 @@ async fn stream_scoped_chat_completion_inner(
             ..GenerateOptions::default()
         },
         label,
+        GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
     );
     let mut sink = AgentStreamSink::new(
         host,
@@ -1539,6 +1562,7 @@ fn cancelled_tool_round_run_result(
         segments,
         api_messages: generated_api_messages,
         steps,
+        stream_outcome: "cancelled".to_string(),
     }
 }
 

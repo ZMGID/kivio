@@ -9,6 +9,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ToolCallRecord, ToolCallStatus } from './types'
+import { isToolCallErrorStatus, normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { AskUserBlock } from './AskUserBlock'
 
@@ -157,32 +158,6 @@ function structuredTodoState(toolCall: ToolCallRecord): AgentTodoState | null {
   }
 }
 
-function normalizeStatus(status?: string): ToolCallStatus {
-  switch (status) {
-    case 'running':
-    case 'in_progress':
-    case 'calling':
-    case 'executing':
-      return 'running'
-    case 'completed':
-    case 'success':
-    case 'succeeded':
-      return 'completed'
-    case 'error':
-    case 'failed':
-      return 'error'
-    case 'skipped':
-      return 'skipped'
-    case 'cancelled':
-    case 'canceled':
-      return 'cancelled'
-    case 'pending':
-    case 'queued':
-    default:
-      return 'pending'
-  }
-}
-
 function formatDuration(ms?: number): string {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return ''
   if (ms < 1000) return `${Math.round(ms)}ms`
@@ -306,7 +281,7 @@ function getResultPreview(toolCall: ToolCallRecord): string {
     return '已提取 PDF 文本并生成摘要上下文'
   }
   if (rawName === 'todo_write' || rawName === 'todo_update') {
-    if (normalizeStatus(toolCall.status) !== 'completed') return ''
+    if (normalizeToolCallStatus(toolCall.status) !== 'completed') return ''
     const counts = formatTodoCounts(structuredTodoState(toolCall)?.items)
     return counts ? `已同步 ${counts}` : '已同步'
   }
@@ -396,7 +371,7 @@ function StatusIcon({ status }: { status: ToolCallStatus }) {
   if (status === 'running') {
     return <Loader2 className="shrink-0 animate-spin" size={12} />
   }
-  if (status === 'completed') {
+  if (status === 'completed' || status === 'success') {
     return (
       <CheckCircle2
         className="shrink-0 text-[#C56646] dark:text-[#E39A78]"
@@ -423,7 +398,7 @@ function DefaultToolCallBlock({
   labels,
 }: ToolCallBlockProps) {
   const mergedLabels = { ...defaultLabels, ...labels }
-  const status = normalizeStatus(toolCall.status)
+  const status = normalizeToolCallStatus(toolCall.status)
   const [open, setOpen] = useState(defaultOpen)
 
   const toolName = getToolName(toolCall)
@@ -469,7 +444,9 @@ function DefaultToolCallBlock({
         {rowPreview && (
           <span
             className={`min-w-0 truncate ${
-              error ? 'text-red-500' : 'text-neutral-400 dark:text-neutral-500'
+              error && isToolCallErrorStatus(toolCall.status)
+                ? 'text-red-500'
+                : 'text-neutral-400 dark:text-neutral-500'
             }`}
           >
             · {rowPreview}

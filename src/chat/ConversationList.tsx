@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { MoreHorizontal } from 'lucide-react'
-import type { ConversationListItem } from './types'
+import type { ChatProject, ConversationListItem } from './types'
 import {
   ConversationContextMenu,
   type ConversationMenuAnchor,
@@ -10,24 +10,30 @@ interface ConversationListProps {
   conversations: ConversationListItem[]
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
-  projectFolders: string[]
+  projects: ChatProject[]
+  compact?: boolean
   emptyLabel?: string
+  indent?: boolean
+  showAssistantName?: boolean
   onSelectConversation: (id: string) => void
   onRenameConversation: (id: string, title: string) => Promise<void>
   onDeleteConversation: (id: string) => Promise<void>
-  onMoveConversationToFolder: (id: string, folder: string | undefined) => Promise<void>
+  onMoveConversationToProject: (id: string, projectId: string | undefined) => Promise<void>
 }
 
 export const ConversationList = memo(function ConversationList({
   conversations,
   currentConversationId,
   generatingConversationIds = new Set(),
-  projectFolders,
+  projects,
+  compact = false,
   emptyLabel = '暂无对话',
+  indent = false,
+  showAssistantName = true,
   onSelectConversation,
   onRenameConversation,
   onDeleteConversation,
-  onMoveConversationToFolder,
+  onMoveConversationToProject,
 }: ConversationListProps) {
   const [menuState, setMenuState] = useState<{
     conversationId: string
@@ -81,7 +87,7 @@ export const ConversationList = memo(function ConversationList({
 
   return (
     <>
-      <div className="space-y-0.5 py-1">
+      <div className={compact ? 'space-y-0.5 py-0.5' : 'space-y-0.5 py-1'}>
         {conversations.map((conv) => {
           const active = currentConversationId === conv.id
           const isGenerating = generatingConversationIds.has(conv.id)
@@ -91,7 +97,7 @@ export const ConversationList = memo(function ConversationList({
             return (
               <div
                 key={conv.id}
-                className="px-1 py-0.5"
+                className={`${indent ? 'pl-8 pr-1' : 'px-1'} py-0.5`}
               >
                 <input
                   ref={renameInputRef}
@@ -119,17 +125,23 @@ export const ConversationList = memo(function ConversationList({
               key={conv.id}
               className={`group relative flex min-w-0 items-center rounded-lg ${
                 active
-                  ? 'bg-black/[0.06] dark:bg-white/[0.1]'
+                  ? 'bg-black/[0.07] dark:bg-white/[0.11]'
                   : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
               }`}
             >
               <button
                 type="button"
                 onClick={() => onSelectConversation(conv.id)}
-                className={`min-w-0 flex-1 px-3 py-2 text-left text-[13px] transition-colors ${
+                className={`min-w-0 flex-1 text-left transition-colors ${
+                  compact
+                    ? `${indent ? 'pl-8' : 'pl-2.5'} pr-2 py-1 text-[13px] leading-5`
+                    : 'px-3 py-2 text-[13px]'
+                } ${
                   active
-                    ? 'font-medium text-neutral-900 dark:text-neutral-100'
-                    : 'text-neutral-700 dark:text-neutral-300'
+                    ? 'font-semibold text-neutral-900 dark:text-neutral-100'
+                    : compact
+                      ? 'font-medium text-neutral-700 dark:text-neutral-300'
+                      : 'text-neutral-700 dark:text-neutral-300'
                 }`}
                 title={isGenerating ? `${conv.title}（正在生成…）` : conv.title}
               >
@@ -142,7 +154,7 @@ export const ConversationList = memo(function ConversationList({
                     />
                   )}
                 </span>
-                {(conv.assistant_name ?? conv.assistantName) && (
+                {showAssistantName && (conv.assistant_name ?? conv.assistantName) && (
                   <span className="mt-0.5 block truncate text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
                     {(conv.assistant_name ?? conv.assistantName)}
                   </span>
@@ -154,14 +166,14 @@ export const ConversationList = memo(function ConversationList({
                   e.stopPropagation()
                   openMenu(conv.id, e.currentTarget)
                 }}
-                className={`mr-1 shrink-0 rounded-md p-1 text-neutral-400 transition-opacity hover:bg-black/[0.06] hover:text-neutral-600 dark:hover:bg-white/[0.1] dark:hover:text-neutral-200 ${
+                className={`mr-1 shrink-0 rounded-md p-0.5 text-neutral-400 transition-opacity hover:bg-black/[0.06] hover:text-neutral-600 dark:hover:bg-white/[0.1] dark:hover:text-neutral-200 ${
                   menuState?.conversationId === conv.id
                     ? 'opacity-100'
                     : 'opacity-0 group-hover:opacity-100'
                 }`}
                 aria-label="对话操作"
               >
-                <MoreHorizontal size={16} />
+                <MoreHorizontal size={15} />
               </button>
             </div>
           )
@@ -173,9 +185,10 @@ export const ConversationList = memo(function ConversationList({
           anchor={menuState.anchor}
           conversationTitle={menuConversation.title}
           conversationFolder={menuConversation.folder}
-          projectFolders={projectFolders}
+          conversationProjectId={menuConversation.project_id ?? menuConversation.projectId ?? null}
+          projects={projects}
           onRename={() => startRename(menuConversation)}
-          onMoveToFolder={(folder) => void onMoveConversationToFolder(menuConversation.id, folder)}
+          onMoveToProject={(projectId) => void onMoveConversationToProject(menuConversation.id, projectId)}
           onDelete={() => void onDeleteConversation(menuConversation.id)}
           onClose={() => setMenuState(null)}
         />

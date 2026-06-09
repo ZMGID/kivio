@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { RefreshCw, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RefreshCw, Trash2 } from 'lucide-react'
 import {
   api,
   type UsageGroupStats,
@@ -29,6 +29,8 @@ const SOURCE_OPTIONS = [
 ]
 
 const STATUS_OPTIONS = ['all', 'success', 'error', 'cancelled', 'missing_usage']
+const LOG_PAGE_SIZE = 30
+const SEARCH_DEBOUNCE_MS = 250
 
 function sourceLabel(source: string, lang: string) {
   const zh: Record<string, string> = {
@@ -109,6 +111,13 @@ function formatTime(seconds?: number | null, lang = 'zh') {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function pageRangeLabel(pageIndex: number, pageSize: number, total: number) {
+  if (total <= 0) return '0 / 0'
+  const start = pageIndex * pageSize + 1
+  const end = Math.min(total, start + pageSize - 1)
+  return `${start}-${end} / ${total}`
 }
 
 function recordTotalTokens(record: UsageRecord) {
@@ -323,6 +332,9 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
   const [status, setStatus] = useState('all')
   const [providerSearch, setProviderSearch] = useState('')
   const [modelSearch, setModelSearch] = useState('')
+  const [debouncedProviderSearch, setDebouncedProviderSearch] = useState('')
+  const [debouncedModelSearch, setDebouncedModelSearch] = useState('')
+  const [logPageIndex, setLogPageIndex] = useState(0)
   const [stats, setStats] = useState<UsageStatsResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [clearing, setClearing] = useState(false)
@@ -336,9 +348,10 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
         range,
         source,
         status,
-        providerSearch,
-        modelSearch,
-        limit: 120,
+        providerSearch: debouncedProviderSearch,
+        modelSearch: debouncedModelSearch,
+        limit: LOG_PAGE_SIZE,
+        offset: logPageIndex * LOG_PAGE_SIZE,
       })
       setStats(data)
     } catch (err) {
@@ -346,7 +359,16 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
     } finally {
       setLoading(false)
     }
-  }, [modelSearch, providerSearch, range, source, status])
+  }, [debouncedModelSearch, debouncedProviderSearch, logPageIndex, range, source, status])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setLogPageIndex(0)
+      setDebouncedProviderSearch(providerSearch.trim())
+      setDebouncedModelSearch(modelSearch.trim())
+    }, SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [modelSearch, providerSearch])
 
   useEffect(() => {
     void loadStats()
@@ -371,6 +393,31 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
   const reportedRatio = summary && summary.totalRequests > 0
     ? Math.round((summary.providerReportedRequests / summary.totalRequests) * 100)
     : 0
+  const totalLogs = stats?.totalLogs ?? 0
+  const pageCount = Math.max(1, Math.ceil(totalLogs / LOG_PAGE_SIZE))
+  const canGoPrev = logPageIndex > 0 && !loading
+  const canGoNext = logPageIndex + 1 < pageCount && !loading
+
+  useEffect(() => {
+    if (logPageIndex > 0 && (totalLogs === 0 || logPageIndex >= pageCount)) {
+      setLogPageIndex(Math.max(0, pageCount - 1))
+    }
+  }, [logPageIndex, pageCount, totalLogs])
+
+  const updateRange = useCallback((next: UsageRange) => {
+    setLogPageIndex(0)
+    setRange(next)
+  }, [])
+
+  const updateSource = useCallback((next: string) => {
+    setLogPageIndex(0)
+    setSource(next)
+  }, [])
+
+  const updateStatus = useCallback((next: string) => {
+    setLogPageIndex(0)
+    setStatus(next)
+  }, [])
 
   return (
     <div className="space-y-3">
@@ -382,7 +429,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
                 key={option}
                 type="button"
                 className={range === option ? 'active' : ''}
-                onClick={() => setRange(option)}
+                onClick={() => updateRange(option)}
                 data-tauri-drag-region="false"
               >
                 {option === 'all' ? (lang === 'zh' ? '全部' : 'All') : option}
@@ -446,13 +493,13 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
             <Select
               className="w-40"
               value={source}
-              onChange={setSource}
+              onChange={updateSource}
               options={SOURCE_OPTIONS.map(value => ({ value, label: sourceLabel(value, lang) }))}
             />
             <Select
               className="w-36"
               value={status}
-              onChange={setStatus}
+              onChange={updateStatus}
               options={STATUS_OPTIONS.map(value => ({ value, label: statusLabel(value, lang) }))}
             />
           </div>
@@ -466,11 +513,40 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
         {view === 'providers' && <GroupTable rows={stats?.providerStats ?? []} lang={lang} type="provider" />}
         {view === 'models' && <GroupTable rows={stats?.modelStats ?? []} lang={lang} type="model" />}
 
-        {stats && stats.totalLogs > (stats.logs?.length ?? 0) && view === 'logs' && (
-          <div className="mt-2 text-[11px] text-neutral-500 dark:text-neutral-500">
-            {lang === 'zh'
-              ? `显示最近 ${stats.logs.length} / ${stats.totalLogs} 条`
-              : `Showing latest ${stats.logs.length} / ${stats.totalLogs}`}
+        {stats && view === 'logs' && (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 dark:text-neutral-500">
+            <span>
+              {lang === 'zh'
+                ? `显示 ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)} 条`
+                : `Showing ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)}`}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                className="kv-btn sm"
+                onClick={() => setLogPageIndex(page => Math.max(0, page - 1))}
+                disabled={!canGoPrev}
+                data-tauri-drag-region="false"
+                title={lang === 'zh' ? '上一页' : 'Previous page'}
+              >
+                <ChevronLeft size={11} />
+                {lang === 'zh' ? '上一页' : 'Prev'}
+              </button>
+              <span className="min-w-12 text-center tabular-nums">
+                {logPageIndex + 1} / {pageCount}
+              </span>
+              <button
+                type="button"
+                className="kv-btn sm"
+                onClick={() => setLogPageIndex(page => Math.min(pageCount - 1, page + 1))}
+                disabled={!canGoNext}
+                data-tauri-drag-region="false"
+                title={lang === 'zh' ? '下一页' : 'Next page'}
+              >
+                {lang === 'zh' ? '下一页' : 'Next'}
+                <ChevronRight size={11} />
+              </button>
+            </div>
           </div>
         )}
       </SettingsGroup>

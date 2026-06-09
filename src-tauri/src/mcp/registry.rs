@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::oneshot;
 
 use crate::{
+    native_tools::{resolve_tool_read_path, NativeToolWorkspace},
     settings::{
         ChatMcpServer, WebSearchProvider, CHAT_TOOL_MAX_TIMEOUT_MS, CHAT_TOOL_MIN_TIMEOUT_MS,
         SKILL_SCRIPT_MIN_TIMEOUT_MS,
@@ -24,6 +25,13 @@ use super::{
 };
 
 const TOOL_LIST_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Clone)]
+pub struct NativeToolContext {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub tool_call_id: Option<String>,
+}
 const MAX_PYTHON_INPUT_FILE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_PYTHON_INPUT_FILES: usize = 8;
 
@@ -60,6 +68,7 @@ fn sanitize_python_input_name(path: &Path) -> String {
 
 fn collect_python_input_files(
     _app: &AppHandle,
+    workspace: &NativeToolWorkspace,
     arguments: &Value,
 ) -> Result<Vec<PythonInputFilePayload>, String> {
     let Some(files) = arguments.get("files") else {
@@ -81,13 +90,9 @@ fn collect_python_input_files(
             .map(str::trim)
             .filter(|path| !path.is_empty())
             .ok_or_else(|| "run_python files entries must be non-empty strings".to_string())?;
-        let path = fs::canonicalize(Path::new(raw_path))
-            .map_err(|err| format!("Resolve run_python input file failed: {err}"))?;
+        let path = resolve_tool_read_path(workspace, raw_path)?;
         if !path.is_file() {
-            return Err(format!(
-                "run_python input is not a file: {}",
-                path.display()
-            ));
+            return Err(format!("run_python input is not a file: {raw_path}"));
         }
         let metadata =
             fs::metadata(&path).map_err(|err| format!("Read input metadata failed: {err}"))?;
@@ -307,9 +312,10 @@ pub async fn call_tool(
     tool: &ChatToolDefinition,
     arguments: Value,
     skill_cache: Option<&mut crate::skills::SkillRunCache>,
+    native_ctx: Option<NativeToolContext>,
 ) -> Result<McpToolCallResult, String> {
     if tool.source == "native" {
-        return call_native_tool(app, state, tool, arguments).await;
+        return call_native_tool(app, state, tool, arguments, native_ctx).await;
     }
 
     if tool.source == "skill" {
@@ -505,12 +511,18 @@ async fn call_native_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
+    native_ctx: Option<NativeToolContext>,
 ) -> Result<McpToolCallResult, String> {
     let settings = state.settings_read().clone();
-    let roots = &settings.chat_tools.native_tools.workspace_roots;
+    let workspace = resolve_native_workspace(
+        app,
+        &settings.chat_tools.native_tools.workspace_roots,
+        native_ctx.as_ref(),
+    )?;
 
     if tool.name == "run_python" {
-        return run_python_via_pyodide(app, state, &settings, &arguments).await;
+        return run_python_via_pyodide(app, state, &settings, &workspace, &arguments, native_ctx)
+            .await;
     }
 
     let content = match tool.name.as_str() {
@@ -554,12 +566,24 @@ async fn call_native_tool(
             }
             return crate::chat::memory::tool_modify(app, &arguments);
         }
-        "read_file" => crate::native_tools::read_file(&arguments)?,
-        "write_file" => crate::native_tools::write_file(roots, &arguments)?,
-        "edit_file" => crate::native_tools::edit_file(roots, &arguments)?,
+        "read_file" => crate::native_tools::read_file(&workspace, &arguments)?,
+        "list_dir" => crate::native_tools::list_dir(&workspace, &arguments)?,
+        "search_files" => crate::native_tools::search_files(&workspace, &arguments)?,
+        "glob_files" => crate::native_tools::glob_files(&workspace, &arguments)?,
+        "stat_path" => crate::native_tools::stat_path(&workspace, &arguments)?,
+        "write_file" => crate::native_tools::write_file(&workspace, &arguments)?,
+        "edit_file" => crate::native_tools::edit_file(&workspace, &arguments)?,
+        "create_dir" => crate::native_tools::create_dir(&workspace, &arguments)?,
+        "delete_path" => crate::native_tools::delete_path(&workspace, &arguments)?,
+        "move_path" => crate::native_tools::move_path(&workspace, &arguments)?,
+        "copy_path" => crate::native_tools::copy_path(&workspace, &arguments)?,
         "run_command" => {
-            crate::native_tools::run_command(roots, settings.chat_tools.tool_timeout_ms, &arguments)
-                .await?
+            crate::native_tools::run_command(
+                &workspace,
+                settings.chat_tools.tool_timeout_ms,
+                &arguments,
+            )
+            .await?
         }
         other => return Err(format!("Unknown native tool: {other}")),
     };
@@ -573,11 +597,39 @@ async fn call_native_tool(
     })
 }
 
+fn resolve_native_workspace(
+    app: &AppHandle,
+    workspace_roots: &[String],
+    native_ctx: Option<&NativeToolContext>,
+) -> Result<NativeToolWorkspace, String> {
+    let Some(native_ctx) = native_ctx else {
+        return Ok(NativeToolWorkspace::global(workspace_roots));
+    };
+    let conversation = crate::chat::storage::load_conversation(app, &native_ctx.conversation_id)
+        .map_err(|err| {
+            format!(
+                "Resolve native tool workspace failed for conversation {}: {err}",
+                native_ctx.conversation_id
+            )
+        })?;
+    let Some(project) = crate::chat::storage::resolve_conversation_project(app, &conversation)?
+    else {
+        return Ok(NativeToolWorkspace::global(workspace_roots));
+    };
+    Ok(NativeToolWorkspace::project(
+        project.id,
+        project.name,
+        project.root_path,
+    ))
+}
+
 async fn run_python_via_pyodide(
     app: &AppHandle,
     state: &AppState,
     settings: &crate::settings::Settings,
+    workspace: &NativeToolWorkspace,
     arguments: &Value,
+    native_ctx: Option<NativeToolContext>,
 ) -> Result<McpToolCallResult, String> {
     let code = arguments
         .get("code")
@@ -591,15 +643,32 @@ async fn run_python_via_pyodide(
         .and_then(|value| value.as_u64())
         .unwrap_or(settings.chat_tools.tool_timeout_ms)
         .clamp(1_000, 300_000);
-    let input_files = collect_python_input_files(app, arguments)?;
+    let input_files = collect_python_input_files(app, workspace, arguments)?;
     let run_id = uuid::Uuid::new_v4().to_string();
+    let export_ctx = native_ctx
+        .map(|ctx| crate::native_tools::SandboxExportContext {
+            conversation_id: ctx.conversation_id,
+            message_id: ctx.message_id,
+            tool_call_id: ctx.tool_call_id,
+        })
+        .unwrap_or_else(|| crate::native_tools::SandboxExportContext {
+            conversation_id: "standalone".to_string(),
+            message_id: run_id.clone(),
+            tool_call_id: None,
+        });
     let (tx, rx) = oneshot::channel();
     {
         let mut pending = state
             .pending_python_runs
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        pending.insert(run_id.clone(), tx);
+        pending.insert(
+            run_id.clone(),
+            crate::state::PendingPythonRun {
+                sender: tx,
+                export_ctx: export_ctx.clone(),
+            },
+        );
     }
     let emit_result = app.emit(
         "chat-run-python",
@@ -627,8 +696,28 @@ async fn run_python_via_pyodide(
             if result.is_error {
                 Err(result.content)
             } else {
+                let mut content = result.content;
+                match crate::native_tools::export_sandbox_artifacts(&export_ctx, &result.artifacts)
+                {
+                    Ok(exported_paths) => {
+                        let export_note =
+                            crate::native_tools::format_exported_paths(&exported_paths);
+                        if !export_note.is_empty() {
+                            if !content.trim().is_empty() {
+                                content.push_str("\n\n");
+                            }
+                            content.push_str(&export_note);
+                        }
+                    }
+                    Err(err) => {
+                        if !content.trim().is_empty() {
+                            content.push_str("\n\n");
+                        }
+                        content.push_str(&crate::native_tools::format_export_error(&err));
+                    }
+                }
                 Ok(McpToolCallResult {
-                    content: result.content,
+                    content,
                     is_error: false,
                     raw: Value::Null,
                     artifacts: result.artifacts,

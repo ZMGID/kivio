@@ -1866,39 +1866,6 @@ body {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .kv-select-button { line-height: 1.35; }
-.kv-select-model-button {
-  padding-top: 5px;
-  padding-bottom: 5px;
-  max-width: min(100%, 22rem);
-  line-height: 1.2;
-}
-.kv-select-model-value {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-}
-.kv-select-model-provider,
-.kv-select-model-option-provider {
-  min-width: 0;
-  font-size: 11px;
-  line-height: 1.2;
-  color: var(--text-muted);
-}
-.kv-select-model-name,
-.kv-select-model-option-name {
-  min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.25;
-  color: var(--text);
-}
-.kv-select-model-option {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 1px 0;
-}
 .kv-select-menu {
   border-radius: 8px;
   border: 1px solid rgba(0, 0, 0, 0.1);
@@ -1910,12 +1877,6 @@ body {
 .dark .kv-select-menu {
   border-color: rgba(255, 255, 255, 0.1);
   background: rgba(29, 29, 31, 0.96);
-}
-.kv-select-menu [aria-selected="true"] .kv-select-model-provider,
-.kv-select-menu [aria-selected="true"] .kv-select-model-option-provider,
-.kv-select-menu [aria-selected="true"] .kv-select-model-name,
-.kv-select-menu [aria-selected="true"] .kv-select-model-option-name {
-  color: currentColor;
 }
 
 .kv-input {

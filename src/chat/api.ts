@@ -418,6 +418,7 @@ function loadMockProjectsWithLegacyFolders(): ChatProject[] {
     projects.push({
       id: `proj_dev_${crypto.randomUUID()}`,
       name: folder,
+      root_path: null,
       created_at: now,
       updated_at: now,
     })
@@ -444,6 +445,8 @@ function toListItem(conversation: Conversation): ConversationListItem {
     updated_at: conversation.updated_at,
     pinned: conversation.pinned,
     folder: conversation.folder,
+    project_id: conversation.project_id ?? conversation.projectId ?? null,
+    projectId: conversation.project_id ?? conversation.projectId ?? null,
     assistant_id: conversation.assistant_id ?? conversation.assistantId ?? null,
     assistant_name:
       conversation.assistant_snapshot?.name
@@ -507,9 +510,20 @@ function withMockContext(conversation: Conversation): Conversation {
 }
 
 const mockChatApi = {
-  async getConversations(offset = 0, limit = 50, folder?: string): Promise<ConversationListItem[]> {
+  async getConversations(
+    offset = 0,
+    limit = 50,
+    folder?: string,
+    projectId?: string | null,
+  ): Promise<ConversationListItem[]> {
     const conversations = loadMockConversations()
-      .filter((conversation) => !folder || conversation.folder === folder)
+      .filter((conversation) => {
+        if (projectId) {
+          const conversationProjectId = conversation.project_id ?? conversation.projectId ?? null
+          return conversationProjectId === projectId || (!conversationProjectId && conversation.folder === folder)
+        }
+        return !folder || conversation.folder === folder
+      })
       .sort((a, b) => b.updated_at - a.updated_at)
     return conversations.slice(offset, offset + limit).map(toListItem)
   },
@@ -524,6 +538,7 @@ const mockChatApi = {
     providerId?: string,
     model?: string,
     folder?: string,
+    projectId?: string | null,
     assistantId?: string | null,
   ): Promise<Conversation> {
     const now = nowSeconds()
@@ -547,6 +562,8 @@ const mockChatApi = {
       updated_at: now,
       pinned: false,
       folder,
+      project_id: projectId ?? null,
+      projectId: projectId ?? null,
       agent_todo_state: { items: [], updated_at: 0 },
       agentTodoState: { items: [], updated_at: 0 },
       agent_plan_state: { mode: 'act', status: 'empty', plan: null, updated_at: 0 },
@@ -561,7 +578,12 @@ const mockChatApi = {
     return loadMockProjectsWithLegacyFolders()
   },
 
-  async createProject(name: string, description?: string | null, color?: string | null): Promise<ChatProject> {
+  async createProject(
+    name: string,
+    description?: string | null,
+    color?: string | null,
+    rootPath?: string | null,
+  ): Promise<ChatProject> {
     const normalized = normalizeProjectName(name)
     const projects = loadMockProjectsWithLegacyFolders()
     if (projects.some((project) => project.name === normalized)) {
@@ -573,6 +595,8 @@ const mockChatApi = {
       name: normalized,
       description: description ?? null,
       color: color ?? null,
+      root_path: rootPath ?? null,
+      rootPath: rootPath ?? null,
       created_at: now,
       updated_at: now,
     }
@@ -582,7 +606,7 @@ const mockChatApi = {
 
   async updateProject(
     projectId: string,
-    updates: { name?: string; description?: string | null; color?: string | null },
+    updates: { name?: string; description?: string | null; color?: string | null; rootPath?: string | null },
   ): Promise<ChatProject> {
     const projects = loadMockProjectsWithLegacyFolders()
     const index = projects.findIndex((project) => project.id === projectId)
@@ -597,6 +621,8 @@ const mockChatApi = {
       name: nextName,
       description: updates.description !== undefined ? updates.description : projects[index].description,
       color: updates.color !== undefined ? updates.color : projects[index].color,
+      root_path: updates.rootPath !== undefined ? updates.rootPath : (projects[index].root_path ?? projects[index].rootPath ?? null),
+      rootPath: updates.rootPath !== undefined ? updates.rootPath : (projects[index].rootPath ?? projects[index].root_path ?? null),
       updated_at: nowSeconds(),
     }
     projects[index] = nextProject
@@ -620,8 +646,8 @@ const mockChatApi = {
     saveMockProjects(projects.filter((item) => item.id !== projectId))
     saveMockConversations(
       loadMockConversations().map((conversation) =>
-        conversation.folder === project.name
-          ? { ...conversation, folder: undefined, updated_at: nowSeconds() }
+        (conversation.project_id ?? conversation.projectId) === project.id || conversation.folder === project.name
+          ? { ...conversation, folder: undefined, project_id: null, projectId: null, updated_at: nowSeconds() }
           : conversation,
       ),
     )
@@ -823,6 +849,7 @@ const mockChatApi = {
       title?: string
       pinned?: boolean
       folder?: string
+      projectId?: string | null
       providerId?: string
       model?: string
       activeSkillId?: string | null
@@ -833,11 +860,25 @@ const mockChatApi = {
     const index = conversations.findIndex((item) => item.id === conversationId)
     if (index < 0) throw new Error('Conversation not found')
     const hasFolderUpdate = Object.prototype.hasOwnProperty.call(updates, 'folder')
+    const hasProjectUpdate = Object.prototype.hasOwnProperty.call(updates, 'projectId')
+    const project = hasProjectUpdate && updates.projectId
+      ? loadMockProjectsWithLegacyFolders().find((item) => item.id === updates.projectId)
+      : undefined
     const conversation = {
       ...conversations[index],
       title: updates.title ?? conversations[index].title,
       pinned: updates.pinned ?? conversations[index].pinned,
-      folder: hasFolderUpdate ? updates.folder || undefined : conversations[index].folder,
+      folder: hasProjectUpdate
+        ? project?.name
+        : hasFolderUpdate
+          ? updates.folder || undefined
+          : conversations[index].folder,
+      project_id: hasProjectUpdate
+        ? updates.projectId || null
+        : conversations[index].project_id ?? conversations[index].projectId ?? null,
+      projectId: hasProjectUpdate
+        ? updates.projectId || null
+        : conversations[index].projectId ?? conversations[index].project_id ?? null,
       provider_id: updates.providerId ?? conversations[index].provider_id,
       model: updates.model ?? conversations[index].model,
       active_skill_id:
@@ -1012,12 +1053,13 @@ export const chatApi = {
   async getConversations(
     offset = 0,
     limit = 50,
-    folder?: string
+    folder?: string,
+    projectId?: string | null,
   ): Promise<ConversationListItem[]> {
-    if (!isTauriRuntime()) return mockChatApi.getConversations(offset, limit, folder)
+    if (!isTauriRuntime()) return mockChatApi.getConversations(offset, limit, folder, projectId)
     const result = await invoke<{ success: boolean; conversations: ConversationListItem[] }>(
       'chat_get_conversations',
-      { offset, limit, folder }
+      { offset, limit, folder, projectId }
     )
     if (!result.success) {
       throw new Error('Failed to get conversations')
@@ -1043,12 +1085,13 @@ export const chatApi = {
     providerId?: string,
     model?: string,
     folder?: string,
+    projectId?: string | null,
     assistantId?: string | null,
   ): Promise<Conversation> {
-    if (!isTauriRuntime()) return mockChatApi.createConversation(providerId, model, folder, assistantId)
+    if (!isTauriRuntime()) return mockChatApi.createConversation(providerId, model, folder, projectId, assistantId)
     const result = await invoke<{ success: boolean; conversation: Conversation }>(
       'chat_create_conversation',
-      { providerId, model, folder, assistantId }
+      { providerId, model, folder, projectId, assistantId }
     )
     if (!result.success) {
       throw new Error('Failed to create conversation')
@@ -1071,11 +1114,12 @@ export const chatApi = {
     name: string,
     description?: string | null,
     color?: string | null,
+    rootPath?: string | null,
   ): Promise<ChatProject> {
-    if (!isTauriRuntime()) return mockChatApi.createProject(name, description, color)
+    if (!isTauriRuntime()) return mockChatApi.createProject(name, description, color, rootPath)
     const result = await invoke<{ success: boolean; project: ChatProject }>(
       'chat_create_project',
-      { name, description, color },
+      { name, description, color, rootPath },
     )
     if (!result.success) {
       throw new Error('Failed to create project')
@@ -1085,16 +1129,23 @@ export const chatApi = {
 
   async updateProject(
     projectId: string,
-    updates: { name?: string; description?: string | null; color?: string | null },
+    updates: { name?: string; description?: string | null; color?: string | null; rootPath?: string | null },
   ): Promise<ChatProject> {
     if (!isTauriRuntime()) return mockChatApi.updateProject(projectId, updates)
+    const hasDescriptionUpdate = Object.prototype.hasOwnProperty.call(updates, 'description')
+    const hasColorUpdate = Object.prototype.hasOwnProperty.call(updates, 'color')
+    const hasRootPathUpdate = Object.prototype.hasOwnProperty.call(updates, 'rootPath')
     const result = await invoke<{ success: boolean; project: ChatProject }>(
       'chat_update_project',
       {
         projectId,
         name: updates.name,
-        description: updates.description,
-        color: updates.color,
+        description: hasDescriptionUpdate ? updates.description : undefined,
+        descriptionSet: hasDescriptionUpdate,
+        color: hasColorUpdate ? updates.color : undefined,
+        colorSet: hasColorUpdate,
+        rootPath: hasRootPathUpdate ? updates.rootPath : undefined,
+        rootPathSet: hasRootPathUpdate,
       },
     )
     if (!result.success) {
@@ -1209,6 +1260,7 @@ export const chatApi = {
       title?: string
       pinned?: boolean
       folder?: string
+      projectId?: string | null
       providerId?: string
       model?: string
       activeSkillId?: string | null
@@ -1217,6 +1269,7 @@ export const chatApi = {
   ): Promise<Conversation> {
     if (!isTauriRuntime()) return mockChatApi.updateConversation(conversationId, updates)
     const hasFolderUpdate = Object.prototype.hasOwnProperty.call(updates, 'folder')
+    const hasProjectUpdate = Object.prototype.hasOwnProperty.call(updates, 'projectId')
     const result = await invoke<{ success: boolean; conversation: Conversation }>(
       'chat_update_conversation',
       {
@@ -1224,6 +1277,7 @@ export const chatApi = {
         title: updates.title,
         pinned: updates.pinned,
         folder: hasFolderUpdate ? updates.folder ?? '' : undefined,
+        projectId: hasProjectUpdate ? updates.projectId ?? '' : undefined,
         providerId: updates.providerId,
         model: updates.model,
         activeSkillId: updates.activeSkillId,

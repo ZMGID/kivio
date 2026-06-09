@@ -81,4 +81,5 @@ pub struct AgentRunResult {
     pub segments: Vec<ChatMessageSegment>,
     pub api_messages: Vec<Value>,
     pub steps: Vec<AgentStepResult>,
+    pub stream_outcome: String,
 }

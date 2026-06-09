@@ -6,7 +6,7 @@ use tokio::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use super::{resolve_read_path, user_home_dir};
+use super::{resolve_tool_existing_dir, NativeToolWorkspace};
 use crate::settings::{CHAT_TOOL_MAX_TIMEOUT_MS, CHAT_TOOL_MIN_TIMEOUT_MS};
 
 const COMMAND_DENYLIST: &[&str] = &[
@@ -32,7 +32,7 @@ const HOST_PYTHON_PACKAGE_INSTALL_PATTERNS: &[&str] = &[
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub async fn run_command(
-    workspace_roots: &[String],
+    workspace: &NativeToolWorkspace,
     default_timeout_ms: u64,
     arguments: &Value,
 ) -> Result<String, String> {
@@ -78,7 +78,7 @@ pub async fn run_command(
         }
     }
 
-    let cwd = resolve_command_cwd(arguments, workspace_roots)?;
+    let cwd = resolve_command_cwd(arguments, workspace)?;
 
     if !cwd.is_dir() {
         return Err(format!(
@@ -104,29 +104,11 @@ pub async fn run_command(
     Ok(formatted)
 }
 
-fn resolve_command_cwd(arguments: &Value, workspace_roots: &[String]) -> Result<PathBuf, String> {
-    if let Some(cwd_arg) = arguments.get("cwd").and_then(|v| v.as_str()) {
-        resolve_unrestricted_existing_dir(cwd_arg)
-    } else if let Some(root) = workspace_roots
-        .iter()
-        .map(|root| root.trim())
-        .find(|root| !root.is_empty())
-    {
-        resolve_unrestricted_existing_dir(root)
-    } else {
-        user_home_dir()
-    }
-}
-
-fn resolve_unrestricted_existing_dir(raw_path: &str) -> Result<PathBuf, String> {
-    let path = resolve_read_path(raw_path)?;
-    if !path.is_dir() {
-        return Err(format!(
-            "Working directory is not a directory: {}",
-            path.display()
-        ));
-    }
-    Ok(path)
+fn resolve_command_cwd(
+    arguments: &Value,
+    workspace: &NativeToolWorkspace,
+) -> Result<PathBuf, String> {
+    resolve_tool_existing_dir(workspace, arguments.get("cwd").and_then(|v| v.as_str()))
 }
 
 #[derive(Debug)]
@@ -236,6 +218,7 @@ fn format_command_output(output: &CommandOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_tools::user_home_dir;
 
     #[test]
     fn default_cwd_uses_first_workspace_root_when_configured() {
@@ -243,8 +226,8 @@ mod tests {
         let root = home.join(".kivio-chat-test-root");
         std::fs::create_dir_all(&root).expect("mkdir");
         let args = serde_json::json!({ "command": "pwd" });
-        let cwd = resolve_command_cwd(&args, &[root.to_string_lossy().into_owned()])
-            .expect("workspace root should resolve");
+        let workspace = NativeToolWorkspace::global(&[root.to_string_lossy().into_owned()]);
+        let cwd = resolve_command_cwd(&args, &workspace).expect("workspace root should resolve");
 
         assert_eq!(cwd, root);
         let _ = std::fs::remove_dir_all(root);
@@ -255,7 +238,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kivio_cmd_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let args = serde_json::json!({ "command": "pwd", "cwd": dir.to_string_lossy() });
-        let cwd = resolve_command_cwd(&args, &[]).expect("temp cwd should resolve");
+        let workspace = NativeToolWorkspace::global(&[]);
+        let cwd = resolve_command_cwd(&args, &workspace).expect("temp cwd should resolve");
 
         assert_eq!(
             cwd,
@@ -281,7 +265,7 @@ mod tests {
     #[tokio::test]
     async fn run_command_blocks_host_python_package_installs() {
         let err = run_command(
-            &[],
+            &NativeToolWorkspace::global(&[]),
             1_000,
             &serde_json::json!({ "command": "python3 -m pip install matplotlib" }),
         )

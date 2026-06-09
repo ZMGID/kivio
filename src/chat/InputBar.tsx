@@ -5,13 +5,19 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   ArrowUp,
   Archive,
+  Check,
+  ChevronDown,
+  ChevronRight,
   CircleHelp,
   Eraser,
+  Folder,
+  FolderPlus,
   ListChecks,
   MessageSquarePlus,
   Paperclip,
   Play,
   Plus,
+  Search,
   Settings,
   ShieldAlert,
   SlidersHorizontal,
@@ -20,7 +26,8 @@ import {
 } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
 import { api, type ChatToolDefinition } from '../api/tauri'
-import type { AgentPlanMode, AgentPlanState, PendingAttachment } from './types'
+import { chatApi } from './api'
+import type { AgentPlanMode, AgentPlanState, ChatProject, PendingAttachment } from './types'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif']
 const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -66,6 +73,32 @@ function shouldComposerAutoFocus(activeElement: Element | null): boolean {
 
 function isExternalMcpTool(tool: ChatToolDefinition): boolean {
   return tool.source !== 'skill' && tool.source !== 'native'
+}
+
+function projectPathLabel(project: ChatProject): string {
+  const rootPath = project.root_path ?? project.rootPath ?? ''
+  if (!rootPath) return ''
+  const normalized = rootPath.replace(/\\/g, '/')
+  return normalized.split('/').filter(Boolean).pop() ?? rootPath
+}
+
+function pathTail(path: string): string {
+  const normalized = path.replace(/\\/g, '/')
+  return normalized.split('/').filter(Boolean).pop() ?? path
+}
+
+function projectUpdatedAt(project: ChatProject): number {
+  return project.updated_at ?? project.updatedAt ?? project.created_at ?? project.createdAt ?? 0
+}
+
+function nextBlankProjectName(projects: ChatProject[]): string {
+  const names = new Set(projects.map((project) => project.name))
+  if (!names.has('新项目')) return '新项目'
+  for (let index = 2; index < 100; index += 1) {
+    const name = `新项目 ${index}`
+    if (!names.has(name)) return name
+  }
+  return `新项目 ${Date.now()}`
 }
 
 const APPROVAL_POLICY_OPTIONS = [
@@ -298,6 +331,9 @@ interface InputBarProps {
   onExecuteAgentPlan?: () => void | Promise<void>
   enabledSkills?: { id: string; name: string }[]
   onOpenSkillSettings?: () => void
+  selectedProject?: ChatProject | null
+  onSelectProject?: (project: ChatProject | null) => void | Promise<void>
+  showProjectEntry?: boolean
   autoFocus?: boolean
   /** footer：贴底（有消息时）；inline：嵌入居中区域（空对话欢迎页） */
   layout?: 'footer' | 'inline'
@@ -325,6 +361,9 @@ export function InputBar({
   onExecuteAgentPlan,
   enabledSkills = [],
   onOpenSkillSettings,
+  selectedProject = null,
+  onSelectProject,
+  showProjectEntry = false,
   autoFocus,
   layout = 'footer',
 }: InputBarProps) {
@@ -333,6 +372,13 @@ export function InputBar({
   const [attachmentError, setAttachmentError] = useState('')
   const [dragActive, setDragActive] = useState(false)
   const [toolPanelOpen, setToolPanelOpen] = useState(false)
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false)
+  const [projectOptions, setProjectOptions] = useState<ChatProject[]>([])
+  const [projectOptionsLoading, setProjectOptionsLoading] = useState(false)
+  const [projectOptionsError, setProjectOptionsError] = useState('')
+  const [projectSearchQuery, setProjectSearchQuery] = useState('')
+  const [projectCreating, setProjectCreating] = useState(false)
+  const [projectCreateMenuOpen, setProjectCreateMenuOpen] = useState(false)
   const [slashPanelOpen, setSlashPanelOpen] = useState(false)
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
   const [activeSlashToken, setActiveSlashToken] = useState<ActiveSlashToken | null>(null)
@@ -342,6 +388,12 @@ export function InputBar({
   const agentPlanMode = agentPlanState?.mode ?? 'act'
   const agentPlanText = agentPlanState?.plan?.trim() ?? ''
   const agentPlanActive = agentPlanMode === 'plan'
+  const projectEntryEnabled = Boolean(showProjectEntry && onSelectProject)
+
+  const closeProjectMenu = useCallback(() => {
+    setProjectMenuOpen(false)
+    setProjectCreateMenuOpen(false)
+  }, [])
 
   const attachmentsFromPaths = useCallback(
     (paths: string[]) =>
@@ -360,6 +412,91 @@ export function InputBar({
     [],
   )
 
+  const loadProjectOptions = useCallback(async () => {
+    if (!projectEntryEnabled) return
+    setProjectOptionsLoading(true)
+    setProjectOptionsError('')
+    try {
+      setProjectOptions(await chatApi.getProjects())
+    } catch (err) {
+      console.error('Failed to load chat projects:', err)
+      setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : '项目加载失败')
+    } finally {
+      setProjectOptionsLoading(false)
+    }
+  }, [projectEntryEnabled])
+
+  const toggleProjectMenu = useCallback(() => {
+    if (!projectEntryEnabled || disabled) return
+    setSlashPanelOpen(false)
+    setToolPanelOpen(false)
+    setProjectMenuOpen((open) => {
+      const nextOpen = !open
+      setProjectCreateMenuOpen(false)
+      if (nextOpen) {
+        setProjectSearchQuery('')
+        void loadProjectOptions()
+      }
+      return nextOpen
+    })
+  }, [disabled, loadProjectOptions, projectEntryEnabled])
+
+  const selectProject = useCallback(async (project: ChatProject | null) => {
+    if (!onSelectProject) return
+    closeProjectMenu()
+    await onSelectProject(project)
+    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+  }, [closeProjectMenu, onSelectProject])
+
+  const createBlankProject = useCallback(async () => {
+    if (!onSelectProject || disabled || projectCreating) return
+    setProjectOptionsError('')
+    setProjectCreating(true)
+    try {
+      const project = await chatApi.createProject(nextBlankProjectName(projectOptions), null, null, null)
+      setProjectOptions((prev) => [
+        project,
+        ...prev.filter((item) => item.id !== project.id),
+      ])
+      closeProjectMenu()
+      await onSelectProject(project)
+    } catch (err) {
+      console.error('Failed to create blank chat project from input bar:', err)
+      setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : '项目创建失败')
+    } finally {
+      setProjectCreating(false)
+      requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+    }
+  }, [closeProjectMenu, disabled, onSelectProject, projectCreating, projectOptions])
+
+  const createProjectFromFolder = useCallback(async () => {
+    if (!onSelectProject || disabled || projectCreating) return
+    setProjectOptionsError('')
+    setProjectCreating(true)
+    try {
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        title: '选择项目文件夹',
+      })
+      const rootPath = Array.isArray(picked) ? picked[0] : picked
+      if (!rootPath) return
+      const project = await chatApi.createProject(pathTail(rootPath), null, null, rootPath)
+      setProjectOptions((prev) => [
+        project,
+        ...prev.filter((item) => item.id !== project.id),
+      ])
+      closeProjectMenu()
+      await onSelectProject(project)
+    } catch (err) {
+      console.error('Failed to create chat project from input bar:', err)
+      setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : '项目创建失败')
+    } finally {
+      setProjectCreating(false)
+      requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+    }
+  }, [closeProjectMenu, disabled, onSelectProject, projectCreating])
+
   const updateTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current
     if (!textarea) return
@@ -373,10 +510,11 @@ export function InputBar({
     if (token) {
       setSlashPanelOpen(true)
       setToolPanelOpen(false)
+      closeProjectMenu()
     } else {
       setSlashPanelOpen(false)
     }
-  }, [])
+  }, [closeProjectMenu])
 
   const filteredSlashCommands = useMemo(
     () => LOCAL_SLASH_COMMANDS.filter((command) => (
@@ -384,6 +522,17 @@ export function InputBar({
     )),
     [activeSlashToken?.query],
   )
+  const visibleProjectOptions = useMemo(() => {
+    const query = projectSearchQuery.trim().toLowerCase()
+    return [...projectOptions]
+      .sort((a, b) => projectUpdatedAt(b) - projectUpdatedAt(a))
+      .filter((project) => {
+        if (!query) return true
+        const rootPath = project.root_path ?? project.rootPath ?? ''
+        return project.name.toLowerCase().includes(query) || rootPath.toLowerCase().includes(query)
+      })
+      .slice(0, 8)
+  }, [projectOptions, projectSearchQuery])
 
   const removeActiveSlashToken = useCallback(() => {
     const token = activeSlashToken
@@ -467,13 +616,14 @@ export function InputBar({
     if (disabled || !onAgentPlanModeChange) return
     setSlashPanelOpen(false)
     setToolPanelOpen(false)
+    closeProjectMenu()
     if (agentPlanMode !== mode) {
       await onAgentPlanModeChange(mode)
     }
     requestAnimationFrame(() => {
       textareaRef.current?.focus({ preventScroll: true })
     })
-  }, [agentPlanMode, disabled, onAgentPlanModeChange])
+  }, [agentPlanMode, closeProjectMenu, disabled, onAgentPlanModeChange])
 
   const toggleAgentPlanMode = useCallback(async () => {
     await setAgentPlanMode(agentPlanMode === 'plan' ? 'act' : 'plan')
@@ -482,6 +632,7 @@ export function InputBar({
   const openAttachmentPicker = useCallback(async () => {
     if (disabled) return
     setToolPanelOpen(false)
+    closeProjectMenu()
     setSlashPanelOpen(false)
     setAttachmentError('')
     try {
@@ -499,7 +650,7 @@ export function InputBar({
         typeof err === 'string' ? err : err instanceof Error ? err.message : '添加附件失败',
       )
     }
-  }, [addAttachments, attachmentsFromPaths, disabled])
+  }, [addAttachments, attachmentsFromPaths, closeProjectMenu, disabled])
 
   const handleSlashCommandSelect = useCallback(async (command: SlashCommandDefinition) => {
     if (disabled) return
@@ -509,6 +660,7 @@ export function InputBar({
       setActiveSlashToken({ start: 0, end: 1, query: '' })
       setSlashPanelOpen(true)
       setToolPanelOpen(false)
+      closeProjectMenu()
       requestAnimationFrame(() => {
         const textarea = textareaRef.current
         if (!textarea) return
@@ -552,6 +704,7 @@ export function InputBar({
           onOpenTools()
         } else {
           setToolPanelOpen(true)
+          closeProjectMenu()
         }
         return
       case 'attach':
@@ -568,6 +721,7 @@ export function InputBar({
     openAttachmentPicker,
     removeActiveSlashToken,
     setAgentPlanMode,
+    closeProjectMenu,
     updateTextareaHeight,
   ])
 
@@ -579,6 +733,7 @@ export function InputBar({
     setAttachments([])
     setAttachmentError('')
     setToolPanelOpen(false)
+    closeProjectMenu()
     setSlashPanelOpen(false)
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -813,6 +968,17 @@ export function InputBar({
   }, [toolPanelOpen])
 
   useEffect(() => {
+    if (!projectMenuOpen) return
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeProjectMenu()
+      }
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [closeProjectMenu, projectMenuOpen])
+
+  useEffect(() => {
     if (!slashPanelOpen) return
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target
@@ -858,8 +1024,9 @@ export function InputBar({
   useEffect(() => {
     if (!disabled) return
     setToolPanelOpen(false)
+    closeProjectMenu()
     setSlashPanelOpen(false)
-  }, [disabled])
+  }, [closeProjectMenu, disabled])
 
   useEffect(() => {
     setSlashSelectedIndex(0)
@@ -925,6 +1092,10 @@ export function InputBar({
     ? 'top-full mt-1'
     : 'bottom-full mb-1'
   const slashPanelOrigin = layout === 'inline' ? 'top left' : 'bottom left'
+  const projectPanelPlacementClass = layout === 'inline'
+    ? 'top-full mt-1.5'
+    : 'bottom-full mb-1.5'
+  const projectPanelOrigin = layout === 'inline' ? 'top left' : 'bottom left'
   const externalMcpTools = enabledTools.filter(isExternalMcpTool)
   const hasToolProblem = Boolean(toolsDisabledReason || toolStatusHint || sendDisabledReason)
   const showMcpSection = externalMcpTools.length > 0 || Boolean(toolsDisabledReason)
@@ -1076,9 +1247,137 @@ export function InputBar({
             </div>
           </div>
         )}
+        {projectMenuOpen && projectEntryEnabled && (
+          <>
+            <div
+              className="fixed inset-0 z-30"
+              onClick={closeProjectMenu}
+              aria-hidden
+            />
+            <div
+              className={`chat-motion-popover absolute left-0 z-40 w-[min(240px,calc(100vw-32px))] overflow-visible rounded-xl border border-neutral-200/90 bg-white p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 ${projectPanelPlacementClass}`}
+              style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
+              data-tauri-drag-region="false"
+            >
+              <div className="flex h-7 items-center gap-1.5 rounded-md px-2 text-neutral-500 dark:text-neutral-400">
+                <Search size={14} strokeWidth={1.8} className="shrink-0" />
+                <input
+                  value={projectSearchQuery}
+                  onChange={(event) => setProjectSearchQuery(event.target.value)}
+                  placeholder="搜索项目"
+                  className="min-w-0 flex-1 border-0 bg-transparent text-[12px] font-semibold text-neutral-800 outline-none placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+                />
+              </div>
+
+              <div className="mt-0.5 max-h-48 overflow-y-auto">
+                {projectOptionsLoading ? (
+                  <div className="px-2 py-2.5 text-[12px] text-neutral-400 dark:text-neutral-500">
+                    正在加载项目…
+                  </div>
+                ) : projectOptionsError ? (
+                  <div className="px-2 py-2 text-[12px] text-red-500 dark:text-red-400">
+                    {projectOptionsError}
+                  </div>
+                ) : visibleProjectOptions.length > 0 ? (
+                  <div className="py-1">
+                    {visibleProjectOptions.map((project) => {
+                      const active = selectedProject?.id === project.id
+                      const pathLabel = projectPathLabel(project)
+                      return (
+                        <button
+                          key={project.id}
+                          type="button"
+                          onClick={() => void selectProject(project)}
+                          className={`flex min-h-[34px] w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left transition-colors ${
+                            active
+                              ? 'bg-neutral-100 text-neutral-950 dark:bg-neutral-800 dark:text-neutral-50'
+                              : 'text-neutral-800 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                          }`}
+                        >
+                          <Folder size={14} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] font-semibold">{project.name}</span>
+                            {pathLabel && (
+                              <span className="block truncate text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
+                                {pathLabel}
+                              </span>
+                            )}
+                          </span>
+                          {active && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500 dark:text-neutral-300" />}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="px-2 py-2.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
+                    {projectSearchQuery.trim() ? '没有匹配的项目' : '还没有最近项目'}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-0.5 border-t border-neutral-200/80 pt-0.5 dark:border-neutral-800">
+                {selectedProject && (
+                  <button
+                    type="button"
+                    onClick={() => void selectProject(null)}
+                    className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                  >
+                    <Folder size={14} strokeWidth={1.75} className="shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">退出项目工作</span>
+                  </button>
+                )}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setProjectCreateMenuOpen((open) => !open)}
+                    disabled={projectCreating}
+                    className={`flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold transition-colors disabled:cursor-default disabled:opacity-50 ${
+                      projectCreateMenuOpen
+                        ? 'bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
+                        : 'text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800'
+                    }`}
+                    aria-haspopup="menu"
+                    aria-expanded={projectCreateMenuOpen}
+                  >
+                    <FolderPlus size={14} strokeWidth={1.75} className="shrink-0 text-neutral-600 dark:text-neutral-300" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {projectCreating ? '正在添加…' : '添加新项目'}
+                    </span>
+                    <ChevronRight size={13} strokeWidth={1.9} className="shrink-0 text-neutral-400" />
+                  </button>
+                  {projectCreateMenuOpen && (
+                    <div
+                      className="absolute left-0 top-full z-50 mt-1 w-32 rounded-lg border border-neutral-200/90 bg-white p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 sm:bottom-0 sm:left-full sm:top-auto sm:mt-0 sm:ml-1"
+                      role="menu"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => void createBlankProject()}
+                        disabled={projectCreating}
+                        className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                      >
+                        <Plus size={14} strokeWidth={1.8} className="shrink-0 text-neutral-600 dark:text-neutral-300" />
+                        <span className="min-w-0 flex-1 truncate">新建空白项目</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void createProjectFromFolder()}
+                        disabled={projectCreating}
+                        className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                      >
+                        <Folder size={14} strokeWidth={1.75} className="shrink-0 text-neutral-600 dark:text-neutral-300" />
+                        <span className="min-w-0 flex-1 truncate">使用现有文件夹</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
         <div
           data-chat-composer="true"
-          className={`chat-composer-shell rounded-[28px] border bg-white px-3 py-2.5 transition-[box-shadow,border-color] duration-200 dark:bg-neutral-900 ${
+          className={`chat-composer-shell relative z-10 rounded-[28px] border bg-white px-3 py-2.5 transition-[box-shadow,border-color] duration-200 dark:bg-neutral-900 ${
             dragActive
               ? 'border-[#e8a090] shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[#e8a090]/25 dark:border-[#e8a090] dark:shadow-none'
               : agentPlanActive
@@ -1128,6 +1427,7 @@ export function InputBar({
                 type="button"
                 onClick={() => {
                   setSlashPanelOpen(false)
+                  closeProjectMenu()
                   setToolPanelOpen((open) => !open)
                 }}
                 disabled={disabled}
@@ -1202,6 +1502,40 @@ export function InputBar({
             )}
           </div>
         </div>
+        {projectEntryEnabled && (
+          <div className="relative z-0 -mt-3 flex min-h-[40px] w-full items-end rounded-b-[24px] bg-neutral-100/75 px-3 pb-2 pt-4 dark:bg-neutral-800/50">
+            <button
+              type="button"
+              onClick={toggleProjectMenu}
+              disabled={disabled}
+              className={`inline-flex h-[26px] max-w-full items-center gap-1 rounded-full px-2 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
+                projectMenuOpen
+                  ? 'bg-neutral-200 text-neutral-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)] dark:bg-neutral-700 dark:text-neutral-100'
+                  : selectedProject
+                    ? 'bg-neutral-200/50 text-neutral-700 hover:bg-neutral-200/80 dark:bg-neutral-700/45 dark:text-neutral-200 dark:hover:bg-neutral-700/70'
+                    : 'bg-transparent text-neutral-500 hover:bg-neutral-200/70 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700/55 dark:hover:text-neutral-100'
+              } disabled:cursor-default disabled:opacity-50`}
+              aria-expanded={projectMenuOpen}
+              aria-haspopup="menu"
+            >
+              {selectedProject ? (
+                <Folder size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+              ) : (
+                <FolderPlus size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+              )}
+              <span className="min-w-0 truncate">
+                {selectedProject ? selectedProject.name : '进入项目工作'}
+              </span>
+              <ChevronDown
+                size={12}
+                strokeWidth={2}
+                className={`shrink-0 text-neutral-400 transition-transform ${
+                  projectMenuOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

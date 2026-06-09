@@ -20,20 +20,26 @@ const PYODIDE_PACKAGE_IMPORTS: Array<[RegExp, string]> = [
   [/(^|\n)\s*(import|from)\s+(PIL|pillow)\b/, 'pillow'],
   [/(^|\n)\s*(import|from)\s+seaborn\b/, 'seaborn'],
   [/(^|\n)\s*(import|from)\s+micropip\b/, 'micropip'],
+  [/(^|\n)\s*(import|from)\s+et_xmlfile\b/, 'et_xmlfile'],
   [/(^|\n)\s*(import|from)\s+openpyxl\b/, 'openpyxl'],
   [/(^|\n)\s*(import|from)\s+xlrd\b/, 'xlrd'],
 ]
 const PYTHON_SANDBOX_FAILURE_GUIDANCE =
   '不要使用 run_command/pip 安装或修改本机 Python 环境来绕过沙盒；请直接基于已有数据用文本/表格回答，除非用户明确要求修改本机环境。'
-const PYTHON_IMAGE_ARTIFACT_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'])
+const PYTHON_ARTIFACT_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
+  '.csv', '.tsv', '.json', '.md', '.txt', '.html', '.htm',
+  '.xlsx', '.xls',
+])
 const PYTHON_ARTIFACT_SCAN_ROOTS = ['/home/pyodide', '/tmp']
+const PYTHON_INPUT_SCAN_ROOT = '/home/pyodide/kivio_inputs'
 const PYTHON_FONT_VIRTUAL_DIR = '/home/pyodide/.kivio/fonts'
 const PYTHON_DEFAULT_CJK_FONT = {
   fileName: 'NotoSansCJKsc-Regular.otf',
   family: 'Noto Sans CJK SC',
 }
-const MAX_PYTHON_IMAGE_ARTIFACT_BYTES = 12 * 1024 * 1024
-const MAX_PYTHON_IMAGE_ARTIFACTS = 12
+const MAX_PYTHON_ARTIFACT_BYTES = 12 * 1024 * 1024
+const MAX_PYTHON_ARTIFACTS = 16
 const MAX_PYTHON_INPUT_FILE_BYTES = 100 * 1024 * 1024
 const PYODIDE_IMPORT_PACKAGE_ALIASES: Record<string, string> = {
   PIL: 'pillow',
@@ -542,7 +548,7 @@ async function executePython(
   const fs = pyodide.FS as PyodideFs
   const initialCwd = await getPythonCwd(pyodide)
   const initialRoots = collectScanRoots(fs, initialCwd)
-  const beforeArtifacts = scanImageFiles(fs, initialRoots)
+  const beforeArtifacts = scanArtifactFiles(fs, initialRoots)
   await pyodide.runPythonAsync(`
 import sys
 from io import StringIO
@@ -575,7 +581,7 @@ sys.stderr = _stderr
   const scanRoots = collectScanRoots(fs, finalCwd)
   const artifacts = appendUniqueArtifacts(
     output.artifacts,
-    collectNewImageArtifacts(
+    collectNewFileArtifacts(
       pyodide,
       beforeArtifacts,
       [...new Set([...initialRoots, ...scanRoots])],
@@ -599,13 +605,23 @@ function joinVirtualPath(parent: string, child: string): string {
   return normalizeVirtualPath(`${parent.replace(/\/$/, '')}/${child}`)
 }
 
-function imageMimeType(path: string): string {
+function artifactMimeType(path: string): string {
   const lower = path.toLowerCase()
   if (lower.endsWith('.png')) return 'image/png'
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
   if (lower.endsWith('.gif')) return 'image/gif'
   if (lower.endsWith('.webp')) return 'image/webp'
   if (lower.endsWith('.svg')) return 'image/svg+xml'
+  if (lower.endsWith('.csv')) return 'text/csv'
+  if (lower.endsWith('.tsv')) return 'text/tab-separated-values'
+  if (lower.endsWith('.json')) return 'application/json'
+  if (lower.endsWith('.md')) return 'text/markdown'
+  if (lower.endsWith('.txt')) return 'text/plain'
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html'
+  if (lower.endsWith('.xlsx')) {
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  }
+  if (lower.endsWith('.xls')) return 'application/vnd.ms-excel'
   return 'application/octet-stream'
 }
 
@@ -705,7 +721,15 @@ function collectScanRoots(fs: PyodideFs, cwd: string | null): string[] {
   return [...new Set(roots)].filter((path) => pathExists(fs, path))
 }
 
-function scanImageFiles(
+function shouldScanArtifactPath(path: string): boolean {
+  const normalized = normalizeVirtualPath(path)
+  if (normalized === PYTHON_INPUT_SCAN_ROOT || normalized.startsWith(`${PYTHON_INPUT_SCAN_ROOT}/`)) {
+    return false
+  }
+  return PYTHON_ARTIFACT_EXTENSIONS.has(fileExtension(path))
+}
+
+function scanArtifactFiles(
   fs: PyodideFs,
   roots: string[],
 ): Map<string, PythonArtifactSnapshotEntry> {
@@ -733,7 +757,7 @@ function scanImageFiles(
         walk(path, depth + 1)
         continue
       }
-      if (!fs.isFile(stat.mode) || !PYTHON_IMAGE_ARTIFACT_EXTENSIONS.has(fileExtension(path))) {
+      if (!fs.isFile(stat.mode) || !shouldScanArtifactPath(path)) {
         continue
       }
       files.set(path, {
@@ -759,7 +783,7 @@ function bytesToBase64(bytes: Uint8Array): string {
   return window.btoa(binary)
 }
 
-function base64ToBytes(value: string, maxBytes = MAX_PYTHON_IMAGE_ARTIFACT_BYTES): Uint8Array | null {
+function base64ToBytes(value: string, maxBytes = MAX_PYTHON_ARTIFACT_BYTES): Uint8Array | null {
   const compact = value.replace(/\s+/g, '')
   if (!compact || compact.length > Math.ceil(maxBytes * 4 / 3) + 8) {
     return null
@@ -909,34 +933,35 @@ function appendUniqueArtifacts(
     seen.add(key)
     combined.push(artifact)
   }
-  return combined.slice(0, MAX_PYTHON_IMAGE_ARTIFACTS)
+  return combined.slice(0, MAX_PYTHON_ARTIFACTS)
 }
 
-function collectNewImageArtifacts(
+function collectNewFileArtifacts(
   pyodide: PyodideInterface,
   before: Map<string, PythonArtifactSnapshotEntry>,
   roots: string[],
   cwd: string | null,
 ): ChatToolArtifact[] {
   const fs = pyodide.FS as PyodideFs
-  const after = scanImageFiles(fs, roots)
+  const after = scanArtifactFiles(fs, roots)
   const changedPaths = [...after.entries()]
     .filter(([path, stat]) => {
       const previous = before.get(path)
       return !previous || previous.size !== stat.size || previous.mtimeMs !== stat.mtimeMs
     })
     .sort((a, b) => b[1].mtimeMs - a[1].mtimeMs)
-    .slice(0, MAX_PYTHON_IMAGE_ARTIFACTS)
+    .slice(0, MAX_PYTHON_ARTIFACTS)
 
   const artifacts: ChatToolArtifact[] = []
   for (const [path, stat] of changedPaths) {
-    if (stat.size > MAX_PYTHON_IMAGE_ARTIFACT_BYTES) continue
+    if (stat.size > MAX_PYTHON_ARTIFACT_BYTES) continue
     try {
       const bytes = toUint8Array(fs.readFile(path, { encoding: 'binary' }))
+      const mimeType = artifactMimeType(path)
       artifacts.push({
         name: artifactNameForPath(path, cwd),
-        mimeType: imageMimeType(path),
-        dataUrl: `data:${imageMimeType(path)};base64,${bytesToBase64(bytes)}`,
+        mimeType,
+        dataUrl: `data:${mimeType};base64,${bytesToBase64(bytes)}`,
         sizeBytes: bytes.byteLength,
       })
     } catch {

@@ -242,6 +242,12 @@ pub struct ChatMessage {
     pub model_messages: Vec<ModelMessage>,
     #[serde(default)]
     pub active_skill_id: Option<String>,
+    /// How this assistant message was produced: `send` or `regenerate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_entry: Option<String>,
+    /// Final stream outcome for this assistant message: `completed`, `cancelled`, or `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_outcome: Option<String>,
     pub timestamp: i64,
 }
 
@@ -276,6 +282,8 @@ pub struct Conversation {
     #[serde(default)]
     pub folder: Option<String>,
     #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
     pub context_state: ConversationContextState,
     #[serde(default)]
     pub agent_todo_state: AgentTodoState,
@@ -299,6 +307,8 @@ pub struct ConversationListItem {
     #[serde(default)]
     pub folder: Option<String>,
     #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
     pub assistant_id: Option<String>,
     #[serde(default)]
     pub assistant_name: Option<String>,
@@ -310,7 +320,7 @@ pub struct ConversationIndex {
     pub conversations: Vec<ConversationListItem>,
 }
 
-/// Chat 项目（MVP 使用 `name` 作为 Conversation.folder 归属键）。
+/// Chat 项目。`folder` 保留用于旧对话兼容，真实项目归属使用 `project_id`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatProject {
     pub id: String,
@@ -319,6 +329,8 @@ pub struct ChatProject {
     pub description: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
+    pub root_path: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -530,6 +542,7 @@ impl From<&Conversation> for ConversationListItem {
             updated_at: conv.updated_at,
             pinned: conv.pinned,
             folder: conv.folder.clone(),
+            project_id: conv.project_id.clone(),
             assistant_id: conv.assistant_id.clone(),
             assistant_name: conv
                 .assistant_snapshot

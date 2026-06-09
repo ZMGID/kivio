@@ -269,7 +269,7 @@ fn apply_cost(provider: &ModelProvider, record: &mut UsageRecord) {
     record.cost_source = source;
 }
 
-fn read_records(dir: &Path) -> (Vec<UsageRecord>, usize) {
+fn read_records(dir: &Path, start: Option<i64>) -> (Vec<UsageRecord>, usize) {
     let Ok(entries) = fs::read_dir(dir) else {
         return (Vec::new(), 0);
     };
@@ -278,6 +278,9 @@ fn read_records(dir: &Path) -> (Vec<UsageRecord>, usize) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if usage_file_is_before_start(&path, start) {
             continue;
         }
         let Ok(content) = fs::read_to_string(&path) else {
@@ -294,13 +297,45 @@ fn read_records(dir: &Path) -> (Vec<UsageRecord>, usize) {
     (records, skipped)
 }
 
+fn usage_file_is_before_start(path: &Path, start: Option<i64>) -> bool {
+    let Some(start) = start else {
+        return false;
+    };
+    let Some(next_month_start) = usage_file_next_month_start(path) else {
+        return false;
+    };
+    next_month_start <= start
+}
+
+fn usage_file_next_month_start(path: &Path) -> Option<i64> {
+    let file_name = path.file_name()?.to_str()?;
+    let stem = file_name.strip_prefix("usage-")?.strip_suffix(".jsonl")?;
+    let (year, month) = stem.split_once('-')?;
+    let mut year = year.parse::<i32>().ok()?;
+    let mut month = month.parse::<u32>().ok()?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    if month == 12 {
+        year = year.saturating_add(1);
+        month = 1;
+    } else {
+        month += 1;
+    }
+    Local
+        .with_ymd_and_hms(year, month, 1, 0, 0, 0)
+        .single()
+        .map(|date| date.timestamp())
+}
+
 #[tauri::command]
 pub fn usage_get_stats(
     state: State<'_, AppState>,
     query: Option<UsageStatsQuery>,
 ) -> Result<UsageStatsResponse, String> {
     let query = query.unwrap_or_default();
-    let (records, skipped_records) = read_records(&state.usage_dir);
+    let start = range_start(&query.range);
+    let (records, skipped_records) = read_records(&state.usage_dir, start);
     let filtered = filter_records(records, &query);
     let total_logs = filtered.len();
     let summary = summarize(&filtered);
@@ -799,5 +834,35 @@ mod tests {
         assert_eq!(filter_records(vec![record.clone()], &query).len(), 1);
         record.usage_source = "provider_reported".to_string();
         assert!(filter_records(vec![record], &query).is_empty());
+    }
+
+    #[test]
+    fn skips_usage_file_before_range_start() {
+        let start = Local
+            .with_ymd_and_hms(2026, 6, 8, 0, 0, 0)
+            .single()
+            .expect("valid date")
+            .timestamp();
+
+        assert!(usage_file_is_before_start(
+            Path::new("usage-2026-05.jsonl"),
+            Some(start)
+        ));
+        assert!(!usage_file_is_before_start(
+            Path::new("usage-2026-06.jsonl"),
+            Some(start)
+        ));
+        assert!(!usage_file_is_before_start(
+            Path::new("usage-2026-07.jsonl"),
+            Some(start)
+        ));
+        assert!(!usage_file_is_before_start(
+            Path::new("other.jsonl"),
+            Some(start)
+        ));
+        assert!(!usage_file_is_before_start(
+            Path::new("usage-2026-05.jsonl"),
+            None
+        ));
     }
 }

@@ -6,14 +6,12 @@ import { formatHotkey, getPlatform, type SelectOption } from './utils'
 const MENU_GAP = 6
 const MENU_MARGIN = 8
 const MENU_MAX_HEIGHT = 260
-const MENU_MAX_WIDTH = 520
 
 function useSelectMenuRect(
   open: boolean,
   value: string,
   optionsLength: number,
   triggerRef: RefObject<HTMLButtonElement | null>,
-  menuMinWidth = 0,
 ) {
   const [menuRect, setMenuRect] = useState<{
     left: number
@@ -27,31 +25,20 @@ function useSelectMenuRect(
     const trigger = triggerRef.current
     if (!trigger) return
     const rect = trigger.getBoundingClientRect()
-    const viewportW = window.innerWidth
     const viewportH = window.innerHeight
     const spaceBelow = viewportH - rect.bottom - MENU_GAP - MENU_MARGIN
     const spaceAbove = rect.top - MENU_GAP - MENU_MARGIN
-    const maxAvailableWidth = Math.max(viewportW - MENU_MARGIN * 2, 80)
-    const width = Math.min(
-      Math.max(rect.width, menuMinWidth),
-      maxAvailableWidth,
-      MENU_MAX_WIDTH,
-    )
-    const left = Math.min(
-      Math.max(rect.left, MENU_MARGIN),
-      Math.max(MENU_MARGIN, viewportW - width - MENU_MARGIN),
-    )
     // 默认向下展开；下方空间不足且上方更宽裕时向上翻转。
     const flipUp = spaceBelow < MENU_MAX_HEIGHT && spaceAbove > spaceBelow
     const available = Math.max(flipUp ? spaceAbove : spaceBelow, 0)
     const maxHeight = Math.max(Math.min(MENU_MAX_HEIGHT, available), 80)
     if (flipUp) {
       // 用 bottom 定位让菜单底边贴着按钮向上生长，避免 top 计算后恒等于 MENU_MARGIN 导致飞到窗口顶部。
-      setMenuRect({ left, bottom: viewportH - rect.top + MENU_GAP, width, maxHeight })
+      setMenuRect({ left: rect.left, bottom: viewportH - rect.top + MENU_GAP, width: rect.width, maxHeight })
     } else {
-      setMenuRect({ left, top: rect.bottom + MENU_GAP, width, maxHeight })
+      setMenuRect({ left: rect.left, top: rect.bottom + MENU_GAP, width: rect.width, maxHeight })
     }
-  }, [menuMinWidth, triggerRef])
+  }, [triggerRef])
 
   useLayoutEffect(() => {
     if (open) updateMenuRect()
@@ -79,23 +66,20 @@ export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: 
 /**
  * 下拉选择 — 自绘菜单，避免 macOS 原生 select 的系统高亮/勾选反馈和受控状态不同步。
  */
-export function Select({ value, onChange, options, className = '', variant = 'default', menuMinWidth = 0 }: {
+export function Select({ value, onChange, options, className = '' }: {
   value: string
   onChange: (v: string) => void
   options: SelectOption[]
   className?: string
-  variant?: 'default' | 'model'
-  menuMinWidth?: number
 }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const selected = options.find(opt => opt.value === value)
   const displayLabel = selected?.label || value
-  const displayDetail = selected?.detail
-  const displayTitle = selected?.title || (displayDetail ? `${displayLabel} - ${displayDetail}` : displayLabel)
+  const displayTitle = selected?.title || displayLabel
   const disabled = options.length === 0
-  const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef, menuMinWidth)
+  const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef)
 
   useEffect(() => {
     if (!open) return
@@ -137,20 +121,13 @@ export function Select({ value, onChange, options, className = '', variant = 'de
             setOpen(true)
           }
         }}
-        className={`kv-select kv-select-button relative w-full text-left disabled:opacity-50 disabled:cursor-not-allowed ${variant === 'model' ? 'kv-select-model-button h-[42px]' : 'h-[30px]'}`}
+        className="kv-select kv-select-button relative w-full h-[30px] text-left disabled:opacity-50 disabled:cursor-not-allowed"
         aria-haspopup="listbox"
         aria-expanded={open}
         title={displayTitle}
         data-tauri-drag-region="false"
       >
-        {variant === 'model' ? (
-          <span className="kv-select-model-value">
-            <span className="kv-select-model-provider truncate">{displayLabel}</span>
-            {displayDetail && <span className="kv-select-model-name truncate">{displayDetail}</span>}
-          </span>
-        ) : (
-          <span className="block truncate">{displayLabel}</span>
-        )}
+        <span className="block truncate">{displayLabel}</span>
         <ChevronDown
           size={14}
           strokeWidth={2.25}
@@ -179,7 +156,7 @@ export function Select({ value, onChange, options, className = '', variant = 'de
                   setOpen(false)
                   triggerRef.current?.focus()
                 }}
-                title={opt.title || (opt.detail ? `${opt.label} - ${opt.detail}` : opt.label)}
+                title={opt.title || opt.label}
                 className={`relative flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 pr-8 text-left text-[12.5px] leading-5 transition-colors ${
                   active
                     ? 'bg-blue-600 text-white'
@@ -187,14 +164,7 @@ export function Select({ value, onChange, options, className = '', variant = 'de
                 }`}
                 data-tauri-drag-region="false"
               >
-                {variant === 'model' && opt.detail ? (
-                  <span className="kv-select-model-option min-w-0 flex-1">
-                    <span className="kv-select-model-option-provider truncate">{opt.label}</span>
-                    <span className="kv-select-model-option-name truncate">{opt.detail}</span>
-                  </span>
-                ) : (
-                  <span className="min-w-0 flex-1 truncate">{opt.label}</span>
-                )}
+                <span className="min-w-0 flex-1 truncate">{opt.label}</span>
                 {active && (
                   <Check
                     size={14}

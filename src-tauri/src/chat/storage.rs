@@ -219,7 +219,19 @@ pub fn load_project_index(app: &AppHandle) -> Result<ChatProjectIndex, String> {
     }
 
     let content = fs::read_to_string(&path).map_err(|e| format!("read projects file: {e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("parse projects file: {e}"))
+    let mut index: ChatProjectIndex =
+        serde_json::from_str(&content).map_err(|e| format!("parse projects file: {e}"))?;
+    for project in &mut index.projects {
+        project.root_path = project.root_path.as_ref().and_then(|path| {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+    }
+    Ok(index)
 }
 
 pub fn save_project_index(app: &AppHandle, index: &ChatProjectIndex) -> Result<(), String> {
@@ -311,6 +323,8 @@ pub fn delete_conversation(app: &AppHandle, id: &str) -> Result<(), String> {
         fs::remove_dir_all(&attachments_dir).map_err(|e| format!("delete attachments dir: {e}"))?;
     }
 
+    crate::native_tools::remove_sandbox_exports_for_conversation(id);
+
     // 更新索引
     let mut index = load_index_or_scan(app)?;
     index.conversations.retain(|c| c.id != id);
@@ -323,11 +337,26 @@ pub fn get_conversations(
     offset: usize,
     limit: usize,
     folder: Option<String>,
+    project_id: Option<String>,
 ) -> Result<Vec<ConversationListItem>, String> {
     let mut index = load_index_or_scan(app)?;
+    let project_filter = project_id.and_then(|id| {
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
 
-    // 按 folder 筛选
-    if let Some(folder_name) = folder {
+    // 新项目优先按 project_id 筛选；旧对话没有 project_id 时回退到 folder 名称。
+    if let Some(project_id) = project_filter {
+        let fallback_folder = folder.as_deref();
+        index.conversations.retain(|c| {
+            c.project_id.as_deref() == Some(project_id.as_str())
+                || (c.project_id.is_none() && c.folder.as_deref() == fallback_folder)
+        });
+    } else if let Some(folder_name) = folder {
         index
             .conversations
             .retain(|c| c.folder.as_deref() == Some(&folder_name));
@@ -351,6 +380,7 @@ pub fn find_reusable_blank_conversation(
     provider_id: &str,
     model: &str,
     folder: Option<&str>,
+    project_id: Option<&str>,
     assistant_id: Option<&str>,
 ) -> Result<Option<Conversation>, String> {
     let mut index = load_index_or_scan(app)?;
@@ -368,6 +398,9 @@ pub fn find_reusable_blank_conversation(
         if item.folder.as_deref() != folder {
             continue;
         }
+        if item.project_id.as_deref() != project_id {
+            continue;
+        }
         if item.assistant_id.as_deref() != assistant_id {
             continue;
         }
@@ -382,6 +415,7 @@ pub fn find_reusable_blank_conversation(
             && conversation.provider_id == provider_id
             && conversation.model == model
             && conversation.folder.as_deref() == folder
+            && conversation.project_id.as_deref() == project_id
             && conversation.assistant_id.as_deref() == assistant_id
         {
             return Ok(Some(conversation));
@@ -416,6 +450,7 @@ pub fn get_projects(app: &AppHandle) -> Result<Vec<ChatProject>, String> {
             name: folder.to_string(),
             description: None,
             color: None,
+            root_path: None,
             created_at: now,
             updated_at: now,
         });
@@ -543,6 +578,7 @@ pub fn archive_assistant(app: &AppHandle, assistant_id: &str) -> Result<(), Stri
 pub fn create_project(app: &AppHandle, mut project: ChatProject) -> Result<ChatProject, String> {
     validate_project_id(&project.id)?;
     project.name = normalize_project_name(&project.name)?;
+    project.root_path = normalize_project_root_path(project.root_path)?;
     let mut index = load_project_index(app)?;
     if index.projects.iter().any(|item| item.name == project.name) {
         return Err("项目名称已存在".to_string());
@@ -557,7 +593,11 @@ pub fn update_project(
     project_id: &str,
     name: Option<String>,
     description: Option<String>,
+    description_set: bool,
     color: Option<String>,
+    color_set: bool,
+    root_path: Option<String>,
+    root_path_set: bool,
 ) -> Result<ChatProject, String> {
     validate_project_id(project_id)?;
     let mut project_index = load_project_index(app)?;
@@ -586,18 +626,21 @@ pub fn update_project(
     if let Some(next_name) = new_name {
         project_index.projects[pos].name = next_name;
     }
-    if description.is_some() {
+    if description_set {
         project_index.projects[pos].description = description;
     }
-    if color.is_some() {
+    if color_set {
         project_index.projects[pos].color = color;
+    }
+    if root_path_set {
+        project_index.projects[pos].root_path = normalize_project_root_path(root_path)?;
     }
     project_index.projects[pos].updated_at = chrono::Local::now().timestamp();
     let project = project_index.projects[pos].clone();
     save_project_index(app, &project_index)?;
 
     if project.name != old_name {
-        move_project_conversations(app, &old_name, Some(&project.name))?;
+        move_project_conversations(app, &old_name, Some(&project.id), Some(&project.name))?;
     }
 
     Ok(project)
@@ -615,7 +658,7 @@ pub fn delete_project(app: &AppHandle, project_id: &str) -> Result<(), String> {
     };
     let project = project_index.projects.remove(pos);
     save_project_index(app, &project_index)?;
-    move_project_conversations(app, &project.name, None)
+    move_project_conversations(app, &project.name, Some(&project.id), None)
 }
 
 fn normalize_project_name(name: &str) -> Result<String, String> {
@@ -627,6 +670,99 @@ fn normalize_project_name(name: &str) -> Result<String, String> {
         return Err("项目名称不能超过 80 个字符".to_string());
     }
     Ok(normalized.to_string())
+}
+
+fn normalize_project_root_path(root_path: Option<String>) -> Result<Option<String>, String> {
+    let Some(root_path) = root_path else {
+        return Ok(None);
+    };
+    let trimmed = root_path.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let expanded = expand_home_prefix(trimmed)?;
+    let path = Path::new(&expanded);
+    if !path.is_absolute() {
+        return Err("项目文件夹必须是绝对路径。".to_string());
+    }
+    if !path.is_dir() {
+        return Err("项目文件夹不存在或不是文件夹。".to_string());
+    }
+    fs::canonicalize(path)
+        .map(|path| Some(path.to_string_lossy().to_string()))
+        .map_err(|err| format!("解析项目文件夹失败：{err}"))
+}
+
+fn expand_home_prefix(raw_path: &str) -> Result<String, String> {
+    if raw_path == "~" {
+        return user_home_dir().map(|path| path.to_string_lossy().to_string());
+    }
+    if let Some(rest) = raw_path.strip_prefix("~/") {
+        return user_home_dir().map(|home| home.join(rest).to_string_lossy().to_string());
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(rest) = raw_path.strip_prefix("~\\") {
+        return user_home_dir().map(|home| home.join(rest).to_string_lossy().to_string());
+    }
+    Ok(raw_path.to_string())
+}
+
+fn user_home_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("USERPROFILE")
+            .map(PathBuf::from)
+            .map_err(|_| "USERPROFILE is not set".to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .map_err(|_| "HOME is not set".to_string())
+    }
+}
+
+pub fn find_project_by_id(app: &AppHandle, project_id: &str) -> Result<ChatProject, String> {
+    validate_project_id(project_id)?;
+    load_project_index(app)?
+        .projects
+        .into_iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| "项目不存在".to_string())
+}
+
+pub fn find_project_by_name(app: &AppHandle, name: &str) -> Result<Option<ChatProject>, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(load_project_index(app)?
+        .projects
+        .into_iter()
+        .find(|project| project.name == trimmed))
+}
+
+pub fn resolve_conversation_project(
+    app: &AppHandle,
+    conversation: &Conversation,
+) -> Result<Option<ChatProject>, String> {
+    if let Some(project_id) = conversation
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return find_project_by_id(app, project_id).map(Some);
+    }
+    if let Some(folder) = conversation
+        .folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|folder| !folder.is_empty())
+    {
+        return find_project_by_name(app, folder);
+    }
+    Ok(None)
 }
 
 pub fn assistant_snapshot(
@@ -1227,16 +1363,24 @@ fn knowledge_skill(
 fn move_project_conversations(
     app: &AppHandle,
     old_name: &str,
+    old_project_id: Option<&str>,
     next_name: Option<&str>,
 ) -> Result<(), String> {
     let mut index = load_index_or_scan(app)?;
     let mut changed = false;
     for item in &mut index.conversations {
-        if item.folder.as_deref() != Some(old_name) {
+        let belongs_to_project = item.folder.as_deref() == Some(old_name)
+            || old_project_id
+                .map(|project_id| item.project_id.as_deref() == Some(project_id))
+                .unwrap_or(false);
+        if !belongs_to_project {
             continue;
         }
         let mut conversation = load_conversation(app, &item.id)?;
         conversation.folder = next_name.map(str::to_string);
+        if next_name.is_none() {
+            conversation.project_id = None;
+        }
         conversation.updated_at = chrono::Local::now().timestamp();
         save_conversation_without_index(app, &conversation)?;
         *item = ConversationListItem::from(&conversation);

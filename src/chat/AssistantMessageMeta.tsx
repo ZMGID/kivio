@@ -9,6 +9,8 @@ interface AssistantMessageMetaProps {
   reasoning?: string
   timestamp: number
   tokensPerSec?: number
+  runEntry?: string | null
+  streamOutcome?: string | null
   onEdit?: () => void
   onRegenerate?: () => void
   onDelete?: () => void
@@ -19,6 +21,8 @@ export function AssistantMessageMeta({
   reasoning,
   timestamp,
   tokensPerSec,
+  runEntry,
+  streamOutcome,
   onEdit,
   onRegenerate,
   onDelete,
@@ -40,9 +44,19 @@ export function AssistantMessageMeta({
   const iconBtn =
     'rounded p-1 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-neutral-800 dark:hover:text-neutral-300'
 
+  const runEntryLabel = runEntry === 'regenerate' ? '已重新生成' : null
+  const streamOutcomeLabel =
+    streamOutcome === 'cancelled'
+      ? '已停止后继续'
+      : streamOutcome === 'error'
+        ? '生成异常结束'
+        : null
+
   return (
     <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-400 dark:text-neutral-500">
       <span className="shrink-0">{formatAssistantMessageTime(timestamp)}</span>
+      {runEntryLabel && <span className="shrink-0">{runEntryLabel}</span>}
+      {streamOutcomeLabel && <span className="shrink-0">{streamOutcomeLabel}</span>}
 
       <div className="flex items-center gap-0.5">
         <button

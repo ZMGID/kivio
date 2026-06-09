@@ -6,7 +6,6 @@ export type Platform = 'macos' | 'windows' | 'linux'
 export type SelectOption = {
   value: string
   label: string
-  detail?: string
   title?: string
 }
 
@@ -133,8 +132,7 @@ export const buildModelPairOptions = (providers: ModelProvider[]): SelectOption[
     .flatMap(provider =>
       provider.enabledModels.map(model => ({
         value: modelPairValue(provider.id, model),
-        label: provider.name,
-        detail: model,
+        label: `${provider.name} - ${model}`,
         title: `${provider.name} - ${model}`,
       })),
     )

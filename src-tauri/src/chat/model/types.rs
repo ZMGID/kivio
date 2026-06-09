@@ -169,6 +169,21 @@ pub struct RequestMetadata {
     pub message_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GenerateRequestContext {
+    pub conversation_id: Option<String>,
+    pub message_id: Option<String>,
+}
+
+impl GenerateRequestContext {
+    pub fn new(conversation_id: Option<&str>, message_id: Option<&str>) -> Self {
+        Self {
+            conversation_id: conversation_id.map(str::to_string),
+            message_id: message_id.map(str::to_string),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateRequest {
     pub model: String,
@@ -424,6 +439,7 @@ pub fn generate_request_from_openai_messages(
     tools: Option<&[ChatToolDefinition]>,
     options: GenerateOptions,
     label: &str,
+    context: GenerateRequestContext,
 ) -> GenerateRequest {
     let mut system_parts = Vec::new();
     let mut model_messages = Vec::new();
@@ -454,6 +470,8 @@ pub fn generate_request_from_openai_messages(
         options,
         metadata: RequestMetadata {
             label: label.to_string(),
+            conversation_id: context.conversation_id,
+            message_id: context.message_id,
             ..RequestMetadata::default()
         },
     }

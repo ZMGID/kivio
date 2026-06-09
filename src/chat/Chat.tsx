@@ -52,6 +52,7 @@ import {
   rememberChatSize,
 } from './persistence'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
+import { normalizeToolCallStatus } from './toolStatus'
 import { TypewriterText } from './TypewriterText'
 import { pickRandomChatEmptyGreeting } from './utils'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
@@ -139,7 +140,7 @@ function toolEventToRecord(payload: ChatToolProgressPayload): ToolCallRecord {
     name: payload.name,
     source: payload.source,
     serverId: payload.serverId ?? undefined,
-    status: payload.status === 'success' ? 'completed' : payload.status,
+    status: normalizeToolCallStatus(payload.status),
     arguments: payload.argumentsPreview,
     argumentPreview: payload.argumentsPreview,
     argumentsPreview: payload.argumentsPreview,
@@ -365,6 +366,8 @@ function optimisticConversationListItem(
     updated_at: Math.floor(Date.now() / 1000),
     pinned: conversation.pinned,
     folder: conversation.folder,
+    project_id: conversation.project_id ?? conversation.projectId ?? null,
+    projectId: conversation.project_id ?? conversation.projectId ?? null,
     assistant_id: conversation.assistant_id ?? conversation.assistantId ?? null,
     assistantId: conversation.assistant_id ?? conversation.assistantId ?? null,
     assistant_name:
@@ -1531,6 +1534,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         assistantProviderId || activeProviderId || undefined,
         assistantModel || activeModel || undefined,
         selectedProject?.name,
+        selectedProject?.id ?? null,
         assistant.id,
       )
       currentConversationIdRef.current = conv.id
@@ -1543,7 +1547,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       console.error('Failed to start assistant conversation:', err)
       setStreamError(typeof err === 'string' ? err : (err as Error).message || '创建助手对话失败')
     }
-  }, [activeModel, activeProviderId, applyConversation, refreshSidebar, restoreStreamingPreview, selectedProject?.name, syncConversationRoute])
+  }, [activeModel, activeProviderId, applyConversation, refreshSidebar, restoreStreamingPreview, selectedProject?.id, selectedProject?.name, syncConversationRoute])
 
   const handleApplyAssistant = useCallback(async (assistantId: string | null) => {
     if (!currentConversation) return
@@ -1566,13 +1570,14 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       activeProviderId || undefined,
       activeModel || undefined,
       selectedProject?.name,
+      selectedProject?.id ?? null,
     )
     currentConversationIdRef.current = conversation.id
     applyConversation(conversation)
     syncConversationRoute(conversation.id)
     refreshSidebar()
     return conversation
-  }, [activeModel, activeProviderId, applyConversation, currentConversation, refreshSidebar, selectedProject?.name, syncConversationRoute])
+  }, [activeModel, activeProviderId, applyConversation, currentConversation, refreshSidebar, selectedProject?.id, selectedProject?.name, syncConversationRoute])
 
   const handleAgentPlanModeChange = useCallback(async (mode: AgentPlanMode) => {
     try {
@@ -1669,6 +1674,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
           activeProviderId || undefined,
           activeModel || undefined,
           selectedProject?.name,
+          selectedProject?.id ?? null,
         )
         currentConversationIdRef.current = conversation.id
         applyConversation(conversation)
@@ -1798,6 +1804,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     markConversationInFlight,
     refreshSidebar,
     resetLocalCancellation,
+    selectedProject?.id,
     selectedProject?.name,
     sendDisabledReason,
     setStreamErrorForConversation,
@@ -2393,6 +2400,9 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       onExecuteAgentPlan={handleExecuteAgentPlan}
                       enabledSkills={enabledSkills.map((skill) => ({ id: skill.id, name: skill.name }))}
                       onOpenSkillSettings={() => openEmbeddedSettings('skill')}
+                      selectedProject={selectedProject}
+                      onSelectProject={handleSidebarSelectProject}
+                      showProjectEntry
                       autoFocus
                     />
                   </div>

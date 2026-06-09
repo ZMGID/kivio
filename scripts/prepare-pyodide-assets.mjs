@@ -48,7 +48,7 @@ const PYPI_WHEELS = [
   {
     name: 'openpyxl',
     version: '3.1.5',
-    pyodideDeps: ['pandas'],
+    pyodideDeps: ['pandas', 'et_xmlfile'],
   },
   {
     name: 'et_xmlfile',

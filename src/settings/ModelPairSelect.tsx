@@ -17,7 +17,7 @@ export function ModelPairSelect({
   providers,
   onChange,
   inheritLabel,
-  className = 'w-[min(100%,22rem)]',
+  className = 'w-52',
 }: ModelPairSelectProps) {
   const options = [
     ...(inheritLabel ? [{ value: modelPairValue('', ''), label: inheritLabel }] : []),
@@ -33,8 +33,6 @@ export function ModelPairSelect({
         onChange(nextProviderId, nextModel)
       }}
       options={options}
-      variant="model"
-      menuMinWidth={420}
     />
   )
 }

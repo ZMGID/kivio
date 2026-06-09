@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 use crate::macos_ocr::MacOcrClient;
 use crate::mcp::types::PythonRunResult;
 use crate::mcp::ChatToolDefinition;
+use crate::native_tools::SandboxExportContext;
 use crate::rapidocr::RapidOcrClient;
 use crate::settings::Settings;
 
@@ -26,6 +27,12 @@ pub struct PendingChatExternalAttachment {
     pub r#type: String,
     pub name: String,
     pub path: String,
+}
+
+#[derive(Debug)]
+pub struct PendingPythonRun {
+    pub sender: oneshot::Sender<PythonRunResult>,
+    pub export_ctx: SandboxExportContext,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,7 +64,7 @@ pub struct AppState {
     pub pending_chat_user_prompts:
         Mutex<HashMap<String, crate::chat::ask_user::PendingAskUserPrompt>>,
     /// 等待前端 Pyodide 完成的 run_python 调用。
-    pub pending_python_runs: Mutex<HashMap<String, oneshot::Sender<PythonRunResult>>>,
+    pub pending_python_runs: Mutex<HashMap<String, PendingPythonRun>>,
     /// 保护 Chat 空白会话复用的短临界区，避免快速多次新建时并发创建多个空白对话。
     pub chat_create_conversation_lock: Mutex<()>,
     /// Chat MCP/native tool 列表缓存。key 由工具相关 settings 生成，避免每轮对话重复冷启动 server。

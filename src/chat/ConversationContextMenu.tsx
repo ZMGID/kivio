@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight, Folder, Pencil, Trash2 } from 'lucide-react'
+import type { ChatProject } from './types'
 
 export interface ConversationMenuAnchor {
   left: number
@@ -11,9 +12,10 @@ interface ConversationContextMenuProps {
   anchor: ConversationMenuAnchor
   conversationTitle: string
   conversationFolder?: string
-  projectFolders: string[]
+  conversationProjectId?: string | null
+  projects: ChatProject[]
   onRename: () => void
-  onMoveToFolder: (folder: string | undefined) => void
+  onMoveToProject: (projectId: string | undefined) => void
   onDelete: () => void
   onClose: () => void
 }
@@ -21,9 +23,10 @@ interface ConversationContextMenuProps {
 export function ConversationContextMenu({
   anchor,
   conversationFolder,
-  projectFolders,
+  conversationProjectId,
+  projects,
   onRename,
-  onMoveToFolder,
+  onMoveToProject,
   onDelete,
   onClose,
 }: ConversationContextMenuProps) {
@@ -79,35 +82,40 @@ export function ConversationContextMenu({
 
         <div className="pointer-events-none absolute left-full top-0 z-[201] min-w-[168px] pl-1 opacity-0 transition-opacity group-hover/sub:pointer-events-auto group-hover/sub:opacity-100">
           <div className="rounded-xl border border-neutral-200/90 bg-white py-1.5 shadow-lg dark:border-neutral-700 dark:bg-[#2a2a2c]">
-            {projectFolders.length === 0 ? (
+            {projects.length === 0 ? (
               <div className="px-3.5 py-2 text-[13px] text-neutral-400">暂无项目</div>
             ) : (
-              projectFolders.map((folder) => (
+              projects.map((project) => {
+                const active = conversationProjectId
+                  ? conversationProjectId === project.id
+                  : conversationFolder === project.name
+                return (
                 <button
-                  key={folder}
+                  key={project.id}
                   type="button"
                   className={`flex w-full px-3.5 py-2 text-left text-[13px] transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.06] ${
-                    conversationFolder === folder
+                    active
                       ? 'font-medium text-neutral-900 dark:text-neutral-50'
                       : 'text-neutral-800 dark:text-neutral-100'
                   }`}
                   onClick={() => {
-                    onMoveToFolder(folder)
+                    onMoveToProject(project.id)
                     onClose()
                   }}
                 >
-                  {folder}
+                  {project.name}
                 </button>
-              ))
+                )
+              })
             )}
-            {conversationFolder && (
+            {(conversationProjectId || conversationFolder) && (
               <>
                 <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
                 <button
                   type="button"
                   className="flex w-full px-3.5 py-2 text-left text-[13px] text-neutral-600 transition-colors hover:bg-black/[0.04] dark:text-neutral-300 dark:hover:bg-white/[0.06]"
                   onClick={() => {
-                    onMoveToFolder(undefined)
+                    onMoveToProject(undefined)
                     onClose()
                   }}
                 >

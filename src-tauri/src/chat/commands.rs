@@ -22,8 +22,8 @@ use crate::chat::attachments::{
 use crate::chat::model::{
     generate_request_from_openai_messages, model_messages_from_openai_messages,
     openai_messages_from_model_messages, AnthropicMessagesProvider, GenerateOptions,
-    GenerateOutput, LanguageModelProvider, MessagePart, ModelMessage, ModelRole,
-    OpenAiChatProvider,
+    GenerateOutput, GenerateRequestContext, LanguageModelProvider, MessagePart, ModelMessage,
+    ModelRole, OpenAiChatProvider,
 };
 use crate::chat::model_metadata::{
     chat_max_output_tokens_for_model, context_window_for_model, model_can_generate_images_directly,
@@ -38,8 +38,9 @@ use crate::state::AppState;
 use super::storage::{
     archive_assistant, assistant_snapshot, conversation_attachments_dir, create_assistant,
     create_project, delete_conversation as delete_conv, delete_project, duplicate_assistant,
-    find_reusable_blank_conversation, get_assistants, get_conversations as get_convs, get_projects,
-    load_conversation, save_conversation, update_assistant, update_project,
+    find_project_by_id, find_project_by_name, find_reusable_blank_conversation, get_assistants,
+    get_conversations as get_convs, get_projects, load_conversation, save_conversation,
+    update_assistant, update_project,
 };
 use super::{
     AgentPlanState, AgentTodoState, ChatAssistant, ChatMessage, ChatMessageSegment,
@@ -90,8 +91,9 @@ pub(crate) fn chat_get_conversations(
     offset: usize,
     limit: usize,
     folder: Option<String>,
+    project_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let conversations = get_convs(&app, offset, limit, folder)?;
+    let conversations = get_convs(&app, offset, limit, folder, project_id)?;
     Ok(serde_json::json!({
         "success": true,
         "conversations": conversations,
@@ -119,6 +121,7 @@ pub(crate) fn chat_create_conversation(
     provider_id: Option<String>,
     model: Option<String>,
     folder: Option<String>,
+    project_id: Option<String>,
     assistant_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let conversation = create_chat_conversation_internal(
@@ -127,6 +130,7 @@ pub(crate) fn chat_create_conversation(
         provider_id,
         model,
         folder,
+        project_id,
         assistant_id,
     )?;
 
@@ -142,6 +146,7 @@ pub(crate) fn create_chat_conversation_internal(
     provider_id: Option<String>,
     model: Option<String>,
     folder: Option<String>,
+    project_id: Option<String>,
     assistant_id: Option<String>,
 ) -> Result<Conversation, String> {
     let settings = state.settings_read().clone();
@@ -170,6 +175,14 @@ pub(crate) fn create_chat_conversation_internal(
                 .and_then(|assistant| non_empty_string(assistant.model.clone()))
         })
         .unwrap_or(default_model);
+    let requested_project_id = project_id.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
     let folder = folder.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -178,6 +191,18 @@ pub(crate) fn create_chat_conversation_internal(
             Some(trimmed.to_string())
         }
     });
+    let project = match requested_project_id.as_deref() {
+        Some(project_id) => Some(find_project_by_id(app, project_id)?),
+        None => match folder.as_deref() {
+            Some(folder) => find_project_by_name(app, folder)?,
+            None => None,
+        },
+    };
+    let project_id = project.as_ref().map(|project| project.id.clone());
+    let folder = project
+        .as_ref()
+        .map(|project| project.name.clone())
+        .or(folder);
     let assistant_id_for_reuse = assistant_snapshot
         .as_ref()
         .map(|assistant| assistant.id.clone());
@@ -192,6 +217,7 @@ pub(crate) fn create_chat_conversation_internal(
             &provider_id,
             &model,
             folder.as_deref(),
+            project_id.as_deref(),
             assistant_id_for_reuse.as_deref(),
         )? {
             conversation
@@ -214,6 +240,7 @@ pub(crate) fn create_chat_conversation_internal(
                 updated_at: now,
                 pinned: false,
                 folder,
+                project_id,
                 context_state: ConversationContextState::default(),
                 agent_todo_state: AgentTodoState::default(),
                 agent_plan_state: AgentPlanState::default(),
@@ -307,6 +334,7 @@ pub(crate) fn chat_create_project(
     name: String,
     description: Option<String>,
     color: Option<String>,
+    root_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let now = chrono::Local::now().timestamp();
     let project = create_project(
@@ -316,6 +344,7 @@ pub(crate) fn chat_create_project(
             name,
             description,
             color,
+            root_path,
             created_at: now,
             updated_at: now,
         },
@@ -333,9 +362,26 @@ pub(crate) fn chat_update_project(
     project_id: String,
     name: Option<String>,
     description: Option<String>,
+    description_set: Option<bool>,
     color: Option<String>,
+    color_set: Option<bool>,
+    root_path: Option<String>,
+    root_path_set: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let project = update_project(&app, &project_id, name, description, color)?;
+    let description_has_value = description.is_some();
+    let color_has_value = color.is_some();
+    let root_path_has_value = root_path.is_some();
+    let project = update_project(
+        &app,
+        &project_id,
+        name,
+        description,
+        description_set.unwrap_or(description_has_value),
+        color,
+        color_set.unwrap_or(color_has_value),
+        root_path,
+        root_path_set.unwrap_or(root_path_has_value),
+    )?;
     Ok(serde_json::json!({
         "success": true,
         "project": project,
@@ -493,6 +539,8 @@ pub(crate) async fn chat_send_message(
         api_messages: Vec::new(),
         model_messages: Vec::new(),
         active_skill_id: None,
+        run_entry: None,
+        stream_outcome: None,
         timestamp: chrono::Local::now().timestamp(),
     };
 
@@ -687,13 +735,13 @@ pub(crate) fn chat_python_complete(
     is_error: bool,
     artifacts: Option<Vec<ChatToolArtifact>>,
 ) -> Result<(), String> {
-    let sender = state
+    let pending = state
         .pending_python_runs
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&run_id);
-    if let Some(sender) = sender {
-        let _ = sender.send(crate::mcp::types::PythonRunResult {
+    if let Some(pending) = pending {
+        let _ = pending.sender.send(crate::mcp::types::PythonRunResult {
             content,
             is_error,
             artifacts: artifacts.unwrap_or_default(),
@@ -865,6 +913,7 @@ async fn complete_assistant_reply(
             assistant_message_id,
             run_generation,
             retry_attempts,
+            entry,
         )
         .await;
     }
@@ -903,6 +952,8 @@ async fn complete_assistant_reply(
                 state,
                 &settings,
                 &auxiliary_vision_model,
+                &conversation.id,
+                &assistant_message_id,
                 last_user_api_content,
                 last_user_image_paths,
                 retry_attempts,
@@ -1149,6 +1200,7 @@ async fn complete_assistant_reply(
     segments.extend(result.segments);
     let mut tool_records = auxiliary_tool_records;
     tool_records.extend(result.tool_records);
+    let run_entry = agent_run_entry_label(entry);
     push_assistant_message(
         app,
         state,
@@ -1163,6 +1215,8 @@ async fn complete_assistant_reply(
         segments,
         skill_id.as_deref(),
         title_from_first_user,
+        Some(run_entry),
+        Some(result.stream_outcome.as_str()),
     )
     .await?;
     Ok(())
@@ -1182,6 +1236,7 @@ async fn complete_direct_image_generation_reply(
     assistant_message_id: String,
     run_generation: u64,
     retry_attempts: usize,
+    entry: crate::chat::agent::AgentRunEntry,
 ) -> Result<(), String> {
     if !last_user_image_paths.is_empty() {
         return Err(
@@ -1265,6 +1320,8 @@ async fn complete_direct_image_generation_reply(
                 vec![plain_text_segment(1000, content.as_str())],
                 active_skill.as_deref(),
                 title_from_first_user,
+                Some(agent_run_entry_label(entry)),
+                Some("completed"),
             )
             .await?;
             Ok(())
@@ -1284,6 +1341,13 @@ async fn complete_direct_image_generation_reply(
             );
             Err(err)
         }
+    }
+}
+
+fn agent_run_entry_label(entry: crate::chat::agent::AgentRunEntry) -> &'static str {
+    match entry {
+        crate::chat::agent::AgentRunEntry::Send => "send",
+        crate::chat::agent::AgentRunEntry::Regenerate => "regenerate",
     }
 }
 
@@ -1329,6 +1393,8 @@ async fn push_assistant_message(
     segments: Vec<ChatMessageSegment>,
     active_skill_id: Option<&str>,
     title_from_first_user: Option<&str>,
+    run_entry: Option<&str>,
+    stream_outcome: Option<&str>,
 ) -> Result<(), String> {
     let segments =
         normalize_assistant_segments(&content, reasoning.as_deref(), &tool_calls, segments);
@@ -1336,7 +1402,16 @@ async fn push_assistant_message(
     let stored_reasoning = reasoning_from_segments(&segments).or(reasoning);
     let generated_title = if let Some(user_content) = title_from_first_user {
         if conversation.messages.len() == 1 && conversation.title == "新对话" {
-            Some(resolve_conversation_title(settings, state, user_content, &stored_content).await)
+            Some(
+                resolve_conversation_title(
+                    settings,
+                    state,
+                    &conversation.id,
+                    user_content,
+                    &stored_content,
+                )
+                .await,
+            )
         } else {
             None
         }
@@ -1361,6 +1436,8 @@ async fn push_assistant_message(
         segments,
         api_messages,
         active_skill_id: active_skill_id.map(|id| id.to_string()),
+        run_entry: run_entry.map(str::to_string),
+        stream_outcome: stream_outcome.map(str::to_string),
         timestamp: chrono::Local::now().timestamp(),
     });
 
@@ -1782,12 +1859,19 @@ fn mark_tool_result_errors(messages: &mut [ModelMessage], tool_calls: &[ToolCall
 async fn resolve_conversation_title(
     settings: &Settings,
     state: &State<'_, AppState>,
+    conversation_id: &str,
     user_content: &str,
     assistant_content: &str,
 ) -> String {
     match timeout(
         Duration::from_secs(8),
-        generate_title_with_model(settings, state, user_content, assistant_content),
+        generate_title_with_model(
+            settings,
+            state,
+            conversation_id,
+            user_content,
+            assistant_content,
+        ),
     )
     .await
     {
@@ -1800,6 +1884,7 @@ async fn resolve_conversation_title(
 async fn generate_title_with_model(
     settings: &Settings,
     state: &State<'_, AppState>,
+    conversation_id: &str,
     user_content: &str,
     assistant_content: &str,
 ) -> Option<String> {
@@ -1837,6 +1922,8 @@ async fn generate_title_with_model(
         None,
         retry_attempts,
         false,
+        Some(conversation_id),
+        None,
         "Chat title summary",
     )
     .await
@@ -2599,6 +2686,10 @@ async fn compress_conversation_context(
             "content": prompt,
         }),
     ];
+    let source_until_message_id = source_messages
+        .last()
+        .map(|message| message.id.clone())
+        .ok_or_else(|| "没有足够的旧消息可以压缩".to_string())?;
     let message = call_chat_completion_message(
         state,
         &provider,
@@ -2607,6 +2698,8 @@ async fn compress_conversation_context(
         None,
         retry_attempts,
         false,
+        Some(&conversation.id),
+        Some(&source_until_message_id),
         "Chat context compression",
     )
     .await?;
@@ -2616,10 +2709,6 @@ async fn compress_conversation_context(
         return Err("Compression model returned an empty summary".to_string());
     }
 
-    let source_until_message_id = source_messages
-        .last()
-        .map(|message| message.id.clone())
-        .ok_or_else(|| "没有足够的旧消息可以压缩".to_string())?;
     let source_message_ids = source_messages
         .iter()
         .map(|message| message.id.clone())
@@ -3048,6 +3137,8 @@ async fn analyze_chat_images_with_auxiliary_model(
     state: &State<'_, AppState>,
     settings: &Settings,
     auxiliary_model: &AuxiliaryVisionModel,
+    conversation_id: &str,
+    message_id: &str,
     last_user_api_content: Option<&str>,
     image_paths: &[PathBuf],
     retry_attempts: usize,
@@ -3093,6 +3184,8 @@ async fn analyze_chat_images_with_auxiliary_model(
         None,
         retry_attempts,
         false,
+        Some(conversation_id),
+        Some(message_id),
         "Chat auxiliary vision analysis",
     )
     .await?;
@@ -3298,7 +3391,20 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
                 emit_chat_todo_state(&self.app, &conversation.id, &next_state);
                 return Ok(crate::chat::todo::tool_result(&next_state));
             }
-            mcp::registry::call_tool(&self.app, self.state, tool, arguments, skill_cache).await
+            let native_ctx = mcp::registry::NativeToolContext {
+                conversation_id: ctx.conversation_id.to_string(),
+                message_id: ctx.message_id.to_string(),
+                tool_call_id: None,
+            };
+            mcp::registry::call_tool(
+                &self.app,
+                self.state,
+                tool,
+                arguments,
+                skill_cache,
+                Some(native_ctx),
+            )
+            .await
         })
     }
 }
@@ -3311,6 +3417,8 @@ async fn call_chat_completion_message(
     tools: Option<&[ChatToolDefinition]>,
     retry_attempts: usize,
     thinking_enabled: bool,
+    conversation_id: Option<&str>,
+    message_id: Option<&str>,
     label: &str,
 ) -> Result<Value, String> {
     let request = generate_request_from_openai_messages(
@@ -3322,6 +3430,7 @@ async fn call_chat_completion_message(
             ..GenerateOptions::default()
         },
         label,
+        GenerateRequestContext::new(conversation_id, message_id),
     );
     let output =
         generate_with_chat_provider(state.inner(), provider, retry_attempts, request).await?;
@@ -3961,6 +4070,7 @@ pub(crate) fn chat_update_conversation(
     title: Option<String>,
     pinned: Option<bool>,
     folder: Option<String>,
+    project_id: Option<String>,
     provider_id: Option<String>,
     model: Option<String>,
     active_skill_id: Option<String>,
@@ -3981,6 +4091,21 @@ pub(crate) fn chat_update_conversation(
         } else {
             Some(trimmed.to_string())
         };
+        conversation.project_id = match conversation.folder.as_deref() {
+            Some(folder) => find_project_by_name(&app, folder)?.map(|project| project.id),
+            None => None,
+        };
+    }
+    if let Some(project_id) = project_id {
+        let trimmed = project_id.trim();
+        if trimmed.is_empty() {
+            conversation.project_id = None;
+            conversation.folder = None;
+        } else {
+            let project = find_project_by_id(&app, trimmed)?;
+            conversation.project_id = Some(project.id);
+            conversation.folder = Some(project.name);
+        }
     }
     if let Some(provider_id) = provider_id {
         conversation.provider_id = provider_id;
@@ -4264,6 +4389,18 @@ mod tests {
 
         assert!(title.ends_with("..."));
         assert!(title.chars().count() <= 33);
+    }
+
+    #[test]
+    fn agent_run_entry_label_distinguishes_regenerate() {
+        assert_eq!(
+            agent_run_entry_label(crate::chat::agent::AgentRunEntry::Send),
+            "send"
+        );
+        assert_eq!(
+            agent_run_entry_label(crate::chat::agent::AgentRunEntry::Regenerate),
+            "regenerate"
+        );
     }
 
     #[test]
@@ -4613,6 +4750,8 @@ mod tests {
             api_messages: Vec::new(),
             model_messages: Vec::new(),
             active_skill_id: None,
+            run_entry: None,
+            stream_outcome: None,
             timestamp: 1,
         };
 
@@ -4707,6 +4846,8 @@ mod tests {
             ],
             model_messages: Vec::new(),
             active_skill_id: None,
+            run_entry: None,
+            stream_outcome: None,
             timestamp: 1,
         };
 
@@ -4735,6 +4876,8 @@ mod tests {
             api_messages: Vec::new(),
             model_messages: Vec::new(),
             active_skill_id: None,
+            run_entry: None,
+            stream_outcome: None,
             timestamp,
         }
     }
@@ -4763,6 +4906,7 @@ mod tests {
             updated_at: 4,
             pinned: false,
             folder: None,
+            project_id: None,
             context_state: ConversationContextState {
                 summary: Some(ConversationContextSummary {
                     id: "ctxsum_test".to_string(),
@@ -4829,6 +4973,7 @@ mod tests {
             updated_at: 1,
             pinned: false,
             folder: None,
+            project_id: None,
             context_state: ConversationContextState::default(),
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
@@ -4899,6 +5044,8 @@ mod tests {
                     api_messages: Vec::new(),
                     model_messages: Vec::new(),
                     active_skill_id: None,
+                    run_entry: None,
+                    stream_outcome: None,
                     timestamp: 1,
                 },
                 ChatMessage {
@@ -4937,6 +5084,8 @@ mod tests {
                     ],
                     model_messages: Vec::new(),
                     active_skill_id: Some("doc".to_string()),
+                    run_entry: None,
+                    stream_outcome: None,
                     timestamp: 2,
                 },
             ],
@@ -4947,6 +5096,7 @@ mod tests {
             updated_at: 2,
             pinned: false,
             folder: None,
+            project_id: None,
             context_state: ConversationContextState::default(),
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
@@ -5047,6 +5197,8 @@ mod tests {
                     ],
                     model_messages: Vec::new(),
                     active_skill_id: None,
+                    run_entry: None,
+                    stream_outcome: None,
                     timestamp: 2,
                 },
             ],
@@ -5057,6 +5209,7 @@ mod tests {
             updated_at: 2,
             pinned: false,
             folder: None,
+            project_id: None,
             context_state: ConversationContextState::default(),
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),

@@ -171,6 +171,10 @@ export interface ChatMessage {
   modelMessages?: unknown[]
   active_skill_id?: string | null
   activeSkillId?: string | null
+  run_entry?: 'send' | 'regenerate' | string | null
+  runEntry?: 'send' | 'regenerate' | string | null
+  stream_outcome?: 'completed' | 'cancelled' | 'error' | string | null
+  streamOutcome?: 'completed' | 'cancelled' | 'error' | string | null
   timestamp: number
 }
 
@@ -193,6 +197,8 @@ export interface ChatProject {
   name: string
   description?: string | null
   color?: string | null
+  root_path?: string | null
+  rootPath?: string | null
   created_at: number
   updated_at: number
   createdAt?: number
@@ -410,6 +416,8 @@ export interface Conversation {
   updated_at: number
   pinned?: boolean
   folder?: string
+  project_id?: string | null
+  projectId?: string | null
   context_state?: ConversationContextState
   contextState?: ConversationContextState
   agent_todo_state?: AgentTodoState
@@ -429,6 +437,8 @@ export interface ConversationListItem {
   updated_at: number
   pinned?: boolean
   folder?: string
+  project_id?: string | null
+  projectId?: string | null
   assistant_id?: string | null
   assistantId?: string | null
   assistant_name?: string | null
