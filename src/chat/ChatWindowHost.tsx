@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { usesNativeTitlebar } from './platform'
+import { isWindows, usesNativeTitlebar } from './platform'
 
 const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -8,7 +8,7 @@ type ChatWindowHostProps = {
   children: ReactNode
 }
 
-/** Chat 专用窗口外壳：真实窗口边界与视觉边界一致，最大化时收起圆角。 */
+/** Chat 专用窗口外壳：Windows 预留透明 gutter 承载阴影，最大化时收起圆角与 gutter。 */
 export function ChatWindowHost({ children }: ChatWindowHostProps) {
   const [maximized, setMaximized] = useState(false)
 
@@ -50,10 +50,14 @@ export function ChatWindowHost({ children }: ChatWindowHostProps) {
     return <div className="h-full w-full">{children}</div>
   }
 
+  const hostClassName = [
+    'chat-window-host h-full w-full',
+    isWindows ? 'chat-window-host--win' : '',
+    maximized ? 'chat-window-host--maximized' : '',
+  ].filter(Boolean).join(' ')
+
   return (
-    <div
-      className={`chat-window-host h-full w-full${maximized ? ' chat-window-host--maximized' : ''}`}
-    >
+    <div className={hostClassName}>
       {children}
     </div>
   )

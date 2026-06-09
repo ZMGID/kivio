@@ -47,6 +47,7 @@ import {
   CHAT_MIN_SIZE_COLLAPSED,
   CHAT_MIN_SIZE_EXPANDED,
   forgetRememberedChatRoute,
+  getChatPlatformWindowSize,
   getRememberedChatSidebarCollapsed,
   rememberChatSidebarCollapsed,
   rememberChatSize,
@@ -2131,7 +2132,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     void (async () => {
       const { getCurrentWindow } = await import('@tauri-apps/api/window')
       const { LogicalSize } = await import('@tauri-apps/api/dpi')
-      const min = sidebarCollapsed ? CHAT_MIN_SIZE_COLLAPSED : CHAT_MIN_SIZE_EXPANDED
+      const baseMin = sidebarCollapsed ? CHAT_MIN_SIZE_COLLAPSED : CHAT_MIN_SIZE_EXPANDED
+      const min = getChatPlatformWindowSize(baseMin)
       const win = getCurrentWindow()
       await win.setMinSize(new LogicalSize(min.width, min.height))
       if (cancelled) return

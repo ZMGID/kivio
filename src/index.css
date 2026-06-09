@@ -52,20 +52,34 @@ body {
   -webkit-backdrop-filter: saturate(160%) blur(28px);
   backdrop-filter: saturate(160%) blur(28px);
   border-radius: 18px;
-  border: 1px solid rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.08);
   box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.05),
-    0 2px 6px rgba(0, 0, 0, 0.06),
-    0 6px 20px rgba(0, 0, 0, 0.08);
+    0 0 0 0.5px rgba(15, 23, 42, 0.06),
+    0 3px 10px rgba(15, 23, 42, 0.10),
+    0 16px 42px -24px rgba(15, 23, 42, 0.55);
 }
 
 .dark .window-frosted {
   background: linear-gradient(180deg, rgba(28, 28, 30, 0.92) 0%, rgba(22, 22, 24, 0.88) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   box-shadow:
-    0 0 0 0.5px rgba(255, 255, 255, 0.05),
-    0 2px 6px rgba(0, 0, 0, 0.35),
-    0 6px 20px rgba(0, 0, 0, 0.4);
+    0 0 0 0.5px rgba(255, 255, 255, 0.07),
+    0 3px 12px rgba(0, 0, 0, 0.45),
+    0 18px 46px -20px rgba(0, 0, 0, 0.72);
+}
+
+.lens-floating-surface {
+  box-shadow:
+    0 0 0 0.5px rgba(15, 23, 42, 0.08),
+    0 4px 14px -8px rgba(15, 23, 42, 0.34),
+    0 18px 48px -24px rgba(15, 23, 42, 0.58);
+}
+
+.dark .lens-floating-surface {
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.08),
+    0 4px 16px -8px rgba(0, 0, 0, 0.58),
+    0 20px 52px -22px rgba(0, 0, 0, 0.82);
 }
 
 @keyframes reasoning-tail-pulse {
@@ -270,6 +284,11 @@ body {
   box-sizing: border-box;
 }
 
+.chat-window-host--win:not(.chat-window-host--maximized) {
+  /* Keep in sync with CHAT_WINDOW_EDGE_GUTTER and Rust CHAT_WINDOW_EDGE_GUTTER. */
+  padding: 12px;
+}
+
 /* ===== Chat 主窗口（圆角 + 交通灯） ===== */
 .chat-window-shell {
   container-type: size;
@@ -295,6 +314,28 @@ body {
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.04),
     0 0 0 0.5px rgba(255, 255, 255, 0.05),
     0 2px 12px rgba(0, 0, 0, 0.38);
+}
+
+.chat-window-host--win:not(.chat-window-host--maximized) .chat-window-shell {
+  border-color: rgba(15, 23, 42, 0.13);
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.62),
+    0 0 0 0.5px rgba(15, 23, 42, 0.10),
+    0 5px 18px -10px rgba(15, 23, 42, 0.34),
+    0 20px 58px -30px rgba(15, 23, 42, 0.72);
+}
+
+.dark .chat-window-host--win:not(.chat-window-host--maximized) .chat-window-shell {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.06),
+    0 0 0 0.5px rgba(255, 255, 255, 0.07),
+    0 5px 20px -10px rgba(0, 0, 0, 0.70),
+    0 22px 64px -28px rgba(0, 0, 0, 0.88);
+}
+
+.chat-window-host--maximized {
+  padding: 0;
 }
 
 .chat-window-host--maximized .chat-window-shell {

@@ -8,6 +8,24 @@ pub const CHAT_MIN_INNER_WIDTH_COLLAPSED: f64 = 400.0;
 /// 侧栏展开时整窗最小宽度（260px 侧栏 + 主内容区最小宽度）。
 pub const CHAT_MIN_INNER_WIDTH_EXPANDED: f64 = 660.0;
 pub const CHAT_MIN_INNER_HEIGHT: f64 = 400.0;
+const CHAT_DEFAULT_INNER_WIDTH: f64 = 1280.0;
+const CHAT_DEFAULT_INNER_HEIGHT: f64 = 800.0;
+
+#[cfg(target_os = "windows")]
+const CHAT_WINDOW_EDGE_GUTTER: f64 = 12.0;
+
+fn chat_window_size_for_visible_content(width: f64, height: f64) -> (f64, f64) {
+    #[cfg(target_os = "windows")]
+    {
+        let gutter = CHAT_WINDOW_EDGE_GUTTER * 2.0;
+        return (width + gutter, height + gutter);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        (width, height)
+    }
+}
 
 pub fn apply_chat_window_min_size(window: &WebviewWindow, sidebar_expanded: bool) {
     let width = if sidebar_expanded {
@@ -15,7 +33,8 @@ pub fn apply_chat_window_min_size(window: &WebviewWindow, sidebar_expanded: bool
     } else {
         CHAT_MIN_INNER_WIDTH_COLLAPSED
     };
-    let _ = window.set_min_size(Some(LogicalSize::new(width, CHAT_MIN_INNER_HEIGHT)));
+    let (width, height) = chat_window_size_for_visible_content(width, CHAT_MIN_INNER_HEIGHT);
+    let _ = window.set_min_size(Some(LogicalSize::new(width, height)));
 }
 
 #[cfg(target_os = "macos")]
@@ -116,6 +135,9 @@ pub fn apply_chat_window_chrome(window: &WebviewWindow) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = window.set_decorations(false);
+        #[cfg(target_os = "windows")]
+        let _ = window.set_shadow(true);
+        #[cfg(not(target_os = "windows"))]
         let _ = window.set_shadow(false);
         let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
     }
@@ -187,10 +209,14 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
     let route = hash.trim_start_matches('#');
     let route = if route.is_empty() { "chat" } else { route };
     let url = format!("index.html#{route}");
+    let (min_width, min_height) =
+        chat_window_size_for_visible_content(CHAT_MIN_INNER_WIDTH_COLLAPSED, CHAT_MIN_INNER_HEIGHT);
+    let (default_width, default_height) =
+        chat_window_size_for_visible_content(CHAT_DEFAULT_INNER_WIDTH, CHAT_DEFAULT_INNER_HEIGHT);
     let mut builder = WebviewWindowBuilder::new(app, "chat", WebviewUrl::App(url.into()))
         .title("Kivio")
-        .inner_size(1280.0, 800.0)
-        .min_inner_size(CHAT_MIN_INNER_WIDTH_COLLAPSED, CHAT_MIN_INNER_HEIGHT)
+        .inner_size(default_width, default_height)
+        .min_inner_size(min_width, min_height)
         .resizable(true)
         .visible_on_all_workspaces(false)
         .skip_taskbar(false)
@@ -212,12 +238,19 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
 
     #[cfg(not(target_os = "macos"))]
     {
-        // 透明 WebView 背景允许前端 shell 裁出圆角；视觉边界仍贴合真实窗口边界。
+        // 透明 WebView 背景允许前端 shell 裁出圆角和 Windows gutter。
         builder = builder
             .decorations(false)
             .transparent(true)
-            .shadow(false)
             .background_color(Color(0, 0, 0, 0));
+        #[cfg(target_os = "windows")]
+        {
+            builder = builder.shadow(true);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            builder = builder.shadow(false);
+        }
     }
 
     builder.build().map_err(|e| e.to_string())

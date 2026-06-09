@@ -1889,7 +1889,7 @@ export default function Lens() {
         >
           {/* 输入栏卡片 */}
           <div
-            className="flex w-full min-w-0 items-center gap-2.5 pl-4 pr-2 py-2 rounded-[18px] bg-white dark:bg-neutral-900 shadow-[0_10px_28px_-20px_rgba(0,0,0,0.28)] ring-1 ring-black/[0.04] dark:ring-white/[0.06] cursor-default overflow-hidden"
+            className="flex w-full min-w-0 items-center gap-2.5 pl-4 pr-2 py-2 rounded-[18px] bg-white dark:bg-neutral-900 border border-black/[0.07] dark:border-white/[0.08] lens-floating-surface cursor-default overflow-hidden"
             data-tauri-drag-region="false"
           >
             <div className="flex min-w-0 shrink items-center gap-2">
@@ -2082,7 +2082,7 @@ export default function Lens() {
 
           {/* answer 区：absolute 展开在对话栏上方或下方（自适应空间），渲染整个 chat list（多轮对话） */}
           <div
-            className="absolute left-0 right-0 rounded-2xl overflow-hidden window-frosted transition-all ease-out select-text"
+            className="absolute left-0 right-0 rounded-2xl overflow-hidden window-frosted lens-floating-surface transition-all ease-out select-text"
             style={{
               top: answerLayout.placeAbove ? undefined : 'calc(100% + 8px)',
               bottom: answerLayout.placeAbove ? 'calc(100% + 8px)' : undefined,
@@ -2210,7 +2210,7 @@ export default function Lens() {
           外层 select-none 用 select-text 覆盖，让用户可选中复制部分文本。 */}
       {showTranslateCard && (
         <div
-          className="absolute ease-out rounded-2xl bg-white dark:bg-neutral-900 shadow-[0_10px_28px_-20px_rgba(0,0,0,0.28)] ring-1 ring-black/[0.04] dark:ring-white/[0.06] overflow-hidden select-text"
+          className="absolute ease-out rounded-2xl bg-white dark:bg-neutral-900 border border-black/[0.07] dark:border-white/[0.08] lens-floating-surface overflow-hidden select-text"
           onMouseDown={(e) => e.stopPropagation()}
           onMouseMove={(e) => e.stopPropagation()}
           onMouseUp={(e) => e.stopPropagation()}
