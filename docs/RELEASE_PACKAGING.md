@@ -58,8 +58,7 @@ GitHub release packaging:
 
 ```json
 "resources": {
-  "resources/skills": "skills",
-  "../dist/pyodide": "pyodide"
+  "resources/skills": "skills"
 }
 ```
 
@@ -90,16 +89,13 @@ Required local package wheels:
 - `numpy`
 - `pandas`
 - `matplotlib`
-- `scipy`
-- `sympy`
-- `scikit-learn`
-- `statsmodels`
 - `pillow`
 - `seaborn`
 - `micropip`
 - `openpyxl`
 - `xlrd`
 - `et_xmlfile`
+- `pypdf`
 
 Required local Python font assets:
 
@@ -107,8 +103,8 @@ Required local Python font assets:
 
 Implementation requirement:
 
-- Run `npm run prepare:pyodide` before the frontend build. It creates the reproducible local cache in `.cache/pyodide/`.
-- Update the Vite Pyodide asset plugin in `vite.config.ts` so it emits the core runtime files, required local wheels, and required local font assets into `dist/pyodide/`.
+- Run `npm run prepare:pyodide` before the frontend build. It creates the reproducible Python sandbox runtime resources in `resources/python-sandbox/pyodide/`.
+- Update the Vite Pyodide asset plugin in `vite.config.ts` so it emits the sandbox runtime core files, required local wheels, and required local font assets into `dist/pyodide/`; Tauri packages that single frontend asset copy through `frontendDist`.
 - Update `src/chat/pyodideRunner.ts` so `run_python` package loading prefers the bundled local `dist/pyodide/` package index and wheels.
 - CDN package loading may remain as a fallback, but the app must be able to run normal `pdf` / `docx` / `xlsx` analysis without downloading those common packages at runtime.
 - Do not package a host machine virtual environment or host `site-packages` as a substitute for Pyodide wheels. The runtime used by `run_python` is Pyodide in the WebView sandbox.

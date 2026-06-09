@@ -19,6 +19,7 @@ const PYODIDE_PACKAGE_IMPORTS: Array<[RegExp, string]> = [
   [/(^|\n)\s*(import|from)\s+statsmodels\b/, 'statsmodels'],
   [/(^|\n)\s*(import|from)\s+(PIL|pillow)\b/, 'pillow'],
   [/(^|\n)\s*(import|from)\s+seaborn\b/, 'seaborn'],
+  [/(^|\n)\s*(import|from)\s+pypdf\b/, 'pypdf'],
   [/(^|\n)\s*(import|from)\s+micropip\b/, 'micropip'],
   [/(^|\n)\s*(import|from)\s+et_xmlfile\b/, 'et_xmlfile'],
   [/(^|\n)\s*(import|from)\s+openpyxl\b/, 'openpyxl'],
@@ -51,6 +52,7 @@ const PYODIDE_IMPORT_PACKAGE_ALIASES: Record<string, string> = {
   yaml: 'pyyaml',
   openpyxl: 'openpyxl',
   xlrd: 'xlrd',
+  pypdf: 'pypdf',
 }
 
 type PyodideFsStat = {
@@ -95,6 +97,7 @@ type PyodidePackageManifest = {
   pypiWheels?: Record<string, {
     fileName?: string
     pyodideDeps?: string[]
+    localWheelDeps?: string[]
   }>
 }
 type PythonFontAsset = {
@@ -254,24 +257,36 @@ async function installLocalWheelPackage(
   pyodide: PyodideInterface,
   packageName: string,
   manifest: PyodidePackageManifest | null,
+  installing = new Set<string>(),
 ): Promise<boolean> {
   const wheel = manifest?.pypiWheels?.[packageName]
   if (!wheel?.fileName) return false
-
-  const deps = wheel.pyodideDeps?.filter((dep) => dep !== packageName) ?? []
-  if (deps.length > 0) {
-    await pyodide.loadPackage(deps)
+  if (installing.has(packageName)) {
+    throw new Error(`Circular Python sandbox wheel dependency: ${[...installing, packageName].join(' -> ')}`)
   }
-  if (!deps.includes('micropip')) {
-    await pyodide.loadPackage('micropip')
-  }
+  installing.add(packageName)
 
-  const wheelUrl = localPyodideAssetUrl(wheel.fileName)
-  const installWheelCode = `
+  try {
+    const deps = wheel.pyodideDeps?.filter((dep) => dep !== packageName) ?? []
+    if (deps.length > 0) {
+      await pyodide.loadPackage(deps)
+    }
+    for (const dep of wheel.localWheelDeps ?? []) {
+      await installLocalWheelPackage(pyodide, dep, manifest, installing)
+    }
+    if (!deps.includes('micropip')) {
+      await pyodide.loadPackage('micropip')
+    }
+
+    const wheelUrl = localPyodideAssetUrl(wheel.fileName)
+    const installWheelCode = `
 import micropip as _kivio_micropip
 await _kivio_micropip.install(${pythonStringLiteral(wheelUrl)}, deps=False)
 `.trim()
-  await pyodide.runPythonAsync(installWheelCode)
+    await pyodide.runPythonAsync(installWheelCode)
+  } finally {
+    installing.delete(packageName)
+  }
   return true
 }
 

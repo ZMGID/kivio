@@ -188,7 +188,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ### Release Packaging Requirements
 
 - If `pdf`, `docx`, and `xlsx` Skills are bundled, their Python/Pyodide runtime must be bundled too.
-- Installers must include Pyodide core files, `python_stdlib.zip`, `pyodide-lock.json`, and local wheels for common packages such as `numpy`, `pandas`, `matplotlib`, `scipy`, `sympy`, `scikit-learn`, `statsmodels`, `pillow`, `seaborn`, `openpyxl`, `xlrd`, `et_xmlfile`, and `micropip`.
+- Installers must include Pyodide core files, `python_stdlib.zip`, `pyodide-lock.json`, and local wheels for common packages such as `numpy`, `pandas`, `matplotlib`, `pillow`, `seaborn`, `openpyxl`, `xlrd`, `et_xmlfile`, `pypdf`, and `micropip`.
 - `run_python` must prefer packaged local Pyodide resources. CDN loading is only a fallback.
 - Before publishing, inspect the final DMG / MSI / NSIS artifacts and verify both bundled Skills and the Python/Pyodide runtime resources are present.
 - Current release flow builds the macOS Apple Silicon DMG locally and lets GitHub Actions publish the Windows MSI / NSIS installers.
@@ -386,7 +386,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ### 发布打包要求
 
 - 如果内置 `pdf`、`docx`、`xlsx` Skills，必须同时内置它们依赖的 Python / Pyodide 运行时。
-- 安装包必须包含 Pyodide 核心文件、`python_stdlib.zip`、`pyodide-lock.json`，以及 `numpy`、`pandas`、`matplotlib`、`scipy`、`sympy`、`scikit-learn`、`statsmodels`、`pillow`、`seaborn`、`openpyxl`、`xlrd`、`et_xmlfile`、`micropip` 等本地 wheels。
+- 安装包必须包含 Pyodide 核心文件、`python_stdlib.zip`、`pyodide-lock.json`，以及 `numpy`、`pandas`、`matplotlib`、`pillow`、`seaborn`、`openpyxl`、`xlrd`、`et_xmlfile`、`pypdf`、`micropip` 等本地 wheels。
 - `run_python` 必须优先使用随包 Pyodide 资源；CDN 只能作为兜底。
 - 发布前必须检查最终 DMG / MSI / NSIS，确认 Skills 和 Python / Pyodide 运行时资源都在安装包里。
 - 当前发布流程是在本机构建并上传 macOS Apple Silicon DMG，GitHub Actions 只发布 Windows MSI / NSIS 安装包。

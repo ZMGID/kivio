@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const pyodideDir = path.resolve(dirname, 'node_modules/pyodide')
-const pyodideCacheDir = path.resolve(dirname, '.cache/pyodide')
+const pythonSandboxPyodideDir = path.resolve(dirname, 'resources/python-sandbox/pyodide')
 const pyodideCoreAssetFiles = [
   'pyodide.asm.js',
   'pyodide.asm.wasm',
@@ -29,10 +29,10 @@ function contentTypeForPyodideAsset(fileName: string): string {
 
 function pyodideAssetSourceDir(): string {
   if (
-    fs.existsSync(pyodideCacheDir)
-    && pyodideCoreAssetFiles.every((fileName) => fs.existsSync(path.join(pyodideCacheDir, fileName)))
+    fs.existsSync(pythonSandboxPyodideDir)
+    && pyodideCoreAssetFiles.every((fileName) => fs.existsSync(path.join(pythonSandboxPyodideDir, fileName)))
   ) {
-    return pyodideCacheDir
+    return pythonSandboxPyodideDir
   }
   return pyodideDir
 }

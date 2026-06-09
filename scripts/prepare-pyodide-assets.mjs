@@ -5,6 +5,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -17,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const PYODIDE_DIR = resolve(ROOT, 'node_modules/pyodide')
-const CACHE_DIR = resolve(ROOT, '.cache/pyodide')
+const SANDBOX_DIR = resolve(ROOT, 'resources/python-sandbox/pyodide')
 
 const CORE_FILES = [
   'pyodide.asm.js',
@@ -31,10 +32,6 @@ const REQUIRED_PYODIDE_PACKAGES = [
   'numpy',
   'pandas',
   'matplotlib',
-  'scipy',
-  'sympy',
-  'scikit-learn',
-  'statsmodels',
   'pillow',
   'micropip',
 ]
@@ -44,21 +41,31 @@ const PYPI_WHEELS = [
     name: 'seaborn',
     version: '0.13.2',
     pyodideDeps: ['numpy', 'pandas', 'matplotlib'],
+    localWheelDeps: [],
   },
   {
     name: 'openpyxl',
     version: '3.1.5',
-    pyodideDeps: ['pandas', 'et_xmlfile'],
+    pyodideDeps: ['pandas'],
+    localWheelDeps: ['et_xmlfile'],
   },
   {
     name: 'et_xmlfile',
     version: '2.0.0',
     pyodideDeps: [],
+    localWheelDeps: [],
   },
   {
     name: 'xlrd',
     version: '2.0.1',
     pyodideDeps: ['pandas'],
+    localWheelDeps: [],
+  },
+  {
+    name: 'pypdf',
+    version: '6.13.1',
+    pyodideDeps: [],
+    localWheelDeps: [],
   },
 ]
 
@@ -89,11 +96,20 @@ function fileMatches(path, expectedSha256) {
 function copyCoreFiles() {
   for (const fileName of CORE_FILES) {
     const source = join(PYODIDE_DIR, fileName)
-    const dest = join(CACHE_DIR, fileName)
+    const dest = join(SANDBOX_DIR, fileName)
     if (!existsSync(source)) {
       throw new Error(`Missing Pyodide core file: ${source}`)
     }
     copyFileSync(source, dest)
+  }
+}
+
+function pruneSandboxFiles(expectedFiles) {
+  for (const fileName of readdirSync(SANDBOX_DIR)) {
+    const filePath = join(SANDBOX_DIR, fileName)
+    if (statSync(filePath).isFile() && !expectedFiles.has(fileName)) {
+      rmSync(filePath, { force: true })
+    }
   }
 }
 
@@ -129,7 +145,7 @@ async function download(url, label) {
 
 async function downloadPyodidePackage(version, pkg) {
   const fileName = pkg.file_name
-  const dest = join(CACHE_DIR, fileName)
+  const dest = join(SANDBOX_DIR, fileName)
   if (fileMatches(dest, pkg.sha256)) {
     return { fileName, status: 'cached' }
   }
@@ -167,7 +183,7 @@ async function pypiWheelInfo(name, version) {
 
 async function downloadPypiWheel(spec) {
   const info = await pypiWheelInfo(spec.name, spec.version)
-  const dest = join(CACHE_DIR, info.fileName)
+  const dest = join(SANDBOX_DIR, info.fileName)
   if (fileMatches(dest, info.sha256)) {
     return { fileName: info.fileName, status: 'cached' }
   }
@@ -183,7 +199,7 @@ async function downloadPypiWheel(spec) {
 }
 
 async function downloadFontFile(spec) {
-  const dest = join(CACHE_DIR, spec.fileName)
+  const dest = join(SANDBOX_DIR, spec.fileName)
   if (fileMatches(dest, spec.sha256)) {
     return { fileName: spec.fileName, status: 'cached' }
   }
@@ -202,7 +218,7 @@ async function main() {
   if (!existsSync(PYODIDE_DIR)) {
     throw new Error('node_modules/pyodide is missing. Run npm install first.')
   }
-  mkdirSync(CACHE_DIR, { recursive: true })
+  mkdirSync(SANDBOX_DIR, { recursive: true })
   copyCoreFiles()
 
   const pyodidePackage = readJson(join(PYODIDE_DIR, 'package.json'))
@@ -217,8 +233,11 @@ async function main() {
   }
 
   const downloaded = []
+  const expectedFiles = new Set(CORE_FILES)
   for (const name of [...selected].sort()) {
-    downloaded.push(await downloadPyodidePackage(pyodidePackage.version, lock.packages[name]))
+    const result = await downloadPyodidePackage(pyodidePackage.version, lock.packages[name])
+    downloaded.push(result)
+    expectedFiles.add(result.fileName)
   }
   const manifest = {
     pyodideVersion: pyodidePackage.version,
@@ -230,28 +249,34 @@ async function main() {
   for (const wheel of PYPI_WHEELS) {
     const result = await downloadPypiWheel(wheel)
     downloaded.push(result)
+    expectedFiles.add(result.fileName)
     manifest.pypiWheels[wheel.name] = {
       version: wheel.version,
       fileName: result.fileName,
       pyodideDeps: wheel.pyodideDeps,
+      localWheelDeps: wheel.localWheelDeps,
     }
   }
   for (const font of PYTHON_FONT_FILES) {
-    downloaded.push(await downloadFontFile(font))
+    const result = await downloadFontFile(font)
+    downloaded.push(result)
+    expectedFiles.add(result.fileName)
   }
 
-  writeFileSync(join(CACHE_DIR, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`)
-  rmSync(join(CACHE_DIR, '.download-failed'), { force: true })
+  expectedFiles.add(MANIFEST_FILE)
+  writeFileSync(join(SANDBOX_DIR, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`)
+  rmSync(join(SANDBOX_DIR, '.download-failed'), { force: true })
+  pruneSandboxFiles(expectedFiles)
   const downloadedCount = downloaded.filter((item) => item.status === 'downloaded').length
   const cachedCount = downloaded.filter((item) => item.status === 'cached').length
   console.log(
-    `[prepare-pyodide-assets] Ready: ${CORE_FILES.length} core files, ${downloaded.length} package/font files (${downloadedCount} downloaded, ${cachedCount} cached).`,
+    `[prepare-pyodide-assets] Ready in resources/python-sandbox/pyodide: ${CORE_FILES.length} core files, ${downloaded.length} package/font files (${downloadedCount} downloaded, ${cachedCount} already present).`,
   )
 }
 
 main().catch((err) => {
-  mkdirSync(CACHE_DIR, { recursive: true })
-  writeFileSync(join(CACHE_DIR, '.download-failed'), String(err?.stack || err?.message || err))
+  mkdirSync(SANDBOX_DIR, { recursive: true })
+  writeFileSync(join(SANDBOX_DIR, '.download-failed'), String(err?.stack || err?.message || err))
   console.error(`[prepare-pyodide-assets] ${err?.message || err}`)
   process.exit(1)
 })
