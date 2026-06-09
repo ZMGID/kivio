@@ -81,7 +81,7 @@ const MessageList = lazy(() => import('./MessageList').then((module) => ({
 
 function ChatPaneLoading() {
   return (
-    <div className="flex h-full w-full items-center justify-center bg-white dark:bg-[#212121]">
+    <div className="chat-themed-surface flex h-full w-full items-center justify-center">
       <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
     </div>
   )
@@ -89,7 +89,7 @@ function ChatPaneLoading() {
 
 function MessageListLoading() {
   return (
-    <div className="flex flex-1 items-center justify-center bg-white dark:bg-[#212121]">
+    <div className="chat-themed-surface flex flex-1 items-center justify-center">
       <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
     </div>
   )
@@ -2251,7 +2251,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
             </Suspense>
           </div>
         ) : (
-          <div className="chat-main-pane relative flex min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
+          <div className="chat-main-pane relative flex min-w-0 flex-1 flex-col">
             {imageViewerItem ? (
               <ChatImageViewer
                 item={imageViewerItem}
@@ -2370,7 +2370,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                                 type="button"
                                 onClick={() => void handleSendMessage(starter)}
                                 disabled={isCurrentConversationBusy()}
-                                className="max-w-full truncate rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-[12px] text-neutral-700 shadow-sm transition hover:border-neutral-300 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                                className="max-w-full truncate rounded-full border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] px-3 py-1.5 text-[12px] text-neutral-700 shadow-sm transition hover:border-[var(--theme-surface-border-strong)] hover:bg-[var(--theme-surface-soft)] disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
                               >
                                 {starter}
                               </button>

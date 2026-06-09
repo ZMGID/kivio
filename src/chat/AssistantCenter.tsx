@@ -1064,7 +1064,7 @@ export function AssistantCenter({
   }
 
   return (
-    <div className="h-full min-h-0 bg-white text-neutral-900 dark:bg-[#212121] dark:text-neutral-100">
+    <div className="assistant-center-root h-full min-h-0 text-neutral-900 dark:text-neutral-100">
       <main className="custom-scrollbar h-full min-h-0 overflow-y-auto px-6 py-6">
         <div className="mx-auto max-w-7xl space-y-4">
           <header className="assistant-center-header flex min-w-0 items-center gap-3">

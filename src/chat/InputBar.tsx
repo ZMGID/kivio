@@ -1110,7 +1110,7 @@ export function InputBar({
           <>
             <div className="fixed inset-0 z-30" onClick={() => setToolPanelOpen(false)} aria-hidden />
             <div
-              className="chat-motion-popover absolute bottom-full left-10 z-40 mb-2 w-[min(320px,calc(100vw-32px))] overflow-hidden rounded-xl border border-neutral-200/90 bg-white shadow-[0_10px_28px_rgba(0,0,0,0.14)] dark:border-neutral-700 dark:bg-neutral-900"
+              className="chat-motion-popover absolute bottom-full left-10 z-40 mb-2 w-[min(320px,calc(100vw-32px))] overflow-hidden rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] shadow-[0_10px_28px_rgba(0,0,0,0.14)] dark:border-neutral-700 dark:bg-neutral-900"
               style={{ ['--chat-popover-origin' as string]: 'bottom left' }}
               data-tauri-drag-region="false"
             >
@@ -1196,7 +1196,7 @@ export function InputBar({
         )}
         {slashPanelOpen && (
           <div
-            className={`chat-motion-popover absolute z-40 overflow-hidden rounded-lg border border-neutral-200/90 bg-white p-0.5 font-sans shadow-[0_6px_18px_-16px_rgba(0,0,0,0.2),0_1px_4px_rgba(0,0,0,0.05)] dark:border-neutral-700 dark:bg-neutral-900 ${slashPanelPlacementClass}`}
+            className={`chat-motion-popover absolute z-40 overflow-hidden rounded-lg border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] p-0.5 font-sans shadow-[0_6px_18px_-16px_rgba(0,0,0,0.2),0_1px_4px_rgba(0,0,0,0.05)] dark:border-neutral-700 dark:bg-neutral-900 ${slashPanelPlacementClass}`}
             style={{
               ['--chat-popover-origin' as string]: slashPanelOrigin,
               ['--chat-popover-start-y' as string]: '0px',
@@ -1255,7 +1255,7 @@ export function InputBar({
               aria-hidden
             />
             <div
-              className={`chat-motion-popover absolute left-0 z-40 w-[min(240px,calc(100vw-32px))] overflow-visible rounded-xl border border-neutral-200/90 bg-white p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 ${projectPanelPlacementClass}`}
+              className={`chat-motion-popover absolute left-0 z-40 w-[min(240px,calc(100vw-32px))] overflow-visible rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 ${projectPanelPlacementClass}`}
               style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
               data-tauri-drag-region="false"
             >
@@ -1347,7 +1347,7 @@ export function InputBar({
                   </button>
                   {projectCreateMenuOpen && (
                     <div
-                      className="absolute left-0 top-full z-50 mt-1 w-32 rounded-lg border border-neutral-200/90 bg-white p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 sm:bottom-0 sm:left-full sm:top-auto sm:mt-0 sm:ml-1"
+                      className="absolute left-0 top-full z-50 mt-1 w-32 rounded-lg border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 sm:bottom-0 sm:left-full sm:top-auto sm:mt-0 sm:ml-1"
                       role="menu"
                     >
                       <button
@@ -1377,7 +1377,7 @@ export function InputBar({
         )}
         <div
           data-chat-composer="true"
-          className={`chat-composer-shell relative z-10 rounded-[28px] border bg-white px-3 py-2.5 transition-[box-shadow,border-color] duration-200 dark:bg-neutral-900 ${
+          className={`chat-composer-shell relative z-10 rounded-[28px] border px-3 py-2.5 transition-[box-shadow,border-color] duration-200 ${
             dragActive
               ? 'border-[#e8a090] shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[#e8a090]/25 dark:border-[#e8a090] dark:shadow-none'
               : agentPlanActive
@@ -1503,7 +1503,7 @@ export function InputBar({
           </div>
         </div>
         {projectEntryEnabled && (
-          <div className="relative z-0 -mt-3 flex min-h-[40px] w-full items-end rounded-b-[24px] bg-neutral-100/75 px-3 pb-2 pt-4 dark:bg-neutral-800/50">
+          <div className="relative z-0 -mt-3 flex min-h-[40px] w-full items-end rounded-b-[24px] bg-[color-mix(in_srgb,var(--theme-surface-muted)_72%,transparent)] px-3 pb-2 pt-4 dark:bg-neutral-800/50">
             <button
               type="button"
               onClick={toggleProjectMenu}

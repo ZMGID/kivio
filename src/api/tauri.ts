@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
+import { normalizeThemeColorId } from '../themeColors'
 
 // ========== 类型定义 ==========
 
@@ -519,6 +520,7 @@ export type DefaultModelsConfig = {
 export type Settings = {
   hotkey: string
   theme: 'system' | 'light' | 'dark'
+  themeColor: string
   targetLang: string
   source: string
   autoPaste: boolean
@@ -818,6 +820,7 @@ function prepareSettingsForSave(settings: Settings): Settings {
 
   return {
     ...settings,
+    themeColor: normalizeThemeColorId(current.themeColor),
     defaultModels,
     chatProviderId: defaultModels.chat.providerId,
     chatModel: defaultModels.chat.model,
@@ -843,6 +846,7 @@ function normalizeSettings(settings: Settings): Settings {
     ...settings,
     hotkey: current.hotkey ?? 'CommandOrControl+Alt+T',
     theme: current.theme ?? 'system',
+    themeColor: normalizeThemeColorId(current.themeColor),
     targetLang: current.targetLang ?? 'auto',
     source: current.source ?? 'openai',
     autoPaste: current.autoPaste ?? true,

@@ -249,7 +249,7 @@ function AgentPlanPanel({ planState }: { planState?: AgentPlanState | null }) {
   const status = planState?.status ?? 'draft'
   return (
     <div className="chat-motion-fade-up pb-3 pt-1">
-      <section className="border-b border-neutral-200/70 bg-white/95 pb-3 backdrop-blur dark:border-neutral-800/80 dark:bg-[#212121]/95">
+      <section className="border-b border-[var(--theme-surface-border)] bg-[color-mix(in_srgb,var(--theme-surface)_95%,transparent)] pb-3 backdrop-blur dark:border-neutral-800/80 dark:bg-[#212121]/95">
         <div className="mb-2 flex items-center justify-between gap-3">
           <div className="text-[11px] font-medium uppercase tracking-normal text-neutral-500 dark:text-neutral-400">
             Agent plan

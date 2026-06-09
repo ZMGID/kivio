@@ -785,6 +785,8 @@ pub struct Settings {
     pub hotkey: String,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_theme_color")]
+    pub theme_color: String,
     #[serde(default = "default_target_lang")]
     pub target_lang: String,
     #[serde(default = "default_source")]
@@ -922,6 +924,7 @@ impl Default for Settings {
         Self {
             hotkey: "CommandOrControl+Alt+T".to_string(),
             theme: "system".to_string(),
+            theme_color: default_theme_color(),
             target_lang: "auto".to_string(),
             source: "openai".to_string(),
             auto_paste: true,
@@ -1284,6 +1287,12 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         normalize_optional_prompt(settings.screenshot_translation.prompt.take());
 
     // 5. 其他字段验证
+    if !matches!(settings.theme.as_str(), "system" | "light" | "dark") {
+        settings.theme = default_theme();
+    }
+    if !matches!(settings.theme_color.as_str(), "neutral" | "warm" | "cool") {
+        settings.theme_color = default_theme_color();
+    }
     if settings.lens.message_order != "asc" && settings.lens.message_order != "desc" {
         settings.lens.message_order = "asc".to_string();
     }
@@ -1760,6 +1769,10 @@ fn default_theme() -> String {
     "system".to_string()
 }
 
+fn default_theme_color() -> String {
+    "neutral".to_string()
+}
+
 fn default_target_lang() -> String {
     "auto".to_string()
 }
@@ -1901,6 +1914,16 @@ mod tests {
         s.chat.max_output_tokens = 100_000;
         let s = sanitize_settings(s);
         assert_eq!(s.chat.max_output_tokens, 65_536);
+    }
+
+    #[test]
+    fn sanitize_settings_resets_unknown_theme_values() {
+        let mut s = Settings::default();
+        s.theme = "sepia".to_string();
+        s.theme_color = "mint".to_string();
+        let s = sanitize_settings(s);
+        assert_eq!(s.theme, "system");
+        assert_eq!(s.theme_color, "neutral");
     }
 
     #[test]

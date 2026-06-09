@@ -16,6 +16,7 @@ import {
   snapshotChatWindowGeometry,
 } from './chat/persistence'
 import { ChatErrorBoundary } from './chat/ChatErrorBoundary'
+import { normalizeThemeColorId } from './themeColors'
 import './index.css'
 
 const Settings = lazy(() => import('./Settings'))
@@ -254,6 +255,7 @@ function App() {
     } else {
       document.documentElement.classList.remove('dark')
     }
+    document.documentElement.dataset.themeColor = normalizeThemeColorId(settings.themeColor)
     setTranslateSource(settings.translatorModel || 'AI')
     setLang((settings.settingsLanguage as Lang) || 'zh')
   }

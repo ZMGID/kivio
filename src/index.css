@@ -25,6 +25,39 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+:root {
+  --theme-surface: #ffffff;
+  --theme-surface-soft: #fbfbfc;
+  --theme-surface-muted: #f6f6f7;
+  --theme-surface-hover: #f0f0f2;
+  --theme-surface-active: #e9e9ec;
+  --theme-surface-titlebar: #ececef;
+  --theme-surface-border: #e4e4e7;
+  --theme-surface-border-strong: #d4d4d8;
+}
+
+:root[data-theme-color="warm"] {
+  --theme-surface: #faf9f5;
+  --theme-surface-soft: #f6f3ed;
+  --theme-surface-muted: #f1eee7;
+  --theme-surface-hover: #ece7de;
+  --theme-surface-active: #e4ded2;
+  --theme-surface-titlebar: #ebe6dc;
+  --theme-surface-border: #e3ddd2;
+  --theme-surface-border-strong: #d3cabc;
+}
+
+:root[data-theme-color="cool"] {
+  --theme-surface: #f6f8fb;
+  --theme-surface-soft: #eff4f9;
+  --theme-surface-muted: #e9eff6;
+  --theme-surface-hover: #e1e8f1;
+  --theme-surface-active: #d7e0eb;
+  --theme-surface-titlebar: #e3eaf3;
+  --theme-surface-border: #dce4ee;
+  --theme-surface-border-strong: #cad6e4;
+}
+
 #root {
   height: 100%;
   margin: 0;
@@ -48,7 +81,7 @@ body {
    半透明白底 + 大模糊背景 + hairline 描边 + 一道柔和近对称阴影。
    阴影偏置只 2-3px（浮起感而非下坠感），靠 blur 散开整圈光晕。 */
 .window-frosted {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(252, 252, 253, 0.94) 100%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--theme-surface) 98%, white) 0%, color-mix(in srgb, var(--theme-surface-soft) 94%, transparent) 100%);
   -webkit-backdrop-filter: saturate(160%) blur(28px);
   backdrop-filter: saturate(160%) blur(28px);
   border-radius: 18px;
@@ -194,7 +227,7 @@ body {
    单点定义阴影/边框/底色，避免内联 box-shadow 在每个 section 重复，
    也让 light/dark 切换的视觉层级一致。 */
 .settings-card {
-  background: #ffffff;
+  background: var(--theme-surface);
   border: 1px solid rgba(0, 0, 0, 0.04);
   border-radius: 12px;
   box-shadow:
@@ -300,7 +333,7 @@ body {
   overflow: hidden;
   border-radius: 14px;
   border: 1px solid rgba(0, 0, 0, 0.06);
-  background: #ffffff;
+  background: var(--theme-surface);
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.55),
     0 0 0 0.5px rgba(0, 0, 0, 0.08),
@@ -364,6 +397,37 @@ body {
   container-type: size;
   container-name: chat-main;
   overflow: hidden;
+  background: var(--theme-surface);
+}
+
+.chat-themed-surface,
+.assistant-center-root {
+  background: var(--theme-surface);
+}
+
+.chat-sidebar-shell {
+  background: var(--theme-surface-muted);
+}
+
+.chat-composer-shell {
+  background: var(--theme-surface);
+}
+
+.dark .chat-main-pane {
+  background: #212121;
+}
+
+.dark .chat-themed-surface,
+.dark .assistant-center-root {
+  background: #212121;
+}
+
+.dark .chat-sidebar-shell {
+  background: #1c1c1e;
+}
+
+.dark .chat-composer-shell {
+  background: rgb(23, 23, 23);
 }
 
 /* —— 主内容区：宽度 —— */
@@ -533,7 +597,7 @@ body {
   position: relative;
   overflow: hidden;
   isolation: isolate;
-  background-color: #ffffff;
+  background-color: var(--theme-surface);
 }
 
 .dark .chat-empty-hero {
@@ -827,18 +891,18 @@ body {
 }
 
 .chat-window-shell .settings-embedded {
-  --bg: #ffffff;
-  --bg-sidebar: #f7f7f8;
-  --bg-savebar: #ffffff;
-  --bg-input: #ffffff;
-  --bg-input-subtle: #f4f4f5;
-  --bg-hover: rgba(0, 0, 0, 0.04);
-  --bg-active: rgba(0, 0, 0, 0.06);
-  --bg-pill: #f0f0f2;
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: #d4d4d8;
-  --border-input: #e5e5ea;
-  --divider: rgba(0, 0, 0, 0.06);
+  --bg: var(--theme-surface);
+  --bg-sidebar: var(--theme-surface-muted);
+  --bg-savebar: var(--theme-surface-soft);
+  --bg-input: var(--theme-surface);
+  --bg-input-subtle: var(--theme-surface-muted);
+  --bg-hover: var(--theme-surface-hover);
+  --bg-active: var(--theme-surface-active);
+  --bg-pill: var(--theme-surface-hover);
+  --border: var(--theme-surface-border);
+  --border-strong: var(--theme-surface-border-strong);
+  --border-input: var(--theme-surface-border-strong);
+  --divider: var(--theme-surface-titlebar);
   --text: #171717;
   --text-muted: #737373;
   --text-faint: #a3a3a3;
@@ -877,8 +941,8 @@ body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid rgba(0, 0, 0, 0.08);
-  background: #f7f7f8;
+  border-right: 1px solid var(--border);
+  background: var(--bg-sidebar);
   padding: 16px 8px 12px;
   overflow: hidden;
 }
@@ -994,7 +1058,7 @@ body {
 }
 
 .settings-embedded-scroll {
-  background: #fafafa;
+  background: var(--bg-savebar);
   padding: 8px 28px 20px;
 }
 
@@ -1008,7 +1072,7 @@ body {
   padding: 4px 16px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  background: #ffffff;
+  background: var(--bg);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 
@@ -1074,7 +1138,7 @@ body {
   min-height: 360px;
   padding: 8px;
   border-radius: 10px;
-  background: #ffffff;
+  background: var(--bg);
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -1519,19 +1583,19 @@ body {
 
 /* ===== Kivio Settings redesign ===== */
 .kv {
-  --bg: #ffffff;
-  --bg-sidebar: #f6f6f7;
-  --bg-savebar: #fbfbfc;
-  --bg-input: #ffffff;
-  --bg-input-subtle: #f4f4f6;
-  --bg-hover: #f0f0f2;
-  --bg-active: #e9e9ec;
-  --bg-pill: #eeeef1;
-  --bg-titlebar: #ececef;
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
-  --border-input: #d9d9de;
-  --divider: #ececef;
+  --bg: var(--theme-surface);
+  --bg-sidebar: var(--theme-surface-muted);
+  --bg-savebar: var(--theme-surface-soft);
+  --bg-input: var(--theme-surface);
+  --bg-input-subtle: var(--theme-surface-muted);
+  --bg-hover: var(--theme-surface-hover);
+  --bg-active: var(--theme-surface-active);
+  --bg-pill: var(--theme-surface-hover);
+  --bg-titlebar: var(--theme-surface-titlebar);
+  --border: var(--theme-surface-border);
+  --border-strong: var(--theme-surface-border-strong);
+  --border-input: var(--theme-surface-border-strong);
+  --divider: var(--theme-surface-titlebar);
   --text: #1d1d1f;
   --text-muted: #6b6b73;
   --text-faint: #9c9ca3;
@@ -1556,6 +1620,39 @@ body {
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+.kv[data-theme-color="neutral"] {
+  --theme-surface: #ffffff;
+  --theme-surface-soft: #fbfbfc;
+  --theme-surface-muted: #f6f6f7;
+  --theme-surface-hover: #f0f0f2;
+  --theme-surface-active: #e9e9ec;
+  --theme-surface-titlebar: #ececef;
+  --theme-surface-border: #e4e4e7;
+  --theme-surface-border-strong: #d4d4d8;
+}
+
+.kv[data-theme-color="warm"] {
+  --theme-surface: #faf9f5;
+  --theme-surface-soft: #f6f3ed;
+  --theme-surface-muted: #f1eee7;
+  --theme-surface-hover: #ece7de;
+  --theme-surface-active: #e4ded2;
+  --theme-surface-titlebar: #ebe6dc;
+  --theme-surface-border: #e3ddd2;
+  --theme-surface-border-strong: #d3cabc;
+}
+
+.kv[data-theme-color="cool"] {
+  --theme-surface: #f6f8fb;
+  --theme-surface-soft: #eff4f9;
+  --theme-surface-muted: #e9eff6;
+  --theme-surface-hover: #e1e8f1;
+  --theme-surface-active: #d7e0eb;
+  --theme-surface-titlebar: #e3eaf3;
+  --theme-surface-border: #dce4ee;
+  --theme-surface-border-strong: #cad6e4;
 }
 
 .dark .kv,
@@ -1665,7 +1762,7 @@ body {
   width: 18px;
   height: 18px;
   border-radius: 5px;
-  background: #ffffff;
+  background: var(--bg);
   border: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -1883,6 +1980,38 @@ body {
 .kv[data-theme="dark"] .kv-seg button.active {
   background: var(--bg-active);
   box-shadow: 0 0 0 0.5px var(--border-strong);
+}
+
+.kv-theme-colors {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.kv-theme-colors button {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-input-subtle);
+  padding: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-sm);
+  cursor: default;
+}
+.kv-theme-colors button:hover {
+  border-color: var(--border-strong);
+}
+.kv-theme-colors button.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.kv-theme-colors span {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
 }
 
 .kv-select {

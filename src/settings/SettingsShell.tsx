@@ -37,6 +37,7 @@ import { ModelDetailDrawer } from '../components/ModelDetailDrawer'
 import { resolveModelInfo } from '../data/modelMatching'
 import { useWindowInteractionFocus } from '../utils/windowFocus'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
+import { THEME_COLOR_PRESETS, normalizeThemeColorId } from '../themeColors'
 import {
   Toggle, Select, Input, TextArea, Label,
   SettingRow, PermissionItem, HotkeyInput, DefaultPrompt,
@@ -603,6 +604,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
+  const themeColor = normalizeThemeColorId(settings?.themeColor)
   const chatTools = settings?.chatTools || defaultChatTools()
   const nativeBuiltinToolsEnabled = hasEnabledNativeBuiltinTool(chatTools.nativeTools)
   const skillRuntimeEnabled = hasEnabledSkillRuntime(chatTools.nativeTools)
@@ -2119,6 +2121,28 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                           {option.label}
                         </button>
                       ))}
+                    </div>
+                  </SettingRow>
+                  <SettingRow label={t.themeColor} description={lang === 'zh' ? '选择浅色界面的背景色调。' : 'Choose the surface tint for light appearance.'}>
+                    <div className="kv-theme-colors" role="radiogroup" aria-label={t.themeColor}>
+                      {THEME_COLOR_PRESETS.map((preset) => {
+                        const active = themeColor === preset.id
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            className={active ? 'active' : ''}
+                            onClick={() => updateSettings({ themeColor: preset.id })}
+                            role="radio"
+                            aria-checked={active}
+                            aria-label={preset.labels[lang]}
+                            title={`${preset.labels[lang]} ${preset.hex}`}
+                            data-tauri-drag-region="false"
+                          >
+                            <span style={{ background: preset.hex }} />
+                          </button>
+                        )
+                      })}
                     </div>
                   </SettingRow>
                 </SettingsGroup>
@@ -4229,6 +4253,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         className={`settings-embedded kv flex min-h-0 min-w-0 flex-1 ${
           reserveTrafficLightSpace ? 'settings-embedded--traffic-safe' : ''
         }`}
+        data-theme-color={themeColor}
       >
         <aside className="settings-embedded-nav">
           <h2 className="settings-embedded-nav-title">{t.settings}</h2>
@@ -4241,7 +4266,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }
 
   return (
-    <div className="kv kv-window" {...focusHandlers}>
+    <div className="kv kv-window" data-theme-color={themeColor} {...focusHandlers}>
       <div className="kv-titlebar" onMouseDown={handleSettingsDragMouseDown}>
         <div className="kv-titlebar-spacer" aria-hidden="true" />
         <div className="kv-title">{t.settings}</div>
