@@ -2,7 +2,8 @@
 //!
 //! 本模块对外暴露：
 //! - `ProviderConnectionInput` / `resolve_provider_credentials` —— 来自前端的 provider 临时配置或 settings.json 的解析。
-//! - `build_http_client` —— 60s 超时的 reqwest Client 构造。
+//! - `build_http_client` —— 共享 reqwest Client 构造；只设置连接/读空闲超时。
+//! - `with_standard_request_timeout` —— 为非流式请求显式加总超时。
 //! - `effective_retry_attempts` —— 把 settings.retry_enabled + retry_attempts 折成实际尝试次数。
 //! - `extract_status_code` / `is_failover_error` —— failover 判定（仅 401/402/403/429）。
 //! - `send_with_retry` —— 网络抖动 / 5xx / 429 退避重试。
@@ -21,7 +22,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use reqwest::{header::HeaderMap, Client, StatusCode};
+use reqwest::{header::HeaderMap, Client, RequestBuilder, StatusCode};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -99,10 +100,23 @@ pub fn resolve_provider_credentials(
     Ok((provider.base_url.clone(), provider.api_keys.clone()))
 }
 
-/// 构建 HTTP 客户端，设置 60 秒超时
+/// 普通非流式 API 请求的总超时。
+pub const STANDARD_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// 只限制 TCP/TLS 建连阶段，避免 DNS/握手长期卡住。
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// 流式响应的读空闲超时：持续有 SSE chunk 到达时不会触发。
+const HTTP_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// 为非流式请求设置总超时。流式请求不要用它，否则长回答会被总时长切断。
+pub fn with_standard_request_timeout(request: RequestBuilder) -> RequestBuilder {
+    request.timeout(STANDARD_HTTP_REQUEST_TIMEOUT)
+}
+
+/// 构建 HTTP 客户端：不设置 total timeout，避免活跃 SSE 流在 60 秒处被砍掉。
 pub fn build_http_client() -> Client {
     Client::builder()
-        .timeout(Duration::from_secs(60))
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .read_timeout(HTTP_READ_IDLE_TIMEOUT)
         .build()
         .unwrap_or_else(|err| {
             eprintln!("Failed to build HTTP client: {err}");
@@ -485,11 +499,7 @@ pub async fn call_openai_text(
         &config.id,
         &config.api_keys,
         |key| {
-            state
-                .http
-                .post(url.clone())
-                .bearer_auth(key)
-                .json(&body)
+            with_standard_request_timeout(state.http.post(url.clone()).bearer_auth(key).json(&body))
                 .send()
         },
     )
@@ -612,11 +622,7 @@ pub async fn call_openai_ocr(
         &config.id,
         &config.api_keys,
         |key| {
-            state
-                .http
-                .post(url.clone())
-                .bearer_auth(key)
-                .json(&body)
+            with_standard_request_timeout(state.http.post(url.clone()).bearer_auth(key).json(&body))
                 .send()
         },
     )
@@ -842,12 +848,13 @@ pub async fn call_vision_api(
         &provider.id,
         &provider.api_keys,
         |key| {
-            state
-                .http
-                .post(url.clone())
-                .bearer_auth(key)
-                .json(&body)
-                .send()
+            let request = state.http.post(url.clone()).bearer_auth(key).json(&body);
+            let request = if stream {
+                request
+            } else {
+                with_standard_request_timeout(request)
+            };
+            request.send()
         },
     )
     .await

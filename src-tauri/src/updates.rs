@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, State};
 #[cfg(target_os = "macos")]
 use uuid::Uuid;
 
+use crate::api::with_standard_request_timeout;
 use crate::state::AppState;
 
 /// 调 GitHub Releases API 检查最新版本
@@ -18,14 +19,16 @@ pub(crate) async fn check_github_latest_release(
     const REPO: &str = "ZMGID/kivio";
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
 
-    let response = state
-        .http
-        .get(&url)
-        // GitHub API 要求显式 User-Agent
-        .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await;
+    let response = with_standard_request_timeout(
+        state
+            .http
+            .get(&url)
+            // GitHub API 要求显式 User-Agent
+            .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
+            .header("Accept", "application/vnd.github+json"),
+    )
+    .send()
+    .await;
 
     let response = match response {
         Ok(r) => r,
@@ -129,14 +132,16 @@ pub(crate) async fn download_update_asset(
 ) -> Result<String, String> {
     const REPO: &str = "ZMGID/kivio";
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let resp = state
-        .http
-        .get(&url)
-        .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| format!("查询 release 失败: {e}"))?;
+    let resp = with_standard_request_timeout(
+        state
+            .http
+            .get(&url)
+            .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
+            .header("Accept", "application/vnd.github+json"),
+    )
+    .send()
+    .await
+    .map_err(|e| format!("查询 release 失败: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("GitHub API 返回 {}", resp.status()));
     }

@@ -1,7 +1,7 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING};
 use serde_json::Value;
 
-use crate::api::send_with_failover;
+use crate::api::{send_with_failover, with_standard_request_timeout};
 use crate::settings::ModelProvider;
 use crate::state::AppState;
 use crate::usage::{
@@ -69,13 +69,15 @@ impl AnthropicMessagesProvider<'_> {
             &self.provider.id,
             &self.provider.api_keys,
             |key| {
-                self.state
-                    .http
-                    .post(self.messages_url())
-                    .headers(anthropic_headers(key).unwrap_or_default())
-                    .header(ACCEPT_ENCODING, "identity")
-                    .json(&body)
-                    .send()
+                with_standard_request_timeout(
+                    self.state
+                        .http
+                        .post(self.messages_url())
+                        .headers(anthropic_headers(key).unwrap_or_default())
+                        .header(ACCEPT_ENCODING, "identity")
+                        .json(&body),
+                )
+                .send()
             },
         )
         .await

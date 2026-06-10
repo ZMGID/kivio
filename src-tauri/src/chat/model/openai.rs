@@ -1,7 +1,7 @@
 use reqwest::header::ACCEPT_ENCODING;
 use serde_json::Value;
 
-use crate::api::send_with_failover;
+use crate::api::{send_with_failover, with_standard_request_timeout};
 use crate::settings::ModelProvider;
 use crate::state::AppState;
 use crate::usage::{
@@ -68,13 +68,15 @@ impl OpenAiChatProvider<'_> {
             &self.provider.id,
             &self.provider.api_keys,
             |key| {
-                self.state
-                    .http
-                    .post(self.chat_completions_url())
-                    .bearer_auth(key)
-                    .header(ACCEPT_ENCODING, "identity")
-                    .json(&body)
-                    .send()
+                with_standard_request_timeout(
+                    self.state
+                        .http
+                        .post(self.chat_completions_url())
+                        .bearer_auth(key)
+                        .header(ACCEPT_ENCODING, "identity")
+                        .json(&body),
+                )
+                .send()
             },
         )
         .await

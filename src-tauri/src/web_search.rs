@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::send_with_retry,
+    api::{send_with_retry, with_standard_request_timeout},
     settings::{LensWebSearchConfig, WebSearchProvider},
     state::AppState,
 };
@@ -107,12 +107,14 @@ async fn search_tavily(
     });
 
     let response = send_with_retry("Tavily search", retry_attempts, || {
-        state
-            .http
-            .post("https://api.tavily.com/search")
-            .bearer_auth(api_key)
-            .json(&body)
-            .send()
+        with_standard_request_timeout(
+            state
+                .http
+                .post("https://api.tavily.com/search")
+                .bearer_auth(api_key)
+                .json(&body),
+        )
+        .send()
     })
     .await?;
 
@@ -182,12 +184,14 @@ async fn search_exa(
     });
 
     let response = send_with_retry("Exa search", retry_attempts, || {
-        state
-            .http
-            .post("https://api.exa.ai/search")
-            .header("x-api-key", api_key)
-            .json(&body)
-            .send()
+        with_standard_request_timeout(
+            state
+                .http
+                .post("https://api.exa.ai/search")
+                .header("x-api-key", api_key)
+                .json(&body),
+        )
+        .send()
     })
     .await?;
 

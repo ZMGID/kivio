@@ -7,7 +7,7 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::api::{
     call_openai_text, effective_retry_attempts, resolve_provider_credentials, send_with_failover,
-    send_with_retry, ProviderConnectionInput,
+    send_with_retry, with_standard_request_timeout, ProviderConnectionInput,
 };
 use crate::prompts::{
     build_translation_prompt, DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE, DEFAULT_TRANSLATION_TEMPLATE,
@@ -278,7 +278,7 @@ pub(crate) async fn fetch_models(
         retry_attempts,
         &provider_id,
         &api_keys,
-        |key| state.http.get(url.clone()).bearer_auth(key).send(),
+        |key| with_standard_request_timeout(state.http.get(url.clone()).bearer_auth(key)).send(),
     )
     .await?;
 
@@ -330,7 +330,7 @@ pub(crate) async fn test_provider_connection(
     let retry_attempts = effective_retry_attempts(&settings);
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let result = send_with_retry("Provider API", retry_attempts, || {
-        state.http.get(url.clone()).bearer_auth(&api_key).send()
+        with_standard_request_timeout(state.http.get(url.clone()).bearer_auth(&api_key)).send()
     })
     .await;
 
