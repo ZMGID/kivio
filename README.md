@@ -160,7 +160,7 @@ If you used v2.4.4 or earlier under the old **KeyLingo** name, Kivio migrates yo
 
 ## Changelog
 
-- **v2.6.8** — Slimmed the bundled Python sandbox for document/data workflows, kept the common offline packages for PDF/Excel/chart analysis, added `pypdf` PDF text extraction, and adjusted release packaging so GitHub Actions publishes only the Windows NSIS `.exe` while macOS DMG is uploaded from the local Apple Silicon build.
+- **v2.6.8** — Agent and workspace polish release: added theme color presets, project workspace filesystem support, better Agent planning/todo/clarification flows, Mermaid and reasoning/timeline rendering improvements, usage statistics, Windows frameless-window polish, a slimmer bundled Python sandbox with common document/data packages, and a release flow that builds macOS locally while GitHub Actions publishes only the Windows NSIS `.exe`.
 - **v2.6.7** — General polish release: restored the native-feeling Windows chat window frame with rounded corners and border, simplified Assistant Center so toolbar controls no longer collide with Windows window controls, and refreshed release packaging so macOS Apple Silicon DMG is built locally while GitHub Actions publishes Windows MSI/NSIS installers.
 - **v2.6.6** — Major Kivio Agent refresh: added local memory, expanded Assistant Center behavior, improved projects/sidebar polish, image/file attachment handling, image preview/viewer support, and a stronger Agent runtime for tool planning and image-generation side tasks. Document workflows now ship with bundled Pyodide, common data/document packages, and looser readable-file mounting for PDF/Word/Excel analysis. Provider tool support is assumed by default.
 - **v2.6.5** — Packaged the first full Kivio Agent wave: Chat client polish, MCP/Skill/native tool integration, bundled `pdf`/`docx`/`xlsx` Skills, document workflow improvements, Mixer auxiliary model routing, better tool/error display, and more stable Windows/macOS chat window chrome.
@@ -359,7 +359,7 @@ Lens 仍然是从屏幕内容到答案的最快路径：
 
 ## 更新日志
 
-- **v2.6.8** —— 精简随包 Python 沙箱，保留 PDF / Excel / 图表分析常用离线库，新增 `pypdf` PDF 文本提取，并调整发布流程：GitHub Actions 只发布 Windows NSIS `.exe`，macOS DMG 由本机 Apple Silicon 构建后上传。
+- **v2.6.8** —— Agent 与工作区体验优化版本：新增主题色预设、项目工作区文件系统、Agent 计划/待办/追问流程，改进 Mermaid、推理/时间线渲染和用量统计，优化 Windows 无边框窗口效果；同时精简随包 Python 沙箱并保留常用文档/数据分析库，发布流程改为本机构建 macOS，GitHub Actions 只发布 Windows NSIS `.exe`。
 - **v2.6.7** —— 通用体验优化：恢复 Windows Chat 窗口接近原生应用的圆角、描边和边界效果；精简助手中心顶部工具栏，避免搜索、创建等控件和 Windows 右上角窗口按钮重叠；同步发布流程，macOS Apple Silicon DMG 改为本机构建上传，GitHub Actions 只发布 Windows MSI / NSIS 安装包。
 - **v2.6.6** —— Kivio Agent 大更新：新增本地记忆，扩展助手中心能力，优化项目/侧边栏体验，改进图片与文件附件、图片查看器，以及面向工具规划和图片生成副任务的 Agent 运行时。文档工作流随包带 Pyodide、常用数据/文档库，并放宽可读取本地文件挂载，PDF / Word / Excel 分析更稳。模型供应商默认支持工具调用。
 - **v2.6.5** —— 打包第一波完整 Kivio Agent 能力：Chat 客户端体验、MCP / Skill / 内置工具、内置 `pdf` / `docx` / `xlsx` Skills、文档工作流、Mixer 辅助模型路由、工具错误展示，以及更稳定的 Windows / macOS Chat 窗口外观。
