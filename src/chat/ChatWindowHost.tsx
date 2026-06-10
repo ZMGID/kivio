@@ -8,7 +8,7 @@ type ChatWindowHostProps = {
   children: ReactNode
 }
 
-/** Chat 专用窗口外壳：Windows 预留透明 gutter 承载阴影，最大化时收起圆角与 gutter。 */
+/** Chat 专用窗口外壳：Windows 自绘圆角边缘，最大化时收起圆角。 */
 export function ChatWindowHost({ children }: ChatWindowHostProps) {
   const [maximized, setMaximized] = useState(false)
 

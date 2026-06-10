@@ -1,24 +1,14 @@
 import type { Window } from '@tauri-apps/api/window'
-import { isWindows } from './platform'
-
 export const CHAT_DEFAULT_SIZE = { width: 1280, height: 800 }
 /** 侧栏收起时可缩到的最小尺寸 */
 export const CHAT_MIN_SIZE_COLLAPSED = { width: 400, height: 400 }
 /** 侧栏展开时整窗最小尺寸（260px 侧栏 + 主内容区） */
 export const CHAT_MIN_SIZE_EXPANDED = { width: 660, height: 400 }
 export const CHAT_MIN_SIZE = CHAT_MIN_SIZE_COLLAPSED
-/** Windows frameless shell 透明 gutter；需与 `src/index.css` 和 Rust 窗口尺寸保持一致。 */
-export const CHAT_WINDOW_EDGE_GUTTER = 12
-
 export function getChatPlatformWindowSize(
   size: { width: number; height: number },
 ): { width: number; height: number } {
-  if (!isWindows) return size
-  const gutter = CHAT_WINDOW_EDGE_GUTTER * 2
-  return {
-    width: size.width + gutter,
-    height: size.height + gutter,
-  }
+  return size
 }
 
 export type ChatWindowGeometry = {

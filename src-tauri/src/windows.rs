@@ -11,20 +11,8 @@ pub const CHAT_MIN_INNER_HEIGHT: f64 = 400.0;
 const CHAT_DEFAULT_INNER_WIDTH: f64 = 1280.0;
 const CHAT_DEFAULT_INNER_HEIGHT: f64 = 800.0;
 
-#[cfg(target_os = "windows")]
-const CHAT_WINDOW_EDGE_GUTTER: f64 = 12.0;
-
 fn chat_window_size_for_visible_content(width: f64, height: f64) -> (f64, f64) {
-    #[cfg(target_os = "windows")]
-    {
-        let gutter = CHAT_WINDOW_EDGE_GUTTER * 2.0;
-        return (width + gutter, height + gutter);
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        (width, height)
-    }
+    (width, height)
 }
 
 pub fn apply_chat_window_min_size(window: &WebviewWindow, sidebar_expanded: bool) {
@@ -135,9 +123,6 @@ pub fn apply_chat_window_chrome(window: &WebviewWindow) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = window.set_decorations(false);
-        #[cfg(target_os = "windows")]
-        let _ = window.set_shadow(true);
-        #[cfg(not(target_os = "windows"))]
         let _ = window.set_shadow(false);
         let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
     }
@@ -238,19 +223,13 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
 
     #[cfg(not(target_os = "macos"))]
     {
-        // 透明 WebView 背景允许前端 shell 裁出圆角和 Windows gutter。
+        // 透明 WebView 背景允许前端 shell 自绘圆角；Windows 不使用原生 shadow，
+        // 避免透明窗口矩形外壳在桌面上显示成第二层边框。
         builder = builder
             .decorations(false)
             .transparent(true)
-            .background_color(Color(0, 0, 0, 0));
-        #[cfg(target_os = "windows")]
-        {
-            builder = builder.shadow(true);
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            builder = builder.shadow(false);
-        }
+            .background_color(Color(0, 0, 0, 0))
+            .shadow(false);
     }
 
     builder.build().map_err(|e| e.to_string())
