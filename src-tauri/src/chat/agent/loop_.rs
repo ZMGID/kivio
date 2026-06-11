@@ -1869,31 +1869,84 @@ async fn stream_with_chat_provider(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     };
 
     use tokio::time::{sleep, Duration};
 
     use super::*;
+    use crate::chat::agent::types::AgentRunEntry;
+    use crate::chat::model::{StreamPart, StreamSink as _};
     use crate::chat::types::ToolCallStatus;
     use crate::mcp::types::{
-        native_read_file_tool, native_run_python_tool, native_web_fetch_tool, McpToolCallResult,
+        native_read_file_tool, native_run_python_tool, native_web_fetch_tool,
+        native_write_file_tool, McpToolCallResult,
     };
+    use crate::settings::{ChatToolsConfig, ModelProvider};
+    use crate::state::AppState;
+
+    #[derive(Clone, Debug)]
+    struct RecordedDelta {
+        delta: String,
+        reasoning_delta: Option<String>,
+        segment: Option<ChatMessageSegment>,
+    }
 
     #[derive(Default)]
     struct TestHost {
         records: Mutex<Vec<ToolCallRecord>>,
+        deltas: Mutex<Vec<RecordedDelta>>,
+        dones: Mutex<Vec<(String, String)>>,
         cancel_after: Option<Duration>,
+        cancel_flag: Arc<AtomicBool>,
+        cancel_on_first_text_delta: bool,
     }
 
     impl TestHost {
         fn cancelling_after(delay: Duration) -> Self {
             Self {
-                records: Mutex::new(Vec::new()),
                 cancel_after: Some(delay),
+                ..Self::default()
             }
+        }
+
+        fn with_cancel_flag(cancel_flag: Arc<AtomicBool>) -> Self {
+            Self {
+                cancel_flag,
+                ..Self::default()
+            }
+        }
+
+        fn cancelling_on_first_text_delta() -> Self {
+            Self {
+                cancel_on_first_text_delta: true,
+                ..Self::default()
+            }
+        }
+
+        fn recorded_deltas(&self) -> Vec<RecordedDelta> {
+            self.deltas
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone()
+        }
+
+        fn recorded_dones(&self) -> Vec<(String, String)> {
+            self.dones
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone()
+        }
+
+        fn recorded_tool_records(&self) -> Vec<ToolCallRecord> {
+            self.records
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone()
         }
     }
 
@@ -1903,10 +1956,21 @@ mod tests {
             _conversation_id: &str,
             _run_id: &str,
             _message_id: &str,
-            _delta: &str,
-            _reasoning_delta: Option<&str>,
-            _segment: Option<&ChatMessageSegment>,
+            delta: &str,
+            reasoning_delta: Option<&str>,
+            segment: Option<&ChatMessageSegment>,
         ) {
+            if self.cancel_on_first_text_delta && !delta.is_empty() {
+                self.cancel_flag.store(true, Ordering::SeqCst);
+            }
+            self.deltas
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(RecordedDelta {
+                    delta: delta.to_string(),
+                    reasoning_delta: reasoning_delta.map(str::to_string),
+                    segment: segment.cloned(),
+                });
         }
 
         fn emit_stream_done(
@@ -1914,9 +1978,13 @@ mod tests {
             _conversation_id: &str,
             _run_id: &str,
             _message_id: &str,
-            _reason: &str,
-            _full: &str,
+            reason: &str,
+            full: &str,
         ) {
+            self.dones
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push((reason.to_string(), full.to_string()));
         }
 
         fn emit_tool_record(
@@ -1951,7 +2019,7 @@ mod tests {
         }
 
         fn is_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
-            true
+            !self.cancel_flag.load(Ordering::SeqCst)
         }
 
         fn wait_for_generation_inactive<'a>(
@@ -1960,11 +2028,19 @@ mod tests {
             _generation: u64,
         ) -> super::super::host::AgentHostFuture<'a, ()> {
             let cancel_after = self.cancel_after;
+            let cancel_flag = self.cancel_flag.clone();
             Box::pin(async move {
-                if let Some(delay) = cancel_after {
-                    sleep(delay).await;
-                } else {
-                    std::future::pending::<()>().await
+                let started = tokio::time::Instant::now();
+                loop {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if let Some(delay) = cancel_after {
+                        if started.elapsed() >= delay {
+                            return;
+                        }
+                    }
+                    sleep(Duration::from_millis(2)).await;
                 }
             })
         }
@@ -2022,6 +2098,300 @@ mod tests {
                 })
             })
         }
+    }
+
+    /// Tool executor that succeeds immediately and flips the shared cancel flag while
+    /// executing, so cancellation deterministically lands between the tool round and
+    /// the synthesis request (the executor branch wins the `tokio::select!` because it
+    /// completes synchronously on its first poll).
+    struct CancelAfterToolExecutor {
+        cancel_flag: Arc<AtomicBool>,
+    }
+
+    impl ToolExecutor for CancelAfterToolExecutor {
+        fn call<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            tool: &'a ChatToolDefinition,
+            _arguments: Value,
+            _skill_cache: Option<&'a mut skills::SkillRunCache>,
+        ) -> super::super::execute::ToolExecutorFuture<'a> {
+            let name = tool.name.clone();
+            let cancel_flag = self.cancel_flag.clone();
+            Box::pin(async move {
+                cancel_flag.store(true, Ordering::SeqCst);
+                Ok(McpToolCallResult {
+                    content: format!("result:{name}"),
+                    is_error: false,
+                    raw: Value::Null,
+                    artifacts: Vec::new(),
+                    structured_content: None,
+                })
+            })
+        }
+    }
+
+    /// Scripted HTTP mock for the OpenAI-compatible chat completions endpoint.
+    /// Responses are served in connection-accept order; each response closes (or
+    /// deliberately breaks) its connection so reqwest opens a fresh one per request.
+    enum MockResponse {
+        /// Complete JSON chat completion body.
+        Json(String),
+        /// SSE stream; each entry becomes one `data: <entry>` event.
+        Sse(Vec<String>),
+        /// Plain HTTP error status with a JSON body.
+        Status(u16, String),
+        /// Chunked SSE that drops the connection without the chunked terminator,
+        /// producing a reqwest decode error (StreamReadInterrupted).
+        SseInterrupt(Vec<String>),
+        /// Chunked SSE that writes the given events then keeps the connection open,
+        /// simulating a hung provider so cancellation paths can win the select.
+        SseThenHang(Vec<String>),
+    }
+
+    struct MockModelServer {
+        base_url: String,
+    }
+
+    impl MockModelServer {
+        fn start(responses: Vec<MockResponse>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock model server");
+            let addr = listener.local_addr().expect("mock model server addr");
+            std::thread::spawn(move || {
+                for response in responses {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        return;
+                    };
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .ok();
+                    if read_http_request(&mut stream).is_err() {
+                        continue;
+                    }
+                    serve_mock_response(stream, response);
+                }
+            });
+            Self {
+                base_url: format!("http://{addr}/v1"),
+            }
+        }
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end = loop {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "client closed before request end",
+                ));
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        while buf.len() < header_end + content_length {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok(())
+    }
+
+    fn sse_body(events: &[String]) -> String {
+        events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect()
+    }
+
+    fn serve_mock_response(mut stream: TcpStream, response: MockResponse) {
+        match response {
+            MockResponse::Json(body) => {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+            }
+            MockResponse::Status(code, body) => {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {code} Mock Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+            }
+            MockResponse::Sse(events) => {
+                let body = sse_body(&events);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+            }
+            MockResponse::SseInterrupt(events) => {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
+                );
+                for event in events {
+                    let payload = format!("data: {event}\n\n");
+                    let _ = write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload);
+                }
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+            MockResponse::SseThenHang(events) => {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
+                );
+                for event in events {
+                    let payload = format!("data: {event}\n\n");
+                    let _ = write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload);
+                }
+                let _ = stream.flush();
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                return;
+            }
+        }
+        let _ = stream.flush();
+    }
+
+    /// Minimal in-memory AppState for run_agent_loop tests. Settings live only in
+    /// memory and usage records go to a unique temp dir, so user settings/providers
+    /// are never touched.
+    fn test_app_state() -> AppState {
+        AppState {
+            settings: std::sync::RwLock::new(Settings::default()),
+            explain_images: Mutex::new(std::collections::HashMap::new()),
+            current_explain_image_id: Mutex::new(None),
+            lens_busy: AtomicBool::new(false),
+            explain_stream_generation: std::sync::atomic::AtomicU64::new(0),
+            chat_stream_generations: Mutex::new(std::collections::HashMap::new()),
+            chat_active_replies: Mutex::new(std::collections::HashSet::new()),
+            pending_chat_tool_approvals: Mutex::new(std::collections::HashMap::new()),
+            pending_chat_user_prompts: Mutex::new(std::collections::HashMap::new()),
+            pending_python_runs: Mutex::new(std::collections::HashMap::new()),
+            chat_create_conversation_lock: Mutex::new(()),
+            chat_tool_list_cache: Mutex::new(std::collections::HashMap::new()),
+            pending_chat_external_sends: Mutex::new(Vec::new()),
+            pending_selection: Mutex::new(None),
+            lens_freeze_frame_image_id: Mutex::new(None),
+            key_cooldowns: Mutex::new(std::collections::HashMap::new()),
+            active_key_idx: Mutex::new(std::collections::HashMap::new()),
+            usage_dir: std::env::temp_dir().join(format!(
+                "kivio-agent-loop-test-usage-{}",
+                uuid::Uuid::new_v4()
+            )),
+            http: reqwest::Client::new(),
+            #[cfg(target_os = "macos")]
+            macos_ocr: crate::macos_ocr::MacOcrClient::disabled(),
+            rapidocr: crate::rapidocr::RapidOcrClient::disabled(),
+        }
+    }
+
+    fn test_provider(base_url: &str) -> ModelProvider {
+        ModelProvider {
+            id: "test-provider".to_string(),
+            name: "Test Provider".to_string(),
+            api_keys: vec!["test-key".to_string()],
+            api_key_legacy: None,
+            base_url: base_url.to_string(),
+            available_models: Vec::new(),
+            enabled_models: Vec::new(),
+            supports_tools: true,
+            enabled: true,
+            api_format: "openai_chat".to_string(),
+            model_overrides: std::collections::HashMap::new(),
+        }
+    }
+
+    fn test_run_config<'a>(
+        state: &'a AppState,
+        base_url: &str,
+        stream_enabled: bool,
+    ) -> AgentRunConfig<'a> {
+        AgentRunConfig {
+            entry: AgentRunEntry::Send,
+            state,
+            conversation_id: "conversation".to_string(),
+            run_id: "run".to_string(),
+            message_id: "message".to_string(),
+            generation: 1,
+            provider: test_provider(base_url),
+            model: "test-model".to_string(),
+            runtime_messages: vec![
+                serde_json::json!({ "role": "system", "content": "system prompt" }),
+                serde_json::json!({ "role": "user", "content": "请读取文件" }),
+            ],
+            tools: vec![native_read_file_tool()],
+            blocked_tool_calls: Vec::new(),
+            settings: Settings::default(),
+            effective_chat_tools: ChatToolsConfig {
+                max_tool_rounds: Some(1),
+                ..ChatToolsConfig::default()
+            },
+            language: "zh-CN".to_string(),
+            has_image: false,
+            thinking_enabled: false,
+            stream_enabled,
+            max_output_tokens: 1024,
+            retry_attempts: 1,
+            skill_registry: skills::SkillRegistry::default(),
+            active_skill_id: None,
+            active_skill_detail: None,
+            assistant_snapshot: None,
+            custom_system_prompt: String::new(),
+            provider_tools_fallback_system_prompt: String::new(),
+        }
+    }
+
+    /// Streaming planning step: one `read_file` tool call, then `[DONE]`.
+    fn planning_tool_call_sse_events() -> Vec<String> {
+        vec![
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/kivio-test.txt\"}"}}]}}]}"#
+                .to_string(),
+            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]
+    }
+
+    /// Non-stream planning step: one `read_file` tool call.
+    fn planning_tool_call_json() -> String {
+        serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": Value::Null,
+                    "tool_calls": [{
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\":\"/tmp/kivio-test.txt\"}"
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string()
     }
 
     fn test_round_context() -> ToolRoundContext<'static> {
@@ -2705,5 +3075,491 @@ mod tests {
                 .and_then(Value::as_str),
             Some("call_py_2")
         );
+    }
+
+    // ===== Fallback scenarios (6 synthesis/planning fallbacks in run_agent_loop) =====
+
+    #[test]
+    fn fallback_responses_are_bilingual() {
+        assert_eq!(
+            empty_synthesis_fallback_response("zh-CN"),
+            "工具调用已经完成，但模型没有返回最终总结。上方工具结果已保存在本轮回复中，你可以继续追问，或让我重新生成总结。"
+        );
+        assert_eq!(
+            empty_synthesis_fallback_response("en-US"),
+            "The tool calls completed, but the model did not return a final summary. The tool results above were saved with this reply; you can continue from them or regenerate the summary."
+        );
+        assert_eq!(
+            synthesis_failed_fallback_response("zh-CN"),
+            "工具调用已经完成，但最终总结生成失败。上方工具结果已保存在本轮回复中，你可以继续追问，或让我重新生成总结。"
+        );
+        assert_eq!(
+            synthesis_failed_fallback_response("en-US"),
+            "The tool calls completed, but final summary generation failed. The tool results above were saved with this reply; you can continue from them or regenerate the summary."
+        );
+        assert_eq!(
+            tool_planning_failed_fallback_response("zh-CN"),
+            "工具调用参数生成失败，这一步还没有真正执行写入。主对话已保留，你可以让我缩小范围、改用补丁，或重新生成。"
+        );
+        assert_eq!(
+            tool_planning_failed_fallback_response("en-US"),
+            "Tool-call argument generation failed before the write actually ran. This conversation was preserved; you can ask me to narrow the scope, use a patch, or regenerate."
+        );
+        assert_eq!(stopped_generation_content("zh-CN"), "已停止生成。");
+        assert_eq!(stopped_generation_content("en-US"), "Generation stopped.");
+    }
+
+    /// Fallback A (helper level, deterministic): a planning stream dies while tool
+    /// argument drafts are in flight; the run result must mark every draft record
+    /// as error, emit the bilingual fallback, and finish with stream_outcome "error".
+    #[test]
+    fn tool_planning_failed_run_result_marks_drafts_error_and_emits_fallback() {
+        let state = test_app_state();
+        let config = test_run_config(&state, "http://127.0.0.1:9/v1", true);
+        let host = TestHost::default();
+
+        let mut segment_builder = SegmentBuilder::new();
+        let _reasoning_segment = segment_builder.reserve(
+            ChatMessageSegmentKind::Reasoning,
+            ChatMessageSegmentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_reasoning",
+        );
+        let planning_text_segment = segment_builder.reserve(
+            ChatMessageSegmentKind::Text,
+            ChatMessageSegmentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_text",
+        );
+        let tracker = ToolCallDraftTracker::new(
+            vec![native_write_file_tool()],
+            1,
+            Some(1),
+            segment_builder.next_order(),
+        );
+        let mut sink = AgentStreamSink::new(
+            &host,
+            "conversation",
+            "run",
+            "message",
+            true,
+            None,
+            None,
+            Some(tracker.clone()),
+        );
+        sink.emit(StreamPart::ToolCallStart {
+            id: "call_write".to_string(),
+            name: "write_file".to_string(),
+        })
+        .expect("tool call start should emit");
+        sink.emit(StreamPart::ToolCallDelta {
+            id: "call_write".to_string(),
+            delta: "{\"path\":\"large.html\",\"content\":\"".to_string(),
+        })
+        .expect("tool call delta should emit");
+        assert!(tracker.has_started());
+
+        let result = tool_planning_failed_run_result(
+            &host,
+            &config,
+            segment_builder,
+            planning_text_segment,
+            tracker,
+            &["planning thought".to_string()],
+            Vec::new(),
+            Vec::new(),
+            "Chat tools planning read body failed".to_string(),
+        );
+
+        let fallback = tool_planning_failed_fallback_response("zh-CN");
+        assert_eq!(result.stream_outcome, "error");
+        assert_eq!(result.content, fallback);
+        assert_eq!(result.reasoning.as_deref(), Some("planning thought"));
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(result.tool_records[0].id, "call_write");
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Error
+        ));
+        assert_eq!(
+            result.tool_records[0].error.as_deref(),
+            Some("Chat tools planning read body failed")
+        );
+        assert!(result.tool_records[0].completed_at.is_some());
+
+        // The error record was re-emitted through the host (after the pending draft).
+        let emitted = host.recorded_tool_records();
+        let last_emitted = emitted.last().expect("error record emitted");
+        assert_eq!(last_emitted.id, "call_write");
+        assert!(matches!(last_emitted.status, ToolCallStatus::Error));
+
+        // Draft tool segment is preserved and the fallback text segment is
+        // synthesis-phase with no round.
+        assert!(result.segments.iter().any(|segment| {
+            segment.kind == ChatMessageSegmentKind::Tool
+                && segment.tool_call_id.as_deref() == Some("call_write")
+        }));
+        let fallback_segment = result
+            .segments
+            .iter()
+            .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
+            .expect("fallback text segment");
+        assert_eq!(fallback_segment.phase, ChatMessageSegmentPhase::Synthesis);
+        assert_eq!(fallback_segment.round, None);
+        assert_eq!(fallback_segment.text.as_deref(), Some(fallback.as_str()));
+
+        // Fallback delta + a single "done" done event.
+        assert!(host
+            .recorded_deltas()
+            .iter()
+            .any(|delta| delta.delta == fallback));
+        assert_eq!(
+            host.recorded_dones(),
+            vec![("done".to_string(), fallback.clone())]
+        );
+
+        // The final assistant message is pushed unconditionally here.
+        assert_eq!(result.api_messages.len(), 1);
+        assert_eq!(
+            result.api_messages[0]
+                .get("content")
+                .and_then(Value::as_str),
+            Some(fallback.as_str())
+        );
+
+        let last_step = result.steps.last().expect("fallback step");
+        assert_eq!(last_step.stop_reason, Some(AgentStopReason::Natural));
+        assert_eq!(last_step.tool_records.len(), 1);
+    }
+
+    /// Fallback A (integration): the provider stream breaks mid-connection after a
+    /// tool-call draft has started; run_agent_loop must return Ok with
+    /// stream_outcome "error" instead of bubbling an invoke error.
+    #[tokio::test]
+    async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_result() {
+        let server = MockModelServer::start(vec![MockResponse::SseInterrupt(vec![
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/"}}]}}]}"#
+                .to_string(),
+        ])]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, true);
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("planning interruption with tool draft must not bubble Err");
+
+        let fallback = tool_planning_failed_fallback_response("zh-CN");
+        assert_eq!(result.stream_outcome, "error");
+        assert_eq!(result.content, fallback);
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(result.tool_records[0].id, "call_read");
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Error
+        ));
+        assert!(
+            executor.events().is_empty(),
+            "interrupted tool drafts must never execute"
+        );
+        assert_eq!(
+            host.recorded_dones(),
+            vec![("done".to_string(), fallback.clone())]
+        );
+        assert_eq!(result.api_messages.len(), 1);
+        assert_eq!(
+            result.api_messages[0]
+                .get("content")
+                .and_then(Value::as_str),
+            Some(fallback.as_str())
+        );
+    }
+
+    /// Fallback B: streamed synthesis request fails (HTTP 400) after a successful
+    /// tool round; the tool records must survive with the bilingual fallback text.
+    #[tokio::test]
+    async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback() {
+        let server = MockModelServer::start(vec![
+            MockResponse::Sse(planning_tool_call_sse_events()),
+            MockResponse::Status(400, r#"{"error":"mock synthesis failure"}"#.to_string()),
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, true);
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("synthesis failure after tool records must not bubble Err");
+
+        let fallback = synthesis_failed_fallback_response("zh-CN");
+        assert_eq!(result.stream_outcome, "error");
+        assert_eq!(result.content, fallback);
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(result.tool_records[0].id, "call_read");
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Success
+        ));
+
+        // assistant tool_calls message + tool result + final fallback message.
+        assert_eq!(result.api_messages.len(), 3);
+        assert_eq!(
+            result.api_messages[2]
+                .get("content")
+                .and_then(Value::as_str),
+            Some(fallback.as_str())
+        );
+
+        // Planning never emits done while tool calls are pending; the only done is
+        // the fallback "done".
+        assert_eq!(
+            host.recorded_dones(),
+            vec![("done".to_string(), fallback.clone())]
+        );
+        let fallback_delta = host
+            .recorded_deltas()
+            .into_iter()
+            .find(|delta| delta.delta == fallback)
+            .expect("fallback delta emitted");
+        assert_eq!(fallback_delta.reasoning_delta, None);
+        let segment = fallback_delta.segment.expect("fallback delta has segment");
+        assert_eq!(segment.kind, ChatMessageSegmentKind::Text);
+        assert_eq!(segment.phase, ChatMessageSegmentPhase::Synthesis);
+
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].stop_reason, Some(AgentStopReason::StepLimit));
+    }
+
+    /// Fallback C: streamed synthesis is cancelled after tool results exist; the run
+    /// returns Ok("cancelled") with the stopped-generation placeholder content.
+    #[tokio::test]
+    async fn run_loop_stream_synthesis_cancelled_returns_cancelled_with_stopped_content() {
+        let server = MockModelServer::start(vec![
+            MockResponse::Sse(planning_tool_call_sse_events()),
+            MockResponse::SseThenHang(Vec::new()),
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, true);
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let host = TestHost::with_cancel_flag(cancel_flag.clone());
+        let executor = CancelAfterToolExecutor { cancel_flag };
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("cancelled synthesis with tool records must not bubble Err");
+
+        assert_eq!(result.stream_outcome, "cancelled");
+        assert_eq!(result.content, stopped_generation_content("zh-CN"));
+        assert_eq!(result.tool_records.len(), 1);
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Success
+        ));
+
+        let dones = host.recorded_dones();
+        assert_eq!(dones.len(), 1, "exactly one done event");
+        assert_eq!(dones[0].0, "cancelled");
+
+        assert_eq!(
+            result
+                .api_messages
+                .last()
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str),
+            Some("已停止生成。")
+        );
+        assert!(result.segments.iter().any(|segment| {
+            segment.kind == ChatMessageSegmentKind::Text
+                && segment.text.as_deref() == Some("已停止生成。")
+        }));
+    }
+
+    /// Fallback C variant: synthesis streamed some text before cancellation; the
+    /// partial text must be kept instead of the stopped-generation placeholder.
+    #[tokio::test]
+    async fn run_loop_stream_synthesis_cancelled_keeps_partial_content() {
+        let server = MockModelServer::start(vec![
+            MockResponse::Sse(planning_tool_call_sse_events()),
+            MockResponse::SseThenHang(vec![
+                r#"{"choices":[{"delta":{"content":"部分回答"}}]}"#.to_string()
+            ]),
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, true);
+        let host = TestHost::cancelling_on_first_text_delta();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("cancelled synthesis with partial content must not bubble Err");
+
+        assert_eq!(result.stream_outcome, "cancelled");
+        assert_eq!(result.content, "部分回答");
+        assert_eq!(result.tool_records.len(), 1);
+        let dones = host.recorded_dones();
+        assert_eq!(dones.len(), 1);
+        assert_eq!(dones[0], ("cancelled".to_string(), "部分回答".to_string()));
+        assert_eq!(
+            result
+                .api_messages
+                .last()
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str),
+            Some("部分回答")
+        );
+    }
+
+    /// Fallback D: streamed synthesis returns an empty answer after tool results;
+    /// the loop substitutes the bilingual fallback and completes normally
+    /// (stream_outcome "completed", not "error").
+    #[tokio::test]
+    async fn run_loop_stream_synthesis_empty_output_uses_fallback_and_completes() {
+        let server = MockModelServer::start(vec![
+            MockResponse::Sse(planning_tool_call_sse_events()),
+            MockResponse::Sse(vec!["[DONE]".to_string()]),
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, true);
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("empty synthesis with tool records must not bubble Err");
+
+        let fallback = empty_synthesis_fallback_response("zh-CN");
+        assert_eq!(result.stream_outcome, "completed");
+        assert_eq!(result.content, fallback);
+        assert_eq!(result.tool_records.len(), 1);
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Success
+        ));
+        assert_eq!(
+            host.recorded_dones(),
+            vec![("done".to_string(), fallback.clone())]
+        );
+
+        assert_eq!(result.steps.len(), 2);
+        assert_eq!(result.steps[0].stop_reason, Some(AgentStopReason::StepLimit));
+        let final_step = &result.steps[1];
+        assert_eq!(final_step.phase, AgentPhase::Synthesis);
+        assert_eq!(final_step.stop_reason, Some(AgentStopReason::Natural));
+
+        assert!(result.segments.iter().any(|segment| {
+            segment.kind == ChatMessageSegmentKind::Text
+                && segment.phase == ChatMessageSegmentPhase::Synthesis
+                && segment.text.as_deref() == Some(fallback.as_str())
+        }));
+        assert_eq!(
+            result
+                .api_messages
+                .last()
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str),
+            Some(fallback.as_str())
+        );
+    }
+
+    /// Fallback E: non-streamed synthesis request fails (HTTP 400) after a
+    /// successful tool round; tool records survive with the failure fallback.
+    #[tokio::test]
+    async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallback() {
+        let server = MockModelServer::start(vec![
+            MockResponse::Json(planning_tool_call_json()),
+            MockResponse::Status(400, r#"{"error":"mock synthesis failure"}"#.to_string()),
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, false);
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("non-stream synthesis failure after tool records must not bubble Err");
+
+        let fallback = synthesis_failed_fallback_response("zh-CN");
+        assert_eq!(result.stream_outcome, "error");
+        assert_eq!(result.content, fallback);
+        assert_eq!(result.tool_records.len(), 1);
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Success
+        ));
+        assert!(host
+            .recorded_deltas()
+            .iter()
+            .any(|delta| delta.delta == fallback));
+        assert_eq!(
+            host.recorded_dones(),
+            vec![("done".to_string(), fallback.clone())]
+        );
+        assert_eq!(
+            result
+                .api_messages
+                .last()
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_str),
+            Some(fallback.as_str())
+        );
+    }
+
+    /// Fallback F: non-streamed synthesis returns empty content after tool results;
+    /// the bilingual fallback replaces it and reasoning is still passed through.
+    #[tokio::test]
+    async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
+        let empty_synthesis = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "synthesis reasoning"
+                }
+            }]
+        })
+        .to_string();
+        let server = MockModelServer::start(vec![
+            MockResponse::Json(planning_tool_call_json()),
+            MockResponse::Json(empty_synthesis),
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, false);
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("non-stream empty synthesis with tool records must not bubble Err");
+
+        let fallback = empty_synthesis_fallback_response("zh-CN");
+        assert_eq!(result.stream_outcome, "completed");
+        assert_eq!(result.content, fallback);
+        assert_eq!(result.reasoning.as_deref(), Some("synthesis reasoning"));
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(
+            host.recorded_dones(),
+            vec![("done".to_string(), fallback.clone())]
+        );
+
+        let final_message = result.api_messages.last().expect("final api message");
+        assert_eq!(
+            final_message.get("content").and_then(Value::as_str),
+            Some(fallback.as_str())
+        );
+        assert_eq!(
+            final_message
+                .get("reasoning_content")
+                .and_then(Value::as_str),
+            Some("synthesis reasoning")
+        );
+
+        let final_step = result.steps.last().expect("final step");
+        assert_eq!(final_step.phase, AgentPhase::Synthesis);
+        assert_eq!(final_step.stop_reason, Some(AgentStopReason::Natural));
     }
 }
