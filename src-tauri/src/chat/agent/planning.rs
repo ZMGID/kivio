@@ -123,6 +123,22 @@ pub(crate) async fn planning_step(
                     // Partial plain text was already streamed to the frontend and the
                     // stream layer already emitted the single done("cancelled") event;
                     // preserve the generated text instead of dropping the whole turn.
+                    // Append the reasoning segment first (its reserved order is lower
+                    // than the text segment's) so the persisted timeline keeps reasoning
+                    // above the answer; otherwise normalize_assistant_segments would add
+                    // a trailing reasoning segment that renders below the text.
+                    if let Some(reasoning_text) = stream
+                        .reasoning
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                    {
+                        let mut reasoning_segment = planning_reasoning_segment.clone();
+                        reasoning_segment.phase = ChatMessageSegmentPhase::Plain;
+                        state
+                            .segment_builder
+                            .append_text_from_template(&reasoning_segment, reasoning_text.to_string());
+                    }
                     let mut segment = planning_text_segment.clone();
                     segment.phase = ChatMessageSegmentPhase::Plain;
                     return Ok(PlanningStepOutcome::Cancelled(

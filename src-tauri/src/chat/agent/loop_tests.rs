@@ -1584,6 +1584,43 @@
         }));
     }
 
+    /// Regression: a cancelled plain-text reply that streamed reasoning before the
+    /// answer must persist the reasoning segment ahead of the text segment, so the
+    /// reloaded timeline keeps "Thinking" above the answer instead of below it.
+    #[tokio::test]
+    async fn run_loop_stream_planning_cancelled_orders_reasoning_before_text() {
+        let server = MockModelServer::start(vec![MockResponse::SseThenHang(vec![
+            r#"{"choices":[{"delta":{"reasoning_content":"先构思一下整体结构","content":"这是已经生成的部分回答内容"}}]}"#.to_string(),
+        ])]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url, true);
+        let host = TestHost::cancelling_on_first_text_delta();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("cancelled plain-text planning with reasoning must not bubble Err");
+
+        assert_eq!(result.stream_outcome, "cancelled");
+
+        let reasoning = result
+            .segments
+            .iter()
+            .find(|segment| segment.kind == ChatMessageSegmentKind::Reasoning)
+            .expect("a reasoning segment must be persisted");
+        let text = result
+            .segments
+            .iter()
+            .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
+            .expect("a text segment must be persisted");
+        assert!(
+            reasoning.order < text.order,
+            "reasoning segment (order {}) must precede the text segment (order {}) so Thinking renders above the answer",
+            reasoning.order,
+            text.order,
+        );
+    }
+
     /// Pins the unchanged path: a plain-text stream cancelled before any text was
     /// generated still bubbles Err("cancelled") (commands.rs handles it as a
     /// successful no-message cancellation).
