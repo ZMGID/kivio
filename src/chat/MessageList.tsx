@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
 import { MessageBubble } from './MessageBubble'
 
@@ -9,6 +9,7 @@ export interface AssistantStreamStats {
   messageId: string
   tokensPerSec: number
   reasoningDurationMs?: number | null
+  reasoningDurationMsBySegmentId?: Record<string, number>
 }
 
 interface MessageListProps {
@@ -19,12 +20,13 @@ interface MessageListProps {
   streamingContent?: string
   streamingReasoning?: string
   streamingReasoningDurationMs?: number | null
+  streamingReasoningDurationMsBySegmentId?: Record<string, number>
   reasoningStreaming?: boolean
   streamingToolCalls?: ToolCallRecord[]
   streamingSegments?: ChatMessageSegment[]
   agentPlanState?: AgentPlanState | null
   error?: string
-  lastAssistantStreamStats?: AssistantStreamStats | null
+  assistantStreamStatsByMessageId?: Record<string, AssistantStreamStats>
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
@@ -38,12 +40,13 @@ export function MessageList({
   streamingContent = '',
   streamingReasoning = '',
   streamingReasoningDurationMs = null,
+  streamingReasoningDurationMsBySegmentId = {},
   reasoningStreaming = false,
   streamingToolCalls = [],
   streamingSegments = [],
   agentPlanState = null,
   error,
-  lastAssistantStreamStats = null,
+  assistantStreamStatsByMessageId = {},
   onUpdateMessage,
   onRegenerateMessage,
   onDeleteMessage,
@@ -56,13 +59,6 @@ export function MessageList({
   const lastScrollTopRef = useRef(0)
   const pendingPrependScrollHeightRef = useRef<number | null>(null)
   const [visibleLimit, setVisibleLimit] = useState(INITIAL_VISIBLE_MESSAGES)
-
-  const lastAssistantId = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'assistant') return messages[i].id
-    }
-    return null
-  }, [messages])
 
   const hiddenMessageCount = Math.max(0, messages.length - visibleLimit)
   const visibleMessages = hiddenMessageCount > 0
@@ -193,30 +189,24 @@ export function MessageList({
           </div>
         )}
 
-        {visibleMessages.map((msg) => (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            conversationId={conversationId}
-            tokensPerSec={
-              msg.role === 'assistant' &&
-              msg.id === lastAssistantId &&
-              lastAssistantStreamStats?.messageId === msg.id
-                ? lastAssistantStreamStats.tokensPerSec
-                : undefined
-            }
-            reasoningDurationMs={
-              msg.role === 'assistant' &&
-              msg.id === lastAssistantId &&
-              lastAssistantStreamStats?.messageId === msg.id
-                ? lastAssistantStreamStats.reasoningDurationMs
-                : undefined
-            }
-            onUpdateMessage={msg.role === 'assistant' ? onUpdateMessage : undefined}
-            onRegenerateMessage={msg.role === 'assistant' ? onRegenerateMessage : undefined}
-            onDeleteMessage={onDeleteMessage}
-          />
-        ))}
+        {visibleMessages.map((msg) => {
+          const assistantStats = msg.role === 'assistant'
+            ? assistantStreamStatsByMessageId[msg.id]
+            : undefined
+          return (
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              conversationId={conversationId}
+              tokensPerSec={assistantStats?.tokensPerSec}
+              reasoningDurationMs={assistantStats?.reasoningDurationMs}
+              reasoningDurationMsBySegmentId={assistantStats?.reasoningDurationMsBySegmentId}
+              onUpdateMessage={msg.role === 'assistant' ? onUpdateMessage : undefined}
+              onRegenerateMessage={msg.role === 'assistant' ? onRegenerateMessage : undefined}
+              onDeleteMessage={onDeleteMessage}
+            />
+          )
+        })}
 
         {(streaming || streamFrozen) && (streamingContent || streamingReasoning || streamingToolCalls.length > 0 || streamingSegments.length > 0) && (
           <MessageBubble
@@ -233,6 +223,7 @@ export function MessageList({
             conversationId={conversationId}
             reasoningStreaming={reasoningStreaming && !streamFrozen}
             reasoningDurationMs={streamingReasoningDurationMs}
+            reasoningDurationMsBySegmentId={streamingReasoningDurationMsBySegmentId}
           />
         )}
 

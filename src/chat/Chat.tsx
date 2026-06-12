@@ -247,6 +247,50 @@ function upsertStreamSegment(
   return next.sort(compareTimelineSegments)
 }
 
+function sameSegmentField<T>(left: T | null | undefined, right: T | null | undefined): boolean {
+  return (left ?? null) === (right ?? null)
+}
+
+function findReasoningSegmentForText(
+  segments: ChatMessageSegment[],
+  textSegment: ChatMessageSegment,
+): ChatMessageSegment | null {
+  const reversedReasoning = [...segments]
+    .reverse()
+    .filter((item) => item.kind === 'reasoning')
+  const textStepNumber = segmentStepNumber(textSegment)
+  const textRound = textSegment.round ?? null
+
+  return reversedReasoning.find((item) => (
+    segmentStepNumber(item) === textStepNumber &&
+    sameSegmentField(item.round, textRound) &&
+    item.phase === textSegment.phase
+  ))
+    ?? reversedReasoning.find((item) => (
+      segmentStepNumber(item) === textStepNumber &&
+      sameSegmentField(item.round, textRound)
+    ))
+    ?? reversedReasoning.find((item) => segmentStepNumber(item) === textStepNumber)
+    ?? reversedReasoning[0]
+    ?? null
+}
+
+function updateReasoningSegmentDuration(
+  snapshot: ConversationStreamSnapshot,
+  segmentId: string,
+  now = Date.now(),
+) {
+  const startedAt = snapshot.reasoningStartedAtBySegmentId[segmentId]
+  if (startedAt == null) return
+  snapshot.reasoningDurationMsBySegmentId = {
+    ...snapshot.reasoningDurationMsBySegmentId,
+    [segmentId]: Math.max(
+      snapshot.reasoningDurationMsBySegmentId[segmentId] ?? 0,
+      now - startedAt,
+    ),
+  }
+}
+
 function normalizeSkill(skill: import('../api/tauri').SkillMeta): SkillMeta {
   return {
     id: skill.id,
@@ -407,14 +451,16 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [streamingContent, setStreamingContent] = useState('')
   const [streamingReasoning, setStreamingReasoning] = useState('')
   const [streamingReasoningDurationMs, setStreamingReasoningDurationMs] = useState<number | null>(null)
+  const [streamingReasoningDurationMsBySegmentId, setStreamingReasoningDurationMsBySegmentId] =
+    useState<Record<string, number>>({})
   const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [streamError, setStreamError] = useState('')
   const [streamingSegments, setStreamingSegments] = useState<ChatMessageSegment[]>([])
   /** 发送中待显示的用户消息（与 conversation 分离，避免 route reload 冲掉） */
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null)
   const [pendingUserMessageConversationId, setPendingUserMessageConversationId] = useState<string | null>(null)
-  const [lastAssistantStreamStats, setLastAssistantStreamStats] =
-    useState<AssistantStreamStats | null>(null)
+  const [assistantStreamStatsByMessageId, setAssistantStreamStatsByMessageId] =
+    useState<Record<string, AssistantStreamStats>>({})
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
   const [optimisticSidebarConversations, setOptimisticSidebarConversations] =
     useState<ConversationListItem[]>([])
@@ -528,6 +574,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     setStreamingContent('')
     setStreamingReasoning('')
     setStreamingReasoningDurationMs(null)
+    setStreamingReasoningDurationMsBySegmentId({})
     setReasoningStreaming(false)
     setStreamingToolCalls([])
     setStreamingSegments([])
@@ -563,6 +610,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setStreamingContent(snapshot.content)
       setStreamingReasoning(snapshot.reasoning)
       setStreamingReasoningDurationMs(snapshot.reasoningDurationMs)
+      setStreamingReasoningDurationMsBySegmentId(snapshot.reasoningDurationMsBySegmentId)
       setReasoningStreaming(snapshot.reasoningStreaming)
       setStreamingToolCalls(snapshot.toolCalls)
       setStreamingSegments(snapshot.segments)
@@ -585,6 +633,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     setStreamingContent(snapshot.content)
     setStreamingReasoning(snapshot.reasoning)
     setStreamingReasoningDurationMs(snapshot.reasoningDurationMs)
+    setStreamingReasoningDurationMsBySegmentId(snapshot.reasoningDurationMsBySegmentId)
     setReasoningStreaming(snapshot.reasoningStreaming)
     setStreamingToolCalls(snapshot.toolCalls)
     setStreamingSegments(snapshot.segments)
@@ -1109,6 +1158,11 @@ export default function Chat({ onSettingsChange }: ChatProps) {
           if (snapshot.reasoningStartedAt == null) {
             snapshot.reasoningStartedAt = now
           }
+          if (segment?.kind === 'reasoning') {
+            const segmentStartedAt = snapshot.reasoningStartedAtBySegmentId[segment.id] ?? now
+            snapshot.reasoningStartedAtBySegmentId[segment.id] = segmentStartedAt
+            updateReasoningSegmentDuration(snapshot, segment.id, now)
+          }
           snapshot.streaming = true
           snapshot.reasoningStreaming = true
           snapshot.reasoning += payload.reasoningDelta
@@ -1124,6 +1178,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
               Date.now() - snapshot.reasoningStartedAt,
             )
           }
+          if (segment?.kind === 'text') {
+            const activeReasoningSegment = findReasoningSegmentForText(snapshot.segments, segment)
+            if (activeReasoningSegment) {
+              updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id)
+            }
+          }
           snapshot.streaming = true
           snapshot.reasoningStreaming = false
           snapshot.content += payload.delta
@@ -1136,6 +1196,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
               snapshot.reasoningDurationMs ?? 0,
               Date.now() - snapshot.reasoningStartedAt,
             )
+            const activeReasoningSegment = [...snapshot.segments]
+              .reverse()
+              .find((item) => item.kind === 'reasoning')
+            if (activeReasoningSegment) {
+              updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id)
+            }
             showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
           }
           // invoke 未完成前不要 reload；延后到 flushPendingStreamDone，避免与 send 写盘竞态。
@@ -1478,7 +1544,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   }, [refreshSidebar, reloadConversation, syncConversationRoute])
 
   const handleSelectConversation = useCallback(async (conversationId: string) => {
-    setLastAssistantStreamStats(null)
+    setAssistantStreamStatsByMessageId({})
     try {
       const conv = await chatApi.getConversation(conversationId)
       currentConversationIdRef.current = conversationId
@@ -1494,7 +1560,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
 
   const handleNewConversation = useCallback(async () => {
     setSelectedProject(null)
-    setLastAssistantStreamStats(null)
+    setAssistantStreamStatsByMessageId({})
     setDraftProviderId(activeProviderId)
     setDraftModel(activeModel)
     currentConversationIdRef.current = null
@@ -1528,7 +1594,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     }
 
     if (!conversationId) {
-      setLastAssistantStreamStats(null)
+      setAssistantStreamStatsByMessageId({})
       setPendingUserMessage(null)
       setPendingUserMessageConversationId(null)
       setStreamError('')
@@ -1550,7 +1616,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       clearConversationInFlight(conversationId)
       forgetRememberedChatRoute()
       currentConversationIdRef.current = null
-      setLastAssistantStreamStats(null)
+      setAssistantStreamStatsByMessageId({})
       setPendingUserMessage(null)
       setPendingUserMessageConversationId(null)
       setContextState(null)
@@ -1567,7 +1633,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   }, [applyConversation, clearConversationInFlight, refreshSidebar, restoreStreamingPreview, setStreamErrorForConversation, syncConversationRoute])
 
   const handleStartAssistantChat = useCallback(async (assistant: ChatAssistant) => {
-    setLastAssistantStreamStats(null)
+    setAssistantStreamStatsByMessageId({})
     try {
       const assistantProviderId = assistant.provider_id ?? assistant.providerId ?? ''
       const assistantModel = assistant.model ?? ''
@@ -1635,7 +1701,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
 
   const handleSelectProject = useCallback((project: ChatProject | null) => {
     setSelectedProject(project)
-    setLastAssistantStreamStats(null)
+    setAssistantStreamStatsByMessageId({})
     setPendingUserMessage(null)
     setPendingUserMessageConversationId(null)
     currentConversationIdRef.current = null
@@ -1676,11 +1742,16 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         ? streamedText
         : `${lastAssistant.content}${lastAssistant.reasoning ? `\n${lastAssistant.reasoning}` : ''}`,
     )
-    setLastAssistantStreamStats({
+    const stats: AssistantStreamStats = {
       messageId: lastAssistant.id,
       tokensPerSec: tokenEstimate / elapsedSec,
       reasoningDurationMs: streamSnapshotsRef.current[updatedConv.id]?.reasoningDurationMs ?? null,
-    })
+      reasoningDurationMsBySegmentId: streamSnapshotsRef.current[updatedConv.id]?.reasoningDurationMsBySegmentId ?? {},
+    }
+    setAssistantStreamStatsByMessageId((prev) => ({
+      ...prev,
+      [lastAssistant.id]: stats,
+    }))
   }, [])
 
   const handleSendMessage = useCallback(async (
@@ -1764,6 +1835,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     snapshot.startedAt = startedAt
     snapshot.reasoningStartedAt = null
     snapshot.reasoningDurationMs = null
+    snapshot.reasoningStartedAtBySegmentId = {}
+    snapshot.reasoningDurationMsBySegmentId = {}
     snapshot.runId = null
     syncGeneratingConversationIds()
 
@@ -1774,6 +1847,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setStreamingContent('')
       setStreamingReasoning('')
       setStreamingReasoningDurationMs(null)
+      setStreamingReasoningDurationMsBySegmentId({})
       setReasoningStreaming(false)
       setStreamingToolCalls([])
       setStreamingSegments([])
@@ -1996,9 +2070,11 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       try {
         const updated = await chatApi.deleteMessage(currentConversation.id, messageId)
         applyConversation(updated)
-        setLastAssistantStreamStats((prev) =>
-          prev?.messageId === messageId ? null : prev,
-        )
+        setAssistantStreamStatsByMessageId((prev) => {
+          const next = { ...prev }
+          delete next[messageId]
+          return next
+        })
         refreshSidebar()
       } catch (err) {
         console.error('Failed to delete message:', err)
@@ -2024,7 +2100,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         ...currentConversation,
         messages: currentConversation.messages.slice(0, messageIndex),
       })
-      setLastAssistantStreamStats(null)
+      const removedMessageIds = new Set(
+        currentConversation.messages.slice(messageIndex).map((message) => message.id),
+      )
+      setAssistantStreamStatsByMessageId((prev) => Object.fromEntries(
+        Object.entries(prev).filter(([id]) => !removedMessageIds.has(id)),
+      ))
       resetLocalCancellation()
       const startedAt = Date.now()
       const snapshot = ensureStreamSnapshot(conversationId)
@@ -2037,6 +2118,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       snapshot.startedAt = startedAt
       snapshot.reasoningStartedAt = null
       snapshot.reasoningDurationMs = null
+      snapshot.reasoningStartedAtBySegmentId = {}
+      snapshot.reasoningDurationMsBySegmentId = {}
       snapshot.runId = null
       syncGeneratingConversationIds()
 
@@ -2047,6 +2130,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         setStreamingContent('')
         setStreamingReasoning('')
         setStreamingReasoningDurationMs(null)
+        setStreamingReasoningDurationMsBySegmentId({})
         setReasoningStreaming(false)
         setStreamingToolCalls([])
         setStreamingSegments([])
@@ -2470,11 +2554,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       streamingContent={streamingContent}
                       streamingReasoning={streamingReasoning}
                       streamingReasoningDurationMs={streamingReasoningDurationMs}
+                      streamingReasoningDurationMsBySegmentId={streamingReasoningDurationMsBySegmentId}
                       reasoningStreaming={reasoningStreaming}
                       streamingToolCalls={streamingToolCalls}
                       streamingSegments={streamingSegments}
                       error={streamError}
-                      lastAssistantStreamStats={lastAssistantStreamStats}
+                      assistantStreamStatsByMessageId={assistantStreamStatsByMessageId}
                       onUpdateMessage={handleUpdateMessage}
                       onRegenerateMessage={handleRegenerateMessage}
                       onDeleteMessage={handleDeleteMessage}

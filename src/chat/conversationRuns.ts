@@ -9,6 +9,8 @@ export interface ConversationStreamSnapshot {
   startedAt: number | null
   reasoningStartedAt: number | null
   reasoningDurationMs: number | null
+  reasoningStartedAtBySegmentId: Record<string, number>
+  reasoningDurationMsBySegmentId: Record<string, number>
 }
 
 export function isConversationInFlight(
@@ -55,5 +57,7 @@ export function createEmptyStreamSnapshot(): ConversationStreamSnapshot {
     startedAt: Date.now(),
     reasoningStartedAt: null,
     reasoningDurationMs: null,
+    reasoningStartedAtBySegmentId: {},
+    reasoningDurationMsBySegmentId: {},
   }
 }

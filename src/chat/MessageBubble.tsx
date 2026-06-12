@@ -19,6 +19,7 @@ interface MessageBubbleProps {
   conversationId?: string | null
   tokensPerSec?: number
   reasoningDurationMs?: number | null
+  reasoningDurationMsBySegmentId?: Record<string, number>
   /** 思维链正在流式写入 */
   reasoningStreaming?: boolean
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
@@ -189,14 +190,17 @@ function TimelineSegments({
   artifacts,
   reasoningStreaming,
   reasoningDurationMs,
+  reasoningDurationMsBySegmentId,
 }: {
   segments: ChatMessageSegment[]
   toolCalls: ToolCallRecord[]
   artifacts: ChatToolArtifact[]
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
+  reasoningDurationMsBySegmentId?: Record<string, number>
 }) {
   const ordered = orderedSegments(segments)
+  const reasoningSegmentCount = ordered.filter((segment) => segment.kind === 'reasoning').length
   return (
     <section aria-label="回答时间线" className="space-y-1.5">
       {ordered.map((segment, index) => {
@@ -217,7 +221,10 @@ function TimelineSegments({
               key={segment.id}
               reasoning={reasoning}
               streaming={reasoningStreaming && index === ordered.length - 1}
-              durationMs={reasoningDurationMs}
+              durationMs={
+                reasoningDurationMsBySegmentId?.[segment.id]
+                  ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)
+              }
             />
           )
         }
@@ -238,6 +245,7 @@ function MessageBubbleComponent({
   conversationId,
   tokensPerSec,
   reasoningDurationMs,
+  reasoningDurationMsBySegmentId,
   reasoningStreaming = false,
   onUpdateMessage,
   onRegenerateMessage,
@@ -445,6 +453,7 @@ function MessageBubbleComponent({
               artifacts={renderArtifacts}
               reasoningStreaming={reasoningStreaming}
               reasoningDurationMs={reasoningDurationMs}
+              reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
             />
             {hasGeneratedImages && (
               <GeneratedImageArtifacts

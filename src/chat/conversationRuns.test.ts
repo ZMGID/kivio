@@ -59,5 +59,7 @@ describe('createEmptyStreamSnapshot', () => {
     expect(snapshot.content).toBe('')
     expect(snapshot.toolCalls).toEqual([])
     expect(snapshot.startedAt).toBeTypeOf('number')
+    expect(snapshot.reasoningStartedAtBySegmentId).toEqual({})
+    expect(snapshot.reasoningDurationMsBySegmentId).toEqual({})
   })
 })
