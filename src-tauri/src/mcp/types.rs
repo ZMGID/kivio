@@ -347,18 +347,21 @@ pub fn native_search_files_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__search_files".to_string(),
         name: "search_files".to_string(),
-        description: "Search text files for a literal query under a directory. In project conversations this is scoped to the project root and skips common dependency/build folders.".to_string(),
+        description: "Search text files under a directory. By default `query` is a literal substring; set regex=true to treat it as a regular expression. In project conversations this is scoped to the project root and skips common dependency/build folders.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "Literal text to search for" },
+                "query": { "type": "string", "description": "Text to search for. Literal substring by default; a regular expression when regex=true." },
                 "path": { "type": "string", "description": "Directory path, defaults to project root/current workspace" },
+                "regex": { "type": "boolean", "description": "Treat query as a regular expression, default false (literal substring)" },
                 "case_sensitive": { "type": "boolean", "description": "Case-sensitive matching, default false" },
                 "include_hidden": { "type": "boolean", "description": "Include dotfiles and hidden entries" },
-                "max_results": { "type": "integer", "description": "Maximum matches to return, default 100, max 200" }
+                "glob": { "type": "string", "description": "Only search files whose relative path or name matches this glob, e.g. \"*.rs\" or \"src/**/*.ts\"" },
+                "output_mode": { "type": "string", "enum": ["content", "files_with_matches", "count"], "description": "content: matching lines (default); files_with_matches: list of matching file paths; count: per-file match counts" },
+                "max_results": { "type": "integer", "description": "Maximum results to return, default 100, max 1000" }
             },
             "required": ["query"]
         }),

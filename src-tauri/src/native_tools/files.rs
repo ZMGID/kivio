@@ -18,8 +18,8 @@ use super::{
 
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_GLOB_RESULTS: usize = 500;
-const MAX_SEARCH_FILES: usize = 2_000;
-const MAX_SEARCH_MATCHES: usize = 200;
+const MAX_SEARCH_FILES: usize = 5_000;
+const MAX_SEARCH_MATCHES: usize = 1_000;
 const MAX_SEARCH_FILE_BYTES: u64 = 1024 * 1024;
 const UTF8_BOM: &str = "\u{feff}";
 const DEFAULT_IGNORED_DIRS: &[&str] = &[
@@ -1121,6 +1121,10 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         .or_else(|| arguments.get("includeHidden"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let use_regex = arguments
+        .get("regex")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let max_results = arguments
         .get("max_results")
         .or_else(|| arguments.get("maxResults"))
@@ -1128,19 +1132,69 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         .map(|v| v as usize)
         .unwrap_or(100)
         .clamp(1, MAX_SEARCH_MATCHES);
-    let needle = if case_sensitive {
-        query.to_string()
+    let output_mode = arguments
+        .get("output_mode")
+        .or_else(|| arguments.get("outputMode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("content");
+    if !matches!(output_mode, "content" | "files_with_matches" | "count") {
+        return Err(
+            "output_mode must be one of: content, files_with_matches, count".to_string(),
+        );
+    }
+    let glob = arguments
+        .get("glob")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|g| !g.is_empty());
+
+    // 匹配器：regex 为可选（默认 false 走字面量子串，保持向后兼容的旧行为）。
+    enum Matcher {
+        Regex(regex::Regex),
+        Literal(String),
+    }
+    let matcher = if use_regex {
+        let re = regex::RegexBuilder::new(query)
+            .case_insensitive(!case_sensitive)
+            .build()
+            .map_err(|err| format!("Invalid regex: {err}"))?;
+        Matcher::Regex(re)
+    } else if case_sensitive {
+        Matcher::Literal(query.to_string())
     } else {
-        query.to_lowercase()
+        Matcher::Literal(query.to_lowercase())
+    };
+    let is_match = |line: &str| -> bool {
+        match &matcher {
+            Matcher::Regex(re) => re.is_match(line),
+            Matcher::Literal(needle) if case_sensitive => line.contains(needle.as_str()),
+            Matcher::Literal(needle) => line.to_lowercase().contains(needle.as_str()),
+        }
     };
 
-    let mut matches = Vec::new();
-    for path in walk_paths(&root, true, include_hidden, MAX_SEARCH_FILES)? {
-        if matches.len() >= max_results {
-            break;
-        }
+    let paths = walk_paths(&root, true, include_hidden, MAX_SEARCH_FILES)?;
+    let walk_truncated = paths.len() >= MAX_SEARCH_FILES;
+    let mut files_scanned = 0usize;
+    let mut content_matches = Vec::new();
+    let mut files_with_matches = Vec::new();
+    let mut counts = Vec::new();
+    let mut limit_hit = false;
+
+    'outer: for path in paths {
         if !path.is_file() {
             continue;
+        }
+        if let Some(pattern) = glob {
+            let rel = relative_slash_path(&root, &path);
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if !(glob_match(pattern, &rel)
+                || (!pattern.contains('/') && glob_match(pattern, file_name)))
+            {
+                continue;
+            }
         }
         let metadata = fs::metadata(&path).map_err(|err| format!("Read metadata failed: {err}"))?;
         if metadata.len() > MAX_SEARCH_FILE_BYTES {
@@ -1149,30 +1203,72 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
+        files_scanned += 1;
+        let display = workspace_display_path(workspace, &path);
+        let mut file_count = 0usize;
         for (idx, line) in content.lines().enumerate() {
-            let haystack = if case_sensitive {
-                line.to_string()
-            } else {
-                line.to_lowercase()
-            };
-            if haystack.contains(&needle) {
-                matches.push(json!({
-                    "path": workspace_display_path(workspace, &path),
+            if !is_match(line) {
+                continue;
+            }
+            file_count += 1;
+            if output_mode == "content" {
+                content_matches.push(json!({
+                    "path": display,
                     "line": idx + 1,
                     "text": line
                 }));
-                if matches.len() >= max_results {
-                    break;
+                if content_matches.len() >= max_results {
+                    limit_hit = true;
+                    break 'outer;
                 }
+            }
+        }
+        if file_count > 0 {
+            match output_mode {
+                "files_with_matches" => {
+                    files_with_matches.push(json!(display));
+                    if files_with_matches.len() >= max_results {
+                        limit_hit = true;
+                        break 'outer;
+                    }
+                }
+                "count" => {
+                    counts.push(json!({ "path": display, "count": file_count }));
+                    if counts.len() >= max_results {
+                        limit_hit = true;
+                        break 'outer;
+                    }
+                }
+                _ => {}
             }
         }
     }
 
-    format_json(json!({
+    let mut out = json!({
         "query": query,
-        "matches": matches,
-        "truncated": matches.len() >= max_results
-    }))
+        "regex": use_regex,
+        "mode": output_mode,
+        "files_scanned": files_scanned,
+        "truncated": limit_hit,
+        "walk_truncated": walk_truncated,
+    });
+    match output_mode {
+        "files_with_matches" => {
+            out["files"] = json!(files_with_matches);
+        }
+        "count" => {
+            let total: u64 = counts
+                .iter()
+                .filter_map(|c| c["count"].as_u64())
+                .sum();
+            out["counts"] = json!(counts);
+            out["total"] = json!(total);
+        }
+        _ => {
+            out["matches"] = json!(content_matches);
+        }
+    }
+    format_json(out)
 }
 
 fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -1658,6 +1754,62 @@ mod tests {
         let on_disk = String::from_utf8(fs::read(&file).expect("read")).expect("utf8");
         assert_eq!(on_disk, "x\nY\nz\n");
         assert!(!on_disk.contains('\r'), "LF file must not gain CR");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_files_regex_output_modes_and_glob() {
+        let root = std::env::temp_dir().join(format!("kivio_search_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("mkdir");
+        let workspace = NativeToolWorkspace::project(
+            "proj".to_string(),
+            "T".to_string(),
+            Some(root.to_string_lossy().into_owned()),
+        );
+        fs::write(root.join("a.rs"), "fn alpha() {}\nlet x = 1;\n").expect("write a");
+        fs::write(root.join("b.txt"), "alpha beta\nALPHA\n").expect("write b");
+
+        let parse = |s: String| serde_json::from_str::<Value>(&s).expect("json");
+
+        // 默认字面量、大小写不敏感：alpha 命中 a.rs 1 行 + b.txt 2 行 = 3。
+        let out = parse(search_files(&workspace, &json!({ "query": "alpha" })).expect("literal"));
+        assert_eq!(out["mode"], "content");
+        assert_eq!(out["regex"], false);
+        assert_eq!(out["matches"].as_array().unwrap().len(), 3);
+
+        // regex：仅以 "let " 开头的行。
+        let out = parse(
+            search_files(&workspace, &json!({ "query": "^let ", "regex": true })).expect("regex"),
+        );
+        assert_eq!(out["regex"], true);
+        assert_eq!(out["matches"].as_array().unwrap().len(), 1);
+
+        // files_with_matches：两个文件都含 alpha。
+        let out = parse(
+            search_files(
+                &workspace,
+                &json!({ "query": "alpha", "output_mode": "files_with_matches" }),
+            )
+            .expect("fwm"),
+        );
+        assert_eq!(out["files"].as_array().unwrap().len(), 2);
+
+        // count：总命中 3。
+        let out = parse(
+            search_files(&workspace, &json!({ "query": "alpha", "output_mode": "count" }))
+                .expect("count"),
+        );
+        assert_eq!(out["total"], 3);
+
+        // glob：只搜 *.rs → alpha 命中 1 行。
+        let out = parse(
+            search_files(&workspace, &json!({ "query": "alpha", "glob": "*.rs" })).expect("glob"),
+        );
+        assert_eq!(out["matches"].as_array().unwrap().len(), 1);
+
+        // 非法 regex 报错。
+        assert!(search_files(&workspace, &json!({ "query": "(", "regex": true })).is_err());
 
         let _ = fs::remove_dir_all(&root);
     }

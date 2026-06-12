@@ -3053,6 +3053,7 @@ dependencies = [
  "oar-ocr",
  "objc",
  "ort",
+ "regex",
  "reqwest 0.12.28",
  "scraper",
  "screencapturekit",

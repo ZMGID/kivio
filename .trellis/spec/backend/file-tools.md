@@ -26,7 +26,7 @@ Discovery/read tools (gated by `native_tools.read_file`):
 
 - `list_dir(path?) -> directory entries`
 - `glob_files(pattern, path?) -> paths`
-- `search_files(query, path?, max_results?) -> path/line/context matches`
+- `search_files(query, path?, regex?, case_sensitive?, include_hidden?, glob?, output_mode?, max_results?) -> matches/files/counts`
 - `stat_path(path) -> type/size/mtime metadata`
 - `read_file(path, offset?, limit?) -> ReadFileResult`
 
@@ -64,6 +64,14 @@ Mutation tools (`write_file` + path tools gated by `native_tools.write_file`; `e
 - Writes are atomic: temp file beside the target, then rename (`atomic_write_bytes`). Existing CRLF line endings and UTF-8 BOM are preserved (`atomic_write_text`). Non-UTF-8 existing targets may be overwritten with the diff omitted plus a warning.
 - `delete_path` refuses to delete the workspace/project root; symlinks are removed without following the target.
 
+#### Search
+
+- `search_files` walks `walk_paths` (recursively skipping `DEFAULT_IGNORED_DIRS` — `.git`, `node_modules`, `target`, `dist`, `build`, `.next`, …), reads each file (skipping ones over `MAX_SEARCH_FILE_BYTES`), and scans lines. It is in-process (no ripgrep subprocess); a ripgrep-backed fast path is a possible future optimization, not a requirement.
+- `query` is a **literal substring by default** (case-insensitive unless `case_sensitive`); `regex: true` compiles it with the `regex` crate (`case_insensitive(!case_sensitive)`) and an invalid pattern returns an `Invalid regex: …` error. Default literal behavior is preserved for backward compatibility.
+- `output_mode`: `content` (default — `{path, line, text}` matches), `files_with_matches` (`files[]` of paths with ≥1 match), `count` (`counts[]` of `{path, count}` plus `total`). An unknown mode is an argument error.
+- `glob` (optional) filters which files are searched, matched against the slash-relative path or, when it has no `/`, the file name (`glob_match`).
+- Walk is bounded by `MAX_SEARCH_FILES`; results by `max_results` (clamped to `MAX_SEARCH_MATCHES`). The result reports `files_scanned`, `truncated` (result cap hit), and `walk_truncated` (file cap hit) so the model knows coverage was bounded — never silently truncate.
+
 #### Results
 
 `FileMutationResult` carries `ok`, `operation`, `target_touched`, `resolved_path`, per-file `files[]` (path/operation/bytes/additions/removals/diff), aggregate diff stats, `warnings`, `diagnostics`. It is serialized into `structured_content` for the UI and summarized into one line for the model (`summary()`).
@@ -80,6 +88,7 @@ Mutation tools (`write_file` + path tools gated by `native_tools.write_file`; `e
 ### 6. Tests Required
 
 - `read_file`: whole-file read, partial window metadata, oversized-file rejection without window, oversized-file windowed read, and `read_file_tool_result` rendering line-numbered `cat -n` text (numbered from `start_line`, truncation/next-offset in the header) while preserving the full `structured_content`.
+- `search_files`: literal default matching, `regex` mode (and invalid-regex error), `output_mode` content/files_with_matches/count, `glob` file filtering, and bounded-coverage reporting (`files_scanned`/`truncated`/`walk_truncated`).
 - `edit_file`: unique-match enforcement, `replace_all` stats, no-op warning, and line-ending normalization (LF `old_string` matches a CRLF file and the write keeps CRLF; a CRLF/LF-only change is a no-op; an LF file stays LF).
 - `write_file`: structured diff metadata, non-UTF-8 overwrite warning, placeholder rejection on existing code files, placeholder acceptance for new files and prose files.
 - Tool exposure: `list_native_builtin_tool_defs` write gate exposes exactly `write_file` + path tools; edit gate exposes exactly `edit_file`; none of the removed names appear.
