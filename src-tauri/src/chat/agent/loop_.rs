@@ -41,6 +41,12 @@ pub(crate) struct RunIds<'a> {
 pub(crate) struct RunState {
     pub(crate) runtime_messages: Vec<Value>,
     pub(crate) tools: Vec<ChatToolDefinition>,
+    /// Full base tool list as prepared for round 0 (already includes assistant
+    /// preset, data-connector, active-skill-pin, inline-code, and Plan-mode
+    /// filtering). The effective per-round `tools` is recomputed from THIS base so
+    /// mid-run skill activations compose order-independently and never permanently
+    /// drop a tool that a later activation/pin re-permits (T3, FIX 4).
+    pub(crate) base_tools: Vec<ChatToolDefinition>,
     pub(crate) blocked_tool_calls: Vec<ChatToolDefinition>,
     pub(crate) generated_api_messages: Vec<Value>,
     pub(crate) tool_records: Vec<ToolCallRecord>,
@@ -53,19 +59,21 @@ pub(crate) struct RunState {
     pub(crate) planning_final_message: Option<Value>,
     pub(crate) planning_final_streamed: bool,
     pub(crate) skill_cache: skills::SkillRunCache,
-    /// Count of `activated_allowed_tools` already folded into `tools` (T3). The
-    /// loop only re-narrows when this grows, so the filter is applied at most
-    /// once per new model-activated skill.
+    /// Count of `activated_allowed_tools` already folded into the effective tool
+    /// set (T3). The loop only recomputes when this grows, so the (idempotent)
+    /// recompute runs at most once per new model-activated skill.
     pub(crate) applied_allowed_tools_len: usize,
     /// 本轮全部模型调用（规划/合成/压缩摘要）的 usage 累计；provider 不报则保持 None。
     pub(crate) usage: Option<crate::chat::model::ModelUsage>,
 }
 
 impl RunState {
-    /// T3: narrow `tools` to the union of allowed-tools across skills the model
-    /// has activated mid-run. No-op unless a new activation arrived since the
-    /// last application (tracked by `applied_allowed_tools_len`). Monotonic:
-    /// only retains, never re-expands.
+    /// T3: recompute the effective `tools` from the FULL base list, narrowed by the
+    /// union of allowed-tools across every skill the model has activated mid-run.
+    /// No-op unless a new activation arrived since the last application (tracked by
+    /// `applied_allowed_tools_len`). Recomputing from `base_tools` (instead of
+    /// shrinking `tools` cumulatively) keeps activation order independent and lets a
+    /// later, wider activation re-permit tools an earlier narrow activation excluded.
     pub(crate) fn apply_activated_tool_filter(&mut self) {
         let allowed = self.skill_cache.activated_allowed_tools();
         if allowed.len() <= self.applied_allowed_tools_len {
@@ -73,6 +81,7 @@ impl RunState {
         }
         let snapshot = allowed.to_vec();
         self.applied_allowed_tools_len = snapshot.len();
+        self.tools = self.base_tools.clone();
         super::prepare::retain_tools_for_allowed(&mut self.tools, &snapshot);
     }
 
@@ -102,9 +111,11 @@ pub async fn run_agent_loop(
     host: &dyn AgentHost,
     executor: &dyn ToolExecutor,
 ) -> Result<AgentRunResult, String> {
+    let initial_tools = std::mem::take(&mut config.tools);
     let mut state = RunState {
         runtime_messages: std::mem::take(&mut config.runtime_messages),
-        tools: std::mem::take(&mut config.tools),
+        base_tools: initial_tools.clone(),
+        tools: initial_tools,
         blocked_tool_calls: std::mem::take(&mut config.blocked_tool_calls),
         generated_api_messages: Vec::new(),
         tool_records: Vec::new(),

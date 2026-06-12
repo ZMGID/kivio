@@ -2038,3 +2038,62 @@
         assert_eq!(final_step.phase, AgentPhase::Synthesis);
         assert_eq!(final_step.stop_reason, Some(AgentStopReason::Natural));
     }
+
+    /// Build a minimal RunState carrying only the tool fields under test.
+    fn run_state_with_base(base_tools: Vec<ChatToolDefinition>) -> RunState {
+        RunState {
+            runtime_messages: Vec::new(),
+            tools: base_tools.clone(),
+            base_tools,
+            blocked_tool_calls: Vec::new(),
+            generated_api_messages: Vec::new(),
+            tool_records: Vec::new(),
+            planning_reasoning_parts: Vec::new(),
+            steps: Vec::new(),
+            segment_builder: SegmentBuilder::new(),
+            step_number: 0,
+            provider_tools_unsupported: false,
+            tried_skill_only_tools: false,
+            planning_final_message: None,
+            planning_final_streamed: false,
+            skill_cache: skills::SkillRunCache::default(),
+            applied_allowed_tools_len: 0,
+            usage: None,
+        }
+    }
+
+    /// FIX 4: T3 dynamic allowed_tools must recompute the effective tool set from the
+    /// FULL base list each round, not shrink cumulatively. Activating skill A (which
+    /// allows only `alpha`) drops `beta`; a later activation of skill B (which allows
+    /// `beta`) must re-permit `beta` — impossible under the old cumulative-shrink impl.
+    #[test]
+    fn activated_tool_filter_recomputes_from_base_not_cumulatively() {
+        let base = vec![
+            test_mcp_tool("alpha", Value::Null),
+            test_mcp_tool("beta", Value::Null),
+        ];
+        let mut state = run_state_with_base(base);
+
+        // Activate skill A: allows only `alpha`. `beta` is dropped.
+        state
+            .skill_cache
+            .record_activated_allowed_tools(&["alpha".to_string()]);
+        state.apply_activated_tool_filter();
+        assert!(state.tools.iter().any(|tool| tool.name == "alpha"));
+        assert!(
+            !state.tools.iter().any(|tool| tool.name == "beta"),
+            "beta should be narrowed out by skill A"
+        );
+
+        // Activate skill B: allows `beta`. Recomputing from base with the union
+        // {alpha, beta} must restore `beta` (not possible with cumulative shrink).
+        state
+            .skill_cache
+            .record_activated_allowed_tools(&["beta".to_string()]);
+        state.apply_activated_tool_filter();
+        assert!(state.tools.iter().any(|tool| tool.name == "alpha"));
+        assert!(
+            state.tools.iter().any(|tool| tool.name == "beta"),
+            "beta must be re-permitted after skill B activation (recompute from base)"
+        );
+    }
