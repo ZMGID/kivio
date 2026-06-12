@@ -1451,7 +1451,6 @@ export function InputBar({
               onPaste={(e) => void handlePaste(e)}
               onKeyDown={handleKeyDown}
               onSelect={handleSelect}
-              disabled={disabled}
               placeholder="Ask me anything..."
               rows={1}
               className="mb-0.5 max-h-40 min-h-[28px] flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-[15px] leading-relaxed text-neutral-900 outline-none placeholder:text-neutral-400 disabled:opacity-50 dark:text-neutral-100"

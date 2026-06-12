@@ -401,6 +401,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [selectedProject, setSelectedProject] = useState<ChatProject | null>(null)
   const [streaming, setStreaming] = useState(false)
+  // 取消后冻结展示已生成的部分内容，直到 send invoke 返回持久化消息无缝替换。
+  const [streamFrozen, setStreamFrozen] = useState(false)
   const [cancellingStream, setCancellingStream] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
   const [streamingReasoning, setStreamingReasoning] = useState('')
@@ -520,6 +522,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
 
   const clearStreamingPreview = useCallback(() => {
     setStreaming(false)
+    setStreamFrozen(false)
     setCancellingStream(false)
     setStreamingContent('')
     setStreamingReasoning('')
@@ -553,6 +556,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       clearStreamingPreview()
     } else {
       setStreaming(snapshot.streaming)
+      setStreamFrozen(false)
       setCancellingStream(false)
       setStreamingContent(snapshot.content)
       setStreamingReasoning(snapshot.reasoning)
@@ -600,9 +604,13 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const cancelCurrentRunLocally = useCallback(() => {
     locallyCancelledConversationIdRef.current = currentConversationIdRef.current
     locallyCancelledRunIdRef.current = activeRunIdRef.current
-    // 不清空预览：保留已生成文本直到 send invoke 返回持久化结果（finally 中
-    // finishStreamingRunWithConversation 会无缝替换；出错路径 clearStreamSnapshot 兜底）。
-    // 后续流事件已被 isLocallyCancelledPayload 过滤，预览自然冻结，不会继续追加。
+    // 立即停掉"生成中"视觉（撤掉取消按钮 + 停 shimmer），但保留已生成文本：
+    // 切到 frozen 态冻结展示，等 send invoke 返回持久化消息时由
+    // finishStreamingRunWithConversation 无缝替换（clearStreamingPreview 会清除 frozen）。
+    // 后续迟到的流事件已被 isLocallyCancelledPayload 过滤，预览不会再变动。
+    setStreaming(false)
+    setReasoningStreaming(false)
+    setStreamFrozen(true)
     const conversationId = currentConversationIdRef.current
     if (conversationId) {
       delete pendingToolConfirmsRef.current[conversationId]
@@ -1733,6 +1741,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
 
     if (currentConversationIdRef.current === conversationId) {
       setStreaming(true)
+      setStreamFrozen(false)
       setCancellingStream(false)
       setStreamingContent('')
       setStreamingReasoning('')
@@ -2002,6 +2011,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
 
       if (currentConversationIdRef.current === conversationId) {
         setStreaming(true)
+        setStreamFrozen(false)
         setCancellingStream(false)
         setStreamingContent('')
         setStreamingReasoning('')
@@ -2391,7 +2401,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       onSend={(content, attachments) => void handleSendMessage(content, attachments)}
                       disabled={isCurrentConversationBusy()}
                       onCancel={() => void handleCancelStream()}
-                      cancelVisible={isCurrentConversationBusy()}
+                      cancelVisible={streaming}
                       cancelling={cancellingStream}
                       onOpenSettings={() => openEmbeddedSettings('chat')}
                       onOpenTools={() => openEmbeddedSettings('skill')}
@@ -2424,6 +2434,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       messages={displayMessages}
                       agentPlanState={currentConversation?.agent_plan_state ?? currentConversation?.agentPlanState ?? null}
                       streaming={streaming}
+                      streamFrozen={streamFrozen}
                       streamingContent={streamingContent}
                       streamingReasoning={streamingReasoning}
                       reasoningStreaming={reasoningStreaming}
@@ -2440,7 +2451,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     onSend={(content, attachments) => void handleSendMessage(content, attachments)}
                     disabled={isCurrentConversationBusy()}
                     onCancel={() => void handleCancelStream()}
-                    cancelVisible={isCurrentConversationBusy()}
+                    cancelVisible={streaming}
                     cancelling={cancellingStream}
                     onOpenSettings={() => openEmbeddedSettings('chat')}
                     onOpenTools={() => openEmbeddedSettings('skill')}

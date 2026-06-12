@@ -14,6 +14,7 @@ interface MessageListProps {
   conversationId?: string | null
   messages: ChatMessage[]
   streaming?: boolean
+  streamFrozen?: boolean
   streamingContent?: string
   streamingReasoning?: string
   reasoningStreaming?: boolean
@@ -31,6 +32,7 @@ export function MessageList({
   conversationId,
   messages,
   streaming,
+  streamFrozen = false,
   streamingContent = '',
   streamingReasoning = '',
   reasoningStreaming = false,
@@ -206,7 +208,7 @@ export function MessageList({
           />
         ))}
 
-        {streaming && (streamingContent || streamingReasoning || streamingToolCalls.length > 0 || streamingSegments.length > 0) && (
+        {(streaming || streamFrozen) && (streamingContent || streamingReasoning || streamingToolCalls.length > 0 || streamingSegments.length > 0) && (
           <MessageBubble
             message={{
               id: 'streaming-assistant',
@@ -219,7 +221,7 @@ export function MessageList({
               timestamp: Math.floor(Date.now() / 1000),
             }}
             conversationId={conversationId}
-            reasoningStreaming={reasoningStreaming}
+            reasoningStreaming={reasoningStreaming && !streamFrozen}
           />
         )}
 
