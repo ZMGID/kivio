@@ -151,15 +151,68 @@ pub fn substitute_arguments(body: &str, args_raw: &str, arg_names: &[String]) ->
     let trimmed = args_raw.trim();
     let words: Vec<&str> = trimmed.split_whitespace().collect();
 
-    let mut out = body.replace("$ARGUMENTS", trimmed);
+    // Map of UPPERCASE declared name -> positional value (missing word => "").
+    let mut name_values: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for (index, name) in arg_names.iter().enumerate() {
         let key = name.trim();
         if key.is_empty() {
             continue;
         }
-        let placeholder = format!("${}", key.to_ascii_uppercase());
-        let value = words.get(index).copied().unwrap_or("");
-        out = out.replace(&placeholder, value);
+        name_values
+            .entry(key.to_ascii_uppercase())
+            .or_insert_with(|| words.get(index).copied().unwrap_or(""));
+    }
+
+    // Single left-to-right scan: every `$TOKEN` is resolved exactly once against the
+    // original body. Substituted values are emitted verbatim and never re-scanned, so
+    // a value containing a `$ARG_...`-like token is not re-substituted, and no token is
+    // a prefix-collision victim of another (e.g. `$A` vs `$AB`).
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            // Copy a full UTF-8 char (find next char boundary).
+            let mut end = i + 1;
+            while end < bytes.len() && !body.is_char_boundary(end) {
+                end += 1;
+            }
+            out.push_str(&body[i..end]);
+            i = end;
+            continue;
+        }
+        // Read the identifier after `$`: [A-Za-z0-9_]+ (ASCII only).
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() {
+            let c = bytes[end];
+            if c.is_ascii_alphanumeric() || c == b'_' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        if end == start {
+            // Lone `$` (no identifier) → literal.
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        let ident = &body[start..end];
+        let upper = ident.to_ascii_uppercase();
+        if upper == "ARGUMENTS" {
+            out.push_str(trimmed);
+        } else if let Some(value) = name_values.get(&upper) {
+            out.push_str(value);
+        } else if let Some(stripped) = upper.strip_prefix("ARG_") {
+            // `$ARG_NAME` convention: resolve the stripped name, else empty string.
+            out.push_str(name_values.get(stripped).copied().unwrap_or(""));
+        } else {
+            // Unknown `$NAME` → leave literal so bodies can mention `$` text safely.
+            out.push('$');
+            out.push_str(ident);
+        }
+        i = end;
     }
     out
 }
@@ -593,5 +646,31 @@ mod tests {
         let body = "A=$FIRST B=$SECOND end";
         let out = substitute_arguments(body, "only", &["first".to_string(), "second".to_string()]);
         assert_eq!(out, "A=only B= end");
+    }
+
+    #[test]
+    fn substitute_arguments_no_prefix_collision_between_a_and_ab() {
+        // FIX 6 (1): `$ARG_A` must resolve to the `a` value and `$ARG_AB` to the `ab`
+        // value; the old multi-pass impl corrupted `$ARG_AB` while replacing `$ARG_A`.
+        let out = substitute_arguments(
+            "$ARG_A|$ARG_AB",
+            "x y",
+            &["a".to_string(), "ab".to_string()],
+        );
+        assert_eq!(out, "x|y");
+    }
+
+    #[test]
+    fn substitute_arguments_does_not_re_substitute_value_tokens() {
+        // FIX 6 (2): a positional value that itself contains a `$ARG_...` token must be
+        // emitted verbatim and never re-scanned/substituted by a later pass.
+        let out = substitute_arguments(
+            "first=$ARG_A second=$ARG_B",
+            r#"$ARG_B payload"#,
+            &["a".to_string(), "b".to_string()],
+        );
+        // word[0] == "$ARG_B", word[1] == "payload"; $ARG_A -> "$ARG_B" (literal),
+        // $ARG_B -> "payload". The injected "$ARG_B" must survive unchanged.
+        assert_eq!(out, "first=$ARG_B second=payload");
     }
 }
