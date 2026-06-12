@@ -52,7 +52,8 @@ Mutation tools (`write_file` + path tools gated by `native_tools.write_file`; `e
 #### Edit
 
 - `edit_file` requires `old_string` to match current content exactly and uniquely; multiple matches error with the count unless `replace_all=true`. `old_string == new_string` returns an ok no-op result with a warning, `target_touched=false`.
-- No fuzzy matching. Error messages must tell the model what to do next (unique anchor or `replace_all`).
+- **Line endings are normalized for matching, not fuzzy-matched.** Matching/counting/replacing happen in an LF-normalized space (`normalize_line_endings(_, "\n")` on the file content, `old_string`, and `new_string`), so an LF `old_string` (what models emit) matches a CRLF file (the common Windows 0-match bug). The write goes through `atomic_write_text` with the original content, which re-applies CRLF and the UTF-8 BOM, so the on-disk line-ending style is preserved. The diff is computed in LF space so a CRLF↔LF difference is not reported as a whole-file change. A change that differs only in line-ending notation normalizes equal and returns the no-op result.
+- No other fuzzy matching (no whitespace/indentation tolerance). Error messages must tell the model what to do next: re-read and copy an exact contiguous snippet with its indentation (`old_string not found`), or extend `old_string` with surrounding context / use `replace_all` (multiple matches). Do not blame CRLF in the not-found message — it is normalized away.
 
 #### Write
 
@@ -78,7 +79,7 @@ Mutation tools (`write_file` + path tools gated by `native_tools.write_file`; `e
 ### 6. Tests Required
 
 - `read_file`: whole-file read, partial window metadata, oversized-file rejection without window, oversized-file windowed read.
-- `edit_file`: unique-match enforcement, `replace_all` stats, no-op warning.
+- `edit_file`: unique-match enforcement, `replace_all` stats, no-op warning, and line-ending normalization (LF `old_string` matches a CRLF file and the write keeps CRLF; a CRLF/LF-only change is a no-op; an LF file stays LF).
 - `write_file`: structured diff metadata, non-UTF-8 overwrite warning, placeholder rejection on existing code files, placeholder acceptance for new files and prose files.
 - Tool exposure: `list_native_builtin_tool_defs` write gate exposes exactly `write_file` + path tools; edit gate exposes exactly `edit_file`; none of the removed names appear.
 - Scheduling: write tools stay outside the parallel whitelist even with `approval_policy = "auto"`.

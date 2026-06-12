@@ -335,7 +335,15 @@ pub fn edit_file(
     }
 
     let content = fs::read_to_string(&full).map_err(|err| format!("Read file failed: {err}"))?;
-    if old_string == new_string {
+    // 行尾归一后再匹配：模型给的 old_string 通常是 LF，而文件可能是 CRLF（Windows 高频），
+    // 直接字面 `contains` 会 0 命中。统一归一到 LF 做匹配/计数/替换；写回时
+    // atomic_write_text 依据原文件把 LF 还原成 CRLF（并保留 BOM），磁盘行尾风格不变。
+    // diff 用归一后的 before 比对，避免 CRLF→LF 让每行都被算成变更。
+    let normalized_content = normalize_line_endings(&content, "\n");
+    let normalized_old = normalize_line_endings(old_string, "\n");
+    let normalized_new = normalize_line_endings(new_string, "\n");
+
+    if normalized_old == normalized_new {
         let display_path = workspace_display_path(workspace, &full);
         return Ok(FileMutationResult {
             ok: true,
@@ -358,20 +366,26 @@ pub fn edit_file(
             diagnostics: Vec::new(),
         });
     }
-    if !content.contains(old_string) {
-        return Err("old_string not found in file".to_string());
+    if !normalized_content.contains(&normalized_old) {
+        return Err(
+            "old_string not found in file. Re-read the file and copy an exact, contiguous snippet \
+             including its leading whitespace/indentation. Line endings are normalized \
+             automatically, so a CRLF vs LF mismatch is not the cause."
+                .to_string(),
+        );
     }
-    let count = content.matches(old_string).count();
+    let count = normalized_content.matches(&normalized_old).count();
     if !replace_all && count > 1 {
         return Err(format!(
-            "old_string appears {count} times; set replace_all=true or use a unique old_string"
+            "old_string appears {count} times; set replace_all=true, or extend old_string with \
+             surrounding context so it matches exactly one location."
         ));
     }
 
     let updated = if replace_all {
-        content.replace(old_string, new_string)
+        normalized_content.replace(&normalized_old, &normalized_new)
     } else {
-        content.replacen(old_string, new_string, 1)
+        normalized_content.replacen(&normalized_old, &normalized_new, 1)
     };
     atomic_write_text(&full, &updated, Some(&content))
         .map_err(|err| format!("Write file failed: {err}"))?;
@@ -381,7 +395,7 @@ pub fn edit_file(
             workspace,
             full,
             "edit",
-            Some(&content),
+            Some(&normalized_content),
             Some(&updated),
         )?],
     ))
@@ -1552,6 +1566,100 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).expect("read"), "hello world");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_file_matches_lf_old_string_against_crlf_file_and_keeps_crlf() {
+        let root = std::env::temp_dir().join(format!("kivio_edit_crlf_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("mkdir");
+        let workspace = NativeToolWorkspace::project(
+            "proj".to_string(),
+            "T".to_string(),
+            Some(root.to_string_lossy().into_owned()),
+        );
+        let file = root.join("crlf.txt");
+        fs::write(&file, "line one\r\nline two\r\nline three\r\n").expect("write");
+
+        // 模型给的是 LF old_string；文件是 CRLF —— 旧实现会 0 命中。
+        let result = edit_file(
+            &workspace,
+            &json!({
+                "path": "crlf.txt",
+                "old_string": "line two\n",
+                "new_string": "line 2\n",
+            }),
+        )
+        .expect("LF old_string must match a CRLF file");
+        assert!(result.ok);
+        assert_eq!(result.files[0].operation, "edit");
+        // diff 只反映真实变更，不把 CRLF→LF 算成整文件变更。
+        assert_eq!(result.additions, 1);
+        assert_eq!(result.removals, 1);
+        // 写回保持 CRLF 风格。
+        let on_disk = String::from_utf8(fs::read(&file).expect("read bytes")).expect("utf8");
+        assert_eq!(on_disk, "line one\r\nline 2\r\nline three\r\n");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edit_file_treats_crlf_vs_lf_only_change_as_noop() {
+        let root = std::env::temp_dir().join(format!("kivio_edit_noop_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("mkdir");
+        let workspace = NativeToolWorkspace::project(
+            "proj".to_string(),
+            "T".to_string(),
+            Some(root.to_string_lossy().into_owned()),
+        );
+        let file = root.join("file.txt");
+        fs::write(&file, "alpha\r\nbeta\r\n").expect("write");
+
+        // old/new 仅行尾写法不同，归一后相等 → 视为 noop，不改盘。
+        let result = edit_file(
+            &workspace,
+            &json!({
+                "path": "file.txt",
+                "old_string": "alpha\r\nbeta",
+                "new_string": "alpha\nbeta",
+            }),
+        )
+        .expect("line-ending-only change is a noop");
+        assert_eq!(result.files[0].operation, "noop");
+        assert_eq!(
+            String::from_utf8(fs::read(&file).expect("read")).expect("utf8"),
+            "alpha\r\nbeta\r\n"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edit_file_lf_file_still_edits_and_keeps_lf() {
+        let root = std::env::temp_dir().join(format!("kivio_edit_lf_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("mkdir");
+        let workspace = NativeToolWorkspace::project(
+            "proj".to_string(),
+            "T".to_string(),
+            Some(root.to_string_lossy().into_owned()),
+        );
+        let file = root.join("lf.txt");
+        fs::write(&file, "x\ny\nz\n").expect("write");
+
+        let result = edit_file(
+            &workspace,
+            &json!({
+                "path": "lf.txt",
+                "old_string": "y\n",
+                "new_string": "Y\n",
+            }),
+        )
+        .expect("LF file edit");
+        assert!(result.ok);
+        let on_disk = String::from_utf8(fs::read(&file).expect("read")).expect("utf8");
+        assert_eq!(on_disk, "x\nY\nz\n");
+        assert!(!on_disk.contains('\r'), "LF file must not gain CR");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
