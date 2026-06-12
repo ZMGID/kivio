@@ -1131,7 +1131,7 @@ async fn complete_assistant_reply(
         settings.chat_memory.enabled,
         crate::settings::chat_image_generation_enabled(&settings),
     );
-    let mut tools = list_tools_for_chat(state.inner(), &settings, provider.supports_tools).await;
+    let mut tools = list_tools_for_chat(app, state.inner(), &settings, provider.supports_tools).await;
     agent_prepare::apply_assistant_tool_preset(
         &mut tools,
         conversation.assistant_snapshot.as_ref(),
@@ -2541,7 +2541,7 @@ async fn compute_context_state(
             )
         })
         .unwrap_or(false);
-    let mut tools = list_tools_for_chat(state.inner(), &settings, provider_supports_tools).await;
+    let mut tools = list_tools_for_chat(app, state.inner(), &settings, provider_supports_tools).await;
     agent_prepare::apply_assistant_tool_preset(
         &mut tools,
         conversation.assistant_snapshot.as_ref(),
@@ -2943,6 +2943,7 @@ fn context_status(
 }
 
 async fn list_tools_for_chat(
+    app: &AppHandle,
     state: &AppState,
     settings: &Settings,
     provider_supports_tools: bool,
@@ -2955,7 +2956,7 @@ async fn list_tools_for_chat(
     {
         return Vec::new();
     }
-    mcp::registry::list_enabled_tool_defs(state)
+    mcp::registry::list_enabled_tool_defs(app, state)
         .await
         .unwrap_or_default()
 }

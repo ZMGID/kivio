@@ -175,8 +175,11 @@ struct CursorMcpServer {
 }
 
 #[tauri::command]
-pub async fn chat_mcp_list_tools(state: State<'_, AppState>) -> Result<McpListToolsResult, String> {
-    Ok(match list_enabled_tool_defs(&state).await {
+pub async fn chat_mcp_list_tools(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<McpListToolsResult, String> {
+    Ok(match list_enabled_tool_defs(&app, &state).await {
         Ok(tools) => McpListToolsResult {
             success: true,
             tools,
@@ -190,7 +193,10 @@ pub async fn chat_mcp_list_tools(state: State<'_, AppState>) -> Result<McpListTo
     })
 }
 
-pub async fn list_enabled_tool_defs(state: &AppState) -> Result<Vec<ChatToolDefinition>, String> {
+pub async fn list_enabled_tool_defs(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<Vec<ChatToolDefinition>, String> {
     let settings = state.settings_read().clone();
     let cache_key = enabled_tools_cache_key(&settings);
     if let Some(tools) = state.get_cached_chat_tools(&cache_key, TOOL_LIST_CACHE_TTL) {
@@ -219,19 +225,26 @@ pub async fn list_enabled_tool_defs(state: &AppState) -> Result<Vec<ChatToolDefi
     }
 
     if settings.chat_tools.enabled {
-        for server in settings
+        // 并行从每个已启用 server 拉工具列表（持久会话，命中即复用）。失败仅置 Error
+        // 态并发事件（mcp_get_or_connect 内部已发），不阻塞其他 server。借用 &AppState 的
+        // future 用 join_all 并发驱动（无需 'static / spawn）。
+        let enabled_servers: Vec<&ChatMcpServer> = settings
             .chat_tools
             .servers
             .iter()
             .filter(|server| server.enabled)
-        {
-            match list_server_tools(server, settings.chat_tools.tool_timeout_ms).await {
-                Ok(mut server_tools) => tools.append(&mut server_tools),
+            .collect();
+        let listings = enabled_servers.iter().map(|server| async move {
+            let result = state.mcp_list_tools(app, server).await;
+            (*server, result)
+        });
+        for (server, result) in futures::future::join_all(listings).await {
+            match result {
+                Ok(server_tools) => {
+                    tools.extend(tools_from_mcp(server, server_tools));
+                }
                 Err(err) => {
-                    eprintln!(
-                        "MCP server {} failed while listing tools: {err}",
-                        server.name
-                    );
+                    eprintln!("MCP server {} failed while listing tools: {err}", server.name);
                 }
             }
         }
@@ -243,20 +256,44 @@ pub async fn list_enabled_tool_defs(state: &AppState) -> Result<Vec<ChatToolDefi
     Ok(tools)
 }
 
+/// 把 server 返回的 McpTool 列表按 enabled_tools 过滤后映射成 ChatToolDefinition。
+fn tools_from_mcp(
+    server: &ChatMcpServer,
+    tools: Vec<crate::mcp::types::McpTool>,
+) -> Vec<ChatToolDefinition> {
+    let allowed = server
+        .enabled_tools
+        .iter()
+        .map(|tool| tool.as_str())
+        .collect::<Vec<_>>();
+    tools
+        .into_iter()
+        .filter(|tool| allowed.is_empty() || allowed.contains(&tool.name.as_str()))
+        .map(|tool| tool_definition_from_mcp(server, tool))
+        .collect()
+}
+
 #[tauri::command]
-pub async fn chat_mcp_test_server(server: ChatMcpServer, timeout_ms: Option<u64>) -> McpTestResult {
-    match list_server_tools(&server, timeout_ms.unwrap_or(60_000)).await {
-        Ok(tools) => McpTestResult {
-            success: true,
-            tools,
-            error: None,
+pub async fn chat_mcp_test_server(
+    state: State<'_, AppState>,
+    server: ChatMcpServer,
+    timeout_ms: Option<u64>,
+) -> Result<McpTestResult, String> {
+    // tauri command 必须返回 Result 才能用 State<'_, _>；前端仍读 McpTestResult（永不 Err）。
+    Ok(
+        match list_server_tools(&state.http, &server, timeout_ms.unwrap_or(60_000)).await {
+            Ok(tools) => McpTestResult {
+                success: true,
+                tools,
+                error: None,
+            },
+            Err(err) => McpTestResult {
+                success: false,
+                tools: Vec::new(),
+                error: Some(err),
+            },
         },
-        Err(err) => McpTestResult {
-            success: false,
-            tools: Vec::new(),
-            error: Some(err),
-        },
-    }
+    )
 }
 
 #[tauri::command]
@@ -307,6 +344,26 @@ pub fn chat_mcp_import_json(path: String) -> McpImportResult {
     }
 }
 
+/// 读取某个 MCP server 的持久连接状态快照（状态点 / handshake 次数 / stderr 尾巴）。
+#[tauri::command]
+pub async fn chat_mcp_server_status(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<crate::mcp::manager::McpServerStatusSnapshot, String> {
+    Ok(state.mcp_server_state(&server_id).await)
+}
+
+/// 主动断开某个 MCP server 的持久会话（重连按钮）：下次调用透明重连。
+#[tauri::command]
+pub async fn chat_mcp_reload_server(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<(), String> {
+    state.mcp_reload_server(&app, &server_id).await;
+    Ok(())
+}
+
 pub async fn call_tool(
     app: &AppHandle,
     state: &AppState,
@@ -339,34 +396,18 @@ pub async fn call_tool(
         .find(|server| server.id == server_id && server.enabled)
         .cloned()
         .ok_or_else(|| "MCP server is disabled or missing".to_string())?;
-    match server.transport.as_str() {
-        "streamable_http" => {
-            StreamableHttpMcpClient::new(
-                server,
-                settings.chat_tools.tool_timeout_ms,
-                state.http.clone(),
-            )
-            .call_tool(&tool.name, arguments)
-            .await
-        }
-        _ => {
-            StdioMcpClient::new(server, settings.chat_tools.tool_timeout_ms)
-                .call_tool(&tool.name, arguments)
-                .await
-        }
-    }
+    // 走持久连接池：复用长连接、liveness 探活 + 透明重连、按 server_id 隔离。
+    state.mcp_call_tool(app, &server, &tool.name, arguments).await
 }
 
 async fn list_server_tools(
+    http: &reqwest::Client,
     server: &ChatMcpServer,
     timeout_ms: u64,
 ) -> Result<Vec<ChatToolDefinition>, String> {
-    if !server.enabled && !server.command.trim().is_empty() {
-        // Test connection passes in disabled draft configs; listing enabled tools filters elsewhere.
-    }
     let tools = match server.transport.as_str() {
         "streamable_http" => {
-            StreamableHttpMcpClient::new(server.clone(), timeout_ms, reqwest::Client::new())
+            StreamableHttpMcpClient::new(server.clone(), timeout_ms, http.clone())
                 .list_tools()
                 .await?
         }
@@ -376,16 +417,7 @@ async fn list_server_tools(
                 .await?
         }
     };
-    let allowed = server
-        .enabled_tools
-        .iter()
-        .map(|tool| tool.as_str())
-        .collect::<Vec<_>>();
-    Ok(tools
-        .into_iter()
-        .filter(|tool| allowed.is_empty() || allowed.contains(&tool.name.as_str()))
-        .map(|tool| tool_definition_from_mcp(server, tool))
-        .collect())
+    Ok(tools_from_mcp(server, tools))
 }
 
 fn normalize_imported_transport(server: &CursorMcpServer) -> String {
