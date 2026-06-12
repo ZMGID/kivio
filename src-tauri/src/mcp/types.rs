@@ -360,7 +360,7 @@ pub fn native_search_files_tool() -> ChatToolDefinition {
                 "regex": { "type": "boolean", "description": "Treat query as a regular expression, default false (literal substring)" },
                 "case_sensitive": { "type": "boolean", "description": "Case-sensitive matching, default false" },
                 "include_hidden": { "type": "boolean", "description": "Include dotfiles and hidden entries" },
-                "glob": { "type": "string", "description": "Only search files whose relative path or name matches this glob, e.g. \"*.rs\" or \"src/**/*.ts\"" },
+                "glob": { "type": "string", "description": "Only search files whose relative path or name matches this glob. Supports brace expansion: \"*.{py,ts}\" matches both .py and .ts files. Examples: \"*.rs\", \"src/**/*.ts\", \"*.{py,ts,js}\"" },
                 "output_mode": { "type": "string", "enum": ["content", "files_with_matches", "count"], "description": "content: matching lines (default); files_with_matches: list of matching file paths; count: per-file match counts" },
                 "max_results": { "type": "integer", "description": "Maximum results to return, default 100, max 1000" }
             },

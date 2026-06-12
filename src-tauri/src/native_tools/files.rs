@@ -1154,6 +1154,10 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|g| !g.is_empty());
+    // `*.{py,ts}` 花括号展开：把单个 glob 展开成多个候选 patterns，每个文件满足任一即通过。
+    let glob_patterns: Vec<String> = glob
+        .map(expand_glob_braces)
+        .unwrap_or_default();
 
     // 匹配器：regex 为可选（默认 false 走字面量子串，保持向后兼容的旧行为）。
     enum Matcher {
@@ -1191,15 +1195,17 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         if !path.is_file() {
             continue;
         }
-        if let Some(pattern) = glob {
+        if !glob_patterns.is_empty() {
             let rel = relative_slash_path(&root, &path);
             let file_name = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("");
-            if !(glob_match(pattern, &rel)
-                || (!pattern.contains('/') && glob_match(pattern, file_name)))
-            {
+            let matches_any = glob_patterns.iter().any(|p| {
+                glob_match(p, &rel)
+                    || (!p.contains('/') && glob_match(p, file_name))
+            });
+            if !matches_any {
                 continue;
             }
         }
@@ -1384,6 +1390,24 @@ fn relative_slash_path(root: &Path, path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// 展开 glob 花括号语法：`*.{py,ts}` → `["*.py", "*.ts"]`，`{a,b}/*.rs` → `["a/*.rs", "b/*.rs"]`。
+/// 无花括号时直接返回单元素 Vec。嵌套花括号不支持（返回原始 pattern）。
+fn expand_glob_braces(pattern: &str) -> Vec<String> {
+    if let Some(open) = pattern.find('{') {
+        if let Some(close) = pattern[open..].find('}') {
+            let close = open + close;
+            let prefix = &pattern[..open];
+            let suffix = &pattern[close + 1..];
+            let alternatives = &pattern[open + 1..close];
+            return alternatives
+                .split(',')
+                .map(|alt| format!("{}{}{}", prefix, alt.trim(), suffix))
+                .collect();
+        }
+    }
+    vec![pattern.to_string()]
 }
 
 fn glob_match(pattern: &str, value: &str) -> bool {
@@ -1826,7 +1850,39 @@ mod tests {
         // 两者都缺则报错。
         assert!(search_files(&workspace, &json!({ "path": "." })).is_err());
 
+        // 花括号 glob：`*.{rs,txt}` 只命中两种扩展名，不命中 .py。
+        let out = parse(
+            search_files(&workspace, &json!({ "query": "alpha", "glob": "*.{rs,txt}" }))
+                .expect("brace glob"),
+        );
+        // 只有 a.rs 有 alpha，b.txt 没有（内容是 "alpha beta..."）——实际有匹配
+        // 关键断言：b.txt 和 a.rs 都在匹配范围内，但 a.rs 的 alpha 一定命中。
+        let paths: Vec<_> = out["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["path"].as_str())
+            .collect();
+        assert!(
+            paths.iter().all(|p| p.ends_with(".rs") || p.ends_with(".txt")),
+            "brace glob must only match .rs and .txt files, got: {paths:?}"
+        );
+
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expand_glob_braces_splits_alternatives() {
+        assert_eq!(
+            expand_glob_braces("*.{py,ts}"),
+            vec!["*.py".to_string(), "*.ts".to_string()]
+        );
+        assert_eq!(
+            expand_glob_braces("src/{a,b,c}.rs"),
+            vec!["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()]
+        );
+        assert_eq!(expand_glob_braces("*.rs"), vec!["*.rs".to_string()]);
+        assert_eq!(expand_glob_braces("*.{rs}"), vec!["*.rs".to_string()]);
     }
 
     #[test]
