@@ -122,7 +122,24 @@ pub fn read_skill_file(record: &SkillRecord, relative_path: &str) -> Result<Stri
     if !path.is_file() {
         return Err(format!("Skill file not found: {relative_path}"));
     }
-    fs::read_to_string(&path).map_err(|err| format!("Read skill file failed: {err}"))
+    let bytes = fs::read(&path).map_err(|err| format!("Read skill file failed: {err}"))?;
+    let cap = crate::native_tools::MAX_READ_FILE_BYTES as usize;
+    if bytes.len() <= cap {
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    // Decode lossily, then keep the head up to a UTF-8 char boundary at or below
+    // the byte cap, and append a marker pointing the model at skill_run_script.
+    let text = String::from_utf8_lossy(&bytes);
+    let mut head_len = cap.min(text.len());
+    while head_len > 0 && !text.is_char_boundary(head_len) {
+        head_len -= 1;
+    }
+    let head = &text[..head_len];
+    Ok(format!(
+        "{head}\n\n[Skill file truncated: original {} bytes, showing first {} bytes (max {cap}). Use skill_run_script to process the full file.]",
+        bytes.len(),
+        head_len
+    ))
 }
 
 pub async fn run_skill_script(
@@ -292,6 +309,19 @@ mod tests {
     use super::*;
     use std::{fs, path::PathBuf};
 
+    fn demo_meta() -> SkillMeta {
+        SkillMeta {
+            id: "demo".to_string(),
+            name: "demo".to_string(),
+            description: "Demo".to_string(),
+            source: "user".to_string(),
+            path: None,
+            recommended_tools: vec![],
+            disable_model_invocation: false,
+            files: vec![],
+        }
+    }
+
     #[test]
     fn resolve_skill_path_rejects_parent_traversal() {
         let dir = std::env::temp_dir().join(format!("kivio-skill-test-{}", uuid::Uuid::new_v4()));
@@ -438,6 +468,44 @@ mod tests {
             ))
             .expect_err("should time out");
         assert!(err.contains("timed out after 100ms"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_skill_file_returns_full_when_small() {
+        let dir = std::env::temp_dir().join(format!("kivio-skill-read-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("note.md"), "hello world").unwrap();
+        let record = SkillRecord {
+            meta: demo_meta(),
+            location: dir.join("SKILL.md"),
+            base_dir: dir.clone(),
+            body: String::new(),
+            allowed_tools: vec![],
+        };
+        let content = read_skill_file(&record, "note.md").unwrap();
+        assert_eq!(content, "hello world");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn read_skill_file_caps_oversize() {
+        let dir = std::env::temp_dir().join(format!("kivio-skill-cap-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let cap = crate::native_tools::MAX_READ_FILE_BYTES as usize;
+        let big = "a".repeat(cap + 1024);
+        fs::write(dir.join("big.txt"), &big).unwrap();
+        let record = SkillRecord {
+            meta: demo_meta(),
+            location: dir.join("SKILL.md"),
+            base_dir: dir.clone(),
+            body: String::new(),
+            allowed_tools: vec![],
+        };
+        let content = read_skill_file(&record, "big.txt").unwrap();
+        assert!(content.contains("Skill file truncated"));
+        assert!(content.contains("skill_run_script"));
+        assert!(content.len() < big.len());
         let _ = fs::remove_dir_all(dir);
     }
 }
