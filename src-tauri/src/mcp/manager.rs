@@ -254,38 +254,74 @@ impl AppState {
     ) -> Result<Arc<Mutex<McpSession>>, String> {
         let fingerprint = config_fingerprint(server);
 
-        // 1) 命中且配置未变且已连接 → 克隆 Arc 立即返回（不跨 await 持外层锁）。
-        {
-            let pool = self.mcp_sessions.lock().await;
-            if let Some(existing) = pool.get(&server.id) {
-                let session = existing.clone();
-                drop(pool);
-                let guard = session.lock().await;
+        // 单飞门闩：在持外层池锁时完成「命中已有会话」或「插入 Connecting 占位」二选一，
+        // 让并发的第二个调用者一定观察到第一个的占位 Arc（而非各插各的）。
+        // 仅当 pool.get 返回 None（或配置已变需重建）时才新建占位并立即插入。
+        enum Resolved {
+            // 命中已有会话（Connected 或正在 Connecting）：共享其 Arc，锁会话后再判定。
+            Existing(Arc<Mutex<McpSession>>),
+            // 新建了占位：本调用者负责握手。
+            Fresh(Arc<Mutex<McpSession>>),
+        }
+
+        let resolved = {
+            let mut pool = self.mcp_sessions.lock().await;
+            match pool.get(&server.id) {
+                Some(existing) => Resolved::Existing(existing.clone()),
+                None => {
+                    let session =
+                        Arc::new(Mutex::new(McpSession::placeholder(fingerprint.clone())));
+                    pool.insert(server.id.clone(), session.clone());
+                    Resolved::Fresh(session)
+                }
+            }
+        };
+
+        match resolved {
+            Resolved::Existing(session) => {
+                // 锁会话后重判：可能已被先到的调用者握手成功；或配置已变需重建。
+                let mut guard = session.lock().await;
                 if guard.config_fingerprint == fingerprint
                     && matches!(guard.state, McpServerState::Connected)
                 {
                     drop(guard);
                     return Ok(session);
                 }
+                if guard.config_fingerprint != fingerprint {
+                    // 配置变更：丢弃旧 transport，按新指纹在同一共享会话上重连。
+                    guard.config_fingerprint = fingerprint.clone();
+                    guard.transport = McpTransport::None;
+                    guard.state = McpServerState::Connecting;
+                }
+                // 共享会话尚未 Connected（Connecting/None/Error）→ 由本调用者握手进它。
+                self.connect_session(sink, server, &mut guard).await?;
+                drop(guard);
+                Ok(session)
+            }
+            Resolved::Fresh(session) => {
+                sink.emit_server_state(server, &McpServerState::Connecting);
+                let mut guard = session.lock().await;
+                self.connect_session(sink, server, &mut guard).await?;
+                drop(guard);
+                Ok(session)
             }
         }
+    }
 
-        // 2) 插入 Connecting 占位，发事件，释放外层锁。
-        let session = Arc::new(Mutex::new(McpSession::placeholder(fingerprint.clone())));
-        {
-            let mut pool = self.mcp_sessions.lock().await;
-            pool.insert(server.id.clone(), session.clone());
-        }
-        sink.emit_server_state(server, &McpServerState::Connecting);
-
-        // 3) 锁住会话，握手一次（不持外层池锁）。
-        let mut guard = session.lock().await;
-        match self.mcp_connect_into(server, &mut guard).await {
+    /// 在持有会话锁的前提下完成一次握手（不持外层池锁）。失败时写 Error 状态并返回错误。
+    async fn connect_session(
+        &self,
+        sink: &impl McpEventSink,
+        server: &ChatMcpServer,
+        guard: &mut McpSession,
+    ) -> Result<(), String> {
+        match self.mcp_connect_into(server, guard).await {
             Ok(()) => {
                 guard.state = McpServerState::Connected;
                 guard.handshake_count = guard.handshake_count.saturating_add(1);
                 guard.last_used = Instant::now();
                 sink.emit_server_state(server, &McpServerState::Connected);
+                Ok(())
             }
             Err(err) => {
                 let stderr_tail = guard.stderr_tail_text().await;
@@ -298,17 +334,10 @@ impl AppState {
                     message: message.clone(),
                 };
                 guard.transport = McpTransport::None;
-                sink.emit_server_state(server, &McpServerState::Error { message });
-                let state = guard.state.clone();
-                drop(guard);
-                return Err(match state {
-                    McpServerState::Error { message } => message,
-                    _ => "MCP connect failed".to_string(),
-                });
+                sink.emit_server_state(server, &McpServerState::Error { message: message.clone() });
+                Err(message)
             }
         }
-        drop(guard);
-        Ok(session)
     }
 
     /// 建立 transport 并完成握手，把元数据写入会话（不改 state）。
@@ -387,18 +416,25 @@ impl AppState {
                 match value {
                     Ok(value) => Ok(client::parse_tool_result(value)),
                     Err(err) => {
-                        // 写期间或读期间发现连接死了 → 重连一次重试单请求。
-                        guard.transport = McpTransport::None;
-                        self.mcp_connect_into(server, &mut guard).await?;
-                        guard.state = McpServerState::Connected;
-                        guard.handshake_count = guard.handshake_count.saturating_add(1);
-                        sink.emit_server_state(server, &McpServerState::Connected);
-                        match &mut guard.transport {
-                            McpTransport::Stdio(conn) => {
-                                let value = conn.request("tools/call", params).await?;
-                                Ok(client::parse_tool_result(value))
+                        // 只有连接真死了才丢弃 transport 重连一次重试。慢但健康的工具
+                        // （超时）必须把错误透传给调用方，绝不能杀子进程 + 重发同一个
+                        // tools/call —— 否则非幂等工具（写文件/付款/发消息）会被静默重复执行。
+                        let connection_dead = conn.is_dead() || is_connection_closed_error(&err);
+                        if !connection_dead {
+                            Err(err)
+                        } else {
+                            guard.transport = McpTransport::None;
+                            self.mcp_connect_into(server, &mut guard).await?;
+                            guard.state = McpServerState::Connected;
+                            guard.handshake_count = guard.handshake_count.saturating_add(1);
+                            sink.emit_server_state(server, &McpServerState::Connected);
+                            match &mut guard.transport {
+                                McpTransport::Stdio(conn) => {
+                                    let value = conn.request("tools/call", params).await?;
+                                    Ok(client::parse_tool_result(value))
+                                }
+                                _ => Err(err),
                             }
-                            _ => Err(err),
                         }
                     }
                 }
@@ -561,6 +597,12 @@ pub fn config_fingerprint(server: &ChatMcpServer) -> String {
 fn is_session_expired(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
     err.contains("404") || lower.contains("session not found") || lower.contains("session-not-found")
+}
+
+/// stdio request 错误是否表示连接已关闭（reader task 结束、子进程关 stdout）。
+/// 用于区分「连接死了应重连」与「慢但健康的工具读/写超时应透传」。
+fn is_connection_closed_error(err: &str) -> bool {
+    err.contains("MCP server closed stdout")
 }
 
 fn parse_tools(value: &Value) -> Result<Vec<McpTool>, String> {
@@ -1029,6 +1071,124 @@ mod tests {
         state.mcp_disconnect_all().await;
     }
 
+    /// fake HTTP MCP server：始终 200，计数收到的 initialize 次数（用于断言会话复用）。
+    /// 返回 (url, initialize_count)。
+    async fn spawn_counting_http_mcp_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let init_count = Arc::new(AtomicU64::new(0));
+        let init_count_server = init_count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let init_count = init_count_server.clone();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 8192];
+                    let mut read = 0_usize;
+                    loop {
+                        let Ok(n) = stream.read(&mut buffer[read..]).await else {
+                            return;
+                        };
+                        if n == 0 {
+                            return;
+                        }
+                        read += n;
+                        let request = String::from_utf8_lossy(&buffer[..read]);
+                        let Some(header_end) = request.find("\r\n\r\n") else {
+                            continue;
+                        };
+                        let content_length = request
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("Content-Length:")
+                                    .or_else(|| line.strip_prefix("content-length:"))
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if read < header_end + 4 + content_length {
+                            continue;
+                        }
+                        let body = &request[header_end + 4..header_end + 4 + content_length];
+                        let message: Value = serde_json::from_str(body).expect("json");
+                        let method = message
+                            .get("method")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or_default();
+                        let id = message.get("id").cloned().unwrap_or(Value::Null);
+
+                        if method == "initialize" {
+                            init_count.fetch_add(1, Ordering::SeqCst);
+                        }
+
+                        let response = match method {
+                            "initialize" => serde_json::json!({
+                                "jsonrpc":"2.0","id":id,
+                                "result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}
+                            }),
+                            "tools/list" => serde_json::json!({
+                                "jsonrpc":"2.0","id":id,
+                                "result":{"tools":[{"name":"echo","description":"Echo","inputSchema":{"type":"object"}}]}
+                            }),
+                            "tools/call" => serde_json::json!({
+                                "jsonrpc":"2.0","id":id,
+                                "result":{"content":[{"type":"text","text":"echo: ok"}]}
+                            }),
+                            _ => serde_json::json!({"jsonrpc":"2.0","id":id,"result":{}}),
+                        };
+                        let payload = if message.get("id").is_some() {
+                            response.to_string()
+                        } else {
+                            String::new()
+                        };
+                        let raw = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMcp-Session-Id: sess-1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            payload.len(),
+                            payload,
+                        );
+                        let _ = stream.write_all(raw.as_bytes()).await;
+                        let _ = stream.shutdown().await;
+                        return;
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}/mcp"), init_count)
+    }
+
+    #[tokio::test]
+    async fn http_two_successful_calls_reuse_one_initialize() {
+        // FIX 7: 两次成功 (200) HTTP 调用复用同一 session_id，全程只 initialize 一次。
+        use std::sync::atomic::Ordering;
+        let (url, init_count) = spawn_counting_http_mcp_server().await;
+        let state = test_app_state();
+        let server = http_server(url);
+
+        let first = state
+            .mcp_call_tool(&(), &server, "echo", serde_json::json!({}))
+            .await
+            .expect("first call ok");
+        assert_eq!(first.content, "echo: ok");
+        let second = state
+            .mcp_call_tool(&(), &server, "echo", serde_json::json!({}))
+            .await
+            .expect("second call ok");
+        assert_eq!(second.content, "echo: ok");
+
+        assert_eq!(
+            init_count.load(Ordering::SeqCst),
+            1,
+            "two successful HTTP calls must share a single initialize"
+        );
+        state.mcp_disconnect_all().await;
+    }
+
     #[cfg(unix)]
     mod stdio {
         use super::*;
@@ -1038,10 +1198,14 @@ mod tests {
         /// 协议：逐行读 JSON-RPC；initialize/tools/list/tools/call 各自回包；
         /// 无 id 的通知忽略。若设置 `KIVIO_DIE_AFTER_CALL=N`，在第 N 次 tools/call 回包后退出，
         /// 用于模拟子进程死亡 → 透明重连。
+        /// `KIVIO_DELAY_CALL_MS=N`：响应 tools/call 前先 sleep N 毫秒（模拟慢但健康的工具）。
+        /// `KIVIO_CALL_MARKER=path`：每次执行 tools/call 时往该文件追加一行（统计实际执行次数）。
         fn write_fake_server() -> std::path::PathBuf {
             let script = r#"#!/usr/bin/env python3
-import sys, json, os
+import sys, json, os, time
 die_after = int(os.environ.get("KIVIO_DIE_AFTER_CALL", "0"))
+delay_ms = int(os.environ.get("KIVIO_DELAY_CALL_MS", "0"))
+marker = os.environ.get("KIVIO_CALL_MARKER", "")
 calls = 0
 while True:
     line = sys.stdin.readline()
@@ -1065,11 +1229,16 @@ while True:
         resp = {"jsonrpc":"2.0","id":mid,"result":{"tools":[{"name":"echo","description":"Echo","inputSchema":{"type":"object","properties":{"text":{"type":"string"}}}}]}}
     elif method == "tools/call":
         calls += 1
+        if marker:
+            with open(marker, "a") as f:
+                f.write("call\n")
         text = ""
         try:
             text = msg["params"]["arguments"].get("text","")
         except Exception:
             text = ""
+        if delay_ms:
+            time.sleep(delay_ms / 1000.0)
         resp = {"jsonrpc":"2.0","id":mid,"result":{"content":[{"type":"text","text":"echo: "+str(text)}]}}
         sys.stdout.write(json.dumps(resp)+"\n")
         sys.stdout.flush()
@@ -1114,6 +1283,110 @@ while True:
                 guard.handshake_count
             };
             assert_eq!(handshake_count, 1, "10 calls must share 1 handshake");
+            state.mcp_disconnect_all().await;
+            let _ = std::fs::remove_file(&script);
+        }
+
+        #[tokio::test]
+        async fn timeout_on_healthy_child_does_not_kill_or_reexecute() {
+            // FIX 1: 一个慢但健康的工具超过 tool_timeout_ms ⇒ request 返回 "read timed out"。
+            // 必须把错误透传，绝不杀健康子进程、不重连、不重发同一个 tools/call
+            // （否则非幂等工具会被静默重复执行）。
+            let script = write_fake_server();
+            let state = test_app_state();
+            // 注入最小工具超时（1s，受 .max(1000) 约束）；server 延迟 2.5s 远超之。
+            state.settings_write().chat_tools.tool_timeout_ms = 1_000;
+
+            let mut marker = std::env::temp_dir();
+            marker.push(format!("kivio-fake-mcp-marker-{}.txt", uuid::Uuid::new_v4()));
+
+            let mut server = python_server(&script);
+            server
+                .env
+                .insert("KIVIO_DELAY_CALL_MS".to_string(), "2500".to_string());
+            server.env.insert(
+                "KIVIO_CALL_MARKER".to_string(),
+                marker.to_string_lossy().into_owned(),
+            );
+
+            let err = state
+                .mcp_call_tool(&(), &server, "echo", serde_json::json!({ "text": "slow" }))
+                .await
+                .expect_err("slow healthy tool should surface a timeout error");
+            assert!(
+                err.contains("timed out"),
+                "expected a timeout error, got: {err}"
+            );
+
+            // 握手仍为 1（未重连），子进程仍存活。
+            let (handshake_count, pid) = {
+                let pool = state.mcp_sessions.lock().await;
+                let session = pool.get(&server.id).expect("session present").clone();
+                drop(pool);
+                let mut guard = session.lock().await;
+                let alive = match &mut guard.transport {
+                    McpTransport::Stdio(conn) => !conn.is_dead() && conn.child.id().is_some(),
+                    _ => false,
+                };
+                assert!(alive, "healthy child must not be killed by a timeout");
+                let pid = match &guard.transport {
+                    McpTransport::Stdio(conn) => conn.child.id(),
+                    _ => None,
+                };
+                (guard.handshake_count, pid)
+            };
+            assert_eq!(
+                handshake_count, 1,
+                "timeout must not trigger a reconnect/re-handshake"
+            );
+            assert!(pid.is_some(), "child pid should still be present");
+
+            // 给延迟的 tools/call 充足时间真正执行完一次（验证只执行一次，没被重发）。
+            tokio::time::sleep(Duration::from_millis(3_000)).await;
+            let marker_lines = std::fs::read_to_string(&marker).unwrap_or_default();
+            let executed = marker_lines.lines().filter(|l| *l == "call").count();
+            assert_eq!(
+                executed, 1,
+                "the tool body must run exactly once (no silent re-execution)"
+            );
+
+            state.mcp_disconnect_all().await;
+            let _ = std::fs::remove_file(&script);
+            let _ = std::fs::remove_file(&marker);
+        }
+
+        #[tokio::test]
+        async fn concurrent_get_or_connect_share_one_handshake() {
+            // FIX 2: 同一 server_id 的两个并发 get_or_connect（无已连接会话）必须收敛到
+            // 单飞门闩，只做一次握手、只有一个池条目。
+            let script = write_fake_server();
+            let state = std::sync::Arc::new(test_app_state());
+            let server = python_server(&script);
+
+            let s1 = state.clone();
+            let srv1 = server.clone();
+            let s2 = state.clone();
+            let srv2 = server.clone();
+            let h1 = tokio::spawn(async move { s1.mcp_get_or_connect(&(), &srv1).await.map(|_| ()) });
+            let h2 = tokio::spawn(async move { s2.mcp_get_or_connect(&(), &srv2).await.map(|_| ()) });
+            let (r1, r2) = tokio::join!(h1, h2);
+            r1.unwrap().expect("connect one ok");
+            r2.unwrap().expect("connect two ok");
+
+            let (entries, handshake_count) = {
+                let pool = state.mcp_sessions.lock().await;
+                let entries = pool.len();
+                let session = pool.get(&server.id).expect("session present").clone();
+                drop(pool);
+                let guard = session.lock().await;
+                (entries, guard.handshake_count)
+            };
+            assert_eq!(entries, 1, "exactly one pool entry for the server");
+            assert_eq!(
+                handshake_count, 1,
+                "two concurrent connects must share a single handshake"
+            );
+
             state.mcp_disconnect_all().await;
             let _ = std::fs::remove_file(&script);
         }
@@ -1223,6 +1496,21 @@ while True:
                 .await
                 .expect("reconnect after reap ok");
             assert_eq!(again.content, "echo: y");
+
+            // 回收后的重连必须是一次全新握手。回收会把旧会话整个移出连接池
+            // （上面已断言 !contains_key），下次调用新建一个全新会话并握手一次 ⇒
+            // 新会话 handshake_count == 1。这证明重连走了全新握手而非复用旧连接。
+            let handshake_count = {
+                let pool = state.mcp_sessions.lock().await;
+                let session = pool.get(&server.id).expect("session present").clone();
+                drop(pool);
+                let guard = session.lock().await;
+                guard.handshake_count
+            };
+            assert_eq!(
+                handshake_count, 1,
+                "reconnect after reap must build a fresh session with exactly one handshake"
+            );
 
             state.mcp_disconnect_all().await;
             let _ = std::fs::remove_file(&script);
