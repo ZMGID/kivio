@@ -11,11 +11,14 @@ use crate::lens_commands::{
 };
 use crate::settings::Settings;
 use crate::state::AppState;
-#[cfg(target_os = "macos")]
-use crate::windows::apply_macos_traffic_light_position;
 use crate::windows::{
     apply_chat_window_chrome, apply_frameless_window_chrome, ensure_chat_window,
     ensure_chat_window_with_hash, ensure_main_window, normalize_chat_window_behavior,
+};
+#[cfg(target_os = "macos")]
+use crate::windows::{
+    apply_macos_auxiliary_window_activation, apply_macos_traffic_light_position,
+    apply_macos_workspace_behavior,
 };
 
 /// 模拟一次 Cmd+C(macOS)/Ctrl+C(Windows)。
@@ -612,6 +615,8 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
     }
 
     let _ = window.set_always_on_top(true);
+    #[cfg(target_os = "macos")]
+    apply_macos_workspace_behavior(&window);
 
     // 重置 hash 为翻译模式；main 现在只承载输入翻译。
     let _ = window.eval(
@@ -634,7 +639,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
                 eprintln!("Failed to get mouse position");
             }
             let _ = window_for_task.show();
-            let _ = window_for_task.set_focus();
+            apply_macos_auxiliary_window_activation(&window_for_task);
         });
         return;
     }
@@ -953,10 +958,15 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                 Ok(window) => {
                     apply_frameless_window_chrome(&window);
                     let _ = window.set_always_on_top(true);
+                    #[cfg(target_os = "macos")]
+                    apply_macos_workspace_behavior(&window);
                     let _ = window.eval(
                         "window.location.hash = '#translator'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
                     );
                     let _ = window.show();
+                    #[cfg(target_os = "macos")]
+                    apply_macos_auxiliary_window_activation(&window);
+                    #[cfg(not(target_os = "macos"))]
                     let _ = window.set_focus();
                 }
                 Err(err) => eprintln!("Failed to ensure main window: {}", err),

@@ -209,7 +209,7 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) -> Option<L
 
 #[cfg(target_os = "macos")]
 fn lens_position_fullscreen_macos(window: &WebviewWindow) -> Result<LensFrame, String> {
-    if macos_is_main_thread() {
+    if windows::macos_is_main_thread() {
         return unsafe { run_lens_position_fullscreen_macos(window) };
     }
 
@@ -223,16 +223,6 @@ fn lens_position_fullscreen_macos(window: &WebviewWindow) -> Result<LensFrame, S
         .map_err(|e| e.to_string())?;
     rx.recv_timeout(std::time::Duration::from_millis(250))
         .map_err(|e| e.to_string())?
-}
-
-#[cfg(target_os = "macos")]
-fn macos_is_main_thread() -> bool {
-    use objc::{class, msg_send, sel, sel_impl};
-
-    unsafe {
-        let is_main: bool = msg_send![class!(NSThread), isMainThread];
-        is_main
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -482,8 +472,17 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         let frame = lens_position_fullscreen(app, &window);
         freeze_frame_image_id = prepare_windows_freeze_frame(app, frame);
     }
-    let _ = window.show();
-    let _ = window.set_focus();
+    #[cfg(target_os = "macos")]
+    {
+        windows::apply_macos_workspace_behavior(&window);
+        let _ = window.show();
+        windows::apply_macos_auxiliary_window_activation(&window);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
     if safe_mode == "translate" || safe_mode == "translateText" {
         register_lens_escape_shortcut(app);
     } else {

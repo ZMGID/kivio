@@ -46,6 +46,59 @@ Route Chat activations through `open_chat_window` / `open_chat_settings_window`,
 
 Lens and translator windows are intentionally different: they may be frameless, transparent, always-on-top, or skipped from the taskbar. Do not copy their restore behavior into Chat.
 
+## macOS Auxiliary Floating Window Contract
+
+Lens and translator floating windows must work while another app, such as
+Chrome, is in macOS native fullscreen. Native fullscreen apps live in their own
+Space, so `visible_on_all_workspaces(true)` / `CanJoinAllSpaces` is not enough:
+it covers ordinary Spaces but does not reliably place an auxiliary Kivio window
+into another app's fullscreen Space.
+
+For macOS-only Lens/translator floating windows, use
+`apply_macos_workspace_behavior` before showing the window, then use
+`apply_macos_auxiliary_window_activation` after `show()`. The behavior helper
+must apply native `NSWindow.collectionBehavior` bits synchronously enough for the
+subsequent show path, and the activation helper must order the NSWindow from the
+main thread so hidden windows join the currently active fullscreen Space.
+
+- `MoveToActiveSpace`
+- `FullScreenAuxiliary`
+- `Transient`
+- `IgnoresCycle`
+
+Do not leave `CanJoinAllSpaces` or `Stationary` on these auxiliary popups when
+showing them from a global shortcut. They can keep a hidden window associated
+with its previous Space instead of moving it into the fullscreen Space the user
+is currently in.
+
+Keep this behavior out of Chat. Chat is a normal desktop window and must continue
+through `normalize_chat_window_behavior`, which clears all-workspaces behavior
+and preserves normal Dock/Cmd+Tab/window-management identity.
+
+### Wrong
+
+```rust
+let _ = window.set_always_on_top(true);
+let _ = window.show();
+let _ = window.set_focus();
+```
+
+This may work on a normal desktop Space but fail silently over a fullscreen
+Chrome Space.
+
+### Correct
+
+```rust
+let _ = window.set_always_on_top(true);
+#[cfg(target_os = "macos")]
+apply_macos_workspace_behavior(&window);
+let _ = window.show();
+#[cfg(target_os = "macos")]
+apply_macos_auxiliary_window_activation(&window);
+#[cfg(not(target_os = "macos"))]
+let _ = window.set_focus();
+```
+
 ## Lens Window Selection Contract
 
 Lens window selection must treat Chat as a selectable app window. On macOS,

@@ -311,15 +311,127 @@ pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 }
 
 /**
- * macOS 平台特有：设置窗口在所有工作区可见
- * 确保截图窗口可以跨越桌面空间显示
+ * macOS 平台特有：设置辅助浮窗可移动到当前 Space，并进入原生全屏 Space。
+ *
+ * Tauri/Tao 的 `visible_on_all_workspaces(true)` 只会追加 CanJoinAllSpaces；
+ * Chrome 这类 App 进入 macOS 原生全屏后会占用独立 Space，Lens / 快速翻译
+ * 还需要 MoveToActiveSpace + FullScreenAuxiliary 才能跟随当前 Space 显示。
  */
 #[cfg(target_os = "macos")]
 pub fn apply_macos_workspace_behavior(window: &WebviewWindow) {
+    if macos_is_main_thread() {
+        apply_macos_workspace_behavior_on_main(window);
+        return;
+    }
+
     let window_for_task = window.clone();
-    let _ = window.run_on_main_thread(move || {
-        let _ = window_for_task.set_visible_on_all_workspaces(true);
-    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    if window
+        .run_on_main_thread(move || {
+            apply_macos_workspace_behavior_on_main(&window_for_task);
+            let _ = tx.send(());
+        })
+        .is_ok()
+    {
+        let _ = rx.recv_timeout(std::time::Duration::from_millis(250));
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn apply_macos_auxiliary_window_activation(window: &WebviewWindow) {
+    if macos_is_main_thread() {
+        apply_macos_auxiliary_window_activation_on_main(window);
+        return;
+    }
+
+    let window_for_task = window.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    if window
+        .run_on_main_thread(move || {
+            apply_macos_auxiliary_window_activation_on_main(&window_for_task);
+            let _ = tx.send(());
+        })
+        .is_ok()
+    {
+        let _ = rx.recv_timeout(std::time::Duration::from_millis(250));
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_is_main_thread() -> bool {
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let is_main: bool = msg_send![class!(NSThread), isMainThread];
+        is_main
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_macos_auxiliary_window_activation_on_main(window: &WebviewWindow) {
+    let Ok(ptr) = window.ns_window() else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+
+    unsafe {
+        let window = ptr as *mut objc::runtime::Object;
+        apply_macos_auxiliary_window_behavior(window);
+        activate_macos_auxiliary_window(window);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_macos_workspace_behavior_on_main(window: &WebviewWindow) {
+    let Ok(ptr) = window.ns_window() else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+
+    unsafe {
+        apply_macos_auxiliary_window_behavior(ptr as *mut objc::runtime::Object);
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn apply_macos_auxiliary_window_behavior(window: *mut objc::runtime::Object) {
+    use objc::{msg_send, sel, sel_impl};
+
+    const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
+    const MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
+    const TRANSIENT: usize = 1 << 3;
+    const STATIONARY: usize = 1 << 4;
+    const IGNORES_CYCLE: usize = 1 << 6;
+    const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
+
+    let behavior: usize = msg_send![window, collectionBehavior];
+    let behavior = (behavior & !CAN_JOIN_ALL_SPACES & !STATIONARY)
+        | MOVE_TO_ACTIVE_SPACE
+        | TRANSIENT
+        | IGNORES_CYCLE
+        | FULL_SCREEN_AUXILIARY;
+    let _: () = msg_send![window, setCollectionBehavior: behavior];
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn activate_macos_auxiliary_window(window: *mut objc::runtime::Object) {
+    use objc::runtime::YES;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    const NS_STATUS_WINDOW_LEVEL: isize = 25;
+    let nil: *mut objc::runtime::Object = std::ptr::null_mut();
+
+    let _: () = msg_send![window, setLevel: NS_STATUS_WINDOW_LEVEL];
+    let _: () = msg_send![window, orderFrontRegardless];
+    let _: () = msg_send![window, makeKeyAndOrderFront: nil];
+
+    let ns_app: *mut objc::runtime::Object = msg_send![class!(NSApplication), sharedApplication];
+    let _: () = msg_send![ns_app, activateIgnoringOtherApps: YES];
+    let _: () = msg_send![window, orderFrontRegardless];
 }
 
 #[allow(dead_code)]
