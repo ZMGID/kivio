@@ -2832,8 +2832,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   <SettingRow
                     label={lang === 'zh' ? '启用记忆' : 'Enable memory'}
                     description={lang === 'zh'
-                      ? '开启后每次 Chat 请求自动注入 L1，并暴露 memory_read / memory_modify。'
-                      : 'When enabled, every Chat request injects L1 and exposes memory_read / memory_modify.'}
+                      ? '开启后每次 Chat 请求自动注入 L1，并暴露 memory_read / memory_search / memory_modify。'
+                      : 'When enabled, every Chat request injects L1 and exposes memory_read / memory_search / memory_modify.'}
                   >
                     <Toggle
                       checked={chatMemory.enabled}

@@ -34,9 +34,10 @@ use super::registry::NativeToolContext;
 use super::types::{
     native_copy_path_tool, native_create_dir_tool, native_delete_path_tool, native_edit_file_tool,
     native_glob_files_tool, native_list_dir_tool, native_memory_modify_tool,
-    native_memory_read_tool, native_move_path_tool, native_read_file_tool, native_run_command_tool,
-    native_run_python_tool, native_search_files_tool, native_stat_path_tool, native_web_fetch_tool,
-    native_web_search_tool, native_write_file_tool, ChatToolDefinition, McpToolCallResult,
+    native_memory_read_tool, native_memory_search_tool, native_move_path_tool, native_read_file_tool,
+    native_run_command_tool, native_run_python_tool, native_search_files_tool, native_stat_path_tool,
+    native_web_fetch_tool, native_web_search_tool, native_write_file_tool, ChatToolDefinition,
+    McpToolCallResult,
 };
 
 /// Gate signature mirrors `list_native_builtin_tool_defs(native,
@@ -262,6 +263,15 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         read_only: false,
         call: NativeToolCall::Async(call_memory_modify),
     },
+    NativeToolEntry {
+        name: "memory_search",
+        def: native_memory_search_tool,
+        enabled: |_, _, memory_enabled| memory_enabled,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        call: NativeToolCall::Async(call_memory_search),
+    },
     // Conversation-level tools below are appended in chat/commands.rs and
     // never exposed via list_native_builtin_tool_defs (enabled = false).
     NativeToolEntry {
@@ -414,6 +424,15 @@ fn call_memory_modify(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
+fn call_memory_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
+    Box::pin(async move {
+        if !ctx.settings.chat_memory.enabled {
+            return Err("Chat memory is disabled in Settings".to_string());
+        }
+        crate::chat::memory::tool_search(ctx.app, ctx.arguments)
+    })
+}
+
 fn call_run_command(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         let content = crate::native_tools::run_command(
@@ -462,6 +481,7 @@ mod tests {
         "run_python",
         "memory_read",
         "memory_modify",
+        "memory_search",
         "todo_write",
         "todo_update",
         "ask_user",
@@ -523,6 +543,7 @@ mod tests {
             [
                 "memory_read",
                 "memory_modify",
+                "memory_search",
                 "todo_write",
                 "todo_update",
                 "ask_user",
@@ -551,10 +572,11 @@ mod tests {
                 "glob_files",
                 "stat_path",
                 "memory_read",
+                "memory_search",
                 "check_agent_result",
                 "list_agent_tasks",
             ],
-            "memory_read is read-only but deliberately not parallel-safe"
+            "memory_read/memory_search are read-only but deliberately not parallel-safe"
         );
     }
 
@@ -655,7 +677,10 @@ mod tests {
         );
 
         // memory gate is independent of native toggles.
-        assert_eq!(names(&off, false, true), ["memory_read", "memory_modify"]);
+        assert_eq!(
+            names(&off, false, true),
+            ["memory_read", "memory_modify", "memory_search"]
+        );
 
         // Everything on: full ordered surface.
         let all = ChatNativeToolsConfig {
@@ -689,6 +714,7 @@ mod tests {
                 "run_python",
                 "memory_read",
                 "memory_modify",
+                "memory_search",
             ]
         );
     }

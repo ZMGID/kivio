@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/native-tool-registry.md", "reason": "校验 memory_search 的注册/暴露/测试是否符合单一注册表来源契约（无漂移的硬编码列表）。"}
+{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "校验 memory_search 的 read_only/parallel/approval 元数据与 memory 工具家族一致、无回归。"}

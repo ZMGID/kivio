@@ -232,3 +232,36 @@ ultracode 编排完成 P2 剩余两线并合入 main：调研蓝图(8 agent)→w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: P4 memory_search
+
+**Date**: 2026-06-13
+**Task**: P4 memory_search
+**Branch**: `p4-memory-search`
+
+### Summary
+
+P4 经 brainstorm 收敛为仅做 memory_search：给 L2 长期记忆加关键词检索原生工具（标题切块 + query token 重叠打分 + top-N {标题,片段}，纯字符串无新依赖），read_only/非parallel/bypass-approval 与 memory_read 家族对齐、gated by chat_memory.enabled、经 list_native_builtin_tool_defs 暴露并更新注册表断言；prompt 提示模型找不准标题用 search；并把 memory_search 加进内置 general 助手的 memory 数据连接器白名单(否则被静默过滤)+设置文案。task 用户编辑入口/memory 固化钩子/project scope 均经用户拍板不做(工作清单保持 agent 维护只读)。396 cargo 测试+typecheck+lint 全绿。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5a9f6172` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

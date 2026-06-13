@@ -440,7 +440,7 @@ Tool-owned conversation state must be merged back before the final conversation 
 - Current plan state must be injected into the system/runtime prompt before `build_chat_api_messages`, and `compute_context_state` must include the same `agent_plan` segment for token estimates.
 - In Act mode, approved or draft plan text remains contextual; if the user asks to execute/continue, the model should use it unless the latest user message changes requirements.
 - Plan mode must filter side-effecting tools before model invocation. Allowed tools are:
-  - native read-only tools: `web_search`, `web_fetch`, `read_file`, `memory_read`
+  - native read-only tools: `web_search`, `web_fetch`, `read_file`, `memory_read`, `memory_search`
   - MCP tools with explicit `readOnlyHint == true` and no destructive/open-world hints
   - skill discovery/read tools: `skill_activate`, `skill_read_file`
   - agent todo tools: `todo_write`, `todo_update`

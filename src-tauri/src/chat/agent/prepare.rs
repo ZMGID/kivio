@@ -856,7 +856,7 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
             "内置工具（已启用）：{list}。只能调用此列表中的内置工具。\n\
 - 项目对话中文件/命令工具的相对路径以项目根目录为根；写入明确的绝对路径或 ~/ 路径（如 ~/Desktop/x.html）会落到项目外的全局位置。非项目对话用绝对路径或 ~/ 路径。\n\
 - 用户明确要求保存/修改/删除本地文件或给出目标路径时才动文件：小改用 edit_file，新建或整文件覆盖用 write_file。只要求“生成代码块”时直接在回答里输出，不调用 write_file。写入成功后简短说明路径即可，不要复述文件内容。\n\
-- 写入/删除/移动类工具和 run_command 可能需要用户确认；memory_read（按需读 L2，L1 已注入）和 memory_modify 无需确认。\n\
+- 写入/删除/移动类工具和 run_command 可能需要用户确认；memory_read（按需读 L2，L1 已注入）、memory_search（按关键词检索 L2，找不准标题时优先用它）和 memory_modify 无需确认。\n\
 - run_command 在宿主 shell 从项目根目录执行，非零退出码即失败；含空格的路径必须用 `cwd` 参数，禁止 `cd 路径 && 命令`；不要同时传 `cwd` 又在 command 里写 `cd ... &&`。`npm run dev` / `tauri dev` / `vite` 等长驻 dev 命令会自动后台启动并立刻返回 pid，不要重复启动。破坏性、联网、改环境的命令先说明并等确认。Skill 脚本走 skill_run_script；不要用 pip 装宿主包绕过沙盒。\n\
 - run_python 在 Pyodide 沙盒运行，用于数据运算、分析、文档处理、图表和聊天产物文件生成；不要用它生成或打印代码答案，代码直接写在回答里。无宿主文件系统访问；files 挂载本地文件后用 KIVIO_INPUT_FILES[n] 路径，numpy、pandas、matplotlib、pillow、openpyxl、pypdf 可直接 import。产物保存为相对路径文件名（如 report.md、summary.csv、data.json、page.html、report.xlsx、chart.png），应用会自动捕获并显示文件卡片；不要 print base64。\n\
 - {zh_live_access_hint}"
@@ -876,7 +876,7 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
             "Built-in tools enabled: {list}. Only call tools in this list.\n\
 - In project conversations, relative paths in file/command tools resolve from the project root; writing an explicit absolute or ~/ path (e.g. ~/Desktop/x.html) targets that global location outside the project. Non-project conversations use absolute or ~/ paths.\n\
 - Touch files only when the user explicitly asks to save/modify/delete local files or gives a target path: edit_file for small edits, write_file for new files or whole-file overwrites. If asked for a code block without saving, answer inline. After a write, state the path briefly; do not repeat the file content.\n\
-- Write/delete/move tools and run_command may need user approval; memory_read (L2 on demand; L1 is auto-injected) and memory_modify do not.\n\
+- Write/delete/move tools and run_command may need user approval; memory_read (L2 on demand; L1 is auto-injected), memory_search (keyword search over L2; prefer it when you are unsure of the exact heading), and memory_modify do not.\n\
 - run_command runs on the host shell from the project root; non-zero exit means failure. Paths with spaces must use the `cwd` parameter—never `cd path && command`; do not combine `cwd` with a leading `cd ... &&` prefix. Long-running dev commands such as `npm run dev`, `tauri dev`, and `vite` start in the background automatically and return a pid immediately; do not start the same dev server twice. Explain and get confirmation before destructive, network, or environment-changing commands. Skill scripts go through skill_run_script; never use host pip to bypass the run_python sandbox.\n\
 - run_python runs in a Pyodide sandbox for data computation, analysis, document processing, charts, and chat deliverable file generation; never use it to generate or print code answers — write code directly in the answer. No host filesystem access; mount files via the files parameter and use KIVIO_INPUT_FILES[n] paths. numpy, pandas, matplotlib, pillow, openpyxl, pypdf import directly. Save artifacts to relative filenames (report.md, summary.csv, data.json, page.html, report.xlsx, chart.png); Kivio auto-captures them and shows file cards. No base64 printing.\n\
 - {en_live_access_hint}"

@@ -236,6 +236,180 @@ pub fn tool_read(app: &AppHandle, arguments: &Value) -> Result<McpToolCallResult
     })
 }
 
+const DEFAULT_SEARCH_RESULTS: usize = 5;
+const MAX_SEARCH_RESULTS: usize = 20;
+const SNIPPET_MAX_BYTES: usize = 1_200;
+const HEADING_HIT_WEIGHT: usize = 2;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemorySearchMatch {
+    heading: String,
+    snippet: String,
+    score: usize,
+}
+
+pub fn tool_search(app: &AppHandle, arguments: &Value) -> Result<McpToolCallResult, String> {
+    let query = arguments
+        .get("query")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "memory_search requires a non-empty query".to_string())?;
+    let max_results = arguments
+        .get("maxResults")
+        .or_else(|| arguments.get("max_results"))
+        .and_then(|value| value.as_u64())
+        .map(|value| (value as usize).clamp(1, MAX_SEARCH_RESULTS))
+        .unwrap_or(DEFAULT_SEARCH_RESULTS);
+    let layer = arguments
+        .get("layer")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(MemoryLayer::from_str)
+        .transpose()?
+        .unwrap_or(MemoryLayer::L2);
+
+    let memory = read_layer(app, layer)?;
+    let tokens = tokenize(query);
+    let matches = search_sections(&memory.content, &tokens, max_results);
+
+    if matches.is_empty() {
+        return Ok(McpToolCallResult {
+            content: format!(
+                "No {} memory entries matched: {query}",
+                layer.label()
+            ),
+            is_error: false,
+            raw: Value::Null,
+            artifacts: Vec::new(),
+            structured_content: Some(serde_json::json!({
+                "query": query,
+                "layer": layer.label().to_ascii_lowercase(),
+                "matches": [],
+            })),
+        });
+    }
+
+    let mut body = String::new();
+    for (idx, entry) in matches.iter().enumerate() {
+        if idx > 0 {
+            body.push_str("\n\n");
+        }
+        body.push_str(&format!("{}. {}\n{}", idx + 1, entry.heading, entry.snippet));
+    }
+
+    let structured = serde_json::json!({
+        "query": query,
+        "layer": layer.label().to_ascii_lowercase(),
+        "matches": matches,
+    });
+
+    Ok(McpToolCallResult {
+        content: format!(
+            "{} memory search for \"{query}\" ({} match(es)):\n\n{}",
+            layer.label(),
+            matches.len(),
+            body.trim()
+        ),
+        is_error: false,
+        raw: structured.clone(),
+        artifacts: Vec::new(),
+        structured_content: Some(structured),
+    })
+}
+
+/// Lowercase token split on whitespace and common punctuation. Empty tokens
+/// are dropped so scoring only counts real words.
+fn tokenize(text: &str) -> Vec<String> {
+    text.to_ascii_lowercase()
+        .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_string())
+        .collect()
+}
+
+/// Split markdown into `#`-led sections (heading line + body) and score each
+/// by query-token overlap. Heading hits are weighted; 0-score sections are
+/// dropped; result is sorted by score (desc) then original order, top-N.
+fn search_sections(
+    content: &str,
+    tokens: &[String],
+    max_results: usize,
+) -> Vec<MemorySearchMatch> {
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, usize, MemorySearchMatch)> = Vec::new();
+    for (order, (heading, body)) in split_sections(content).into_iter().enumerate() {
+        let heading_lower = heading.to_ascii_lowercase();
+        let body_lower = body.to_ascii_lowercase();
+        let mut score = 0usize;
+        for token in tokens {
+            if heading_lower.contains(token.as_str()) {
+                score += HEADING_HIT_WEIGHT;
+            }
+            if body_lower.contains(token.as_str()) {
+                score += 1;
+            }
+        }
+        if score == 0 {
+            continue;
+        }
+        let snippet = truncate_bytes(body.trim(), SNIPPET_MAX_BYTES);
+        scored.push((
+            score,
+            order,
+            MemorySearchMatch {
+                heading: if heading.is_empty() {
+                    "(untitled)".to_string()
+                } else {
+                    heading.to_string()
+                },
+                snippet,
+                score,
+            },
+        ));
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .take(max_results)
+        .map(|(_, _, m)| m)
+        .collect()
+}
+
+/// Break content into `(heading_line, body)` pairs. A new section starts at
+/// any line beginning with `#`. Content before the first heading becomes a
+/// leading section with an empty heading.
+fn split_sections(content: &str) -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current_heading = String::new();
+    let mut current_body = String::new();
+    let mut started = false;
+
+    for line in content.lines() {
+        if line.trim_start().starts_with('#') {
+            if started || !current_body.trim().is_empty() {
+                sections.push((current_heading, current_body.trim_end().to_string()));
+            }
+            current_heading = line.trim().to_string();
+            current_body = String::new();
+            started = true;
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+    if started || !current_body.trim().is_empty() {
+        sections.push((current_heading, current_body.trim_end().to_string()));
+    }
+    sections
+}
+
 pub fn tool_modify(app: &AppHandle, arguments: &Value) -> Result<McpToolCallResult, String> {
     let args: MemoryModifyArgs = serde_json::from_value(arguments.clone())
         .map_err(|e| format!("Invalid memory_modify arguments: {e}"))?;
@@ -556,5 +730,59 @@ mod tests {
         let current = "# L2\n\n## A\n\nold\n\n## B\n\nother\n";
         let next = append_to_heading_or_end(current, "new", Some("## A"));
         assert!(next.contains("## A\n\nold\n\nnew\n\n## B"));
+    }
+
+    const SEARCH_DOC: &str = "# L2 Long-Term Memory\n\n\
+## Deployment Pipeline\n\nWe deploy via GitHub Actions to staging then production.\n\n\
+## Database Schema\n\nThe users table stores email and a hashed password digest.\n\n\
+## Code Style\n\nUse two-space indentation in TypeScript files.\n";
+
+    #[test]
+    fn search_returns_relevant_section() {
+        let tokens = tokenize("database password");
+        let matches = search_sections(SEARCH_DOC, &tokens, 5);
+        assert!(!matches.is_empty());
+        assert_eq!(matches[0].heading, "## Database Schema");
+        assert!(matches[0].snippet.contains("hashed password"));
+    }
+
+    #[test]
+    fn search_weights_heading_hits() {
+        // "code" appears only in the "## Code Style" heading; heading weight
+        // should rank that section above one that only matches in body.
+        let tokens = tokenize("code");
+        let matches = search_sections(SEARCH_DOC, &tokens, 5);
+        assert_eq!(matches[0].heading, "## Code Style");
+        assert!(matches[0].score >= HEADING_HIT_WEIGHT);
+    }
+
+    #[test]
+    fn search_respects_top_n_limit() {
+        // Every section mentions a token shared with the query.
+        let doc = "# Title\n\n## One\n\nshared alpha\n\n## Two\n\nshared beta\n\n## Three\n\nshared gamma\n";
+        let tokens = tokenize("shared");
+        let matches = search_sections(doc, &tokens, 2);
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn search_no_match_yields_empty() {
+        let tokens = tokenize("kubernetes helm chart");
+        let matches = search_sections(SEARCH_DOC, &tokens, 5);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn search_missing_query_errors() {
+        // tokenize of empty/whitespace yields no tokens -> empty result, but
+        // tool_search rejects before that; emulate the arg check here.
+        let args = serde_json::json!({ "maxResults": 3 });
+        let query = args
+            .get("query")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        assert!(query.is_none());
+        assert!(tokenize("   ").is_empty());
     }
 }

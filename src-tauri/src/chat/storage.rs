@@ -1126,7 +1126,7 @@ fn default_assistants() -> Vec<ChatAssistant> {
                 quick_command("下一步", "/下一步", "给出可执行计划", "把用户目标拆成具体下一步，优先给出今天就能执行的动作。"),
             ],
             data_connectors: vec![
-                data_connector("memory", "记忆", "memory", "读取和维护用户长期偏好与流程。", vec!["memory_read", "memory_modify"]),
+                data_connector("memory", "记忆", "memory", "读取和维护用户长期偏好与流程。", vec!["memory_read", "memory_search", "memory_modify"]),
             ],
             knowledge_skills: vec![
                 knowledge_skill("日常任务拆解", "把模糊问题拆成目标、约束、方案和行动。", vec!["整理", "计划", "下一步"], None, ""),

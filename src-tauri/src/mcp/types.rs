@@ -59,8 +59,8 @@ impl ChatToolDefinition {
                 && self.open_world_hint() != Some(true);
         }
         // Native read-only metadata lives in the static registry
-        // (mcp/native_registry.rs). Note: this set includes memory_read,
-        // which is read-only but deliberately not parallel-safe.
+        // (mcp/native_registry.rs). Note: this set includes memory_read and
+        // memory_search, which are read-only but deliberately not parallel-safe.
         self.source == "native"
             && super::native_registry::find_entry(&self.name).is_some_and(|entry| entry.read_only)
     }
@@ -678,6 +678,39 @@ pub fn native_memory_modify_tool() -> ChatToolDefinition {
                 }
             },
             "required": ["layer", "operation"]
+        }),
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
+pub fn native_memory_search_tool() -> ChatToolDefinition {
+    ChatToolDefinition {
+        id: "native__memory_search".to_string(),
+        name: "memory_search".to_string(),
+        description: "Search Kivio Chat long-term memory (L2) by keywords and get the most relevant entries back as heading + snippet. Prefer this over memory_read when you are not sure of the exact L2 heading: memory_read needs an exact heading/text match, while memory_search ranks sections by query-token overlap.".to_string(),
+        source: "native".to_string(),
+        server_id: None,
+        server_name: Some("Kivio".to_string()),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords to search for in long-term memory"
+                },
+                "maxResults": {
+                    "type": "integer",
+                    "description": "Maximum number of matching entries to return (default 5, max 20)"
+                },
+                "layer": {
+                    "type": "string",
+                    "enum": ["l1", "l2"],
+                    "description": "Memory layer to search; defaults to l2 (L1 is small and already injected)"
+                }
+            },
+            "required": ["query"]
         }),
         sensitive: false,
         annotations: None,
