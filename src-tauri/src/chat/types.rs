@@ -110,6 +110,7 @@ pub struct AgentTodoState {
 pub enum AgentPlanMode {
     Act,
     Plan,
+    Orchestrate,
 }
 
 impl Default for AgentPlanMode {

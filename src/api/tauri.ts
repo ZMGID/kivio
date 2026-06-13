@@ -448,8 +448,6 @@ export type ChatToolsConfig = {
   mcpIdleTimeoutMs?: number
   maxToolOutputChars: number | null
   approvalPolicy: 'readonly_auto_sensitive_confirm' | 'always_confirm' | 'auto' | string
-  /** Multi-agent / sub-agent system (P3). Off by default (opt-in). */
-  subAgents?: boolean
   nativeTools: ChatNativeToolsConfig
 }
 
@@ -813,7 +811,6 @@ function normalizeChatTools(config?: Partial<ChatToolsConfig> | null): ChatTools
     mcpIdleTimeoutMs: current.mcpIdleTimeoutMs ?? 600_000,
     maxToolOutputChars: null,
     approvalPolicy: current.approvalPolicy || 'readonly_auto_sensitive_confirm',
-    subAgents: current.subAgents ?? false,
     nativeTools: {
       ...defaultNativeTools(),
       ...current.nativeTools,

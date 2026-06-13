@@ -74,3 +74,26 @@ updateSettings({ themeColor: 'warm' })
 // Lets the selected preset control the light surface tint.
 <div className="chat-themed-surface flex-1" />
 ```
+
+## Scenario: Sub-Agent Exposure Is Mode-Controlled (No Settings Toggle)
+
+### 1. Scope / Trigger
+
+- Trigger: anything touching the removed `chatTools.subAgents` setting, the deleted "Multi-agent (sub-agents)" Settings toggle, or how sub-agent spawn tools become available.
+
+### 2. Signatures
+
+- Removed Rust field: `ChatToolsConfig.sub_agents` (and its `Default`). `serde` ignores the leftover key in old `settings.json`, so no migration is needed.
+- Removed frontend field: `ChatToolsConfig.subAgents` in `src/api/tauri.ts`, plus its `defaultChatTools` entry and the `SettingsShell.tsx` toggle + default.
+- Mode type: `AgentPlanMode = 'act' | 'plan' | 'orchestrate'` (`src/chat/types.ts`). Mode is changed via `chatApi.setAgentPlanMode(conversationId, mode)` → `chat_set_agent_plan_mode`.
+
+### 3. Contracts
+
+- Sub-agent availability is decided by agent mode, not a settings flag: Act and Orchestrate expose the spawn tools; Plan filters them out. The Settings page no longer has a multi-agent toggle.
+- The InputBar surfaces mode entry via `/plan` + `/orchestrate` slash commands and a Shift+Tab cycle (act → plan → orchestrate → act). Orchestrate gets a distinct composer border accent.
+- Old `settings.json` containing `subAgents` must load without error; the value is simply dropped.
+
+### 4. Tests Required
+
+- Frontend: `npm run typecheck` and `npm run lint` (verify no dangling `subAgents` references and the three-state `AgentPlanMode`).
+- Backend: existing `sanitize_settings` / `ChatToolsConfig::default` tests must compile and pass after the field removal.

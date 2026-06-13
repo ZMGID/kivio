@@ -411,43 +411,51 @@ push_assistant_message(app, state, settings, conversation, ..., result.tool_reco
 
 Tool-owned conversation state must be merged back before the final conversation save.
 
-## Scenario: Agent Plan Mode Runtime State
+## Scenario: Agent Plan / Orchestrate Mode Runtime State
 
 ### 1. Scope / Trigger
 
-- Trigger: changes that add or modify Plan/Act behavior, especially `agent_plan_state`, plan prompt injection, plan approval commands, Plan-mode tool filtering, or `chat-plan` events.
-- Plan mode is an agent runtime permission mode, not a user task manager. It lets the assistant investigate and draft an implementation plan before side-effecting actions are allowed.
+- Trigger: changes that add or modify Act / Plan / Orchestrate behavior, especially `agent_plan_state`, plan/orchestrate prompt injection, plan approval commands, Plan-mode tool filtering, sub-agent tool exposure gating, or `chat-plan` events.
+- This is a single three-state agent runtime mode (named `AgentPlanMode` for back-compat; do NOT rename to `AgentMode`). The three modes:
+  - **Act** (default): normal execution; all enabled tools available, including passive sub-agent spawn tools.
+  - **Plan**: investigate + draft an implementation plan before side-effecting actions are allowed; side-effecting tools (including sub-agent spawn) are filtered out.
+  - **Orchestrate**: proactively delegate decomposable/parallel work to sub-agents (plan with `todo_write`, delegate via `owner` + `agent`, aggregate); raised autonomy budget.
 - The persisted plan is read-only from the user's perspective. Do not add user-editable plan fields without a product decision.
 
 ### 2. Signatures
 
 - Persistent model: `Conversation.agent_plan_state: AgentPlanState` with `#[serde(default)]` for old conversation JSON.
 - State shape: `AgentPlanState { mode: AgentPlanMode, status: AgentPlanStatus, plan: Option<String>, updated_at: i64 }`.
-- Mode enum: `act | plan`.
+- Mode enum: `act | plan | orchestrate` (serde `snake_case`; default `act`). Frontend TS `AgentPlanMode = 'act' | 'plan' | 'orchestrate'`.
+- Helpers in `chat/plan.rs`: `mode_from_str` accepts `"act"|"plan"|"orchestrate"`; `is_plan_mode`; `is_orchestrate_mode`; `with_mode`; `format_prompt` (mode-aware).
+- Budget constant: `settings::ORCHESTRATE_MIN_TOOL_ROUNDS = 40`.
 - Status enum: `empty | draft | approved`.
 - Tauri commands:
   - `chat_set_agent_plan_mode(conversation_id: String, mode: String) -> { success, conversation, planState }`
   - `chat_execute_agent_plan(conversation_id: String) -> { success, conversation, planState }`
 - Tauri event: `chat-plan` payload `{ conversationId, planState }`.
-- Prompt segment id: `agent_plan`.
+- Prompt segment id: `agent_plan` (same id carries plan OR orchestrate text depending on mode).
 
 ### 3. Contracts
 
 - New conversations start in `mode = act`, `status = empty`, `plan = None`.
-- `chat_set_agent_plan_mode` only accepts `act` or `plan`; it preserves the saved plan text and status while changing mode.
+- `chat_set_agent_plan_mode` accepts `act`, `plan`, or `orchestrate` (via `mode_from_str`); it preserves the saved plan text and status while changing mode.
 - `chat_execute_agent_plan` switches to `act`; if a non-empty plan exists, status becomes `approved`, otherwise it remains `empty`.
-- In Plan mode, the final assistant reply is captured as a draft plan only when the original turn started in Plan mode and the latest saved state is still Plan mode.
-- Current plan state must be injected into the system/runtime prompt before `build_chat_api_messages`, and `compute_context_state` must include the same `agent_plan` segment for token estimates.
+- In Plan mode, the final assistant reply is captured as a draft plan only when the original turn started in Plan mode and the latest saved state is still Plan mode. Orchestrate mode does NOT capture draft plans (it executes).
+- `format_prompt` emits a mode-specific `agent_plan` segment: Plan = plan-then-stop guidance; Orchestrate = imperative proactive-delegation guidance — the orchestrator's default is to fan out, and it MUST dispatch one sub-agent per part whenever a task splits into 2+ independent/parallelizable/separable parts (research/compare/multi-source/multi-file work named as must-fan-out scenarios), keeping only a genuinely indivisible single-step small task for itself (plan via `todo_write`, delegate by setting todo `owner` + `agent` spawn, mark `completed`, aggregate); Act = saved-plan-as-context.
+- Current plan/orchestrate prompt must be injected into the system/runtime prompt before `build_chat_api_messages`, and `compute_context_state` must include the same `agent_plan` segment for token estimates. Because both paths call `format_prompt`, making `format_prompt` mode-aware keeps the request and the token estimate aligned automatically.
+- **Sub-agent tool exposure is mode-controlled, NOT a settings toggle.** Act and Orchestrate both expose `agent` / `check_agent_result` / `list_agent_tasks` (passive vs. proactive); Plan does not. The gate is `provider.supports_tools && !plan_mode` (the removed `chat_tools.sub_agents` flag no longer participates).
+- **Orchestrate raises the autonomy budget**: `effective_chat_tools.max_tool_rounds` becomes `Some(n.max(ORCHESTRATE_MIN_TOOL_ROUNDS))`. `None` (unlimited) stays `None` — orchestrate never forces a cap onto an unlimited config.
 - In Act mode, approved or draft plan text remains contextual; if the user asks to execute/continue, the model should use it unless the latest user message changes requirements.
 - Plan mode must filter side-effecting tools before model invocation. Allowed tools are:
   - native read-only tools: `web_search`, `web_fetch`, `read_file`, `memory_read`, `memory_search`
   - MCP tools with explicit `readOnlyHint == true` and no destructive/open-world hints
   - skill discovery/read tools: `skill_activate`, `skill_read_file`
   - agent todo tools: `todo_write`, `todo_update`
-- Plan mode must not expose writes/edits, command execution, `run_python`, memory mutation, Mixer image generation, `skill_run_script`, or arbitrary/non-read-only MCP tools.
+- Plan mode must not expose writes/edits, command execution, `run_python`, memory mutation, Mixer image generation, `skill_run_script`, sub-agent spawn (`agent`), or arbitrary/non-read-only MCP tools. (Orchestrate mode does NOT apply this filter.)
 - Tools removed by the Plan filter must be kept as blocked metadata for the current run. If the model still requests one through fallback markup or stale provider state, emit a visible `ToolCallRecord` with `status = skipped` and return model-facing feedback that the tool is blocked in Plan mode.
 - If plan state is updated while a reply is being completed, `complete_assistant_reply` must reload/merge the latest plan state before saving the assistant message, otherwise an older in-memory `Conversation` can overwrite the plan update.
-- The frontend treats plan state as read-only conversation data and updates it from `chat-plan`.
+- The frontend treats plan state as read-only conversation data and updates it from `chat-plan`. The InputBar surfaces mode entry via `/plan` and `/orchestrate` slash commands and a Shift+Tab cycle (act → plan → orchestrate → act).
 
 ### 4. Validation & Error Matrix
 
@@ -461,14 +469,20 @@ Tool-owned conversation state must be merged back before the final conversation 
 | Plan mode tool list includes write/command/Python/memory mutation/image/script tools | Remove them before provider invocation. |
 | Model requests a tool removed by Plan filtering | Emit a visible skipped tool record and return a tool message explaining it is blocked in Plan mode. |
 | Non-read-only MCP tool has `readOnlyHint == false`, missing read-only metadata, `destructiveHint == true`, or `openWorldHint == true` | Remove it in Plan mode. |
-| Provider does not support tools or is Apple local | Inject plan context as prompt text; do not expose unavailable tools. |
+| `chat_set_agent_plan_mode` receives `orchestrate` | Switch mode to Orchestrate, preserve plan text/status. |
+| Mode is Orchestrate | Expose sub-agent spawn tools, inject orchestrate prompt, raise `max_tool_rounds` to `max(configured, 40)`; do NOT apply the Plan side-effecting filter. |
+| Mode is Orchestrate with `max_tool_rounds == None` | Keep `None` (unlimited); do not impose a 40 cap. |
+| Provider does not support tools or is Apple local | Inject plan/orchestrate context as prompt text; do not expose unavailable tools. |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: user switches to Plan, asks for implementation analysis, the agent reads files/searches web, returns a plan, and the draft is visible and persisted on the conversation.
 - Good: user clicks Execute Plan, runtime switches to Act, sends a continuation request, and the saved plan is injected into the next model turn.
+- Good: user switches to Orchestrate and asks for a multi-part task; the model plans with `todo_write`, sets each independent todo's `owner` to a sub-agent name and `in_progress`, fans out `agent` spawns, marks todos `completed`, then aggregates — within the raised round budget.
 - Base: no plan exists; UI shows no plan panel, prompt says there is no saved plan, and Act behavior is unchanged.
-- Bad: Plan mode only changes the system prompt while leaving `write_file`, `run_command`, or `run_python` in the tool schema.
+- Base: Act mode still exposes sub-agent spawn tools (passive), but the model only uses them when the task warrants it.
+- Bad: Plan mode only changes the system prompt while leaving `write_file`, `run_command`, `run_python`, or `agent` in the tool schema.
+- Bad: gating sub-agent exposure on a settings flag instead of mode (the `chat_tools.sub_agents` toggle was removed).
 - Bad: storing the plan only in assistant message text; next turn loses the accepted plan after reload, compaction, or route changes.
 - Bad: treating the plan as a calendar/reminder/task-management object or allowing manual user edits in the MVP.
 
@@ -476,11 +490,13 @@ Tool-owned conversation state must be merged back before the final conversation 
 
 - Serde compatibility: old conversation JSON without `agent_plan_state` loads as Act/Empty.
 - State helpers: draft capture trims non-empty assistant replies and approval marks saved plans as `approved`.
-- Prompt/context: `agent_plan` prompt segment appears in both request construction and context estimates.
-- Tool filter: Plan mode keeps read-only native/MCP, skill read tools, and todo tools while removing writes, commands, Python, memory mutation, image generation, script execution, and non-read-only MCP tools.
+- Mode helpers: `mode_from_str("orchestrate")` parses, `is_orchestrate_mode` detects, and `format_prompt` emits an orchestrate-specific segment (zh + en).
+- Orchestrate budget: `max_tool_rounds` bump raises below-floor configured rounds, preserves above-floor, and keeps `None` unlimited.
+- Prompt/context: `agent_plan` prompt segment (plan OR orchestrate text) appears in both request construction and context estimates.
+- Tool filter: Plan mode keeps read-only native/MCP, skill read tools, and todo tools while removing writes, commands, Python, memory mutation, image generation, script execution, sub-agent spawn, and non-read-only MCP tools.
 - Blocked-tool trace: a model request for a Plan-filtered tool yields a `skipped` record rather than silently disappearing.
 - Command registration/API: new Tauri commands are registered and frontend types mirror the payload.
-- Frontend type/build: `npm run typecheck` verifies `chat-plan` event wiring, Plan/Act controls, Execute Plan flow, and read-only plan panel props.
+- Frontend type/build: `npm run typecheck` verifies `chat-plan` event wiring, Act/Plan/Orchestrate controls (slash + Shift+Tab cycle), Execute Plan flow, and read-only plan panel props.
 
 ### 7. Wrong vs Correct
 
@@ -805,7 +821,7 @@ Build and validate all mutation plans first, lock resolved target paths before r
 
 ### 2. Signatures
 
-- `chat::sub_agent::{agent_tool, check_agent_result_tool, list_agent_tasks_tool}` — the three native tool defs, registered in `NATIVE_TOOLS` with `enabled=false` (appended in `complete_assistant_reply` via `append_tool_definitions(&mut tools, allow_spawn)` only when `chat_tools.sub_agents && supports_tools && !plan_mode`).
+- `chat::sub_agent::{agent_tool, check_agent_result_tool, list_agent_tasks_tool}` — the three native tool defs, registered in `NATIVE_TOOLS` with `enabled=false` (appended in `complete_assistant_reply` via `append_tool_definitions(&mut tools, allow_spawn)`). Exposure is mode-controlled: appended only when `supports_tools && !plan_mode` (i.e. in Act + Orchestrate, not Plan). The legacy `chat_tools.sub_agents` settings toggle was removed.
 - `NativeToolCall::SubAgent(for<'a> fn(SubAgentCallCtx<'a>) -> NativeToolFuture<'a>)` — dispatched in `call_native_tool` BEFORE workspace resolution (like `Conversation`), carrying `NativeToolContext { conversation_id (=parent), run_id, generation, depth, tool_call_id }`.
 - `run_sub_agent(app, state, SubAgentRequest) -> Result<AgentRunResult, String>` — builds the isolated config and reuses `run_agent_loop`.
 - `SubAgentManager` on `AppState.sub_agents`: `tasks` map + `by_name` + `Semaphore(3)`.
@@ -825,7 +841,7 @@ Build and validate all mutation plans first, lock resolved target paths before r
 - **Pure worker, no todo access (acceptance #5).** A sub-agent is a pure worker in the orchestrator-worker model: it is exposed NO todo tools, gets NO todo prompt, and cannot read or mutate any todo list. Task delegation is strictly top-down — the parent conversation uses its OWN todo tools to set a todo's `owner` (= sub-agent name) and mark it `in_progress` before the spawn, then marks it `completed` after the sub-agent returns. Each sub-agent "task" is carried by a global `SubAgentTaskRecord` (id/status/result/usage); the parent creates it on spawn and finishes it on completion. `tool_conversation_id` still points at the parent conversation so the worker's native file tools resolve the parent's project workspace, but with todo tools removed the worker has no way to touch parent todos.
 - **Parallel spawn.** The `agent` tool has `parallel_safe = true` in `NATIVE_TOOLS`: a single tool round may dispatch multiple `agent` spawns concurrently (the per-round scheduler caps at `MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 4`; the `SubAgentManager` `Semaphore(3)` is the real ceiling, so a 4th spawn waits for a permit). Each spawn is isolated (own conversation/generation/message history) and bypasses approval, so concurrent runs do not race shared engine state. `check_agent_result`/`list_agent_tasks` stay serial. A sub-agent writes no shared conversation state (no todo access), so parallel spawns have no shared-write contention.
 - **Per-agent token usage.** On successful completion the spawn handler reads `AgentRunResult.usage` (the sub-agent's own provider usage, not overlapping the parent conversation) and emits it on the final tool record's `structured_content.usage` as `{ inputTokens, outputTokens, totalTokens }` (each optional/None-omitted), alongside the existing `type/taskId/name/agentType/status/result` fields. `SubAgentTaskRecord.usage` mirrors it for `check_agent_result`/`list_agent_tasks`. Live `subagentProgress` carries no usage; the frontend `SubAgentCard` renders a compact `↑in ↓out · total tokens` line (k-abbreviated) only in the completed state.
-- **Opt-in.** `chat_tools.sub_agents` defaults `false` (serde default). Background `wait=false` execution and the `SendMessage` inbox are intentionally deferred (research doc 05 P2 split); v1 spawn is synchronous.
+- **Mode-controlled exposure.** Sub-agent tools are exposed by agent mode, not a settings flag: Act and Orchestrate expose them (passive vs. proactive), Plan filters them out. The old `chat_tools.sub_agents` opt-in toggle was removed (see the Plan / Orchestrate scenario). Orchestrate additionally injects a proactive-delegation prompt and raises `max_tool_rounds`. Background `wait=false` execution and the `SendMessage` inbox are intentionally deferred (research doc 05 P2 split); v1 spawn is synchronous.
 
 ### 4. Tests Required
 

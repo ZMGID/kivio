@@ -291,7 +291,6 @@ function defaultChatTools(): ChatToolsConfig {
     mcpIdleTimeoutMs: 600_000,
     maxToolOutputChars: null,
     approvalPolicy: 'readonly_auto_sensitive_confirm',
-    subAgents: false,
     nativeTools: defaultNativeTools(),
   }
 }
@@ -3184,26 +3183,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             return
                           }
                           updateChatTools({ enabled })
-                        }}
-                      />
-                    </div>
-                    <div className="flex min-w-0 items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="kv-row-label">{lang === 'zh' ? '多 Agent（子 Agent）' : 'Multi-agent (sub-agents)'}</div>
-                        <p className="kv-row-desc">
-                          {chatProviderSupportsTools
-                            ? (lang === 'zh' ? '允许模型派生子 agent 处理子任务（agent / check_agent_result / list_agent_tasks 工具）。会增加 API 用量。' : 'Let the model spawn sub-agents for sub-tasks (agent / check_agent_result / list_agent_tasks tools). Increases API usage.')
-                            : (lang === 'zh' ? '当前 Chat 模型供应商不支持 tools，无法启用多 agent。' : 'The current Chat provider does not support tools, so multi-agent cannot be enabled.')}
-                        </p>
-                      </div>
-                      <Toggle
-                        checked={chatTools.subAgents ?? false}
-                        onChange={(subAgents) => {
-                          if (!chatProviderSupportsTools) {
-                            setSaveError(lang === 'zh' ? '当前 Chat 模型供应商不支持 tools，无法启用多 agent。' : 'The current Chat provider does not support tools, so multi-agent cannot be enabled.')
-                            return
-                          }
-                          updateChatTools({ subAgents })
                         }}
                       />
                     </div>

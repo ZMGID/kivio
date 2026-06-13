@@ -713,6 +713,9 @@ pub const CHAT_TOOL_MAX_TIMEOUT_MS: u64 = 300_000;
 pub const CHAT_TOOL_DEFAULT_ROUNDS: u32 = 20;
 pub const CHAT_TOOL_MIN_ROUNDS: u32 = 1;
 pub const CHAT_TOOL_MAX_ROUNDS: u32 = 100;
+/// Orchestrate 模式下的最低工具轮次预算：编排者主动 fan-out 子 agent + 先规划再分派，
+/// 单条用户消息内可能需要更多轮次，因此抬到 max(用户配置, 此值)，但不放开为无限。
+pub const ORCHESTRATE_MIN_TOOL_ROUNDS: u32 = 40;
 pub const SKILL_SCRIPT_MIN_TIMEOUT_MS: u64 = 120_000;
 /// MCP 持久连接空闲超时下限：太小会让长连接频繁回收失去意义。
 pub const MCP_IDLE_TIMEOUT_MIN_MS: u64 = 60_000;
@@ -764,12 +767,6 @@ pub struct ChatToolsConfig {
     pub max_tool_output_chars: Option<usize>,
     #[serde(default = "default_chat_approval_policy")]
     pub approval_policy: String,
-    /// Multi-agent / sub-agent system (P3). When on, the `agent` /
-    /// `check_agent_result` / `list_agent_tasks` tools are exposed to the
-    /// model. Off by default (opt-in, like MCP): spawning sub-agents
-    /// multiplies API usage and key/quota pressure.
-    #[serde(default)]
-    pub sub_agents: bool,
     pub native_tools: ChatNativeToolsConfig,
 }
 
@@ -788,7 +785,6 @@ impl Default for ChatToolsConfig {
             mcp_idle_timeout_ms: default_mcp_idle_timeout_ms(),
             max_tool_output_chars: None,
             approval_policy: default_chat_approval_policy(),
-            sub_agents: false,
             native_tools: ChatNativeToolsConfig::default(),
         }
     }

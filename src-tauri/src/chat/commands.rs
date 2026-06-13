@@ -980,6 +980,7 @@ async fn complete_assistant_reply(
     let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
     let plan_mode = crate::chat::plan::is_plan_mode(&conversation.agent_plan_state);
+    let orchestrate_mode = crate::chat::plan::is_orchestrate_mode(&conversation.agent_plan_state);
     if !plan_mode && model_can_generate_images_directly(&provider, &conversation.model) {
         return complete_direct_image_generation_reply(
             app,
@@ -1167,11 +1168,21 @@ async fn complete_assistant_reply(
     );
     let ask_user_tools_available = append_agent_ask_user_tools(&mut tools, provider.supports_tools);
     let todo_tools_available = append_agent_todo_tools(&mut tools, provider.supports_tools);
-    // Multi-agent spawn tools (P3): top-level chat may spawn sub-agents when the
-    // opt-in toggle is on and tools are supported. Excluded in Plan mode (spawn
-    // is a side-effecting, non-read-only capability).
-    if settings.chat_tools.sub_agents && provider.supports_tools && !plan_mode {
+    // Multi-agent spawn tools (P3): exposure is mode-controlled. Act and
+    // Orchestrate both expose the `agent` / `check_agent_result` /
+    // `list_agent_tasks` tools (passive vs. proactive); Plan mode excludes
+    // them (spawn is a side-effecting, non-read-only capability).
+    if provider.supports_tools && !plan_mode {
         crate::chat::sub_agent::append_tool_definitions(&mut tools, true);
+    }
+    // Orchestrate mode raises the autonomy budget: a single user message may
+    // need more tool rounds to plan, fan out sub-agents, and aggregate. We lift
+    // max_tool_rounds to max(configured, ORCHESTRATE_MIN_TOOL_ROUNDS) but keep
+    // unlimited (None) as-is rather than forcing a cap.
+    if orchestrate_mode {
+        effective_chat_tools.max_tool_rounds = effective_chat_tools
+            .max_tool_rounds
+            .map(|rounds| rounds.max(crate::settings::ORCHESTRATE_MIN_TOOL_ROUNDS));
     }
     let runtime_tools_available = provider.supports_tools && !tools.is_empty();
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
@@ -4562,6 +4573,20 @@ mod tests {
         assert!(tools.iter().any(|tool| tool.name == "write_file"));
         assert!(tools.iter().any(|tool| tool.name == "run_command"));
         assert!(blocked.is_empty());
+    }
+
+    #[test]
+    fn orchestrate_budget_bump_raises_rounds_but_keeps_unlimited() {
+        use crate::settings::ORCHESTRATE_MIN_TOOL_ROUNDS;
+        let bump = |configured: Option<u32>| {
+            configured.map(|rounds| rounds.max(ORCHESTRATE_MIN_TOOL_ROUNDS))
+        };
+        // Configured below the floor -> raised to the floor.
+        assert_eq!(bump(Some(20)), Some(ORCHESTRATE_MIN_TOOL_ROUNDS));
+        // Configured above the floor -> preserved.
+        assert_eq!(bump(Some(80)), Some(80));
+        // Unlimited (None) stays unlimited.
+        assert_eq!(bump(None), None);
     }
 
     #[test]

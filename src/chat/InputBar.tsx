@@ -14,6 +14,7 @@ import {
   FolderPlus,
   ListChecks,
   MessageSquarePlus,
+  Network,
   Paperclip,
   Play,
   Plus,
@@ -132,6 +133,7 @@ const APPROVAL_POLICY_OPTIONS = [
 type SlashCommandId =
   | 'help'
   | 'plan'
+  | 'orchestrate'
   | 'new'
   | 'compact'
   | 'clear'
@@ -165,6 +167,15 @@ const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
     category: 'Local',
     kind: 'action',
     keywords: ['plan', 'act', 'mode', '计划', '模式', '切换'],
+  },
+  {
+    id: 'orchestrate',
+    slash: '/orchestrate',
+    title: '/orchestrate',
+    description: 'Enter orchestrate mode (proactive sub-agents)',
+    category: 'Local',
+    kind: 'action',
+    keywords: ['orchestrate', 'agent', 'subagent', 'fanout', 'mode', '编排', '子代理', '模式', '切换'],
   },
   {
     id: 'new',
@@ -231,6 +242,8 @@ function slashCommandIcon(command: SlashCommandDefinition) {
       return CircleHelp
     case 'plan':
       return ListChecks
+    case 'orchestrate':
+      return Network
     case 'new':
       return MessageSquarePlus
     case 'compact':
@@ -386,6 +399,7 @@ export function InputBar({
   const agentPlanMode = agentPlanState?.mode ?? 'act'
   const agentPlanText = agentPlanState?.plan?.trim() ?? ''
   const agentPlanActive = agentPlanMode === 'plan'
+  const agentOrchestrateActive = agentPlanMode === 'orchestrate'
   const projectEntryEnabled = Boolean(showProjectEntry && onSelectProject)
 
   const closeProjectMenu = useCallback(() => {
@@ -653,7 +667,9 @@ export function InputBar({
   }, [agentPlanMode, closeProjectMenu, disabled, onAgentPlanModeChange])
 
   const toggleAgentPlanMode = useCallback(async () => {
-    await setAgentPlanMode(agentPlanMode === 'plan' ? 'act' : 'plan')
+    const next: AgentPlanMode =
+      agentPlanMode === 'act' ? 'plan' : agentPlanMode === 'plan' ? 'orchestrate' : 'act'
+    await setAgentPlanMode(next)
   }, [agentPlanMode, setAgentPlanMode])
 
   const openAttachmentPicker = useCallback(async () => {
@@ -712,6 +728,9 @@ export function InputBar({
     switch (command.id) {
       case 'plan':
         await setAgentPlanMode('plan')
+        return
+      case 'orchestrate':
+        await setAgentPlanMode('orchestrate')
         return
       case 'new':
         setInput('')
@@ -1426,7 +1445,9 @@ export function InputBar({
               ? 'border-[#e8a090] shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[#e8a090]/25 dark:border-[#e8a090] dark:shadow-none'
               : agentPlanActive
                 ? 'border-emerald-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-emerald-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_18px_44px_-16px_rgba(16,185,129,0.22)] dark:border-emerald-400 dark:shadow-none dark:focus-within:border-emerald-400'
-                : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:border-neutral-700 dark:shadow-none dark:focus-within:border-neutral-600'
+                : agentOrchestrateActive
+                  ? 'border-violet-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-violet-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_18px_44px_-16px_rgba(139,92,246,0.22)] dark:border-violet-400 dark:shadow-none dark:focus-within:border-violet-400'
+                  : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:border-neutral-700 dark:shadow-none dark:focus-within:border-neutral-600'
           }`}
         >
           {dragActive && (
