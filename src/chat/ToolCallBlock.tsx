@@ -12,6 +12,7 @@ import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ToolCallRecord, To
 import { isToolCallErrorStatus, normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { AskUserBlock } from './AskUserBlock'
+import { ChatMarkdown } from './ChatMarkdown'
 
 export interface ToolCallBlockLabels {
   pending: string
@@ -218,6 +219,44 @@ interface SubagentView {
   error?: string
   preview?: string
   steps: string[]
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+}
+
+/** Parse the optional token usage from a final sub-agent structured result.
+ *  Live `subagentProgress` has no usage; only the completed `{type:"subagent"}`
+ *  payload carries it. */
+function subagentUsage(value: unknown): SubagentView['usage'] {
+  const usage = objectValue(value)
+  if (!usage) return undefined
+  const input = typeof usage.inputTokens === 'number' ? usage.inputTokens : undefined
+  const output = typeof usage.outputTokens === 'number' ? usage.outputTokens : undefined
+  const total = typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined
+  if (input == null && output == null && total == null) return undefined
+  return { inputTokens: input, outputTokens: output, totalTokens: total }
+}
+
+/** Compact token count, e.g. 1234 → "1.2k", 999 → "999". */
+function formatTokenCount(value?: number): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return ''
+  if (value < 1000) return String(Math.round(value))
+  const thousands = value / 1000
+  return `${thousands >= 100 ? Math.round(thousands) : thousands.toFixed(1)}k`
+}
+
+/** One-line token summary like `↑1.2k ↓340 · 1.5k tokens`. Empty when no usage. */
+function subagentUsageLine(usage: SubagentView['usage']): string {
+  if (!usage) return ''
+  const parts: string[] = []
+  const input = formatTokenCount(usage.inputTokens)
+  const output = formatTokenCount(usage.outputTokens)
+  if (input) parts.push(`↑${input}`)
+  if (output) parts.push(`↓${output}`)
+  const total = formatTokenCount(usage.totalTokens)
+  const head = parts.join(' ')
+  if (head && total) return `${head} · ${total} tokens`
+  if (head) return head
+  if (total) return `${total} tokens`
+  return ''
 }
 
 /** Parse sub-agent state (P3) from a tool record's structured content: either
@@ -238,29 +277,183 @@ function structuredSubagent(toolCall: ToolCallRecord): SubagentView | null {
     error: stringValue(structured.error) || undefined,
     preview: stringValue(progress?.preview) || undefined,
     steps: stringArrayValue(progress?.steps),
+    usage: subagentUsage(structured.usage),
   }
 }
 
-function SubagentDetails({ view }: { view: SubagentView }) {
-  const finalText = view.error || view.result
+function isSubAgentRecord(toolCall: ToolCallRecord): boolean {
+  if (structuredSubagent(toolCall)) return true
+  return toolCall.source === 'native' && toolRawName(toolCall) === 'agent'
+}
+
+/** Sub-agent type / display name fall back to the spawn arguments while the run
+ *  is live (structured content only carries agentType in the final result). */
+function subagentAgentType(view: SubagentView | null, args: Record<string, unknown> | null): string {
+  return view?.agentType || stringValue(args?.subagent_type) || ''
+}
+
+function subagentName(view: SubagentView | null, args: Record<string, unknown> | null): string {
   return (
-    <div>
-      <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
-        子 agent · {view.name}
-        {view.agentType ? ` (${view.agentType})` : ''} · {view.status}
-      </div>
-      {view.steps.length > 0 && (
-        <div className="mt-0.5 space-y-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">
-          {view.steps.map((step, i) => (
-            <div key={`${i}-${step}`} className="truncate">
-              · {step}
-            </div>
-          ))}
-        </div>
-      )}
-      {(finalText || view.preview) && (
-        <div className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-          {finalText || view.preview}
+    view?.name ||
+    stringValue(args?.name) ||
+    stringValue(args?.subagent_type) ||
+    'sub-agent'
+  )
+}
+
+function subagentPrompt(args: Record<string, unknown> | null): string {
+  return stringValue(args?.prompt)
+}
+
+function subagentTitle(agentType: string, name: string): string {
+  const parts = ['子 Agent']
+  if (agentType) parts.push(agentType)
+  if (name && name !== agentType) parts.push(name)
+  return parts.join(' · ')
+}
+
+function subagentStatusLine(view: SubagentView | null, status: ToolCallStatus): string {
+  if (status === 'completed') return '已完成'
+  if (status === 'error') return view?.error ? compactText(view.error, 160) : '运行失败'
+  if (status === 'cancelled') return '已取消'
+  if (status === 'running') {
+    const lastStep = view?.steps?.length ? view.steps[view.steps.length - 1] : ''
+    if (lastStep) return compactText(lastStep, 160)
+    if (view?.preview) return compactText(view.preview, 160)
+    return '运行中…'
+  }
+  return '准备运行…'
+}
+
+function SubAgentCard({ toolCall, defaultOpen = false }: ToolCallBlockProps) {
+  const status = normalizeToolCallStatus(toolCall.status)
+  const [open, setOpen] = useState(defaultOpen)
+  const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
+  const args = useMemo(() => parsedArguments(toolCall), [toolCall])
+
+  const agentType = subagentAgentType(view, args)
+  const name = subagentName(view, args)
+  const title = subagentTitle(agentType, name)
+  const duration = formatDuration(getDuration(toolCall))
+  const statusLine = subagentStatusLine(view, status)
+  const prompt = subagentPrompt(args)
+  const result = view?.result || ''
+  const error = view?.error || (toolCall.error ? compactToolError(toolCall.error) : '')
+  const steps = view?.steps ?? []
+  const preview = view?.preview || ''
+  const usageLine = status !== 'running' ? subagentUsageLine(view?.usage) : ''
+
+  const hasDetails = Boolean(prompt || steps.length || preview || result || error)
+
+  return (
+    <div className="not-prose mb-2 text-[11.5px] leading-5 text-neutral-500 dark:text-neutral-400">
+      <button
+        type="button"
+        onClick={() => {
+          if (hasDetails) setOpen((value) => !value)
+        }}
+        aria-expanded={hasDetails ? open : undefined}
+        className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0.5 transition-colors ${
+          hasDetails
+            ? 'hover:text-neutral-700 dark:hover:text-neutral-200'
+            : 'cursor-default'
+        }`}
+      >
+        <svg
+          className={`shrink-0 text-violet-500 dark:text-violet-300 ${
+            status === 'running' ? 'subagent-twinkle is-running' : 'subagent-twinkle'
+          }`}
+          width={13}
+          height={13}
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M12 0c.7 5.6 5.7 10.6 11.3 11.3v1.4C17.7 13.4 12.7 18.4 12 24h-1.4c-.7-5.6-5.7-10.6-11.3-11.3v-1.4C5.6 10.6 10.6 5.6 11.3 0H12z" />
+        </svg>
+        <span className="shrink-0 font-medium text-neutral-700 dark:text-neutral-200">
+          {title}
+        </span>
+        <span className="shrink-0">
+          <StatusIcon status={status} />
+        </span>
+        {duration && (
+          <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+            · {duration}
+          </span>
+        )}
+        {usageLine && (
+          <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+            · {usageLine}
+          </span>
+        )}
+        {statusLine && (
+          <span
+            className={`min-w-0 truncate ${
+              status === 'error'
+                ? 'text-red-500'
+                : status === 'running'
+                  ? 'chat-motion-subagent-shimmer'
+                  : 'text-neutral-400 dark:text-neutral-500'
+            }`}
+          >
+            · {statusLine}
+          </span>
+        )}
+        {hasDetails && (
+          <ChevronDown
+            size={11}
+            strokeWidth={2}
+            className={`shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          />
+        )}
+      </button>
+
+      {hasDetails && (
+        <div className={`chat-motion-reveal ${open ? 'is-open' : ''}`} aria-hidden={!open}>
+          <div className="mt-1.5 ml-1.5 space-y-1.5 border-l-2 border-violet-400/50 pl-2.5 dark:border-violet-400/40">
+            {prompt && (
+              <div>
+                <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                  任务
+                </div>
+                <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                  {compactText(prompt, 600)}
+                </div>
+              </div>
+            )}
+            {status === 'running' && (steps.length > 0 || preview) && (
+              <div className="rounded-md border-l-2 border-violet-400/60 bg-violet-500/[0.04] py-1 pl-2.5 pr-1.5 dark:bg-violet-400/[0.06]">
+                {steps.length > 0 && (
+                  <div className="space-y-0.5 text-[10.5px] text-neutral-500 dark:text-neutral-400">
+                    {steps.map((step, index) => (
+                      <div key={`${index}-${step}`} className="truncate">
+                        · {step}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {preview && (
+                  <div className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                    {preview}
+                  </div>
+                )}
+              </div>
+            )}
+            {status !== 'running' && result && (
+              <div>
+                <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                  结果
+                </div>
+                <ChatMarkdown content={result} />
+              </div>
+            )}
+            {error && (
+              <div className="whitespace-pre-wrap break-words text-red-500">
+                {error}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -880,7 +1073,6 @@ function DefaultToolCallBlock({
   const source = getSource(toolCall)
   const duration = formatDuration(getDuration(toolCall))
   const fileMutation = useMemo(() => structuredFileMutation(toolCall), [toolCall])
-  const subagent = useMemo(() => structuredSubagent(toolCall), [toolCall])
   const argumentPreview = useMemo(() => getArgumentPreview(toolCall), [toolCall])
   const resultPreview = useMemo(() => getResultPreview(toolCall), [toolCall])
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
@@ -893,11 +1085,7 @@ function DefaultToolCallBlock({
       fileMutation.diagnostics?.length
     ),
   )
-  const hasSubagentDetails = Boolean(
-    subagent &&
-      (subagent.steps.length || subagent.preview || subagent.result || subagent.error),
-  )
-  const hasDetails = Boolean(argumentPreview || resultPreview || error || hasFileMutationDetails || hasSubagentDetails)
+  const hasDetails = Boolean(argumentPreview || resultPreview || error || hasFileMutationDetails)
 
   return (
     <div className="not-prose mb-2 text-[11.5px] leading-5 text-neutral-500 dark:text-neutral-400">
@@ -976,7 +1164,6 @@ function DefaultToolCallBlock({
             {fileMutation && hasFileMutationDetails && (
               <FileMutationDetails mutation={fileMutation} />
             )}
-            {subagent && hasSubagentDetails && <SubagentDetails view={subagent} />}
             {error && (
               <div className="whitespace-pre-wrap break-words text-red-500">
                 {error}
@@ -992,6 +1179,9 @@ function DefaultToolCallBlock({
 export function ToolCallBlock(props: ToolCallBlockProps) {
   if (isAskUserTool(props.toolCall)) {
     return <AskUserBlock toolCall={props.toolCall} />
+  }
+  if (isSubAgentRecord(props.toolCall)) {
+    return <SubAgentCard {...props} />
   }
   return <DefaultToolCallBlock {...props} />
 }

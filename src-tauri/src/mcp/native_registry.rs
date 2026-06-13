@@ -15,7 +15,9 @@
 //!   read_file plus the read-side project tools (list_dir/search_files/
 //!   glob_files/stat_path), and only when approval-free. Do not widen or
 //!   narrow it here without a spec change. memory_read is read-only and
-//!   approval-free but deliberately NOT parallel-safe.
+//!   approval-free but deliberately NOT parallel-safe. `agent` is also
+//!   parallel-safe (multi-agent fan-out): each spawn runs isolated and is
+//!   Semaphore(3)-capped.
 //! - Table order is the model-facing tool list order; keep it stable.
 
 use std::future::Future;
@@ -298,7 +300,12 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         name: crate::chat::sub_agent::AGENT_TOOL_NAME,
         def: crate::chat::sub_agent::agent_tool,
         enabled: |_, _, _| false,
-        parallel_safe: false,
+        // parallel_safe = true: each `agent` spawn runs in isolation (its own
+        // synthetic conversation/generation/message history), bypasses approval,
+        // and is capped by the SubAgentManager `Semaphore(3)`. Concurrent fan-out
+        // is the core value of multi-agent, so a single round may dispatch
+        // several spawns in parallel (scheduler caps at 4, semaphore at 3).
+        parallel_safe: true,
         bypasses_approval: true,
         read_only: false,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::dispatch_agent_spawn),
@@ -495,8 +502,12 @@ mod tests {
                 "search_files",
                 "glob_files",
                 "stat_path",
+                "agent",
             ],
-            "parallel-safe set is intentionally narrow per agent-runtime spec"
+            "parallel-safe set is intentionally narrow per agent-runtime spec; \
+             `agent` joins it because each spawn runs in isolation (own \
+             conversation/generation/message history), bypasses approval, and is \
+             Semaphore(3)-capped, making concurrent fan-out the core multi-agent value"
         );
     }
 

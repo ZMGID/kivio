@@ -4,10 +4,16 @@
 //! `run_agent_loop`" — there is no second execution engine. `run_sub_agent`
 //! builds an isolated `AgentRunConfig` (system + user only, a synthetic
 //! `conversation_id` for generation/streaming isolation, but the PARENT
-//! conversation as `tool_conversation_id` so the child can claim the parent's
-//! todos and resolve its project workspace), wraps it in a `SubAgentHost`, and
+//! conversation as `tool_conversation_id` so the child's native file tools
+//! resolve the parent's project workspace), wraps it in a `SubAgentHost`, and
 //! reuses the existing loop. The `agent` native tool spawns one synchronously
 //! and reports live nested progress onto the parent tool card.
+//!
+//! Orchestrator-worker model: a sub-agent is a PURE WORKER. It receives one
+//! self-contained prompt, runs in isolation, and returns a result. It is given
+//! NO todo tools and NO todo prompt, so it cannot read or mutate any todo list.
+//! Task delegation is top-down: the parent conversation owns its todos and uses
+//! its own todo tools to set `owner` (= sub-agent name) and status itself.
 //!
 //! Safety rails (research doc 05 + architecture P3):
 //! - depth guard (`MAX_SUB_AGENT_DEPTH`): an agent at depth ≥ 3 cannot spawn.
@@ -47,6 +53,11 @@ use crate::state::AppState;
 pub const MAX_SUB_AGENT_DEPTH: u8 = 3;
 const SUB_AGENT_CONCURRENCY: usize = 3;
 const SUB_AGENT_SYNC_TIMEOUT_SECS: u64 = 300;
+/// Max attempts for a single sub-agent run. Reasoning models (e.g. DeepSeek-V4)
+/// intermittently return an empty assistant message in the planning step, which
+/// `run_agent_loop` surfaces as `Err`. Top-level chat recovers via user resend;
+/// a sub-agent has no resend loop, so we retry the run once before giving up.
+const SUB_AGENT_MAX_ATTEMPTS: usize = 2;
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 350;
 const RESULT_PREVIEW_MAX: usize = 4000;
 
@@ -54,7 +65,6 @@ pub const AGENT_TOOL_NAME: &str = "agent";
 pub const CHECK_AGENT_RESULT_TOOL_NAME: &str = "check_agent_result";
 pub const LIST_AGENT_TASKS_TOOL_NAME: &str = "list_agent_tasks";
 
-#[allow(dead_code)]
 #[allow(dead_code)]
 pub fn is_sub_agent_tool_name(name: &str) -> bool {
     matches!(
@@ -68,6 +78,19 @@ pub fn is_sub_agent_tool_name(name: &str) -> bool {
 /// (research doc 05 §1.3 / acceptance #2).
 pub fn depth_allows_spawn(depth: u8) -> bool {
     depth < MAX_SUB_AGENT_DEPTH
+}
+
+/// Whether a failed sub-agent run should be retried. Retry only when the outcome
+/// is an error that is NOT a cancellation, there are attempts remaining, and the
+/// parent generation is still active (so we never retry after a cascade cancel).
+fn should_retry_sub_agent(
+    outcome: &Result<AgentRunResult, String>,
+    attempt: usize,
+    parent_active: bool,
+) -> bool {
+    matches!(outcome, Err(err) if err != "cancelled")
+        && attempt + 1 < SUB_AGENT_MAX_ATTEMPTS
+        && parent_active
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +122,34 @@ pub struct SubAgentTaskRecord {
     pub created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<i64>,
+    /// Provider token usage for this sub-agent's own run (input/output/total),
+    /// surfaced on the parent tool card. None until the run completes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<SubAgentUsage>,
+}
+
+/// Compact token usage for a finished sub-agent run, derived from the run's
+/// `AgentRunResult.usage` (the sub-agent's own provider usage, not overlapping
+/// the parent conversation's). All fields optional: providers may omit any.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubAgentUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+}
+
+impl SubAgentUsage {
+    fn from_model_usage(usage: &crate::chat::model::ModelUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+        }
+    }
 }
 
 /// Process-level sub-agent task table + concurrency gate. Held on `AppState`.
@@ -144,11 +195,13 @@ impl SubAgentManager {
         status: SubAgentStatus,
         result: Option<String>,
         error: Option<String>,
+        usage: Option<SubAgentUsage>,
     ) {
         if let Some(record) = self.lock_tasks().get_mut(id) {
             record.status = status;
             record.result = result;
             record.error = error;
+            record.usage = usage;
             record.completed_at = Some(chrono::Local::now().timestamp());
         }
     }
@@ -406,6 +459,7 @@ pub struct SubAgentRequest {
     pub model: String,
     pub tools: Vec<ChatToolDefinition>,
     pub settings: Settings,
+    pub max_output_tokens: u32,
     pub language: String,
     pub depth: u8,
     pub parent_conversation_id: String,
@@ -416,92 +470,124 @@ pub struct SubAgentRequest {
 
 /// Run a sub-agent to completion (synchronous spawn). Builds an isolated
 /// config and reuses `run_agent_loop`. Cancellation cascades from the parent
-/// via `SubAgentHost`.
+/// via `SubAgentHost`. Up to `SUB_AGENT_MAX_ATTEMPTS` tries: reasoning models
+/// occasionally return an empty planning response (surfaced as `Err`); since a
+/// sub-agent has no user resend loop, we retry once on non-cancel errors.
 async fn run_sub_agent(
     app: &AppHandle,
     state: &AppState,
     req: SubAgentRequest,
 ) -> Result<AgentRunResult, String> {
     let sub_conversation_id = format!("subagent-{}", req.task_id);
-    let sub_run_id = format!("subrun-{}", req.task_id);
-    let sub_message_id = format!("submsg-{}", req.task_id);
-    let sub_generation = state.next_chat_generation(&sub_conversation_id);
 
-    let runtime_messages = vec![
-        serde_json::json!({ "role": "system", "content": req.system_prompt }),
-        serde_json::json!({ "role": "user", "content": req.prompt }),
-    ];
+    let mut last_outcome: Result<AgentRunResult, String> =
+        Err("Sub-agent did not run".to_string());
 
-    let host = SubAgentHost {
-        app: app.clone(),
-        state,
-        parent_conversation_id: req.parent_conversation_id.clone(),
-        parent_run_id: req.parent_run_id.clone(),
-        parent_tool_call_id: req.parent_tool_call_id.clone(),
-        parent_generation: req.parent_generation,
-        task_id: req.task_id.clone(),
-        name: req.name.clone(),
-        depth: req.depth,
-        progress: Mutex::new(ProgressState::default()),
-    };
-    let executor = SubAgentToolExecutor {
-        app: app.clone(),
-        state,
-    };
+    for attempt in 0..SUB_AGENT_MAX_ATTEMPTS {
+        // A cascade cancel between attempts must short-circuit: never retry once
+        // the parent generation is gone.
+        if attempt > 0
+            && !state
+                .is_chat_generation_active(&req.parent_conversation_id, req.parent_generation)
+        {
+            return Err("cancelled".to_string());
+        }
 
-    let thinking_enabled = req.settings.chat.thinking_enabled;
-    let stream_enabled = req.settings.chat.stream_enabled;
-    let max_output_tokens = req.settings.chat.max_output_tokens;
-    let retry_attempts = if req.settings.retry_enabled {
-        req.settings.retry_attempts as usize
-    } else {
-        1
-    };
-    let effective_chat_tools = req.settings.chat_tools.clone();
+        // Fresh generation + runtime per attempt. The config is moved into
+        // `run_agent_loop`, so host/executor/config are rebuilt each iteration.
+        let sub_generation = state.next_chat_generation(&sub_conversation_id);
+        let sub_run_id = format!("subrun-{}", req.task_id);
+        let sub_message_id = format!("submsg-{}", req.task_id);
 
-    let config = AgentRunConfig {
-        entry: AgentRunEntry::Send,
-        state,
-        conversation_id: sub_conversation_id.clone(),
-        tool_conversation_id: req.parent_conversation_id.clone(),
-        depth: req.depth,
-        run_id: sub_run_id,
-        message_id: sub_message_id,
-        generation: sub_generation,
-        provider: req.provider,
-        model: req.model,
-        runtime_messages,
-        tools: req.tools,
-        blocked_tool_calls: Vec::new(),
-        settings: req.settings.clone(),
-        effective_chat_tools,
-        language: req.language,
-        has_image: false,
-        thinking_enabled,
-        stream_enabled,
-        max_output_tokens,
-        retry_attempts,
-        skill_registry: SkillRegistry::default(),
-        active_skill_id: None,
-        active_skill_detail: None,
-        assistant_snapshot: None,
-        custom_system_prompt: String::new(),
-        provider_tools_fallback_system_prompt: req.system_prompt.clone(),
-    };
+        let runtime_messages = vec![
+            serde_json::json!({ "role": "system", "content": req.system_prompt }),
+            serde_json::json!({ "role": "user", "content": req.prompt }),
+        ];
 
-    let timeout = Duration::from_secs(SUB_AGENT_SYNC_TIMEOUT_SECS);
-    let outcome = match tokio::time::timeout(timeout, run_agent_loop(config, &host, &executor)).await
-    {
-        Ok(result) => result,
-        Err(_) => Err(format!(
-            "Sub-agent timed out after {SUB_AGENT_SYNC_TIMEOUT_SECS}s"
-        )),
-    };
-    // Retire the sub-agent's own generation on every exit path (success,
-    // failure, timeout). Otherwise a timeout leaves the synthetic generation
-    // reading "active" forever, and entries accumulate in chat_stream_generations.
-    state.cancel_chat_generation(&sub_conversation_id);
-    outcome
+        let host = SubAgentHost {
+            app: app.clone(),
+            state,
+            parent_conversation_id: req.parent_conversation_id.clone(),
+            parent_run_id: req.parent_run_id.clone(),
+            parent_tool_call_id: req.parent_tool_call_id.clone(),
+            parent_generation: req.parent_generation,
+            task_id: req.task_id.clone(),
+            name: req.name.clone(),
+            depth: req.depth,
+            progress: Mutex::new(ProgressState::default()),
+        };
+        let executor = SubAgentToolExecutor {
+            app: app.clone(),
+            state,
+        };
+
+        let thinking_enabled = req.settings.chat.thinking_enabled;
+        let stream_enabled = req.settings.chat.stream_enabled;
+        let max_output_tokens = req.max_output_tokens;
+        let retry_attempts = if req.settings.retry_enabled {
+            req.settings.retry_attempts as usize
+        } else {
+            1
+        };
+        let effective_chat_tools = req.settings.chat_tools.clone();
+
+        let config = AgentRunConfig {
+            entry: AgentRunEntry::Send,
+            state,
+            conversation_id: sub_conversation_id.clone(),
+            tool_conversation_id: req.parent_conversation_id.clone(),
+            depth: req.depth,
+            run_id: sub_run_id,
+            message_id: sub_message_id,
+            generation: sub_generation,
+            provider: req.provider.clone(),
+            model: req.model.clone(),
+            runtime_messages,
+            tools: req.tools.clone(),
+            blocked_tool_calls: Vec::new(),
+            settings: req.settings.clone(),
+            effective_chat_tools,
+            language: req.language.clone(),
+            has_image: false,
+            thinking_enabled,
+            stream_enabled,
+            max_output_tokens,
+            retry_attempts,
+            skill_registry: SkillRegistry::default(),
+            active_skill_id: None,
+            active_skill_detail: None,
+            assistant_snapshot: None,
+            custom_system_prompt: String::new(),
+            provider_tools_fallback_system_prompt: req.system_prompt.clone(),
+        };
+
+        let timeout = Duration::from_secs(SUB_AGENT_SYNC_TIMEOUT_SECS);
+        let outcome =
+            match tokio::time::timeout(timeout, run_agent_loop(config, &host, &executor)).await {
+                Ok(result) => result,
+                Err(_) => Err(format!(
+                    "Sub-agent timed out after {SUB_AGENT_SYNC_TIMEOUT_SECS}s"
+                )),
+            };
+        // Retire this attempt's generation on every exit path (success, failure,
+        // timeout). Otherwise a timeout leaves the synthetic generation reading
+        // "active" forever, and entries accumulate in chat_stream_generations.
+        state.cancel_chat_generation(&sub_conversation_id);
+
+        // Success or cancellation → return immediately.
+        if matches!(outcome, Ok(_)) || matches!(&outcome, Err(err) if err == "cancelled") {
+            return outcome;
+        }
+
+        let parent_active =
+            state.is_chat_generation_active(&req.parent_conversation_id, req.parent_generation);
+        if !should_retry_sub_agent(&outcome, attempt, parent_active) {
+            return outcome;
+        }
+        last_outcome = outcome;
+    }
+
+    last_outcome
 }
 
 // ---------------------------------------------------------------------------
@@ -771,18 +857,19 @@ pub fn handle_agent_spawn<'a>(
 
         // Build the sub-agent's toolset: full enabled set, narrowed by the
         // agent definition, with the `agent` tool ALWAYS stripped (acceptance
-        // #4), plus the parent's todo tools so the sub-agent can claim tasks.
+        // #4). A sub-agent is a pure worker (orchestrator-worker model): it gets
+        // NO todo tools, so it can never read or mutate any todo list. Task
+        // delegation is top-down — the parent orchestrator owns the todos and
+        // marks them itself (owner = sub-agent name) before/after the spawn.
         let mut tools = crate::mcp::registry::list_enabled_tool_defs(ctx.app, ctx.state)
             .await
             .unwrap_or_default();
         crate::chat::agent::filter::filter_tools_for_agent(&mut tools, &def);
-        crate::chat::todo::append_tool_definitions(&mut tools);
         let available_builtin_tools = available_builtin_tool_names(&tools);
 
         // Compose the sub-agent system prompt: persona prefix + base chat
-        // system prompt + the parent's todo context (so it can claim tasks).
-        let todo_prompt =
-            crate::chat::todo::format_prompt(&parent_conversation.agent_todo_state, &language, true);
+        // system prompt. No todo context is injected — the worker is not aware
+        // of and cannot touch the parent's todo list.
         let system_prompt = build_chat_system_prompt(
             &language,
             false,
@@ -798,7 +885,7 @@ pub fn handle_agent_spawn<'a>(
             None,
             None,
             None,
-            Some(&todo_prompt),
+            None,
             None,
         );
 
@@ -823,12 +910,21 @@ pub fn handle_agent_spawn<'a>(
             depth: ctx.native_ctx.depth + 1,
             created_at: chrono::Local::now().timestamp(),
             completed_at: None,
+            usage: None,
         });
 
         // Concurrency gate.
         // Concurrency gate: held for the lifetime of the run. acquire_owned only
         // errors if the semaphore is closed (never — it lives on AppState).
         let _permit = manager.semaphore().acquire_owned().await.ok();
+
+        // Model-aware output cap: prefer the model library / provider override
+        // (matching top-level chat); the raw setting is only a fallback.
+        let max_output_tokens = crate::chat::model_metadata::chat_max_output_tokens_for_model(
+            Some(&provider),
+            &model,
+            settings.chat.max_output_tokens,
+        );
 
         let request = SubAgentRequest {
             task_id: task_id.clone(),
@@ -840,6 +936,7 @@ pub fn handle_agent_spawn<'a>(
             model,
             tools,
             settings,
+            max_output_tokens,
             language,
             depth: ctx.native_ctx.depth + 1,
             parent_conversation_id: parent_conversation_id.clone(),
@@ -861,13 +958,15 @@ pub fn handle_agent_spawn<'a>(
                 } else {
                     result.content.clone()
                 };
+                let usage = result.usage.as_ref().map(SubAgentUsage::from_model_usage);
                 manager.finish(
                     &task_id,
                     SubAgentStatus::Completed,
                     Some(clip(&content, RESULT_PREVIEW_MAX)),
                     None,
+                    usage.clone(),
                 );
-                let structured = serde_json::json!({
+                let mut structured = serde_json::json!({
                     "type": "subagent",
                     "taskId": task_id,
                     "name": name,
@@ -875,6 +974,14 @@ pub fn handle_agent_spawn<'a>(
                     "status": "completed",
                     "result": clip(&content, RESULT_PREVIEW_MAX),
                 });
+                if let Some(usage) = usage {
+                    if let Some(obj) = structured.as_object_mut() {
+                        obj.insert(
+                            "usage".to_string(),
+                            serde_json::to_value(&usage).unwrap_or(Value::Null),
+                        );
+                    }
+                }
                 Ok(McpToolCallResult {
                     content: format!("[Sub-agent: {} ({})]\n\n{}", name, def.name, content),
                     is_error: false,
@@ -890,17 +997,26 @@ pub fn handle_agent_spawn<'a>(
                 } else {
                     SubAgentStatus::Failed
                 };
-                manager.finish(&task_id, status, None, Some(err.clone()));
+                // Surface a clean, user/model-facing message instead of the raw
+                // internal error string. The empty-assistant-response case (a
+                // reasoning model returning nothing in planning) is the common
+                // failure; other errors keep their original text.
+                let display_err = if err.contains("empty assistant response") {
+                    "子 agent 运行失败：模型返回了空响应（可重试）。".to_string()
+                } else {
+                    err.clone()
+                };
+                manager.finish(&task_id, status, None, Some(display_err.clone()), None);
                 let structured = serde_json::json!({
                     "type": "subagent",
                     "taskId": task_id,
                     "name": name,
                     "agentType": def.name,
                     "status": if cancelled { "cancelled" } else { "failed" },
-                    "error": err,
+                    "error": display_err,
                 });
                 Ok(McpToolCallResult {
-                    content: format!("[Sub-agent: {} ({})] failed: {}", name, def.name, err),
+                    content: format!("[Sub-agent: {} ({})] failed: {}", name, def.name, display_err),
                     is_error: !cancelled,
                     raw: structured.clone(),
                     artifacts: Vec::new(),
@@ -981,10 +1097,17 @@ mod tests {
             depth: 1,
             created_at: 100,
             completed_at: None,
+            usage: None,
         });
         assert_eq!(manager.get("agent-1").unwrap().name, "researcher");
         assert_eq!(manager.get("researcher").unwrap().id, "agent-1");
-        manager.finish("agent-1", SubAgentStatus::Completed, Some("done".into()), None);
+        manager.finish(
+            "agent-1",
+            SubAgentStatus::Completed,
+            Some("done".into()),
+            None,
+            None,
+        );
         let rec = manager.get("agent-1").unwrap();
         assert_eq!(rec.status, SubAgentStatus::Completed);
         assert_eq!(rec.result.as_deref(), Some("done"));
@@ -1025,5 +1148,41 @@ mod tests {
             "conv-parent",
             parent_gen
         ));
+    }
+
+    fn ok_run_result() -> Result<AgentRunResult, String> {
+        Ok(AgentRunResult {
+            content: "done".to_string(),
+            reasoning: None,
+            tool_records: Vec::new(),
+            segments: Vec::new(),
+            api_messages: Vec::new(),
+            steps: Vec::new(),
+            stream_outcome: String::new(),
+            usage: None,
+        })
+    }
+
+    #[test]
+    fn retry_only_on_recoverable_error_with_attempts_and_active_parent() {
+        // SUB_AGENT_MAX_ATTEMPTS == 2: attempt 0 may retry, attempt 1 may not.
+        assert_eq!(SUB_AGENT_MAX_ATTEMPTS, 2);
+
+        let recoverable: Result<AgentRunResult, String> =
+            Err("Chat tools planning returned an empty assistant response".to_string());
+
+        // First attempt, parent alive, recoverable error → retry.
+        assert!(should_retry_sub_agent(&recoverable, 0, true));
+        // Last attempt → no retry even though recoverable.
+        assert!(!should_retry_sub_agent(&recoverable, 1, true));
+        // Parent cancelled → never retry (cascade).
+        assert!(!should_retry_sub_agent(&recoverable, 0, false));
+
+        // Cancellation is not a recoverable error → never retry.
+        let cancelled: Result<AgentRunResult, String> = Err("cancelled".to_string());
+        assert!(!should_retry_sub_agent(&cancelled, 0, true));
+
+        // Success → never retry.
+        assert!(!should_retry_sub_agent(&ok_run_result(), 0, true));
     }
 }
