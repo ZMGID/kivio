@@ -88,6 +88,7 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void
   onNewConversation: () => void
   onConversationDeleted?: (id: string) => void
+  onForceDropConversation?: (id: string) => void
   onOpenSettings: () => void
   onOpenExtensionsItem: (item: ExtensionsNavItem) => void
   settingsActive?: boolean
@@ -368,6 +369,7 @@ export const Sidebar = memo(function Sidebar({
   onSelectConversation,
   onNewConversation,
   onConversationDeleted,
+  onForceDropConversation,
   onOpenSettings,
   onOpenExtensionsItem,
   settingsActive = false,
@@ -472,17 +474,28 @@ export const Sidebar = memo(function Sidebar({
 
   const handleDeleteConversation = async (id: string) => {
     if (!window.confirm('确定删除此对话？此操作无法撤销。')) return
-    try {
-      if (generatingConversationIds.has(id)) {
+    // B3：删"generating"会话先强制清父组件 in-flight/乐观状态，
+    // 让乐观合并（visibleConversations）不再保留它。
+    if (generatingConversationIds.has(id)) {
+      onForceDropConversation?.(id)
+      try {
         await chatApi.cancelStream(id)
+      } catch (err) {
+        console.error('Failed to cancel stream before delete:', err)
       }
+    }
+    try {
       await chatApi.deleteConversation(id)
+    } catch (err) {
+      console.error('Failed to delete conversation:', err)
+    } finally {
+      // 无论后端删除成功或抛错，都本地剔除该 id 并刷新侧栏，确保 ghost 立即消失。
+      setConversations((items) => items.filter((item) => item.id !== id))
+      onForceDropConversation?.(id)
       if (currentConversationId === id) {
         onConversationDeleted?.(id)
       }
       await loadSidebarData({ silent: true })
-    } catch (err) {
-      console.error('Failed to delete conversation:', err)
     }
   }
 

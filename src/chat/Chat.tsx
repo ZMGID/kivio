@@ -503,6 +503,10 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const streamingReasoningRef = useRef('')
   const settingsRef = useRef<SettingsShellHandle>(null)
   const pendingAfterSettingsCloseRef = useRef<(() => void) | null>(null)
+  // A 合帧（render coalescing）：高频 stream/tool/subagent/userprompt 事件不再每条都同步
+  // setState 重渲，而是把"待显示的快照"记到 ref，用 requestAnimationFrame 每帧最多 flush 一次。
+  const pendingStreamRenderRef = useRef<{ conversationId: string; snapshot: ConversationStreamSnapshot } | null>(null)
+  const streamRenderRafRef = useRef<number | null>(null)
 
   useEffect(() => onChatImageViewerOpen(setImageViewerItem), [])
 
@@ -521,6 +525,26 @@ export default function Chat({ onSettingsChange }: ChatProps) {
 
   const clearConversationInFlight = useCallback((conversationId: string) => {
     inFlightConversationsRef.current.delete(conversationId)
+    syncGeneratingConversationIds()
+  }, [syncGeneratingConversationIds])
+
+  // B：彻底把一个会话从所有本地乐观/in-flight/快照状态中剔除（ghost 清理）。
+  // 不触碰 currentConversation/route，由调用方按场景决定。
+  const dropConversationLocally = useCallback((conversationId: string) => {
+    inFlightConversationsRef.current.delete(conversationId)
+    delete streamSnapshotsRef.current[conversationId]
+    delete pendingToolConfirmsRef.current[conversationId]
+    delete pendingStreamDoneRef.current[conversationId]
+    delete streamErrorsRef.current[conversationId]
+    // 若该会话还挂着待刷新的合帧，连带取消，避免被剔除的 ghost 还闪一帧。
+    if (pendingStreamRenderRef.current?.conversationId === conversationId) {
+      if (streamRenderRafRef.current != null) {
+        cancelAnimationFrame(streamRenderRafRef.current)
+        streamRenderRafRef.current = null
+      }
+      pendingStreamRenderRef.current = null
+    }
+    setOptimisticSidebarConversations((items) => items.filter((item) => item.id !== conversationId))
     syncGeneratingConversationIds()
   }, [syncGeneratingConversationIds])
 
@@ -568,6 +592,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   }, [])
 
   const clearStreamingPreview = useCallback(() => {
+    // 取消挂起的合帧，避免旧快照在清空后又被刷回来产生空帧/串帧。
+    if (streamRenderRafRef.current != null) {
+      cancelAnimationFrame(streamRenderRafRef.current)
+      streamRenderRafRef.current = null
+    }
+    pendingStreamRenderRef.current = null
     setStreaming(false)
     setStreamFrozen(false)
     setCancellingStream(false)
@@ -594,6 +624,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   }, [syncGeneratingConversationIds])
 
   const restoreStreamingPreview = useCallback((conversationId: string | null) => {
+    // 切换会话/恢复预览前取消任何挂起的合帧，避免上一个会话的快照被刷到当前视图。
+    if (streamRenderRafRef.current != null) {
+      cancelAnimationFrame(streamRenderRafRef.current)
+      streamRenderRafRef.current = null
+    }
+    pendingStreamRenderRef.current = null
     if (!conversationId) {
       clearStreamingPreview()
       setPendingToolConfirm(null)
@@ -623,11 +659,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     setPendingToolConfirm(pendingToolConfirmsRef.current[conversationId] ?? null)
   }, [clearStreamingPreview])
 
-  const showStreamSnapshotIfCurrent = useCallback((
-    conversationId: string,
-    snapshot: ConversationStreamSnapshot,
-  ) => {
-    if (currentConversationIdRef.current !== conversationId) return
+  const applyStreamSnapshotToState = useCallback((snapshot: ConversationStreamSnapshot) => {
     setStreaming(snapshot.streaming)
     setCancellingStream(false)
     setStreamingContent(snapshot.content)
@@ -641,6 +673,53 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     streamStartedAtRef.current = snapshot.startedAt
     streamingContentRef.current = snapshot.content
     streamingReasoningRef.current = snapshot.reasoning
+  }, [])
+
+  // 立即把挂起帧刷出去（done/结束、卸载、切换会话前调用），保证不丢最后一帧。
+  const flushStreamRender = useCallback(() => {
+    if (streamRenderRafRef.current != null) {
+      cancelAnimationFrame(streamRenderRafRef.current)
+      streamRenderRafRef.current = null
+    }
+    const pending = pendingStreamRenderRef.current
+    pendingStreamRenderRef.current = null
+    if (!pending) return
+    if (currentConversationIdRef.current !== pending.conversationId) return
+    applyStreamSnapshotToState(pending.snapshot)
+  }, [applyStreamSnapshotToState])
+
+  // 取消挂起帧而不应用（切换会话/卸载时调用，避免把旧会话快照刷到新会话）。
+  // 注：clearStreamingPreview / restoreStreamingPreview 已内联同样的取消逻辑。
+
+  // A 合帧：事件本身仍即时累积到 snapshot 对象，这里只把"渲染"节流到每帧一次。
+  // immediate=true（done 等终止帧）立即 flush，不再等下一帧。
+  const showStreamSnapshotIfCurrent = useCallback((
+    conversationId: string,
+    snapshot: ConversationStreamSnapshot,
+    immediate = false,
+  ) => {
+    if (currentConversationIdRef.current !== conversationId) return
+    pendingStreamRenderRef.current = { conversationId, snapshot }
+    if (immediate) {
+      flushStreamRender()
+      return
+    }
+    if (streamRenderRafRef.current != null) return
+    streamRenderRafRef.current = requestAnimationFrame(() => {
+      streamRenderRafRef.current = null
+      const pending = pendingStreamRenderRef.current
+      pendingStreamRenderRef.current = null
+      if (!pending) return
+      if (currentConversationIdRef.current !== pending.conversationId) return
+      applyStreamSnapshotToState(pending.snapshot)
+    })
+  }, [applyStreamSnapshotToState, flushStreamRender])
+
+  useEffect(() => () => {
+    if (streamRenderRafRef.current != null) {
+      cancelAnimationFrame(streamRenderRafRef.current)
+      streamRenderRafRef.current = null
+    }
   }, [])
 
   const clearStreamSnapshot = useCallback((conversationId: string | null) => {
@@ -1002,13 +1081,18 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setCancellingStream(false)
     } catch (err) {
       console.error('Failed to reload conversation:', err)
+      // B2：reload 失败（尤其"对话不存在"）——把 ghost 从乐观列表/in-flight/快照剔除并刷新侧栏。
+      dropConversationLocally(conversationId)
       forgetRememberedChatRoute()
-      currentConversationIdRef.current = null
-      applyConversation(null)
-      syncConversationRoute(null)
-      setStreamError(typeof err === 'string' ? err : (err as Error).message || '对话加载失败')
+      if (currentConversationIdRef.current === conversationId || currentConversationIdRef.current === null) {
+        currentConversationIdRef.current = null
+        applyConversation(null)
+        syncConversationRoute(null)
+      }
+      refreshSidebar()
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '对话加载失败，已从列表移除')
     }
-  }, [applyConversation, restoreStreamingPreview, syncConversationRoute])
+  }, [applyConversation, dropConversationLocally, refreshSidebar, restoreStreamingPreview, syncConversationRoute])
 
   const refreshContextStats = useCallback(async (conversationId?: string) => {
     const targetConversationId = conversationId ?? currentConversationIdRef.current
@@ -1212,8 +1296,9 @@ export default function Chat({ onSettingsChange }: ChatProps) {
             if (activeReasoningSegment) {
               updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id)
             }
-            showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
           }
+          // done：立即 flush 最后一帧，别让合帧吞掉收尾内容。
+          showStreamSnapshotIfCurrent(payload.conversationId, snapshot, true)
           // invoke 未完成前不要 reload；延后到 flushPendingStreamDone，避免与 send 写盘竞态。
           if (isConversationInFlight(inFlightConversationsRef.current, payload.conversationId)) {
             pendingStreamDoneRef.current[payload.conversationId] = () => finishStreamingRun(payload)
@@ -1608,9 +1693,19 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setStreamError('')
     } catch (err) {
       console.error('Failed to load conversation:', err)
-      setStreamError(typeof err === 'string' ? err : (err as Error).message || '对话加载失败')
+      // B2：点开一个不存在/加载失败的 ghost——从乐观列表 + in-flight + 快照剔除，
+      // 清空当前会话并刷新侧栏，让 ghost 自动消失而不是卡住。
+      dropConversationLocally(conversationId)
+      if (currentConversationIdRef.current === conversationId) {
+        currentConversationIdRef.current = null
+        applyConversation(null)
+      }
+      forgetRememberedChatRoute()
+      syncConversationRoute(null)
+      refreshSidebar()
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '对话加载失败，已从列表移除')
     }
-  }, [applyConversation, restoreStreamingPreview, syncConversationRoute])
+  }, [applyConversation, dropConversationLocally, refreshSidebar, restoreStreamingPreview, syncConversationRoute])
 
   const handleNewConversation = useCallback(async () => {
     setSelectedProject(null)
@@ -2363,6 +2458,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     refreshSidebar()
   }, [applyConversation, refreshSidebar, syncConversationRoute])
 
+  const handleSidebarForceDropConversation = useCallback((id: string) => {
+    // B3：侧栏删除时强制清掉该会话的 in-flight/快照/乐观项，
+    // 使乐观合并不再保留它（删"generating"会话也能立即从侧栏消失）。
+    dropConversationLocally(id)
+  }, [dropConversationLocally])
+
   const handleSidebarOpenSettings = useCallback(() => {
     const settingsPanelOpen = chatView === 'settings' && extensionsNavItem === null
     if (settingsPanelOpen) {
@@ -2400,6 +2501,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
           onSelectConversation={handleSidebarSelectConversation}
           onNewConversation={handleSidebarNewConversation}
           onConversationDeleted={handleSidebarConversationDeleted}
+          onForceDropConversation={handleSidebarForceDropConversation}
           onOpenExtensionsItem={openExtensionsItem}
           onOpenSettings={handleSidebarOpenSettings}
           settingsActive={chatView === 'settings' && extensionsNavItem === null}
