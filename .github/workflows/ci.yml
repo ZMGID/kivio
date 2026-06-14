@@ -35,5 +35,18 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Tauri 在 Linux 上编译需要 glib/gtk/webkit 等系统库（应用本身只发 macOS/Windows，
+      # 但 CI 在 Linux 上跑平台无关的 Rust 测试，cargo test 仍需编过 Tauri 依赖）。
+      - name: Install Tauri Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev
+
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
