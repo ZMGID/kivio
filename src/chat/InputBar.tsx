@@ -1227,6 +1227,8 @@ export function InputBar({
     ? 'top-full mt-1.5'
     : 'bottom-full mb-1.5'
   const projectPanelOrigin = layout === 'inline' ? 'top left' : 'bottom left'
+  // 模式菜单移到发送键旁、右对齐：原点跟随展开方向用右侧
+  const modePanelOrigin = layout === 'inline' ? 'top right' : 'bottom right'
   const externalMcpTools = enabledTools.filter(isExternalMcpTool)
   const hasToolProblem = Boolean(toolsDisabledReason || toolStatusHint || sendDisabledReason)
   const showMcpSection = externalMcpTools.length > 0 || Boolean(toolsDisabledReason)
@@ -1609,77 +1611,13 @@ export function InputBar({
               </button>
             )}
 
-            {cancelVisible && onCancel ? (
-              <button
-                type="button"
-                onClick={onCancel}
-                disabled={cancelling}
-                className="chat-motion-fade-up mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white shadow-sm transition-all hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
-                title={cancelling ? '正在停止' : '停止生成'}
-                aria-label={cancelling ? '正在停止' : '停止生成'}
-              >
-                <Square size={13} strokeWidth={2.4} fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={!canSend}
-                tabIndex={-1}
-                title={sendDisabledReason || (canSend ? '发送' : '输入消息后发送')}
-                aria-label={sendDisabledReason || '发送'}
-                className={`mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all ${
-                  canSend
-                    ? 'chat-motion-soft-pulse bg-[#e8a090] text-white shadow-sm hover:bg-[#df9585]'
-                    : 'bg-neutral-200 text-neutral-400 dark:bg-neutral-700 dark:text-neutral-500'
-                }`}
-              >
-                <ArrowUp size={18} strokeWidth={2.25} />
-              </button>
-            )}
-          </div>
-        </div>
-        {(projectEntryEnabled || modeEntryEnabled) && (
-          <div className="relative z-10 mt-2 flex items-center justify-start gap-1.5 px-3">
-            {projectEntryEnabled && (
-              <button
-                type="button"
-                onClick={toggleProjectMenu}
-                disabled={disabled}
-                className={`inline-flex h-[26px] max-w-full items-center gap-1 rounded-full px-2 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
-                  projectMenuOpen
-                    ? 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100'
-                    : selectedProject
-                      ? 'text-neutral-700 hover:bg-neutral-200/60 dark:text-neutral-200 dark:hover:bg-neutral-700/55'
-                      : 'text-neutral-500 hover:bg-neutral-200/50 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700/55 dark:hover:text-neutral-100'
-                } disabled:cursor-default disabled:opacity-50`}
-                aria-expanded={projectMenuOpen}
-                aria-haspopup="menu"
-              >
-                {selectedProject ? (
-                  <Folder size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
-                ) : (
-                  <FolderPlus size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
-                )}
-                <span className="min-w-0 truncate">
-                  {selectedProject ? selectedProject.name : '进入项目工作'}
-                </span>
-                <ChevronDown
-                  size={12}
-                  strokeWidth={2}
-                  className={`shrink-0 text-neutral-400 transition-transform ${
-                    projectMenuOpen ? 'rotate-180' : ''
-                  }`}
-                />
-              </button>
-            )}
             {modeEntryEnabled && (
-              <div className="relative">
+              <div className="relative shrink-0 self-center">
                 <button
                   type="button"
                   onClick={toggleModeMenu}
                   disabled={disabled}
-                  className={`inline-flex h-[26px] max-w-full items-center gap-1 rounded-full px-2 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
+                  className={`inline-flex h-[26px] max-w-full items-center gap-0.5 rounded-full px-1.5 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
                     modeMenuOpen
                       ? 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100'
                       : activeModePillClass.idle
@@ -1706,8 +1644,8 @@ export function InputBar({
                   <>
                     <div className="fixed inset-0 z-30" onClick={closeModeMenu} aria-hidden />
                     <div
-                      className={`chat-motion-popover absolute left-0 z-40 w-[min(248px,calc(100vw-32px))] overflow-visible rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 ${projectPanelPlacementClass}`}
-                      style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
+                      className={`chat-motion-popover absolute right-0 z-40 w-[min(248px,calc(100vw-32px))] overflow-visible rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] p-1 shadow-[0_10px_24px_rgba(0,0,0,0.12)] dark:border-neutral-700 dark:bg-neutral-900 ${projectPanelPlacementClass}`}
+                      style={{ ['--chat-popover-origin' as string]: modePanelOrigin }}
                       data-tauri-drag-region="false"
                       role="menu"
                     >
@@ -1748,6 +1686,71 @@ export function InputBar({
                   </>
                 )}
               </div>
+            )}
+
+            {cancelVisible && onCancel ? (
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={cancelling}
+                className="chat-motion-fade-up mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-white shadow-sm transition-all hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
+                title={cancelling ? '正在停止' : '停止生成'}
+                aria-label={cancelling ? '正在停止' : '停止生成'}
+              >
+                <Square size={13} strokeWidth={2.4} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!canSend}
+                tabIndex={-1}
+                title={sendDisabledReason || (canSend ? '发送' : '输入消息后发送')}
+                aria-label={sendDisabledReason || '发送'}
+                className={`mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-all ${
+                  canSend
+                    ? 'chat-motion-soft-pulse bg-[#e8a090] text-white shadow-sm hover:bg-[#df9585]'
+                    : 'bg-neutral-200 text-neutral-400 dark:bg-neutral-700 dark:text-neutral-500'
+                }`}
+              >
+                <ArrowUp size={18} strokeWidth={2.25} />
+              </button>
+            )}
+          </div>
+        </div>
+        {projectEntryEnabled && (
+          <div className="relative z-10 mt-2 flex items-center justify-start gap-1.5 px-3">
+            {projectEntryEnabled && (
+              <button
+                type="button"
+                onClick={toggleProjectMenu}
+                disabled={disabled}
+                className={`inline-flex h-[26px] max-w-full items-center gap-1 rounded-full px-2 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
+                  projectMenuOpen
+                    ? 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100'
+                    : selectedProject
+                      ? 'text-neutral-700 hover:bg-neutral-200/60 dark:text-neutral-200 dark:hover:bg-neutral-700/55'
+                      : 'text-neutral-500 hover:bg-neutral-200/50 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700/55 dark:hover:text-neutral-100'
+                } disabled:cursor-default disabled:opacity-50`}
+                aria-expanded={projectMenuOpen}
+                aria-haspopup="menu"
+              >
+                {selectedProject ? (
+                  <Folder size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+                ) : (
+                  <FolderPlus size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+                )}
+                <span className="min-w-0 truncate">
+                  {selectedProject ? selectedProject.name : '进入项目工作'}
+                </span>
+                <ChevronDown
+                  size={12}
+                  strokeWidth={2}
+                  className={`shrink-0 text-neutral-400 transition-transform ${
+                    projectMenuOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
             )}
           </div>
         )}
