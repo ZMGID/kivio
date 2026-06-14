@@ -124,14 +124,18 @@ pub fn apply_chat_window_chrome(window: &WebviewWindow) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = window.set_decorations(false);
-        let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
         #[cfg(target_os = "windows")]
         {
+            // 不透明窗口：填白底即可（前端 shell 会铺满覆盖），圆角 / 描边 / 阴影交给 DWM。
+            let _ = window.set_background_color(Some(Color(255, 255, 255, 255)));
             let _ = window.set_shadow(true);
             apply_windows_chat_window_frame(window);
         }
         #[cfg(not(target_os = "windows"))]
-        let _ = window.set_shadow(false);
+        {
+            let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
+            let _ = window.set_shadow(false);
+        }
     }
 }
 
@@ -141,7 +145,7 @@ pub fn apply_chat_window_chrome(window: &WebviewWindow) {
 fn apply_windows_chat_window_frame(window: &WebviewWindow) {
     use std::ffi::c_void;
     use windows::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT,
         DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
 
@@ -158,7 +162,8 @@ fn apply_windows_chat_window_frame(window: &WebviewWindow) {
             std::mem::size_of_val(&corner) as u32,
         );
 
-        let border_color = DWMWA_COLOR_NONE;
+        // 使用系统默认描边颜色（随浅色/深色主题自适应），呈现原生 Windows 窗口边框。
+        let border_color = DWMWA_COLOR_DEFAULT;
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_BORDER_COLOR,
@@ -261,10 +266,21 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
             .shadow(true);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        // 透明 WebView 背景允许前端 shell 自绘圆角；Windows 不使用原生 shadow，
-        // 避免透明窗口矩形外壳在桌面上显示成第二层边框。
+        // Windows：不透明无边框窗口，圆角 / 描边 / 阴影全部交给 DWM
+        // （见 apply_windows_chat_window_frame）。刻意不用透明分层窗口，
+        // 否则 Win11 在分层表面上绘制系统边框时会出现一条二次接缝（顶部“叠了一层”）。
+        builder = builder
+            .decorations(false)
+            .transparent(false)
+            .background_color(Color(255, 255, 255, 255))
+            .shadow(true);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // Linux：透明无边框壳，由前端 CSS 自绘圆角 / 边框 / 阴影。
         builder = builder
             .decorations(false)
             .transparent(true)
