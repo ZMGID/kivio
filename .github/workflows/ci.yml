@@ -8,7 +8,9 @@ on:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    # 应用只发 macOS / Windows；在 macOS runner 上跑全部检查，使 cargo test 在真实目标平台编译
+    # （Linux 分支如 rapidocr 的 ONNX 动态库下载是不维护的死代码，无法在 Linux 编过）。
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
@@ -35,22 +37,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Tauri 在 Linux 上编译需要 glib/gtk/webkit 等系统库（应用本身只发 macOS/Windows，
-      # 但 CI 在 Linux 上跑平台无关的 Rust 测试，cargo test 仍需编过 Tauri 依赖）。
-      - name: Install Tauri Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libglib2.0-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libsoup-3.0-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev
-
       # tauri-build 会校验 externalBin（kivio-ocr-helper）对应当前 target triple 的二进制存在。
-      # build:swift 在非 macOS 平台生成 stub 占位，满足校验（否则 cargo test 在 build-script 阶段失败）。
-      - name: Build Swift sidecar stub
+      # 在 macOS 上 build:swift 构建真实 Swift sidecar，满足校验（否则 cargo test 在 build-script 阶段失败）。
+      - name: Build Swift sidecar
         run: npm run build:swift
 
       - name: Rust tests
