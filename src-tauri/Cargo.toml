@@ -52,6 +52,10 @@ ndarray = "0.17"
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+# objc 0.2.7 内部用的就是 objc_exception 0.1：提供裸 @try/@catch（C 层），用于在 FFI 边界拦截
+# overlay 主线程 objc 调用抛出的 NSException——catch_unwind 接不住外来异常会 abort。直接依赖它而
+# 不开 objc 的 `exception` feature（那会把每个 msg_send! 都包起来并 panic，副作用太大）。
+objc_exception = "0.1"
 libc = "0.2"
 core-graphics = "0.24"
 core-foundation = "0.10"

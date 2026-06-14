@@ -55,13 +55,27 @@ struct ImageCropRect {
 }
 
 pub(crate) fn request_lens_close(app: &AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("lens") {
+    if let Some(window) = active_overlay_window(app) {
         if window.is_visible().ok().unwrap_or(false) {
-            let _ = app.emit_to("lens", "lens-close-request", ());
+            let _ = app.emit_to(window.label(), "lens-close-request", ());
             return Ok(());
         }
     }
     lens_close(app.clone())
+}
+
+/// 返回当前可见的浮窗（lens 问答 或 translate 快速翻译）。两窗口互斥，同一时刻至多一个
+/// 可见，所以这里返回第一个可见的即可。共享命令（capture / close / floating / focus 等）
+/// 用它把操作落到"当前活动的浮窗"上，而不是硬编码 "lens"。
+pub(crate) fn active_overlay_window(app: &AppHandle) -> Option<WebviewWindow> {
+    for label in ["translate", "lens"] {
+        if let Some(window) = app.get_webview_window(label) {
+            if window.is_visible().ok().unwrap_or(false) {
+                return Some(window);
+            }
+        }
+    }
+    None
 }
 
 fn register_lens_escape_shortcut(app: &AppHandle) {
@@ -74,11 +88,11 @@ fn register_lens_escape_shortcut(app: &AppHandle) {
         if event.state != ShortcutState::Pressed {
             return;
         }
-        let Some(window) = app.get_webview_window("lens") else {
+        let Some(window) = active_overlay_window(app) else {
             return;
         };
         if window.is_visible().ok().unwrap_or(false) {
-            let _ = app.emit_to("lens", "lens-close-request", ());
+            let _ = app.emit_to(window.label(), "lens-close-request", ());
         }
     }) {
         eprintln!("[lens-esc] failed to register temporary Escape shortcut: {err}");
@@ -413,12 +427,9 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     }
 
     let state = app.state::<AppState>();
-    // 自愈：busy=true 但 lens 窗口已不可见（外部强关 / dev 重载等异常），重置 busy
+    // 自愈：busy=true 但已无浮窗可见（外部强关 / dev 重载等异常），重置 busy
     if state.lens_busy.load(Ordering::SeqCst) {
-        let visible = app
-            .get_webview_window("lens")
-            .and_then(|w| w.is_visible().ok())
-            .unwrap_or(false);
+        let visible = active_overlay_window(app).is_some();
         if !visible {
             state.lens_busy.store(false, Ordering::SeqCst);
         }
@@ -446,11 +457,20 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         return Ok(());
     }
 
-    let window = match windows::ensure_lens_window(app) {
-        Ok(w) => w,
-        Err(e) => {
-            state.lens_busy.store(false, Ordering::SeqCst);
-            return Err(e);
+    // 按 mode 选目标窗口：chat → lens 问答窗口；translate / translateText → 独立快速翻译窗口。
+    // 两者互斥（同一时刻只一个浮窗可见，由 lens_is_active 泛化 + 热键 toggle 保证）。
+    let window = {
+        let ensured = if mode == "chat" {
+            windows::ensure_lens_window(app)
+        } else {
+            windows::ensure_translate_window(app)
+        };
+        match ensured {
+            Ok(w) => w,
+            Err(e) => {
+                state.lens_busy.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
         }
     };
     // 窗口已确保会显示（早返回守卫都已通过）：此刻记下前台 App，关闭时交还给它，避免 Kivio
@@ -593,7 +613,7 @@ pub(crate) async fn lens_capture_region(
     // SCK 路径：把自己 PID 传给 capture_region_image，SCK 在 GPU compositor 排除 lens webview，
     // 不再需要 hide webview + sleep 60ms 等 NSWindow.orderOut 生效（旧 `screencapture -R` 会截到全屏透明 lens 自己）。
     // Windows 版 capture_region_image 忽略 exclude_self_pid 参数。
-    let _ = app.get_webview_window("lens"); // 仍引用以保证 webview 存活
+    let _ = active_overlay_window(&app); // 仍引用以保证当前浮窗 webview 存活
     let exclude_self_pid: Option<i32> = {
         #[cfg(target_os = "macos")]
         {
@@ -1784,8 +1804,8 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
     cleanup_lens_freeze_frame(&app);
     state.lens_busy.store(false, Ordering::SeqCst);
     unregister_lens_escape_shortcut(&app);
-    if let Some(window) = app.get_webview_window("lens") {
-        // 关闭只 hide、不销毁：lens 窗口被 object_setClass 换成了自定义 NSPanel 子类，
+    if let Some(window) = active_overlay_window(&app) {
+        // 关闭只 hide、不销毁：浮窗被 object_setClass 换成了自定义 NSPanel 子类，
         // destroy() 时 tao/wry 按原类清理会抛 ObjC 异常穿过 FFI → "Rust cannot catch foreign
         // exceptions" abort。所以复用（隐藏 + 复位），不走销毁重建。
         let _ = window.hide();
@@ -1980,7 +2000,7 @@ pub(crate) struct FloatingRect {
 
 #[tauri::command]
 pub(crate) fn lens_set_floating(app: AppHandle, rect: FloatingRect) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("lens") else {
+    let Some(window) = active_overlay_window(&app) else {
         return Ok(());
     };
 
@@ -2021,7 +2041,7 @@ pub(crate) fn lens_animate_floating(
     height: f64,
     duration_ms: f64,
 ) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("lens") else {
+    let Some(window) = active_overlay_window(&app) else {
         return Ok(());
     };
     // AppKit 调用必须落在主线程;run_on_main_thread 立即返回,动画后续由 Core Animation 驱动。
@@ -2109,7 +2129,7 @@ pub(crate) fn lens_animate_floating(
     duration_ms: f64,
 ) -> Result<(), String> {
     let _ = duration_ms;
-    let Some(window) = app.get_webview_window("lens") else {
+    let Some(window) = active_overlay_window(&app) else {
         return Ok(());
     };
     let _ = window.set_position(tauri::LogicalPosition::new(x, y));

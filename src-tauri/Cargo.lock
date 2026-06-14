@@ -3054,6 +3054,7 @@ dependencies = [
  "ndarray",
  "oar-ocr",
  "objc",
+ "objc_exception",
  "ort",
  "regex",
  "reqwest 0.12.28",
@@ -4170,6 +4171,15 @@ dependencies = [
  "objc2-foundation",
  "objc2-javascript-core",
  "objc2-security",
+]
+
+[[package]]
+name = "objc_exception"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad970fb455818ad6cba4c122ad012fae53ae8b4795f86378bce65e4f6bab2ca4"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

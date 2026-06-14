@@ -5,7 +5,8 @@
     "main",
     "chat",
     "settings",
-    "lens"
+    "lens",
+    "translate"
   ],
   "permissions": [
     "core:default",

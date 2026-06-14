@@ -279,15 +279,11 @@ export default function Lens() {
 
     const run = async () => {
       if (!canFocus()) return
-      try {
-        await getCurrentWindow().setFocus()
-      } catch {
-        // Native focus can fail briefly while the window is still becoming visible.
-      }
-      if (!canFocus()) return
-      // 复用 lens 窗口时，原生 first responder 可能没落到内部 WKWebView，导致"第二次打开"要
-      // 手点一下才聚焦。这里让原生把 WKWebView 设为 first responder；本函数本就带多次重试
-      // ([0,40,120,240,420])，复用其时序磨平复用窗口的聚焦不稳定。
+      // 复用窗口时原生 first responder 可能没落到内部 WKWebView，导致"第二次打开"要手点一下才聚焦。
+      // 这里让原生 makeKeyWindow + makeFirstResponder(WKWebView)——非激活方式，**不调
+      // getCurrentWindow().setFocus()**：tao 的 set_focus 会 `[NSApp activateIgnoringOtherApps:YES]`
+      // 激活整个 app，从而把别屏上的 Chat 主窗口拽到前台造成跳屏。非激活 panel 只需 makeKeyWindow
+      // 即可拿到键盘，无需激活 app。本函数本就带多次重试([0,40,120,240,420])磨平复用聚焦不稳定。
       try {
         await api.lensFocusWebview()
       } catch {

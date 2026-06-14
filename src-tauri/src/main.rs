@@ -104,7 +104,7 @@ fn main() {
         .plugin(autostart_plugin)
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                if window.label() == "lens" {
+                if window.label() == "lens" || window.label() == "translate" {
                     api.prevent_close();
                     let _ = window.hide();
                     return;
@@ -121,8 +121,10 @@ fn main() {
             tauri::WindowEvent::Focused(true) =>
             {
                 #[cfg(target_os = "macos")]
-                if window.label() == "lens" {
-                    if let Some(webview_window) = window.app_handle().get_webview_window("lens") {
+                if window.label() == "lens" || window.label() == "translate" {
+                    if let Some(webview_window) =
+                        window.app_handle().get_webview_window(window.label())
+                    {
                         ensure_overlay_panel(&webview_window);
                     }
                 }
@@ -204,6 +206,11 @@ fn main() {
             #[cfg(target_os = "windows")]
             if let Err(err) = windows::ensure_lens_window(&app.handle()) {
                 eprintln!("Failed to pre-create lens window: {err}");
+            }
+            // 快速翻译独立窗口同样预创建，让截图翻译/选词翻译首次触发不闪白。
+            #[cfg(target_os = "windows")]
+            if let Err(err) = windows::ensure_translate_window(&app.handle()) {
+                eprintln!("Failed to pre-create translate window: {err}");
             }
 
             // 启动后 5s 静默检查更新（settings.auto_check_update 控制）

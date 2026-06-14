@@ -75,12 +75,25 @@ fn send_copy_shortcut() {
     }
 }
 
+/// Accessibility 选区读取的三态结果。
+/// - `Text(s)`：AX 取到非空选区。
+/// - `Empty`：AX 可用且确认当前没有选区（元素支持选区属性但内容为空），
+///   据此可以直接判定无选区，**跳过 Cmd+C 兜底**（消除空选区时原生 App 的系统提示音）。
+/// - `Unavailable`：AX 无权限 / 无 focused element / 元素不支持该属性 / 其它错误——
+///   无法判定，保留 Cmd+C 兜底（浏览器/Electron/终端等不暴露 AX 的 App，行为不变）。
+enum AxSelection {
+    Text(String),
+    Empty,
+    Unavailable,
+}
+
 /// macOS: 直接从当前前台控件读取 Accessibility selected text。
 /// 这条路径不碰剪贴板，也不受 Lens 热键仍按住的 Cmd/Shift/G 干扰。
 #[cfg(target_os = "macos")]
-fn read_accessibility_selected_text() -> Option<String> {
+fn read_accessibility_selected_text() -> AxSelection {
     if !check_accessibility(false) {
-        return None;
+        eprintln!("[lens-capture] AX unavailable: accessibility permission missing");
+        return AxSelection::Unavailable;
     }
 
     use core_foundation::{
@@ -102,11 +115,14 @@ fn read_accessibility_selected_text() -> Option<String> {
     }
 
     const AX_ERROR_SUCCESS: AXError = 0;
+    // kAXErrorNoValue：元素支持该属性，但当前没有值（即确认无选区）。
+    const AX_ERROR_NO_VALUE: AXError = -25212;
 
     unsafe {
         let system = AXUIElementCreateSystemWide();
         if system.is_null() {
-            return None;
+            eprintln!("[lens-capture] AX unavailable: system-wide element null");
+            return AxSelection::Unavailable;
         }
 
         let focused_attr = CFString::new("AXFocusedUIElement");
@@ -118,7 +134,8 @@ fn read_accessibility_selected_text() -> Option<String> {
         );
         CFRelease(system as CFTypeRef);
         if focused_err != AX_ERROR_SUCCESS || focused_ref.is_null() {
-            return None;
+            eprintln!("[lens-capture] AX unavailable: no focused element (err={focused_err})");
+            return AxSelection::Unavailable;
         }
         let focused = CFType::wrap_under_create_rule(focused_ref);
 
@@ -129,24 +146,44 @@ fn read_accessibility_selected_text() -> Option<String> {
             selected_attr.as_concrete_TypeRef(),
             &mut selected_ref,
         );
+
+        // 元素支持该属性但当前无值（无选区）→ 确认无选区。
+        if selected_err == AX_ERROR_NO_VALUE {
+            eprintln!("[lens-capture] AX confirmed empty selection (kAXErrorNoValue)");
+            return AxSelection::Empty;
+        }
+
         if selected_err != AX_ERROR_SUCCESS || selected_ref.is_null() {
-            return None;
+            // 元素不支持该属性 / 其它错误 / 空指针 → 无法判定，落 Cmd+C 兜底。
+            eprintln!("[lens-capture] AX unavailable: AXSelectedText err={selected_err}");
+            return AxSelection::Unavailable;
         }
 
         let selected = CFType::wrap_under_create_rule(selected_ref);
-        let text = selected.downcast_into::<CFString>()?.to_string();
-        if text.trim().is_empty() {
-            None
-        } else {
-            Some(text)
+        match selected.downcast_into::<CFString>() {
+            Some(cf) => {
+                let text = cf.to_string();
+                if text.trim().is_empty() {
+                    eprintln!("[lens-capture] AX confirmed empty selection (empty AXSelectedText)");
+                    AxSelection::Empty
+                } else {
+                    AxSelection::Text(text)
+                }
+            }
+            None => {
+                eprintln!("[lens-capture] AX unavailable: AXSelectedText not a CFString");
+                AxSelection::Unavailable
+            }
         }
     }
 }
 
 /// Windows: 通过 UI Automation TextPattern 直接读取当前前台控件的选区。
 /// 这条路径不碰剪贴板；不支持 TextPattern 的控件会自动降级到 Ctrl+C fallback。
+/// 维持旧行为：读到选区 → `Text`，读不到 → `Unavailable`（落 Ctrl+C 兜底），
+/// 不引入 `Empty` 短路，避免改动 Windows 的选区捕获行为。
 #[cfg(target_os = "windows")]
-fn read_accessibility_selected_text() -> Option<String> {
+fn read_accessibility_selected_text() -> AxSelection {
     use ::windows::{
         core::Interface,
         Win32::{
@@ -165,7 +202,7 @@ fn read_accessibility_selected_text() -> Option<String> {
         let init_result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         if init_result.is_err() && init_result != RPC_E_CHANGED_MODE {
             eprintln!("[lens-capture] CoInitializeEx failed: {init_result:?}");
-            return None;
+            return AxSelection::Unavailable;
         }
         let should_uninitialize = init_result.is_ok();
 
@@ -202,13 +239,16 @@ fn read_accessibility_selected_text() -> Option<String> {
             CoUninitialize();
         }
 
-        result
+        match result {
+            Some(text) => AxSelection::Text(text),
+            None => AxSelection::Unavailable,
+        }
     }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn read_accessibility_selected_text() -> Option<String> {
-    None
+fn read_accessibility_selected_text() -> AxSelection {
+    AxSelection::Unavailable
 }
 
 #[cfg(target_os = "macos")]
@@ -294,12 +334,22 @@ fn wait_for_copy_shortcut_modifiers_to_clear(timeout: Duration) {
 /// 失败/Accessibility 权限缺失/剪贴板为非文本格式 → 一律静默降级返回 None。
 /// 调用方负责确保此函数在 Lens 窗口 show() 之前执行。
 pub(crate) fn capture_active_selection() -> Option<String> {
-    if let Some(text) = read_accessibility_selected_text() {
-        eprintln!(
-            "[lens-capture] selected text captured via Accessibility len={}",
-            text.len()
-        );
-        return Some(text);
+    match read_accessibility_selected_text() {
+        AxSelection::Text(text) => {
+            eprintln!(
+                "[lens-capture] selected text captured via Accessibility len={}",
+                text.len()
+            );
+            return Some(text);
+        }
+        AxSelection::Empty => {
+            // AX 确认当前无选区：直接判定无选区，跳过 Cmd+C 兜底，避免空选区时原生 App 的系统提示音。
+            eprintln!("[lens-capture] AX confirmed no selection, skipping Cmd+C fallback");
+            return None;
+        }
+        AxSelection::Unavailable => {
+            // AX 无法判定：继续走下面的剪贴板 snapshot + Cmd+C 兜底逻辑。
+        }
     }
 
     // snapshot 原剪贴板文本(仅 text)。若是图片/文件/空，snapshot=None，事后不还原。
@@ -871,32 +921,37 @@ pub(crate) fn open_chat_settings_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 浮窗（lens 问答 或 translate 快速翻译）是否有任意一个正在显示。两窗口互斥，热键 toggle
+/// 据此判断"已开 → 关闭，否则打开"，从而保证同一时刻只有一个浮窗可见。
 fn lens_is_active(app: &AppHandle) -> bool {
+    let any_overlay_visible = || {
+        ["lens", "translate"].iter().any(|label| {
+            app.get_webview_window(label)
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false)
+        })
+    };
+
     if let Some(state) = app.try_state::<AppState>() {
         if state.lens_busy.load(Ordering::SeqCst) {
-            let visible = app
-                .get_webview_window("lens")
-                .and_then(|window| window.is_visible().ok())
-                .unwrap_or(false);
-            if visible {
+            if any_overlay_visible() {
                 return true;
             }
             state.lens_busy.store(false, Ordering::SeqCst);
         }
     }
 
-    app.get_webview_window("lens")
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false)
+    any_overlay_visible()
 }
 
 fn focus_lens_window(app: &AppHandle) -> bool {
-    let Some(window) = app.get_webview_window("lens") else {
+    let Some(window) = ["translate", "lens"]
+        .iter()
+        .filter_map(|label| app.get_webview_window(label))
+        .find(|window| window.is_visible().ok().unwrap_or(false))
+    else {
         return false;
     };
-    if !window.is_visible().ok().unwrap_or(false) {
-        return false;
-    }
     let _ = window.show();
     let _ = window.set_focus();
     true

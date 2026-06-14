@@ -281,12 +281,30 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
  * 创建时尺寸为悬浮态默认值；后端按需要 set_size 切换。
  */
 pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    if let Some(window) = app.get_webview_window("lens") {
+    ensure_overlay_window(app, "lens", "Lens")
+}
+
+/// 确保独立"快速翻译"窗口存在（不存在则创建）。
+/// 与 lens 浮窗共用同一套无边框透明 NSPanel 形态与 Lens.tsx bundle，按 hash query
+/// 的 mode（translate / translateText）渲染翻译 UI。与 lens 问答窗口互斥（同一时刻
+/// 只有一个浮窗可见，由 `lens_is_active` 泛化 + 热键 toggle 保证）。
+pub fn ensure_translate_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    ensure_overlay_window(app, "translate", "Translate")
+}
+
+/// lens / translate 浮窗共用的创建逻辑：无边框、透明、无原生阴影、初始隐藏，建窗后在
+/// macOS 上转成非激活 NSPanel（`ensure_overlay_panel`）。两窗口除 label / title 外完全一致。
+fn ensure_overlay_window(
+    app: &AppHandle,
+    label: &str,
+    title: &str,
+) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(label) {
         return Ok(window);
     }
 
-    let window = WebviewWindowBuilder::new(app, "lens", WebviewUrl::App("index.html#lens".into()))
-        .title("Lens")
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#lens".into()))
+        .title(title)
         .inner_size(600.0, 72.0)
         .always_on_top(true)
         .visible_on_all_workspaces(true)
@@ -304,7 +322,7 @@ pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    // macOS：把 lens 浮窗转成非激活 NSPanel，使其能浮现在别的 App 原生全屏 Space 上方。
+    // macOS：把浮窗转成非激活 NSPanel，使其能浮现在别的 App 原生全屏 Space 上方。
     #[cfg(target_os = "macos")]
     ensure_overlay_panel(&window);
 
@@ -410,6 +428,16 @@ pub fn focus_overlay_webview(window: &WebviewWindow) {
 }
 
 /// 在主线程上拿到 ns_window 指针并执行 `f`（AppKit 调用必须落在主线程）。
+///
+/// **FFI 边界拦 ObjC 异常（真 bug 修复，非兜底）**：overlay 的所有 objc 闭包
+/// （`ensure_overlay_panel` / `show_overlay_panel` / `focus_overlay_webview`）都经此单一漏斗。
+/// 这些闭包里的 `msg_send!` 一旦让某个 AppKit/ObjC 调用抛出 `NSException`，异常会沿主线程
+/// runloop 往上穿过 tao 的 `stop_app_on_panic`(`catch_unwind`)——而 `catch_unwind` **接不住
+/// 外来（ObjC）异常**，于是触发 `__rust_foreign_exception` → `abort`，整个 app 崩溃。
+/// 因此必须在这里用 `objc_exception::try`（底层 C 层 `@try/@catch`）把闭包执行包起来：
+/// ① 不再 abort（优雅吞掉这一次 overlay 配置/显示）；
+/// ② 捕获到异常时打印 `NSException` 的 `name` + `reason`——这是诊断职责，下次复现即可凭日志
+///   定位到底是哪个 ObjC 调用抛的异常，再去修真正的根因。
 #[cfg(target_os = "macos")]
 fn run_overlay_on_main<F>(window: &WebviewWindow, f: F)
 where
@@ -422,7 +450,13 @@ where
         if ptr.is_null() {
             return;
         }
-        f(ptr as *mut objc::runtime::Object);
+        let ptr = ptr as *mut objc::runtime::Object;
+        // 在 FFI 边界用 @try/@catch 包住闭包执行。两个执行分支（直接执行 / run_on_main_thread）
+        // 都通过 `run` 走这里，因此一处 guard 覆盖全部。
+        let result = unsafe { objc_exception::r#try(move || f(ptr)) };
+        if let Err(exc) = result {
+            log_overlay_objc_exception(exc);
+        }
     };
 
     if macos_is_main_thread() {
@@ -440,6 +474,43 @@ where
         .is_ok()
     {
         let _ = rx.recv_timeout(std::time::Duration::from_millis(250));
+    }
+}
+
+/// 把捕获到的 `NSException` 指针里的 `name` + `reason` 提取成 Rust 字符串并打印，用于定位到底是
+/// 哪个 ObjC 调用抛的异常。已在 `objc_exception::try` 的 `Err` 安全区内，这里只读裸指针、判空后再
+/// 取 UTF8String，绝不再触发新异常。
+#[cfg(target_os = "macos")]
+fn log_overlay_objc_exception(exc: *mut objc_exception::Exception) {
+    use objc::{msg_send, sel, sel_impl};
+
+    let exc = exc as *mut objc::runtime::Object;
+    if exc.is_null() {
+        eprintln!("[overlay-objc] caught nil NSException");
+        return;
+    }
+
+    // 从 NSString 安全取出 Rust 字符串：判空 → UTF8String(*const c_char) → CStr → 拷贝。
+    unsafe fn ns_string_to_rust(s: *mut objc::runtime::Object) -> String {
+        use objc::{msg_send, sel, sel_impl};
+        use std::ffi::CStr;
+        use std::os::raw::c_char;
+        if s.is_null() {
+            return "<nil>".to_string();
+        }
+        let utf8: *const c_char = msg_send![s, UTF8String];
+        if utf8.is_null() {
+            return "<nil>".to_string();
+        }
+        CStr::from_ptr(utf8).to_string_lossy().into_owned()
+    }
+
+    unsafe {
+        let name_obj: *mut objc::runtime::Object = msg_send![exc, name];
+        let reason_obj: *mut objc::runtime::Object = msg_send![exc, reason];
+        let name = ns_string_to_rust(name_obj);
+        let reason = ns_string_to_rust(reason_obj);
+        eprintln!("[overlay-objc] caught NSException name={name} reason={reason}");
     }
 }
 
@@ -543,12 +614,12 @@ unsafe fn configure_overlay_panel(window: *mut objc::runtime::Object) {
         let _: () = msg_send![window, _setPreventsActivation: true];
     }
 
-    // 3) collectionBehavior：每次显示时把浮窗移到**当前活动 Space**（MoveToActiveSpace）+ 允许
-    //    进别的 App 全屏 Space（FullScreenAuxiliary）+ 不进 Cmd+` 循环。
-    //    用 MoveToActiveSpace 而非 CanJoinAllSpaces：复用的窗口 orderOut→orderFront 时，
-    //    CanJoinAllSpaces 会把窗口粘在上次显示的那个 Space（用户切到别的 Space 起 lens 会跑回旧
-    //    Space），MoveToActiveSpace 则显式跟到当前 Space。两者互斥；Transient 与 Stationary 互斥，
-    //    配 MoveToActiveSpace 用 Transient（浮窗随 Space 浮动）。
+    // 3) collectionBehavior：用 **CanJoinAllSpaces**（Spotlight/Alfred 同款）让浮窗出现在**所有
+    //    Space**——它永远在当前这个 Space，orderFront 不需要切 Space → 不跳屏。配 FullScreenAuxiliary
+    //    覆盖别的 App 全屏、Transient 随 Space 浮动、IgnoresCycle 不进 Cmd+`。
+    //    不要用 MoveToActiveSpace：非激活 panel 只"成为 key"不"激活 app"，它的"移到活动 Space"
+    //    触发不发生 → 窗口停在归属 Space、orderFront 时系统把你切过去（每次都跳）。
+    //    不要用 Stationary：会把窗口钉在某个 Space（复用时跑回旧 Space）。
     const CAN_JOIN_ALL_SPACES: usize = 1 << 0;
     const MOVE_TO_ACTIVE_SPACE: usize = 1 << 1;
     const TRANSIENT: usize = 1 << 3;
@@ -556,8 +627,8 @@ unsafe fn configure_overlay_panel(window: *mut objc::runtime::Object) {
     const IGNORES_CYCLE: usize = 1 << 6;
     const FULL_SCREEN_AUXILIARY: usize = 1 << 8;
     let behavior: usize = msg_send![window, collectionBehavior];
-    let behavior = (behavior & !CAN_JOIN_ALL_SPACES & !STATIONARY)
-        | MOVE_TO_ACTIVE_SPACE
+    let behavior = (behavior & !MOVE_TO_ACTIVE_SPACE & !STATIONARY)
+        | CAN_JOIN_ALL_SPACES
         | TRANSIENT
         | IGNORES_CYCLE
         | FULL_SCREEN_AUXILIARY;

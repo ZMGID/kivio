@@ -71,14 +71,19 @@ on macOS, via `windows::ensure_overlay_panel`. It is idempotent and:
    `canBecomeMainWindow=NO`).
 2. Sets `NSWindowStyleMaskNonactivatingPanel` — clicking/focusing the panel does
    not activate Kivio, so it never switches away from the fullscreen Space.
-3. Sets `collectionBehavior = MoveToActiveSpace | FullScreenAuxiliary | Transient
-   | IgnoresCycle` (clears `CanJoinAllSpaces` and `Stationary`, mutually exclusive
-   with those). **Use `MoveToActiveSpace`, NOT `CanJoinAllSpaces`** — the window is
-   reused (hidden, not destroyed), and `CanJoinAllSpaces` makes a reused window
-   `orderOut`→`orderFront`'d from a background app **stick to the Space it was last
-   shown on**, so triggering lens on another Mission Control desktop shows it on the
-   old desktop. `MoveToActiveSpace` moves it to the current active Space on each
-   show; `FullScreenAuxiliary` keeps it working over another app's fullscreen Space.
+3. Sets `collectionBehavior = CanJoinAllSpaces | FullScreenAuxiliary | Transient
+   | IgnoresCycle` (clears `MoveToActiveSpace` and `Stationary`, mutually exclusive
+   with those). **Use `CanJoinAllSpaces`, NOT `MoveToActiveSpace`** (Spotlight /
+   Alfred recipe) — the panel then lives on **every** Space, so it is always on the
+   current Space and `orderFront` never needs to switch Spaces (no jump). The
+   earlier `MoveToActiveSpace` choice does NOT work here: a **non-activating** panel
+   only "becomes key" without activating the app, so its "move to the active Space"
+   trigger never fires → the window stays homed on its origin Space and `orderFront`
+   yanks you over there every time ("每次都跳"). Do NOT use `Stationary` either — it
+   pins the reused window to one Space (the reused window then snaps back to the old
+   Space). `FullScreenAuxiliary` keeps it working over another app's fullscreen
+   Space; `Transient` lets it float with the Space; `IgnoresCycle` keeps it out of
+   Cmd+`. **Do NOT revert to `MoveToActiveSpace`.**
 4. Sets window level to `NSStatusWindowLevel` (25) — above the menu bar /
    fullscreen content, but below the `screenSaver` (1000) band that causes a
    wrong-Space blink.
@@ -90,10 +95,11 @@ Then show with `windows::show_overlay_panel(&window, need_key)`, which calls
 `orderFrontRegardless` (and `makeKeyWindow` when `need_key`). Never use
 `window.show()` / `set_focus()` on the macOS overlay path.
 
-Apply `ensure_overlay_panel` at lens-window creation (`ensure_lens_window`), in
-the `Focused(true)` self-heal (`main.rs`), and once per show in
-`lens_request_internal` / `toggle_main_window` / tray `"show"`. Drop
-`set_always_on_top(true)` on macOS for these windows — the panel owns its level,
+Apply `ensure_overlay_panel` at overlay-window creation (`ensure_lens_window` and
+`ensure_translate_window`, which share the `ensure_overlay_window` factory), in
+the `Focused(true)` self-heal (`main.rs`, for labels `"lens"` and `"translate"`),
+and once per show in `lens_request_internal` / `toggle_main_window` / tray `"show"`.
+Drop `set_always_on_top(true)` on macOS for these windows — the panel owns its level,
 and tao's `set_always_on_top` resets the level to `NSFloatingWindowLevel` (and to
 `Normal` on toggle-off), which would clobber the status level.
 
