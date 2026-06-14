@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kivio (formerly KeyLingo through v2.4.4) is a lightweight desktop **screen-level AI assistant** built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows and provides global hotkey-triggered text translation, screenshot OCR/translation, and a Lens overlay for capture-then-ask vision Q&A — all via OpenAI-compatible APIs.
+Kivio (formerly KeyLingo through v2.4.4; currently v2.6.x) is a desktop **AI assistant** built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows. It began as a screen-level utility — global hotkey-triggered text translation, screenshot OCR/translation, and a Lens capture-then-ask vision overlay — and has grown a full **agentic chat application** (`src/chat/` + `src-tauri/src/chat/`) with a tool-calling agent loop, MCP servers, Skills, sub-agents, a Pyodide code sandbox, and a provider-agnostic model layer (OpenAI-compatible **and** Anthropic Messages). All AI calls go through user-configured providers.
 
 ## Common Commands
 
@@ -15,13 +15,14 @@ Use `npm` (lockfile is `package-lock.json`). Rust tooling is managed by Tauri.
 - `npm run dev:ui` — run the Vite UI dev server only (useful for quick UI iteration without compiling Rust).
 - `npm run build` — build the full desktop app bundle via Tauri.
 - `npm run build:swift` — build the Swift sidecar binary (`kivio-ocr-helper` for Apple Vision OCR). macOS only; other platforms generate an empty stub to satisfy Tauri's `externalBin` validation.
-- `npm run build:ui` — build the production UI bundle only (outputs to `dist/`).
+- `npm run build:ui` — runs `prepare:pyodide` then builds the production UI bundle only (outputs to `dist/`). `npm run prepare:pyodide` (`scripts/prepare-pyodide-assets.mjs`) stages the bundled Pyodide runtime for the code sandbox.
 - `npm run preview` — preview the built UI bundle locally.
-- `npm run lint` — run ESLint on `.ts` and `.tsx` files.
+- `npm run lint` — run ESLint on `.ts` and `.tsx` files (`--max-warnings 0`, so warnings fail).
 - `npm run typecheck` — run `tsc --noEmit` for strict TypeScript checks.
-- `cargo test --manifest-path src-tauri/Cargo.toml` — run Rust unit tests.
+- `npm test` — run the **Vitest** frontend test suite once (`npm run test:watch` for watch mode). Run a single file with `npx vitest run src/chat/segments.test.ts`; filter by name with `-t "<pattern>"`.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — run Rust unit tests (the agent loop has substantial coverage in `chat/agent/loop_tests.rs`).
 
-There is no frontend unit/e2e test runner configured. Manual smoke testing is required after changes that affect app flows.
+There is no e2e runner; manual smoke testing is still required after changes that affect app flows (capture, hotkeys, streaming).
 
 ## Architecture
 
@@ -32,31 +33,37 @@ All Tauri `invoke` calls and event listeners are centralized in **`src/api/tauri
 Key patterns:
 - `api.translateText(text)` — debounced 600ms in `App.tsx`.
 - `api.commitTranslation(text)` — copies to clipboard, hides window, optionally sends paste shortcut to the previous app.
-- `api.closeWindow()` — calls `win.hide()` rather than destroying the window; both `main` and `lens` windows are reused across hotkey triggers.
+- `api.closeWindow()` — calls `win.hide()` rather than destroying the window; windows are reused across hotkey triggers.
 
 ### Window Modes and Routing
 
-The app uses **two webview windows**:
-- **`main`** — translator (default, `392×152`) and Settings panel; switches view via `window.location.hash` (`''` → translator, `'#settings'` → Settings).
-- **`lens`** — fullscreen transparent overlay for capture + chat. Created on first hotkey trigger via `ensure_lens_window` in `src-tauri/src/windows.rs`. Subroute via hash query: `#lens` (chat mode, default) vs `#lens?mode=translate` (screenshot translate mode); both modes share the same component (`Lens.tsx`) which reads the query in `readModeFromHash`.
+The app uses **four webview windows**, all serving the same `index.html` / `App.tsx` bundle. `App.tsx` picks which view to render from `window.location.hash` (+ `?mode=` query); the Rust side decides which window to show. Only `main` is declared statically in `tauri.conf.json`; the others are created on demand by helpers in **`src-tauri/src/windows.rs`**:
+- **`main`** — translator (default, `392×152`), routed by hash `''`.
+- **`settings`** — Settings panel (`#settings` → `Settings.tsx`). `ensure_*`/`get_settings_window`.
+- **`chat`** — the agentic chat app (`#chat` → lazy-loaded `chat/Chat.tsx`, wrapped by `ChatWindowHost`). Created via `ensure_chat_window` / `ensure_chat_window_with_hash`; geometry + last route are persisted and restored. `#chat/settings` is the in-chat settings subroute. Routing predicates (`isChatPath`, `isChatSettingsPath`, `hashPath`, route-remembering) live in `src/chat/`.
+- **`lens`** — fullscreen transparent overlay for capture + chat (`ensure_lens_window`). Subroute via hash query: `#lens` (chat mode) vs `#lens?mode=translate` (screenshot translate); both share `Lens.tsx`, which reads the query in `readModeFromHash`.
 
-`App.tsx` reads the hash to determine the mode and resizes the main window accordingly. Window behavior and bundle targets are configured in **`src-tauri/tauri.conf.json`**. The capabilities allowlist (`src-tauri/capabilities/default.json`) must contain every webview label any plugin permission applies to (currently `["main", "lens"]`).
+The capabilities allowlist (`src-tauri/capabilities/default.json`) must list every webview label a plugin permission applies to — currently `["main", "chat", "settings", "lens"]`. When you add a window, add its label here or plugin calls silently fail.
 
-### Settings UI Submodules
+### Frontend Submodules
 
 The settings panel (`src/Settings.tsx`) delegates to helpers in **`src/settings/`**:
 - `components.tsx` — reusable UI primitives (Toggle, Select, HotkeyRecorder, etc.).
 - `i18n.ts` — bilingual string table (zh/en).
 - `utils.ts` — hotkey parsing/formatting and platform detection.
+- plus `ProviderModelsPicker`, `ProviderSortableList`, `ModelPairSelect`, `ScreenshotTranslationSettings`, `UsageStatsPanel`, `providerPresets`, `SettingsShell`.
+
+The chat UI lives in **`src/chat/`** (mounted via lazy `Chat.tsx` inside `ChatWindowHost`). It mirrors the Rust agent concepts: message rendering (`MessageList`/`MessageBubble`/`ChatMarkdown`), tool-call and reasoning blocks (`ToolCallBlock`/`ReasoningBlock`/`AskUserBlock`), conversation/project sidebar, model/skill selectors, the Pyodide runner, and error boundaries (`ChatErrorBoundary`/`ToolCallErrorBoundary`/`MarkdownErrorBoundary`). Many of these modules have colocated Vitest `.test.ts(x)` files — keep them green. Lens-specific frontend helpers are in `src/lens/`.
 
 ### Multi-Provider System
 
-The app supports multiple OpenAI-compatible providers. Each feature can use a different provider/model:
+The app supports multiple AI providers. Each feature can use a different provider/model:
 - **Translator** (`translatorProviderId` + `translatorModel`)
 - **Screenshot Translation/OCR** (`screenshotTranslation.providerId` + `model`)
 - **Lens** (`lens.providerId` + `lens.model`; both blank ⇒ falls back to translator provider/model)
+- **Chat** — selected per-conversation in the chat UI (`ModelSelector`); see the Chat/Agent section.
 
-Providers have `availableModels` (fetched from `/models` endpoint) and `enabledModels` (user-selected subset used in dropdowns). Model selection UI uses colon-delimited values like `providerId:modelName`.
+Providers are mostly OpenAI-compatible, but the chat runtime is provider-agnostic and also speaks the **Anthropic Messages** API natively (`chat/model/anthropic.rs`). Providers have `availableModels` (fetched from `/models`) and `enabledModels` (user-selected subset shown in dropdowns). Model selection UI uses colon-delimited values like `providerId:modelName`.
 
 Each provider stores `apiKeys: string[]` (a pool of keys for failover), not a single key. The first entry is the primary; subsequent entries are backups.
 
@@ -70,6 +77,28 @@ When a request fails with a quota/rate-limit/auth error, the backend automatical
 - `is_failover_error(err_msg)` — pattern-matches on HTTP status parsed from the error string. Only 401/402/403/429 trigger key rotation; malformed requests and server/network failures do not burn backup keys.
 - Non-failover errors (timeouts, 5xx) still go through `send_with_retry` exponential backoff and don't burn keys.
 - `test_provider_connection` deliberately uses only the first key (so users see whether their primary configuration is correct without hidden fallback masking issues).
+
+### Chat / Agent Runtime
+
+The chat app (`src-tauri/src/chat/`) is the largest subsystem. It runs a **provider-agnostic agentic tool loop**, with `src/chat/` (esp. `Chat.tsx`) as the frontend.
+
+**Model abstraction (`chat/model/`).** Read `chat/model/README.md` — it's the binding contract. Runtime code never inspects provider JSON: it builds a `GenerateRequest`, hands it to a `LanguageModelProvider`, and consumes `GenerateOutput` + `StreamPart` events. `openai.rs` (OpenAI-compatible) and `anthropic.rs` (Anthropic Messages) are **peer adapters** that own all wire-format details. Do not leak `choices`, Anthropic `content` blocks, or SSE event names into loop/tool code.
+
+**Agent loop (`chat/agent/`).** Orchestration is split into phases threaded by `loop_.rs`: `prepare` → `planning` → `rounds` (tool execution) → `synthesis` → `finalize`, with `compaction.rs` for context window compaction, `stream.rs` for streaming, `stop.rs` for cancellation/system-message patching, and `filter.rs` for per-agent tool allow-listing. The loop is decoupled from Tauri via the **`AgentHost` trait (`host.rs`)** — it emits stream deltas, tool records, and approval requests through that trait, and executes tools through a `ToolExecutor` (`execute.rs`). `loop_tests.rs` exercises the phases with fake hosts; prefer extending it over manual testing for loop changes.
+
+**Tools.** The agent's tool set is assembled per-round from several sources:
+- **Native tools (`src-tauri/src/native_tools/`)** — built-in: `web_fetch`, file ops (`read_file`/`write_file`/`edit_file`/`glob_files`/`search_files`/`list_dir`/`stat_path`/`move`/`copy`/`delete`/`create_dir`), `run_command` (shell), and sandbox artifact export. **Security**: writes/edits are blocked under sensitive home segments (`.ssh`, `.gnupg`, Keychains, …) via `WRITE_BLOCKLIST_SEGMENTS`; `MAX_READ_FILE_BYTES` caps reads. Touch these guards carefully.
+- **MCP (`src-tauri/src/mcp/`)** — Model Context Protocol client/manager for external tool servers. `native_registry.rs` registers the built-in native tools alongside MCP-provided ones; `ChatToolDefinition` is the unified tool shape consumed by the loop.
+- **Skills (`src-tauri/src/skills/`)** — markdown-defined skills (frontmatter + body, like Claude Code skills) discovered from a user dir + built-ins (`discover.rs`), activated mid-run (`runtime.rs`), and optionally backed by runnable scripts. Skill activation re-permits tools, which is why `base_tools` is recomputed each round (see comments in `loop_.rs`).
+- **Sub-agents (`src-tauri/src/agents/` + `chat/sub_agent.rs`)** — named personas (built-in → user `<app_data>/agents/*.md` → project `.kivio/agents/*.md`, later layers override by id) with a system-prompt prefix, optional model override, and a tool allow-list **enforced** at spawn via `filter::filter_tools_for_agent`, which also strips the `agent` tool so sub-agents can't recurse.
+
+**Other chat modules**: `storage.rs` (conversation persistence), `memory.rs`, `todo.rs` + `plan.rs` (agent task/plan tracking), `ask_user.rs` (mid-run user prompts), `attachments.rs` + `image_generation.rs`, `model_metadata.rs`, `dsml_tools.rs`. `commands.rs` exposes the chat Tauri commands.
+
+**Code sandbox**: chat can run Python via **Pyodide** in the webview (frontend `src/chat/pyodideRunner.ts`); the runtime assets are bundled at build time (see `prepare:pyodide`) and document Skills (pdf/docx/xlsx) depend on it — see Release.
+
+**Streaming & events**: the chat UI contracts are the Tauri events `chat-stream`, `chat-tool`, and `chat-context` (and there is a separate Lens stream — see Streaming). These payload shapes are UI contracts, not provider contracts — keep them stable.
+
+`usage.rs` records per-call token usage (logged under a `usage/` dir) and feeds the Settings usage panel (`src/settings/UsageStatsPanel.tsx`).
 
 ### Settings Persistence and Security
 
@@ -105,7 +134,7 @@ A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent over
 - **`screenshot.rs`** — Temp PNG cleanup helpers (`cleanup_temp_file` for one-shot, `cleanup_orphan_temp_files` for app-startup GC of stale `lens-*.png` / `screenshot-*.png` older than 24 h).
 - **`sck.rs`** — macOS-only ScreenCaptureKit wrapper invoked by `lens_capture_window` / `lens_capture_region`.
 - **`lens.rs`** — Lens overlay state machine support: `lens_list_windows` (macOS only; Windows returns `[]`), capture coord helpers.
-- **`windows.rs`** — Window helpers: `ensure_main_window`, `ensure_lens_window`, `get_main_window`, plus `apply_macos_workspace_behavior` for `visibleOnAllWorkspaces`.
+- **`windows.rs`** — Window helpers for all four windows: `ensure_main_window`, `ensure_chat_window`(`_with_hash`), `ensure_lens_window`, `get_main_window`/`get_settings_window`/`get_chat_window`, chat-window chrome/min-size/geometry helpers, plus `apply_macos_workspace_behavior` for `visibleOnAllWorkspaces`.
 - **`utils.rs`** — Language detection, target language resolution, timestamp helper.
 - **`commands.rs`** — General Tauri command implementations (settings, window management, clipboard, testing).
 - **`lens_commands.rs`** — Lens-specific Tauri commands (capture, explain, streaming, history).
@@ -113,6 +142,12 @@ A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent over
 - **`updates.rs`** — Auto-update check and GitHub release polling.
 - **`prompts.rs`** — Default prompt templates for translator, screenshot translation, and Lens features.
 - **`web_search.rs`** — Lens web search integration (Tavily / Exa providers). Called when Lens decides to search for current facts, unfamiliar visible text, or external context.
+- **`usage.rs`** — Per-call token-usage logging (`usage/` dir) and aggregation for the Settings usage panel.
+- **`chat/`** — the agentic chat subsystem (see Chat / Agent Runtime): `agent/` (loop phases), `model/` (provider adapters), plus `storage`, `memory`, `todo`, `plan`, `ask_user`, `attachments`, `image_generation`, `sub_agent`, `commands`, etc.
+- **`mcp/`** — MCP client/manager and the unified `ChatToolDefinition` tool registry (`native_registry` + external servers).
+- **`native_tools/`** — built-in agent tools (web fetch, file ops, shell, sandbox export) with path/size security guards.
+- **`skills/`** — Skill discovery/parse/activation/run (markdown-defined skills).
+- **`agents/`** — sub-agent persona definitions (built-in + user + project layers).
 - **`macos_ocr.rs`** — macOS Apple Vision OCR via Swift sidecar (`kivio-ocr-helper`). Persistent subprocess with JSON stdin/stdout protocol.
 - **`windows_ocr.rs`** — Windows system OCR via `Windows.Media.Ocr` APIs.
 - **`rapidocr.rs`** — Cross-platform offline OCR using PaddleOCR ONNX models. Downloads ONNX Runtime + models on user-initiated install.
