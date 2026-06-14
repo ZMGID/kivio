@@ -5,9 +5,9 @@
 //! - `build_http_client` —— 共享 reqwest Client 构造；只设置连接/读空闲超时。
 //! - `with_standard_request_timeout` —— 为非流式请求显式加总超时。
 //! - `effective_retry_attempts` —— 把 settings.retry_enabled + retry_attempts 折成实际尝试次数。
-//! - `extract_status_code` / `is_failover_error` —— failover 判定（仅 401/402/403/429）。
+//! - `extract_status_code` / `is_failover_error` —— failover 判定（401/402/403 立即换 key；429 阈值化换 key）。
 //! - `send_with_retry` —— 网络抖动 / 5xx / 429 退避重试。
-//! - `send_with_failover` —— 在 api_keys 列表上轮换；401/402/403/429 直接切 key。
+//! - `send_with_failover` —— 在 api_keys 列表上轮换；401/402/403 立即换 key，429 达阈值且有备用 key 才换。
 //! - `call_openai_text` / `call_openai_ocr` / `call_vision_api` —— chat completion 三类调用。
 //! - `stream_chat_call` / `stream_translate_combined` / `stream_vision_response` —— SSE 流解析。
 //! - `build_ocr_request_body` —— 视觉 + 流式 body 构造。
@@ -126,10 +126,13 @@ pub fn build_http_client() -> Client {
 
 // ===== Retry / Failover =====
 
-/// 重试延迟基础值（毫秒）
-const RETRY_BASE_DELAY_MS: u64 = 500;
-/// 重试延迟最大值（毫秒）
-const RETRY_MAX_DELAY_MS: u64 = 10_000;
+/// 重试延迟基础值（毫秒）。暂时性错误起步退避 ~5s。
+const RETRY_BASE_DELAY_MS: u64 = 5_000;
+/// 重试延迟最大值（毫秒）。温和退避封顶 30s（Retry-After 可覆盖更大值）。
+const RETRY_MAX_DELAY_MS: u64 = 30_000;
+/// 同一个 key 上连续 429 退避重试达到该次数后，若存在未冷却的备用 key，
+/// 则交回外层切 key（在新 key 上重新计数 / 重试）；无备用 key 时继续退避到总次数上限。
+const RATE_LIMIT_KEY_SWITCH_THRESHOLD: usize = 2;
 
 /// 获取实际的重试次数
 /// 如果重试功能被禁用，则返回 1（即只尝试一次）
@@ -149,10 +152,14 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
-/// 判断 HTTP 状态码是否可重试
-/// 包括 429（限流）和所有服务器错误（5xx）
-fn is_retryable_status(status: StatusCode) -> bool {
-    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+/// 判断 HTTP 状态码是否属于"立即换 key"错误（坏 / 失效 key）：
+/// - 401 鉴权失败（key 被吊销 / 错误）
+/// - 402 需要付费（账户欠费）
+/// - 403 权限不足 / 被封禁
+/// 这些与 key 直接相关、在同一 key 上重试永远失败 → 内层不重试，立即交外层换 key。
+/// 注意：429 不在此列 —— 429 由内层退避重试，仅在达到阈值且有备用 key 时才换 key。
+fn is_immediate_failover_status(status: StatusCode) -> bool {
+    matches!(status.as_u16(), 401 | 402 | 403)
 }
 
 /// 判断请求错误是否可重试
@@ -203,30 +210,31 @@ pub fn extract_status_code(err_msg: &str) -> Option<u16> {
     None
 }
 
-/// 判断错误信息是否触发 key failover
+/// 判断错误信息是否触发 key failover（外层换 key 决策）
 /// 严格按 HTTP 状态码：401/402/403/429 才换 key —— 与 key 直接相关的错误：
-/// - 401 鉴权失败（key 被吊销 / 错误）
-/// - 402 需要付费（账户欠费）
-/// - 403 权限不足 / 被封禁
-/// - 429 限流（key 维度配额耗尽）
+/// - 401 鉴权失败（key 被吊销 / 错误）→ 内层不重试，立即换 key
+/// - 402 需要付费（账户欠费）→ 立即换 key
+/// - 403 权限不足 / 被封禁 → 立即换 key
+/// - 429 限流（key 维度配额耗尽）→ 内层先退避重试；达到阈值且有备用 key 时，
+///   429 错误冒泡到外层触发换 key（在新 key 上重新计数）
 /// 其它 4xx（如 400 malformed body）属于请求本身问题，换 key 也无济于事 → 不触发
-/// 5xx 由 send_with_retry 内部退避重试，不会到这里
+/// 5xx 由内层退避重试，正常不会到这里（除非耗尽次数；耗尽后非 key 问题，不换 key）
 /// 网络错误（timeout / connect 失败）非 key 问题，extract_status_code 返回 None → 不触发
 pub fn is_failover_error(err_msg: &str) -> bool {
     matches!(extract_status_code(err_msg), Some(401 | 402 | 403 | 429))
 }
 
-fn is_failover_status(status: StatusCode) -> bool {
-    matches!(status.as_u16(), 401 | 402 | 403 | 429)
-}
-
-fn is_retryable_status_for_failover(status: StatusCode) -> bool {
-    is_retryable_status(status) && !is_failover_status(status)
-}
-
-/// 多 key failover 包装：在 api_keys 列表上依次尝试，遇到 failover-eligible 错误自动切下一 key
-/// 内层每次尝试仍走 send_with_retry_for_failover（处理网络抖动 / 服务端 5xx 等通用重试；
-/// 401/402/403/429 立即交回外层换 key，避免在同一 key 上耗尽重试次数）。
+/// 多 key failover 包装：在 api_keys 列表上依次尝试，遇到 failover-eligible 错误自动切下一 key。
+///
+/// 错误分类（内层 vs 外层换 key）：
+/// - **401/402/403（坏 / 失效 key）**：内层不重试，立即冒泡 → 外层换 key。
+/// - **429（限流）**：内层在当前 key 退避重试；只有当**同一 key 连续 429 达到阈值**
+///   `RATE_LIMIT_KEY_SWITCH_THRESHOLD` **且存在未冷却备用 key** 时，才让 429 冒泡 → 外层换 key
+///   （换后在新 key 上重新计数 / 重试）；无备用 key 时继续退避到总次数上限。
+/// - **5xx / timeout / connect（暂时性）**：内层退避重试，不换 key（不是 key 的问题）。
+/// - **400 / 404 / 422 等确定性客户端错误**：不重试，快速失败。
+///
+/// 始终优先尊重 Retry-After。所有 key 用尽后返回最后一次错误（最终失败路径不变）。
 pub async fn send_with_failover<F, Fut>(
     state: &AppState,
     label: &str,
@@ -255,7 +263,15 @@ where
         tried.insert(idx);
         let key = api_keys[idx].as_str();
 
-        match send_with_retry_for_failover(label, attempts, || send(key)).await {
+        // 是否还有未试过的备用 key —— 决定 429 是否在阈值处提前交回外层换 key。
+        let has_backup_key = state.pick_active_key(provider_id, total, &tried).is_some();
+        let rate_limit_cap = if has_backup_key {
+            Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD)
+        } else {
+            None
+        };
+
+        match send_with_retry_for_failover(label, attempts, rate_limit_cap, || send(key)).await {
             Ok(resp) => {
                 state.mark_key_ok(provider_id, idx);
                 return Ok(resp);
@@ -296,35 +312,76 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
-    send_with_retry_status_policy(label, attempts, &mut send, is_retryable_status).await
+    send_with_retry_status_policy(
+        label,
+        attempts,
+        &mut send,
+        FailoverRetryPolicy {
+            rate_limit_cap: None,
+        },
+    )
+    .await
 }
 
+/// failover 内层重试策略：
+/// - 401/402/403：不重试，立即冒泡（外层换 key）。
+/// - 429：退避重试；若 `rate_limit_cap` 为 Some(N)（有备用 key），同一 key 上第 N 次 429
+///   后冒泡（外层换 key）；为 None（无备用 key）则退避到总次数上限。
+/// - 5xx / timeout / connect：退避重试，不换 key。
+/// - 其它确定性 4xx：不重试，快速失败。
 async fn send_with_retry_for_failover<F, Fut>(
     label: &str,
     attempts: usize,
+    rate_limit_cap: Option<usize>,
     mut send: F,
 ) -> Result<reqwest::Response, String>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
-    send_with_retry_status_policy(label, attempts, &mut send, is_retryable_status_for_failover)
-        .await
+    send_with_retry_status_policy(
+        label,
+        attempts,
+        &mut send,
+        FailoverRetryPolicy { rate_limit_cap },
+    )
+    .await
 }
 
-async fn send_with_retry_status_policy<F, Fut, P>(
+/// 内层重试的状态分类策略。
+#[derive(Clone, Copy)]
+struct FailoverRetryPolicy {
+    /// 429 退避重试的次数上限：Some(N) 表示有备用 key，同一 key 上第 N 次 429 后停止重试
+    /// 并冒泡（让外层换 key）；None 表示无备用 key，429 与 5xx 一样退避到总次数上限。
+    rate_limit_cap: Option<usize>,
+}
+
+impl FailoverRetryPolicy {
+    /// 判断在第 `rate_limit_attempts` 次 429（含本次）后，是否还应继续在当前 key 上退避重试。
+    /// - 有备用 key 且已达阈值 → false（停止重试 → 冒泡换 key）。
+    /// - 无备用 key → true（继续退避，受总次数上限约束）。
+    fn should_retry_rate_limit(&self, rate_limit_attempts: usize) -> bool {
+        match self.rate_limit_cap {
+            Some(cap) => rate_limit_attempts < cap,
+            None => true,
+        }
+    }
+}
+
+async fn send_with_retry_status_policy<F, Fut>(
     label: &str,
     attempts: usize,
     send: &mut F,
-    should_retry_status: P,
+    policy: FailoverRetryPolicy,
 ) -> Result<reqwest::Response, String>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
-    P: Fn(StatusCode) -> bool,
 {
     let attempts = attempts.max(1);
     let mut last_error: Option<String> = None;
+    // 同一 key 上累计的 429 次数，用于阈值化换 key。
+    let mut rate_limit_attempts: usize = 0;
 
     for attempt in 1..=attempts {
         match send().await {
@@ -334,11 +391,31 @@ where
                     return Ok(response);
                 }
 
+                // 401/402/403：坏 / 失效 key，内层不重试，立即冒泡（外层换 key）。
+                if is_immediate_failover_status(status) {
+                    let text = response.text().await.unwrap_or_default();
+                    let err_msg = format!("{} Error: {} - {}", label, status, text);
+                    return Err(format!("{} (attempt {}/{})", err_msg, attempt, attempts));
+                }
+
+                let is_rate_limit = status == StatusCode::TOO_MANY_REQUESTS;
+                if is_rate_limit {
+                    rate_limit_attempts += 1;
+                }
+
                 let retry_after = parse_retry_after(response.headers());
                 let text = response.text().await.unwrap_or_default();
                 let err_msg = format!("{} Error: {} - {}", label, status, text);
 
-                if should_retry_status(status) && attempt < attempts {
+                // 429：受阈值约束（有备用 key 时达到阈值即冒泡换 key）；
+                // 5xx：退避重试到总次数；其它确定性 4xx：不重试快速失败。
+                let should_retry = if is_rate_limit {
+                    policy.should_retry_rate_limit(rate_limit_attempts)
+                } else {
+                    status.is_server_error()
+                };
+
+                if should_retry && attempt < attempts {
                     last_error = Some(err_msg);
                     let delay = retry_delay_ms(attempt, retry_after);
                     eprintln!(
@@ -1827,15 +1904,48 @@ mod tests {
     }
 
     #[test]
-    fn failover_retry_policy_switches_key_on_429_without_inner_retry() {
-        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
-        assert!(!is_retryable_status_for_failover(
-            StatusCode::TOO_MANY_REQUESTS
-        ));
-        assert!(is_retryable_status_for_failover(
+    fn is_failover_error_still_triggers_on_429() {
+        // 429 仍是 failover-eligible：内层退避到阈值后冒泡，外层据此换 key。
+        assert!(is_failover_error("X Error: 429 Too Many Requests - body"));
+    }
+
+    // ===== 错误分类（is_immediate_failover_status / FailoverRetryPolicy） =====
+
+    #[test]
+    fn immediate_failover_status_covers_auth_codes_only() {
+        assert!(is_immediate_failover_status(StatusCode::UNAUTHORIZED)); // 401
+        assert!(is_immediate_failover_status(StatusCode::PAYMENT_REQUIRED)); // 402
+        assert!(is_immediate_failover_status(StatusCode::FORBIDDEN)); // 403
+                                                                      // 429 不是 immediate failover —— 由内层退避重试。
+        assert!(!is_immediate_failover_status(StatusCode::TOO_MANY_REQUESTS));
+        // 5xx / 4xx 确定性错误也不是 immediate failover。
+        assert!(!is_immediate_failover_status(
             StatusCode::INTERNAL_SERVER_ERROR
         ));
-        assert!(is_retryable_status_for_failover(StatusCode::BAD_GATEWAY));
+        assert!(!is_immediate_failover_status(StatusCode::BAD_REQUEST));
+        assert!(!is_immediate_failover_status(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn rate_limit_policy_caps_at_threshold_when_backup_key_available() {
+        let policy = FailoverRetryPolicy {
+            rate_limit_cap: Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD),
+        };
+        // 阈值 N=2：第 1 次 429 后继续重试，第 N 次后停止（冒泡换 key）。
+        assert!(policy.should_retry_rate_limit(1));
+        assert!(!policy.should_retry_rate_limit(RATE_LIMIT_KEY_SWITCH_THRESHOLD));
+        assert!(!policy.should_retry_rate_limit(RATE_LIMIT_KEY_SWITCH_THRESHOLD + 1));
+    }
+
+    #[test]
+    fn rate_limit_policy_retries_indefinitely_without_backup_key() {
+        let policy = FailoverRetryPolicy {
+            rate_limit_cap: None,
+        };
+        // 无备用 key：429 一直可重试（受外层总次数上限约束）。
+        assert!(policy.should_retry_rate_limit(1));
+        assert!(policy.should_retry_rate_limit(5));
+        assert!(policy.should_retry_rate_limit(99));
     }
 
     #[test]
@@ -1882,5 +1992,355 @@ data: [DONE]
 "#;
 
         assert_eq!(parse_sse_chat_content(raw), Some("你好，世界".to_string()));
+    }
+
+    // ===== retry_delay_ms / parse_retry_after =====
+
+    #[test]
+    fn retry_delay_starts_around_five_seconds_and_caps() {
+        // 起步 ~5s（RETRY_BASE_DELAY_MS）；指数退避封顶 RETRY_MAX_DELAY_MS（30s）。
+        assert_eq!(retry_delay_ms(1, None), RETRY_BASE_DELAY_MS);
+        assert_eq!(retry_delay_ms(2, None), RETRY_BASE_DELAY_MS * 2);
+        // 第 4 次本应 5s*8=40s，被 cap 到 30s。
+        assert_eq!(retry_delay_ms(4, None), RETRY_MAX_DELAY_MS);
+        assert_eq!(retry_delay_ms(10, None), RETRY_MAX_DELAY_MS);
+    }
+
+    #[test]
+    fn retry_delay_prefers_retry_after_over_backoff() {
+        // Retry-After 优先：哪怕退避会算出别的值，也用服务器给的秒数。
+        assert_eq!(retry_delay_ms(1, Some(7)), 7_000);
+        assert_eq!(retry_delay_ms(5, Some(2)), 2_000);
+    }
+
+    #[test]
+    fn parse_retry_after_reads_seconds_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "12".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(12));
+
+        let empty = HeaderMap::new();
+        assert_eq!(parse_retry_after(&empty), None);
+    }
+
+    // ===== send_with_retry_status_policy / send_with_failover 行为（mock send 闭包） =====
+
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+
+    /// 用一个 reqwest::Error 模拟网络层错误（timeout/connect）。
+    /// 通过对一个不可路由地址发起极短超时请求来获得真实的 reqwest::Error。
+    async fn make_network_error() -> reqwest::Error {
+        // 192.0.2.0/24 是 TEST-NET-1，保证不可路由 → connect/timeout 错误。
+        Client::builder()
+            .connect_timeout(Duration::from_millis(1))
+            .build()
+            .unwrap()
+            .get("http://192.0.2.1:9/")
+            .timeout(Duration::from_millis(1))
+            .send()
+            .await
+            .expect_err("expected a network error")
+    }
+
+    /// 构造一个带指定状态码与可选 retry-after 的 reqwest::Response（不走网络）。
+    fn make_response(status: u16, retry_after: Option<u64>) -> reqwest::Response {
+        let mut builder = http::Response::builder().status(status);
+        if let Some(secs) = retry_after {
+            builder = builder.header("retry-after", secs.to_string());
+        }
+        let http_resp = builder.body("body").expect("build http response");
+        reqwest::Response::from(http_resp)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn server_error_retries_up_to_attempt_limit() {
+        let attempts = 5;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_inner = Arc::clone(&calls);
+
+        let result = send_with_retry_status_policy(
+            "Test",
+            attempts,
+            &mut || {
+                let calls = Arc::clone(&calls_inner);
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(make_response(500, None))
+                }
+            },
+            FailoverRetryPolicy {
+                rate_limit_cap: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        // 5xx 一直重试到 attempts 次。
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), attempts);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn network_error_retries_up_to_attempt_limit() {
+        let attempts = 5;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_inner = Arc::clone(&calls);
+
+        let result = send_with_retry_status_policy(
+            "Test",
+            attempts,
+            &mut || {
+                let calls = Arc::clone(&calls_inner);
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    Err(make_network_error().await)
+                }
+            },
+            FailoverRetryPolicy {
+                rate_limit_cap: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        // timeout/connect 网络错误也重试到上限。
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), attempts);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deterministic_client_error_does_not_retry() {
+        for status in [400u16, 404, 422] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let calls_inner = Arc::clone(&calls);
+
+            let result = send_with_retry_status_policy(
+                "Test",
+                5,
+                &mut || {
+                    let calls = Arc::clone(&calls_inner);
+                    async move {
+                        calls.fetch_add(1, AtomicOrdering::SeqCst);
+                        Ok(make_response(status, None))
+                    }
+                },
+                FailoverRetryPolicy {
+                    rate_limit_cap: None,
+                },
+            )
+            .await;
+
+            assert!(result.is_err());
+            // 确定性 4xx 快速失败，只发一次。
+            assert_eq!(
+                calls.load(AtomicOrdering::SeqCst),
+                1,
+                "status {status} should not retry"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn immediate_failover_status_does_not_retry_inner() {
+        for status in [401u16, 402, 403] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let calls_inner = Arc::clone(&calls);
+
+            // 即便给了 rate_limit_cap，401/403 也不重试 —— 立即冒泡换 key。
+            let result = send_with_retry_status_policy(
+                "Test",
+                5,
+                &mut || {
+                    let calls = Arc::clone(&calls_inner);
+                    async move {
+                        calls.fetch_add(1, AtomicOrdering::SeqCst);
+                        Ok(make_response(status, None))
+                    }
+                },
+                FailoverRetryPolicy {
+                    rate_limit_cap: Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD),
+                },
+            )
+            .await;
+
+            let err = result.expect_err("auth error should fail");
+            assert!(
+                is_failover_error(&err),
+                "status {status} should be failover"
+            );
+            assert_eq!(
+                calls.load(AtomicOrdering::SeqCst),
+                1,
+                "status {status} must not retry inner"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_backs_off_on_same_key_when_no_backup() {
+        // 无备用 key：429 在同一 key 上退避重试到总次数上限，不提前停。
+        let attempts = 5;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_inner = Arc::clone(&calls);
+
+        let result = send_with_retry_status_policy(
+            "Test",
+            attempts,
+            &mut || {
+                let calls = Arc::clone(&calls_inner);
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(make_response(429, None))
+                }
+            },
+            FailoverRetryPolicy {
+                rate_limit_cap: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), attempts);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_bubbles_at_threshold_when_backup_available() {
+        // 有备用 key：429 退避到阈值 N 后停止重试并冒泡（让外层换 key）。
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_inner = Arc::clone(&calls);
+
+        let result = send_with_retry_status_policy(
+            "Test",
+            10, // 总次数远大于阈值，验证是阈值而非总次数封顶
+            &mut || {
+                let calls = Arc::clone(&calls_inner);
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(make_response(429, None))
+                }
+            },
+            FailoverRetryPolicy {
+                rate_limit_cap: Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD),
+            },
+        )
+        .await;
+
+        let err = result.expect_err("429 at threshold should bubble");
+        assert!(is_failover_error(&err));
+        // 第 N 次 429 后停止 → 共发 N 次。
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            RATE_LIMIT_KEY_SWITCH_THRESHOLD
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_respects_retry_after_header() {
+        // Retry-After 优先：429 带 retry-after，仍退避重试（这里验证不快速失败、能继续）。
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_inner = Arc::clone(&calls);
+
+        let result = send_with_retry_status_policy(
+            "Test",
+            3,
+            &mut || {
+                let calls = Arc::clone(&calls_inner);
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(make_response(429, Some(2)))
+                }
+            },
+            FailoverRetryPolicy {
+                rate_limit_cap: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        // 退避重试到上限（paused 时钟让 retry-after 的 sleep 瞬时跳过）。
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failover_switches_key_after_429_threshold_with_backup() {
+        // 两把 key：key#0 一直 429 → 达阈值换 key#1（key#1 成功）。
+        let state = crate::state::test_app_state();
+        let keys = vec!["key0".to_string(), "key1".to_string()];
+        let key0_calls = Arc::new(AtomicUsize::new(0));
+        let key1_calls = Arc::new(AtomicUsize::new(0));
+        let k0 = Arc::clone(&key0_calls);
+        let k1 = Arc::clone(&key1_calls);
+
+        let result = send_with_failover(&state, "Test", 5, "prov", &keys, |key| {
+            let k0 = Arc::clone(&k0);
+            let k1 = Arc::clone(&k1);
+            let key = key.to_string();
+            async move {
+                if key == "key0" {
+                    k0.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(make_response(429, None))
+                } else {
+                    k1.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(make_response(200, None))
+                }
+            }
+        })
+        .await;
+
+        assert!(result.is_ok());
+        // key#0 退避到阈值 N 次，然后换到 key#1 成功一次。
+        assert_eq!(
+            key0_calls.load(AtomicOrdering::SeqCst),
+            RATE_LIMIT_KEY_SWITCH_THRESHOLD
+        );
+        assert_eq!(key1_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failover_switches_immediately_on_auth_error() {
+        // key#0 返回 401 → 立即换 key（不重试），key#1 成功。
+        let state = crate::state::test_app_state();
+        let keys = vec!["key0".to_string(), "key1".to_string()];
+        let key0_calls = Arc::new(AtomicUsize::new(0));
+        let k0 = Arc::clone(&key0_calls);
+
+        let result = send_with_failover(&state, "Test", 5, "prov", &keys, |key| {
+            let k0 = Arc::clone(&k0);
+            let key = key.to_string();
+            async move {
+                if key == "key0" {
+                    k0.fetch_add(1, AtomicOrdering::SeqCst);
+                    Ok(make_response(401, None))
+                } else {
+                    Ok(make_response(200, None))
+                }
+            }
+        })
+        .await;
+
+        assert!(result.is_ok());
+        // 401 不重试，只发一次就换 key。
+        assert_eq!(key0_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failover_with_single_key_429_backs_off_no_switch() {
+        // 只有一把 key：429 在该 key 上退避到总次数上限，没有可换的 key。
+        let state = crate::state::test_app_state();
+        let keys = vec!["only".to_string()];
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&calls);
+
+        let result = send_with_failover(&state, "Test", 5, "prov", &keys, |_key| {
+            let c = Arc::clone(&c);
+            async move {
+                c.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(make_response(429, None))
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        // 无备用 key → 退避到总次数 5。
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 5);
     }
 }

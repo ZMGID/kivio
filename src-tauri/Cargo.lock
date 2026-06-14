@@ -3047,6 +3047,7 @@ dependencies = [
  "flate2",
  "futures",
  "html-escape",
+ "http",
  "image",
  "keyring",
  "libc",

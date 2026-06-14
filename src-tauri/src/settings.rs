@@ -1813,7 +1813,7 @@ fn default_settings_language() -> Option<String> {
 }
 
 fn default_retry_attempts() -> u8 {
-    3
+    5
 }
 
 fn default_retry_enabled() -> bool {
@@ -1821,7 +1821,7 @@ fn default_retry_enabled() -> bool {
 }
 
 fn clamp_retry_attempts(value: u8) -> u8 {
-    value.clamp(1, 5)
+    value.clamp(1, 8)
 }
 
 /**
@@ -1914,12 +1914,12 @@ mod tests {
         let mut s = Settings::default();
         s.retry_attempts = 0;
         let s = sanitize_settings(s);
-        assert!((1..=5).contains(&s.retry_attempts));
+        assert!((1..=8).contains(&s.retry_attempts));
 
         let mut s = Settings::default();
         s.retry_attempts = 99;
         let s = sanitize_settings(s);
-        assert!((1..=5).contains(&s.retry_attempts));
+        assert!((1..=8).contains(&s.retry_attempts));
     }
 
     #[test]
@@ -2252,10 +2252,7 @@ mod tests {
     #[test]
     fn sanitize_settings_clamps_mcp_idle_timeout_and_keeps_default() {
         // 默认值保持不变（在范围内）。
-        assert_eq!(
-            ChatToolsConfig::default().mcp_idle_timeout_ms,
-            600_000
-        );
+        assert_eq!(ChatToolsConfig::default().mcp_idle_timeout_ms, 600_000);
 
         // 太小钳到下限 60s。
         let mut settings = Settings::default();

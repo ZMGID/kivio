@@ -70,3 +70,47 @@ with_standard_request_timeout(
 )
 .send()
 ```
+
+## Scenario: Provider Retry And Threshold-Based Key Failover
+
+### 1. Scope / Trigger
+
+- Trigger: changing retry/failover logic in `src-tauri/src/api.rs` (`send_with_retry`, `send_with_failover`, `send_with_retry_status_policy`, `FailoverRetryPolicy`, `is_immediate_failover_status`, `is_failover_error`, `retry_delay_ms`, the `RETRY_*` / `RATE_LIMIT_KEY_SWITCH_THRESHOLD` constants) or the retry defaults in `src-tauri/src/settings.rs` (`default_retry_attempts`, `clamp_retry_attempts`).
+- Problem prevented: transient errors (5xx / timeout / connect / 429) immediately failing a whole run; and 429 burning backup keys by switching keys on the first rate-limit instead of backing off on the current key first.
+
+### 2. Defaults
+
+- `default_retry_attempts` = `5`; `clamp_retry_attempts` clamps to `1..=8`; `retry_enabled` default `true`.
+- `RETRY_BASE_DELAY_MS` = `5_000` (start backoff ~5s); `RETRY_MAX_DELAY_MS` = `30_000` (cap). Exponential per attempt, capped at the max.
+- `RATE_LIMIT_KEY_SWITCH_THRESHOLD` = `2` (consecutive 429s on the same key before switching keys).
+- Retry-After always takes priority over computed backoff.
+- Worst-case wall-clock for a fully transient failure on `attempts = 5` is the sum of inter-attempt sleeps `5s + 10s + 20s + 30s = ~65s` per key. 5xx/timeout do not switch keys, so they stay bounded to one key's ~65s regardless of key count. 429 across N keys switches at the threshold (one ~5s sleep) per intermediate key and runs the full ~65s only on the final (backup-less) key; with two keys this is ~5s + ~65s ≈ 70s. Provider/test calls that need a tighter bound should lower `retry_attempts` or wrap with an explicit operation timeout, since this resilience is intentionally allowed to take that long.
+
+### 3. Error Classification Contract
+
+- **401 / 402 / 403 (bad/expired key)** -> `is_immediate_failover_status` true; inner does NOT retry; bubbles immediately so `send_with_failover` switches keys.
+- **429 (rate limit)** -> inner backs off and retries on the current key. Only when the same key hits `RATE_LIMIT_KEY_SWITCH_THRESHOLD` consecutive 429s AND a switchable backup key exists (an untried key that `pick_active_key` would return next — it prefers un-cooled keys but falls back to a cooled untried key when every key is cooled, so the outer always has somewhere to go) does the 429 bubble so the outer switches keys (counter resets on the new key). With no backup key, 429 keeps backing off up to the total attempt limit.
+- **5xx / timeout / connect (transient)** -> inner backs off and retries up to the total attempt limit; never switches keys (not a key problem).
+- **400 / 404 / 422 and other deterministic 4xx** -> no retry, fast fail (retrying always fails).
+
+### 4. Implementation Shape
+
+- `send_with_retry_status_policy(label, attempts, send, policy: FailoverRetryPolicy)` is the single retry loop. `FailoverRetryPolicy { rate_limit_cap: Option<usize> }`: `Some(N)` means a backup key is available and 429 stops retrying after N attempts; `None` means retry 429/5xx up to the total attempt limit.
+- `send_with_failover` computes `has_backup_key` per key via `state.pick_active_key(provider_id, total, &tried)` and passes `Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD)` only when a backup is available.
+- `is_failover_error` (outer key-switch decision) stays `401 | 402 | 403 | 429`: a bubbled 429 means the inner threshold was reached, so the outer is allowed to switch.
+
+### 5. Validation & Error Matrix
+
+- 5xx repeated -> retries to attempt limit, then fails.
+- timeout/connect repeated -> retries to attempt limit, then fails.
+- 400/404/422 -> single attempt, immediate failure.
+- 401/402/403 -> single attempt, bubbles to key switch.
+- 429 with no backup key -> backs off to attempt limit.
+- 429 with backup key -> backs off to threshold N on the current key, then switches keys.
+- Retry-After header present -> its delay wins over exponential backoff.
+
+### 6. Tests Required
+
+- Run `cargo test --manifest-path src-tauri/Cargo.toml` after retry/failover changes.
+- Unit tests use mock `send` closures (call-count driven) plus `reqwest::Response::from(http::Response)` to drive `send_with_retry_status_policy` / `send_with_failover`. Use `#[tokio::test(start_paused = true)]` so backoff sleeps are instant (requires tokio `test-util` dev feature).
+
