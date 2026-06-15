@@ -26,9 +26,25 @@ pub struct SkillRunCache {
     /// `skill_activate` (T3). The loop reads this to monotonically narrow the
     /// tool set on subsequent planning rounds.
     activated_allowed_tools: Vec<String>,
+    /// 当前对话助手允许激活的技能 id 白名单(冻结自助手快照)。
+    /// `None` = 无助手限制(全局行为);`Some(ids)` = 仅这些技能可激活,空集合 = 一个都不可。
+    allowed_skill_ids: Option<Vec<String>>,
 }
 
 impl SkillRunCache {
+    /// 设置助手技能白名单。在 run 启动时由 RunState 依据 assistant_snapshot 调用。
+    pub fn set_allowed_skill_ids(&mut self, ids: Option<Vec<String>>) {
+        self.allowed_skill_ids = ids;
+    }
+
+    /// 某技能 id 是否在助手白名单内(无助手 = 不限)。
+    pub fn skill_id_allowed(&self, skill_id: &str) -> bool {
+        match &self.allowed_skill_ids {
+            Some(ids) => ids.iter().any(|id| id == skill_id),
+            None => true,
+        }
+    }
+
     /// Lazily build (once) and return the run-scoped skill registry. Subsequent
     /// calls reuse the cached registry instead of re-scanning the skill dirs.
     pub fn registry_for(

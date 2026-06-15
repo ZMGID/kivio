@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   ArrowUp,
   Archive,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -25,6 +26,7 @@ import {
   Sparkles,
   Square,
   Wrench,
+  X,
   Zap,
 } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
@@ -389,6 +391,10 @@ interface InputBarProps {
   selectedProject?: ChatProject | null
   onSelectProject?: (project: ChatProject | null) => void | Promise<void>
   showProjectEntry?: boolean
+  /** 当前生效的专家(无则为空);显示在底部栏 */
+  currentAssistant?: { id: string; name: string } | null
+  onOpenAssistantCenter?: () => void
+  onClearAssistant?: () => void
   autoFocus?: boolean
   /** footer：贴底（有消息时）；inline：嵌入居中区域（空对话欢迎页） */
   layout?: 'footer' | 'inline'
@@ -419,6 +425,9 @@ export function InputBar({
   selectedProject = null,
   onSelectProject,
   showProjectEntry = false,
+  currentAssistant = null,
+  onOpenAssistantCenter,
+  onClearAssistant,
   autoFocus,
   layout = 'footer',
 }: InputBarProps) {
@@ -446,6 +455,10 @@ export function InputBar({
   const agentPlanActive = agentPlanMode === 'plan'
   const agentOrchestrateActive = agentPlanMode === 'orchestrate'
   const projectEntryEnabled = Boolean(showProjectEntry && onSelectProject)
+  // 专家入口:空对话页(inline)显示「选择专家」;进行中的对话(footer)只在已选专家时显示药丸,
+  // 没选就别占地方。
+  const showAssistantEntry =
+    Boolean(onOpenAssistantCenter) && (layout === 'inline' || Boolean(currentAssistant))
   const modeEntryEnabled = Boolean(onAgentPlanModeChange)
   const activeModeOption = AGENT_MODE_OPTIONS.find((option) => option.mode === agentPlanMode)
     ?? AGENT_MODE_OPTIONS[0]
@@ -1722,7 +1735,7 @@ export function InputBar({
             )}
           </div>
         </div>
-        {projectEntryEnabled && (
+        {(projectEntryEnabled || showAssistantEntry) && (
           <div className="relative z-10 mt-2 flex items-center justify-start gap-1.5 px-3">
             {projectEntryEnabled && (
               <button
@@ -1755,6 +1768,43 @@ export function InputBar({
                   }`}
                 />
               </button>
+            )}
+            {showAssistantEntry && (
+              currentAssistant ? (
+                <span className="inline-flex h-[26px] max-w-full items-center gap-0.5 rounded-full bg-neutral-100 pl-2 pr-1 text-[12px] font-semibold text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                  <button
+                    type="button"
+                    onClick={onOpenAssistantCenter}
+                    className="inline-flex min-w-0 items-center gap-1"
+                    title={currentAssistant.name}
+                  >
+                    <Bot size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+                    <span className="min-w-0 max-w-[150px] truncate">{currentAssistant.name}</span>
+                  </button>
+                  {onClearAssistant && (
+                    <button
+                      type="button"
+                      onClick={onClearAssistant}
+                      className="ml-0.5 grid size-4 shrink-0 place-items-center rounded-full text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-100"
+                      title="清除专家"
+                      aria-label="清除专家"
+                    >
+                      <X size={11} strokeWidth={2} />
+                    </button>
+                  )}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onOpenAssistantCenter}
+                  disabled={disabled}
+                  className="inline-flex h-[26px] max-w-full items-center gap-1 rounded-full px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-200/50 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 disabled:cursor-default disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-700/55 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-600"
+                  title="选择或创建专家"
+                >
+                  <Bot size={13} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+                  <span className="min-w-0 truncate">选择专家</span>
+                </button>
+              )
             )}
           </div>
         )}

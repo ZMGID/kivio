@@ -507,6 +507,14 @@ async fn call_skill_tool(
     if !crate::settings::is_skill_enabled(&settings.chat_tools, &record.meta.id) {
         return Err(format!("Skill is disabled in Settings: {skill_name}"));
     }
+    // 助手技能白名单硬 gate(防绕过):模型报个不在目录里的技能名也会被这里拦下。
+    if let Some(cache) = skill_cache.as_deref() {
+        if !cache.skill_id_allowed(&record.meta.id) {
+            return Err(format!(
+                "Skill is not allowed for the active assistant: {skill_name}"
+            ));
+        }
+    }
 
     let content = match tool.name.as_str() {
         "skill_activate" => {

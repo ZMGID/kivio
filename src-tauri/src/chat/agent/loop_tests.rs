@@ -30,6 +30,9 @@
         records: Mutex<Vec<ToolCallRecord>>,
         deltas: Mutex<Vec<RecordedDelta>>,
         dones: Mutex<Vec<(String, String)>>,
+        /// Per-call snapshot sizes from `persist_partial_assistant`:
+        /// `(message_id, tool_records_len, segments_len)`.
+        persists: Mutex<Vec<(String, usize, usize)>>,
         cancel_after: Option<Duration>,
         cancel_flag: Arc<AtomicBool>,
         cancel_on_first_text_delta: bool,
@@ -73,6 +76,13 @@
 
         fn recorded_tool_records(&self) -> Vec<ToolCallRecord> {
             self.records
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone()
+        }
+
+        fn recorded_persists(&self) -> Vec<(String, usize, usize)> {
+            self.persists
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .clone()
@@ -127,6 +137,19 @@
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .push(record.clone());
+        }
+
+        fn persist_partial_assistant(
+            &self,
+            _conversation_id: &str,
+            message_id: &str,
+            tool_records: &[ToolCallRecord],
+            segments: &[ChatMessageSegment],
+        ) {
+            self.persists
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push((message_id.to_string(), tool_records.len(), segments.len()));
         }
 
         fn request_tool_approval<'a>(
@@ -1246,11 +1269,11 @@
         );
         assert_eq!(
             synthesis_failed_fallback_response("zh-CN"),
-            "工具调用已经完成，但最终总结生成失败。上方工具结果已保存在本轮回复中，你可以继续追问，或让我重新生成总结。"
+            "最终总结生成失败(可能是模型供应商内容审核拦截)。上方工具结果已保存在本轮回复中,你可以继续追问、让我重新生成,或更换聊天模型再试。"
         );
         assert_eq!(
             synthesis_failed_fallback_response("en-US"),
-            "The tool calls completed, but final summary generation failed. The tool results above were saved with this reply; you can continue from them or regenerate the summary."
+            "Final summary generation failed (possibly provider content moderation). The tool results above were saved with this reply; you can continue from them, regenerate, or switch the chat model and retry."
         );
         assert_eq!(
             tool_planning_failed_fallback_response("zh-CN"),
@@ -1450,9 +1473,12 @@
             .await
             .expect("synthesis failure after tool records must not bubble Err");
 
-        let fallback = synthesis_failed_fallback_response("zh-CN");
-        assert_eq!(result.stream_outcome, "error");
-        assert_eq!(result.content, fallback);
+        // 框架恢复:合成被拒(400)后不再吐静态"失败"文案,而是用已收集的工具结果兜底。
+        let recovered =
+            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
+        assert!(recovered.contains("result:read_file"));
+        assert_eq!(result.stream_outcome, "recovered");
+        assert_eq!(result.content, recovered);
         assert_eq!(result.tool_records.len(), 1);
         assert_eq!(result.tool_records[0].id, "call_read");
         assert!(matches!(
@@ -1460,26 +1486,26 @@
             ToolCallStatus::Success
         ));
 
-        // assistant tool_calls message + tool result + final fallback message.
+        // assistant tool_calls message + tool result + final recovered message.
         assert_eq!(result.api_messages.len(), 3);
         assert_eq!(
             result.api_messages[2]
                 .get("content")
                 .and_then(Value::as_str),
-            Some(fallback.as_str())
+            Some(recovered.as_str())
         );
 
         // Planning never emits done while tool calls are pending; the only done is
-        // the fallback "done".
+        // the recovered "done".
         assert_eq!(
             host.recorded_dones(),
-            vec![("done".to_string(), fallback.clone())]
+            vec![("done".to_string(), recovered.clone())]
         );
         let fallback_delta = host
             .recorded_deltas()
             .into_iter()
-            .find(|delta| delta.delta == fallback)
-            .expect("fallback delta emitted");
+            .find(|delta| delta.delta == recovered)
+            .expect("recovered delta emitted");
         assert_eq!(fallback_delta.reasoning_delta, None);
         let segment = fallback_delta.segment.expect("fallback delta has segment");
         assert_eq!(segment.kind, ChatMessageSegmentKind::Text);
@@ -1804,6 +1830,50 @@
         assert_eq!(persisted_tool["content"], "result:read_file");
     }
 
+    /// Crash-safety: after a tool round that returns `Continue` (more rounds
+    /// allowed), the loop must checkpoint a partial-assistant snapshot carrying
+    /// the round's tool work, so a mid-run crash before the final write keeps the
+    /// turn recoverable instead of discarding it.
+    #[tokio::test]
+    async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
+        let server = MockModelServer::start(vec![
+            // Round 1 planning: one read_file tool call. With max_tool_rounds=2
+            // this round returns Continue, so the checkpoint fires.
+            MockResponse::Sse(planning_tool_call_sse_events()),
+            // Round 2 planning: a natural final answer (no tools) ends the loop.
+            MockResponse::Sse(vec![
+                r#"{"choices":[{"delta":{"content":"完成。"}}]}"#.to_string(),
+                "[DONE]".to_string(),
+            ]),
+        ]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url, true);
+        config.effective_chat_tools.max_tool_rounds = Some(2);
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("multi-round run completes");
+
+        // The checkpoint fired after round 1's completed tool round, snapshotting
+        // the work done so far under the run's message id.
+        let persists = host.recorded_persists();
+        let snapshot = persists
+            .iter()
+            .find(|(_, tool_records_len, _)| *tool_records_len >= 1)
+            .expect("a checkpoint snapshot includes the completed round's tool record");
+        assert_eq!(snapshot.0, "message", "snapshot keyed by run message id");
+        assert!(
+            snapshot.1 >= 1,
+            "snapshot carries the round's tool record(s)"
+        );
+
+        // The run still completed normally end-to-end.
+        assert_eq!(result.stream_outcome, "completed");
+        assert!(result.tool_records.iter().any(|r| r.id == "call_read"));
+    }
+
     /// Layer2 escalation: when snip alone cannot fit the window, a summary request
     /// fires first and the next provider request carries the summary instead of
     /// the old history; the summary itself stays out of persisted api_messages.
@@ -1914,9 +1984,11 @@
             .await
             .expect("empty synthesis with tool records must not bubble Err");
 
-        let fallback = empty_synthesis_fallback_response("zh-CN");
+        let recovered =
+            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
+        assert!(recovered.contains("result:read_file"));
         assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, fallback);
+        assert_eq!(result.content, recovered);
         assert_eq!(result.tool_records.len(), 1);
         assert!(matches!(
             result.tool_records[0].status,
@@ -1924,7 +1996,7 @@
         ));
         assert_eq!(
             host.recorded_dones(),
-            vec![("done".to_string(), fallback.clone())]
+            vec![("done".to_string(), recovered.clone())]
         );
 
         assert_eq!(result.steps.len(), 2);
@@ -1936,7 +2008,7 @@
         assert!(result.segments.iter().any(|segment| {
             segment.kind == ChatMessageSegmentKind::Text
                 && segment.phase == ChatMessageSegmentPhase::Synthesis
-                && segment.text.as_deref() == Some(fallback.as_str())
+                && segment.text.as_deref() == Some(recovered.as_str())
         }));
         assert_eq!(
             result
@@ -1944,7 +2016,7 @@
                 .last()
                 .and_then(|message| message.get("content"))
                 .and_then(Value::as_str),
-            Some(fallback.as_str())
+            Some(recovered.as_str())
         );
     }
 
@@ -1965,9 +2037,11 @@
             .await
             .expect("non-stream synthesis failure after tool records must not bubble Err");
 
-        let fallback = synthesis_failed_fallback_response("zh-CN");
-        assert_eq!(result.stream_outcome, "error");
-        assert_eq!(result.content, fallback);
+        let recovered =
+            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
+        assert!(recovered.contains("result:read_file"));
+        assert_eq!(result.stream_outcome, "recovered");
+        assert_eq!(result.content, recovered);
         assert_eq!(result.tool_records.len(), 1);
         assert!(matches!(
             result.tool_records[0].status,
@@ -1976,10 +2050,10 @@
         assert!(host
             .recorded_deltas()
             .iter()
-            .any(|delta| delta.delta == fallback));
+            .any(|delta| delta.delta == recovered));
         assert_eq!(
             host.recorded_dones(),
-            vec![("done".to_string(), fallback.clone())]
+            vec![("done".to_string(), recovered.clone())]
         );
         assert_eq!(
             result
@@ -1987,7 +2061,7 @@
                 .last()
                 .and_then(|message| message.get("content"))
                 .and_then(Value::as_str),
-            Some(fallback.as_str())
+            Some(recovered.as_str())
         );
     }
 
@@ -2019,20 +2093,22 @@
             .await
             .expect("non-stream empty synthesis with tool records must not bubble Err");
 
-        let fallback = empty_synthesis_fallback_response("zh-CN");
+        let recovered =
+            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
+        assert!(recovered.contains("result:read_file"));
         assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, fallback);
+        assert_eq!(result.content, recovered);
         assert_eq!(result.reasoning.as_deref(), Some("synthesis reasoning"));
         assert_eq!(result.tool_records.len(), 1);
         assert_eq!(
             host.recorded_dones(),
-            vec![("done".to_string(), fallback.clone())]
+            vec![("done".to_string(), recovered.clone())]
         );
 
         let final_message = result.api_messages.last().expect("final api message");
         assert_eq!(
             final_message.get("content").and_then(Value::as_str),
-            Some(fallback.as_str())
+            Some(recovered.as_str())
         );
         assert_eq!(
             final_message

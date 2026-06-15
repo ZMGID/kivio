@@ -7,6 +7,7 @@ import { ChatDotGridBackground } from './ChatDotGridBackground'
 import { ChatMarkdown } from './ChatMarkdown'
 import { GeneratedFileArtifacts } from './GeneratedFileArtifacts'
 import { isImageArtifact } from './artifacts'
+import { loadArtifactDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ToolCallBlock } from './ToolCallBlock'
@@ -65,12 +66,72 @@ function artifactIsReferenced(content: string, artifact: ChatToolArtifact): bool
   return false
 }
 
+function ArtifactImage({
+  artifact,
+  conversationId,
+}: {
+  artifact: ChatToolArtifact
+  conversationId?: string | null
+}) {
+  const inline = artifactDataUrl(artifact)
+  const [src, setSrc] = useState<string>(inline)
+
+  // 正常情况下 data_url 是内联缩略图(秒显);仅当缩略图生成失败为空时,用 path 懒加载原图兜底。
+  useEffect(() => {
+    if (inline) {
+      setSrc(inline)
+      return
+    }
+    if (!artifact.path) return
+    let cancelled = false
+    void loadArtifactDataUrl(artifact, conversationId).then((loaded) => {
+      if (!cancelled && loaded) setSrc(loaded)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [inline, artifact, conversationId])
+
+  if (!src) return null
+  const name = artifact.name || 'Generated image'
+  return (
+    <figure className="m-0">
+      <button
+        type="button"
+        className="block max-w-full cursor-zoom-in rounded-md p-0 text-left"
+        onClick={() =>
+          openChatImageViewer({
+            src,
+            alt: name,
+            name: artifact.name,
+            path: artifact.path,
+            conversationId,
+          })
+        }
+        aria-label="预览图片"
+      >
+        <img
+          src={src}
+          alt={name}
+          loading="lazy"
+          className="max-h-[420px] max-w-full rounded-md border border-neutral-200/90 bg-white object-contain dark:border-neutral-700 dark:bg-neutral-900"
+        />
+      </button>
+      {artifact.name && (
+        <figcaption className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
+          {artifact.name}
+        </figcaption>
+      )}
+    </figure>
+  )
+}
+
 function GeneratedImageArtifacts({
   artifacts,
-  onImageClick,
+  conversationId,
 }: {
   artifacts: ChatToolArtifact[]
-  onImageClick?: (src: string, alt: string, name?: string) => void
+  conversationId?: string | null
 }) {
   const imageArtifacts = artifacts.filter(isImageArtifact)
   if (imageArtifacts.length === 0) return null
@@ -78,26 +139,11 @@ function GeneratedImageArtifacts({
   return (
     <div className="mt-3 space-y-3">
       {imageArtifacts.map((artifact, index) => (
-        <figure key={`${artifact.name}-${index}`} className="m-0">
-          <button
-            type="button"
-            className="block max-w-full cursor-zoom-in rounded-md p-0 text-left"
-            onClick={() => onImageClick?.(artifactDataUrl(artifact), artifact.name || 'Generated image', artifact.name)}
-            aria-label="预览图片"
-          >
-            <img
-              src={artifactDataUrl(artifact)}
-              alt={artifact.name || 'Generated image'}
-              loading="lazy"
-              className="max-h-[420px] max-w-full rounded-md border border-neutral-200/90 bg-white object-contain dark:border-neutral-700 dark:bg-neutral-900"
-            />
-          </button>
-          {artifact.name && (
-            <figcaption className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
-              {artifact.name}
-            </figcaption>
-          )}
-        </figure>
+        <ArtifactImage
+          key={`${artifact.name}-${index}`}
+          artifact={artifact}
+          conversationId={conversationId}
+        />
       ))}
     </div>
   )
@@ -459,7 +505,7 @@ function MessageBubbleComponent({
             {hasGeneratedImages && (
               <GeneratedImageArtifacts
                 artifacts={unreferencedImageArtifacts}
-                onImageClick={(src, alt, name) => openChatImageViewer({ src, alt, name })}
+                conversationId={conversationId}
               />
             )}
             {hasGeneratedFiles && <GeneratedFileArtifacts artifacts={generatedFileArtifacts} />}
@@ -482,7 +528,7 @@ function MessageBubbleComponent({
               {hasGeneratedImages && (
                 <GeneratedImageArtifacts
                   artifacts={unreferencedImageArtifacts}
-                  onImageClick={(src, alt, name) => openChatImageViewer({ src, alt, name })}
+                  conversationId={conversationId}
                 />
               )}
               {hasGeneratedFiles && <GeneratedFileArtifacts artifacts={generatedFileArtifacts} />}

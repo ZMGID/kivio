@@ -73,7 +73,7 @@ pub async fn run_command(
         for denied in HOST_PYTHON_PACKAGE_INSTALL_PATTERNS {
             if lowered.contains(denied) {
                 return Err(
-                    "run_command cannot install Python packages or modify the host Python environment unless allow_host_python_package_install is true. Use run_python for sandboxed Python instead."
+                    "run_command cannot install Python packages or modify the host Python environment unless allow_host_python_package_install is true. Do not retry with variants — use run_python for sandboxed Python, or (if the user explicitly wants host installs) create/activate a venv and pass allow_host_python_package_install=true."
                         .to_string(),
                 );
             }
@@ -242,7 +242,10 @@ async fn run_shell_command_background(command: &str, cwd: PathBuf) -> Result<Str
         #[cfg(target_os = "windows")]
         {
             let mut c = Command::new("cmd");
-            c.args(["/C", command]);
+            // ponytail: raw_arg 而非 args(),绕开 Rust 对参数的 MSVC 转义。
+            // 否则命令里的内部 " 会被转成 \",cmd.exe 不认 → python -c "..." 之类全坏。
+            c.raw_arg("/C");
+            c.raw_arg(command);
             c
         }
         #[cfg(not(target_os = "windows"))]
@@ -302,7 +305,10 @@ async fn run_shell_command(
         #[cfg(target_os = "windows")]
         {
             let mut c = Command::new("cmd");
-            c.args(["/C", command]);
+            // ponytail: raw_arg 而非 args(),绕开 Rust 对参数的 MSVC 转义。
+            // 否则命令里的内部 " 会被转成 \",cmd.exe 不认 → python -c "..." 之类全坏。
+            c.raw_arg("/C");
+            c.raw_arg(command);
             c
         }
         #[cfg(not(target_os = "windows"))]
@@ -435,6 +441,34 @@ mod tests {
 
         assert!(formatted.contains("exit_code: 1"));
         assert!(formatted.contains("stderr:\nboom"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_run_command_preserves_embedded_quotes() {
+        // 回归:内部双引号必须原样到达目标程序。
+        // 旧实现 args(["/C", cmd]) 会把 " 转成 \",cmd.exe 不认 → python -c "..." 报
+        // "unterminated string literal"。raw_arg 修复后应原样通过。
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let out = rt
+            .block_on(run_shell_command(
+                "python -c \"print(40 + 2)\"",
+                std::env::temp_dir(),
+                30_000,
+            ))
+            .expect("spawn should succeed");
+        // python 不在 PATH 时跳过,不让本机环境决定测试成败。
+        let unavailable = out.stderr.contains("not recognized")
+            || out.stderr.to_lowercase().contains("cannot find")
+            || out.stderr.contains("找不到");
+        if !unavailable {
+            assert!(
+                out.stdout.contains("42"),
+                "embedded quotes mangled? stdout={:?} stderr={:?}",
+                out.stdout,
+                out.stderr
+            );
+        }
     }
 
     #[test]

@@ -120,6 +120,9 @@ export default function Lens() {
   const translateStartRef = useRef<number | null>(null)
   const [freezeFrameImageId, setFreezeFrameImageId] = useState('')
   const [freezeFramePreview, setFreezeFramePreview] = useState('')
+  // 冻结帧用 canvas 渲染：backing store 取图片原生分辨率，保证全屏帧在屏上按设备像素 1:1
+  // 栅格化（绕过透明 overlay 下 WebView2 把全屏 <img> 以低光栅倍率放大导致的发虚）。
+  const freezeCanvasRef = useRef<HTMLCanvasElement>(null)
   // viewport 大小：监听 resize（拔显示器/系统缩放变化都会触发），所有相对尺寸由此重算
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : 1280,
@@ -160,6 +163,30 @@ export default function Lens() {
       setDraftArrow(null)
     }
   }, [stage])
+  // 冻结帧绘制：把 data URL 画进 canvas，backing store = 图片原生像素，CSS 铺满 viewport，
+  // 使全屏冻结帧按设备像素 1:1 显示，与实时桌面同等清晰（避免 <img> 被重采样发虚）。
+  // 全屏态（select 及 keepFullscreen 的 ready/answering）整段会话都保留作背景，直到关闭 Lens。
+  useEffect(() => {
+    if (!freezeFramePreview) return
+    if (stage !== 'select' && !keepFullscreen) return
+    const canvas = freezeCanvasRef.current
+    if (!canvas) return
+    let cancelled = false
+    const img = new Image()
+    img.onload = () => {
+      if (cancelled) return
+      if (canvas.width !== img.naturalWidth) canvas.width = img.naturalWidth
+      if (canvas.height !== img.naturalHeight) canvas.height = img.naturalHeight
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, 0, 0)
+    }
+    img.src = freezeFramePreview
+    return () => {
+      cancelled = true
+    }
+  }, [stage, keepFullscreen, freezeFramePreview])
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
   const [history, setHistory] = useState<HistoryItem[]>(loadHistoryFromStorage)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -1241,7 +1268,8 @@ export default function Lens() {
       const newId = result.imageId
       imageIdRef.current = newId
       setFreezeFrameImageId('')
-      setFreezeFramePreview('')
+      // 不清 freezeFramePreview：截图后仍把冻结帧作为全屏背景保留，直到按 Esc 关闭 Lens
+      // （enterSelect / resetBeforeHide 会在重开 / 隐藏时清理）。
 
       setCapturedFrame({
         x: params.x,
@@ -1698,12 +1726,11 @@ export default function Lens() {
       onMouseUp={handleMouseUp}
       data-tauri-drag-region="false"
     >
-      {stage === 'select' && freezeFramePreview && (
-        <img
-          src={freezeFramePreview}
-          alt=""
-          draggable={false}
-          className="absolute inset-0 w-full h-full object-fill pointer-events-none"
+      {(stage === 'select' || keepFullscreen) && freezeFramePreview && (
+        <canvas
+          ref={freezeCanvasRef}
+          aria-hidden
+          className="absolute inset-0 w-full h-full pointer-events-none"
         />
       )}
 

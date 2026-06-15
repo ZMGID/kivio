@@ -1,4 +1,6 @@
-use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind};
+use serde_json::{json, Value};
+
+use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ToolCallStatus};
 
 use super::finalize::{
     empty_synthesis_fallback_response, segment_phase_for_agent_phase, stopped_generation_content,
@@ -7,6 +9,7 @@ use super::finalize::{
 use super::loop_::{LoopEnv, RunState};
 use super::planning::{call_chat_completion_message_with_usage, stream_scoped_chat_completion_inner};
 use super::prepare::{prepare_agent_step, PrepareStepInput};
+use super::recovery::{self, RecoveryAction};
 use super::stop::{
     empty_assistant_response_error, extract_reasoning_content, final_assistant_api_message,
     merge_reasoning, sanitize_assistant_text_response,
@@ -93,26 +96,22 @@ pub(crate) async fn synthesis_step(
             None,
         )
         .await
-        .map_err(|err| {
-            if state.tool_records.is_empty() {
-                err.to_string()
-            } else {
-                eprintln!(
-                    "Chat synthesis stream failed after tool records; preserving tool results with fallback: {}",
-                    err
-                );
-                String::new()
-            }
-        });
+        .map_err(|err| err.to_string());
         let stream = match stream {
             Ok(stream) => stream,
-            Err(err) if err.is_empty() && !state.tool_records.is_empty() => {
-                let fallback = synthesis_failed_fallback_response(&config.language);
+            Err(err) if !state.tool_records.is_empty() => {
+                eprintln!("Chat synthesis stream failed after tool records; recovering: {err}");
+                let recovered = recover_synthesis(env, state, &err).await;
+                let content = if recovered.trim().is_empty() {
+                    synthesis_failed_fallback_response(&config.language)
+                } else {
+                    recovered
+                };
                 return Ok(SynthesisFlow::Early(
-                    RunResultBuilder::new(host, env.ids(), fallback)
+                    RunResultBuilder::new(host, env.ids(), content)
                         .segment(&response_segment)
                         .emit_done("done")
-                        .outcome("error")
+                        .outcome("recovered")
                         .finish(
                             std::mem::take(&mut state.segment_builder),
                             &state.planning_reasoning_parts,
@@ -175,15 +174,17 @@ pub(crate) async fn synthesis_step(
         if response.trim().is_empty() {
             if !state.tool_records.is_empty() {
                 log_empty_synthesis_output(config, phase, &stream, state.tool_records.len());
-                let fallback = RunResultBuilder::new(
-                    host,
-                    env.ids(),
-                    empty_synthesis_fallback_response(&config.language),
-                )
-                .emit_segment_opt(Some(response_segment.clone()))
-                .api_reasoning(final_reasoning_for_api.clone())
-                .emit_done("done")
-                .emit_and_record(&mut state.generated_api_messages);
+                let recovered = recover_synthesis(env, state, "").await;
+                let content = if recovered.trim().is_empty() {
+                    empty_synthesis_fallback_response(&config.language)
+                } else {
+                    recovered
+                };
+                let fallback = RunResultBuilder::new(host, env.ids(), content)
+                    .emit_segment_opt(Some(response_segment.clone()))
+                    .api_reasoning(final_reasoning_for_api.clone())
+                    .emit_done("done")
+                    .emit_and_record(&mut state.generated_api_messages);
                 (fallback, reasoning, final_reasoning_for_api)
             } else {
                 return Err(empty_assistant_response_error("Chat stream"));
@@ -233,16 +234,18 @@ pub(crate) async fn synthesis_step(
                 message
             }
             Err(err) if !state.tool_records.is_empty() => {
-                eprintln!(
-                    "Chat synthesis request failed after tool records; preserving tool results with fallback: {}",
-                    err
-                );
-                let fallback = synthesis_failed_fallback_response(&config.language);
+                eprintln!("Chat synthesis request failed after tool records; recovering: {err}");
+                let recovered = recover_synthesis(env, state, &err).await;
+                let content = if recovered.trim().is_empty() {
+                    synthesis_failed_fallback_response(&config.language)
+                } else {
+                    recovered
+                };
                 return Ok(SynthesisFlow::Early(
-                    RunResultBuilder::new(host, env.ids(), fallback)
+                    RunResultBuilder::new(host, env.ids(), content)
                         .segment(&response_segment)
                         .emit_done("done")
-                        .outcome("error")
+                        .outcome("recovered")
                         .finish(
                             std::mem::take(&mut state.segment_builder),
                             &state.planning_reasoning_parts,
@@ -279,15 +282,17 @@ pub(crate) async fn synthesis_step(
                     .and_then(|value| value.as_str())
                     .unwrap_or("unknown"),
             );
-            let fallback = RunResultBuilder::new(
-                host,
-                env.ids(),
-                empty_synthesis_fallback_response(&config.language),
-            )
-            .emit_segment_opt(Some(response_segment.clone()))
-            .api_reasoning(extract_reasoning_content(&message))
-            .emit_done("done")
-            .emit_and_record(&mut state.generated_api_messages);
+            let recovered = recover_synthesis(env, state, "").await;
+            let content = if recovered.trim().is_empty() {
+                empty_synthesis_fallback_response(&config.language)
+            } else {
+                recovered
+            };
+            let fallback = RunResultBuilder::new(host, env.ids(), content)
+                .emit_segment_opt(Some(response_segment.clone()))
+                .api_reasoning(extract_reasoning_content(&message))
+                .emit_done("done")
+                .emit_and_record(&mut state.generated_api_messages);
             (fallback, reasoning, response_reasoning)
         } else if response.trim().is_empty() {
             host.emit_stream_done(
@@ -329,6 +334,100 @@ pub(crate) async fn synthesis_step(
         response_segment,
         response_reasoning_segment,
     }))
+}
+
+fn last_user_text(messages: &[Value]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+}
+
+/// 收集本轮成功工具产出的可读摘要(用于去敏重做的输入)。
+fn gathered_previews(state: &RunState) -> Vec<String> {
+    state
+        .tool_records
+        .iter()
+        .filter(|r| r.status == ToolCallStatus::Success)
+        .filter_map(|r| {
+            r.result_preview
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(|p| format!("【{}】\n{}", r.name, p))
+        })
+        .collect()
+}
+
+/// 去敏 + 精简的恢复输入:仅用「用户问题 + 工具产出摘要 + 中立指令」重做一次合成,
+/// 去掉触发审核的完整正文/历史。
+fn build_neutral_reduced_messages(state: &RunState, language: &str) -> Vec<Value> {
+    let zh = language.starts_with("zh");
+    let question = last_user_text(&state.runtime_messages).unwrap_or_default();
+    let previews = gathered_previews(state).join("\n\n");
+    let system = if zh {
+        "用中立、客观的语气,严格依据下面的检索摘要回答用户的问题。只整理与陈述摘要中已有的信息,不要添加评论、立场或摘要之外的内容。"
+    } else {
+        "Answer the user's question objectively and neutrally, strictly based on the search snippets below. Only organize and state information already present in the snippets; add no commentary, stance, or outside content."
+    };
+    let user = if zh {
+        format!("用户的问题:{question}\n\n检索摘要:\n{previews}")
+    } else {
+        format!("User question: {question}\n\nSearch snippets:\n{previews}")
+    };
+    vec![
+        json!({ "role": "system", "content": system }),
+        json!({ "role": "user", "content": user }),
+    ]
+}
+
+/// 统一恢复入口:按 `recovery::decide` 走「去敏重做 → 确定性兜底」阶梯。
+/// 返回非空内容即视为已恢复;返回空串表示无可恢复(调用方退回静态文案)。
+async fn recover_synthesis(env: &LoopEnv<'_>, state: &RunState, failure_message: &str) -> String {
+    let config = env.config;
+    let kind = recovery::classify(failure_message);
+    let has_results = !state.tool_records.is_empty();
+    match recovery::decide(kind, has_results, false) {
+        RecoveryAction::Surface => String::new(),
+        RecoveryAction::DegradeToGathered => {
+            recovery::assemble_results_from_tool_records(&state.tool_records, &config.language)
+        }
+        RecoveryAction::Remediate => {
+            let reduced = build_neutral_reduced_messages(state, &config.language);
+            let result = call_chat_completion_message_with_usage(
+                config.state,
+                &config.provider,
+                &config.model,
+                reduced,
+                None,
+                config.retry_attempts,
+                config.thinking_enabled,
+                config.max_output_tokens,
+                &config.conversation_id,
+                &config.message_id,
+                "Chat synthesis recovery",
+            )
+            .await;
+            let text = match result {
+                Ok((message, _usage)) => sanitize_assistant_text_response(
+                    message
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or_default(),
+                ),
+                Err(_) => String::new(),
+            };
+            if !text.trim().is_empty() {
+                text
+            } else {
+                // 去敏重试仍失败 → 确定性兜底(decide 的 already_remediated 臂)。
+                recovery::assemble_results_from_tool_records(&state.tool_records, &config.language)
+            }
+        }
+    }
 }
 
 fn log_empty_synthesis_output(

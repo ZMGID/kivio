@@ -71,7 +71,9 @@ export function AssistantMessageMeta({
       ? '已停止后继续'
       : streamOutcome === 'error'
         ? '生成异常结束'
-        : null
+        : streamOutcome === 'interrupted'
+          ? '运行中断，未完成'
+          : null
 
   return (
     <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-400 dark:text-neutral-500">

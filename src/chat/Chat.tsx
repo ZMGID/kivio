@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Wrench, X } from 'lucide-react'
+import { Wrench, X } from 'lucide-react'
 import { Sidebar, type ExtensionsNavItem } from './Sidebar'
 import { ChatImageViewer } from './ChatImageViewer'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
@@ -12,8 +12,6 @@ import { AgentTodoIndicator } from './AgentTodoIndicator'
 import { chatApi } from './api'
 import {
   chatTitlebarMacInsetClass,
-  chatTitlebarPillButtonClass,
-  chatTitlebarPillIconClass,
   chatTitlebarRowClass,
   usesNativeTitlebar,
 } from './platform'
@@ -1839,6 +1837,26 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     }
   }, [activeModel, activeProviderId, applyConversation, refreshSidebar, restoreStreamingPreview, selectedProject?.id, selectedProject?.name, syncConversationRoute])
 
+  const handleStartBuilderChat = useCallback(async () => {
+    setAssistantStreamStatsByMessageId({})
+    try {
+      const conv = await chatApi.createBuilderConversation(
+        activeProviderId || undefined,
+        activeModel || undefined,
+        selectedProject?.id ?? null,
+      )
+      currentConversationIdRef.current = conv.id
+      applyConversation(conv)
+      restoreStreamingPreview(conv.id)
+      syncConversationRoute(conv.id)
+      refreshSidebar()
+      setStreamError('')
+    } catch (err) {
+      console.error('Failed to start builder conversation:', err)
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '创建搭建对话失败')
+    }
+  }, [activeModel, activeProviderId, applyConversation, refreshSidebar, restoreStreamingPreview, selectedProject?.id, syncConversationRoute])
+
   const handleApplyAssistant = useCallback(async (assistantId: string | null) => {
     if (!currentConversation) return
     try {
@@ -2082,12 +2100,13 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       setStreamErrorForConversation(conversationId, message)
     } finally {
       clearConversationInFlight(conversationId)
-      if (!(await flushPendingStreamDone(conversationId))) {
-        if (persistedConversation) {
-          finishStreamingRunWithConversation(conversationId, persistedConversation)
-        } else {
-          clearStreamSnapshot(conversationId)
-        }
+      if (persistedConversation) {
+        // invoke 已返回持久化后的完整对话且上面已 applyConversation。
+        // 丢弃被延后的 finishStreamingRun(它会再次全量 reloadConversation),避免每轮随历史线性变慢。
+        delete pendingStreamDoneRef.current[conversationId]
+        finishStreamingRunWithConversation(conversationId, persistedConversation)
+      } else if (!(await flushPendingStreamDone(conversationId))) {
+        clearStreamSnapshot(conversationId)
       }
     }
     return true
@@ -2367,12 +2386,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         }
       } finally {
         clearConversationInFlight(conversationId)
-        if (!(await flushPendingStreamDone(conversationId))) {
-          if (persistedConversation) {
-            finishStreamingRunWithConversation(conversationId, persistedConversation)
-          } else {
-            clearStreamSnapshot(conversationId)
-          }
+        if (persistedConversation) {
+          // 同 handleSend:已有持久化对话,丢弃延后的全量重拉,直接套用。
+          delete pendingStreamDoneRef.current[conversationId]
+          finishStreamingRunWithConversation(conversationId, persistedConversation)
+        } else if (!(await flushPendingStreamDone(conversationId))) {
+          clearStreamSnapshot(conversationId)
         }
       }
     },
@@ -2587,6 +2606,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                 skills={enabledSkills}
                 currentAssistantId={currentAssistantId}
                 onStartAssistantChat={(assistant) => void handleStartAssistantChat(assistant)}
+                onStartBuilder={() => void handleStartBuilderChat()}
                 onApplyAssistant={currentConversation ? (assistantId) => void handleApplyAssistant(assistantId) : undefined}
                 onClose={handleAssistantCenterClose}
               />
@@ -2635,34 +2655,6 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     onModelChange={(providerId, model) => void handleModelChange(providerId, model)}
                   />
                 </div>
-                {currentAssistantSnapshot && (
-                  <div className={`${chatTitlebarPillButtonClass} chat-titlebar-assistant-pill min-w-0 shrink`} data-tauri-drag-region="false">
-                    <button
-                      type="button"
-                      onClick={openAssistantCenter}
-                      className="flex min-w-0 items-center gap-1.5"
-                      title={currentAssistantSnapshot.name}
-                    >
-                      <Bot size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
-                      <span className="chat-titlebar-assistant-label max-w-[150px] truncate text-[13px] font-medium text-neutral-800 dark:text-neutral-200">
-                        {currentAssistantSnapshot.name}
-                      </span>
-                    </button>
-                    <span
-                      aria-hidden
-                      className="chat-titlebar-assistant-divider h-4 w-px shrink-0 bg-neutral-200/90 dark:bg-neutral-700"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void handleApplyAssistant(null)}
-                      className={chatTitlebarPillIconClass}
-                      title="清除助手"
-                      aria-label="清除助手"
-                    >
-                      <X size={13} strokeWidth={1.9} />
-                    </button>
-                  </div>
-                )}
                 <div className="shrink-0" data-tauri-drag-region="false">
                   <ContextIndicator
                     contextState={contextState}
@@ -2706,30 +2698,6 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                         />
                       )}
                     </h2>
-                    {(currentAssistantSnapshot?.greeting || currentAssistantSnapshot?.conversation_starters?.length) && (
-                      <div className="space-y-3 text-center">
-                        {currentAssistantSnapshot.greeting && (
-                          <p className="mx-auto max-w-xl text-[13px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-                            {currentAssistantSnapshot.greeting}
-                          </p>
-                        )}
-                        {currentAssistantSnapshot.conversation_starters && currentAssistantSnapshot.conversation_starters.length > 0 && (
-                          <div className="mx-auto flex max-w-2xl flex-wrap justify-center gap-2">
-                            {currentAssistantSnapshot.conversation_starters.slice(0, 4).map((starter) => (
-                              <button
-                                key={starter}
-                                type="button"
-                                onClick={() => void handleSendMessage(starter)}
-                                disabled={isCurrentConversationBusy()}
-                                className="max-w-full truncate rounded-full border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] px-3 py-1.5 text-[12px] text-neutral-700 shadow-sm transition hover:border-[var(--theme-surface-border-strong)] hover:bg-[var(--theme-surface-soft)] disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                              >
-                                {starter}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
                     <InputBar
                       layout="inline"
                       onSend={(content, attachments) => void handleSendMessage(content, attachments)}
@@ -2756,6 +2724,9 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       selectedProject={selectedProject}
                       onSelectProject={handleSidebarSelectProject}
                       showProjectEntry
+                      currentAssistant={currentAssistantSnapshot ? { id: currentAssistantSnapshot.id, name: currentAssistantSnapshot.name } : null}
+                      onOpenAssistantCenter={openAssistantCenter}
+                      onClearAssistant={() => void handleApplyAssistant(null)}
                       autoFocus
                     />
                   </div>
@@ -2805,6 +2776,9 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     onExecuteAgentPlan={handleExecuteAgentPlan}
                     enabledSkills={slashSkills}
                     onOpenSkillSettings={openSkillCenter}
+                    currentAssistant={currentAssistantSnapshot ? { id: currentAssistantSnapshot.id, name: currentAssistantSnapshot.name } : null}
+                    onOpenAssistantCenter={openAssistantCenter}
+                    onClearAssistant={() => void handleApplyAssistant(null)}
                     autoFocus
                   />
                     </>

@@ -939,7 +939,8 @@ function normalizeSettings(settings: Settings): Settings {
       sendToChat: current.lens?.sendToChat ?? true,
       messageOrder: current.lens?.messageOrder === 'desc' ? 'desc' : 'asc',
       showCaptureHint: current.lens?.showCaptureHint ?? true,
-      windowsFreezeFrameSelection: current.lens?.windowsFreezeFrameSelection ?? false,
+      windowsFreezeFrameSelection:
+        current.lens?.windowsFreezeFrameSelection ?? navigator.platform.startsWith('Win'),
       webSearch: {
         enabled: current.lens?.webSearch?.enabled ?? false,
         provider: current.lens?.webSearch?.provider ?? 'tavily',
@@ -1200,6 +1201,10 @@ export const api = {
   onChatRunPython: (listener: (payload: ChatRunPythonPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<ChatRunPythonPayload>('chat-run-python', (payload) => listener(payload))
+  },
+  onChatAssistantsChanged: (listener: (assistantId: string) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<string>('chat-assistants-changed', (payload) => listener(payload))
   },
   onLensWebSearch: (listener: (payload: LensWebSearchPayload) => void) =>
     on<LensWebSearchPayload>('lens-web-search', (payload) => listener(payload)),

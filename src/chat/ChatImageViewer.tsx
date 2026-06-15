@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, ImageIcon, Minus, Plus, RotateCcw } from 'lucide-react'
 import type { ChatImageViewerItem } from './imageViewer'
+import { loadArtifactDataUrl } from './attachmentPreview'
 
 type ChatImageViewerProps = {
   item: ChatImageViewerItem
@@ -9,11 +10,28 @@ type ChatImageViewerProps = {
 
 export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
   const [zoom, setZoom] = useState(1)
+  // 先显示缩略图(item.src),若有 path 则懒加载全分辨率原图并替换。
+  const [fullSrc, setFullSrc] = useState<string | null>(null)
   const title = item.name || item.alt || '图片附件'
 
   useEffect(() => {
     setZoom(1)
   }, [item.src])
+
+  useEffect(() => {
+    setFullSrc(null)
+    if (!item.path) return
+    let cancelled = false
+    void loadArtifactDataUrl(
+      { path: item.path, dataUrl: item.src },
+      item.conversationId,
+    ).then((src) => {
+      if (!cancelled && src) setFullSrc(src)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [item.path, item.conversationId, item.src])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -82,7 +100,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
       <div className="custom-scrollbar min-h-0 flex-1 overflow-auto px-6 py-7">
         <div className="flex min-h-full items-center justify-center">
           <img
-            src={item.src}
+            src={fullSrc ?? item.src}
             alt={item.alt ?? ''}
             className="block rounded-lg bg-white shadow-sm ring-1 ring-black/10 dark:bg-neutral-950 dark:ring-white/10"
             style={{

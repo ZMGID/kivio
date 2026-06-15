@@ -17,7 +17,6 @@ const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS
 const mockStorageKey = 'kivio-chat-dev-conversations'
 const mockProjectsStorageKey = 'kivio-chat-dev-projects'
 const mockAssistantsStorageKey = 'kivio-chat-dev-assistants'
-const legacyGeneralAssistantSystemPrompt = '你是 Kivio 的通用助手。回答要清晰、直接，并在信息不足时主动说明假设。'
 
 const nowSeconds = () => Math.floor(Date.now() / 1000)
 
@@ -51,293 +50,15 @@ function saveMockProjects(projects: ChatProject[]) {
   window.localStorage.setItem(mockProjectsStorageKey, JSON.stringify(projects))
 }
 
-function mockQuickCommand(name: string, slash: string, description: string, prompt: string) {
-  return {
-    id: slash.replace(/^\//, 'cmd_') || `cmd_${name}`,
-    name,
-    slash,
-    description,
-    prompt,
-    enabled: true,
-    requires_suite_enabled: true,
-  }
-}
-
-function mockConnector(
-  id: string,
-  name: string,
-  kind: string,
-  description: string,
-  toolIds: string[] = [],
-) {
-  return {
-    id,
-    name,
-    kind,
-    description,
-    tool_ids: toolIds,
-    enabled: true,
-    configured: true,
-  }
-}
-
-function mockKnowledgeSkill(
-  name: string,
-  description: string,
-  triggers: string[],
-  skillId: string | null = null,
-  prompt = '',
-) {
-  return {
-    id: `ks_${name}`,
-    name,
-    description,
-    trigger_phrases: triggers,
-    skill_id: skillId,
-    prompt,
-    enabled: true,
-  }
-}
-
-function defaultMockAssistants(): ChatAssistant[] {
-  const now = nowSeconds()
-  return [
-    {
-      id: 'asst_builtin_general',
-      name: '通用助手',
-      description: '适合日常问答、梳理想法和处理轻量任务。',
-      icon: 'sparkles',
-      color: '#6A8FBD',
-      source: 'builtin',
-      author: 'Kivio',
-      version: '1.0.0',
-      category: 'general',
-      tags: ['通用', '效率'],
-      system_prompt: '',
-      provider_id: '',
-      model: '',
-      skill_id: null,
-      tool_preset: 'inherit',
-      conversation_starters: ['帮我整理一下这个想法', '把这段内容改得更清楚', '给我一个可执行的下一步计划'],
-      greeting: '我可以帮你整理、分析、写作和处理日常 AI 任务。',
-      quick_commands: [
-        mockQuickCommand('整理想法', '/整理', '把零散想法整理成结构化要点', '请把用户输入整理成背景、关键点、风险和下一步。'),
-        mockQuickCommand('改清楚', '/改清楚', '让表达更直接、更易读', '在保留原意的前提下改写用户内容，使其更清晰、自然、紧凑。'),
-        mockQuickCommand('下一步', '/下一步', '给出可执行计划', '把用户目标拆成具体下一步，优先给出今天就能执行的动作。'),
-      ],
-      data_connectors: [
-        mockConnector('memory', '记忆', 'memory', '读取和维护用户长期偏好与流程。', ['memory_read', 'memory_search', 'memory_modify']),
-      ],
-      knowledge_skills: [
-        mockKnowledgeSkill('日常任务拆解', '把模糊问题拆成目标、约束、方案和行动。', ['整理', '计划', '下一步']),
-      ],
-      enabled: true,
-      installed: true,
-      archived: false,
-      built_in: true,
-      created_at: now - 5,
-      updated_at: now - 5,
-    },
-    {
-      id: 'asst_builtin_translate_polish',
-      name: '翻译润色助手',
-      description: '面向翻译、改写、语气调整和双语表达。',
-      icon: 'languages',
-      color: '#C56646',
-      source: 'builtin',
-      author: 'Kivio',
-      version: '1.0.0',
-      category: 'language',
-      tags: ['翻译', '润色'],
-      system_prompt: '你是翻译与润色助手。优先保留原意，输出自然、准确、适合目标语境的表达。',
-      provider_id: '',
-      model: '',
-      skill_id: null,
-      tool_preset: 'inherit',
-      conversation_starters: ['把这段中文翻译成自然英文', '帮我润色这段邮件', '给我三个不同语气的版本'],
-      greeting: '贴文本给我，我会帮你翻译、润色或改成指定语气。',
-      quick_commands: [
-        mockQuickCommand('翻译', '/翻译', '翻译为指定语言', '把用户内容翻译成目标语言；未指定目标语言时，中文默认译成英文，其他语言默认译成中文。'),
-        mockQuickCommand('润色', '/润色', '改善措辞和流畅度', '保留原意，提升表达自然度、专业度和可读性。'),
-        mockQuickCommand('语气调整', '/语气', '按指定语气改写', '按用户指定的正式、友好、简洁、礼貌等语气改写内容。'),
-      ],
-      data_connectors: [],
-      knowledge_skills: [
-        mockKnowledgeSkill('双语表达', '保持含义准确，同时让目标语言读起来自然。', ['翻译', '双语', '英文']),
-        mockKnowledgeSkill('表达润色', '针对邮件、产品文案、说明文字做语气和清晰度优化。', ['润色', '改写', '语气']),
-      ],
-      enabled: true,
-      installed: true,
-      archived: false,
-      built_in: true,
-      created_at: now - 4,
-      updated_at: now - 4,
-    },
-    {
-      id: 'asst_builtin_screenshot_analyst',
-      name: '截图分析助手',
-      description: '适合分析截图、界面、报错和视觉信息。',
-      icon: 'scan',
-      color: '#8A6FBD',
-      source: 'builtin',
-      author: 'Kivio',
-      version: '1.0.0',
-      category: 'vision',
-      tags: ['截图', '视觉'],
-      system_prompt: '你是截图分析助手。看到图片时先描述关键信息，再回答用户问题；如果是界面或报错，优先指出可能原因和下一步操作。',
-      provider_id: '',
-      model: '',
-      skill_id: null,
-      tool_preset: 'inherit',
-      conversation_starters: ['这张截图里发生了什么？', '帮我分析这个报错', '这个界面可以怎么优化？'],
-      greeting: '发截图或图片给我，我会帮你识别重点并分析问题。',
-      quick_commands: [
-        mockQuickCommand('分析截图', '/截图分析', '解释截图里的关键信息', '结合截图回答用户问题，先识别画面中的关键对象、文本和状态。'),
-        mockQuickCommand('报错排查', '/报错', '定位错误原因和下一步', '读取截图或文本中的报错信息，给出可能原因、验证方法和修复步骤。'),
-        mockQuickCommand('界面建议', '/界面建议', '分析 UI 可用性', '从信息层级、交互效率、视觉一致性和可读性角度分析界面。'),
-      ],
-      data_connectors: [
-        mockConnector('vision', '图片附件', 'file', '读取当前对话中的截图和图片附件。'),
-      ],
-      knowledge_skills: [
-        mockKnowledgeSkill('截图信息提取', '从截图中提取文字、状态、按钮、报错和上下文线索。', ['截图', '界面', '报错']),
-      ],
-      enabled: true,
-      installed: true,
-      archived: false,
-      built_in: true,
-      created_at: now - 3,
-      updated_at: now - 3,
-    },
-    {
-      id: 'asst_builtin_code_data',
-      name: '编程/数据助手',
-      description: '适合代码解释、调试、脚本和数据分析。',
-      icon: 'code',
-      color: '#4F9D7A',
-      source: 'builtin',
-      author: 'Kivio',
-      version: '1.0.0',
-      category: 'technical',
-      tags: ['代码', '数据'],
-      system_prompt: '你是编程和数据助手。回答要具体，优先给出可运行的步骤、代码或排查路径。',
-      provider_id: '',
-      model: '',
-      skill_id: null,
-      tool_preset: 'all',
-      conversation_starters: ['解释这段代码', '帮我定位这个 bug', '用数据分析这个问题'],
-      greeting: '把代码、错误信息或数据问题发给我，我会帮你拆解和验证。',
-      quick_commands: [
-        mockQuickCommand('解释代码', '/解释代码', '解释代码行为和结构', '解释用户提供代码的目的、关键路径、输入输出和潜在风险。'),
-        mockQuickCommand('调试', '/调试', '定位 bug 或报错', '根据代码、日志或报错，提出排查路径、可能原因和修复建议。'),
-        mockQuickCommand('数据分析', '/数据分析', '分析数据或生成图表', '优先使用可用的数据/代码工具验证结论，并给出可复现步骤。'),
-      ],
-      data_connectors: [
-        mockConnector('python', 'Python 沙盒', 'builtin_tool', '运行 Python 做数据计算、图表和文件分析。', ['run_python']),
-        mockConnector('filesystem', '文件读取', 'builtin_tool', '读取用户提供的本地文本文件。', ['read_file']),
-      ],
-      knowledge_skills: [
-        mockKnowledgeSkill('代码调试', '把问题拆成复现、定位、验证、修复四步。', ['bug', '报错', '调试']),
-        mockKnowledgeSkill('数据分析', '用数据处理和统计方法回答问题，并说明假设。', ['数据', '统计', '图表'], 'xlsx'),
-      ],
-      enabled: true,
-      installed: true,
-      archived: false,
-      built_in: true,
-      created_at: now - 2,
-      updated_at: now - 2,
-    },
-    {
-      id: 'asst_builtin_writing',
-      name: '写作助手',
-      description: '适合文章、文案、提纲、总结和表达优化。',
-      icon: 'pen',
-      color: '#BD8A3E',
-      source: 'builtin',
-      author: 'Kivio',
-      version: '1.0.0',
-      category: 'writing',
-      tags: ['写作', '总结'],
-      system_prompt: '你是写作助手。先理解目标读者和用途，输出结构清晰、语言自然的内容；需要时给出多个可选版本。',
-      provider_id: '',
-      model: '',
-      skill_id: null,
-      tool_preset: 'inherit',
-      conversation_starters: ['帮我写一个提纲', '把这段话改得更有说服力', '总结这段内容'],
-      greeting: '告诉我写作目标和受众，我会帮你起草、改写或总结。',
-      quick_commands: [
-        mockQuickCommand('写提纲', '/提纲', '生成文章或方案提纲', '根据用户主题生成层次清楚、可继续扩展的提纲。'),
-        mockQuickCommand('写文案', '/文案', '生成产品或传播文案', '围绕目标受众、场景和行动目标生成简洁有力的文案。'),
-        mockQuickCommand('总结', '/总结', '提炼重点', '把用户内容总结成重点、结论和可行动事项。'),
-      ],
-      data_connectors: [],
-      knowledge_skills: [
-        mockKnowledgeSkill('结构化写作', '先确定读者、目的、结构，再生成正文。', ['提纲', '文章', '文案']),
-        mockKnowledgeSkill('总结提炼', '压缩内容时保留结论、证据和行动项。', ['总结', '提炼', '摘要']),
-      ],
-      enabled: true,
-      installed: true,
-      archived: false,
-      built_in: true,
-      created_at: now - 1,
-      updated_at: now - 1,
-    },
-  ]
-}
-
-function hydrateBuiltinMockAssistant(existing: ChatAssistant, defaults: ChatAssistant): boolean {
-  if ((existing.built_in ?? existing.builtIn) !== true && existing.source !== 'builtin') return false
-  let changed = false
-  if (existing.id === 'asst_builtin_general' && (existing.system_prompt ?? existing.systemPrompt ?? '').trim() === legacyGeneralAssistantSystemPrompt) {
-    existing.system_prompt = ''
-    existing.systemPrompt = ''
-    changed = true
-  }
-  const fill = <K extends keyof ChatAssistant>(key: K, value: ChatAssistant[K]) => {
-    const current = existing[key]
-    const emptyArray = Array.isArray(current) && current.length === 0
-    if (current === undefined || current === null || current === '' || emptyArray) {
-      existing[key] = value
-      changed = true
-    }
-  }
-  fill('source', defaults.source)
-  fill('author', defaults.author)
-  fill('version', defaults.version)
-  fill('category', defaults.category)
-  fill('tags', defaults.tags)
-  fill('icon', defaults.icon)
-  fill('color', defaults.color)
-  fill('installed', defaults.installed)
-  fill('quick_commands', defaults.quick_commands)
-  fill('data_connectors', defaults.data_connectors)
-  fill('knowledge_skills', defaults.knowledge_skills)
-  return changed
-}
-
 function loadMockAssistants(): ChatAssistant[] {
   try {
     const raw = window.localStorage.getItem(mockAssistantsStorageKey)
     const parsed = raw ? JSON.parse(raw) : []
     const assistants = Array.isArray(parsed) ? parsed : []
-    const defaults = defaultMockAssistants()
-    let changed = false
-    for (const assistant of defaults) {
-      const existing = assistants.find((item) => item.id === assistant.id)
-      if (existing) {
-        changed = hydrateBuiltinMockAssistant(existing, assistant) || changed
-        continue
-      }
-      assistants.push(assistant)
-      changed = true
-    }
     assistants.sort((a, b) => b.updated_at - a.updated_at || a.name.localeCompare(b.name, 'zh-CN'))
-    if (changed || !raw) saveMockAssistants(assistants)
     return assistants
   } catch {
-    const assistants = defaultMockAssistants()
-    saveMockAssistants(assistants)
-    return assistants
+    return []
   }
 }
 
@@ -354,23 +75,11 @@ function normalizeAssistant(assistant: ChatAssistant): ChatAssistant {
     icon: assistant.icon?.trim() ?? '',
     color: assistant.color?.trim() ?? '',
     source: assistant.source ?? (assistant.built_in ?? assistant.builtIn ? 'builtin' : 'user'),
-    author: assistant.author?.trim() ?? '',
-    version: assistant.version?.trim() || '1.0.0',
-    category: assistant.category?.trim() ?? '',
-    tags: Array.isArray(assistant.tags) ? assistant.tags.map((tag) => tag.trim()).filter(Boolean).slice(0, 8) : [],
     system_prompt: (assistant.system_prompt ?? assistant.systemPrompt ?? '').trim(),
     provider_id: (assistant.provider_id ?? assistant.providerId ?? '').trim(),
     model: (assistant.model ?? '').trim(),
-    skill_id: (assistant.skill_id ?? assistant.skillId ?? null) || null,
-    tool_preset: assistant.tool_preset ?? assistant.toolPreset ?? 'inherit',
-    conversation_starters: (assistant.conversation_starters ?? assistant.conversationStarters ?? [])
-      .map((starter) => starter.trim())
-      .filter(Boolean)
-      .slice(0, 6),
-    greeting: assistant.greeting?.trim() ?? '',
-    quick_commands: assistant.quick_commands ?? assistant.quickCommands ?? [],
-    data_connectors: assistant.data_connectors ?? assistant.dataConnectors ?? [],
-    knowledge_skills: assistant.knowledge_skills ?? assistant.knowledgeSkills ?? [],
+    mcp_server_ids: assistant.mcp_server_ids ?? assistant.mcpServerIds ?? [],
+    skill_ids: assistant.skill_ids ?? assistant.skillIds ?? [],
     enabled: assistant.enabled ?? true,
     installed: assistant.installed ?? true,
     archived: assistant.archived ?? false,
@@ -386,17 +95,11 @@ function assistantSnapshot(assistant: ChatAssistant): ChatAssistantSnapshot {
     name: assistant.name,
     description: assistant.description ?? '',
     source: assistant.source,
-    version: assistant.version,
     system_prompt: assistant.system_prompt ?? assistant.systemPrompt ?? '',
     provider_id: assistant.provider_id ?? assistant.providerId ?? '',
     model: assistant.model ?? '',
-    skill_id: assistant.skill_id ?? assistant.skillId ?? null,
-    tool_preset: assistant.tool_preset ?? assistant.toolPreset ?? 'inherit',
-    conversation_starters: assistant.conversation_starters ?? assistant.conversationStarters ?? [],
-    greeting: assistant.greeting ?? '',
-    quick_commands: assistant.quick_commands ?? assistant.quickCommands ?? [],
-    data_connectors: assistant.data_connectors ?? assistant.dataConnectors ?? [],
-    knowledge_skills: assistant.knowledge_skills ?? assistant.knowledgeSkills ?? [],
+    mcp_server_ids: assistant.mcp_server_ids ?? assistant.mcpServerIds ?? [],
+    skill_ids: assistant.skill_ids ?? assistant.skillIds ?? [],
   }
 }
 
@@ -552,8 +255,8 @@ const mockChatApi = {
       provider_id: providerId?.trim() || snapshot?.provider_id || snapshot?.providerId || 'dev-provider',
       model: model?.trim() || snapshot?.model || 'dev-model',
       messages: [],
-      active_skill_id: snapshot?.skill_id ?? null,
-      activeSkillId: snapshot?.skill_id ?? null,
+      active_skill_id: null,
+      activeSkillId: null,
       assistant_id: snapshot?.id ?? null,
       assistantId: snapshot?.id ?? null,
       assistant_snapshot: snapshot,
@@ -912,7 +615,7 @@ const mockChatApi = {
         conversation.assistantId = snapshot.id
         conversation.assistant_snapshot = snapshot
         conversation.assistantSnapshot = snapshot
-        conversation.active_skill_id = snapshot.skill_id ?? snapshot.skillId ?? null
+        conversation.active_skill_id = null
       }
     }
     conversation.activeSkillId = conversation.active_skill_id
@@ -1103,6 +806,26 @@ export const chatApi = {
     )
     if (!result.success) {
       throw new Error('Failed to create conversation')
+    }
+    return result.conversation
+  },
+
+  // 创建「对话搭建专家」会话(瞬态搭建助手,只暴露 save_assistant 工具)
+  async createBuilderConversation(
+    providerId?: string,
+    model?: string,
+    projectId?: string | null,
+  ): Promise<Conversation> {
+    if (!isTauriRuntime()) {
+      // dev 浏览器无后端 LLM,搭建流程只在 Tauri 内真正可用;这里仅返回一个占位会话。
+      return mockChatApi.createConversation(providerId, model, undefined, projectId, null)
+    }
+    const result = await invoke<{ success: boolean; conversation: Conversation }>(
+      'chat_create_builder_conversation',
+      { providerId, model, projectId }
+    )
+    if (!result.success) {
+      throw new Error('Failed to create builder conversation')
     }
     return result.conversation
   },

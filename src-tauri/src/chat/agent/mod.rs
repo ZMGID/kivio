@@ -6,6 +6,7 @@ pub mod host;
 pub mod loop_;
 pub(crate) mod planning;
 pub mod prepare;
+pub(crate) mod recovery;
 pub(crate) mod rounds;
 pub mod stop;
 pub mod stream;

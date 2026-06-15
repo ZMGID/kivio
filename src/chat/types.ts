@@ -180,8 +180,8 @@ export interface ChatMessage {
   activeSkillId?: string | null
   run_entry?: 'send' | 'regenerate' | string | null
   runEntry?: 'send' | 'regenerate' | string | null
-  stream_outcome?: 'completed' | 'cancelled' | 'error' | string | null
-  streamOutcome?: 'completed' | 'cancelled' | 'error' | string | null
+  stream_outcome?: 'completed' | 'cancelled' | 'error' | 'interrupted' | string | null
+  streamOutcome?: 'completed' | 'cancelled' | 'error' | 'interrupted' | string | null
   /** Provider 报告的本条回复真实 token 用量（规划/合成/压缩累计）；不报告时缺省。 */
   usage?: MessageUsage | null
   timestamp: number
@@ -229,52 +229,6 @@ export interface ChatProject {
   updatedAt?: number
 }
 
-export type AssistantToolPreset = 'inherit' | 'none' | 'skills' | 'all' | string
-
-export interface AssistantQuickCommand {
-  id: string
-  name: string
-  slash: string
-  description?: string
-  placeholder?: string
-  prompt?: string
-  starter_text?: string
-  starterText?: string
-  requires_suite_enabled?: boolean
-  requiresSuiteEnabled?: boolean
-  enabled?: boolean
-}
-
-export interface AssistantDataConnector {
-  id: string
-  name: string
-  kind?: 'builtin_tool' | 'mcp' | 'skill_tool' | 'memory' | 'file' | 'web' | string
-  description?: string
-  tool_ids?: string[]
-  toolIds?: string[]
-  server_id?: string | null
-  serverId?: string | null
-  required?: boolean
-  enabled?: boolean
-  configured?: boolean
-}
-
-export interface AssistantKnowledgeSkill {
-  id: string
-  name: string
-  description?: string
-  trigger_phrases?: string[]
-  triggerPhrases?: string[]
-  skill_id?: string | null
-  skillId?: string | null
-  prompt?: string
-  recommended_tools?: string[]
-  recommendedTools?: string[]
-  requires_connectors?: string[]
-  requiresConnectors?: string[]
-  enabled?: boolean
-}
-
 export interface ChatAssistant {
   id: string
   name: string
@@ -282,28 +236,17 @@ export interface ChatAssistant {
   icon?: string
   color?: string
   source?: 'builtin' | 'user' | 'imported' | string
-  author?: string
-  version?: string
-  category?: string
-  tags?: string[]
   system_prompt?: string
   systemPrompt?: string
   provider_id?: string
   providerId?: string
   model?: string
-  skill_id?: string | null
-  skillId?: string | null
-  tool_preset?: AssistantToolPreset
-  toolPreset?: AssistantToolPreset
-  conversation_starters?: string[]
-  conversationStarters?: string[]
-  greeting?: string
-  quick_commands?: AssistantQuickCommand[]
-  quickCommands?: AssistantQuickCommand[]
-  data_connectors?: AssistantDataConnector[]
-  dataConnectors?: AssistantDataConnector[]
-  knowledge_skills?: AssistantKnowledgeSkill[]
-  knowledgeSkills?: AssistantKnowledgeSkill[]
+  /** 允许使用的 MCP 服务器 id 白名单。空 = 不可用任何 MCP。 */
+  mcp_server_ids?: string[]
+  mcpServerIds?: string[]
+  /** 允许激活的技能 id 白名单。空 = 不可用任何技能。 */
+  skill_ids?: string[]
+  skillIds?: string[]
   enabled?: boolean
   installed?: boolean
   archived?: boolean
@@ -320,25 +263,15 @@ export interface ChatAssistantSnapshot {
   name: string
   description?: string
   source?: 'builtin' | 'user' | 'imported' | string
-  version?: string
   system_prompt?: string
   systemPrompt?: string
   provider_id?: string
   providerId?: string
   model?: string
-  skill_id?: string | null
-  skillId?: string | null
-  tool_preset?: AssistantToolPreset
-  toolPreset?: AssistantToolPreset
-  conversation_starters?: string[]
-  conversationStarters?: string[]
-  greeting?: string
-  quick_commands?: AssistantQuickCommand[]
-  quickCommands?: AssistantQuickCommand[]
-  data_connectors?: AssistantDataConnector[]
-  dataConnectors?: AssistantDataConnector[]
-  knowledge_skills?: AssistantKnowledgeSkill[]
-  knowledgeSkills?: AssistantKnowledgeSkill[]
+  mcp_server_ids?: string[]
+  mcpServerIds?: string[]
+  skill_ids?: string[]
+  skillIds?: string[]
 }
 
 export type ContextUsageStatus =

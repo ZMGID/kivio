@@ -2,6 +2,9 @@ export type ChatImageViewerItem = {
   src: string
   alt?: string
   name?: string
+  // 当 src 是缩略图时,提供 path + conversationId 让查看器按需懒加载全分辨率原图。
+  path?: string | null
+  conversationId?: string | null
 }
 
 const CHAT_IMAGE_VIEWER_EVENT = 'kivio-chat-open-image-viewer'

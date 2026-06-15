@@ -131,6 +131,14 @@ pub async fn run_agent_loop(
         applied_allowed_tools_len: 0,
         usage: None,
     };
+    // 把助手的技能白名单冻结进 skill_cache,作为 skill_activate 执行派发的硬 gate。
+    // 无助手 = None = 不限(全局行为)。
+    state.skill_cache.set_allowed_skill_ids(
+        config
+            .assistant_snapshot
+            .as_ref()
+            .map(|assistant| assistant.skill_ids.clone()),
+    );
     let env = LoopEnv {
         config: &config,
         host,
@@ -160,6 +168,9 @@ pub async fn run_agent_loop(
                 PlanningStepOutcome::DraftFailed(result) => {
                     return Ok(attach_usage(result, &mut state))
                 }
+                PlanningStepOutcome::Recovered(result) => {
+                    return Ok(attach_usage(result, &mut state))
+                }
                 PlanningStepOutcome::Cancelled(result) => {
                     return Ok(attach_usage(result, &mut state))
                 }
@@ -178,6 +189,21 @@ pub async fn run_agent_loop(
             // the next planning round. Apply only when a new activation arrived
             // (monotonic — retain only, never re-expand).
             state.apply_activated_tool_filter();
+
+            // Crash-safety checkpoint: persist a best-effort snapshot of the
+            // partial assistant message after each completed tool round. The
+            // final assistant message is otherwise written only once, after this
+            // loop returns (`push_assistant_message`); if the process dies mid-run
+            // the whole turn — including files just written by tools this round —
+            // vanishes. Persisting here keeps the work recoverable on next load.
+            // The final write replaces this draft (same `message_id`), so there
+            // is no duplication on the normal success path.
+            host.persist_partial_assistant(
+                &config.conversation_id,
+                &config.message_id,
+                &state.tool_records,
+                state.segment_builder.segments(),
+            );
         }
     }
 

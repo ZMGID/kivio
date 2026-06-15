@@ -7,9 +7,6 @@ use crate::skills;
 
 use super::types::{AgentPhase, AgentStepResult, AgentStreamPolicy};
 
-const LEGACY_GENERAL_ASSISTANT_SYSTEM_PROMPT: &str =
-    "你是 Kivio 的通用助手。回答要清晰、直接，并在信息不足时主动说明假设。";
-
 pub struct PrepareStepInput<'a> {
     pub step_number: u8,
     pub previous_steps: &'a [AgentStepResult],
@@ -85,60 +82,42 @@ pub fn retain_tools_for_allowed(tools: &mut Vec<ChatToolDefinition>, allowed: &[
     });
 }
 
-pub fn apply_assistant_tool_preset(
-    tools: &mut Vec<ChatToolDefinition>,
-    assistant_snapshot: Option<&ChatAssistantSnapshot>,
-) {
-    let preset = assistant_snapshot
-        .map(|assistant| assistant.tool_preset.trim())
-        .filter(|preset| !preset.is_empty())
-        .unwrap_or("inherit");
-    match preset {
-        "none" => tools.clear(),
-        "skills" => tools.retain(|tool| tool.source == "skill"),
-        "inherit" | "all" => {}
-        _ => {}
-    }
-}
-
-pub fn apply_assistant_data_connectors_tool_filter(
+/// 按助手白名单收窄 MCP 工具：仅保留 server_id 在 `mcp_server_ids` 内的 MCP 工具。
+/// 原生工具与技能工具不受影响（原生工具仍由全局聊天设置管控）。无助手快照 = 不限制。
+/// 注意：空 `mcp_server_ids` 必须清空所有 MCP 工具（语义与 `retain_tools_for_allowed`
+/// 的「空=不限」相反，故不能复用后者）。
+pub fn apply_assistant_mcp_restrictions(
     tools: &mut Vec<ChatToolDefinition>,
     assistant_snapshot: Option<&ChatAssistantSnapshot>,
 ) {
     let Some(assistant) = assistant_snapshot else {
         return;
     };
-    let mut has_explicit_scope = false;
-    for connector in assistant
-        .data_connectors
-        .iter()
-        .filter(|connector| connector.enabled && connector.configured)
-    {
-        if connector
-            .server_id
-            .as_ref()
-            .is_some_and(|id| !id.trim().is_empty())
-            || connector
-                .tool_ids
-                .iter()
-                .any(|tool_id| !tool_id.trim().is_empty())
-        {
-            has_explicit_scope = true;
-            break;
-        }
-    }
-    if !has_explicit_scope {
-        return;
-    }
-
     tools.retain(|tool| {
-        tool.source == "skill"
-            || assistant
-                .data_connectors
-                .iter()
-                .filter(|connector| connector.enabled && connector.configured)
-                .any(|connector| data_connector_allows_tool(connector, tool))
+        if tool.source != "mcp" {
+            return true;
+        }
+        match tool.server_id.as_deref() {
+            Some(server_id) => assistant.mcp_server_ids.iter().any(|id| id == server_id),
+            None => false,
+        }
     });
+}
+
+/// 某技能在当前对话是否可用：全局已启用 **且**（无助手 = 不限；有助手 = 在其 skill_ids 白名单内）。
+/// 空 skill_ids = 该助手不可用任何技能。
+pub fn skill_allowed_for_conversation(
+    chat_tools: &crate::settings::ChatToolsConfig,
+    assistant_snapshot: Option<&ChatAssistantSnapshot>,
+    skill_id: &str,
+) -> bool {
+    if !crate::settings::is_skill_enabled(chat_tools, skill_id) {
+        return false;
+    }
+    match assistant_snapshot {
+        Some(assistant) => assistant.skill_ids.iter().any(|id| id == skill_id),
+        None => true,
+    }
 }
 
 pub fn apply_skill_fallback_when_tools_unavailable(
@@ -451,7 +430,7 @@ pub fn build_chat_system_prompt_with_segments(
     if include_catalog {
         let catalog =
             skills::format_catalog(registry, active_skill_id, tools_available, |skill_id| {
-                crate::settings::is_skill_enabled(chat_tools, skill_id)
+                skill_allowed_for_conversation(chat_tools, assistant_snapshot, skill_id)
             });
         if !catalog.is_empty() {
             append_context_segment(&mut prompt, &mut segments, "skills", "Skills", &catalog);
@@ -570,154 +549,12 @@ fn append_context_segment(
 
 fn assistant_prompt_segment(assistant: &ChatAssistantSnapshot) -> String {
     let mut parts = vec![format!("Active assistant: {}", assistant.name)];
-    let mut suite_meta = Vec::new();
-    if !assistant.source.trim().is_empty() {
-        suite_meta.push(format!("source {}", assistant.source.trim()));
-    }
-    if !assistant.version.trim().is_empty() {
-        suite_meta.push(format!("version {}", assistant.version.trim()));
-    }
-    if !suite_meta.is_empty() {
-        parts.push(format!(
-            "Assistant suite metadata: {}",
-            suite_meta.join(", ")
-        ));
-    }
     if !assistant.description.trim().is_empty() {
-        parts.push(format!(
-            "Assistant purpose: {}",
-            assistant.description.trim()
-        ));
+        parts.push(format!("Assistant purpose: {}", assistant.description.trim()));
     }
     let assistant_system_prompt = assistant.system_prompt.trim();
-    let is_legacy_general_identity = assistant.id == "asst_builtin_general"
-        && assistant_system_prompt == LEGACY_GENERAL_ASSISTANT_SYSTEM_PROMPT;
-    if !assistant_system_prompt.is_empty() && !is_legacy_general_identity {
-        parts.push(format!(
-            "Assistant instructions:\n{}",
-            assistant_system_prompt
-        ));
-    }
-    if !assistant.greeting.trim().is_empty() {
-        parts.push(format!("Assistant greeting: {}", assistant.greeting.trim()));
-    }
-    if !assistant.conversation_starters.is_empty() {
-        parts.push(format!(
-            "Representative starter prompts: {}",
-            assistant.conversation_starters.join(" | ")
-        ));
-    }
-    let quick_commands = assistant
-        .quick_commands
-        .iter()
-        .filter(|command| command.enabled)
-        .filter(|command| !command.name.trim().is_empty() || !command.slash.trim().is_empty())
-        .map(|command| {
-            let slash = if command.slash.trim().is_empty() {
-                "(no slash)"
-            } else {
-                command.slash.trim()
-            };
-            let mut line = format!("- {slash} / {}", command.name.trim());
-            if !command.description.trim().is_empty() {
-                line.push_str(&format!(": {}", command.description.trim()));
-            }
-            if !command.prompt.trim().is_empty() {
-                line.push_str(&format!(
-                    " Prompt to apply when invoked: {}",
-                    command.prompt.trim()
-                ));
-            }
-            if !command.starter_text.trim().is_empty() {
-                line.push_str(&format!(" Starter text: {}", command.starter_text.trim()));
-            }
-            line
-        })
-        .collect::<Vec<_>>();
-    if !quick_commands.is_empty() {
-        parts.push(format!(
-            "Assistant quick commands. When the user's message starts with one of these slash commands, follow its command prompt for that turn:\n{}",
-            quick_commands.join("\n")
-        ));
-    }
-
-    let data_connectors = assistant
-        .data_connectors
-        .iter()
-        .filter(|connector| connector.enabled)
-        .filter(|connector| !connector.name.trim().is_empty())
-        .map(|connector| {
-            let mut line = format!(
-                "- {} ({})",
-                connector.name.trim(),
-                if connector.kind.trim().is_empty() {
-                    "connector"
-                } else {
-                    connector.kind.trim()
-                }
-            );
-            if !connector.configured {
-                line.push_str(" [not configured]");
-            }
-            if connector.required {
-                line.push_str(" [required]");
-            }
-            if !connector.description.trim().is_empty() {
-                line.push_str(&format!(": {}", connector.description.trim()));
-            }
-            if !connector.tool_ids.is_empty() {
-                line.push_str(&format!(" Tools: {}", connector.tool_ids.join(", ")));
-            }
-            if let Some(server_id) = connector
-                .server_id
-                .as_ref()
-                .filter(|id| !id.trim().is_empty())
-            {
-                line.push_str(&format!(" Server: {}", server_id.trim()));
-            }
-            line
-        })
-        .collect::<Vec<_>>();
-    if !data_connectors.is_empty() {
-        parts.push(format!(
-            "Assistant data connectors. Use only configured connectors and only claim connector access after a tool result is returned:\n{}",
-            data_connectors.join("\n")
-        ));
-    }
-
-    let knowledge_skills = assistant
-        .knowledge_skills
-        .iter()
-        .filter(|skill| skill.enabled)
-        .filter(|skill| !skill.name.trim().is_empty())
-        .map(|skill| {
-            let mut line = format!("- {}", skill.name.trim());
-            if !skill.description.trim().is_empty() {
-                line.push_str(&format!(": {}", skill.description.trim()));
-            }
-            if !skill.trigger_phrases.is_empty() {
-                line.push_str(&format!(" Triggers: {}", skill.trigger_phrases.join(", ")));
-            }
-            if let Some(skill_id) = skill.skill_id.as_ref().filter(|id| !id.trim().is_empty()) {
-                line.push_str(&format!(" Bound Skill: {skill_id}"));
-            }
-            if !skill.prompt.trim().is_empty() {
-                line.push_str(&format!(" Instructions: {}", skill.prompt.trim()));
-            }
-            if !skill.recommended_tools.is_empty() {
-                line.push_str(&format!(
-                    " Recommended tools: {}",
-                    skill.recommended_tools.join(", ")
-                ));
-            }
-            line
-        })
-        .collect::<Vec<_>>();
-    if !knowledge_skills.is_empty() {
-        parts.push(format!(
-            "Assistant knowledge skills. When the user request matches a trigger, apply the matching skill guidance before answering:\n{}",
-            knowledge_skills.join("\n")
-        ));
+    if !assistant_system_prompt.is_empty() {
+        parts.push(format!("Assistant instructions:\n{assistant_system_prompt}"));
     }
     parts.join("\n\n")
 }
@@ -784,25 +621,6 @@ pub(crate) fn tool_matches_recommended_name(tool: &ChatToolDefinition, recommend
             .unwrap_or(false)
 }
 
-fn data_connector_allows_tool(
-    connector: &crate::chat::types::AssistantDataConnector,
-    tool: &ChatToolDefinition,
-) -> bool {
-    if connector
-        .server_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|server_id| !server_id.is_empty())
-        .is_some_and(|server_id| tool.server_id.as_deref() == Some(server_id))
-    {
-        return true;
-    }
-    connector
-        .tool_ids
-        .iter()
-        .any(|tool_id| tool_matches_recommended_name(tool, tool_id))
-}
-
 fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Option<String> {
     let native_tool_names = available_builtin_tools
         .iter()
@@ -813,6 +631,14 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
         return None;
     }
     let list = native_tool_names.join(", ");
+    // 运行时取值,让同一份 prompt 在不同平台都说真话(run_command 的 shell 是编译期 cfg 选的)。
+    let (os_name, shell_name) = if cfg!(target_os = "windows") {
+        ("Windows", "cmd.exe")
+    } else if cfg!(target_os = "macos") {
+        ("macOS", "sh")
+    } else {
+        ("Linux", "sh")
+    };
     let has_web_search = native_tool_names
         .iter()
         .any(|tool| tool.as_str() == "web_search");
@@ -857,6 +683,7 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
 - 项目对话中文件/命令工具的相对路径以项目根目录为根；写入明确的绝对路径或 ~/ 路径（如 ~/Desktop/x.html）会落到项目外的全局位置。非项目对话用绝对路径或 ~/ 路径。\n\
 - 用户明确要求保存/修改/删除本地文件或给出目标路径时才动文件：小改用 edit_file，新建或整文件覆盖用 write_file。只要求“生成代码块”时直接在回答里输出，不调用 write_file。写入成功后简短说明路径即可，不要复述文件内容。\n\
 - 写入/删除/移动类工具和 run_command 可能需要用户确认；memory_read（按需读 L2，L1 已注入）、memory_search（按关键词检索 L2，找不准标题时优先用它）和 memory_modify 无需确认。\n\
+- 运行环境：{os_name}，run_command 经 {shell_name} 执行；命令语法须匹配该 shell（Windows 用 `%VAR%`、`dir`、`\\`；Unix 用 `$VAR`、`ls`、`/`）。每次 run_command 都是全新进程，cwd 不跨调用保留——切目录用 `cwd` 参数，别靠上一条 `cd`。要跑多行或带引号的代码，先用 write_file 写成脚本再执行，或用 run_python，别塞进 `python -c \"...\"` 这类内联命令（内联引号在各 shell 下都脆弱）。工具返回硬性拒绝时换策略，别把同一动作换几种写法反复试；失败命令不要原样重跑；别为一次性探测或清理往项目里扔临时脚本。\n\
 - run_command 在宿主 shell 从项目根目录执行，非零退出码即失败；含空格的路径必须用 `cwd` 参数，禁止 `cd 路径 && 命令`；不要同时传 `cwd` 又在 command 里写 `cd ... &&`。`npm run dev` / `tauri dev` / `vite` 等长驻 dev 命令会自动后台启动并立刻返回 pid，不要重复启动。破坏性、联网、改环境的命令先说明并等确认。Skill 脚本走 skill_run_script；不要用 pip 装宿主包绕过沙盒。\n\
 - run_python 在 Pyodide 沙盒运行，用于数据运算、分析、文档处理、图表和聊天产物文件生成；不要用它生成或打印代码答案，代码直接写在回答里。无宿主文件系统访问；files 挂载本地文件后用 KIVIO_INPUT_FILES[n] 路径，numpy、pandas、matplotlib、pillow、openpyxl、pypdf 可直接 import。产物保存为相对路径文件名（如 report.md、summary.csv、data.json、page.html、report.xlsx、chart.png），应用会自动捕获并显示文件卡片；不要 print base64。\n\
 - {zh_live_access_hint}"
@@ -877,6 +704,7 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
 - In project conversations, relative paths in file/command tools resolve from the project root; writing an explicit absolute or ~/ path (e.g. ~/Desktop/x.html) targets that global location outside the project. Non-project conversations use absolute or ~/ paths.\n\
 - Touch files only when the user explicitly asks to save/modify/delete local files or gives a target path: edit_file for small edits, write_file for new files or whole-file overwrites. If asked for a code block without saving, answer inline. After a write, state the path briefly; do not repeat the file content.\n\
 - Write/delete/move tools and run_command may need user approval; memory_read (L2 on demand; L1 is auto-injected), memory_search (keyword search over L2; prefer it when you are unsure of the exact heading), and memory_modify do not.\n\
+- Runtime environment: {os_name}; run_command runs via {shell_name}. Match that shell's syntax (Windows: `%VAR%`, `dir`, `\\`; Unix: `$VAR`, `ls`, `/`). Each run_command is a fresh process — cwd does NOT persist across calls; switch directories with the `cwd` parameter, not a prior `cd`. To run multi-line or quoted code, write it to a file with write_file and run that, or use run_python — do not cram it into inline commands like `python -c \"...\"` (inline quotes are fragile across shells). When a tool returns a hard rejection, change strategy instead of retrying variants of the same action; never re-run a failed command unchanged; don't drop one-off probe or cleanup scripts into the project.\n\
 - run_command runs on the host shell from the project root; non-zero exit means failure. Paths with spaces must use the `cwd` parameter—never `cd path && command`; do not combine `cwd` with a leading `cd ... &&` prefix. Long-running dev commands such as `npm run dev`, `tauri dev`, and `vite` start in the background automatically and return a pid immediately; do not start the same dev server twice. Explain and get confirmation before destructive, network, or environment-changing commands. Skill scripts go through skill_run_script; never use host pip to bypass the run_python sandbox.\n\
 - run_python runs in a Pyodide sandbox for data computation, analysis, document processing, charts, and chat deliverable file generation; never use it to generate or print code answers — write code directly in the answer. No host filesystem access; mount files via the files parameter and use KIVIO_INPUT_FILES[n] paths. numpy, pandas, matplotlib, pillow, openpyxl, pypdf import directly. Save artifacts to relative filenames (report.md, summary.csv, data.json, page.html, report.xlsx, chart.png); Kivio auto-captures them and shows file cards. No base64 printing.\n\
 - {en_live_access_hint}"
@@ -892,23 +720,20 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
 mod tests {
     use super::*;
 
-    fn test_assistant_snapshot(tool_preset: &str, skill_id: Option<&str>) -> ChatAssistantSnapshot {
+    fn test_assistant_snapshot(
+        mcp_server_ids: Vec<&str>,
+        skill_ids: Vec<&str>,
+    ) -> ChatAssistantSnapshot {
         ChatAssistantSnapshot {
             id: "asst_test".to_string(),
             name: "Test Assistant".to_string(),
             description: String::new(),
             source: "user".to_string(),
-            version: "1.0.0".to_string(),
             system_prompt: String::new(),
             provider_id: String::new(),
             model: String::new(),
-            skill_id: skill_id.map(str::to_string),
-            tool_preset: tool_preset.to_string(),
-            conversation_starters: Vec::new(),
-            greeting: String::new(),
-            quick_commands: Vec::new(),
-            data_connectors: Vec::new(),
-            knowledge_skills: Vec::new(),
+            mcp_server_ids: mcp_server_ids.into_iter().map(str::to_string).collect(),
+            skill_ids: skill_ids.into_iter().map(str::to_string).collect(),
         }
     }
 
@@ -1062,139 +887,67 @@ mod tests {
     }
 
     #[test]
-    fn custom_chat_prompt_is_not_overridden_by_general_assistant_identity() {
-        let registry = skills::SkillRegistry::default();
-        let chat_tools = crate::settings::ChatToolsConfig::default();
-        let mut assistant = test_assistant_snapshot("inherit", None);
-        assistant.id = "asst_builtin_general".to_string();
-        assistant.name = "通用助手".to_string();
-        assistant.system_prompt =
-            "你是 Kivio 的通用助手。回答要清晰、直接，并在信息不足时主动说明假设。".to_string();
+    fn assistant_mcp_restrictions_keep_only_allowed_servers() {
+        let assistant = test_assistant_snapshot(vec!["demo"], vec![]);
+        let mut other = test_mcp_tool();
+        other.server_id = Some("other".to_string());
+        let mut tools = vec![
+            crate::mcp::types::native_skill_activate_tool(),
+            crate::mcp::types::native_web_fetch_tool(),
+            test_mcp_tool(), // server_id = "demo"
+            other,           // server_id = "other"
+        ];
 
-        let prompt = build_chat_system_prompt(
-            "zh-CN",
-            false,
-            false,
-            &registry,
+        apply_assistant_mcp_restrictions(&mut tools, Some(&assistant));
+
+        // 原生工具保留,只有 allow-list 内的 MCP 工具保留。
+        assert!(tools.iter().any(|t| t.name == "skill_activate"));
+        assert!(tools.iter().any(|t| t.name == "web_fetch"));
+        assert_eq!(tools.iter().filter(|t| t.source == "mcp").count(), 1);
+        assert!(tools
+            .iter()
+            .any(|t| t.source == "mcp" && t.server_id.as_deref() == Some("demo")));
+    }
+
+    #[test]
+    fn assistant_empty_mcp_list_drops_all_mcp_tools() {
+        let assistant = test_assistant_snapshot(vec![], vec![]);
+        let mut tools = vec![
+            crate::mcp::types::native_web_fetch_tool(),
+            test_mcp_tool(),
+        ];
+
+        apply_assistant_mcp_restrictions(&mut tools, Some(&assistant));
+
+        assert!(tools.iter().all(|t| t.source != "mcp"));
+        assert!(tools.iter().any(|t| t.name == "web_fetch"));
+    }
+
+    #[test]
+    fn no_assistant_does_not_restrict_mcp() {
+        let mut tools = vec![test_mcp_tool()];
+        apply_assistant_mcp_restrictions(&mut tools, None);
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn skill_allowed_respects_assistant_allow_list() {
+        let chat_tools = crate::settings::ChatToolsConfig::default(); // 默认无禁用技能
+        let assistant = test_assistant_snapshot(vec![], vec!["doc"]);
+
+        assert!(skill_allowed_for_conversation(
             &chat_tools,
-            false,
-            &[],
-            None,
-            None,
             Some(&assistant),
-            "你",
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        assert!(prompt.starts_with("你\n\nActive assistant: 通用助手"));
-        assert!(!prompt.contains("你是 Kivio 的通用助手"));
-    }
-
-    #[test]
-    fn assistant_tool_preset_none_disables_all_tools() {
-        let assistant = test_assistant_snapshot("none", Some("doc"));
-        let mut tools = vec![
-            crate::mcp::types::native_skill_activate_tool(),
-            crate::mcp::types::native_web_fetch_tool(),
-            test_mcp_tool(),
-        ];
-
-        apply_assistant_tool_preset(&mut tools, Some(&assistant));
-
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn assistant_tool_preset_skills_keeps_only_skill_runtime_tools() {
-        let assistant = test_assistant_snapshot("skills", Some("doc"));
-        let mut tools = vec![
-            crate::mcp::types::native_skill_activate_tool(),
-            crate::mcp::types::native_skill_read_file_tool(),
-            crate::mcp::types::native_web_fetch_tool(),
-            test_mcp_tool(),
-        ];
-
-        apply_assistant_tool_preset(&mut tools, Some(&assistant));
-
-        assert_eq!(tools.len(), 2);
-        assert!(tools.iter().all(|tool| tool.source == "skill"));
-        assert!(tools.iter().any(|tool| tool.name == "skill_activate"));
-        assert!(tools.iter().any(|tool| tool.name == "skill_read_file"));
-    }
-
-    #[test]
-    fn assistant_tool_preset_inherit_and_all_leave_tools_unchanged() {
-        for preset in ["inherit", "all", "unexpected"] {
-            let assistant = test_assistant_snapshot(preset, None);
-            let mut tools = vec![
-                crate::mcp::types::native_skill_activate_tool(),
-                crate::mcp::types::native_web_fetch_tool(),
-                test_mcp_tool(),
-            ];
-
-            apply_assistant_tool_preset(&mut tools, Some(&assistant));
-
-            assert_eq!(tools.len(), 3, "preset {preset} should not filter tools");
-        }
-    }
-
-    #[test]
-    fn assistant_data_connectors_filter_tools_when_explicitly_scoped() {
-        let mut assistant = test_assistant_snapshot("inherit", None);
-        assistant.data_connectors = vec![crate::chat::types::AssistantDataConnector {
-            id: "python".to_string(),
-            name: "Python".to_string(),
-            kind: "builtin_tool".to_string(),
-            description: String::new(),
-            tool_ids: vec!["run_python".to_string()],
-            server_id: None,
-            required: false,
-            enabled: true,
-            configured: true,
-        }];
-        let mut tools = vec![
-            crate::mcp::types::native_skill_activate_tool(),
-            crate::mcp::types::native_run_python_tool(),
-            crate::mcp::types::native_web_fetch_tool(),
-            test_mcp_tool(),
-        ];
-
-        apply_assistant_data_connectors_tool_filter(&mut tools, Some(&assistant));
-
-        assert_eq!(tools.len(), 2);
-        assert!(tools.iter().any(|tool| tool.name == "skill_activate"));
-        assert!(tools.iter().any(|tool| tool.name == "run_python"));
-        assert!(!tools.iter().any(|tool| tool.name == "web_fetch"));
-        assert!(!tools.iter().any(|tool| tool.name == "search"));
-    }
-
-    #[test]
-    fn assistant_data_connectors_without_explicit_scope_do_not_filter() {
-        let mut assistant = test_assistant_snapshot("inherit", None);
-        assistant.data_connectors = vec![crate::chat::types::AssistantDataConnector {
-            id: "image_attachment".to_string(),
-            name: "Image attachment".to_string(),
-            kind: "file".to_string(),
-            description: String::new(),
-            tool_ids: Vec::new(),
-            server_id: None,
-            required: false,
-            enabled: true,
-            configured: true,
-        }];
-        let mut tools = vec![
-            crate::mcp::types::native_skill_activate_tool(),
-            crate::mcp::types::native_web_fetch_tool(),
-            test_mcp_tool(),
-        ];
-
-        apply_assistant_data_connectors_tool_filter(&mut tools, Some(&assistant));
-
-        assert_eq!(tools.len(), 3);
+            "doc"
+        ));
+        // 不在白名单内的技能被拒。
+        assert!(!skill_allowed_for_conversation(
+            &chat_tools,
+            Some(&assistant),
+            "pdf"
+        ));
+        // 无助手 = 不限(只看全局 enable)。
+        assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf"));
     }
 
     #[test]

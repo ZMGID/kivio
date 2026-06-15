@@ -419,6 +419,7 @@ fn lens_position_text_floating(app: &AppHandle, window: &WebviewWindow) {
 ///   - "translate"：截完直接做 OCR + 翻译，弹原文/译文浮动卡
 ///   - "translateText"：直接翻译当前选中文本，复用截图翻译结果卡
 pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), String> {
+    let __t0 = std::time::Instant::now();
     // 预热 SCK SCShareableContent 缓存，摊销首次截图的 WindowServer 查询开销。
     // 用户从按热键到选目标 + 单击截图通常 ≥ 300 ms，足以盖住 30-80 ms 的 prewarm。
     #[cfg(target_os = "macos")]
@@ -449,6 +450,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     } else {
         None
     };
+    eprintln!("[lens-timing] after_selection_capture +{}ms", __t0.elapsed().as_millis());
     if mode == "translateText" && pending_selection.is_none() {
         if let Ok(mut guard) = state.pending_selection.lock() {
             *guard = None;
@@ -494,8 +496,10 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         // 先在 hidden 状态下尝试定位：即便部分系统下 hidden 窗口 set_position 被忽略，也比
         // 不调强（成功则消除"先在旧位置闪一帧再跳到全屏"的可见跳变）。
         let frame = lens_position_fullscreen(app, &window);
+        eprintln!("[lens-timing]   ..after_position +{}ms", __t0.elapsed().as_millis());
         freeze_frame_image_id = prepare_windows_freeze_frame(app, frame);
     }
+    eprintln!("[lens-timing] after_freeze_capture +{}ms", __t0.elapsed().as_millis());
     #[cfg(target_os = "macos")]
     {
         windows::ensure_overlay_panel(&window);
@@ -539,6 +543,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         detail = reset_detail,
     );
     let _ = window.eval(&script);
+    eprintln!("[lens-timing] after_show_and_emit +{}ms", __t0.elapsed().as_millis());
     Ok(())
 }
 
@@ -2153,7 +2158,9 @@ fn capture_region_image(
     _exclude_self_pid: Option<i32>,
 ) -> Result<PathBuf, String> {
     let _ = (x, y, scale_factor);
+    let __tc = std::time::Instant::now();
     let monitors = Monitor::all().map_err(|e| e.to_string())?;
+    eprintln!("[lens-timing]     ...Monitor::all +{}ms", __tc.elapsed().as_millis());
     let monitor_geometry = monitors
         .iter()
         .map(|m| {
@@ -2178,6 +2185,7 @@ fn capture_region_image(
         .ok_or_else(|| "Invalid capture region".to_string())?;
     let monitor = &monitors[monitor_index];
 
+    let __tcap = std::time::Instant::now();
     let image = monitor
         .capture_region(
             capture_region.x,
@@ -2186,10 +2194,27 @@ fn capture_region_image(
             capture_region.height,
         )
         .map_err(|e| e.to_string())?;
+    eprintln!("[lens-timing]     ...xcap.capture_region +{}ms", __tcap.elapsed().as_millis());
 
     let temp_path = std::env::temp_dir().join(format!("screenshot-{}.png", Uuid::new_v4()));
-    image.save(&temp_path).map_err(|e| e.to_string())?;
+    let __tsave = std::time::Instant::now();
+    write_png_fast(&temp_path, image.as_raw(), image.width(), image.height())?;
+    eprintln!("[lens-timing]     ...png.save +{}ms", __tsave.elapsed().as_millis());
     Ok(temp_path)
+}
+
+/// 快速无损 PNG 编码：`image` 默认编码器对全屏 4MP 图做自适应滤波 + 默认 zlib 压缩，
+/// 单帧编码约 350ms，是冻结帧/截图首帧出现的主要延迟。冻结帧只需「无损 + 快」，
+/// 改用 Fast 压缩 + 无滤波，编码降到几十毫秒（文件略大，临时文件可接受）。
+#[cfg(target_os = "windows")]
+fn write_png_fast(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::{ExtendedColorType, ImageEncoder};
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let writer = std::io::BufWriter::new(file);
+    PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::NoFilter)
+        .write_image(rgba, width, height, ExtendedColorType::Rgba8)
+        .map_err(|e| e.to_string())
 }
 
 /// macOS 平台：区域截图，走 ScreenCaptureKit。

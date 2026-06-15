@@ -577,6 +577,33 @@ pub fn native_run_command_tool() -> ChatToolDefinition {
     }
 }
 
+pub fn native_save_assistant_tool() -> ChatToolDefinition {
+    ChatToolDefinition {
+        id: "native__save_assistant".to_string(),
+        name: "save_assistant".to_string(),
+        description: "Create a new Kivio assistant (专家). ONLY available while building an assistant by chat, and only call it after you have restated the full config and the user confirmed. system_prompt is the assistant's own instructions (write it in the user's language). mcp_server_ids and skill_ids MUST be chosen from the available lists given in your builder instructions — use the exact ids, never invent them; leave a list empty if none apply. Returns the new assistant id.".to_string(),
+        source: "native".to_string(),
+        server_id: None,
+        server_name: Some("Kivio".to_string()),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Assistant display name (1-64 chars)" },
+                "description": { "type": "string", "description": "Short one-line description (optional)" },
+                "icon": { "type": "string", "description": "Optional short icon label/emoji" },
+                "color": { "type": "string", "description": "Optional hex color like #6A8FBD" },
+                "system_prompt": { "type": "string", "description": "The assistant's own system instructions" },
+                "mcp_server_ids": { "type": "array", "items": { "type": "string" }, "description": "Allowed MCP server ids (exact ids from the available list; empty = none)" },
+                "skill_ids": { "type": "array", "items": { "type": "string" }, "description": "Allowed skill ids (exact ids from the available list; empty = none)" }
+            },
+            "required": ["name", "system_prompt"]
+        }),
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
 pub fn native_run_python_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__run_python".to_string(),

@@ -146,7 +146,7 @@ pub struct AgentPlanState {
 }
 
 /// 工具调用状态（保存在 assistant message metadata 中）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStatus {
     Pending,
@@ -361,65 +361,8 @@ pub struct ChatProjectIndex {
 }
 
 /// 可复用 Chat 助手配置。存储字段保持 snake_case，与 Conversation JSON 一致。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AssistantQuickCommand {
-    pub id: String,
-    pub name: String,
-    pub slash: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub placeholder: String,
-    #[serde(default)]
-    pub prompt: String,
-    #[serde(default)]
-    pub starter_text: String,
-    #[serde(default = "default_true")]
-    pub requires_suite_enabled: bool,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AssistantDataConnector {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub tool_ids: Vec<String>,
-    #[serde(default)]
-    pub server_id: Option<String>,
-    #[serde(default)]
-    pub required: bool,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_true")]
-    pub configured: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AssistantKnowledgeSkill {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub trigger_phrases: Vec<String>,
-    #[serde(default)]
-    pub skill_id: Option<String>,
-    #[serde(default)]
-    pub prompt: String,
-    #[serde(default)]
-    pub recommended_tools: Vec<String>,
-    #[serde(default)]
-    pub requires_connectors: Vec<String>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
+/// 重建后只保留：身份(name/desc/icon/color) + 系统提示词 + 模型 + 勾选的 MCP/技能白名单。
+/// 旧文件里的 author/tags/quick_commands/data_connectors/knowledge_skills 等字段由 serde 忽略未知字段容错。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatAssistant {
     pub id: String,
@@ -433,33 +376,17 @@ pub struct ChatAssistant {
     #[serde(default)]
     pub source: String,
     #[serde(default)]
-    pub author: String,
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
-    pub category: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
     pub provider_id: String,
     #[serde(default)]
     pub model: String,
+    /// 该助手允许使用的 MCP 服务器 id 白名单。空 = 不可用任何 MCP。
     #[serde(default)]
-    pub skill_id: Option<String>,
+    pub mcp_server_ids: Vec<String>,
+    /// 该助手允许激活的技能 id 白名单。空 = 不可用任何技能。
     #[serde(default)]
-    pub tool_preset: String,
-    #[serde(default)]
-    pub conversation_starters: Vec<String>,
-    #[serde(default)]
-    pub greeting: String,
-    #[serde(default)]
-    pub quick_commands: Vec<AssistantQuickCommand>,
-    #[serde(default)]
-    pub data_connectors: Vec<AssistantDataConnector>,
-    #[serde(default)]
-    pub knowledge_skills: Vec<AssistantKnowledgeSkill>,
+    pub skill_ids: Vec<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_true")]
@@ -482,27 +409,15 @@ pub struct ChatAssistantSnapshot {
     #[serde(default)]
     pub source: String,
     #[serde(default)]
-    pub version: String,
-    #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
     pub provider_id: String,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
-    pub skill_id: Option<String>,
+    pub mcp_server_ids: Vec<String>,
     #[serde(default)]
-    pub tool_preset: String,
-    #[serde(default)]
-    pub conversation_starters: Vec<String>,
-    #[serde(default)]
-    pub greeting: String,
-    #[serde(default)]
-    pub quick_commands: Vec<AssistantQuickCommand>,
-    #[serde(default)]
-    pub data_connectors: Vec<AssistantDataConnector>,
-    #[serde(default)]
-    pub knowledge_skills: Vec<AssistantKnowledgeSkill>,
+    pub skill_ids: Vec<String>,
 }
 
 impl From<&ChatAssistant> for ChatAssistantSnapshot {
@@ -512,17 +427,11 @@ impl From<&ChatAssistant> for ChatAssistantSnapshot {
             name: assistant.name.clone(),
             description: assistant.description.clone(),
             source: assistant.source.clone(),
-            version: assistant.version.clone(),
             system_prompt: assistant.system_prompt.clone(),
             provider_id: assistant.provider_id.clone(),
             model: assistant.model.clone(),
-            skill_id: assistant.skill_id.clone(),
-            tool_preset: assistant.tool_preset.clone(),
-            conversation_starters: assistant.conversation_starters.clone(),
-            greeting: assistant.greeting.clone(),
-            quick_commands: assistant.quick_commands.clone(),
-            data_connectors: assistant.data_connectors.clone(),
-            knowledge_skills: assistant.knowledge_skills.clone(),
+            mcp_server_ids: assistant.mcp_server_ids.clone(),
+            skill_ids: assistant.skill_ids.clone(),
         }
     }
 }

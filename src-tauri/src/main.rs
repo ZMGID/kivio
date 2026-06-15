@@ -344,6 +344,7 @@ fn main() {
             chat::commands::chat_get_conversations,
             chat::commands::chat_get_conversation,
             chat::commands::chat_create_conversation,
+            chat::commands::chat_create_builder_conversation,
             chat::commands::chat_get_assistants,
             chat::commands::chat_create_assistant,
             chat::commands::chat_update_assistant,

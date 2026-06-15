@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Sparkles,
   Trash2,
   Wrench,
 } from 'lucide-react'
@@ -17,19 +18,13 @@ import { api, type ModelProvider } from '../api/tauri'
 import { isProviderEnabled } from '../settings/utils'
 import { chatApi } from './api'
 import { usesNativeTitlebar } from './platform'
-import type {
-  AssistantDataConnector,
-  AssistantKnowledgeSkill,
-  AssistantQuickCommand,
-  AssistantToolPreset,
-  ChatAssistant,
-  SkillMeta,
-} from './types'
+import type { ChatAssistant, SkillMeta } from './types'
 
 interface AssistantCenterProps {
   skills: SkillMeta[]
   currentAssistantId?: string | null
   onStartAssistantChat: (assistant: ChatAssistant) => void
+  onStartBuilder?: () => void
   onApplyAssistant?: (assistantId: string | null) => void
   onClose: () => void
 }
@@ -37,13 +32,6 @@ interface AssistantCenterProps {
 type AssistantDraft = ChatAssistant
 type CenterView = 'list' | 'detail' | 'edit'
 type SuiteTab = 'plaza' | 'installed' | 'mine'
-
-const toolPresetOptions: Array<{ value: AssistantToolPreset; label: string }> = [
-  { value: 'inherit', label: '跟随聊天设置' },
-  { value: 'none', label: '不使用工具' },
-  { value: 'skills', label: '仅 Skill 工具' },
-  { value: 'all', label: '全部可用工具' },
-]
 
 const assistantColors = ['#6A8FBD', '#C56646', '#4F9D7A', '#8A6FBD', '#B7791F', '#5E8C6A']
 
@@ -55,19 +43,19 @@ function listFromMaybe<T>(snake?: T[], camel?: T[]): T[] {
   return Array.isArray(snake) ? snake : Array.isArray(camel) ? camel : []
 }
 
-function assistantQuickCommands(assistant?: ChatAssistant | null): AssistantQuickCommand[] {
-  return listFromMaybe(assistant?.quick_commands, assistant?.quickCommands)
+function assistantMcpIds(assistant?: ChatAssistant | null): string[] {
+  return listFromMaybe(assistant?.mcp_server_ids, assistant?.mcpServerIds)
 }
 
-function assistantDataConnectors(assistant?: ChatAssistant | null): AssistantDataConnector[] {
-  return listFromMaybe(assistant?.data_connectors, assistant?.dataConnectors)
+function assistantSkillIds(assistant?: ChatAssistant | null): string[] {
+  return listFromMaybe(assistant?.skill_ids, assistant?.skillIds)
 }
 
-function assistantKnowledgeSkills(assistant?: ChatAssistant | null): AssistantKnowledgeSkill[] {
-  return listFromMaybe(assistant?.knowledge_skills, assistant?.knowledgeSkills)
+function toggleId(list: string[], id: string): string[] {
+  return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
 }
 
-function normalizeStringList(values?: string[], limit = 8): string[] {
+function normalizeStringList(values?: string[], limit = 64): string[] {
   const out: string[] = []
   for (const value of values ?? []) {
     const item = value.trim()
@@ -78,61 +66,6 @@ function normalizeStringList(values?: string[], limit = 8): string[] {
   return out
 }
 
-function normalizeSlash(value: string, fallback: string): string {
-  const source = (value.trim() || fallback.trim()).replace(/\s+/g, '')
-  if (!source) return ''
-  return source.startsWith('/') ? source : `/${source}`
-}
-
-function normalizeCommand(command: AssistantQuickCommand, index: number): AssistantQuickCommand | null {
-  const name = command.name.trim()
-  const slash = normalizeSlash(command.slash, name)
-  if (!name || !slash) return null
-  return {
-    id: command.id?.trim() || `cmd_${index}`,
-    name,
-    slash,
-    description: command.description?.trim() ?? '',
-    placeholder: command.placeholder?.trim() ?? '',
-    prompt: command.prompt?.trim() ?? '',
-    starter_text: (command.starter_text ?? command.starterText ?? '').trim(),
-    requires_suite_enabled: command.requires_suite_enabled ?? command.requiresSuiteEnabled ?? true,
-    enabled: command.enabled ?? true,
-  }
-}
-
-function normalizeConnector(connector: AssistantDataConnector, index: number): AssistantDataConnector | null {
-  const name = connector.name.trim()
-  if (!name) return null
-  return {
-    id: connector.id?.trim() || `conn_${index}`,
-    name,
-    kind: connector.kind || 'builtin_tool',
-    description: connector.description?.trim() ?? '',
-    tool_ids: normalizeStringList(connector.tool_ids ?? connector.toolIds, 12),
-    server_id: connector.server_id ?? connector.serverId ?? null,
-    required: connector.required ?? false,
-    enabled: connector.enabled ?? true,
-    configured: connector.configured ?? true,
-  }
-}
-
-function normalizeKnowledgeSkill(skill: AssistantKnowledgeSkill, index: number): AssistantKnowledgeSkill | null {
-  const name = skill.name.trim()
-  if (!name) return null
-  return {
-    id: skill.id?.trim() || `ks_${index}`,
-    name,
-    description: skill.description?.trim() ?? '',
-    trigger_phrases: normalizeStringList(skill.trigger_phrases ?? skill.triggerPhrases, 16),
-    skill_id: skill.skill_id ?? skill.skillId ?? null,
-    prompt: skill.prompt?.trim() ?? '',
-    recommended_tools: normalizeStringList(skill.recommended_tools ?? skill.recommendedTools, 12),
-    requires_connectors: normalizeStringList(skill.requires_connectors ?? skill.requiresConnectors, 12),
-    enabled: skill.enabled ?? true,
-  }
-}
-
 function normalizeAssistantForDraft(assistant: ChatAssistant): AssistantDraft {
   return {
     ...assistant,
@@ -140,20 +73,11 @@ function normalizeAssistantForDraft(assistant: ChatAssistant): AssistantDraft {
     icon: assistant.icon ?? 'bot',
     color: assistant.color ?? '#6A8FBD',
     source: assistant.source ?? (assistant.built_in ?? assistant.builtIn ? 'builtin' : 'user'),
-    author: assistant.author ?? (assistant.built_in ?? assistant.builtIn ? 'Kivio' : ''),
-    version: assistant.version ?? '1.0.0',
-    category: assistant.category ?? '',
-    tags: assistant.tags ?? [],
     system_prompt: assistant.system_prompt ?? assistant.systemPrompt ?? '',
     provider_id: assistant.provider_id ?? assistant.providerId ?? '',
     model: assistant.model ?? '',
-    skill_id: assistant.skill_id ?? assistant.skillId ?? null,
-    tool_preset: assistant.tool_preset ?? assistant.toolPreset ?? 'inherit',
-    conversation_starters: assistant.conversation_starters ?? assistant.conversationStarters ?? [],
-    greeting: assistant.greeting ?? '',
-    quick_commands: assistantQuickCommands(assistant),
-    data_connectors: assistantDataConnectors(assistant),
-    knowledge_skills: assistantKnowledgeSkills(assistant),
+    mcp_server_ids: assistantMcpIds(assistant),
+    skill_ids: assistantSkillIds(assistant),
     enabled: assistant.enabled ?? true,
     installed: assistant.installed ?? true,
     archived: assistant.archived ?? false,
@@ -167,25 +91,16 @@ function createBlankAssistant(): AssistantDraft {
   const now = nowSeconds()
   return {
     id: `asst_${crypto.randomUUID()}`,
-    name: '新套件',
+    name: '新助手',
     description: '',
     icon: 'bot',
     color: '#6A8FBD',
     source: 'user',
-    author: '',
-    version: '1.0.0',
-    category: '',
-    tags: [],
     system_prompt: '',
     provider_id: '',
     model: '',
-    skill_id: null,
-    tool_preset: 'inherit',
-    conversation_starters: [],
-    greeting: '',
-    quick_commands: [],
-    data_connectors: [],
-    knowledge_skills: [],
+    mcp_server_ids: [],
+    skill_ids: [],
     enabled: true,
     installed: true,
     archived: false,
@@ -203,32 +118,11 @@ function draftPayload(draft: AssistantDraft): ChatAssistant {
     icon: draft.icon?.trim() || 'bot',
     color: draft.color?.trim() || '#6A8FBD',
     source: draft.source || (draft.built_in ?? draft.builtIn ? 'builtin' : 'user'),
-    author: draft.author?.trim() ?? '',
-    version: draft.version?.trim() || '1.0.0',
-    category: draft.category?.trim() ?? '',
-    tags: normalizeStringList(draft.tags, 8),
     system_prompt: (draft.system_prompt ?? draft.systemPrompt ?? '').trim(),
     provider_id: (draft.provider_id ?? draft.providerId ?? '').trim(),
     model: draft.provider_id ? (draft.model ?? '').trim() : '',
-    skill_id: draft.skill_id || null,
-    tool_preset: draft.tool_preset ?? 'inherit',
-    conversation_starters: (draft.conversation_starters ?? [])
-      .map((starter) => starter.trim())
-      .filter(Boolean)
-      .slice(0, 6),
-    greeting: draft.greeting?.trim() ?? '',
-    quick_commands: assistantQuickCommands(draft)
-      .map(normalizeCommand)
-      .filter((command): command is AssistantQuickCommand => Boolean(command))
-      .slice(0, 12),
-    data_connectors: assistantDataConnectors(draft)
-      .map(normalizeConnector)
-      .filter((connector): connector is AssistantDataConnector => Boolean(connector))
-      .slice(0, 12),
-    knowledge_skills: assistantKnowledgeSkills(draft)
-      .map(normalizeKnowledgeSkill)
-      .filter((skill): skill is AssistantKnowledgeSkill => Boolean(skill))
-      .slice(0, 12),
+    mcp_server_ids: normalizeStringList(assistantMcpIds(draft)),
+    skill_ids: normalizeStringList(assistantSkillIds(draft)),
     enabled: draft.enabled ?? true,
     installed: draft.installed ?? true,
     archived: false,
@@ -240,18 +134,10 @@ function draftPayload(draft: AssistantDraft): ChatAssistant {
 
 function assistantMatches(assistant: ChatAssistant, query: string) {
   if (!query) return true
-  const text = [
-    assistant.name,
-    assistant.description,
-    assistant.author,
-    assistant.category,
-    ...(assistant.tags ?? []),
-    assistant.system_prompt ?? assistant.systemPrompt,
-    ...(assistant.conversation_starters ?? assistant.conversationStarters ?? []),
-    ...assistantQuickCommands(assistant).flatMap((command) => [command.name, command.slash, command.description]),
-    ...assistantDataConnectors(assistant).flatMap((connector) => [connector.name, connector.description]),
-    ...assistantKnowledgeSkills(assistant).flatMap((skill) => [skill.name, skill.description]),
-  ].join('\n').toLowerCase()
+  const text = [assistant.name, assistant.description, assistant.system_prompt ?? assistant.systemPrompt]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase()
   return text.includes(query)
 }
 
@@ -262,97 +148,27 @@ function providerModels(provider?: ModelProvider): string[] {
 
 function suiteStats(assistant: ChatAssistant) {
   return {
-    commands: assistantQuickCommands(assistant).filter((command) => command.enabled !== false).length,
-    connectors: assistantDataConnectors(assistant).filter((connector) => connector.enabled !== false).length,
-    skills: assistantKnowledgeSkills(assistant).filter((skill) => skill.enabled !== false).length,
+    mcp: assistantMcpIds(assistant).length,
+    skills: assistantSkillIds(assistant).length,
   }
-}
-
-function linesToCommands(value: string): AssistantQuickCommand[] {
-  return value.split('\n').map((line, index) => {
-    const [slash = '', name = '', description = '', prompt = ''] = line.split('|')
-    return {
-      id: `cmd_${index}`,
-      slash: slash.trim(),
-      name: name.trim() || slash.replace('/', '').trim(),
-      description: description.trim(),
-      prompt: prompt.trim(),
-      enabled: true,
-      requires_suite_enabled: true,
-    }
-  }).filter((command) => command.name.trim() || command.slash.trim())
-}
-
-function commandsToLines(commands: AssistantQuickCommand[]): string {
-  return commands.map((command) => [
-    command.slash,
-    command.name,
-    command.description ?? '',
-    command.prompt ?? '',
-  ].join(' | ')).join('\n')
-}
-
-function linesToConnectors(value: string): AssistantDataConnector[] {
-  return value.split('\n').map((line, index) => {
-    const [name = '', kind = '', tools = '', description = ''] = line.split('|')
-    return {
-      id: `conn_${index}`,
-      name: name.trim(),
-      kind: kind.trim() || 'builtin_tool',
-      tool_ids: tools.split(',').map((tool) => tool.trim()).filter(Boolean),
-      description: description.trim(),
-      enabled: true,
-      configured: true,
-    }
-  }).filter((connector) => connector.name.trim())
-}
-
-function connectorsToLines(connectors: AssistantDataConnector[]): string {
-  return connectors.map((connector) => [
-    connector.name,
-    connector.kind ?? 'builtin_tool',
-    (connector.tool_ids ?? connector.toolIds ?? []).join(', '),
-    connector.description ?? '',
-  ].join(' | ')).join('\n')
-}
-
-function linesToKnowledgeSkills(value: string): AssistantKnowledgeSkill[] {
-  return value.split('\n').map((line, index) => {
-    const [name = '', triggers = '', description = '', prompt = ''] = line.split('|')
-    return {
-      id: `ks_${index}`,
-      name: name.trim(),
-      trigger_phrases: triggers.split(',').map((trigger) => trigger.trim()).filter(Boolean),
-      description: description.trim(),
-      prompt: prompt.trim(),
-      enabled: true,
-    }
-  }).filter((skill) => skill.name.trim())
-}
-
-function knowledgeSkillsToLines(skills: AssistantKnowledgeSkill[]): string {
-  return skills.map((skill) => [
-    skill.name,
-    (skill.trigger_phrases ?? skill.triggerPhrases ?? []).join(', '),
-    skill.description ?? '',
-    skill.prompt ?? '',
-  ].join(' | ')).join('\n')
 }
 
 export function AssistantCenter({
   skills,
   currentAssistantId,
   onStartAssistantChat,
+  onStartBuilder,
   onApplyAssistant,
   onClose,
 }: AssistantCenterProps) {
   const [assistants, setAssistants] = useState<ChatAssistant[]>([])
   const [providers, setProviders] = useState<ModelProvider[]>([])
+  const [mcpServers, setMcpServers] = useState<Array<{ id: string; name: string }>>([])
   const [selectedId, setSelectedId] = useState<string | null>(currentAssistantId ?? null)
   const [draft, setDraft] = useState<AssistantDraft | null>(null)
   const [query, setQuery] = useState('')
   const [view, setView] = useState<CenterView>('list')
-  const [tab, setTab] = useState<SuiteTab>('plaza')
+  const [tab, setTab] = useState<SuiteTab>('installed')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -378,8 +194,12 @@ export function AssistantCenter({
     try {
       const settings = await api.getSettings()
       setProviders(settings.providers || [])
+      setMcpServers(
+        (settings.chatTools?.servers ?? []).map((server) => ({ id: server.id, name: server.name })),
+      )
     } catch {
       setProviders([])
+      setMcpServers([])
     }
   }, [])
 
@@ -387,6 +207,14 @@ export function AssistantCenter({
     void loadAssistants(currentAssistantId)
     void loadProviders()
   }, [currentAssistantId, loadAssistants, loadProviders])
+
+  // 对话搭建落库后会发 chat-assistants-changed,刷新列表让新专家实时出现。
+  useEffect(() => {
+    const unlistenPromise = api.onChatAssistantsChanged(() => void loadAssistants())
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten())
+    }
+  }, [loadAssistants])
 
   const selectedAssistant = useMemo(
     () => assistants.find((assistant) => assistant.id === selectedId) ?? null,
@@ -412,7 +240,8 @@ export function AssistantCenter({
 
   const selectedProvider = providers.find((provider) => provider.id === (draft?.provider_id ?? draft?.providerId))
   const models = providerModels(selectedProvider)
-  const selectedSkill = skills.find((skill) => skill.id === (draft?.skill_id ?? draft?.skillId))
+  const draftMcpIds = assistantMcpIds(draft)
+  const draftSkillIds = assistantSkillIds(draft)
   const canApplyCurrent = Boolean(onApplyAssistant)
   const builtInCount = assistants.filter((assistant) => assistant.built_in ?? assistant.builtIn).length
   const installedCount = assistants.filter((assistant) => assistant.installed !== false).length
@@ -550,66 +379,62 @@ export function AssistantCenter({
           没有匹配的套件
         </div>
       ) : (
-        <div className="grid gap-3 xl:grid-cols-2">
+        <div className="overflow-hidden rounded-md border border-neutral-200 divide-y divide-neutral-200 dark:border-neutral-800 dark:divide-neutral-800">
           {filteredAssistants.map((assistant) => {
             const stats = suiteStats(assistant)
             const builtIn = assistant.built_in ?? assistant.builtIn ?? false
             return (
               <article
                 key={assistant.id}
-                className="min-w-0 rounded-md bg-neutral-50 p-3.5 transition-colors hover:bg-neutral-100 dark:bg-neutral-900/60 dark:hover:bg-neutral-900"
+                className="flex min-w-0 items-center gap-3 px-3 py-2.5 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-900/60"
               >
-                <div className="flex min-w-0 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => openDetail(assistant)}
-                    className="grid size-11 shrink-0 place-items-center rounded-md border border-neutral-200 bg-white text-[17px] font-semibold text-neutral-600 hover:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-300"
-                    style={{ color: assistant.color || '#6A8FBD' }}
-                    aria-label={`打开 ${assistant.name}`}
-                  >
-                    {assistant.name.trim().slice(0, 1) || '套'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openDetail(assistant)}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-[15px] font-semibold text-neutral-950 dark:text-neutral-50">
-                        {assistant.name}
+                <button
+                  type="button"
+                  onClick={() => openDetail(assistant)}
+                  className="grid size-9 shrink-0 place-items-center rounded-md border border-neutral-200 bg-white text-[15px] font-semibold hover:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-950"
+                  style={{ color: assistant.color || '#6A8FBD' }}
+                  aria-label={`打开 ${assistant.name}`}
+                >
+                  {assistant.name.trim().slice(0, 1) || '套'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openDetail(assistant)}
+                  className="min-w-0 flex-1 text-left"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-[14px] font-semibold text-neutral-950 dark:text-neutral-50">
+                      {assistant.name}
+                    </span>
+                    {builtIn && (
+                      <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                        内置
                       </span>
-                      {builtIn && (
-                        <span className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
-                          内置
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 truncate text-[12px] font-medium text-neutral-500">
-                      @{assistant.author || (builtIn ? 'Kivio' : 'Local')}
-                    </div>
-                    <p className="mt-2 line-clamp-2 text-[12px] leading-relaxed text-neutral-600 dark:text-neutral-400">
-                      {assistant.description || '未设置描述'}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleStartChat(assistant)}
-                    disabled={assistant.enabled === false}
-                    className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-100 dark:hover:bg-neutral-800"
-                    aria-label={`使用 ${assistant.name} 开始聊天`}
-                    title="开始聊天"
-                  >
-                    <Plus size={20} />
-                  </button>
-                </div>
-                <div className="mt-4 flex items-center justify-between gap-3 text-[12px] text-neutral-500 dark:text-neutral-400">
-                  <div className="flex min-w-0 flex-wrap gap-x-4 gap-y-1">
-                    <span>{stats.skills} 个技能</span>
-                    <span>{stats.connectors} 个数据连接</span>
-                    <span>{stats.commands} 个快捷命令</span>
+                    )}
+                    <span className="truncate text-[12px] font-medium text-neutral-400 dark:text-neutral-500">
+                      {builtIn ? '内置' : '自定义'}
+                    </span>
                   </div>
-                  <span className="shrink-0">v{assistant.version || '1.0.0'}</span>
-                </div>
+                  <p className="mt-0.5 truncate text-[12px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                    {assistant.description || '未设置描述'}
+                  </p>
+                  <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">
+                    <span className="shrink-0">{stats.mcp} MCP</span>
+                    <span className="shrink-0 opacity-50">·</span>
+                    <span className="shrink-0">{stats.skills} 技能</span>
+                    <span className="ml-auto shrink-0">{assistant.enabled === false ? '已停用' : '可用'}</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleStartChat(assistant)}
+                  disabled={assistant.enabled === false}
+                  className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-900 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                  aria-label={`使用 ${assistant.name} 开始聊天`}
+                  title="开始聊天"
+                >
+                  <Plus size={18} />
+                </button>
               </article>
             )
           })}
@@ -621,9 +446,11 @@ export function AssistantCenter({
   const renderDetail = () => {
     const assistant = selectedAssistant
     if (!assistant) return renderList()
-    const commands = assistantQuickCommands(assistant)
-    const connectors = assistantDataConnectors(assistant)
-    const knowledge = assistantKnowledgeSkills(assistant)
+    const usedMcpIds = assistantMcpIds(assistant)
+    const usedSkillIds = assistantSkillIds(assistant)
+    const mcpNames = usedMcpIds.map((id) => mcpServers.find((s) => s.id === id)?.name ?? id)
+    const skillNames = usedSkillIds.map((id) => skills.find((s) => s.id === id)?.name ?? id)
+    const systemPrompt = assistant.system_prompt ?? assistant.systemPrompt ?? ''
     return (
       <div className="space-y-7">
         <div className="flex flex-col gap-4 border-b border-neutral-200 pb-5 dark:border-neutral-800 lg:flex-row lg:items-start lg:justify-between">
@@ -640,20 +467,17 @@ export function AssistantCenter({
               className="grid size-16 shrink-0 place-items-center rounded-md text-[26px] font-semibold text-white"
               style={{ backgroundColor: assistant.color || '#6A8FBD' }}
             >
-              {assistant.name.trim().slice(0, 1) || '套'}
+              {assistant.name.trim().slice(0, 1) || '助'}
             </div>
             <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <h2 className="truncate text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
-                  {assistant.name}
-                </h2>
-                <span className="rounded bg-emerald-100 px-2 py-1 text-[12px] font-medium text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
-                  v{assistant.version || '1.0.0'}
-                </span>
+              <h2 className="truncate text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+                {assistant.name}
+              </h2>
+              <div className="mt-1 text-[13px] font-medium text-neutral-500">
+                {assistant.enabled === false ? '已停用' : '可用'}
               </div>
-              <div className="mt-1 text-[13px] font-medium text-neutral-500">@{assistant.author || 'Kivio'}</div>
               <p className="mt-6 max-w-5xl text-[16px] leading-8 text-neutral-700 dark:text-neutral-300">
-                {assistant.description || '这个套件还没有描述。'}
+                {assistant.description || '这个助手还没有描述。'}
               </p>
             </div>
           </div>
@@ -673,8 +497,8 @@ export function AssistantCenter({
               type="button"
               onClick={() => void handleDuplicate(assistant)}
               className="grid h-9 w-9 place-items-center rounded-md bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
-              title="复制套件"
-              aria-label="复制套件"
+              title="复制助手"
+              aria-label="复制助手"
             >
               <Copy size={15} />
             </button>
@@ -702,100 +526,45 @@ export function AssistantCenter({
         </div>
 
         <section className="space-y-3">
-          <h3 className="text-[17px] font-semibold text-neutral-950 dark:text-neutral-50">
-            快捷命令 <span className="text-neutral-400">({commands.length})</span>
-          </h3>
-          <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-            {commands.length === 0 ? (
-              <div className="px-4 py-5 text-[13px] text-neutral-400">暂无快捷命令</div>
-            ) : commands.map((command) => (
-              <button
-                key={command.id}
-                type="button"
-                onClick={() => void handleStartChat(assistant)}
-                disabled={assistant.enabled === false || command.enabled === false}
-                className="flex w-full min-w-0 items-center gap-4 border-b border-neutral-200 px-4 py-3 text-left last:border-b-0 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-800 dark:hover:bg-neutral-900/70"
-              >
-                <span className="shrink-0 rounded bg-emerald-50 px-2.5 py-1 text-[14px] font-semibold text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300">
-                  {command.slash}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-neutral-800 dark:text-neutral-100">
-                    {command.name}
-                  </span>
-                  <span className="mt-0.5 block truncate text-[12px] text-neutral-500">
-                    {command.description || command.placeholder || '启动这个套件的专用任务'}
-                  </span>
-                </span>
-                <Play size={15} className="shrink-0 text-neutral-300" />
-              </button>
-            ))}
+          <h3 className="text-[17px] font-semibold text-neutral-950 dark:text-neutral-50">系统提示词</h3>
+          <div className="rounded-md border border-neutral-200 px-4 py-3 text-[13px] leading-relaxed whitespace-pre-wrap text-neutral-700 dark:border-neutral-800 dark:text-neutral-300">
+            {systemPrompt || '未设置系统提示词。'}
           </div>
         </section>
 
-        <section className="space-y-3">
-          <h3 className="text-[17px] font-semibold text-neutral-950 dark:text-neutral-50">
-            数据连接 <span className="text-neutral-400">({connectors.length})</span>
-          </h3>
-          <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-            {connectors.length === 0 ? (
-              <div className="px-4 py-5 text-[13px] text-neutral-400">暂无数据连接</div>
-            ) : connectors.map((connector) => (
-              <div
-                key={connector.id}
-                className="flex min-w-0 items-center gap-4 border-b border-neutral-200 px-4 py-4 last:border-b-0 dark:border-neutral-800"
-              >
-                <Wrench size={16} className="shrink-0 text-neutral-400" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
-                    {connector.name}
-                  </div>
-                  <div className="mt-1 line-clamp-2 text-[12px] text-neutral-500">
-                    {connector.description || connector.kind || '数据连接'}
-                  </div>
-                </div>
-                <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] ${
-                  connector.enabled === false || connector.configured === false
-                    ? 'bg-neutral-100 text-neutral-400 dark:bg-neutral-800'
-                    : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300'
-                }`}>
-                  {connector.enabled === false || connector.configured === false ? '未启用' : '可用'}
+        <div className="grid gap-6 md:grid-cols-2">
+          <section className="space-y-3">
+            <h3 className="flex items-center gap-2 text-[17px] font-semibold text-neutral-950 dark:text-neutral-50">
+              <Wrench size={16} className="text-neutral-400" />
+              MCP <span className="text-neutral-400">({mcpNames.length})</span>
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {mcpNames.length === 0 ? (
+                <span className="text-[13px] text-neutral-400">未启用任何 MCP</span>
+              ) : mcpNames.map((name) => (
+                <span key={name} className="rounded-md bg-neutral-100 px-2.5 py-1 text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                  {name}
                 </span>
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
 
-        <section className="space-y-3">
-          <h3 className="text-[17px] font-semibold text-neutral-950 dark:text-neutral-50">
-            知识技能 <span className="text-neutral-400">({knowledge.length})</span>
-          </h3>
-          <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-            {knowledge.length === 0 ? (
-              <div className="px-4 py-5 text-[13px] text-neutral-400">暂无知识技能</div>
-            ) : knowledge.map((skill) => (
-              <div
-                key={skill.id}
-                className="border-b border-neutral-200 px-4 py-4 last:border-b-0 dark:border-neutral-800"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <BookOpen size={16} className="shrink-0 text-neutral-400" />
-                  <div className="min-w-0 flex-1 truncate text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
-                    {skill.name}
-                  </div>
-                  {skill.skill_id && (
-                    <span className="shrink-0 rounded bg-neutral-100 px-2 py-1 text-[11px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
-                      Skill
-                    </span>
-                  )}
-                </div>
-                <p className="mt-2 line-clamp-3 text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-400">
-                  {skill.description || skill.prompt || '未设置说明'}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
+          <section className="space-y-3">
+            <h3 className="flex items-center gap-2 text-[17px] font-semibold text-neutral-950 dark:text-neutral-50">
+              <BookOpen size={16} className="text-neutral-400" />
+              技能 <span className="text-neutral-400">({skillNames.length})</span>
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {skillNames.length === 0 ? (
+                <span className="text-[13px] text-neutral-400">未启用任何技能</span>
+              ) : skillNames.map((name) => (
+                <span key={name} className="rounded-md bg-neutral-100 px-2.5 py-1 text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                  {name}
+                </span>
+              ))}
+            </div>
+          </section>
+        </div>
       </div>
     )
   }
@@ -896,61 +665,49 @@ export function AssistantCenter({
               />
             </label>
             <div className="grid gap-4 md:grid-cols-2">
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-medium text-neutral-600 dark:text-neutral-300">开场白</span>
-                <input
-                  type="text"
-                  value={draft.greeting ?? ''}
-                  onChange={(event) => updateDraft('greeting', event.target.value)}
-                  className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-medium text-neutral-600 dark:text-neutral-300">标签</span>
-                <input
-                  type="text"
-                  value={(draft.tags ?? []).join(', ')}
-                  onChange={(event) => updateDraft('tags', event.target.value.split(',').map((tag) => tag.trim()))}
-                  className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                />
-              </label>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] font-medium text-neutral-600 dark:text-neutral-300">MCP 服务器</span>
+                  <span className="text-[11px] text-neutral-400">{draftMcpIds.length} 已选</span>
+                </div>
+                <div className="custom-scrollbar max-h-56 space-y-1 overflow-y-auto rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+                  {mcpServers.length === 0 ? (
+                    <div className="px-1 py-2 text-[12px] text-neutral-400">未配置 MCP 服务器（在「MCP」设置里添加）</div>
+                  ) : mcpServers.map((server) => (
+                    <label key={server.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[13px] hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                      <input
+                        type="checkbox"
+                        checked={draftMcpIds.includes(server.id)}
+                        onChange={() => updateDraft('mcp_server_ids', toggleId(draftMcpIds, server.id))}
+                        className="size-4 accent-neutral-900 dark:accent-neutral-100"
+                      />
+                      <span className="min-w-0 truncate text-neutral-700 dark:text-neutral-200">{server.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] font-medium text-neutral-600 dark:text-neutral-300">技能</span>
+                  <span className="text-[11px] text-neutral-400">{draftSkillIds.length} 已选</span>
+                </div>
+                <div className="custom-scrollbar max-h-56 space-y-1 overflow-y-auto rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
+                  {skills.length === 0 ? (
+                    <div className="px-1 py-2 text-[12px] text-neutral-400">没有可用技能</div>
+                  ) : skills.map((skill) => (
+                    <label key={skill.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[13px] hover:bg-neutral-50 dark:hover:bg-neutral-800">
+                      <input
+                        type="checkbox"
+                        checked={draftSkillIds.includes(skill.id)}
+                        onChange={() => updateDraft('skill_ids', toggleId(draftSkillIds, skill.id))}
+                        className="size-4 accent-neutral-900 dark:accent-neutral-100"
+                      />
+                      <span className="min-w-0 truncate text-neutral-700 dark:text-neutral-200">{skill.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-medium text-neutral-600 dark:text-neutral-300">开场问题</span>
-              <textarea
-                value={(draft.conversation_starters ?? []).join('\n')}
-                onChange={(event) => updateDraft('conversation_starters', event.target.value.split('\n').slice(0, 6))}
-                rows={4}
-                className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-[13px] leading-relaxed outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-medium text-neutral-600 dark:text-neutral-300">快捷命令</span>
-              <textarea
-                value={commandsToLines(assistantQuickCommands(draft))}
-                onChange={(event) => updateDraft('quick_commands', linesToCommands(event.target.value))}
-                rows={5}
-                className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-[13px] leading-relaxed outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-medium text-neutral-600 dark:text-neutral-300">知识技能</span>
-              <textarea
-                value={knowledgeSkillsToLines(assistantKnowledgeSkills(draft))}
-                onChange={(event) => updateDraft('knowledge_skills', linesToKnowledgeSkills(event.target.value))}
-                rows={5}
-                className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-[13px] leading-relaxed outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-medium text-neutral-600 dark:text-neutral-300">数据连接</span>
-              <textarea
-                value={connectorsToLines(assistantDataConnectors(draft))}
-                onChange={(event) => updateDraft('data_connectors', linesToConnectors(event.target.value))}
-                rows={4}
-                className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-white px-3 py-2.5 text-[13px] leading-relaxed outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              />
-            </label>
           </section>
 
           <section className="grid gap-4 lg:grid-cols-3">
@@ -988,33 +745,8 @@ export function AssistantCenter({
                   ))}
                 </select>
               </label>
-              <label className="block">
-                <span className="mb-1 block text-[11px] text-neutral-500 dark:text-neutral-400">默认 Skill</span>
-                <select
-                  value={draft.skill_id ?? ''}
-                  onChange={(event) => updateDraft('skill_id', event.target.value || null)}
-                  className="h-9 w-full rounded-md border border-neutral-200 bg-white px-2 text-[12px] outline-none dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
-                >
-                  <option value="">不绑定</option>
-                  {skills.map((skill) => (
-                    <option key={skill.id} value={skill.id}>{skill.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-[11px] text-neutral-500 dark:text-neutral-400">工具策略</span>
-                <select
-                  value={draft.tool_preset ?? 'inherit'}
-                  onChange={(event) => updateDraft('tool_preset', event.target.value)}
-                  className="h-9 w-full rounded-md border border-neutral-200 bg-white px-2 text-[12px] outline-none dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
-                >
-                  {toolPresetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
               <label className="flex items-center justify-between gap-3 rounded-md bg-neutral-50 px-2.5 py-2 text-[12px] text-neutral-700 dark:bg-neutral-800/70 dark:text-neutral-200">
-                <span>启用套件</span>
+                <span>启用助手</span>
                 <input
                   type="checkbox"
                   checked={draft.enabled !== false}
@@ -1048,9 +780,8 @@ export function AssistantCenter({
               <div className="text-[12px] font-semibold text-neutral-700 dark:text-neutral-200">当前配置</div>
               <div className="space-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
                 <div className="truncate">模型：{draft.model || '跟随聊天默认'}</div>
-                <div className="truncate">Skill：{selectedSkill?.name || '不绑定'}</div>
-                <div className="truncate">工具：{toolPresetOptions.find((item) => item.value === draft.tool_preset)?.label ?? '跟随聊天设置'}</div>
-                <div className="truncate">命令：{assistantQuickCommands(draft).length} 个</div>
+                <div className="truncate">MCP：{draftMcpIds.length} 个</div>
+                <div className="truncate">技能：{draftSkillIds.length} 个</div>
               </div>
               {providers.length === 0 && (
                 <div className="rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
@@ -1124,6 +855,17 @@ export function AssistantCenter({
                     className="h-9 w-full rounded-md border border-neutral-200 bg-white pl-9 pr-3 text-[13px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
                   />
                 </div>
+                {onStartBuilder && (
+                  <button
+                    type="button"
+                    onClick={() => onStartBuilder()}
+                    className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-[13px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                    title="通过对话搭建一个新专家"
+                  >
+                    <Sparkles size={16} />
+                    AI 创建
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleCreate}

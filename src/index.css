@@ -1380,8 +1380,26 @@ body {
   padding-bottom: 10px;
 }
 
+/* ponytail: 模型页右侧详情去卡片化——只在 .kv-provider-detail 内覆盖通用 .kv-group 卡片样式,
+   不影响其它设置标签页。布局不变,仅去掉边框/圆角/底色/阴影,侧边内边距归零让内容对齐面板。 */
 .settings-embedded .kv-provider-detail .kv-group {
-  margin-bottom: 10px;
+  margin-bottom: 0;
+  padding: 6px 0 10px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+/* 暗色 + chat 内嵌的 .kv-group 底色规则特异性更高,这里同等限定覆盖掉 */
+.dark .chat-window-shell .settings-embedded .kv-provider-detail .kv-group {
+  background: none;
+}
+
+/* 分组之间用一条细线分隔,替代原来的卡片边界 */
+.settings-embedded .kv-provider-detail .kv-group + .kv-group {
+  border-top: 1px solid var(--divider);
+  margin-top: 0;
 }
 
 .settings-embedded .kv-provider-section {

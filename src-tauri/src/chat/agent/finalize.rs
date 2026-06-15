@@ -253,6 +253,14 @@ impl SegmentBuilder {
         self.next_order
     }
 
+    /// Borrow the segments accumulated so far without consuming the builder.
+    /// Used by the loop's per-round crash-safety checkpoint to snapshot the
+    /// in-progress assistant message; `all()` (which moves) still produces the
+    /// final segment list at finalize time.
+    pub(crate) fn segments(&self) -> &[ChatMessageSegment] {
+        &self.segments
+    }
+
     pub(crate) fn all(self) -> Vec<ChatMessageSegment> {
         self.segments
     }
@@ -376,9 +384,9 @@ pub(crate) fn empty_synthesis_fallback_response(language: &str) -> String {
 
 pub(crate) fn synthesis_failed_fallback_response(language: &str) -> String {
     if language.starts_with("zh") {
-        "工具调用已经完成，但最终总结生成失败。上方工具结果已保存在本轮回复中，你可以继续追问，或让我重新生成总结。".to_string()
+        "最终总结生成失败(可能是模型供应商内容审核拦截)。上方工具结果已保存在本轮回复中,你可以继续追问、让我重新生成,或更换聊天模型再试。".to_string()
     } else {
-        "The tool calls completed, but final summary generation failed. The tool results above were saved with this reply; you can continue from them or regenerate the summary.".to_string()
+        "Final summary generation failed (possibly provider content moderation). The tool results above were saved with this reply; you can continue from them, regenerate, or switch the chat model and retry.".to_string()
     }
 }
 

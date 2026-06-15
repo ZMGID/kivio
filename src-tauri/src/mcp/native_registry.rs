@@ -35,7 +35,8 @@ use super::types::{
     native_copy_path_tool, native_create_dir_tool, native_delete_path_tool, native_edit_file_tool,
     native_glob_files_tool, native_list_dir_tool, native_memory_modify_tool,
     native_memory_read_tool, native_memory_search_tool, native_move_path_tool, native_read_file_tool,
-    native_run_command_tool, native_run_python_tool, native_search_files_tool, native_stat_path_tool,
+    native_run_command_tool, native_run_python_tool, native_save_assistant_tool,
+    native_search_files_tool, native_stat_path_tool,
     native_web_fetch_tool, native_web_search_tool, native_write_file_tool, ChatToolDefinition,
     McpToolCallResult,
 };
@@ -235,6 +236,17 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         bypasses_approval: false,
         read_only: false,
         call: NativeToolCall::Async(call_run_command),
+    },
+    NativeToolEntry {
+        // 仅在「对话搭建专家」会话里手动 append(见 commands.rs);全局列表永不暴露。
+        // call_native_tool 按名分发、调用期不复查 enabled,故手动 append 仍可执行。
+        name: "save_assistant",
+        def: native_save_assistant_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: false,
+        read_only: false,
+        call: NativeToolCall::Async(call_save_assistant),
     },
     NativeToolEntry {
         name: "run_python",
@@ -445,6 +457,13 @@ fn call_run_command(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
+fn call_save_assistant(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
+    Box::pin(async move {
+        let content = crate::chat::commands::create_assistant_via_builder(ctx.app, ctx.arguments)?;
+        Ok(text_tool_result(content))
+    })
+}
+
 fn call_run_python(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         super::registry::run_python_via_pyodide(
@@ -478,6 +497,7 @@ mod tests {
         "copy_path",
         "edit_file",
         "run_command",
+        "save_assistant",
         "run_python",
         "memory_read",
         "memory_modify",

@@ -96,3 +96,10 @@ custom-protocol = ["tauri/custom-protocol"]
 tokio = { version = "1", features = ["test-util", "macros", "rt", "rt-multi-thread", "time"] }
 # 测试用：构造 reqwest::Response（不走网络）以驱动 retry/failover 单测。与 reqwest 传递依赖同版本。
 http = "1"
+
+# dev 构建只把「依赖库」按 opt-level 3 编译，本 crate 仍保持 debug（增量编译快、可调试）。
+# 解决 `npm run dev` 下 Lens / 快速翻译冻结帧截图慢的问题：image/png/xcap 这类纯 CPU 的
+# 图像编码在未优化的 debug 依赖里慢几十倍（整屏 PNG 编码可达数秒）。优化依赖后接近 release。
+# 仅影响 dev 体验，不改变 release 安装包的产物。首次构建会因依赖按优化重编一次而变慢。
+[profile.dev.package."*"]
+opt-level = 3

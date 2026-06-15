@@ -2,8 +2,46 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
 import { MessageBubble } from './MessageBubble'
 
-const INITIAL_VISIBLE_MESSAGES = 60
-const LOAD_MORE_MESSAGES = 60
+// agent 模式下"一条消息 = 一整轮"(几十个工具调用 + 多段 reasoning + 大块 markdown),
+// 按条数定窗口会失效。改为按"渲染权重"决定首屏与每次加载更早的步长。
+const VISIBLE_WEIGHT_BUDGET = 40
+const MIN_VISIBLE_MESSAGES = 6
+const MAX_VISIBLE_MESSAGES = 60
+// 每次"加载更早"也按权重切一小块,避免一次性铺一大段造成卡顿。
+const LOAD_MORE_WEIGHT_BUDGET = 30
+const MIN_LOAD_MORE = 6
+const MAX_LOAD_MORE = 40
+
+function messageWeight(msg: ChatMessage): number {
+  const toolCalls = msg.tool_calls ?? msg.toolCalls ?? []
+  const segments = msg.segments ?? []
+  const contentLen = msg.content?.length ?? 0
+  return 1 + toolCalls.length + segments.length + Math.ceil(contentLen / 2000)
+}
+
+// 从某个上界往前累加权重,返回应再揭开的消息条数(用于首屏和加载更早)。
+function countByWeight(
+  messages: ChatMessage[],
+  upperExclusive: number,
+  budget: number,
+  minCount: number,
+  maxCount: number,
+): number {
+  if (upperExclusive <= minCount) return upperExclusive
+  let weight = 0
+  let count = 0
+  for (let i = upperExclusive - 1; i >= 0; i--) {
+    weight += messageWeight(messages[i])
+    count++
+    if (count >= maxCount) break
+    if (count >= minCount && weight >= budget) break
+  }
+  return count
+}
+
+function computeInitialVisible(messages: ChatMessage[]): number {
+  return countByWeight(messages, messages.length, VISIBLE_WEIGHT_BUDGET, MIN_VISIBLE_MESSAGES, MAX_VISIBLE_MESSAGES)
+}
 
 export interface AssistantStreamStats {
   messageId: string
@@ -58,7 +96,10 @@ export function MessageList({
   const prevCountRef = useRef(0)
   const lastScrollTopRef = useRef(0)
   const pendingPrependScrollHeightRef = useRef<number | null>(null)
-  const [visibleLimit, setVisibleLimit] = useState(INITIAL_VISIBLE_MESSAGES)
+  const [visibleLimit, setVisibleLimit] = useState(() => computeInitialVisible(messages))
+  // 切换会话的重置 effect 需要最新 messages,但不应把 messages 列进依赖(否则每次流式更新都重置窗口)。
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
 
   const hiddenMessageCount = Math.max(0, messages.length - visibleLimit)
   const visibleMessages = hiddenMessageCount > 0
@@ -78,8 +119,13 @@ export function MessageList({
       pendingPrependScrollHeightRef.current = el.scrollHeight
       stickToBottomRef.current = false
     }
-    setVisibleLimit((limit) => Math.min(messages.length, limit + LOAD_MORE_MESSAGES))
-  }, [messages.length])
+    setVisibleLimit((limit) => {
+      const hidden = Math.max(0, messages.length - limit)
+      if (hidden === 0) return limit
+      const more = countByWeight(messages, hidden, LOAD_MORE_WEIGHT_BUDGET, MIN_LOAD_MORE, MAX_LOAD_MORE)
+      return Math.min(messages.length, limit + more)
+    })
+  }, [messages])
 
   // 滚轮向上 = 明确的离开底部意图，立即解除跟随（不设缓冲，消除“挣扎感”）
   const handleWheel = (e: React.WheelEvent) => {
@@ -104,7 +150,7 @@ export function MessageList({
 
   // 切换会话：重置跟随并瞬间定位到底部
   useLayoutEffect(() => {
-    setVisibleLimit(INITIAL_VISIBLE_MESSAGES)
+    setVisibleLimit(computeInitialVisible(messagesRef.current))
     pendingPrependScrollHeightRef.current = null
     stickToBottomRef.current = true
     scrollToBottom()
@@ -184,7 +230,7 @@ export function MessageList({
               onClick={loadOlderMessages}
               className="rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-[12px] font-medium text-neutral-500 shadow-sm transition-colors hover:border-neutral-300 hover:text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:border-neutral-600 dark:hover:text-neutral-200"
             >
-              加载更早 {Math.min(hiddenMessageCount, LOAD_MORE_MESSAGES)} 条
+              加载更早消息（剩 {hiddenMessageCount} 条）
             </button>
           </div>
         )}

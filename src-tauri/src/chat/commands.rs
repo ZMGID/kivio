@@ -247,9 +247,8 @@ pub(crate) fn create_chat_conversation_internal(
                 provider_id,
                 model,
                 messages: vec![],
-                active_skill_id: assistant_snapshot
-                    .as_ref()
-                    .and_then(|assistant| assistant.skill_id.clone()),
+                // 助手不再有「默认单技能」;skill_ids 只是白名单,不强制激活某个技能。
+                active_skill_id: None,
                 assistant_id: assistant_snapshot
                     .as_ref()
                     .map(|assistant| assistant.id.clone()),
@@ -311,6 +310,199 @@ pub(crate) fn chat_update_assistant(
     Ok(serde_json::json!({
         "success": true,
         "assistant": assistant,
+    }))
+}
+
+/// 对话搭建专家的会话哨兵 id:挂在 assistant_snapshot 上,既注入搭建系统提示词,
+/// 又作为「搭建模式」标记(仅此类会话暴露 save_assistant 工具)。
+const BUILDER_ASSISTANT_ID: &str = "asst_builder";
+
+fn is_builder_conversation(conversation: &Conversation) -> bool {
+    conversation
+        .assistant_snapshot
+        .as_ref()
+        .map(|a| a.id.as_str())
+        == Some(BUILDER_ASSISTANT_ID)
+}
+
+/// 把 `save_assistant` 的工具参数解析成一个待落库的 ChatAssistant(纯函数,便于单测)。
+/// 校验/裁剪交给 storage::normalize_assistant;这里只做必填检查与字段提取。
+fn assistant_from_builder_args(arguments: &Value) -> Result<ChatAssistant, String> {
+    let name = arguments
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "save_assistant 需要非空的 name".to_string())?;
+    let system_prompt = arguments
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if system_prompt.is_empty() {
+        return Err("save_assistant 需要非空的 system_prompt".to_string());
+    }
+    let str_field = |key: &str| -> String {
+        arguments
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let str_arr = |key: &str| -> Vec<String> {
+        arguments
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let now = chrono::Local::now().timestamp();
+    Ok(ChatAssistant {
+        id: format!("asst_{}", Uuid::new_v4()),
+        name: name.to_string(),
+        description: str_field("description"),
+        icon: str_field("icon"),
+        color: str_field("color"),
+        source: "user".to_string(),
+        system_prompt: system_prompt.to_string(),
+        provider_id: String::new(),
+        model: String::new(),
+        mcp_server_ids: str_arr("mcp_server_ids"),
+        skill_ids: str_arr("skill_ids"),
+        enabled: true,
+        installed: true,
+        archived: false,
+        built_in: false,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// 由对话搭建流程的 `save_assistant` 工具调用:把工具参数组装成一个新专家并落库。
+/// 返回给模型的成功摘要。校验/字段裁剪交给 storage::normalize_assistant。
+pub(crate) fn create_assistant_via_builder(
+    app: &AppHandle,
+    arguments: &Value,
+) -> Result<String, String> {
+    let assistant = assistant_from_builder_args(arguments)?;
+    let saved = create_assistant(app, assistant)?;
+    let _ = app.emit("chat-assistants-changed", &saved.id);
+    Ok(format!(
+        "已创建专家「{}」(MCP {} 个 / 技能 {} 个)。可在「专家套件」里查看、编辑或开始对话。",
+        saved.name,
+        saved.mcp_server_ids.len(),
+        saved.skill_ids.len()
+    ))
+}
+
+/// 构造搭建助手的系统提示词:固定流程指令 + 当前可用的 MCP 服务器与技能目录(供模型选 id)。
+fn builder_system_prompt(app: &AppHandle, settings: &Settings) -> String {
+    let mcp_block = {
+        let items: Vec<String> = settings
+            .chat_tools
+            .servers
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| format!("- {} ({})", s.id, s.name))
+            .collect();
+        if items.is_empty() {
+            "（无已启用的 MCP 服务器）".to_string()
+        } else {
+            items.join("\n")
+        }
+    };
+    let skills_block = match skills::build_registry(app, &settings.chat_tools.skill_scan_paths) {
+        Ok(registry) => {
+            let items: Vec<String> = registry
+                .records
+                .iter()
+                .filter(|r| crate::settings::is_skill_enabled(&settings.chat_tools, &r.meta.id))
+                .map(|r| format!("- {} ({})", r.meta.id, r.meta.name))
+                .collect();
+            if items.is_empty() {
+                "（无可用技能）".to_string()
+            } else {
+                items.join("\n")
+            }
+        }
+        Err(_) => "（无可用技能）".to_string(),
+    };
+    format!(
+        "你是「专家搭建助手」。任务:通过对话帮用户创建一个新的 Kivio 专家(assistant),最后调用 save_assistant 工具落库。回答语言跟随用户。\n\n\
+流程:\n\
+1. 先用一两个问题问清这个专家「要做什么、面向什么场景、语气/风格、有没有边界或禁忌」。一次只问一两个,别一次性列一堆。\n\
+2. 据此为它撰写 system_prompt(这是该专家自己的系统指令,用第二人称写给它)。\n\
+3. 判断它需要哪些 MCP 服务器和技能,只能从下面「可用」列表里选并给出精确 id;用不到就留空。\n\
+4. 调用 save_assistant 前,先把完整配置(名称/描述/系统提示词要点/选用的 MCP/技能)复述给用户,得到明确确认后再调用;确认前不要调用工具。\n\
+5. save_assistant 成功后,简短告诉用户已创建、可在「专家套件」查看。\n\n\
+可用 MCP 服务器(格式 id (名称)):\n{mcp_block}\n\n\
+可用技能(格式 id (名称)):\n{skills_block}\n\n\
+注意:mcp_server_ids / skill_ids 必须使用上面列出的精确 id,不要编造;name 与 system_prompt 必填。"
+    )
+}
+
+#[tauri::command]
+pub(crate) fn chat_create_builder_conversation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    project_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let settings = state.settings_read().clone();
+    let (default_provider_id, default_model) = settings.effective_chat_model();
+    let provider_id = provider_id.and_then(non_empty_string).unwrap_or(default_provider_id);
+    let model = model.and_then(non_empty_string).unwrap_or(default_model);
+
+    let project = match project_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(pid) => Some(find_project_by_id(&app, pid)?),
+        None => None,
+    };
+    let resolved_project_id = project.as_ref().map(|p| p.id.clone());
+    let folder = project.as_ref().map(|p| p.name.clone());
+
+    let snapshot = crate::chat::types::ChatAssistantSnapshot {
+        id: BUILDER_ASSISTANT_ID.to_string(),
+        name: "专家搭建助手".to_string(),
+        description: "通过对话帮你创建一个新专家。".to_string(),
+        source: "builtin".to_string(),
+        system_prompt: builder_system_prompt(&app, &settings),
+        provider_id: String::new(),
+        model: String::new(),
+        mcp_server_ids: Vec::new(),
+        skill_ids: Vec::new(),
+    };
+
+    let now = chrono::Local::now().timestamp();
+    let conversation = Conversation {
+        id: format!("conv_{}", Uuid::new_v4()),
+        title: "搭建新专家".to_string(),
+        provider_id,
+        model,
+        messages: vec![],
+        active_skill_id: None,
+        assistant_id: None,
+        assistant_snapshot: Some(snapshot),
+        created_at: now,
+        updated_at: now,
+        pinned: false,
+        folder,
+        project_id: resolved_project_id,
+        context_state: ConversationContextState::default(),
+        agent_todo_state: AgentTodoState::default(),
+        agent_plan_state: AgentPlanState::default(),
+    };
+    save_conversation(&app, &conversation)?;
+    Ok(serde_json::json!({
+        "success": true,
+        "conversation": conversation,
     }))
 }
 
@@ -568,7 +760,12 @@ pub(crate) async fn chat_send_message(
         let settings = state.settings_read().clone();
         let registry =
             skills::build_registry(&app, &settings.chat_tools.skill_scan_paths).unwrap_or_default();
-        match try_apply_skill_slash_trigger(&registry, &settings.chat_tools, &content) {
+        match try_apply_skill_slash_trigger(
+            &registry,
+            &settings.chat_tools,
+            conversation.assistant_snapshot.as_ref(),
+            &content,
+        ) {
             Some((skill_id, rewritten)) => (rewritten, Some(skill_id)),
             None => (content, active_skill_id),
         }
@@ -1118,16 +1315,13 @@ async fn complete_assistant_reply(
         .or(last_user_api_content);
     let skill_registry =
         skills::build_registry(app, &settings.chat_tools.skill_scan_paths).unwrap_or_default();
-    let requested_skill_id = active_skill_id
-        .or(conversation.active_skill_id.as_deref())
-        .or_else(|| {
-            conversation
-                .assistant_snapshot
-                .as_ref()
-                .and_then(|assistant| assistant.skill_id.as_deref())
-        });
-    let skill_id =
-        resolve_forced_skill_id(&settings.chat_tools, &skill_registry, requested_skill_id);
+    let requested_skill_id = active_skill_id.or(conversation.active_skill_id.as_deref());
+    let skill_id = resolve_forced_skill_id(
+        &settings.chat_tools,
+        conversation.assistant_snapshot.as_ref(),
+        &skill_registry,
+        requested_skill_id,
+    );
     let active_skill_record = skill_id
         .as_deref()
         .and_then(|id| skill_registry.find(id))
@@ -1147,14 +1341,16 @@ async fn complete_assistant_reply(
         crate::settings::chat_image_generation_enabled(&settings),
     );
     let mut tools = list_tools_for_chat(app, state.inner(), &settings, provider.supports_tools).await;
-    agent_prepare::apply_assistant_tool_preset(
+    agent_prepare::apply_assistant_mcp_restrictions(
         &mut tools,
         conversation.assistant_snapshot.as_ref(),
     );
-    agent_prepare::apply_assistant_data_connectors_tool_filter(
-        &mut tools,
-        conversation.assistant_snapshot.as_ref(),
-    );
+    let builder_mode = is_builder_conversation(conversation);
+    if builder_mode {
+        // 搭建会话只暴露 save_assistant,屏蔽文件/命令/MCP/技能等,保持聚焦。
+        tools.clear();
+        tools.push(crate::mcp::types::native_save_assistant_tool());
+    }
     if let Some(skill) = active_skill_record.as_ref() {
         agent_prepare::apply_active_skill_tool_filter(&mut tools, skill);
     }
@@ -1172,7 +1368,7 @@ async fn complete_assistant_reply(
     // Orchestrate both expose the `agent` / `check_agent_result` /
     // `list_agent_tasks` tools (passive vs. proactive); Plan mode excludes
     // them (spawn is a side-effecting, non-read-only capability).
-    if provider.supports_tools && !plan_mode {
+    if provider.supports_tools && !plan_mode && !builder_mode {
         crate::chat::sub_agent::append_tool_definitions(&mut tools, true);
     }
     // Orchestrate mode raises the autonomy budget: a single user message may
@@ -1404,13 +1600,7 @@ async fn complete_direct_image_generation_reply(
             );
             let active_skill = active_skill_id
                 .map(str::to_string)
-                .or_else(|| conversation.active_skill_id.clone())
-                .or_else(|| {
-                    conversation
-                        .assistant_snapshot
-                        .as_ref()
-                        .and_then(|assistant| assistant.skill_id.clone())
-                });
+                .or_else(|| conversation.active_skill_id.clone());
             push_assistant_message(
                 app,
                 state,
@@ -1533,28 +1723,31 @@ async fn push_assistant_message(
         None
     };
 
-    conversation.messages.push(ChatMessage {
-        id: message_id,
-        role: "assistant".to_string(),
-        content: stored_content.clone(),
-        attachments: vec![],
-        reasoning: stored_reasoning.clone(),
-        artifacts,
-        model_messages: assistant_model_messages_for_storage(
-            &stored_content,
-            stored_reasoning.as_deref(),
-            &api_messages,
-            &tool_calls,
-        ),
-        tool_calls,
-        segments,
-        api_messages,
-        active_skill_id: active_skill_id.map(|id| id.to_string()),
-        run_entry: run_entry.map(str::to_string),
-        stream_outcome: stream_outcome.map(str::to_string),
-        usage,
-        timestamp: chrono::Local::now().timestamp(),
-    });
+    upsert_assistant_message(
+        conversation,
+        ChatMessage {
+            id: message_id,
+            role: "assistant".to_string(),
+            content: stored_content.clone(),
+            attachments: vec![],
+            reasoning: stored_reasoning.clone(),
+            artifacts,
+            model_messages: assistant_model_messages_for_storage(
+                &stored_content,
+                stored_reasoning.as_deref(),
+                &api_messages,
+                &tool_calls,
+            ),
+            tool_calls,
+            segments,
+            api_messages,
+            active_skill_id: active_skill_id.map(|id| id.to_string()),
+            run_entry: run_entry.map(str::to_string),
+            stream_outcome: stream_outcome.map(str::to_string),
+            usage,
+            timestamp: chrono::Local::now().timestamp(),
+        },
+    );
 
     if let Some(title) = generated_title {
         conversation.title = title;
@@ -1573,6 +1766,65 @@ async fn push_assistant_message(
     conversation.updated_at = chrono::Local::now().timestamp();
     save_conversation(app, conversation)?;
     Ok(())
+}
+
+/// Insert an assistant message, replacing any existing message that already
+/// carries the same id. The agent loop's per-round crash-safety checkpoint
+/// writes a draft assistant message under the run's `message_id`; both that
+/// draft path and the final write go through here so a completed run cleanly
+/// overwrites its own draft instead of appending a duplicate.
+fn upsert_assistant_message(conversation: &mut Conversation, message: ChatMessage) {
+    if let Some(pos) = conversation
+        .messages
+        .iter()
+        .position(|existing| existing.id == message.id)
+    {
+        conversation.messages[pos] = message;
+    } else {
+        conversation.messages.push(message);
+    }
+}
+
+/// Write a best-effort snapshot of the in-progress assistant turn to disk so a
+/// mid-run crash / forced exit doesn't discard the whole reply. Reloads the
+/// conversation (to pick up todo/plan/user state already persisted by other
+/// paths), upserts a draft assistant message keyed by `message_id`, and saves.
+/// The draft is marked `interrupted`; the loop's final write replaces it with
+/// the completed message. No-op when nothing has been produced yet.
+fn persist_partial_assistant_snapshot(
+    app: &AppHandle,
+    conversation_id: &str,
+    message_id: &str,
+    tool_records: &[ToolCallRecord],
+    segments: &[ChatMessageSegment],
+) -> Result<(), String> {
+    if tool_records.is_empty() && segments.is_empty() {
+        return Ok(());
+    }
+    let mut conversation = load_conversation(app, conversation_id)?;
+    let segments = segments.to_vec();
+    let content = content_from_segments(&segments).unwrap_or_default();
+    let reasoning = reasoning_from_segments(&segments);
+    let draft = ChatMessage {
+        id: message_id.to_string(),
+        role: "assistant".to_string(),
+        content,
+        attachments: Vec::new(),
+        reasoning,
+        artifacts: Vec::new(),
+        tool_calls: tool_records.to_vec(),
+        segments,
+        api_messages: Vec::new(),
+        model_messages: Vec::new(),
+        active_skill_id: None,
+        run_entry: None,
+        stream_outcome: Some("interrupted".to_string()),
+        usage: None,
+        timestamp: chrono::Local::now().timestamp(),
+    };
+    upsert_assistant_message(&mut conversation, draft);
+    conversation.updated_at = chrono::Local::now().timestamp();
+    save_conversation(app, &conversation)
 }
 
 fn normalize_assistant_segments(
@@ -2115,6 +2367,7 @@ fn sanitize_generated_title(raw: &str) -> Option<String> {
 fn try_apply_skill_slash_trigger(
     registry: &skills::SkillRegistry,
     chat_tools: &crate::settings::ChatToolsConfig,
+    assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     content: &str,
 ) -> Option<(String, String)> {
     let trimmed = content.trim_start();
@@ -2126,8 +2379,9 @@ fn try_apply_skill_slash_trigger(
     let args_raw = parts.next().unwrap_or_default();
 
     let record = registry.find_by_trigger(first_word)?;
-    if !crate::settings::is_skill_enabled(chat_tools, &record.meta.id) {
-        // A disabled skill's slash command is left as ordinary text.
+    if !agent_prepare::skill_allowed_for_conversation(chat_tools, assistant_snapshot, &record.meta.id)
+    {
+        // A disabled or out-of-allow-list skill's slash command is left as ordinary text.
         return None;
     }
     if crate::mcp::native_registry::find_entry(first_word.trim_start_matches('/')).is_some() {
@@ -2147,6 +2401,7 @@ fn try_apply_skill_slash_trigger(
 
 fn resolve_forced_skill_id(
     chat_tools: &crate::settings::ChatToolsConfig,
+    assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     registry: &skills::SkillRegistry,
     requested: Option<&str>,
 ) -> Option<String> {
@@ -2154,7 +2409,13 @@ fn resolve_forced_skill_id(
     let enabled = registry
         .records
         .iter()
-        .filter(|record| crate::settings::is_skill_enabled(chat_tools, &record.meta.id))
+        .filter(|record| {
+            agent_prepare::skill_allowed_for_conversation(
+                chat_tools,
+                assistant_snapshot,
+                &record.meta.id,
+            )
+        })
         .any(|record| {
             record.meta.id == requested
                 || record.meta.name == requested
@@ -2595,14 +2856,13 @@ async fn compute_context_state(
     let thinking_enabled = settings.chat.thinking_enabled;
     let skill_registry =
         skills::build_registry(app, &settings.chat_tools.skill_scan_paths).unwrap_or_default();
-    let requested_skill_id = conversation.active_skill_id.as_deref().or_else(|| {
-        conversation
-            .assistant_snapshot
-            .as_ref()
-            .and_then(|assistant| assistant.skill_id.as_deref())
-    });
-    let active_skill_id =
-        resolve_forced_skill_id(&settings.chat_tools, &skill_registry, requested_skill_id);
+    let requested_skill_id = conversation.active_skill_id.as_deref();
+    let active_skill_id = resolve_forced_skill_id(
+        &settings.chat_tools,
+        conversation.assistant_snapshot.as_ref(),
+        &skill_registry,
+        requested_skill_id,
+    );
     let active_skill_detail = active_skill_id.as_deref().and_then(|id| {
         skills::read_skill_detail(app, &settings.chat_tools.skill_scan_paths, id).ok()
     });
@@ -2620,14 +2880,14 @@ async fn compute_context_state(
         })
         .unwrap_or(false);
     let mut tools = list_tools_for_chat(app, state.inner(), &settings, provider_supports_tools).await;
-    agent_prepare::apply_assistant_tool_preset(
+    agent_prepare::apply_assistant_mcp_restrictions(
         &mut tools,
         conversation.assistant_snapshot.as_ref(),
     );
-    agent_prepare::apply_assistant_data_connectors_tool_filter(
-        &mut tools,
-        conversation.assistant_snapshot.as_ref(),
-    );
+    if is_builder_conversation(conversation) {
+        tools.clear();
+        tools.push(crate::mcp::types::native_save_assistant_tool());
+    }
     if let Some(skill) = active_skill_id
         .as_deref()
         .and_then(|id| skill_registry.find(id))
@@ -3460,6 +3720,24 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         emit_chat_tool_record(&self.app, conversation_id, run_id, message_id, record);
     }
 
+    fn persist_partial_assistant(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        tool_records: &[ToolCallRecord],
+        segments: &[ChatMessageSegment],
+    ) {
+        if let Err(err) = persist_partial_assistant_snapshot(
+            &self.app,
+            conversation_id,
+            message_id,
+            tool_records,
+            segments,
+        ) {
+            eprintln!("persist partial assistant snapshot failed: {err}");
+        }
+    }
+
     fn request_tool_approval<'a>(
         &'a self,
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
@@ -4274,7 +4552,8 @@ pub(crate) fn chat_update_conversation(
             conversation.active_skill_id = None;
         } else {
             let snapshot = assistant_snapshot(&app, trimmed)?;
-            conversation.active_skill_id = snapshot.skill_id.clone();
+            // 切换助手不再强制激活默认技能;skill_ids 仅作白名单。
+            conversation.active_skill_id = None;
             conversation.assistant_id = Some(snapshot.id.clone());
             conversation.assistant_snapshot = Some(snapshot);
         }
@@ -4305,6 +4584,35 @@ mod tests {
     use super::*;
     use crate::chat::Attachment;
     use std::collections::HashMap;
+
+    #[test]
+    fn builder_args_produce_valid_assistant() {
+        let args = serde_json::json!({
+            "name": "  写作助手 ",
+            "system_prompt": "你是写作助手。",
+            "description": "写文案",
+            "mcp_server_ids": ["mcp-1", "  ", "mcp-2"],
+            "skill_ids": ["doc"]
+        });
+        let a = assistant_from_builder_args(&args).expect("should parse");
+        assert!(a.id.starts_with("asst_"));
+        assert_eq!(a.name, "写作助手");
+        assert_eq!(a.system_prompt, "你是写作助手。");
+        assert_eq!(a.source, "user");
+        assert!(!a.built_in);
+        assert_eq!(a.mcp_server_ids, vec!["mcp-1", "mcp-2"]); // 空串被过滤
+        assert_eq!(a.skill_ids, vec!["doc"]);
+    }
+
+    #[test]
+    fn builder_args_reject_missing_required() {
+        assert!(assistant_from_builder_args(&serde_json::json!({ "system_prompt": "x" })).is_err());
+        assert!(assistant_from_builder_args(&serde_json::json!({ "name": "x" })).is_err());
+        assert!(
+            assistant_from_builder_args(&serde_json::json!({ "name": "x", "system_prompt": "  " }))
+                .is_err()
+        );
+    }
 
     fn slash_skill_record(id: &str, name: &str, triggers: Vec<&str>) -> skills::SkillRecord {
         skills::SkillRecord {
@@ -4341,7 +4649,7 @@ mod tests {
         let chat_tools = crate::settings::ChatToolsConfig::default();
 
         let (skill_id, rewritten) =
-            try_apply_skill_slash_trigger(&registry, &chat_tools, "/commit fix login")
+            try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix login")
                 .expect("slash trigger should match");
 
         assert_eq!(skill_id, "commit");
@@ -4356,8 +4664,8 @@ mod tests {
         let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
         let chat_tools = crate::settings::ChatToolsConfig::default();
 
-        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, "commit fix").is_none());
-        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, "/unknown x").is_none());
+        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "commit fix").is_none());
+        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/unknown x").is_none());
     }
 
     #[test]
@@ -4366,7 +4674,7 @@ mod tests {
         let mut chat_tools = crate::settings::ChatToolsConfig::default();
         chat_tools.disabled_skill_ids = vec!["commit".to_string()];
 
-        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, "/commit fix").is_none());
+        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix").is_none());
     }
 
     fn test_provider(id: &str, name: &str, enabled_models: Vec<&str>) -> ModelProvider {

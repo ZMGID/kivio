@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Cursor,
     path::{Path, PathBuf},
 };
 
@@ -7,8 +8,10 @@ use base64::{engine::general_purpose, Engine as _};
 use tauri::AppHandle;
 use uuid::Uuid;
 
+use crate::mcp::types::ChatToolArtifact;
+
 use super::storage::conversation_attachments_dir;
-use super::Attachment;
+use super::{Attachment, ChatMessage};
 
 const MAX_ATTACHMENT_PREVIEW_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_PASTED_IMAGE_BYTES: usize = 12 * 1024 * 1024;
@@ -222,6 +225,129 @@ pub(crate) fn read_attachment_as_data_url(path: &Path) -> Result<String, String>
     let mime = mime_type_for_attachment(file_name);
     let encoded = general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:{mime};base64,{encoded}"))
+}
+
+// 超过该大小的内联图片 artifact 才外置到磁盘（小图保持内联，避免无谓的读盘往返）。
+const ARTIFACT_INLINE_THRESHOLD_BYTES: usize = 32 * 1024;
+// 缩略图最长边像素：列表里只需要小预览，原图点开时再按 path 懒加载。
+const ARTIFACT_THUMBNAIL_MAX_DIM: u32 = 256;
+
+/// 把一条消息里内联的大图 artifact（含 `tool_calls` 内的）外置到对话附件目录：
+/// 整图写盘并置 `path`，`data_url` 替换为内联缩略图（生成失败则留空，前端按 path 懒加载原图）。
+/// 返回是否发生了修改。已带 `path` 的 artifact 直接跳过，因此可重复安全调用。
+pub(crate) fn externalize_message_artifacts(
+    app: &AppHandle,
+    conversation_id: &str,
+    message: &mut ChatMessage,
+) -> bool {
+    let mut changed = false;
+    for artifact in message.artifacts.iter_mut() {
+        changed |= externalize_image_artifact(app, conversation_id, artifact);
+    }
+    for tool_call in message.tool_calls.iter_mut() {
+        for artifact in tool_call.artifacts.iter_mut() {
+            changed |= externalize_image_artifact(app, conversation_id, artifact);
+        }
+    }
+    changed
+}
+
+/// 快速判断:消息里是否存在"需要外置"的内联大图(图片 + 无 path + data_url 超阈值)。
+/// 用于 save_conversation 的廉价预扫描——没有这类 artifact 就完全不必克隆对话。
+pub(crate) fn message_has_inline_image_to_externalize(message: &ChatMessage) -> bool {
+    let needs = |artifact: &ChatToolArtifact| {
+        if artifact
+            .path
+            .as_deref()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        match parse_data_url(artifact.data_url.trim()) {
+            Some((mime, payload)) => {
+                mime.starts_with("image/")
+                    && decoded_base64_len(payload) > ARTIFACT_INLINE_THRESHOLD_BYTES
+            }
+            None => false,
+        }
+    };
+    message.artifacts.iter().any(needs)
+        || message
+            .tool_calls
+            .iter()
+            .any(|tool_call| tool_call.artifacts.iter().any(needs))
+}
+
+fn externalize_image_artifact(
+    app: &AppHandle,
+    conversation_id: &str,
+    artifact: &mut ChatToolArtifact,
+) -> bool {
+    if artifact
+        .path
+        .as_deref()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let Some((mime, payload)) = parse_data_url(artifact.data_url.trim()) else {
+        return false;
+    };
+    if !mime.starts_with("image/") {
+        return false;
+    }
+    let Ok(bytes) = general_purpose::STANDARD.decode(payload) else {
+        return false;
+    };
+    if bytes.len() <= ARTIFACT_INLINE_THRESHOLD_BYTES {
+        return false;
+    }
+
+    let dir = match conversation_attachments_dir(app, conversation_id) {
+        Ok(dir) => dir,
+        Err(_) => return false,
+    };
+    let file_name = format!("artifact-{}.{}", Uuid::new_v4(), extension_for_image_mime(&mime));
+    if fs::write(dir.join(&file_name), &bytes).is_err() {
+        return false;
+    }
+
+    artifact.size_bytes = Some(bytes.len() as u64);
+    artifact.data_url = make_thumbnail_data_url(&bytes).unwrap_or_default();
+    artifact.path = Some(file_name);
+    true
+}
+
+/// 解析 `data:<mime>;base64,<payload>`，返回 (小写 mime, payload)。非 base64 data URL 返回 None。
+fn parse_data_url(data_url: &str) -> Option<(String, &str)> {
+    let rest = data_url.strip_prefix("data:")?;
+    let comma = rest.find(',')?;
+    let meta = &rest[..comma];
+    if !meta.contains("base64") {
+        return None;
+    }
+    let mime = meta.split(';').next().unwrap_or("").to_ascii_lowercase();
+    Some((mime, &rest[comma + 1..]))
+}
+
+/// 不真正解码，估算 base64 payload 的解码字节数(用于阈值预扫描)。
+fn decoded_base64_len(payload: &str) -> usize {
+    let len = payload.trim_end_matches('=').len();
+    len / 4 * 3 + (len % 4).saturating_sub(1)
+}
+
+/// 用已有的 `image` crate 生成 PNG 缩略图的内联 data URL。解码/编码失败返回 None。
+fn make_thumbnail_data_url(bytes: &[u8]) -> Option<String> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let thumb = img.thumbnail(ARTIFACT_THUMBNAIL_MAX_DIM, ARTIFACT_THUMBNAIL_MAX_DIM);
+    let mut buf = Cursor::new(Vec::new());
+    thumb.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some(format!(
+        "data:image/png;base64,{}",
+        general_purpose::STANDARD.encode(buf.get_ref())
+    ))
 }
 
 pub(crate) fn save_message_attachments(
@@ -539,5 +665,75 @@ mod tests {
         );
 
         assert_eq!(title, "附件: notes.pdf");
+    }
+
+    #[test]
+    fn parse_data_url_extracts_mime_and_payload() {
+        let (mime, payload) = parse_data_url("data:image/png;base64,aGVsbG8=").unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(payload, "aGVsbG8=");
+        // 大小写 mime 归一化
+        let (mime, _) = parse_data_url("data:IMAGE/JPEG;base64,QQ==").unwrap();
+        assert_eq!(mime, "image/jpeg");
+        // 非 base64 / 非 data URL 返回 None
+        assert!(parse_data_url("data:text/plain,hi").is_none());
+        assert!(parse_data_url("https://example.com/a.png").is_none());
+    }
+
+    #[test]
+    fn decoded_base64_len_estimates_within_one_byte() {
+        // "aGVsbG8=" 解码为 "hello"(5 字节)
+        assert_eq!(decoded_base64_len("aGVsbG8="), 5);
+        // 无 padding 的 4 字符块 → 3 字节
+        assert_eq!(decoded_base64_len("QUJD"), 3);
+    }
+
+    #[test]
+    fn make_thumbnail_data_url_shrinks_large_image() {
+        // 生成 512x512 PNG,缩略图(<=256)应远小于原图。
+        let img = image::RgbImage::from_fn(512, 512, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+        let mut original = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut original, image::ImageFormat::Png)
+            .unwrap();
+
+        let data_url = make_thumbnail_data_url(original.get_ref()).unwrap();
+        assert!(data_url.starts_with("data:image/png;base64,"));
+        let thumb_payload = data_url.split_once(',').unwrap().1;
+        assert!(decoded_base64_len(thumb_payload) < original.get_ref().len());
+    }
+
+    #[test]
+    fn message_inline_image_scan_respects_threshold_and_path() {
+        let big_payload = "A".repeat(60_000); // 解码约 45KB > 32KB 阈值
+        let make_message = |data_url: &str, path: Option<&str>| -> ChatMessage {
+            serde_json::from_value(serde_json::json!({
+                "id": "m1",
+                "role": "assistant",
+                "content": "",
+                "timestamp": 0,
+                "artifacts": [{
+                    "name": "chart.png",
+                    "mime_type": "image/png",
+                    "data_url": data_url,
+                    "path": path,
+                }],
+            }))
+            .unwrap()
+        };
+
+        // 大内联图、无 path → 需要外置
+        let msg = make_message(&format!("data:image/png;base64,{big_payload}"), None);
+        assert!(message_has_inline_image_to_externalize(&msg));
+
+        // 已有 path → 跳过
+        let msg = make_message(&format!("data:image/png;base64,{big_payload}"), Some("artifact-x.png"));
+        assert!(!message_has_inline_image_to_externalize(&msg));
+
+        // 小图 → 跳过
+        let msg = make_message("data:image/png;base64,aGVsbG8=", None);
+        assert!(!message_has_inline_image_to_externalize(&msg));
     }
 }

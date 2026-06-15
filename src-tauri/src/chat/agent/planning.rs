@@ -12,6 +12,7 @@ use crate::settings::ProviderApiFormat;
 use super::finalize::{tool_planning_failed_run_result, RunResultBuilder};
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
+use super::recovery;
 use super::prepare::{prepare_agent_step, PrepareStepInput};
 use super::rounds::visible_tool_segment_calls;
 use super::stop::{
@@ -50,6 +51,10 @@ pub(crate) enum PlanningStepOutcome {
     ToolsUnsupported,
     /// Tool-call argument drafting failed mid-stream; the run ends immediately.
     DraftFailed(AgentRunResult),
+    /// A later-round planning call hard-failed but tool results already exist;
+    /// the run ends with those gathered results instead of bubbling an error
+    /// (统一恢复:不空手而归).
+    Recovered(AgentRunResult),
     /// Streaming was cancelled after partial plain-text output (no tool drafts
     /// started); the run ends immediately preserving the generated text. The
     /// stream layer already emitted the single done("cancelled") event.
@@ -285,7 +290,33 @@ pub(crate) async fn planning_step(
             });
             return Ok(PlanningStepOutcome::ToolsUnsupported);
         }
-        Err(err) => return Err(err),
+        Err(err) => {
+            // 统一恢复:多轮中途 planning 调用硬失败时,若已收集到工具结果,不要让
+            // 整轮报错丢弃成果——确定性兜底把已检索内容交给用户(与 synthesis 同一不变式)。
+            if !state.tool_records.is_empty() {
+                let content = recovery::assemble_results_from_tool_records(
+                    &state.tool_records,
+                    &config.language,
+                );
+                if !content.trim().is_empty() {
+                    eprintln!("Chat planning call failed mid-run; degrading to gathered results: {err}");
+                    return Ok(PlanningStepOutcome::Recovered(
+                        RunResultBuilder::new(host, env.ids(), content)
+                            .segment(&planning_text_segment)
+                            .emit_done("done")
+                            .outcome("recovered")
+                            .finish(
+                                std::mem::take(&mut state.segment_builder),
+                                &state.planning_reasoning_parts,
+                                std::mem::take(&mut state.tool_records),
+                                std::mem::take(&mut state.generated_api_messages),
+                                std::mem::take(&mut state.steps),
+                            ),
+                    ));
+                }
+            }
+            return Err(err);
+        }
     };
     let tool_calls = extract_tool_calls(&message);
     if tool_calls.is_empty() {

@@ -35,6 +35,22 @@ pub trait AgentHost: Send + Sync {
         record: &ToolCallRecord,
     );
 
+    /// Persist a best-effort snapshot of the in-progress assistant message to
+    /// durable storage after a completed tool round. The full assistant message
+    /// is otherwise written only once, after the loop returns; if the process
+    /// dies mid-run (crash / forced exit) that whole turn — including tool work
+    /// already done — is lost. This checkpoint keeps it recoverable on the next
+    /// load. Default no-op for hosts that don't own persistence (sub-agents,
+    /// tests).
+    fn persist_partial_assistant(
+        &self,
+        _conversation_id: &str,
+        _message_id: &str,
+        _tool_records: &[ToolCallRecord],
+        _segments: &[ChatMessageSegment],
+    ) {
+    }
+
     fn request_tool_approval<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
