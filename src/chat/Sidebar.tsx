@@ -682,7 +682,7 @@ export const Sidebar = memo(function Sidebar({
 
   return (
     <>
-      <aside className="chat-sidebar-shell flex h-full w-[240px] shrink-0 flex-col border-r border-neutral-200/80 dark:border-neutral-800">
+      <aside className="chat-sidebar-shell flex h-full w-[240px] shrink-0 flex-col">
         <div
           className={`${chatTitlebarRowClass} ${chatTitlebarMacInsetClass} pr-3`}
           data-tauri-drag-region

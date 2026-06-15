@@ -16,6 +16,7 @@ import {
 import { api, type ModelProvider } from '../api/tauri'
 import { isProviderEnabled } from '../settings/utils'
 import { chatApi } from './api'
+import { usesNativeTitlebar } from './platform'
 import type {
   AssistantDataConnector,
   AssistantKnowledgeSkill,
@@ -1064,69 +1065,88 @@ export function AssistantCenter({
   }
 
   return (
-    <div className="assistant-center-root h-full min-h-0 text-neutral-900 dark:text-neutral-100">
-      <main className="custom-scrollbar h-full min-h-0 overflow-y-auto px-6 py-6">
-        <div className="mx-auto max-w-7xl space-y-4">
-          <header className="assistant-center-header flex min-w-0 items-center gap-3">
-            <div className="flex min-w-0 shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="grid size-9 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                aria-label="返回聊天"
-                title="返回聊天"
-              >
-                <ArrowLeft size={16} />
-              </button>
-              <h1 className="truncate text-[24px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
-                专家套件
-              </h1>
-              <button
-                type="button"
-                onClick={() => void loadAssistants(selectedId)}
-                className="grid size-9 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                aria-label="刷新套件"
-                title="刷新"
-              >
-                <RefreshCw size={16} />
-              </button>
-            </div>
-            <div className="assistant-center-toolbar ml-auto flex min-w-0 flex-1 items-center justify-end gap-2">
-              <div className="assistant-center-search relative min-w-[180px] flex-1 sm:max-w-[360px]">
-                <Search
-                  size={16}
-                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400"
-                />
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索套件..."
-                  className="h-9 w-full rounded-md border border-neutral-200 bg-white pl-9 pr-3 text-[13px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                />
+    <div
+      className="flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100"
+      style={{ background: 'var(--theme-surface-muted)' }}
+    >
+      {/* 顶栏：与侧栏一体（同底色、无分隔），可拖拽，右侧避开窗口按钮 */}
+      <div
+        className={`flex h-[52px] shrink-0 items-center gap-2 px-3 ${
+          !usesNativeTitlebar ? 'chat-win-titlebar-safe' : ''
+        }`}
+        data-tauri-drag-region
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-neutral-600 transition-colors hover:bg-black/[0.06] hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-white/[0.08] dark:hover:text-neutral-100"
+          data-tauri-drag-region="false"
+        >
+          <ArrowLeft size={15} />
+          返回聊天
+        </button>
+        <div className="h-full min-w-5 flex-1" data-tauri-drag-region />
+      </div>
+
+      {/* 内容区：白底嵌入灰色外框，左上圆角 */}
+      <div
+        className="min-h-0 flex-1 overflow-hidden rounded-tl-2xl"
+        style={{ background: 'var(--theme-surface)' }}
+      >
+        <main className="custom-scrollbar h-full min-h-0 overflow-y-auto px-6 py-6">
+          <div className="mx-auto max-w-7xl space-y-4">
+            <header className="flex min-w-0 items-center gap-3">
+              <div className="flex min-w-0 shrink-0 items-center gap-2">
+                <h1 className="truncate text-[24px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+                  专家套件
+                </h1>
+                <button
+                  type="button"
+                  onClick={() => void loadAssistants(selectedId)}
+                  className="grid size-9 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                  aria-label="刷新套件"
+                  title="刷新"
+                >
+                  <RefreshCw size={16} />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={handleCreate}
-                className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-neutral-950 px-3 text-[13px] font-medium text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-neutral-200"
-              >
-                <Plus size={16} />
-                创建
-              </button>
-            </div>
-          </header>
+              <div className="assistant-center-toolbar ml-auto flex min-w-0 flex-1 items-center justify-end gap-2">
+                <div className="assistant-center-search relative min-w-[180px] flex-1 sm:max-w-[360px]">
+                  <Search
+                    size={16}
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400"
+                  />
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="搜索套件..."
+                    className="h-9 w-full rounded-md border border-neutral-200 bg-white pl-9 pr-3 text-[13px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCreate}
+                  className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-neutral-950 px-3 text-[13px] font-medium text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-neutral-200"
+                >
+                  <Plus size={16} />
+                  创建
+                </button>
+              </div>
+            </header>
 
-          {error && (
-            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-              {error}
-            </div>
-          )}
+            {error && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                {error}
+              </div>
+            )}
 
-          {view === 'list' && renderList()}
-          {view === 'detail' && renderDetail()}
-          {view === 'edit' && renderEdit()}
-        </div>
-      </main>
+            {view === 'list' && renderList()}
+            {view === 'detail' && renderDetail()}
+            {view === 'edit' && renderEdit()}
+          </div>
+        </main>
+      </div>
     </div>
   )
 }

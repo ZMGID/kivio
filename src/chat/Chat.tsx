@@ -75,6 +75,10 @@ const SettingsShell = lazy(() => import('../settings/SettingsShell').then((modul
   default: module.SettingsShell,
 })))
 
+const SkillCenter = lazy(() => import('./SkillCenter').then((module) => ({
+  default: module.SkillCenter,
+})))
+
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,
 })))
@@ -95,7 +99,7 @@ function MessageListLoading() {
   )
 }
 
-type ChatView = 'conversation' | 'settings' | 'assistants'
+type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill'
 
 interface ChatProps {
   onSettingsChange: () => void
@@ -111,6 +115,10 @@ function isChatSettingsPath(path: string): boolean {
 
 function isChatAssistantCenterPath(path: string): boolean {
   return path === 'chat/assistants' || path.startsWith('chat/assistants/')
+}
+
+function isChatSkillCenterPath(path: string): boolean {
+  return path === 'chat/skill' || path.startsWith('chat/skill/')
 }
 
 function isTauriRuntime(): boolean {
@@ -436,6 +444,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     const path = hashPath()
     if (isChatSettingsPath(path)) return 'settings'
     if (isChatAssistantCenterPath(path)) return 'assistants'
+    if (isChatSkillCenterPath(path)) return 'skill'
     return 'conversation'
   })
   const [currentConversation, setCurrentConversation] = useState<Awaited<
@@ -945,6 +954,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     }
   }, [])
 
+  const syncSkillCenterRoute = useCallback(() => {
+    if (window.location.hash !== '#chat/skill') {
+      window.location.hash = '#chat/skill'
+    }
+  }, [])
+
   const refreshSidebar = useCallback(() => {
     setSidebarRefreshKey((key) => key + 1)
   }, [])
@@ -1015,18 +1030,27 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     syncAssistantCenterRoute()
   }, [syncAssistantCenterRoute])
 
+  const openSkillCenter = useCallback(() => {
+    setChatView('skill')
+    syncSkillCenterRoute()
+  }, [syncSkillCenterRoute])
+
   const openExtensionsItem = useCallback((item: ExtensionsNavItem) => {
     setExtensionsNavItem(item)
     if (item === 'assistants') {
       openAssistantCenter()
       return
     }
+    if (item === 'skill') {
+      openSkillCenter()
+      return
+    }
     openEmbeddedSettings(item)
-  }, [openAssistantCenter, openEmbeddedSettings])
+  }, [openAssistantCenter, openSkillCenter, openEmbeddedSettings])
 
   const extensionsActive = useMemo<ExtensionsNavItem | null>(() => {
     if (chatView === 'assistants') return 'assistants'
-    if (chatView === 'settings' && extensionsNavItem === 'skill') return 'skill'
+    if (chatView === 'skill') return 'skill'
     if (chatView === 'settings' && extensionsNavItem === 'mcp') return 'mcp'
     return null
   }, [chatView, extensionsNavItem])
@@ -1045,6 +1069,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     setChatView('conversation')
     syncConversationRoute(currentConversationIdRef.current)
   }, [syncConversationRoute])
+
+  const handleSkillCenterClose = useCallback(() => {
+    setChatView('conversation')
+    syncConversationRoute(currentConversationIdRef.current)
+    void loadSkills()
+  }, [loadSkills, syncConversationRoute])
 
   const runAfterLeavingSettings = useCallback((action: () => void) => {
     if (chatView !== 'settings') {
@@ -1642,6 +1672,10 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       }
       if (isChatAssistantCenterPath(path)) {
         setChatView('assistants')
+        return
+      }
+      if (isChatSkillCenterPath(path)) {
+        setChatView('skill')
         return
       }
       setChatView('conversation')
@@ -2539,6 +2573,15 @@ export default function Chat({ onSettingsChange }: ChatProps) {
               />
             </Suspense>
           </div>
+        ) : chatView === 'skill' ? (
+          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+            <Suspense fallback={<ChatPaneLoading />}>
+              <SkillCenter
+                onClose={handleSkillCenterClose}
+                onSkillsChanged={() => void loadSkills()}
+              />
+            </Suspense>
+          </div>
         ) : (
           <div className="chat-main-pane relative flex min-w-0 flex-1 flex-col">
             {imageViewerItem ? (
@@ -2690,7 +2733,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       onAgentPlanModeChange={handleAgentPlanModeChange}
                       onExecuteAgentPlan={handleExecuteAgentPlan}
                       enabledSkills={slashSkills}
-                      onOpenSkillSettings={() => openEmbeddedSettings('skill')}
+                      onOpenSkillSettings={openSkillCenter}
                       selectedProject={selectedProject}
                       onSelectProject={handleSidebarSelectProject}
                       showProjectEntry
@@ -2742,7 +2785,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     onAgentPlanModeChange={handleAgentPlanModeChange}
                     onExecuteAgentPlan={handleExecuteAgentPlan}
                     enabledSkills={slashSkills}
-                    onOpenSkillSettings={() => openEmbeddedSettings('skill')}
+                    onOpenSkillSettings={openSkillCenter}
                     autoFocus
                   />
                     </>

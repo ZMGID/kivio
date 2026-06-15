@@ -1766,7 +1766,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         sendToChat: true,
         messageOrder: 'asc' as const,
         showCaptureHint: true,
-        windowsFreezeFrameSelection: false,
+        windowsFreezeFrameSelection: getPlatform() === 'windows',
         webSearch: {
           enabled: false,
           provider: 'tavily' as const,
@@ -3165,128 +3165,163 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 </SettingsGroup>
 
                 <SettingsGroup title={lang === 'zh' ? '工具运行' : 'Tool Runtime'}>
-                  <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-4 py-3">
-                    <div className="flex min-w-0 items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="kv-row-label">{lang === 'zh' ? '启用 MCP' : 'Enable MCP'}</div>
+                  {/* 主开关：MCP 启用与否，单独成行并垂直居中 */}
+                  <div className="flex items-center justify-between gap-4 py-3">
+                    <div className="min-w-0">
+                      <div className="kv-row-label">{lang === 'zh' ? '启用 MCP' : 'Enable MCP'}</div>
+                      <p className="kv-row-desc">
+                        {chatProviderSupportsTools
+                          ? (lang === 'zh' ? '向支持 tools 的模型暴露已启用的 MCP 工具。' : 'Expose enabled MCP tools to models that support tools.')
+                          : (lang === 'zh' ? '当前 Chat 模型供应商不支持 tools；Skill 仍会作为提示词生效。' : 'The current Chat provider does not support tools; Skills still work as prompt injection.')}
+                      </p>
+                    </div>
+                    <Toggle
+                      checked={chatTools.enabled}
+                      onChange={(enabled) => {
+                        if (!chatProviderSupportsTools) {
+                          setSaveError(lang === 'zh' ? '当前 Chat 模型供应商不支持 tools，无法启用 MCP。' : 'The current Chat provider does not support tools, so MCP cannot be enabled.')
+                          return
+                        }
+                        updateChatTools({ enabled })
+                      }}
+                    />
+                  </div>
+
+                  {/* 审批与运行参数：统一栅格，每格 label→描述→控件，控件用 mt-auto 底部对齐 */}
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] items-stretch gap-x-4 gap-y-5 border-t border-[var(--divider)] py-3">
+                    {/* 审批策略 */}
+                    <div className="flex h-full flex-col">
+                      <div className="mb-2">
+                        <div className="kv-row-label">{lang === 'zh' ? '审批策略' : 'Approval policy'}</div>
+                        <p className="kv-row-desc">{lang === 'zh' ? '控制工具调用是否需要人工确认。' : 'Controls whether tool calls require manual approval.'}</p>
+                      </div>
+                      <div className="mt-auto">
+                        <Select
+                          className="w-full"
+                          value={chatTools.approvalPolicy || 'readonly_auto_sensitive_confirm'}
+                          onChange={(approvalPolicy) => updateChatTools({ approvalPolicy })}
+                          options={[
+                            {
+                              value: 'readonly_auto_sensitive_confirm',
+                              label: lang === 'zh' ? '读类自动，敏感确认' : 'Read auto, sensitive confirm',
+                            },
+                            { value: 'always_confirm', label: lang === 'zh' ? '每次确认' : 'Always confirm' },
+                            { value: 'auto', label: lang === 'zh' ? '全部自动' : 'Auto approve' },
+                          ]}
+                        />
+                      </div>
+                    </div>
+
+                    {/* 最大工具轮次 */}
+                    <div className="flex h-full flex-col">
+                      <div className="mb-2">
+                        <div className="kv-row-label">{lang === 'zh' ? '最大工具轮次' : 'Max tool rounds'}</div>
                         <p className="kv-row-desc">
-                          {chatProviderSupportsTools
-                            ? (lang === 'zh' ? '向支持 tools 的模型暴露已启用的 MCP 工具。' : 'Expose enabled MCP tools to models that support tools.')
-                            : (lang === 'zh' ? '当前 Chat 模型供应商不支持 tools；Skill 仍会作为提示词生效。' : 'The current Chat provider does not support tools; Skills still work as prompt injection.')}
+                          {lang === 'zh'
+                            ? '达到上限后停止调用工具，并基于已有结果生成最终回复。'
+                            : 'After the limit, Chat stops calling tools and synthesizes a final answer from existing tool results.'}
                         </p>
                       </div>
-                      <Toggle
-                        checked={chatTools.enabled}
-                        onChange={(enabled) => {
-                          if (!chatProviderSupportsTools) {
-                            setSaveError(lang === 'zh' ? '当前 Chat 模型供应商不支持 tools，无法启用 MCP。' : 'The current Chat provider does not support tools, so MCP cannot be enabled.')
-                            return
-                          }
-                          updateChatTools({ enabled })
-                        }}
-                      />
-                    </div>
-                    <FieldBlock label={lang === 'zh' ? '审批策略' : 'Approval policy'} className="py-0">
-                      <Select
-                        className="w-full"
-                        value={chatTools.approvalPolicy || 'readonly_auto_sensitive_confirm'}
-                        onChange={(approvalPolicy) => updateChatTools({ approvalPolicy })}
-                        options={[
-                          {
-                            value: 'readonly_auto_sensitive_confirm',
-                            label: lang === 'zh' ? '读类自动，敏感确认' : 'Read auto, sensitive confirm',
-                          },
-                          { value: 'always_confirm', label: lang === 'zh' ? '每次确认' : 'Always confirm' },
-                          { value: 'auto', label: lang === 'zh' ? '全部自动' : 'Auto approve' },
-                        ]}
-                      />
-                      <p className="kv-row-desc">
-                        {lang === 'zh' ? '控制工具调用是否需要人工确认。' : 'Controls whether tool calls require manual approval.'}
-                      </p>
-                    </FieldBlock>
-                  </div>
-                  <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-4 border-t border-[var(--divider)] py-3">
-                    <FieldBlock
-                      label={lang === 'zh' ? '最大工具轮次' : 'Max tool rounds'}
-                      description={lang === 'zh'
-                        ? '达到上限后会停止继续调用工具，并基于已有工具结果生成最终回复。'
-                        : 'After the limit, Chat stops calling tools and synthesizes a final answer from existing tool results.'}
-                    >
-                      <Select
-                        className="w-full"
-                        value={chatTools.maxToolRounds === null ? 'unlimited' : String(clampToolRounds(chatTools.maxToolRounds))}
-                        onChange={(value) => updateChatTools({
-                          maxToolRounds: value === 'unlimited' ? null : clampToolRounds(value),
-                        })}
-                        options={[
-                          ...(chatTools.maxToolRounds !== null && !CHAT_TOOL_ROUND_PRESETS.includes(clampToolRounds(chatTools.maxToolRounds))
-                            ? [{
-                                value: String(clampToolRounds(chatTools.maxToolRounds)),
-                                label: lang === 'zh'
-                                  ? `当前 ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`
-                                  : `Current ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`,
-                              }]
-                            : []),
-                          ...CHAT_TOOL_ROUND_PRESETS.map((rounds) => ({
-                            value: String(rounds),
-                            label: formatToolRoundsLabel(rounds, lang),
-                          })),
-                          { value: 'unlimited', label: lang === 'zh' ? '无限制' : 'Unlimited' },
-                        ]}
-                      />
-                    </FieldBlock>
-                    <FieldBlock label={lang === 'zh' ? '工具超时 ms' : 'Tool timeout ms'}>
-                      <Select
-                        className="w-full"
-                        value={String(clampToolTimeoutMs(chatTools.toolTimeoutMs))}
-                        onChange={(value) => updateChatTools({ toolTimeoutMs: clampToolTimeoutMs(value) })}
-                        options={[
-                          ...(!CHAT_TOOL_TIMEOUT_PRESETS_MS.includes(clampToolTimeoutMs(chatTools.toolTimeoutMs))
-                            ? [{
-                                value: String(clampToolTimeoutMs(chatTools.toolTimeoutMs)),
-                                label: lang === 'zh'
-                                  ? `当前 ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`
-                                  : `Current ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`,
-                              }]
-                            : []),
-                          ...CHAT_TOOL_TIMEOUT_PRESETS_MS.map((ms) => ({
-                            value: String(ms),
-                            label: formatToolTimeoutLabel(ms, lang),
-                          })),
-                        ]}
-                      />
-                    </FieldBlock>
-                    <FieldBlock
-                      label={lang === 'zh' ? 'MCP 空闲超时' : 'MCP idle timeout'}
-                      description={lang === 'zh'
-                        ? 'MCP 持久连接空闲超过此值后回收子进程，下次调用透明重连。'
-                        : 'Persistent MCP connections idle beyond this are recycled; the next call reconnects transparently.'}
-                    >
-                      <Select
-                        className="w-full"
-                        value={String(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs))}
-                        onChange={(value) => updateChatTools({ mcpIdleTimeoutMs: clampMcpIdleTimeoutMs(value) })}
-                        options={[
-                          ...(!MCP_IDLE_TIMEOUT_PRESETS_MS.includes(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs))
-                            ? [{
-                                value: String(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs)),
-                                label: lang === 'zh'
-                                  ? `当前 ${formatToolTimeoutLabel(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs), lang)}`
-                                  : `Current ${formatToolTimeoutLabel(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs), lang)}`,
-                              }]
-                            : []),
-                          ...MCP_IDLE_TIMEOUT_PRESETS_MS.map((ms) => ({
-                            value: String(ms),
-                            label: formatToolTimeoutLabel(ms, lang),
-                          })),
-                        ]}
-                      />
-                    </FieldBlock>
-                    <FieldBlock label={lang === 'zh' ? '结果截断字符' : 'Output chars'}>
-                      <div className="flex h-[30px] items-center rounded-md border border-[var(--border)] bg-[var(--bg-input-subtle)] px-2.5 text-[12.5px] text-[var(--text-muted)]">
-                        {lang === 'zh' ? '无限制输出' : 'Unlimited output'}
+                      <div className="mt-auto">
+                        <Select
+                          className="w-full"
+                          value={chatTools.maxToolRounds === null ? 'unlimited' : String(clampToolRounds(chatTools.maxToolRounds))}
+                          onChange={(value) => updateChatTools({
+                            maxToolRounds: value === 'unlimited' ? null : clampToolRounds(value),
+                          })}
+                          options={[
+                            ...(chatTools.maxToolRounds !== null && !CHAT_TOOL_ROUND_PRESETS.includes(clampToolRounds(chatTools.maxToolRounds))
+                              ? [{
+                                  value: String(clampToolRounds(chatTools.maxToolRounds)),
+                                  label: lang === 'zh'
+                                    ? `当前 ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`
+                                    : `Current ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`,
+                                }]
+                              : []),
+                            ...CHAT_TOOL_ROUND_PRESETS.map((rounds) => ({
+                              value: String(rounds),
+                              label: formatToolRoundsLabel(rounds, lang),
+                            })),
+                            { value: 'unlimited', label: lang === 'zh' ? '无限制' : 'Unlimited' },
+                          ]}
+                        />
                       </div>
-                    </FieldBlock>
+                    </div>
+
+                    {/* 工具超时 */}
+                    <div className="flex h-full flex-col">
+                      <div className="mb-2">
+                        <div className="kv-row-label">{lang === 'zh' ? '工具超时' : 'Tool timeout'}</div>
+                        <p className="kv-row-desc">{lang === 'zh' ? '单次工具调用的最长等待时间。' : 'Maximum wait time for a single tool call.'}</p>
+                      </div>
+                      <div className="mt-auto">
+                        <Select
+                          className="w-full"
+                          value={String(clampToolTimeoutMs(chatTools.toolTimeoutMs))}
+                          onChange={(value) => updateChatTools({ toolTimeoutMs: clampToolTimeoutMs(value) })}
+                          options={[
+                            ...(!CHAT_TOOL_TIMEOUT_PRESETS_MS.includes(clampToolTimeoutMs(chatTools.toolTimeoutMs))
+                              ? [{
+                                  value: String(clampToolTimeoutMs(chatTools.toolTimeoutMs)),
+                                  label: lang === 'zh'
+                                    ? `当前 ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`
+                                    : `Current ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`,
+                                }]
+                              : []),
+                            ...CHAT_TOOL_TIMEOUT_PRESETS_MS.map((ms) => ({
+                              value: String(ms),
+                              label: formatToolTimeoutLabel(ms, lang),
+                            })),
+                          ]}
+                        />
+                      </div>
+                    </div>
+
+                    {/* MCP 空闲超时 */}
+                    <div className="flex h-full flex-col">
+                      <div className="mb-2">
+                        <div className="kv-row-label">{lang === 'zh' ? 'MCP 空闲超时' : 'MCP idle timeout'}</div>
+                        <p className="kv-row-desc">
+                          {lang === 'zh'
+                            ? '持久连接空闲超过此值后回收子进程，下次调用透明重连。'
+                            : 'Persistent MCP connections idle beyond this are recycled; the next call reconnects transparently.'}
+                        </p>
+                      </div>
+                      <div className="mt-auto">
+                        <Select
+                          className="w-full"
+                          value={String(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs))}
+                          onChange={(value) => updateChatTools({ mcpIdleTimeoutMs: clampMcpIdleTimeoutMs(value) })}
+                          options={[
+                            ...(!MCP_IDLE_TIMEOUT_PRESETS_MS.includes(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs))
+                              ? [{
+                                  value: String(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs)),
+                                  label: lang === 'zh'
+                                    ? `当前 ${formatToolTimeoutLabel(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs), lang)}`
+                                    : `Current ${formatToolTimeoutLabel(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs), lang)}`,
+                                }]
+                              : []),
+                            ...MCP_IDLE_TIMEOUT_PRESETS_MS.map((ms) => ({
+                              value: String(ms),
+                              label: formatToolTimeoutLabel(ms, lang),
+                            })),
+                          ]}
+                        />
+                      </div>
+                    </div>
+
+                    {/* 结果截断字符 */}
+                    <div className="flex h-full flex-col">
+                      <div className="mb-2">
+                        <div className="kv-row-label">{lang === 'zh' ? '结果截断字符' : 'Output chars'}</div>
+                        <p className="kv-row-desc">{lang === 'zh' ? '工具结果当前不做截断。' : 'Tool results are not truncated for now.'}</p>
+                      </div>
+                      <div className="mt-auto">
+                        <div className="flex h-[30px] items-center rounded-md border border-[var(--border)] bg-[var(--bg-input-subtle)] px-2.5 text-[12.5px] text-[var(--text-muted)]">
+                          {lang === 'zh' ? '无限制输出' : 'Unlimited output'}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </SettingsGroup>
 
