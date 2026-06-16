@@ -3009,28 +3009,28 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 <SettingsGroup title={lang === 'zh' ? 'Kivio 内置工具' : 'Kivio built-in tools'}>
                   <p className="kv-row-desc mb-2">
                     {lang === 'zh'
-                      ? 'Chat 原生工具。read_file 可读取 Kivio 能访问的本地文本文件；写入和编辑仍限制在用户主目录内，终端命令可在任意已存在目录中运行并会请求确认。'
-                      : 'Native Chat tools. read_file can read local text files Kivio can access; write and edit stay limited to the user home, while shell commands can run in any existing directory with approval.'}
+                      ? 'Chat 原生工具。read 可读取 Kivio 能访问的本地文本文件；写入和编辑仍限制在用户主目录内，终端命令可在任意已存在目录中运行并会请求确认。'
+                      : 'Native Chat tools. read can read local text files Kivio can access; write and edit stay limited to the user home, while shell commands can run in any existing directory with approval.'}
                   </p>
-                  <SettingRow label={lang === 'zh' ? '读取文件' : 'Read file'} description={lang === 'zh' ? 'read_file，无需确认' : 'read_file, no approval'}>
+                  <SettingRow label={lang === 'zh' ? '读取文件' : 'Read file'} description={lang === 'zh' ? 'read，无需确认' : 'read, no approval'}>
                     <Toggle
                       checked={chatTools.nativeTools?.readFile === true}
                       onChange={(readFile) => updateNativeTools({ readFile })}
                     />
                   </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '写入文件' : 'Write file'} description={lang === 'zh' ? 'write_file，需确认' : 'write_file, approval required'}>
+                  <SettingRow label={lang === 'zh' ? '写入文件' : 'Write file'} description={lang === 'zh' ? 'write，需确认' : 'write, approval required'}>
                     <Toggle
                       checked={chatTools.nativeTools?.writeFile === true}
                       onChange={(writeFile) => updateNativeTools({ writeFile })}
                     />
                   </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '编辑文件' : 'Edit file'} description={lang === 'zh' ? 'edit_file，需确认' : 'edit_file, approval required'}>
+                  <SettingRow label={lang === 'zh' ? '编辑文件' : 'Edit file'} description={lang === 'zh' ? 'edit，需确认' : 'edit, approval required'}>
                     <Toggle
                       checked={chatTools.nativeTools?.editFile === true}
                       onChange={(editFile) => updateNativeTools({ editFile })}
                     />
                   </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '终端命令' : 'Terminal command'} description={lang === 'zh' ? 'run_command，需确认' : 'run_command, approval required'}>
+                  <SettingRow label={lang === 'zh' ? '终端命令' : 'Terminal command'} description={lang === 'zh' ? 'bash，需确认' : 'bash, approval required'}>
                     <Toggle
                       checked={chatTools.nativeTools?.runCommand === true}
                       onChange={(runCommand) => updateNativeTools({ runCommand })}

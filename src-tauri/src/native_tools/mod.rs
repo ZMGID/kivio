@@ -5,8 +5,8 @@ mod shell;
 
 pub use fetch::web_fetch;
 pub use files::{
-    copy_path, create_dir, delete_path, edit_file, glob_files, list_dir, move_path, read_file,
-    search_files, stat_path, write_file, FileMutationResult, ReadFileResult, ReadFileState,
+    edit_file, glob_files, list_dir, read_file, search_files, write_file, FileMutationResult,
+    ReadFileResult, ReadFileState,
 };
 pub use sandbox_exports::{
     cleanup_stale_sandbox_exports, export_sandbox_artifacts, format_export_error,
@@ -147,21 +147,6 @@ pub fn resolve_tool_write_path(
             return Ok(path);
         }
         return resolve_project_path(workspace, raw_path, true);
-    }
-    let path = resolve_workspace_path(raw_path, &workspace.workspace_roots)?;
-    assert_writable_path(&path)?;
-    Ok(path)
-}
-
-pub fn resolve_tool_write_entry_path(
-    workspace: &NativeToolWorkspace,
-    raw_path: &str,
-) -> Result<PathBuf, String> {
-    if workspace.has_project() {
-        if let Some(path) = resolve_project_escape_write_path(workspace, raw_path, true)? {
-            return Ok(path);
-        }
-        return resolve_project_entry_path(workspace, raw_path);
     }
     let path = resolve_workspace_path(raw_path, &workspace.workspace_roots)?;
     assert_writable_path(&path)?;

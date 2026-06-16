@@ -520,7 +520,7 @@ fn effective_tool_timeout_ms(
             arguments.get("timeout_ms").and_then(|value| value.as_u64()),
         );
     }
-    if tool.source == "native" && matches!(tool.name.as_str(), "run_command" | "run_python") {
+    if tool.source == "native" && matches!(tool.name.as_str(), "bash" | "run_python") {
         return arguments
             .get("timeout_ms")
             .and_then(|value| value.as_u64())
@@ -773,7 +773,7 @@ mod tests {
     fn sensitive_test_tool() -> ChatToolDefinition {
         ChatToolDefinition {
             id: "native__write_file".to_string(),
-            name: "write_file".to_string(),
+            name: "write".to_string(),
             description: "Write file".to_string(),
             source: "native".to_string(),
             server_id: None,
@@ -815,7 +815,7 @@ mod tests {
         let executor = ExecuteTestExecutor::default();
         let settings = Settings::default();
         let tool = sensitive_test_tool();
-        let call = test_pending_call("call_invalid", "write_file", serde_json::json!({}));
+        let call = test_pending_call("call_invalid", "write", serde_json::json!({}));
 
         let (record, content) = execute_tool_call(
             &host,
@@ -868,7 +868,7 @@ mod tests {
         tool.sensitive = false;
         let call = test_pending_call(
             "call_ok",
-            "write_file",
+            "write",
             serde_json::json!({ "path": "/tmp/out.txt", "content": "hello" }),
         );
 
@@ -912,7 +912,7 @@ mod tests {
         tool.server_id = Some("server-1".to_string());
         let call = test_pending_call(
             "call_mcp",
-            "write_file",
+            "write",
             serde_json::json!({ "path": "/tmp/out.txt", "content": "hello" }),
         );
 

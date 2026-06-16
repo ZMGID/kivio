@@ -538,17 +538,17 @@
         }
     }
 
-    /// Streaming planning step: one `read_file` tool call, then `[DONE]`.
+    /// Streaming planning step: one `read` tool call, then `[DONE]`.
     fn planning_tool_call_sse_events() -> Vec<String> {
         vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/kivio-test.txt\"}"}}]}}]}"#
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read","arguments":"{\"path\":\"/tmp/kivio-test.txt\"}"}}]}}]}"#
                 .to_string(),
             r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.to_string(),
             "[DONE]".to_string(),
         ]
     }
 
-    /// Non-stream planning step: one `read_file` tool call.
+    /// Non-stream planning step: one `read` tool call.
     fn planning_tool_call_json() -> String {
         serde_json::json!({
             "choices": [{
@@ -560,7 +560,7 @@
                         "id": "call_read",
                         "type": "function",
                         "function": {
-                            "name": "read_file",
+                            "name": "read",
                             "arguments": "{\"path\":\"/tmp/kivio-test.txt\"}"
                         }
                     }]
@@ -595,7 +595,7 @@
 
     fn test_tool_arguments(function_name: &str) -> Value {
         match function_name {
-            "read_file" => serde_json::json!({ "path": "/tmp/kivio-test.txt" }),
+            "read" => serde_json::json!({ "path": "/tmp/kivio-test.txt" }),
             "web_fetch" => serde_json::json!({ "url": "https://example.com" }),
             "run_python" => serde_json::json!({ "code": "print(1)" }),
             "ask_user" => serde_json::json!({
@@ -619,7 +619,7 @@
         let tools = vec![native_read_file_tool()];
         let blocked = vec![native_run_python_tool()];
         let calls = vec![
-            pending_tool_call("call_read", "read_file"),
+            pending_tool_call("call_read", "read"),
             pending_tool_call("call_blocked", "run_python"),
             pending_tool_call("call_hidden_disabled", "web_search"),
             pending_tool_call("call_unknown", "mcp__server__tool"),
@@ -703,7 +703,7 @@
             &tools,
             &[],
             vec![
-                pending_tool_call("call_read", "read_file"),
+                pending_tool_call("call_read", "read"),
                 pending_tool_call("call_fetch", "web_fetch"),
             ],
             &mut skill_cache,
@@ -814,7 +814,7 @@
             &tools,
             &[],
             vec![
-                pending_tool_call("call_read", "read_file"),
+                pending_tool_call("call_read", "read"),
                 pending_tool_call("call_ask", "ask_user"),
                 pending_tool_call("call_fetch", "web_fetch"),
             ],
@@ -826,8 +826,8 @@
         assert_eq!(
             executor.events(),
             vec![
-                "start:read_file",
-                "finish:read_file",
+                "start:read",
+                "finish:read",
                 "start:web_fetch",
                 "finish:web_fetch"
             ]
@@ -939,12 +939,12 @@
             &tools,
             &[],
             vec![
-                pending_tool_call("call_read", "read_file"),
+                pending_tool_call("call_read", "read"),
                 pending_tool_call("call_fetch", "web_fetch"),
                 pending_tool_call("call_missing", "missing_tool"),
-                pending_tool_call("call_read_after_unknown", "read_file"),
+                pending_tool_call("call_read_after_unknown", "read"),
                 invalid_fetch,
-                pending_tool_call("call_final", "read_file"),
+                pending_tool_call("call_final", "read"),
             ],
             &mut skill_cache,
         )
@@ -1069,7 +1069,7 @@
             &tools,
             &[],
             vec![
-                pending_tool_call("call_read", "read_file"),
+                pending_tool_call("call_read", "read"),
                 pending_tool_call("call_py", "run_python"),
             ],
             &mut skill_cache,
@@ -1100,7 +1100,7 @@
             .collect::<Vec<_>>();
         assert_eq!(
             start_events,
-            vec!["start:read_file"],
+            vec!["start:read"],
             "remaining serial tools must not start after cancellation"
         );
     }
@@ -1109,7 +1109,7 @@
     fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
         let tool_record = ToolCallRecord {
             id: "call_read".to_string(),
-            name: "read_file".to_string(),
+            name: "read".to_string(),
             source: "native".to_string(),
             server_id: None,
             arguments: "{}".to_string(),
@@ -1133,7 +1133,7 @@
                 "id": "call_read",
                 "type": "function",
                 "function": {
-                    "name": "read_file",
+                    "name": "read",
                     "arguments": "{}",
                 }
             }],
@@ -1329,7 +1329,7 @@
         );
         sink.emit(StreamPart::ToolCallStart {
             id: "call_write".to_string(),
-            name: "write_file".to_string(),
+            name: "write".to_string(),
         })
         .expect("tool call start should emit");
         sink.emit(StreamPart::ToolCallDelta {
@@ -1418,7 +1418,7 @@
     #[tokio::test]
     async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_result() {
         let server = MockModelServer::start(vec![MockResponse::SseInterrupt(vec![
-            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/"}}]}}]}"#
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read","arguments":"{\"path\":\"/tmp/"}}]}}]}"#
                 .to_string(),
         ])]);
         let state = test_app_state();
@@ -1476,7 +1476,7 @@
         // 框架恢复:合成被拒(400)后不再吐静态"失败"文案,而是用已收集的工具结果兜底。
         let recovered =
             crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
-        assert!(recovered.contains("result:read_file"));
+        assert!(recovered.contains("result:read"));
         assert_eq!(result.stream_outcome, "recovered");
         assert_eq!(result.content, recovered);
         assert_eq!(result.tool_records.len(), 1);
@@ -1780,7 +1780,7 @@
         let huge = "A".repeat(9_000);
         config.runtime_messages.push(serde_json::json!({
             "role": "assistant", "content": "", "tool_calls": [
-                {"id": "old_call", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+                {"id": "old_call", "type": "function", "function": {"name": "read", "arguments": "{}"}}
             ]
         }));
         config.runtime_messages.push(serde_json::json!({
@@ -1827,7 +1827,7 @@
             .iter()
             .find(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
             .expect("persisted tool message from this round");
-        assert_eq!(persisted_tool["content"], "result:read_file");
+        assert_eq!(persisted_tool["content"], "result:read");
     }
 
     /// Crash-safety: after a tool round that returns `Continue` (more rounds
@@ -1837,7 +1837,7 @@
     #[tokio::test]
     async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
         let server = MockModelServer::start(vec![
-            // Round 1 planning: one read_file tool call. With max_tool_rounds=2
+            // Round 1 planning: one read tool call. With max_tool_rounds=2
             // this round returns Continue, so the checkpoint fires.
             MockResponse::Sse(planning_tool_call_sse_events()),
             // Round 2 planning: a natural final answer (no tools) ends the loop.
@@ -1986,7 +1986,7 @@
 
         let recovered =
             crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
-        assert!(recovered.contains("result:read_file"));
+        assert!(recovered.contains("result:read"));
         assert_eq!(result.stream_outcome, "completed");
         assert_eq!(result.content, recovered);
         assert_eq!(result.tool_records.len(), 1);
@@ -2039,7 +2039,7 @@
 
         let recovered =
             crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
-        assert!(recovered.contains("result:read_file"));
+        assert!(recovered.contains("result:read"));
         assert_eq!(result.stream_outcome, "recovered");
         assert_eq!(result.content, recovered);
         assert_eq!(result.tool_records.len(), 1);
@@ -2095,7 +2095,7 @@
 
         let recovered =
             crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN");
-        assert!(recovered.contains("result:read_file"));
+        assert!(recovered.contains("result:read"));
         assert_eq!(result.stream_outcome, "completed");
         assert_eq!(result.content, recovered);
         assert_eq!(result.reasoning.as_deref(), Some("synthesis reasoning"));

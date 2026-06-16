@@ -455,8 +455,8 @@ fn tool_draft_preview(name: &str, phase: &str, argument_chars: usize) -> String 
         return "工具参数已生成，等待调用…".to_string();
     }
     let prefix = match name {
-        "write_file" => "正在生成文件内容",
-        "edit_file" => "正在生成编辑参数",
+        "write" => "正在生成文件内容",
+        "edit" => "正在生成编辑参数",
         _ => "正在生成工具参数",
     };
     if argument_chars == 0 {
@@ -745,7 +745,7 @@ mod tests {
 
         sink.emit(StreamPart::ToolCallStart {
             id: "call_write".to_string(),
-            name: "write_file".to_string(),
+            name: "write".to_string(),
         })
         .expect("start should emit");
         sink.emit(StreamPart::ToolCallDelta {
@@ -755,7 +755,7 @@ mod tests {
         .expect("delta should emit");
         let call = PendingToolCall {
             id: "call_write".to_string(),
-            function_name: "write_file".to_string(),
+            function_name: "write".to_string(),
             arguments: serde_json::json!({
                 "path": "demo.html",
                 "content": "<html></html>"
@@ -769,7 +769,7 @@ mod tests {
         let records = host.records.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].id, "call_write");
-        assert_eq!(records[0].name, "write_file");
+        assert_eq!(records[0].name, "write");
         assert!(matches!(records[0].status, ToolCallStatus::Pending));
         assert!(records[0]
             .result_preview
@@ -815,7 +815,7 @@ mod tests {
 
         sink.emit(StreamPart::ToolCallStart {
             id: "call_write".to_string(),
-            name: "write_file".to_string(),
+            name: "write".to_string(),
         })
         .expect("start should emit");
         sink.emit(StreamPart::ToolCallDelta {
@@ -829,7 +829,7 @@ mod tests {
         assert_eq!(failed.len(), 1);
         let record = &failed[0];
         assert_eq!(record.id, "call_write");
-        assert_eq!(record.name, "write_file");
+        assert_eq!(record.name, "write");
         assert!(matches!(record.status, ToolCallStatus::Error));
         assert_eq!(
             record.error.as_deref(),

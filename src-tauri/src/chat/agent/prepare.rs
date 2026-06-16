@@ -362,16 +362,13 @@ pub fn build_chat_system_prompt_with_segments(
             action_examples.push("asking the user a blocking clarification");
         }
         if available_builtin_tools.iter().any(|tool| {
-            matches!(
-                tool.as_str(),
-                "read_file" | "list_dir" | "search_files" | "glob_files" | "stat_path"
-            )
+            matches!(tool.as_str(), "read" | "ls" | "grep" | "find")
         }) {
             action_examples.push("reading or searching project files");
         }
         if available_builtin_tools
             .iter()
-            .any(|tool| matches!(tool.as_str(), "run_command" | "run_python"))
+            .any(|tool| matches!(tool.as_str(), "bash" | "run_python"))
         {
             action_examples.push("running code or a command");
         }
@@ -674,17 +671,17 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
             "\n- 生图工具未启用；用户要求生成图片时，说明需要先在「混音器」里配置生图模型。"
         };
         let generated_file_hint = if has_run_python {
-            "\n- 用户用自然语言要求“生成/整理/导出/发我”报告、摘要、表格、数据集、图表、Markdown、CSV、JSON、TXT、HTML 或 XLSX 文件时，主动调用 run_python 生成对应相对路径产物；不要要求用户说出 run_python 或 Python。成功后只简短说明已生成文件，文件卡片会展示给用户。若用户给出明确宿主路径或要求保存到本地某处，改用 write_file。"
+            "\n- 用户用自然语言要求“生成/整理/导出/发我”报告、摘要、表格、数据集、图表、Markdown、CSV、JSON、TXT、HTML 或 XLSX 文件时，主动调用 run_python 生成对应相对路径产物；不要要求用户说出 run_python 或 Python。成功后只简短说明已生成文件，文件卡片会展示给用户。若用户给出明确宿主路径或要求保存到本地某处，改用 write。"
         } else {
             ""
         };
         format!(
             "内置工具（已启用）：{list}。只能调用此列表中的内置工具。\n\
 - 项目对话中文件/命令工具的相对路径以项目根目录为根；写入明确的绝对路径或 ~/ 路径（如 ~/Desktop/x.html）会落到项目外的全局位置。非项目对话用绝对路径或 ~/ 路径。\n\
-- 用户明确要求保存/修改/删除本地文件或给出目标路径时才动文件：小改用 edit_file，新建或整文件覆盖用 write_file。只要求“生成代码块”时直接在回答里输出，不调用 write_file。写入成功后简短说明路径即可，不要复述文件内容。\n\
-- 写入/删除/移动类工具和 run_command 可能需要用户确认；memory_read（按需读 L2，L1 已注入）、memory_search（按关键词检索 L2，找不准标题时优先用它）和 memory_modify 无需确认。\n\
-- 运行环境：{os_name}，run_command 经 {shell_name} 执行；命令语法须匹配该 shell（Windows 用 `%VAR%`、`dir`、`\\`；Unix 用 `$VAR`、`ls`、`/`）。每次 run_command 都是全新进程，cwd 不跨调用保留——切目录用 `cwd` 参数，别靠上一条 `cd`。要跑多行或带引号的代码，先用 write_file 写成脚本再执行，或用 run_python，别塞进 `python -c \"...\"` 这类内联命令（内联引号在各 shell 下都脆弱）。工具返回硬性拒绝时换策略，别把同一动作换几种写法反复试；失败命令不要原样重跑；别为一次性探测或清理往项目里扔临时脚本。\n\
-- run_command 在宿主 shell 从项目根目录执行，非零退出码即失败；含空格的路径必须用 `cwd` 参数，禁止 `cd 路径 && 命令`；不要同时传 `cwd` 又在 command 里写 `cd ... &&`。`npm run dev` / `tauri dev` / `vite` 等长驻 dev 命令会自动后台启动并立刻返回 pid，不要重复启动。破坏性、联网、改环境的命令先说明并等确认。Skill 脚本走 skill_run_script；不要用 pip 装宿主包绕过沙盒。\n\
+- 用户明确要求保存/修改/删除本地文件或给出目标路径时才动文件：小改用 edit，新建或整文件覆盖用 write。只要求“生成代码块”时直接在回答里输出，不调用 write。写入成功后简短说明路径即可，不要复述文件内容。\n\
+- 写入/编辑类工具和 bash 可能需要用户确认；memory_read（按需读 L2，L1 已注入）、memory_search（按关键词检索 L2，找不准标题时优先用它）和 memory_modify 无需确认。\n\
+- 运行环境：{os_name}，bash 经 {shell_name} 执行；命令语法须匹配该 shell（Windows 用 `%VAR%`、`dir`、`\\`；Unix 用 `$VAR`、`ls`、`/`）。每次 bash 都是全新进程，cwd 不跨调用保留——切目录用 `cwd` 参数，别靠上一条 `cd`。要跑多行或带引号的代码，先用 write 写成脚本再执行，或用 run_python，别塞进 `python -c \"...\"` 这类内联命令（内联引号在各 shell 下都脆弱）。工具返回硬性拒绝时换策略，别把同一动作换几种写法反复试；失败命令不要原样重跑；别为一次性探测或清理往项目里扔临时脚本。\n\
+- bash 在宿主 shell 从项目根目录执行，非零退出码即失败；含空格的路径必须用 `cwd` 参数，禁止 `cd 路径 && 命令`；不要同时传 `cwd` 又在 command 里写 `cd ... &&`。`npm run dev` / `tauri dev` / `vite` 等长驻 dev 命令会自动后台启动并立刻返回 pid，不要重复启动。破坏性、联网、改环境的命令先说明并等确认。Skill 脚本走 skill_run_script；不要用 pip 装宿主包绕过沙盒。\n\
 - run_python 在 Pyodide 沙盒运行，用于数据运算、分析、文档处理、图表和聊天产物文件生成；不要用它生成或打印代码答案，代码直接写在回答里。无宿主文件系统访问；files 挂载本地文件后用 KIVIO_INPUT_FILES[n] 路径，numpy、pandas、matplotlib、pillow、openpyxl、pypdf 可直接 import。产物保存为相对路径文件名（如 report.md、summary.csv、data.json、page.html、report.xlsx、chart.png），应用会自动捕获并显示文件卡片；不要 print base64。\n\
 - {zh_live_access_hint}"
         ) + generated_file_hint + image_generation_hint
@@ -695,17 +692,17 @@ fn native_tools_prompt(available_builtin_tools: &[String], language: &str) -> Op
             "\n- Image generation is not enabled; if asked, explain that an image model must be configured under Mixer first."
         };
         let generated_file_hint = if has_run_python {
-            "\n- When the user naturally asks you to generate, export, send, package, or provide a report, summary, table, dataset, chart, Markdown, CSV, JSON, TXT, HTML, or XLSX file, proactively call run_python to create the artifact as a relative output file; do not ask the user to mention run_python or Python. After success, briefly say the file was generated; Kivio will show the file card. If the user gives an explicit host path or asks to save somewhere local, use write_file instead."
+            "\n- When the user naturally asks you to generate, export, send, package, or provide a report, summary, table, dataset, chart, Markdown, CSV, JSON, TXT, HTML, or XLSX file, proactively call run_python to create the artifact as a relative output file; do not ask the user to mention run_python or Python. After success, briefly say the file was generated; Kivio will show the file card. If the user gives an explicit host path or asks to save somewhere local, use write instead."
         } else {
             ""
         };
         format!(
             "Built-in tools enabled: {list}. Only call tools in this list.\n\
 - In project conversations, relative paths in file/command tools resolve from the project root; writing an explicit absolute or ~/ path (e.g. ~/Desktop/x.html) targets that global location outside the project. Non-project conversations use absolute or ~/ paths.\n\
-- Touch files only when the user explicitly asks to save/modify/delete local files or gives a target path: edit_file for small edits, write_file for new files or whole-file overwrites. If asked for a code block without saving, answer inline. After a write, state the path briefly; do not repeat the file content.\n\
-- Write/delete/move tools and run_command may need user approval; memory_read (L2 on demand; L1 is auto-injected), memory_search (keyword search over L2; prefer it when you are unsure of the exact heading), and memory_modify do not.\n\
-- Runtime environment: {os_name}; run_command runs via {shell_name}. Match that shell's syntax (Windows: `%VAR%`, `dir`, `\\`; Unix: `$VAR`, `ls`, `/`). Each run_command is a fresh process — cwd does NOT persist across calls; switch directories with the `cwd` parameter, not a prior `cd`. To run multi-line or quoted code, write it to a file with write_file and run that, or use run_python — do not cram it into inline commands like `python -c \"...\"` (inline quotes are fragile across shells). When a tool returns a hard rejection, change strategy instead of retrying variants of the same action; never re-run a failed command unchanged; don't drop one-off probe or cleanup scripts into the project.\n\
-- run_command runs on the host shell from the project root; non-zero exit means failure. Paths with spaces must use the `cwd` parameter—never `cd path && command`; do not combine `cwd` with a leading `cd ... &&` prefix. Long-running dev commands such as `npm run dev`, `tauri dev`, and `vite` start in the background automatically and return a pid immediately; do not start the same dev server twice. Explain and get confirmation before destructive, network, or environment-changing commands. Skill scripts go through skill_run_script; never use host pip to bypass the run_python sandbox.\n\
+- Touch files only when the user explicitly asks to save/modify/delete local files or gives a target path: edit for small edits, write for new files or whole-file overwrites. If asked for a code block without saving, answer inline. After a write, state the path briefly; do not repeat the file content.\n\
+- Write/edit tools and bash may need user approval; memory_read (L2 on demand; L1 is auto-injected), memory_search (keyword search over L2; prefer it when you are unsure of the exact heading), and memory_modify do not.\n\
+- Runtime environment: {os_name}; bash runs via {shell_name}. Match that shell's syntax (Windows: `%VAR%`, `dir`, `\\`; Unix: `$VAR`, `ls`, `/`). Each bash call is a fresh process — cwd does NOT persist across calls; switch directories with the `cwd` parameter, not a prior `cd`. To run multi-line or quoted code, write it to a file with write and run that, or use run_python — do not cram it into inline commands like `python -c \"...\"` (inline quotes are fragile across shells). When a tool returns a hard rejection, change strategy instead of retrying variants of the same action; never re-run a failed command unchanged; don't drop one-off probe or cleanup scripts into the project.\n\
+- bash runs on the host shell from the project root; non-zero exit means failure. Paths with spaces must use the `cwd` parameter—never `cd path && command`; do not combine `cwd` with a leading `cd ... &&` prefix. Long-running dev commands such as `npm run dev`, `tauri dev`, and `vite` start in the background automatically and return a pid immediately; do not start the same dev server twice. Explain and get confirmation before destructive, network, or environment-changing commands. Skill scripts go through skill_run_script; never use host pip to bypass the run_python sandbox.\n\
 - run_python runs in a Pyodide sandbox for data computation, analysis, document processing, charts, and chat deliverable file generation; never use it to generate or print code answers — write code directly in the answer. No host filesystem access; mount files via the files parameter and use KIVIO_INPUT_FILES[n] paths. numpy, pandas, matplotlib, pillow, openpyxl, pypdf import directly. Save artifacts to relative filenames (report.md, summary.csv, data.json, page.html, report.xlsx, chart.png); Kivio auto-captures them and shows file cards. No base64 printing.\n\
 - {en_live_access_hint}"
         ) + generated_file_hint + image_generation_hint
@@ -869,7 +866,7 @@ mod tests {
             &registry,
             &chat_tools,
             true,
-            &["write_file".to_string()],
+            &["write".to_string()],
             None,
             None,
             None,
@@ -882,7 +879,7 @@ mod tests {
         );
 
         assert!(prompt.contains("生成代码块"));
-        assert!(prompt.contains("不调用 write_file"));
+        assert!(prompt.contains("不调用 write"));
         assert!(prompt.contains("不要复述文件内容"));
     }
 

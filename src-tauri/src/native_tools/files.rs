@@ -12,8 +12,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::{
-    assert_writable_path, resolve_tool_read_path, resolve_tool_write_entry_path,
-    resolve_tool_write_path, workspace_display_path, NativeToolWorkspace, MAX_READ_FILE_BYTES,
+    assert_writable_path, resolve_tool_read_path, resolve_tool_write_path, workspace_display_path,
+    NativeToolWorkspace, MAX_READ_FILE_BYTES,
 };
 
 const MAX_LIST_ENTRIES: usize = 500;
@@ -946,109 +946,6 @@ pub fn list_dir(workspace: &NativeToolWorkspace, arguments: &Value) -> Result<St
     }))
 }
 
-pub fn stat_path(workspace: &NativeToolWorkspace, arguments: &Value) -> Result<String, String> {
-    let path = required_string(arguments, "path")?;
-    let full = resolve_tool_read_path(workspace, path)?;
-    let metadata = fs::metadata(&full).map_err(|err| format!("Read metadata failed: {err}"))?;
-    format_json(path_info(workspace, &full, &metadata)?)
-}
-
-pub fn create_dir(workspace: &NativeToolWorkspace, arguments: &Value) -> Result<String, String> {
-    let path = required_string(arguments, "path")?;
-    let full = resolve_tool_write_path(workspace, path)?;
-    if !workspace.has_project() {
-        assert_writable_path(&full)?;
-    }
-    fs::create_dir_all(&full).map_err(|err| format!("Create directory failed: {err}"))?;
-    Ok(format!(
-        "Created directory {}",
-        workspace_display_path(workspace, &full)
-    ))
-}
-
-pub fn delete_path(workspace: &NativeToolWorkspace, arguments: &Value) -> Result<String, String> {
-    let path = required_string(arguments, "path")?;
-    let recursive = arguments
-        .get("recursive")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let full = resolve_tool_write_entry_path(workspace, path)?;
-    if !workspace.has_project() {
-        assert_writable_path(&full)?;
-    }
-    let _guard = acquire_file_mutation_locks([full.clone()])?;
-    reject_workspace_root_delete(workspace, &full)?;
-
-    let metadata = fs::symlink_metadata(&full).map_err(|_| format!("路径不存在: {path}"))?;
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() || metadata.is_file() {
-        fs::remove_file(&full).map_err(|err| format!("Delete file failed: {err}"))?;
-    } else if metadata.is_dir() {
-        if recursive {
-            fs::remove_dir_all(&full).map_err(|err| format!("Delete directory failed: {err}"))?;
-        } else {
-            fs::remove_dir(&full).map_err(|err| format!("Delete directory failed: {err}"))?;
-        }
-    } else {
-        return Err(format!("不是可删除的文件或文件夹: {path}"));
-    }
-
-    Ok(format!(
-        "Deleted {}",
-        workspace_display_path(workspace, &full)
-    ))
-}
-
-pub fn move_path(workspace: &NativeToolWorkspace, arguments: &Value) -> Result<String, String> {
-    let from = required_string(arguments, "from")?;
-    let to = required_string(arguments, "to")?;
-    let source = resolve_tool_write_entry_path(workspace, from)?;
-    let destination = resolve_tool_write_path(workspace, to)?;
-    if !workspace.has_project() {
-        assert_writable_path(&source)?;
-        assert_writable_path(&destination)?;
-    }
-    let _guard = acquire_file_mutation_locks([source.clone(), destination.clone()])?;
-    reject_workspace_root_delete(workspace, &source)?;
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|err| format!("Create parent dirs failed: {err}"))?;
-    }
-    fs::rename(&source, &destination).map_err(|err| format!("Move path failed: {err}"))?;
-    Ok(format!(
-        "Moved {} to {}",
-        workspace_display_path(workspace, &source),
-        workspace_display_path(workspace, &destination)
-    ))
-}
-
-pub fn copy_path(workspace: &NativeToolWorkspace, arguments: &Value) -> Result<String, String> {
-    let from = required_string(arguments, "from")?;
-    let to = required_string(arguments, "to")?;
-    let source = resolve_tool_read_path(workspace, from)?;
-    let destination = resolve_tool_write_path(workspace, to)?;
-    if !workspace.has_project() {
-        assert_writable_path(&destination)?;
-    }
-    let _guard = acquire_file_mutation_locks([destination.clone()])?;
-    if source.is_dir() {
-        reject_recursive_directory_copy(&source, &destination)?;
-        copy_dir_recursive(&source, &destination)?;
-    } else if source.is_file() {
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("Create parent dirs failed: {err}"))?;
-        }
-        fs::copy(&source, &destination).map_err(|err| format!("Copy file failed: {err}"))?;
-    } else {
-        return Err(format!("不是可复制的文件或文件夹: {from}"));
-    }
-    Ok(format!(
-        "Copied {} to {}",
-        workspace_display_path(workspace, &source),
-        workspace_display_path(workspace, &destination)
-    ))
-}
-
 pub fn glob_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Result<String, String> {
     let pattern = required_string(arguments, "pattern")?;
     validate_glob_pattern(pattern)?;
@@ -1456,48 +1353,6 @@ fn segment_match(pattern: &str, value: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
-}
-
-fn reject_workspace_root_delete(
-    workspace: &NativeToolWorkspace,
-    path: &Path,
-) -> Result<(), String> {
-    if let Some(project) = &workspace.project {
-        if let Some(root) = project.root_path.as_ref() {
-            if let Ok(root) = fs::canonicalize(root) {
-                if path == root {
-                    return Err("不能删除、移动或覆盖项目根目录。".to_string());
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn reject_recursive_directory_copy(source: &Path, destination: &Path) -> Result<(), String> {
-    if destination == source || destination.starts_with(source) {
-        return Err("不能将文件夹复制到自身或自身的子目录。".to_string());
-    }
-    Ok(())
-}
-
-fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
-    fs::create_dir_all(destination)
-        .map_err(|err| format!("Create destination dir failed: {err}"))?;
-    for entry in fs::read_dir(source).map_err(|err| format!("Read source dir failed: {err}"))? {
-        let entry = entry.map_err(|err| format!("Read source entry failed: {err}"))?;
-        let from = entry.path();
-        let to = destination.join(entry.file_name());
-        let metadata = entry
-            .metadata()
-            .map_err(|err| format!("Read source metadata failed: {err}"))?;
-        if metadata.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else if metadata.is_file() {
-            fs::copy(&from, &to).map_err(|err| format!("Copy file failed: {err}"))?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1985,42 +1840,6 @@ mod tests {
     }
 
     #[test]
-    fn copy_path_rejects_directory_copy_into_self_or_child() {
-        let root = std::env::temp_dir().join(format!("kivio_copy_{}", uuid::Uuid::new_v4()));
-        let source = root.join("src");
-        fs::create_dir_all(&source).expect("mkdir source");
-        fs::write(source.join("file.txt"), "hello").expect("write source file");
-        let workspace = NativeToolWorkspace::project(
-            "proj_test".to_string(),
-            "Test".to_string(),
-            Some(root.to_string_lossy().into_owned()),
-        );
-
-        let same_err = copy_path(
-            &workspace,
-            &json!({
-                "from": "src",
-                "to": "src"
-            }),
-        )
-        .unwrap_err();
-        assert!(same_err.contains("自身"));
-
-        let child_err = copy_path(
-            &workspace,
-            &json!({
-                "from": "src",
-                "to": "src/backup"
-            }),
-        )
-        .unwrap_err();
-        assert!(child_err.contains("自身"));
-        assert!(!source.join("backup").exists());
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn glob_files_rejects_path_like_patterns() {
         let root = std::env::temp_dir().join(format!("kivio_glob_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).expect("mkdir");
@@ -2049,33 +1868,6 @@ mod tests {
         .unwrap_err();
         assert!(parent_err.contains(".."));
 
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn delete_path_removes_project_symlink_without_following_target() {
-        let root = std::env::temp_dir().join(format!("kivio_link_root_{}", uuid::Uuid::new_v4()));
-        let outside =
-            std::env::temp_dir().join(format!("kivio_link_target_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).expect("mkdir root");
-        fs::write(&outside, "outside").expect("write outside");
-        let link = root.join("outside-link.txt");
-        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
-        let workspace = NativeToolWorkspace::project(
-            "proj_test".to_string(),
-            "Test".to_string(),
-            Some(root.to_string_lossy().into_owned()),
-        );
-
-        let result = delete_path(&workspace, &json!({ "path": "outside-link.txt" }))
-            .expect("delete symlink");
-
-        assert!(result.contains("outside-link.txt"));
-        assert!(!link.exists());
-        assert!(outside.exists());
-
-        let _ = fs::remove_file(outside);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2159,46 +1951,6 @@ mod tests {
         assert_eq!(removed_lines, 2);
         assert_eq!(added_lines, 2);
 
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn move_path_moves_project_symlink_without_following_target() {
-        let root =
-            std::env::temp_dir().join(format!("kivio_move_link_root_{}", uuid::Uuid::new_v4()));
-        let outside =
-            std::env::temp_dir().join(format!("kivio_move_link_target_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).expect("mkdir root");
-        fs::write(&outside, "outside").expect("write outside");
-        let link = root.join("outside-link.txt");
-        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
-        let workspace = NativeToolWorkspace::project(
-            "proj_test".to_string(),
-            "Test".to_string(),
-            Some(root.to_string_lossy().into_owned()),
-        );
-
-        let result = move_path(
-            &workspace,
-            &json!({
-                "from": "outside-link.txt",
-                "to": "moved-link.txt"
-            }),
-        )
-        .expect("move symlink");
-
-        assert!(result.contains("moved-link.txt"));
-        assert!(!link.exists() && fs::symlink_metadata(&link).is_err());
-        let moved = root.join("moved-link.txt");
-        let metadata = fs::symlink_metadata(&moved).expect("moved metadata");
-        assert!(metadata.file_type().is_symlink());
-        assert_eq!(
-            fs::read_to_string(&outside).expect("read outside"),
-            "outside"
-        );
-
-        let _ = fs::remove_file(outside);
         let _ = fs::remove_dir_all(root);
     }
 }

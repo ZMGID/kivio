@@ -42,11 +42,10 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             system_prompt: "You are a research sub-agent. Investigate thoroughly using read-only tools, then return a concise, well-organized synthesis of your findings with concrete references. Do not attempt to modify files or run commands.".to_string(),
             model: None,
             tools: vec![
-                "read_file".to_string(),
-                "list_dir".to_string(),
-                "search_files".to_string(),
-                "glob_files".to_string(),
-                "stat_path".to_string(),
+                "read".to_string(),
+                "ls".to_string(),
+                "grep".to_string(),
+                "find".to_string(),
                 "web_search".to_string(),
                 "web_fetch".to_string(),
             ],
@@ -59,13 +58,12 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             system_prompt: "You are a coding sub-agent. Implement the requested change precisely. Read the relevant files first, make targeted edits, and report exactly what you changed. Keep the change scoped to the task you were given.".to_string(),
             model: None,
             tools: vec![
-                "read_file".to_string(),
-                "list_dir".to_string(),
-                "search_files".to_string(),
-                "glob_files".to_string(),
-                "stat_path".to_string(),
-                "edit_file".to_string(),
-                "write_file".to_string(),
+                "read".to_string(),
+                "ls".to_string(),
+                "grep".to_string(),
+                "find".to_string(),
+                "edit".to_string(),
+                "write".to_string(),
             ],
             source: "builtin".to_string(),
         },
@@ -76,11 +74,10 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             system_prompt: "You are a code-review sub-agent. Inspect the relevant code using read-only tools and report concrete findings: bugs, risks, and concise improvement suggestions with file references. Do not modify files.".to_string(),
             model: None,
             tools: vec![
-                "read_file".to_string(),
-                "list_dir".to_string(),
-                "search_files".to_string(),
-                "glob_files".to_string(),
-                "stat_path".to_string(),
+                "read".to_string(),
+                "ls".to_string(),
+                "grep".to_string(),
+                "find".to_string(),
             ],
             source: "builtin".to_string(),
         },
@@ -113,9 +110,9 @@ mod tests {
     fn researcher_is_read_only_set() {
         let defs = builtin_agent_definitions();
         let r = defs.iter().find(|d| d.id == "researcher").unwrap();
-        assert!(r.tools.contains(&"read_file".to_string()));
+        assert!(r.tools.contains(&"read".to_string()));
         assert!(r.tools.contains(&"web_search".to_string()));
-        assert!(!r.tools.contains(&"write_file".to_string()));
-        assert!(!r.tools.contains(&"edit_file".to_string()));
+        assert!(!r.tools.contains(&"write".to_string()));
+        assert!(!r.tools.contains(&"edit".to_string()));
     }
 }

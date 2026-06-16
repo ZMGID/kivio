@@ -3362,7 +3362,7 @@ fn apply_inline_code_request_tool_filter(
     if !should_answer_inline_without_file_write(last_user_api_content) {
         return;
     }
-    tools.retain(|tool| !(tool.source == "native" && tool.name == "write_file"));
+    tools.retain(|tool| !(tool.source == "native" && tool.name == "write"));
 }
 
 fn should_answer_inline_without_file_write(last_user_api_content: Option<&str>) -> bool {
@@ -4220,7 +4220,7 @@ fn format_tool_approval_summary(record: &ToolCallRecord) -> String {
     let parsed = serde_json::from_str::<Value>(&record.arguments).ok();
     let mut lines = Vec::new();
     match record.name.as_str() {
-        "run_command" => {
+        "bash" => {
             if let Some(command) = parsed
                 .as_ref()
                 .and_then(|value| value.get("command"))
@@ -4240,7 +4240,7 @@ fn format_tool_approval_summary(record: &ToolCallRecord) -> String {
                 lines.push(format!("Working directory: {cwd}"));
             }
         }
-        "write_file" | "edit_file" | "read_file" => {
+        "write" | "edit" | "read" => {
             if let Some(path) = parsed
                 .as_ref()
                 .and_then(|value| value.get("path"))
@@ -4250,7 +4250,7 @@ fn format_tool_approval_summary(record: &ToolCallRecord) -> String {
             {
                 lines.push(format!("Path: {path}"));
             }
-            if record.name == "edit_file" {
+            if record.name == "edit" {
                 if let Some(old) = parsed
                     .as_ref()
                     .and_then(|value| value.get("old_string").or_else(|| value.get("old")))
@@ -4743,9 +4743,9 @@ mod tests {
             Some("生成一个完整的 HTML demo，用 ```html 代码块包起来。"),
         );
 
-        assert!(tools.iter().any(|tool| tool.name == "read_file"));
-        assert!(!tools.iter().any(|tool| tool.name == "write_file"));
-        assert!(tools.iter().any(|tool| tool.name == "edit_file"));
+        assert!(tools.iter().any(|tool| tool.name == "read"));
+        assert!(!tools.iter().any(|tool| tool.name == "write"));
+        assert!(tools.iter().any(|tool| tool.name == "edit"));
     }
 
     #[test]
@@ -4757,7 +4757,7 @@ mod tests {
 
         apply_inline_code_request_tool_filter(&mut tools, Some("生成一个完整的 HTML demo"));
 
-        assert!(tools.iter().any(|tool| tool.name == "write_file"));
+        assert!(tools.iter().any(|tool| tool.name == "write"));
     }
 
     #[test]
@@ -4769,7 +4769,7 @@ mod tests {
 
         apply_inline_code_request_tool_filter(&mut tools, Some("把完整 HTML 放到代码块里给我"));
 
-        assert!(!tools.iter().any(|tool| tool.name == "write_file"));
+        assert!(!tools.iter().any(|tool| tool.name == "write"));
     }
 
     #[test]
@@ -4785,8 +4785,8 @@ mod tests {
             Some("生成一个完整的 HTML demo，保存为 ~/news-demo.html。"),
         );
 
-        assert!(tools.iter().any(|tool| tool.name == "write_file"));
-        assert!(tools.iter().any(|tool| tool.name == "edit_file"));
+        assert!(tools.iter().any(|tool| tool.name == "write"));
+        assert!(tools.iter().any(|tool| tool.name == "edit"));
     }
 
     #[test]
@@ -4843,7 +4843,7 @@ mod tests {
             .iter()
             .map(|tool| tool.openai_tool_name())
             .collect::<Vec<_>>();
-        assert!(names.contains(&"read_file".to_string()));
+        assert!(names.contains(&"read".to_string()));
         assert!(names.contains(&"memory_read".to_string()));
         assert!(names.contains(&"skill_activate".to_string()));
         assert!(names.contains(&"skill_read_file".to_string()));
@@ -4851,15 +4851,15 @@ mod tests {
         assert!(names.contains(&"todo_write".to_string()));
         assert!(names.contains(&"todo_update".to_string()));
         assert!(names.contains(&"mcp__docs__search".to_string()));
-        assert!(!names.contains(&"write_file".to_string()));
-        assert!(!names.contains(&"run_command".to_string()));
+        assert!(!names.contains(&"write".to_string()));
+        assert!(!names.contains(&"bash".to_string()));
         assert!(!names.contains(&"run_python".to_string()));
         assert!(!names.contains(&"memory_modify".to_string()));
         assert!(!names.contains(&"mixer_generate_image".to_string()));
         assert!(!names.contains(&"skill_run_script".to_string()));
         assert!(!names.contains(&"mcp__fs__write".to_string()));
-        assert!(blocked_names.contains(&"write_file".to_string()));
-        assert!(blocked_names.contains(&"run_command".to_string()));
+        assert!(blocked_names.contains(&"write".to_string()));
+        assert!(blocked_names.contains(&"bash".to_string()));
         assert!(blocked_names.contains(&"run_python".to_string()));
         assert!(blocked_names.contains(&"memory_modify".to_string()));
         assert!(blocked_names.contains(&"mixer_generate_image".to_string()));
@@ -4877,9 +4877,9 @@ mod tests {
 
         let blocked = apply_agent_plan_tool_filter(&mut tools, false);
 
-        assert!(tools.iter().any(|tool| tool.name == "read_file"));
-        assert!(tools.iter().any(|tool| tool.name == "write_file"));
-        assert!(tools.iter().any(|tool| tool.name == "run_command"));
+        assert!(tools.iter().any(|tool| tool.name == "read"));
+        assert!(tools.iter().any(|tool| tool.name == "write"));
+        assert!(tools.iter().any(|tool| tool.name == "bash"));
         assert!(blocked.is_empty());
     }
 
@@ -4969,7 +4969,7 @@ mod tests {
     fn format_tool_approval_summary_highlights_run_command() {
         let record = ToolCallRecord {
             id: "call_1".to_string(),
-            name: "run_command".to_string(),
+            name: "bash".to_string(),
             source: "native".to_string(),
             server_id: None,
             arguments: r#"{"command":"npm test","cwd":"/tmp/project"}"#.to_string(),
@@ -4997,7 +4997,7 @@ mod tests {
     fn format_tool_approval_summary_highlights_file_path() {
         let record = ToolCallRecord {
             id: "call_1".to_string(),
-            name: "write_file".to_string(),
+            name: "write".to_string(),
             source: "native".to_string(),
             server_id: None,
             arguments: r#"{"path":"/tmp/project/out.txt","content":"hello"}"#.to_string(),

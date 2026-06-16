@@ -303,8 +303,8 @@ pub fn native_skill_tools() -> Vec<ChatToolDefinition> {
 pub fn native_read_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__read_file".to_string(),
-        name: "read_file".to_string(),
-        description: "Read a local text file. Output is line-numbered as `N<TAB>line` for easy reference; the numbers are display-only and are NOT part of the file — never include them in edit_file old_string. Optional offset/limit select a 1-based line window — use them for large files; the result reports total_lines and next_offset so you can continue reading.".to_string(),
+        name: "read".to_string(),
+        description: "Read a local text file. Output is line-numbered as `N<TAB>line` for easy reference; the numbers are display-only and are NOT part of the file — never include them in edit old_string. Optional offset/limit select a 1-based line window — use them for large files; the result reports total_lines and next_offset so you can continue reading.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -326,7 +326,7 @@ pub fn native_read_file_tool() -> ChatToolDefinition {
 pub fn native_list_dir_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__list_dir".to_string(),
-        name: "list_dir".to_string(),
+        name: "ls".to_string(),
         description: "List files and directories. In a project conversation, paths are project-relative by default and cannot escape the project root.".to_string(),
         source: "native".to_string(),
         server_id: None,
@@ -348,7 +348,7 @@ pub fn native_list_dir_tool() -> ChatToolDefinition {
 pub fn native_search_files_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__search_files".to_string(),
-        name: "search_files".to_string(),
+        name: "grep".to_string(),
         description: "Search text files under a directory. By default `query` is a literal substring; set regex=true to treat it as a regular expression. In project conversations this is scoped to the project root and skips common dependency/build folders.".to_string(),
         source: "native".to_string(),
         server_id: None,
@@ -377,7 +377,7 @@ pub fn native_search_files_tool() -> ChatToolDefinition {
 pub fn native_glob_files_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__glob_files".to_string(),
-        name: "glob_files".to_string(),
+        name: "find".to_string(),
         description: "Find files/directories by glob pattern such as \"src/**/*.tsx\". In project conversations this is scoped to the project root.".to_string(),
         source: "native".to_string(),
         server_id: None,
@@ -398,32 +398,11 @@ pub fn native_glob_files_tool() -> ChatToolDefinition {
     }
 }
 
-pub fn native_stat_path_tool() -> ChatToolDefinition {
-    ChatToolDefinition {
-        id: "native__stat_path".to_string(),
-        name: "stat_path".to_string(),
-        description: "Return metadata for a file or directory. In project conversations this is scoped to the project root.".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "File or directory path" }
-            },
-            "required": ["path"]
-        }),
-        sensitive: false,
-        annotations: None,
-        output_schema: None,
-    }
-}
-
 pub fn native_write_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__write_file".to_string(),
-        name: "write_file".to_string(),
-        description: "Write a full text file: create it if missing, overwrite it if it exists. Use this when the user explicitly asks to save/write/create a local file or gives a target path; for small changes to an existing file prefer edit_file. Do not call it just because the user asked for a code block or inline code — answer directly instead. Returns structured file mutation metadata including diff stats.".to_string(),
+        name: "write".to_string(),
+        description: "Write a full text file: create it if missing, overwrite it if it exists. Use this when the user explicitly asks to save/write/create a local file or gives a target path; for small changes to an existing file prefer edit. Do not call it just because the user asked for a code block or inline code — answer directly instead. Returns structured file mutation metadata including diff stats.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -444,8 +423,8 @@ pub fn native_write_file_tool() -> ChatToolDefinition {
 pub fn native_edit_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__edit_file".to_string(),
-        name: "edit_file".to_string(),
-        description: "Replace old_string with new_string in one file. old_string must match the current file content exactly and uniquely (copy it from read_file output WITHOUT the leading line-number prefix); set replace_all=true to replace every occurrence. Prefer this over write_file for small edits. Returns structured file mutation metadata including diff stats.".to_string(),
+        name: "edit".to_string(),
+        description: "Replace old_string with new_string in one file. old_string must match the current file content exactly and uniquely (copy it from read output WITHOUT the leading line-number prefix); set replace_all=true to replace every occurrence. Prefer this over write for small edits. Returns structured file mutation metadata including diff stats.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -465,97 +444,10 @@ pub fn native_edit_file_tool() -> ChatToolDefinition {
     }
 }
 
-pub fn native_create_dir_tool() -> ChatToolDefinition {
-    ChatToolDefinition {
-        id: "native__create_dir".to_string(),
-        name: "create_dir".to_string(),
-        description: "Create a directory, including missing parents. In project conversations the path is project-relative by default and cannot escape the project root.".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "Directory path to create" }
-            },
-            "required": ["path"]
-        }),
-        sensitive: true,
-        annotations: None,
-        output_schema: None,
-    }
-}
-
-pub fn native_delete_path_tool() -> ChatToolDefinition {
-    ChatToolDefinition {
-        id: "native__delete_path".to_string(),
-        name: "delete_path".to_string(),
-        description: "Delete a file or empty directory; set recursive=true to delete a non-empty directory. In project conversations the path cannot escape the project root and the project root itself cannot be deleted.".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "File or directory path to delete" },
-                "recursive": { "type": "boolean", "description": "Delete non-empty directories recursively" }
-            },
-            "required": ["path"]
-        }),
-        sensitive: true,
-        annotations: None,
-        output_schema: None,
-    }
-}
-
-pub fn native_move_path_tool() -> ChatToolDefinition {
-    ChatToolDefinition {
-        id: "native__move_path".to_string(),
-        name: "move_path".to_string(),
-        description: "Move or rename a file/directory. In project conversations both paths are project-relative by default and cannot escape the project root.".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "from": { "type": "string", "description": "Source path" },
-                "to": { "type": "string", "description": "Destination path" }
-            },
-            "required": ["from", "to"]
-        }),
-        sensitive: true,
-        annotations: None,
-        output_schema: None,
-    }
-}
-
-pub fn native_copy_path_tool() -> ChatToolDefinition {
-    ChatToolDefinition {
-        id: "native__copy_path".to_string(),
-        name: "copy_path".to_string(),
-        description: "Copy a file or directory. In project conversations both paths are project-relative by default and cannot escape the project root.".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "from": { "type": "string", "description": "Source path" },
-                "to": { "type": "string", "description": "Destination path" }
-            },
-            "required": ["from", "to"]
-        }),
-        sensitive: true,
-        annotations: None,
-        output_schema: None,
-    }
-}
-
 pub fn native_run_command_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__run_command".to_string(),
-        name: "run_command".to_string(),
+        name: "bash".to_string(),
         description: "Run a host shell command (build, test, etc.). In a project conversation, the command starts from the bound project root by default; any explicit cwd is only a startup directory and is validated as workspace-local. Do not use `cd path && command` when the path contains spaces—pass `cwd` and run only the remaining command. Do not combine `cwd` with a leading `cd ... &&` prefix. Long-running dev servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a pid. This is a sensitive host-shell capability, not the same boundary as the file tools: obey user constraints and explain or seek confirmation before cross-directory, destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Do not use this to run Skill scripts; use skill_run_script for bundled Skill scripts. Do not use pip to bypass run_python sandbox failures; host Python package installs require an explicit user request and allow_host_python_package_install=true.".to_string(),
         source: "native".to_string(),
         server_id: None,
@@ -907,7 +799,7 @@ mod tests {
 
         assert!(tool.description.contains("explicitly asks"));
         assert!(tool.description.contains("code block"));
-        assert!(tool.description.contains("prefer edit_file"));
+        assert!(tool.description.contains("prefer edit"));
         assert!(tool
             .description
             .contains("structured file mutation metadata"));
@@ -933,23 +825,20 @@ mod tests {
     fn write_gate_exposes_exactly_whole_file_and_path_tools() {
         let mut native = crate::settings::ChatNativeToolsConfig::default();
         let defs = list_native_builtin_tool_defs(&native, false, false);
-        assert!(defs.is_empty() || !defs.iter().any(|tool| tool.name == "write_file"));
+        assert!(defs.is_empty() || !defs.iter().any(|tool| tool.name == "write"));
 
         native.write_file = true;
         native.edit_file = true;
         let defs = list_native_builtin_tool_defs(&native, false, false);
         let names: Vec<&str> = defs.iter().map(|tool| tool.name.as_str()).collect();
-        for expected in [
-            "write_file",
+        for expected in ["write", "edit"] {
+            assert!(names.contains(&expected), "{expected} should be exposed");
+        }
+        for removed in [
             "create_dir",
             "delete_path",
             "move_path",
             "copy_path",
-            "edit_file",
-        ] {
-            assert!(names.contains(&expected), "{expected} should be exposed");
-        }
-        for removed in [
             "patch",
             "write_file_chunk",
             "begin_file_write",

@@ -503,11 +503,13 @@ function normalizeFileWriteSession(value: unknown): FileWriteSession | null {
   }
 }
 
-// Names beyond write_file/edit_file are legacy-only: the chunked-write session
-// protocol and patch tool were removed in 2.6.9, but persisted conversations
-// still carry their ToolCallRecords and must keep rendering.
+// `write`/`edit` are the current Pi-style names. `write_file`/`edit_file` and
+// the chunked-write session protocol + patch tool are legacy-only: persisted
+// conversations still carry their ToolCallRecords and must keep rendering.
 function isFileMutationTool(rawName: string): boolean {
   return [
+    'write',
+    'edit',
     'write_file',
     'write_file_chunk',
     'begin_file_write',
@@ -748,7 +750,7 @@ function extractPatchArgumentFiles(patch: string): string[] {
 function fileToolArgumentPreview(toolCall: ToolCallRecord, args: Record<string, unknown> | null): string {
   const rawName = toolRawName(toolCall)
   const path = typeof args?.path === 'string' ? args.path.trim() : ''
-  if (rawName === 'write_file') {
+  if (rawName === 'write' || rawName === 'write_file') {
     return path ? path : '写入文件'
   }
   // Branches below for write_file_chunk/begin/append/finish/abort_file_write and
@@ -773,7 +775,7 @@ function fileToolArgumentPreview(toolCall: ToolCallRecord, args: Record<string, 
     const sessionId = typeof args?.session_id === 'string' ? args.session_id.trim() : ''
     return sessionId ? `${sessionId} · 取消草稿` : '取消文件草稿'
   }
-  if (rawName === 'edit_file') {
+  if (rawName === 'edit' || rawName === 'edit_file') {
     const oldString = typeof args?.old_string === 'string' ? compactText(args.old_string, 80) : ''
     return [path, oldString ? `替换 ${oldString}` : ''].filter(Boolean).join(' · ')
   }
@@ -826,18 +828,27 @@ function getToolName(toolCall: ToolCallRecord): string {
     return '生成 PDF 摘要上下文'
   }
   if (raw === 'skill_run_script') return '执行 Skill 脚本'
-  if (raw === 'read_file') return hasOffset ? '读取文件片段' : '读取文件'
-  if (raw === 'write_file') return '写入文件'
-  // Legacy labels: tools removed in 2.6.9, kept for rendering old conversations.
+  if (raw === 'read' || raw === 'read_file') return hasOffset ? '读取文件片段' : '读取文件'
+  if (raw === 'write' || raw === 'write_file') return '写入文件'
+  if (raw === 'edit' || raw === 'edit_file') return '编辑文件'
+  if (raw === 'grep' || raw === 'search_files') return '搜索文件'
+  if (raw === 'find' || raw === 'glob_files') return '查找文件'
+  if (raw === 'ls' || raw === 'list_dir') return '列出目录'
+  // Legacy labels: tools renamed to Pi-style short names / removed, kept for
+  // rendering persisted conversations.
+  if (raw === 'stat_path') return '查看文件信息'
+  if (raw === 'create_dir') return '创建目录'
+  if (raw === 'delete_path') return '删除'
+  if (raw === 'move_path') return '移动'
+  if (raw === 'copy_path') return '复制'
   if (raw === 'write_file_chunk') return '分块写入文件'
   if (raw === 'begin_file_write') return '准备文件草稿'
   if (raw === 'append_file_write') return '写入草稿分段'
   if (raw === 'finish_file_write') return '提交文件草稿'
   if (raw === 'abort_file_write') return '取消文件草稿'
-  if (raw === 'edit_file') return '编辑文件'
   if (raw === 'patch') return '应用补丁'
-  if (raw === 'run_command' && /\bpdftotext\b/.test(command)) return '提取 PDF 文本'
-  if (raw === 'run_command') return '终端命令'
+  if ((raw === 'bash' || raw === 'run_command') && /\bpdftotext\b/.test(command)) return '提取 PDF 文本'
+  if (raw === 'bash' || raw === 'run_command') return '终端命令'
   if (raw === 'run_python') return 'Python'
   if (raw === 'web_search') return '联网搜索'
   if (raw === 'web_fetch') return '网页抓取'
@@ -957,10 +968,10 @@ function getRunningPreview(toolCall: ToolCallRecord): string {
   if (raw === 'run_python') {
     return '正在加载 Python 环境…'
   }
-  if (raw === 'write_file') {
+  if (raw === 'write' || raw === 'write_file') {
     return '正在写入文件…'
   }
-  if (raw === 'edit_file') {
+  if (raw === 'edit' || raw === 'edit_file') {
     return '正在应用文件变更…'
   }
   if (raw === 'mixer_vision') {
