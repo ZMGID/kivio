@@ -12,8 +12,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::{
-    assert_writable_path, resolve_tool_read_path, resolve_tool_write_path, workspace_display_path,
-    NativeToolWorkspace, MAX_READ_FILE_BYTES,
+    resolve_tool_read_path, resolve_tool_write_path, workspace_display_path, NativeToolWorkspace,
+    MAX_READ_FILE_BYTES,
 };
 
 const MAX_LIST_ENTRIES: usize = 500;
@@ -262,9 +262,6 @@ pub fn write_file(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "write_file requires content".to_string())?;
     let full = resolve_tool_write_path(workspace, path)?;
-    if !workspace.has_project() {
-        assert_writable_path(&full)?;
-    }
     let _guard = acquire_file_mutation_locks([full.clone()])?;
     let existed = full.is_file();
     // Placeholder phrases ("rest of file unchanged", "省略") are a real hazard
@@ -326,9 +323,6 @@ pub fn edit_file(
         .unwrap_or(false);
 
     let full = resolve_tool_write_path(workspace, path)?;
-    if !workspace.has_project() {
-        assert_writable_path(&full)?;
-    }
     let _guard = acquire_file_mutation_locks([full.clone()])?;
     if !full.is_file() {
         return Err(format!("不是可编辑的文件: {path}"));
@@ -1796,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn project_workspace_allows_explicit_home_write_outside_root() {
+    fn project_workspace_no_boundary_writes_anywhere() {
         let root = std::env::temp_dir().join(format!("kivio_project_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).expect("mkdir");
         let workspace = NativeToolWorkspace::project(
@@ -1805,7 +1799,7 @@ mod tests {
             Some(root.to_string_lossy().into_owned()),
         );
 
-        // Explicit home path escapes the project via global write rules.
+        // No-boundary: an explicit absolute path outside the project writes fine.
         let home = super::super::user_home_dir().expect("home");
         let dir = home.join(format!(".kivio_escape_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("mkdir home target");
@@ -1820,21 +1814,18 @@ mod tests {
             "<html></html>"
         );
 
-        // Relative paths still cannot escape, and blocked dirs stay blocked.
-        let err = write_file(
+        // No-boundary: a relative `..` path now escapes the project root instead
+        // of being rejected (it resolves against the parent of the root).
+        let escape_name = format!("kivio_escape_{}.txt", uuid::Uuid::new_v4());
+        write_file(
             &workspace,
-            &json!({ "path": "../escape.txt", "content": "x" }),
+            &json!({ "path": format!("../{escape_name}"), "content": "x" }),
         )
-        .unwrap_err();
-        assert!(err.contains(".."));
-        let blocked = home.join(".ssh/kivio_test_blocked.txt");
-        let err = write_file(
-            &workspace,
-            &json!({ "path": blocked.to_string_lossy(), "content": "x" }),
-        )
-        .unwrap_err();
-        assert!(err.contains(".ssh"));
+        .expect("relative `..` write is allowed under no-boundary");
+        let escaped = root.parent().expect("root parent").join(&escape_name);
+        assert_eq!(fs::read_to_string(&escaped).expect("read escaped"), "x");
 
+        let _ = fs::remove_file(&escaped);
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(root);
     }

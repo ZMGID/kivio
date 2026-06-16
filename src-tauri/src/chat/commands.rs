@@ -944,6 +944,24 @@ pub(crate) fn chat_confirm_tool_call(
     Ok(())
 }
 
+/// 响应会话级文件/命令工具授权请求(按 conversation_id)。
+#[tauri::command]
+pub(crate) fn chat_respond_session_consent(
+    state: State<AppState>,
+    conversation_id: String,
+    granted: bool,
+) -> Result<(), String> {
+    let sender = state
+        .pending_chat_session_consents
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&conversation_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(granted);
+    }
+    Ok(())
+}
+
 /// 回答 ask_user 澄清卡片。
 #[tauri::command]
 pub(crate) fn chat_submit_user_choice(
@@ -3757,6 +3775,23 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         })
     }
 
+    fn request_session_consent<'a>(
+        &'a self,
+        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+    ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
+        Box::pin(async move {
+            request_session_consent(
+                &self.app,
+                self.state,
+                ctx.tool_conversation_id,
+                ctx.run_id,
+                ctx.message_id,
+                ctx.generation,
+            )
+            .await
+        })
+    }
+
     fn request_user_response<'a>(
         &'a self,
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
@@ -3964,6 +3999,62 @@ fn looks_like_inline_image_base64(value: &str) -> bool {
         || value.starts_with("UklGR")
         || value.starts_with("PHN2Zy")
         || value.starts_with("PD94bWwg")
+}
+
+async fn request_session_consent(
+    app: &AppHandle,
+    state: &AppState,
+    conversation_id: &str,
+    run_id: &str,
+    message_id: &str,
+    generation: u64,
+) -> bool {
+    // Already granted for this conversation — no prompt.
+    if state.has_chat_consent(conversation_id) {
+        return true;
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut pending = state
+            .pending_chat_session_consents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Only one outstanding consent prompt per conversation.
+        pending.insert(conversation_id.to_string(), tx);
+    }
+    let _ = app.emit(
+        "chat-session-consent",
+        serde_json::json!({
+            "conversationId": conversation_id,
+            "runId": run_id,
+            "messageId": message_id,
+        }),
+    );
+    let result = tokio::select! {
+        result = timeout(Duration::from_secs(60), rx) => result,
+        _ = wait_for_chat_cancel(state, conversation_id, generation) => {
+            state
+                .pending_chat_session_consents
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(conversation_id);
+            return false;
+        }
+    };
+    match result {
+        Ok(Ok(true)) => {
+            state.grant_chat_consent(conversation_id);
+            true
+        }
+        _ => {
+            state
+                .pending_chat_session_consents
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(conversation_id);
+            false
+        }
+    }
 }
 
 async fn request_tool_approval(

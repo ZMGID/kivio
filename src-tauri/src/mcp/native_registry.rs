@@ -306,6 +306,15 @@ pub fn find_entry(name: &str) -> Option<&'static NativeToolEntry> {
     NATIVE_TOOLS.iter().find(|entry| entry.name == name)
 }
 
+/// The native file/shell tools (Pi's 7) are gated by a single one-time
+/// per-conversation **session consent** prompt — granting one authorizes
+/// full-disk read/write and arbitrary command execution for the rest of that
+/// conversation. Everything else (web/python/memory/todo/sub-agent/...) keeps
+/// its own gating and is NOT behind this consent.
+pub fn native_tool_requires_session_consent(name: &str) -> bool {
+    matches!(name, "read" | "write" | "edit" | "bash" | "grep" | "find" | "ls")
+}
+
 pub(super) fn text_tool_result(content: String) -> McpToolCallResult {
     McpToolCallResult {
         content,

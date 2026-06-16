@@ -57,6 +57,17 @@ pub trait AgentHost: Send + Sync {
         record: &'a ToolCallRecord,
     ) -> AgentHostFuture<'a, bool>;
 
+    /// Ask the user once per conversation to authorize the file/shell tool
+    /// family (full-disk read/write + command execution). Hosts that can prompt
+    /// (the chat window) surface a consent dialog and cache the grant; hosts
+    /// that cannot (sub-agents) deny. Default denies — a host must opt in.
+    fn request_session_consent<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+    ) -> AgentHostFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+
     fn request_user_response<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,

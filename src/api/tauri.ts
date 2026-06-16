@@ -299,6 +299,12 @@ export type ChatToolConfirmPayload = {
   sensitivity?: string
 }
 
+export type ChatSessionConsentPayload = {
+  conversationId: string
+  runId: string
+  messageId?: string
+}
+
 export type ChatToolDefinition = {
   id: string
   name: string
@@ -1114,6 +1120,10 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<ChatToolConfirmPayload>('chat-tool-confirm', (payload) => listener(payload))
   },
+  onChatSessionConsent: (listener: (payload: ChatSessionConsentPayload) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<ChatSessionConsentPayload>('chat-session-consent', (payload) => listener(payload))
+  },
   onChatOpenConversation: (listener: (payload: { conversationId: string; reload?: boolean | null; error?: string | null }) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<{ conversationId: string; reload?: boolean | null; error?: string | null }>('chat-open-conversation', (payload) => listener(payload))
@@ -1185,6 +1195,8 @@ export const api = {
     invoke<void>('chat_cancel_stream', { conversationId }),
   chatConfirmToolCall: (toolCallId: string, approved: boolean) =>
     invoke<void>('chat_confirm_tool_call', { toolCallId, approved }),
+  chatRespondSessionConsent: (conversationId: string, granted: boolean) =>
+    invoke<void>('chat_respond_session_consent', { conversationId, granted }),
   chatSubmitUserChoice: (
     toolCallId: string,
     answers: Record<string, AskUserAnswer>,

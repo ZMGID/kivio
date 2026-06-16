@@ -160,6 +160,13 @@
             Box::pin(async { true })
         }
 
+        fn request_session_consent<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+        ) -> super::super::host::AgentHostFuture<'a, bool> {
+            Box::pin(async { true })
+        }
+
         fn request_user_response<'a>(
             &'a self,
             _ctx: &'a ToolExecutionContext<'a>,
@@ -458,6 +465,8 @@
             chat_stream_generations: Mutex::new(std::collections::HashMap::new()),
             chat_active_replies: Mutex::new(std::collections::HashSet::new()),
             pending_chat_tool_approvals: Mutex::new(std::collections::HashMap::new()),
+            chat_session_consent: Mutex::new(std::collections::HashSet::new()),
+            pending_chat_session_consents: Mutex::new(std::collections::HashMap::new()),
             pending_chat_user_prompts: Mutex::new(std::collections::HashMap::new()),
             pending_python_runs: Mutex::new(std::collections::HashMap::new()),
             chat_create_conversation_lock: Mutex::new(()),

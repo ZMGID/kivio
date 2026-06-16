@@ -3009,28 +3009,28 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 <SettingsGroup title={lang === 'zh' ? 'Kivio 内置工具' : 'Kivio built-in tools'}>
                   <p className="kv-row-desc mb-2">
                     {lang === 'zh'
-                      ? 'Chat 原生工具。read 可读取 Kivio 能访问的本地文本文件；写入和编辑仍限制在用户主目录内，终端命令可在任意已存在目录中运行并会请求确认。'
-                      : 'Native Chat tools. read can read local text files Kivio can access; write and edit stay limited to the user home, while shell commands can run in any existing directory with approval.'}
+                      ? 'Chat 原生工具。启用后，本会话首次使用文件 / 命令工具时会请求一次授权；授权后 Kivio 可读写磁盘任意路径并执行终端命令（不再限制在主目录内，也不再逐次确认）。授权仅本次会话有效，重启后重新请求。'
+                      : 'Native Chat tools. When first used in a conversation, file/command tools ask for one-time consent; once granted, Kivio can read/write anywhere on disk and run shell commands (no home-directory limit, no per-call prompts). Consent lasts for that conversation only and is re-requested after restart.'}
                   </p>
-                  <SettingRow label={lang === 'zh' ? '读取文件' : 'Read file'} description={lang === 'zh' ? 'read，无需确认' : 'read, no approval'}>
+                  <SettingRow label={lang === 'zh' ? '读取文件' : 'Read file'} description={lang === 'zh' ? 'read' : 'read'}>
                     <Toggle
                       checked={chatTools.nativeTools?.readFile === true}
                       onChange={(readFile) => updateNativeTools({ readFile })}
                     />
                   </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '写入文件' : 'Write file'} description={lang === 'zh' ? 'write，需确认' : 'write, approval required'}>
+                  <SettingRow label={lang === 'zh' ? '写入文件' : 'Write file'} description={lang === 'zh' ? 'write' : 'write'}>
                     <Toggle
                       checked={chatTools.nativeTools?.writeFile === true}
                       onChange={(writeFile) => updateNativeTools({ writeFile })}
                     />
                   </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '编辑文件' : 'Edit file'} description={lang === 'zh' ? 'edit，需确认' : 'edit, approval required'}>
+                  <SettingRow label={lang === 'zh' ? '编辑文件' : 'Edit file'} description={lang === 'zh' ? 'edit' : 'edit'}>
                     <Toggle
                       checked={chatTools.nativeTools?.editFile === true}
                       onChange={(editFile) => updateNativeTools({ editFile })}
                     />
                   </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '终端命令' : 'Terminal command'} description={lang === 'zh' ? 'bash，需确认' : 'bash, approval required'}>
+                  <SettingRow label={lang === 'zh' ? '终端命令' : 'Terminal command'} description={lang === 'zh' ? 'bash' : 'bash'}>
                     <Toggle
                       checked={chatTools.nativeTools?.runCommand === true}
                       onChange={(runCommand) => updateNativeTools({ runCommand })}
@@ -3193,7 +3193,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     <div className="flex h-full flex-col">
                       <div className="mb-2">
                         <div className="kv-row-label">{lang === 'zh' ? '审批策略' : 'Approval policy'}</div>
-                        <p className="kv-row-desc">{lang === 'zh' ? '控制工具调用是否需要人工确认。' : 'Controls whether tool calls require manual approval.'}</p>
+                        <p className="kv-row-desc">{lang === 'zh' ? '文件/命令工具的授权方式；MCP 工具仍按其只读/敏感属性逐次判定。' : 'How file/command tools are authorized; MCP tools still follow their read-only/sensitive hints per call.'}</p>
                       </div>
                       <div className="mt-auto">
                         <Select
@@ -3203,10 +3203,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                           options={[
                             {
                               value: 'readonly_auto_sensitive_confirm',
-                              label: lang === 'zh' ? '读类自动，敏感确认' : 'Read auto, sensitive confirm',
+                              label: lang === 'zh' ? '会话授权一次（推荐）' : 'Session consent (once)',
                             },
-                            { value: 'always_confirm', label: lang === 'zh' ? '每次确认' : 'Always confirm' },
-                            { value: 'auto', label: lang === 'zh' ? '全部自动' : 'Auto approve' },
+                            { value: 'always_confirm', label: lang === 'zh' ? '授权后仍逐次确认' : 'Confirm every call' },
+                            { value: 'auto', label: lang === 'zh' ? '全部自动（不弹授权）' : 'Auto (no prompt)' },
                           ]}
                         />
                       </div>

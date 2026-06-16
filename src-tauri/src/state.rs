@@ -67,6 +67,11 @@ pub struct AppState {
     pub chat_active_replies: Mutex<HashSet<String>>,
     /// 等待用户确认的敏感 Chat tool 调用。
     pub pending_chat_tool_approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    /// 本会话(conversation_id)已授予「文件/命令」工具的会话级授权集合。
+    /// 仅内存、不持久化:重启后重新授权(也是一道轻量安全属性)。
+    pub chat_session_consent: Mutex<HashSet<String>>,
+    /// 等待用户响应的会话级授权请求(按 conversation_id,同一会话同时至多一个)。
+    pub pending_chat_session_consents: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     /// 等待用户回答的 Chat ask_user 澄清卡片。
     pub pending_chat_user_prompts:
         Mutex<HashMap<String, crate::chat::ask_user::PendingAskUserPrompt>>,
@@ -212,6 +217,22 @@ impl AppState {
         generations.insert(conversation_id.to_string(), next);
     }
 
+    /// 该会话是否已授予文件/命令工具的会话级授权。
+    pub fn has_chat_consent(&self, conversation_id: &str) -> bool {
+        self.chat_session_consent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(conversation_id)
+    }
+
+    /// 记录该会话已授予文件/命令工具的会话级授权(本进程内有效)。
+    pub fn grant_chat_consent(&self, conversation_id: &str) {
+        self.chat_session_consent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(conversation_id.to_string());
+    }
+
     /// 判断指定 conversation 的 Chat 运行是否仍然有效。
     pub fn is_chat_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
         self.chat_stream_generations
@@ -306,6 +327,8 @@ pub(crate) fn test_app_state() -> AppState {
         chat_stream_generations: Mutex::new(HashMap::new()),
         chat_active_replies: Mutex::new(HashSet::new()),
         pending_chat_tool_approvals: Mutex::new(HashMap::new()),
+        chat_session_consent: Mutex::new(HashSet::new()),
+        pending_chat_session_consents: Mutex::new(HashMap::new()),
         pending_chat_user_prompts: Mutex::new(HashMap::new()),
         pending_python_runs: Mutex::new(HashMap::new()),
         chat_create_conversation_lock: Mutex::new(()),
@@ -418,5 +441,15 @@ mod tests {
         let result = st.pick_active_key("p", 2, &HashSet::new());
         assert!(result.is_some());
         assert!(result.unwrap() < 2);
+    }
+
+    #[test]
+    fn chat_session_consent_is_per_conversation() {
+        let st = test_state();
+        assert!(!st.has_chat_consent("conv-1"));
+        st.grant_chat_consent("conv-1");
+        assert!(st.has_chat_consent("conv-1"));
+        // Consent is scoped to a single conversation, not global.
+        assert!(!st.has_chat_consent("conv-2"));
     }
 }

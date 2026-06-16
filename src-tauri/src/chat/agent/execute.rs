@@ -160,13 +160,36 @@ pub async fn execute_tool_call(
         return execute_ask_user_call(host, settings, ctx, record, call.arguments.clone()).await;
     }
 
-    let requires_approval = tool_requires_approval(settings, tool);
-    if requires_approval {
+    // Gate. The file/shell tools (read/write/edit/bash/grep/find/ls) are
+    // governed by a single per-conversation **session consent**: prompt once,
+    // then run freely with full-disk access for the rest of the conversation.
+    // `approval_policy`: "auto" implicitly consents (no prompt); the default
+    // prompts once; "always_confirm" prompts once AND confirms each call.
+    // Everything else (MCP tools, etc.) keeps the existing per-call approval.
+    let skip = |record: &mut ToolCallRecord, reason: &str| {
+        record.status = ToolCallStatus::Skipped;
+        record.completed_at = Some(chrono::Local::now().timestamp());
+        record.error = Some(reason.to_string());
+    };
+
+    if super::prepare::tool_requires_session_consent(tool) {
+        let policy = settings.chat_tools.approval_policy.as_str();
+        if policy != "auto" && !host.request_session_consent(ctx).await {
+            skip(&mut record, "用户未授权本会话使用文件 / 命令工具");
+            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            let content = record.error.clone().unwrap_or_default();
+            return (record, content);
+        }
+        if policy == "always_confirm" && !host.request_tool_approval(ctx, &record).await {
+            skip(&mut record, "Tool call was not approved");
+            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            let content = record.error.clone().unwrap_or_default();
+            return (record, content);
+        }
+    } else if tool_requires_approval(settings, tool) {
         let approved = host.request_tool_approval(ctx, &record).await;
         if !approved {
-            record.status = ToolCallStatus::Skipped;
-            record.completed_at = Some(chrono::Local::now().timestamp());
-            record.error = Some("Tool call was not approved".to_string());
+            skip(&mut record, "Tool call was not approved");
             host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
             let content = record.error.clone().unwrap_or_default();
             return (record, content);
@@ -649,6 +672,8 @@ mod tests {
     #[derive(Default)]
     struct ExecuteTestHost {
         approvals: AtomicUsize,
+        consents: AtomicUsize,
+        deny_consent: bool,
         records: Mutex<Vec<ToolCallRecord>>,
     }
 
@@ -694,6 +719,15 @@ mod tests {
         ) -> AgentHostFuture<'a, bool> {
             self.approvals.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { true })
+        }
+
+        fn request_session_consent<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+        ) -> AgentHostFuture<'a, bool> {
+            self.consents.fetch_add(1, Ordering::SeqCst);
+            let granted = !self.deny_consent;
+            Box::pin(async move { granted })
         }
 
         fn request_user_response<'a>(
@@ -893,6 +927,68 @@ mod tests {
         // native 工具的 content 是为模型格式化的文本，不再追加整包 structuredContent
         // JSON（record/前端仍持有完整 structured_content）。MCP 契约见下一个测试。
         assert!(!content.contains("structuredContent"));
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn file_tool_skipped_when_session_consent_denied() {
+        let host = ExecuteTestHost {
+            deny_consent: true,
+            ..Default::default()
+        };
+        let executor = ExecuteTestExecutor::default();
+        let settings = Settings::default();
+        let tool = sensitive_test_tool(); // native "write" — consent-gated
+        let call = test_pending_call(
+            "call_write",
+            "write",
+            serde_json::json!({ "path": "/tmp/out.txt", "content": "hi" }),
+        );
+
+        let (record, _content) = execute_tool_call(
+            &host,
+            &executor,
+            &settings,
+            &test_execution_context(),
+            &tool,
+            call,
+            None,
+        )
+        .await;
+
+        assert!(matches!(record.status, ToolCallStatus::Skipped));
+        assert_eq!(host.consents.load(Ordering::SeqCst), 1);
+        // No per-call approval under default policy, and the tool never ran.
+        assert_eq!(host.approvals.load(Ordering::SeqCst), 0);
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn file_tool_uses_session_consent_not_per_call_approval() {
+        let host = ExecuteTestHost::default(); // grants consent
+        let executor = ExecuteTestExecutor::default();
+        let settings = Settings::default(); // default policy: consent, no per-call confirm
+        let tool = sensitive_test_tool();
+        let call = test_pending_call(
+            "call_write",
+            "write",
+            serde_json::json!({ "path": "/tmp/out.txt", "content": "hi" }),
+        );
+
+        let (record, _content) = execute_tool_call(
+            &host,
+            &executor,
+            &settings,
+            &test_execution_context(),
+            &tool,
+            call,
+            None,
+        )
+        .await;
+
+        assert!(matches!(record.status, ToolCallStatus::Success));
+        assert_eq!(host.consents.load(Ordering::SeqCst), 1);
+        assert_eq!(host.approvals.load(Ordering::SeqCst), 0);
         assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
     }
 

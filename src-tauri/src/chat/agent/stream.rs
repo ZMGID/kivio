@@ -696,6 +696,13 @@ mod tests {
             Box::pin(async { true })
         }
 
+        fn request_session_consent<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+        ) -> AgentHostFuture<'a, bool> {
+            Box::pin(async { true })
+        }
+
         fn request_user_response<'a>(
             &'a self,
             _ctx: &'a ToolExecutionContext<'a>,

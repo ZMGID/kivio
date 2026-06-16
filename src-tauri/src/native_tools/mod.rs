@@ -17,18 +17,10 @@ pub use shell::run_command;
 
 use std::{
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 pub const MAX_READ_FILE_BYTES: u64 = 2 * 1024 * 1024;
-
-/// Block writes/edits under these path segments (relative to home).
-const WRITE_BLOCKLIST_SEGMENTS: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    "Library/Keychains",
-    "Library/Application Support/Keychain",
-];
 
 #[derive(Debug, Clone)]
 pub struct ProjectWorkspaceContext {
@@ -82,44 +74,16 @@ pub fn user_home_dir() -> Result<PathBuf, String> {
     }
 }
 
+/// Resolve any path to an absolute, canonical form. No sandbox: absolute/`~`
+/// paths are taken as-is, relative paths are joined to the user home. Disk-wide
+/// access is gated by per-conversation session consent, not by path rules.
+/// `workspace_roots` is no longer a write boundary (kept for signature/back-compat).
 pub fn resolve_workspace_path(
     raw_path: &str,
-    workspace_roots: &[String],
+    _workspace_roots: &[String],
 ) -> Result<PathBuf, String> {
-    let home = user_home_dir()?;
-    let home_canon = fs_canonicalize_existing_or_self(&home)?;
     let candidate = candidate_path(raw_path)?;
-    let canonical = fs_canonicalize_existing_or_self(&candidate)?;
-    if !canonical.starts_with(&home_canon) {
-        return Err("路径不在允许范围内：只能访问用户主目录下的文件。".to_string());
-    }
-
-    if !workspace_roots.is_empty() {
-        let allowed = workspace_roots.iter().any(|root| {
-            let expanded = match expand_home_prefix(root.trim()) {
-                Ok(path) => path,
-                Err(_) => return false,
-            };
-            if expanded.is_empty() {
-                return false;
-            }
-            let root_path = Path::new(&expanded);
-            let root_canon = fs_canonicalize_existing_or_self(root_path).ok();
-            root_canon
-                .map(|root_canon| {
-                    root_canon.starts_with(&home_canon) && canonical.starts_with(&root_canon)
-                })
-                .unwrap_or(false)
-        });
-        if !allowed {
-            return Err(
-                "路径不在允许的工作区根目录内，请到设置 > MCP > Kivio 内置工具检查 workspaceRoots。"
-                    .to_string(),
-            );
-        }
-    }
-
-    Ok(canonical)
+    fs_canonicalize_existing_or_self(&candidate)
 }
 
 pub fn resolve_tool_read_path(
@@ -143,46 +107,15 @@ pub fn resolve_tool_write_path(
     raw_path: &str,
 ) -> Result<PathBuf, String> {
     if workspace.has_project() {
-        if let Some(path) = resolve_project_escape_write_path(workspace, raw_path, false)? {
-            return Ok(path);
+        // An explicit absolute or ~/ path may write anywhere on disk; a relative
+        // path resolves against the project root for ergonomics.
+        let expanded = expand_home_prefix(raw_path)?;
+        if Path::new(&expanded).is_absolute() {
+            return resolve_read_path(raw_path);
         }
         return resolve_project_path(workspace, raw_path, true);
     }
-    let path = resolve_workspace_path(raw_path, &workspace.workspace_roots)?;
-    assert_writable_path(&path)?;
-    Ok(path)
-}
-
-/// In a project conversation, an explicit absolute or ~/ path that resolves
-/// outside the project root falls back to the global write rules (home-bounded,
-/// blocklist, workspace_roots) instead of being rejected. Relative paths never
-/// escape. Returns Ok(None) when the path belongs to the normal project flow.
-fn resolve_project_escape_write_path(
-    workspace: &NativeToolWorkspace,
-    raw_path: &str,
-    entry: bool,
-) -> Result<Option<PathBuf>, String> {
-    let expanded = expand_home_prefix(raw_path)?;
-    let raw = Path::new(&expanded);
-    if !raw.is_absolute() {
-        return Ok(None);
-    }
-    if let Ok(root) = project_root_required(workspace) {
-        // Entry semantics must not follow a final symlink, or an in-root link
-        // pointing outside would be misclassified as an escape and the global
-        // flow would delete the link target instead of the link itself.
-        let probed = if entry {
-            canonicalize_entry_or_missing(raw)?
-        } else {
-            canonicalize_existing_or_missing(raw, true)?
-        };
-        if probed.starts_with(&root) {
-            return Ok(None);
-        }
-    }
-    let path = resolve_workspace_path(raw_path, &workspace.workspace_roots)?;
-    assert_writable_path(&path)?;
-    Ok(Some(path))
+    resolve_workspace_path(raw_path, &workspace.workspace_roots)
 }
 
 pub fn resolve_tool_existing_dir(
@@ -287,68 +220,15 @@ fn resolve_project_path(
         return Err("路径为空，请提供项目内的文件或目录路径。".to_string());
     }
 
+    // Relative paths resolve against the project root (ergonomic default).
+    // `..` and absolute paths are allowed — no project-root confinement.
     let raw = Path::new(&expanded);
-    for component in raw.components() {
-        if matches!(component, Component::ParentDir) {
-            return Err("项目路径不能包含 '..'，请使用项目内的明确相对路径。".to_string());
-        }
-    }
-
     let candidate = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
         root.join(raw)
     };
-    let resolved = canonicalize_existing_or_missing(&candidate, allow_missing)?;
-    if !resolved.starts_with(&root) {
-        return Err(format!(
-            "路径不在当前项目根目录内。项目「{}」根目录：{}",
-            workspace
-                .project
-                .as_ref()
-                .map(|project| project.project_name.as_str())
-                .unwrap_or(""),
-            root.display()
-        ));
-    }
-    Ok(resolved)
-}
-
-fn resolve_project_entry_path(
-    workspace: &NativeToolWorkspace,
-    raw_path: &str,
-) -> Result<PathBuf, String> {
-    let root = project_root_required(workspace)?;
-    let expanded = expand_home_prefix(raw_path)?;
-    if expanded.trim().is_empty() {
-        return Err("路径为空，请提供项目内的文件或目录路径。".to_string());
-    }
-
-    let raw = Path::new(&expanded);
-    for component in raw.components() {
-        if matches!(component, Component::ParentDir) {
-            return Err("项目路径不能包含 '..'，请使用项目内的明确相对路径。".to_string());
-        }
-    }
-
-    let candidate = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        root.join(raw)
-    };
-    let resolved = canonicalize_entry_or_missing(&candidate)?;
-    if !resolved.starts_with(&root) {
-        return Err(format!(
-            "路径不在当前项目根目录内。项目「{}」根目录：{}",
-            workspace
-                .project
-                .as_ref()
-                .map(|project| project.project_name.as_str())
-                .unwrap_or(""),
-            root.display()
-        ));
-    }
-    Ok(resolved)
+    canonicalize_existing_or_missing(&candidate, allow_missing)
 }
 
 fn canonicalize_existing_or_missing(path: &Path, _allow_missing: bool) -> Result<PathBuf, String> {
@@ -372,45 +252,6 @@ fn canonicalize_existing_or_missing(path: &Path, _allow_missing: bool) -> Result
         resolved.push(name);
     }
     Ok(resolved)
-}
-
-fn canonicalize_entry_or_missing(path: &Path) -> Result<PathBuf, String> {
-    if fs::symlink_metadata(path).is_ok() {
-        let parent = path.parent().ok_or_else(|| "Invalid path".to_string())?;
-        let parent =
-            fs::canonicalize(parent).map_err(|err| format!("Resolve path failed: {err}"))?;
-        let name = path.file_name().ok_or_else(|| "Invalid path".to_string())?;
-        return Ok(parent.join(name));
-    }
-    canonicalize_existing_or_missing(path, true)
-}
-
-pub fn assert_writable_path(path: &Path) -> Result<(), String> {
-    let home = user_home_dir()?;
-    let home_canon = fs_canonicalize_existing_or_self(&home)?;
-    let canonical = if path.exists() {
-        fs::canonicalize(path).map_err(|err| format!("Resolve path failed: {err}"))?
-    } else if let Some(parent) = path.parent() {
-        let parent_canon = fs_canonicalize_existing_or_self(parent)?;
-        parent_canon.join(path.file_name().ok_or_else(|| "Invalid path".to_string())?)
-    } else {
-        return Err("Invalid path".to_string());
-    };
-
-    if !canonical.starts_with(&home_canon) {
-        return Err("路径不在允许范围内：只能写入用户主目录下的文件。".to_string());
-    }
-
-    let relative = canonical
-        .strip_prefix(&home_canon)
-        .map_err(|_| "Invalid path".to_string())?;
-    let rel = relative.to_string_lossy();
-    for blocked in WRITE_BLOCKLIST_SEGMENTS {
-        if rel.as_ref() == *blocked || rel.starts_with(&format!("{blocked}/")) {
-            return Err(format!("出于安全策略，禁止写入 {blocked} 目录。"));
-        }
-    }
-    Ok(())
 }
 
 /// Expands a leading `~` / `~/` / `~\` to the user home directory (shell-style).
@@ -440,22 +281,12 @@ fn candidate_path(raw_path: &str) -> Result<PathBuf, String> {
         return Err("路径为空，请提供要访问的文件或目录路径。".to_string());
     }
 
-    let candidate = {
-        let path = Path::new(&expanded);
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            user_home_dir()?.join(path)
-        }
-    };
-
-    for component in candidate.components() {
-        if matches!(component, Component::ParentDir) {
-            return Err("路径不能包含 '..'，请使用明确的文件路径。".to_string());
-        }
-    }
-
-    Ok(candidate)
+    let path = Path::new(&expanded);
+    Ok(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        user_home_dir()?.join(path)
+    })
 }
 
 fn fs_canonicalize_existing_or_self(path: &Path) -> Result<PathBuf, String> {
@@ -471,9 +302,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_parent_dir_traversal() {
-        let err = resolve_workspace_path("../etc/passwd", &[]).unwrap_err();
-        assert!(err.contains(".."));
+    fn parent_dir_traversal_is_allowed_no_boundary() {
+        // No-boundary model: `..` is no longer rejected. The path resolves to an
+        // absolute, canonical form (access is gated by session consent instead).
+        let resolved = resolve_workspace_path("../", &[]).expect("`..` resolves under no-boundary");
+        assert!(resolved.is_absolute());
     }
 
     #[test]

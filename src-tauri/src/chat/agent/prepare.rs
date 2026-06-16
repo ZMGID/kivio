@@ -183,6 +183,14 @@ pub fn builtin_tool_bypasses_approval(tool: &ChatToolDefinition) -> bool {
             .is_some_and(|entry| entry.bypasses_approval)
 }
 
+/// True for the native file/shell tools gated by one-time per-conversation
+/// session consent (read/write/edit/bash/grep/find/ls). See
+/// `native_registry::native_tool_requires_session_consent`.
+pub fn tool_requires_session_consent(tool: &ChatToolDefinition) -> bool {
+    tool.source == "native"
+        && crate::mcp::native_registry::native_tool_requires_session_consent(&tool.name)
+}
+
 pub fn build_chat_system_prompt(
     language: &str,
     has_image: bool,
