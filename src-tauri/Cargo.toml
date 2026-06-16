@@ -6,6 +6,18 @@ description = "Kivio - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 edition = "2021"
 
+[lib]
+name = "kivio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kivio"
+path = "src/main.rs"
+
+[[bin]]
+name = "kivio-code"
+path = "src/bin/kivio-code.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
