@@ -1217,6 +1217,18 @@ fn walk_paths(
         .require_git(false)
         .max_depth(if recursive { None } else { Some(1) })
         .filter_entry(|entry| {
+            // Never prune the search root itself (depth 0) — the `ignore` crate
+            // applies this predicate to the root too, so without this guard a
+            // search rooted at a dir literally named `build`/`dist`/`target`/…
+            // would return nothing. Only prune DIRECTORIES whose name is in the
+            // floor list; a regular file that happens to share the name stays.
+            if entry.depth() == 0 {
+                return true;
+            }
+            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+            if !is_dir {
+                return true;
+            }
             entry
                 .file_name()
                 .to_str()
@@ -1751,6 +1763,47 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_respects_gitignore_and_walks_root_named_like_ignored_dir() {
+        // Regression: filter_entry must not prune the search root itself, and must
+        // skip gitignored dirs (node_modules) without hiding same-named files.
+        let root = std::env::temp_dir().join(format!("kivio_gi_build_{}", uuid::Uuid::new_v4()));
+        // Root is literally named like an ignored dir ("build") — must still walk.
+        let root = root.join("build");
+        fs::create_dir_all(root.join("src")).expect("mkdir src");
+        fs::create_dir_all(root.join("node_modules/pkg")).expect("mkdir node_modules");
+        fs::write(root.join(".gitignore"), "node_modules/\n").expect("write gitignore");
+        fs::write(root.join("src/app.rs"), "let needle = 1;\n").expect("write app");
+        fs::write(root.join("node_modules/pkg/index.js"), "needle vendored\n").expect("write vendor");
+        // A regular FILE named "build" must not be pruned by the dir floor list.
+        fs::write(root.join("build"), "needle in a file named build\n").expect("write build file");
+        let workspace = NativeToolWorkspace::project(
+            "proj".to_string(),
+            "T".to_string(),
+            Some(root.to_string_lossy().into_owned()),
+        );
+
+        let parse = |s: String| serde_json::from_str::<Value>(&s).expect("json");
+        let out = parse(
+            search_files(&workspace, &json!({ "query": "needle", "output_mode": "files_with_matches" }))
+                .expect("search"),
+        );
+        let files: Vec<String> = out["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f.as_str().map(str::to_string))
+            .collect();
+        // Root walked (not pruned by its "build" name): src/app.rs found.
+        assert!(files.iter().any(|f| f.ends_with("app.rs")), "root must be walked: {files:?}");
+        // The file literally named "build" is found (only DIRS are floor-pruned).
+        assert!(files.iter().any(|f| f.ends_with("build")), "same-named file kept: {files:?}");
+        // node_modules is gitignored → its file is skipped.
+        assert!(!files.iter().any(|f| f.contains("node_modules")), "gitignored dir skipped: {files:?}");
+
+        let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 
     #[test]

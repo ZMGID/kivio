@@ -99,6 +99,10 @@ pub struct NativeToolEntry {
     pub parallel_safe: bool,
     pub bypasses_approval: bool,
     pub read_only: bool,
+    /// File/shell tools (read/write/edit/bash/grep/find/ls) gated by one-time
+    /// per-conversation session consent. The flag lives on the entry so a rename
+    /// or a newly-added tool can't silently bypass the consent gate.
+    pub requires_session_consent: bool,
     pub call: NativeToolCall,
 }
 
@@ -113,6 +117,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: true,
         bypasses_approval: false,
         read_only: true,
+        requires_session_consent: false,
         call: NativeToolCall::Async(call_web_search),
     },
     NativeToolEntry {
@@ -122,6 +127,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: true,
         bypasses_approval: false,
         read_only: true,
+        requires_session_consent: false,
         call: NativeToolCall::Async(call_web_fetch),
     },
     NativeToolEntry {
@@ -131,6 +137,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: true,
         bypasses_approval: false,
         read_only: true,
+        requires_session_consent: true,
         call: NativeToolCall::SyncResult(call_read_file),
     },
     NativeToolEntry {
@@ -140,6 +147,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: true,
         bypasses_approval: false,
         read_only: true,
+        requires_session_consent: true,
         call: NativeToolCall::SyncText(crate::native_tools::list_dir),
     },
     NativeToolEntry {
@@ -149,6 +157,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: true,
         bypasses_approval: false,
         read_only: true,
+        requires_session_consent: true,
         call: NativeToolCall::SyncText(crate::native_tools::search_files),
     },
     NativeToolEntry {
@@ -158,6 +167,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: true,
         bypasses_approval: false,
         read_only: true,
+        requires_session_consent: true,
         call: NativeToolCall::SyncText(crate::native_tools::glob_files),
     },
     NativeToolEntry {
@@ -167,6 +177,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: false,
         read_only: false,
+        requires_session_consent: true,
         call: NativeToolCall::BlockingMutation(crate::native_tools::write_file),
     },
     NativeToolEntry {
@@ -176,6 +187,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: false,
         read_only: false,
+        requires_session_consent: true,
         call: NativeToolCall::BlockingMutation(crate::native_tools::edit_file),
     },
     NativeToolEntry {
@@ -185,6 +197,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: false,
         read_only: false,
+        requires_session_consent: true,
         call: NativeToolCall::Async(call_run_command),
     },
     NativeToolEntry {
@@ -196,6 +209,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: false,
         read_only: false,
+        requires_session_consent: false,
         call: NativeToolCall::Async(call_save_assistant),
     },
     NativeToolEntry {
@@ -205,6 +219,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: false,
         read_only: false,
+        requires_session_consent: false,
         call: NativeToolCall::Async(call_run_python),
     },
     NativeToolEntry {
@@ -214,6 +229,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: true,
         read_only: true,
+        requires_session_consent: false,
         call: NativeToolCall::Async(call_memory_read),
     },
     NativeToolEntry {
@@ -223,6 +239,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: true,
         read_only: false,
+        requires_session_consent: false,
         call: NativeToolCall::Async(call_memory_modify),
     },
     NativeToolEntry {
@@ -232,6 +249,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: true,
         read_only: true,
+        requires_session_consent: false,
         call: NativeToolCall::Async(call_memory_search),
     },
     // Conversation-level tools below are appended in chat/commands.rs and
@@ -243,6 +261,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: true,
         read_only: false,
+        requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::todo::handle_conversation_tool_call),
     },
     NativeToolEntry {
@@ -252,6 +271,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: true,
         read_only: false,
+        requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::todo::handle_conversation_tool_call),
     },
     NativeToolEntry {
@@ -261,6 +281,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false, // spec: ask_user is forced serial with batch flush
         bypasses_approval: true,
         read_only: false,
+        requires_session_consent: false,
         call: NativeToolCall::HostMediated,
     },
     // Sub-agent management tools (P3). Appended in chat/commands.rs
@@ -280,6 +301,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: true,
         bypasses_approval: true,
         read_only: false,
+        requires_session_consent: false,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::dispatch_agent_spawn),
     },
     NativeToolEntry {
@@ -289,6 +311,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: true,
         read_only: true,
+        requires_session_consent: false,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::dispatch_check_agent_result),
     },
     NativeToolEntry {
@@ -298,6 +321,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         parallel_safe: false,
         bypasses_approval: true,
         read_only: true,
+        requires_session_consent: false,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::dispatch_list_agent_tasks),
     },
 ];
@@ -310,9 +334,10 @@ pub fn find_entry(name: &str) -> Option<&'static NativeToolEntry> {
 /// per-conversation **session consent** prompt — granting one authorizes
 /// full-disk read/write and arbitrary command execution for the rest of that
 /// conversation. Everything else (web/python/memory/todo/sub-agent/...) keeps
-/// its own gating and is NOT behind this consent.
+/// its own gating and is NOT behind this consent. Driven by the per-entry
+/// `requires_session_consent` flag so a rename or new tool can't drift.
 pub fn native_tool_requires_session_consent(name: &str) -> bool {
-    matches!(name, "read" | "write" | "edit" | "bash" | "grep" | "find" | "ls")
+    find_entry(name).is_some_and(|entry| entry.requires_session_consent)
 }
 
 pub(super) fn text_tool_result(content: String) -> McpToolCallResult {
@@ -463,6 +488,27 @@ mod tests {
         "check_agent_result",
         "list_agent_tasks",
     ];
+
+    #[test]
+    fn session_consent_set_is_exactly_the_seven_file_shell_tools() {
+        let consent: Vec<&str> = NATIVE_TOOLS
+            .iter()
+            .filter(|entry| entry.requires_session_consent)
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(
+            consent,
+            ["read", "ls", "grep", "find", "write", "edit", "bash"],
+            "session-consent set must be exactly Pi's 7 file/shell tools; a new \
+             file/shell tool MUST set requires_session_consent or it silently \
+             bypasses the consent gate"
+        );
+        // The predicate agrees with the flag, and non-file tools are excluded.
+        assert!(native_tool_requires_session_consent("bash"));
+        assert!(!native_tool_requires_session_consent("web_search"));
+        assert!(!native_tool_requires_session_consent("run_python"));
+        assert!(!native_tool_requires_session_consent("memory_read"));
+    }
 
     #[test]
     fn registry_order_and_names_match_legacy_exposure_order() {

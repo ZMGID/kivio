@@ -4013,6 +4013,14 @@ async fn request_session_consent(
     if state.has_chat_consent(conversation_id) {
         return true;
     }
+    // Serialize prompts so concurrent first-round tools (read/grep/find/ls run
+    // in parallel) don't each insert a pending sender and clobber one another.
+    // Whoever wins the lock prompts once; the rest re-check consent and reuse
+    // the grant without a second dialog.
+    let _prompt_guard = state.chat_consent_prompt_lock.lock().await;
+    if state.has_chat_consent(conversation_id) {
+        return true;
+    }
     let (tx, rx) = tokio::sync::oneshot::channel();
     {
         let mut pending = state

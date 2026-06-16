@@ -644,6 +644,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     if (!conversationId) {
       clearStreamingPreview()
       setPendingToolConfirm(null)
+      setPendingSessionConsent(null)
       setStreamError('')
       return
     }
@@ -738,9 +739,11 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     if (!conversationId) return
     delete streamSnapshotsRef.current[conversationId]
     delete pendingToolConfirmsRef.current[conversationId]
+    delete pendingSessionConsentsRef.current[conversationId]
     syncGeneratingConversationIds()
     if (currentConversationIdRef.current === conversationId) {
       setPendingToolConfirm(null)
+      setPendingSessionConsent(null)
       clearStreamingPreview()
     }
   }, [clearStreamingPreview, syncGeneratingConversationIds])
@@ -758,8 +761,10 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     const conversationId = currentConversationIdRef.current
     if (conversationId) {
       delete pendingToolConfirmsRef.current[conversationId]
+      delete pendingSessionConsentsRef.current[conversationId]
     }
     setPendingToolConfirm(null)
+    setPendingSessionConsent(null)
   }, [])
 
   const resetLocalCancellation = useCallback(() => {
@@ -1201,10 +1206,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       if (conversationId) {
         delete streamSnapshotsRef.current[conversationId]
         delete pendingToolConfirmsRef.current[conversationId]
+        delete pendingSessionConsentsRef.current[conversationId]
         syncGeneratingConversationIds()
       }
       if (conversationId && currentConversationIdRef.current === conversationId) {
         setPendingToolConfirm(null)
+        setPendingSessionConsent(null)
         clearStreamingPreview()
       }
     },
@@ -1236,9 +1243,11 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     if (currentConversationIdRef.current === conversationId) {
       applyConversation(conversation)
       setPendingToolConfirm(null)
+      setPendingSessionConsent(null)
     }
     delete streamSnapshotsRef.current[conversationId]
     delete pendingToolConfirmsRef.current[conversationId]
+    delete pendingSessionConsentsRef.current[conversationId]
     syncGeneratingConversationIds()
     if (currentConversationIdRef.current === conversationId) {
       clearStreamingPreview()
@@ -1829,6 +1838,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       }
       delete streamSnapshotsRef.current[conversationId]
       delete pendingToolConfirmsRef.current[conversationId]
+      delete pendingSessionConsentsRef.current[conversationId]
       delete streamErrorsRef.current[conversationId]
       clearConversationInFlight(conversationId)
       forgetRememberedChatRoute()

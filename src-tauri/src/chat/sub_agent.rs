@@ -433,6 +433,17 @@ impl AgentHost for SubAgentHost<'_> {
         Box::pin(async move { false })
     }
 
+    fn request_session_consent<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+    ) -> AgentHostFuture<'a, bool> {
+        // A sub-agent cannot prompt the user, but it inherits the parent
+        // conversation's session consent: if the user already authorized
+        // file/shell tools for this conversation, the sub-agent reuses that
+        // grant. Otherwise it denies (the parent must consent first).
+        Box::pin(async move { self.state.has_chat_consent(&self.parent_conversation_id) })
+    }
+
     fn request_user_response<'a>(
         &'a self,
         _ctx: &'a ToolExecutionContext<'a>,

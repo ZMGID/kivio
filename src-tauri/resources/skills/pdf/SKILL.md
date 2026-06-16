@@ -3,7 +3,7 @@ id: pdf
 name: pdf
 description: Read, extract, summarize, and analyze PDF attachments saved by Kivio Chat.
 recommended-tools:
-  - read_file
+  - read
   - run_python
 ---
 

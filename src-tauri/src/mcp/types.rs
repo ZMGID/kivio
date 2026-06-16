@@ -327,7 +327,7 @@ pub fn native_list_dir_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__list_dir".to_string(),
         name: "ls".to_string(),
-        description: "List files and directories. In a project conversation, paths are project-relative by default and cannot escape the project root.".to_string(),
+        description: "List files and directories. Relative paths resolve from the project root (or home) for convenience; absolute or ~/ paths may point anywhere on disk.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -349,7 +349,7 @@ pub fn native_search_files_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__search_files".to_string(),
         name: "grep".to_string(),
-        description: "Search text files under a directory. By default `query` is a literal substring; set regex=true to treat it as a regular expression. In project conversations this is scoped to the project root and skips common dependency/build folders.".to_string(),
+        description: "Search text files under a directory. By default `query` is a literal substring; set regex=true to treat it as a regular expression. Relative paths resolve from the project root; respects .gitignore and skips common dependency/build folders (node_modules, target, dist, …).".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -378,7 +378,7 @@ pub fn native_glob_files_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__glob_files".to_string(),
         name: "find".to_string(),
-        description: "Find files/directories by glob pattern such as \"src/**/*.tsx\". In project conversations this is scoped to the project root.".to_string(),
+        description: "Find files/directories by glob pattern such as \"src/**/*.tsx\". Relative paths resolve from the project root; respects .gitignore.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -510,7 +510,7 @@ pub fn native_run_python_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__run_python".to_string(),
         name: "run_python".to_string(),
-        description: "Execute Python code in a Pyodide sandbox with no direct host filesystem access. Use for calculation, statistics, chart/data code, document analysis, sandbox-compatible package installs, and user-requested chat deliverable files. If the user naturally asks to generate, export, send, package, or provide a report, summary, table, dataset, chart, Markdown, CSV, JSON, TXT, HTML, or XLSX file, proactively create it here; the user does not need to mention Python or run_python. Bundled packages auto-load on import: numpy, matplotlib, pandas, pillow, seaborn, openpyxl, xlrd, et_xmlfile, pypdf, micropip. Prefer plain import statements; do not write await micropip.install in sync code. To analyze local files, pass paths in files using the same syntax as read_file; in project conversations these are project-relative and cannot escape the project root. Mounted paths appear in KIVIO_INPUT_FILES. Save outputs to relative filenames in the Pyodide cwd (e.g. report.md, summary.csv, data.json, page.html, report.xlsx, chart.png); do not write host paths such as /Users or ~/Desktop inside Python. Kivio auto-captures images plus csv/json/md/txt/html/xlsx artifacts and caches them under ~/Kivio/runs/<conversation>/<message>/ for ~7 days; use write_file when the user explicitly wants a durable deliverable at a specific host path (e.g. ~/Desktop). stdout/stderr are returned.".to_string(),
+        description: "Execute Python code in a Pyodide sandbox with no direct host filesystem access. Use for calculation, statistics, chart/data code, document analysis, sandbox-compatible package installs, and user-requested chat deliverable files. If the user naturally asks to generate, export, send, package, or provide a report, summary, table, dataset, chart, Markdown, CSV, JSON, TXT, HTML, or XLSX file, proactively create it here; the user does not need to mention Python or run_python. Bundled packages auto-load on import: numpy, matplotlib, pandas, pillow, seaborn, openpyxl, xlrd, et_xmlfile, pypdf, micropip. Prefer plain import statements; do not write await micropip.install in sync code. To analyze local files, pass paths in files using the same syntax as the read tool; in project conversations these resolve from the project root by default. Mounted paths appear in KIVIO_INPUT_FILES. Save outputs to relative filenames in the Pyodide cwd (e.g. report.md, summary.csv, data.json, page.html, report.xlsx, chart.png); do not write host paths such as /Users or ~/Desktop inside Python. Kivio auto-captures images plus csv/json/md/txt/html/xlsx artifacts and caches them under ~/Kivio/runs/<conversation>/<message>/ for ~7 days; use write_file when the user explicitly wants a durable deliverable at a specific host path (e.g. ~/Desktop). stdout/stderr are returned.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),

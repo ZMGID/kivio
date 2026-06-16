@@ -3,7 +3,7 @@ id: xlsx
 name: xlsx
 description: Read, summarize, calculate from, and analyze Excel/CSV/TSV spreadsheet attachments saved by Kivio Chat.
 recommended-tools:
-  - read_file
+  - read
   - run_python
 ---
 
@@ -18,7 +18,7 @@ Kivio stores each uploaded spreadsheet as a safe local copy and includes its abs
 ## Workflow
 
 1. Identify the safe copy path from the attachment note.
-2. For `.csv` / `.tsv`, use `read_file` for a small text preview or `run_python` with `files=["Kivio 安全副本路径"]` and `pandas` for analysis.
+2. For `.csv` / `.tsv`, use `read` for a small text preview or `run_python` with `files=["Kivio 安全副本路径"]` and `pandas` for analysis.
 3. For `.xlsx` / `.xlsm`, use `run_python` with `files=["Kivio 安全副本路径"]` and `pandas.read_excel` when available.
 4. For legacy `.xls`, try `pandas.read_excel`; if the engine is unavailable, explain the limitation and ask for `.xlsx` or `.csv`.
 5. Inspect sheet names, columns, row counts, missing values, and representative rows before answering.

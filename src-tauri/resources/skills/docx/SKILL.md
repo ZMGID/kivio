@@ -3,7 +3,7 @@ id: docx
 name: docx
 description: Read, summarize, revise, and analyze Word DOC/DOCX attachments saved by Kivio Chat.
 recommended-tools:
-  - read_file
+  - read
   - run_python
 ---
 

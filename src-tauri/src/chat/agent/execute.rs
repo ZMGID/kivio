@@ -163,9 +163,10 @@ pub async fn execute_tool_call(
     // Gate. The file/shell tools (read/write/edit/bash/grep/find/ls) are
     // governed by a single per-conversation **session consent**: prompt once,
     // then run freely with full-disk access for the rest of the conversation.
-    // `approval_policy`: "auto" implicitly consents (no prompt); the default
-    // prompts once; "always_confirm" prompts once AND confirms each call.
-    // Everything else (MCP tools, etc.) keeps the existing per-call approval.
+    // `approval_policy`: "auto" implicitly consents (no prompt); "always_confirm"
+    // confirms each call (the per-call prompt IS the gate — no separate session
+    // consent); the default prompts once per conversation. Everything else (MCP
+    // tools, etc.) keeps the existing per-call approval.
     let skip = |record: &mut ToolCallRecord, reason: &str| {
         record.status = ToolCallStatus::Skipped;
         record.completed_at = Some(chrono::Local::now().timestamp());
@@ -174,14 +175,15 @@ pub async fn execute_tool_call(
 
     if super::prepare::tool_requires_session_consent(tool) {
         let policy = settings.chat_tools.approval_policy.as_str();
-        if policy != "auto" && !host.request_session_consent(ctx).await {
+        if policy == "always_confirm" {
+            if !host.request_tool_approval(ctx, &record).await {
+                skip(&mut record, "Tool call was not approved");
+                host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+                let content = record.error.clone().unwrap_or_default();
+                return (record, content);
+            }
+        } else if policy != "auto" && !host.request_session_consent(ctx).await {
             skip(&mut record, "用户未授权本会话使用文件 / 命令工具");
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
-            let content = record.error.clone().unwrap_or_default();
-            return (record, content);
-        }
-        if policy == "always_confirm" && !host.request_tool_approval(ctx, &record).await {
-            skip(&mut record, "Tool call was not approved");
             host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
             let content = record.error.clone().unwrap_or_default();
             return (record, content);

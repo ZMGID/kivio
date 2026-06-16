@@ -72,6 +72,10 @@ pub struct AppState {
     pub chat_session_consent: Mutex<HashSet<String>>,
     /// 等待用户响应的会话级授权请求(按 conversation_id,同一会话同时至多一个)。
     pub pending_chat_session_consents: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    /// 串行化会话授权弹窗:同一时刻全局只发一个授权请求。首轮多个并行只读工具
+    /// (read/grep/find/ls)同时触发授权时,避免互相覆盖 pending sender 导致「假拒绝」——
+    /// 拿到锁后先复查 has_chat_consent,领头者授权后其余直接复用、不再弹窗。
+    pub chat_consent_prompt_lock: tokio::sync::Mutex<()>,
     /// 等待用户回答的 Chat ask_user 澄清卡片。
     pub pending_chat_user_prompts:
         Mutex<HashMap<String, crate::chat::ask_user::PendingAskUserPrompt>>,
@@ -329,6 +333,7 @@ pub(crate) fn test_app_state() -> AppState {
         pending_chat_tool_approvals: Mutex::new(HashMap::new()),
         chat_session_consent: Mutex::new(HashSet::new()),
         pending_chat_session_consents: Mutex::new(HashMap::new()),
+        chat_consent_prompt_lock: tokio::sync::Mutex::new(()),
         pending_chat_user_prompts: Mutex::new(HashMap::new()),
         pending_python_runs: Mutex::new(HashMap::new()),
         chat_create_conversation_lock: Mutex::new(()),
