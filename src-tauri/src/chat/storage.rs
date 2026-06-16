@@ -258,6 +258,102 @@ pub fn save_assistant_index(app: &AppHandle, index: &ChatAssistantIndex) -> Resu
     atomic_write(&path, &content, "assistants")
 }
 
+/// 内置专家模板（v1）：写作 / 编程 / 研究 / 数据分析。
+///
+/// `ChatAssistant` 没有原生工具白名单（只有 mcp_server_ids + skill_ids），所以人设主要靠
+/// `system_prompt`，文件/联网/Python 等原生工具由全局 Chat 工具开关决定。这里：
+/// - provider_id + model 留空 ⇒ 继承用户在 UI 选择的模型（不假设具体 provider 存在）；
+/// - mcp_server_ids 留空 ⇒ 不绑定任何 MCP 服务器；
+/// - skill_ids 仅引用内置文档技能（pdf/docx/xlsx/doc-coauthoring）。
+pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
+    let make = |id: &str,
+                name: &str,
+                icon: &str,
+                color: &str,
+                description: &str,
+                system_prompt: &str,
+                skill_ids: &[&str]| ChatAssistant {
+        id: id.to_string(),
+        name: name.to_string(),
+        description: description.to_string(),
+        icon: icon.to_string(),
+        color: color.to_string(),
+        source: "builtin".to_string(),
+        system_prompt: system_prompt.to_string(),
+        provider_id: String::new(),
+        model: String::new(),
+        mcp_server_ids: Vec::new(),
+        skill_ids: skill_ids.iter().map(|s| s.to_string()).collect(),
+        enabled: true,
+        installed: true,
+        archived: false,
+        built_in: true,
+        created_at: now,
+        updated_at: now,
+    };
+
+    vec![
+        make(
+            "asst_builtin_writer",
+            "写作助手",
+            "✍️",
+            "#C56646",
+            "起草、改写、润色与精简文章 / 邮件 / 文案 / 报告，按你的读者与语气产出。",
+            "你是一名专业的写作助手，擅长起草、改写、润色与精简各类文本：文章、报告、邮件、文案、演讲稿等。\
+工作方式：动笔前先确认目标读者、用途与期望的语气和篇幅，再产出。输出要结构清晰、用词准确、避免空话套话；\
+改写时保留原意并简要指出关键改动。除非用户另行指定，默认使用与用户相同的语言写作。需要长文档协作时可使用文档协作技能。",
+            &["doc-coauthoring", "docx", "pdf"],
+        ),
+        make(
+            "asst_builtin_coder",
+            "编程助手",
+            "💻",
+            "#4F8A8B",
+            "读写代码、调试、重构与解释，做最小聚焦的改动并说明改了什么、为什么。",
+            "你是一名严谨的编程助手，擅长读写代码、调试、重构与解释。\
+工作方式：动手前先读相关文件与上下文，做最小、聚焦的改动，并清楚说明改了什么、为什么。\
+遵循项目既有的代码风格与约定；涉及命令或脚本时谨慎执行并解释其影响。给出代码时确保可运行、含必要的错误处理。\
+不确定之处主动指出，绝不臆造接口或事实。",
+            &[],
+        ),
+        make(
+            "asst_builtin_researcher",
+            "研究助手",
+            "🔍",
+            "#6A8FBD",
+            "联网检索 + 阅读资料，交叉核实后给出带出处的结构化综述（只做调研，不改文件）。",
+            "你是一名研究助手，负责检索、核实并综合信息，给出有出处的结论。\
+工作方式：在可用时联网检索，并结合资料阅读交叉验证关键事实，明确区分事实与推测。\
+输出为结构化综述：先给结论，再列论据，并附上来源链接。你只做调研与综述，不修改用户的文件。\
+信息不足或来源相互冲突时如实说明，不强行下结论。",
+            &[],
+        ),
+        make(
+            "asst_builtin_data",
+            "数据分析",
+            "📊",
+            "#7A9A57",
+            "读取 PDF / Excel / Word，用 Python 做数据清洗、统计计算与可视化。",
+            "你是一名数据分析助手，擅长读取并分析 PDF、Excel/CSV、Word 等文档，做数据清洗、统计计算与可视化。\
+工作方式：先了解数据结构与分析目标，再用 Python（沙箱）完成处理与作图，并给出可复现的步骤与结论。\
+结论要落到具体数字与图表，主动指出数据质量问题与所做的假设。可使用 pdf/docx/xlsx 文档技能读取附件。",
+            &["pdf", "docx", "xlsx"],
+        ),
+    ]
+}
+
+/// 一次性内置专家迁移（v1）：用 `builtin_assistant_definitions` **覆盖整个**助手索引
+/// （清空含用户自建的全部专家——这是用户明确选择），只留这 4 个内置专家。
+///
+/// 幂等性由调用方通过 `settings.builtin_assistants_seeded_v1` 标记保证；调用方必须在本函数
+/// 成功后立即持久化该标记，否则下次启动会再次覆盖（连用户届时新建的专家一起抹掉）。
+pub fn seed_builtin_assistants_v1(app: &AppHandle, now: i64) -> Result<(), String> {
+    let index = ChatAssistantIndex {
+        assistants: builtin_assistant_definitions(now),
+    };
+    save_assistant_index(app, &index)
+}
+
 /// 加载对话详情
 pub fn load_conversation(app: &AppHandle, id: &str) -> Result<Conversation, String> {
     let path = conversation_file_path(app, id)?;
@@ -888,4 +984,47 @@ fn move_project_conversations(
         save_index(app, &index)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod builtin_assistant_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_assistants_are_four_valid_built_in_personas() {
+        let defs = builtin_assistant_definitions(1_700_000_000);
+        assert_eq!(defs.len(), 4, "expected exactly 4 built-in assistants");
+
+        let mut ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), defs.len(), "built-in assistant ids must be unique");
+
+        for d in &defs {
+            // ids must satisfy validate_assistant_id (asst_ prefix + safe chars).
+            assert!(d.id.starts_with("asst_") && d.id.len() > "asst_".len(), "{}", d.id);
+            assert!(d.built_in, "{} must be built_in", d.id);
+            assert_eq!(d.source, "builtin", "{}", d.id);
+            assert!(d.enabled && d.installed && !d.archived, "{}", d.id);
+            // Inherit the user's selected model — never pin a provider/model.
+            assert!(d.provider_id.is_empty() && d.model.is_empty(), "{}", d.id);
+            // Honor normalize_assistant constraints so a later edit won't reject them.
+            assert!(!d.name.trim().is_empty() && d.name.chars().count() <= 64, "{}", d.id);
+            assert!(d.description.chars().count() <= 240, "{}", d.id);
+            assert!(d.icon.chars().count() <= 8, "{}", d.id);
+            assert!(!d.system_prompt.trim().is_empty(), "{}", d.id);
+        }
+    }
+
+    #[test]
+    fn data_assistant_whitelists_document_skills() {
+        let defs = builtin_assistant_definitions(1_700_000_000);
+        let data = defs.iter().find(|d| d.id == "asst_builtin_data").unwrap();
+        for skill in ["pdf", "docx", "xlsx"] {
+            assert!(data.skill_ids.iter().any(|s| s == skill), "missing skill {skill}");
+        }
+        // Researcher/coder need no document skills.
+        let coder = defs.iter().find(|d| d.id == "asst_builtin_coder").unwrap();
+        assert!(coder.skill_ids.is_empty());
+    }
 }

@@ -148,7 +148,25 @@ fn main() {
             cleanup_orphan_temp_files();
             cleanup_stale_sandbox_exports();
 
-            let settings = load_settings(&app.handle());
+            let mut settings = load_settings(&app.handle());
+            // 一次性内置专家迁移（v1）：清空旧专家索引（含用户自建——用户明确选择），
+            // 装入 4 个内置专家（写作/编程/研究/数据）。靠 settings flag 幂等，成功后立即写盘，
+            // 否则下次启动会再次覆盖。持久化失败则回滚内存 flag，下次重试（仍是覆盖为这 4 个，可接受）。
+            if !settings.builtin_assistants_seeded_v1 {
+                let now = chrono::Local::now().timestamp();
+                match chat::storage::seed_builtin_assistants_v1(&app.handle(), now) {
+                    Ok(()) => {
+                        settings.builtin_assistants_seeded_v1 = true;
+                        if let Err(err) = settings::persist_settings(&app.handle(), &settings) {
+                            eprintln!(
+                                "Failed to persist settings after seeding built-in assistants: {err}"
+                            );
+                            settings.builtin_assistants_seeded_v1 = false;
+                        }
+                    }
+                    Err(err) => eprintln!("Failed to seed built-in assistants: {err}"),
+                }
+            }
             if let Err(err) = apply_launch_at_startup(&app.handle(), settings.launch_at_startup) {
                 eprintln!("Failed to apply launch-at-startup setting: {err}");
             }
