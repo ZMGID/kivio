@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
@@ -858,13 +858,22 @@ function compactToolError(error: string): string {
 }
 
 function StatusIcon({ status }: { status: ToolCallStatus }) {
+  // 仅在「实时」由非完成态切到完成态时让 ✓ 弹入；历史消息（挂载即完成态）不 pop，
+  // 避免切换会话时大量历史工具的 ✓ 同时弹动造成视觉噪声。
+  const prevStatusRef = useRef(status)
+  const isDone = status === 'completed' || status === 'success'
+  const wasDone = prevStatusRef.current === 'completed' || prevStatusRef.current === 'success'
+  const justCompleted = isDone && !wasDone
+  useEffect(() => {
+    prevStatusRef.current = status
+  }, [status])
   if (status === 'running') {
     return <Loader2 className="shrink-0 animate-spin" size={12} />
   }
-  if (status === 'completed' || status === 'success') {
+  if (isDone) {
     return (
       <CheckCircle2
-        className="shrink-0 text-[#C56646] dark:text-[#E39A78]"
+        className={`shrink-0 text-[#C56646] dark:text-[#E39A78]${justCompleted ? ' chat-motion-pop' : ''}`}
         size={12}
         strokeWidth={1.9}
       />

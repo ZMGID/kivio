@@ -415,7 +415,7 @@ export function AskUserBlock({ toolCall }: AskUserBlockProps) {
             </span>
           </div>
 
-          <div className="mt-2">
+          <div key={visibleIndex} className="chat-motion-fade mt-2">
             <div className="mb-1.5 flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1 text-[13px] font-medium leading-5 text-neutral-950 dark:text-neutral-50">
                 {currentQuestion.prompt}
@@ -456,7 +456,7 @@ export function AskUserBlock({ toolCall }: AskUserBlockProps) {
                       <Icon
                         size={hasDescriptions ? 14 : 12}
                         strokeWidth={2}
-                        className={hasDescriptions ? 'mt-0.5 shrink-0' : 'shrink-0'}
+                        className={`${hasDescriptions ? 'mt-0.5 shrink-0' : 'shrink-0'}${selected ? ' chat-motion-pop' : ''}`}
                       />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[12.5px] font-medium">{option.label}</span>

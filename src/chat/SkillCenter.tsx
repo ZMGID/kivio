@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Box,
@@ -197,6 +197,14 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
   const [query, setQuery] = useState('')
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [selectedSkillPreview, setSelectedSkillPreview] = useState<SkillDetail | null>(null)
+
+  // 高级设置折叠时内容仍在 DOM（用于 chat-motion-reveal 高度动画），用 inert 让其退出 tab 序 / a11y 树，
+  // 避免键盘 Tab 进入视觉折叠的表单控件（WCAG 2.1.1）。
+  const advancedRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const el = advancedRef.current
+    if (el) el.inert = !advancedOpen
+  }, [advancedOpen])
 
   const settingsRef = useRef<Settings | null>(null)
   const saveTimer = useRef<number | null>(null)
@@ -483,7 +491,7 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
                 className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${advancedOpen ? 'rotate-180' : ''}`}
               />
             </button>
-            {advancedOpen && (
+            <div ref={advancedRef} className={`chat-motion-reveal ${advancedOpen ? 'is-open' : ''}`}>
               <div className="space-y-5 border-t border-neutral-200 px-4 py-4 dark:border-neutral-800">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
@@ -591,7 +599,7 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
                   </div>
                 </div>
               </div>
-            )}
+            </div>
           </section>
 
           {/* 技能列表 */}

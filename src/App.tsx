@@ -259,6 +259,11 @@ function App() {
     document.documentElement.dataset.themeColor = normalizeThemeColorId(settings.themeColor)
     setTranslateSource(settings.translatorModel || 'AI')
     setLang((settings.settingsLanguage as Lang) || 'zh')
+    // 首次应用主题后（下一帧）再开启主题色过渡，避免初始 light↔dark 闪烁；
+    // 之后用户切换主题/系统主题变化时才平滑过渡。classList.add 幂等。
+    requestAnimationFrame(() => {
+      document.documentElement.classList.add('theme-transitions-ready')
+    })
   }
 
   // 初始化主题并监听系统主题变化

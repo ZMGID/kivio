@@ -107,6 +107,8 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
               width: zoom <= 1 ? 'auto' : `${zoom * 100}%`,
               maxWidth: zoom <= 1 ? '100%' : 'none',
               maxHeight: zoom <= 1 ? 'calc(100vh - 8rem)' : 'none',
+              // 连续放大/缩小步进（%↔%）平滑过渡；auto↔% 边界为 width 模型固有限制，瞬跳。
+              transition: 'width var(--kv-dur-fast) var(--kv-ease-out)',
             }}
           />
         </div>

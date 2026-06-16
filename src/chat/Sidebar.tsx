@@ -728,7 +728,11 @@ export const Sidebar = memo(function Sidebar({
 
       <div className="custom-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto" data-tauri-drag-region="false">
         {loading ? (
-          <div className="px-3 py-8 text-center text-[13px] text-neutral-400">加载中…</div>
+          <div className="space-y-2 px-3 py-3" aria-label="加载中" aria-busy="true">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="kv-skeleton h-7 rounded-lg" />
+            ))}
+          </div>
         ) : (
           <>
             <section className="group/projects px-3 pb-2 pt-3">

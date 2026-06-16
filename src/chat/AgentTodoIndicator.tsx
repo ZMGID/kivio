@@ -131,8 +131,8 @@ export function AgentTodoIndicator({ todoState }: AgentTodoIndicatorProps) {
 
           <div className="max-h-72 space-y-2 overflow-auto pr-1">
             {items.map((item) => (
-              <div key={item.id} className="grid grid-cols-[14px_1fr] gap-2 text-[12px] leading-relaxed">
-                <span className={`mt-[7px] size-2.5 rounded-full ${dotClass(item.status)}`} />
+              <div key={item.id} className="chat-motion-fade grid grid-cols-[14px_1fr] gap-2 text-[12px] leading-relaxed">
+                <span className={`mt-[7px] size-2.5 rounded-full transition-colors duration-[var(--kv-dur-normal)] ${dotClass(item.status)}`} />
                 <div className="min-w-0">
                   <div className="mb-0.5 text-[10px] font-medium uppercase leading-none tracking-normal text-neutral-400 dark:text-neutral-500">
                     {statusLabel(item.status)}

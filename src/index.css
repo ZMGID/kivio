@@ -54,6 +54,21 @@ body {
   --kv-dur-slow: 320ms;    /* 较大位移/侧栏折叠 */
 }
 
+/* 主题切换过渡：仅在首帧主题应用完成后（<html> 加 .theme-transitions-ready）才对主要表面的
+   背景/边框色做过渡，避免初始 light↔dark 闪烁。文字等小元素不纳入，保持简洁。
+   reduced-motion 下由全局兜底压成瞬时（瞬时切换主题正是无障碍期望）。 */
+.theme-transitions-ready .window-frosted,
+.theme-transitions-ready .chat-window-shell,
+.theme-transitions-ready .chat-main-pane,
+.theme-transitions-ready .chat-sidebar-shell,
+.theme-transitions-ready .chat-themed-surface,
+.theme-transitions-ready .chat-composer-shell,
+.theme-transitions-ready .assistant-center-root {
+  transition:
+    background-color var(--kv-dur-normal) var(--kv-ease-out),
+    border-color var(--kv-dur-normal) var(--kv-ease-out);
+}
+
 :root[data-theme-color="warm"] {
   --theme-surface: #faf9f5;
   --theme-surface-soft: #f6f3ed;
@@ -1186,6 +1201,8 @@ body {
 .chat-window-shell button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+  /* 键盘聚焦时焦点环缓入；失焦时瞬退（不拖尾），是更利落的行为。 */
+  transition: box-shadow var(--kv-dur-fast) var(--kv-ease-out);
 }
 
 .dark .chat-window-shell button:focus-visible {
