@@ -566,7 +566,6 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
                     current_line.push_str(&reset);
                 }
                 wrapped.push(std::mem::take(&mut current_line));
-                current_visible = 0;
             }
             let broken = break_long_word(token, width, &mut tracker);
             for b in &broken[..broken.len() - 1] {

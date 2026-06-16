@@ -1,3 +1,7 @@
+// macOS cocoa interop below uses the legacy `cocoa` crate (objc, not objc2),
+// which is deprecated. Migrating to objc2 is out of scope; suppress the lint here.
+#![allow(deprecated)]
+
 use std::{
     fs,
     path::{Path, PathBuf},

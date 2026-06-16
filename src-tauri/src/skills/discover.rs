@@ -37,6 +37,7 @@ fn bundled_skills_dir(app: &AppHandle) -> Option<PathBuf> {
         .filter(|dir| dir.is_dir())
 }
 
+#[allow(dead_code)]
 pub fn scan_roots(app: &AppHandle, extra_paths: &[String]) -> Result<Vec<PathBuf>, String> {
     Ok(scan_root_entries(app, extra_paths)?
         .into_iter()
@@ -243,6 +244,7 @@ fn classify_file(relative_path: &str) -> SkillFileKind {
     SkillFileKind::Other
 }
 
+#[allow(dead_code)]
 pub fn folder_slug_for_path(path: &Path) -> String {
     path.parent()
         .and_then(|parent| parent.file_name())

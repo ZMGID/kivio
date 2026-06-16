@@ -464,6 +464,7 @@ enum HotkeyErrorKind {
     /// 应用内重复：用户把同一个组合分配给了多个功能
     Duplicate,
     /// 热键字段为空但功能开关打开
+    #[allow(dead_code)]
     Empty,
     /// 其他注册失败(网络/权限/未知错误)
     Other,

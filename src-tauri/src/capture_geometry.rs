@@ -21,6 +21,7 @@ pub(crate) struct MappedSourceRect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 pub(crate) struct CaptureMonitor {
     pub(crate) x: i32,
     pub(crate) y: i32,
@@ -30,6 +31,7 @@ pub(crate) struct CaptureMonitor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 pub(crate) struct CaptureRegionPx {
     pub(crate) x: u32,
     pub(crate) y: u32,
@@ -71,6 +73,7 @@ pub(crate) fn source_rect_for_region(
         .map(|(_, mapped)| mapped)
 }
 
+#[allow(dead_code)]
 pub(crate) fn monitor_for_region(
     region: CaptureRect,
     monitors: &[CaptureMonitor],
@@ -94,6 +97,7 @@ pub(crate) fn monitor_for_region(
         .map(|(_, idx)| idx)
 }
 
+#[allow(dead_code)]
 pub(crate) fn windows_monitor_region(
     region: CaptureRect,
     monitor: CaptureMonitor,
@@ -136,6 +140,7 @@ fn is_positive_rect(rect: CaptureRect) -> bool {
         && rect.height > 0.0
 }
 
+#[allow(dead_code)]
 fn valid_scale(scale_factor: f64) -> f64 {
     if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -161,6 +166,7 @@ fn intersect(a: CaptureRect, b: CaptureRect) -> Option<CaptureRect> {
 }
 
 impl CaptureMonitor {
+    #[allow(dead_code)]
     fn logical_rect(self) -> CaptureRect {
         let scale = valid_scale(self.scale_factor);
         CaptureRect {
