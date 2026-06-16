@@ -264,12 +264,6 @@ pub fn write_file(
     let full = resolve_tool_write_path(workspace, path)?;
     let _guard = acquire_file_mutation_locks([full.clone()])?;
     let existed = full.is_file();
-    // Placeholder phrases ("rest of file unchanged", "省略") are a real hazard
-    // only when a model lazily overwrites existing code; prose like meeting
-    // notes legitimately contains them, so new files and non-code files pass.
-    if existed && is_code_like_path(&full) && looks_like_placeholder_content(content) {
-        return Err("write_file rejected placeholder/lazy content; target untouched".to_string());
-    }
     // The existing content is only needed for the diff; degrade gracefully on non-UTF-8.
     let before = if existed {
         fs::read_to_string(&full).ok()
@@ -308,19 +302,30 @@ pub fn edit_file(
     let path = arguments
         .get("path")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "edit_file requires path".to_string())?;
-    let old_string = arguments
-        .get("old_string")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "edit_file requires old_string".to_string())?;
-    let new_string = arguments
-        .get("new_string")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "edit_file requires new_string".to_string())?;
-    let replace_all = arguments
-        .get("replace_all")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .ok_or_else(|| "edit requires path".to_string())?;
+    let edits_value = arguments
+        .get("edits")
+        .and_then(|v| v.as_array())
+        .filter(|edits| !edits.is_empty())
+        .ok_or_else(|| {
+            "edit requires `edits`: a non-empty array of {old_string, new_string}".to_string()
+        })?;
+    // Parse the edits up front so a malformed entry fails before we touch disk.
+    let parsed: Vec<(String, String)> = edits_value
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let old = e
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("edits[{i}] requires old_string"))?;
+            let new = e
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("edits[{i}] requires new_string"))?;
+            Ok((old.to_string(), new.to_string()))
+        })
+        .collect::<Result<_, String>>()?;
 
     let full = resolve_tool_write_path(workspace, path)?;
     let _guard = acquire_file_mutation_locks([full.clone()])?;
@@ -330,15 +335,52 @@ pub fn edit_file(
 
     let content = fs::read_to_string(&full).map_err(|err| format!("Read file failed: {err}"))?;
     // 行尾归一后再匹配：模型给的 old_string 通常是 LF，而文件可能是 CRLF（Windows 高频），
-    // 直接字面 `contains` 会 0 命中。统一归一到 LF 做匹配/计数/替换；写回时
-    // atomic_write_text 依据原文件把 LF 还原成 CRLF（并保留 BOM），磁盘行尾风格不变。
-    // diff 用归一后的 before 比对，避免 CRLF→LF 让每行都被算成变更。
+    // 直接字面 `contains` 会 0 命中。统一归一到 LF 做匹配/替换；写回时 atomic_write_text
+    // 依据原文件把 LF 还原成 CRLF（并保留 BOM），磁盘行尾风格不变。
     let normalized_content = normalize_line_endings(&content, "\n");
-    let normalized_old = normalize_line_endings(old_string, "\n");
-    let normalized_new = normalize_line_endings(new_string, "\n");
+    // Apply edits in order. Each old_string must occur exactly once in the
+    // current working text (no replace_all): a model that wants to change every
+    // occurrence lists them as separate, context-extended edits — same safety as
+    // the old single-edit uniqueness check, now per edit.
+    let mut working = normalized_content.clone();
+    let mut warnings = Vec::new();
+    let mut applied = 0usize;
+    for (i, (old, new)) in parsed.iter().enumerate() {
+        let normalized_old = normalize_line_endings(old, "\n");
+        let normalized_new = normalize_line_endings(new, "\n");
+        if normalized_old == normalized_new {
+            warnings.push(format!(
+                "edits[{i}]: old_string and new_string are identical; skipped."
+            ));
+            continue;
+        }
+        if normalized_old.is_empty() {
+            return Err(format!("edits[{i}]: old_string is empty."));
+        }
+        let count = working.matches(&normalized_old).count();
+        if count == 0 {
+            return Err(format!(
+                "edits[{i}]: old_string not found in file. Re-read the file and copy an exact, \
+                 contiguous snippet including its leading whitespace/indentation. Line endings are \
+                 normalized automatically, so a CRLF vs LF mismatch is not the cause."
+            ));
+        }
+        if count > 1 {
+            return Err(format!(
+                "edits[{i}]: old_string appears {count} times; extend it with surrounding context \
+                 so it matches exactly one location (replace_all is no longer supported — list each \
+                 occurrence as its own edit)."
+            ));
+        }
+        working = working.replacen(&normalized_old, &normalized_new, 1);
+        applied += 1;
+    }
 
-    if normalized_old == normalized_new {
+    if applied == 0 {
         let display_path = workspace_display_path(workspace, &full);
+        if warnings.is_empty() {
+            warnings.push("No edits changed the file.".to_string());
+        }
         return Ok(FileMutationResult {
             ok: true,
             operation: "edit".to_string(),
@@ -356,43 +398,25 @@ pub fn edit_file(
             additions: 0,
             removals: 0,
             diff: String::new(),
-            warnings: vec!["old_string and new_string are identical; no changes made.".to_string()],
+            warnings,
             diagnostics: Vec::new(),
         });
     }
-    if !normalized_content.contains(&normalized_old) {
-        return Err(
-            "old_string not found in file. Re-read the file and copy an exact, contiguous snippet \
-             including its leading whitespace/indentation. Line endings are normalized \
-             automatically, so a CRLF vs LF mismatch is not the cause."
-                .to_string(),
-        );
-    }
-    let count = normalized_content.matches(&normalized_old).count();
-    if !replace_all && count > 1 {
-        return Err(format!(
-            "old_string appears {count} times; set replace_all=true, or extend old_string with \
-             surrounding context so it matches exactly one location."
-        ));
-    }
 
-    let updated = if replace_all {
-        normalized_content.replace(&normalized_old, &normalized_new)
-    } else {
-        normalized_content.replacen(&normalized_old, &normalized_new, 1)
-    };
-    atomic_write_text(&full, &updated, Some(&content))
+    atomic_write_text(&full, &working, Some(&content))
         .map_err(|err| format!("Write file failed: {err}"))?;
-    Ok(file_mutation_result(
+    let mut result = file_mutation_result(
         "edit",
         vec![planned_file_result(
             workspace,
             full,
             "edit",
             Some(&normalized_content),
-            Some(&updated),
+            Some(&working),
         )?],
-    ))
+    );
+    result.warnings.extend(warnings);
+    Ok(result)
 }
 
 struct FileMutationLocks {
@@ -490,74 +514,6 @@ fn atomic_write_text(
         }
     }
     atomic_write_bytes(target, text.as_bytes(), existing_text)
-}
-
-fn looks_like_placeholder_content(content: &str) -> bool {
-    let normalized = content.to_ascii_lowercase();
-    [
-        "original code here",
-        "rest of file unchanged",
-        "same as before",
-        "remaining code unchanged",
-        "unchanged code",
-        "原代码",
-        "其余不变",
-        "保持不变",
-        "省略",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
-}
-
-/// Extensions where placeholder phrases indicate a lazily truncated overwrite
-/// rather than legitimate document text.
-fn is_code_like_path(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
-        return false;
-    };
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "rs" | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "py"
-            | "rb"
-            | "go"
-            | "java"
-            | "kt"
-            | "swift"
-            | "c"
-            | "h"
-            | "cpp"
-            | "hpp"
-            | "cc"
-            | "cs"
-            | "php"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "fish"
-            | "ps1"
-            | "sql"
-            | "html"
-            | "css"
-            | "scss"
-            | "less"
-            | "vue"
-            | "svelte"
-            | "json"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "xml"
-            | "lua"
-            | "zig"
-            | "dart"
-            | "scala"
-    )
 }
 
 fn normalize_line_endings(content: &str, target: &str) -> String {
@@ -1559,43 +1515,7 @@ mod tests {
     }
 
     #[test]
-    fn write_file_allows_placeholder_phrases_in_new_and_prose_files() {
-        let root = std::env::temp_dir().join(format!("kivio_prose_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).expect("mkdir");
-        let workspace = NativeToolWorkspace::project(
-            "proj_test".to_string(),
-            "Test".to_string(),
-            Some(root.to_string_lossy().into_owned()),
-        );
-
-        // New code file containing a placeholder phrase: allowed (nothing to lazily truncate).
-        write_file(
-            &workspace,
-            &json!({ "path": "fresh.rs", "content": "// 省略 demo\nfn main() {}\n" }),
-        )
-        .expect("new code file with placeholder phrase");
-
-        // Existing prose file: phrases like 省略 are normal text, allowed.
-        write_file(&workspace, &json!({ "path": "notes.md", "content": "v1" })).expect("seed");
-        write_file(
-            &workspace,
-            &json!({ "path": "notes.md", "content": "会议纪要：以下内容省略，详情保持不变。" }),
-        )
-        .expect("prose overwrite with placeholder phrase");
-
-        // Existing code file: placeholder phrase means a lazy overwrite, rejected.
-        let err = write_file(
-            &workspace,
-            &json!({ "path": "fresh.rs", "content": "fn main() {}\n// rest of file unchanged\n" }),
-        )
-        .unwrap_err();
-        assert!(err.contains("placeholder"));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn edit_file_requires_unique_match_by_default() {
+    fn edit_file_requires_unique_match_and_supports_multiple_edits() {
         let home = super::super::user_home_dir().expect("home");
         let dir = home.join(format!(".kivio_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("mkdir");
@@ -1604,27 +1524,28 @@ mod tests {
 
         let rel = file.to_string_lossy().to_string();
         let workspace = NativeToolWorkspace::global(&[]);
+
+        // A non-unique old_string is rejected (replace_all no longer exists).
         let err = edit_file(
             &workspace,
-            &json!({
-                "path": rel,
-                "old_string": "alpha",
-                "new_string": "gamma"
-            }),
+            &json!({ "path": rel, "edits": [{ "old_string": "alpha", "new_string": "gamma" }] }),
         )
         .unwrap_err();
         assert!(err.contains("appears"));
 
+        // Multiple edits in one call, applied in order: disambiguate the first with
+        // surrounding context, then the remaining occurrence becomes unique.
         edit_file(
             &workspace,
             &json!({
                 "path": rel,
-                "old_string": "alpha",
-                "new_string": "gamma",
-                "replace_all": true
+                "edits": [
+                    { "old_string": "alpha\nbeta", "new_string": "gamma\nbeta" },
+                    { "old_string": "alpha", "new_string": "gamma" }
+                ]
             }),
         )
-        .expect("replace all");
+        .expect("two edits in one call");
 
         let content = fs::read_to_string(&file).expect("read");
         assert_eq!(content, "gamma\nbeta\ngamma\n");
@@ -1645,8 +1566,7 @@ mod tests {
             &workspace,
             &json!({
                 "path": rel,
-                "old_string": "hello world",
-                "new_string": "hello world"
+                "edits": [{ "old_string": "hello world", "new_string": "hello world" }]
             }),
         )
         .expect("noop edit");
@@ -1654,7 +1574,7 @@ mod tests {
         assert!(result
             .warnings
             .iter()
-            .any(|warning| warning.contains("no changes made")));
+            .any(|warning| warning.contains("identical")));
         assert_eq!(fs::read_to_string(&file).expect("read"), "hello world");
 
         let _ = fs::remove_dir_all(&dir);
@@ -1672,13 +1592,12 @@ mod tests {
         let file = root.join("crlf.txt");
         fs::write(&file, "line one\r\nline two\r\nline three\r\n").expect("write");
 
-        // 模型给的是 LF old_string；文件是 CRLF —— 旧实现会 0 命中。
+        // 模型给的是 LF old_string；文件是 CRLF —— 归一化后仍命中。
         let result = edit_file(
             &workspace,
             &json!({
                 "path": "crlf.txt",
-                "old_string": "line two\n",
-                "new_string": "line 2\n",
+                "edits": [{ "old_string": "line two\n", "new_string": "line 2\n" }]
             }),
         )
         .expect("LF old_string must match a CRLF file");
@@ -1711,8 +1630,7 @@ mod tests {
             &workspace,
             &json!({
                 "path": "file.txt",
-                "old_string": "alpha\r\nbeta",
-                "new_string": "alpha\nbeta",
+                "edits": [{ "old_string": "alpha\r\nbeta", "new_string": "alpha\nbeta" }]
             }),
         )
         .expect("line-ending-only change is a noop");
@@ -1741,8 +1659,7 @@ mod tests {
             &workspace,
             &json!({
                 "path": "lf.txt",
-                "old_string": "y\n",
-                "new_string": "Y\n",
+                "edits": [{ "old_string": "y\n", "new_string": "Y\n" }]
             }),
         )
         .expect("LF file edit");
@@ -2015,7 +1932,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_file_replace_all_reports_exact_stats_with_multiple_hunks() {
+    fn edit_file_multiple_edits_report_exact_stats_with_multiple_hunks() {
         let root = std::env::temp_dir().join(format!("kivio_hunks_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).expect("mkdir");
         let mut lines = vec!["needle old".to_string()];
@@ -2031,16 +1948,18 @@ mod tests {
             Some(root.to_string_lossy().into_owned()),
         );
 
+        // Two scattered occurrences, each disambiguated with one line of context.
         let result = edit_file(
             &workspace,
             &json!({
                 "path": "scatter.txt",
-                "old_string": "old",
-                "new_string": "new",
-                "replace_all": true
+                "edits": [
+                    { "old_string": "needle old\nunchanged line 0", "new_string": "needle new\nunchanged line 0" },
+                    { "old_string": "unchanged line 19\nneedle old", "new_string": "unchanged line 19\nneedle new" }
+                ]
             }),
         )
-        .expect("replace all");
+        .expect("two scattered edits");
 
         assert_eq!(result.additions, 2);
         assert_eq!(result.removals, 2);

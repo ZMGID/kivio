@@ -4342,13 +4342,24 @@ fn format_tool_approval_summary(record: &ToolCallRecord) -> String {
                 lines.push(format!("Path: {path}"));
             }
             if record.name == "edit" {
-                if let Some(old) = parsed
+                // Current shape: edits: [{old_string, new_string}, ...]. Preview the
+                // first edit's old_string; fall back to the legacy single-edit field.
+                let first_old = parsed
                     .as_ref()
-                    .and_then(|value| value.get("old_string").or_else(|| value.get("old")))
+                    .and_then(|value| value.get("edits"))
+                    .and_then(|value| value.as_array())
+                    .and_then(|edits| edits.first())
+                    .and_then(|edit| edit.get("old_string"))
                     .and_then(|value| value.as_str())
+                    .or_else(|| {
+                        parsed
+                            .as_ref()
+                            .and_then(|value| value.get("old_string").or_else(|| value.get("old")))
+                            .and_then(|value| value.as_str())
+                    })
                     .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
+                    .filter(|value| !value.is_empty());
+                if let Some(old) = first_old {
                     lines.push(format!("Replace: {}", truncate_chars(old, 180)));
                 }
             }

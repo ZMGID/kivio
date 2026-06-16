@@ -424,7 +424,7 @@ pub fn native_edit_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__edit_file".to_string(),
         name: "edit".to_string(),
-        description: "Replace old_string with new_string in one file. old_string must match the current file content exactly and uniquely (copy it from read output WITHOUT the leading line-number prefix); set replace_all=true to replace every occurrence. Prefer this over write for small edits. Returns structured file mutation metadata including diff stats.".to_string(),
+        description: "Edit a file with one or more exact text replacements in a single call. Each edit's old_string must match a unique, contiguous region of the current file (copy it from read output WITHOUT the leading line-number prefix); if a snippet appears more than once, extend it with surrounding context. Edits apply in order. Prefer this over write for changes to existing files. Returns structured file mutation metadata including diff stats.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -432,11 +432,21 @@ pub fn native_edit_file_tool() -> ChatToolDefinition {
             "type": "object",
             "properties": {
                 "path": { "type": "string" },
-                "old_string": { "type": "string" },
-                "new_string": { "type": "string" },
-                "replace_all": { "type": "boolean" }
+                "edits": {
+                    "type": "array",
+                    "description": "One or more replacements, applied in order. Each old_string must occur exactly once in the current file.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": { "type": "string", "description": "Exact text to replace (unique in the file)" },
+                            "new_string": { "type": "string", "description": "Replacement text" }
+                        },
+                        "required": ["old_string", "new_string"]
+                    },
+                    "minItems": 1
+                }
             },
-            "required": ["path", "old_string", "new_string"]
+            "required": ["path", "edits"]
         }),
         sensitive: true,
         annotations: None,

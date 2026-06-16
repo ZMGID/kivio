@@ -776,6 +776,12 @@ function fileToolArgumentPreview(toolCall: ToolCallRecord, args: Record<string, 
     return sessionId ? `${sessionId} · 取消草稿` : '取消文件草稿'
   }
   if (rawName === 'edit' || rawName === 'edit_file') {
+    const edits = Array.isArray(args?.edits) ? args.edits : null
+    if (edits) {
+      const label = edits.length === 1 ? '1 处编辑' : `${edits.length} 处编辑`
+      return [path, label].filter(Boolean).join(' · ')
+    }
+    // Legacy single-edit records (old_string/new_string) from persisted conversations.
     const oldString = typeof args?.old_string === 'string' ? compactText(args.old_string, 80) : ''
     return [path, oldString ? `替换 ${oldString}` : ''].filter(Boolean).join(' · ')
   }
