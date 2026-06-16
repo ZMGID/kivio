@@ -53,6 +53,17 @@ crossterm = "0.29"
 unicode-width = "0.2"
 unicode-segmentation = "1"
 unicode-normalization = "0.1"
+# TUI Markdown 渲染：pulldown-cmark 解析 + syntect 代码块语法高亮。
+# syntect 默认特性会拉入 onig（C 依赖）；这里关默认、改用纯 Rust 的 fancy-regex 后端，
+# 保持 cargo build 不需要外部 C 工具链。
+pulldown-cmark = { version = "0.13", default-features = false }
+syntect = { version = "5", default-features = false, features = [
+  "default-syntaxes",
+  "default-themes",
+  "regex-fancy",
+  "parsing",
+  "html",
+] }
 
 # 工具库
 base64 = "0.22"

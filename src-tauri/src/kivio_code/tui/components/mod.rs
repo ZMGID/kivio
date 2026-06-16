@@ -4,11 +4,14 @@
 pub mod editor;
 pub mod input;
 pub mod loader;
+pub mod markdown;
 pub mod select_list;
 pub mod text;
 
 #[allow(unused_imports)]
 pub use editor::{Editor, EditorTheme, TextChunk};
+#[allow(unused_imports)]
+pub use markdown::{Markdown, MarkdownTheme};
 #[allow(unused_imports)]
 pub use input::Input;
 #[allow(unused_imports)]
