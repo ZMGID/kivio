@@ -1369,6 +1369,108 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
+    /// End-to-end simulation of an agent session using the Pi-style tool set.
+    /// Exercises the new behaviors together: gitignore-aware grep/find, no-boundary
+    /// writes outside the project root, read-back, and bash large-output offload.
+    /// Run with: cargo test --bin kivio simulated_agent_session -- --nocapture
+    #[tokio::test]
+    async fn simulated_agent_session_exercises_pi_style_tools() {
+        // ---- set up a realistic mini project ----
+        let proj = std::env::temp_dir().join(format!("kivio_sim_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(proj.join("src")).expect("mkdir src");
+        fs::create_dir_all(proj.join("node_modules/leftpad")).expect("mkdir node_modules");
+        fs::write(proj.join(".gitignore"), "node_modules/\ndist/\n").expect("write gitignore");
+        fs::write(proj.join("src/app.rs"), "fn main() {\n    // TODO: wire up the CLI\n}\n")
+            .expect("write app.rs");
+        fs::write(proj.join("src/util.rs"), "pub fn helper() -> u32 { 42 }\n").expect("write util.rs");
+        fs::write(
+            proj.join("node_modules/leftpad/index.js"),
+            "// TODO: vendored junk that must NOT show up\n",
+        )
+        .expect("write vendored js");
+        let ws = NativeToolWorkspace::project(
+            "sim".into(),
+            "Sim".into(),
+            Some(proj.to_string_lossy().into_owned()),
+        );
+        println!("\n=== Simulated agent session in {} ===", proj.display());
+
+        // 1) registry exposes exactly Pi's 7 file/shell short names.
+        let names: Vec<&str> = crate::mcp::native_registry::NATIVE_TOOLS
+            .iter()
+            .map(|e| e.name)
+            .filter(|n| matches!(*n, "read" | "write" | "edit" | "bash" | "grep" | "find" | "ls"))
+            .collect();
+        println!("\n[1] file/shell tools in registry: {names:?}");
+        assert_eq!(names.len(), 7, "exactly Pi's 7 short-named tools");
+
+        // 2) grep "TODO" — finds src/app.rs, skips gitignored node_modules.
+        let grep = search_files(&ws, &json!({ "query": "TODO" })).expect("grep");
+        println!("\n[2] grep TODO:\n{grep}");
+        assert!(grep.contains("app.rs"), "grep finds the source TODO");
+        assert!(
+            !grep.contains("node_modules") && !grep.contains("leftpad"),
+            "gitignored node_modules is skipped"
+        );
+
+        // 3) find "*.rs" finds sources; find "*.js" skips gitignored vendor js.
+        let find_rs = glob_files(&ws, &json!({ "pattern": "*.rs" })).expect("find rs");
+        println!("\n[3a] find *.rs:\n{find_rs}");
+        assert!(find_rs.contains("app.rs") && find_rs.contains("util.rs"));
+        let find_js = glob_files(&ws, &json!({ "pattern": "*.js" })).expect("find js");
+        println!("\n[3b] find *.js:\n{find_js}");
+        assert!(!find_js.contains("leftpad"), "gitignored js is skipped");
+
+        // 4) no-boundary: write to an absolute path OUTSIDE the project root.
+        let outside =
+            std::env::temp_dir().join(format!("kivio_sim_outside_{}.txt", uuid::Uuid::new_v4()));
+        let written = write_file(
+            &ws,
+            &json!({ "path": outside.to_string_lossy(), "content": "escaped the project root\n" }),
+        )
+        .expect("write outside project (no boundary)");
+        println!(
+            "\n[4] write outside project -> ok (operation={}, path={})",
+            written.operation,
+            outside.display()
+        );
+        assert!(outside.is_file(), "file written outside project root");
+
+        // 5) read it back.
+        let read = read_file(&ws, &json!({ "path": outside.to_string_lossy() })).expect("read back");
+        println!("[5] read back content: {:?}", read.content.trim());
+        assert_eq!(read.content, "escaped the project root\n");
+
+        // 6) bash: a large output is offloaded to a temp log with a path note.
+        let bash = crate::native_tools::run_command(
+            &ws,
+            30_000,
+            &json!({
+                "command": "for i in $(seq 1 4000); do echo \"line $i ----------------------------------------------------------------\"; done"
+            }),
+        )
+        .await
+        .expect("bash large output");
+        let first_line = bash.lines().next().unwrap_or("");
+        println!("\n[6] bash large output, first line:\n{first_line}");
+        assert!(
+            bash.contains("complete log saved to"),
+            "large bash output is offloaded to a temp log"
+        );
+
+        // cleanup
+        let _ = fs::remove_dir_all(&proj);
+        let _ = fs::remove_file(&outside);
+        if let Some(rest) = first_line.strip_prefix("[full output:") {
+            if let Some(idx) = rest.find("saved to ") {
+                if let Some(path) = rest[idx + "saved to ".len()..].split('.').next() {
+                    let _ = fs::remove_file(path.trim());
+                }
+            }
+        }
+        println!("\n=== simulation complete: all assertions passed ===\n");
+    }
+
     #[test]
     fn read_file_allows_temp_paths() {
         let file = std::env::temp_dir().join(format!("kivio_read_{}.txt", uuid::Uuid::new_v4()));
