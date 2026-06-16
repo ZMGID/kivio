@@ -173,6 +173,18 @@ impl RapidOcrClient {
         })
     }
 
+    /// Headless (no-AppHandle) client for the `kivio-code` CLI. OCR is never
+    /// invoked from the terminal agent; carries `app: None` so any OCR call
+    /// errors out, identical to the test `disabled()` placeholder.
+    pub fn headless(http: reqwest::Client) -> Arc<Self> {
+        Arc::new(Self {
+            app: None,
+            http,
+            pipeline: OnceCell::new(),
+            install_lock: Mutex::new(()),
+        })
+    }
+
     /// 模型 + dylib 落盘位置:`{app_data_dir}/rapidocr-models/`。
     fn model_dir(&self) -> Result<PathBuf, String> {
         let app = self

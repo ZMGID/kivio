@@ -37,12 +37,16 @@ chrono = "0.4"
 
 # HTTP 客户端与异步运行时
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["time", "process", "io-util", "sync"] }
+tokio = { version = "1", features = ["time", "process", "io-util", "sync", "rt-multi-thread", "macros"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 scraper = "0.23"
 html-escape = "0.2"
 regex = "1"
 ignore = "0.4"
+
+# kivio-code 终端 agent CLI 用：参数解析 + 跨平台 app-data 目录定位。
+clap = { version = "4", features = ["derive"] }
+directories = "5"
 
 # 工具库
 base64 = "0.22"

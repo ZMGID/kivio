@@ -5,6 +5,7 @@ pub mod agents;
 pub mod capture_geometry;
 pub mod chat;
 pub mod commands;
+pub mod kivio_code;
 pub mod lens;
 pub mod lens_commands;
 #[cfg(target_os = "macos")]

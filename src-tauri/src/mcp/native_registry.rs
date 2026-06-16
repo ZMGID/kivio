@@ -340,7 +340,7 @@ pub fn native_tool_requires_session_consent(name: &str) -> bool {
     find_entry(name).is_some_and(|entry| entry.requires_session_consent)
 }
 
-pub(super) fn text_tool_result(content: String) -> McpToolCallResult {
+pub fn text_tool_result(content: String) -> McpToolCallResult {
     McpToolCallResult {
         content,
         is_error: false,

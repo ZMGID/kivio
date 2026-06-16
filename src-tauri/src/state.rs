@@ -120,6 +120,47 @@ pub struct AppState {
 pub const KEY_COOLDOWN: Duration = Duration::from_secs(60);
 
 impl AppState {
+    /// Build a headless `AppState` for the `kivio-code` terminal agent — no
+    /// `AppHandle`, no Tauri runtime. Every field mirrors the live construction
+    /// in `lib.rs::run` (the `app.manage(AppState { .. })` block) except the two
+    /// OCR clients use their `headless()` constructors and `usage_dir` is passed
+    /// in. The agent loop only touches `settings`, the chat-generation maps,
+    /// session-consent set, `http`, and `usage_dir`; the rest are inert defaults
+    /// kept for struct completeness.
+    pub fn new_headless(settings: Settings, usage_dir: PathBuf) -> Self {
+        AppState {
+            settings: RwLock::new(settings),
+            explain_images: Mutex::new(HashMap::new()),
+            current_explain_image_id: Mutex::new(None),
+            lens_busy: AtomicBool::new(false),
+            prev_frontmost_pid_lens: AtomicI32::new(0),
+            prev_frontmost_pid_main: AtomicI32::new(0),
+            explain_stream_generation: AtomicU64::new(0),
+            chat_stream_generations: Mutex::new(HashMap::new()),
+            chat_active_replies: Mutex::new(HashSet::new()),
+            pending_chat_tool_approvals: Mutex::new(HashMap::new()),
+            chat_session_consent: Mutex::new(HashSet::new()),
+            pending_chat_session_consents: Mutex::new(HashMap::new()),
+            chat_consent_prompt_lock: tokio::sync::Mutex::new(()),
+            pending_chat_user_prompts: Mutex::new(HashMap::new()),
+            pending_python_runs: Mutex::new(HashMap::new()),
+            chat_create_conversation_lock: Mutex::new(()),
+            chat_tool_list_cache: Mutex::new(HashMap::new()),
+            pending_chat_external_sends: Mutex::new(Vec::new()),
+            pending_selection: Mutex::new(None),
+            lens_freeze_frame_image_id: Mutex::new(None),
+            key_cooldowns: Mutex::new(HashMap::new()),
+            active_key_idx: Mutex::new(HashMap::new()),
+            mcp_sessions: tokio::sync::Mutex::new(HashMap::new()),
+            usage_dir,
+            http: crate::api::build_http_client(),
+            #[cfg(target_os = "macos")]
+            macos_ocr: MacOcrClient::headless(),
+            rapidocr: RapidOcrClient::headless(crate::api::build_http_client()),
+            sub_agents: crate::chat::sub_agent::SubAgentManager::default(),
+        }
+    }
+
     /// 安全读取设置（锁中毒时返回内部数据，不 panic）
     pub fn settings_read(&self) -> std::sync::RwLockReadGuard<'_, Settings> {
         self.settings.read().unwrap_or_else(|e| e.into_inner())

@@ -673,7 +673,7 @@ where
 /// 文件变更结果给模型的 diff 最多带多少行（对齐 clawspring 的 80 行裁剪）。
 const FILE_MUTATION_DIFF_MAX_LINES: usize = 80;
 
-fn file_mutation_tool_result(result: FileMutationResult) -> Result<McpToolCallResult, String> {
+pub fn file_mutation_tool_result(result: FileMutationResult) -> Result<McpToolCallResult, String> {
     let summary = result.summary();
     let mut content = summary;
     if !result.warnings.is_empty() {
@@ -707,7 +707,7 @@ fn file_mutation_tool_result(result: FileMutationResult) -> Result<McpToolCallRe
     })
 }
 
-pub(super) fn read_file_tool_result(result: ReadFileResult) -> Result<McpToolCallResult, String> {
+pub fn read_file_tool_result(result: ReadFileResult) -> Result<McpToolCallResult, String> {
     // structured_content 保留完整 ReadFileResult 给前端 ToolCallBlock 渲染（不变）。
     let structured = serde_json::to_value(&result)
         .map_err(|err| format!("Serialize read_file result failed: {err}"))?;
