@@ -22,11 +22,13 @@ use crate::kivio_code::tui::components::{
     SelectListLayoutOptions, SelectListTheme, Spacer, Text,
 };
 use crate::kivio_code::tui::render::Component;
+use crate::kivio_code::tui::text_width::visible_width;
 
 use super::agent_host::AgentUiEvent;
-use super::slash::{dispatch_slash, SlashOutcome};
+use super::slash::{dispatch_slash, SlashOutcome, SlashCommandSpec, SLASH_COMMANDS};
 use super::tool_card::render_tool_card;
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
+use crate::kivio_code::tui::fuzzy::fuzzy_filter;
 
 /// transcript 里的一条目。每条目自带其渲染所需的 [`Component`]（懒构造、按需重渲染）。
 pub enum TranscriptItem {
@@ -139,6 +141,10 @@ pub struct App {
     loader: Loader,
     /// 当 thinking/verbose 开启时，把 reasoning delta 显示在 spinner 旁（最近一行预览）。
     show_reasoning: bool,
+    /// 是否在 transcript 上方渲染欢迎头（首屏品牌头；用户开始对话/清屏后仍保留作为页眉）。
+    show_welcome: bool,
+    /// slash 命令补全弹窗（编辑器内容以 `/` 开头且为整行时显示；BUG 4）。None = 不显示。
+    slash_popup: Option<SelectList>,
 }
 
 impl App {
@@ -160,12 +166,19 @@ impl App {
             overlay: None,
             loader,
             show_reasoning: false,
+            show_welcome: true,
+            slash_popup: None,
         }
     }
 
     /// 是否把 reasoning delta 显示在 spinner 旁（`--verbose` 或 thinking 开启时）。
     pub fn set_show_reasoning(&mut self, show: bool) {
         self.show_reasoning = show;
+    }
+
+    /// 是否渲染品牌欢迎头（续跑会话时关掉，让 transcript 成为焦点）。
+    pub fn set_show_welcome(&mut self, show: bool) {
+        self.show_welcome = show;
     }
 
     /// 推进 thinking spinner 一帧（仅 generating 态有意义）；返回是否变化（用于决定重绘）。
@@ -333,6 +346,21 @@ impl App {
         self.transcript.len()
     }
 
+    /// transcript 条目的紧凑形状（测试用）：每条 `(kind, text)`，kind ∈ user/assistant/notice/tool，
+    /// text 是助手段落文本 / 卡片工具名等，便于断言**时间序**。
+    #[cfg(test)]
+    pub fn transcript_shape(&self) -> Vec<(&'static str, String)> {
+        self.transcript
+            .iter()
+            .map(|item| match item {
+                TranscriptItem::UserMessage(t) => ("user", t.clone()),
+                TranscriptItem::AssistantMessage(m) => ("assistant", m.content.clone()),
+                TranscriptItem::Notice(t) => ("notice", t.clone()),
+                TranscriptItem::ToolCard(c) => ("tool", c.tool_name.clone()),
+            })
+            .collect()
+    }
+
     /// 最近一次提交的原文（测试用）。
     pub fn last_submitted(&self) -> Option<&str> {
         self.last_submitted.as_deref()
@@ -445,12 +473,20 @@ impl App {
         }
     }
 
-    /// 把 delta 追加到 `message_id` 对应的助手消息；不存在则在 transcript 末尾新建一条流式中的助手消息。
+    /// 把 delta 追加进 transcript，**保持时间序**。
+    ///
+    /// 关键约束（修 BUG 1）：只有当 transcript 的最后一条仍是这次轮次正在写的助手段落时，才把 delta
+    /// 续写进它；若在它之后又 push 了别的条目（典型是工具卡片），下一条 delta 必须**在末尾另起一条新的
+    /// 助手段落**（与前一段共享同一 `message_id`，但是时间序上不同的可视块）。这样「文字 → 工具卡片 →
+    /// 文字」就会按发生顺序交错呈现，而不是所有文字挤在最上面、所有卡片堆在最下面。
     fn stream_assistant_delta(&mut self, message_id: &str, delta: &str, reasoning: &str) {
-        if let Some(msg) = self.assistant_mut(message_id) {
-            msg.content.push_str(delta);
-            msg.reasoning.push_str(reasoning);
-            return;
+        // 末尾若是「同 message_id 且仍在流式」的助手段落，续写它；否则另起一段。
+        if let Some(TranscriptItem::AssistantMessage(msg)) = self.transcript.last_mut() {
+            if msg.streaming && (message_id.is_empty() || msg.message_id == message_id) {
+                msg.content.push_str(delta);
+                msg.reasoning.push_str(reasoning);
+                return;
+            }
         }
         let mut msg = AssistantMessage {
             message_id: message_id.to_string(),
@@ -463,25 +499,38 @@ impl App {
         self.transcript.push(TranscriptItem::AssistantMessage(msg));
     }
 
-    /// 标记 `message_id` 的助手消息流式结束。`cancelled` / `error` 时追加一条状态说明（如果该消息存在）。
+    /// 标记 `message_id` 这一轮的所有助手段落流式结束（一轮可能因工具卡片穿插而拆成多段，全部 seal）。
+    /// `cancelled` / `error` 时把状态说明追加到**最后一个**该轮段落（无则推一条通知）。
     fn finalize_assistant(&mut self, message_id: &str, reason: &str) {
         let note = match reason {
             "cancelled" => Some("(cancelled)"),
             "error" => Some("(error)"),
             _ => None,
         };
-        if let Some(msg) = self.assistant_mut(message_id) {
-            msg.streaming = false;
-            if let Some(note) = note {
-                if !msg.content.is_empty() {
-                    msg.content.push_str("\n\n");
+        let mut last_idx: Option<usize> = None;
+        for (idx, item) in self.transcript.iter_mut().enumerate() {
+            if let TranscriptItem::AssistantMessage(m) = item {
+                if message_id.is_empty() || m.message_id == message_id {
+                    m.streaming = false;
+                    last_idx = Some(idx);
                 }
-                msg.content.push_str(note);
             }
-        } else if let Some(note) = note {
-            // No streamed content arrived (e.g. cancelled before any token):
-            // still surface the outcome as a notice so the user sees it.
-            self.push_notice(note);
+        }
+        match (note, last_idx) {
+            (Some(note), Some(idx)) => {
+                if let TranscriptItem::AssistantMessage(m) = &mut self.transcript[idx] {
+                    if !m.content.is_empty() {
+                        m.content.push_str("\n\n");
+                    }
+                    m.content.push_str(note);
+                }
+            }
+            (Some(note), None) => {
+                // No streamed content arrived (e.g. cancelled before any token):
+                // still surface the outcome as a notice so the user sees it.
+                self.push_notice(note);
+            }
+            _ => {}
         }
     }
 
@@ -497,17 +546,6 @@ impl App {
             }
         }
         self.transcript.push(TranscriptItem::ToolCard(card));
-    }
-
-    /// 取某 message_id 的助手消息可变引用（流式累积用）。空 id 不匹配（已完成的通知类助手消息用空 id）。
-    fn assistant_mut(&mut self, message_id: &str) -> Option<&mut AssistantMessage> {
-        if message_id.is_empty() {
-            return None;
-        }
-        self.transcript.iter_mut().rev().find_map(|item| match item {
-            TranscriptItem::AssistantMessage(m) if m.message_id == message_id => Some(m),
-            _ => None,
-        })
     }
 
     /// 清空 transcript（`/new`）。
@@ -559,6 +597,34 @@ impl App {
             return AppEffect::None;
         }
 
+        // slash 命令补全弹窗打开时优先处理导航 / 补全 / 关闭（BUG 4）。
+        if self.slash_popup.is_some() {
+            // Esc：关闭弹窗（不取消生成——此分支只在 idle 到达）。
+            if matches_key(data, "escape", self.kitty_active) {
+                self.slash_popup = None;
+                return AppEffect::None;
+            }
+            // Up/Down：在弹窗内导航。
+            if matches_key(data, "up", self.kitty_active) || matches_key(data, "down", self.kitty_active)
+            {
+                if let Some(popup) = self.slash_popup.as_mut() {
+                    popup.handle_input(data);
+                }
+                return AppEffect::None;
+            }
+            // Tab：把选中命令补全进编辑器（保持在编辑态，让用户可继续输入参数）。
+            if matches_key(data, "tab", self.kitty_active) {
+                self.complete_slash_selection();
+                return AppEffect::None;
+            }
+            // Enter：补全选中命令并立即执行（complete-then-run）。
+            if matches_key(data, "enter", self.kitty_active) {
+                self.complete_slash_selection();
+                self.slash_popup = None;
+                return self.submit();
+            }
+        }
+
         // 提交：Enter（editor 在内部也会响应 submit，但我们要拦截以分流 slash / echo）。
         if matches_key(data, "enter", self.kitty_active) {
             return self.submit();
@@ -566,7 +632,47 @@ impl App {
 
         // 其余一律交给 editor（含历史 / 编辑 / autocomplete / 换行 alt+enter 等）。
         self.editor.handle_input(data);
+        self.refresh_slash_popup();
         AppEffect::None
+    }
+
+    /// 按当前编辑器内容刷新 slash 命令弹窗：整行（首行、无换行）以 `/` 开头且尚无空格时，
+    /// 用 [`slash_candidates`] fuzzy 过滤命令；否则关闭弹窗。
+    fn refresh_slash_popup(&mut self) {
+        let candidates = slash_candidates(&self.editor.get_text());
+        match candidates {
+            Some(items) if !items.is_empty() => {
+                let select_items: Vec<SelectItem> = items
+                    .into_iter()
+                    .map(|(value, label, desc)| SelectItem::new(value, label, desc))
+                    .collect();
+                if let Some(popup) = self.slash_popup.as_mut() {
+                    popup.set_filtered_items(select_items);
+                } else {
+                    let mut list = SelectList::new(
+                        select_items,
+                        8,
+                        default_select_theme(),
+                        SelectListLayoutOptions::default(),
+                    );
+                    list.set_kitty_active(self.kitty_active);
+                    self.slash_popup = Some(list);
+                }
+            }
+            _ => self.slash_popup = None,
+        }
+    }
+
+    /// 把 slash 弹窗里选中的命令写回编辑器（替换整行为 `/<name> `），并关弹窗。
+    fn complete_slash_selection(&mut self) {
+        if let Some(value) = self
+            .slash_popup
+            .as_ref()
+            .and_then(|p| p.get_selected_item())
+            .map(|i| i.value)
+        {
+            self.editor.set_text(&format!("{value} "));
+        }
     }
 
     /// 提交当前编辑器内容。slash 命令就地分发；否则记入 transcript 并返回 [`AppEffect::Submitted`]，
@@ -581,6 +687,7 @@ impl App {
         // 记入历史并清空编辑器。
         self.editor.add_to_history(&trimmed);
         self.editor.set_text("");
+        self.slash_popup = None;
 
         // slash 命令分发。
         if trimmed.starts_with('/') {
@@ -656,11 +763,53 @@ impl App {
         AppEffect::None
     }
 
+    /// 渲染品牌欢迎头（BUG 2）：克制的 macOS 原生气质的 bordered 头，含标题+版本、cwd、活动模型、
+    /// 紧凑提示行。用既有 [`ColorFn`] 配色，不用喧闹的 ASCII art。
+    fn render_welcome(&self, width: u16) -> Vec<String> {
+        let dim: ColorFn = Arc::new(|s: &str| format!("\x1b[2m{s}\x1b[22m"));
+        let bold: ColorFn = Arc::new(|s: &str| format!("\x1b[1m{s}\x1b[22m"));
+        let cyan: ColorFn = Arc::new(|s: &str| format!("\x1b[36m{s}\x1b[39m"));
+
+        let version = env!("CARGO_PKG_VERSION");
+        let title = format!("{} {}", bold("Kivio Code"), dim(&format!("v{version}")));
+        let cwd_line = format!("{}  {}", dim("cwd"), self.footer.cwd_display);
+        let model_line = format!("{}  {}", dim("model"), cyan(&self.footer.model));
+        let tips = dim("/help · /model · Ctrl+D exit · Esc cancel");
+
+        // 盒宽：在终端宽内、留两列外边距，给一个上限避免在超宽终端拉得过长。
+        let w = width as usize;
+        let inner = w.saturating_sub(4).clamp(1, 56);
+        let line_visible = |s: &str| {
+            let pad = inner.saturating_sub(visible_width(s));
+            format!("│ {s}{} │", " ".repeat(pad))
+        };
+        let top = format!("╭{}╮", "─".repeat(inner + 2));
+        let bottom = format!("╰{}╯", "─".repeat(inner + 2));
+
+        let mut out: Vec<String> = Vec::new();
+        out.push(dim(&top));
+        out.push(line_visible(&title));
+        out.push(line_visible(&dim("Terminal coding agent")));
+        out.push(line_visible(""));
+        out.push(line_visible(&cwd_line));
+        out.push(line_visible(&model_line));
+        out.push(line_visible(""));
+        out.push(line_visible(&tips));
+        out.push(dim(&bottom));
+        out
+    }
+
     /// 渲染整棵 UI（transcript → 间隔 → editor → footer）成行数组（每行 ≤ width 可见列）。
     ///
     /// 每次调用重建组件树：transcript 体量在 5a 可控，重建简单可靠；5b 大 transcript 可改增量缓存。
     pub fn render(&mut self, width: u16) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
+
+        // 品牌欢迎头（首屏页眉）。
+        if self.show_welcome {
+            lines.extend(self.render_welcome(width));
+            lines.push(String::new());
+        }
 
         // transcript。
         for item in &self.transcript {
@@ -671,14 +820,21 @@ impl App {
                     lines.push(String::new());
                 }
                 TranscriptItem::AssistantMessage(msg) => {
+                    // reasoning（thinking）作为次要的 DIM 块呈现在答案之上（BUG 3）：
+                    // 流式中逐行显示完整推理；完成后折叠为一行 dim 摘要，保持其从属于答案的视觉层级。
+                    if !msg.reasoning.trim().is_empty() {
+                        lines.extend(render_reasoning(&msg.reasoning, msg.streaming, width));
+                    }
                     // 流式中追加一个光标提示，让用户看到「还在写」。
                     let body = if msg.streaming {
                         format!("{}▌", msg.content)
                     } else {
                         msg.content.clone()
                     };
-                    let mut md = Markdown::new(body, 1, 0, MarkdownTheme::plain(), None);
-                    lines.extend(md.render(width));
+                    if !body.trim().is_empty() {
+                        let mut md = Markdown::new(body, 1, 0, MarkdownTheme::plain(), None);
+                        lines.extend(md.render(width));
+                    }
                     lines.push(String::new());
                 }
                 TranscriptItem::Notice(text) => {
@@ -720,6 +876,10 @@ impl App {
         } else {
             // editor。
             lines.extend(self.editor.render(width));
+            // slash 命令补全弹窗（编辑器之下；BUG 4）。
+            if let Some(popup) = &mut self.slash_popup {
+                lines.extend(popup.render(width));
+            }
         }
 
         // footer：一行空隔 + 状态行。
@@ -834,6 +994,62 @@ fn clip(text: &str, max: usize) -> String {
     } else {
         let head: String = text.chars().take(max).collect();
         format!("{head}…")
+    }
+}
+
+/// slash 命令补全候选（BUG 4 的纯逻辑，便于单测）。
+///
+/// 仅当 `input` 是单行、以 `/` 开头、且命令名后还没有空格（即仍在敲命令名）时返回 `Some(candidates)`；
+/// 候选用 [`fuzzy_filter`] 按命令名匹配，每条展开为 `(/<name>, /<name>, description)`。别名不单独列出
+/// （只补全规范名）。空查询（仅 `/`）列出全部命令。不满足触发条件时返回 `None`（调用方据此关闭弹窗）。
+fn slash_candidates(input: &str) -> Option<Vec<(String, String, Option<String>)>> {
+    // 整行触发：不允许换行（多行输入不是 slash 命令）。
+    if input.contains('\n') {
+        return None;
+    }
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let query = trimmed.trim_start_matches('/');
+    // 命令名后出现空格 ⇒ 已在输入参数，不再补全命令名。
+    if query.contains(char::is_whitespace) {
+        return None;
+    }
+    let specs: Vec<&'static SlashCommandSpec> = SLASH_COMMANDS.iter().collect();
+    let filtered = fuzzy_filter(specs, query, |s| s.name.to_string());
+    Some(
+        filtered
+            .into_iter()
+            .map(|s| {
+                (
+                    format!("/{}", s.name),
+                    format!("/{}", s.name),
+                    Some(s.description.to_string()),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// 把 reasoning（thinking）渲染成 DIM 次要块（BUG 3）。
+///
+/// 流式中（`streaming=true`）逐行 dim 显示完整推理，让用户看到模型「在想什么」；完成后折叠为一行
+/// `💭 thought for a moment` dim 摘要，保持其从属于答案的视觉层级。
+fn render_reasoning(reasoning: &str, streaming: bool, width: u16) -> Vec<String> {
+    let dim: ColorFn = Arc::new(|s: &str| format!("\x1b[2;3m{s}\x1b[0m"));
+    if streaming {
+        let mut lines: Vec<String> = Vec::new();
+        for raw in reasoning.lines() {
+            let mut t = Text::new(format!("· {}", raw.trim_end()), 1, 0, None);
+            for line in t.render(width) {
+                lines.push(dim(&line));
+            }
+        }
+        lines
+    } else {
+        let mut t = Text::new("💭 thought for a moment".to_string(), 1, 0, None);
+        t.render(width).into_iter().map(|l| dim(&l)).collect()
     }
 }
 
@@ -1446,5 +1662,214 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
+    }
+
+    // ---- BUG 1: transcript interleaves by emission order ----
+
+    #[test]
+    fn stream_then_tool_then_stream_interleaves_in_order() {
+        let mut a = app();
+        // Round 1 assistant text.
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "A".to_string(),
+            reasoning: String::new(),
+        });
+        // A tool card lands between rounds.
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(tool_record(
+            "call_1",
+            "read",
+            ToolCallStatus::Success,
+        ))));
+        // Round 2 assistant text — must start a NEW segment AFTER the card.
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "B".to_string(),
+            reasoning: String::new(),
+        });
+
+        let shape = a.transcript_shape();
+        assert_eq!(
+            shape,
+            vec![
+                ("assistant", "A".to_string()),
+                ("tool", "read".to_string()),
+                ("assistant", "B".to_string()),
+            ],
+            "text/tool/text must interleave by emission order, not pile up"
+        );
+        // last_assistant_text returns the LAST assistant segment.
+        assert_eq!(a.last_assistant_text(), Some("B"));
+        assert!(a.assistant_streaming());
+    }
+
+    #[test]
+    fn consecutive_deltas_without_tool_stay_one_segment() {
+        let mut a = app();
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "Hel".to_string(),
+            reasoning: String::new(),
+        });
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "lo".to_string(),
+            reasoning: String::new(),
+        });
+        // No tool between → single coalesced segment.
+        assert_eq!(a.transcript_shape(), vec![("assistant", "Hello".to_string())]);
+    }
+
+    #[test]
+    fn finalize_seals_all_segments_of_the_turn() {
+        let mut a = app();
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "A".to_string(),
+            reasoning: String::new(),
+        });
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(tool_record(
+            "call_1",
+            "read",
+            ToolCallStatus::Success,
+        ))));
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "B".to_string(),
+            reasoning: String::new(),
+        });
+        a.apply_agent_event(AgentUiEvent::Done {
+            message_id: "m1".to_string(),
+            reason: "completed".to_string(),
+        });
+        assert!(!a.assistant_streaming(), "all turn segments sealed after Done");
+    }
+
+    // ---- BUG 2: branded welcome header ----
+
+    #[test]
+    fn initial_render_shows_welcome_header() {
+        let mut a = app();
+        let joined = a.render(80).join("\n");
+        assert!(joined.contains("Kivio Code"), "title present");
+        assert!(joined.contains(env!("CARGO_PKG_VERSION")), "version present");
+        assert!(joined.contains("~/proj"), "cwd present");
+        assert!(joined.contains("openai:gpt-4o"), "active model present");
+        assert!(joined.contains("/help"), "tips line present");
+        assert!(joined.contains("Ctrl+D"), "tips mention exit");
+    }
+
+    #[test]
+    fn welcome_header_can_be_suppressed() {
+        let mut a = app();
+        a.set_show_welcome(false);
+        let joined = a.render(80).join("\n");
+        assert!(!joined.contains("Kivio Code"));
+    }
+
+    // ---- BUG 3: reasoning rendered as a dim block ----
+
+    #[test]
+    fn streaming_reasoning_rendered_dim() {
+        let mut a = app();
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "answer".to_string(),
+            reasoning: "considering options".to_string(),
+        });
+        let joined = a.render(80).join("\n");
+        assert!(joined.contains("considering options"), "reasoning visible while streaming");
+        // dim+italic ANSI escape is applied (\x1b[2;3m).
+        assert!(joined.contains("\x1b[2;3m"), "reasoning is dim/italic");
+        assert!(joined.contains("answer"), "answer still rendered");
+    }
+
+    #[test]
+    fn finalized_reasoning_collapses_to_thought_line() {
+        let mut a = app();
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "answer".to_string(),
+            reasoning: "long chain of thought".to_string(),
+        });
+        a.apply_agent_event(AgentUiEvent::Done {
+            message_id: "m1".to_string(),
+            reason: "completed".to_string(),
+        });
+        let joined = a.render(80).join("\n");
+        assert!(joined.contains("thought for a moment"), "collapsed thought summary shown");
+        assert!(!joined.contains("long chain of thought"), "full reasoning hidden once done");
+    }
+
+    // ---- BUG 4: slash command autocomplete ----
+
+    #[test]
+    fn slash_candidates_lists_all_for_bare_slash() {
+        let c = slash_candidates("/").expect("triggers on bare slash");
+        assert_eq!(c.len(), SLASH_COMMANDS.len());
+    }
+
+    #[test]
+    fn slash_candidates_fuzzy_filters_by_name() {
+        let c = slash_candidates("/mod").expect("triggers");
+        let values: Vec<&str> = c.iter().map(|(v, _, _)| v.as_str()).collect();
+        assert!(values.contains(&"/model"));
+        assert!(!values.contains(&"/quit"));
+    }
+
+    #[test]
+    fn slash_candidates_none_when_not_slash_or_has_args() {
+        assert!(slash_candidates("hello").is_none());
+        assert!(slash_candidates("/model gpt").is_none(), "args → no command completion");
+        assert!(slash_candidates("line\n/model").is_none(), "multiline → no completion");
+    }
+
+    #[test]
+    fn typing_slash_opens_popup_and_renders() {
+        let mut a = app();
+        type_str(&mut a, "/mo");
+        let joined = a.render(80).join("\n");
+        assert!(joined.contains("/model"), "popup lists matching command");
+        assert!(joined.contains("Switch the active model"), "popup shows description");
+    }
+
+    #[test]
+    fn popup_enter_completes_and_runs_command() {
+        // "/mod" fuzzy-matches /model; Enter completes then runs → OpenModelSelector.
+        let mut a = app();
+        type_str(&mut a, "/mod");
+        let effect = a.handle_key("\r");
+        assert_eq!(effect, AppEffect::OpenModelSelector);
+    }
+
+    #[test]
+    fn popup_tab_completes_into_editor_without_running() {
+        let mut a = app();
+        type_str(&mut a, "/mod");
+        let effect = a.handle_key("\t");
+        assert_eq!(effect, AppEffect::None);
+        assert_eq!(a.editor_text(), "/model ");
+    }
+
+    #[test]
+    fn popup_esc_dismisses_without_clearing_editor() {
+        let mut a = app();
+        type_str(&mut a, "/mo");
+        let effect = a.handle_key("\x1b"); // esc
+        assert_eq!(effect, AppEffect::None);
+        // editor text retained; popup gone.
+        assert_eq!(a.editor_text(), "/mo");
+        let joined = a.render(80).join("\n");
+        assert!(!joined.contains("Switch the active model"), "popup dismissed");
+    }
+
+    #[test]
+    fn typing_slash_help_then_enter_still_runs() {
+        // Even with the popup open, an exact /help + Enter must execute /help.
+        let mut a = app();
+        type_str(&mut a, "/help");
+        let effect = a.handle_key("\r");
+        assert_eq!(effect, AppEffect::None);
+        assert!(a.render(80).join("\n").contains("/help"));
     }
 }

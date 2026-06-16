@@ -485,8 +485,11 @@ pub fn run(options: InteractiveOptions) -> std::io::Result<()> {
             }
             let state = build_app_state(settings.clone());
             let timeout_ms = assembly.effective_chat_tools.tool_timeout_ms;
-            if !resumed {
-                app.push_notice("kivio-code interactive. Type a message; /help for commands; /model switches model; Esc cancels a run; Ctrl+D exits.");
+            // The branded welcome header (rendered by App::render) replaces the old
+            // bare one-line startup notice. On resume the restored transcript is the
+            // focus, so suppress the header there.
+            if resumed {
+                app.set_show_welcome(false);
             }
             Some(TurnRuntime {
                 handle: runtime.handle().clone(),

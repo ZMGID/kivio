@@ -46,10 +46,18 @@ const MAX_DETAIL_CHARS: usize = 4000;
 
 const DIM: &str = "\x1b[2m";
 const DIM_OFF: &str = "\x1b[22m";
+const BOLD: &str = "\x1b[1m";
+const BOLD_OFF: &str = "\x1b[22m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const CYAN: &str = "\x1b[36m";
 const COLOR_OFF: &str = "\x1b[39m";
+
+/// The dim left gutter drawn before every body line, so a card's body reads as
+/// one grouped unit visually separated from assistant text and the next card.
+const GUTTER: &str = "\x1b[2m│\x1b[22m ";
+/// Visible width the gutter occupies (`│` + space). Used to budget body width.
+const GUTTER_WIDTH: u16 = 2;
 
 /// The status glyph shown at the head of a card (shared with `app.rs`).
 pub fn status_symbol(status: &ToolCallStatus) -> &'static str {
@@ -63,20 +71,60 @@ pub fn status_symbol(status: &ToolCallStatus) -> &'static str {
     }
 }
 
+/// The status glyph wrapped in its themed color: green success, red error, cyan
+/// while running/pending, dim for skipped/cancelled. Keeps the header readable
+/// at a glance without dumping raw SGR into the per-tool body code.
+fn status_glyph_colored(status: &ToolCallStatus) -> String {
+    let glyph = status_symbol(status);
+    match status {
+        ToolCallStatus::Success => format!("{GREEN}{glyph}{COLOR_OFF}"),
+        ToolCallStatus::Error => format!("{RED}{glyph}{COLOR_OFF}"),
+        ToolCallStatus::Running | ToolCallStatus::Pending => format!("{CYAN}{glyph}{COLOR_OFF}"),
+        ToolCallStatus::Skipped | ToolCallStatus::Cancelled => format!("{DIM}{glyph}{DIM_OFF}"),
+    }
+}
+
+/// A short, fixed-width text tag shown before the tool name in the header so the
+/// card type is scannable at a glance. Plain ASCII (no emoji) keeps the column
+/// alignment exact across terminals — emoji are double-width on some and
+/// single on others, which would jitter the header.
+fn tool_tag(name: &str) -> &'static str {
+    match normalize_tool(name) {
+        ToolKind::Read => "read",
+        ToolKind::Listing => "list",
+        ToolKind::Grep => "find",
+        ToolKind::Mutation => "edit",
+        ToolKind::Bash => "bash",
+        ToolKind::Other => "tool",
+    }
+}
+
 /// Render one tool card to ANSI lines for the given viewport width.
 ///
-/// The first line is always the header (`<glyph> <tool> — <summary>`); the body
-/// is shaped per tool. Errors short-circuit to a red error line regardless of
-/// tool type.
+/// Layout is a grouped block:
+///
+/// ```text
+///                          ← one blank line separating it from the previous block
+/// ✓ list  src — path=.     ← header: colored glyph, fixed tag, bold name, dim summary
+/// │ sub/                   ← body, indented under a dim left gutter
+/// │ alpha.rs
+/// ```
+///
+/// The leading blank line keeps adjacent cards (and surrounding assistant text)
+/// from running together. The body is shaped per tool; errors short-circuit to a
+/// red error block regardless of tool type. Every emitted line respects `width`.
 pub fn render_tool_card(card: &ToolCard, width: u16) -> Vec<String> {
     let mut lines = Vec::new();
+    // Blank separator line so cards don't visually merge with the preceding
+    // block. A bare empty string renders as a blank terminal row.
+    lines.push(String::new());
     lines.extend(header_lines(card, width));
 
-    // An error result is shown the same way for every tool.
+    // An error result is shown the same way for every tool: a red, guttered block.
     if matches!(card.status, ToolCallStatus::Error) {
         if let Some(detail) = &card.detail {
             for raw in clip_lines(detail, MAX_BASH_TAIL_LINES) {
-                lines.extend(text_line(&format!("{RED}{}{COLOR_OFF}", raw), width));
+                lines.extend(body_line(&format!("{RED}{}{COLOR_OFF}", raw), width));
             }
         }
         return lines;
@@ -91,15 +139,20 @@ pub fn render_tool_card(card: &ToolCard, width: u16) -> Vec<String> {
     lines
 }
 
-/// The card header line(s): `<glyph> <tool> — <summary>`.
+/// The card header line(s): `<glyph> <tag> <name>  <summary>`.
+///
+/// The glyph is themed by status, the fixed-width tag makes the card type
+/// scannable, the tool name is emphasized (bold), and the argument summary is
+/// dimmed so it reads as metadata rather than chat text.
 fn header_lines(card: &ToolCard, width: u16) -> Vec<String> {
+    let glyph = status_glyph_colored(&card.status);
+    let tag = tool_tag(&card.tool_name);
+    let name = format!("{BOLD}{}{BOLD_OFF}", card.tool_name);
     let header = if card.summary.is_empty() {
-        format!("{} {}", status_symbol(&card.status), card.tool_name)
+        format!("{glyph} {DIM}{tag}{DIM_OFF} {name}")
     } else {
         format!(
-            "{} {} {DIM}—{DIM_OFF} {}",
-            status_symbol(&card.status),
-            card.tool_name,
+            "{glyph} {DIM}{tag}{DIM_OFF} {name}  {DIM}{}{DIM_OFF}",
             card.summary
         )
     };
@@ -145,7 +198,7 @@ fn normalize_tool(name: &str) -> ToolKind {
 /// structured content for an accurate range; falls back to the summary path.
 fn read_body(card: &ToolCard, width: u16) -> Vec<String> {
     let header = read_header(card);
-    text_line(&format!("  {DIM}{header}{DIM_OFF}"), width)
+    body_line(&format!("{DIM}{header}{DIM_OFF}"), width)
 }
 
 fn read_header(card: &ToolCard) -> String {
@@ -213,7 +266,7 @@ fn listing_body(card: &ToolCard, width: u16) -> Vec<String> {
         return clipped_preview_line(card, width);
     };
     if names.is_empty() {
-        return text_line(&format!("  {DIM}(empty){DIM_OFF}"), width);
+        return body_line(&format!("{DIM}(empty){DIM_OFF}"), width);
     }
 
     // Partition while preserving order: directories first, then files/other.
@@ -232,11 +285,11 @@ fn listing_body(card: &ToolCard, width: u16) -> Vec<String> {
 
     let mut lines = Vec::new();
     for name in &ordered[..shown] {
-        lines.extend(text_line(&format!("  {name}"), width));
+        lines.extend(body_line(name, width));
     }
     if total > shown {
         let more = total - shown;
-        lines.extend(text_line(&format!("  {DIM}… +{more} more{DIM_OFF}"), width));
+        lines.extend(body_line(&format!("{DIM}… +{more} more{DIM_OFF}"), width));
     }
     lines
 }
@@ -260,7 +313,7 @@ fn grep_body(card: &ToolCard, width: u16) -> Vec<String> {
         return clipped_preview_line(card, width);
     };
     if refs.is_empty() {
-        return text_line(&format!("  {DIM}no matches{DIM_OFF}"), width);
+        return body_line(&format!("{DIM}no matches{DIM_OFF}"), width);
     }
 
     let total = refs.len();
@@ -268,11 +321,11 @@ fn grep_body(card: &ToolCard, width: u16) -> Vec<String> {
     let mut lines = Vec::new();
     for m in &refs[..shown] {
         // Dim so the `path:line` reference reads as a reference, not chat text.
-        lines.extend(text_line(&format!("  {DIM}{m}{DIM_OFF}"), width));
+        lines.extend(body_line(&format!("{DIM}{m}{DIM_OFF}"), width));
     }
     if total > shown {
         let more = total - shown;
-        lines.extend(text_line(&format!("  {DIM}… +{more} more{DIM_OFF}"), width));
+        lines.extend(body_line(&format!("{DIM}… +{more} more{DIM_OFF}"), width));
     }
     lines
 }
@@ -448,11 +501,11 @@ fn extract_json_string_values(text: &str, key: &str) -> Vec<String> {
 /// or grep result is neither structured nor parseable — never a JSON-brace wall.
 fn clipped_preview_line(card: &ToolCard, width: u16) -> Vec<String> {
     let Some(detail) = card.detail.as_deref() else {
-        return text_line(&format!("  {DIM}(no result){DIM_OFF}"), width);
+        return body_line(&format!("{DIM}(no result){DIM_OFF}"), width);
     };
     let collapsed = detail.replace('\n', " ");
     let collapsed = clip_chars(collapsed.trim(), 200);
-    text_line(&format!("  {DIM}{collapsed}{DIM_OFF}"), width)
+    body_line(&format!("{DIM}{collapsed}{DIM_OFF}"), width)
 }
 
 /// `write_file` / `edit_file`: the unified diff, green `+` / red `-`, clipped.
@@ -478,7 +531,8 @@ fn mutation_diff(card: &ToolCard) -> Option<String> {
 }
 
 /// Color a unified diff: `+` green, `-` red, `@@` cyan, everything else dim.
-/// Clipped to [`MAX_DIFF_LINES`] with a trailing `… diff clipped` note.
+/// Clipped to [`MAX_DIFF_LINES`] with a trailing `… diff clipped` note. Each
+/// line is rendered under the card gutter so the diff sits inside the card.
 fn diff_lines(diff: &str, width: u16) -> Vec<String> {
     let raw: Vec<&str> = diff.lines().collect();
     let total = raw.len();
@@ -486,11 +540,12 @@ fn diff_lines(diff: &str, width: u16) -> Vec<String> {
     let mut lines = Vec::new();
     for line in &raw[..shown] {
         let colored = color_diff_line(line);
-        lines.extend(text_line(&format!("  {colored}"), width));
+        lines.extend(body_line(&colored, width));
     }
     if total > shown {
-        lines.extend(text_line(
-            &format!("  {DIM}… diff clipped ({shown} of {total} lines){DIM_OFF}"),
+        let more = total - shown;
+        lines.extend(body_line(
+            &format!("{DIM}… {more} more diff line(s) ({shown} of {total} shown){DIM_OFF}"),
             width,
         ));
     }
@@ -518,7 +573,9 @@ fn color_diff_line(line: &str) -> String {
 fn bash_body(card: &ToolCard, width: u16) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(cmd) = arg_after_eq(&card.summary, "command") {
-        lines.extend(text_line(&format!("  {CYAN}${COLOR_OFF} {cmd}"), width));
+        // The command line, prefixed with a cyan `$` prompt so it reads as the
+        // invocation rather than output.
+        lines.extend(body_line(&format!("{CYAN}${COLOR_OFF} {BOLD}{cmd}{BOLD_OFF}"), width));
     }
     if let Some(detail) = &card.detail {
         let output: Vec<&str> = detail.lines().collect();
@@ -526,30 +583,34 @@ fn bash_body(card: &ToolCard, width: u16) -> Vec<String> {
         // Keep the *tail* (most shells' useful output is at the end).
         let start = total.saturating_sub(MAX_BASH_TAIL_LINES);
         if start > 0 {
-            lines.extend(text_line(
-                &format!("  {DIM}… {start} earlier line(s) hidden{DIM_OFF}"),
+            lines.extend(body_line(
+                &format!("{DIM}… {start} earlier line(s) hidden{DIM_OFF}"),
                 width,
             ));
         }
         for line in &output[start..] {
-            lines.extend(text_line(&format!("  {DIM}{line}{DIM_OFF}"), width));
+            lines.extend(body_line(&format!("{DIM}{line}{DIM_OFF}"), width));
         }
     }
     lines
 }
 
 /// Fallback: a single collapsed preview line (newlines → spaces), clipped. Used
-/// for `web_fetch` and any unrecognized tool.
+/// for `web_fetch` and any unrecognized tool. Rendered through Markdown (so
+/// fenced/inline formatting reads cleanly) at the gutter-reduced width, then
+/// each produced line is placed under the card gutter.
 fn preview_body(card: &ToolCard, width: u16) -> Vec<String> {
     let Some(detail) = &card.detail else {
         return Vec::new();
     };
     let collapsed = detail.replace('\n', " ");
     let collapsed = clip_chars(&collapsed, MAX_DETAIL_CHARS);
-    // Render through Markdown so fenced/inline formatting in tool text reads
-    // cleanly, matching assistant message rendering.
-    let mut md = Markdown::new(format!("  {collapsed}"), 1, 0, MarkdownTheme::plain(), None);
-    md.render(width)
+    let inner_width = width.saturating_sub(GUTTER_WIDTH).max(1);
+    let mut md = Markdown::new(collapsed, 0, 0, MarkdownTheme::plain(), None);
+    md.render(inner_width)
+        .into_iter()
+        .map(|line| format!("{GUTTER}{line}"))
+        .collect()
 }
 
 // ---- helpers ----
@@ -558,6 +619,21 @@ fn preview_body(card: &ToolCard, width: u16) -> Vec<String> {
 fn text_line(s: &str, width: u16) -> Vec<String> {
     let mut t = Text::new(s.to_string(), 1, 0, None);
     t.render(width)
+}
+
+/// Render one body line under the dim left gutter (`│ `), word-wrapping the
+/// content to the gutter-reduced width so wrapped continuations stay aligned
+/// under the same gutter and nothing exceeds `width`.
+///
+/// `content` may carry its own SGR color (diff +/-, dim refs, the bash `$`);
+/// the gutter is prepended after wrapping so the bar color never bleeds into it.
+fn body_line(content: &str, width: u16) -> Vec<String> {
+    let inner_width = width.saturating_sub(GUTTER_WIDTH).max(1);
+    let mut t = Text::new(content.to_string(), 0, 0, None);
+    t.render(inner_width)
+        .into_iter()
+        .map(|line| format!("{GUTTER}{line}"))
+        .collect()
 }
 
 /// Split `text` into at most `max` non-empty lines.
@@ -928,8 +1004,8 @@ mod tests {
         let big: Vec<String> = (0..100).map(|i| format!("+line {i}")).collect();
         c.structured_content = Some(serde_json::json!({ "diff": big.join("\n") }));
         let text = strip_ansi(&joined(&c, 80));
-        assert!(text.contains("diff clipped"), "{text}");
-        assert!(text.contains("40 of 100 lines"), "{text}");
+        assert!(text.contains("more diff line(s)"), "{text}");
+        assert!(text.contains("40 of 100 shown"), "{text}");
     }
 
     #[test]
@@ -982,5 +1058,111 @@ mod tests {
         for line in render_tool_card(&c, 50) {
             assert!(visible_width(&line) <= 50, "line exceeds width: {line:?}");
         }
+    }
+
+    // ---- layout structure (the 6a tool-card visual pass) ----
+
+    /// The first rendered line is always blank, separating the card from the
+    /// preceding block so adjacent cards never visually merge.
+    #[test]
+    fn card_starts_with_blank_separator_line() {
+        let mut c = card("read_file", ToolCallStatus::Success);
+        c.summary = "path=src/main.rs".to_string();
+        let rendered = render_tool_card(&c, 60);
+        assert!(!rendered.is_empty());
+        assert_eq!(strip_ansi(&rendered[0]).trim(), "", "first line should be blank");
+    }
+
+    /// The header carries the themed status glyph (green ✓ on success), a short
+    /// type tag, and the bold tool name — not the old `name — summary` form.
+    #[test]
+    fn header_has_colored_glyph_tag_and_bold_name() {
+        let mut c = card("list_dir", ToolCallStatus::Success);
+        c.summary = "path=.".to_string();
+        let rendered = render_tool_card(&c, 70);
+        // header is the line right after the blank separator
+        let header = &rendered[1];
+        assert!(header.contains(GREEN), "success glyph should be green: {header:?}");
+        assert!(header.contains(BOLD), "tool name should be bold: {header:?}");
+        let plain = strip_ansi(header);
+        assert!(plain.contains('✓'), "{plain}");
+        assert!(plain.contains("list"), "tag present: {plain}");
+        assert!(plain.contains("list_dir"), "tool name present: {plain}");
+        // no leftover em-dash separator from the old layout
+        assert!(!plain.contains('—'), "old em-dash layout removed: {plain}");
+    }
+
+    /// Error glyph is red.
+    #[test]
+    fn error_header_glyph_is_red() {
+        let mut c = card("read", ToolCallStatus::Error);
+        c.detail = Some("boom".to_string());
+        let rendered = render_tool_card(&c, 60);
+        assert!(rendered[1].contains(RED), "error glyph should be red: {:?}", rendered[1]);
+        assert!(strip_ansi(&rendered[1]).contains('✗'));
+    }
+
+    /// Every non-blank body line sits under the dim left gutter (`│`), so the
+    /// card reads as one grouped unit. The header line does NOT carry a gutter.
+    #[test]
+    fn body_lines_carry_left_gutter() {
+        let (dir, ws) = scratch();
+        std::fs::create_dir_all(dir.join("sub")).expect("mkdir sub");
+        std::fs::write(dir.join("alpha.rs"), "a").expect("write alpha");
+        let out = crate::native_tools::list_dir(
+            &ws,
+            &serde_json::json!({ "path": dir.to_string_lossy() }),
+        )
+        .expect("list_dir");
+        let c = text_tool_card("ls", "path=.", out);
+
+        let rendered = render_tool_card(&c, 80);
+        // lines[0] blank, lines[1] header (no gutter), lines[2..] body (gutter)
+        assert!(!strip_ansi(&rendered[1]).starts_with('│'), "header has no gutter");
+        let body: Vec<&String> = rendered[2..].iter().collect();
+        assert!(!body.is_empty(), "expected body lines");
+        for line in &body {
+            assert!(
+                strip_ansi(line).starts_with('│'),
+                "body line should start with gutter: {line:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The diff body keeps green `+` / red `-` colors under the gutter.
+    #[test]
+    fn diff_body_is_guttered_and_colored() {
+        let mut c = card("edit_file", ToolCallStatus::Success);
+        c.structured_content = Some(serde_json::json!({
+            "diff": "@@ -1 +1 @@\n-old line\n+new line",
+        }));
+        let rendered = render_tool_card(&c, 80);
+        let raw = rendered.join("\n");
+        assert!(raw.contains(GREEN) && raw.contains(RED), "diff keeps +/- colors");
+        // each diff line is guttered
+        for line in &rendered[2..] {
+            assert!(strip_ansi(line).starts_with('│'), "diff line guttered: {line:?}");
+        }
+        // no raw JSON braces leaked into the card
+        assert!(!strip_ansi(&raw).contains('{'), "no JSON braces: {raw}");
+    }
+
+    /// The bash command line renders the cyan `$` prompt under the gutter.
+    #[test]
+    fn bash_command_line_guttered_with_prompt() {
+        let mut c = card("bash", ToolCallStatus::Success);
+        c.summary = "command=echo hi".to_string();
+        c.detail = Some("hi".to_string());
+        let rendered = render_tool_card(&c, 80);
+        let cmd_line = rendered
+            .iter()
+            .find(|l| {
+                let plain = strip_ansi(l);
+                plain.starts_with('│') && plain.contains("$ echo hi")
+            })
+            .expect("command line present");
+        assert!(strip_ansi(cmd_line).starts_with('│'), "command line guttered: {cmd_line:?}");
+        assert!(strip_ansi(cmd_line).contains('$'), "shows $ prompt: {cmd_line:?}");
     }
 }
