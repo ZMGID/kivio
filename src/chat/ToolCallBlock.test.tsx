@@ -17,7 +17,7 @@ function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord 
 describe('ToolCallBlock', () => {
   it('renders success status with localized tool label', () => {
     render(<ToolCallBlock toolCall={buildToolCall()} />)
-    expect(screen.getByRole('button', { name: /读取文件/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /read_file/i })).toBeInTheDocument()
     expect(screen.getByText(/已完成/)).toBeInTheDocument()
   })
 
@@ -31,7 +31,7 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    const button = screen.getByRole('button', { name: /读取文件/i })
+    const button = screen.getByRole('button', { name: /read_file/i })
     const preview = within(button).getByText(/legacy warning text/)
     expect(preview.className).not.toContain('text-red-500')
   })
@@ -45,7 +45,7 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    const button = screen.getByRole('button', { name: /读取文件/i })
+    const button = screen.getByRole('button', { name: /read_file/i })
     const preview = within(button).getByText(/permission denied/)
     expect(preview.className).toContain('text-red-500')
   })
@@ -60,7 +60,7 @@ describe('ToolCallBlock', () => {
         defaultOpen={false}
       />,
     )
-    await user.click(screen.getByRole('button', { name: /读取文件/i }))
+    await user.click(screen.getByRole('button', { name: /read_file/i }))
     expect(screen.getByText('参数')).toBeInTheDocument()
     expect(screen.getByText(/README\.md/)).toBeInTheDocument()
   })

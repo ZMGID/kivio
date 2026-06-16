@@ -811,13 +811,11 @@ function getDuration(toolCall: ToolCallRecord): number | undefined {
 function getToolName(toolCall: ToolCallRecord): string {
   const raw = toolRawName(toolCall) || 'Tool'
   const args = parsedArguments(toolCall)
-  const command = typeof args?.command === 'string' ? args.command : ''
   const relativePath = typeof args?.relative_path === 'string'
     ? args.relative_path
     : typeof args?.relativePath === 'string'
       ? args.relativePath
       : ''
-  const hasOffset = args?.offset != null
 
   if (raw === 'skill_activate') return '激活 Skill'
   if (raw === 'skill_read_file') return '读取 Skill 文件'
@@ -828,27 +826,16 @@ function getToolName(toolCall: ToolCallRecord): string {
     return '生成 PDF 摘要上下文'
   }
   if (raw === 'skill_run_script') return '执行 Skill 脚本'
-  if (raw === 'read' || raw === 'read_file') return hasOffset ? '读取文件片段' : '读取文件'
-  if (raw === 'write' || raw === 'write_file') return '写入文件'
-  if (raw === 'edit' || raw === 'edit_file') return '编辑文件'
-  if (raw === 'grep' || raw === 'search_files') return '搜索文件'
-  if (raw === 'find' || raw === 'glob_files') return '查找文件'
-  if (raw === 'ls' || raw === 'list_dir') return '列出目录'
-  // Legacy labels: tools renamed to Pi-style short names / removed, kept for
-  // rendering persisted conversations.
-  if (raw === 'stat_path') return '查看文件信息'
-  if (raw === 'create_dir') return '创建目录'
-  if (raw === 'delete_path') return '删除'
-  if (raw === 'move_path') return '移动'
-  if (raw === 'copy_path') return '复制'
+  // read/write/edit/bash/grep/find/ls — plus legacy aliases (read_file/…/
+  // run_command) and the removed path tools — display their raw tool name.
+  // Legacy chunked-write/patch tools (removed in 2.6.9) keep their labels so
+  // old conversations still render meaningfully.
   if (raw === 'write_file_chunk') return '分块写入文件'
   if (raw === 'begin_file_write') return '准备文件草稿'
   if (raw === 'append_file_write') return '写入草稿分段'
   if (raw === 'finish_file_write') return '提交文件草稿'
   if (raw === 'abort_file_write') return '取消文件草稿'
   if (raw === 'patch') return '应用补丁'
-  if ((raw === 'bash' || raw === 'run_command') && /\bpdftotext\b/.test(command)) return '提取 PDF 文本'
-  if (raw === 'bash' || raw === 'run_command') return '终端命令'
   if (raw === 'run_python') return 'Python'
   if (raw === 'web_search') return '联网搜索'
   if (raw === 'web_fetch') return '网页抓取'
