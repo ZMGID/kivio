@@ -109,7 +109,21 @@ fn scan_root_entries_headless(extra_paths: &[String]) -> Vec<SkillScanRoot> {
 /// surfaces only user skills.
 fn bundled_skills_dir_headless() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
+    bundled_skills_dir_from_exe(&exe)
+}
+
+/// Pure path logic for [`bundled_skills_dir_headless`]: given an executable
+/// path, canonicalize it (so a PATH symlink resolves to the real binary's
+/// directory) and probe the bundled-skills candidates next to it.
+///
+/// `current_exe()` does not resolve symlinks on macOS, so a PATH symlink
+/// (e.g. `~/.cargo/bin/kivio-code -> target/debug/kivio-code`) would otherwise
+/// point `exe_dir` at the symlink's directory — where `skills/` doesn't exist —
+/// and built-in skills would silently go missing. Canonicalizing reaches the
+/// real binary's directory.
+fn bundled_skills_dir_from_exe(exe: &Path) -> Option<PathBuf> {
+    let real = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    let exe_dir = real.parent()?;
     let candidates = [
         exe_dir.join("skills"),
         exe_dir.join("..").join("Resources").join("skills"),
@@ -362,5 +376,39 @@ description: Test skill.
         assert_eq!(full_record.meta.files[0].relative_path, "scripts/run.sh");
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Regression test for non-deterministic bundled-skill discovery: a PATH
+    /// symlink to the real binary must still resolve `skills/` next to the real
+    /// binary (macOS `current_exe()` does not resolve symlinks).
+    #[cfg(unix)]
+    #[test]
+    fn bundled_skills_dir_resolves_through_path_symlink() {
+        let base = std::env::temp_dir().join(format!("kivio-skill-symlink-{}", uuid::Uuid::new_v4()));
+        // Real binary lives in `bin_dir`, with `bin_dir/skills/<name>/SKILL.md`.
+        let bin_dir = base.join("real");
+        let skills_dir = bin_dir.join("skills").join("demo");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(skills_dir.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        let real_bin = bin_dir.join("kivio-code");
+        fs::write(&real_bin, "#!/bin/sh\n").unwrap();
+
+        // Symlink in a separate dir (e.g. ~/.cargo/bin) with NO skills/ alongside.
+        let link_dir = base.join("path");
+        fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("kivio-code");
+        std::os::unix::fs::symlink(&real_bin, &link).unwrap();
+
+        // Resolving via the symlink must reach the real binary's skills dir.
+        let found = bundled_skills_dir_from_exe(&link).unwrap();
+        assert_eq!(
+            fs::canonicalize(found).unwrap(),
+            fs::canonicalize(bin_dir.join("skills")).unwrap()
+        );
+
+        // And of course resolving via the real path also works.
+        assert!(bundled_skills_dir_from_exe(&real_bin).is_some());
+
+        fs::remove_dir_all(base).unwrap();
     }
 }
