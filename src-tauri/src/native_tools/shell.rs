@@ -386,6 +386,10 @@ async fn run_shell_command(
         }
     };
     cmd.current_dir(cwd)
+        // stdin 必须为 null:coding-agent 的 shell 命令绝不能读交互终端的 stdin。
+        // 否则子进程会继承父进程(TUI 的 pty)stdin,抢占/消费它 → TUI 输入线程 EOF → 会话中途退出。
+        // null stdin 意味着任何尝试读 stdin 的命令立即得到 EOF,而非偷走 TUI 输入。
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
@@ -610,6 +614,43 @@ mod tests {
         .expect_err("pip installs should be blocked");
 
         assert!(err.contains("allow_host_python_package_install"));
+    }
+
+    // A coding-agent shell command must never read the interactive terminal's stdin.
+    // The child is spawned with Stdio::null() for stdin, so a command that reads stdin
+    // (e.g. `cat` with no file args) gets immediate EOF and returns promptly instead of
+    // blocking forever waiting on the parent's terminal. If stdin were inherited, this
+    // test would hang (and in the TUI would steal the input thread, exiting the session).
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn run_command_stdin_is_null_so_readers_get_eof() {
+        let dir = std::env::temp_dir().join(format!("kivio_stdin_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let workspace =
+            NativeToolWorkspace::global(&[dir.to_string_lossy().into_owned()]);
+
+        // `cat` with no args reads stdin to EOF. With null stdin this returns immediately.
+        // Wrap in tokio::time::timeout as a hard backstop so a regression fails fast
+        // instead of hanging the test suite.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_command(
+                &workspace,
+                2_000,
+                &serde_json::json!({ "command": "cat" }),
+            ),
+        )
+        .await
+        .expect("cat should return promptly because stdin is null (EOF), not hang");
+
+        let output = result.expect("cat with null stdin should succeed");
+        // No stdin content → empty captured stdout.
+        assert!(
+            !output.contains("Command timed out"),
+            "command must not time out: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -1042,6 +1042,56 @@ mod tests {
         }
     }
 
+    /// A bash card whose output contains a single very long line (e.g. a rustc
+    /// diagnostic) must render every body line within the given width — the long
+    /// line is WRAPPED (not overflowed), so the differential renderer's
+    /// per-physical-line ≤ width invariant holds and no content silently drops the
+    /// app into a corrupt diff state. This is the live crash's tool-card half.
+    #[test]
+    fn bash_card_with_long_output_line_wraps_within_width() {
+        let width = 40u16;
+        let mut c = card("bash", ToolCallStatus::Success);
+        c.summary = "command=cargo build".to_string();
+        // One rustc-style line far wider than the terminal.
+        let long = format!(
+            "error[E0599]: no method named `{}` found for struct `Foo` in the current scope",
+            "frobnicate".repeat(20)
+        );
+        c.detail = Some(format!("compiling…\n{long}\nerror: aborting"));
+
+        let rendered = render_tool_card(&c, width);
+        // The long line spans multiple wrapped rows; assert every emitted row fits.
+        for line in &rendered {
+            assert!(
+                visible_width(line) <= width as usize,
+                "bash body line exceeds width {width}: {} cols ({line:?})",
+                visible_width(line)
+            );
+        }
+        // Content is preserved across wraps (the head of the long line is present),
+        // not clipped away — wrap, don't drop.
+        let text = strip_ansi(&rendered.join("\n"));
+        assert!(text.contains("error[E0599]"), "long line head preserved: {text}");
+        assert!(text.contains("aborting"), "tail line preserved: {text}");
+    }
+
+    /// CJK / wide-character bash output also stays within width when wrapped (each
+    /// wide glyph is 2 columns; the wrap accounts for that under the gutter).
+    #[test]
+    fn bash_card_with_wide_char_output_stays_within_width() {
+        let width = 24u16;
+        let mut c = card("bash", ToolCallStatus::Success);
+        c.summary = "command=echo".to_string();
+        c.detail = Some("全角输出".repeat(20)); // 160 visible columns
+        for line in render_tool_card(&c, width) {
+            assert!(
+                visible_width(&line) <= width as usize,
+                "wide-char bash line exceeds width {width}: {} cols",
+                visible_width(&line)
+            );
+        }
+    }
+
     // ---- layout structure (the 6a tool-card visual pass) ----
 
     /// The first rendered line is always blank, separating the card from the

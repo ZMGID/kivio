@@ -9,7 +9,7 @@
 //! 剥离，记录 {row,col} 用于定位硬件光标（IME 候选窗）。
 
 use super::terminal::Terminal;
-use super::text_width::{normalize_terminal_output, visible_width};
+use super::text_width::{normalize_terminal_output, truncate_to_width, visible_width};
 
 /// 光标位置标记：零宽 APC 序列，终端忽略。Focusable 组件在文本光标处 emit，渲染器找到后剥离
 /// 并据此定位硬件光标。对应 PI 的 `CURSOR_MARKER`。
@@ -86,6 +86,23 @@ fn extract_cursor_position(lines: &mut [String], height: usize) -> Option<(usize
 fn apply_line_resets(lines: &mut [String]) {
     for line in lines.iter_mut() {
         *line = format!("{}{}", normalize_terminal_output(line), SEGMENT_RESET);
+    }
+}
+
+/// 防御性裁剪：把一行裁到最多 `width` 可见列再写入终端。
+///
+/// 差分渲染器的全部正确性都建立在「每个物理行 ≤ width」这一不变式上：超宽行会让相对光标移动
+/// 计算与上一帧 diff 全部错位（行被终端自动 wrap，渲染器却以为它只占一行）。组件**应当**自己 wrap
+/// 到 width（见 `Text` / tool_card 的 `body_line`），但无论组件 emit 了什么，这里都兜底保证不变式
+/// 成立——绝不 panic，绝不让超宽行破坏差分模型。
+///
+/// 用 ANSI-aware 的 [`truncate_to_width`]（不计转义序列宽度、按 grapheme 计宽、CJK=2），裁掉
+/// 超出部分（无 ellipsis、不 padding，保持与未裁行的视觉一致）。≤ width 的行原样返回（零拷贝快路径）。
+fn clip_line_to_width(line: &str, width: u16) -> std::borrow::Cow<'_, str> {
+    if visible_width(line) <= width as usize {
+        std::borrow::Cow::Borrowed(line)
+    } else {
+        std::borrow::Cow::Owned(truncate_to_width(line, width as usize, "", false))
     }
 }
 
@@ -188,7 +205,8 @@ impl<T: Terminal> Tui<T> {
             if i > 0 {
                 buffer.push_str("\r\n");
             }
-            buffer.push_str(line);
+            // 防御性裁剪：保证每个物理行 ≤ width（见 `clip_line_to_width`）。
+            buffer.push_str(&clip_line_to_width(line, width));
         }
         buffer.push_str("\x1b[?2026l"); // end synchronized output
         self.terminal.write(&buffer);
@@ -368,15 +386,16 @@ impl<T: Terminal> Tui<T> {
             if i > first_changed as usize {
                 buffer.push_str("\r\n");
             }
-            let line = &new_lines[i];
             buffer.push_str("\x1b[2K"); // clear current line
-            // 宽度溢出守卫：差分模型会被超宽行破坏，直接 panic（PI 在此 throw）。
+            // 防御性裁剪：差分模型要求每个物理行 ≤ width。无论组件 emit 了什么（如 bash/rustc
+            // 的超宽输出行），都先裁到 width 再写——绝不 panic、绝不让超宽行破坏 diff。
+            let clipped = clip_line_to_width(&new_lines[i], width);
+            buffer.push_str(&clipped);
             debug_assert!(
-                visible_width(line) <= width as usize,
-                "rendered line {i} exceeds terminal width ({} > {width})",
-                visible_width(line)
+                visible_width(&clipped) <= width as usize,
+                "clipped line {i} still exceeds terminal width ({} > {width})",
+                visible_width(&clipped)
             );
-            buffer.push_str(line);
         }
 
         let mut final_cursor_row = render_end;
@@ -541,6 +560,108 @@ mod tests {
         assert!(out.contains("c"));
         // unchanged "a"/"b" not rewritten
         assert_eq!(out.matches("\x1b[2K").count(), 1);
+    }
+
+    /// 取一帧输出里被 `\x1b[2K`（清行）打头的各内容段，校验每段可见列 ≤ width。差分写出的每个
+    /// 物理行都以 `\x1b[2K` 起头，故据此切出渲染器实际写到终端的行内容。每段在下一个 `\r\n`
+    /// 或同步输出结束符 `\x1b[?2026l` 处截断（后者非标准 CSI final，`visible_width` 不识别，
+    /// 须显式剥离，否则会把它当可见文本误计入宽度）。
+    fn diff_written_lines(out: &str) -> Vec<String> {
+        out.split("\x1b[2K")
+            .skip(1) // 第一段是 `\x1b[2K` 之前的光标定位前缀，非内容行
+            .map(|seg| {
+                let seg = seg.split("\r\n").next().unwrap_or("");
+                // 剥离行尾的同步输出结束符（`\x1b[?2026l` 不是 CSI m/G/K/H/J，visible_width 不跳过它）。
+                seg.split("\x1b[?2026l").next().unwrap_or("").to_string()
+            })
+            .collect()
+    }
+
+    /// 首帧（full_render）路径：组件 emit 的超宽行必须被裁到 ≤ width，不破坏后续 diff。
+    #[test]
+    fn first_render_clips_overwide_line() {
+        let width = 20u16;
+        let mut tui = Tui::new(BufferTerminal::new(width, 5));
+        let wide = "x".repeat(80); // 远超 20 列
+        tui.add_child(Box::new(LineSource::new(vec![wide])));
+        tui.render();
+        let out = tui.terminal.take_output();
+        // strip the synchronized-output / cursor frame, find the content line.
+        // full_render joins lines with \r\n; the single content line is between
+        // the `\x1b[?2026h` prefix and the `\x1b[?2026l` suffix.
+        let body = out
+            .trim_start_matches("\x1b[?2026h")
+            .trim_end_matches("\x1b[?2026l");
+        assert!(
+            visible_width(body) <= width as usize,
+            "first-render line not clipped: {} cols",
+            visible_width(body)
+        );
+    }
+
+    /// 差分写出路径：当一个改动行的可见宽度超过 width 时，不 panic（debug 也不），且写出的该行
+    /// 字节可见列 ≤ width。覆盖纯 ASCII 超宽行。
+    #[test]
+    fn diff_clips_overwide_ascii_line_without_panic() {
+        let width = 16u16;
+        let mut tui = Tui::new(BufferTerminal::new(width, 5));
+        tui.add_child(Box::new(LineSource::new(lines(&["short"]))));
+        tui.render();
+        let _ = tui.terminal.take_output();
+        // 改成一行远超 width 的 ASCII —— 旧代码会在 debug 下 panic。
+        tui.set_lines(vec!["y".repeat(100)]);
+        tui.render();
+        let out = tui.terminal.take_output();
+        for line in diff_written_lines(&out) {
+            assert!(
+                visible_width(&line) <= width as usize,
+                "diff-written line exceeds width: {} cols ({line:?})",
+                visible_width(&line)
+            );
+        }
+    }
+
+    /// 差分写出路径：CJK / 全角超宽行也被裁到 ≤ width（每个 CJK 字符占 2 列，按列裁剪而非字节）。
+    #[test]
+    fn diff_clips_overwide_cjk_line() {
+        let width = 10u16;
+        let mut tui = Tui::new(BufferTerminal::new(width, 5));
+        tui.add_child(Box::new(LineSource::new(lines(&["短"]))));
+        tui.render();
+        let _ = tui.terminal.take_output();
+        // 30 个全角字符 = 60 可见列，远超 10。
+        tui.set_lines(vec!["全角字符串".repeat(6)]);
+        tui.render();
+        let out = tui.terminal.take_output();
+        for line in diff_written_lines(&out) {
+            assert!(
+                visible_width(&line) <= width as usize,
+                "CJK diff line exceeds width: {} cols ({line:?})",
+                visible_width(&line)
+            );
+        }
+    }
+
+    /// 差分写出路径：带 ANSI 颜色的超宽行 —— 转义序列不计宽，裁剪后可见列仍 ≤ width。
+    #[test]
+    fn diff_clips_overwide_ansi_colored_line() {
+        let width = 12u16;
+        let mut tui = Tui::new(BufferTerminal::new(width, 5));
+        tui.add_child(Box::new(LineSource::new(lines(&["plain"]))));
+        tui.render();
+        let _ = tui.terminal.take_output();
+        // 红色的 80 列文本：可见宽度 80，转义序列不计。
+        let colored = format!("\x1b[31m{}\x1b[0m", "z".repeat(80));
+        tui.set_lines(vec![colored]);
+        tui.render();
+        let out = tui.terminal.take_output();
+        for line in diff_written_lines(&out) {
+            assert!(
+                visible_width(&line) <= width as usize,
+                "ANSI diff line exceeds width: {} cols ({line:?})",
+                visible_width(&line)
+            );
+        }
     }
 
     // 一个测试组件，渲染固定行。Tui 便捷方法 set_lines 通过重建子组件改内容。
