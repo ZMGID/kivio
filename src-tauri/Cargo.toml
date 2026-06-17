@@ -5,6 +5,9 @@ version = "2.7.0"
 description = "Kivio - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 edition = "2021"
+# 项目有两个 binary（kivio 主应用 + kivio-code CLI）。`tauri dev` 跑裸 `cargo run`，
+# 没有 default-run 会因「不知道跑哪个 binary」直接报错退出。固定默认跑主应用 kivio。
+default-run = "kivio"
 
 [lib]
 name = "kivio"
