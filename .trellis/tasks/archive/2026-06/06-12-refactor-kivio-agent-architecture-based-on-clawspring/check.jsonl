@@ -1,7 +1,0 @@
-{"file": ".trellis/tasks/06-12-refactor-kivio-agent-architecture-based-on-clawspring/prd.md", "reason": "已定稿 PRD：分阶段范围、验收标准（cargo test/typecheck/冒烟清单）、ADR 决策——check 的对照基准"}
-{"file": ".trellis/tasks/06-12-refactor-kivio-agent-architecture-based-on-clawspring/research/00-architecture-proposal.md", "reason": "§5 风险清单 R1-R10 与统一回归基线——每阶段交付必查"}
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "agent 运行时 spec 合规检查"}
-{"file": ".trellis/spec/backend/file-tools.md", "reason": "文件工具 spec 合规检查（路径安全、原子写不得回退）"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "前端改动（tool card/状态面板）质量门"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "新增事件 payload 与 task 模型的 TS 类型安全检查"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "事件契约三不动（chat-stream/chat-tool/chat-todo payload）跨层一致性检查"}

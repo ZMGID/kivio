@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend/Tauri entry points and quality expectations for window lifecycle changes."}
-{"file": ".trellis/spec/backend/window-lifecycle.md", "reason": "Concrete Chat window restore contract for macOS Dock reopen and activation paths."}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Fix should reuse existing Chat window normalization paths instead of duplicating behavior."}

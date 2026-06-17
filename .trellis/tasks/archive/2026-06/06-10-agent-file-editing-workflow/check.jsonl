@@ -1,4 +1,0 @@
-{"file":".trellis/tasks/06-10-agent-file-editing-workflow/prd.md","reason":"Acceptance criteria and MVP/non-MVP boundaries to verify before implementation is considered complete."}
-{"file":".trellis/tasks/06-10-agent-file-editing-workflow/research/agent-file-editing-patterns.md","reason":"Reference behavior from established coding agents to compare against implementation."}
-{"file":".trellis/spec/backend/agent-runtime.md","reason":"Backend runtime requirements for tool execution, records, segments, cancellation, and project workspace safety."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Checklist for backend/frontend contract consistency and edge cases."}

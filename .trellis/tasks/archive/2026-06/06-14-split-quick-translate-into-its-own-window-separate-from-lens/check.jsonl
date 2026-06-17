@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/window-lifecycle.md", "reason": "核对新 translate 窗口完整满足 overlay 契约与互斥语义，不回归全屏浮现/键盘/跨 Space/阴影/不崩。"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "前后端命令窗口寻址一致性：命令操作正确窗口、事件不串、互斥状态正确。"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "确认复用 Lens.tsx 与共享命令（按窗口寻址）而非复制一份，符合代码复用原则。"}

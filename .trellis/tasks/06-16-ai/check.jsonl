@@ -1,2 +1,0 @@
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "check 阶段核对：动效是否集中在 index.css、是否复用 chat-motion-*、是否每个新动效都有 reduced-motion fallback、滚动跟随是否仍尊重真实内容尺寸与用户上滑意图、lint/typecheck/test 是否全绿。"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "check 阶段核对是否存在重复 keyframes/未复用既有 token 的情况。"}

@@ -1,4 +1,0 @@
-{"file":".trellis/tasks/06-10-agent-file-editing-workflow/prd.md","reason":"Primary product requirements for the Agent file editing workflow redesign."}
-{"file":".trellis/tasks/06-10-agent-file-editing-workflow/research/agent-file-editing-patterns.md","reason":"Research summary comparing Kivio, Codex, OpenCode, Aider, and local Hermes file editing patterns."}
-{"file":".trellis/spec/backend/agent-runtime.md","reason":"Existing backend contract for Chat agent tool execution, tool records, timeline segments, and project workspace file tools."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Cross-layer checklist because the change spans backend tools, agent runtime events, and frontend rendering."}

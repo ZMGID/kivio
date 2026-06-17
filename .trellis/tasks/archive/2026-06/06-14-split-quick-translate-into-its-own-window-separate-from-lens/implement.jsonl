@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/window-lifecycle.md", "reason": "新 translate 窗口必须遵守全部 macOS overlay 契约：非激活 NSPanel、WKWebView first-responder 键盘、MoveToActiveSpace 跨 Space、hasShadow=NO、绝不 destroy 重分类窗口、focus-return；命令的窗口寻址改动也属窗口生命周期范畴。"}
-{"file": ".trellis/spec/backend/lens-chat-handoff.md", "reason": "改 lens/translate 窗口路由与共享命令时，lens→AI 客户端交接（lens_send_to_chat / open_chat_window）不能回归。"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "translate 窗口复用同一 Lens.tsx 按 mode 渲染，遵守组件规范、避免为新窗口复制一份。"}
-{"file": ".trellis/spec/frontend/state-management.md", "reason": "新增第二个 webview 窗口实例时前端状态/事件（lens:reset 等）按窗口隔离的处理。"}

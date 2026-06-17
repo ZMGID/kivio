@@ -1,2 +1,0 @@
-{"file":".trellis/tasks/06-10-fix-file-write-tools-and-chunked-write/prd.md","reason":"Verify every acceptance criterion is met."}
-{"file":".trellis/spec/backend/agent-runtime.md","reason":"Verify spec contracts (locks, serial/approval, Plan filter, structured content) hold and spec was updated for write_file_chunk."}

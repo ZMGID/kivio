@@ -1,5 +1,0 @@
-{"file": ".trellis/tasks/06-12-p2-c-task-owner-project/prd.md", "reason": "验收标准 + 决策记录 + 非目标边界，check 的对照基准"}
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "Agent Todo Runtime State 契约合规检查：单 in_progress、schema、防覆盖重读、chat-todo 事件不得回退"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "前端 cancelled/description 渲染改动质量门 + 测试要求"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "AgentTodoStatus/新字段的 TS 类型同步检查"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "conversation/project 双存储路由 + 后端→前端事件一致性检查"}

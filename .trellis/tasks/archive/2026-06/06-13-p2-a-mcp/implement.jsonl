@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "工具执行管线契约：(record,content) 返回、execute.rs select! 超时/取消缝、chat 事件 payload 不可破坏"}
-{"file": ".trellis/spec/backend/native-tool-registry.md", "reason": "registry 统一分发 native/skill/mcp 四源；call_tool MCP 分支与 list_enabled_tool_defs 改动需遵守注册表契约"}
-{"file": ".trellis/spec/backend/http-timeouts.md", "reason": "复用 state.http 与超时策略；修 reqwest::Client::new() 不一致；MCP RPC timeout"}
-{"file": ".trellis/spec/frontend/settings-contracts.md", "reason": "设置页状态面板 + mcp_idle_timeout_ms 新字段需符合 settings 契约与 serde default 兼容"}
-{"file": ".trellis/tasks/archive/2026-06/06-12-refactor-kivio-agent-architecture-based-on-clawspring/research/04-mcp-integration.md", "reason": "P2 MCP 持久连接管理器目标设计来源（McpSession/pending/stderr/探活/回收）"}

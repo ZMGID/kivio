@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "验证 SkillRunCache 复用、pin 链与动态 allowed_tools 过滤未破坏执行契约与 chat 事件"}
-{"file": ".trellis/spec/backend/native-tool-registry.md", "reason": "验证 call_skill_tool run 级缓存与工具过滤符合注册表契约"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "验证 InputBar slash 弹层改动符合组件规范、与内置命令共存"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "验证 SkillMeta 前端类型扩展符合类型安全"}

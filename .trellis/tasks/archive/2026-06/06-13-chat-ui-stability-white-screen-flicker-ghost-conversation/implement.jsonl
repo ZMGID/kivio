@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "Assistant Timeline Segments 的 finish-no-blank 契约 + 流式/事件协议，闪烁与白屏修复要遵守。"}
-{"file": ".trellis/spec/frontend/state-management.md", "reason": "前端状态/重渲管理规范，rAF 合帧 + in-flight/ghost 状态清理要符合。"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Chat/Sidebar 组件改动规范。"}

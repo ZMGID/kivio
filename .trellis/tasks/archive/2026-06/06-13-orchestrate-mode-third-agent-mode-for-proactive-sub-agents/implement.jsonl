@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "Agent Plan Mode Runtime State + Multi-Agent scenario：第三 mode 要对齐 mode 状态/prompt 注入/compute_context_state/工具过滤契约；sub-agent 工具暴露规则改为按 mode。"}
-{"file": ".trellis/spec/backend/native-tool-registry.md", "reason": "sub-agent 工具的 enabled/暴露规则随设置开关删除而改为按 mode；保持单一注册表来源。"}
-{"file": ".trellis/spec/frontend/settings-contracts.md", "reason": "删除 chatTools.subAgents 设置项 + 设置页开关的前端契约。"}

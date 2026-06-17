@@ -1,1 +1,0 @@
-{"file": ".trellis/spec/backend/http-timeouts.md", "reason": "HTTP 重试/超时契约——重试次数/间隔/退避/Retry-After/可重试错误分类要遵守并更新。"}

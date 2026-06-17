@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "Quality expectations for backend/Tauri changes and targeted Rust verification."}
-{"file": ".trellis/spec/backend/window-lifecycle.md", "reason": "Verify Chat restore paths follow the normal-window restore contract."}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check that all Chat open/reopen paths converge on the same helper behavior."}

@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/frontend/index.md", "reason": "Validate frontend shell and styling changes against project frontend guidelines."}
-{"file": ".trellis/spec/backend/index.md", "reason": "Validate any Tauri window chrome/platform changes against backend guidelines."}
-{"file": ".trellis/tasks/06-10-fix-windows-frameless-window-borders/research/windows-frameless-shadow.md", "reason": "Check implementation against researched Windows shadow/transparency constraints and risks."}

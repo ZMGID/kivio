@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "验证工具执行契约与 chat 事件 payload 未被破坏、取消/超时缝完好"}
-{"file": ".trellis/spec/backend/native-tool-registry.md", "reason": "验证 MCP 分支改走 manager 后仍符合注册表分发契约、TTL 缓存语义未变"}
-{"file": ".trellis/spec/backend/http-timeouts.md", "reason": "验证 state.http 复用与超时策略一致性"}
-{"file": ".trellis/spec/frontend/settings-contracts.md", "reason": "验证设置页状态面板与 mcp_idle_timeout_ms 字段的 settings 兼容性"}

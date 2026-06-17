@@ -1,3 +1,0 @@
-{"file":".trellis/tasks/06-10-fix-file-write-tools-and-chunked-write/prd.md","reason":"Requirements and acceptance criteria for the file write tool fixes and chunked write wiring."}
-{"file":".trellis/spec/backend/agent-runtime.md","reason":"Backend contracts for file mutation tools, tool scheduling, locks, and Plan-mode filtering that the fixes must satisfy and that must be updated for write_file_chunk."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Cross-layer checklist because changes span native tools, MCP registry, agent prepare/commands filters, and frontend rendering."}

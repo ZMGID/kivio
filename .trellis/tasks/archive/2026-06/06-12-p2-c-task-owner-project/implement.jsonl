@@ -1,6 +1,0 @@
-{"file": ".trellis/tasks/06-12-p2-c-task-owner-project/prd.md", "reason": "本任务 PRD：数据模型、project 级持久化路由、依赖边写侧同步、决策记录、验收标准"}
-{"file": ".trellis/tasks/archive/2026-06/06-12-refactor-kivio-agent-architecture-based-on-clawspring/research/06-task-management.md", "reason": "clawspring task 数据模型（四态/owner/双向依赖边自动同步）与 kivio todo 差距分析的设计依据"}
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "Agent Todo Runtime State 契约：单 in_progress 不变量、严格 schema、系统提示注入、防覆盖重读、chat-todo 事件——升级时全部必须保留"}
-{"file": ".trellis/spec/frontend/state-management.md", "reason": "chat-todo 事件驱动前端只读渲染的状态管理约定——cancelled/description/deleted 渲染需遵守"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "新增 AgentTodoStatus::Cancelled、description/blocks/blocked_by/owner 字段的 TS 类型同步检查"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "task 状态跨 Rust 后端持久化与 React 前端渲染，project 路由跨 conversation/project 两套存储，需要跨层一致性检查"}

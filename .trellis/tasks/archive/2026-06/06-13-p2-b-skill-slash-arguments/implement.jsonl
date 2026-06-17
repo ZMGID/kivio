@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "SkillRunCache 贯穿 loop_/execute/registry 的执行管线；active_skill pin 链、工具过滤、chat 事件契约"}
-{"file": ".trellis/spec/backend/native-tool-registry.md", "reason": "call_skill_tool 分发、skill 源工具与 native skill 元工具在注册表的位置；run 级缓存改动点"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "InputBar slash 弹层与内置命令共存的组件改动规范"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "SkillMeta 前端类型加三字段（camelCase）需符合类型安全规范"}
-{"file": ".trellis/tasks/archive/2026-06/06-12-refactor-kivio-agent-architecture-based-on-clawspring/research/03-skill-system.md", "reason": "P2 skill 目标设计来源（run 级缓存、slash 触发、$ARGUMENTS、动态过滤、read_file 上限）"}

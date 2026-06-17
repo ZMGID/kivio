@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "绑定规范：Chat motion 必须集中在 index.css 的 chat-motion-* 工具类、不引动画库、新动效必须带 prefers-reduced-motion fallback；滚动跟随须响应真实内容尺寸变化、用户上滑优先；以及测试/CI 要求（lint/typecheck/test）。"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "动效优先复用现有 chat-motion-* 关键帧与 token，缺口才新增；避免组件本地重复 keyframes。"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "改 InputBar/composer 时须保留 IME-safe Enter 守卫与 Lens 焦点约定，不能因动效改动破坏。"}

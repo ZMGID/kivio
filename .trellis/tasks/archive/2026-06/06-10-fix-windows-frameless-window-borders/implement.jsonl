@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend shell, styling, and quality guidance for Windows frameless window visual fixes."}
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend/Tauri guideline index for window chrome and platform-specific runtime changes."}
-{"file": ".trellis/tasks/06-10-fix-windows-frameless-window-borders/research/windows-frameless-shadow.md", "reason": "Source-backed research on Tauri/Tao/Wry Windows frameless shadow behavior and recommended approach."}

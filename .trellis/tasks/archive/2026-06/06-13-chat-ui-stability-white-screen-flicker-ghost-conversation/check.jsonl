@@ -1,2 +1,0 @@
-{"file": ".trellis/spec/backend/agent-runtime.md", "reason": "校验流式/finish 契约不被破坏。"}
-{"file": ".trellis/spec/frontend/state-management.md", "reason": "校验合帧/状态清理正确、无回归。"}

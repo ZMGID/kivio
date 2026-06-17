@@ -1,4 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for Chat MCP and Skill cross-layer UI work"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Chat MCP + Skill cross-layer contract and type expectations"}
-{"file": ".trellis/spec/frontend/hook-guidelines.md", "reason": "Async Tauri listener cleanup pattern for chat-tool/chat-stream events"}

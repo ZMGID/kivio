@@ -1,5 +1,0 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
-{"file": ".trellis/spec/backend/file-tools.md", "reason": "现行文件工具 spec，本任务需重写该文档反映新工具面"}
-{"file": ".trellis/spec/backend/index.md", "reason": "backend spec 索引，文件工具条目需同步"}
-{"file": ".trellis/tasks/06-10-agent-file-editing-workflow/research/agent-file-editing-patterns.md", "reason": "上任务对 Codex/OpenCode/Aider/Claude/Hermes 文件编辑模式的一手研究"}
-{"file": ".trellis/tasks/06-11-simplify-native-file-tools/research/mature-agent-tool-surfaces.md", "reason": "pi agent 与 Claude Code 工具面一手核实（research 子代理产出）"}
