@@ -28,10 +28,10 @@ use serde_json::{json, Value};
 use crate::chat::agent::{run_agent_loop, AgentRunConfig, AgentRunEntry};
 use crate::mcp::types::{
     native_edit_file_tool, native_glob_files_tool, native_list_dir_tool, native_read_file_tool,
-    native_run_command_tool, native_search_files_tool, native_web_fetch_tool, native_write_file_tool,
-    ChatToolDefinition,
+    native_run_command_tool, native_search_files_tool, native_web_fetch_tool,
+    native_web_search_tool, native_write_file_tool, ChatToolDefinition,
 };
-use crate::settings::{ModelProvider, Settings};
+use crate::settings::{ModelProvider, Settings, WebSearchProvider};
 use crate::skills::SkillRegistry;
 use crate::state::AppState;
 
@@ -82,6 +82,17 @@ pub fn core_tool_definitions() -> Vec<ChatToolDefinition> {
         native_run_command_tool(),
         native_web_fetch_tool(),
     ]
+}
+
+/// Whether web search is usable: the configured Lens web-search provider has a
+/// non-empty API key. Mirrors the GUI's gate (`mcp::registry::web_search_configured`)
+/// so the `web_search` tool is advertised to the model only when it would actually
+/// work (a key is set), never advertised-but-broken.
+pub fn web_search_configured(settings: &Settings) -> bool {
+    match settings.lens.web_search.provider {
+        WebSearchProvider::Tavily => !settings.lens.web_search.tavily_api_key.trim().is_empty(),
+        WebSearchProvider::Exa => !settings.lens.web_search.exa_api_key.trim().is_empty(),
+    }
 }
 
 /// Read the prompt from stdin when it is piped (not a TTY) and non-empty.
@@ -371,6 +382,15 @@ impl TurnAssembly {
         let mut tools = core_tool_definitions();
         tools.extend(self.mcp_tools.clone());
         tools.extend(skill_setup::skill_tool_definitions(&self.skill_registry));
+
+        // web_search is appended only when a Lens web-search provider key is
+        // configured (mirrors the GUI gate). Otherwise it is never advertised, so
+        // the model can't call a tool that would immediately fail for lack of a key.
+        // It is read-only (`is_read_only_tool()`), so it survives the plan-mode
+        // filter below — desired: research/planning may search the web.
+        if web_search_configured(&self.settings) {
+            tools.push(native_web_search_tool());
+        }
 
         // Plan mode: keep only read-only tools (read/ls/grep/find/web_fetch + read-only
         // skill tools); drop write/edit/bash so the turn cannot mutate the workspace.
@@ -700,6 +720,99 @@ mod tests {
         }
         for kept in ["read", "ls", "grep", "find", "web_fetch"] {
             assert!(plan.iter().any(|n| n == kept), "plan must keep {kept}: {plan:?}");
+        }
+    }
+
+    fn assembly_with_tavily_key(key: &str) -> TurnAssembly {
+        let mut a = assembly_with("chat", "Chat", "m1");
+        a.settings.lens.web_search.provider = crate::settings::WebSearchProvider::Tavily;
+        a.settings.lens.web_search.tavily_api_key = key.to_string();
+        a
+    }
+
+    #[test]
+    fn web_search_configured_true_with_tavily_key_false_when_empty() {
+        let mut settings = Settings::default();
+        settings.lens.web_search.provider = crate::settings::WebSearchProvider::Tavily;
+
+        settings.lens.web_search.tavily_api_key = String::new();
+        assert!(!web_search_configured(&settings), "empty key must be unconfigured");
+
+        settings.lens.web_search.tavily_api_key = "tvly-abc".to_string();
+        assert!(web_search_configured(&settings), "non-empty Tavily key is configured");
+
+        // Whitespace-only is treated as empty (trimmed).
+        settings.lens.web_search.tavily_api_key = "   ".to_string();
+        assert!(!web_search_configured(&settings), "whitespace key must be unconfigured");
+
+        // Switching provider to Exa with no Exa key is unconfigured even though Tavily had one.
+        settings.lens.web_search.provider = crate::settings::WebSearchProvider::Exa;
+        settings.lens.web_search.tavily_api_key = "tvly-abc".to_string();
+        assert!(!web_search_configured(&settings), "Exa provider needs an Exa key");
+        settings.lens.web_search.exa_api_key = "exa-key".to_string();
+        assert!(web_search_configured(&settings), "non-empty Exa key is configured");
+    }
+
+    #[test]
+    fn into_config_includes_web_search_only_when_configured() {
+        let configured = assembly_with_tavily_key("tvly-abc");
+        let unconfigured = assembly_with("chat", "Chat", "m1");
+
+        let names = |assembly: &TurnAssembly| -> Vec<String> {
+            let state = build_app_state(assembly.settings.clone());
+            let cfg = assembly.into_config(
+                &state,
+                "c".to_string(),
+                "r".to_string(),
+                "msg".to_string(),
+                1,
+                Vec::new(),
+                /* plan_mode */ false,
+            );
+            cfg.tools.iter().map(|t| t.name.clone()).collect()
+        };
+
+        let with = names(&configured);
+        assert!(
+            with.iter().any(|n| n == "web_search"),
+            "web_search must be exposed when a provider key is configured: {with:?}"
+        );
+
+        let without = names(&unconfigured);
+        assert!(
+            !without.iter().any(|n| n == "web_search"),
+            "web_search must NOT be exposed without a provider key: {without:?}"
+        );
+    }
+
+    #[test]
+    fn web_search_survives_plan_mode_filter() {
+        // web_search is read-only, so a plan-mode turn (read-only filter applied)
+        // must still expose it when a key is configured.
+        let assembly = assembly_with_tavily_key("tvly-abc");
+        let state = build_app_state(assembly.settings.clone());
+        let cfg = assembly.into_config(
+            &state,
+            "c".to_string(),
+            "r".to_string(),
+            "msg".to_string(),
+            1,
+            Vec::new(),
+            /* plan_mode */ true,
+        );
+        let names: Vec<String> = cfg.tools.iter().map(|t| t.name.clone()).collect();
+        assert!(
+            names.iter().any(|n| n == "web_search"),
+            "web_search is read-only and must survive plan mode: {names:?}"
+        );
+        // is_read_only_tool() is the mechanism — assert it directly too.
+        assert!(
+            native_web_search_tool().is_read_only_tool(),
+            "web_search must report read-only"
+        );
+        // Mutating tools are still dropped in plan mode.
+        for blocked in ["write", "edit", "bash"] {
+            assert!(!names.iter().any(|n| n == blocked), "plan must drop {blocked}: {names:?}");
         }
     }
 }

@@ -128,10 +128,47 @@ impl CliToolExecutor {
                 .await?,
             )),
             "web_fetch" => Ok(text_tool_result(web_fetch(&self.http, &arguments).await?)),
+            "web_search" => self.dispatch_web_search(&arguments).await,
             other => Err(format!(
                 "kivio-code does not support tool '{other}' in print mode (core tools only)."
             )),
         }
+    }
+
+    /// Dispatch a `web_search` call. Mirrors `mcp::native_registry::call_web_search`:
+    /// reads the `query` arg (error if empty — no network call), derives the retry
+    /// count from settings, runs the configured Lens web-search provider, and returns
+    /// the formatted web context. The tool is only ever advertised when a provider
+    /// key is configured (see `mod.rs::web_search_configured`), so this assumes a key.
+    async fn dispatch_web_search(
+        &self,
+        arguments: &Value,
+    ) -> Result<McpToolCallResult, String> {
+        let query = arguments
+            .get("query")
+            .and_then(|query| query.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if query.is_empty() {
+            return Err("web_search query is empty".to_string());
+        }
+        let settings = self.state.settings_read().clone();
+        let retry_attempts = if settings.retry_enabled {
+            settings.retry_attempts as usize
+        } else {
+            1
+        };
+        let results = crate::web_search::search_web(
+            &self.state,
+            &settings.lens.web_search,
+            &query,
+            retry_attempts,
+        )
+        .await?;
+        Ok(text_tool_result(crate::web_search::format_web_context(
+            &results,
+        )))
     }
 }
 
@@ -515,6 +552,26 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does not support tool"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn web_search_empty_query_errors_without_network() {
+        // An empty/whitespace query must short-circuit with an error BEFORE any
+        // network call — this test makes no real request.
+        let (dir, executor) = temp_workspace();
+
+        for empty in [serde_json::json!({}), serde_json::json!({ "query": "   " })] {
+            let result = executor
+                .call(&ctx(), &tool("web_search"), empty, None)
+                .await;
+            assert!(result.is_err(), "empty query must error");
+            assert!(
+                result.unwrap_err().contains("query is empty"),
+                "error must name the empty query"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
