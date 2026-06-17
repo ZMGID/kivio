@@ -156,6 +156,12 @@ pub struct App {
     overlay: Option<Overlay>,
     /// generating 态下的 thinking spinner（事件循环按其 interval 调 [`App::tick_loader`]）。
     loader: Loader,
+    /// spinner 的**相位标签**（与 reasoning 尾巴预览解耦）：随最近一次 agent 信号变化
+    /// （planning→`thinking…`、工具运行→`reading …`/`running: …`、答案流式→`responding…`），
+    /// 让 spinner 像 Claude Code / Codex 那样反映当前在做什么，而非固定 "thinking…"。
+    /// 每轮起始（`set_mode(Generating)`）重置为默认 `thinking…`。render 时把 reasoning 尾巴
+    /// 叠加在它之上。
+    phase_label: String,
     /// 当 thinking/verbose 开启时，把 reasoning delta 显示在 spinner 旁（最近一行预览）。
     show_reasoning: bool,
     /// 是否在 transcript 上方渲染欢迎头（首屏品牌头；用户开始对话/清屏后仍保留作为页眉）。
@@ -196,6 +202,7 @@ impl App {
             last_submitted: None,
             overlay: None,
             loader,
+            phase_label: DEFAULT_PHASE_LABEL.to_string(),
             show_reasoning: false,
             show_welcome: true,
             slash_popup: None,
@@ -482,8 +489,25 @@ impl App {
     }
 
     /// 进入 / 退出 generating 态（事件循环在 spawn agent / 收尾时调用）。
+    /// 进入 generating 时把 spinner 相位标签重置为默认 `thinking…`，让新一轮不残留上一轮的
+    /// "running: …" 之类的状态。
     pub fn set_mode(&mut self, mode: AppMode) {
+        if mode == AppMode::Generating && self.mode != AppMode::Generating {
+            self.set_phase_label(DEFAULT_PHASE_LABEL.to_string());
+        }
         self.mode = mode;
+    }
+
+    /// 设置 spinner 的相位标签（基础串），并同步到 loader。reasoning 尾巴预览在 render 时叠加。
+    fn set_phase_label(&mut self, label: String) {
+        self.phase_label = label;
+        self.loader.set_message(self.phase_label.clone());
+    }
+
+    /// 当前 spinner 相位标签（测试断言用）。
+    #[cfg(test)]
+    pub fn phase_label(&self) -> &str {
+        &self.phase_label
     }
 
     /// 设置当前模型的上下文窗口大小（tokens；`None` = 未知，则 footer 只显示原始 token 数）。
@@ -584,6 +608,13 @@ impl App {
     /// 助手段落**（与前一段共享同一 `message_id`，但是时间序上不同的可视块）。这样「文字 → 工具卡片 →
     /// 文字」就会按发生顺序交错呈现，而不是所有文字挤在最上面、所有卡片堆在最下面。
     fn stream_assistant_delta(&mut self, message_id: &str, delta: &str, reasoning: &str) {
+        // 相位标签：有可见答案文本 → `responding…`；只有 reasoning（无可见 delta）→ `thinking…`。
+        // （工具运行中收到答案 delta 也意味着模型已开始作答，故覆盖工具相位。）
+        if !delta.is_empty() {
+            self.set_phase_label("responding…".to_string());
+        } else if !reasoning.is_empty() {
+            self.set_phase_label(DEFAULT_PHASE_LABEL.to_string());
+        }
         // 末尾若是「同 message_id 且仍在流式」的助手段落，续写它；否则另起一段。
         if let Some(TranscriptItem::AssistantMessage(msg)) = self.transcript.last_mut() {
             if msg.streaming && (message_id.is_empty() || msg.message_id == message_id) {
@@ -640,6 +671,20 @@ impl App {
 
     /// upsert 一张工具卡片：已存在（同 id）则就地更新状态 / 结果 / diff；否则新建并 push。
     fn upsert_tool_card(&mut self, record: &ToolCallRecord) {
+        // 相位标签随工具状态变化：运行中（Pending/Running）→ 现在进行时短语（如 `reading lib.rs`）；
+        // 完成（Success/Error）→ 退回默认 `thinking…`（模型接着会思考/作答）。
+        match record.status {
+            ToolCallStatus::Pending | ToolCallStatus::Running => {
+                self.set_phase_label(tool_phase_label(&record.name, &record.arguments));
+            }
+            // 完成 / 取消 / 跳过：退回默认 `thinking…`（模型接着会思考/作答）。
+            ToolCallStatus::Success
+            | ToolCallStatus::Error
+            | ToolCallStatus::Cancelled
+            | ToolCallStatus::Skipped => {
+                self.set_phase_label(DEFAULT_PHASE_LABEL.to_string());
+            }
+        }
         let card = ToolCard::from_record(record);
         for item in self.transcript.iter_mut() {
             if let TranscriptItem::ToolCard(existing) = item {
@@ -999,11 +1044,14 @@ impl App {
 
         // thinking spinner（generating 态）。在 transcript 与 editor/overlay 之间。
         if self.mode == AppMode::Generating {
+            // 基础相位标签由 agent 事件维护（thinking…/responding…/reading …/running: …）；
+            // 当 verbose / thinking 开启时把 reasoning 尾巴叠加在它之上。
             if self.show_reasoning {
                 if let Some(reasoning) = self.latest_reasoning_tail() {
-                    self.loader.set_message(format!("thinking… {reasoning}"));
+                    self.loader
+                        .set_message(format!("{} {reasoning}", self.phase_label));
                 } else {
-                    self.loader.set_message("thinking…");
+                    self.loader.set_message(self.phase_label.clone());
                 }
             }
             lines.extend(self.loader.render(width));
@@ -1092,6 +1140,87 @@ impl ToolCard {
             diff,
             structured_content: record.structured_content.clone(),
         }
+    }
+}
+
+/// spinner 的默认相位标签（planning / 思考中 / 工具完成后回退）。
+const DEFAULT_PHASE_LABEL: &str = "thinking…";
+
+/// 把一条运行中的工具调用映射成现在进行时的相位短语（spinner 标签用），如
+/// `reading lib.rs`、`running: cargo test`、`searching TODO`。
+///
+/// 工具名 → 动词；再从 `arguments` JSON 取一个简短目标（路径 basename / 命令首段 / 模式 / host），
+/// 整体裁剪到 ~40 列以保证与 spinner 共享一行不溢出。本地从 `record.arguments` 做轻量提取
+/// （不依赖 `tool_card.rs`），避免跨模块耦合。
+fn tool_phase_label(tool_name: &str, arguments: &str) -> String {
+    let args: Option<serde_json::Value> = serde_json::from_str(arguments).ok();
+    let obj = args.as_ref().and_then(|v| v.as_object());
+    let str_arg = |key: &str| -> Option<String> {
+        obj.and_then(|o| o.get(key))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    let basename = |key: &str| -> Option<String> {
+        str_arg(key).map(|p| {
+            p.trim_end_matches('/')
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(&p)
+                .to_string()
+        })
+    };
+    let with_target = |verb: &str, target: Option<String>| -> String {
+        match target.filter(|t| !t.is_empty()) {
+            Some(t) => format!("{verb} {t}"),
+            None => verb.to_string(),
+        }
+    };
+
+    let label = match tool_name {
+        "read" | "read_file" => with_target("reading", basename("path")),
+        "write" | "write_file" => with_target("writing", basename("path")),
+        "edit" | "edit_file" => with_target("editing", basename("path")),
+        "ls" | "list_dir" => {
+            let target = basename("path").or_else(|| basename("dir"));
+            with_target("listing", target.filter(|t| !t.is_empty()).or_else(|| Some(".".to_string())))
+        }
+        "find" | "glob_files" => "finding files".to_string(),
+        "grep" | "search_files" => {
+            with_target("searching", str_arg("pattern").or_else(|| str_arg("query")))
+        }
+        "bash" | "run_command" => {
+            let cmd = str_arg("command")
+                .map(|c| c.lines().next().unwrap_or("").trim().to_string())
+                .filter(|c| !c.is_empty());
+            match cmd {
+                Some(c) => format!("running: {c}"),
+                None => "running command".to_string(),
+            }
+        }
+        "web_fetch" => {
+            let host = str_arg("url").and_then(|u| host_of(&u));
+            with_target("fetching", host)
+        }
+        "skill_activate" => {
+            with_target("activating skill", str_arg("name").or_else(|| str_arg("skill")))
+        }
+        "skill_read_file" => "reading skill file".to_string(),
+        "skill_run_script" => "running skill script".to_string(),
+        other => format!("running {other}"),
+    };
+    clip(&label, 40)
+}
+
+/// 从一个 URL 里取 host（无 scheme 也能容错地取首段）。失败返回 `None`。
+fn host_of(url: &str) -> Option<String> {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let host = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.split('@').next_back().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
     }
 }
 
@@ -1958,6 +2087,188 @@ mod tests {
         assert!(!a.tick_loader(), "no tick while idle");
         a.set_mode(AppMode::Generating);
         assert!(a.tick_loader(), "ticks while generating");
+    }
+
+    // ---- phase-aware spinner label ----
+
+    fn record_with_args(name: &str, status: ToolCallStatus, args: serde_json::Value) -> ToolCallRecord {
+        let mut r = tool_record("call_x", name, status);
+        r.arguments = args.to_string();
+        r
+    }
+
+    #[test]
+    fn phase_label_defaults_to_thinking() {
+        let a = app();
+        assert_eq!(a.phase_label(), "thinking…");
+    }
+
+    #[test]
+    fn running_list_dir_sets_listing_phase() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "list_dir",
+            ToolCallStatus::Running,
+            serde_json::json!({ "path": "src/kivio_code" }),
+        ))));
+        assert_eq!(a.phase_label(), "listing kivio_code");
+    }
+
+    #[test]
+    fn running_ls_without_path_lists_cwd() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "ls",
+            ToolCallStatus::Running,
+            serde_json::json!({}),
+        ))));
+        assert_eq!(a.phase_label(), "listing .");
+    }
+
+    #[test]
+    fn running_read_file_sets_reading_basename() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "read_file",
+            ToolCallStatus::Pending,
+            serde_json::json!({ "path": "/abs/path/to/main.rs" }),
+        ))));
+        assert_eq!(a.phase_label(), "reading main.rs");
+    }
+
+    #[test]
+    fn running_run_command_sets_running_cmd_head() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "run_command",
+            ToolCallStatus::Running,
+            serde_json::json!({ "command": "cargo test\nsecond line" }),
+        ))));
+        assert_eq!(a.phase_label(), "running: cargo test");
+    }
+
+    #[test]
+    fn running_grep_sets_searching_pattern() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "search_files",
+            ToolCallStatus::Running,
+            serde_json::json!({ "pattern": "TODO" }),
+        ))));
+        assert_eq!(a.phase_label(), "searching TODO");
+    }
+
+    #[test]
+    fn running_web_fetch_sets_fetching_host() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "web_fetch",
+            ToolCallStatus::Running,
+            serde_json::json!({ "url": "https://example.com/path?q=1" }),
+        ))));
+        assert_eq!(a.phase_label(), "fetching example.com");
+    }
+
+    #[test]
+    fn unknown_tool_uses_running_tool_name() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "mcp_custom_tool",
+            ToolCallStatus::Running,
+            serde_json::json!({}),
+        ))));
+        assert_eq!(a.phase_label(), "running mcp_custom_tool");
+    }
+
+    #[test]
+    fn answer_delta_sets_responding() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: "Here is".to_string(),
+            reasoning: String::new(),
+        });
+        assert_eq!(a.phase_label(), "responding…");
+    }
+
+    #[test]
+    fn reasoning_only_delta_stays_thinking() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::StreamDelta {
+            message_id: "m1".to_string(),
+            delta: String::new(),
+            reasoning: "considering".to_string(),
+        });
+        assert_eq!(a.phase_label(), "thinking…");
+    }
+
+    #[test]
+    fn tool_success_reverts_phase_to_default() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "read_file",
+            ToolCallStatus::Running,
+            serde_json::json!({ "path": "main.rs" }),
+        ))));
+        assert_eq!(a.phase_label(), "reading main.rs");
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "read_file",
+            ToolCallStatus::Success,
+            serde_json::json!({ "path": "main.rs" }),
+        ))));
+        assert_eq!(a.phase_label(), "thinking…");
+    }
+
+    #[test]
+    fn new_turn_resets_phase_label() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "run_command",
+            ToolCallStatus::Running,
+            serde_json::json!({ "command": "ls" }),
+        ))));
+        assert_eq!(a.phase_label(), "running: ls");
+        // End the turn, then start a fresh one — the stale "running: ls" must clear.
+        a.set_mode(AppMode::Idle);
+        a.set_mode(AppMode::Generating);
+        assert_eq!(a.phase_label(), "thinking…");
+    }
+
+    #[test]
+    fn phase_label_long_target_is_width_trimmed() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "run_command",
+            ToolCallStatus::Running,
+            serde_json::json!({ "command": "a".repeat(200) }),
+        ))));
+        assert!(a.phase_label().chars().count() <= 41, "trimmed to ~40 + ellipsis");
+        assert!(a.phase_label().ends_with('…'));
+    }
+
+    #[test]
+    fn spinner_line_shows_phase_label() {
+        let mut a = app();
+        a.set_mode(AppMode::Generating);
+        a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(record_with_args(
+            "read_file",
+            ToolCallStatus::Running,
+            serde_json::json!({ "path": "lib.rs" }),
+        ))));
+        let joined = a.render(80).join("\n");
+        assert!(joined.contains("reading lib.rs"), "spinner shows current phase: {joined}");
     }
 
     // ---- Phase 5c: input history cycling (editor-backed) ----
