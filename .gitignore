@@ -43,3 +43,11 @@ src-tauri/swift/kivio-ocr-helper/.build/
 
 # CodeGraph 本地索引（生成物 / 本地缓存，不入库）
 .codegraph/
+
+# AI agent 工具脚手架（各 CLI / Trellis 生成的本地配置与依赖产物，不入库）
+.agents/
+.claude/
+.codex/
+.cursor/
+.opencode/
+.trellis/
