@@ -5,6 +5,16 @@ use super::super::types::{
 
 const FALLBACK_MODELS: &[(&str, &str)] = &[("default", "Default")];
 
+/// Claude Code thinking levels, passed via the CLI's `--effort <level>` flag.
+const REASONING: &[(&str, &str)] = &[
+    ("default", "Default"),
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "Extra high"),
+    ("max", "Max"),
+];
+
 pub fn build_claude_args(
     ctx: &RuntimeContext,
     options: &RuntimeBuildOptions,
@@ -24,6 +34,14 @@ pub fn build_claude_args(
     if let Some(model) = options.model.as_ref().filter(|m| *m != "default" && !m.is_empty()) {
         args.push("--model".to_string());
         args.push(model.clone());
+    }
+    if let Some(effort) = options
+        .reasoning
+        .as_ref()
+        .filter(|r| *r != "default" && !r.is_empty())
+    {
+        args.push("--effort".to_string());
+        args.push(effort.clone());
     }
     for dir in &ctx.extra_allowed_dirs {
         if !dir.is_empty() {
@@ -51,7 +69,7 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     version_args: &["--version"],
     auth_probe_args: Some(&["auth", "status"]),
     fallback_models: FALLBACK_MODELS,
-    reasoning_options: &[],
+    reasoning_options: REASONING,
     list_models_args: None,
     list_models_timeout_secs: Some(10),
     models_from_stderr: false,
@@ -94,5 +112,30 @@ mod tests {
         assert!(args.contains(&"--add-dir".to_string()));
         assert!(args.contains(&"/skills".to_string()));
         assert!(args.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_passes_effort_when_set() {
+        let mk = |reasoning: Option<&str>| {
+            build_claude_args(
+                &RuntimeContext {
+                    cwd: None,
+                    extra_allowed_dirs: vec![],
+                    resume_session_id: None,
+                    new_session_id: None,
+                    include_partial_messages: false,
+                },
+                &RuntimeBuildOptions {
+                    model: None,
+                    reasoning: reasoning.map(str::to_string),
+                },
+                None,
+            )
+        };
+        let high = mk(Some("high"));
+        assert!(high.windows(2).any(|w| w == ["--effort", "high"]));
+        // "default" / none → no --effort (Claude uses its own default).
+        assert!(!mk(Some("default")).contains(&"--effort".to_string()));
+        assert!(!mk(None).contains(&"--effort".to_string()));
     }
 }

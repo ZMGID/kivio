@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Check } from 'lucide-react'
 import { AgentIcon } from './AgentIcon'
 import { chatApi, type DetectedExternalAgent } from './api'
 import { chatTitlebarPillButtonClass } from './platform'
@@ -205,12 +205,22 @@ export function ExternalModelSelector({
   }, [])
 
   const agent = agents.find((item) => item.id === agentRuntime.externalAgentId)
-  const models = agent?.models ?? [{ id: 'default', label: 'Default' }]
-  const reasoningOptions = agent?.reasoningOptions ?? []
+  const models = useMemo(
+    () => agent?.models ?? [{ id: 'default', label: 'Default' }],
+    [agent],
+  )
+  const reasoningOptions = useMemo(() => agent?.reasoningOptions ?? [], [agent])
+  const currentReasoning = agentRuntime.externalReasoning ?? 'default'
   const displayName = useMemo(() => {
     const selected = models.find((item) => item.id === (agentRuntime.externalModel || 'default'))
-    return selected ? formatModelLabel(selected) : (agentRuntime.externalModel || 'default')
-  }, [agentRuntime.externalModel, models])
+    const base = selected ? formatModelLabel(selected) : (agentRuntime.externalModel || 'default')
+    // Append the active thinking level (when set to a non-default level) so it's visible on the pill.
+    const reasoning = reasoningOptions.find((o) => o.id === currentReasoning)
+    if (reasoning && currentReasoning !== 'default') {
+      return `${base} · ${reasoning.label}`
+    }
+    return base
+  }, [agentRuntime.externalModel, models, reasoningOptions, currentReasoning])
 
   if (agentRuntime.kind !== 'external' || !agentRuntime.externalAgentId) {
     return null
@@ -264,9 +274,12 @@ export function ExternalModelSelector({
                       onModelChange(agentRuntime.externalModel ?? 'default', option.id)
                       setOpen(false)
                     }}
-                    className="block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
                   >
-                    {option.label}
+                    <span>{option.label}</span>
+                    {option.id === currentReasoning && (
+                      <Check size={15} className="shrink-0 text-neutral-500" />
+                    )}
                   </button>
                 ))}
               </>
