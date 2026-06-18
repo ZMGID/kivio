@@ -95,6 +95,7 @@ mod tests {
             &RuntimeBuildOptions {
                 model: Some("anthropic/claude-sonnet-4-5".to_string()),
                 reasoning: Some("high".to_string()),
+                sandbox: None,
             },
             None,
         );

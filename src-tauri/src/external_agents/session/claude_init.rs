@@ -150,6 +150,7 @@ pub async fn probe_claude_init(
             .filter(|value| !value.is_empty() && *value != "default")
             .map(str::to_string),
         reasoning: None,
+        sandbox: None,
     };
     let args = (def.build_args)(&runtime_ctx, &build_options, None);
     let extra_env = std::collections::HashMap::new();

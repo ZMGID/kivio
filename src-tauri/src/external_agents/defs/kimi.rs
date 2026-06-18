@@ -71,6 +71,7 @@ mod tests {
             &RuntimeBuildOptions {
                 model: Some("kimi-k2-turbo-preview".to_string()),
                 reasoning: None,
+                sandbox: None,
             },
             Some("hello world"),
         );

@@ -74,6 +74,7 @@ mod tests {
             &RuntimeBuildOptions {
                 model: None,
                 reasoning: None,
+                sandbox: None,
             },
             None,
         );

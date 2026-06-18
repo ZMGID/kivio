@@ -21,7 +21,7 @@ import {
   Plus,
   Search,
   Settings,
-  ShieldAlert,
+
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -116,27 +116,6 @@ function nextBlankProjectName(projects: ChatProject[]): string {
   }
   return `新项目 ${Date.now()}`
 }
-
-const APPROVAL_POLICY_OPTIONS = [
-  {
-    value: 'always_confirm',
-    label: '每次确认',
-    title: '请求批准',
-    description: '所有工具调用都先问你',
-  },
-  {
-    value: 'readonly_auto_sensitive_confirm',
-    label: '敏感确认',
-    title: '替我审批',
-    description: '只对写文件、终端等风险操作确认',
-  },
-  {
-    value: 'auto',
-    label: '完全访问',
-    title: '完全访问权限',
-    description: '工具调用自动放行',
-  },
-]
 
 type SlashCommandId =
   | 'help'
@@ -334,11 +313,6 @@ function findActiveSlashToken(value: string, cursor: number): ActiveSlashToken |
   }
 }
 
-function approvalPolicyOption(policy?: string) {
-  return APPROVAL_POLICY_OPTIONS.find((option) => option.value === policy)
-    ?? APPROVAL_POLICY_OPTIONS[1]
-}
-
 function imageExtensionForMime(mimeType: string): string {
   switch (mimeType.toLowerCase()) {
     case 'image/jpeg':
@@ -388,8 +362,6 @@ interface InputBarProps {
   toolsDisabledReason?: string
   toolStatusHint?: string
   sendDisabledReason?: string
-  approvalPolicy?: string
-  onApprovalPolicyChange?: (approvalPolicy: string) => void | Promise<void>
   agentPlanState?: AgentPlanState | null
   onAgentPlanModeChange?: (mode: AgentPlanMode) => void | Promise<void>
   onExecuteAgentPlan?: () => void | Promise<void>
@@ -426,8 +398,6 @@ export function InputBar({
   toolsDisabledReason,
   toolStatusHint,
   sendDisabledReason,
-  approvalPolicy,
-  onApprovalPolicyChange,
   agentPlanState = null,
   onAgentPlanModeChange,
   onExecuteAgentPlan,
@@ -1304,7 +1274,7 @@ export function InputBar({
   const showMcpSection = externalMcpTools.length > 0 || Boolean(toolsDisabledReason)
   const mcpStatusLine = toolsDisabledReason
     || (externalMcpTools.length > 0 ? `MCP ${externalMcpTools.length}` : '')
-  const approvalOption = approvalPolicyOption(approvalPolicy)
+
 
   return (
     <div className={wrapperClass}>
@@ -1346,41 +1316,6 @@ export function InputBar({
                     </>
                   )}
                 </div>
-
-                {onApprovalPolicyChange && (
-                  <div className="border-t border-neutral-200/80 pt-1.5 dark:border-neutral-800">
-                    <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-                      <span className="inline-flex items-center gap-1">
-                        <ShieldAlert size={13} strokeWidth={1.8} />
-                        审批
-                      </span>
-                      <span className={approvalOption.value === 'auto' ? 'font-semibold text-[#e9531f] dark:text-[#ff9a71]' : ''}>
-                        {approvalOption.label}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-1">
-                      {APPROVAL_POLICY_OPTIONS.map((option) => {
-                        const selected = option.value === approvalOption.value
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => void onApprovalPolicyChange(option.value)}
-                            className={`rounded-md px-1.5 py-1 text-[11px] font-medium transition-colors ${
-                              selected
-                                ? option.value === 'auto'
-                                  ? 'bg-[#fff1eb] text-[#e9531f] dark:bg-[#f26b2d]/15 dark:text-[#ff9a71]'
-                                  : 'bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
-                                : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100'
-                            }`}
-                          >
-                            {option.label}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
 
                 {showMcpSection && mcpStatusLine && (
                   <div className="border-t border-neutral-200/80 pt-1.5 text-[11px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">

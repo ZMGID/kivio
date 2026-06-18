@@ -21,6 +21,7 @@ export const BUILTIN_AGENT_RUNTIME: AgentRuntimeConfig = {
   externalAgentId: null,
   externalModel: null,
   externalReasoning: null,
+  externalSandbox: null,
 }
 
 export function normalizeAgentRuntime(
@@ -35,6 +36,7 @@ export function normalizeAgentRuntime(
     externalAgentId: raw.externalAgentId ?? raw.external_agent_id ?? null,
     externalModel: raw.externalModel ?? raw.external_model ?? 'default',
     externalReasoning: raw.externalReasoning ?? raw.external_reasoning ?? null,
+    externalSandbox: raw.externalSandbox ?? raw.external_sandbox ?? null,
   }
 }
 
@@ -52,6 +54,7 @@ export function agentRuntimesEqual(
     && (a.externalAgentId ?? null) === (b.externalAgentId ?? null)
     && (a.externalModel ?? 'default') === (b.externalModel ?? 'default')
     && (a.externalReasoning ?? null) === (b.externalReasoning ?? null)
+    && (a.externalSandbox ?? null) === (b.externalSandbox ?? null)
 }
 
 const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -1243,6 +1246,7 @@ export const chatApi = {
       externalAgentId: agentRuntime.externalAgentId ?? null,
       externalModel: agentRuntime.externalModel ?? null,
       externalReasoning: agentRuntime.externalReasoning ?? null,
+      externalSandbox: agentRuntime.externalSandbox ?? null,
     }
     const result = await invoke<{ success: boolean; conversation: Conversation }>(
       'chat_set_agent_runtime',

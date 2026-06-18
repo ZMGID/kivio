@@ -164,6 +164,7 @@ pub async fn list_external_cli_slash_commands(
             let build_options = RuntimeBuildOptions {
                 model: None,
                 reasoning: None,
+                sandbox: None,
             };
             let args = (def.build_args)(&runtime_ctx, &build_options, None);
             probe_claude_slash_commands(&resolved_bin, Path::new(&cwd), &args).await?
@@ -189,6 +190,7 @@ pub async fn list_external_cli_slash_commands(
             let build_options = RuntimeBuildOptions {
                 model: None,
                 reasoning: None,
+                sandbox: None,
             };
             let args = (def.build_args)(&runtime_ctx, &build_options, None);
             let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();

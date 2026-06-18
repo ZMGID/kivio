@@ -62,6 +62,7 @@ mod tests {
             &RuntimeBuildOptions {
                 model: Some("auto".to_string()),
                 reasoning: None,
+                sandbox: None,
             },
             None,
         );

@@ -416,6 +416,7 @@ impl CodexAppServerSession {
         args: &[String],
         cwd: &Path,
         model: Option<&str>,
+        sandbox: Option<&str>,
         resume_thread: Option<&str>,
     ) -> Result<Self, String> {
         let mut child = tokio::process::Command::new(resolved_bin)
@@ -447,7 +448,11 @@ impl CodexAppServerSession {
             Some(tid) => ("thread/resume", json!({ "threadId": tid })),
             None => (
                 "thread/start",
-                json!({ "cwd": cwd_str, "sandbox": "workspace-write", "approvalPolicy": "never" }),
+                json!({
+                    "cwd": cwd_str,
+                    "sandbox": sandbox.filter(|s| !s.is_empty()).unwrap_or("workspace-write"),
+                    "approvalPolicy": "never",
+                }),
             ),
         };
         if let Some(m) = chosen_model {
@@ -703,7 +708,7 @@ mod tests {
 
         let bin = which_codex().expect("codex on PATH");
         let cwd = std::env::temp_dir();
-        let session = CodexAppServerSession::connect(&bin, &["app-server".to_string()], &cwd, None, None)
+        let session = CodexAppServerSession::connect(&bin, &["app-server".to_string()], &cwd, None, None, None)
             .await
             .expect("connect codex app-server");
         let thread_id = session.thread_id().to_string();

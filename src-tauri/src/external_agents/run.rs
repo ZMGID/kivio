@@ -187,6 +187,7 @@ pub async fn run_external_cli_reply(
     let build_options = RuntimeBuildOptions {
         model: conversation.agent_runtime.external_model.clone(),
         reasoning: conversation.agent_runtime.external_reasoning.clone(),
+        sandbox: conversation.agent_runtime.external_sandbox.clone(),
     };
 
     if let Some(max_bytes) = def.max_prompt_arg_bytes {
@@ -277,6 +278,7 @@ pub async fn run_external_cli_reply(
             &cwd,
             conversation.agent_runtime.external_model.clone(),
             conversation.agent_runtime.external_reasoning.clone(),
+            conversation.agent_runtime.external_sandbox.clone(),
             persistent_mcp,
             &composed.full_prompt,
             latest_user_message,
@@ -539,6 +541,7 @@ async fn run_persistent_turn<E, C>(
     cwd: &std::path::Path,
     model: Option<String>,
     reasoning: Option<String>,
+    sandbox: Option<String>,
     mcp_servers: Vec<AcpMcpServer>,
     first_prompt: &str,
     reuse_prompt: &str,
@@ -574,6 +577,7 @@ where
                     args,
                     cwd,
                     model.as_deref(),
+                    sandbox.as_deref(),
                     &mcp_servers,
                     resume_native,
                 )
@@ -679,6 +683,7 @@ async fn connect_persistent_session(
     args: &[String],
     cwd: &std::path::Path,
     model: Option<&str>,
+    sandbox: Option<&str>,
     mcp_servers: &[AcpMcpServer],
     resume_native: Option<String>,
 ) -> Result<
@@ -698,14 +703,14 @@ async fn connect_persistent_session(
         StreamFormat::CodexAppServer => {
             if let Some(tid) = resume_native.as_deref() {
                 if let Ok(session) =
-                    CodexAppServerSession::connect(resolved_bin, args, cwd, model, Some(tid)).await
+                    CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, Some(tid)).await
                 {
                     let id = session.thread_id().to_string();
                     return Ok((spawn_codex_session_actor(session), id, true));
                 }
             }
             let session =
-                CodexAppServerSession::connect(resolved_bin, args, cwd, model, None).await?;
+                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None).await?;
             let id = session.thread_id().to_string();
             Ok((spawn_codex_session_actor(session), id, false))
         }

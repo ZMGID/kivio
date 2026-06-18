@@ -381,6 +381,8 @@ export interface AgentRuntimeConfig {
   external_model?: string | null
   externalReasoning?: string | null
   external_reasoning?: string | null
+  externalSandbox?: string | null
+  external_sandbox?: string | null
 }
 
 export interface DetectedExternalAgent {
@@ -392,6 +394,8 @@ export interface DetectedExternalAgent {
   models: Array<{ id: string; label: string; contextWindowTokens?: number | null; context_window_tokens?: number | null }>
   reasoningOptions?: Array<{ id: string; label: string }>
   reasoning_options?: Array<{ id: string; label: string }>
+  sandboxOptions?: Array<{ id: string; label: string }>
+  sandbox_options?: Array<{ id: string; label: string }>
   authStatus?: string | null
   auth_status?: string | null
   externalMcpInjection?: string | null

@@ -57,9 +57,37 @@ pub async fn detect_single_agent(def: &RuntimeAgentDef) -> DetectedAgent {
         version,
         models,
         reasoning_options: reasoning_options_from_pairs(def.reasoning_options),
+        sandbox_options: sandbox_options_for(def.id),
         auth_status,
         external_mcp_injection: def.external_mcp_injection,
     }
+}
+
+/// Sandbox/permission levels offered per agent. Ids are the agent's native flag values so
+/// `build_args` can pass them straight through (claude `--permission-mode`, codex `--sandbox`).
+/// Agents without a meaningful sandbox flag return an empty list (no capsule shown).
+pub fn sandbox_options_for(agent_id: &str) -> Vec<RuntimeModelOption> {
+    let pairs: &[(&str, &str)] = match agent_id {
+        "claude" => &[
+            ("plan", "计划 (只读)"),
+            ("acceptEdits", "接受编辑"),
+            ("bypassPermissions", "完全 (默认)"),
+        ],
+        "codex" => &[
+            ("read-only", "只读"),
+            ("workspace-write", "工作区写 (默认)"),
+            ("danger-full-access", "完全"),
+        ],
+        _ => &[],
+    };
+    pairs
+        .iter()
+        .map(|(id, label)| RuntimeModelOption {
+            id: (*id).to_string(),
+            label: (*label).to_string(),
+            context_window_tokens: None,
+        })
+        .collect()
 }
 
 async fn probe_version(def: &RuntimeAgentDef, path: Option<&std::path::Path>) -> Option<String> {

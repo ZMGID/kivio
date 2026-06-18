@@ -7,6 +7,7 @@ import type { AssistantStreamStats } from './MessageList'
 import { InputBar } from './InputBar'
 import { ModelSelector } from './ModelSelector'
 import { ExternalModelSelector, RuntimePicker } from './RuntimePicker'
+import { PermissionPicker } from './PermissionPicker'
 import { WindowControls } from './WindowControls'
 import { ContextIndicator } from './ContextIndicator'
 import { AgentTodoIndicator } from './AgentTodoIndicator'
@@ -2526,6 +2527,15 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     await handleRuntimeChange(next)
   }
 
+  const handleExternalSandboxChange = async (sandbox: string) => {
+    const next: AgentRuntimeConfig = {
+      ...activeAgentRuntime,
+      kind: 'external',
+      externalSandbox: sandbox,
+    }
+    await handleRuntimeChange(next)
+  }
+
   const handleModelChange = async (providerId: string, model: string) => {
     setDraftProviderId(providerId)
     setDraftModel(model)
@@ -2796,6 +2806,14 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     />
                   )}
                 </div>
+                <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
+                  <PermissionPicker
+                    agentRuntime={activeAgentRuntime}
+                    onSandboxChange={(s) => void handleExternalSandboxChange(s)}
+                    approvalPolicy={approvalPolicy}
+                    onApprovalPolicyChange={handleApprovalPolicyChange}
+                  />
+                </div>
                 <div className="shrink-0" data-tauri-drag-region="false">
                   <ContextIndicator
                     contextState={contextState}
@@ -2856,8 +2874,6 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       toolsDisabledReason={toolsDisabledReason}
                       toolStatusHint={toolStatusHint}
                       sendDisabledReason={sendDisabledReason}
-                      approvalPolicy={approvalPolicy}
-                      onApprovalPolicyChange={handleApprovalPolicyChange}
                       agentPlanState={currentConversation?.agent_plan_state ?? currentConversation?.agentPlanState ?? null}
                       onAgentPlanModeChange={handleAgentPlanModeChange}
                       onExecuteAgentPlan={handleExecuteAgentPlan}
@@ -2915,8 +2931,6 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     toolsDisabledReason={toolsDisabledReason}
                     toolStatusHint={toolStatusHint}
                     sendDisabledReason={sendDisabledReason}
-                    approvalPolicy={approvalPolicy}
-                    onApprovalPolicyChange={handleApprovalPolicyChange}
                     agentPlanState={currentConversation?.agent_plan_state ?? currentConversation?.agentPlanState ?? null}
                     onAgentPlanModeChange={handleAgentPlanModeChange}
                     onExecuteAgentPlan={handleExecuteAgentPlan}

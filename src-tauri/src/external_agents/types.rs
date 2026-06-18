@@ -79,6 +79,8 @@ pub struct DetectedAgent {
     pub version: Option<String>,
     pub models: Vec<RuntimeModelOption>,
     pub reasoning_options: Vec<RuntimeModelOption>,
+    #[serde(default)]
+    pub sandbox_options: Vec<RuntimeModelOption>,
     pub auth_status: Option<String>,
     pub external_mcp_injection: Option<ExternalMcpInjection>,
 }
@@ -87,6 +89,8 @@ pub struct DetectedAgent {
 pub struct RuntimeBuildOptions {
     pub model: Option<String>,
     pub reasoning: Option<String>,
+    /// Sandbox/permission level id (native flag value, e.g. claude "bypassPermissions" / codex "workspace-write").
+    pub sandbox: Option<String>,
 }
 
 #[derive(Debug, Clone)]

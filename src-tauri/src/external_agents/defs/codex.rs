@@ -94,6 +94,7 @@ mod tests {
             &RuntimeBuildOptions {
                 model: Some("gpt-5".to_string()),
                 reasoning: Some("high".to_string()),
+                sandbox: None,
             },
             None,
         );

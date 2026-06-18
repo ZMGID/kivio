@@ -57,7 +57,14 @@ pub fn build_claude_args(
         args.push(session_id.clone());
     }
     args.push("--permission-mode".to_string());
-    args.push("bypassPermissions".to_string());
+    args.push(
+        options
+            .sandbox
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("bypassPermissions")
+            .to_string(),
+    );
     args
 }
 
@@ -104,6 +111,7 @@ mod tests {
             &RuntimeBuildOptions {
                 model: Some("sonnet".to_string()),
                 reasoning: None,
+                sandbox: None,
             },
             None,
         );
@@ -128,6 +136,7 @@ mod tests {
                 &RuntimeBuildOptions {
                     model: None,
                     reasoning: reasoning.map(str::to_string),
+                    sandbox: None,
                 },
                 None,
             )
@@ -137,5 +146,31 @@ mod tests {
         // "default" / none → no --effort (Claude uses its own default).
         assert!(!mk(Some("default")).contains(&"--effort".to_string()));
         assert!(!mk(None).contains(&"--effort".to_string()));
+    }
+
+    #[test]
+    fn claude_build_args_permission_mode_from_sandbox() {
+        let mk = |sandbox: Option<&str>| {
+            build_claude_args(
+                &RuntimeContext {
+                    cwd: None,
+                    extra_allowed_dirs: vec![],
+                    resume_session_id: None,
+                    new_session_id: None,
+                    include_partial_messages: false,
+                },
+                &RuntimeBuildOptions {
+                    model: None,
+                    reasoning: None,
+                    sandbox: sandbox.map(str::to_string),
+                },
+                None,
+            )
+        };
+        assert!(mk(Some("plan")).windows(2).any(|w| w == ["--permission-mode", "plan"]));
+        // Unset → defaults to bypassPermissions so headless tools still work.
+        assert!(mk(None)
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "bypassPermissions"]));
     }
 }

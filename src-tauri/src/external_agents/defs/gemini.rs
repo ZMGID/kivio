@@ -66,6 +66,7 @@ mod tests {
             &RuntimeBuildOptions {
                 model: Some("gemini-2.5-pro".to_string()),
                 reasoning: None,
+                sandbox: None,
             },
             None,
         );
