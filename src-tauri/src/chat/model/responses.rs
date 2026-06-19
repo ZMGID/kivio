@@ -102,24 +102,62 @@ impl OpenAiResponsesProvider<'_> {
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
             ModelError::new(message)
         })?;
-        let value: Value = serde_json::from_str(&raw).map_err(|err| {
-            let message = format!(
-                "{label} parse JSON: {} (body: {})",
-                err,
-                raw.chars().take(500).collect::<String>()
-            );
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            ModelError::new(message)
-        })?;
-        let output = output_from_responses(&value, &raw, &label)?;
-        self.record_usage_success(
-            &request,
-            &label,
-            started_at,
-            started.elapsed(),
-            output.usage.clone(),
-        );
-        Ok(output)
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(value) => {
+                let output = output_from_responses(&value, &raw, &label)?;
+                self.record_usage_success(
+                    &request,
+                    &label,
+                    started_at,
+                    started.elapsed(),
+                    output.usage.clone(),
+                );
+                Ok(output)
+            }
+            Err(json_err) => {
+                // Some Responses-API proxies stream an SSE body even when the request
+                // sets `stream:false`. The body is then `event: …\ndata: {…}` lines, not a
+                // JSON object, so `from_str` fails. Tolerate that: parse the SSE body
+                // through the same accumulation the streaming path uses.
+                if !looks_like_sse(&raw) {
+                    let message = format!(
+                        "{label} parse JSON: {} (body: {})",
+                        json_err,
+                        raw.chars().take(500).collect::<String>()
+                    );
+                    self.record_usage_failure(
+                        &request,
+                        &label,
+                        started_at,
+                        started.elapsed(),
+                        &message,
+                    );
+                    return Err(ModelError::new(message));
+                }
+                match output_from_sse_body(&raw) {
+                    Ok(output) => {
+                        self.record_usage_success(
+                            &request,
+                            &label,
+                            started_at,
+                            started.elapsed(),
+                            output.usage.clone(),
+                        );
+                        Ok(output)
+                    }
+                    Err(err) => {
+                        self.record_usage_failure(
+                            &request,
+                            &label,
+                            started_at,
+                            started.elapsed(),
+                            &err.to_string(),
+                        );
+                        Err(err)
+                    }
+                }
+            }
+        }
     }
 
     async fn stream_inner(
@@ -174,22 +212,7 @@ impl OpenAiResponsesProvider<'_> {
             buffer.push_str(&String::from_utf8_lossy(&chunk));
             while let Some(pos) = buffer.find('\n') {
                 let line: String = buffer.drain(..=pos).collect();
-                let line = line.trim();
-                // Responses SSE carries `event:` and `data:` lines; the `data:` JSON
-                // already includes a `type` field mirroring the event name, so we only
-                // need the data payload.
-                if !line.starts_with("data:") {
-                    continue;
-                }
-                let data = line.trim_start_matches("data:").trim();
-                if data.is_empty() || data == "[DONE]" {
-                    continue;
-                }
-                let value: Value = match serde_json::from_str(data) {
-                    Ok(value) => value,
-                    Err(_) => continue,
-                };
-                if let Some(err) = handle_responses_stream_event(&value, &mut state, sink)? {
+                if let Some(err) = process_sse_line(&line, &mut state, sink)? {
                     self.record_usage_failure(
                         &request,
                         &label,
@@ -521,19 +544,80 @@ fn handle_responses_stream_event(
             }
         }
         "response.failed" | "error" => {
-            let message = value
+            let error_obj = value
                 .get("response")
                 .and_then(|response| response.get("error"))
-                .or_else(|| value.get("error"))
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("Responses stream failed")
-                .to_string();
+                .or_else(|| value.get("error"));
+            let message = error_obj
+                .map(responses_error_message)
+                .unwrap_or_else(|| "Responses stream failed".to_string());
             return Ok(Some(message));
         }
         _ => {}
     }
     Ok(None)
+}
+
+/// Process one raw SSE line from a Responses stream into the accumulating state.
+///
+/// Shared by the live streaming loop (`stream_inner`, one drained `\n`-terminated line
+/// at a time) and the non-stream SSE fallback (`output_from_sse_body`, lines split off a
+/// fully-buffered body). Responses SSE carries `event:` and `data:` lines; the `data:`
+/// JSON already includes a `type` field mirroring the event name, so only the `data:`
+/// payload matters. Returns `Ok(Some(err))` for a terminal provider error, `Ok(None)`
+/// otherwise; non-`data:` lines, blanks, `[DONE]`, and unparseable payloads are skipped.
+fn process_sse_line(
+    line: &str,
+    state: &mut ResponsesStreamState,
+    sink: &mut (dyn StreamSink + Send),
+) -> Result<Option<String>, ModelError> {
+    let line = line.trim();
+    if !line.starts_with("data:") {
+        return Ok(None);
+    }
+    let data = line.trim_start_matches("data:").trim();
+    if data.is_empty() || data == "[DONE]" {
+        return Ok(None);
+    }
+    let value: Value = match serde_json::from_str(data) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    handle_responses_stream_event(&value, state, sink)
+}
+
+/// True if `body` looks like a Responses SSE stream rather than a JSON object — i.e. it
+/// contains a line starting with `data:` or `event:` (tolerant of CRLF and leading
+/// whitespace). Used to decide whether a non-JSON non-stream response body can be salvaged.
+fn looks_like_sse(body: &str) -> bool {
+    body.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("data:") || line.starts_with("event:")
+    })
+}
+
+/// Parse a fully-buffered Responses **SSE** body (a provider that streamed despite
+/// `stream:false`) into a `GenerateOutput`, reusing the exact streaming accumulation. The
+/// non-stream path has no live consumer, so events are fed through a discarding sink.
+fn output_from_sse_body(body: &str) -> Result<GenerateOutput, ModelError> {
+    let mut state = ResponsesStreamState::default();
+    let mut sink = DiscardSink;
+    for line in body.split('\n') {
+        if let Some(err) = process_sse_line(line, &mut state, &mut sink)? {
+            return Err(ModelError::new(err));
+        }
+    }
+    state.finish(&mut sink)
+}
+
+/// A `StreamSink` that drops every part. Used by the non-stream SSE fallback where the
+/// accumulated `GenerateOutput` is the only consumer and no live deltas are needed.
+struct DiscardSink;
+
+impl StreamSink for DiscardSink {
+    fn emit(&mut self, _part: StreamPart) -> Result<(), ModelError> {
+        Ok(())
+    }
 }
 
 fn pending_tool_call_from_partial(partial: &ResponsesToolPartial) -> PendingToolCall {
@@ -559,11 +643,10 @@ pub fn output_from_responses(
     label: &str,
 ) -> Result<GenerateOutput, ModelError> {
     if let Some(error) = value.get("error") {
-        let message = error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown Responses API error");
-        return Err(ModelError::new(format!("{label}: {message}")));
+        return Err(ModelError::new(format!(
+            "{label}: {}",
+            responses_error_message(error)
+        )));
     }
     let output = value
         .get("output")
@@ -664,6 +747,30 @@ fn invalid_response(label: &str, raw: &str) -> ModelError {
         "Invalid {label} response: {}",
         raw.chars().take(500).collect::<String>()
     ))
+}
+
+/// Extract the most informative human-readable message from a Responses API `error`
+/// object. Providers vary: some put the real reason in `message`, some only in `code`
+/// or `type`, and some proxies return a bare object. Try `message` → `code` → `type` →
+/// the compact JSON of the whole error value; only fall back to a generic string when the
+/// error object carries nothing at all. This surfaces the provider's real reason (rate
+/// limit, 502, context length, …) instead of a useless "Unknown Responses API error".
+fn responses_error_message(error: &Value) -> String {
+    for key in ["message", "code", "type"] {
+        if let Some(text) = error.get(key).and_then(Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    // No standard field carried a string. If the error value is a non-empty object/array
+    // or a non-empty scalar, serialize it compactly so the real payload is visible.
+    let serialized = error.to_string();
+    if !error.is_null() && serialized != "{}" && serialized != "\"\"" && !serialized.is_empty() {
+        return serialized;
+    }
+    "Unknown Responses API error".to_string()
 }
 
 fn non_empty(value: String) -> Option<String> {
@@ -771,5 +878,105 @@ mod tests {
         let out = output_from_responses(&text_value, "{}", "test").expect("output");
         assert_eq!(out.text, "hi");
         assert_eq!(out.finish_reason.as_deref(), Some("stop"));
+    }
+
+    /// A provider that streams an SSE body despite `stream:false`. `output_from_sse_body`
+    /// must reuse the streaming accumulation and yield the same `GenerateOutput` the live
+    /// stream path produces — text/tool-call args/usage — instead of a JSON parse error.
+    #[test]
+    fn sse_body_fallback_parses_tool_call_and_usage() {
+        let body = concat!(
+            "event: response.created\r\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\r\n",
+            "\r\n",
+            "event: response.output_item.added\r\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\",\"call_id\":\"call_abc\",\"name\":\"web_search\"}}\r\n",
+            "\r\n",
+            "event: response.function_call_arguments.done\r\n",
+            "data: {\"type\":\"response.function_call_arguments.done\",\"arguments\":\"{\\\"query\\\":\\\"吉林市 明天 天气\\\"}\",\"item_id\":\"fc_1\",\"output_index\":1}\r\n",
+            "\r\n",
+            "event: response.output_item.done\r\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"query\\\":\\\"吉林市 明天 天气\\\"}\",\"call_id\":\"call_abc\",\"name\":\"web_search\"}}\r\n",
+            "\r\n",
+            "event: response.completed\r\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\r\n",
+            "\r\n",
+            "data: [DONE]\r\n",
+        );
+        assert!(looks_like_sse(body));
+        let output = output_from_sse_body(body).expect("sse output");
+        assert_eq!(output.tool_calls.len(), 1);
+        let call = &output.tool_calls[0];
+        assert_eq!(call.id, "call_abc");
+        assert_eq!(call.function_name, "web_search");
+        assert_eq!(call.arguments["query"], "吉林市 明天 天气");
+        assert!(call.arguments_parse_error.is_none());
+        assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(output.usage.and_then(|u| u.total_tokens), Some(15));
+    }
+
+    /// SSE body carrying only text deltas accumulates the same as the live stream path.
+    #[test]
+    fn sse_body_fallback_accumulates_text() {
+        let body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"，世界\"}\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
+        );
+        let output = output_from_sse_body(body).expect("sse output");
+        assert_eq!(output.text, "你好，世界");
+        assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+    }
+
+    /// A terminal `response.failed` event in the SSE body surfaces as a `ModelError`.
+    #[test]
+    fn sse_body_fallback_surfaces_provider_error() {
+        let body = concat!(
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n",
+        );
+        let err = output_from_sse_body(body).expect_err("should error");
+        assert!(err.to_string().contains("boom"));
+    }
+
+    /// A plain JSON body is not mistaken for SSE; the happy path stays unchanged.
+    #[test]
+    fn plain_json_body_is_not_sse() {
+        let body = r#"{"status":"completed","output":[]}"#;
+        assert!(!looks_like_sse(body));
+    }
+
+    /// Gap 4: a non-stream Responses error object surfaces the provider's real reason.
+    #[test]
+    fn output_from_responses_surfaces_real_error_message() {
+        let value: Value = serde_json::from_str(r#"{"error":{"message":"boom"}}"#).unwrap();
+        let err = output_from_responses(&value, "{}", "Chat planning").expect_err("error");
+        assert!(err.to_string().contains("boom"), "got {err}");
+        assert!(!err.to_string().contains("Unknown"));
+    }
+
+    /// Gap 4: error message extraction falls through message → code → type → JSON, and
+    /// only uses the generic fallback when the error object is truly empty.
+    #[test]
+    fn responses_error_message_falls_through_fields() {
+        assert_eq!(
+            responses_error_message(&serde_json::json!({"message": "rate limited"})),
+            "rate limited"
+        );
+        assert_eq!(
+            responses_error_message(&serde_json::json!({"code": "context_length_exceeded"})),
+            "context_length_exceeded"
+        );
+        assert_eq!(
+            responses_error_message(&serde_json::json!({"type": "server_error"})),
+            "server_error"
+        );
+        // No standard field but a non-empty object → compact JSON is surfaced.
+        let json_only = responses_error_message(&serde_json::json!({"detail": "502 bad gateway"}));
+        assert!(json_only.contains("502 bad gateway"), "got {json_only}");
+        // Truly empty error object → generic fallback (last resort only).
+        assert_eq!(
+            responses_error_message(&serde_json::json!({})),
+            "Unknown Responses API error"
+        );
     }
 }

@@ -356,17 +356,23 @@ impl TurnRuntime {
         self.assembly.model_label_display()
     }
 
-    /// 当前活动模型的上下文窗口大小（tokens）；`context_window_for_model` 返回 `(tokens, is_fallback)`，
-    /// 仅当**非** fallback（即可靠已知）时返回 `Some`，否则 `None` 让 footer 优雅降级（FIX 3）。
+    /// 当前活动模型的**安全**上下文窗口大小（tokens）：裸窗口 × `SAFE_WINDOW_RATIO`（Gap 3）。
+    /// footer 量表显示 safe_window 而非裸窗口，与压缩触发预算（同样基于 safe_window）口径一致——
+    /// 元数据偏乐观时也不会让用户以为还有很多余量。`context_window_for_model` 返回
+    /// `(tokens, is_fallback)`，仅当**非** fallback（即可靠已知）时返回 `Some`，否则 `None`
+    /// 让 footer 优雅降级（FIX 3）。
     fn context_window(&self) -> Option<usize> {
-        let (tokens, is_fallback) = crate::chat::model_metadata::context_window_for_model(
+        let (_tokens, is_fallback) = crate::chat::model_metadata::context_window_for_model(
             Some(&self.assembly.provider),
             &self.assembly.model,
         );
         if is_fallback {
             None
         } else {
-            Some(tokens)
+            Some(crate::chat::model_metadata::safe_context_window_for_model(
+                Some(&self.assembly.provider),
+                &self.assembly.model,
+            ))
         }
     }
 
@@ -2192,7 +2198,9 @@ mod tests {
         s.default_models.chat.provider_id = "p".to_string();
         s.default_models.chat.model = "my-model-128k".to_string();
         let (rt, _done) = turn_runtime_with(s, &cwd);
-        assert_eq!(rt.context_window(), Some(128_000));
+        // Gap 3: footer shows the SAFE window (raw 128k × SAFE_WINDOW_RATIO = 0.9 → 115_200),
+        // not the raw window — keeps the gauge consistent with the compaction trigger budget.
+        assert_eq!(rt.context_window(), Some(115_200));
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));

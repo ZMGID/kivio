@@ -1774,11 +1774,11 @@
     #[tokio::test]
     async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
         let server = MockModelServer::start(vec![
-            // 1) L2 摘要请求（非流式 JSON）——压缩超预算的旧段。
-            MockResponse::Json(
-                r#"{"choices":[{"message":{"role":"assistant","content":"SUMMARY_MARKER: 早前轮次摘要"}}]}"#
-                    .to_string(),
-            ),
+            // 1) L2 摘要请求（**流式 SSE**）——压缩摘要调用现在走流式路径。
+            MockResponse::Sse(vec![
+                r#"{"choices":[{"delta":{"content":"SUMMARY_MARKER: 早前轮次摘要"}}]}"#.to_string(),
+                "[DONE]".to_string(),
+            ]),
             // 2) 压缩后的规划请求 → 发起一次 read 工具调用。
             MockResponse::Sse(planning_tool_call_sse_events()),
             // 3) 合成请求 → 最终回答。
@@ -1910,11 +1910,11 @@
     #[tokio::test]
     async fn run_loop_layer2_replaces_old_history_with_summary() {
         let server = MockModelServer::start(vec![
-            // 1) Layer2 摘要请求（非流式 JSON）。
-            MockResponse::Json(
-                r#"{"choices":[{"message":{"role":"assistant","content":"SUMMARY_MARKER: 早前轮次已读取大文件"}}]}"#
-                    .to_string(),
-            ),
+            // 1) Layer2 摘要请求（**流式 SSE**）——压缩摘要调用现在走流式路径。
+            MockResponse::Sse(vec![
+                r#"{"choices":[{"delta":{"content":"SUMMARY_MARKER: 早前轮次已读取大文件"}}]}"#.to_string(),
+                "[DONE]".to_string(),
+            ]),
             // 2) 压缩后的规划请求 → 直接给出最终回答（无工具调用）。
             MockResponse::Sse(vec![
                 r#"{"choices":[{"delta":{"content":"基于摘要继续完成任务。"}}]}"#.to_string(),
@@ -1954,6 +1954,12 @@
         assert_eq!(bodies.len(), 2, "summary request + planning request");
         // 摘要请求带着 Claude Code 结构化 prompt 与旧段样本。
         assert!(bodies[0].contains("tasked with summarizing conversations"));
+        // L2 摘要调用现在走**流式**路径——摘要请求体携带 `"stream":true`（这是它能在仅支持
+        // 流式的 provider 上成功摘要的关键：mock 摘要响应以 SSE 提供而非非流式 JSON）。
+        assert!(
+            bodies[0].contains("\"stream\":true"),
+            "compaction summary call must use the streaming path"
+        );
         // 压缩后的规划请求：携带摘要，不再携带旧原文，保留最近历史。
         assert!(bodies[1].contains("SUMMARY_MARKER"));
         assert!(!bodies[1].contains(&"B".repeat(1_000)));
@@ -1970,6 +1976,172 @@
             .expect("compacted_history present when L2 ran");
         assert!(compacted.iter().any(|m| m.to_string().contains("SUMMARY_MARKER")));
         assert!(!compacted.iter().any(|m| m.to_string().contains(&"B".repeat(1_000))));
+    }
+
+    /// Streaming-only provider: the compaction summary call MUST stream. This is the
+    /// "real path" L2 test the prior mock tests lacked — the user's provider (xb1520.com
+    /// `gpt-5.3-codex-spark`, openai_responses) only reliably serves STREAMING, so the
+    /// lone non-stream summary call failed and compaction could never compress on it.
+    ///
+    /// We model a streaming-only provider by serving the summary as an SSE stream while
+    /// FAILING any non-stream call shape: the summary mock is the FIRST request; if the
+    /// agent issued a non-stream `generate` for it, the captured body would lack
+    /// `"stream":true`. We assert the summary request streamed AND that compaction
+    /// SUCCEEDED (old history replaced by the summary, `compacted_history` produced).
+    #[tokio::test]
+    async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
+        let server = MockModelServer::start(vec![
+            // 1) 摘要请求：仅以 SSE 提供（模拟仅支持流式的 provider）。
+            MockResponse::Sse(vec![
+                r#"{"choices":[{"delta":{"content":"<summary>\nSUMMARY_MARKER: streamed summary\n</summary>"}}]}"#.to_string(),
+                "[DONE]".to_string(),
+            ]),
+            // 2) 压缩后的规划请求 → 直接给出最终回答（无工具调用）。
+            MockResponse::Sse(vec![
+                r#"{"choices":[{"delta":{"content":"流式摘要后继续完成任务。"}}]}"#.to_string(),
+                "[DONE]".to_string(),
+            ]),
+        ]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url, true);
+        config.provider.model_overrides.insert(
+            "test-model".to_string(),
+            crate::settings::ModelInfo {
+                context_window: Some(600),
+                ..Default::default()
+            },
+        );
+        let huge = "C".repeat(9_000);
+        config.runtime_messages.push(serde_json::json!({
+            "role": "tool", "tool_call_id": "old_call", "content": huge
+        }));
+        for i in 0..8 {
+            config.runtime_messages.push(serde_json::json!({
+                "role": if i % 2 == 0 { "user" } else { "assistant" },
+                "content": format!("recent history {i}")
+            }));
+        }
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("streaming-only compacted run completes");
+        assert_eq!(result.stream_outcome, "completed");
+        assert_eq!(result.content, "流式摘要后继续完成任务。");
+
+        let bodies = server.captured_bodies();
+        assert_eq!(bodies.len(), 2, "streamed summary request + planning request");
+        // 关键：摘要请求走流式（仅流式 provider 上能成功的根本原因）。
+        assert!(
+            bodies[0].contains("tasked with summarizing conversations"),
+            "first request is the summary call"
+        );
+        assert!(
+            bodies[0].contains("\"stream\":true"),
+            "summary call must stream on a streaming-only provider"
+        );
+        // 压缩成功：旧原文被摘要取代，compacted_history 产出。
+        assert!(bodies[1].contains("SUMMARY_MARKER"));
+        assert!(!bodies[1].contains(&"C".repeat(1_000)));
+        let compacted = result
+            .compacted_history
+            .as_ref()
+            .expect("compacted_history present when streamed L2 compaction succeeds");
+        assert!(compacted.iter().any(|m| m.to_string().contains("SUMMARY_MARKER")));
+        assert!(!compacted.iter().any(|m| m.to_string().contains(&"C".repeat(1_000))));
+    }
+
+    /// Gap 2 (Layer 3 anti-thrashing): when the history is persistently over the
+    /// compaction budget and every summary call FAILS, the loop must NOT keep
+    /// re-summarizing-and-failing forever (the real-world "6× failed compaction"
+    /// regression). After `COMPACTION_THRASH_LIMIT` (2) unresolved rounds it ends
+    /// the turn gracefully with the gathered tool results — a degraded answer, not
+    /// an `Err`, and a BOUNDED number of model calls.
+    #[tokio::test]
+    async fn run_loop_compaction_thrash_degrades_with_gathered_results() {
+        let overflow_400 = || {
+            MockResponse::Status(
+                400,
+                r#"{"error":{"message":"This model's maximum context length is 600 tokens"}}"#
+                    .to_string(),
+            )
+        };
+        let server = MockModelServer::start(vec![
+            // Round 1 entry: compaction summary call #1 → fails (unresolved 0→1).
+            overflow_400(),
+            // Round 1 planning → one read tool call (gathers a result).
+            MockResponse::Sse(planning_tool_call_sse_events()),
+            // Round 2 entry: compaction summary call #2 → fails (unresolved 1→2);
+            // the thrash limit is now reached, so the loop degrades BEFORE any
+            // further planning call. No more responses are consumed after this.
+            overflow_400(),
+        ]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url, true);
+        // Small window so the pre-filled huge tool output is always over budget,
+        // forcing a compaction attempt at the top of every planning round.
+        config.provider.model_overrides.insert(
+            "test-model".to_string(),
+            crate::settings::ModelInfo {
+                context_window: Some(600),
+                ..Default::default()
+            },
+        );
+        // Allow a second round so the loop re-enters planning after the tool round
+        // and trips the thrash guard there.
+        config.effective_chat_tools.max_tool_rounds = Some(2);
+        // Pre-fill an oversized earlier tool output + small recent tail: the history
+        // stays over budget every round, but the summary call always errors so the
+        // send view never shrinks → unresolved_rounds climbs to the limit.
+        let huge = "A".repeat(9_000);
+        config.runtime_messages.push(serde_json::json!({
+            "role": "assistant", "content": "", "tool_calls": [
+                {"id": "old_call", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ]
+        }));
+        config.runtime_messages.push(serde_json::json!({
+            "role": "tool", "tool_call_id": "old_call", "content": huge
+        }));
+        for i in 0..8 {
+            config.runtime_messages.push(serde_json::json!({
+                "role": if i % 2 == 0 { "user" } else { "assistant" },
+                "content": format!("history {i}")
+            }));
+        }
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("anti-thrashing must end the turn, not bubble Err");
+
+        // Degraded but completed via the recovery path — not an error, not a loop.
+        assert_eq!(result.stream_outcome, "compaction_thrash");
+        // The gathered round-1 tool result is surfaced in the degraded answer.
+        assert_eq!(result.tool_records.len(), 1);
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Success
+        ));
+        assert!(
+            result.content.contains("result:read"),
+            "degraded answer must carry the gathered tool result, got: {}",
+            result.content
+        );
+        // BOUNDED model calls: summary#1 + planning#1 + summary#2 = exactly 3.
+        // The thrash guard fires before a 2nd planning call, so we never see the
+        // 6× failed-compaction loop from the regression.
+        assert_eq!(
+            server.captured_bodies().len(),
+            3,
+            "anti-thrashing must bound model calls (summary + planning + summary), no repeat-fail loop"
+        );
+        // A single done event with the degraded content (turn ended cleanly).
+        assert_eq!(
+            host.recorded_dones(),
+            vec![("done".to_string(), result.content.clone())]
+        );
     }
 
     /// Under-budget runs must not be touched by compaction: the request body
@@ -2279,6 +2451,7 @@
             applied_allowed_tools_len: 0,
             usage: None,
             compacted: false,
+            compaction_unresolved_rounds: 0,
         }
     }
 

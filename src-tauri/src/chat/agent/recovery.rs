@@ -253,6 +253,13 @@ pub(crate) fn assemble_results_from_tool_records(
     out
 }
 
+/// 上下文超长的静态说明文案（Gap 2 anti-thrashing 兜底用）：当压缩反复失败、且没有任何
+/// 工具结果可降级时，至少给用户一条明确的上下文超长提示，而不是空字符串/笼统报错。
+/// 复用 `failure_reason_line` 的 ContextOverflow 文案，保持口径一致。
+pub(crate) fn overflow_static_message(language: &str) -> String {
+    failure_reason_line(FailureKind::ContextOverflow, language.starts_with("zh")).to_string()
+}
+
 /// 一行人读的失败原因(按 `kind`)。这是修复「降级消息误导」的核心:429 就说限流,
 /// 上下文超长就说上下文,绝不再把限流说成"可能上下文过长"。
 fn failure_reason_line(kind: FailureKind, zh: bool) -> &'static str {

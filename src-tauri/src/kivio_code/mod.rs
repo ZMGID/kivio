@@ -41,17 +41,50 @@ use host::CliAgentHost;
 pub use settings_loader::{load_settings_from_disk, load_settings_from_path};
 
 /// Plan-mode system note appended to a turn's message clone (never to the stored
-/// `runtime_messages`) when the interactive App is in [`AgentMode::Plan`]. It tells the
-/// model it is in read-only research/planning mode: research by reading/searching, do NOT
-/// mutate files or run commands or claim to have made changes, and produce a concise,
-/// numbered, executable plan that is implemented only after switching to build mode.
+/// `runtime_messages`) when the interactive App is in [`AgentMode::Plan`]. It is a rich,
+/// structured plan-mode prompt (read-only tech-lead framing + investigation mandate +
+/// clarification gate + a 7-section plan schema + granularity rules + no-drift rule), so
+/// the model investigates thoroughly and produces a detailed, executable plan instead of a
+/// thin checklist. Implementation happens only after the user switches to build mode.
 ///
 /// (Tooling already enforces read-only via [`into_config`]'s `plan_mode` filter; this note
-/// is the behavioral half so the model proposes a plan instead of trying to act.)
+/// is the behavioral half so the model proposes a plan instead of trying to act. The CLI
+/// has no `ask_user`/clarification tool, so clarifying questions are asked as plain text and
+/// answered on the next turn; there is no plan-file or exit-plan tool — the plan is the
+/// turn's final text answer.)
 ///
 /// [`AgentMode::Plan`]: crate::kivio_code::interactive::AgentMode
 /// [`into_config`]: TurnAssembly::into_config
-pub const PLAN_SYSTEM_NOTE: &str = "You are in PLAN mode (read-only). Research the project by reading and searching files; you CANNOT modify files, run commands, or claim to have made any changes. Produce a concise, numbered, executable plan, and state that implementation happens after the user switches to build mode.";
+pub const PLAN_SYSTEM_NOTE: &str = r#"You are in PLAN mode (read-only). Act as a technical lead: investigate the codebase and produce a high-level implementation design for the user to review. You do NOT write code, do NOT modify files, do NOT run mutating commands, and do NOT claim to have made any changes — the read-only tools are all you have here. You may reference relevant symbols, classes, functions, and files. Do not introduce unnecessary complexity or over-engineer; keep the approach strictly aligned with the task.
+
+## Investigate thoroughly before planning
+Be THOROUGH — get the full picture before you design anything. Shallow research produces shallow plans.
+- Start broad, then narrow: begin with high-level searches for the overall intent, then drill into the specific files and symbols.
+- Run MULTIPLE searches with different wording — first-pass results often miss things. Look past the first seemingly relevant hit; explore alternative implementations, edge cases, and varied search terms.
+- TRACE every relevant symbol to its definition AND all of its usages so you understand how it is wired up.
+- REUSE FIRST: actively search for existing functions, utilities, and patterns you can reuse — avoid proposing new code when a suitable implementation already exists. Cite what you found.
+- Examine related files, tests, and the project's conventions; understand the current architecture before proposing changes.
+- Scale your investigation to the task's size and scope. A small, well-scoped change needs only a few targeted reads — not an exhaustive sweep. Read what you need to write a correct plan, then STOP.
+- Prefer a handful of precise, targeted searches and reads over dozens of broad ones. Avoid reading large files in full when a targeted search or a line range suffices.
+- Keep exploring only until you are CONFIDENT — meaning confident you can write a correct, specific plan for THIS task, not that you have read the whole codebase. Once you can write that plan, you have investigated enough; do not keep exploring for its own sake. If you are genuinely unsure on something the plan depends on, search more — do not guess. Bias toward answering questions yourself rather than asking the user.
+
+## Ask for clarification only when it matters
+Explore first and prefer reasonable defaults. Only ask the user when there is critical missing information, a pivotal decision, or a design-taste choice you cannot resolve yourself. When you do ask: keep the question brief, offer concrete options, ask about one aspect at a time, and ask BEFORE producing the final plan. (There is no clarification tool here — ask as a short plain-text question and wait for the user's reply on the next turn.)
+
+## Produce the plan in these 7 sections, in order
+1. Context — why this change: the problem or need, what prompted it, and the intended outcome.
+2. How I investigated — what you searched and read, and what you learned (concise).
+3. Relevant files & symbols — the key files and functions, with paths (use `path:line` where known).
+4. Recommended approach — the design you chose; briefly note alternatives you rejected and why.
+5. Phased steps — ordered, each step PR-sized and leaving the build and tests green. For each step: what to do, which files to touch or create, and a verification check. Describe a repeated pattern once with a few representative paths rather than enumerating every file.
+6. Risks & open questions — edge cases, unknowns, and anything that needs confirmation.
+7. Verification — how to test the change end-to-end (run the code, run the tests, etc.).
+
+## Granularity
+Make the plan concise enough to scan quickly, yet detailed enough to execute without re-investigating. Cite file paths and existing symbols. Do NOT dump every line number; for a pattern repeated across many files, describe it once and list a few representative paths.
+
+## Stay in plan mode
+Only PRODUCE the plan — do not start implementing. Implementation happens after the user switches to build mode."#;
 
 /// Options for a single print-mode run, parsed from CLI args by the bin.
 #[derive(Debug, Clone)]
@@ -446,6 +479,12 @@ impl TurnAssembly {
             tools.retain(|t| t.is_read_only_tool());
         }
 
+        // Plan mode uses the SAME tool-round budget as build mode — thoroughness is bounded
+        // by PLAN_SYSTEM_NOTE's soft proportionality guidance, not by a hard numeric cap.
+        // The real safety net for large contexts is Layer 2 compaction, not an investigation
+        // limit (plan investigation is intentionally unbounded by hard round caps).
+        let effective_chat_tools = self.effective_chat_tools.clone();
+
         // 主模型支持视觉时，调用方已把图片 inline 进某条 user 消息（content 数组里含 image_url）。
         // 据此设 has_image，让系统提示按「带图」措辞（不影响图片本身的传递）。
         let has_image = runtime_messages.iter().any(|message| {
@@ -474,7 +513,7 @@ impl TurnAssembly {
             tools,
             blocked_tool_calls: Vec::new(),
             settings: self.settings.clone(),
-            effective_chat_tools: self.effective_chat_tools.clone(),
+            effective_chat_tools,
             language: self.language.clone(),
             has_image,
             thinking_enabled: self.thinking_enabled,
@@ -843,6 +882,81 @@ mod tests {
     }
 
     #[test]
+    fn plan_system_note_contains_key_directives() {
+        let note = PLAN_SYSTEM_NOTE;
+
+        // Read-only / tech-lead framing: must say no edits, no mutating commands.
+        assert!(note.contains("PLAN mode"), "must announce plan mode");
+        assert!(
+            note.contains("read-only"),
+            "must state read-only framing"
+        );
+        assert!(
+            note.contains("do NOT write code") && note.contains("do NOT modify files"),
+            "must prohibit writing/modifying"
+        );
+
+        // Investigation mandate: thoroughness, multiple searches, trace usages, reuse-first.
+        assert!(note.contains("THOROUGH"), "must mandate thoroughness");
+        assert!(
+            note.contains("MULTIPLE searches"),
+            "must mandate multiple searches"
+        );
+        assert!(
+            note.contains("TRACE every relevant symbol")
+                && note.contains("all of its usages"),
+            "must mandate tracing symbols to definition and usages"
+        );
+        assert!(
+            note.contains("REUSE FIRST"),
+            "must mandate reuse-first investigation"
+        );
+        assert!(
+            note.contains("CONFIDENT"),
+            "must mandate exploring until confident enough to plan"
+        );
+        // Proportionality / scope guard: investigation must be bounded to task size.
+        assert!(
+            note.contains("Scale your investigation"),
+            "must bound investigation to the task's size and scope"
+        );
+
+        // Clarification gate: explore first, only ask for critical/pivotal/taste, before plan.
+        assert!(
+            note.contains("clarification"),
+            "must include a clarification gate"
+        );
+        assert!(
+            note.contains("critical missing information"),
+            "clarification gate must be limited to critical gaps"
+        );
+
+        // The 7 structured plan section headers, in order.
+        for header in [
+            "1. Context",
+            "2. How I investigated",
+            "3. Relevant files & symbols",
+            "4. Recommended approach",
+            "5. Phased steps",
+            "6. Risks & open questions",
+            "7. Verification",
+        ] {
+            assert!(note.contains(header), "missing plan section header: {header}");
+        }
+
+        // Granularity rule + no-drift rule.
+        assert!(
+            note.contains("Do NOT dump every line number"),
+            "must include the granularity rule"
+        );
+        assert!(
+            note.contains("do not start implementing")
+                && note.contains("after the user switches to build mode"),
+            "must include the no-drift / build-mode rule"
+        );
+    }
+
+    #[test]
     fn into_config_plan_mode_drops_mutating_tools() {
         let assembly = assembly_with("chat", "Chat", "m1");
         let state = build_app_state(assembly.settings.clone());
@@ -874,6 +988,34 @@ mod tests {
         for kept in ["read", "ls", "grep", "find", "web_fetch"] {
             assert!(plan.iter().any(|n| n == kept), "plan must keep {kept}: {plan:?}");
         }
+    }
+
+    #[test]
+    fn into_config_plan_mode_uses_same_round_budget_as_build() {
+        let mut assembly = assembly_with("chat", "Chat", "m1");
+        assembly.effective_chat_tools.max_tool_rounds = Some(40);
+        let state = build_app_state(assembly.settings.clone());
+
+        let rounds = |plan_mode: bool| -> Option<u32> {
+            assembly
+                .into_config(
+                    &state,
+                    "c".to_string(),
+                    "r".to_string(),
+                    "msg".to_string(),
+                    1,
+                    Vec::new(),
+                    plan_mode,
+                )
+                .effective_chat_tools
+                .max_tool_rounds
+        };
+
+        // Plan mode no longer hard-caps tool rounds; thoroughness is bounded only by the
+        // soft proportionality guidance in PLAN_SYSTEM_NOTE. Plan and build are identical.
+        assert_eq!(rounds(true), Some(40));
+        assert_eq!(rounds(false), Some(40));
+        assert_eq!(rounds(true), rounds(false));
     }
 
     fn assembly_with_tavily_key(key: &str) -> TurnAssembly {
@@ -940,7 +1082,6 @@ mod tests {
 
     #[test]
     fn web_search_survives_plan_mode_filter() {
-        // web_search is read-only, so a plan-mode turn (read-only filter applied)
         // must still expose it when a key is configured.
         let assembly = assembly_with_tavily_key("tvly-abc");
         let state = build_app_state(assembly.settings.clone());

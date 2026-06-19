@@ -2,8 +2,8 @@ use serde_json::Value;
 
 use crate::chat::model::{
     generate_request_from_openai_messages, AnthropicMessagesProvider, GenerateOptions,
-    GenerateOutput, GenerateRequestContext, LanguageModelProvider, ModelError, OpenAiChatProvider,
-    OpenAiResponsesProvider, PendingToolCall,
+    GenerateOutput, GenerateRequest, GenerateRequestContext, LanguageModelProvider, ModelError,
+    OpenAiChatProvider, OpenAiResponsesProvider, PendingToolCall, StreamPart, StreamSink,
 };
 use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase};
 use crate::mcp::ChatToolDefinition;
@@ -70,6 +70,51 @@ pub(crate) async fn planning_step(
     let step_number = state.step_number;
     // 循环内上下文治理：超限时先 snip / 摘要，得到本步发送视图（未超限时为原样 clone）。
     let send_messages = super::compaction::maybe_compact_send_view(env, state).await;
+
+    // Gap 2（Layer 3 anti-thrashing）：连续多轮「需要压缩但压不下去」时（摘要调用反复失败/为空），
+    // 不要再用必然超窗的发送视图去打规划调用、再失败——而是用已收集的工具结果优雅收尾。
+    // 复用 recovery 的确定性降级路径（`assemble_results_from_tool_records`），不另造终止通道。
+    if state.compaction_unresolved_rounds >= super::loop_::COMPACTION_THRASH_LIMIT {
+        eprintln!(
+            "Chat context compaction could not reduce context after {} rounds; ending turn with gathered results (anti-thrashing)",
+            state.compaction_unresolved_rounds
+        );
+        let kind = crate::chat::agent::recovery::FailureKind::ContextOverflow;
+        let content = crate::chat::agent::recovery::assemble_results_from_tool_records(
+            &state.tool_records,
+            &config.language,
+            kind,
+        );
+        // 有可兜底素材 → 用降级摘要收尾；没有素材（content 为空）→ 退回去敏/超长静态文案，
+        // 但仍以「已收尾」结束本轮，绝不再循环触发压缩失败。
+        let content = if content.trim().is_empty() {
+            crate::chat::agent::recovery::overflow_static_message(&config.language)
+        } else {
+            content
+        };
+        // 为降级文案预约一个文本 segment，让它在 transcript 里正常渲染（与其它收尾路径一致）。
+        let degrade_segment = state.segment_builder.reserve(
+            ChatMessageSegmentKind::Text,
+            ChatMessageSegmentPhase::Plain,
+            Some(step_number),
+            Some(round),
+            &format!("step_{step_number}_compaction_thrash"),
+        );
+        return Ok(PlanningStepOutcome::Recovered(
+            RunResultBuilder::new(host, env.ids(), content)
+                .segment(&degrade_segment)
+                .emit_done("done")
+                .outcome("compaction_thrash")
+                .finish(
+                    std::mem::take(&mut state.segment_builder),
+                    &state.planning_reasoning_parts,
+                    std::mem::take(&mut state.tool_records),
+                    std::mem::take(&mut state.generated_api_messages),
+                    std::mem::take(&mut state.steps),
+                ),
+        ));
+    }
+
     let prepared = prepare_agent_step(PrepareStepInput {
         step_number,
         previous_steps: &state.steps,
@@ -438,37 +483,7 @@ pub(crate) async fn planning_step(
     }))
 }
 
-pub(crate) async fn call_chat_completion_message(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
-    model: &str,
-    messages: Vec<Value>,
-    tools: Option<&[ChatToolDefinition]>,
-    retry_attempts: usize,
-    thinking_enabled: bool,
-    max_output_tokens: u32,
-    conversation_id: &str,
-    message_id: &str,
-    label: &str,
-) -> Result<Value, String> {
-    call_chat_completion_message_with_usage(
-        state,
-        provider,
-        model,
-        messages,
-        tools,
-        retry_attempts,
-        thinking_enabled,
-        max_output_tokens,
-        conversation_id,
-        message_id,
-        label,
-    )
-    .await
-    .map(|(message, _usage)| message)
-}
-
-/// 与 `call_chat_completion_message` 相同，但同时返回 provider 报告的 usage，
+/// 模型调用并同时返回 provider 报告的 usage，
 /// 供循环把每次模型调用的 token 消耗累计进 AgentRunResult。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn call_chat_completion_message_with_usage(
@@ -501,6 +516,78 @@ pub(crate) async fn call_chat_completion_message_with_usage(
         .map_err(|err| err.to_string())?;
     let usage = output.usage.clone();
     Ok((output.to_openai_compatible_message(), usage))
+}
+
+/// 与 `call_chat_completion_message_with_usage` 同形（返回 `to_openai_compatible_message()` Value），
+/// 但走**流式**路径而非非流式 `generate`：内部用 `generate_via_stream_collect` 触发流式后
+/// 取回 provider 组装好的 `GenerateOutput`。
+///
+/// 动机：压缩的摘要调用是 agent 里**唯一**的非流式模型调用；部分 provider（如 `openai_responses`
+/// 代理）只可靠地服务流式请求，非流式摘要调用会失败（"Unknown Responses API error"），导致压缩在
+/// 这类 provider 上永远摘不动。整个 agent 的 planning/synthesis 已经证明流式在该 provider 上可用，
+/// 故把摘要调用也改走流式。流式被所有 provider 普遍支持，对支持非流式的 GUI provider 也无退化。
+///
+/// 这是**无头**收集（不涉及 `AgentHost`、不发任何 host 事件），与手动压缩/非 UI 路径一致。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn call_chat_completion_message_streamed(
+    state: &crate::state::AppState,
+    provider: &crate::settings::ModelProvider,
+    model: &str,
+    messages: Vec<Value>,
+    tools: Option<&[ChatToolDefinition]>,
+    retry_attempts: usize,
+    thinking_enabled: bool,
+    max_output_tokens: u32,
+    conversation_id: &str,
+    message_id: &str,
+    label: &str,
+) -> Result<Value, String> {
+    let request = generate_request_from_openai_messages(
+        model,
+        messages,
+        tools,
+        GenerateOptions {
+            stream: true,
+            thinking_enabled,
+            max_tokens: max_output_tokens,
+            ..GenerateOptions::default()
+        },
+        label,
+        GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
+    );
+    let output = generate_via_stream_collect(state, provider, retry_attempts, request)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(output.to_openai_compatible_message())
+}
+
+/// 无头流式收集 sink：丢弃所有增量。摘要调用只消费返回的 `GenerateOutput.text`
+/// （所有 provider 适配器都在流式路径上从累积增量填好 `text`），故无需在此累积；
+/// 仅把 `StreamPart::Error` 上抛为 `ModelError`。不向任何 `AgentHost` 发事件。
+struct DiscardStreamSink;
+
+impl StreamSink for DiscardStreamSink {
+    fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
+        if let StreamPart::Error { message } = part {
+            return Err(ModelError::new(message));
+        }
+        Ok(())
+    }
+}
+
+/// 走 provider 的**流式** `stream(...)`（经 `send_with_failover` + SSE 累积，与 planning/synthesis
+/// 同一路径），用一个丢弃增量的 sink 触发流式，返回 provider 组装好的 `GenerateOutput`。
+///
+/// 所有适配器（`openai` / `anthropic` / `responses`）都在流式路径上把累积结果填进返回的
+/// `GenerateOutput.text`/`reasoning`，故无需 sink 侧再累积兜底。
+pub(crate) async fn generate_via_stream_collect(
+    state: &crate::state::AppState,
+    provider: &crate::settings::ModelProvider,
+    retry_attempts: usize,
+    request: GenerateRequest,
+) -> Result<GenerateOutput, ModelError> {
+    let mut sink = DiscardStreamSink;
+    stream_with_chat_provider(state, provider, retry_attempts, request, &mut sink).await
 }
 
 #[allow(clippy::too_many_arguments)]

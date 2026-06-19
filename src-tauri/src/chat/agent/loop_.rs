@@ -69,7 +69,17 @@ pub(crate) struct RunState {
     /// 把压缩后的完整历史回传到 `AgentRunResult.compacted_history`，让跨轮调用方
     /// 用压缩后的历史替换其累积副本（压缩真正跨轮生效，而非仅当轮发送视图瘦身）。
     pub(crate) compacted: bool,
+    /// Anti-thrashing 计数（Gap 2，Layer 3）：连续多少轮「需要压缩（超预算）但压缩没能减小
+    /// 上下文」（摘要调用失败/为空/无可摘要旧段）。在 `maybe_compact_send_view` 里维护——
+    /// 压成功并降到预算内则清零，否则递增。达到 `COMPACTION_THRASH_LIMIT` 时规划循环优雅收尾
+    /// （用已收集的工具结果降级），而不是反复触发压缩并连续失败后才报错。
+    pub(crate) compaction_unresolved_rounds: u32,
 }
+
+/// 连续「需要压缩但压不下去」多少轮后停止工具循环、优雅收尾（Gap 2，Layer 3 anti-thrashing）。
+/// 取 2：给压缩一次重试机会（provider 偶发抖动可能第二轮成功），第二次仍失败则判定压缩无能为力，
+/// 不再硬撑——避免实测里出现的「压缩连续失败 6+ 次后才超窗报错」。
+pub(crate) const COMPACTION_THRASH_LIMIT: u32 = 2;
 
 impl RunState {
     /// T3: recompute the effective `tools` from the FULL base list, narrowed by the
@@ -135,6 +145,7 @@ pub async fn run_agent_loop(
         applied_allowed_tools_len: 0,
         usage: None,
         compacted: false,
+        compaction_unresolved_rounds: 0,
     };
     // 把助手的技能白名单冻结进 skill_cache,作为 skill_activate 执行派发的硬 gate。
     // 无助手 = None = 不限(全局行为)。

@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 
-use crate::chat::model_metadata::context_window_for_model;
+use crate::chat::model_metadata::{context_window_for_model, safe_context_window_for_model};
 
 use super::loop_::{LoopEnv, RunState};
-use super::planning::call_chat_completion_message;
+use super::planning::call_chat_completion_message_streamed;
 use super::prepare::estimate_tokens;
 
 /// 近期窗口（tokens）：从尾部往前累积整条消息，~该预算内的为受保护近期窗口、原样保留，
@@ -17,6 +17,28 @@ pub(crate) const COMPACT_TRIGGER_RATIO: f32 = 0.85;
 const TOOL_OUTPUT_SUMMARY_MAX_CHARS: usize = 2_000;
 /// 摘要调用允许产生的最大输出 token 数（R9）。对齐 OpenCode `SUMMARY_OUTPUT_TOKENS = 4_096`。
 const SUMMARY_OUTPUT_TOKENS: u32 = 4_096;
+
+/// 摘要**输入** token 预算占窗口的比例（R1）。摘要请求自身**绝不能**超窗——否则就是
+/// "用超窗的请求去救超窗"，每次压缩都失败、降级返回原始视图，最终主调用仍超窗报错。
+/// 取保守的 0.5 而非更高比例的理由：
+/// - 模型窗口元数据常偏乐观（实测标称 128k 的模型真实可用 ~100k）；
+/// - Responses API 等有额外 token 计数开销（工具 schema、system、role 标注）；
+/// - 近期 8k 窗口本就在摘要请求之外逐字保留，预算只需覆盖旧段摘要本身。
+///
+/// 0.5×window 给足余量，保证摘要请求恒定放得进窗口。
+const SUMMARY_INPUT_BUDGET_RATIO: f32 = 0.5;
+
+/// 当窗口未知（`window == 0`）时，摘要输入预算的兜底值（tokens）。
+/// 取一个保守常见窗口的一半，既不跳过封顶又不会过度裁剪。
+const SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS: usize = 64_000;
+
+/// 头尾裁剪时插入到中段的省略标记——告知摘要模型此处有更早历史被省略以放进摘要请求。
+const HEAD_TAIL_OMISSION_MARKER: &str =
+    "\n\n[... older history omitted to fit the summary request ...]\n\n";
+
+/// 头尾裁剪保留预算偏向尾部的比例：头 ~40% / 尾 ~60%。近期工作（尾部）比早期意图更关键，
+/// 但开头的任务目标/早期意图也需保留，故仍给头部留 ~40%。
+const HEAD_BUDGET_FRACTION: f32 = 0.4;
 
 /// 由 `replace_with_summary` 插入的摘要锚点前缀；anchored 链式摘要（R8）据此识别历史里已存在的
 /// 上一份摘要，把它作为 `previous_summary` 让模型合并更新，而非从头再摘。
@@ -250,6 +272,53 @@ fn serialize_for_summary(messages: &[Value]) -> String {
         .join("\n\n")
 }
 
+/// 把字符串按字符数前缀截取（不切多字节字符）。
+fn take_chars(text: &str, n: usize) -> String {
+    text.chars().take(n).collect()
+}
+
+/// 把字符串按字符数后缀截取（保留末尾 n 个字符）。
+fn take_chars_tail(text: &str, n: usize) -> String {
+    let total = text.chars().count();
+    if n >= total {
+        return text.to_string();
+    }
+    text.chars().skip(total - n).collect()
+}
+
+/// 把序列化后的旧段文本头尾裁剪到 `budget_tokens`（R2）：保留开头（任务目标/早期意图）+
+/// 结尾（最近工作），中间替换为 `HEAD_TAIL_OMISSION_MARKER`。偏向保留更多尾部（头 ~40% / 尾 ~60%）。
+/// 未超预算则原样返回（R5，零行为变化）。
+///
+/// 在 token 预算上工作，但裁剪以字符为粒度：用 `estimate_tokens` 的 ASCII≈4 chars/token
+/// 启发式把 token 预算换算成字符预算（保守按 4 倍），裁剪后再用 `estimate_tokens` 校验，
+/// 若仍超预算则迭代收紧——硬保证返回结果 `estimate_tokens <= budget_tokens`（R2 兜底）。
+fn clip_serialized_to_budget(serialized: &str, budget_tokens: usize) -> String {
+    if estimate_tokens(serialized) <= budget_tokens {
+        return serialized.to_string();
+    }
+    // 给省略标记留出 token 预算。
+    let marker_tokens = estimate_tokens(HEAD_TAIL_OMISSION_MARKER);
+    let content_budget = budget_tokens.saturating_sub(marker_tokens);
+
+    // token 预算换算成字符预算：ASCII 约 4 chars/token，按 4 倍作为初始字符预算上限。
+    let mut char_budget = content_budget.saturating_mul(4).max(1);
+
+    // 迭代收紧：头尾按比例切，校验 estimate_tokens，超了就收紧字符预算重切。
+    loop {
+        let head_chars = ((char_budget as f32) * HEAD_BUDGET_FRACTION) as usize;
+        let tail_chars = char_budget.saturating_sub(head_chars);
+        let head = take_chars(serialized, head_chars);
+        let tail = take_chars_tail(serialized, tail_chars);
+        let clipped = format!("{head}{HEAD_TAIL_OMISSION_MARKER}{tail}");
+        if estimate_tokens(&clipped) <= budget_tokens || char_budget <= 1 {
+            return clipped;
+        }
+        // 仍超预算（多字节字符占 1 token/char 时换算偏乐观）——收紧字符预算重试。
+        char_budget = char_budget * 3 / 4;
+    }
+}
+
 /// 一条 assistant 消息是否携带 tool_calls（其后的 role=="tool" 结果不能与它拆到摘要/保留两侧）。
 #[cfg_attr(not(test), allow(dead_code))]
 fn has_tool_calls(message: &Value) -> bool {
@@ -406,6 +475,9 @@ fn summary_output_tokens(config_max: u32) -> u32 {
 /// 自动路径（`maybe_compact_send_view`）与手动路径（`force_compact`）都走这里，避免重复摘要逻辑。
 /// `keep_tokens`：受保护近期窗口大小——自动路径传 `min(RECENT_KEEP_TOKENS, budget)`（窗口比 8000 还小的
 /// 模型上，近期窗口不能大过压缩预算，否则压完仍超窗），手动路径传 `RECENT_KEEP_TOKENS`。
+/// `window`：模型上下文窗口（tokens）——据此把**摘要请求自身的输入**封顶到
+/// `window * SUMMARY_INPUT_BUDGET_RATIO`（R1/R2），保证摘要调用绝不超窗（"用超窗请求救超窗"的根因）。
+/// `window == 0`（未知）时用 `SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS` 兜底。
 /// `cancel`：进行中取消的 future——自动路径传 host 的取消等待，手动路径传 `None`（强制压缩不取消）。
 #[allow(clippy::too_many_arguments)]
 async fn summarize_history(
@@ -414,6 +486,7 @@ async fn summarize_history(
     model: &str,
     messages: &[Value],
     keep_tokens: usize,
+    window: usize,
     config_max_output_tokens: u32,
     retry_attempts: usize,
     conversation_id: &str,
@@ -445,7 +518,28 @@ async fn summarize_history(
         old_segment.clone()
     };
 
-    let serialized = serialize_for_summary(&head);
+    // 摘要**输入**预算（R1）：window * ratio，未知窗口用兜底常量。
+    let summary_input_budget = if window == 0 {
+        SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS
+    } else {
+        ((window as f32) * SUMMARY_INPUT_BUDGET_RATIO) as usize
+    };
+    // 为固定开销（system prompt + 9 段 Claude Code prompt + anchored previous_summary + focus）
+    // 预留预算（R4：previous_summary 不被裁掉），剩余给序列化旧段 head。
+    let fixed_overhead = estimate_tokens(SUMMARY_SYSTEM_PROMPT)
+        + estimate_tokens(CLAUDE_CODE_SUMMARY_PROMPT)
+        + previous_summary
+            .as_deref()
+            .map(estimate_tokens)
+            .unwrap_or(0)
+        + focus.map(estimate_tokens).unwrap_or(0);
+    // head 预算 = 总输入预算 - 固定开销；至少保留一点，避免开销吃光预算时退化为 0。
+    let head_budget = summary_input_budget
+        .saturating_sub(fixed_overhead)
+        .max(summary_input_budget / 4);
+
+    // 序列化旧段，超 head 预算时头尾裁剪（R2）；未超则原样（R5，零变化）。
+    let serialized = clip_serialized_to_budget(&serialize_for_summary(&head), head_budget);
     let user_content =
         build_summary_user_content(&serialized, previous_summary.as_deref(), focus);
     let summary_request = vec![
@@ -453,7 +547,10 @@ async fn summarize_history(
         json!({ "role": "user", "content": user_content }),
     ];
 
-    let call = call_chat_completion_message(
+    // 摘要调用走**流式**路径（`call_chat_completion_message_streamed`）而非非流式 `generate`：
+    // 部分 provider（如 openai_responses 代理）只可靠服务流式，非流式摘要调用会失败、导致压缩永远
+    // 摘不动；agent 的 planning/synthesis 已证明流式可用。流式被普遍支持，对支持非流式的 provider 无退化。
+    let call = call_chat_completion_message_streamed(
         state,
         provider,
         model,
@@ -507,18 +604,23 @@ async fn summarize_history(
 /// `generated_api_messages`（持久化镜像）在任何分支都不被触碰。
 pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunState) -> Vec<Value> {
     let config = env.config;
-    let (window, _estimated) = context_window_for_model(Some(&config.provider), &config.model);
-    if window == 0 {
+    // Gap 3: 用 safe_window（裸窗口 × SAFE_WINDOW_RATIO）作为所有压缩预算的基准——模型窗口
+    // 元数据偏乐观，安全折扣给元数据偏差留余量。触发预算、摘要输入封顶都基于同一个 safe_window。
+    let window = context_window_for_model(Some(&config.provider), &config.model).0;
+    let safe_window = safe_context_window_for_model(Some(&config.provider), &config.model);
+    if safe_window == 0 {
         return state.runtime_messages.clone();
     }
-    let budget = (window as f32 * COMPACT_TRIGGER_RATIO) as usize;
+    let budget = (safe_window as f32 * COMPACT_TRIGGER_RATIO) as usize;
     let estimated = estimate_messages_tokens(&state.runtime_messages);
     if estimated <= budget {
+        // 未超预算：本步无需压缩。重置 anti-thrashing 计数（Gap 2）——上下文已回到预算内。
+        state.compaction_unresolved_rounds = 0;
         return state.runtime_messages.clone();
     }
 
     eprintln!(
-        "Chat context compaction: est {estimated} tokens over budget {budget} (window {window}); summarizing old history"
+        "Chat context compaction: est {estimated} tokens over budget {budget} (safe_window {safe_window}, window {window}); summarizing old history"
     );
 
     let cancel = env
@@ -533,6 +635,7 @@ pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunSt
         &config.model,
         &state.runtime_messages,
         keep_tokens,
+        safe_window,
         config.max_output_tokens,
         config.retry_attempts,
         &config.conversation_id,
@@ -551,9 +654,24 @@ pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunSt
             // （交互模式据 compacted_history 替换其累积历史，让压缩真正跨轮生效）。
             state.runtime_messages = compacted.clone();
             state.compacted = true;
+            // Gap 2: 压缩确实把上下文压到了预算内吗？是 → anti-thrashing 计数清零；
+            // 否（摘要成功但仍超预算，例如近期窗口本身已超）→ 计为一次未解决，防止后续轮空转。
+            if after <= budget {
+                state.compaction_unresolved_rounds = 0;
+            } else {
+                state.compaction_unresolved_rounds =
+                    state.compaction_unresolved_rounds.saturating_add(1);
+            }
             compacted
         }
-        None => state.runtime_messages.clone(),
+        None => {
+            // Gap 2: 需要压缩（超预算）但压缩没能减小上下文（摘要调用失败/为空/无旧段）——
+            // 计为一次「未解决」。连续达到 COMPACTION_THRASH_LIMIT 次时，规划循环会据此优雅收尾，
+            // 而不是反复触发压缩并失败 6+ 次后才报错。
+            state.compaction_unresolved_rounds =
+                state.compaction_unresolved_rounds.saturating_add(1);
+            state.runtime_messages.clone()
+        }
     }
 }
 
@@ -573,12 +691,17 @@ pub(crate) async fn force_compact(
     message_id: &str,
     focus: Option<&str>,
 ) -> Option<Vec<Value>> {
+    // 手动路径自行计算窗口（自动路径已有 window；此处与触发判定同源的元数据查询）。
+    // Gap 3：摘要输入封顶基于 safe_window（裸窗口 × SAFE_WINDOW_RATIO），与自动路径同源，
+    // 保证两条路径的摘要请求预算一致。safe_window == 0（未知模型）时 summarize_history 用兜底常量。
+    let safe_window = safe_context_window_for_model(Some(provider), model);
     summarize_history(
         state,
         provider,
         model,
         messages,
         RECENT_KEEP_TOKENS,
+        safe_window,
         config_max_output_tokens,
         retry_attempts,
         conversation_id,
@@ -864,5 +987,85 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with(SUMMARY_MARKER_PREFIX));
+    }
+
+    #[test]
+    fn budget_ratio_halves_the_window() {
+        // R1: summary input budget is window * 0.5.
+        assert_eq!(SUMMARY_INPUT_BUDGET_RATIO, 0.5);
+        let window = 128_000usize;
+        let budget = ((window as f32) * SUMMARY_INPUT_BUDGET_RATIO) as usize;
+        assert_eq!(budget, 64_000);
+    }
+
+    #[test]
+    fn clip_keeps_small_serialized_unchanged() {
+        // R5: a serialized old segment already under budget is returned verbatim.
+        let serialized = "[User]: hi\n\n[Assistant]: hello there";
+        let out = clip_serialized_to_budget(serialized, 10_000);
+        assert_eq!(out, serialized);
+        assert!(!out.contains("omitted to fit"));
+    }
+
+    #[test]
+    fn clip_head_tail_fits_budget_and_keeps_both_ends() {
+        // R2: a serialized old segment far exceeding the budget is clipped HEAD+TAIL
+        // to fit, keeping a recognizable beginning and end with a middle marker.
+        let head_marker = "BEGINNING_TASK_GOAL";
+        let tail_marker = "MOST_RECENT_WORK";
+        let mut serialized = String::new();
+        serialized.push_str(head_marker);
+        serialized.push(' ');
+        serialized.push_str(&"filler ".repeat(50_000)); // ~350k chars
+        serialized.push_str(tail_marker);
+
+        let budget = 4_000usize;
+        let clipped = clip_serialized_to_budget(&serialized, budget);
+
+        // Hard guarantee: result fits the budget.
+        assert!(
+            estimate_tokens(&clipped) <= budget,
+            "clipped est {} must be <= budget {budget}",
+            estimate_tokens(&clipped)
+        );
+        // Both ends survive.
+        assert!(clipped.contains(head_marker), "head must survive");
+        assert!(clipped.contains(tail_marker), "tail must survive");
+        // The omission marker is present in the middle.
+        assert!(clipped.contains("older history omitted to fit"));
+        // Tail bias: tail budget (~60%) >= head budget (~40%).
+        let marker_pos = clipped.find("older history omitted").unwrap();
+        let head_part_len = marker_pos;
+        let tail_part_len = clipped.len() - (marker_pos + "older history omitted".len());
+        assert!(
+            tail_part_len >= head_part_len,
+            "tail ({tail_part_len}) should keep at least as much as head ({head_part_len})"
+        );
+    }
+
+    #[test]
+    fn clip_with_unicode_fits_budget() {
+        // Multi-byte (CJK) content costs ~1 token/char; clipping must still fit the budget.
+        let serialized = "开头任务".to_string() + &"上下文".repeat(40_000) + "最近工作";
+        let budget = 2_000usize;
+        let clipped = clip_serialized_to_budget(&serialized, budget);
+        assert!(
+            estimate_tokens(&clipped) <= budget,
+            "unicode clipped est {} must be <= budget {budget}",
+            estimate_tokens(&clipped)
+        );
+        assert!(clipped.contains("开头任务"));
+        assert!(clipped.contains("最近工作"));
+    }
+
+    #[test]
+    fn budget_fallback_when_window_unknown() {
+        // window == 0 → use the fallback budget constant (no panic, capping still applies).
+        let serialized = "x".repeat(SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS * 4 * 2);
+        // Mirror summarize_history's budget calc for window == 0.
+        let budget = SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS;
+        let clipped = clip_serialized_to_budget(&serialized, budget);
+        assert!(estimate_tokens(&clipped) <= budget);
+        assert!(SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS > 0);
     }
 }
