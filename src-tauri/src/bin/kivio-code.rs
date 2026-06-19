@@ -146,6 +146,11 @@ fn main() -> ExitCode {
 /// provider / no-approve / verbose / resume) into [`InteractiveOptions`], and
 /// runs the event loop.
 fn run_interactive(cli: &Cli, cwd: &Path) -> ExitCode {
+    // GC any header-only ("empty shell") sessions left in this cwd by earlier
+    // bare launches that exited without a turn. Best-effort and conservative —
+    // only positively-confirmed header-only files are removed.
+    kivio::kivio_code::session::gc_empty_sessions(cwd);
+
     let settings = load_settings_from_disk();
     let cfg = kivio::kivio_code::config::load_merged(cwd);
     let model = match resolve_provider_model(

@@ -850,17 +850,21 @@ fn resolve_session(
 ) -> (Option<Session>, Vec<Value>, bool) {
     if let Some(request) = resume {
         if let Some(session) = load_session_for_resume(request, cwd) {
-            // 重建 UI transcript + 上下文消息。
-            app.rebuild_from_session(&session);
             let mut messages = session.to_runtime_messages();
-            // to_runtime_messages 不含 system（session 不存 system）；补一条当前 system。
-            if !messages.iter().any(|m| m["role"] == "system") {
-                messages.insert(
-                    0,
-                    json!({ "role": "system", "content": assembly.system_prompt.clone() }),
-                );
+            // 真的有可恢复对话才算 resume：to_runtime_messages 不含 system，所以非空即代表
+            // 至少有一条 user/assistant/tool 记录。空壳（header-only）落到这里 → 不谎报。
+            if !messages.is_empty() {
+                // 重建 UI transcript + 上下文消息。
+                app.rebuild_from_session(&session);
+                // to_runtime_messages 不含 system（session 不存 system）；补一条当前 system。
+                if !messages.iter().any(|m| m["role"] == "system") {
+                    messages.insert(
+                        0,
+                        json!({ "role": "system", "content": assembly.system_prompt.clone() }),
+                    );
+                }
+                return (Some(session), messages, true);
             }
-            return (Some(session), messages, true);
         }
         app.push_notice("No matching session to resume; starting a new one.");
     }
@@ -892,10 +896,12 @@ fn load_session_for_resume(request: &ResumeRequest, cwd: &PathBuf) -> Option<Ses
 }
 
 /// 该 cwd 下的会话作为选择器条目（最近优先）：`(jsonl_path, label, preview)`。label 用
-/// 创建时间，description 用首条用户消息预览。纯函数，便于单测。
+/// 创建时间，description 用首条用户消息预览。空会话（无首条用户消息）被隐藏，避免选到
+/// header-only 空壳。纯函数，便于单测。
 fn session_items_for_cwd(cwd: &PathBuf) -> Vec<(String, String, Option<String>)> {
     crate::kivio_code::session::list_sessions(cwd)
         .into_iter()
+        .filter(|s| s.first_user_message.is_some())
         .map(|s| {
             let label = s.created_at.clone();
             let desc = s.first_user_message.clone();
@@ -2255,7 +2261,17 @@ mod tests {
     #[tokio::test]
     async fn resolve_session_reference_by_id() {
         let cwd = unique_cwd("resumeid");
-        let s = Session::create(&cwd, "chat:m1").unwrap();
+        let mut s = Session::create(&cwd, "chat:m1").unwrap();
+        // Append a real message so the session materializes (lazy creation) and
+        // counts as resumable (non-empty).
+        s.append(SessionRecord::Message {
+            id: String::new(),
+            parent_id: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            role: "user".to_string(),
+            content: "earlier question".to_string(),
+        })
+        .unwrap();
         let id = s.id.clone();
         let settings = test_settings();
         let assembly = TurnAssembly::resolve(&settings, None, None, &cwd, true).unwrap();
@@ -2289,6 +2305,76 @@ mod tests {
         assert!(!resumed);
         assert!(session.is_some());
         assert!(messages.is_empty()); // caller seeds system
+
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
+    }
+
+    #[tokio::test]
+    async fn resolve_session_only_empty_does_not_lie_about_resume() {
+        let cwd = unique_cwd("resumeemptyonly");
+        std::fs::create_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd)).unwrap();
+        // A header-only shell on disk (the old bug's "empty session").
+        let empty = Session::create(&cwd, "chat:m1").unwrap();
+        let header = crate::kivio_code::session::SessionRecord::Header {
+            version: crate::kivio_code::session::SESSION_VERSION,
+            id: empty.id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            model: "chat:m1".to_string(),
+        };
+        std::fs::write(&empty.path, format!("{}\n", serde_json::to_string(&header).unwrap()))
+            .unwrap();
+
+        let settings = test_settings();
+        let assembly = TurnAssembly::resolve(&settings, None, None, &cwd, true).unwrap();
+        let mut app = App::new("~".into(), "chat:m1".into());
+        app.set_terminal_rows(24);
+        let (session, messages, resumed) =
+            resolve_session(&Some(ResumeRequest::Recent), &cwd, &assembly, &mut app);
+        // Only-empty sessions → not resumed, fresh start, no false "Resumed session."
+        assert!(!resumed);
+        assert!(session.is_some());
+        assert!(messages.is_empty());
+        let rendered = app.render(80).join("\n");
+        assert!(!rendered.contains("Resumed session."), "no false resume notice");
+
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
+    }
+
+    #[tokio::test]
+    async fn session_items_excludes_empty_sessions() {
+        let cwd = unique_cwd("itemsexcludeempty");
+        std::fs::create_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd)).unwrap();
+
+        // An empty shell (no user message).
+        let empty = Session::create(&cwd, "chat:m1").unwrap();
+        let header = crate::kivio_code::session::SessionRecord::Header {
+            version: crate::kivio_code::session::SESSION_VERSION,
+            id: empty.id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            model: "chat:m1".to_string(),
+        };
+        std::fs::write(&empty.path, format!("{}\n", serde_json::to_string(&header).unwrap()))
+            .unwrap();
+
+        // A real session with a user message.
+        let mut real = Session::create(&cwd, "chat:m1").unwrap();
+        real.append(SessionRecord::Message {
+            id: String::new(),
+            parent_id: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            role: "user".to_string(),
+            content: "real one".to_string(),
+        })
+        .unwrap();
+
+        let items = session_items_for_cwd(&cwd);
+        // Only the non-empty session is offered.
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].0, real.path.to_string_lossy());
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));

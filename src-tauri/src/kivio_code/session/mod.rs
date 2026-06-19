@@ -259,33 +259,17 @@ fn preview(text: &str, max: usize) -> String {
 }
 
 impl Session {
-    /// Create a brand-new session: build the per-cwd directory, choose a path,
-    /// and write the header line. The returned [`Session`] is ready to
-    /// [`append`](Session::append) to.
+    /// Create a brand-new session **lazily**: build the in-memory struct and
+    /// choose an on-disk path, but write **nothing** to disk yet. The header
+    /// line and file are only materialized on the first [`append`](Session::append),
+    /// so a session that never gets an append leaves no file behind (avoids the
+    /// header-only "empty shell" sessions that polluted resume).
     pub fn create(cwd: &Path, model: &str) -> Result<Session, String> {
         let id = new_id();
         let created_at = now_rfc3339();
         let dir = session_dir_for_cwd(cwd);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("failed to create session dir {}: {e}", dir.display()))?;
         let file_name = format!("{}_{}.jsonl", filename_timestamp(), id);
         let path = dir.join(file_name);
-
-        let header = SessionRecord::Header {
-            version: SESSION_VERSION,
-            id: id.clone(),
-            cwd: cwd.to_string_lossy().into_owned(),
-            created_at: created_at.clone(),
-            model: model.to_string(),
-        };
-        let line = serde_json::to_string(&header)
-            .map_err(|e| format!("failed to serialize session header: {e}"))?;
-        let mut file = File::create(&path)
-            .map_err(|e| format!("failed to create session file {}: {e}", path.display()))?;
-        writeln!(file, "{line}")
-            .map_err(|e| format!("failed to write session header: {e}"))?;
-        file.flush()
-            .map_err(|e| format!("failed to flush session header: {e}"))?;
 
         Ok(Session {
             id,
@@ -296,6 +280,35 @@ impl Session {
             path,
             records: Vec::new(),
         })
+    }
+
+    /// Materialize the session file on disk if it doesn't exist yet: create the
+    /// per-cwd directory and write the header line. Idempotent — a no-op once the
+    /// file exists. Called by [`append`](Session::append) before its first write.
+    fn materialize_if_needed(&self) -> Result<(), String> {
+        if self.path.exists() {
+            return Ok(());
+        }
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("failed to create session dir {}: {e}", dir.display()))?;
+        }
+        let header = SessionRecord::Header {
+            version: self.version,
+            id: self.id.clone(),
+            cwd: self.cwd.clone(),
+            created_at: self.created_at.clone(),
+            model: self.model.clone(),
+        };
+        let line = serde_json::to_string(&header)
+            .map_err(|e| format!("failed to serialize session header: {e}"))?;
+        let mut file = File::create(&self.path)
+            .map_err(|e| format!("failed to create session file {}: {e}", self.path.display()))?;
+        writeln!(file, "{line}")
+            .map_err(|e| format!("failed to write session header: {e}"))?;
+        file.flush()
+            .map_err(|e| format!("failed to flush session header: {e}"))?;
+        Ok(())
     }
 
     /// The id of the current leaf record (last appended), or `None` when the
@@ -314,6 +327,10 @@ impl Session {
     pub fn append(&mut self, mut record: SessionRecord) -> Result<String, String> {
         let leaf = self.leaf_id();
         let assigned_id = Self::ensure_ids(&mut record, leaf);
+
+        // Lazy creation: the file (and its header) only exist once there's a real
+        // record to write, so empty sessions never touch the disk.
+        self.materialize_if_needed()?;
 
         let line = serde_json::to_string(&record)
             .map_err(|e| format!("failed to serialize session record: {e}"))?;
@@ -624,12 +641,94 @@ fn read_summary(path: &Path) -> Option<SessionSummary> {
     })
 }
 
-/// Open the most-recent session for `cwd`, if any (the `--continue` flow). The
-/// returned session is fully loaded and ready to append to. `None` when there
-/// are no sessions for that directory.
+/// Open the most-recent **non-empty** session for `cwd`, if any (the
+/// `--continue` flow). "Non-empty" means it has at least one real user message
+/// (`first_user_message.is_some()`) — header-only shells are skipped so resume
+/// never restores an empty session. The returned session is fully loaded and
+/// ready to append to. `None` when there is no real conversation for that
+/// directory.
 pub fn resume_recent(cwd: &Path) -> Option<Session> {
-    let summary = list_sessions(cwd).into_iter().next()?;
+    let summary = list_sessions(cwd)
+        .into_iter()
+        .find(|s| s.first_user_message.is_some())?;
     Session::load(&summary.path).ok()
+}
+
+/// Delete header-only ("empty shell") session files under `cwd` — files that
+/// parse a valid header but contain no `Message` / `ToolCall` / `ToolResult`
+/// record. These accumulate from bare launches that exit without a turn.
+///
+/// Best-effort and conservative: IO errors are ignored, never panics, and a
+/// file is deleted **only** when its header parses and a full scan confirms it
+/// has zero real records — a file with any real record (or an unreadable /
+/// unparseable header) is left untouched.
+pub fn gc_empty_sessions(cwd: &Path) {
+    let dir = session_dir_for_cwd(cwd);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if is_header_only_session(&path) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Positively confirm a session file is header-only: a valid header on the first
+/// non-empty line and no `Message` / `ToolCall` / `ToolResult` record anywhere
+/// after it. Returns `false` on any read/parse failure or as soon as a real
+/// record is seen, so callers never delete a file they can't confirm is empty.
+fn is_header_only_session(path: &Path) -> bool {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    // First non-empty line must be a valid header.
+    let mut saw_header = false;
+    for line in lines.by_ref() {
+        let Ok(line) = line else { return false };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<SessionRecord>(&line) {
+            Ok(SessionRecord::Header { .. }) => {
+                saw_header = true;
+                break;
+            }
+            _ => return false,
+        }
+    }
+    if !saw_header {
+        return false;
+    }
+
+    // Any real conversation record disqualifies it.
+    for line in lines {
+        let Ok(line) = line else { return false };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<SessionRecord>(&line) {
+            Ok(
+                SessionRecord::Message { .. }
+                | SessionRecord::ToolCall { .. }
+                | SessionRecord::ToolResult { .. },
+            ) => return false,
+            // Compaction / ModelChange / header don't count as conversation, but
+            // an unparseable line means we can't confirm emptiness — be safe.
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -663,7 +762,8 @@ mod tests {
     fn create_append_reload_roundtrip() {
         let cwd = unique_cwd("roundtrip");
         let mut session = Session::create(&cwd, "prov:model-x").expect("create");
-        assert!(session.path.exists(), "header file written");
+        // Lazy creation: no file on disk until the first append.
+        assert!(!session.path.exists(), "no file before first append");
         assert_eq!(session.records.len(), 0);
 
         let m1 = session
@@ -675,6 +775,8 @@ mod tests {
                 content: "read main.rs".to_string(),
             })
             .expect("append user");
+        // First append materializes the header + record.
+        assert!(session.path.exists(), "file exists after first append");
         let call = session
             .append(SessionRecord::ToolCall {
                 id: String::new(),
@@ -741,7 +843,9 @@ mod tests {
             let mut s = Session::create(&cwd, &format!("m{i}")).expect("create");
             // Rewrite header with a controlled created_at by appending a marker
             // user message and patching the header in place is overkill; instead
-            // we craft the file directly to control created_at.
+            // we craft the file directly to control created_at. Lazy creation
+            // means the dir isn't made until first append, so ensure it here.
+            std::fs::create_dir_all(session_dir_for_cwd(&cwd)).unwrap();
             let header = SessionRecord::Header {
                 version: SESSION_VERSION,
                 id: s.id.clone(),
@@ -780,7 +884,8 @@ mod tests {
         assert!(resume_recent(&cwd).is_none(), "no sessions yet");
 
         for (i, ts) in ["2026-01-01T00:00:00Z", "2026-09-01T00:00:00Z"].iter().enumerate() {
-            let s = Session::create(&cwd, &format!("m{i}")).expect("create");
+            let mut s = Session::create(&cwd, &format!("m{i}")).expect("create");
+            std::fs::create_dir_all(session_dir_for_cwd(&cwd)).unwrap();
             let header = SessionRecord::Header {
                 version: SESSION_VERSION,
                 id: s.id.clone(),
@@ -790,6 +895,15 @@ mod tests {
             };
             let line = serde_json::to_string(&header).unwrap();
             std::fs::write(&s.path, format!("{line}\n")).unwrap();
+            // Make each session non-empty so resume_recent considers it.
+            s.append(SessionRecord::Message {
+                id: String::new(),
+                parent_id: None,
+                timestamp: now_rfc3339(),
+                role: "user".to_string(),
+                content: format!("hi {i}"),
+            })
+            .unwrap();
         }
 
         let resumed = resume_recent(&cwd).expect("resume");
@@ -854,6 +968,7 @@ mod tests {
             content: "tail".to_string(),
         };
         let good_line = serde_json::to_string(&good).unwrap();
+        std::fs::create_dir_all(session_dir_for_cwd(&cwd)).unwrap();
         std::fs::write(
             &session.path,
             format!("{header_line}\n{{not json}}\n{good_line}\n"),
@@ -1034,6 +1149,166 @@ mod tests {
         let msgs = reloaded.to_runtime_messages();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "user");
+
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(session_dir_for_cwd(&cwd));
+    }
+
+    #[test]
+    fn create_is_lazy_no_file_until_first_append() {
+        let cwd = unique_cwd("lazy");
+        let mut session = Session::create(&cwd, "prov:m").expect("create");
+        // No file (and no dir) until something is appended.
+        assert!(!session.path.exists(), "no file right after create");
+        assert!(
+            !session_dir_for_cwd(&cwd).exists(),
+            "no cwd session dir right after create"
+        );
+
+        session
+            .append(SessionRecord::Message {
+                id: String::new(),
+                parent_id: None,
+                timestamp: now_rfc3339(),
+                role: "user".to_string(),
+                content: "first".to_string(),
+            })
+            .expect("append");
+        assert!(session.path.exists(), "file materialized on first append");
+
+        // Reload roundtrip: header + the one record survive.
+        let reloaded = Session::load(&session.path).expect("reload");
+        assert_eq!(reloaded.id, session.id);
+        assert_eq!(reloaded.records.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(session_dir_for_cwd(&cwd));
+    }
+
+    #[test]
+    fn resume_recent_skips_empty_and_returns_none_when_all_empty() {
+        let cwd = unique_cwd("resumeskip");
+        std::fs::create_dir_all(session_dir_for_cwd(&cwd)).unwrap();
+
+        // An OLDER non-empty session (has a real user message).
+        let mut old = Session::create(&cwd, "old").expect("create");
+        let old_header = SessionRecord::Header {
+            version: SESSION_VERSION,
+            id: old.id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            model: "old".to_string(),
+        };
+        std::fs::write(&old.path, format!("{}\n", serde_json::to_string(&old_header).unwrap()))
+            .unwrap();
+        old.append(SessionRecord::Message {
+            id: String::new(),
+            parent_id: None,
+            timestamp: now_rfc3339(),
+            role: "user".to_string(),
+            content: "real conversation".to_string(),
+        })
+        .unwrap();
+
+        // A NEWER empty shell (header only) — the kind that used to win.
+        let empty = Session::create(&cwd, "empty").expect("create");
+        let empty_header = SessionRecord::Header {
+            version: SESSION_VERSION,
+            id: empty.id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            created_at: "2026-09-01T00:00:00Z".to_string(),
+            model: "empty".to_string(),
+        };
+        std::fs::write(
+            &empty.path,
+            format!("{}\n", serde_json::to_string(&empty_header).unwrap()),
+        )
+        .unwrap();
+
+        // resume_recent picks the older NON-empty session, not the newer shell.
+        let resumed = resume_recent(&cwd).expect("resume non-empty");
+        assert_eq!(resumed.model, "old");
+
+        // Remove the only non-empty session → nothing left to resume.
+        std::fs::remove_file(&old.path).unwrap();
+        assert!(resume_recent(&cwd).is_none(), "all-empty → None");
+
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(session_dir_for_cwd(&cwd));
+    }
+
+    #[test]
+    fn gc_empty_sessions_deletes_header_only_keeps_real() {
+        let cwd = unique_cwd("gc");
+        std::fs::create_dir_all(session_dir_for_cwd(&cwd)).unwrap();
+
+        // A header-only shell.
+        let empty = Session::create(&cwd, "empty").expect("create");
+        let empty_header = SessionRecord::Header {
+            version: SESSION_VERSION,
+            id: empty.id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            created_at: now_rfc3339(),
+            model: "empty".to_string(),
+        };
+        std::fs::write(
+            &empty.path,
+            format!("{}\n", serde_json::to_string(&empty_header).unwrap()),
+        )
+        .unwrap();
+
+        // A real session with a message.
+        let mut real = Session::create(&cwd, "real").expect("create");
+        real.append(SessionRecord::Message {
+            id: String::new(),
+            parent_id: None,
+            timestamp: now_rfc3339(),
+            role: "user".to_string(),
+            content: "keep me".to_string(),
+        })
+        .unwrap();
+
+        assert!(empty.path.exists());
+        assert!(real.path.exists());
+
+        gc_empty_sessions(&cwd);
+
+        assert!(!empty.path.exists(), "header-only file deleted");
+        assert!(real.path.exists(), "session with records kept");
+
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(session_dir_for_cwd(&cwd));
+    }
+
+    #[test]
+    fn is_header_only_session_classifies_correctly() {
+        let cwd = unique_cwd("headeronly");
+        std::fs::create_dir_all(session_dir_for_cwd(&cwd)).unwrap();
+
+        // Header-only → true.
+        let empty = Session::create(&cwd, "m").expect("create");
+        let header = SessionRecord::Header {
+            version: SESSION_VERSION,
+            id: empty.id.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            created_at: now_rfc3339(),
+            model: "m".to_string(),
+        };
+        std::fs::write(&empty.path, format!("{}\n", serde_json::to_string(&header).unwrap()))
+            .unwrap();
+        assert!(is_header_only_session(&empty.path));
+
+        // With a message → false.
+        let mut real = Session::create(&cwd, "m").expect("create");
+        real.append(SessionRecord::Message {
+            id: String::new(),
+            parent_id: None,
+            timestamp: now_rfc3339(),
+            role: "user".to_string(),
+            content: "x".to_string(),
+        })
+        .unwrap();
+        assert!(!is_header_only_session(&real.path));
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(session_dir_for_cwd(&cwd));
