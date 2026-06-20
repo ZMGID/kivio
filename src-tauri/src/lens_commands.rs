@@ -33,7 +33,9 @@ use crate::prompts::{
 use crate::screenshot::cleanup_temp_file;
 use crate::settings::{self, default_question_prompt, ExplainMessage, OcrMode};
 use crate::shortcuts::{capture_active_selection, get_mouse_position, open_chat_window};
-use crate::state::{AppState, PendingChatExternalAttachment, PendingChatExternalSend};
+use crate::state::{
+    AppState, PendingChatExternalAttachment, PendingChatExternalMessage, PendingChatExternalSend,
+};
 use crate::utils::{language_name, provider_supports_thinking_field, resolve_target_lang};
 use crate::web_search::{format_web_context, search_web, WebSearchResult};
 use crate::windows;
@@ -998,6 +1000,85 @@ pub(crate) async fn lens_send_to_chat(
         id: request_id.clone(),
         content: question,
         attachments,
+        messages: Vec::new(),
+    };
+    {
+        let mut pending = state
+            .pending_chat_external_sends
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        pending.push(request);
+    }
+
+    if let Err(err) = open_chat_window(&app) {
+        let mut pending = state
+            .pending_chat_external_sends
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        pending.retain(|item| item.id != request_id);
+        for path in handoff_temp_paths {
+            cleanup_temp_file(&path);
+        }
+        return Err(err);
+    }
+    let _ = app.emit_to("chat", "chat-external-send-ready", serde_json::json!({}));
+
+    Ok(serde_json::json!({
+      "success": true,
+      "requestId": request_id,
+    }))
+}
+
+/// 把 Lens 当前的完整多轮对话历史 + 截图同步到 AI 客户端，预置成一个新会话的历史，
+/// 不触发回复（用户可在客户端接着聊）。设置「发送到 AI 客户端」关闭时由浮窗按钮调用。
+///
+/// 与 `lens_send_to_chat` 共用 `pending_chat_external_sends` 管道与 `chat-external-send-ready`
+/// 事件；区别在于此处携带 `messages`（非空），chat 前端据此走「历史预置」分支而非「发一条消息」。
+#[tauri::command]
+pub(crate) async fn lens_send_history_to_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    image_id: String,
+    messages: Vec<ExplainMessage>,
+) -> Result<serde_json::Value, String> {
+    let history: Vec<PendingChatExternalMessage> = messages
+        .into_iter()
+        .filter(|m| !m.content.trim().is_empty())
+        .map(|m| PendingChatExternalMessage {
+            role: m.role,
+            content: m.content,
+        })
+        .collect();
+
+    if history.is_empty() {
+        return Ok(serde_json::json!({
+          "success": false,
+          "error": "Missing conversation history"
+        }));
+    }
+
+    let mut attachments = Vec::new();
+    let mut handoff_temp_paths = Vec::new();
+    if !image_id.trim().is_empty() {
+        let image_path = resolve_explain_image_path(&app, &state, &image_id)?;
+        let handoff_path = std::env::temp_dir().join(format!("lens-chat-{}.png", Uuid::new_v4()));
+        fs::copy(&image_path, &handoff_path)
+            .map_err(|e| format!("Prepare Lens image for Chat failed: {e}"))?;
+        attachments.push(PendingChatExternalAttachment {
+            id: format!("att_{}", Uuid::new_v4()),
+            r#type: "image".to_string(),
+            name: "Lens Screenshot.png".to_string(),
+            path: handoff_path.to_string_lossy().to_string(),
+        });
+        handoff_temp_paths.push(handoff_path);
+    }
+
+    let request_id = format!("lens_send_{}", Uuid::new_v4());
+    let request = PendingChatExternalSend {
+        id: request_id.clone(),
+        content: String::new(),
+        attachments,
+        messages: history,
     };
     {
         let mut pending = state

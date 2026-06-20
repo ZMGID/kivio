@@ -38,10 +38,21 @@ pub struct PendingPythonRun {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PendingChatExternalMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PendingChatExternalSend {
     pub id: String,
     pub content: String,
     pub attachments: Vec<PendingChatExternalAttachment>,
+    /// 可选的多轮历史。为空 → 旧的「单条消息」交接路径；非空 → 用历史预置一个新会话，
+    /// 不触发回复（截图作为首个 user 轮的附件，见 attachments）。
+    #[serde(default)]
+    pub messages: Vec<PendingChatExternalMessage>,
 }
 
 /// 应用全局状态

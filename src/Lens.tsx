@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { flushSync } from 'react-dom'
-import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, Globe } from 'lucide-react'
+import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, Globe, MessageSquarePlus } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
@@ -1500,6 +1500,51 @@ export default function Lens() {
     copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
   }
 
+  // 「在 AI 客户端继续」：把 Lens 浮窗内的完整多轮历史 + 截图同步到客户端成为一个新会话，然后关闭 Lens。
+  // 仅在「发送到 AI 客户端」关闭 + 已有完成问答时显示（见下方按钮显隐条件）。
+  const handleContinueInChat = async () => {
+    if (streaming) return
+    // 只带最终 content（不带 reasoning/web 搜索状态），保持顺序。
+    const history = messages
+      .filter(m => m.content.trim().length > 0)
+      .map(m => ({ role: m.role, content: m.content }))
+    if (history.length === 0) return
+    setStreaming(true)
+    preparingSendRef.current = true
+    try {
+      let effectiveImageId = imageIdRef.current
+      if (arrows.length > 0 && imagePreview && capturedFrame) {
+        try {
+          const base64 = await composeAnnotatedImage(
+            imagePreview,
+            arrows,
+            capturedFrame.width,
+            capturedFrame.height,
+          )
+          const result = await api.lensRegisterAnnotatedImage(base64)
+          if (result.success && result.imageId) {
+            effectiveImageId = result.imageId
+            imageIdRef.current = result.imageId
+          }
+        } catch (err) {
+          console.warn('[lens-chat] compose annotated image failed, fallback to original:', err)
+        }
+      }
+      const result = await api.lensSendHistoryToChat(effectiveImageId || '', history)
+      if (!result.success) {
+        console.error('[lens-chat] continue-in-chat failed:', result.error)
+        setStreaming(false)
+        return
+      }
+      await closeAfterReset()
+    } catch (err) {
+      console.error('[lens-chat] continue-in-chat handoff failed:', err)
+      setStreaming(false)
+    } finally {
+      preparingSendRef.current = false
+    }
+  }
+
   // 点击历史项：把当前会话恢复到该 item（image / appLabel / messages / capturedFrame）
   // 取消任何正在跑的流，避免后端继续 emit delta 灌入新恢复的 messages（如果新旧 imageId 巧合相同会污染）
   const restoreHistory = (item: HistoryItem) => {
@@ -2142,6 +2187,18 @@ export default function Lens() {
                     >
                       <Square size={10} strokeWidth={2.5} fill="currentColor" />
                       <span>{t.lensStop}</span>
+                    </button>
+                  )}
+                  {/* 「发送到 AI 客户端」关闭时：把当前完整多轮历史 + 截图转交客户端继续聊。
+                      仅 chat 模式、非流式、且已有完成问答（showActions 保证）时显示。 */}
+                  {mode === 'chat' && sendToChatRef.current === false && !streaming && (
+                    <button
+                      onClick={() => void handleContinueInChat()}
+                      title={t.lensContinueInChat}
+                      className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-[#D97757] dark:text-neutral-400 dark:hover:text-[#D97757] rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                    >
+                      <MessageSquarePlus size={11} />
+                      <span>{t.lensContinueInChat}</span>
                     </button>
                   )}
                 </div>

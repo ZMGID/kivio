@@ -2244,6 +2244,34 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const handleSendMessageRef = useRef(handleSendMessage)
   handleSendMessageRef.current = handleSendMessage
 
+  // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
+  // 同 handleSendMessageRef 思路用 ref 持有，保持 drainExternalSends 稳定身份。
+  const importExternalConversation = useCallback(async (
+    messages: { role: string; content: string }[],
+    attachmentPaths: string[],
+  ): Promise<boolean> => {
+    try {
+      const conversation = await chatApi.importExternalConversation(
+        messages,
+        attachmentPaths,
+        activeProviderId || undefined,
+        activeModel || undefined,
+        selectedProject?.id ?? null,
+      )
+      currentConversationIdRef.current = conversation.id
+      applyConversation(conversation)
+      syncConversationRoute(conversation.id)
+      refreshSidebar()
+      return true
+    } catch (err) {
+      console.error('Failed to import external conversation:', err)
+      setStreamError(typeof err === 'string' ? err : (err as Error).message || '导入对话失败')
+      return false
+    }
+  }, [activeModel, activeProviderId, applyConversation, refreshSidebar, selectedProject?.id, syncConversationRoute])
+  const importExternalConversationRef = useRef(importExternalConversation)
+  importExternalConversationRef.current = importExternalConversation
+
   const handleExecuteAgentPlan = useCallback(async () => {
     const conversation = currentConversation
     if (!conversation) return
@@ -2302,6 +2330,17 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         const request = externalSendQueueRef.current[0]
         if (!request) continue
         setChatView('conversation')
+        const attachmentPaths = (request.attachments ?? [])
+          .map((attachment) => attachment.path)
+          .filter((path): path is string => !!path)
+
+        // 历史预置分支：把 Lens 完整多轮历史 + 截图搬成一个新会话（不发消息、不触发回复），落地末尾可续聊。
+        if (request.messages && request.messages.length > 0) {
+          await importExternalConversationRef.current(request.messages, attachmentPaths)
+          externalSendQueueRef.current.shift()
+          continue
+        }
+
         const attachments = (request.attachments ?? [])
           .filter((attachment) => attachment.path)
           .map<PendingAttachment>((attachment, index) => ({

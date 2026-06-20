@@ -97,6 +97,8 @@ export type ChatExternalSendRequest = {
   id: string
   content: string
   attachments: ChatExternalSendAttachment[]
+  /** 可选的多轮历史。非空 → 用历史预置一个新会话（不发消息、不触发回复）。 */
+  messages?: { role: string; content: string }[]
 }
 
 export type ChatContextUsageSegment = {
@@ -1298,6 +1300,12 @@ export const api = {
     invoke<{ success: boolean; requestId?: string; error?: string }>('lens_send_to_chat', {
       imageId,
       question,
+    }),
+  // 把 Lens 完整多轮历史 + 截图同步到 AI 客户端，预置成一个新会话（不触发回复，落地末尾可续聊）。
+  lensSendHistoryToChat: (imageId: string, messages: ExplainMessage[]) =>
+    invoke<{ success: boolean; requestId?: string; error?: string }>('lens_send_history_to_chat', {
+      imageId,
+      messages,
     }),
   lensCancelStream: () => invoke<void>('lens_cancel_stream'),
   // 让原生把 lens 浮窗内部 WKWebView 设为 first responder（修复复用窗口第二次打开偶尔不聚焦）。

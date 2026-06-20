@@ -855,6 +855,25 @@ export const chatApi = {
     return result.conversation
   },
 
+  // 用预置的多轮历史 + 截图创建一个新会话（不触发回复）。Lens「在 AI 客户端继续」交接使用。
+  async importExternalConversation(
+    messages: { role: string; content: string }[],
+    attachmentPaths: string[],
+    providerId?: string,
+    model?: string,
+    projectId?: string | null,
+  ): Promise<Conversation> {
+    if (!isTauriRuntime()) return mockChatApi.createConversation(providerId, model, undefined, projectId, null)
+    const result = await invoke<{ success: boolean; conversation: Conversation }>(
+      'chat_import_external_conversation',
+      { messages, attachments: attachmentPaths, providerId, model, projectId },
+    )
+    if (!result.success) {
+      throw new Error('Failed to import external conversation')
+    }
+    return result.conversation
+  },
+
   // 创建「对话搭建专家」会话(瞬态搭建助手,只暴露 save_assistant 工具)
   async createBuilderConversation(
     providerId?: string,

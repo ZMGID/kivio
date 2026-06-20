@@ -44,13 +44,20 @@ use super::storage::{
     update_assistant, update_project,
 };
 use super::{
-    AgentPlanState, AgentTodoState, ChatAssistant, ChatMessage, ChatMessageSegment,
+    AgentPlanState, AgentTodoState, Attachment, ChatAssistant, ChatMessage, ChatMessageSegment,
     ChatMessageSegmentKind, ChatMessageSegmentPhase, ContextUsageSegment, Conversation,
     ConversationContextState, ConversationContextSummary, ToolCallRecord, ToolCallStatus,
 };
 
 const DIRECT_IMAGE_GENERATION_PENDING: &str = "[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]";
 const CHAT_REPLY_BUSY_ERROR: &str = "该对话正在生成中，请稍后再试";
+
+/// 外部入口（如 Lens 交接）预置会话历史时的一条消息。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct ExternalConversationMessage {
+    pub role: String,
+    pub content: String,
+}
 
 struct ChatReplyGuard<'a> {
     state: &'a AppState,
@@ -271,6 +278,93 @@ pub(crate) fn create_chat_conversation_internal(
     };
 
     Ok(conversation)
+}
+
+/// 用一段预置的多轮历史 + 截图创建一个新会话（不触发回复）。
+/// Lens「在 AI 客户端继续」按钮经由 external-send 管道走这条路径：
+/// 把 Lens 浮窗内已有的 user/assistant 历史搬到客户端成为真正的对话历史，截图挂在首个 user 轮，
+/// 用户落地后可直接继续输入。
+#[tauri::command]
+pub(crate) fn chat_import_external_conversation(
+    app: AppHandle,
+    state: State<AppState>,
+    messages: Vec<ExternalConversationMessage>,
+    attachments: Vec<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    project_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let history: Vec<ExternalConversationMessage> = messages
+        .into_iter()
+        .filter(|m| !m.content.trim().is_empty())
+        .collect();
+    if history.is_empty() {
+        return Err("Missing conversation history".to_string());
+    }
+
+    // 始终新建会话（不复用空白会话）：历史预置需要干净的容器。
+    let mut conversation = create_chat_conversation_internal(
+        &app,
+        state.inner(),
+        provider_id,
+        model,
+        None,
+        project_id,
+        None,
+    )?;
+    // create 可能复用了一个空白会话；这里清空以确保从干净状态写入历史。
+    conversation.messages.clear();
+
+    // 截图等附件存入会话目录，只挂在首个 user 轮。
+    let stored_attachments = save_message_attachments(&app, &conversation.id, attachments)?;
+
+    let now = chrono::Local::now().timestamp();
+    let mut first_user_seen = false;
+    let mut title_set = false;
+    for entry in history {
+        let role = if entry.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
+        let mut message_attachments: Vec<Attachment> = Vec::new();
+        if role == "user" && !first_user_seen {
+            first_user_seen = true;
+            message_attachments = stored_attachments.clone();
+        }
+        if role == "user" && !title_set {
+            let title_source = title_source_for_user_message(&entry.content, &message_attachments);
+            if !title_source.is_empty() {
+                conversation.title = title_source.chars().take(40).collect();
+                title_set = true;
+            }
+        }
+        conversation.messages.push(ChatMessage {
+            id: format!("msg_{}", Uuid::new_v4()),
+            role: role.to_string(),
+            content: entry.content,
+            attachments: message_attachments,
+            reasoning: None,
+            artifacts: Vec::new(),
+            tool_calls: Vec::new(),
+            segments: Vec::new(),
+            api_messages: Vec::new(),
+            model_messages: Vec::new(),
+            active_skill_id: None,
+            run_entry: None,
+            stream_outcome: None,
+            usage: None,
+            timestamp: now,
+        });
+    }
+
+    conversation.updated_at = chrono::Local::now().timestamp();
+    save_conversation(&app, &conversation)?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "conversation": conversation,
+    }))
 }
 
 fn non_empty_string(value: String) -> Option<String> {
