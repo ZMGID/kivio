@@ -3,6 +3,7 @@
   "private": true,
   "version": "2.7.1",
   "description": "Kivio - Screen-level AI assistant for macOS and Windows",
+  "license": "GPL-3.0-or-later",
   "author": "ZM",
   "type": "module",
   "scripts": {

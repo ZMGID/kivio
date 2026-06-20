@@ -12,7 +12,7 @@
   <a href="https://github.com/ZMGID/kivio/releases/latest"><img src="https://img.shields.io/github/v/release/ZMGID/kivio?style=flat-square&color=4f46e5&label=release" alt="Latest Release"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-success?style=flat-square" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Windows-10%2F11-success?style=flat-square" alt="Windows 10/11">
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT">
+  <img src="https://img.shields.io/badge/license-GPLv3-blue?style=flat-square" alt="GPL-3.0">
 </p>
 
 <p align="center">
@@ -131,7 +131,7 @@ Releases follow [docs/RELEASE_PACKAGING.md](docs/RELEASE_PACKAGING.md): the macO
 
 ## License
 
-MIT © ZM
+GPL-3.0-or-later © ZM. See [LICENSE](LICENSE).
 
 ## Friends
 
@@ -264,7 +264,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 许可证
 
-MIT © ZM
+GPL-3.0-or-later © ZM。见 [LICENSE](LICENSE)。
 
 ## 友链
 
