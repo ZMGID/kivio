@@ -8,6 +8,7 @@ use crate::external_agents::types::{
     DetectedAgent, ModelProbeStrategy, RuntimeAgentDef, RuntimeModelOption, default_model_option,
     fallback_models_from_pairs, reasoning_options_from_pairs,
 };
+use crate::proc::NoConsoleWindow;
 
 pub const EXTERNAL_AGENT_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
 
@@ -93,6 +94,7 @@ async fn probe_version(def: &RuntimeAgentDef, path: Option<&std::path::Path>) ->
     let bin = path?;
     let output = tokio::process::Command::new(bin)
         .args(def.version_args)
+        .no_console_window()
         .output()
         .await
         .ok()?;
@@ -113,7 +115,10 @@ async fn probe_auth(def: &RuntimeAgentDef, path: Option<&std::path::Path>) -> Op
     let bin = path?;
     let output = tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::process::Command::new(bin).args(args).output(),
+        tokio::process::Command::new(bin)
+            .args(args)
+            .no_console_window()
+            .output(),
     )
     .await
     .ok()?
@@ -154,7 +159,10 @@ async fn probe_models(
     let timeout_secs = def.list_models_timeout_secs.unwrap_or(5);
     let output = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        tokio::process::Command::new(bin).args(args).output(),
+        tokio::process::Command::new(bin)
+            .args(args)
+            .no_console_window()
+            .output(),
     )
     .await
     .ok()?

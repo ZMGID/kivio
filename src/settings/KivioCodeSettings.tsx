@@ -27,6 +27,9 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
   const [config, setConfig] = useState<KivioCodeConfig | null>(null)
   const [instructions, setInstructions] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // 「安装命令行工具」按钮的状态:installing 期间禁用,result 显示成功/已装/失败提示。
+  const [installing, setInstalling] = useState(false)
+  const [installMessage, setInstallMessage] = useState<{ ok: boolean; text: string } | null>(null)
   // 全局指令的防抖落盘:输入停止 ~700ms 后写一次,避免每次按键都写磁盘。
   const instrTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -89,6 +92,21 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
         setError(String(err))
       })
     }, 700)
+  }
+
+  const installCli = () => {
+    setInstalling(true)
+    setInstallMessage(null)
+    api
+      .installCliCommand()
+      .then((result) => {
+        setInstallMessage({ ok: result.ok, text: result.message })
+      })
+      .catch((err) => {
+        console.error('Failed to install kivio CLI command:', err)
+        setInstallMessage({ ok: false, text: String(err) })
+      })
+      .finally(() => setInstalling(false))
   }
 
   return (
@@ -173,9 +191,13 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
         <div className="px-1 py-2 text-[13px] leading-relaxed text-neutral-500 dark:text-neutral-400">
           {zh ? (
             <>
-              kivio-code 是随应用一起构建的终端编码代理。在终端里进入你的项目目录后运行{' '}
+              kivio code 是随应用一起构建的终端编码代理。先点击下方「安装命令行工具」把{' '}
               <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
-                kivio-code
+                kivio
+              </code>{' '}
+              命令加入 PATH,然后在新终端里进入你的项目目录运行{' '}
+              <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                kivio code
               </code>{' '}
               即可启动;它会读取上面这些设置(默认模型、审批策略、上下文开关)。加{' '}
               <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
@@ -185,11 +207,16 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
             </>
           ) : (
             <>
-              kivio-code is the terminal coding agent bundled with this app. Run{' '}
+              kivio code is the terminal coding agent bundled with this app. First click "Install
+              command line tool" below to add the{' '}
               <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
-                kivio-code
+                kivio
               </code>{' '}
-              in a terminal from your project directory; it reads the settings above (default
+              command to your PATH, then run{' '}
+              <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                kivio code
+              </code>{' '}
+              in a new terminal from your project directory; it reads the settings above (default
               model, approval policy, context toggle). Pass{' '}
               <code className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[12px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
                 --model provider:model
@@ -198,6 +225,43 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
             </>
           )}
         </div>
+
+        <SettingRow
+          label={zh ? '安装命令行工具' : 'Install command line tool'}
+          description={
+            zh
+              ? '把 kivio 命令注册进用户 PATH(Windows)/软链到 ~/.local/bin(macOS),装好后在新终端可直接用 kivio code。'
+              : 'Register the kivio command on your user PATH (Windows) / symlink it to ~/.local/bin (macOS). After installing, use kivio code in a new terminal.'
+          }
+        >
+          <button
+            type="button"
+            onClick={installCli}
+            disabled={installing}
+            className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-[13px] font-medium text-neutral-700 transition hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+          >
+            {installing
+              ? zh
+                ? '安装中…'
+                : 'Installing…'
+              : zh
+                ? '安装'
+                : 'Install'}
+          </button>
+        </SettingRow>
+
+        {installMessage && (
+          <div
+            className={
+              'px-1 pb-2 text-[12px] leading-relaxed ' +
+              (installMessage.ok
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : 'text-red-500 dark:text-red-400')
+            }
+          >
+            {installMessage.text}
+          </div>
+        )}
       </SettingsGroup>
 
       {error && (

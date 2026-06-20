@@ -673,6 +673,13 @@ export type KivioCodeConfig = {
   approvalPolicy?: string | null
 }
 
+/** install_cli_command 的返回:是否成功 / 是否已安装 / 给用户的提示信息。 */
+export type InstallCliResult = {
+  ok: boolean
+  alreadyInstalled: boolean
+  message: string
+}
+
 export type UsageRange = '7d' | '30d' | '90d' | 'all'
 
 export type UsageStatsQuery = {
@@ -1040,6 +1047,8 @@ export const api = {
     invoke<string>('get_kivio_code_global_instructions'),
   saveKivioCodeGlobalInstructions: (content: string) =>
     invoke<void>('set_kivio_code_global_instructions', { content }),
+  // 「安装命令行工具」:把 kivio 命令注册进用户 PATH(Win)/软链到 ~/.local/bin(mac),使 `kivio code` 可用。
+  installCliCommand: () => invoke<InstallCliResult>('install_cli_command'),
   // 把（Windows 不透明）chat 窗口的原生背景设为当前主题色，避免伸缩时闪白。其他窗口/平台为 no-op。
   setChatWindowBackground: (isDark: boolean) =>
     invoke('set_chat_window_background', { isDark }).catch(() => {}),

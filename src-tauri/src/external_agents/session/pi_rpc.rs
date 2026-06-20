@@ -11,6 +11,7 @@ use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::{
     default_model_option, ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent,
 };
+use crate::proc::NoConsoleWindow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PiRpcOutcome {
@@ -32,6 +33,7 @@ pub async fn detect_pi_commands(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_console_window()
         .kill_on_drop(true)
         .spawn()
         .ok()?;

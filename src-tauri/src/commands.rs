@@ -88,6 +88,14 @@ pub(crate) fn set_kivio_code_global_instructions(content: String) -> Result<(), 
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+/// 「安装命令行工具」：把 `kivio` 命令注册进当前用户的 PATH，使任意终端可用 `kivio code`。
+/// Windows 改 `HKCU\Environment\Path` 并广播 WM_SETTINGCHANGE；macOS 在 `~/.local/bin`
+/// 建到主程序的软链。由 Kivio Code 设置页的按钮手动触发,不在安装时自动改 PATH。
+#[tauri::command]
+pub(crate) fn install_cli_command() -> Result<crate::cli_install::InstallCliResult, String> {
+    crate::cli_install::install_cli()
+}
+
 /// 前端解析好主题（含 system）后调用：把 chat 窗口的原生背景设为对应主题色，
 /// 避免伸缩时露出白色清屏底色导致暗色下闪白。仅对 label=="chat" 生效；
 /// macOS/Linux 透明窗口在 windows 模块内为 no-op。

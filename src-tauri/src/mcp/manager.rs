@@ -36,6 +36,7 @@ use tokio::{
     time::timeout,
 };
 
+use crate::proc::NoConsoleWindow;
 use crate::settings::ChatMcpServer;
 use crate::state::AppState;
 
@@ -632,6 +633,7 @@ fn spawn_stdio(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     command.kill_on_drop(true);
+    command.no_console_window();
 
     let mut child = command
         .spawn()

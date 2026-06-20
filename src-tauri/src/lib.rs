@@ -4,6 +4,7 @@ pub mod api;
 pub mod agents;
 pub mod capture_geometry;
 pub mod chat;
+pub mod cli_install;
 pub mod external_agents;
 pub mod commands;
 pub mod kivio_code;
@@ -13,6 +14,7 @@ pub mod lens_commands;
 pub mod macos_ocr;
 pub mod mcp;
 pub mod native_tools;
+pub mod proc;
 pub mod prompts;
 pub mod rapidocr;
 #[cfg(target_os = "macos")]
@@ -344,6 +346,7 @@ pub fn run() {
             commands::set_kivio_code_config,
             commands::get_kivio_code_global_instructions,
             commands::set_kivio_code_global_instructions,
+            commands::install_cli_command,
             commands::set_chat_window_background,
             commands::get_default_prompt_templates,
             commands::save_settings,

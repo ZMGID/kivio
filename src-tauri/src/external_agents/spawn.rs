@@ -8,6 +8,7 @@ use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
 use crate::external_agents::types::{PromptInputFormat, RuntimeAgentDef, UnifiedAgentEvent};
+use crate::proc::NoConsoleWindow;
 
 pub struct SpawnedAgent {
     pub child: Child,
@@ -26,6 +27,7 @@ pub async fn resolve_binary(def: &RuntimeAgentDef) -> Option<PathBuf> {
 async fn which_binary(name: &str) -> Option<PathBuf> {
     let output = Command::new(if cfg!(windows) { "where" } else { "which" })
         .arg(name)
+        .no_console_window()
         .output()
         .await
         .ok()?;
@@ -58,6 +60,7 @@ pub async fn spawn_agent(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .no_console_window()
         .kill_on_drop(true);
     for (key, value) in def.env {
         command.env(key, value);

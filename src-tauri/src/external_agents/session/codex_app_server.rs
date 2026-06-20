@@ -11,6 +11,7 @@ use tokio::time::timeout;
 use crate::external_agents::session::live::SessionCommand;
 use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::{ExternalCliSlashCommand, UnifiedAgentEvent};
+use crate::proc::NoConsoleWindow;
 
 /// Codex `app-server` speaks newline-delimited JSON-RPC over stdio (one JSON object per line,
 /// no `Content-Length` framing). Responses omit the `jsonrpc` field, so we never require it.
@@ -425,6 +426,7 @@ impl CodexAppServerSession {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .no_console_window()
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn codex app-server: {e}"))?;
@@ -693,6 +695,7 @@ pub async fn detect_codex_commands(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_console_window()
         .kill_on_drop(true)
         .spawn()
     {

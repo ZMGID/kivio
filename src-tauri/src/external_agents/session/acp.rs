@@ -13,6 +13,7 @@ use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::{
     ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent, default_model_option,
 };
+use crate::proc::NoConsoleWindow;
 
 const ACP_PROTOCOL_VERSION: i64 = 1;
 
@@ -171,6 +172,7 @@ pub async fn detect_acp_models(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_console_window()
         .kill_on_drop(true)
         .spawn()
         .ok()?;
@@ -292,6 +294,7 @@ pub async fn detect_acp_commands(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .no_console_window()
         .kill_on_drop(true)
         .spawn()
         .ok()?;
@@ -856,6 +859,7 @@ impl AcpSession {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .no_console_window()
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn acp agent: {e}"))?;

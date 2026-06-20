@@ -12,6 +12,7 @@ use tokio::{
     time::timeout,
 };
 
+use crate::proc::NoConsoleWindow;
 use crate::settings::ChatMcpServer;
 
 use super::types::{ChatToolArtifact, McpTool, McpToolCallResult};
@@ -116,6 +117,7 @@ impl StdioMcpClient {
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::null());
+        command.no_console_window();
 
         let mut child = command
             .spawn()

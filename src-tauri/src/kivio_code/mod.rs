@@ -7,6 +7,7 @@
 //! synthesis) through the unmodified agent loop, streaming the answer to stdout.
 //! No TUI, no run_python, no sessions yet.
 
+pub mod cli;
 pub mod config;
 pub mod errors;
 pub mod executor;

@@ -9,6 +9,8 @@ use serde_json::Value;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
+use crate::proc::NoConsoleWindow;
+
 use super::{
     discover::build_registry,
     types::{SkillFileKind, SkillRecord, SkillRegistry},
@@ -306,7 +308,8 @@ pub async fn run_skill_script(
         .args(script_args)
         .current_dir(&record.base_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .no_console_window();
     #[cfg(unix)]
     {
         command.kill_on_drop(true);
