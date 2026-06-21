@@ -5,7 +5,9 @@ use crate::mcp::ChatToolDefinition;
 use crate::skills;
 
 use super::execute::ToolExecutor;
-use super::finalize::{finalize_completed, finalize_planning_final, SegmentBuilder};
+use super::finalize::{
+    cancelled_run_result_from_state, finalize_completed, finalize_planning_final, SegmentBuilder,
+};
 use super::host::AgentHost;
 use super::planning::{planning_step, PlanningStepOutcome};
 use super::rounds::{run_tool_round, ToolRoundOutcome};
@@ -167,14 +169,13 @@ pub async fn run_agent_loop(
             round = round.saturating_add(1);
             state.step_number = state.step_number.saturating_add(1);
             if !host.is_generation_active(&config.conversation_id, config.generation) {
-                host.emit_stream_done(
-                    &config.conversation_id,
-                    &config.run_id,
-                    &config.message_id,
-                    "cancelled",
-                    "",
-                );
-                return Err("cancelled".to_string());
+                // Cancelled at the loop top (before this round's planning call).
+                // Preserve whatever previous rounds already accumulated
+                // (tool_records / segments / api_messages) by ending with
+                // Ok(cancelled_result) instead of a bare Err("cancelled") — the
+                // latter skipped persistence and dropped the whole turn.
+                let result = cancelled_run_result_from_state(&env, &mut state);
+                return Ok(attach_usage(result, &mut state));
             }
 
             let planned = match planning_step(&env, &mut state, round).await? {

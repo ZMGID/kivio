@@ -36,6 +36,11 @@
         cancel_after: Option<Duration>,
         cancel_flag: Arc<AtomicBool>,
         cancel_on_first_text_delta: bool,
+        /// Flip `cancel_flag` from inside `persist_partial_assistant`, so a tool
+        /// round completes uncancelled (its records preserved) and the NEXT
+        /// round's loop-top generation check observes the cancellation. Used to
+        /// exercise the planning/loop-top cancellation path deterministically.
+        cancel_on_persist: bool,
     }
 
     impl TestHost {
@@ -56,6 +61,13 @@
         fn cancelling_on_first_text_delta() -> Self {
             Self {
                 cancel_on_first_text_delta: true,
+                ..Self::default()
+            }
+        }
+
+        fn cancelling_on_persist() -> Self {
+            Self {
+                cancel_on_persist: true,
                 ..Self::default()
             }
         }
@@ -146,6 +158,9 @@
             tool_records: &[ToolCallRecord],
             segments: &[ChatMessageSegment],
         ) {
+            if self.cancel_on_persist {
+                self.cancel_flag.store(true, Ordering::SeqCst);
+            }
             self.persists
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
@@ -1608,6 +1623,59 @@
         );
     }
 
+    /// Bug fix regression (Fix 2): cancellation observed at the loop top of a
+    /// later round (after an earlier tool round already completed) must end with
+    /// Ok(cancelled_result) carrying the tool records gathered so far — not a bare
+    /// Err("cancelled") that drops the whole turn. The host flips the cancel flag
+    /// from `persist_partial_assistant` (end of round 1), so round 2's loop-top
+    /// generation check fires while round 1's record is fully preserved.
+    #[tokio::test]
+    async fn run_loop_planning_top_cancelled_preserves_gathered_tool_records() {
+        let server = MockModelServer::start(vec![
+            // Round 1 planning: one read tool call. The tool executes, the round
+            // completes, then persist flips cancel → round 2 loop-top cancels.
+            MockResponse::Json(planning_tool_call_json()),
+        ]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url, false);
+        // Allow a second round so cancellation lands at the loop top rather than
+        // the round limit.
+        config.effective_chat_tools.max_tool_rounds = Some(2);
+        let host = TestHost::cancelling_on_persist();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("loop-top cancellation must return Ok, not bubble Err");
+
+        assert_eq!(result.stream_outcome, "cancelled");
+        assert_eq!(result.content, stopped_generation_content("zh-CN"));
+        // Round 1's tool record is preserved (the bug dropped it entirely).
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(result.tool_records[0].name, "read");
+        assert!(matches!(
+            result.tool_records[0].status,
+            ToolCallStatus::Success
+        ));
+        // The tool actually executed in round 1 before cancellation.
+        assert_eq!(
+            executor.events(),
+            vec!["start:read".to_string(), "finish:read".to_string()]
+        );
+
+        // Exactly one done("cancelled") event for the frontend freeze logic.
+        let dones = host.recorded_dones();
+        assert_eq!(dones.len(), 1, "exactly one done event");
+        assert_eq!(dones[0].0, "cancelled");
+
+        // The turn is persistable: the stopped-generation placeholder is appended
+        // as a synthesis api message + segment alongside the preserved records.
+        assert!(result.segments.iter().any(|segment| {
+            segment.kind == ChatMessageSegmentKind::Text
+                && segment.text.as_deref() == Some("已停止生成。")
+        }));
+    }
+
     /// Bug fix regression: a plain-text planning stream (no tool calls started)
     /// cancelled after partial text must keep the generated text as an
     /// Ok("cancelled") run result instead of bubbling Err and dropping the turn.
@@ -1687,24 +1755,29 @@
         );
     }
 
-    /// Pins the unchanged path: a plain-text stream cancelled before any text was
-    /// generated still bubbles Err("cancelled") (commands.rs handles it as a
-    /// successful no-message cancellation).
+    /// Bug fix regression (Fix 2): a plain-text stream cancelled before any text
+    /// or tool draft was generated must now end with Ok(cancelled_result) carrying
+    /// the stopped-generation placeholder — not a bare Err("cancelled") that
+    /// skipped persistence. With no prior rounds there are no tool records to
+    /// preserve, but the turn is still persistable (one done("cancelled") event,
+    /// already emitted by the stream layer, and no duplicate).
     #[tokio::test]
-    async fn run_loop_stream_planning_cancelled_with_no_text_returns_err() {
+    async fn run_loop_stream_planning_cancelled_with_no_text_returns_cancelled() {
         let server = MockModelServer::start(vec![MockResponse::SseThenHang(Vec::new())]);
         let state = test_app_state();
         let config = test_run_config(&state, &server.base_url, true);
         let host = TestHost::cancelling_after(Duration::from_millis(20));
         let executor = RecordingExecutor::default();
 
-        let err = run_agent_loop(config, &host, &executor)
+        let result = run_agent_loop(config, &host, &executor)
             .await
-            .expect_err("cancelled stream with zero generated text keeps returning Err");
+            .expect("cancelled stream with zero generated text must return Ok, not Err");
 
-        assert_eq!(err, "cancelled");
+        assert_eq!(result.stream_outcome, "cancelled");
+        assert_eq!(result.content, stopped_generation_content("zh-CN"));
+        assert!(result.tool_records.is_empty());
         let dones = host.recorded_dones();
-        assert_eq!(dones.len(), 1, "exactly one done event");
+        assert_eq!(dones.len(), 1, "exactly one done event (no duplicate)");
         assert_eq!(dones[0], ("cancelled".to_string(), String::new()));
     }
 

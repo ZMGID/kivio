@@ -52,22 +52,18 @@ use crate::state::AppState;
 /// chain general→sub→sub→sub is the hard ceiling.
 pub const MAX_SUB_AGENT_DEPTH: u8 = 3;
 const SUB_AGENT_CONCURRENCY: usize = 3;
-const SUB_AGENT_SYNC_TIMEOUT_SECS: u64 = 300;
 /// Max attempts for a single sub-agent run. Reasoning models (e.g. DeepSeek-V4)
 /// intermittently return an empty assistant message in the planning step, which
 /// `run_agent_loop` surfaces as `Err`. Top-level chat recovers via user resend;
 /// a sub-agent has no resend loop, so we retry the run once before giving up.
 const SUB_AGENT_MAX_ATTEMPTS: usize = 2;
-/// Outer per-tool-call timeout for the `agent` spawn tool. It must NOT fire before
-/// the sub-agent's own run budget: a single run is capped at
-/// `SUB_AGENT_SYNC_TIMEOUT_SECS` and may be attempted up to `SUB_AGENT_MAX_ATTEMPTS`
-/// times, so the worst-case run length is `300 × 2 = 600s`, plus a 60s margin.
-/// The default generic tool timeout (120s) is far shorter and would mis-kill a
-/// long-running sub-agent; this lets the inner 300s timeout + cascade cancel
-/// actually govern the lifecycle, with the outer timeout only as a big backstop.
-/// `(300 * 2 + 60) * 1000 = 660_000ms`.
-pub const SUB_AGENT_TOOL_TIMEOUT_MS: u64 =
-    (SUB_AGENT_SYNC_TIMEOUT_SECS * SUB_AGENT_MAX_ATTEMPTS as u64 + 60) * 1000;
+/// Outer per-tool-call timeout for the `agent` spawn tool. The sub-agent run
+/// itself has no inner wall-clock cap (it finishes naturally or via cascade
+/// cancel); the default generic tool timeout (120s) is far shorter and would
+/// mis-kill a long-running sub-agent doing real multi-round work. This generous
+/// backstop only guards against a wedged spawn never returning at all — normal
+/// lifecycle is governed by completion + cascade cancel, not by this value.
+pub const SUB_AGENT_TOOL_TIMEOUT_MS: u64 = 660_000;
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 350;
 const RESULT_PREVIEW_MAX: usize = 4000;
 
@@ -91,16 +87,15 @@ pub fn depth_allows_spawn(depth: u8) -> bool {
 }
 
 /// Whether a failed sub-agent run should be retried. Retry only when the outcome
-/// is an error that is NOT a cancellation and NOT a timeout, there are attempts
-/// remaining, and the parent generation is still active (so we never retry after
-/// a cascade cancel). A timeout means the run was already too slow (not an instant
-/// empty response), so retrying would only waste another full 300s budget.
+/// is an error that is NOT a cancellation, there are attempts remaining, and the
+/// parent generation is still active (so we never retry after a cascade cancel).
+/// A cancellation (own stop or parent cascade) must never be retried.
 fn should_retry_sub_agent(
     outcome: &Result<AgentRunResult, String>,
     attempt: usize,
     parent_active: bool,
 ) -> bool {
-    matches!(outcome, Err(err) if err != "cancelled" && !err.contains("timed out"))
+    matches!(outcome, Err(err) if err != "cancelled")
         && attempt + 1 < SUB_AGENT_MAX_ATTEMPTS
         && parent_active
 }
@@ -644,17 +639,14 @@ async fn run_sub_agent(
             provider_tools_fallback_system_prompt: req.system_prompt.clone(),
         };
 
-        let timeout = Duration::from_secs(SUB_AGENT_SYNC_TIMEOUT_SECS);
-        let outcome =
-            match tokio::time::timeout(timeout, run_agent_loop(config, &host, &executor)).await {
-                Ok(result) => result,
-                Err(_) => Err(format!(
-                    "Sub-agent timed out after {SUB_AGENT_SYNC_TIMEOUT_SECS}s"
-                )),
-            };
-        // Retire this attempt's generation on every exit path (success, failure,
-        // timeout). Otherwise a timeout leaves the synthetic generation reading
-        // "active" forever, and entries accumulate in chat_stream_generations.
+        // No wall-clock cap: a sub-agent now runs to natural completion or until
+        // cancelled via generation cascade (parent stop ⇒ host.is_generation_active
+        // flips false ⇒ the loop ends gracefully). A 300s hard timeout was removed
+        // because real multi-round file work legitimately exceeds it.
+        let outcome = run_agent_loop(config, &host, &executor).await;
+        // Retire this attempt's generation on every exit path (success or failure).
+        // Otherwise the synthetic generation reads "active" forever and entries
+        // accumulate in chat_stream_generations.
         state.cancel_chat_generation(&sub_conversation_id);
 
         // Success or cancellation → return immediately.
@@ -1035,6 +1027,30 @@ pub fn handle_agent_spawn<'a>(
         let outcome = run_sub_agent(ctx.app, ctx.state, request).await;
 
         match outcome {
+            // A cancelled run (own stop or parent cascade) now returns
+            // Ok(cancelled_result) from every loop phase, not just an
+            // Err("cancelled") from the planning/stream path. Detect it via
+            // `stream_outcome` so a cancelled sub-agent is reported as
+            // `cancelled` to the parent — never as a `completed` result whose
+            // "content" is just the stopped-generation placeholder.
+            Ok(result) if result.stream_outcome == "cancelled" => {
+                manager.finish(&task_id, SubAgentStatus::Cancelled, None, None, None);
+                let structured = serde_json::json!({
+                    "type": "subagent",
+                    "taskId": task_id,
+                    "name": name,
+                    "agentType": def.name,
+                    "status": "cancelled",
+                    "error": "cancelled",
+                });
+                Ok(McpToolCallResult {
+                    content: format!("[Sub-agent: {} ({})] cancelled", name, def.name),
+                    is_error: false,
+                    raw: structured.clone(),
+                    artifacts: Vec::new(),
+                    structured_content: Some(structured),
+                })
+            }
             Ok(result) => {
                 let content = if result.content.trim().is_empty() {
                     "(sub-agent produced no text output)".to_string()
@@ -1289,6 +1305,25 @@ mod tests {
         })
     }
 
+    /// A cancelled run now surfaces as `Ok(result)` with `stream_outcome ==
+    /// "cancelled"` from the planning/loop-top paths (not just `Err("cancelled")`
+    /// from the tool round). `run_sub_agent` short-circuits any `Ok(_)`, so it is
+    /// never retried; `should_retry_sub_agent` returns false for it because it is
+    /// not an `Err`.
+    fn ok_cancelled_run_result() -> Result<AgentRunResult, String> {
+        Ok(AgentRunResult {
+            content: "已停止生成。".to_string(),
+            reasoning: None,
+            tool_records: Vec::new(),
+            segments: Vec::new(),
+            api_messages: Vec::new(),
+            steps: Vec::new(),
+            stream_outcome: "cancelled".to_string(),
+            usage: None,
+            compacted_history: None,
+        })
+    }
+
     #[test]
     fn retry_only_on_recoverable_error_with_attempts_and_active_parent() {
         // SUB_AGENT_MAX_ATTEMPTS == 2: attempt 0 may retry, attempt 1 may not.
@@ -1308,13 +1343,12 @@ mod tests {
         let cancelled: Result<AgentRunResult, String> = Err("cancelled".to_string());
         assert!(!should_retry_sub_agent(&cancelled, 0, true));
 
-        // Timeout is too-slow, not an instant empty response → never retry.
-        let timed_out: Result<AgentRunResult, String> = Err(format!(
-            "Sub-agent timed out after {SUB_AGENT_SYNC_TIMEOUT_SECS}s"
-        ));
-        assert!(!should_retry_sub_agent(&timed_out, 0, true));
-
         // Success → never retry.
         assert!(!should_retry_sub_agent(&ok_run_result(), 0, true));
+
+        // An Ok(cancelled) result (planning/loop-top cancellation now returns
+        // Ok, not Err) → never retried: it is not an Err, so should_retry is
+        // false, and run_sub_agent short-circuits any Ok(_) before retrying.
+        assert!(!should_retry_sub_agent(&ok_cancelled_run_result(), 0, true));
     }
 }

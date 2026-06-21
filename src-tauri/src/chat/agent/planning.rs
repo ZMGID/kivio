@@ -9,7 +9,10 @@ use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessage
 use crate::mcp::ChatToolDefinition;
 use crate::settings::ProviderApiFormat;
 
-use super::finalize::{tool_planning_failed_run_result, RunResultBuilder};
+use super::finalize::{
+    cancelled_run_result_from_state, cancelled_tool_round_run_result,
+    tool_planning_failed_run_result, RunResultBuilder,
+};
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
 use super::prepare::{prepare_agent_step, PrepareStepInput};
@@ -169,7 +172,23 @@ pub(crate) async fn planning_step(
                 if stream.cancelled {
                     let partial = sanitize_assistant_text_response(&stream.content);
                     if partial.trim().is_empty() || planning_tool_drafts.has_started() {
-                        return Err("cancelled".to_string());
+                        // No preservable partial answer (empty text, or tool-arg
+                        // drafting had started and is now incomplete). The stream
+                        // layer already emitted the single done("cancelled") event,
+                        // so build the cancelled result WITHOUT re-emitting — but
+                        // still end with Ok(cancelled_result) carrying the rounds
+                        // already accumulated, so the turn is persisted instead of
+                        // dropped via a bare Err("cancelled").
+                        return Ok(PlanningStepOutcome::Cancelled(
+                            cancelled_tool_round_run_result(
+                                &config.language,
+                                &state.planning_reasoning_parts,
+                                std::mem::take(&mut state.tool_records),
+                                std::mem::take(&mut state.segment_builder).all(),
+                                std::mem::take(&mut state.generated_api_messages),
+                                std::mem::take(&mut state.steps),
+                            ),
+                        ));
                     }
                     // Partial plain text was already streamed to the frontend and the
                     // stream layer already emitted the single done("cancelled") event;
@@ -283,14 +302,13 @@ pub(crate) async fn planning_step(
                 }
             }),
             _ = host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
-                host.emit_stream_done(
-                    &config.conversation_id,
-                    &config.run_id,
-                    &config.message_id,
-                    "cancelled",
-                    "",
-                );
-                return Err("cancelled".to_string());
+                // Cancelled during the (non-streaming) planning call. Preserve the
+                // rounds already accumulated by ending with Ok(cancelled_result)
+                // instead of a bare Err("cancelled") that dropped the whole turn.
+                // The helper emits the single done("cancelled") event itself.
+                return Ok(PlanningStepOutcome::Cancelled(
+                    cancelled_run_result_from_state(env, state),
+                ));
             }
         }
     };

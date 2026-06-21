@@ -512,3 +512,32 @@ pub(crate) fn cancelled_tool_round_run_result(
         compacted_history: None,
     }
 }
+
+/// Build a cancelled `AgentRunResult` from the loop's accumulated `state` and
+/// emit the single `done("cancelled")` event the frontend's freeze logic relies
+/// on. Used by the planning/loop-top cancellation paths (no partial streamed
+/// answer to preserve) so they end with `Ok(cancelled_result)` carrying the
+/// tool records / segments / api messages gathered up to the cancel point —
+/// mirroring the tool-round cancellation path so the whole turn is persisted
+/// instead of being dropped via a bare `Err("cancelled")`.
+pub(crate) fn cancelled_run_result_from_state(
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+) -> AgentRunResult {
+    let config = env.config;
+    env.host.emit_stream_done(
+        &config.conversation_id,
+        &config.run_id,
+        &config.message_id,
+        "cancelled",
+        "",
+    );
+    cancelled_tool_round_run_result(
+        &config.language,
+        &state.planning_reasoning_parts,
+        std::mem::take(&mut state.tool_records),
+        std::mem::take(&mut state.segment_builder).all(),
+        std::mem::take(&mut state.generated_api_messages),
+        std::mem::take(&mut state.steps),
+    )
+}
