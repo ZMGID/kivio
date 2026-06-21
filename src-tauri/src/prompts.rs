@@ -15,15 +15,27 @@ pub const DEFAULT_TRANSLATION_TEMPLATE: &str =
    - Do not add headings, labels, or explanations.\n\n\
    {text}";
 
-/// 默认截图翻译提示词模板
+/// 默认截图翻译提示词模板（本地 OCR 文本翻译路径：先识别成文本，再交给文本模型翻译）。
+/// 输出渲染到 Lens 的 Markdown 卡片，所以保留 OCR 文本里能体现的结构（列表/标题/段落），
+/// 同时保留 OCR 纠错容忍度。多模态直连 / 合并模式另有内联规则，不走这里。
 pub const DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE: &str =
   "Translate the OCR text below to {lang}. Output only the translation, no commentary.\n\n\
    Rules:\n\
+   - Preserve the structure present in the source: keep bullet/numbered lists, headings, code blocks, and paragraph breaks. Separate distinct paragraphs and blocks with a blank line; never put a blank line between items of the same list.\n\
    - Preserve LaTeX formulas exactly (keep $...$ and $$...$$). Normalize formula-like plain text to LaTeX where natural.\n\
-   - Keep the output tight: do not output blank lines. Use a single newline only for necessary list items, table rows, code/math blocks, or clear paragraph boundaries.\n\
-   - Do not use Markdown's loose paragraph style. Never put an empty line between numbered or bulleted list items.\n\
    - The input is OCR output and may contain errors (broken words, character confusions like \"rn\"↔\"m\" / \"0\"↔\"O\" / \"1\"↔\"l\", scattered artifacts). Use surrounding context to fix obvious mistakes; for unreadable fragments, omit them rather than translate gibberish.\n\
    - Do not invent missing content. Do not add headings, labels, or explanations.\n\n\
+   {text}";
+
+/// 默认选中文本翻译提示词模板。
+/// 选中文本是干净的、本来就带结构的文本（不是 OCR 噪声），所以不做纠错、要求保留原文 Markdown 结构。
+pub const DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE: &str =
+  "Translate the text below to {lang}. Output only the translation, no commentary.\n\n\
+   Rules:\n\
+   - Preserve the source's Markdown structure: keep bullet/numbered lists, bold/italic emphasis, headings, code blocks, blockquotes, links, and tables as they appear in the input.\n\
+   - Separate distinct paragraphs and blocks with a blank line; never put a blank line between items of the same list.\n\
+   - Preserve LaTeX formulas exactly (keep $...$ and $$...$$).\n\
+   - Do not add headings, labels, or explanations beyond what the source already has.\n\n\
    {text}";
 
 /// 截图翻译合并模式分隔符。模型先输出译文，再单独一行 `<<<ORIGINAL>>>`，再输出原文。
@@ -99,6 +111,20 @@ pub fn build_screenshot_translation_prompt(
         lang_name,
         template,
         DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
+    )
+}
+
+/// 构建选中文本翻译提示词（输入是带结构的干净文本，保留 Markdown 结构、不做 OCR 纠错）
+pub fn build_selected_text_translation_prompt(
+    text: &str,
+    lang_name: &str,
+    template: Option<&str>,
+) -> String {
+    build_prompt_with_template(
+        text,
+        lang_name,
+        template,
+        DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE,
     )
 }
 
@@ -226,5 +252,25 @@ mod tests {
         // 分隔符必须出现且仅作为协议标记：示例输出块 + Format guard 提及 2 次
         assert_eq!(prompt.matches(COMBINED_TRANSLATE_SEPARATOR).count(), 4);
         assert!(prompt.contains("Output format (replace placeholders)"));
+    }
+
+    #[test]
+    fn screenshot_prompt_preserves_structure_not_flattens() {
+        let prompt = build_screenshot_translation_prompt("- a\n- b", "Chinese", None);
+        assert!(prompt.contains("Preserve the structure present in the source"));
+        // 旧的压扁规则不应再出现
+        assert!(!prompt.contains("Keep the output tight"));
+        assert!(!prompt.contains("loose paragraph"));
+        // OCR 纠错容忍度仍保留
+        assert!(prompt.contains("OCR output and may contain errors"));
+    }
+
+    #[test]
+    fn selected_text_prompt_preserves_structure_and_is_not_ocr() {
+        let prompt = build_selected_text_translation_prompt("- **a**", "Chinese", None);
+        assert!(prompt.contains("Preserve the source's Markdown structure"));
+        assert!(prompt.contains("- **a**"));
+        // 选中文本不是 OCR：不应带 OCR 纠错措辞
+        assert!(!prompt.contains("OCR"));
     }
 }

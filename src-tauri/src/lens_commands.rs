@@ -27,7 +27,7 @@ use crate::capture_geometry::{
 use crate::lens;
 use crate::prompts::{
     build_combined_translate_prompt, build_ocr_direct_translation_prompt,
-    build_screenshot_translation_prompt, build_translation_prompt, compact_ocr_text,
+    build_screenshot_translation_prompt, build_selected_text_translation_prompt, compact_ocr_text,
     COMBINED_TRANSLATE_SEPARATOR,
 };
 use crate::screenshot::cleanup_temp_file;
@@ -1411,7 +1411,7 @@ pub(crate) async fn lens_translate(
             &ocr_provider,
             &settings.screenshot_translation.model,
             retry_attempts,
-            settings.translator_prompt.as_deref(),
+            settings.screenshot_translation.prompt.as_deref(),
             effective_mode,
         )
         .await;
@@ -1625,11 +1625,8 @@ pub(crate) async fn lens_translate_text(
     let st_stream = settings.screenshot_translation.stream_enabled;
     let target_lang = resolve_target_lang(&settings.target_lang, &original);
     let lang_name = language_name(&target_lang).to_string();
-    let prompt = build_screenshot_translation_prompt(
-        &original,
-        &lang_name,
-        settings.screenshot_translation.prompt.as_deref(),
-    );
+    // 选中文本是干净的带结构文本，不复用截图(OCR)提示词，也不沿用其自定义 prompt。
+    let prompt = build_selected_text_translation_prompt(&original, &lang_name, None);
 
     let translated = if st_stream {
         let mut body = serde_json::json!({
@@ -1759,7 +1756,7 @@ async fn local_ocr_then_translate(
     translate_provider: &settings::ModelProvider,
     translate_model: &str,
     retry_attempts: usize,
-    translator_template: Option<&str>,
+    screenshot_template: Option<&str>,
     engine: OcrMode,
 ) -> Result<serde_json::Value, String> {
     let emit_done = |success: bool, error: Option<&str>| {
@@ -1805,9 +1802,10 @@ async fn local_ocr_then_translate(
     );
     }
 
-    // 2) 翻译 prompt：用主翻译模板。新版默认模板已经加了"输入像 OCR 输出时用上下文修错 + 压缩空行"的规则,
-    // 跟纯文本翻译共用一份模板;用户在 Settings 里改 translator_prompt 同样会作用到这条路径。
-    let translate_prompt = build_translation_prompt(&original, lang_name, translator_template);
+    // 2) 翻译 prompt：用截图翻译专用模板——它要求保留 OCR 文本里的结构（列表/标题/段落），
+    // 译文渲染到 Lens 的 Markdown 卡片。用户在 Settings 改截图翻译 prompt 同样作用到这条路径。
+    let translate_prompt =
+        build_screenshot_translation_prompt(&original, lang_name, screenshot_template);
 
     // 3) Translate via configured provider.
     let translated = if st_stream {
