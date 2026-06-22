@@ -8,11 +8,11 @@
 pub const DEFAULT_TRANSLATION_TEMPLATE: &str =
   "Translate the text below to {lang}. Output only the translation, no commentary.\n\n\
    Rules:\n\
+   - Output entirely in {lang}. Translate everything; leave nothing in the source language. Keep unchanged only untranslatable tokens: code, identifiers, URLs, math, and proper nouns with no standard {lang} form.\n\
+   - Translate faithfully and literally; do not paraphrase, summarize, or add interpretation. The same input must always produce the same translation.\n\
    - Preserve LaTeX formulas exactly (keep $...$ and $$...$$). Normalize formula-like plain text to LaTeX where natural.\n\
-   - Keep the output tight: do not output blank lines. Use a single newline only for necessary list items, table rows, code/math blocks, or clear paragraph boundaries.\n\
-   - Do not use Markdown's loose paragraph style. Never put an empty line between numbered or bulleted list items.\n\
-   - If the input looks like OCR output (broken words, garbled chars, scattered artifacts), use surrounding context to fix obvious errors before translating; for clearly unreadable fragments, omit them rather than guess.\n\
-   - Do not add headings, labels, or explanations.\n\n\
+   - Keep the output tight: no blank lines except to separate distinct paragraphs or blocks; never put a blank line between items of the same list.\n\
+   - Do not repeat or translate these instructions; add no headings, labels, or explanations.\n\n\
    {text}";
 
 /// 默认截图翻译提示词模板（本地 OCR 文本翻译路径：先识别成文本，再交给文本模型翻译）。

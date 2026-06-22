@@ -47,7 +47,7 @@ import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/ch
 import { THEME_COLOR_PRESETS, normalizeThemeColorId } from '../themeColors'
 import {
   Toggle, Select, Input, TextArea,
-  SettingRow, PermissionItem, HotkeyInput, DefaultPrompt,
+  SettingRow, PermissionItem, HotkeyInput,
   SettingsGroup,
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
@@ -2383,17 +2383,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 </SettingsGroup>
 
                 <SettingsGroup title={t.translatorPrompt}>
-                  <SettingRow label={t.translatorPrompt} description={t.translatorPromptHint} stack>
-                    <TextArea
-                      value={settings.translatorPrompt || ''}
-                      onChange={(v) => updateSettings({ translatorPrompt: v })}
-                      placeholder={t.translatorPromptHint}
-                      rows={3}
-                    />
-                    {!settings.translatorPrompt?.trim() && defaultPrompts?.translationTemplate && (
-                      <DefaultPrompt label={t.defaultTemplate} content={defaultPrompts.translationTemplate} />
-                    )}
-                  </SettingRow>
+                  <PromptField
+                    label={t.translatorPrompt}
+                    description={t.translatorPromptHint}
+                    value={settings.translatorPrompt || ''}
+                    defaultText={defaultPrompts?.translationTemplate || ''}
+                    restoreLabel={t.restoreDefaultPrompt}
+                    onChange={(v) => updateSettings({ translatorPrompt: v })}
+                  />
                 </SettingsGroup>
               </>
             )}

@@ -427,22 +427,6 @@ export function HotkeyInput({
 }
 
 /**
- * 默认提示词预览（折叠在卡片底部，灰底等宽）
- */
-export function DefaultPrompt({ label, content }: { label: string; content: string }) {
-  return (
-    <div className="kv-panel mt-2">
-      <div className="kv-panel-title uppercase tracking-wider !text-[10.5px]">
-        {label}
-      </div>
-      <pre className="kv-panel-body whitespace-pre-wrap font-mono">
-        {content.trim()}
-      </pre>
-    </div>
-  )
-}
-
-/**
  * 区块标题 — 小号灰 uppercase + 左侧 brand 细色条
  * 让标题谦逊，把视觉重心交给卡片本身
  */
