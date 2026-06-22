@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { prefersReducedMotion } from './utils'
 
 interface TypewriterTextProps {
   text: string
@@ -7,11 +8,6 @@ interface TypewriterTextProps {
   className?: string
   charDelayMs?: number
   startDelayMs?: number
-}
-
-function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined') return false
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 export function TypewriterText({

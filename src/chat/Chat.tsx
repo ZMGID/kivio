@@ -62,7 +62,7 @@ import {
 import { ChatDotGridBackground } from './ChatDotGridBackground'
 import { normalizeToolCallStatus } from './toolStatus'
 import { TypewriterText } from './TypewriterText'
-import { pickRandomChatEmptyGreeting } from './utils'
+import { pickRandomChatEmptyGreeting, isTauriRuntime } from './utils'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
 import { onChatImageViewerOpen, type ChatImageViewerItem } from './imageViewer'
 import {
@@ -126,10 +126,6 @@ function isChatAssistantCenterPath(path: string): boolean {
 
 function isChatSkillCenterPath(path: string): boolean {
   return path === 'chat/skill' || path.startsWith('chat/skill/')
-}
-
-function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
 function scheduleIdleTask(callback: () => void, timeout = 1200): () => void {

@@ -539,6 +539,63 @@ async fn sleep_with_cancel(
     Ok(())
 }
 
+enum ApiUsageOutcome<'a> {
+    Success(Option<ModelUsage>),
+    Failure(&'a str),
+    Cancelled(Option<ModelUsage>),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_api_usage(
+    state: &AppState,
+    provider: &settings::ModelProvider,
+    model: &str,
+    source: &str,
+    operation: &str,
+    started_at: i64,
+    started: Instant,
+    outcome: ApiUsageOutcome<'_>,
+) {
+    let (status, status_code, usage, usage_source, error_kind) = match outcome {
+        ApiUsageOutcome::Success(usage) => {
+            ("success", Some(200), usage, "provider_reported", None)
+        }
+        ApiUsageOutcome::Failure(error) => (
+            "error",
+            extract_status_code(error),
+            None,
+            "missing",
+            Some(error_kind_from_message(error)),
+        ),
+        ApiUsageOutcome::Cancelled(usage) => (
+            "cancelled",
+            None,
+            usage,
+            "provider_reported",
+            Some("cancelled".to_string()),
+        ),
+    };
+    record_model_call(
+        state,
+        UsageRecordInput {
+            provider,
+            model,
+            source,
+            operation,
+            status,
+            status_code,
+            usage,
+            usage_source,
+            started_at,
+            duration_ms: started.elapsed().as_millis() as u64,
+            conversation_id: None,
+            message_id: None,
+            error_kind,
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn record_api_usage_success(
     state: &AppState,
     provider: &settings::ModelProvider,
@@ -549,26 +606,19 @@ fn record_api_usage_success(
     started: Instant,
     usage: Option<ModelUsage>,
 ) {
-    record_model_call(
+    record_api_usage(
         state,
-        UsageRecordInput {
-            provider,
-            model,
-            source,
-            operation,
-            status: "success",
-            status_code: Some(200),
-            usage,
-            usage_source: "provider_reported",
-            started_at,
-            duration_ms: started.elapsed().as_millis() as u64,
-            conversation_id: None,
-            message_id: None,
-            error_kind: None,
-        },
+        provider,
+        model,
+        source,
+        operation,
+        started_at,
+        started,
+        ApiUsageOutcome::Success(usage),
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_api_usage_failure(
     state: &AppState,
     provider: &settings::ModelProvider,
@@ -579,26 +629,19 @@ fn record_api_usage_failure(
     started: Instant,
     error: &str,
 ) {
-    record_model_call(
+    record_api_usage(
         state,
-        UsageRecordInput {
-            provider,
-            model,
-            source,
-            operation,
-            status: "error",
-            status_code: extract_status_code(error),
-            usage: None,
-            usage_source: "missing",
-            started_at,
-            duration_ms: started.elapsed().as_millis() as u64,
-            conversation_id: None,
-            message_id: None,
-            error_kind: Some(error_kind_from_message(error)),
-        },
+        provider,
+        model,
+        source,
+        operation,
+        started_at,
+        started,
+        ApiUsageOutcome::Failure(error),
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_api_usage_cancelled(
     state: &AppState,
     provider: &settings::ModelProvider,
@@ -609,23 +652,15 @@ fn record_api_usage_cancelled(
     started: Instant,
     usage: Option<ModelUsage>,
 ) {
-    record_model_call(
+    record_api_usage(
         state,
-        UsageRecordInput {
-            provider,
-            model,
-            source,
-            operation,
-            status: "cancelled",
-            status_code: None,
-            usage,
-            usage_source: "provider_reported",
-            started_at,
-            duration_ms: started.elapsed().as_millis() as u64,
-            conversation_id: None,
-            message_id: None,
-            error_kind: Some("cancelled".to_string()),
-        },
+        provider,
+        model,
+        source,
+        operation,
+        started_at,
+        started,
+        ApiUsageOutcome::Cancelled(usage),
     );
 }
 

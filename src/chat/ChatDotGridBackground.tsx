@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { isWindows } from './platform'
+import { prefersReducedMotion } from './utils'
 
 const GRID_SPACING = 20
 const DOT_RADIUS = 1
@@ -214,10 +215,6 @@ function resolvePattern(nowSec: number, active: ActivePattern): { pattern: Activ
 
 function readDarkMode(): boolean {
   return document.documentElement.classList.contains('dark')
-}
-
-function prefersReducedMotion(): boolean {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 export function ChatDotGridBackground() {

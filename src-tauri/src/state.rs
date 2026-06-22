@@ -149,6 +149,30 @@ pub struct AppState {
 /// 单个 key 触发 failover 后的冷却时长。
 pub const KEY_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// 共享的 TTL 缓存读取：命中且未过期返回克隆，否则移除过期条目并返回 None。
+fn get_cached<V: Clone>(
+    cache: &Mutex<HashMap<String, (Instant, V)>>,
+    key: &str,
+    ttl: Duration,
+) -> Option<V> {
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((created_at, value)) = cache.get(key) {
+        if created_at.elapsed() <= ttl {
+            return Some(value.clone());
+        }
+    }
+    cache.remove(key);
+    None
+}
+
+/// 共享的 TTL 缓存写入：以当前时刻为创建时间插入。
+fn set_cached<V>(cache: &Mutex<HashMap<String, (Instant, V)>>, key: String, value: V) {
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, (Instant::now(), value));
+}
+
 impl AppState {
     /// Build a headless `AppState` for the `kivio-code` terminal agent — no
     /// `AppHandle`, no Tauri runtime. Every field mirrors the live construction
@@ -364,24 +388,11 @@ impl AppState {
         cache_key: &str,
         ttl: Duration,
     ) -> Option<Vec<ChatToolDefinition>> {
-        let mut cache = self
-            .chat_tool_list_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some((created_at, tools)) = cache.get(cache_key) {
-            if created_at.elapsed() <= ttl {
-                return Some(tools.clone());
-            }
-        }
-        cache.remove(cache_key);
-        None
+        get_cached(&self.chat_tool_list_cache, cache_key, ttl)
     }
 
     pub fn set_cached_chat_tools(&self, cache_key: String, tools: Vec<ChatToolDefinition>) {
-        self.chat_tool_list_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(cache_key, (Instant::now(), tools));
+        set_cached(&self.chat_tool_list_cache, cache_key, tools);
     }
 
     pub fn get_cached_external_slash_commands(
@@ -389,17 +400,7 @@ impl AppState {
         cache_key: &str,
         ttl: Duration,
     ) -> Option<Vec<crate::external_agents::types::ExternalCliSlashCommand>> {
-        let mut cache = self
-            .external_slash_commands_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some((created_at, commands)) = cache.get(cache_key) {
-            if created_at.elapsed() <= ttl {
-                return Some(commands.clone());
-            }
-        }
-        cache.remove(cache_key);
-        None
+        get_cached(&self.external_slash_commands_cache, cache_key, ttl)
     }
 
     pub fn set_cached_external_slash_commands(
@@ -407,10 +408,7 @@ impl AppState {
         cache_key: String,
         commands: Vec<crate::external_agents::types::ExternalCliSlashCommand>,
     ) {
-        self.external_slash_commands_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(cache_key, (Instant::now(), commands));
+        set_cached(&self.external_slash_commands_cache, cache_key, commands);
     }
 
     pub fn get_cached_external_agent_models(
@@ -418,17 +416,7 @@ impl AppState {
         agent_id: &str,
         ttl: Duration,
     ) -> Option<Vec<crate::external_agents::types::RuntimeModelOption>> {
-        let mut cache = self
-            .external_agent_models_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some((created_at, models)) = cache.get(agent_id) {
-            if created_at.elapsed() <= ttl {
-                return Some(models.clone());
-            }
-        }
-        cache.remove(agent_id);
-        None
+        get_cached(&self.external_agent_models_cache, agent_id, ttl)
     }
 
     pub fn set_cached_external_agent_models(
@@ -436,10 +424,7 @@ impl AppState {
         agent_id: String,
         models: Vec<crate::external_agents::types::RuntimeModelOption>,
     ) {
-        self.external_agent_models_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(agent_id, (Instant::now(), models));
+        set_cached(&self.external_agent_models_cache, agent_id, models);
     }
 
     pub fn get_cached_detected_agents(

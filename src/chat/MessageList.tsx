@@ -2,9 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { ChevronDown } from 'lucide-react'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
 import { MessageBubble } from './MessageBubble'
-
-const prefersReducedMotion = () =>
-  typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+import { prefersReducedMotion } from './utils'
 
 // agent 模式下"一条消息 = 一整轮"(几十个工具调用 + 多段 reasoning + 大块 markdown),
 // 按条数定窗口会失效。改为按"渲染权重"决定首屏与每次加载更早的步长。

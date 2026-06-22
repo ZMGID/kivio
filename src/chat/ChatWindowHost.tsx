@@ -1,8 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isWindows, usesNativeTitlebar } from './platform'
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+import { isTauriRuntime } from './utils'
 
 type ChatWindowHostProps = {
   children: ReactNode

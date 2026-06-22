@@ -1,6 +1,14 @@
 // Chat 工具函数
 import type { ConversationListItem, ConversationGroup } from './types'
 
+/** 是否运行在 Tauri 运行时(而非纯浏览器/SSR) */
+export const isTauriRuntime = (): boolean =>
+  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+/** 用户是否偏好减少动画 */
+export const prefersReducedMotion = (): boolean =>
+  typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
 /**
  * 将对话列表按时间分组
  */
@@ -36,37 +44,6 @@ export function groupConversationsByTime(
 
   // 过滤掉空分组
   return groups.filter((g) => g.conversations.length > 0)
-}
-
-/**
- * 格式化相对时间
- */
-export function formatRelativeTime(timestamp: number): string {
-  const now = Date.now() / 1000
-  const diff = now - timestamp
-
-  if (diff < 60) {
-    return '刚刚'
-  } else if (diff < 3600) {
-    return `${Math.floor(diff / 60)} 分钟前`
-  } else if (diff < 86400) {
-    return `${Math.floor(diff / 3600)} 小时前`
-  } else if (diff < 86400 * 7) {
-    return `${Math.floor(diff / 86400)} 天前`
-  } else {
-    const date = new Date(timestamp * 1000)
-    return date.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
-  }
-}
-
-/**
- * 截断文本
- */
-export function truncateText(text: string, maxLength: number): string {
-  if (text.length <= maxLength) {
-    return text
-  }
-  return text.slice(0, maxLength) + '...'
 }
 
 /** Empty-chat hero headline: pick one at random for each new empty conversation */

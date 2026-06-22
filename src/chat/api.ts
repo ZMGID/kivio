@@ -1,6 +1,7 @@
 // Chat API 调用封装
 import { invoke } from '@tauri-apps/api/core'
 import { estimateTokens } from '../utils/tokens'
+import { isTauriRuntime } from './utils'
 import type {
   AgentRuntimeConfig,
   ChatAssistant,
@@ -56,8 +57,6 @@ export function agentRuntimesEqual(
     && (a.externalReasoning ?? null) === (b.externalReasoning ?? null)
     && (a.externalSandbox ?? null) === (b.externalSandbox ?? null)
 }
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 const mockStorageKey = 'kivio-chat-dev-conversations'
 const mockProjectsStorageKey = 'kivio-chat-dev-projects'
@@ -615,8 +614,8 @@ const mockChatApi = {
     const conversations = loadMockConversations()
     const index = conversations.findIndex((item) => item.id === conversationId)
     if (index < 0) throw new Error('Conversation not found')
-    const hasFolderUpdate = Object.prototype.hasOwnProperty.call(updates, 'folder')
-    const hasProjectUpdate = Object.prototype.hasOwnProperty.call(updates, 'projectId')
+    const hasFolderUpdate = 'folder' in updates
+    const hasProjectUpdate = 'projectId' in updates
     const project = hasProjectUpdate && updates.projectId
       ? loadMockProjectsWithLegacyFolders().find((item) => item.id === updates.projectId)
       : undefined
@@ -643,7 +642,7 @@ const mockChatApi = {
           : conversations[index].active_skill_id ?? conversations[index].activeSkillId ?? null,
       updated_at: nowSeconds(),
     }
-    if (Object.prototype.hasOwnProperty.call(updates, 'assistantId')) {
+    if ('assistantId' in updates) {
       const assistantId = updates.assistantId?.trim() ?? ''
       if (!assistantId) {
         conversation.assistant_id = null
@@ -927,9 +926,9 @@ export const chatApi = {
     updates: { name?: string; description?: string | null; color?: string | null; rootPath?: string | null },
   ): Promise<ChatProject> {
     if (!isTauriRuntime()) return mockChatApi.updateProject(projectId, updates)
-    const hasDescriptionUpdate = Object.prototype.hasOwnProperty.call(updates, 'description')
-    const hasColorUpdate = Object.prototype.hasOwnProperty.call(updates, 'color')
-    const hasRootPathUpdate = Object.prototype.hasOwnProperty.call(updates, 'rootPath')
+    const hasDescriptionUpdate = 'description' in updates
+    const hasColorUpdate = 'color' in updates
+    const hasRootPathUpdate = 'rootPath' in updates
     const result = await invoke<{ success: boolean; project: ChatProject }>(
       'chat_update_project',
       {
@@ -1074,8 +1073,8 @@ export const chatApi = {
     }
   ): Promise<Conversation> {
     if (!isTauriRuntime()) return mockChatApi.updateConversation(conversationId, updates)
-    const hasFolderUpdate = Object.prototype.hasOwnProperty.call(updates, 'folder')
-    const hasProjectUpdate = Object.prototype.hasOwnProperty.call(updates, 'projectId')
+    const hasFolderUpdate = 'folder' in updates
+    const hasProjectUpdate = 'projectId' in updates
     const result = await invoke<{ success: boolean; conversation: Conversation }>(
       'chat_update_conversation',
       {

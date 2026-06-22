@@ -43,9 +43,9 @@ import {
   type SlashSkill,
 } from './slashCommands'
 import { mapExternalCliSlashCommands, externalCliAgentLabel } from './externalCliSlashCommands'
+import { isTauriRuntime } from './utils'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif']
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 function isAttachableClipboardFile(file: File): boolean {
   return Boolean(file.name?.trim()) || file.size > 0

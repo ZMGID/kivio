@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { Attachment, PendingAttachment } from './types'
-
-const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+import { isTauriRuntime } from './utils'
 
 type AttachmentLike = Pick<Attachment, 'path' | 'name' | 'type'>
 
