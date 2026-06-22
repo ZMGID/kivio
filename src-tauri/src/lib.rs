@@ -122,7 +122,18 @@ pub fn run() {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "lens" || window.label() == "translate" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    // Windows：原生关闭（Alt+F4 等 WM_CLOSE）也要走完整清理 + destroy，回收内存，
+                    // 不留隐藏僵尸 overlay（active_overlay_window 只认可见窗，hide 掉的再也销毁不到）。
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = lens_commands::lens_close(window.app_handle().clone());
+                    }
+                    // macOS：浮窗是自定义 NSPanel 子类，destroy() 会抛 ObjC 异常穿过 FFI → abort，
+                    // 只能拦截转 hide 复用。
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let _ = window.hide();
+                    }
                     return;
                 }
                 // 翻译窗（main）关闭（Esc / toggle / commit 都走 window.close()）→ 把前台交还给

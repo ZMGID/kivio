@@ -1895,11 +1895,20 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
     state.lens_busy.store(false, Ordering::SeqCst);
     unregister_lens_escape_shortcut(&app);
     if let Some(window) = active_overlay_window(&app) {
-        // 关闭只 hide、不销毁：浮窗被 object_setClass 换成了自定义 NSPanel 子类，
-        // destroy() 时 tao/wry 按原类清理会抛 ObjC 异常穿过 FFI → "Rust cannot catch foreign
-        // exceptions" abort。所以复用（隐藏 + 复位），不走销毁重建。
-        let _ = window.hide();
-        lens_position_fullscreen(&app, &window);
+        // Windows：无 NSPanel 限制，且默认开启冻结帧（重建时背景是截屏冻结帧，不会白闪）
+        // → 关闭即销毁，回收 renderer 内存。lens/translate 低频调用，偶尔付一次冷创建可接受。
+        // 下次触发由 ensure_lens_window / ensure_translate_window 重建。destroy() 绕过
+        // CloseRequested 的 prevent_close（仅 macOS 走那条），强制销毁。
+        #[cfg(target_os = "windows")]
+        let _ = window.destroy();
+        // macOS：浮窗被 object_setClass 换成了自定义 NSPanel 子类，destroy() 时 tao/wry 按原类
+        // 清理会抛 ObjC 异常穿过 FFI → "Rust cannot catch foreign exceptions" abort。所以只能
+        // 复用（隐藏 + 复位全屏几何，避免下次 show 还停在上次浮动 bar 位置）。
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = window.hide();
+            lens_position_fullscreen(&app, &window);
+        }
     }
     Ok(())
 }
