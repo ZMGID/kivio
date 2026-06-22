@@ -265,12 +265,15 @@ pub(crate) async fn commit_translation(
     Ok(())
 }
 
-/// 取走 Rust 端在 lens_request_internal 中暂存的 selection 文本。
-/// 取一次清一次：前端 enterSelect 调用，第二次调用立即返回空串。
+/// 读取 Rust 端在 lens_request_internal 中暂存的 selection 文本（peek，不清除）。
+/// 不能"读一次清一次"：前端 enterSelect 在 React StrictMode（dev 双调）/ 冷挂载 / 复用事件等
+/// 情况下可能被调用多次，take 会让第一次取走、随后被 reqId 作废丢弃，第二次拿到空 → 选区丢失。
+/// 每次打开 lens 时 lens_request_internal 都会覆盖 pending_selection（有选区写文本、无选区写
+/// None），所以读不清除不会产生跨次 stale：当前这次打开读到的始终是这次的值。
 #[tauri::command]
 pub(crate) fn take_lens_selection(state: State<'_, AppState>) -> Result<String, String> {
     match state.pending_selection.lock() {
-        Ok(mut guard) => Ok(guard.take().unwrap_or_default()),
+        Ok(guard) => Ok(guard.clone().unwrap_or_default()),
         Err(_) => Ok(String::new()),
     }
 }

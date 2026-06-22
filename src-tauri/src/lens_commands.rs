@@ -467,11 +467,16 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
 
     // 按 mode 选目标窗口：chat → lens 问答窗口；translate / translateText → 独立快速翻译窗口。
     // 两者互斥（同一时刻只一个浮窗可见，由 lens_is_active 泛化 + 热键 toggle 保证）。
+    // 先记下浮窗是否"已存在"（复用）：冷创建时前端会全新挂载、自行 take 复位载荷与选区，
+    // 之后绝不能再发 lens:reset——否则 mount 的 enterSelect 与事件的 enterSelect 双跑,
+    // take-once 的选中文本会被先取后作废丢弃（见前端 selectionReqIdRef 竞态）。
+    let target_label = if mode == "chat" { "lens" } else { "translate" };
+    let overlay_existed = app.get_webview_window(target_label).is_some();
     let window = {
         let ensured = if mode == "chat" {
-            windows::ensure_lens_window(app)
+            windows::ensure_lens_window(app, mode)
         } else {
-            windows::ensure_translate_window(app)
+            windows::ensure_translate_window(app, mode)
         };
         match ensured {
             Ok(w) => w,
@@ -543,21 +548,25 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
             .unwrap_or_else(|| serde_json::json!({})),
     };
     let reset_detail = serde_json::to_string(&reset_detail).unwrap_or_else(|_| "{}".to_string());
-    // 把复位载荷存进 AppState 供前端冷挂载时主动 take 兜底：Windows 关闭即销毁后，下次冷启的
-    // webview 可能晚于这次 eval 才挂上 lens:reset 监听 → 事件被丢、丢冻结帧。拉取式不丢。
+    // 复位载荷（frame + freezeFrameImageId）存进 AppState：前端无论冷挂载还是复用收到 lens:reset，
+    // 都通过 lens_take_reset_payload 主动 take 取走（take-once，只被消费一次）。
     {
         let mut pending = state
             .lens_pending_reset
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        *pending = Some(reset_detail.clone());
+        *pending = Some(reset_detail);
     }
-    let script = format!(
-        "window.location.hash = '#lens?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('lens:reset', {{ detail: {detail} }}));",
-        mode = safe_mode,
-        detail = reset_detail,
-    );
-    let _ = window.eval(&script);
+    // 仅"复用已存在浮窗"时才 eval：设 mode hash + 触发 lens:reset，让已挂载的前端重入 select。
+    // 冷创建：mode 已烤进创建 URL，前端冷挂载会自行 take 复位载荷 + 选区——绝不能再发 lens:reset，
+    // 否则 mount 的 enterSelect 与事件的 enterSelect 双跑，把 take-once 的选中文本先取后作废丢弃。
+    if overlay_existed {
+        let script = format!(
+            "window.location.hash = '#lens?mode={mode}'; window.dispatchEvent(new HashChangeEvent('hashchange')); window.dispatchEvent(new CustomEvent('lens:reset', {{ detail: {{}} }}));",
+            mode = safe_mode,
+        );
+        let _ = window.eval(&script);
+    }
     eprintln!("[lens-timing] after_show_and_emit +{}ms", __t0.elapsed().as_millis());
     Ok(())
 }

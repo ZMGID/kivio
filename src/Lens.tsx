@@ -540,9 +540,10 @@ export default function Lens() {
   }, [cancelPendingMotion, focusLensSurface, loadLensSettings])
 
   useEffect(() => {
-    // 冷挂载兜底：主动 take 一次后端暂存的复位载荷（frame + freezeFrameImageId）。Windows 关闭即
-    // 销毁后下次冷启，lens:reset 事件可能早于下面的监听注册被丢；从 AppState 拉取则不丢冻结帧。
-    void (async () => {
+    // 冷挂载 与 复用收到 lens:reset 走同一路径：主动 take 后端暂存的复位载荷（frame +
+    // freezeFrameImageId）再 enterSelect。后端保证每次打开只会触发其中一个（冷创建→挂载；
+    // 复用→事件），所以每次打开只跑一次 enterSelect，不会双跑把 take-once 的选区吞掉。
+    const consumeAndEnter = async () => {
       let payload: LensResetPayload = {}
       try {
         const raw = await api.lensTakeResetPayload()
@@ -551,9 +552,10 @@ export default function Lens() {
         console.error('[lens] take reset payload failed', err)
       }
       void enterSelect(payload)
-    })()
-    const handleReset = (event: Event) => {
-      void enterSelect(readLensResetPayload((event as CustomEvent).detail))
+    }
+    void consumeAndEnter()
+    const handleReset = () => {
+      void consumeAndEnter()
     }
     window.addEventListener('lens:reset', handleReset)
     return () => {

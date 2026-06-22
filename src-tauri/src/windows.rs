@@ -330,30 +330,39 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
  * 单 webview 三态：select 全屏 / ready 悬浮 600x72 / answering 悬浮 600x420。
  * 创建时尺寸为悬浮态默认值；后端按需要 set_size 切换。
  */
-pub fn ensure_lens_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    ensure_overlay_window(app, "lens", "Lens")
+pub fn ensure_lens_window(app: &AppHandle, mode: &str) -> Result<WebviewWindow, String> {
+    ensure_overlay_window(app, "lens", "Lens", mode)
 }
 
 /// 确保独立"快速翻译"窗口存在（不存在则创建）。
 /// 与 lens 浮窗共用同一套无边框透明 NSPanel 形态与 Lens.tsx bundle，按 hash query
 /// 的 mode（translate / translateText）渲染翻译 UI。与 lens 问答窗口互斥（同一时刻
 /// 只有一个浮窗可见，由 `lens_is_active` 泛化 + 热键 toggle 保证）。
-pub fn ensure_translate_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    ensure_overlay_window(app, "translate", "Translate")
+pub fn ensure_translate_window(app: &AppHandle, mode: &str) -> Result<WebviewWindow, String> {
+    ensure_overlay_window(app, "translate", "Translate", mode)
 }
 
 /// lens / translate 浮窗共用的创建逻辑：无边框、透明、无原生阴影、初始隐藏，建窗后在
 /// macOS 上转成非激活 NSPanel（`ensure_overlay_panel`）。两窗口除 label / title 外完全一致。
+/// mode 烤进创建 URL 的 hash query，使冷挂载的前端首帧即读到正确 mode（不依赖事后 eval 设 hash 的时机）。
 fn ensure_overlay_window(
     app: &AppHandle,
     label: &str,
     title: &str,
+    mode: &str,
 ) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(label) {
         return Ok(window);
     }
 
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#lens".into()))
+    // chat 模式 hash 为 '#lens'（readModeFromHash 默认即 chat）；translate / translateText 带 query。
+    let hash = if mode == "translate" || mode == "translateText" {
+        format!("lens?mode={mode}")
+    } else {
+        "lens".to_string()
+    };
+    let url = format!("index.html#{hash}");
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
         .title(title)
         .inner_size(600.0, 72.0)
         .always_on_top(true)
