@@ -79,6 +79,19 @@ const waitForFrames = (frames: number) => new Promise<void>((resolve) => {
   step(frames)
 })
 
+const LENS_HIDE_IDLE_TIMEOUT_MS = 120
+
+const waitForVisibleIdle = (timeout = LENS_HIDE_IDLE_TIMEOUT_MS) => new Promise<void>((resolve) => {
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (cb: () => void, options?: { timeout?: number }) => number
+  }
+  if (idleWindow.requestIdleCallback) {
+    idleWindow.requestIdleCallback(() => resolve(), { timeout })
+    return
+  }
+  window.setTimeout(resolve, timeout)
+})
+
 /**
  * Lens 模式：单 webview 三态机，统一 DOM。
  * - select：webview 全屏 + 灰幕 + hover 应用窗口高亮 + 区域 drag + 底部对话栏（纯文字直发）
@@ -735,19 +748,32 @@ export default function Lens() {
   // 关闭前同步重置 state，让 webview surface 在 hide 之前已经是空 select 态。
   // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
   // barNoTransition：禁用 transition，避免 380ms 动画被 hide 暂停后下次 show 续播。
+  const releaseFreezeCanvas = useCallback(() => {
+    const canvas = freezeCanvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    ctx?.clearRect(0, 0, canvas.width, canvas.height)
+    canvas.width = 0
+    canvas.height = 0
+  }, [])
+
   const resetBeforeHide = useCallback(() => {
     cancelPendingMotion()
+    releaseFreezeCanvas()
     fullscreenMetricsRef.current = null
+    translateStartRef.current = null
     // 防御：和 enterSelect 同理 —— reset 路径不该走持久化
     justFinishedStreamRef.current = false
     flushSync(() => {
       setBarNoTransition(true)
       setStage('select')
+      setWindows([])
       setFloatingRebased(false)
       setHovered(null)
       setDragStart(null)
       setDragCurrent(null)
       setDragging(false)
+      setTranslateCardDragging(false)
       setImagePreview('')
       setFreezeFrameImageId('')
       setFreezeFramePreview('')
@@ -756,18 +782,30 @@ export default function Lens() {
       setSelectionText('')
       setMessages([])
       setStreaming(false)
+      setCopied(false)
+      setTranslateOriginal('')
+      setTranslateText('')
+      setTranslateError('')
+      setTranslateDurationMs(null)
       setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
       setFlyDelta({ x: 0, y: 0 })
       setCapturedFrame(null)
+      setDrawMode(false)
+      setArrows([])
+      setDraftArrow(null)
+      setSourceMode(false)
+      setHistoryOpen(false)
+      setHistoryPanelH(0)
       setBarIntro(false)
       setShowCaptureHint(false)
     })
     selectRevealedRef.current = false
     imageIdRef.current = ''
+    translateCardDragRef.current = null
     // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
     selectionReqIdRef.current++
     focusReqIdRef.current++
-  }, [cancelPendingMotion, viewport, metrics])
+  }, [cancelPendingMotion, releaseFreezeCanvas, viewport, metrics])
 
   const closeAfterReset = useCallback(async () => {
     // 记下关闭开始时的"会话代次"。resetBeforeHide 会 setStage('select') 进而触发动画
@@ -776,6 +814,7 @@ export default function Lens() {
     const closeOpenSeq = lensOpenSeqRef.current
     resetBeforeHide()
     await waitForFrames(2)
+    await waitForVisibleIdle()
     if (closeOpenSeq !== lensOpenSeqRef.current) return
     try { await api.lensClose() } catch (err) { console.error(err) }
   }, [resetBeforeHide])
