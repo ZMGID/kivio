@@ -141,30 +141,78 @@ pub(crate) fn save_settings(
     state: State<AppState>,
     settings: Settings,
 ) -> Result<Settings, String> {
+    apply_settings(&app, &state, settings)
+}
+
+/// sanitize → 应用运行时（自启/热键/托盘）→ 持久化，失败回滚。save_settings 与 import_settings 共用。
+fn apply_settings(
+    app: &AppHandle,
+    state: &State<AppState>,
+    settings: Settings,
+) -> Result<Settings, String> {
     let previous_settings = state.settings_read().clone();
     let sanitized = sanitize_settings(settings);
-    apply_launch_at_startup(&app, sanitized.launch_at_startup)?;
+    apply_launch_at_startup(app, sanitized.launch_at_startup)?;
     {
         let mut guard = state.settings_write();
         *guard = sanitized.clone();
     }
 
-    if let Err(err) = register_hotkeys(&app) {
-        restore_runtime_settings(&app, &state, &previous_settings);
+    if let Err(err) = register_hotkeys(app) {
+        restore_runtime_settings(app, state, &previous_settings);
         return Err(err);
     }
 
-    if let Err(err) = persist_settings(&app, &sanitized) {
+    if let Err(err) = persist_settings(app, &sanitized) {
         eprintln!("Failed to save settings: {err}");
-        restore_runtime_settings(&app, &state, &previous_settings);
+        restore_runtime_settings(app, state, &previous_settings);
         return Err(err);
     }
 
-    if let Err(err) = setup_tray(&app) {
+    if let Err(err) = setup_tray(app) {
         eprintln!("Failed to update tray: {err}");
     }
 
     Ok(sanitized)
+}
+
+/// 设置备份文件格式版本。结构变化不兼容时递增。
+const SETTINGS_BACKUP_VERSION: u32 = 1;
+
+/// 导出全部设置（含供应商/模型配置与 API Key）到指定路径的 JSON 备份文件。
+#[tauri::command]
+pub(crate) fn export_settings(state: State<AppState>, path: String) -> Result<(), String> {
+    let settings = state.settings_read().clone();
+    let backup = serde_json::json!({
+        "app": "kivio",
+        "type": "settings-backup",
+        "version": SETTINGS_BACKUP_VERSION,
+        "settings": serde_json::to_value(&settings).map_err(|e| e.to_string())?,
+    });
+    let json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(())
+}
+
+/// 从备份文件导入设置，覆盖当前全部设置并立即生效（与保存同样走 sanitize/回滚）。
+#[tauri::command]
+pub(crate) fn import_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<Settings, String> {
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|_| "文件不是有效的 JSON".to_string())?;
+    if value.get("type").and_then(|v| v.as_str()) != Some("settings-backup") {
+        return Err("这不是 Kivio 设置备份文件".to_string());
+    }
+    let settings_value = value
+        .get("settings")
+        .ok_or_else(|| "备份文件缺少 settings 字段".to_string())?;
+    let settings: Settings = serde_json::from_value(settings_value.clone())
+        .map_err(|e| format!("备份内容无法解析: {e}"))?;
+    apply_settings(&app, &state, settings)
 }
 
 #[tauri::command]

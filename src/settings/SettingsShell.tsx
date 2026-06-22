@@ -1,9 +1,9 @@
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   X, Check, Plus, Minus, Trash2, RefreshCw,
-  ExternalLink, Download, ChevronRight, Wrench, Sparkles, FolderOpen,
+  ExternalLink, Download, Upload, ChevronRight, Wrench, Sparkles, FolderOpen, Eye, EyeOff,
 } from 'lucide-react'
-import { open } from '@tauri-apps/plugin-dialog'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
 import {
   api,
@@ -1150,6 +1150,46 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [])
 
+  // 设置备份：导出/导入 JSON。导入会覆盖全部设置并立即生效。
+  const [backupStatus, setBackupStatus] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+
+  // 哪些 API Key 输入框处于明文显示（按 `${providerId}-${idx}` 记），默认全部隐藏。
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
+  const toggleKeyReveal = useCallback((keyId: string) => {
+    setRevealedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(keyId)) next.delete(keyId)
+      else next.add(keyId)
+      return next
+    })
+  }, [])
+
+  const handleExportSettings = useCallback(async () => {
+    try {
+      const path = await save({
+        defaultPath: 'kivio-settings-backup.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+      if (!path) return
+      await api.exportSettings(path)
+      setBackupStatus({ kind: 'ok', msg: lang === 'zh' ? '设置已导出。' : 'Settings exported.' })
+    } catch (err) {
+      setBackupStatus({ kind: 'err', msg: `${lang === 'zh' ? '导出失败：' : 'Export failed: '}${err}` })
+    }
+  }, [lang])
+
+  const handleImportSettings = useCallback(async () => {
+    try {
+      const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
+      if (!selected || typeof selected !== 'string') return
+      const imported = await api.importSettings(selected)
+      setSettings(imported)
+      setBackupStatus({ kind: 'ok', msg: lang === 'zh' ? '设置已导入并生效。' : 'Settings imported and applied.' })
+    } catch (err) {
+      setBackupStatus({ kind: 'err', msg: `${lang === 'zh' ? '导入失败：' : 'Import failed: '}${err}` })
+    }
+  }, [lang])
+
   const updateDefaultModel = useCallback((
     key: keyof SettingsData['defaultModels'],
     providerId: string,
@@ -2286,6 +2326,41 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       />
                     </SettingRow>
                   )}
+                </SettingsGroup>
+
+                <SettingsGroup title={lang === 'zh' ? '备份与恢复' : 'Backup & Restore'}>
+                  <FieldBlock
+                    label={lang === 'zh' ? '设置备份' : 'Settings backup'}
+                    description={lang === 'zh'
+                      ? '导出全部设置（含供应商、模型与 API Key）为 JSON 文件。导入会覆盖当前全部设置并立即生效。'
+                      : 'Export all settings (providers, models, and API keys) to a JSON file. Importing overwrites all current settings and takes effect immediately.'}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        className="kv-btn sm"
+                        onClick={handleExportSettings}
+                        data-tauri-drag-region="false"
+                      >
+                        <Download size={11} />
+                        {lang === 'zh' ? '导出设置' : 'Export'}
+                      </button>
+                      <button
+                        type="button"
+                        className="kv-btn sm"
+                        onClick={handleImportSettings}
+                        data-tauri-drag-region="false"
+                      >
+                        <Upload size={11} />
+                        {lang === 'zh' ? '导入设置' : 'Import'}
+                      </button>
+                      {backupStatus && (
+                        <span className={`text-[12px] ${backupStatus.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
+                          {backupStatus.msg}
+                        </span>
+                      )}
+                    </div>
+                  </FieldBlock>
                 </SettingsGroup>
 
                 {permissionStatus?.platform === 'macos' && (
@@ -4013,10 +4088,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             <div className="space-y-1.5">
                               {(provider.apiKeys.length > 0 ? provider.apiKeys : ['']).map((key, idx) => {
                                 const total = Math.max(provider.apiKeys.length, 1)
+                                const keyId = `${provider.id}-${idx}`
+                                const revealed = revealedKeys.has(keyId)
                                 return (
                                   <div key={`${provider.id}-${total}-${idx}`} className="flex items-center gap-1.5">
                                     <Input
-                                      type="password"
+                                      type={revealed ? 'text' : 'password'}
                                       value={key}
                                       mono
                                       onChange={(v) => {
@@ -4026,6 +4103,15 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                       }}
                                       placeholder={idx === 0 ? `sk-... (${t.apiKeyPrimary})` : `sk-... (${t.apiKeyBackup})`}
                                     />
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleKeyReveal(keyId)}
+                                      className="kv-icon-btn"
+                                      title={revealed ? (lang === 'zh' ? '隐藏密钥' : 'Hide key') : (lang === 'zh' ? '显示密钥' : 'Show key')}
+                                      data-tauri-drag-region="false"
+                                    >
+                                      {revealed ? <EyeOff size={12} /> : <Eye size={12} />}
+                                    </button>
                                     {total > 1 && (
                                       <button
                                         type="button"

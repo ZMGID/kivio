@@ -23,6 +23,7 @@
     "core:window:allow-center",
     "core:window:allow-is-visible",
     "dialog:allow-open",
+    "dialog:allow-save",
     "shell:allow-open"
   ]
 }

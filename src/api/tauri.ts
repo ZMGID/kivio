@@ -1077,6 +1077,9 @@ export const api = {
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   saveSettings: async (settings: Settings) =>
     normalizeSettings(await invoke<Settings>('save_settings', { settings: prepareSettingsForSave(settings) })),
+  exportSettings: (path: string) => invoke<void>('export_settings', { path }),
+  importSettings: async (path: string) =>
+    normalizeSettings(await invoke<Settings>('import_settings', { path })),
   usageGetStats: (query?: UsageStatsQuery) =>
     invoke<UsageStatsResponse>('usage_get_stats', { query }),
   usageClear: () => invoke<void>('usage_clear'),
