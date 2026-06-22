@@ -500,6 +500,7 @@
             pending_chat_external_sends: Mutex::new(Vec::new()),
             pending_selection: Mutex::new(None),
             lens_freeze_frame_image_id: Mutex::new(None),
+            lens_pending_reset: Mutex::new(None),
             key_cooldowns: Mutex::new(std::collections::HashMap::new()),
             active_key_idx: Mutex::new(std::collections::HashMap::new()),
             mcp_sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
