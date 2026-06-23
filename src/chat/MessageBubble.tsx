@@ -35,7 +35,7 @@ import { ReasoningBlock } from './ReasoningBlock'
 import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { ChatMessage, ChatMessageSegment, ChatToolArtifact, ToolCallRecord } from './types'
-import { compareTimelineSegments, groupTimelineSegments, segmentToolCallId, summarizeToolGroup } from './segments'
+import { compareTimelineSegments, groupTimelineSegments, segmentToolCallId, summarizeToolGroup, toolRecordId } from './segments'
 import type { TimelineGroupItem, ToolGroupIcon } from './segments'
 
 const DIRECT_IMAGE_GENERATION_PENDING = '[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]'
@@ -191,10 +191,6 @@ function ImageGenerationPending() {
       </div>
     </section>
   )
-}
-
-function toolRecordId(toolCall: ToolCallRecord): string {
-  return toolCall.id || toolCall.toolCallId || toolCall.call_id || toolCall.callId || ''
 }
 
 function orderedSegments(segments?: ChatMessageSegment[]): ChatMessageSegment[] {

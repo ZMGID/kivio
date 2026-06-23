@@ -9,6 +9,11 @@ export function toolRecordRawName(toolCall: ToolCallRecord): string {
   return toolCall.tool_name || toolCall.toolName || toolCall.name || ''
 }
 
+/** tool record 的唯一 id（兼容多种字段命名）。 */
+export function toolRecordId(toolCall: ToolCallRecord): string {
+  return toolCall.id || toolCall.toolCallId || toolCall.call_id || toolCall.callId || ''
+}
+
 export function segmentStepNumber(segment: ChatMessageSegment): number | null | undefined {
   return segment.step_number ?? segment.stepNumber
 }
@@ -324,9 +329,4 @@ function buildGroupFragments(
     counts.set(category, (counts.get(category) ?? 0) + 1)
   }
   return meaningful.map((category) => categoryFragment(category, counts.get(category) ?? 0))
-}
-
-/** tool record 的唯一 id（兼容多种字段命名）。 */
-function toolRecordId(toolCall: ToolCallRecord): string {
-  return toolCall.id || toolCall.toolCallId || toolCall.call_id || toolCall.callId || ''
 }
