@@ -409,13 +409,23 @@ function TimelineGroupBlock({
         ) : (
           <SummaryIcon size={16} className="shrink-0" />
         )}
-        <span
-          className={`min-w-0 truncate ${
-            generating ? 'chat-motion-tool-shimmer' : ''
-          }`}
-        >
-          {summary.text}
-        </span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span
+            className={`min-w-0 truncate ${
+              generating ? 'chat-motion-tool-shimmer' : ''
+            }`}
+          >
+            {summary.text}
+          </span>
+          {summary.categories.length > 1 && (
+            <span className="flex shrink-0 items-center gap-1" aria-hidden="true">
+              {summary.categories.map((category) => {
+                const CategoryIcon = GROUP_ICON_BY_CATEGORY[category]
+                return <CategoryIcon key={category} size={14} />
+              })}
+            </span>
+          )}
+        </div>
         <ChevronDown
           size={16}
           strokeWidth={2}

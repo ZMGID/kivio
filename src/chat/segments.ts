@@ -189,9 +189,16 @@ function categorizeTool(toolCall: ToolCallRecord): ToolGroupCategory {
   return 'other'
 }
 
-/** 去重并剔除 `'other'` 后的「有意义类别」集合，文案与图标共用同一判定。 */
+/** 去重（保持首次出现顺序）并剔除 `'other'` 后的「有意义类别」集合，文案与图标共用同一判定。 */
 function meaningfulCategories(categories: ToolGroupCategory[]): ToolGroupCategory[] {
-  return Array.from(new Set(categories)).filter((category) => category !== 'other')
+  const seen = new Set<ToolGroupCategory>()
+  const result: ToolGroupCategory[] = []
+  for (const category of categories) {
+    if (category === 'other' || seen.has(category)) continue
+    seen.add(category)
+    result.push(category)
+  }
+  return result
 }
 
 function describeCategories(categories: ToolGroupCategory[]): string {
@@ -216,6 +223,9 @@ export interface ToolGroupSummary {
   status: 'running' | 'error' | 'done'
   /** 折叠头图标用的代表类别。 */
   icon: ToolGroupIcon
+  /** 组内涉及的「有意义类别」列表（去重、保持首次出现顺序、剔除 `'other'`）。
+   *  混合类别时用于在摘要后排一行各类工具图标；纯 reasoning 组为 `[]`。 */
+  categories: ToolGroupIcon[]
 }
 
 /**
@@ -238,6 +248,7 @@ export function summarizeToolGroup(
   }
 
   const categories = matchedTools.map((tool) => categorizeTool(tool))
+  const meaningful = meaningfulCategories(categories)
   const label = matchedTools.length
     ? describeCategories(categories)
     : toolSegments.length
@@ -269,6 +280,7 @@ export function summarizeToolGroup(
     text: `${label} · ${stepCount} 步 · ${suffix}`,
     status,
     icon,
+    categories: meaningful,
   }
 }
 

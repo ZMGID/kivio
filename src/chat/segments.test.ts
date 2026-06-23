@@ -115,6 +115,8 @@ describe('summarizeToolGroup', () => {
     const summary = summarizeToolGroup(segments, toolCalls)
     expect(summary.text).toBe('读取文件 · 2 步 · 已完成')
     expect(summary.icon).toBe('read')
+    // 单类组：去重后仅一个类别
+    expect(summary.categories).toEqual(['read'])
   })
 
   it('joins two categories', () => {
@@ -127,6 +129,24 @@ describe('summarizeToolGroup', () => {
     expect(summary.text).toBe('代码搜索与读取文件 · 2 步 · 已完成')
     // 混合类别 → 通用兜底图标
     expect(summary.icon).toBe('other')
+    // 两个去重类别，保持首次出现顺序
+    expect(summary.categories).toEqual(['codeSearch', 'read'])
+  })
+
+  it('dedupes repeated tools and drops other-category tools from categories', () => {
+    const segments = [
+      toolSegment('t1', 1, 'c1'),
+      toolSegment('t2', 2, 'c2'),
+      toolSegment('t3', 3, 'c3'),
+    ]
+    const toolCalls = [
+      tool({ id: 'c1', name: 'read_file' }),
+      tool({ id: 'c2', name: 'totally_unknown_tool', source: 'native' }),
+      tool({ id: 'c3', name: 'read' }),
+    ]
+    const summary = summarizeToolGroup(segments, toolCalls)
+    // 重复 read 去重，未知工具(other)被剔除
+    expect(summary.categories).toEqual(['read'])
   })
 
   it('falls back to generic label when category is unknown', () => {
@@ -135,6 +155,8 @@ describe('summarizeToolGroup', () => {
     const summary = summarizeToolGroup(segments, toolCalls)
     expect(summary.text).toBe('工具调用 · 1 步 · 已完成')
     expect(summary.icon).toBe('other')
+    // 全是 other → categories 为空
+    expect(summary.categories).toEqual([])
   })
 
   it('appends failure count and error status', () => {
@@ -172,5 +194,7 @@ describe('summarizeToolGroup', () => {
     const summary = summarizeToolGroup(segments, [])
     expect(summary.text).toBe('思考过程 · 2 步 · 已完成')
     expect(summary.icon).toBe('reasoning')
+    // 纯思考组不进图标排
+    expect(summary.categories).toEqual([])
   })
 })
