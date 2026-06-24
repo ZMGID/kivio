@@ -21,6 +21,7 @@ interface ScreenshotTranslationSettingsProps {
   settings: Settings
   isMac: boolean
   hasSystemOcr: boolean
+  hasRapidOcr: boolean
   recordingTarget: RecordingTarget | null
   defaultPrompts: DefaultPromptTemplates | null
   rapidOcrStatus: RapidOcrStatus | null
@@ -40,6 +41,7 @@ export function ScreenshotTranslationSettings({
   settings,
   isMac,
   hasSystemOcr,
+  hasRapidOcr,
   recordingTarget,
   defaultPrompts,
   rapidOcrStatus,
@@ -65,6 +67,12 @@ export function ScreenshotTranslationSettings({
     setWidthDraft(String(next))
     if (next !== cardWidth) onUpdate({ cardWidth: next })
   }
+  const hasLocalOcr = hasSystemOcr || hasRapidOcr
+  const ocrOptions = [
+    { value: 'cloud_vision', label: t.ocrEngineCloudVision },
+    ...(hasSystemOcr ? [{ value: 'system', label: t.ocrEngineSystem }] : []),
+    ...(hasRapidOcr ? [{ value: 'rapid_ocr', label: t.ocrEngineRapidOcr }] : []),
+  ]
 
   return (
     <>
@@ -164,7 +172,7 @@ export function ScreenshotTranslationSettings({
               </SettingRow>
           </SettingsGroup>
 
-          {hasSystemOcr && (
+          {hasLocalOcr && (
             <SettingsGroup title={t.ocrEngine}>
                   <SettingRow label={t.ocrEngine} description={t.ocrEngineHint}>
                     <Select
@@ -174,11 +182,7 @@ export function ScreenshotTranslationSettings({
                           ocrMode: value as ScreenshotTranslation['ocrMode'],
                         })
                       }
-                      options={[
-                        { value: 'cloud_vision', label: t.ocrEngineCloudVision },
-                        { value: 'system', label: t.ocrEngineSystem },
-                        { value: 'rapid_ocr', label: t.ocrEngineRapidOcr },
-                      ]}
+                      options={ocrOptions}
                       className="w-44"
                     />
                   </SettingRow>

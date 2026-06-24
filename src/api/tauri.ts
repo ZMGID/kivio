@@ -829,6 +829,29 @@ export type RapidOcrInstallResult = {
   message: string
 }
 
+export type PlatformKind = 'macos' | 'windows' | 'linux' | 'other'
+export type DesktopSession = 'x11' | 'wayland' | 'headless' | 'unknown'
+export type CapabilityStatus = 'supported' | 'unsupported' | 'degraded'
+
+export type CapabilityInfo = {
+  status: CapabilityStatus
+  reason?: string
+  smokeRequired: boolean
+}
+
+export type PlatformCapabilities = {
+  platform: PlatformKind
+  sessionType: DesktopSession
+  windowCapture: CapabilityInfo
+  regionCapture: CapabilityInfo
+  systemOcr: CapabilityInfo
+  rapidOcr: CapabilityInfo
+  globalShortcuts: CapabilityInfo
+  tray: CapabilityInfo
+  autostart: CapabilityInfo
+  transparentOverlay: CapabilityInfo
+}
+
 function normalizeProvider(provider: ModelProvider): ModelProvider {
   return {
     ...provider,
@@ -1098,6 +1121,7 @@ export const api = {
     invoke<{ success: boolean; error?: string }>('test_provider_connection', { providerId, provider }),
 
   // 权限相关（macOS）
+  getPlatformCapabilities: () => invoke<PlatformCapabilities>('get_platform_capabilities'),
   getPermissionStatus: () => invoke<PermissionStatus>('get_permission_status'),
   openPermissionSettings: (kind: 'accessibility' | 'screen-recording') =>
     invoke<void>('open_permission_settings', { kind }),
