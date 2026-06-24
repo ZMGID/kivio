@@ -822,6 +822,18 @@ export const chatApi = {
     return result.conversations
   },
 
+  // 全量索引搜索对话（覆盖所有对话，不止侧栏默认加载的前 N 个）
+  async searchConversations(query: string, limit = 30): Promise<ConversationListItem[]> {
+    if (!isTauriRuntime()) return []
+    const trimmed = query.trim()
+    if (!trimmed) return []
+    const result = await invoke<{ success: boolean; conversations: ConversationListItem[] }>(
+      'chat_search_conversations',
+      { query: trimmed, limit }
+    )
+    return result.success ? result.conversations : []
+  },
+
   // 获取对话详情
   async getConversation(conversationId: string): Promise<Conversation> {
     if (!isTauriRuntime()) return mockChatApi.getConversation(conversationId)

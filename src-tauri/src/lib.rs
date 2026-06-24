@@ -433,6 +433,7 @@ pub fn run() {
             usage::usage_clear,
             // Chat 模块命令
             chat::commands::chat_get_conversations,
+            chat::commands::chat_search_conversations,
             chat::commands::chat_get_conversation,
             chat::commands::chat_create_conversation,
             chat::commands::chat_import_external_conversation,

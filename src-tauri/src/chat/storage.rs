@@ -484,6 +484,35 @@ pub fn get_conversations(
     Ok(index.conversations[offset..end].to_vec())
 }
 
+/// 全量索引搜索：在所有对话（不止侧栏默认加载的前 N 个）的标题/预览/文件夹里做大小写
+/// 不敏感子串匹配，按更新时间倒序返回前 limit 个。让侧栏搜索能找到已掉出"最近"列表的老对话。
+/// 仅读 index.json（轻量元数据），不读对话正文，因此与对话总数无关地廉价。
+pub fn search_conversations(
+    app: &AppHandle,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ConversationListItem>, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut index = load_index_or_scan(app)?;
+    index.conversations.retain(|c| {
+        c.title.to_lowercase().contains(&needle)
+            || c.preview.to_lowercase().contains(&needle)
+            || c
+                .folder
+                .as_deref()
+                .map(|f| f.to_lowercase().contains(&needle))
+                .unwrap_or(false)
+    });
+    index
+        .conversations
+        .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    index.conversations.truncate(limit);
+    Ok(index.conversations)
+}
+
 pub fn find_reusable_blank_conversation(
     app: &AppHandle,
     provider_id: &str,

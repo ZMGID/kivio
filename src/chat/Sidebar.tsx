@@ -391,6 +391,8 @@ export const Sidebar = memo(function Sidebar({
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
   const [projects, setProjects] = useState<ChatProject[]>([])
   const [searchQuery, setSearchQuery] = useState('')
+  // 后端全量索引搜索结果（覆盖所有对话，不止已加载的前 80）；空查询/非 Tauri 时为空，回退客户端过滤。
+  const [fullSearchResults, setFullSearchResults] = useState<ConversationListItem[]>([])
   const [projectSectionCollapsed, setProjectSectionCollapsed] = useState(false)
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),
@@ -642,10 +644,39 @@ export const Sidebar = memo(function Sidebar({
     [projects, visibleConversations],
   )
 
+  // 查询变化时去后端全量索引搜（debounce 180ms）。覆盖掉出"最近 80"的老对话。
+  useEffect(() => {
+    if (!searchOpen || !normalizedSearchQuery) {
+      setFullSearchResults([])
+      return
+    }
+    let cancelled = false
+    const handle = setTimeout(() => {
+      void chatApi
+        .searchConversations(searchQuery, 30)
+        .then((items) => {
+          if (!cancelled) setFullSearchResults(items)
+        })
+        .catch(() => {
+          if (!cancelled) setFullSearchResults([])
+        })
+    }, 180)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [searchOpen, normalizedSearchQuery, searchQuery])
+
   const searchResults = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return visibleConversations.slice(0, 9)
+    }
+    // Tauri：后端全量结果优先；为空/mock 时回退到已加载列表的客户端过滤（也覆盖后端结果到达前的瞬间）。
+    if (fullSearchResults.length > 0) {
+      return fullSearchResults
+    }
     return visibleConversations
       .filter((conversation) => {
-        if (!normalizedSearchQuery) return true
         const project = findConversationProject(conversation, projects)
         return (
           conversationMatchesSearch(conversation, normalizedSearchQuery) ||
@@ -654,7 +685,7 @@ export const Sidebar = memo(function Sidebar({
         )
       })
       .slice(0, 9)
-  }, [normalizedSearchQuery, projects, visibleConversations])
+  }, [normalizedSearchQuery, projects, visibleConversations, fullSearchResults])
 
   const clearableConversationCount = selectedProject
     ? conversations.filter((conv) => conversationBelongsToProject(conv, selectedProject)).length

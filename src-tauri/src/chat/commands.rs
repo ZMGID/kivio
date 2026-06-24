@@ -126,6 +126,21 @@ pub(crate) fn chat_get_conversations(
     }))
 }
 
+/// 全量索引搜索对话（不止侧栏默认加载的前 N 个）。仅读 index.json 元数据，按标题/预览/
+/// 文件夹匹配，与对话总数无关地廉价。让搜索能找到掉出"最近"列表的老对话。
+#[tauri::command]
+pub(crate) fn chat_search_conversations(
+    app: AppHandle,
+    query: String,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    let conversations = crate::chat::storage::search_conversations(&app, &query, limit)?;
+    Ok(serde_json::json!({
+        "success": true,
+        "conversations": conversations,
+    }))
+}
+
 /// 获取对话详情
 #[tauri::command]
 pub(crate) fn chat_get_conversation(
