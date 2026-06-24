@@ -114,7 +114,11 @@ let pythonCjkFontAssetPromise: Promise<PythonFontAsset | null> | null = null
 const fontConfiguredRuntimes = new WeakSet<PyodideInterface>()
 
 function localPyodideIndexUrl(): string {
-  return new URL(`${import.meta.env.BASE_URL}pyodide/`, self.location.href).toString()
+  // Pyodide 资源固定 emit 在应用根 /pyodide/（见 vite.config.ts generateBundle: `pyodide/${fileName}`）。
+  // 本模块只在 Web Worker 里运行，worker 自身被 Vite 打到 /assets/ 下——绝不能拿 self.location.href
+  // 当基址 + 相对的 BASE_URL('./')，那样会解析成 /assets/pyodide/ → 404 → 静默回落 CDN（dev 下
+  // BASE_URL 被规范成 '/' 掩盖了这点，仅打包后暴露）。用根绝对路径解析到应用根，dev/prod 一致。
+  return new URL('/pyodide/', self.location.href).toString()
 }
 
 function pyodideSources(): PyodideSource[] {
