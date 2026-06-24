@@ -1690,7 +1690,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
         if (cancelled) return
         void (async () => {
           try {
-            const { runPythonInSandbox } = await import('./pyodideRunner')
+            const { runPythonInSandbox } = await import('./pyodideClient')
             const outcome = await runPythonInSandbox(payload.code, payload.timeoutMs, payload.files)
             await api.chatPythonComplete(
               payload.runId,

@@ -79,7 +79,7 @@ type PythonOutputResult = {
   content: string
   artifacts: ChatToolArtifact[]
 }
-type PythonInputFile = {
+export type PythonInputFile = {
   name: string
   dataBase64: string
   sizeBytes: number
@@ -114,7 +114,7 @@ let pythonCjkFontAssetPromise: Promise<PythonFontAsset | null> | null = null
 const fontConfiguredRuntimes = new WeakSet<PyodideInterface>()
 
 function localPyodideIndexUrl(): string {
-  return new URL(`${import.meta.env.BASE_URL}pyodide/`, window.location.href).toString()
+  return new URL(`${import.meta.env.BASE_URL}pyodide/`, self.location.href).toString()
 }
 
 function pyodideSources(): PyodideSource[] {
@@ -586,7 +586,7 @@ sys.stderr = _stderr
     await Promise.race([
       pyodide.runPythonAsync(wrapPythonUserCode(code)),
       new Promise<never>((_, reject) => {
-        window.setTimeout(
+        self.setTimeout(
           () => reject(new Error(`Python execution timed out after ${timeoutMs}ms`)),
           timeoutMs,
         )
@@ -804,7 +804,7 @@ function bytesToBase64(bytes: Uint8Array): string {
     const chunk = bytes.subarray(offset, offset + chunkSize)
     binary += String.fromCharCode(...chunk)
   }
-  return window.btoa(binary)
+  return self.btoa(binary)
 }
 
 function base64ToBytes(value: string, maxBytes = MAX_PYTHON_ARTIFACT_BYTES): Uint8Array | null {
@@ -813,7 +813,7 @@ function base64ToBytes(value: string, maxBytes = MAX_PYTHON_ARTIFACT_BYTES): Uin
     return null
   }
   try {
-    const binary = window.atob(compact)
+    const binary = self.atob(compact)
     const bytes = new Uint8Array(binary.length)
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index)
