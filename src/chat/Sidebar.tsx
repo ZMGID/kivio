@@ -410,7 +410,6 @@ export const Sidebar = memo(function Sidebar({
   const [projectError, setProjectError] = useState('')
   const sectionMenuButtonRef = useRef<HTMLButtonElement>(null)
   const sidebarLoadedRef = useRef(false)
-  const lastProjectIdRef = useRef(selectedProject?.id)
   const [userProfile, setUserProfile] = useState(() => resolveChatUserProfile())
 
   useEffect(() => {
@@ -447,9 +446,10 @@ export const Sidebar = memo(function Sidebar({
   }, [onSelectProject, selectedProject])
 
   useEffect(() => {
-    const projectChanged = sidebarLoadedRef.current && lastProjectIdRef.current !== selectedProject?.id
-    lastProjectIdRef.current = selectedProject?.id
-    void loadSidebarData({ silent: sidebarLoadedRef.current && !projectChanged })
+    // 侧栏数据与 selectedProject 无关（loadSidebarData 始终拉全部项目+对话，仅用 selectedProject
+    // 判断项目是否被删）。切项目时拉到的是相同数据，不该进 loading 态白闪一下；首次加载非静默
+    // 显 loading，之后（含跨项目切换）一律静默后台刷新，消除切换对话时的侧栏闪烁。
+    void loadSidebarData({ silent: sidebarLoadedRef.current })
     sidebarLoadedRef.current = true
   }, [loadSidebarData, selectedProject?.id])
 
