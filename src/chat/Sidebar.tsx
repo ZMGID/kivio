@@ -874,7 +874,7 @@ export const Sidebar = memo(function Sidebar({
 
       <div className="mx-3 border-t border-neutral-200/90 dark:border-neutral-800" />
 
-      <div className="custom-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto" data-tauri-drag-region="false">
+      <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
         {loading ? (
           <div className="space-y-2 px-3 py-3" aria-label="加载中" aria-busy="true">
             {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -1011,6 +1011,7 @@ export const Sidebar = memo(function Sidebar({
               </div>
             </div>
 
+            <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto" data-tauri-drag-region="false">
             {activeTab === 'projects' && (
             <section className="group/projects px-3 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
@@ -1321,6 +1322,7 @@ export const Sidebar = memo(function Sidebar({
               ) : null}
             </section>
             )}
+            </div>
           </>
         )}
       </div>
