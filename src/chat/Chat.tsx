@@ -612,6 +612,19 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   ), [])
 
   const applyConversation = useCallback((conversation: Conversation | null) => {
+    // 兜底网：后端已在所有返回 Conversation 的命令出口剥离 model_messages/api_messages
+    // （strip_transcripts_for_frontend），所以正常路径到这里已是轻量副本。这里再剥一次，确保
+    // 任何遗漏/未来新增的后端出口都不会把这两份前端永不读的转录留进 React state。后端回放读盘
+    // 上完整副本，不受影响。
+    if (conversation?.messages) {
+      for (const m of conversation.messages) {
+        if (m.role !== 'assistant') continue
+        m.model_messages = undefined
+        m.modelMessages = undefined
+        m.api_messages = undefined
+        m.apiMessages = undefined
+      }
+    }
     setCurrentConversation(conversation)
     setContextState(conversation?.context_state ?? conversation?.contextState ?? null)
   }, [])
