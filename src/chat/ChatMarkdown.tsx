@@ -616,12 +616,22 @@ function buildArtifactLookup(artifacts: ChatToolArtifact[]): Map<string, string>
 // 视口懒渲染数学公式：KaTeX 公式 DOM(几十~上百 span)的 paint 是滚动卡顿主因。
 // 不再用 rehype-katex 在解析期一次性渲染全部公式，改为每个公式进视口前只显示原始 LaTeX 文本
 // (近零 DOM)，进视口(提前 800px)才 katex.renderToString。离屏公式几乎不参与 layout/paint。
+// 按 (tex, display) 缓存 KaTeX 渲染结果：流式时每帧重渲会对每个公式重复调用，
+// 同一公式只算一次。简单上限防无界增长(超了清空，ponytail)。
+const texCache = new Map<string, string>()
 function renderTex(tex: string, display: boolean): string {
+  const key = (display ? 'd:' : 'i:') + tex
+  const cached = texCache.get(key)
+  if (cached != null) return cached
+  let out = ''
   try {
-    return katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' })
+    out = katex.renderToString(tex, { displayMode: display, throwOnError: false, output: 'html' })
   } catch {
-    return ''
+    out = ''
   }
+  if (texCache.size > 500) texCache.clear()
+  texCache.set(key, out)
+  return out
 }
 
 function LazyMath({ tex, display }: { tex: string; display: boolean }) {
