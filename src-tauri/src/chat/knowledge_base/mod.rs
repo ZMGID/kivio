@@ -465,6 +465,34 @@ pub fn heal_stale_indexing(app: &AppHandle) {
     }
 }
 
+/// System-prompt segment injected when the conversation has knowledge bases
+/// attached. Tells the model the user's docs are already indexed (don't ask for
+/// re-upload), to prefer `knowledge_search`, and to cite passages inline as
+/// `[n]`. Returns None when nothing resolvable is attached.
+pub fn mount_system_prompt(app: &AppHandle, kb_ids: &[String], language: &str) -> Option<String> {
+    if kb_ids.is_empty() {
+        return None;
+    }
+    let libs = load_libraries(app).unwrap_or_default();
+    let names: Vec<String> = kb_ids
+        .iter()
+        .filter_map(|id| libs.iter().find(|l| &l.id == id).map(|l| l.name.clone()))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let names_str = names.join(if language.starts_with("zh") { "、" } else { ", " });
+    Some(if language.starts_with("zh") {
+        format!(
+            "本会话已挂载知识库：{names_str}。当用户的问题可能涉及这些文档时，**优先调用 knowledge_search 检索**——文档已在知识库里，不要让用户重新上传文件。用到检索到的片段时，必须在正文中用 [n] 行内标注其来源编号（n 为该工具返回片段前的编号），让用户能溯源；只有检索不到相关内容时才如实说明知识库里没有。"
+        )
+    } else {
+        format!(
+            "This conversation has knowledge bases attached: {names_str}. When the user's question may relate to these documents, prefer calling knowledge_search first — the documents are already indexed, so do not ask the user to re-upload files. When you use a retrieved passage, cite its source number inline as [n] (the number shown before each returned passage) so the user can trace it; only if nothing relevant is found, say the knowledge base doesn't cover it."
+        )
+    })
+}
+
 
 // ===== pure retrieval math (unit-tested without an AppHandle) =====
 

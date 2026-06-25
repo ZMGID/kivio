@@ -230,6 +230,7 @@ pub fn build_chat_system_prompt(
         agent_todo_prompt,
         project_context,
         delivery_dir,
+        None,
     )
     .0
 }
@@ -282,6 +283,7 @@ pub fn build_chat_system_prompt_with_segments(
     agent_todo_prompt: Option<&str>,
     project_context: Option<&ProjectPromptContext>,
     delivery_dir: Option<&str>,
+    knowledge_base_prompt: Option<&str>,
 ) -> (String, Vec<ContextUsageSegment>) {
     let mut prompt = String::new();
     let mut segments = Vec::new();
@@ -351,6 +353,19 @@ pub fn build_chat_system_prompt_with_segments(
             "memory_l1",
             "Memory / L1",
             memory,
+        );
+    }
+
+    if let Some(kb) = knowledge_base_prompt
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        append_context_segment(
+            &mut prompt,
+            &mut segments,
+            "knowledge_base",
+            "Knowledge base",
+            kb,
         );
     }
 

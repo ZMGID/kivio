@@ -513,6 +513,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [sidebarProfileRefreshKey, setSidebarProfileRefreshKey] = useState(0)
   const [draftProviderId, setDraftProviderId] = useState('')
   const [draftModel, setDraftModel] = useState('')
+  // 欢迎页（尚无会话）时挂载的知识库草稿；首次发送建会话时落到会话上。
+  const [draftKnowledgeBaseIds, setDraftKnowledgeBaseIds] = useState<string[]>([])
   const [draftAgentRuntime, setDraftAgentRuntime] = useState<AgentRuntimeConfig>(
     BUILTIN_AGENT_RUNTIME,
   )
@@ -1867,6 +1869,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     setDraftProviderId(activeProviderId)
     setDraftModel(activeModel)
     setDraftAgentRuntime(activeAgentRuntime)
+    setDraftKnowledgeBaseIds([])
     currentConversationIdRef.current = null
     forgetRememberedChatRoute()
     applyConversation(null)
@@ -2158,6 +2161,25 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       }
     }
 
+    // Apply the welcome-page knowledge-base draft to the freshly-created
+    // conversation (mounting on the welcome screen had no conversation yet).
+    {
+      const convKb = conversation.knowledge_base_ids ?? conversation.knowledgeBaseIds ?? []
+      const sameKb =
+        convKb.length === draftKnowledgeBaseIds.length &&
+        convKb.every((id) => draftKnowledgeBaseIds.includes(id))
+      if (draftKnowledgeBaseIds.length > 0 && !sameKb) {
+        try {
+          conversation = await chatApi.updateConversation(conversation.id, {
+            knowledgeBaseIds: draftKnowledgeBaseIds,
+          })
+          applyConversation(conversation)
+        } catch (err) {
+          console.error('Failed to apply knowledge base draft before send:', err)
+        }
+      }
+    }
+
     const conversationId = conversation.id
     if (isConversationInFlight(inFlightConversationsRef.current, conversationId)) {
       setStreamErrorForConversation(conversationId, '该对话正在生成中，请稍后再试')
@@ -2277,6 +2299,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     clearStreamSnapshot,
     currentConversation,
     draftAgentRuntime,
+    draftKnowledgeBaseIds,
     effectiveSkillId,
     enabledSkills,
     ensureStreamSnapshot,
@@ -2649,6 +2672,9 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   }
 
   const handleChangeKnowledgeBaseIds = async (ids: string[]) => {
+    // Track a draft so mounting works on the welcome page (no conversation yet);
+    // the draft is applied when the conversation is created on first send.
+    setDraftKnowledgeBaseIds(ids)
     if (!currentConversation) return
     try {
       const updatedConv = await chatApi.updateConversation(currentConversation.id, {
@@ -3006,7 +3032,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       usesExternalRuntime={usesExternalRuntime}
                       externalAgentName={activeAgentRuntime.externalAgentId ?? null}
                       conversationId={currentConversation?.id ?? null}
-                      knowledgeBaseIds={currentConversation?.knowledge_base_ids ?? currentConversation?.knowledgeBaseIds ?? []}
+                      knowledgeBaseIds={currentConversation ? (currentConversation.knowledge_base_ids ?? currentConversation.knowledgeBaseIds ?? []) : draftKnowledgeBaseIds}
                       onChangeKnowledgeBaseIds={handleChangeKnowledgeBaseIds}
                     />
                   </div>
@@ -3062,7 +3088,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     usesExternalRuntime={usesExternalRuntime}
                     externalAgentName={activeAgentRuntime.externalAgentId ?? null}
                     conversationId={currentConversation?.id ?? null}
-                    knowledgeBaseIds={currentConversation?.knowledge_base_ids ?? currentConversation?.knowledgeBaseIds ?? []}
+                    knowledgeBaseIds={currentConversation ? (currentConversation.knowledge_base_ids ?? currentConversation.knowledgeBaseIds ?? []) : draftKnowledgeBaseIds}
                     onChangeKnowledgeBaseIds={handleChangeKnowledgeBaseIds}
                   />
                     </>

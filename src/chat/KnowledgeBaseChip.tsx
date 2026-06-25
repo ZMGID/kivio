@@ -107,7 +107,7 @@ export function KnowledgeBaseChip({
           ) : (
             <>
               <p className="px-2 py-1 text-[10.5px] text-neutral-400">
-                {hasMounted ? '勾选的库参与检索' : '未勾选时检索全部库'}
+                {hasMounted ? '勾选的库参与检索' : '未勾选则不检索任何库'}
               </p>
               {libraries.map((lib) => {
                 const checked = value.includes(lib.id)

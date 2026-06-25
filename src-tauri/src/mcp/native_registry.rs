@@ -485,16 +485,16 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                 }
             }
         }
-        let libs = kb::load_libraries(ctx.app)?;
-        if kb_ids.is_empty() {
-            kb_ids = libs.iter().map(|l| l.id.clone()).collect();
-        }
+        // No explicit kb_ids and nothing attached to this conversation →
+        // retrieve NOTHING. Attaching libraries is an explicit per-conversation
+        // choice; an empty selection must not silently fan out to every library.
         if kb_ids.is_empty() {
             return Ok(text_tool_result(
-                "No knowledge base is configured. Ask the user to create one and add documents."
+                "No knowledge base is attached to this conversation. Ask the user to attach one via the 知识库 selector before searching, then retry."
                     .to_string(),
             ));
         }
+        let libs = kb::load_libraries(ctx.app)?;
 
         // Group by (provider, model) so each group is embedded with its own
         // model; scores (all cosine) are merged across groups.

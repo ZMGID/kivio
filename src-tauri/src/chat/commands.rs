@@ -3368,6 +3368,11 @@ async fn compute_context_state(
         .and_then(|id| find_set_by_id(app, id).ok())
         .map(|set| set.system_prompt)
         .filter(|prompt| !prompt.trim().is_empty());
+    let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
+        app,
+        &conversation.knowledge_base_ids,
+        &language,
+    );
     let (system_prompt, mut segments) = agent_prepare::build_chat_system_prompt_with_segments(
         &language,
         !main_image_paths.is_empty(),
@@ -3400,6 +3405,7 @@ async fn compute_context_state(
             .ok()
             .map(|path| path.display().to_string())
             .as_deref(),
+        knowledge_base_prompt.as_deref(),
     );
     let last_user_idx = conversation.messages.iter().rposition(|m| m.role == "user");
     let request_messages = build_chat_api_messages(

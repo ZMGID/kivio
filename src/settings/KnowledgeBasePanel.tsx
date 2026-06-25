@@ -43,10 +43,35 @@ function EmbeddingModelPicker({
   const t = (zh: string, en: string) => (lang === 'zh' ? zh : en)
   const enabled = providers.filter((p) => p.enabled !== false)
   const selected = enabled.find((p) => p.id === providerId)
-  const suggestions = selected
-    ? (selected.availableModels?.length ? selected.availableModels : selected.enabledModels) ?? []
-    : []
-  const listId = `kb-emb-models-${providerId || 'none'}`
+  // Build the provider dropdown. If the bound providerId isn't among the
+  // enabled providers (disabled, or deleted/never-saved → dangling binding),
+  // surface it explicitly with a readable label so the Select never falls back
+  // to showing the raw provider id.
+  const options = [
+    { value: '', label: t('选择提供商…', 'Pick provider…') },
+    ...enabled.map((p) => ({ value: p.id, label: p.name || p.id })),
+  ]
+  if (providerId && !options.some((o) => o.value === providerId)) {
+    const known = providers.find((p) => p.id === providerId)
+    const label = known
+      ? `${known.name || known.id}${known.enabled === false ? t('（已停用）', ' (disabled)') : ''}`
+      : t('⚠ 供应商已删除，请重新选择', '⚠ provider missing — re-select')
+    options.unshift({ value: providerId, label })
+  }
+
+  // Model dropdown: pick from THIS provider's configured (enabled) models —
+  // the exact set the user curated in provider settings ("these models appear
+  // in each feature's model selector"). Do NOT pull the full /models list.
+  const configuredModels = selected?.enabledModels ?? []
+  const modelOptions = [
+    { value: '', label: t('选择 embedding 模型…', 'Pick embedding model…') },
+    ...configuredModels.map((m) => ({ value: m, label: m })),
+  ]
+  // Keep an existing/legacy binding visible even if it's no longer enabled.
+  if (model && !modelOptions.some((o) => o.value === model)) {
+    modelOptions.push({ value: model, label: model })
+  }
+
   // 解析模型信息（含嵌入维度/多语言/上下文），用于展示能力徽章。
   const info = model.trim() ? resolveModelInfo(model.trim(), selected?.modelOverrides) : null
   const isEmbedding = Boolean(info?.capabilities?.embedding || info?.dimensions)
@@ -58,24 +83,14 @@ function EmbeddingModelPicker({
           className="w-44"
           value={providerId}
           onChange={(pid) => onChange(pid, '')}
-          options={[
-            { value: '', label: t('选择提供商…', 'Pick provider…') },
-            ...enabled.map((p) => ({ value: p.id, label: p.name })),
-          ]}
+          options={options}
         />
-        <Input
-          className="w-56"
+        <Select
+          className="w-64"
           value={model}
           onChange={(m) => onChange(providerId, m)}
-          placeholder={t('embedding 模型名', 'embedding model id')}
-          list={listId}
-          mono
+          options={modelOptions}
         />
-        <datalist id={listId}>
-          {suggestions.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
       </div>
       {isEmbedding && (
         <div className="flex flex-wrap items-center gap-1">

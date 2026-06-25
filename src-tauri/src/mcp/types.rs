@@ -810,7 +810,7 @@ pub fn native_knowledge_search_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__knowledge_search".to_string(),
         name: "knowledge_search".to_string(),
-        description: "Search the user's knowledge base(s) for passages relevant to a query and return them with citation markers. Use this whenever the question may be answered by the user's uploaded documents. Each returned passage is prefixed with a [n] marker and its source; when you use a passage, cite it inline as [n]. If no relevant passage is returned, say you don't have that information in the knowledge base instead of guessing. By default this searches the libraries attached to the current conversation.".to_string(),
+        description: "Search the user's knowledge base(s) for passages relevant to a query and return them with citation markers. Use this whenever the question may be answered by the user's uploaded documents. Each returned passage is prefixed with a [n] marker and its source; when you use a passage, cite it inline as [n]. If no relevant passage is returned, say you don't have that information in the knowledge base instead of guessing. This searches only the libraries the user attached to the current conversation; if none are attached it returns nothing.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -824,7 +824,7 @@ pub fn native_knowledge_search_tool() -> ChatToolDefinition {
                 "kb_ids": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional: restrict the search to these knowledge base ids. Defaults to the libraries attached to this conversation (or all libraries if none are attached)."
+                    "description": "Optional: restrict the search to these knowledge base ids. Defaults to the libraries attached to the current conversation; if none are attached, the search returns nothing."
                 },
                 "top_k": {
                     "type": "integer",
