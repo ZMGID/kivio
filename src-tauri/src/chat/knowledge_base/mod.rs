@@ -117,7 +117,9 @@ static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn gen_id(prefix: &str) -> String {
     let millis = chrono::Local::now().timestamp_millis();
     let n = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}_{millis:x}{n:x}")
+    // Separator between timestamp and counter so distinct (millis, n) pairs
+    // can't collapse to the same hex string.
+    format!("{prefix}_{millis:x}_{n:x}")
 }
 
 fn validate_kb_id(id: &str) -> Result<(), String> {
@@ -177,7 +179,17 @@ fn load_libraries_at(root: &Path) -> Result<Vec<KnowledgeLibrary>, String> {
         return Ok(Vec::new());
     }
     let content = fs::read_to_string(&path).map_err(|e| format!("read libraries.json: {e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("libraries.json corrupt: {e}"))
+    match serde_json::from_str(&content) {
+        Ok(libs) => Ok(libs),
+        Err(e) => {
+            // libraries.json is the root of every KB operation. If it's
+            // corrupt (manual edit / FS damage), don't brick the whole panel:
+            // back the bad file up and start empty so the user can rebuild.
+            eprintln!("libraries.json corrupt ({e}); backing up to libraries.json.bak and starting empty");
+            let _ = fs::rename(&path, root.join("libraries.json.bak"));
+            Ok(Vec::new())
+        }
+    }
 }
 
 fn save_libraries_at(root: &Path, libs: &[KnowledgeLibrary]) -> Result<(), String> {
@@ -337,8 +349,18 @@ fn search_at(
 ) -> Result<Vec<ScoredChunk>, String> {
     let mut candidates: Vec<(String, KnowledgeChunk)> = Vec::new();
     for kb_id in kb_ids {
-        for chunk in load_chunks_at(root, kb_id)? {
-            candidates.push((kb_id.clone(), chunk));
+        // Tolerate a single corrupt library: skip it (logged) rather than
+        // failing the entire cross-library search and starving the model of
+        // every other library's hits.
+        match load_chunks_at(root, kb_id) {
+            Ok(chunks) => {
+                for chunk in chunks {
+                    candidates.push((kb_id.clone(), chunk));
+                }
+            }
+            Err(e) => {
+                eprintln!("kb search: skipping library {kb_id}: {e}");
+            }
         }
     }
     Ok(top_k_by_cosine(candidates, query, top_k))
@@ -403,6 +425,44 @@ pub fn save_chunks(app: &AppHandle, kb_id: &str, chunks: &[KnowledgeChunk]) -> R
 /// Remove a document and all its chunks + source snapshot, then refresh counts.
 pub fn delete_document(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<(), String> {
     delete_document_at(&kb_root(app)?, kb_id, doc_id)
+}
+
+/// Startup self-heal: any document left in `indexing` is stale (its indexing
+/// task died with the app / crashed / was killed mid-embed). Flip it to `error`
+/// so the UI stops spinning forever and the user can retry. Returns how many
+/// were healed.
+fn heal_stale_indexing_at(root: &Path) -> usize {
+    let mut healed = 0usize;
+    for lib in load_libraries_at(root).unwrap_or_default() {
+        let Ok(mut docs) = load_docs_at(root, &lib.id) else {
+            continue;
+        };
+        let mut changed = false;
+        for doc in docs.iter_mut() {
+            if doc.status == DocStatus::Indexing {
+                doc.status = DocStatus::Error;
+                doc.error = Some("索引被中断，请重试 / Indexing was interrupted; please retry".to_string());
+                changed = true;
+                healed += 1;
+            }
+        }
+        if changed {
+            let _ = save_docs_at(root, &lib.id, &docs);
+            let _ = refresh_library_counts_at(root, &lib.id);
+        }
+    }
+    healed
+}
+
+/// Call once at app startup (no indexing in flight) to clear stale `indexing`
+/// statuses left by a previous run that didn't finish.
+pub fn heal_stale_indexing(app: &AppHandle) {
+    if let Ok(root) = kb_root(app) {
+        let n = heal_stale_indexing_at(&root);
+        if n > 0 {
+            eprintln!("knowledge_base: healed {n} stale 'indexing' document(s) → error");
+        }
+    }
 }
 
 
@@ -675,6 +735,73 @@ mod tests {
         assert_eq!(get_library_at(&root, &kb).unwrap().name, "New");
         assert!(rename_library_at(&root, "kb_missing", "X").is_err());
         assert!(delete_document_at(&root, &kb, "doc_missing").is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn gen_id_has_separator_between_time_and_counter() {
+        // prefix + millis + counter → at least two '_' so segments can't merge.
+        let id = gen_id("kb");
+        assert!(id.starts_with("kb_"));
+        assert_eq!(id.matches('_').count(), 2, "id was {id}");
+    }
+
+    #[test]
+    fn heal_flips_stale_indexing_to_error() {
+        let root = temp_root();
+        let kb = create_library_at(&root, "L", "openai", "m").unwrap().id;
+        save_docs_at(
+            &root,
+            &kb,
+            &[
+                {
+                    let mut d = doc("doc_stuck", "a.md", 0);
+                    d.status = DocStatus::Indexing;
+                    d
+                },
+                doc("doc_ok", "b.md", 3),
+            ],
+        )
+        .unwrap();
+
+        let healed = heal_stale_indexing_at(&root);
+        assert_eq!(healed, 1);
+        let docs = load_docs_at(&root, &kb).unwrap();
+        let stuck = docs.iter().find(|d| d.id == "doc_stuck").unwrap();
+        assert_eq!(stuck.status, DocStatus::Error);
+        assert!(stuck.error.is_some());
+        // healthy doc untouched
+        assert_eq!(docs.iter().find(|d| d.id == "doc_ok").unwrap().status, DocStatus::Ready);
+        // idempotent: nothing left to heal
+        assert_eq!(heal_stale_indexing_at(&root), 0);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn search_skips_corrupt_library_instead_of_failing() {
+        let root = temp_root();
+        let good = create_library_at(&root, "good", "openai", "m").unwrap().id;
+        let bad = create_library_at(&root, "bad", "openai", "m").unwrap().id;
+        save_chunks_at(&root, &good, &[chunk_emb("g1", "d", "g.md", None, vec![1.0, 0.0])]).unwrap();
+        // Corrupt the bad library's chunks.json with non-JSON garbage.
+        let bad_chunks = kb_dir_at(&root, &bad).unwrap().join("chunks.json");
+        std::fs::create_dir_all(bad_chunks.parent().unwrap()).unwrap();
+        std::fs::write(&bad_chunks, "{ not valid json").unwrap();
+
+        let hits = search_at(&root, &[good.clone(), bad.clone()], &[1.0, 0.0], 5).unwrap();
+        assert_eq!(hits.len(), 1, "healthy library's hit must survive a corrupt sibling");
+        assert_eq!(hits[0].chunk.id, "g1");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn corrupt_libraries_json_degrades_to_empty_with_backup() {
+        let root = temp_root();
+        std::fs::write(root.join("libraries.json"), "{ broken").unwrap();
+        // Must not error — returns empty so the panel still opens.
+        assert!(load_libraries_at(&root).unwrap().is_empty());
+        // Bad file is backed up, not silently destroyed.
+        assert!(root.join("libraries.json.bak").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 }

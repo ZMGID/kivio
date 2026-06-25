@@ -206,6 +206,8 @@ pub fn run() {
             // 清理上次崩溃 / 强杀 / 旧版本遗留的截图 PNG（24h 之前的，避免误删并发实例的活文件）
             cleanup_orphan_temp_files();
             cleanup_stale_sandbox_exports();
+            // 复位上次未跑完的知识库索引（崩溃/强杀留下的 indexing 状态 → error，可重试）
+            chat::knowledge_base::heal_stale_indexing(&app.handle());
 
             // 周期性回收闲置的持久外部 CLI 会话（10 分钟无活动即丢弃 → actor 关闭其子进程），
             // 避免长时间挂着空转进程占内存。注册时也会做一次清扫 + LRU 限流，这里覆盖纯闲置场景。

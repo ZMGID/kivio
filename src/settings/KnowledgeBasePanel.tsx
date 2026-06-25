@@ -22,7 +22,7 @@ import {
   type KnowledgeDocument,
 } from '../chat/knowledgeBase'
 
-const UPLOAD_EXTS = ['txt', 'text', 'log', 'csv', 'tsv', 'md', 'markdown', 'mdown', 'pdf']
+const UPLOAD_EXTS = ['txt', 'text', 'log', 'csv', 'tsv', 'md', 'markdown', 'mdown', 'mkd', 'pdf']
 
 // Embedding 模型选择器：从 provider 的 availableModels 取建议（含未启用的 embedding
 // 模型，如 bge-m3 / text-embedding-3-small），并允许自由输入——有些 provider 不在
@@ -160,6 +160,7 @@ export function KnowledgeBasePanel({ providers, lang }: { providers: ModelProvid
   const selectedRef = useRef<string | null>(null)
   selectedRef.current = selectedId
   useEffect(() => {
+    let cancelled = false
     let unlisten: (() => void) | undefined
     void onKbIndex((ev) => {
       setProgress((p) => ({ ...p, [ev.docId]: { indexed: ev.indexed, total: ev.total } }))
@@ -168,9 +169,15 @@ export function KnowledgeBasePanel({ providers, lang }: { providers: ModelProvid
         void refreshLibraries()
       }
     }).then((fn) => {
-      unlisten = fn
+      // If we already unmounted before the listener resolved, detach immediately
+      // — otherwise the listener leaks (cleanup ran while unlisten was undefined).
+      if (cancelled) fn()
+      else unlisten = fn
     })
-    return () => unlisten?.()
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [refreshDocs, refreshLibraries])
 
   const handleCreate = async () => {
@@ -208,15 +215,22 @@ export function KnowledgeBasePanel({ providers, lang }: { providers: ModelProvid
     const paths = Array.isArray(picked) ? picked : [picked]
     setBusy(true)
     setError(null)
-    try {
-      for (const path of paths) {
+    // Try every file independently so one failure doesn't silently drop the
+    // rest; report which ones failed and always refresh to reflect successes.
+    const failures: string[] = []
+    for (const path of paths) {
+      try {
         await kbUploadDocument(selectedId, path)
+      } catch (e) {
+        const name = path.split(/[\\/]/).pop() || path
+        failures.push(`${name}: ${e}`)
       }
-      await refreshDocs(selectedId)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setBusy(false)
+    }
+    await refreshDocs(selectedId).catch(() => {})
+    await refreshLibraries()
+    setBusy(false)
+    if (failures.length > 0) {
+      setError(t(`${failures.length} 个文件导入失败：`, `${failures.length} file(s) failed: `) + failures.join('; '))
     }
   }
 
@@ -284,6 +298,7 @@ export function KnowledgeBasePanel({ providers, lang }: { providers: ModelProvid
     try {
       await kbReindexLibrary(selected.id)
       await refreshDocs(selected.id)
+      await refreshLibraries()
     } catch (e) {
       setError(String(e))
     } finally {

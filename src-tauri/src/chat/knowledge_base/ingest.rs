@@ -170,21 +170,49 @@ async fn index_one(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<usize, 
     Ok(n)
 }
 
-/// Wrap `index_one` with status + event bookkeeping. Always emits a terminal
-/// (`ready` | `error`) event.
-async fn run_index(app: AppHandle, kb_id: String, doc_id: String) {
-    match index_one(&app, &kb_id, &doc_id).await {
+/// Per-kb async lock registry. Indexing a library is a non-atomic
+/// read-modify-write over its JSON files (docs/chunks/library counts), so all
+/// index writes for one kb must be serialized or concurrent uploads silently
+/// overwrite each other's chunks (lost update).
+/// ponytail: process-global registry of per-kb locks. Kivio is a single-user
+/// desktop app; a global map keyed by kb_id is enough — no AppState field, no
+/// 3-constructor churn. Move into AppState if this ever needs per-window scope.
+fn kb_lock_for(kb_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(kb_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+/// Apply the terminal status + counts + event for one finished document.
+fn finish_index(app: &AppHandle, kb_id: &str, doc_id: &str, result: Result<usize, String>) {
+    match result {
         Ok(n) => {
-            let _ = set_doc_status(&app, &kb_id, &doc_id, DocStatus::Ready, n, None);
-            let _ = refresh_library_counts(&app, &kb_id);
-            emit_index(&app, &kb_id, &doc_id, "ready", n, n, None);
+            let _ = set_doc_status(app, kb_id, doc_id, DocStatus::Ready, n, None);
+            let _ = refresh_library_counts(app, kb_id);
+            emit_index(app, kb_id, doc_id, "ready", n, n, None);
         }
         Err(e) => {
-            let _ = set_doc_status(&app, &kb_id, &doc_id, DocStatus::Error, 0, Some(e.clone()));
-            let _ = refresh_library_counts(&app, &kb_id);
-            emit_index(&app, &kb_id, &doc_id, "error", 0, 0, Some(e));
+            let _ = set_doc_status(app, kb_id, doc_id, DocStatus::Error, 0, Some(e.clone()));
+            let _ = refresh_library_counts(app, kb_id);
+            emit_index(app, kb_id, doc_id, "error", 0, 0, Some(e));
         }
     }
+}
+
+/// Upload path: index one document under the kb's serialization lock, then emit
+/// its terminal state. The lock is held across the embedding awaits so two
+/// uploads to the same library never interleave their chunks.json read-modify-write.
+async fn run_index(app: AppHandle, kb_id: String, doc_id: String) {
+    let lock = kb_lock_for(&kb_id);
+    let _guard = lock.lock().await;
+    let result = index_one(&app, &kb_id, &doc_id).await;
+    finish_index(&app, &kb_id, &doc_id, result);
 }
 
 // ===== commands =====
@@ -251,7 +279,12 @@ pub(crate) async fn kb_upload_document(
         created_at: chrono::Local::now().timestamp(),
     };
     docs.push(doc.clone());
-    super::save_docs(&app, &kb_id, &docs)?;
+    // Roll back the just-written source snapshot if registration fails, so a
+    // failed upload doesn't leave an unreachable orphan file under sources/.
+    if let Err(e) = super::save_docs(&app, &kb_id, &docs) {
+        let _ = fs::remove_file(&dest);
+        return Err(e);
+    }
     let _ = refresh_library_counts(&app, &kb_id);
 
     let app2 = app.clone();
@@ -275,14 +308,26 @@ pub(crate) async fn kb_reindex_library(app: AppHandle, kb_id: String) -> Result<
         doc.error = None;
     }
     super::save_docs(&app, &kb_id, &docs)?;
-    // Drop all chunks now — they may be the wrong dimension after a model swap.
-    super::save_chunks(&app, &kb_id, &[])?;
 
     let ids: Vec<String> = docs.into_iter().map(|d| d.id).collect();
     let app2 = app.clone();
+    // Whole reindex runs as ONE locked unit: clear + per-doc indexing happen
+    // under the kb lock so a concurrent upload can't interleave with the clear
+    // or with a doc's chunk write. We call `index_one` directly (not `run_index`)
+    // because `run_index` re-acquires the same lock (tokio Mutex is not reentrant).
     tauri::async_runtime::spawn(async move {
-        for doc_id in ids {
-            run_index(app2.clone(), kb_id.clone(), doc_id).await;
+        let lock = kb_lock_for(&kb_id);
+        let _guard = lock.lock().await;
+        // Drop all chunks now — they may be the wrong dimension after a model swap.
+        let _ = super::save_chunks(&app2, &kb_id, &[]);
+        for doc_id in &ids {
+            let result = index_one(&app2, &kb_id, doc_id).await;
+            finish_index(&app2, &kb_id, doc_id, result);
+        }
+        // Empty library emits no per-doc event; refresh counts so the UI's
+        // library card converges (chunk_count → 0) without a manual reload.
+        if ids.is_empty() {
+            let _ = refresh_library_counts(&app2, &kb_id);
         }
     });
     Ok(())

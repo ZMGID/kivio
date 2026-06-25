@@ -1,8 +1,8 @@
 // 会话级知识库挂载选择器：底部栏药丸 + 勾选弹层。选中的库 id 写回会话，
 // knowledge_search 缺省检索这些库（一个都不选时检索全部库）。
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Library, Check, ChevronDown } from 'lucide-react'
-import { kbListLibraries, type KnowledgeLibrary } from './knowledgeBase'
+import { kbListLibraries, onKbIndex, type KnowledgeLibrary } from './knowledgeBase'
 
 export function KnowledgeBaseChip({
   value,
@@ -15,11 +15,45 @@ export function KnowledgeBaseChip({
 }) {
   const [open, setOpen] = useState(false)
   const [libraries, setLibraries] = useState<KnowledgeLibrary[]>([])
+  const [hasAny, setHasAny] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
+  const loadLibs = useCallback(async () => {
+    try {
+      const libs = await kbListLibraries()
+      setLibraries(libs)
+      setHasAny(libs.length > 0)
+      // 清理已删除库留下的陈旧挂载 id（否则计数偏大且无法在弹层取消勾选）。
+      const valid = value.filter((id) => libs.some((l) => l.id === id))
+      if (valid.length !== value.length) onChange(valid)
+    } catch {
+      /* ignore */
+    }
+  }, [value, onChange])
+
+  // 用 ref 让 onKbIndex 订阅保持稳定（只订阅一次），同时总能调到最新 loadLibs。
+  const loadLibsRef = useRef(loadLibs)
+  loadLibsRef.current = loadLibs
+
+  // 初次评估 + 库变化(索引事件)时重评：保证创建/导入首个库后 chip 自动出现，无需重开聊天窗。
   useEffect(() => {
-    if (!open) return
-    void kbListLibraries().then(setLibraries).catch(() => {})
+    void loadLibsRef.current()
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    void onKbIndex(() => {
+      void loadLibsRef.current()
+    }).then((fn) => {
+      if (cancelled) fn()
+      else unlisten = fn
+    })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (open) void loadLibsRef.current()
   }, [open])
 
   useEffect(() => {
@@ -31,14 +65,7 @@ export function KnowledgeBaseChip({
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  // 仅在存在库时才展示该入口（无库时隐藏，避免干扰）。
   const hasMounted = value.length > 0
-  const [hasAny, setHasAny] = useState(false)
-  useEffect(() => {
-    void kbListLibraries()
-      .then((libs) => setHasAny(libs.length > 0))
-      .catch(() => {})
-  }, [])
   if (!hasAny && !hasMounted) return null
 
   const toggle = (id: string) => {

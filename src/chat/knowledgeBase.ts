@@ -40,17 +40,6 @@ export interface KbIndexEvent {
   error?: string
 }
 
-// 一条检索命中（knowledge_search 工具 structuredContent.hits 的形状）。
-export interface KbHit {
-  n: number
-  kbId: string
-  docId: string
-  docName: string
-  headingPath?: string | null
-  score: number
-  text: string
-}
-
 export async function kbListLibraries(): Promise<KnowledgeLibrary[]> {
   if (!isTauri()) return []
   return invoke<KnowledgeLibrary[]>('kb_list_libraries')

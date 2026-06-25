@@ -905,7 +905,7 @@
     "contextWindow": 32000,
     "maxOutput": 0,
     "capabilities": { "embedding": true },
-    "dimensions": 512,
+    "dimensions": 1024,
     "multilingual": true,
     "pricing": { "input": 0.02, "output": 0 }
   },

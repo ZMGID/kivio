@@ -164,11 +164,13 @@ pub fn chunk_with(
     let mut offset = 0usize;
     for line in split_lines_keep(text) {
         let line_chars = line.chars().count();
-        let line_start = offset;
-        let line_end = offset + line_chars;
-        offset = line_end + 1; // account for the '\n' separator we split on
-
         let content = line.trim_end_matches(['\r']);
+        // char_end points at the end of the stored content (CRLF '\r' excluded),
+        // while `offset` still advances over the full raw line + the '\n' so
+        // later line offsets stay aligned with the original text.
+        let line_start = offset;
+        let line_end = offset + content.chars().count();
+        offset += line_chars + 1;
 
         // Heading boundary (markdown only).
         if markdown {
