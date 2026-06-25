@@ -168,8 +168,11 @@ pub fn record_triggers(meta: &SkillMeta) -> Vec<String> {
 pub fn slugify(value: &str) -> String {
     let mut out = String::new();
     for c in value.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
+        // Keep unicode alphanumerics (CJK, Cyrillic, …), not just ASCII —
+        // otherwise a Chinese-only skill name slugifies to empty and falls
+        // through to the fallback below.
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
         } else if c == '-' || c == '_' || c.is_whitespace() {
             if !out.ends_with('-') {
                 out.push('-');
@@ -178,10 +181,25 @@ pub fn slugify(value: &str) -> String {
     }
     let out = out.trim_matches('-').to_string();
     if out.is_empty() {
-        format!("skill-{}", uuid::Uuid::new_v4())
+        // Deterministic, NOT random: a skill id must be stable across scans.
+        // A random uuid here made non-alphanumeric-named skills reappear after
+        // being toggled off — disabled_skill_ids stored an id that changed on
+        // the next scan, so the match was lost.
+        format!("skill-{:x}", fnv1a(value))
     } else {
         out
     }
+}
+
+/// FNV-1a — a tiny deterministic hash (stdlib-only, stable forever) used to
+/// derive a fallback skill id from names with no alphanumeric chars at all.
+fn fnv1a(value: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in value.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 pub fn parse_bool(value: Option<&str>) -> bool {
@@ -227,6 +245,19 @@ mod tests {
             records,
             warnings: vec![],
         }
+    }
+
+    #[test]
+    fn slugify_is_stable_for_non_ascii_names() {
+        // The bug: a Chinese-only skill name slugified to empty -> random uuid
+        // each scan -> disabled_skill_ids never matched on reload.
+        assert_eq!(slugify("问题步骤拆解"), "问题步骤拆解");
+        assert_eq!(slugify("问题步骤拆解"), slugify("问题步骤拆解"));
+        // ASCII behavior unchanged.
+        assert_eq!(slugify("Git Helper"), "git-helper");
+        // No-alphanumeric names still get a stable (deterministic) fallback.
+        assert_eq!(slugify("🎉🎉"), slugify("🎉🎉"));
+        assert!(slugify("🎉🎉").starts_with("skill-"));
     }
 
     #[test]

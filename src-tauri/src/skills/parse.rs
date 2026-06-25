@@ -84,7 +84,6 @@ pub fn parse_allowed_tools(frontmatter: &HashMap<String, String>) -> Vec<String>
 }
 
 pub fn parse_skill_markdown(
-    fallback_id: &str,
     raw: &str,
     source: &str,
     path: Option<String>,
@@ -118,7 +117,6 @@ pub fn parse_skill_markdown(
         .map(|hint| hint.trim().to_string())
         .filter(|hint| !hint.is_empty());
     let arguments = parse_list_value(frontmatter.get("arguments"));
-    let _ = fallback_id;
     Ok(SkillDetail {
         meta: SkillMeta {
             id,
@@ -152,9 +150,7 @@ pub fn parse_skill_record(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("skill");
-    let fallback_id = slugify(folder_name);
     let detail = parse_skill_markdown(
-        &fallback_id,
         raw,
         source,
         Some(skill_md_path.display().to_string()),
@@ -259,7 +255,7 @@ arguments:
 ---
 # Body with $ARGUMENTS
 "#;
-        let parsed = super::parse_skill_markdown("commit", raw, "user", None, Vec::new()).unwrap();
+        let parsed = super::parse_skill_markdown(raw, "user", None, Vec::new()).unwrap();
         assert_eq!(parsed.meta.triggers, vec!["/commit", "/ci"]);
         assert_eq!(parsed.meta.argument_hint.as_deref(), Some("<message>"));
         assert_eq!(parsed.meta.arguments, vec!["title", "scope"]);

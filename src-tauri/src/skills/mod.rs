@@ -214,13 +214,7 @@ fn import_skill_zip(source: &Path, skills_dir: &Path) -> Result<SkillMeta, Strin
     if skill_raw.trim().is_empty() {
         return Err("Zip does not contain SKILL.md".to_string());
     }
-    let dest_name = skill_path
-        .split('/')
-        .rev()
-        .nth(1)
-        .map(slugify)
-        .unwrap_or_else(|| "skill".to_string());
-    let parsed = parse_skill_markdown(&dest_name, &skill_raw, "user", None, Vec::new())?;
+    let parsed = parse_skill_markdown(&skill_raw, "user", None, Vec::new())?;
     let dest = skills_dir.join(&parsed.meta.id);
     fs::create_dir_all(&dest).map_err(|err| format!("create skill dir failed: {err}"))?;
     for i in 0..archive.len() {
@@ -288,7 +282,7 @@ allowed-tools: Bash(git:*)
 # Body
 "#;
 
-        let parsed = parse_skill_markdown("test-skill", raw, "user", None, Vec::new()).unwrap();
+        let parsed = parse_skill_markdown(raw, "user", None, Vec::new()).unwrap();
 
         assert!(parsed.meta.recommended_tools.contains(&"fetch".to_string()));
         assert!(parsed
@@ -305,7 +299,6 @@ allowed-tools: Bash(git:*)
     #[test]
     fn parse_skill_requires_name_and_description() {
         let err = parse_skill_markdown(
-            "missing-name",
             r#"---
 description: Missing name.
 ---
@@ -323,7 +316,6 @@ description: Missing name.
     #[test]
     fn disable_model_invocation_parses_from_frontmatter() {
         let parsed = parse_skill_markdown(
-            "manual-only",
             r#"---
 name: manual-only
 description: Only when invoked explicitly.
