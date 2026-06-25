@@ -17,6 +17,7 @@ import {
   kbListDocuments,
   kbDeleteDocument,
   kbUploadDocument,
+  kbImportUrl,
   kbReindexLibrary,
   kbUpdateEmbedding,
   onKbIndex,
@@ -24,7 +25,7 @@ import {
   type KnowledgeDocument,
 } from '../chat/knowledgeBase'
 
-const UPLOAD_EXTS = ['txt', 'text', 'log', 'csv', 'tsv', 'md', 'markdown', 'mdown', 'mkd', 'pdf']
+const UPLOAD_EXTS = ['txt', 'text', 'log', 'csv', 'tsv', 'md', 'markdown', 'mdown', 'mkd', 'pdf', 'docx', 'xlsx', 'html', 'htm']
 
 // Embedding 模型选择器：从 provider 的 availableModels 取建议（含未启用的 embedding
 // 模型，如 bge-m3 / text-embedding-3-small），并允许自由输入——有些 provider 不在
@@ -154,6 +155,9 @@ export function KnowledgeBasePanel({
   const [editProviderId, setEditProviderId] = useState('')
   const [editModel, setEditModel] = useState('')
 
+  // 网址导入输入框
+  const [urlInput, setUrlInput] = useState('')
+
   const selected = libraries.find((l) => l.id === selectedId) ?? null
 
   const refreshLibraries = useCallback(async () => {
@@ -265,6 +269,24 @@ export function KnowledgeBasePanel({
     setBusy(false)
     if (failures.length > 0) {
       setError(t(`${failures.length} 个文件导入失败：`, `${failures.length} file(s) failed: `) + failures.join('; '))
+    }
+  }
+
+  const handleImportUrl = async () => {
+    if (!selectedId) return
+    const url = urlInput.trim()
+    if (!url) return
+    setBusy(true)
+    setError(null)
+    try {
+      await kbImportUrl(selectedId, url)
+      setUrlInput('')
+      await refreshDocs(selectedId).catch(() => {})
+      await refreshLibraries()
+    } catch (e) {
+      setError(t('网址导入失败：', 'URL import failed: ') + String(e))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -553,11 +575,30 @@ export function KnowledgeBasePanel({
                 </button>
               </div>
 
+              {/* 网址导入：抓取网页正文入库 */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  className="min-w-[260px] flex-1"
+                  value={urlInput}
+                  onChange={setUrlInput}
+                  placeholder={t('粘贴网址导入网页正文（https://…）', 'Paste a URL to import page text (https://…)')}
+                  mono
+                />
+                <button
+                  type="button"
+                  disabled={busy || !urlInput.trim()}
+                  onClick={handleImportUrl}
+                  className="inline-flex items-center gap-1 rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  <Plus size={14} /> {t('导入网址', 'Add URL')}
+                </button>
+              </div>
+
               {/* 文档列表 */}
               <div className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">
                 {docs.length === 0 ? (
                   <p className="px-3 py-4 text-center text-sm text-zinc-400">
-                    {t('暂无文档。支持 txt / md / pdf。', 'No documents. Supports txt / md / pdf.')}
+                    {t('暂无文档。支持 txt / md / pdf / docx / xlsx / html，或导入网址。', 'No documents. Supports txt / md / pdf / docx / xlsx / html, or import a URL.')}
                   </p>
                 ) : (
                   docs.map((doc) => (

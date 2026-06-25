@@ -290,6 +290,117 @@ pub(crate) async fn kb_upload_document(
     Ok(doc)
 }
 
+/// Import a web page into a library. Fetches the URL, extracts readable text
+/// (HTML → article text via the shared `web_fetch` extractor; non-HTML kept as
+/// text), snapshots the extracted Markdown under `sources/` (so re-index never
+/// re-fetches), dedups by content hash, registers the doc, and indexes it.
+#[tauri::command]
+pub(crate) async fn kb_import_url(
+    app: AppHandle,
+    kb_id: String,
+    url: String,
+) -> Result<KnowledgeDocument, String> {
+    let _lib = super::get_library(&app, &kb_id)?;
+    let url = url.trim().to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("Only http(s) URLs are supported".to_string());
+    }
+
+    // Fetch + read body (drop the state guard before parsing).
+    let (body, is_html) = {
+        let state = app.state::<AppState>();
+        let resp = crate::api::with_standard_request_timeout(
+            state
+                .http
+                .get(&url)
+                .header("User-Agent", "Mozilla/5.0 (compatible; KivioBot/1.0)"),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("fetch {url}: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("fetch {url}: {e}"))?;
+        let is_html = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_ascii_lowercase().contains("html"))
+            .unwrap_or(false);
+        let body = resp.text().await.map_err(|e| format!("read body: {e}"))?;
+        (body, is_html)
+    };
+
+    let text = if is_html || body.trim_start().starts_with('<') {
+        crate::native_tools::html_to_text(&body)
+    } else {
+        body
+    };
+    if text.trim().is_empty() {
+        return Err("No extractable text at that URL".to_string());
+    }
+
+    // Title from the first `# heading` the extractor emitted, else the URL.
+    let title = truncate_name(
+        &text
+            .lines()
+            .find_map(|l| l.strip_prefix("# ").map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| url.clone()),
+    );
+
+    let bytes = text.into_bytes();
+    let hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    // Dedup by extracted-content hash: re-importing an unchanged page is a no-op.
+    if let Some(existing) = super::doc_by_hash(&app, &kb_id, &hash)? {
+        return Ok(existing);
+    }
+
+    let doc_id = super::gen_id("doc");
+    // Snapshot as `.md` so the normal pipeline re-parses the extracted text.
+    let dest = sources_dir(&app, &kb_id)?.join(format!(
+        "{doc_id}__{}.md",
+        sanitize_filename(&title)
+    ));
+    fs::write(&dest, &bytes).map_err(|e| format!("write source snapshot: {e}"))?;
+
+    let doc = KnowledgeDocument {
+        id: doc_id.clone(),
+        name: title,
+        size_bytes: bytes.len() as u64,
+        hash,
+        chunk_count: 0,
+        status: DocStatus::Indexing,
+        error: None,
+        created_at: chrono::Local::now().timestamp(),
+    };
+    if let Err(e) = super::insert_doc(&app, &kb_id, &doc) {
+        let _ = fs::remove_file(&dest);
+        return Err(e);
+    }
+    let _ = refresh_library_counts(&app, &kb_id);
+
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run_index(app2, kb_id, doc_id).await;
+    });
+
+    Ok(doc)
+}
+
+/// Cap a derived document name (and the filename built from it) to a sane length.
+fn truncate_name(s: &str) -> String {
+    let t = s.trim();
+    if t.chars().count() <= 120 {
+        t.to_string()
+    } else {
+        t.chars().take(120).collect()
+    }
+}
+
 /// Re-index every document in a library from its stored source snapshot. Used
 /// after the embedding model changes (vectors of the old dimension are dropped
 /// first). Documents are flipped to `indexing` immediately; work runs in the

@@ -77,6 +77,10 @@ export async function kbUploadDocument(
   return invoke<KnowledgeDocument>('kb_upload_document', { kbId, filePath })
 }
 
+export async function kbImportUrl(kbId: string, url: string): Promise<KnowledgeDocument> {
+  return invoke<KnowledgeDocument>('kb_import_url', { kbId, url })
+}
+
 export async function kbReindexLibrary(kbId: string): Promise<void> {
   await invoke('kb_reindex_library', { kbId })
 }
