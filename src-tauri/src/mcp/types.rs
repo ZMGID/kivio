@@ -804,6 +804,41 @@ pub fn native_web_fetch_tool() -> ChatToolDefinition {
     }
 }
 
+/// `knowledge_search` — retrieve passages from the user's knowledge bases
+/// (RAG). Read-only. Returns passages each tagged with a `[n]` citation marker.
+pub fn native_knowledge_search_tool() -> ChatToolDefinition {
+    ChatToolDefinition {
+        id: "native__knowledge_search".to_string(),
+        name: "knowledge_search".to_string(),
+        description: "Search the user's knowledge base(s) for passages relevant to a query and return them with citation markers. Use this whenever the question may be answered by the user's uploaded documents. Each returned passage is prefixed with a [n] marker and its source; when you use a passage, cite it inline as [n]. If no relevant passage is returned, say you don't have that information in the knowledge base instead of guessing. By default this searches the libraries attached to the current conversation.".to_string(),
+        source: "native".to_string(),
+        server_id: None,
+        server_name: Some("Kivio".to_string()),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to look for. Use a focused natural-language query."
+                },
+                "kb_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional: restrict the search to these knowledge base ids. Defaults to the libraries attached to this conversation (or all libraries if none are attached)."
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Optional: number of passages to return (default 5)."
+                }
+            },
+            "required": ["query"]
+        }),
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
 /// Builtin native tool exposure: iterates the static registry in
 /// `mcp/native_registry.rs` (declaration order = model-facing order).
 pub fn list_native_builtin_tool_defs(

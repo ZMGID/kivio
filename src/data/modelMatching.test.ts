@@ -60,3 +60,31 @@ describe('hasModelInfo', () => {
     expect(hasModelInfo('unknown')).toBe(false)
   })
 })
+
+describe('embedding models', () => {
+  it('resolves BAAI/bge-m3 (provider-prefixed) with embedding info', () => {
+    const info = matchModel('BAAI/bge-m3')
+    expect(info?.capabilities?.embedding).toBe(true)
+    expect(info?.dimensions).toBe(1024)
+    expect(info?.multilingual).toBe(true)
+    expect(info?.contextWindow).toBe(8192)
+  })
+
+  it('knows OpenAI embedding dimensions', () => {
+    expect(matchModel('text-embedding-3-small')?.dimensions).toBe(1536)
+    expect(matchModel('text-embedding-3-large')?.dimensions).toBe(3072)
+  })
+
+  it('matches models/-prefixed Gemini embedding id', () => {
+    const info = matchModel('models/gemini-embedding-001')
+    expect(info?.capabilities?.embedding).toBe(true)
+    expect(info?.dimensions).toBe(3072)
+  })
+
+  it('carries embedding fields through resolveModelInfo', () => {
+    const info = resolveModelInfo('jina-embeddings-v3')
+    expect(info.capabilities?.embedding).toBe(true)
+    expect(info.dimensions).toBe(1024)
+    expect(info.multilingual).toBe(true)
+  })
+})

@@ -519,6 +519,15 @@ pub fn run() {
             skills::chat_skills_read,
             skills::chat_skills_import,
             skills::chat_skills_open_folder,
+            chat::knowledge_base::commands::kb_list_libraries,
+            chat::knowledge_base::commands::kb_create_library,
+            chat::knowledge_base::commands::kb_rename_library,
+            chat::knowledge_base::commands::kb_delete_library,
+            chat::knowledge_base::commands::kb_list_documents,
+            chat::knowledge_base::commands::kb_delete_document,
+            chat::knowledge_base::ingest::kb_upload_document,
+            chat::knowledge_base::ingest::kb_reindex_library,
+            chat::knowledge_base::ingest::kb_update_embedding,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

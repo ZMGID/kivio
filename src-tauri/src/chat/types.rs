@@ -375,6 +375,9 @@ pub struct Conversation {
     pub agent_todo_state: AgentTodoState,
     #[serde(default)]
     pub agent_plan_state: AgentPlanState,
+    /// 本会话挂载的知识库 id 列表；`knowledge_search` 缺省检索这些库。
+    #[serde(default)]
+    pub knowledge_base_ids: Vec<String>,
 }
 
 /// 对话列表项（index.json 中的元数据）

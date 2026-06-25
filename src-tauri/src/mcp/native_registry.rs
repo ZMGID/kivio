@@ -37,10 +37,11 @@ use super::registry::NativeToolContext;
 use super::types::{
     native_bash_output_tool, native_edit_file_tool, native_glob_files_tool,
     native_kill_background_tool, native_list_background_tool, native_list_dir_tool,
-    native_memory_modify_tool, native_memory_read_tool, native_memory_search_tool,
-    native_read_file_tool, native_run_command_tool, native_run_python_tool,
-    native_save_assistant_tool, native_search_files_tool, native_web_fetch_tool,
-    native_web_search_tool, native_write_file_tool, ChatToolDefinition, McpToolCallResult,
+    native_knowledge_search_tool, native_memory_modify_tool, native_memory_read_tool,
+    native_memory_search_tool, native_read_file_tool, native_run_command_tool,
+    native_run_python_tool, native_save_assistant_tool, native_search_files_tool,
+    native_web_fetch_tool, native_web_search_tool, native_write_file_tool, ChatToolDefinition,
+    McpToolCallResult,
 };
 
 /// Gate signature mirrors `list_native_builtin_tool_defs(native,
@@ -134,6 +135,16 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         read_only: true,
         requires_session_consent: false,
         call: NativeToolCall::Async(call_web_fetch),
+    },
+    NativeToolEntry {
+        name: "knowledge_search",
+        def: native_knowledge_search_tool,
+        enabled: |native, _, _| native.knowledge_search,
+        parallel_safe: true,
+        bypasses_approval: false,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(call_knowledge_search),
     },
     NativeToolEntry {
         name: "read",
@@ -427,6 +438,134 @@ fn call_web_fetch(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
+/// Knowledge-base retrieval (RAG). Embeds the query with each target library's
+/// own embedding model, runs a cosine search, merges the hits, and returns
+/// passages tagged with `[n]` citation markers plus structured hits for the UI.
+fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
+    Box::pin(async move {
+        use crate::chat::knowledge_base as kb;
+        use std::collections::BTreeMap;
+        use std::cmp::Ordering;
+
+        let query = ctx
+            .arguments
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if query.is_empty() {
+            return Err("knowledge_search query is empty".to_string());
+        }
+        let top_k = ctx
+            .arguments
+            .get("top_k")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .filter(|n| *n > 0)
+            .unwrap_or(5)
+            .min(20);
+
+        // Target libraries: explicit arg > conversation mount > all libraries.
+        let mut kb_ids: Vec<String> = ctx
+            .arguments
+            .get("kb_ids")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if kb_ids.is_empty() {
+            if let Some(nc) = ctx.native_ctx {
+                if let Ok(conv) = crate::chat::storage::load_conversation(ctx.app, &nc.conversation_id)
+                {
+                    kb_ids = conv.knowledge_base_ids.clone();
+                }
+            }
+        }
+        let libs = kb::load_libraries(ctx.app)?;
+        if kb_ids.is_empty() {
+            kb_ids = libs.iter().map(|l| l.id.clone()).collect();
+        }
+        if kb_ids.is_empty() {
+            return Ok(text_tool_result(
+                "No knowledge base is configured. Ask the user to create one and add documents."
+                    .to_string(),
+            ));
+        }
+
+        // Group by (provider, model) so each group is embedded with its own
+        // model; scores (all cosine) are merged across groups.
+        let mut groups: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+        for id in &kb_ids {
+            if let Some(l) = libs.iter().find(|l| &l.id == id) {
+                groups
+                    .entry((l.embedding_provider_id.clone(), l.embedding_model.clone()))
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
+        let attempts = if ctx.settings.retry_enabled {
+            ctx.settings.retry_attempts as usize
+        } else {
+            1
+        };
+
+        let mut all_hits: Vec<kb::ScoredChunk> = Vec::new();
+        for ((provider_id, model), ids) in groups {
+            let Some(provider) = ctx.settings.get_provider(&provider_id).cloned() else {
+                continue;
+            };
+            let qvec =
+                kb::embeddings::embed_query(ctx.state, &provider, &model, &query, attempts).await?;
+            all_hits.extend(kb::search(ctx.app, &ids, &qvec, top_k)?);
+        }
+        all_hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        all_hits.truncate(top_k);
+        all_hits.retain(|h| h.score > 0.0);
+
+        if all_hits.is_empty() {
+            return Ok(text_tool_result(
+                "No relevant passages found in the knowledge base.".to_string(),
+            ));
+        }
+
+        let mut content = format!(
+            "Found {} relevant passage(s). Cite each with its [n] marker.\n\n",
+            all_hits.len()
+        );
+        let mut struct_hits = Vec::with_capacity(all_hits.len());
+        for (i, h) in all_hits.iter().enumerate() {
+            let n = i + 1;
+            let src = match &h.chunk.heading_path {
+                Some(hp) => format!("{} — {}", h.chunk.doc_name, hp),
+                None => h.chunk.doc_name.clone(),
+            };
+            content.push_str(&format!("[{n}] {src}\n{}\n\n", h.chunk.text.trim()));
+            struct_hits.push(serde_json::json!({
+                "n": n,
+                "kbId": h.kb_id,
+                "docId": h.chunk.doc_id,
+                "docName": h.chunk.doc_name,
+                "headingPath": h.chunk.heading_path,
+                "score": h.score,
+                "text": h.chunk.text,
+            }));
+        }
+        let payload = serde_json::json!({ "hits": struct_hits });
+        Ok(McpToolCallResult {
+            content,
+            is_error: false,
+            raw: payload.clone(),
+            artifacts: Vec::new(),
+            structured_content: Some(payload),
+        })
+    })
+}
+
+
 fn call_memory_read(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         // Runtime second gate kept on purpose: the tool list is cached, so a
@@ -518,6 +657,7 @@ mod tests {
     const EXPECTED_ORDER: &[&str] = &[
         "web_search",
         "web_fetch",
+        "knowledge_search",
         "read",
         "ls",
         "grep",
@@ -599,6 +739,7 @@ mod tests {
             [
                 "web_search",
                 "web_fetch",
+                "knowledge_search",
                 "read",
                 "ls",
                 "grep",
@@ -649,6 +790,7 @@ mod tests {
             [
                 "web_search",
                 "web_fetch",
+                "knowledge_search",
                 "read",
                 "ls",
                 "grep",
@@ -673,6 +815,7 @@ mod tests {
             edit_file: true,
             run_command: true,
             run_python: true,
+            knowledge_search: true,
             workspace_roots: Vec::new(),
         };
         for entry in NATIVE_TOOLS {
@@ -720,6 +863,7 @@ mod tests {
             edit_file: false,
             run_command: false,
             run_python: false,
+            knowledge_search: false,
             workspace_roots: Vec::new(),
         };
         assert!(names(&off, true, false).is_empty());
@@ -760,6 +904,7 @@ mod tests {
             edit_file: true,
             run_command: true,
             run_python: true,
+            knowledge_search: true,
             workspace_roots: Vec::new(),
         };
         assert_eq!(
@@ -767,6 +912,7 @@ mod tests {
             [
                 "web_search",
                 "web_fetch",
+                "knowledge_search",
                 "read",
                 "ls",
                 "grep",

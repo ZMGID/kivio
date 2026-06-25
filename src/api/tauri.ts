@@ -560,7 +560,12 @@ export type ModelInfo = {
     streaming?: boolean
     webSearch?: boolean
     imageGeneration?: boolean
+    embedding?: boolean
   }
+  /** 嵌入模型的向量维度（默认/原生）。 */
+  dimensions?: number
+  /** 是否多语言（嵌入模型尤其关心）。 */
+  multilingual?: boolean
   pricing?: {
     input?: number
     output?: number

@@ -262,6 +262,7 @@ mod tests {
             context_state: ConversationContextState::default(),
             agent_plan_state: AgentPlanState::default(),
             agent_todo_state: AgentTodoState::default(),
+            knowledge_base_ids: Vec::new(),
         }
     }
 

@@ -84,6 +84,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 arboard = "3"
 enigo = "0.1.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# 知识库 PDF 文本抽取（纯文本，扫描件留待 OCR fallback）。
+pdf-extract = "0.7"
 
 # RapidOCR 离线识别：用 oar-ocr 封装好的 PaddleOCR pipeline。
 # default-features = false 关掉 download-binaries，避免 cargo build 时下载 onnxruntime。

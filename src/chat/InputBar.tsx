@@ -31,6 +31,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
+import { KnowledgeBaseChip } from './KnowledgeBaseChip'
 import { api, type ChatToolDefinition } from '../api/tauri'
 import { chatApi } from './api'
 import { builtinAssistantGlyph } from './assistantIcons'
@@ -381,6 +382,9 @@ interface InputBarProps {
   usesExternalRuntime?: boolean
   externalAgentName?: string | null
   conversationId?: string | null
+  /** 本会话挂载的知识库 id；缺省时 knowledge_search 检索全部库 */
+  knowledgeBaseIds?: string[]
+  onChangeKnowledgeBaseIds?: (ids: string[]) => void | Promise<void>
 }
 
 export function InputBar({
@@ -414,6 +418,8 @@ export function InputBar({
   usesExternalRuntime = false,
   externalAgentName = null,
   conversationId = null,
+  knowledgeBaseIds = [],
+  onChangeKnowledgeBaseIds,
 }: InputBarProps) {
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
@@ -1745,8 +1751,15 @@ export function InputBar({
             </div>
           </div>
         </div>
-        {(projectEntryEnabled || showAssistantEntry) && (
+        {(projectEntryEnabled || showAssistantEntry || Boolean(onChangeKnowledgeBaseIds)) && (
           <div className="relative z-10 mt-2 flex items-center justify-start gap-1.5 px-3">
+            {onChangeKnowledgeBaseIds && (
+              <KnowledgeBaseChip
+                value={knowledgeBaseIds}
+                onChange={(ids) => void onChangeKnowledgeBaseIds(ids)}
+                disabled={disabled}
+              />
+            )}
             {projectEntryEnabled && (
               <button
                 type="button"

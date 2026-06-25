@@ -440,6 +440,8 @@ export interface Conversation {
   agentPlanState?: AgentPlanState
   agent_runtime?: AgentRuntimeConfig
   agentRuntime?: AgentRuntimeConfig
+  knowledge_base_ids?: string[]
+  knowledgeBaseIds?: string[]
 }
 
 export interface ConversationListItem {

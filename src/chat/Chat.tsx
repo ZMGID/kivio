@@ -2648,6 +2648,18 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     }
   }
 
+  const handleChangeKnowledgeBaseIds = async (ids: string[]) => {
+    if (!currentConversation) return
+    try {
+      const updatedConv = await chatApi.updateConversation(currentConversation.id, {
+        knowledgeBaseIds: ids,
+      })
+      applyConversation(updatedConv)
+    } catch (err) {
+      console.error('Failed to update knowledge bases:', err)
+    }
+  }
+
   const handleCancelStream = useCallback(async () => {
     const conversationId = currentConversationIdRef.current
     if (
@@ -2994,6 +3006,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       usesExternalRuntime={usesExternalRuntime}
                       externalAgentName={activeAgentRuntime.externalAgentId ?? null}
                       conversationId={currentConversation?.id ?? null}
+                      knowledgeBaseIds={currentConversation?.knowledge_base_ids ?? currentConversation?.knowledgeBaseIds ?? []}
+                      onChangeKnowledgeBaseIds={handleChangeKnowledgeBaseIds}
                     />
                   </div>
                 </div>
@@ -3048,6 +3062,8 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                     usesExternalRuntime={usesExternalRuntime}
                     externalAgentName={activeAgentRuntime.externalAgentId ?? null}
                     conversationId={currentConversation?.id ?? null}
+                    knowledgeBaseIds={currentConversation?.knowledge_base_ids ?? currentConversation?.knowledgeBaseIds ?? []}
+                    onChangeKnowledgeBaseIds={handleChangeKnowledgeBaseIds}
                   />
                     </>
                   )}

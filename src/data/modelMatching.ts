@@ -12,7 +12,10 @@ type DbEntry = {
     streaming?: boolean
     webSearch?: boolean
     imageGeneration?: boolean
+    embedding?: boolean
   }
+  dimensions?: number
+  multilingual?: boolean
   pricing?: {
     input: number
     output: number
@@ -103,7 +106,10 @@ export function resolveModelInfo(
       streaming: override.capabilities?.streaming ?? defaults.capabilities?.streaming,
       webSearch: override.capabilities?.webSearch ?? defaults.capabilities?.webSearch,
       imageGeneration: override.capabilities?.imageGeneration ?? defaults.capabilities?.imageGeneration,
+      embedding: override.capabilities?.embedding ?? defaults.capabilities?.embedding,
     },
+    dimensions: override.dimensions ?? defaults.dimensions,
+    multilingual: override.multilingual ?? defaults.multilingual,
     pricing: {
       input: override.pricing?.input ?? defaults.pricing?.input,
       output: override.pricing?.output ?? defaults.pricing?.output,
@@ -134,7 +140,10 @@ function toModelInfo(entry: DbEntry): ModelInfo {
       streaming: entry.capabilities.streaming ?? false,
       webSearch: entry.capabilities.webSearch ?? false,
       imageGeneration: entry.capabilities.imageGeneration ?? false,
+      embedding: entry.capabilities.embedding ?? false,
     },
+    dimensions: entry.dimensions,
+    multilingual: entry.multilingual,
     pricing: {
       input: entry.pricing?.input,
       output: entry.pricing?.output,

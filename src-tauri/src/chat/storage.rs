@@ -51,7 +51,7 @@ fn validate_assistant_id(id: &str) -> Result<(), String> {
     }
 }
 
-fn atomic_write(path: &Path, content: &str, label: &str) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, content: &str, label: &str) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("{label} path has no parent"))?;

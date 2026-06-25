@@ -34,6 +34,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ToolCallRecord, ToolCallStatus } from './types'
 import { isToolCallErrorStatus, normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
+import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
 import { AskUserBlock } from './AskUserBlock'
 import { ChatMarkdown } from './ChatMarkdown'
 import { WebSearchIcon } from '../settings/NavIcons'
@@ -566,6 +567,33 @@ function isFileMutationTool(rawName: string): boolean {
   return ['write', 'edit', 'write_file', 'edit_file'].includes(rawName)
 }
 
+function KnowledgeHits({ hits }: { hits: KbHitView[] }) {
+  return (
+    <div className="space-y-1.5">
+      {hits.map((hit, idx) => (
+        <div
+          key={`${hit.n}-${idx}`}
+          className="rounded-md border border-black/[0.08] bg-black/[0.02] p-2 dark:border-white/[0.1] dark:bg-white/[0.03]"
+        >
+          <div className="flex items-center gap-1.5 text-[10.5px] font-medium text-neutral-500 dark:text-neutral-400">
+            <span className="shrink-0 rounded bg-indigo-500/15 px-1 text-indigo-500">[{hit.n}]</span>
+            <span className="min-w-0 truncate">
+              {hit.docName}
+              {hit.headingPath ? ` · ${hit.headingPath}` : ''}
+            </span>
+            <span className="ml-auto shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+              {hit.score.toFixed(2)}
+            </span>
+          </div>
+          <div className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+            {hit.text}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function structuredFileMutation(toolCall: ToolCallRecord): FileMutationStructuredContent | null {
   const rawName = toolRawName(toolCall)
   if (!isFileMutationTool(rawName)) return null
@@ -791,6 +819,7 @@ function getToolName(toolCall: ToolCallRecord): string {
   if (raw === 'run_python') return 'Python'
   if (raw === 'web_search') return '联网搜索'
   if (raw === 'web_fetch') return '网页抓取'
+  if (raw === 'knowledge_search') return '知识库检索'
   if (raw === 'mixer_vision') return '混音器视觉分析'
   if (raw === 'mixer_generate_image') return '混音器生图'
   if (raw === 'todo_write' || raw === 'todo_update') return '更新 Todo'
@@ -1065,6 +1094,7 @@ function DefaultToolCallBlock({
   const source = getSource(toolCall)
   const duration = formatDuration(getDuration(toolCall))
   const fileMutation = useMemo(() => structuredFileMutation(toolCall), [toolCall])
+  const knowledgeHits = useMemo(() => knowledgeSearchHits(toolCall), [toolCall])
   const argumentPreview = useMemo(() => getArgumentPreview(toolCall), [toolCall])
   const resultPreview = useMemo(() => getResultPreview(toolCall), [toolCall])
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
@@ -1077,7 +1107,7 @@ function DefaultToolCallBlock({
       fileMutation.diagnostics?.length
     ),
   )
-  const hasDetails = Boolean(argumentPreview || resultPreview || error || hasFileMutationDetails)
+  const hasDetails = Boolean(argumentPreview || resultPreview || error || hasFileMutationDetails || knowledgeHits)
 
   return (
     <div className="not-prose mb-2 text-[12.5px] leading-5 text-neutral-500 dark:text-neutral-400">
@@ -1147,7 +1177,7 @@ function DefaultToolCallBlock({
                 </div>
               </div>
             )}
-            {resultPreview && (
+            {resultPreview && !knowledgeHits && (
               <div>
                 <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
                   {mergedLabels.result}
@@ -1157,6 +1187,7 @@ function DefaultToolCallBlock({
                 </div>
               </div>
             )}
+            {knowledgeHits && <KnowledgeHits hits={knowledgeHits} />}
             {fileMutation && hasFileMutationDetails && (
               <FileMutationDetails mutation={fileMutation} />
             )}

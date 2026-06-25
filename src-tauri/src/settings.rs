@@ -636,6 +636,8 @@ pub struct ChatNativeToolsConfig {
     pub run_command: bool,
     #[serde(default)]
     pub run_python: bool,
+    #[serde(default = "default_true")]
+    pub knowledge_search: bool,
     #[serde(default)]
     pub workspace_roots: Vec<String>,
 }
@@ -650,6 +652,7 @@ impl ChatNativeToolsConfig {
             || self.edit_file
             || self.run_command
             || self.run_python
+            || self.knowledge_search
     }
 }
 
@@ -670,6 +673,7 @@ impl Default for ChatNativeToolsConfig {
             edit_file: true,
             run_command: true,
             run_python: true,
+            knowledge_search: true,
             workspace_roots: Vec::new(),
         }
     }

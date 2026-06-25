@@ -5,6 +5,7 @@ pub mod attachments;
 pub mod commands;
 pub mod dsml_tools;
 pub mod image_generation;
+pub mod knowledge_base;
 pub mod memory;
 pub mod model;
 pub mod model_metadata;

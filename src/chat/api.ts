@@ -1149,6 +1149,7 @@ export const chatApi = {
       model?: string
       activeSkillId?: string | null
       assistantId?: string | null
+      knowledgeBaseIds?: string[]
     }
   ): Promise<Conversation> {
     if (!isTauriRuntime()) return mockChatApi.updateConversation(conversationId, updates)
@@ -1168,6 +1169,7 @@ export const chatApi = {
         model: updates.model,
         activeSkillId: updates.activeSkillId,
         assistantId: updates.assistantId,
+        knowledgeBaseIds: updates.knowledgeBaseIds,
       }
     )
     if (!result.success) {

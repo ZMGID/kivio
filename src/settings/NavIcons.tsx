@@ -32,6 +32,18 @@ export function GeneralIcon(props: IconProps) {
   )
 }
 
+// 知识库：书本 + 书脊
+export function KnowledgeIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <path d="M5 4.5 H17 a2 2 0 0 1 2 2 V19 a1.5 1.5 0 0 0 -1.5 -1.5 H5 Z" />
+      <path d="M5 4.5 a1.5 1.5 0 0 0 -1.5 1.5 V18 a1.5 1.5 0 0 0 1.5 1.5" />
+      <path d="M8.5 9 H14.5" />
+      <path d="M8.5 12 H13" />
+    </svg>
+  )
+}
+
 // 输入翻译：A 字 + CJK 字符
 export function TranslateIcon(props: IconProps) {
   return (

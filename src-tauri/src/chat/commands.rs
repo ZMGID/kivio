@@ -337,6 +337,7 @@ pub(crate) fn create_chat_conversation_internal(
                 context_state: ConversationContextState::default(),
                 agent_todo_state: AgentTodoState::default(),
                 agent_plan_state: AgentPlanState::default(),
+                knowledge_base_ids: Vec::new(),
                 agent_runtime: settings.chat.default_agent_runtime.clone(),
             };
 
@@ -665,6 +666,7 @@ pub(crate) fn chat_create_builder_conversation(
         context_state: ConversationContextState::default(),
         agent_todo_state: AgentTodoState::default(),
         agent_plan_state: AgentPlanState::default(),
+        knowledge_base_ids: Vec::new(),
         agent_runtime: crate::chat::AgentRuntimeConfig::default(),
     };
     save_conversation(&app, &conversation)?;
@@ -5061,6 +5063,7 @@ pub(crate) fn chat_update_conversation(
     model: Option<String>,
     active_skill_id: Option<String>,
     assistant_id: Option<String>,
+    knowledge_base_ids: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
 
@@ -5133,6 +5136,15 @@ pub(crate) fn chat_update_conversation(
             conversation.assistant_id = Some(snapshot.id.clone());
             conversation.assistant_snapshot = Some(snapshot);
         }
+    }
+    if let Some(ids) = knowledge_base_ids {
+        // Drop blanks/dups; order preserved.
+        let mut seen = std::collections::HashSet::new();
+        conversation.knowledge_base_ids = ids
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+            .collect();
     }
 
     conversation.updated_at = chrono::Local::now().timestamp();
@@ -6133,6 +6145,7 @@ mod tests {
             },
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
+            knowledge_base_ids: Vec::new(),
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         }
     }
@@ -6238,6 +6251,7 @@ mod tests {
             context_state: ConversationContextState::default(),
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
+            knowledge_base_ids: Vec::new(),
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         };
         let result = AuxiliaryVisionResult {
@@ -6365,6 +6379,7 @@ mod tests {
             context_state: ConversationContextState::default(),
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
+            knowledge_base_ids: Vec::new(),
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         };
 
@@ -6481,6 +6496,7 @@ mod tests {
             context_state: ConversationContextState::default(),
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
+            knowledge_base_ids: Vec::new(),
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         };
 

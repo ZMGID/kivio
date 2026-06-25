@@ -28,7 +28,7 @@ import {
 import { i18n } from './i18n'
 import {
   GeneralIcon, TranslateIcon, ScreenshotIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  CodeIcon, AgentIcon, McpIcon, SkillIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon,
+  CodeIcon, AgentIcon, McpIcon, SkillIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon, KnowledgeIcon,
 } from './NavIcons'
 import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, stableStringify } from './utils'
 import { PROVIDER_PRESETS, type ProviderPreset } from './providerPresets'
@@ -51,8 +51,9 @@ import {
   SettingsGroup,
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
+import { KnowledgeBasePanel } from './KnowledgeBasePanel'
 
-export type SettingsTab = 'general' | 'translate' | 'screenshot' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'mcp' | 'skill' | 'webSearch' | 'connectors' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'translate' | 'screenshot' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'mcp' | 'skill' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 type MemoryLayerKey = 'l1' | 'l2'
@@ -2071,6 +2072,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: AgentIcon },
     { id: 'mcp' as const, label: 'MCP', icon: McpIcon },
     { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
+    { id: 'knowledge' as const, label: lang === 'zh' ? '知识库' : 'Knowledge', icon: KnowledgeIcon },
     { id: 'skill' as const, label: 'Skill', icon: SkillIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '用量统计' : 'Usage', icon: UsageIcon },
@@ -2134,6 +2136,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     skill: {
       title: 'Skill',
       subtitle: lang === 'zh' ? '管理内置与用户 Skill。' : 'Manage built-in and user Skills.',
+    },
+    knowledge: {
+      title: lang === 'zh' ? '知识库' : 'Knowledge',
+      subtitle: lang === 'zh'
+        ? '导入文档建立向量知识库，对话中由 agent 检索并标注出处。'
+        : 'Import documents into vector libraries the agent retrieves and cites in chat.',
     },
     webSearch: {
       title: t.tabWebSearch,
@@ -3756,6 +3764,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   }
                 }}
               />
+            )}
+
+            {/* ===== 知识库标签页 ===== */}
+            {activeTab === 'knowledge' && (
+              <KnowledgeBasePanel providers={settings?.providers ?? []} lang={lang} />
             )}
 
             {/* ===== Skill 标签页 ===== */}
