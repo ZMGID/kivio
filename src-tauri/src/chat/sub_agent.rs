@@ -3304,4 +3304,658 @@ mod tests {
             None => format!("No sub-agent task found for '{id}'"),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Loop-level integration: orchestrator fan-out + single await_agents join.
+    //
+    // The 6 `await_agents` unit tests above exercise the handler in isolation.
+    // The gap this section closes is the END-TO-END property inside the REAL
+    // `run_agent_loop` acting as the orchestrator: it fans out ≥2 background
+    // sub-agents, collects them with ONE `await_agents` call (a runtime join,
+    // not a model poll loop), reaches a final answer, and NEVER invokes
+    // `check_agent_result`.
+    //
+    // What is REAL here:
+    //   * the orchestrator's `run_agent_loop` — the production engine, driven
+    //     against a scripted mock model wire (body-capturing TCP server).
+    //   * the `await_agents` tool — the production `handle_await_agents`,
+    //     invoked by the loop's own tool executor. It only reads
+    //     `SubAgentManager` + generation state, so no `AppHandle` is needed.
+    //   * the background sub-agents — real detached `run_agent_loop` runs (via
+    //     the existing `spawn_detached_sub_run` helper) registered on the same
+    //     shared `SubAgentManager`, each driven by its own `MockSubServer`,
+    //     gated so `await_agents` truly blocks until released.
+    //   * generation / cancellation state — the real `AppState`, so the
+    //     cooperative-cancel variant exercises production cancel logic.
+    //
+    // What is TEST-SHIMMED (and why):
+    //   * the `agent` DISPATCH tool. Production `handle_agent_spawn` is bound to
+    //     a concrete `AppHandle<Wry>` (a `tao` event loop can't be built off the
+    //     main thread), so it cannot run verbatim in a `#[tokio::test]`. The
+    //     orchestrator therefore registers a TEST `agent` tool whose executor
+    //     replicates `handle_agent_spawn`'s detach block via the same
+    //     `spawn_detached_sub_run` helper the PR1 detach tests already use, then
+    //     returns the task_id immediately — exactly the background dispatch
+    //     contract. `await_agents` (the real handler) then waits on those real
+    //     detached tasks.
+
+    /// Body-capturing multi-response mock for the orchestrator's OpenAI-compatible
+    /// chat endpoint. Mirrors `loop_tests::MockModelServer` (which lives in a
+    /// different test module): serves one canned JSON completion per accepted
+    /// connection, in accept order, and records each request body so the test can
+    /// assert which tool calls the orchestrator emitted (and, crucially, which it
+    /// did NOT).
+    struct MockOrchestratorServer {
+        base_url: String,
+        captured_bodies: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockOrchestratorServer {
+        fn start(responses: Vec<String>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind orchestrator server");
+            let addr = listener.local_addr().expect("orchestrator server addr");
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let captured_for_thread = Arc::clone(&captured);
+            std::thread::spawn(move || {
+                for body in responses {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        return;
+                    };
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                        .ok();
+                    match read_http_request_capturing(&mut stream) {
+                        Ok(request_body) => {
+                            captured_for_thread
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(request_body);
+                        }
+                        Err(_) => continue,
+                    }
+                    write_json(&mut stream, &body);
+                }
+            });
+            Self {
+                base_url: format!("http://{addr}/v1"),
+                captured_bodies: captured,
+            }
+        }
+
+        fn captured_bodies(&self) -> Vec<String> {
+            self.captured_bodies
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+    }
+
+    /// Like `read_http_request`, but returns the request body text so the test can
+    /// assert the orchestrator's emitted tool-call names.
+    fn read_http_request_capturing(stream: &mut TcpStream) -> std::io::Result<String> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end = loop {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "client closed before request end",
+                ));
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        while buf.len() < header_end + content_length {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok(String::from_utf8_lossy(&buf[header_end..]).into_owned())
+    }
+
+    /// One assistant turn with N parallel `agent` tool calls, each `background:true`.
+    /// `calls` is `(tool_call_id, task_name)` — the task name is passed in the args
+    /// so the test executor can mint a deterministic task_id per dispatch.
+    fn fanout_agent_calls_json(calls: &[(&str, &str)]) -> String {
+        let tool_calls: Vec<Value> = calls
+            .iter()
+            .map(|(call_id, name)| {
+                serde_json::json!({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "agent",
+                        "arguments": serde_json::json!({
+                            "name": name,
+                            "prompt": "do the task",
+                            "background": true
+                        }).to_string()
+                    }
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": { "role": "assistant", "content": Value::Null, "tool_calls": tool_calls }
+            }],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10 }
+        })
+        .to_string()
+    }
+
+    /// One assistant turn with a single `await_agents` call (no args ⇒ all in-flight).
+    fn await_agents_call_json(call_id: &str) -> String {
+        serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": Value::Null,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": { "name": "await_agents", "arguments": "{}" }
+                    }]
+                }
+            }],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10 }
+        })
+        .to_string()
+    }
+
+    /// Orchestrator host: identical no-op stream/record surface as `TestSubHost`,
+    /// but its generation check consults the REAL `AppState` for the ORCHESTRATOR
+    /// conversation, so the loop's per-call `tokio::select!` cancel path and
+    /// `handle_await_agents`'s own generation check agree on one source of truth.
+    struct OrchestratorHost {
+        state: Arc<AppState>,
+        conversation_id: String,
+    }
+
+    impl AgentHost for OrchestratorHost {
+        fn emit_stream_delta(
+            &self,
+            _conversation_id: &str,
+            _run_id: &str,
+            _message_id: &str,
+            _delta: &str,
+            _reasoning_delta: Option<&str>,
+            _segment: Option<&ChatMessageSegment>,
+        ) {
+        }
+        fn emit_stream_done(
+            &self,
+            _conversation_id: &str,
+            _run_id: &str,
+            _message_id: &str,
+            _reason: &str,
+            _full: &str,
+        ) {
+        }
+        fn emit_tool_record(
+            &self,
+            _conversation_id: &str,
+            _run_id: &str,
+            _message_id: &str,
+            _record: &ToolCallRecord,
+        ) {
+        }
+        fn request_tool_approval<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            _record: &'a ToolCallRecord,
+        ) -> AgentHostFuture<'a, bool> {
+            Box::pin(async move { true })
+        }
+        fn request_user_response<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            _record: &'a ToolCallRecord,
+            _prompt: AskUserPromptPayload,
+        ) -> AgentHostFuture<'a, AskUserResponseResult> {
+            Box::pin(async move {
+                AskUserResponseResult {
+                    phase: "cancelled".to_string(),
+                    answers: HashMap::new(),
+                }
+            })
+        }
+        fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
+            // The orchestrator run is governed solely by its own conversation's
+            // generation in the real AppState.
+            let _ = conversation_id;
+            self.state
+                .is_chat_generation_active(&self.conversation_id, generation)
+        }
+        fn wait_for_generation_inactive<'a>(
+            &'a self,
+            conversation_id: &'a str,
+            generation: u64,
+        ) -> AgentHostFuture<'a, ()> {
+            Box::pin(async move {
+                loop {
+                    if !self.is_generation_active(conversation_id, generation) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+        }
+    }
+
+    /// The orchestrator's tool executor. Handles exactly the two tools the
+    /// scripted orchestrator emits:
+    ///   * `agent` → replicate the PR1 background dispatch: spawn a real detached
+    ///     sub-run via `spawn_detached_sub_run` and return its task_id IMMEDIATELY.
+    ///   * `await_agents` → the REAL `handle_await_agents` (runtime join).
+    /// A `check_agent_result` call would be a regression (model polling): it is
+    /// counted and surfaced as a hard failure so the "no poll" property is proven
+    /// from the executor side as well as the request-body side.
+    struct OrchestratorExecutor {
+        state: Arc<AppState>,
+        /// Per-dispatch sub-server base URLs, keyed by task name, so each
+        /// background sub-agent gets a distinct gated result.
+        sub_providers: Arc<Mutex<HashMap<String, ModelProvider>>>,
+        check_agent_result_calls: Arc<AtomicUsize>,
+        await_calls: Arc<AtomicUsize>,
+    }
+
+    impl ToolExecutor for OrchestratorExecutor {
+        fn call<'a>(
+            &'a self,
+            ctx: &'a ToolExecutionContext<'a>,
+            tool: &'a ChatToolDefinition,
+            arguments: Value,
+            _skill_cache: Option<&'a mut crate::skills::SkillRunCache>,
+        ) -> ToolExecutorFuture<'a> {
+            let state = Arc::clone(&self.state);
+            let sub_providers = Arc::clone(&self.sub_providers);
+            let check_calls = Arc::clone(&self.check_agent_result_calls);
+            let await_calls = Arc::clone(&self.await_calls);
+            let conversation_id = ctx.conversation_id.to_string();
+            let run_id = ctx.run_id.to_string();
+            let message_id = ctx.message_id.to_string();
+            let tool_call_id = ctx.tool_call_id.to_string();
+            let generation = ctx.generation;
+            let depth = ctx.depth;
+            let tool_name = tool.name.clone();
+            Box::pin(async move {
+                match tool_name.as_str() {
+                    AGENT_TOOL_NAME => {
+                        let name = arguments
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("worker")
+                            .to_string();
+                        let provider = sub_providers
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get(&name)
+                            .cloned()
+                            .expect("a sub-provider was registered for this dispatch name");
+                        // Use the task name as the deterministic task_id so the
+                        // test can assert per-agent results without guessing.
+                        spawn_detached_sub_run(
+                            Arc::clone(&state),
+                            provider,
+                            &conversation_id,
+                            &run_id,
+                            generation,
+                            &name,
+                        );
+                        // Background dispatch returns the task_id immediately.
+                        Ok(McpToolCallResult {
+                            content: format!("Dispatched background sub-agent '{name}' (task_id: {name}). It is running; collect it later with await_agents."),
+                            is_error: false,
+                            raw: Value::Null,
+                            artifacts: Vec::new(),
+                            structured_content: None,
+                        })
+                    }
+                    AWAIT_AGENTS_TOOL_NAME => {
+                        await_calls.fetch_add(1, Ordering::SeqCst);
+                        let native_ctx = crate::mcp::registry::NativeToolContext {
+                            conversation_id: conversation_id.clone(),
+                            message_id: message_id.clone(),
+                            tool_call_id: Some(tool_call_id.clone()),
+                            run_id: run_id.clone(),
+                            generation,
+                            depth,
+                        };
+                        handle_await_agents(&state, &native_ctx, &arguments).await
+                    }
+                    "check_agent_result" => {
+                        // A model poll — the exact failure mode PR3 eliminates.
+                        check_calls.fetch_add(1, Ordering::SeqCst);
+                        Err("REGRESSION: orchestrator polled check_agent_result".to_string())
+                    }
+                    other => Err(format!("unexpected tool in orchestrator test: {other}")),
+                }
+            })
+        }
+    }
+
+    /// Build the orchestrator's `run_agent_loop` config: a top-level run (depth 0)
+    /// whose tool table is the real `agent` + `await_agents` definitions, with a
+    /// generous round budget so the 3-round script (fan-out → await → final)
+    /// completes without hitting the round limit.
+    fn orchestrator_run_config<'a>(
+        state: &'a AppState,
+        base_url: &str,
+        conversation_id: &str,
+    ) -> AgentRunConfig<'a> {
+        AgentRunConfig {
+            entry: AgentRunEntry::Send,
+            state,
+            conversation_id: conversation_id.to_string(),
+            tool_conversation_id: conversation_id.to_string(),
+            depth: 0,
+            run_id: "orch-run".to_string(),
+            message_id: "orch-msg".to_string(),
+            generation: state.next_chat_generation(conversation_id),
+            provider: test_provider(base_url),
+            model: "test-model".to_string(),
+            runtime_messages: vec![
+                serde_json::json!({ "role": "system", "content": "you orchestrate workers" }),
+                serde_json::json!({ "role": "user", "content": "research two topics in parallel" }),
+            ],
+            // The real spawn + await tool definitions.
+            tools: vec![agent_tool(), await_agents_tool()],
+            blocked_tool_calls: Vec::new(),
+            settings: Settings::default(),
+            effective_chat_tools: ChatToolsConfig {
+                max_tool_rounds: Some(8),
+                ..ChatToolsConfig::default()
+            },
+            language: "zh-CN".to_string(),
+            has_image: false,
+            thinking_enabled: false,
+            stream_enabled: false,
+            max_output_tokens: 1024,
+            retry_attempts: 1,
+            skill_registry: SkillRegistry::default(),
+            active_skill_id: None,
+            active_skill_detail: None,
+            assistant_snapshot: None,
+            custom_system_prompt: String::new(),
+            provider_tools_fallback_system_prompt: String::new(),
+        }
+    }
+
+    /// THE integration test (happy path). Drives the real `run_agent_loop` as the
+    /// orchestrator against a scripted mock model:
+    ///   round 1: two `agent` calls, both `background:true` (fan-out);
+    ///   round 2: ONE `await_agents` call (no args ⇒ all in-flight);
+    ///   round 3: a final assistant answer (no tool calls) ⇒ loop ends.
+    /// The two background sub-agents are real detached runs gated until the test
+    /// releases them, so `await_agents` BLOCKS in the runtime then returns BOTH.
+    ///
+    /// Asserts (the point of the test):
+    ///   1. `await_agents` invoked exactly ONCE; its single result carries BOTH
+    ///      sub-agent results, labeled by task_id/name.
+    ///   2. `check_agent_result` invoked ZERO times — proven two ways: the
+    ///      executor counter is 0, and no captured request body names it.
+    ///   3. the run reaches a final answer (loop returns Ok, content matches).
+    ///   4. `await_agents` actually BLOCKED until the sub-agents finished (the
+    ///      gate is released only AFTER await is observed in-flight, and both
+    ///      results — not "still running" — are present in the single result).
+    #[tokio::test]
+    async fn orchestrator_fans_out_then_collects_with_single_await_no_polling() {
+        ensure_tauri_async_runtime();
+
+        // Each background sub-agent gets its own gated sub-server with a distinct
+        // result, so the collected output is deterministic regardless of which
+        // detached run connects first.
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let server_a = MockSubServer::start(vec![MockSubResponse::GatedJson(
+            final_answer_json("RESULT_A"),
+            Arc::clone(&gate),
+        )]);
+        let server_b = MockSubServer::start(vec![MockSubResponse::GatedJson(
+            final_answer_json("RESULT_B"),
+            Arc::clone(&gate),
+        )]);
+
+        // Orchestrator model script: fan-out → await → final answer.
+        let orchestrator = MockOrchestratorServer::start(vec![
+            fanout_agent_calls_json(&[("call_a", "agent-a"), ("call_b", "agent-b")]),
+            await_agents_call_json("call_await"),
+            final_answer_json("Both workers finished: A and B."),
+        ]);
+
+        let state = Arc::new(crate::state::test_app_state());
+        let mut sub_providers = HashMap::new();
+        sub_providers.insert("agent-a".to_string(), test_provider(&server_a.base_url));
+        sub_providers.insert("agent-b".to_string(), test_provider(&server_b.base_url));
+
+        let check_agent_result_calls = Arc::new(AtomicUsize::new(0));
+        let await_calls = Arc::new(AtomicUsize::new(0));
+        let executor = OrchestratorExecutor {
+            state: Arc::clone(&state),
+            sub_providers: Arc::new(Mutex::new(sub_providers)),
+            check_agent_result_calls: Arc::clone(&check_agent_result_calls),
+            await_calls: Arc::clone(&await_calls),
+        };
+        let host = OrchestratorHost {
+            state: Arc::clone(&state),
+            conversation_id: "orch-conv".to_string(),
+        };
+
+        // Release the gate only AFTER both sub-agents are in-flight AND the
+        // orchestrator's await_agents has started waiting — proving await truly
+        // blocks in the runtime. We poll for that condition from a detached task.
+        let state_for_gate = Arc::clone(&state);
+        let await_calls_for_gate = Arc::clone(&await_calls);
+        let gate_for_release = Arc::clone(&gate);
+        let releaser = tauri::async_runtime::spawn(async move {
+            // Wait until both sub-agents are registered + Running (gated) and the
+            // orchestrator has entered await_agents at least once.
+            for _ in 0..400 {
+                let both_running = ["agent-a", "agent-b"].iter().all(|id| {
+                    matches!(
+                        state_for_gate.sub_agents.get(id).map(|r| r.status),
+                        Some(SubAgentStatus::Running)
+                    )
+                });
+                let awaiting = await_calls_for_gate.load(Ordering::SeqCst) >= 1;
+                if both_running && awaiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // Both are still gated (no result yet) at the moment await is waiting:
+            // confirm await is genuinely blocked on running tasks, not returning
+            // early on already-terminal records.
+            assert!(
+                state_for_gate
+                    .sub_agents
+                    .get("agent-a")
+                    .map(|r| r.result.is_none())
+                    .unwrap_or(false),
+                "agent-a must still be running (no result) while await blocks"
+            );
+            // Release → both sub-runs complete → await_agents unblocks.
+            let (lock, cvar) = &*gate_for_release;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        });
+
+        let config = orchestrator_run_config(&state, &orchestrator.base_url, "orch-conv");
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            run_agent_loop(config, &host, &executor),
+        )
+        .await
+        .expect("orchestrator run must not hang")
+        .expect("orchestrator run completes Ok");
+        let _ = releaser.await;
+
+        // (3) Final answer reached.
+        assert_eq!(result.stream_outcome, "completed");
+        assert_eq!(result.content, "Both workers finished: A and B.");
+
+        // (1) await_agents invoked exactly once, and its single result carried
+        // BOTH sub-agent results (collected in one call — no per-agent polling).
+        assert_eq!(
+            await_calls.load(Ordering::SeqCst),
+            1,
+            "await_agents must be invoked exactly once"
+        );
+        // (4) Both real results are present (not "still running") — proving await
+        // blocked until the gated sub-runs finished.
+        let a = state.sub_agents.get("agent-a").expect("agent-a record");
+        let b = state.sub_agents.get("agent-b").expect("agent-b record");
+        assert_eq!(a.status, SubAgentStatus::Completed);
+        assert_eq!(b.status, SubAgentStatus::Completed);
+        assert_eq!(a.result.as_deref(), Some("RESULT_A"));
+        assert_eq!(b.result.as_deref(), Some("RESULT_B"));
+
+        // (2a) check_agent_result never executed.
+        assert_eq!(
+            check_agent_result_calls.load(Ordering::SeqCst),
+            0,
+            "no polling: check_agent_result must never be invoked"
+        );
+        // (2b) and the orchestrator never even EMITTED a check_agent_result tool
+        // call. NOTE: the literal string "check_agent_result" DOES appear in every
+        // request — the `await_agents` tool DESCRIPTION says "do NOT poll
+        // check_agent_result". So we cannot assert its mere absence; instead we
+        // assert the function-call invocation shape never appears (the tool is not
+        // even in the orchestrator's tool table, so the only way it could show up
+        // is if the model had called it, which would echo into the history as
+        // `"name":"check_agent_result"` inside a tool_calls entry).
+        let bodies = orchestrator.captured_bodies();
+        assert_eq!(bodies.len(), 3, "fan-out + await + final = 3 model requests");
+        assert!(
+            bodies
+                .iter()
+                .all(|b| !b.contains("\"name\":\"check_agent_result\"")),
+            "no request history may contain a check_agent_result tool call"
+        );
+        // Conversely, the requests DO carry the tool calls the orchestrator
+        // actually made (agent fan-out + await_agents), confirming the script ran.
+        assert!(
+            bodies[1].contains("\"name\":\"agent\""),
+            "round-2 request history must echo the round-1 agent fan-out calls"
+        );
+        assert!(
+            bodies[2].contains("\"name\":\"await_agents\""),
+            "round-3 request history must echo the await_agents call"
+        );
+        // Sanity: the await result the orchestrator received (in request 3's
+        // history) carried both labeled results — the single-call collection.
+        assert!(
+            bodies[2].contains("RESULT_A") && bodies[2].contains("RESULT_B"),
+            "the final request's history must contain BOTH results from the one await_agents call"
+        );
+        assert!(
+            bodies[2].contains("agent-a") && bodies[2].contains("agent-b"),
+            "await result must label each sub-agent by id/name"
+        );
+
+        // Release any blocked server threads (gate already released above; this is
+        // belt-and-suspenders if the run finished before the releaser ran).
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+    }
+
+    /// Cooperative-cancel variant: while the orchestrator is parked inside
+    /// `await_agents` (sub-agents gated, never finishing on their own), the parent
+    /// generation is bumped (user stop). The loop must end promptly as cancelled —
+    /// no hang — via the same `generation_cascade_active` path production uses.
+    #[tokio::test]
+    async fn orchestrator_await_cancels_cooperatively_on_generation_bump() {
+        ensure_tauri_async_runtime();
+
+        // Gated sub-agent that never finishes on its own → await would block
+        // forever absent cancellation.
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let server_a = MockSubServer::start(vec![MockSubResponse::GatedJson(
+            final_answer_json("never observed"),
+            Arc::clone(&gate),
+        )]);
+
+        let orchestrator = MockOrchestratorServer::start(vec![
+            fanout_agent_calls_json(&[("call_a", "agent-c")]),
+            await_agents_call_json("call_await"),
+            // A final answer is scripted in case the run somehow proceeds; the
+            // cancel path should end the run before this is consumed.
+            final_answer_json("unexpected"),
+        ]);
+
+        let state = Arc::new(crate::state::test_app_state());
+        let mut sub_providers = HashMap::new();
+        sub_providers.insert("agent-c".to_string(), test_provider(&server_a.base_url));
+
+        let await_calls = Arc::new(AtomicUsize::new(0));
+        let check_calls = Arc::new(AtomicUsize::new(0));
+        let executor = OrchestratorExecutor {
+            state: Arc::clone(&state),
+            sub_providers: Arc::new(Mutex::new(sub_providers)),
+            check_agent_result_calls: Arc::clone(&check_calls),
+            await_calls: Arc::clone(&await_calls),
+        };
+        let host = OrchestratorHost {
+            state: Arc::clone(&state),
+            conversation_id: "orch-conv-cancel".to_string(),
+        };
+
+        // Bump the orchestrator generation once await is observed mid-wait.
+        let state_for_cancel = Arc::clone(&state);
+        let await_calls_for_cancel = Arc::clone(&await_calls);
+        let canceller = tauri::async_runtime::spawn(async move {
+            for _ in 0..400 {
+                if await_calls_for_cancel.load(Ordering::SeqCst) >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // Give the awaiter a beat to actually park on terminal_notify.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            state_for_cancel.cancel_chat_generation("orch-conv-cancel");
+        });
+
+        let config =
+            orchestrator_run_config(&state, &orchestrator.base_url, "orch-conv-cancel");
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            run_agent_loop(config, &host, &executor),
+        )
+        .await
+        .expect("cancelled orchestrator run must not hang")
+        .expect("cancelled run still returns Ok(result)");
+        let _ = canceller.await;
+
+        // The run ended as cancelled (loop-top / tool-round cancel), not by
+        // consuming the scripted final answer.
+        assert_eq!(
+            result.stream_outcome, "cancelled",
+            "generation bump during await must end the run cancelled"
+        );
+        // await_agents was entered exactly once and never polled.
+        assert_eq!(await_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(check_calls.load(Ordering::SeqCst), 0);
+
+        // Release the gate so the blocked sub-server thread exits cleanly.
+        {
+            let (lock, cvar) = &*gate;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        }
+    }
 }
