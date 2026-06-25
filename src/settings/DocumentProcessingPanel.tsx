@@ -180,8 +180,8 @@ export function DocumentProcessingPanel({
       <p className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">
         <FileCog size={12} className="shrink-0" />
         {t(
-          '第三方文档处理的后端尚未接入；当前所有文档仍由 Kivio 内置解析，此处配置会被保存以备接入。',
-          'Third-party document processing is not wired to the backend yet; all documents are still parsed by Kivio built-in. Settings here are saved for when it lands.',
+          'MinerU / Doc2X 走各自的异步云端 API（提交→轮询→取 Markdown），请填写有效密钥后用一个文档实测确认。自定义处理器约定：原始字节 POST 到接口地址，返回 Markdown 文本或 JSON。',
+          'MinerU / Doc2X use their async cloud APIs (submit → poll → fetch Markdown); add a valid key and test with one document to confirm. Custom processor contract: POST raw bytes to the URL, receive Markdown text or JSON.',
         )}
       </p>
     </SettingsGroup>

@@ -32,6 +32,7 @@ pub mod commands;
 pub mod embeddings;
 pub mod ingest;
 pub mod parse;
+pub mod process;
 pub mod rerank;
 pub mod store;
 

@@ -4,6 +4,7 @@ mod sandbox_exports;
 mod shell;
 
 pub use fetch::web_fetch;
+pub(crate) use fetch::html_to_text;
 pub use files::{
     edit_file, glob_files, list_dir, read_file, search_files, write_file, FileMutationResult,
     ReadFileResult, ReadFileState,

@@ -339,6 +339,17 @@ fn html_to_readable_text(html: &str) -> (Option<String>, String) {
     (title.map(|value| collapse_whitespace(&value)), text)
 }
 
+/// Extract readable plain text from an HTML document for knowledge-base ingest.
+/// Reuses the same article-extraction the `web_fetch` tool uses; prepends the
+/// page title as an `# h1` so it survives chunking.
+pub(crate) fn html_to_text(html: &str) -> String {
+    let (title, body) = html_to_readable_text(html);
+    match title {
+        Some(t) if !t.trim().is_empty() => format!("# {t}\n\n{body}"),
+        _ => body,
+    }
+}
+
 fn first_selector_text(document: &Html, selector: &str) -> Option<String> {
     let selector = Selector::parse(selector).ok()?;
     document.select(&selector).find_map(|element| {
