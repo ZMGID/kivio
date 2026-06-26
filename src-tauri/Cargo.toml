@@ -100,6 +100,15 @@ oar-ocr = { version = "0.6.3", default-features = false }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
 ndarray = "0.17"
 
+# Unix 平台公共依赖：后台命令需要 setsid/kill，kivio-code 交互输入需要 poll。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# ONNX Runtime 的 macOS/Linux 官方包都是 tar.gz，RapidOCR 安装器需要抽取其中的动态库。
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+
 # macOS 平台特有依赖（系统 API 调用）
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

@@ -104,9 +104,11 @@ fn scan_root_entries_headless(extra_paths: &[String]) -> Vec<SkillScanRoot> {
 
 /// Best-effort location of bundled skills next to the executable when running
 /// headless (no Tauri `resource_dir`). Checks `<exe_dir>/skills` and, for the
-/// macOS app-bundle layout, `<exe_dir>/../Resources/skills`. Returns `None`
-/// when neither exists (e.g. plain `cargo run`), which is fine — the CLI then
-/// surfaces only user skills.
+/// macOS app-bundle layout, `<exe_dir>/../Resources/skills`. Linux AppImage
+/// bundles place the CLI under `usr/bin` and resources under
+/// `usr/lib/Kivio/skills`, so that layout is checked too. Returns `None` when
+/// none exists (e.g. plain `cargo run`), which is fine — the CLI then surfaces
+/// only user skills.
 fn bundled_skills_dir_headless() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     bundled_skills_dir_from_exe(&exe)
@@ -127,6 +129,8 @@ fn bundled_skills_dir_from_exe(exe: &Path) -> Option<PathBuf> {
     let candidates = [
         exe_dir.join("skills"),
         exe_dir.join("..").join("Resources").join("skills"),
+        exe_dir.join("..").join("lib").join("Kivio").join("skills"),
+        exe_dir.join("..").join("lib").join("kivio").join("skills"),
     ];
     candidates.into_iter().find(|dir| dir.is_dir())
 }
@@ -384,7 +388,8 @@ description: Test skill.
     #[cfg(unix)]
     #[test]
     fn bundled_skills_dir_resolves_through_path_symlink() {
-        let base = std::env::temp_dir().join(format!("kivio-skill-symlink-{}", uuid::Uuid::new_v4()));
+        let base =
+            std::env::temp_dir().join(format!("kivio-skill-symlink-{}", uuid::Uuid::new_v4()));
         // Real binary lives in `bin_dir`, with `bin_dir/skills/<name>/SKILL.md`.
         let bin_dir = base.join("real");
         let skills_dir = bin_dir.join("skills").join("demo");
@@ -408,6 +413,34 @@ description: Test skill.
 
         // And of course resolving via the real path also works.
         assert!(bundled_skills_dir_from_exe(&real_bin).is_some());
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundled_skills_dir_resolves_linux_appdir_layout() {
+        let base =
+            std::env::temp_dir().join(format!("kivio-skill-appdir-{}", uuid::Uuid::new_v4()));
+        let bin_dir = base.join("Kivio.AppDir").join("usr").join("bin");
+        let skills_dir = base
+            .join("Kivio.AppDir")
+            .join("usr")
+            .join("lib")
+            .join("Kivio")
+            .join("skills")
+            .join("demo");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(skills_dir.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        let cli_bin = bin_dir.join("kivio-code");
+        fs::write(&cli_bin, "#!/bin/sh\n").unwrap();
+
+        let found = bundled_skills_dir_from_exe(&cli_bin).unwrap();
+        assert_eq!(
+            fs::canonicalize(found).unwrap(),
+            fs::canonicalize(skills_dir.parent().unwrap()).unwrap()
+        );
 
         fs::remove_dir_all(base).unwrap();
     }

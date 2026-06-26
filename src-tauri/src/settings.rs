@@ -154,7 +154,7 @@ pub struct ModelPricing {
  *
  * 字段在 sanitize_settings 中由 use_system_ocr 自动迁移：true→System，false→CloudVision。
  * persist_settings 写盘时反向镜像到 use_system_ocr 维持降级到 v2.5.x 的兼容性。
- * RapidOcr 模式降级会落回 CloudVision（use_system_ocr=false），可接受。
+ * RapidOcr 模式降级到旧版会落回 CloudVision（use_system_ocr=false），可接受。
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1595,8 +1595,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
     // 系统 OCR 依赖平台本地 OCR 能力（macOS Apple Vision / Windows.Media.Ocr）。其它平台
     // 同步来的旧配置必须关闭，否则截图翻译会误入不可用分支。
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
+    if !crate::ocr_port::system_ocr_available_on_current_platform() {
         settings.screenshot_translation.use_system_ocr = false;
     }
 
@@ -1605,7 +1604,8 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     //    保留用户此前选择离线 OCR 的隐私边界；模型未下载时由前端引导下载。
     // 2. 若 ocr_mode 缺省（老版本数据），按 use_system_ocr 反推：
     //    true→System，false→CloudVision
-    // 3. Linux 不支持 System / RapidOcr，强制落回 CloudVision
+    // 3. 非 macOS/Windows 不支持 System，强制落回 CloudVision。
+    // 4. RapidOcr 当前支持 macOS/Windows/Linux；其它平台强制落回 CloudVision。
     if matches!(
         settings.screenshot_translation.ocr_mode,
         Some(OcrMode::Legacy)
@@ -1620,14 +1620,10 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
                 OcrMode::CloudVision
             });
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        if matches!(
-            settings.screenshot_translation.ocr_mode,
-            Some(OcrMode::System) | Some(OcrMode::RapidOcr)
-        ) {
-            settings.screenshot_translation.ocr_mode = Some(OcrMode::CloudVision);
-        }
+    if let Some(mode) = settings.screenshot_translation.ocr_mode {
+        settings.screenshot_translation.ocr_mode = Some(
+            crate::ocr_port::normalize_ocr_mode_for_current_platform(mode),
+        );
     }
 
     settings
@@ -2145,7 +2141,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn sanitize_settings_preserves_rapidocr_mode() {
         let mut s = Settings::default();

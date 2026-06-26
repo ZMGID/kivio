@@ -11,15 +11,13 @@
 //! ONNX Runtime dylib 通过 `ort` 的 `load-dynamic` feature 在运行时加载,
 //! 安装包不带任何 ONNX Runtime 二进制。
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::HashMap;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use flate2::read::GzDecoder;
 use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
 use serde::Serialize;
@@ -39,6 +37,8 @@ use windows::{
 /// 当前平台 dylib 在 app data 目录里的本地文件名。下载完落到 model_dir/DYLIB_NAME。
 #[cfg(target_os = "macos")]
 const DYLIB_NAME: &str = "libonnxruntime.dylib";
+#[cfg(target_os = "linux")]
+const DYLIB_NAME: &str = "libonnxruntime.so.1.24.4";
 #[cfg(target_os = "windows")]
 const DYLIB_NAME: &str = "onnxruntime.dll";
 
@@ -49,12 +49,20 @@ const DYLIB_URL: &str =
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DYLIB_URL: &str =
   "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-x86_64-1.24.4.tgz";
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const DYLIB_URL: &str =
+  "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const DYLIB_URL: &str =
+  "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-aarch64-1.24.4.tgz";
 #[cfg(target_os = "windows")]
 const DYLIB_URL: &str =
   "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip";
 
 #[cfg(target_os = "macos")]
 const DYLIB_ARCHIVE_PATH: &str = "lib/libonnxruntime.dylib";
+#[cfg(target_os = "linux")]
+const DYLIB_ARCHIVE_PATH: &str = "lib/libonnxruntime.so.1.24.4";
 #[cfg(target_os = "windows")]
 const DYLIB_ARCHIVE_PATH: &str = "lib/onnxruntime.dll";
 #[cfg(target_os = "windows")]
@@ -144,6 +152,7 @@ pub struct RapidOcrInstallResult {
 /// AppState 持有的 RapidOCR 客户端。线程安全,Tauri command 间共享。
 pub struct RapidOcrClient {
     app: Option<AppHandle>,
+    model_dir_override: Option<PathBuf>,
     http: reqwest::Client,
     /// 首次 ocr_image 调用时初始化:ort::init_from + OAROCRBuilder.build,后续复用。
     /// init_from 全进程一次,所以这里也只能初始化一次;失败需重启 app 重试。
@@ -156,6 +165,7 @@ impl RapidOcrClient {
     pub fn new(app: &AppHandle, http: reqwest::Client) -> Arc<Self> {
         Arc::new(Self {
             app: Some(app.clone()),
+            model_dir_override: None,
             http,
             pipeline: OnceCell::new(),
             install_lock: Mutex::new(()),
@@ -167,6 +177,7 @@ impl RapidOcrClient {
     pub fn disabled() -> Arc<Self> {
         Arc::new(Self {
             app: None,
+            model_dir_override: None,
             http: reqwest::Client::new(),
             pipeline: OnceCell::new(),
             install_lock: Mutex::new(()),
@@ -179,6 +190,19 @@ impl RapidOcrClient {
     pub fn headless(http: reqwest::Client) -> Arc<Self> {
         Arc::new(Self {
             app: None,
+            model_dir_override: None,
+            http,
+            pipeline: OnceCell::new(),
+            install_lock: Mutex::new(()),
+        })
+    }
+
+    /// 测试/手动 smoke 用:显式指定模型目录,避免下载写入真实 app data。
+    #[cfg(test)]
+    fn with_model_dir_for_test(dir: PathBuf, http: reqwest::Client) -> Arc<Self> {
+        Arc::new(Self {
+            app: None,
+            model_dir_override: Some(dir),
             http,
             pipeline: OnceCell::new(),
             install_lock: Mutex::new(()),
@@ -187,6 +211,9 @@ impl RapidOcrClient {
 
     /// 模型 + dylib 落盘位置:`{app_data_dir}/rapidocr-models/`。
     fn model_dir(&self) -> Result<PathBuf, String> {
+        if let Some(dir) = &self.model_dir_override {
+            return Ok(dir.clone());
+        }
         let app = self
             .app
             .as_ref()
@@ -381,7 +408,7 @@ fn prepare_onnxruntime_dll_dir(_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn extract_archive_entry(bytes: &[u8], entry_suffix: &str, output: &Path) -> Result<(), String> {
     let reader = GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(reader);
@@ -972,4 +999,51 @@ fn is_cjk(c: char) -> bool {
         c as u32,
         0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x3040..=0x30ff | 0xac00..=0xd7af
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_model_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("kivio-{name}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn status_uses_explicit_model_dir_without_app_handle() {
+        let dir = temp_model_dir("rapidocr-status");
+        std::fs::create_dir_all(&dir).expect("create temp model dir");
+        let client = RapidOcrClient::with_model_dir_for_test(dir.clone(), reqwest::Client::new());
+
+        let status = client.status();
+
+        assert!(!status.models_available);
+        assert_eq!(
+            status.model_dir.as_deref(),
+            Some(dir.to_string_lossy().as_ref())
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "downloads ONNX Runtime + PP-OCR models and initializes the OCR pipeline"]
+    async fn linux_smoke_downloads_models_and_initializes_pipeline() {
+        let dir = temp_model_dir("rapidocr-linux-smoke");
+        std::fs::create_dir_all(&dir).expect("create temp model dir");
+        let client = RapidOcrClient::with_model_dir_for_test(dir.clone(), reqwest::Client::new());
+
+        let install = client.install().await;
+        assert!(install.success, "install failed: {}", install.message);
+        assert!(client.status().models_available);
+
+        let image_path = dir.join("blank.png");
+        let image = image::RgbaImage::from_pixel(320, 120, image::Rgba([255, 255, 255, 255]));
+        image.save(&image_path).expect("write smoke png");
+
+        let result = client.ocr_image(&image_path).await;
+        assert!(result.is_ok(), "ocr init/predict failed: {result:?}");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

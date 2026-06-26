@@ -1,13 +1,14 @@
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
-pub mod api;
 pub mod agents;
+pub mod api;
 pub mod capture_geometry;
+pub mod capture_port;
 pub mod chat;
 pub mod cli_install;
-pub mod external_agents;
 pub mod commands;
 pub mod connectors;
+pub mod external_agents;
 pub mod kivio_code;
 pub mod lens;
 pub mod lens_commands;
@@ -15,7 +16,9 @@ pub mod lens_commands;
 pub mod macos_ocr;
 pub mod mcp;
 pub mod native_tools;
+pub mod ocr_port;
 pub mod path_env;
+pub mod platform_capabilities;
 pub mod proc;
 pub mod prompts;
 pub mod rapidocr;
@@ -46,6 +49,8 @@ use std::{
 use tauri::{Emitter, Manager, State};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_global_shortcut::GlobalShortcutExt as _;
 use tauri_plugin_single_instance::init as init_single_instance;
 
 use api::build_http_client;
@@ -64,9 +69,52 @@ use windows::{ensure_overlay_panel, restore_previous_frontmost_app};
 
 /// 自启动参数，用于区分用户手动启动和系统自动启动
 const AUTOSTART_ARG: &str = "--from-autostart";
+const DESKTOP_SMOKE_ENV: &str = "KIVIO_DESKTOP_SMOKE";
+const DESKTOP_SMOKE_EXIT_AFTER_MS_ENV: &str = "KIVIO_DESKTOP_SMOKE_EXIT_AFTER_MS";
+const DESKTOP_SMOKE_PYODIDE_ASSETS: &[&str] = &[
+    // 发布包必须离线携带 Pyodide 核心、常用文档分析 wheels 和 CJK 字体。
+    "pyodide/pyodide.asm.js",
+    "pyodide/pyodide.asm.wasm",
+    "pyodide/pyodide-lock.json",
+    "pyodide/python_stdlib.zip",
+    "pyodide/pyodide-package-manifest.json",
+    "pyodide/cycler-0.12.1-py3-none-any.whl",
+    "pyodide/et_xmlfile-2.0.0-py3-none-any.whl",
+    "pyodide/fonttools-4.51.0-py3-none-any.whl",
+    "pyodide/kiwisolver-1.4.5-cp312-cp312-pyodide_2024_0_wasm32.whl",
+    "pyodide/matplotlib-3.5.2-cp312-cp312-pyodide_2024_0_wasm32.whl",
+    "pyodide/matplotlib_pyodide-0.2.2-py3-none-any.whl",
+    "pyodide/micropip-0.6.0-py3-none-any.whl",
+    "pyodide/NotoSansCJKsc-Regular.otf",
+    "pyodide/numpy-1.26.4-cp312-cp312-pyodide_2024_0_wasm32.whl",
+    "pyodide/openpyxl-3.1.5-py2.py3-none-any.whl",
+    "pyodide/packaging-23.2-py3-none-any.whl",
+    "pyodide/pandas-2.2.0-cp312-cp312-pyodide_2024_0_wasm32.whl",
+    "pyodide/pillow-10.2.0-cp312-cp312-pyodide_2024_0_wasm32.whl",
+    "pyodide/pyparsing-3.1.2-py3-none-any.whl",
+    "pyodide/pypdf-6.13.1-py3-none-any.whl",
+    "pyodide/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+    "pyodide/pytz-2024.1-py2.py3-none-any.whl",
+    "pyodide/seaborn-0.13.2-py3-none-any.whl",
+    "pyodide/six-1.16.0-py2.py3-none-any.whl",
+    "pyodide/xlrd-2.0.1-py2.py3-none-any.whl",
+];
 
 #[cfg(target_os = "macos")]
 const USER_WINDOW_LABELS: &[&str] = &["chat", "main"];
+
+#[cfg(target_os = "linux")]
+fn init_x11_threads_for_linux() {
+    #[link(name = "X11")]
+    extern "C" {
+        fn XInitThreads() -> std::os::raw::c_int;
+    }
+
+    // GTK/WebKit、全局热键和 XTest/X11 事件可能落在不同线程；必须在任何 Xlib 调用前启用。
+    unsafe {
+        let _ = XInitThreads();
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn first_visible_user_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
@@ -76,13 +124,170 @@ fn first_visible_user_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWin
     })
 }
 
+fn desktop_smoke_enabled() -> bool {
+    std::env::var(DESKTOP_SMOKE_ENV)
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn desktop_smoke_exit_after_ms() -> Option<u64> {
+    std::env::var(DESKTOP_SMOKE_EXIT_AFTER_MS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn desktop_smoke_hotkey_status(
+    app: &tauri::AppHandle,
+    settings: &settings::Settings,
+) -> serde_json::Value {
+    let shortcuts = app.global_shortcut();
+    let mut hotkeys = Vec::new();
+
+    let mut push_hotkey = |scope: &str, enabled: bool, hotkey: &str| {
+        let hotkey = hotkey.trim();
+        if hotkey.is_empty() {
+            return;
+        }
+        hotkeys.push(serde_json::json!({
+            "scope": scope,
+            "enabled": enabled,
+            "hotkey": hotkey,
+            "registered": enabled && shortcuts.is_registered(hotkey),
+        }));
+    };
+
+    push_hotkey("translator", true, &settings.hotkey);
+    push_hotkey(
+        "screenshot",
+        settings.screenshot_translation.enabled,
+        &settings.screenshot_translation.hotkey,
+    );
+    push_hotkey(
+        "screenshotText",
+        settings.screenshot_translation.enabled,
+        &settings.screenshot_translation.text_hotkey,
+    );
+    push_hotkey("lens", settings.lens.enabled, &settings.lens.hotkey);
+
+    serde_json::Value::Array(hotkeys)
+}
+
+fn desktop_smoke_window_status(app: &tauri::AppHandle) -> serde_json::Value {
+    let windows = ["main", "chat", "lens", "translate"]
+        .iter()
+        .map(|label| {
+            let window = app.get_webview_window(label);
+            serde_json::json!({
+                "label": label,
+                "exists": window.is_some(),
+                "visible": window.as_ref().and_then(|w| w.is_visible().ok()).unwrap_or(false),
+                "minimized": window.as_ref().and_then(|w| w.is_minimized().ok()).unwrap_or(false),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::Value::Array(windows)
+}
+
+fn desktop_smoke_asset_status(app: &tauri::AppHandle, path: &str) -> serde_json::Value {
+    let resolver = app.asset_resolver();
+    let asset = resolver
+        .get(path.to_string())
+        .or_else(|| resolver.get(format!("/{path}")));
+    match asset {
+        Some(asset) => serde_json::json!({
+            "path": path,
+            "present": true,
+            "bytes": asset.bytes().len(),
+            "mimeType": asset.mime_type(),
+        }),
+        None => serde_json::json!({
+            "path": path,
+            "present": false,
+            "bytes": 0,
+            "mimeType": null,
+        }),
+    }
+}
+
+fn desktop_smoke_resource_status(
+    app: &tauri::AppHandle,
+    settings: &settings::Settings,
+) -> serde_json::Value {
+    let resource_dir = app.path().resource_dir().ok();
+    let bundled_skills_dir = resource_dir.as_ref().map(|dir| dir.join("skills"));
+    let registry = skills::build_registry_metadata(app, &settings.chat_tools.skill_scan_paths);
+
+    let (skill_count, builtin_skill_count, skill_ids, skill_warnings, skill_error) = match registry
+    {
+        Ok(registry) => {
+            let mut skill_ids = registry
+                .records
+                .iter()
+                .map(|record| record.meta.id.clone())
+                .collect::<Vec<_>>();
+            skill_ids.sort();
+            let builtin_skill_count = registry
+                .records
+                .iter()
+                .filter(|record| record.meta.source == "builtin")
+                .count();
+            (
+                registry.records.len(),
+                builtin_skill_count,
+                skill_ids,
+                registry.warnings,
+                None::<String>,
+            )
+        }
+        Err(err) => (0, 0, Vec::new(), Vec::new(), Some(err)),
+    };
+
+    // Pyodide 是前端静态资源，生产包中由 Tauri 嵌入主二进制；用 asset_resolver
+    // 直接验证运行时可解析性，比检查 squashfs 普通文件更接近真实加载路径。
+    let pyodide_assets = DESKTOP_SMOKE_PYODIDE_ASSETS
+        .iter()
+        .map(|path| desktop_smoke_asset_status(app, path))
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "resourceDir": resource_dir.as_ref().map(|dir| dir.display().to_string()),
+        "bundledSkillsDir": bundled_skills_dir.as_ref().map(|dir| dir.display().to_string()),
+        "bundledSkillsDirExists": bundled_skills_dir.as_ref().map(|dir| dir.is_dir()).unwrap_or(false),
+        "skillCount": skill_count,
+        "builtinSkillCount": builtin_skill_count,
+        "skillIds": skill_ids,
+        "skillWarnings": skill_warnings,
+        "skillError": skill_error,
+        "pyodideAssets": pyodide_assets,
+    })
+}
+
+fn emit_desktop_smoke_snapshot(app: &tauri::AppHandle) {
+    let state: State<AppState> = app.state();
+    let settings = state.settings_read().clone();
+    let caps = platform_capabilities::current_platform_capabilities();
+    let autostart_enabled = app.autolaunch().is_enabled().ok();
+    let snapshot = serde_json::json!({
+        "platform": caps.platform,
+        "sessionType": caps.session_type,
+        "hotkeys": desktop_smoke_hotkey_status(app, &settings),
+        "trayPresent": app.tray_by_id("main").is_some(),
+        "windows": desktop_smoke_window_status(app),
+        "launchAtStartupSetting": settings.launch_at_startup,
+        "autostartEnabled": autostart_enabled,
+        "resources": desktop_smoke_resource_status(app, &settings),
+    });
+    eprintln!("[desktop-smoke] {snapshot}");
+}
+
 /// Windows：让本进程退出 EcoQoS 执行速度节流，使其在无窗口/后台空闲时仍保持正常调度，
 /// 避免全局热键的 WM_HOTKEY 消息泵被饿死。ControlMask=EXECUTION_SPEED + StateMask=0 表示
 /// "由本进程接管该项节流并关闭它"。best-effort：失败静默忽略。
 #[cfg(target_os = "windows")]
 fn disable_process_power_throttling() {
     use ::windows::Win32::System::Threading::{
-        GetCurrentProcess, SetProcessInformation, ProcessPowerThrottling,
+        GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
         PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         PROCESS_POWER_THROTTLING_STATE,
     };
@@ -104,6 +309,9 @@ fn disable_process_power_throttling() {
 /// 应用入口函数
 /// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    init_x11_threads_for_linux();
+
     // GUI launches don't always inherit the *current* user PATH, so packaged
     // builds can't find user-installed CLIs. Enrich the process PATH once,
     // before any window creation or CLI probing. macOS: login-shell PATH is not
@@ -405,6 +613,20 @@ pub fn run() {
                     }
                 });
             }
+
+            if desktop_smoke_enabled() {
+                let app_handle = app.handle().clone();
+                let exit_after_ms = desktop_smoke_exit_after_ms();
+                tauri::async_runtime::spawn(async move {
+                    // 给默认 Chat 打开、热键和托盘注册留出一点事件循环时间。
+                    tokio::time::sleep(Duration::from_millis(1_800)).await;
+                    emit_desktop_smoke_snapshot(&app_handle);
+                    if let Some(ms) = exit_after_ms {
+                        tokio::time::sleep(Duration::from_millis(ms.saturating_sub(1_800))).await;
+                        app_handle.exit(0);
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -428,6 +650,7 @@ pub fn run() {
             lens_commands::explain_read_image,
             commands::fetch_models,
             commands::test_provider_connection,
+            commands::get_platform_capabilities,
             commands::get_permission_status,
             commands::open_permission_settings,
             lens_commands::lens_request,

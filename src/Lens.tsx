@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { flushSync } from 'react-dom'
 import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, MessageSquarePlus } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
+import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload, type PlatformCapabilities } from './api/tauri'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -136,6 +136,7 @@ export default function Lens() {
   const [messageOrder, setMessageOrder] = useState<'asc' | 'desc'>('asc')
   const [webSearchAvailable, setWebSearchAvailable] = useState(false)
   const [webSearchEnabled, setWebSearchEnabled] = useState(false)
+  const [platformCapabilities, setPlatformCapabilities] = useState<PlatformCapabilities | null>(null)
   const [keepFullscreen, setKeepFullscreen] = useState(() => readModeFromHash() !== 'translateText')
   const [floatingRebased, setFloatingRebased] = useState(false)
   const [mode, setMode] = useState<Mode>(() => readModeFromHash())
@@ -192,6 +193,18 @@ export default function Lens() {
       setDraftArrow(null)
     }
   }, [stage])
+
+  useEffect(() => {
+    let active = true
+    api.getPlatformCapabilities()
+      .then((capabilities) => {
+        if (active) setPlatformCapabilities(capabilities)
+      })
+      .catch((err) => console.error('[lens] getPlatformCapabilities failed:', err))
+    return () => {
+      active = false
+    }
+  }, [])
   // 冻结帧绘制：把 data URL 画进 canvas，backing store = 图片原生像素，CSS 铺满 viewport，
   // 使全屏冻结帧按设备像素 1:1 显示，与实时桌面同等清晰（避免 <img> 被重采样发虚）。
   // 全屏态（select 及 keepFullscreen 的 ready/answering）整段会话都保留作背景，直到关闭 Lens。
@@ -548,15 +561,28 @@ export default function Lens() {
         }
       } catch (err) { console.error('Failed to read window origin', err) }
     }
+    let captureCapabilities = platformCapabilities
+    if (!captureCapabilities) {
+      try {
+        captureCapabilities = await api.getPlatformCapabilities()
+        if (motionSeq === motionSeqRef.current) setPlatformCapabilities(captureCapabilities)
+      } catch (err) {
+        console.error('[lens] getPlatformCapabilities failed:', err)
+      }
+    }
     try {
-      const list = await api.lensListWindows()
-      if (motionSeq === motionSeqRef.current) setWindows(list)
+      if (captureCapabilities?.windowCapture.status === 'unsupported') {
+        if (motionSeq === motionSeqRef.current) setWindows([])
+      } else {
+        const list = await api.lensListWindows()
+        if (motionSeq === motionSeqRef.current) setWindows(list)
+      }
     } catch (err) {
       console.error('Failed to list windows', err)
       if (motionSeq === motionSeqRef.current) setWindows([])
     }
     focusLensSurface()
-  }, [cancelPendingMotion, focusLensSurface, loadLensSettings])
+  }, [cancelPendingMotion, focusLensSurface, loadLensSettings, platformCapabilities])
 
   useEffect(() => {
     // 冷挂载 与 复用收到 lens:reset 走同一路径：主动 take 后端暂存的复位载荷（frame +
@@ -940,8 +966,13 @@ export default function Lens() {
     y: winOrigin.y + p.y,
   })
 
+  const windowCaptureAvailable = platformCapabilities?.windowCapture.status !== 'unsupported'
+  const regionCaptureAvailable = platformCapabilities?.regionCapture.status !== 'unsupported'
+  const anyCaptureAvailable = windowCaptureAvailable || regionCaptureAvailable
+
   /** 命中检测：找第一个包含该全局坐标的应用窗口 */
   const hitTest = (gp: Point): LensWindowInfo | null => {
+    if (!windowCaptureAvailable) return null
     for (const w of windows) {
       if (gp.x >= w.x && gp.x < w.x + w.width && gp.y >= w.y && gp.y < w.y + w.height) {
         return w
@@ -972,10 +1003,13 @@ export default function Lens() {
   }, [hovered, dragging, winOrigin])
 
   const captureHintText = useMemo(() => {
+    if (!anyCaptureAvailable) return t.lensCaptureUnavailable
     if (dragging) return t.lensSelectHintDrag
     if (hovered) return t.lensSelectHintHover.replace('{app}', hovered.owner)
+    if (!windowCaptureAvailable) return t.lensSelectHintRegionOnly
+    if (!regionCaptureAvailable) return t.lensSelectHintWindowOnly
     return t.lensSelectHintIdle
-  }, [dragging, hovered, t])
+  }, [anyCaptureAvailable, dragging, hovered, regionCaptureAvailable, t, windowCaptureAvailable])
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (stage !== 'select') return
@@ -986,6 +1020,7 @@ export default function Lens() {
       setHistoryOpen(false)
       return
     }
+    if (!regionCaptureAvailable) return
     const p: Point = { x: e.clientX, y: e.clientY }
     setDragStart(p)
     setDragCurrent(p)
@@ -995,7 +1030,7 @@ export default function Lens() {
   const handleMouseMove = (e: React.MouseEvent) => {
     if (stage !== 'select') return
     const p: Point = { x: e.clientX, y: e.clientY }
-    if (dragStart) {
+    if (dragStart && regionCaptureAvailable) {
       setDragCurrent(p)
       const dx = Math.abs(p.x - dragStart.x)
       const dy = Math.abs(p.y - dragStart.y)
@@ -1007,6 +1042,10 @@ export default function Lens() {
     }
     // 鼠标在对话栏（含历史面板）上方时清除 hover，避免高亮/误截图背后窗口
     if (barRef.current?.contains(e.target as Node)) {
+      setHovered(null)
+      return
+    }
+    if (!windowCaptureAvailable) {
       setHovered(null)
       return
     }
@@ -1386,7 +1425,7 @@ export default function Lens() {
     if (stage !== 'select') return
     const releasedAt: Point = { x: e.clientX, y: e.clientY }
 
-    if (dragging && dragStart) {
+    if (dragging && dragStart && regionCaptureAvailable) {
       const x = Math.min(dragStart.x, releasedAt.x)
       const y = Math.min(dragStart.y, releasedAt.y)
       const w = Math.abs(releasedAt.x - dragStart.x)
@@ -1410,7 +1449,7 @@ export default function Lens() {
     setDragStart(null)
     setDragCurrent(null)
     setDragging(false)
-    if (hovered) {
+    if (hovered && windowCaptureAvailable) {
       await handleCaptureWindow(hovered)
     }
   }
@@ -1995,7 +2034,7 @@ export default function Lens() {
       {/* select-only：hover 高亮 / drag 选区 / 顶部 hint */}
       {stage === 'select' && (
         <>
-          {showCaptureHint && (
+          {(showCaptureHint || !anyCaptureAvailable) && (
             <div className="absolute top-[calc(env(safe-area-inset-top,0px)+36px)] left-0 right-0 flex justify-center pointer-events-none z-30">
               <div className="px-3 py-1.5 rounded-full bg-neutral-950/80 text-white text-[12px] font-medium shadow-[0_8px_24px_rgba(0,0,0,0.24)] ring-1 ring-white/10 backdrop-blur-md">
                 {captureHintText}

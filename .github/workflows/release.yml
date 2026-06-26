@@ -20,7 +20,9 @@ on:
         default: 'windows'
         type: choice
         options:
+          - all
           - windows
+          - linux
 
 permissions:
   contents: write
@@ -38,6 +40,9 @@ jobs:
           - id: windows
             platform: windows-latest
             args: "--bundles nsis"
+          - id: linux
+            platform: ubuntu-22.04
+            args: ""
 
     runs-on: ${{ matrix.platform }}
 
@@ -59,6 +64,12 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Linux system dependencies
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id) && matrix.id == 'linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
       - name: Install frontend dependencies
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id }}
         run: npm ci
@@ -79,6 +90,7 @@ jobs:
             Automated build artifacts for ${{ env.RELEASE_TAG }}.
             Built from: ${{ env.BUILD_REF }}
             - Windows: NSIS (.exe)
+            - Linux: AppImage (x86_64)
             (macOS DMG for Apple Silicon is built locally and uploaded separately.)
           releaseDraft: false
           prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'rc') }}

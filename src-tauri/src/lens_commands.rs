@@ -13,18 +13,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use uuid::Uuid;
 
-#[cfg(target_os = "windows")]
-use xcap::Monitor;
-
 use crate::api::{
     build_ocr_request_body, call_openai_ocr, call_openai_text, call_vision_api,
     effective_retry_attempts, stream_chat_call, stream_translate_combined,
 };
-#[cfg(target_os = "windows")]
-use crate::capture_geometry::{
-    monitor_for_region, windows_monitor_region, CaptureMonitor, CaptureRect,
-};
+use crate::capture_port::{capture_region_image, RegionCaptureRequest};
 use crate::lens;
+use crate::ocr_port::normalize_ocr_mode_for_current_platform;
 use crate::prompts::{
     build_combined_translate_prompt, build_ocr_direct_translation_prompt,
     build_screenshot_translation_prompt, build_selected_text_translation_prompt, compact_ocr_text,
@@ -41,8 +36,6 @@ use crate::web_search::{format_web_context, search_web, WebSearchResult};
 use crate::windows;
 
 const LENS_ESCAPE_SHORTCUT: &str = "Escape";
-#[cfg(target_os = "windows")]
-use crate::windows_ocr;
 
 #[derive(Debug, Clone, Copy)]
 struct LensFrame {
@@ -666,7 +659,7 @@ pub(crate) async fn lens_capture_region(
         scale_factor,
     )
     .unwrap_or_else(|| {
-        capture_region_image(
+        capture_region_image(RegionCaptureRequest {
             absolute_x,
             absolute_y,
             x,
@@ -675,7 +668,7 @@ pub(crate) async fn lens_capture_region(
             height,
             scale_factor,
             exclude_self_pid,
-        )
+        })
     });
     match result {
         Ok(path) => {
@@ -1409,15 +1402,12 @@ pub(crate) async fn lens_translate(
 
     // OCR 引擎路由：System / RapidOcr 走 local_ocr_then_translate（先识别再翻译两步）
     // CloudVision 落到下方 call_openai_ocr 单次完成 OCR+翻译的多模态路径。
-    let system_ocr_available = cfg!(any(target_os = "macos", target_os = "windows"));
     let mut effective_mode = settings
         .screenshot_translation
         .ocr_mode
         .unwrap_or(OcrMode::CloudVision);
-    // 平台不支持 System / RapidOcr 时(理论上 sanitize 已经处理掉,这里防御性兜底)
-    if !system_ocr_available && matches!(effective_mode, OcrMode::System | OcrMode::RapidOcr) {
-        effective_mode = OcrMode::CloudVision;
-    }
+    // 平台不支持对应本地 OCR 引擎时(理论上 sanitize 已经处理掉,这里防御性兜底)
+    effective_mode = normalize_ocr_mode_for_current_platform(effective_mode);
     if matches!(effective_mode, OcrMode::System | OcrMode::RapidOcr) {
         return local_ocr_then_translate(
             &app,
@@ -1724,41 +1714,6 @@ pub(crate) async fn lens_translate_text(
     }))
 }
 
-async fn run_system_ocr(
-    state: &State<'_, AppState>,
-    image_path: &std::path::Path,
-) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        return state
-            .macos_ocr
-            .ocr_image(&image_path.to_string_lossy())
-            .await;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let _ = state;
-        return windows_ocr::ocr_image(image_path).await;
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let _ = (state, image_path);
-        Err("System OCR is not available on this platform".to_string())
-    }
-}
-
-/// RapidOCR 离线 OCR：dispatch 到 RapidOcrClient.ocr_image。
-/// 模型 / dylib 文件未下载时返回 "rapidocr_models_missing",
-/// 路由层会在调用前先 precheck,这里是双层保险。
-async fn run_rapidocr_ocr(
-    state: &State<'_, AppState>,
-    image_path: &std::path::Path,
-) -> Result<String, String> {
-    state.rapidocr.ocr_image(image_path).await
-}
-
 /// 本地 OCR + 任意 provider 翻译的两步链路。
 /// `engine` 决定 OCR 来源:`OcrMode::System`(macOS Apple Vision / Windows.Media.Ocr) 或
 /// `OcrMode::RapidOcr`(本地 RapidOCR PaddleOCR ONNX)。`OcrMode::CloudVision` 走另一条单步路径,
@@ -1795,16 +1750,7 @@ async fn local_ocr_then_translate(
     // 1) OCR via selected local engine
     // RapidOCR 找不到模型文件时 ocr_image 自己会返回 "rapidocr_models_missing",
     // 走下面统一 error 分支 emit 给前端,Lens 据此渲染下载提示——不再做单独 precheck。
-    let ocr_result = match engine {
-        OcrMode::System => run_system_ocr(state, image_path).await,
-        OcrMode::RapidOcr => run_rapidocr_ocr(state, image_path).await,
-        // 路由层只把 System / RapidOcr 派发到这里,CloudVision 走另一条单步路径。
-        // Legacy 兜底变体在 sanitize_settings 中会被正常化为 CloudVision,理论不会到这里。
-        // 仍留 runtime 兜底,防止后续重构时漏掉某个分支。
-        OcrMode::CloudVision | OcrMode::Legacy => {
-            Err("internal: non-local OCR mode reached local_ocr_then_translate".to_string())
-        }
-    };
+    let ocr_result = crate::ocr_port::run_local_ocr(state, image_path, engine).await;
     let original = match ocr_result {
         Ok(text) => text,
         Err(err) => {
@@ -1929,15 +1875,18 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
             let _ = window.hide();
             let _ = window.destroy();
         }
-        // macOS：浮窗被 object_setClass 换成了自定义 NSPanel 子类，destroy() 时 tao/wry 按原类
-        // 清理会抛 ObjC 异常穿过 FFI → "Rust cannot catch foreign exceptions" abort。所以只能
-        // 复用（隐藏 + 复位全屏几何，避免下次 show 还停在上次浮动 bar 位置）。
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         {
             // macOS：换回原窗口类后 destroy，终结 WebContent 进程回收内存（about:blank 实测
             // 不回收，只有销毁进程才行）。下次触发由 ensure_lens/translate_window 冷重建。
             let _ = window.hide();
             windows::destroy_overlay_window(&window);
+        }
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            // Linux 等其它桌面平台没有 macOS 的 NSPanel 重分类问题，直接销毁即可释放 renderer。
+            let _ = window.hide();
+            let _ = window.destroy();
         }
     }
     Ok(())
@@ -1964,16 +1913,16 @@ fn prepare_windows_freeze_frame(app: &AppHandle, frame: Option<LensFrame>) -> Op
     let frame = frame?;
     let width = frame.width.round().max(1.0) as u32;
     let height = frame.height.round().max(1.0) as u32;
-    let path = capture_region_image(
-        frame.x.round() as i32,
-        frame.y.round() as i32,
-        0,
-        0,
+    let path = capture_region_image(RegionCaptureRequest {
+        absolute_x: frame.x.round() as i32,
+        absolute_y: frame.y.round() as i32,
+        x: 0,
+        y: 0,
         width,
         height,
-        1.0,
-        None,
-    )
+        scale_factor: 1.0,
+        exclude_self_pid: None,
+    })
     .map_err(|err| {
         eprintln!("[lens-freeze] capture failed: {err}");
         err
@@ -2276,116 +2225,6 @@ pub(crate) fn lens_animate_floating(
     let _ = window.set_position(tauri::LogicalPosition::new(x, y));
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
     Ok(())
-}
-
-/// Windows 平台：截取指定区域的屏幕图像
-/// 需要将逻辑坐标根据缩放因子转换为物理坐标，再转换为相对于显示器的相对坐标
-#[cfg(target_os = "windows")]
-fn capture_region_image(
-    absolute_x: i32,
-    absolute_y: i32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    scale_factor: f64,
-    _exclude_self_pid: Option<i32>,
-) -> Result<PathBuf, String> {
-    let _ = (x, y, scale_factor);
-    let __tc = std::time::Instant::now();
-    let monitors = Monitor::all().map_err(|e| e.to_string())?;
-    eprintln!("[lens-timing]     ...Monitor::all +{}ms", __tc.elapsed().as_millis());
-    let monitor_geometry = monitors
-        .iter()
-        .map(|m| {
-            Ok(CaptureMonitor {
-                x: m.x().map_err(|e| e.to_string())?,
-                y: m.y().map_err(|e| e.to_string())?,
-                width: m.width().map_err(|e| e.to_string())?,
-                height: m.height().map_err(|e| e.to_string())?,
-                scale_factor: m.scale_factor().map_err(|e| e.to_string())? as f64,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let region = CaptureRect {
-        x: absolute_x as f64,
-        y: absolute_y as f64,
-        width: width as f64,
-        height: height as f64,
-    };
-    let monitor_index = monitor_for_region(region, &monitor_geometry)
-        .ok_or_else(|| "No monitor found for capture region".to_string())?;
-    let capture_region = windows_monitor_region(region, monitor_geometry[monitor_index])
-        .ok_or_else(|| "Invalid capture region".to_string())?;
-    let monitor = &monitors[monitor_index];
-
-    let __tcap = std::time::Instant::now();
-    let image = monitor
-        .capture_region(
-            capture_region.x,
-            capture_region.y,
-            capture_region.width,
-            capture_region.height,
-        )
-        .map_err(|e| e.to_string())?;
-    eprintln!("[lens-timing]     ...xcap.capture_region +{}ms", __tcap.elapsed().as_millis());
-
-    let temp_path = std::env::temp_dir().join(format!("screenshot-{}.png", Uuid::new_v4()));
-    let __tsave = std::time::Instant::now();
-    write_png_fast(&temp_path, image.as_raw(), image.width(), image.height())?;
-    eprintln!("[lens-timing]     ...png.save +{}ms", __tsave.elapsed().as_millis());
-    Ok(temp_path)
-}
-
-/// 快速无损 PNG 编码：`image` 默认编码器对全屏 4MP 图做自适应滤波 + 默认 zlib 压缩，
-/// 单帧编码约 350ms，是冻结帧/截图首帧出现的主要延迟。冻结帧只需「无损 + 快」，
-/// 改用 Fast 压缩 + 无滤波，编码降到几十毫秒（文件略大，临时文件可接受）。
-#[cfg(target_os = "windows")]
-fn write_png_fast(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-    use image::{ExtendedColorType, ImageEncoder};
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let writer = std::io::BufWriter::new(file);
-    PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::NoFilter)
-        .write_image(rgba, width, height, ExtendedColorType::Rgba8)
-        .map_err(|e| e.to_string())
-}
-
-/// macOS 平台：区域截图，走 ScreenCaptureKit。
-/// `exclude_self_pid` 传 `Some(pid)` 让 SCK 在 GPU compositor 阶段排除该 PID 的所有窗口
-/// （lens webview 自己），无需 hide+sleep 60ms。
-#[cfg(target_os = "macos")]
-fn capture_region_image(
-    absolute_x: i32,
-    absolute_y: i32,
-    _x: i32,
-    _y: i32,
-    width: u32,
-    height: u32,
-    _scale_factor: f64,
-    exclude_self_pid: Option<i32>,
-) -> Result<PathBuf, String> {
-    crate::sck::capture_region(
-        absolute_x as f64,
-        absolute_y as f64,
-        width as f64,
-        height as f64,
-        exclude_self_pid,
-    )
-}
-
-/// 其他平台：占位
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn capture_region_image(
-    _absolute_x: i32,
-    _absolute_y: i32,
-    _x: i32,
-    _y: i32,
-    _width: u32,
-    _height: u32,
-    _scale_factor: f64,
-) -> Result<PathBuf, String> {
-    Err("Region capture is not supported on this platform".to_string())
 }
 
 #[tauri::command]

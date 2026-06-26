@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use arboard::Clipboard;
 use tauri::{AppHandle, State};
@@ -28,7 +28,28 @@ use crate::state::AppState;
 use crate::utils::{language_name, resolve_target_lang};
 use crate::windows::get_main_window;
 
+#[cfg(target_os = "linux")]
+fn linux_autostart_dir_from_home(home: Option<&str>) -> Option<PathBuf> {
+    home.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| PathBuf::from(value).join(".config").join("autostart"))
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_linux_autostart_dir() -> Result<(), String> {
+    let dir = linux_autostart_dir_from_home(std::env::var("HOME").ok().as_deref())
+        .ok_or_else(|| "could not resolve Linux autostart directory".to_string())?;
+    // auto-launch 0.5 的 Linux 实现固定写入 `$HOME/.config/autostart`，
+    // 不读取 XDG_CONFIG_HOME。新 HOME 下目录可能不存在，先创建再调用插件。
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())
+}
+
 pub(crate) fn apply_launch_at_startup(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if enabled {
+        ensure_linux_autostart_dir()?;
+    }
+
     let auto_launch = app.autolaunch();
     let current = auto_launch.is_enabled().map_err(|e| e.to_string())?;
 
@@ -461,6 +482,12 @@ pub(crate) async fn test_provider_connection(
     }
 }
 
+/// 获取平台能力契约。前端据此展示/降级，不再自行猜测平台可用性。
+#[tauri::command]
+pub(crate) fn get_platform_capabilities() -> crate::platform_capabilities::PlatformCapabilities {
+    crate::platform_capabilities::current_platform_capabilities()
+}
+
 /// 获取平台权限状态（仅限 macOS：辅助功能和屏幕录制权限）
 #[tauri::command]
 pub(crate) fn get_permission_status() -> serde_json::Value {
@@ -513,5 +540,27 @@ pub(crate) fn open_permission_settings(kind: String) -> Result<(), String> {
     {
         let _ = kind;
         Err("Permission settings are only available on macOS".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    use super::linux_autostart_dir_from_home;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_autostart_dir_uses_home_config_for_auto_launch_crate() {
+        assert_eq!(
+            linux_autostart_dir_from_home(Some("/home/user")).unwrap(),
+            std::path::PathBuf::from("/home/user/.config/autostart")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_autostart_dir_rejects_empty_home() {
+        assert!(linux_autostart_dir_from_home(Some(" ")).is_none());
+        assert!(linux_autostart_dir_from_home(None).is_none());
     }
 }

@@ -12,6 +12,8 @@ import {
   type ModelInfo,
   type DefaultPromptTemplates,
   type PermissionStatus,
+  type CapabilityInfo,
+  type PlatformCapabilities,
   type UpdateInfo,
   type ChatMcpServer,
   type ChatToolsConfig,
@@ -77,6 +79,26 @@ const textEncoder = new TextEncoder()
 
 function utf8ByteLength(value: string): number {
   return textEncoder.encode(value).length
+}
+
+function capabilityAwareDescription(base: string, capability: CapabilityInfo | undefined, lang: string): string {
+  if (!capability || (capability.status === 'supported' && !capability.smokeRequired)) {
+    return base
+  }
+  const reason = capability.reason ? ` ${capability.reason}` : ''
+  if (capability.status === 'unsupported') {
+    return lang === 'zh'
+      ? `${base} 当前平台不支持。${reason}`.trim()
+      : `${base} Not supported on this platform.${reason}`.trim()
+  }
+  if (capability.status === 'degraded') {
+    return lang === 'zh'
+      ? `${base} 当前平台为降级可用，仍需实机验证。${reason}`.trim()
+      : `${base} Degraded on this platform; smoke test still required.${reason}`.trim()
+  }
+  return lang === 'zh'
+    ? `${base} 当前平台仍需实机验证。${reason}`.trim()
+    : `${base} Smoke test still required on this platform.${reason}`.trim()
 }
 
 function clampToolRounds(value: string | number | null | undefined): number {
@@ -630,13 +652,19 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [downloadError, setDownloadError] = useState('')
   // RapidOCR 离线 OCR 状态:检查 app data 目录里 dylib + 模型 4 个文件齐不齐。
   const [rapidOcrStatus, setRapidOcrStatus] = useState<import('../api/tauri').RapidOcrStatus | null>(null)
+  const [platformCapabilities, setPlatformCapabilities] = useState<PlatformCapabilities | null>(null)
   // 下载临时状态:'idle' / 'downloading' / 'failed'(success 后自动 refresh status 到已就绪,
   // 没有专门的 success 终态)
   const [rapidOcrDownloadState, setRapidOcrDownloadState] = useState<'idle' | 'downloading' | 'failed'>('idle')
   const [rapidOcrDownloadError, setRapidOcrDownloadError] = useState('')
   const platform = getPlatform()
   const isMac = platform === 'macos'
-  const hasSystemOcr = isMac || platform === 'windows'
+  const hasSystemOcr = platformCapabilities
+    ? platformCapabilities.systemOcr.status === 'supported'
+    : isMac || platform === 'windows'
+  const hasRapidOcr = platformCapabilities
+    ? platformCapabilities.rapidOcr.status === 'supported'
+    : isMac || platform === 'windows' || platform === 'linux'
   // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
   // （否则用户可能没察觉就 Save 把磁盘真实数据覆盖掉）
   const [loadError, setLoadError] = useState('')
@@ -646,6 +674,21 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
+  const globalShortcutDescription = capabilityAwareDescription(
+    lang === 'zh' ? '翻译当前选中文本或剪贴板内容。' : 'Translates the current selection or clipboard.',
+    platformCapabilities?.globalShortcuts,
+    lang,
+  )
+  const lensOverlayDescription = capabilityAwareDescription(
+    lang === 'zh' ? '进入 Lens 截图选择模式。' : 'Enter Lens screenshot selection mode.',
+    platformCapabilities?.transparentOverlay,
+    lang,
+  )
+  const launchAtStartupDescription = capabilityAwareDescription(
+    lang === 'zh' ? '登录后在后台启动 Kivio。' : 'Open Kivio in the background when you sign in.',
+    platformCapabilities?.autostart,
+    lang,
+  )
   const themeColor = normalizeThemeColorId(settings?.themeColor)
   const chatTools = settings?.chatTools || defaultChatTools()
   const nativeBuiltinToolsEnabled = hasEnabledNativeBuiltinTool(chatTools.nativeTools)
@@ -776,6 +819,20 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     refreshPermissions()
   }, [refreshPermissions])
 
+  useEffect(() => {
+    let active = true
+    api.getPlatformCapabilities()
+      .then((capabilities) => {
+        if (active) setPlatformCapabilities(capabilities)
+      })
+      .catch((err) => {
+        console.error('Failed to get platform capabilities:', err)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
   // 监听后端启动时的 update-available 事件，发现新版立即在 About 区块展开提示
   useEffect(() => {
     let cancelled = false
@@ -877,17 +934,18 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   /** 拉一次 RapidOCR 状态(app data 里 dylib + 模型 4 个文件齐不齐)。
    *  挂载时 + 切换到 RapidOCR 引擎时调一下。 */
   const refreshRapidOcrStatus = useCallback(async () => {
-    if (!hasSystemOcr) return
+    if (!hasRapidOcr) return
     try {
       const status = await api.rapidOcrStatus()
       setRapidOcrStatus(status)
     } catch (err) {
       console.error('rapidOcrStatus failed:', err)
     }
-  }, [hasSystemOcr])
+  }, [hasRapidOcr])
 
   /** 下载 RapidOCR 包(dylib + 模型,~30-50MB):阻塞 ~15-30s,完成后 refresh status。 */
   const handleDownloadRapidOcr = useCallback(async () => {
+    if (!hasRapidOcr) return
     setRapidOcrDownloadState('downloading')
     setRapidOcrDownloadError('')
     try {
@@ -904,7 +962,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       setRapidOcrDownloadError(msg)
       setRapidOcrDownloadState('failed')
     }
-  }, [refreshRapidOcrStatus])
+  }, [hasRapidOcr, refreshRapidOcrStatus])
 
   // 挂载时拉一次状态
   useEffect(() => {
@@ -2320,7 +2378,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 </SettingsGroup>
 
                 <SettingsGroup title={lang === 'zh' ? '行为' : 'Behavior'}>
-                  <SettingRow label={t.launchAtStartup} description={lang === 'zh' ? '登录后在后台启动 Kivio。' : 'Open Kivio in the background when you sign in.'}>
+                  <SettingRow label={t.launchAtStartup} description={launchAtStartupDescription}>
                     <Toggle
                       checked={settings.launchAtStartup ?? false}
                       onChange={(v) => updateSettings({ launchAtStartup: v })}
@@ -2422,7 +2480,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {activeTab === 'translate' && (
               <>
                 <SettingsGroup title={t.hotkey}>
-                  <SettingRow label={t.hotkey} description={lang === 'zh' ? '翻译当前选中文本或剪贴板内容。' : 'Translates the current selection or clipboard.'} stack>
+                  <SettingRow label={t.hotkey} description={globalShortcutDescription} stack>
                     <HotkeyInput
                       value={settings.hotkey}
                       placeholder={t.hotkeyPlaceholder}
@@ -2496,6 +2554,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 settings={settings}
                 isMac={isMac}
                 hasSystemOcr={hasSystemOcr}
+                hasRapidOcr={hasRapidOcr}
                 recordingTarget={recordingTarget}
                 defaultPrompts={defaultPrompts}
                 rapidOcrStatus={rapidOcrStatus}
@@ -2525,7 +2584,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
                   {settings.lens?.enabled !== false && (
                     <>
-                      <SettingRow label={t.hotkey} description={lang === 'zh' ? '进入 Lens 截图选择模式。' : 'Enter Lens screenshot selection mode.'} stack>
+                      <SettingRow label={t.hotkey} description={lensOverlayDescription} stack>
                         <HotkeyInput
                           value={settings.lens?.hotkey ?? ''}
                           placeholder="CommandOrControl+Shift+G"
