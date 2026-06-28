@@ -345,18 +345,10 @@ body {
   background-color: rgba(255, 255, 255, 0.32);
 }
 
-/* 关键性能：公式滚动卡顿的真正根因是「滚动时把 KaTeX 子树插入 DOM」——每次插入都触发对几百个
-   KaTeX 元素的 matchAllRules 全量样式重算(实测 profiler 热栈)。根治手段在 JS 层：
-   消息全量渲染(MessageList 不虚拟化、滚动时不卸载/重挂)+ 公式即时渲染(ChatMarkdown LazyMath，
-   不再视口懒插入)，使滚动时 DOM 恒定不变。此处 CSS 只做轻量收尾：
-   每个公式 contain 隔离 layout/style；inline-block 盒给宽公式独立 overflow 边界，缩小重绘面积。 */
-.chat-markdown .katex {
-  contain: layout style;
-  /* Cherry Studio 同款：每个公式自成 inline-block 盒，拥有独立 overflow 上下文，
-     给绘制/裁剪一个天然边界，宽公式不再溢出牵动整行/整表 layout，缩小滚动重绘面积。
-     inline-block 默认 baseline 对齐对行内公式正常；display 公式(.katex-display)仍是 block，不受影响。
-     padding+margin 抵消：给 overflow-y:hidden 的盒一点上下余量，避免裁掉高公式(积分/分式栈/矩阵)
-     抗锯齿描边的上下沿(Cherry 同款 1px 2px / -2px)；vertical-align:middle 保持行内对齐不下沉。 */
+/* 关键性能：KaTeX 的视觉 HTML 会生成大量 span。它现在由 ChatMarkdown 挂到每个公式的
+   Shadow DOM 内，避免已完成公式参与页面级样式匹配/布局 invalidation。普通 DOM 里只保留
+   轻量 host；横向滚动与行内对齐也放在 host 上。 */
+.katex-lazy {
   display: inline-block;
   max-width: 100%;
   overflow-x: auto;
@@ -365,21 +357,6 @@ body {
   padding: 1px 2px;
   margin-top: -2px;
 }
-
-/* display 公式(.katex-display > .katex)是块级居中、本就独占一行，高度由 KaTeX 按内容算足。
-   对它用 overflow:hidden 风险在裁掉高公式(大积分上下限/矩阵/根号)上下沿——这里显式放开为 visible，
-   裁剪只作用于行内公式。块级公式过宽的横向滚动交给 .katex-display 自身处理。 */
-.chat-markdown .katex-display > .katex {
-  display: block;
-  overflow: visible;
-}
-.chat-markdown .katex-display {
-  max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-/* 懒渲染占位：未进视口的公式只渲染原始 LaTeX 文本，极轻。display 预留行高减少进视口时跳动。 */
 .katex-lazy--pending {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   opacity: 0.85;
@@ -388,6 +365,9 @@ body {
 }
 .katex-lazy--display {
   display: block;
+  padding: 0;
+  margin-top: 0;
+  vertical-align: baseline;
 }
 .katex-lazy--pending.katex-lazy--display {
   min-height: 1.7em;

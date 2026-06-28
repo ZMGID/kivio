@@ -1,4 +1,4 @@
-import { isValidElement, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { isValidElement, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, Code2, Copy, ExternalLink, Eye, Loader2 } from 'lucide-react'
 import type { Components, UrlTransform } from 'react-markdown'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
@@ -6,7 +6,7 @@ import type { PluggableList } from 'unified'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import katex from 'katex'
-import 'katex/dist/katex.min.css'
+import katexCss from 'katex/dist/katex.min.css?inline'
 import { normalizeMarkdownForRender } from './markdownUtils'
 import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 import type { ChatToolArtifact } from './types'
@@ -613,11 +613,103 @@ function buildArtifactLookup(artifacts: ChatToolArtifact[]): Map<string, string>
   return lookup
 }
 
-// 视口懒渲染数学公式：KaTeX 公式 DOM(几十~上百 span)的 paint 是滚动卡顿主因。
-// 不再用 rehype-katex 在解析期一次性渲染全部公式，改为每个公式进视口前只显示原始 LaTeX 文本
-// (近零 DOM)，进视口(提前 800px)才 katex.renderToString。离屏公式几乎不参与 layout/paint。
+const katexShadowCss = `${katexCss}
+:host {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: middle;
+  padding: 1px 2px;
+  margin-top: -2px;
+}
+:host(.katex-lazy--display) {
+  display: block;
+  padding: 0;
+  margin-top: 0;
+  vertical-align: baseline;
+}
+:host(.katex-lazy--display) .katex-display {
+  max-width: 100%;
+  overflow: visible;
+}
+:host(.katex-lazy--display) .katex-display > .katex {
+  display: block;
+  overflow: visible;
+}
+`
+
+let katexShadowSheet: CSSStyleSheet | null = null
+let katexShadowSheetUnavailable = false
+
+function getKatexShadowSheet(): CSSStyleSheet | null {
+  if (katexShadowSheetUnavailable || typeof CSSStyleSheet === 'undefined') return null
+  if (katexShadowSheet) return katexShadowSheet
+  try {
+    const sheet = new CSSStyleSheet()
+    sheet.replaceSync(katexShadowCss)
+    katexShadowSheet = sheet
+    return sheet
+  } catch {
+    katexShadowSheetUnavailable = true
+    return null
+  }
+}
+
+function installKatexShadowStyles(root: ShadowRoot) {
+  const sheet = getKatexShadowSheet()
+  if (sheet && 'adoptedStyleSheets' in root) {
+    try {
+      if (!root.adoptedStyleSheets.includes(sheet)) {
+        root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet]
+      }
+      return
+    } catch {
+      katexShadowSheetUnavailable = true
+    }
+  }
+
+  if (root.querySelector('style[data-katex-shadow-style="true"]')) return
+  const style = document.createElement('style')
+  style.dataset.katexShadowStyle = 'true'
+  style.textContent = katexShadowCss
+  root.prepend(style)
+}
+
+function upsertKatexShadowContent(root: ShadowRoot, html: string) {
+  let content = root.querySelector<HTMLElement>('[data-katex-shadow-content="true"]')
+  if (!content) {
+    content = document.createElement('span')
+    content.dataset.katexShadowContent = 'true'
+    root.appendChild(content)
+  }
+  content.innerHTML = html
+}
+
+// KaTeX HTML is visually high fidelity but expands into hundreds of spans. Keep
+// those spans out of the page-level DOM so WebKit global UI invalidations do not
+// repeatedly match styles through every formula descendant.
+function ShadowKatex({ html, display }: { html: string; display: boolean }) {
+  const hostRef = useRef<HTMLSpanElement>(null)
+  const renderedHtmlRef = useRef<string | null>(null)
+
+  useLayoutEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' })
+    installKatexShadowStyles(root)
+    if (renderedHtmlRef.current !== html) {
+      upsertKatexShadowContent(root, html)
+      renderedHtmlRef.current = html
+    }
+  }, [html])
+
+  const cls = display ? 'katex-lazy katex-lazy--display' : 'katex-lazy'
+  return <span ref={hostRef} className={cls} data-katex-shadow-host="true" />
+}
+
 // 按 (tex, display) 缓存 KaTeX 渲染结果：流式时每帧重渲会对每个公式重复调用，
-// 同一公式只算一次。简单上限防无界增长(超了清空，ponytail)。
+// 同一公式只算一次。简单上限防无界增长(超了清空)。
 const texCache = new Map<string, string>()
 function renderTex(tex: string, display: boolean): string {
   const key = (display ? 'd:' : 'i:') + tex
@@ -636,15 +728,13 @@ function renderTex(tex: string, display: boolean): string {
 }
 
 function LazyMath({ tex, display }: { tex: string; display: boolean }) {
-  // 即时渲染（不再用 IntersectionObserver 延迟到滚动进视口才渲染）。视口懒渲染会在「滚动时」
-  // 把 KaTeX 子树插入 DOM，每次插入触发对几百个元素的 matchAllRules 全量样式重算——实测这正是
-  // 公式滚动卡顿的根因。改为随消息一次性渲染（renderTex 有 texCache，重复公式近零成本），
-  // 渲染成本前移到消息挂载时（一次性），滚动时 DOM 不再变动 → 丝滑。
+  // 即时渲染（不再用 IntersectionObserver 延迟到滚动进视口才渲染）。KaTeX 子树进入
+  // Shadow DOM，避免已完成公式让 WebKit 后续全局 UI 交互反复扫大段普通 DOM。
   const html = useMemo(() => renderTex(tex, display), [tex, display])
-  const cls = display ? 'katex-lazy katex-lazy--display' : 'katex-lazy'
   if (html) {
-    return <span className={cls} dangerouslySetInnerHTML={{ __html: html }} />
+    return <ShadowKatex html={html} display={display} />
   }
+  const cls = display ? 'katex-lazy katex-lazy--display' : 'katex-lazy'
   return <span className={`${cls} katex-lazy--pending`}>{tex}</span>
 }
 

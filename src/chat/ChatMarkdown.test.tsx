@@ -20,4 +20,20 @@ describe('ChatMarkdown 公式稳定性', () => {
 
     expect(after).toBe(before) // 同一个 DOM 节点 = 未 remount
   })
+
+  it('把 KaTeX HTML 隔离在 Shadow DOM 中，普通 DOM 只保留轻量 host', () => {
+    const { container } = render(
+      <ChatMarkdown content={'目标函数 $Z_1$ 最小化'} artifacts={[]} />,
+    )
+
+    const host = container.querySelector<HTMLElement>('[data-katex-shadow-host="true"]')
+    expect(host).not.toBeNull()
+    expect(host).toHaveClass('katex-lazy')
+    expect(container.querySelector('.chat-markdown .katex')).toBeNull()
+    expect(host?.shadowRoot?.querySelector('.katex')).not.toBeNull()
+    expect(host?.shadowRoot?.querySelector('[data-katex-shadow-content="true"]')).not.toBeNull()
+    expect(
+      host?.shadowRoot?.querySelector('style[data-katex-shadow-style="true"]'),
+    ).not.toBeNull()
+  })
 })
