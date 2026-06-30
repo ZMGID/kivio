@@ -109,31 +109,49 @@ export function ScreenshotTranslationSettings({
                   error={textHotkeyError}
                 />
               </SettingRow>
-
-              <SettingRow label={t.replaceTranslateHotkey} description={t.replaceTranslateHint} stack>
-                <HotkeyInput
-                  value={screenshot?.replaceHotkey ?? ''}
-                  placeholder="CommandOrControl+Shift+R"
-                  recording={recordingTarget === 'screenshotTranslationReplace'}
-                  onToggleRecording={() => onToggleRecording('screenshotTranslationReplace')}
-                  recordLabel={t.hotkeyRecord}
-                  recordingLabel={t.hotkeyRecording}
-                  recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                  onClear={() => onUpdate({ replaceHotkey: '' })}
-                  clearLabel={hotkeyClearLabel}
-                  error={replaceHotkeyError}
-                />
-              </SettingRow>
-
-              <SettingRow label={t.replaceTranslateEnabled} description={t.replaceTranslate}>
-                <Toggle
-                  checked={screenshot?.replaceEnabled !== false}
-                  onChange={(replaceEnabled) => onUpdate({ replaceEnabled })}
-                />
-              </SettingRow>
             </>
           )}
       </SettingsGroup>
+
+      {screenshot?.enabled !== false && (
+        <SettingsGroup title={t.replaceTranslate}>
+          <p className="kv-row-desc px-1 pb-1">{t.replaceTranslateScopeHint}</p>
+          <SettingRow label={t.replaceTranslateHotkey} description={t.replaceTranslateHint} stack>
+            <HotkeyInput
+              value={screenshot?.replaceHotkey ?? ''}
+              placeholder="CommandOrControl+Shift+R"
+              recording={recordingTarget === 'screenshotTranslationReplace'}
+              onToggleRecording={() => onToggleRecording('screenshotTranslationReplace')}
+              recordLabel={t.hotkeyRecord}
+              recordingLabel={t.hotkeyRecording}
+              recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+              onClear={() => onUpdate({ replaceHotkey: '' })}
+              clearLabel={hotkeyClearLabel}
+              error={replaceHotkeyError}
+            />
+          </SettingRow>
+
+          <SettingRow label={t.replaceTranslateEnabled} description={t.replaceTranslate}>
+            <Toggle
+              checked={screenshot?.replaceEnabled !== false}
+              onChange={(replaceEnabled) => onUpdate({ replaceEnabled })}
+            />
+          </SettingRow>
+
+          {hasSystemOcr && screenshot?.replaceEnabled !== false && (
+            <SettingRow label={t.replaceTranslateRapidOcr} stack>
+              <RapidOcrStatusPanel
+                status={rapidOcrStatus}
+                downloadState={rapidOcrDownloadState}
+                downloadError={rapidOcrDownloadError}
+                t={t}
+                onRefresh={onRefreshRapidOcrStatus}
+                onDownload={onDownloadRapidOcr}
+              />
+            </SettingRow>
+          )}
+        </SettingsGroup>
+      )}
 
       {screenshot?.enabled !== false && (
         <>
@@ -216,14 +234,17 @@ export function ScreenshotTranslationSettings({
                   )}
 
                   {ocrMode === 'rapid_ocr' && (
-                    <RapidOcrStatusPanel
-                      status={rapidOcrStatus}
-                      downloadState={rapidOcrDownloadState}
-                      downloadError={rapidOcrDownloadError}
-                      t={t}
-                      onRefresh={onRefreshRapidOcrStatus}
-                      onDownload={onDownloadRapidOcr}
-                    />
+                    <>
+                      <p className="kv-row-desc px-1 pb-1">{t.ocrEngineRapidOcrSharedNote}</p>
+                      <RapidOcrStatusPanel
+                        status={rapidOcrStatus}
+                        downloadState={rapidOcrDownloadState}
+                        downloadError={rapidOcrDownloadError}
+                        t={t}
+                        onRefresh={onRefreshRapidOcrStatus}
+                        onDownload={onDownloadRapidOcr}
+                      />
+                    </>
                   )}
             </SettingsGroup>
           )}
@@ -334,7 +355,7 @@ function RapidOcrStatusPanel({
   onDownload: () => void
 }) {
   return (
-    <div className="kv-panel mt-2">
+    <div className="kv-panel mt-0 w-full">
       {status?.modelsAvailable ? (
         <div className="flex items-start gap-2">
           <span className="mt-0.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
