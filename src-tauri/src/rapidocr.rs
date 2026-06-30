@@ -536,8 +536,8 @@ impl OcrLine {
     }
 }
 
-/// 从 OCR 原始结果提取带 bbox 的视觉行（共享几何聚合逻辑）。
-fn collect_ocr_lines(results: &[oar_ocr::oarocr::OAROCRResult]) -> (Vec<OcrLine>, Vec<String>) {
+/// 从 OCR 原始结果提取带 bbox 的文本块（每个 DBNet 检测框一块）。
+fn collect_ocr_spans(results: &[oar_ocr::oarocr::OAROCRResult]) -> (Vec<OcrSpan>, Vec<String>) {
     let mut spans = Vec::new();
     let mut fallback = Vec::new();
 
@@ -576,6 +576,13 @@ fn collect_ocr_lines(results: &[oar_ocr::oarocr::OAROCRResult]) -> (Vec<OcrLine>
         }
     }
 
+    (spans, fallback)
+}
+
+/// 从 OCR 原始结果提取带 bbox 的视觉行（共享几何聚合逻辑）。
+fn collect_ocr_lines(results: &[oar_ocr::oarocr::OAROCRResult]) -> (Vec<OcrLine>, Vec<String>) {
+    let (mut spans, fallback) = collect_ocr_spans(results);
+
     if spans.is_empty() {
         return (Vec::new(), fallback);
     }
@@ -600,19 +607,22 @@ fn collect_ocr_lines(results: &[oar_ocr::oarocr::OAROCRResult]) -> (Vec<OcrLine>
     (lines, fallback)
 }
 
-/// 替换翻译用：返回带坐标的行块（跳过无 bbox 的 fallback 文本）。
+/// 替换翻译用：返回带坐标的 OCR 文本块（每个检测框一块，不合并同行多列）。
+///
+/// 表格/多栏布局若按视觉行合并，会把整行合成一个大框；逐块输出才能按单元格原位覆盖。
 pub fn lines_from_results(results: &[oar_ocr::oarocr::OAROCRResult]) -> Vec<RapidOcrLine> {
-    let (lines, _) = collect_ocr_lines(results);
-    lines
+    let (mut spans, _) = collect_ocr_spans(results);
+    spans.sort_by(|a, b| cmp_f32(a.center_y(), b.center_y()).then(cmp_f32(a.x_min, b.x_min)));
+    spans
         .iter()
-        .map(|line| {
-            let text = collapse_spaces(&line.text);
+        .map(|span| {
+            let text = collapse_spaces(&span.text);
             RapidOcrLine {
                 text: text.clone(),
-                x: line.x_min,
-                y: line.y_min,
-                width: (line.x_max - line.x_min).max(1.0),
-                height: (line.y_max - line.y_min).max(1.0),
+                x: span.x_min,
+                y: span.y_min,
+                width: (span.x_max - span.x_min).max(1.0),
+                height: (span.y_max - span.y_min).max(1.0),
             }
         })
         .filter(|line| !line.text.is_empty())

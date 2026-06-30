@@ -1988,6 +1988,7 @@ export default function Lens() {
           error={replaceError || undefined}
           statusLabel={replaceStatusLabel}
           escHint={t.replaceTranslateEscHint}
+          freezeCanvasRef={freezeCanvasRef}
         />
       )}
 

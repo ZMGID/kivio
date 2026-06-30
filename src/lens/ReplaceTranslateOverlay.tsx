@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 import type { LensReplaceLine } from '../api/tauri'
 import type { CapturedFrame } from './types'
 
@@ -10,20 +10,23 @@ type ReplaceTranslateOverlayProps = {
   error?: string
   statusLabel: string
   escHint: string
+  freezeCanvasRef: RefObject<HTMLCanvasElement | null>
 }
 
-function sampleAverageColor(
+function sampleAverageColorFromCtx(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   w: number,
   h: number,
+  maxW: number,
+  maxH: number,
 ): string {
   try {
-    const sx = Math.max(0, Math.floor(x))
-    const sy = Math.max(0, Math.floor(y))
-    const sw = Math.max(1, Math.floor(w))
-    const sh = Math.max(1, Math.floor(h))
+    const sx = Math.max(0, Math.min(maxW - 1, Math.floor(x)))
+    const sy = Math.max(0, Math.min(maxH - 1, Math.floor(y)))
+    const sw = Math.max(1, Math.min(maxW - sx, Math.floor(w)))
+    const sh = Math.max(1, Math.min(maxH - sy, Math.floor(h)))
     const data = ctx.getImageData(sx, sy, sw, sh).data
     let r = 0
     let g = 0
@@ -35,11 +38,38 @@ function sampleAverageColor(
       b += data[i + 2]
       count += 1
     }
-    if (count === 0) return 'rgba(255,255,255,0.92)'
+    if (count === 0) return 'rgb(255,255,255)'
     return `rgb(${Math.round(r / count)},${Math.round(g / count)},${Math.round(b / count)})`
   } catch {
-    return 'rgba(255,255,255,0.92)'
+    return 'rgb(255,255,255)'
   }
+}
+
+function sampleFromFreezeCanvas(
+  freezeCanvas: HTMLCanvasElement,
+  viewportW: number,
+  viewportH: number,
+  globalX: number,
+  globalY: number,
+  w: number,
+  h: number,
+): string | null {
+  if (viewportW <= 0 || viewportH <= 0 || freezeCanvas.width <= 0 || freezeCanvas.height <= 0) {
+    return null
+  }
+  const ctx = freezeCanvas.getContext('2d')
+  if (!ctx) return null
+  const scaleX = freezeCanvas.width / viewportW
+  const scaleY = freezeCanvas.height / viewportH
+  return sampleAverageColorFromCtx(
+    ctx,
+    globalX * scaleX,
+    globalY * scaleY,
+    w * scaleX,
+    h * scaleY,
+    freezeCanvas.width,
+    freezeCanvas.height,
+  )
 }
 
 function luminance(r: number, g: number, b: number): number {
@@ -52,19 +82,79 @@ function parseRgb(color: string): [number, number, number] {
   return [Number(m[1]), Number(m[2]), Number(m[3])]
 }
 
-function fitFontSize(
+function wrapTextLines(
   ctx: CanvasRenderingContext2D,
   text: string,
   maxWidth: number,
-  maxHeight: number,
-): number {
-  let size = Math.max(10, maxHeight * 0.72)
-  ctx.font = `${size}px system-ui, "Segoe UI", sans-serif`
-  while (size > 8 && ctx.measureText(text).width > maxWidth - 4) {
-    size -= 1
-    ctx.font = `${size}px system-ui, "Segoe UI", sans-serif`
+  fontSize: number,
+): string[] {
+  ctx.font = `${fontSize}px system-ui, "Segoe UI", sans-serif`
+  const lines: string[] = []
+  let current = ''
+
+  const pushToken = (token: string) => {
+    if (!token) return
+    const candidate = current ? `${current}${token}` : token
+    if (ctx.measureText(candidate).width <= maxWidth || !current) {
+      current = candidate
+      return
+    }
+    if (current) lines.push(current)
+    current = token
+    if (ctx.measureText(current).width > maxWidth) {
+      for (const ch of token) {
+        const next = current + ch
+        if (ctx.measureText(next).width <= maxWidth || !current) {
+          current = next
+        } else {
+          lines.push(current)
+          current = ch
+        }
+      }
+    }
   }
-  return size
+
+  for (const word of text.split(/(\s+)/)) {
+    pushToken(word)
+  }
+  if (current) lines.push(current)
+  return lines.length > 0 ? lines : ['']
+}
+
+function drawTextInBox(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+  fillColor: string,
+) {
+  const pad = 2
+  const innerW = Math.max(1, bw - pad * 2)
+  const innerH = Math.max(1, bh - pad * 2)
+  let fontSize = Math.min(Math.max(10, innerH * 0.72), 18)
+
+  let lines: string[] = []
+  let lineHeight = fontSize * 1.15
+  while (fontSize >= 8) {
+    lines = wrapTextLines(ctx, text, innerW, fontSize)
+    lineHeight = fontSize * 1.15
+    if (lines.length * lineHeight <= innerH) break
+    fontSize -= 1
+  }
+
+  ctx.font = `${fontSize}px system-ui, "Segoe UI", sans-serif`
+  ctx.fillStyle = fillColor
+  ctx.textBaseline = 'top'
+  ctx.textAlign = 'left'
+
+  const totalHeight = lines.length * lineHeight
+  let y = by + pad + Math.max(0, (innerH - totalHeight) / 2)
+  for (const line of lines) {
+    ctx.fillText(line.trim(), bx + pad, y, innerW)
+    y += lineHeight
+  }
 }
 
 export function ReplaceTranslateOverlay({
@@ -75,8 +165,10 @@ export function ReplaceTranslateOverlay({
   error,
   statusLabel,
   escHint,
+  freezeCanvasRef,
 }: ReplaceTranslateOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const fallbackCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -91,12 +183,25 @@ export function ReplaceTranslateOverlay({
       const h = Math.max(1, Math.round(frame.height))
       canvas.width = w
       canvas.height = h
-
       ctx.clearRect(0, 0, w, h)
-      ctx.drawImage(img, 0, 0, w, h)
 
       const scaleX = w / img.naturalWidth
       const scaleY = h / img.naturalHeight
+      const freezeCanvas = freezeCanvasRef.current
+      const viewportW = window.innerWidth
+      const viewportH = window.innerHeight
+
+      let fallbackCtx: CanvasRenderingContext2D | null = null
+      if (!freezeCanvas || freezeCanvas.width <= 0) {
+        if (!fallbackCanvasRef.current) {
+          fallbackCanvasRef.current = document.createElement('canvas')
+        }
+        const fb = fallbackCanvasRef.current
+        fb.width = img.naturalWidth
+        fb.height = img.naturalHeight
+        fallbackCtx = fb.getContext('2d')
+        fallbackCtx?.drawImage(img, 0, 0)
+      }
 
       for (const line of lines) {
         const displayText = line.translated.trim() || line.text
@@ -107,20 +212,40 @@ export function ReplaceTranslateOverlay({
         const bw = Math.max(1, line.width * scaleX)
         const bh = Math.max(1, line.height * scaleY)
 
-        const bg = sampleAverageColor(ctx, bx, by, bw, bh)
+        let bg: string | null = null
+        if (freezeCanvas && freezeCanvas.width > 0) {
+          bg = sampleFromFreezeCanvas(
+            freezeCanvas,
+            viewportW,
+            viewportH,
+            frame.x + bx,
+            frame.y + by,
+            bw,
+            bh,
+          )
+        }
+        if (!bg && fallbackCtx) {
+          bg = sampleAverageColorFromCtx(
+            fallbackCtx,
+            line.x,
+            line.y,
+            line.width,
+            line.height,
+            img.naturalWidth,
+            img.naturalHeight,
+          )
+        }
+        bg ??= 'rgb(255,255,255)'
+
         ctx.fillStyle = bg
         ctx.fillRect(bx, by, bw, bh)
 
         const [r, g, b] = parseRgb(bg)
-        ctx.fillStyle = luminance(r, g, b) > 140 ? '#111827' : '#f9fafb'
-        const fontSize = fitFontSize(ctx, displayText, bw, bh)
-        ctx.font = `${fontSize}px system-ui, "Segoe UI", sans-serif`
-        ctx.textBaseline = 'middle'
-        ctx.fillText(displayText, bx + 2, by + bh / 2, bw - 4)
+        drawTextInBox(ctx, displayText, bx, by, bw, bh, luminance(r, g, b) > 140 ? '#111827' : '#f9fafb')
       }
     }
     img.src = imagePreview.startsWith('data:') ? imagePreview : `data:image/png;base64,${imagePreview}`
-  }, [frame.height, frame.width, imagePreview, lines])
+  }, [frame.height, frame.width, frame.x, frame.y, freezeCanvasRef, imagePreview, lines])
 
   const showOverlay = lines.length > 0 && (phase === 'ocr' || phase === 'translating' || phase === 'done')
 
@@ -145,7 +270,11 @@ export function ReplaceTranslateOverlay({
             height: frame.height,
           }}
         >
-          <canvas ref={canvasRef} className="w-full h-full" />
+          <canvas
+            ref={canvasRef}
+            className="block"
+            style={{ width: frame.width, height: frame.height }}
+          />
         </div>
       )}
     </>
