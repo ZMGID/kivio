@@ -161,3 +161,13 @@ http = "1"
 # 仅影响 dev 体验，不改变 release 安装包的产物。首次构建会因依赖按优化重编一次而变慢。
 [profile.dev.package."*"]
 opt-level = 3
+
+# release 产物优化：缩小二进制、加快冷启动 mmap。纯产物层优化，不改运行时行为。
+# strip 去符号表（实测省 ~8%）；lto="thin" + codegen-units=1 跨 crate 内联去冗余；
+# opt-level="s" 偏体积。panic 仍保持默认 unwind —— 不设 "abort"，因为 macOS overlay 走
+# catch_unwind / ObjC 异常拦截（见 lib.rs），abort 会破坏其 unwind 语义。
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+opt-level = "s"
