@@ -366,15 +366,32 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
 
 let mermaidRenderCounter = 0
 
+// 已渲染 mermaid SVG 的缓存：键 = 主题 + 源码。虚拟列表（virtua）会卸载屏外的消息气泡，
+// 往回翻时图会重新挂载；若每次都重新 import+parse+render，会出现 spinner(小)→大SVG 的高度
+// 突变，导致 virtua 纠正滚动 → 抽搐/闪烁。缓存后命中即同步拿到完整 SVG，挂载时高度即确定，
+// 消除回滚 jank。用外部 Map 而非 useMemo（React 可能在内存压力下丢弃 useMemo 缓存）。
+const mermaidSvgCache = new Map<string, string>()
+const MERMAID_SVG_CACHE_MAX = 80
+function cacheMermaidSvg(key: string, svg: string) {
+  if (mermaidSvgCache.has(key)) mermaidSvgCache.delete(key)
+  mermaidSvgCache.set(key, svg)
+  if (mermaidSvgCache.size > MERMAID_SVG_CACHE_MAX) {
+    const oldest = mermaidSvgCache.keys().next().value
+    if (oldest !== undefined) mermaidSvgCache.delete(oldest)
+  }
+}
+
 function MermaidBlock({ code }: { code: string }) {
   const normalizedCode = useMemo(() => normalizeCodeBlockText(code), [code])
   const isDark = useDocumentDark()
+  const cacheKey = `${isDark ? 'd' : 'l'}\n${normalizedCode}`
   const renderBaseId = useRef('')
   const renderSeq = useRef(0)
   const [view, setView] = useState<'diagram' | 'source'>('diagram')
-  const [svg, setSvg] = useState('')
+  // 初始即读缓存：命中则首帧就有完整 SVG（高度确定、无 spinner、无闪烁）。
+  const [svg, setSvg] = useState(() => mermaidSvgCache.get(cacheKey) ?? '')
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => !mermaidSvgCache.has(cacheKey))
 
   if (!renderBaseId.current) {
     mermaidRenderCounter += 1
@@ -382,15 +399,24 @@ function MermaidBlock({ code }: { code: string }) {
   }
 
   useEffect(() => {
+    // 命中缓存：同步设回（处理主题/源码切换时的更新；首帧已由 useState 初始值覆盖）。无异步、无闪烁。
+    const cached = mermaidSvgCache.get(cacheKey)
+    if (cached) {
+      setSvg(cached)
+      setError('')
+      setLoading(false)
+      return
+    }
     let cancelled = false
+    let errorTimer: ReturnType<typeof setTimeout> | undefined
     renderSeq.current += 1
     const renderId = `${renderBaseId.current}-${renderSeq.current}`
 
-    setLoading(true)
-    setError('')
-    setSvg('')
-
-    const render = async () => {
+    // 业界标准做法（Vercel AI 实践 / Open WebUI）：渲染前先用 mermaid.parse 校验。
+    // suppressErrors=true 时非法/半截代码返回 false 而非抛错——流式中的不完整代码直接跳过
+    // 渲染、不报错，语法完整时立刻 render。错误只在“代码已稳定仍解析失败”后才显示，
+    // 不在流式途中报红。
+    void (async () => {
       try {
         const { default: mermaid } = await import('mermaid')
         mermaid.initialize({
@@ -399,22 +425,43 @@ function MermaidBlock({ code }: { code: string }) {
           theme: 'base',
           themeVariables: mermaidThemeVariables(isDark),
         })
-        const result = await mermaid.render(renderId, normalizedCode)
+        const valid = await mermaid.parse(normalizedCode, { suppressErrors: true })
         if (cancelled) return
-        setSvg(result.svg)
+        if (valid) {
+          const { svg: rendered } = await mermaid.render(renderId, normalizedCode)
+          if (cancelled) return
+          cacheMermaidSvg(cacheKey, rendered)
+          setSvg(rendered)
+          setError('')
+          setLoading(false)
+        } else {
+          // 尚不合法：可能流式未写完，也可能最终就是错的。先保持上一次结果/加载态、不报错；
+          // 若 ~600ms 内代码不再变化仍不合法，视为“写完且确实有语法错”，取真实报错信息再显示。
+          errorTimer = setTimeout(() => {
+            void mermaid
+              .parse(normalizedCode)
+              .then(() => {
+                if (!cancelled) setLoading(false)
+              })
+              .catch((err) => {
+                if (cancelled) return
+                setError(err instanceof Error ? err.message : String(err))
+                setLoading(false)
+              })
+          }, 600)
+        }
       } catch (err) {
         if (cancelled) return
         setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        if (!cancelled) setLoading(false)
+        setLoading(false)
       }
-    }
+    })()
 
-    void render()
     return () => {
       cancelled = true
+      if (errorTimer) clearTimeout(errorTimer)
     }
-  }, [isDark, normalizedCode])
+  }, [cacheKey, isDark, normalizedCode])
 
   return (
     <figure className="not-prose my-3 overflow-hidden rounded-lg border border-neutral-200/80 bg-white text-neutral-950 shadow-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100">
@@ -451,7 +498,7 @@ function MermaidBlock({ code }: { code: string }) {
         </>
       ) : (
         <div
-          className="max-w-full overflow-auto bg-white px-4 py-4 dark:bg-neutral-950 [&>svg]:mx-auto [&>svg]:max-w-none"
+          className="max-w-full overflow-x-auto overflow-y-hidden [contain:content] bg-white px-4 py-4 dark:bg-neutral-950 [&>svg]:mx-auto [&>svg]:max-w-none"
           dangerouslySetInnerHTML={{ __html: svg }}
         />
       )}
