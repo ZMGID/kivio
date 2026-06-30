@@ -32,8 +32,8 @@ All Tauri `invoke` calls and event listeners are centralized in **`src/api/tauri
 
 Key patterns:
 - `api.translateText(text)` — debounced 600ms in `App.tsx`.
-- `api.commitTranslation(text)` — copies to clipboard, hides window, optionally sends paste shortcut to the previous app.
-- `api.closeWindow()` — calls `win.hide()` rather than destroying the window; windows are reused across hotkey triggers.
+- `api.commitTranslation(text)` — copies to clipboard, then **closes** (destroys) the `main` window to avoid the translator WebView lingering in memory, optionally sends paste shortcut to the previous app.
+- `api.closeWindow()` — calls `win.close()`, which **destroys** the window to reclaim memory (idle process drops to ~50MB). The `CloseRequested` handler in `lib.rs` only `prevent_close()`s the `lens`/`translate` overlays — and even those immediately run `lens_close` → `destroy()` for full cleanup; `main`/`chat`/`settings` take the default close (destroy). Windows are re-created on demand (`ensure_*_window`), not hidden-and-reused.
 
 ### Window Modes and Routing
 
