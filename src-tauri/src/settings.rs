@@ -184,6 +184,11 @@ pub struct ScreenshotTranslationConfig {
     pub hotkey: String,
     #[serde(default = "default_screenshot_translation_text_hotkey")]
     pub text_hotkey: String,
+    /// 替换翻译独立热键（框选后在原位覆盖译文，固定 RapidOCR）。
+    #[serde(default = "default_screenshot_translation_replace_hotkey")]
+    pub replace_hotkey: String,
+    #[serde(default = "default_true")]
+    pub replace_enabled: bool,
     #[serde(default)]
     pub provider_id: String,
     #[serde(default = "default_openai_model")]
@@ -234,6 +239,8 @@ impl Default for ScreenshotTranslationConfig {
             enabled: true,
             hotkey: "CommandOrControl+Shift+A".to_string(),
             text_hotkey: "CommandOrControl+Shift+T".to_string(),
+            replace_hotkey: "CommandOrControl+Shift+R".to_string(),
+            replace_enabled: true,
             provider_id: "default-ocr".to_string(),
             model: "gpt-4o".to_string(),
             direct_translate: false,
@@ -1610,6 +1617,8 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         normalize_hotkey(&settings.screenshot_translation.hotkey);
     settings.screenshot_translation.text_hotkey =
         normalize_hotkey(&settings.screenshot_translation.text_hotkey);
+    settings.screenshot_translation.replace_hotkey =
+        normalize_hotkey(&settings.screenshot_translation.replace_hotkey);
     settings.lens.hotkey = normalize_hotkey(&settings.lens.hotkey);
 
     // 规范化提示词（去除首尾空白，空值转为 None）
@@ -2142,6 +2151,10 @@ fn default_screenshot_translation_hotkey() -> String {
 
 fn default_screenshot_translation_text_hotkey() -> String {
     "CommandOrControl+Shift+T".to_string()
+}
+
+fn default_screenshot_translation_replace_hotkey() -> String {
+    "CommandOrControl+Shift+R".to_string()
 }
 
 /// 快速翻译结果卡默认宽度（px）。介于旧截图卡(~514)与选中文本卡(420)之间。

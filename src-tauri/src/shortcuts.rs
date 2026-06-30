@@ -6,7 +6,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::commands::apply_launch_at_startup;
 use crate::lens_commands::{
-    lens_request, lens_request_internal, lens_request_translate, lens_request_translate_text,
+    lens_request, lens_request_internal, lens_request_replace, lens_request_translate,
+    lens_request_translate_text,
     request_lens_close,
 };
 use crate::settings::Settings;
@@ -477,6 +478,7 @@ enum HotkeyScope {
     Translator,
     Screenshot,
     ScreenshotText,
+    ScreenshotReplace,
     Lens,
 }
 
@@ -645,6 +647,46 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
                     text_hotkey,
                     err.to_string(),
                 ));
+            }
+        }
+
+        if settings.screenshot_translation.replace_enabled {
+            let replace_hotkey = settings
+                .screenshot_translation
+                .replace_hotkey
+                .trim()
+                .to_string();
+            if !replace_hotkey.is_empty() {
+                let hotkey_key = replace_hotkey.to_lowercase();
+                if !registered.insert(hotkey_key) {
+                    errors.push(HotkeyError {
+                        kind: HotkeyErrorKind::Duplicate,
+                        scope: HotkeyScope::ScreenshotReplace,
+                        hotkey: replace_hotkey.clone(),
+                        raw: None,
+                    });
+                } else if let Err(err) =
+                    shortcut_manager.on_shortcut(replace_hotkey.as_str(), move |app, _shortcut, event| {
+                        if event.state == ShortcutState::Pressed {
+                            if lens_is_active(app) {
+                                let _ = request_lens_close(app);
+                            } else {
+                                let handle = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    if let Err(err) = lens_request_replace(handle) {
+                                        eprintln!("Replace translation trigger error: {err}");
+                                    }
+                                });
+                            }
+                        }
+                    })
+                {
+                    errors.push(classify_hotkey_error(
+                        HotkeyScope::ScreenshotReplace,
+                        replace_hotkey,
+                        err.to_string(),
+                    ));
+                }
             }
         }
     }

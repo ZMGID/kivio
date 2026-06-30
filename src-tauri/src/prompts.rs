@@ -188,6 +188,42 @@ pub fn build_combined_translate_prompt(lang_name: &str, template: Option<&str>) 
   )
 }
 
+/// 替换翻译批量 prompt：要求模型返回与输入等长的 JSON 字符串数组。
+pub fn build_replace_translation_batch_prompt(lines: &[&str], lang_name: &str) -> String {
+    let mut numbered = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        numbered.push_str(&format!("{}. {}\n", i + 1, line));
+    }
+    format!(
+        "Translate each numbered line below into {lang}. \
+         Return ONLY a JSON array of strings with exactly {count} elements, \
+         in the same order as the input lines. \
+         No markdown fences, no commentary, no extra keys.\n\n{numbered}",
+        lang = lang_name,
+        count = lines.len(),
+        numbered = numbered.trim_end(),
+    )
+}
+
+/// 从模型输出解析 JSON 字符串数组；容忍前后缀与 markdown 代码块。
+pub fn parse_replace_translation_json(raw: &str, expected_len: usize) -> Result<Vec<String>, String> {
+    let trimmed = raw.trim();
+    let json_str = if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
+        &trimmed[start..=end]
+    } else {
+        trimmed
+    };
+    let values: Vec<String> = serde_json::from_str(json_str)
+        .map_err(|e| format!("Invalid translation JSON array: {e}"))?;
+    if values.len() != expected_len {
+        return Err(format!(
+            "Translation array length mismatch: expected {expected_len}, got {}",
+            values.len()
+        ));
+    }
+    Ok(values)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +301,12 @@ mod tests {
         assert!(prompt.contains("- **a**"));
         // 选中文本不是 OCR：不应带 OCR 纠错措辞
         assert!(!prompt.contains("OCR"));
+    }
+
+    #[test]
+    fn parse_replace_translation_json_accepts_fenced_array() {
+        let raw = "```json\n[\"你好\", \"世界\"]\n```";
+        let out = parse_replace_translation_json(raw, 2).unwrap();
+        assert_eq!(out, vec!["你好".to_string(), "世界".to_string()]);
     }
 }

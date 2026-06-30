@@ -2,13 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { flushSync } from 'react-dom'
 import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, MessageSquarePlus } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
+import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensReplaceLine, type LensReplaceStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
 import { ChatMarkdown } from './chat/ChatMarkdown'
 import { i18n, type Lang } from './settings/i18n'
 import { copyToClipboard } from './utils/clipboard'
 
 import type { Arrow, BarRect, CapturedFrame, HistoryItem, Metrics, Mode, Point, Stage, TranslateCardDrag } from './lens/types'
 import { ArrowSvg } from './lens/ArrowSvg'
+import { ReplaceTranslateOverlay } from './lens/ReplaceTranslateOverlay'
 import { ARROW_MIN_DRAG_PX, composeAnnotatedImage } from './lens/annotation'
 import { HISTORY_MAX, HISTORY_THUMB_SIZE, loadHistoryFromStorage, makeThumbnail, saveHistoryToStorage } from './lens/history'
 import { ANCHOR_GAP, DRAG_THRESHOLD, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
@@ -27,7 +28,14 @@ function readModeFromHash(): Mode {
   const mode = params.get('mode')
   if (mode === 'translate') return 'translate'
   if (mode === 'translateText') return 'translateText'
+  if (mode === 'replace') return 'replace'
   return 'chat'
+}
+
+function keepFullscreenForMode(curMode: Mode, screenshotKeepFullscreen: boolean): boolean {
+  return curMode === 'chat'
+    || curMode === 'replace'
+    || (curMode === 'translate' && screenshotKeepFullscreen)
 }
 
 const makeTextRequestId = () => `text-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -126,6 +134,9 @@ export default function Lens() {
   const [translateOriginal, setTranslateOriginal] = useState('')
   const [translateText, setTranslateText] = useState('')
   const [translateError, setTranslateError] = useState('')
+  const [replaceLines, setReplaceLines] = useState<LensReplaceLine[]>([])
+  const [replacePhase, setReplacePhase] = useState<'ocr' | 'translating' | 'done' | ''>('')
+  const [replaceError, setReplaceError] = useState('')
   const [translateDurationMs, setTranslateDurationMs] = useState<number | null>(null)
   const [translateNow, setTranslateNow] = useState(() => Date.now())
   const translateStartRef = useRef<number | null>(null)
@@ -296,7 +307,7 @@ export default function Lens() {
       setWebSearchEnabled(canUseWebSearch && curMode === 'chat')
       screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
       cardWidthRef.current = settings.screenshotTranslation?.cardWidth ?? 480
-      setKeepFullscreen(curMode === 'chat' || (curMode === 'translate' && screenshotKeepFullscreenRef.current))
+      setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
       captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
       sendToChatRef.current = settings.lens?.sendToChat !== false
     } catch (err) { console.error('Failed to load settings', err) }
@@ -365,7 +376,7 @@ export default function Lens() {
       setSurfaceDormant(false)
       setStage(curMode === 'translateText' ? 'translating' : 'select')
       setMode(curMode)
-      setKeepFullscreen(curMode === 'chat' || (curMode === 'translate' && screenshotKeepFullscreenRef.current))
+      setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
       setFloatingRebased(false)
       setHovered(null)
       setDragStart(null)
@@ -381,6 +392,9 @@ export default function Lens() {
       setTranslateOriginal('')
       setTranslateText('')
       setTranslateError('')
+      setReplaceLines([])
+      setReplacePhase('')
+      setReplaceError('')
       setFreezeFrameImageId(resetFreezeFrameImageId)
       setFreezeFramePreview('')
       const w = resetFrame?.width ?? window.innerWidth
@@ -421,7 +435,7 @@ export default function Lens() {
         if (motionSeq !== motionSeqRef.current) return
         screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
       cardWidthRef.current = settings.screenshotTranslation?.cardWidth ?? 480
-        setKeepFullscreen(curMode === 'chat' || (curMode === 'translate' && screenshotKeepFullscreenRef.current))
+        setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
         captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
         if (stageRef.current === 'select' && selectRevealedRef.current) {
           setShowCaptureHint(captureHintEnabledRef.current)
@@ -459,6 +473,9 @@ export default function Lens() {
           setTranslateOriginal('')
           setTranslateText('')
           setTranslateError('')
+      setReplaceLines([])
+      setReplacePhase('')
+      setReplaceError('')
           setTranslateDurationMs(null)
           translateStartRef.current = Date.now()
           setTranslateNow(Date.now())
@@ -806,6 +823,9 @@ export default function Lens() {
       setTranslateOriginal('')
       setTranslateText('')
       setTranslateError('')
+      setReplaceLines([])
+      setReplacePhase('')
+      setReplaceError('')
       setTranslateDurationMs(null)
       setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
       setFlyDelta({ x: 0, y: 0 })
@@ -1067,7 +1087,7 @@ export default function Lens() {
     if (targetX + barW > vw - 16) targetX = vw - barW - 16
 
     // translate 模式截完直接进 translating；chat 模式进 ready 等用户提问
-    const targetStage: Stage = mode === 'translate' ? 'translating' : 'ready'
+    const targetStage: Stage = (mode === 'translate' || mode === 'replace') ? 'translating' : 'ready'
 
     if (!keepFullscreen) {
       fullscreenMetricsRef.current = metrics
@@ -1232,6 +1252,64 @@ export default function Lens() {
     }
   }, [])
 
+  const runReplaceTranslate = useCallback(async (id: string) => {
+    const translateSeq = motionSeqRef.current
+    setReplaceLines([])
+    setReplacePhase('')
+    setReplaceError('')
+    setTranslateDurationMs(null)
+    translateStartRef.current = Date.now()
+    setTranslateNow(Date.now())
+    try {
+      const r = await api.lensReplaceTranslate(id)
+      if (translateSeq !== motionSeqRef.current || imageIdRef.current !== id) return
+      if (!r.success) {
+        setReplaceError(r.error || 'Failed')
+        setReplacePhase('done')
+        if (translateStartRef.current !== null) {
+          setTranslateDurationMs(Date.now() - translateStartRef.current)
+          translateStartRef.current = null
+        }
+        setStage('translated')
+      }
+    } catch (err) {
+      if (translateSeq !== motionSeqRef.current || imageIdRef.current !== id) return
+      setReplaceError(err instanceof Error ? err.message : String(err))
+      setReplacePhase('done')
+      if (translateStartRef.current !== null) {
+        setTranslateDurationMs(Date.now() - translateStartRef.current)
+        translateStartRef.current = null
+      }
+      setStage('translated')
+    }
+  }, [])
+
+  // lens-replace-stream 事件监听
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    api.onLensReplaceStream((payload: LensReplaceStreamPayload) => {
+      if (payload.imageId !== imageIdRef.current) return
+      if (payload.error) setReplaceError(payload.error)
+      if (payload.lines?.length) setReplaceLines(payload.lines)
+      if (payload.phase) setReplacePhase(payload.phase)
+      if (payload.phase === 'done') {
+        if (translateStartRef.current !== null) {
+          setTranslateDurationMs(Date.now() - translateStartRef.current)
+          translateStartRef.current = null
+        }
+        setStage('translated')
+      }
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(err => console.error(err))
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
   // lens-translate-stream 事件监听（与 lens-stream 同款 cancelled 旗标处理 StrictMode 双挂）
   useEffect(() => {
     let cancelled = false
@@ -1306,6 +1384,7 @@ export default function Lens() {
       )
       if (captureOpenSeq !== lensOpenSeqRef.current) return
       if (mode === 'translate') void runTranslate(newId)
+      else if (mode === 'replace') void runReplaceTranslate(newId)
     } finally {
       capturingRef.current = false
     }
@@ -1359,6 +1438,7 @@ export default function Lens() {
       await flyBarToAnchor(params.absoluteX, params.absoluteY, params.width, params.height, '')
       if (captureOpenSeq !== lensOpenSeqRef.current) return
       if (mode === 'translate') void runTranslate(newId)
+      else if (mode === 'replace') void runReplaceTranslate(newId)
     } finally {
       capturingRef.current = false
     }
@@ -1691,6 +1771,14 @@ export default function Lens() {
   const showBar = mode === 'chat'
   // translate 浮动卡片：截图后在选区旁出现，加载/完成两态
   const showTranslateCard = (mode === 'translate' || mode === 'translateText') && (stage === 'translating' || stage === 'translated')
+  const showReplaceOverlay = mode === 'replace' && capturedFrame && (stage === 'translating' || stage === 'translated')
+  const replaceStatusLabel = replaceError
+    ? (replaceError === 'rapidocr_models_missing' ? t.rapidOcrModelsMissing : replaceError)
+    : replacePhase === 'ocr'
+      ? t.replaceTranslateStatusOcr
+      : replacePhase === 'translating'
+        ? t.replaceTranslateStatusTranslating
+        : t.replaceTranslateStatusDone
   // 浮动布局仅用于截图翻译关闭全屏覆盖、或 translateText 文本翻译卡。
   // 普通 Lens 截图后固定保持全屏 overlay，只移动输入栏。
   // capturedFrame 只在最近一次截图后非空,而 restoreHistory 会清掉它(历史项的选区不再相关);
@@ -1889,6 +1977,18 @@ export default function Lens() {
             }}
           />
         </>
+      )}
+
+      {showReplaceOverlay && capturedFrame && imagePreview && (
+        <ReplaceTranslateOverlay
+          frame={capturedFrame}
+          imagePreview={imagePreview}
+          lines={replaceLines}
+          phase={replacePhase}
+          error={replaceError || undefined}
+          statusLabel={replaceStatusLabel}
+          escHint={t.replaceTranslateEscHint}
+        />
       )}
 
       {/* drawMode 关闭时也持续显示已落下的箭头 */}

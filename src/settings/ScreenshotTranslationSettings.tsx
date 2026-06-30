@@ -14,7 +14,7 @@ import {
 import { type I18n } from './i18n'
 
 type ScreenshotTranslation = Settings['screenshotTranslation']
-type RecordingTarget = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'lens'
+type RecordingTarget = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'
 type RapidOcrDownloadState = 'idle' | 'downloading' | 'failed'
 
 interface ScreenshotTranslationSettingsProps {
@@ -28,11 +28,12 @@ interface ScreenshotTranslationSettingsProps {
   rapidOcrDownloadError: string
   t: I18n
   onUpdate: (updates: Partial<ScreenshotTranslation>) => void
-  onToggleRecording: (target: 'screenshotTranslation' | 'screenshotTranslationText') => void
+  onToggleRecording: (target: 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace') => void
   onRefreshRapidOcrStatus: () => void
   onDownloadRapidOcr: () => void
   hotkeyError?: string
   textHotkeyError?: string
+  replaceHotkeyError?: string
   hotkeyClearLabel?: string
 }
 
@@ -52,6 +53,7 @@ export function ScreenshotTranslationSettings({
   onDownloadRapidOcr,
   hotkeyError,
   textHotkeyError,
+  replaceHotkeyError,
   hotkeyClearLabel,
 }: ScreenshotTranslationSettingsProps) {
   const screenshot = settings.screenshotTranslation
@@ -105,6 +107,28 @@ export function ScreenshotTranslationSettings({
                   onClear={() => onUpdate({ textHotkey: '' })}
                   clearLabel={hotkeyClearLabel}
                   error={textHotkeyError}
+                />
+              </SettingRow>
+
+              <SettingRow label={t.replaceTranslateHotkey} description={t.replaceTranslateHint} stack>
+                <HotkeyInput
+                  value={screenshot?.replaceHotkey ?? ''}
+                  placeholder="CommandOrControl+Shift+R"
+                  recording={recordingTarget === 'screenshotTranslationReplace'}
+                  onToggleRecording={() => onToggleRecording('screenshotTranslationReplace')}
+                  recordLabel={t.hotkeyRecord}
+                  recordingLabel={t.hotkeyRecording}
+                  recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                  onClear={() => onUpdate({ replaceHotkey: '' })}
+                  clearLabel={hotkeyClearLabel}
+                  error={replaceHotkeyError}
+                />
+              </SettingRow>
+
+              <SettingRow label={t.replaceTranslateEnabled} description={t.replaceTranslate}>
+                <Toggle
+                  checked={screenshot?.replaceEnabled !== false}
+                  onChange={(replaceEnabled) => onUpdate({ replaceEnabled })}
                 />
               </SettingRow>
             </>

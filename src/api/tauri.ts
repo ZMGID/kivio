@@ -537,6 +537,22 @@ export type LensTranslateStreamPayload = {
   error?: string | null
 }
 
+export type LensReplaceLine = {
+  text: string
+  translated: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export type LensReplaceStreamPayload = {
+  imageId: string
+  phase: 'ocr' | 'translating' | 'done'
+  lines: LensReplaceLine[]
+  error?: string | null
+}
+
 // Lens 屏幕窗口元信息（macOS 实际数据；Windows 空数组）
 export type LensWindowInfo = {
   id: number
@@ -659,6 +675,8 @@ export type Settings = {
     enabled: boolean
     hotkey: string
     textHotkey: string
+    replaceHotkey?: string
+    replaceEnabled?: boolean
     providerId: string
     model: string
     directTranslate?: boolean
@@ -1061,6 +1079,8 @@ function normalizeSettings(settings: Settings): Settings {
       enabled: current.screenshotTranslation?.enabled ?? true,
       hotkey: current.screenshotTranslation?.hotkey ?? 'CommandOrControl+Shift+A',
       textHotkey: current.screenshotTranslation?.textHotkey ?? 'CommandOrControl+Shift+T',
+      replaceHotkey: current.screenshotTranslation?.replaceHotkey ?? 'CommandOrControl+Shift+R',
+      replaceEnabled: current.screenshotTranslation?.replaceEnabled ?? true,
       providerId: current.screenshotTranslation?.providerId ?? '',
       model: current.screenshotTranslation?.model ?? '',
       directTranslate: current.screenshotTranslation?.directTranslate ?? false,
@@ -1397,6 +1417,8 @@ export const api = {
     on<LensWebSearchPayload>('lens-web-search', (payload) => listener(payload)),
   onLensTranslateStream: (listener: (payload: LensTranslateStreamPayload) => void) =>
     on<LensTranslateStreamPayload>('lens-translate-stream', (payload) => listener(payload)),
+  onLensReplaceStream: (listener: (payload: LensReplaceStreamPayload) => void) =>
+    on<LensReplaceStreamPayload>('lens-replace-stream', (payload) => listener(payload)),
   onLensCloseRequest: (listener: () => void) =>
     on('lens-close-request', () => listener()),
   lensListWindows: () => invoke<LensWindowInfo[]>('lens_list_windows'),
@@ -1423,6 +1445,10 @@ export const api = {
   lensTranslateText: (text: string, requestId: string) =>
     invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
       'lens_translate_text', { text, requestId }
+    ),
+  lensReplaceTranslate: (imageId: string) =>
+    invoke<{ success: boolean; lineCount?: number; error?: string }>(
+      'lens_replace_translate', { imageId }
     ),
   lensAsk: (imageId: string, messages: ExplainMessage[], options?: { webSearch?: boolean }) =>
     invoke<{ success: boolean; response?: string; error?: string; webSearchResults?: LensWebSearchResult[] }>('lens_ask', {

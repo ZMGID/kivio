@@ -355,8 +355,8 @@ fn ensure_overlay_window(
         return Ok(window);
     }
 
-    // chat 模式 hash 为 '#lens'（readModeFromHash 默认即 chat）；translate / translateText 带 query。
-    let hash = if mode == "translate" || mode == "translateText" {
+    // chat 模式 hash 为 '#lens'（readModeFromHash 默认即 chat）；translate / translateText / replace 带 query。
+    let hash = if mode == "translate" || mode == "translateText" || mode == "replace" {
         format!("lens?mode={mode}")
     } else {
         "lens".to_string()

@@ -587,7 +587,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [confirmDeleteProviderId, setConfirmDeleteProviderId] = useState<string | null>(null)
-  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'lens'>(null)
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [chatSystemPromptInteracted, setChatSystemPromptInteracted] = useState(false)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
@@ -657,7 +657,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   // OS 层面的冲突(Spotlight 占用 Cmd+Space 等)仍需保存后从后端拿到结果。
   // 返回每个 scope 对应的"和谁冲突"——前端各 HotkeyInput 拿到对应 scope 的伙伴名后,
   // 用 hotkeyScope* 模板自己拼本地化字符串。
-  type HotkeyScopeKey = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'lens'
+  type HotkeyScopeKey = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'
   const hotkeyConflicts = useMemo<Partial<Record<HotkeyScopeKey, HotkeyScopeKey>>>(() => {
     if (!settings) return {}
     const slots: Array<{ scope: HotkeyScopeKey; hotkey: string; enabled: boolean }> = [
@@ -671,6 +671,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         scope: 'screenshotTranslationText',
         hotkey: settings.screenshotTranslation?.textHotkey || '',
         enabled: settings.screenshotTranslation?.enabled !== false,
+      },
+      {
+        scope: 'screenshotTranslationReplace',
+        hotkey: settings.screenshotTranslation?.replaceHotkey || '',
+        enabled: settings.screenshotTranslation?.enabled !== false
+          && settings.screenshotTranslation?.replaceEnabled !== false,
       },
       { scope: 'lens', hotkey: settings.lens?.hotkey || '', enabled: settings.lens?.enabled !== false },
     ]
@@ -693,10 +699,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     return out
   }, [settings])
 
-  const SCOPE_I18N_KEY: Record<HotkeyScopeKey, 'hotkeyScopeTranslator' | 'hotkeyScopeScreenshot' | 'hotkeyScopeScreenshotText' | 'hotkeyScopeLens'> = {
+  const SCOPE_I18N_KEY: Record<HotkeyScopeKey, 'hotkeyScopeTranslator' | 'hotkeyScopeScreenshot' | 'hotkeyScopeScreenshotText' | 'hotkeyScopeScreenshotReplace' | 'hotkeyScopeLens'> = {
     main: 'hotkeyScopeTranslator',
     screenshotTranslation: 'hotkeyScopeScreenshot',
     screenshotTranslationText: 'hotkeyScopeScreenshotText',
+    screenshotTranslationReplace: 'hotkeyScopeScreenshotReplace',
     lens: 'hotkeyScopeLens',
   }
   const conflictMessageFor = (scope: HotkeyScopeKey): string | undefined => {
@@ -1957,7 +1964,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   /**
    * 切换快捷键录制状态
    */
-  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'lens') => {
+  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
@@ -2003,6 +2010,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         updateScreenshotTranslation({ hotkey })
       } else if (recordingTarget === 'screenshotTranslationText') {
         updateScreenshotTranslation({ textHotkey: hotkey })
+      } else if (recordingTarget === 'screenshotTranslationReplace') {
+        updateScreenshotTranslation({ replaceHotkey: hotkey })
       } else if (recordingTarget === 'lens') {
         updateLens({ hotkey })
       }
@@ -2508,6 +2517,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 onDownloadRapidOcr={handleDownloadRapidOcr}
                 hotkeyError={conflictMessageFor('screenshotTranslation')}
                 textHotkeyError={conflictMessageFor('screenshotTranslationText')}
+                replaceHotkeyError={conflictMessageFor('screenshotTranslationReplace')}
                 hotkeyClearLabel={t.hotkeyClear}
               />
             )}

@@ -1,7 +1,7 @@
 import type { ExplainMessage } from '../api/tauri'
 
 export type Stage = 'select' | 'ready' | 'answering' | 'translating' | 'translated'
-export type Mode = 'chat' | 'translate' | 'translateText'
+export type Mode = 'chat' | 'translate' | 'translateText' | 'replace'
 export type Point = { x: number; y: number }
 export type BarRect = { x: number; y: number; width: number }
 export type CapturedFrame = { x: number; y: number; width: number; height: number; label: string }
