@@ -81,7 +81,6 @@ function Translator({
     return () => clearTimeout(timer)
   }, [input])
 
-  // Esc 键关闭输入翻译窗口，释放不常用的 main WebView。
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -89,6 +88,15 @@ function Translator({
           await api.closeWindow()
         } catch (err) {
           console.error('[Translator] Failed to close window:', err)
+        }
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault()
+        try {
+          await api.openSettingsWindow()
+          await api.closeTranslatorWindow()
+        } catch (err) {
+          console.error('[Translator] Failed to open settings:', err)
         }
       }
     }

@@ -101,7 +101,7 @@ export function KnowledgeBaseChip({
             ) : (
               <>
                 <p className="px-2 py-1 text-[10.5px] text-neutral-400">
-                  {hasMounted ? '勾选的库参与检索' : '未勾选则不检索任何库'}
+                  {hasMounted ? '勾選的庫參與檢索' : '未勾選則不檢索任何庫'}
                 </p>
                 {libraries.map((lib) => {
                   const checked = value.includes(lib.id)
@@ -148,7 +148,7 @@ export function KnowledgeBaseChip({
         }`}
         aria-expanded={open}
         aria-haspopup="menu"
-        title={hasMounted ? `知识库 · 已挂载 ${value.length} 个` : '选择本会话使用的知识库'}
+        title={hasMounted ? `知識庫 · 已掛載 ${value.length} 個` : '選擇本會話使用的知識庫'}
       >
         <Library size={18} strokeWidth={1.75} />
         {hasMounted && (

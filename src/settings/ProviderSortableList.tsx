@@ -6,7 +6,7 @@ import { isProviderEnabled } from './utils'
 type ProviderSortableListProps = {
   providers: ModelProvider[]
   selectedId: string | undefined
-  lang: 'zh' | 'en'
+  lang: 'zh' | 'zh-TW' | 'en'
   providerNameLabel: string
   onSelect: (id: string) => void
   onReorder: (fromId: string, toId: string) => void
@@ -103,7 +103,7 @@ export function ProviderSortableList({
     return undefined
   }
 
-  const dragLabel = lang === 'zh' ? '拖动调整顺序' : 'Drag to reorder'
+  const dragLabel = lang.startsWith('zh') ? '拖曳調整順序' : 'Drag to reorder'
 
   return (
     <div className={`kv-provider-list-items custom-scrollbar${draggingId ? ' is-sorting' : ''}`}>

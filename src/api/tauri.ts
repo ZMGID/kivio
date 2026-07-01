@@ -761,8 +761,8 @@ export type Settings = {
       searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
     }
   }
-  settingsLanguage?: 'zh' | 'en'
-  /** 首次使用引导：`pending` | `completed` | `skipped` */
+  settingsLanguage?: 'zh' | 'zh-TW' | 'en'
+  /** 首次使用引導：`pending` | `completed` | `skipped` */
   onboardingStatus?: 'pending' | 'completed' | 'skipped'
   /** 启动时静默检查 GH Releases 是否有新版（默认 true） */
   autoCheckUpdate?: boolean

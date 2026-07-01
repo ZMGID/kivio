@@ -28,7 +28,7 @@ export function SetDialog({
     set?.default_assistant_id ?? set?.defaultAssistantId ?? '',
   )
   const inputRef = useRef<HTMLInputElement>(null)
-  const title = set ? '编辑集' : '新建集'
+  const title = set ? '編輯集' : '新建集'
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -81,7 +81,7 @@ export function SetDialog({
           maxLength={80}
           onChange={(e) => setName(e.target.value)}
           className="mt-1.5 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-[13px] text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-          placeholder="例如：写作助手集"
+          placeholder="例如：寫作助手集"
         />
 
         <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
@@ -93,7 +93,7 @@ export function SetDialog({
           onChange={(e) => setSystemPrompt(e.target.value)}
           rows={4}
           className="mt-1.5 max-h-48 w-full resize-y rounded-lg border border-neutral-200 bg-white px-3 py-2 text-[13px] leading-relaxed text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-          placeholder="给这个集里的对话统一的角色 / 指令…"
+          placeholder="給這個集裡的對話統一的角色 / 指令…"
         />
 
         <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
@@ -104,7 +104,7 @@ export function SetDialog({
           value={defaultAssistantId}
           onChange={setDefaultAssistantId}
           options={[
-            { value: '', label: '不指定（用全局默认）' },
+            { value: '', label: '不指定（用全局默認）' },
             ...selectableAssistants.map((assistant) => ({
               value: assistant.id,
               label: assistant.name,
@@ -127,7 +127,7 @@ export function SetDialog({
             disabled={!name.trim() || saving}
             className="rounded-lg bg-neutral-900 px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-neutral-800 disabled:cursor-default disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-white"
           >
-            {saving ? '保存中…' : set ? '保存' : '创建'}
+            {saving ? '保存中…' : set ? '保存' : '創建'}
           </button>
         </div>
       </form>
