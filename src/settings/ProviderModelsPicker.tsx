@@ -5,7 +5,7 @@ import type { ModelProvider } from '../api/tauri'
 import { ModelIcon } from '../chat/ModelIcon'
 import { Input } from './components'
 
-type Lang = 'zh' | 'en'
+type Lang = 'zh' | 'zh-TW' | 'en'
 
 export type ProviderModelsPickerLabels = {
   title: string
@@ -240,8 +240,8 @@ export function ProviderModelsPicker({
                       data-tauri-drag-region="false"
                       aria-label={
                         isEnabled
-                          ? (lang === 'zh' ? `移除 ${model}` : `Remove ${model}`)
-                          : (lang === 'zh' ? `添加 ${model}` : `Add ${model}`)
+                           ? (lang.startsWith('zh') ? `移除 ${model}` : `Remove ${model}`)
+                           : (lang.startsWith('zh') ? `新增 ${model}` : `Add ${model}`)
                       }
                     >
                       {isEnabled ? <Minus size={14} /> : <Plus size={14} strokeWidth={2.25} />}

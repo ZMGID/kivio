@@ -23,7 +23,7 @@ export function RetrievalPanel({
   lang: Lang
   onChange: (next: KnowledgeBaseConfig) => void
 }) {
-  const t = (zh: string, en: string) => (lang === 'zh' ? zh : en)
+  const t = (zh: string, en: string) => (lang.startsWith('zh') ? zh : en)
   const cfg = config ?? DEFAULT
   const patch = (u: Partial<KnowledgeBaseConfig>) => onChange({ ...cfg, ...u })
 
@@ -33,9 +33,13 @@ export function RetrievalPanel({
 
   return (
     <div className="space-y-4">
-      <SettingsGroup title={t('混合检索', 'Hybrid search')}>
+      <SettingsGroup title={t('混合檢索', 'Hybrid search')}>
         <SettingRow
           label={t('Hybrid 融合', 'Hybrid fusion')}
+          description={t(
+            '向量召回 + 關鍵詞 BM25，經 RRF 融合；對中文短詞和精確匹配更有幫助。',
+            'Fuses vector recall with keyword BM25 via RRF — helps CJK short terms and exact match.',
+          )}
         >
           <Toggle checked={cfg.hybridEnabled} onChange={(v) => patch({ hybridEnabled: v })} />
         </SettingRow>
@@ -43,7 +47,8 @@ export function RetrievalPanel({
         {cfg.hybridEnabled && (
           <div className="grid gap-1 sm:grid-cols-2">
             <SettingRow
-              label={t('向量权重', 'Vector weight')}
+              label={t('向量權重', 'Vector weight')}
+              description={t('調高更偏語義相似。', 'Higher favors semantic similarity.')}
               stack
             >
               <Input
@@ -54,7 +59,8 @@ export function RetrievalPanel({
               />
             </SettingRow>
             <SettingRow
-              label={t('关键词权重', 'Keyword weight')}
+              label={t('關鍵詞權重', 'Keyword weight')}
+              description={t('調高更偏字面匹配。', 'Higher favors literal match.')}
               stack
             >
               <Input
@@ -72,8 +78,8 @@ export function RetrievalPanel({
         <SettingRow
           label={t('Rerank 提供商', 'Rerank provider')}
           description={t(
-            '留空关闭；失败时降级为融合顺序',
-            'Blank = off; failures use fused order',
+            'Cohere / Jina 兼容；留空關閉，調用失敗自動降級為融合順序。',
+            'Cohere/Jina-compatible; blank = off, failures fall back to fused order.',
           )}
         >
           <Select
@@ -81,7 +87,7 @@ export function RetrievalPanel({
             value={cfg.rerankProviderId}
             onChange={(pid) => patch({ rerankProviderId: pid, rerankModel: '' })}
             options={[
-              { value: '', label: t('关闭', 'Off') },
+              { value: '', label: t('關閉', 'Off') },
               ...enabled.map((p) => ({ value: p.id, label: p.name || p.id })),
             ]}
           />
@@ -94,7 +100,7 @@ export function RetrievalPanel({
               value={cfg.rerankModel}
               onChange={(m) => patch({ rerankModel: m })}
               options={[
-                { value: '', label: t('选择 rerank 模型…', 'Pick rerank model…') },
+                { value: '', label: t('選擇 rerank 模型…', 'Pick rerank model…') },
                 ...rerankModels.map((m) => ({ value: m, label: m })),
               ]}
             />

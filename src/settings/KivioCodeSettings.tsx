@@ -3,7 +3,7 @@ import { api, type KivioCodeConfig, type ModelProvider } from '../api/tauri'
 import { ModelPairSelect } from './ModelPairSelect'
 import { Select, SettingsGroup, SettingRow, TextArea, Toggle } from './components'
 
-type Lang = 'zh' | 'en'
+type Lang = 'zh' | 'zh-TW' | 'en'
 
 interface KivioCodeSettingsProps {
   lang: Lang
@@ -20,10 +20,10 @@ const DEFAULT_CONFIG: KivioCodeConfig = {
 /**
  * "Kivio Code" 设置页:读写 kivio-code CLI 的独立配置(<app_data>/kivio-code/config.json)。
  * 与共享 Settings 分开存储,故走专用命令 get/saveKivioCodeConfig(参考 UsageStatsPanel 的取数方式)。
- * 改动即时落盘。模型选择器复用 ModelPairSelect;空选项表示"跟随 Chat 模型"。
+ * 改动即时落盘。模型选择器复用 ModelPairSelect;空选项表示"跟隨 Chat 模型"。
  */
 export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
-  const zh = lang === 'zh'
+  const zh = lang === 'zh' || lang === 'zh-TW'
   const [config, setConfig] = useState<KivioCodeConfig | null>(null)
   const [instructions, setInstructions] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -68,7 +68,7 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
     return (
       <SettingsGroup>
         <div className="px-1 py-4 text-[13px] text-neutral-400">
-          {zh ? '加载中…' : 'Loading…'}
+          {zh ? '加載中…' : 'Loading…'}
         </div>
       </SettingsGroup>
     )
@@ -111,9 +111,14 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
 
   return (
     <>
-      <SettingsGroup title={zh ? '默认模型与权限' : 'Default model & permissions'}>
+      <SettingsGroup title={zh ? '默認模型與權限' : 'Default model & permissions'}>
         <SettingRow
-          label={zh ? '默认模型' : 'Default model'}
+          label={zh ? '默認模型' : 'Default model'}
+          description={
+            zh
+              ? '留空則跟隨 Chat 默認模型。命令行 --model / --provider 仍優先生效。'
+              : 'Leave unset to follow the Chat default model. CLI --model / --provider still take precedence.'
+          }
         >
           <ModelPairSelect
             providerId={config.defaultProviderId || ''}
@@ -122,29 +127,39 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
             onChange={(providerId, model) =>
               update({ defaultProviderId: providerId, defaultModel: model })
             }
-            inheritLabel={zh ? '跟随 Chat 模型' : 'Follow Chat model'}
+            inheritLabel={zh ? '跟隨 Chat 模型' : 'Follow Chat model'}
           />
         </SettingRow>
 
         <SettingRow
-          label={zh ? '工具审批策略' : 'Tool approval policy'}
+          label={zh ? '工具審批策略' : 'Tool approval policy'}
+          description={
+            zh
+              ? '決定 kivio-code 執行工具前是否需要確認。命令行 --no-approve 會強制為"每次確認"。'
+              : 'Whether kivio-code confirms before running tools. CLI --no-approve forces "confirm every call".'
+          }
         >
           <Select
             value={config.approvalPolicy || 'auto'}
             onChange={(approvalPolicy) => update({ approvalPolicy })}
             options={[
-              { value: 'auto', label: zh ? '完全访问' : 'Full access' },
+              { value: 'auto', label: zh ? '完全訪問' : 'Full access' },
               {
                 value: 'readonly_auto_sensitive_confirm',
-                label: zh ? '敏感确认' : 'Sensitive confirmation',
+                label: zh ? '敏感確認' : 'Sensitive confirmation',
               },
-              { value: 'always_confirm', label: zh ? '每次确认' : 'Confirm every call' },
+              { value: 'always_confirm', label: zh ? '每次確認' : 'Confirm every call' },
             ]}
           />
         </SettingRow>
 
         <SettingRow
-          label={zh ? '读取 CLAUDE.md / .claude 上下文' : 'Read CLAUDE.md / .claude context'}
+          label={zh ? '讀取 CLAUDE.md / .claude 上下文' : 'Read CLAUDE.md / .claude context'}
+          description={
+            zh
+              ? '開啟後 kivio-code 會讀取項目與全局的 CLAUDE.md / .claude 指令文件(跨工具兼容)。'
+              : "When on, kivio-code reads project and global CLAUDE.md / .claude instruction files for cross-tool compatibility."
+          }
         >
           <Toggle
             checked={config.readClaudeDir}
@@ -156,8 +171,8 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
       <SettingsGroup title={zh ? '全局指令' : 'Global instructions'}>
         <div className="px-1 pb-2 text-[12px] leading-relaxed text-neutral-500 dark:text-neutral-400">
           {zh
-            ? '每次运行注入；项目 KIVIO.md / AGENTS.md 会叠加。'
-            : 'Injected every run; project KIVIO.md / AGENTS.md layers on top.'}
+            ? '每次運行 kivio-code 都會注入的全局指令。項目根目錄的 KIVIO.md / AGENTS.md 會在其後疊加。'
+            : "Global instructions injected on every kivio-code run. A project's root KIVIO.md / AGENTS.md layers on top."}
         </div>
         <TextArea
           value={instructions ?? ''}
@@ -166,13 +181,13 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
           mono
           placeholder={
             zh
-              ? '# 全局指令\n\n例如:始终用中文回复;提交信息遵循 Conventional Commits…'
+              ? '# 全局指令\n\n例如:始終用中文回覆;提交信息遵循 Conventional Commits…'
               : '# Global instructions\n\ne.g. Always answer in English; follow Conventional Commits for messages…'
           }
         />
       </SettingsGroup>
 
-      <SettingsGroup title={zh ? '启动方式' : 'How to launch'}>
+      <SettingsGroup title={zh ? '啟動方式' : 'How to launch'}>
         <div className="px-1 py-2 text-[13px] leading-relaxed text-neutral-500 dark:text-neutral-400">
           {zh ? (
             <>
@@ -202,7 +217,12 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
         </div>
 
         <SettingRow
-          label={zh ? '安装命令行工具' : 'Install command line tool'}
+          label={zh ? '安裝命令行工具' : 'Install command line tool'}
+          description={
+            zh
+              ? '把 kivio 命令註冊進用戶 PATH(Windows)/軟鏈到 ~/.local/bin(macOS),裝好後在新終端可直接用 kivio code。'
+              : 'Register the kivio command on your user PATH (Windows) / symlink it to ~/.local/bin (macOS). After installing, use kivio code in a new terminal.'
+          }
         >
           <button
             type="button"
@@ -212,10 +232,10 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
           >
             {installing
               ? zh
-                ? '安装中…'
+                ? '安裝中…'
                 : 'Installing…'
               : zh
-                ? '安装'
+                ? '安裝'
                 : 'Install'}
           </button>
         </SettingRow>
@@ -236,7 +256,7 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
 
       {error && (
         <div className="px-1 py-2 text-[12px] text-red-500 dark:text-red-400">
-          {(zh ? '保存失败:' : 'Save failed: ') + error}
+          {(zh ? '保存失敗:' : 'Save failed: ') + error}
         </div>
       )}
     </>

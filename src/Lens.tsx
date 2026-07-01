@@ -162,12 +162,12 @@ export default function Lens() {
   const [barNoTransition, setBarNoTransition] = useState(true)
   // flyDelta：全屏覆盖模式下 fly 动画用 transform translate 取代 left/top 过渡。
   // left/top 不是 GPU 合成属性，每帧都要走 layout/reflow；Windows 上 webview hide→show 后
-  // 合成器刚被唤醒、首个大幅 left/top 过渡极易卡顿（"乱跳"）。改为：left/top 立即 snap 到
+  // 合成器刚被唤醒、首个大幅 left/top 过渡极易卡顿（"亂跳"）。改为：left/top 立即 snap 到
   // 最终位置，用 transform: translate(dx, dy) 把视觉位置拉回起点，下一帧再把 delta 过渡到 (0,0)。
   // transform 走合成层，不阻塞主线程，多窗口会话间稳定。
   const [flyDelta, setFlyDelta] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [translateCardDragging, setTranslateCardDragging] = useState(false)
-  // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
+  // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截圖"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
   const [showCaptureHint, setShowCaptureHint] = useState(false)
   // 箭头标注:仅 stage==='ready' 子模式
@@ -228,8 +228,8 @@ export default function Lens() {
   const floatingRebaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const focusReqIdRef = useRef(0)
   const motionSeqRef = useRef(0)
-  // 只在真正"打开/重入 Lens 会话"（enterSelect）时自增，与动画用的 motionSeqRef 区分开。
-  // closeAfterReset 用它判断"等待隐藏期间是否有新会话开启"，避免被关闭自身的
+  // 只在真正"打開/重入 Lens 會話"（enterSelect）时自增，与动画用的 motionSeqRef 区分开。
+  // closeAfterReset 用它判断"等待隱藏期間是否有新會話開啟"，避免被关闭自身的
   // setStage('select') 副作用（会再次 bump motionSeqRef）误判而跳过 lensClose。
   const lensOpenSeqRef = useRef(0)
   const selectRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -248,7 +248,7 @@ export default function Lens() {
   // 避免恢复历史时 setMessages 触发 effect 把恢复的对话又当新条目写一遍历史。
   const justFinishedStreamRef = useRef(false)
   // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
-  // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
+  // 这个 ref 标记"截圖進行中"，blur handler 看到就跳过。
   const capturingRef = useRef(false)
   // selectionText 异步 take 的重入 token：每次 enterSelect / resetBeforeHide / restoreHistory 都 +1，
   // 老请求看到 myReq !== current 直接丢弃，避免 take 完成时已经进入新会话被错误注入。
@@ -331,7 +331,7 @@ export default function Lens() {
 
     const run = async () => {
       if (!canFocus()) return
-      // 复用窗口时原生 first responder 可能没落到内部 WKWebView，导致"第二次打开"要手点一下才聚焦。
+      // 复用窗口时原生 first responder 可能没落到内部 WKWebView，导致"第二次打開"要手点一下才聚焦。
       // 这里让原生 makeKeyWindow + makeFirstResponder(WKWebView)——非激活方式，**不调
       // getCurrentWindow().setFocus()**：tao 的 set_focus 会 `[NSApp activateIgnoringOtherApps:YES]`
       // 激活整个 app，从而把别屏上的 Chat 主窗口拽到前台造成跳屏。非激活 panel 只需 makeKeyWindow
@@ -623,7 +623,7 @@ export default function Lens() {
   // translate 模式不入对话历史（OCR+翻译是一次性任务，无对话语义）。
   // 缩略图压缩到 96x96 jpeg 再写历史，避免 localStorage 被几 MB 的 base64 撑爆。
   useEffect(() => {
-    // 只在真实"流刚结束"路径触发：handleSend / handleStop 的 finally 会先置 ref 再 setStreaming(false)。
+    // 只在真实"流剛結束"路径触发：handleSend / handleStop 的 finally 会先置 ref 再 setStreaming(false)。
     // restoreHistory / enterSelect / resetBeforeHide 调用前会显式清零 ref，避免恢复历史时 effect 误触发。
     if (!justFinishedStreamRef.current) return
     if (mode !== 'chat') return
@@ -677,7 +677,7 @@ export default function Lens() {
 
   // 监听 lens-stream 事件：把 reasoning_delta / delta 累积到最后一条 assistant 消息
   // StrictMode 双挂载下 listen 是 async：cleanup 时 unlisten 可能还没赋值，需要 cancelled 旗标
-  // 让 promise resolve 时立即 dispose，否则会留下"幽灵 listener"导致每个事件触发 N 次（字符重复）
+  // 让 promise resolve 时立即 dispose，否则会留下"幽靈 listener"导致每个事件触发 N 次（字符重复）
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
@@ -848,7 +848,7 @@ export default function Lens() {
   }, [cancelPendingMotion, releaseFreezeCanvas, viewport, metrics])
 
   const closeAfterReset = useCallback(async () => {
-    // 记下关闭开始时的"会话代次"。resetBeforeHide 会 setStage('select') 进而触发动画
+    // 记下关闭开始时的"會話代次"。resetBeforeHide 会 setStage('select') 进而触发动画
     // effect 再次 bump motionSeqRef，所以不能用 motionSeqRef 当守卫（会被自身副作用误判）。
     // 只有 enterSelect（真正的新会话开启/重入）才会改 lensOpenSeqRef——这才是该放弃隐藏的信号。
     const closeOpenSeq = lensOpenSeqRef.current
@@ -1116,7 +1116,7 @@ export default function Lens() {
           setFlyDelta({ x: 0, y: 0 })
           setStage(targetStage)
           if (isTranslateMode) {
-            // translate 卡片截图前不渲染 → 没"起点位置",禁 transition 避免 (selectX,selectY) → (0,0) 瞬时跳动触发动画
+            // translate 卡片截图前不渲染 → 没"起點位置",禁 transition 避免 (selectX,selectY) → (0,0) 瞬时跳动触发动画
             setBarIntro(false)
             setBarNoTransition(true)
           } else {
@@ -1391,7 +1391,7 @@ export default function Lens() {
   }
 
   const handleCaptureRegion = async (rect: { x: number; y: number; width: number; height: number }) => {
-    // 用 lensOpenSeqRef 做"截图期间是否开了新会话"的守卫：flyBarToAnchor 内部会 cancelPendingMotion
+    // 用 lensOpenSeqRef 做"截圖期間是否開了新會話"的守卫：flyBarToAnchor 内部会 cancelPendingMotion
     // 把 motionSeqRef++，若用 motionSeq 守卫则 flyBar 后必然不等、runTranslate 永不触发（截图翻译卡住）。
     // lensOpenSeqRef 只有 enterSelect（真正新会话）才 bump，flyBar 不动它。
     const captureOpenSeq = lensOpenSeqRef.current
@@ -1488,8 +1488,8 @@ export default function Lens() {
     const ctx = (isFirstTurn && mode === 'chat' && !hasScreenshot) ? selectionText.trim() : ''
     if (!hasScreenshot && !ctx && !question.trim()) return
     const userContent = ctx
-      ? (lang === 'zh'
-          ? `[已选文本]\n${ctx}\n\n[用户问题]\n${question}`
+      ? (lang.startsWith('zh')
+          ? `[已選文字]\n${ctx}\n\n[使用者問題]\n${question}`
           : `[Selected Text]\n${ctx}\n\n[Question]\n${question}`)
       : question
 
@@ -1706,7 +1706,7 @@ export default function Lens() {
       void api.lensCancelStream().catch(err => console.error(err))
     }
     imageIdRef.current = item.id
-    // 防御：恢复历史 setMessages 会触发持久化 effect，但本路径不是"流刚结束"，不该 push 重复条目
+    // 防御：恢复历史 setMessages 会触发持久化 effect，但本路径不是"流剛結束"，不该 push 重复条目
     justFinishedStreamRef.current = false
     flushSync(() => {
       setImagePreview(item.imagePreview)
@@ -1723,15 +1723,15 @@ export default function Lens() {
     focusLensSurface([50, 140, 260])
   }
 
-  // 相对时间字符串（"刚刚" / "3 分钟前"）
+  // 相对时间字符串（"剛剛" / "3 分鐘前"）
   const relTime = (ts: number): string => {
     const diff = Date.now() - ts
     const m = Math.floor(diff / 60000)
-    if (m < 1) return lang === 'zh' ? '刚刚' : 'just now'
-    if (m < 60) return lang === 'zh' ? `${m} 分钟前` : `${m}m ago`
+    if (m < 1) return lang.startsWith('zh') ? '剛剛' : 'just now'
+    if (m < 60) return lang.startsWith('zh') ? `${m} 分鐘前` : `${m}m ago`
     const h = Math.floor(m / 60)
-    if (h < 24) return lang === 'zh' ? `${h} 小时前` : `${h}h ago`
-    return lang === 'zh' ? `${Math.floor(h / 24)} 天前` : `${Math.floor(h / 24)}d ago`
+    if (h < 24) return lang.startsWith('zh') ? `${h} 小時前` : `${h}h ago`
+    return lang.startsWith('zh') ? `${Math.floor(h / 24)} 天前` : `${Math.floor(h / 24)}d ago`
   }
 
   useEffect(() => () => {
@@ -1754,7 +1754,7 @@ export default function Lens() {
 
   // 测量 history 面板实际高度,供浮动模式 resize 副作用按需扩窗(不然面板上方/下方溢出会被 OS 裁掉)。
   // useLayoutEffect 确保在浏览器 paint 之前同步算出高度并 setState,resize 副作用立刻拿到新值扩窗,
-  // 不会出现"面板已渲染但窗口没扩"的中间帧。
+  // 不会出现"面板已渲染但窗口沒擴"的中间帧。
   useLayoutEffect(() => {
     if (historyOpen && historyContentRef.current) {
       setHistoryPanelH(historyContentRef.current.offsetHeight)
@@ -1782,7 +1782,7 @@ export default function Lens() {
   // 浮动布局仅用于截图翻译关闭全屏覆盖、或 translateText 文本翻译卡。
   // 普通 Lens 截图后固定保持全屏 overlay，只移动输入栏。
   // capturedFrame 只在最近一次截图后非空,而 restoreHistory 会清掉它(历史项的选区不再相关);
-  // 但此时 lens 窗口仍是浮动小尺寸 → 必须叠加 floatingRebased 才能正确反映"窗口当前在浮动态"。
+  // 但此时 lens 窗口仍是浮动小尺寸 → 必须叠加 floatingRebased 才能正确反映"窗口當前在浮動態"。
   const isFloatingLayout = mode === 'translateText' || (!keepFullscreen && (capturedFrame !== null || floatingRebased) && stage !== 'select')
   const stableAnswerHeight = isFloatingLayout
     ? fullscreenMetricsRef.current?.ANSWER_H || metrics.ANSWER_H
@@ -2169,7 +2169,7 @@ export default function Lens() {
               )}
               {selectionLineCount > 0 && (
                 <span
-                  title={lang === 'zh' ? `已选中 ${selectionLineCount} 行` : `${selectionLineCount} lines selected`}
+                  title={lang.startsWith('zh') ? `已選取 ${selectionLineCount} 行` : `${selectionLineCount} lines selected`}
                   className="select-none px-1.5 py-0.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-[11px] font-medium tabular-nums text-neutral-600 dark:text-neutral-400 ring-1 ring-black/[0.04] dark:ring-white/[0.06]"
                 >
                   {selectionLineCount}
@@ -2247,7 +2247,7 @@ export default function Lens() {
                         // 首条 user 消息可能含 [已选文本]\n...\n\n[用户问题]\n... 的拼接形式（chat 启动注入），
                         // 历史预览只显示问题原文，剥掉 marker 段
                         const firstUserRaw = item.messages.find(m => m.role === 'user')?.content ?? ''
-                        const zhMarker = '[用户问题]\n'
+                        const zhMarker = '[用戶問題]\n'
                         const enMarker = '[Question]\n'
                         const zhIdx = firstUserRaw.indexOf(zhMarker)
                         const enIdx = firstUserRaw.indexOf(enMarker)
@@ -2278,7 +2278,7 @@ export default function Lens() {
                                 </div>
                               )}
                               <div className="text-[9.5px] text-neutral-400 dark:text-neutral-500 mt-0.5 truncate leading-tight">
-                                {item.appLabel ? `${item.appLabel} · ` : ''}{turns > 1 ? `${turns} 轮 · ` : ''}{relTime(item.timestamp)}
+                                {item.appLabel ? `${item.appLabel} · ` : ''}{turns > 1 ? `${turns} 輪 · ` : ''}{relTime(item.timestamp)}
                               </div>
                             </div>
                           </button>

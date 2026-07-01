@@ -4,7 +4,7 @@ import type { ModelInfo } from '../api/tauri'
 import { resolveModelInfo, matchModel } from '../data/modelMatching'
 import { Toggle, Input } from '../settings/components'
 
-type Lang = 'zh' | 'en'
+type Lang = 'zh' | 'zh-TW' | 'en'
 
 type ModelDetailDrawerProps = {
   modelName: string
@@ -70,25 +70,25 @@ export function ModelDetailDrawer({
   const isDirty = !deepEqual(form, resolved)
 
   const t = {
-    title: lang === 'zh' ? '模型详情' : 'Model Details',
-    back: lang === 'zh' ? '返回' : 'Back',
-    displayName: lang === 'zh' ? '显示名称' : 'Display Name',
-    contextWindow: lang === 'zh' ? '上下文长度' : 'Context Window',
-    maxOutput: lang === 'zh' ? '最大输出' : 'Max Output',
-    capabilities: lang === 'zh' ? '功能' : 'Capabilities',
-    vision: lang === 'zh' ? '图像输入' : 'Image Input',
-    functionCalling: lang === 'zh' ? '工具调用' : 'Tool Calling',
-    reasoning: lang === 'zh' ? '推理模式' : 'Reasoning',
-    streaming: lang === 'zh' ? '流式输出' : 'Streaming',
-    webSearch: lang === 'zh' ? '网络搜索' : 'Web Search',
-    imageGeneration: lang === 'zh' ? '生图' : 'Image Generation',
-    pricing: lang === 'zh' ? '定价 (per 1M tokens, USD)' : 'Pricing (per 1M tokens, USD)',
-    input: lang === 'zh' ? '输入' : 'Input',
-    output: lang === 'zh' ? '输出' : 'Output',
-    cachedInput: lang === 'zh' ? '缓存输入' : 'Cached Input',
-    save: lang === 'zh' ? '保存' : 'Save',
-    reset: lang === 'zh' ? '重置为默认值' : 'Reset to Defaults',
-    noDatabase: lang === 'zh' ? '未在数据库中找到此模型，可手动填写参数。' : 'Model not found in database. You can fill in parameters manually.',
+    title: lang.startsWith('zh') ? '模型詳情' : 'Model Details',
+    back: lang.startsWith('zh') ? '返回' : 'Back',
+    displayName: lang.startsWith('zh') ? '顯示名稱' : 'Display Name',
+    contextWindow: lang.startsWith('zh') ? '上下文長度' : 'Context Window',
+    maxOutput: lang.startsWith('zh') ? '最大輸出' : 'Max Output',
+    capabilities: lang.startsWith('zh') ? '功能' : 'Capabilities',
+    vision: lang.startsWith('zh') ? '圖像輸入' : 'Image Input',
+    functionCalling: lang.startsWith('zh') ? '工具呼叫' : 'Tool Calling',
+    reasoning: lang.startsWith('zh') ? '推理模式' : 'Reasoning',
+    streaming: lang.startsWith('zh') ? '串流輸出' : 'Streaming',
+    webSearch: lang.startsWith('zh') ? '網路搜尋' : 'Web Search',
+    imageGeneration: lang.startsWith('zh') ? '生圖' : 'Image Generation',
+    pricing: lang.startsWith('zh') ? '定價 (per 1M tokens, USD)' : 'Pricing (per 1M tokens, USD)',
+    input: lang.startsWith('zh') ? '輸入' : 'Input',
+    output: lang.startsWith('zh') ? '輸出' : 'Output',
+    cachedInput: lang.startsWith('zh') ? '快取輸入' : 'Cached Input',
+    save: lang.startsWith('zh') ? '儲存' : 'Save',
+    reset: lang.startsWith('zh') ? '重設為預設值' : 'Reset to Defaults',
+    noDatabase: lang.startsWith('zh') ? '未在資料庫中找到此模型，可手動填寫參數。' : 'Model not found in database. You can fill in parameters manually.',
   }
 
   return (

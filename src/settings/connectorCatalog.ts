@@ -6,13 +6,15 @@
 //   - 'vault'：本地笔记库路径（Obsidian）；写入 settings，注入系统提示，不走 MCP。
 //   - 'email'：IMAP/SMTP 邮箱（Himalaya CLI）；写入 settings + config.toml，配合 himalaya skill。
 
+import { type Lang } from './i18n'
+
 export type ConnectorAuthKind = 'oauth' | 'token' | 'vault' | 'email'
 
 export type ConnectorCatalogEntry = {
   id: string
   name: string
-  /** 双语简介。 */
-  description: { zh: string; en: string }
+  /** 双语简介。zh-TW 回退到 zh。 */
+  description: Record<Lang, string>
   /** NavIcons 之外的图标键，用于卡片渲染（见 ConnectorsPanel 的图标映射）。 */
   iconKey: string
   /** MCP（streamable_http）端点 URL；vault 类连接器可省略。 */
@@ -20,10 +22,10 @@ export type ConnectorCatalogEntry = {
   authKind: ConnectorAuthKind
   /** 数据是否经第三方中转（Composio/Rube 等聚合服务）。 */
   composio?: boolean
-  /** token 输入框的占位提示（双语）。 */
-  tokenHint?: { zh: string; en: string }
-  /** 详情面板「概览」要点（双语 bullet 列表）。 */
-  overview?: { zh: string[]; en: string[] }
+  /** token 输入框的占位提示（双语）。zh-TW 回退到 zh。 */
+  tokenHint?: Record<Lang, string>
+  /** 详情面板「概览」要点（双语 bullet 列表）。zh-TW 回退到 zh。 */
+  overview?: Record<Lang, string[]>
   /** 官网链接（详情面板「链接」区）。 */
   website?: string
   /** 支持/帮助链接（详情面板「链接」区）。 */
@@ -38,6 +40,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'Obsidian',
     description: {
       zh: '告诉 AI 你的 Obsidian 笔记库本地路径，由 agent 用 read_file 等工具直接读取笔记。',
+      'zh-TW': '告訴 AI 你的 Obsidian 筆記庫本地路徑，由 agent 用 read_file 等工具直接讀取筆記。',
       en: 'Tell the agent where your Obsidian vault lives on disk; it reads notes via read_file and other native tools.',
     },
     iconKey: 'obsidian',
@@ -47,6 +50,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '选择本机 Obsidian 笔记库（vault）路径。',
         '路径写入设置并注入对话系统提示，无需 MCP。',
         'Agent 可用 read_file、glob_files、search_files 等工具检索与阅读 .md 笔记。',
+      ],
+      'zh-TW': [
+        '選擇本機 Obsidian 筆記庫（vault）路徑。',
+        '路徑寫入設定並注入對話系統提示，無需 MCP。',
+        'Agent 可用 read_file、glob_files、search_files 等工具檢索與閱讀 .md 筆記。',
       ],
       en: [
         'Pick your local Obsidian vault directory.',
@@ -63,6 +71,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'Email',
     description: {
       zh: '通过 Himalaya CLI 连接 IMAP/SMTP 邮箱，agent 激活 himalaya skill 后用 bash 读写邮件。',
+      'zh-TW': '透過 Himalaya CLI 連線 IMAP/SMTP 信箱，agent 啟用 himalaya skill 後用 bash 讀寫郵件。',
       en: 'Connect IMAP/SMTP mail via the Himalaya CLI; the agent uses the himalaya skill and bash to read and send mail.',
     },
     iconKey: 'email',
@@ -72,6 +81,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '填写邮箱、密码与 IMAP/SMTP 服务器（支持 Gmail / Outlook 等预设）。',
         '需先在连接器中手动安装 Himalaya，再添加邮箱；保存后写入设置并同步 ~/.config/himalaya/config.toml。',
         'Agent 激活 himalaya skill 后通过 bash 读写邮件。',
+      ],
+      'zh-TW': [
+        '填寫信箱、密碼與 IMAP/SMTP 伺服器（支援 Gmail / Outlook 等預設）。',
+        '需先在連接器中手動安裝 Himalaya，再新增信箱；儲存後寫入設定並同步 ~/.config/himalaya/config.toml。',
+        'Agent 啟用 himalaya skill 後透過 bash 讀寫郵件。',
       ],
       en: [
         'Enter email, password, and IMAP/SMTP servers (Gmail / Outlook presets supported).',
@@ -88,6 +102,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'Notion',
     description: {
       zh: '读取与检索 Notion 页面、数据库。',
+      'zh-TW': '讀取與搜尋 Notion 頁面、資料庫。',
       en: 'Read and search Notion pages and databases.',
     },
     iconKey: 'notion',
@@ -98,6 +113,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '检索与读取 Notion 页面、数据库内容。',
         '按关键词在工作区内全文搜索。',
         '通过 OAuth 授权，无需手动管理 token。',
+      ],
+      'zh-TW': [
+        '搜尋與讀取 Notion 頁面、資料庫內容。',
+        '按關鍵詞在工作區內全文搜尋。',
+        '透過 OAuth 授權，無需手動管理 token。',
       ],
       en: [
         'Search and read Notion pages and database content.',
@@ -114,6 +134,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'GitHub',
     description: {
       zh: '访问仓库、Issue、PR 与代码搜索（使用 Personal Access Token）。',
+      'zh-TW': '存取倉庫、Issue、PR 與程式碼搜尋（使用 Personal Access Token）。',
       en: 'Access repos, issues, PRs, and code search (via Personal Access Token).',
     },
     iconKey: 'github',
@@ -121,6 +142,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     authKind: 'token',
     tokenHint: {
       zh: '粘贴 GitHub Personal Access Token（PAT）',
+      'zh-TW': '貼上 GitHub Personal Access Token（PAT）',
       en: 'Paste a GitHub Personal Access Token (PAT)',
     },
     overview: {
@@ -128,6 +150,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '访问仓库、Issue、Pull Request 与代码搜索。',
         '读取文件内容、提交记录与分支信息。',
         '使用 Personal Access Token 鉴权，权限由 token scope 决定。',
+      ],
+      'zh-TW': [
+        '存取倉庫、Issue、Pull Request 與程式碼搜尋。',
+        '讀取檔案內容、提交記錄與分支資訊。',
+        '使用 Personal Access Token 鑑權，權限由 token scope 決定。',
       ],
       en: [
         'Access repositories, issues, pull requests, and code search.',
@@ -144,6 +171,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'Linear',
     description: {
       zh: '在 Linear 中管理项目、Issue 与工作流。',
+      'zh-TW': '在 Linear 中管理專案、Issue 與工作流程。',
       en: 'Manage projects, issues, and workflows in Linear.',
     },
     iconKey: 'linear',
@@ -154,6 +182,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '查询与管理 Linear 项目、Issue 与工作流。',
         '创建、更新 Issue 并跟踪状态变更。',
         '通过 OAuth 授权，无需手动管理 token。',
+      ],
+      'zh-TW': [
+        '查詢與管理 Linear 專案、Issue 與工作流程。',
+        '建立、更新 Issue 並追蹤狀態變更。',
+        '透過 OAuth 授權，無需手動管理 token。',
       ],
       en: [
         'Query and manage Linear projects, issues, and workflows.',
@@ -170,6 +203,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'Sentry',
     description: {
       zh: '查询项目错误、Issue 与监控数据。',
+      'zh-TW': '查詢專案錯誤、Issue 與監控資料。',
       en: 'Query project errors, issues, and monitoring data.',
     },
     iconKey: 'sentry',
@@ -180,6 +214,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '查询项目错误、Issue 与监控数据。',
         '检索堆栈信息与错误发生趋势。',
         '通过 OAuth 授权，无需手动管理 token。',
+      ],
+      'zh-TW': [
+        '查詢專案錯誤、Issue 與監控資料。',
+        '檢索堆疊資訊與錯誤發生趨勢。',
+        '透過 OAuth 授權，無需手動管理 token。',
       ],
       en: [
         'Query project errors, issues, and monitoring data.',
@@ -196,6 +235,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'Atlassian',
     description: {
       zh: '访问 Jira 工单与 Confluence 页面。',
+      'zh-TW': '存取 Jira 工單與 Confluence 頁面。',
       en: 'Access Jira issues and Confluence pages.',
     },
     iconKey: 'atlassian',
@@ -206,6 +246,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '访问 Jira 工单并跟踪进度。',
         '检索与读取 Confluence 页面内容。',
         '通过 OAuth 授权，无需手动管理 token。',
+      ],
+      'zh-TW': [
+        '存取 Jira 工單並追蹤進度。',
+        '檢索與讀取 Confluence 頁面內容。',
+        '透過 OAuth 授權，無需手動管理 token。',
       ],
       en: [
         'Access Jira issues and track their progress.',
@@ -222,6 +267,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     name: 'Composio',
     description: {
       zh: '通过 Composio 聚合接入 Gmail、Drive、Outlook 等长尾服务。数据经第三方中转，请确认 MCP 端点与 token。',
+      'zh-TW': '透過 Composio 聚合接取 Gmail、Drive、Outlook 等長尾服務。資料經第三方中轉，請確認 MCP 端點與 token。',
       en: 'Reach long-tail services (Gmail, Drive, Outlook…) through Composio. Data is relayed by a third party; confirm the MCP endpoint and token.',
     },
     iconKey: 'composio',
@@ -231,6 +277,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     composio: true,
     tokenHint: {
       zh: '粘贴 Composio API key / token',
+      'zh-TW': '貼上 Composio API key / token',
       en: 'Paste your Composio API key / token',
     },
     overview: {
@@ -238,6 +285,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         '通过 Composio 聚合接入 Gmail、Drive、Outlook 等长尾服务。',
         '一个 token 复用多家服务，统一 MCP 端点。',
         '数据经第三方中转，请确认 MCP 端点与 token 来源可信。',
+      ],
+      'zh-TW': [
+        '透過 Composio 聚合接取 Gmail、Drive、Outlook 等長尾服務。',
+        '一個 token 復用多家服務，統一 MCP 端點。',
+        '資料經第三方中轉，請確認 MCP 端點與 token 來源可信。',
       ],
       en: [
         'Reach long-tail services (Gmail, Drive, Outlook…) through Composio.',

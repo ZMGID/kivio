@@ -34,15 +34,15 @@ const SEARCH_DEBOUNCE_MS = 250
 
 function sourceLabel(source: string, lang: string) {
   const zh: Record<string, string> = {
-    all: '全部来源',
+    all: '全部來源',
     chat: 'Chat',
-    translator: '输入翻译',
-    screenshot_translation: '快速翻译',
+    translator: '輸入翻譯',
+    screenshot_translation: '快速翻譯',
     lens: 'Lens',
-    chat_title_summary: '标题总结',
-    chat_compression: '上下文压缩',
-    chat_aux_vision: '辅助视觉',
-    chat_image_generation: '图片生成',
+    chat_title_summary: '標題總結',
+    chat_compression: '上下文壓縮',
+    chat_aux_vision: '輔助視覺',
+    chat_image_generation: '圖片生成',
   }
   const en: Record<string, string> = {
     all: 'All sources',
@@ -55,16 +55,16 @@ function sourceLabel(source: string, lang: string) {
     chat_aux_vision: 'Aux vision',
     chat_image_generation: 'Image generation',
   }
-  return (lang === 'zh' ? zh : en)[source] || source.replace(/_/g, ' ')
+  return (lang.startsWith('zh') ? zh : en)[source] || source.replace(/_/g, ' ')
 }
 
 function statusLabel(status: string, lang: string) {
   const zh: Record<string, string> = {
-    all: '全部状态',
+    all: '全部狀態',
     success: '成功',
-    error: '失败',
+    error: '失敗',
     cancelled: '取消',
-    missing_usage: '无 usage',
+    missing_usage: '無 usage',
   }
   const en: Record<string, string> = {
     all: 'All statuses',
@@ -73,7 +73,7 @@ function statusLabel(status: string, lang: string) {
     cancelled: 'Cancelled',
     missing_usage: 'No usage',
   }
-  return (lang === 'zh' ? zh : en)[status] || status
+  return (lang.startsWith('zh') ? zh : en)[status] || status
 }
 
 function formatCount(value?: number | null) {
@@ -105,7 +105,7 @@ function formatDuration(ms?: number | null) {
 
 function formatTime(seconds?: number | null, lang = 'zh') {
   if (!seconds) return '--'
-  return new Date(seconds * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US', {
+  return new Date(seconds * 1000).toLocaleString(lang.startsWith('zh') ? 'zh-CN' : 'en-US', {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -165,7 +165,7 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
   if (points.length === 0) {
     return (
       <div className="flex h-36 items-center justify-center rounded-md border border-dashed border-neutral-200 text-[12px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-        {lang === 'zh' ? '暂无趋势数据' : 'No trend data'}
+        {lang.startsWith('zh') ? '暫無趨勢數據' : 'No trend data'}
       </div>
     )
   }
@@ -220,7 +220,7 @@ function GroupTable({ rows, lang, type }: { rows: UsageGroupStats[]; lang: strin
   if (rows.length === 0) {
     return (
       <div className="kv-panel">
-        <div className="kv-panel-body">{lang === 'zh' ? '暂无统计数据' : 'No usage data'}</div>
+        <div className="kv-panel-body">{lang.startsWith('zh') ? '暫無統計數據' : 'No usage data'}</div>
       </div>
     )
   }
@@ -230,13 +230,13 @@ function GroupTable({ rows, lang, type }: { rows: UsageGroupStats[]; lang: strin
         <thead className="border-b border-neutral-200 text-[10.5px] uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-500">
           <tr>
             <th className="px-3 py-2 font-semibold">{type === 'provider' ? 'Provider' : 'Model'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '请求' : 'Req'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '成功率' : 'Success'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '請求' : 'Req'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '成功率' : 'Success'}</th>
             <th className="px-3 py-2 font-semibold">Token</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '输入/输出' : 'In/Out'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '成本' : 'Cost'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '平均耗时' : 'Avg'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '最近' : 'Last'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '輸入/輸出' : 'In/Out'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '成本' : 'Cost'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '平均耗時' : 'Avg'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '最近' : 'Last'}</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -270,7 +270,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
   if (logs.length === 0) {
     return (
       <div className="kv-panel">
-        <div className="kv-panel-body">{lang === 'zh' ? '暂无请求日志' : 'No request logs'}</div>
+        <div className="kv-panel-body">{lang.startsWith('zh') ? '暫無請求日誌' : 'No request logs'}</div>
       </div>
     )
   }
@@ -279,16 +279,16 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
       <table className="min-w-[920px] w-full text-left text-[12px]">
         <thead className="border-b border-neutral-200 text-[10.5px] uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-500">
           <tr>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '时间' : 'Time'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '来源' : 'Source'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '時間' : 'Time'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '來源' : 'Source'}</th>
             <th className="px-3 py-2 font-semibold">Provider</th>
             <th className="px-3 py-2 font-semibold">Model</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '输入' : 'Input'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '输出' : 'Output'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '輸入' : 'Input'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '輸出' : 'Output'}</th>
             <th className="px-3 py-2 font-semibold">Token</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '成本' : 'Cost'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '耗时' : 'Time'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '状态' : 'Status'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '成本' : 'Cost'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '耗時' : 'Time'}</th>
+            <th className="px-3 py-2 font-semibold">{lang.startsWith('zh') ? '狀態' : 'Status'}</th>
             <th className="px-3 py-2 font-semibold">Usage</th>
           </tr>
         </thead>
@@ -314,7 +314,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
               </td>
               <td className="px-3 py-2">
                 <span className={`kv-tag ${record.usageSource === 'missing' ? 'warn' : 'ok'}`}>
-                  {record.usageSource === 'missing' ? (lang === 'zh' ? '缺失' : 'missing') : 'provider'}
+                  {record.usageSource === 'missing' ? (lang.startsWith('zh') ? '缺失' : 'missing') : 'provider'}
                 </span>
               </td>
             </tr>
@@ -375,7 +375,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
   }, [loadStats])
 
   const clearStats = useCallback(async () => {
-    const ok = window.confirm(lang === 'zh' ? '清空所有本地用量统计？' : 'Clear all local usage statistics?')
+    const ok = window.confirm(lang.startsWith('zh') ? '清空所有本地用量統計？' : 'Clear all local usage statistics?')
     if (!ok) return
     setClearing(true)
     setError('')
@@ -421,7 +421,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
 
   return (
     <div className="space-y-3">
-      <SettingsGroup title={lang === 'zh' ? '总览' : 'Overview'}>
+      <SettingsGroup title={lang.startsWith('zh') ? '總覽' : 'Overview'}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="kv-seg">
             {(['7d', '30d', '90d', 'all'] as UsageRange[]).map(option => (
@@ -432,18 +432,18 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
                 onClick={() => updateRange(option)}
                 data-tauri-drag-region="false"
               >
-                {option === 'all' ? (lang === 'zh' ? '全部' : 'All') : option}
+                {option === 'all' ? (lang.startsWith('zh') ? '全部' : 'All') : option}
               </button>
             ))}
           </div>
           <div className="flex items-center gap-1.5">
             <button type="button" className="kv-btn sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
               <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
-              {lang === 'zh' ? '刷新' : 'Refresh'}
+              {lang.startsWith('zh') ? '刷新' : 'Refresh'}
             </button>
             <button type="button" className="kv-btn sm danger" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
               <Trash2 size={11} />
-              {lang === 'zh' ? '清空' : 'Clear'}
+              {lang.startsWith('zh') ? '清空' : 'Clear'}
             </button>
           </div>
         </div>
@@ -455,29 +455,29 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
         )}
 
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-          <SummaryTile label={lang === 'zh' ? '总 Token' : 'Total tokens'} value={formatTokens(summary?.totalTokens)} sub={`${formatCount(summary?.totalRequests)} ${lang === 'zh' ? '次请求' : 'requests'}`} />
-          <SummaryTile label={lang === 'zh' ? '估算成本' : 'Estimated cost'} value={formatCost(summary?.totalCostUsd)} sub={lang === 'zh' ? '按本地模型价格估算' : 'From local model pricing'} />
-          <SummaryTile label={lang === 'zh' ? '输入 / 输出' : 'Input / Output'} value={`${formatTokens(summary?.inputTokens)} / ${formatTokens(summary?.outputTokens)}`} sub={lang === 'zh' ? 'provider 返回 usage 时统计' : 'Provider usage only'} />
-          <SummaryTile label={lang === 'zh' ? '可信度' : 'Coverage'} value={`${reportedRatio}%`} sub={`${formatCount(summary?.missingUsageRequests)} ${lang === 'zh' ? '条缺少 usage' : 'missing usage'}`} />
-          <SummaryTile label={lang === 'zh' ? '缓存命中' : 'Cached input'} value={formatTokens(summary?.cachedInputTokens)} />
-          <SummaryTile label={lang === 'zh' ? '缓存创建' : 'Cache creation'} value={formatTokens(summary?.cacheCreationInputTokens)} />
-          <SummaryTile label={lang === 'zh' ? '推理 Token' : 'Reasoning'} value={formatTokens(summary?.reasoningTokens)} />
-          <SummaryTile label={lang === 'zh' ? '平均耗时' : 'Avg duration'} value={formatDuration(summary?.averageDurationMs)} />
+          <SummaryTile label={lang.startsWith('zh') ? '總 Token' : 'Total tokens'} value={formatTokens(summary?.totalTokens)} sub={`${formatCount(summary?.totalRequests)} ${lang.startsWith('zh') ? '次請求' : 'requests'}`} />
+          <SummaryTile label={lang.startsWith('zh') ? '估算成本' : 'Estimated cost'} value={formatCost(summary?.totalCostUsd)} sub={lang.startsWith('zh') ? '按本地模型價格估算' : 'From local model pricing'} />
+          <SummaryTile label={lang.startsWith('zh') ? '輸入 / 輸出' : 'Input / Output'} value={`${formatTokens(summary?.inputTokens)} / ${formatTokens(summary?.outputTokens)}`} sub={lang.startsWith('zh') ? 'provider 返回 usage 時統計' : 'Provider usage only'} />
+          <SummaryTile label={lang.startsWith('zh') ? '可信度' : 'Coverage'} value={`${reportedRatio}%`} sub={`${formatCount(summary?.missingUsageRequests)} ${lang.startsWith('zh') ? '條缺少 usage' : 'missing usage'}`} />
+          <SummaryTile label={lang.startsWith('zh') ? '緩存命中' : 'Cached input'} value={formatTokens(summary?.cachedInputTokens)} />
+          <SummaryTile label={lang.startsWith('zh') ? '緩存創建' : 'Cache creation'} value={formatTokens(summary?.cacheCreationInputTokens)} />
+          <SummaryTile label={lang.startsWith('zh') ? '推理 Token' : 'Reasoning'} value={formatTokens(summary?.reasoningTokens)} />
+          <SummaryTile label={lang.startsWith('zh') ? '平均耗時' : 'Avg duration'} value={formatDuration(summary?.averageDurationMs)} />
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title={lang === 'zh' ? '趋势' : 'Trend'}>
+      <SettingsGroup title={lang.startsWith('zh') ? '趨勢' : 'Trend'}>
         <TrendChart points={stats?.trend ?? []} lang={lang} />
       </SettingsGroup>
 
-      <SettingsGroup title={lang === 'zh' ? '明细' : 'Details'}>
+      <SettingsGroup title={lang.startsWith('zh') ? '明細' : 'Details'}>
         <div className="mb-3 flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
             <div className="kv-seg">
               {[
-                { id: 'logs' as const, label: lang === 'zh' ? '请求日志' : 'Logs' },
+                { id: 'logs' as const, label: lang.startsWith('zh') ? '請求日誌' : 'Logs' },
                 { id: 'providers' as const, label: 'Provider' },
-                { id: 'models' as const, label: lang === 'zh' ? '模型' : 'Models' },
+                { id: 'models' as const, label: lang.startsWith('zh') ? '模型' : 'Models' },
               ].map(option => (
                 <button
                   key={option.id}
@@ -504,8 +504,8 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
             />
           </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            <Input value={providerSearch} onChange={setProviderSearch} placeholder={lang === 'zh' ? '搜索 Provider' : 'Search provider'} />
-            <Input value={modelSearch} onChange={setModelSearch} placeholder={lang === 'zh' ? '搜索模型' : 'Search model'} mono />
+            <Input value={providerSearch} onChange={setProviderSearch} placeholder={lang.startsWith('zh') ? '搜索 Provider' : 'Search provider'} />
+            <Input value={modelSearch} onChange={setModelSearch} placeholder={lang.startsWith('zh') ? '搜索模型' : 'Search model'} mono />
           </div>
         </div>
 
@@ -516,8 +516,8 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
         {stats && view === 'logs' && (
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 dark:text-neutral-500">
             <span>
-              {lang === 'zh'
-                ? `显示 ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)} 条`
+              {lang.startsWith('zh')
+                ? `顯示 ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)} 條`
                 : `Showing ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)}`}
             </span>
             <div className="flex items-center gap-1.5">
@@ -527,10 +527,10 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
                 onClick={() => setLogPageIndex(page => Math.max(0, page - 1))}
                 disabled={!canGoPrev}
                 data-tauri-drag-region="false"
-                title={lang === 'zh' ? '上一页' : 'Previous page'}
+                title={lang.startsWith('zh') ? '上一頁' : 'Previous page'}
               >
                 <ChevronLeft size={11} />
-                {lang === 'zh' ? '上一页' : 'Prev'}
+                {lang.startsWith('zh') ? '上一頁' : 'Prev'}
               </button>
               <span className="min-w-12 text-center tabular-nums">
                 {logPageIndex + 1} / {pageCount}
@@ -541,9 +541,9 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
                 onClick={() => setLogPageIndex(page => Math.min(pageCount - 1, page + 1))}
                 disabled={!canGoNext}
                 data-tauri-drag-region="false"
-                title={lang === 'zh' ? '下一页' : 'Next page'}
+                title={lang.startsWith('zh') ? '下一頁' : 'Next page'}
               >
-                {lang === 'zh' ? '下一页' : 'Next'}
+                {lang.startsWith('zh') ? '下一頁' : 'Next'}
                 <ChevronRight size={11} />
               </button>
             </div>
