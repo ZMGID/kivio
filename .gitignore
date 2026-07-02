@@ -50,4 +50,4 @@ src-tauri/swift/kivio-ocr-helper/.build/
 .codex/
 .cursor/
 .opencode/
-.trellis/
+# .trellis/ is tracked; its own .trellis/.gitignore excludes runtime/backup/cache files.
