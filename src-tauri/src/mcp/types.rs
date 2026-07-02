@@ -942,7 +942,8 @@ mod tests {
             native_skill_read_file_tool().openai_tool_name(),
             "skill_read_file"
         );
-        assert_eq!(native_web_search_tool().openai_tool_name(), "web_search");
+        // 保留名规避：native web_search 在 wire/prompt 上声明为别名 search_web。
+        assert_eq!(native_web_search_tool().openai_tool_name(), "search_web");
     }
 
     #[test]
