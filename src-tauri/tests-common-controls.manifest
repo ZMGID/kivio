@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  cargo test 构建的测试二进制不经 tauri_build 的资源/清单嵌入。项目依赖（rfd/tauri-plugin-dialog）
+  静态导入 comctl32.dll 的 TaskDialogIndirect —— 该导出仅存在于 Common-Controls v6（WinSxS，靠应用
+  清单激活），System32 默认的 v5.82 没有。缺清单时测试 exe 加载即 STATUS_ENTRYPOINT_NOT_FOUND
+  (0xC0000139)，cargo test 一条都跑不了。
+
+  不能在 build.rs 里用链接参数嵌入：唯一覆盖 lib 单测 harness 的 rustc-link-arg 是全目标级，会同时
+  作用于主程序 bin，与 tauri 已嵌入的资源清单撞车（CVT1100 资源重复 / LNK1123）。
+  改用「外部清单」：Windows 对无嵌入清单的 exe 会读取同名 <exe>.manifest。scripts/win-cargo-test.ps1
+  构建测试二进制后把本文件复制到每个测试 exe 旁，即可让加载器绑定到 Common-Controls v6。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
