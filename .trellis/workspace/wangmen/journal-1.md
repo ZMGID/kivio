@@ -209,3 +209,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: 原生工具集精简 MVP：24→20（旧名归一化别名）
+
+**Date**: 2026-07-03
+**Task**: 原生工具集精简 MVP：24→20（旧名归一化别名）
+**Branch**: `main`
+
+### Summary
+
+参照 opencode(11 工具)精简 chat agent 原生工具集 24→20。核心机制：LEGACY_TOOL_ALIASES + canonical_tool_name（mcp/types.rs），接入 match_tool_call(模型调用) 与 tool_matches_recommended_name(persona/skill 白名单) 两处，方向与既有 web_search→search_web wire alias 相反（旧输入名→现内部名，不参与声明/提示词），落 spec C4。四项改动：find→glob 改名；read 传目录时复用 list_dir 列目录并移除 chat 的 ls 条目；删 list_background，bash_output 无 job_id 时返回作业列表；删 todo_update，todo_write 整表替换覆盖改/删/清除（3 单测改写）。全部注册表快照测试 + 提示词 + CLAUDE.md 同步；kivio_code 因共享 def 连带更新（保留自己的 ls，接受 glob）。旧名(find/ls/todo_update/list_background)经归一化仍路由，persona 白名单不丢工具。验证：cargo check --lib --tests 干净、前端 typecheck/lint 绿、Tauri app 编译启动正常、trellis-check 独立审查 PASS（修 2 trivial）；cargo test 本环境 0xC0000139 无法加载（DLL 问题非代码），逻辑靠编译+复核。手测因环境无法捕获 GUI 输出——下一任务将建文件监听 probe 通道支持自动化测试。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7fbd076` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
