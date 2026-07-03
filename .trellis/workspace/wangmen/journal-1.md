@@ -176,3 +176,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: 请求调试面板并入用量统计 + claude-tap 风格 trace 查看器重做
+
+**Date**: 2026-07-03
+**Task**: 请求调试面板并入用量统计 + claude-tap 风格 trace 查看器重做
+**Branch**: `main`
+
+### Summary
+
+把独立的'请求调试'导航项并入'用量统计'页二级视图（PRD R3 同步），并参照 claude-tap 参考项目（E:\ZM database\kivio tap）重做 RequestDebugPanel 为 trace 查看器。侧边列表：来源类别彩色徽标+左侧竖条、model 徽标染色、token(千分位)/耗时/时间、endpoint、gap 分隔。详情默认视图：可折叠 工具/系统提示词/消息/响应/请求Body/Headers/完整JSON，usage 彩色明细，请求JSON/cURL/整条 复制；工具兼容 OpenAI(function.*)+Anthropic(input_schema)，消息渲染角色卡片并归一化 tool_use/tool_result；YAML 序列化对齐 claude-tap。详情 Trace 视图：输入/输出/元数据分块+JSON/YAML 切换+整块复制（无 SSE，范围外）。纯前端，后端抓包(102647d)未动，headers 保持后端脱敏、无新增密钥暴露。trellis-check PASS：typecheck/lint/vitest(185) 全绿。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `303cc37` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
