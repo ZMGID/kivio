@@ -360,6 +360,16 @@ pub fn run() {
                 });
             }
 
+            // 无头测试通道（probe）——仅 debug 构建。轮询 <app_data>/chat_probe/request.json，
+            // 走与聊天窗口相同的生成路径并把结果写 result.json，供自动化真实验证工具调用。
+            #[cfg(debug_assertions)]
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::chat::probe::run_probe_watcher(app_handle).await;
+                });
+            }
+
             // 启动期并行预热：对每个已启用的 MCP server 建立持久连接（非阻塞）。
             // 失败仅置 Error 态（mcp_get_or_connect 内部已发事件），不影响启动。
             {

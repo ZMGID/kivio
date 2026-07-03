@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/07-03-chat-gui-probe-channel/research/generation-entry-and-result.md", "reason": "核对 probe 结果提取字段、工具装配是否忠实复用 GUI 路径"}
+{"file": ".trellis/tasks/07-03-chat-gui-probe-channel/research/probe-hook-points.md", "reason": "验收时核对 debug 门控、无头放行、超时兜底、scratch 清理是否落实"}

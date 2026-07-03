@@ -47,6 +47,7 @@
 | provider 拒绝 `tool_choice` | `is_tools_unsupported_error`（stop.rs）识别并降级无工具重试 |
 | 模型调用内部名（未经别名，如某些不读提示词的模型） | `match_tool_call` 精确匹配 `openai_tool_name()`==别名失败 → 大小写兜底 → 未知工具喂回（不崩） |
 | 新发现的保留名撞车 | 往 `RESERVED_WIRE_ALIASES` 加一行即可，无需改逻辑 |
+| **provider 拒绝 `prompt_cache_key`/`promptCacheKey`** | ⚠️ **已知未修 bug**：Google Gemini 的 OpenAI-compat 端点对未知字段严格校验，返回 `400 Unknown name "promptCacheKey"/"prompt_cache_key": Cannot find field`（chat-probe 实测）。当前无条件下发该缓存键，Gemini 端点整个会话 400 失败。**修复方向**：缓存键按 provider/端点门控（仅 OpenAI/兼容缓存路由的端点发；Google/Gemini 端点不发），或加"发未知字段失败即降级重试去掉该字段"的兜底。待单独任务。 |
 
 ### 5. Good/Base/Bad Cases
 

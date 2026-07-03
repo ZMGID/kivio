@@ -1737,6 +1737,7 @@ async fn complete_assistant_reply(
         active_skill_id,
         entry,
         None,
+        false,
     )
     .await
     .map(|_| ())
@@ -1755,6 +1756,7 @@ async fn complete_assistant_reply_inner(
     active_skill_id: Option<&str>,
     entry: crate::chat::agent::AgentRunEntry,
     arm: Option<&ReplyArm>,
+    probe: bool,
 ) -> Result<ArmReplyOutcome, String> {
     if conversation.agent_runtime.is_external() {
         // 外部 CLI 路径在 run.rs 内自带 generation；这里登记一条 per-run 回复槽位，
@@ -1991,9 +1993,10 @@ async fn complete_assistant_reply_inner(
         skills::read_skill_detail(app, &settings.chat_tools.skill_scan_paths, id).ok()
     });
     let mut effective_chat_tools = settings.chat_tools.clone();
-    if arm.is_some() {
+    if arm.is_some() || probe {
         // 多答 fan-out（决策 D1 注）：N 条并行 run 若各自弹工具审批会产生 N 倍弹窗、
         // 且无法对应到具体列。多模型臂内一律自动批准（静默执行）。单模型保持原审批策略。
+        // probe（无头测试通道）同理：无 GUI 可应答审批，必须自动放行，否则挂起。
         effective_chat_tools.approval_policy = "auto".to_string();
     }
     let (memory_prompt, memory_warning) = chat_memory_prompt_for_request(app, &settings);
@@ -2153,12 +2156,31 @@ async fn complete_assistant_reply_inner(
         email_accounts_prompt.as_deref(),
     );
 
-    let host = ChatAgentHost {
+    let chat_host = ChatAgentHost {
         app: app.clone(),
         state: state.inner(),
         // 多模型臂不直接落盘（最终由协调者统一 upsert + save），因此抑制 loop 的
         // mid-run 部分快照写盘，避免 N 条并发 run 同写 conversations/{id}.json 的竞态。
         suppress_partial_persist: arm.is_some(),
+    };
+    // probe（无头测试通道，仅 debug）：换用自动放行审批/consent/ask_user 的 host，
+    // 否则模型调用敏感工具或 ask_user 会 await GUI 应答而永久挂起。
+    #[cfg(debug_assertions)]
+    let probe_host = ProbeAgentHost { state: state.inner() };
+    let host: &dyn crate::chat::agent::AgentHost = {
+        #[cfg(debug_assertions)]
+        {
+            if probe {
+                &probe_host
+            } else {
+                &chat_host
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = probe;
+            &chat_host
+        }
     };
     let executor = RegistryToolExecutor {
         app: app.clone(),
@@ -2200,7 +2222,7 @@ async fn complete_assistant_reply_inner(
             custom_system_prompt: settings.chat.system_prompt.clone(),
             provider_tools_fallback_system_prompt,
         },
-        &host,
+        host,
         &executor,
     )
     .await;
@@ -2333,6 +2355,7 @@ async fn run_reply_fan_out(
                 active_skill_id,
                 crate::chat::agent::AgentRunEntry::Send,
                 Some(&arm),
+                false,
             )
             .await;
             (outcome, arm_conversation)
@@ -5001,11 +5024,215 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
     }
 }
 
+/// 无头测试通道（probe）的 AgentHost，仅 debug 构建。跑的是与 GUI 完全相同的生成核心
+/// （`complete_assistant_reply_inner`），但所有需要 GUI 应答的交互门一律自动放行：审批 /
+/// 会话 consent → 允许，`ask_user` → 取消态（不阻塞）。事件发射 no-op（结果从落盘的 assistant
+/// 消息内联读取，不靠事件）。generation 相关沿用标准机制，保证超时/取消能生效。
+#[cfg(debug_assertions)]
+struct ProbeAgentHost<'a> {
+    state: &'a AppState,
+}
+
+#[cfg(debug_assertions)]
+impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
+    fn emit_stream_delta(
+        &self,
+        _conversation_id: &str,
+        _run_id: &str,
+        _message_id: &str,
+        _delta: &str,
+        _reasoning_delta: Option<&str>,
+        _segment: Option<&ChatMessageSegment>,
+    ) {
+    }
+
+    fn emit_stream_done(
+        &self,
+        _conversation_id: &str,
+        _run_id: &str,
+        _message_id: &str,
+        _reason: &str,
+        _full: &str,
+    ) {
+    }
+
+    fn emit_tool_record(
+        &self,
+        _conversation_id: &str,
+        _run_id: &str,
+        _message_id: &str,
+        _record: &ToolCallRecord,
+    ) {
+    }
+
+    fn request_tool_approval<'a>(
+        &'a self,
+        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        _record: &'a ToolCallRecord,
+    ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    fn request_session_consent<'a>(
+        &'a self,
+        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+    ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    fn request_user_response<'a>(
+        &'a self,
+        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        _record: &'a ToolCallRecord,
+        _prompt: crate::chat::ask_user::AskUserPromptPayload,
+    ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
+        // 无头：不能向用户提问，直接返回取消态让 loop 继续（不阻塞）。
+        Box::pin(async { crate::chat::ask_user::cancelled_response() })
+    }
+
+    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
+        self.state
+            .is_chat_generation_active(conversation_id, generation)
+    }
+
+    fn wait_for_generation_inactive<'a>(
+        &'a self,
+        conversation_id: &'a str,
+        generation: u64,
+    ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
+        Box::pin(async move {
+            wait_for_chat_cancel(self.state, conversation_id, generation).await;
+        })
+    }
+}
+
+/// 无头测试通道的一次生成编排（仅 debug）：把 scratch 会话绑到一个**固定复用**的
+/// 「Chat Probe」项目（根为请求的 cwd，使文件工具相对路径可解析）→ 推入 user 消息 →
+/// 走与 GUI 完全相同的生成核心（`complete_assistant_reply_inner`，probe=true 自动放行）→
+/// 取回生成的 assistant 消息。**会话与项目都保留**（不删除），以便在会话列表里观察调试。
+/// 返回 assistant 消息（含 content + tool_calls + stream_outcome + usage）。
+#[cfg(debug_assertions)]
+pub(crate) async fn run_chat_probe(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    prompt: String,
+    provider: Option<String>,
+    model: Option<String>,
+    skill_id: Option<String>,
+    cwd: Option<String>,
+) -> Result<ChatMessage, String> {
+    const PROBE_PROJECT_ID: &str = "proj_kivio_probe";
+    // cwd → 固定复用的「Chat Probe」项目：根设为 cwd，使文件工具（read/glob/grep）相对路径
+    // 从此解析（非项目会话是 global workspace 无根，与真实 GUI 一致）。复用同一项目避免污染
+    // 列表；不删除，方便在会话列表里点开观察每次 probe 的完整轨迹。
+    let project_id = if let Some(cwd) = cwd.as_deref().filter(|c| !c.trim().is_empty()) {
+        let now = chrono::Local::now().timestamp();
+        let exists = get_projects(app)?
+            .into_iter()
+            .any(|p| p.id == PROBE_PROJECT_ID);
+        if exists {
+            // 更新根到本次 cwd（其余字段不动）。
+            let _ = update_project(
+                app,
+                PROBE_PROJECT_ID,
+                None,
+                None,
+                false,
+                None,
+                false,
+                Some(cwd.to_string()),
+                true,
+            );
+        } else {
+            create_project(
+                app,
+                crate::chat::types::ChatProject {
+                    id: PROBE_PROJECT_ID.to_string(),
+                    name: "Chat Probe".to_string(),
+                    description: Some("无头测试通道（debug）的会话都在这里，可点开观察".to_string()),
+                    color: None,
+                    root_path: Some(cwd.to_string()),
+                    created_at: now,
+                    updated_at: now,
+                },
+            )?;
+        }
+        Some(PROBE_PROJECT_ID.to_string())
+    } else {
+        None
+    };
+
+    let mut conversation = create_chat_conversation_internal(
+        app,
+        state.inner(),
+        provider,
+        model,
+        None,
+        project_id,
+        None,
+        None,
+    )?;
+    // 会话标题取自 prompt（截断），便于在列表里识别。
+    conversation.title = {
+        let head: String = prompt.chars().take(60).collect();
+        format!("🔬 {head}")
+    };
+    let user_message = ChatMessage {
+        id: format!("msg_{}", Uuid::new_v4()),
+        role: "user".to_string(),
+        content: prompt.clone(),
+        attachments: Vec::new(),
+        reasoning: None,
+        artifacts: Vec::new(),
+        tool_calls: Vec::new(),
+        segments: Vec::new(),
+        agent_plan: None,
+        api_messages: Vec::new(),
+        model_messages: Vec::new(),
+        active_skill_id: None,
+        run_entry: None,
+        stream_outcome: None,
+        usage: None,
+        group_id: None,
+        provider_id: None,
+        model: None,
+        timestamp: chrono::Local::now().timestamp(),
+    };
+    conversation.messages.push(user_message);
+    conversation.updated_at = chrono::Local::now().timestamp();
+    save_conversation(app, &conversation)?;
+
+    let gen_result = complete_assistant_reply_inner(
+        app,
+        state,
+        &mut conversation,
+        None,
+        Some(prompt.as_str()),
+        &[],
+        skill_id.as_deref(),
+        crate::chat::agent::AgentRunEntry::Send,
+        None,
+        /* probe */ true,
+    )
+    .await;
+
+    // 拿到最后一条 assistant 消息（complete_assistant_reply_inner 已 push+save 到会话）。
+    // 会话与项目都保留在列表里，供观察调试——不删除。
+    let assistant = conversation
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .cloned();
+
+    gen_result?;
+    assistant.ok_or_else(|| "probe: no assistant message produced".to_string())
+}
+
 struct RegistryToolExecutor<'a> {
     app: AppHandle,
     state: &'a AppState,
 }
-
 impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
     fn call<'a>(
         &'a self,

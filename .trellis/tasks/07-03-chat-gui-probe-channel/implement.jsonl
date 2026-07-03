@@ -1,0 +1,3 @@
+{"file": ".trellis/tasks/07-03-chat-gui-probe-channel/research/probe-hook-points.md", "reason": "lib.rs spawn 点、app_data_dir、poll-vs-notify、backend-direct 决策 + 风险（审批挂起、debug 门控）"}
+{"file": ".trellis/tasks/07-03-chat-gui-probe-channel/research/generation-entry-and-result.md", "reason": "chat_send_message 内部、工具装配、AgentRunResult/ToolCallRecord 字段、会话创建/落盘"}
+{"file": ".trellis/tasks/07-03-chat-gui-probe-channel/research/external-send-channel.md", "reason": "Lens→chat 外部注入通道（可参照的既有模式）"}
