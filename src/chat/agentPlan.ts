@@ -36,5 +36,5 @@ function isTodoKeywordStep(line: string): boolean {
 
 function hasPlanKeyword(text: string): boolean {
   return /plan|todo|step/i.test(text)
-    || /計劃|步驟|待辦|任務/.test(text)
+    || /計畫|步驟|待辦|任務/.test(text)
 }

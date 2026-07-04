@@ -56,7 +56,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange }: RuntimePickerProps
 
   const label = useMemo(() => {
     if (!usesExternal) return '內建 Agent'
-    return currentAgent?.name ?? agentRuntime.externalAgentId ?? '本地 CLI'
+    return currentAgent?.name ?? agentRuntime.externalAgentId ?? '本機 CLI'
   }, [agentRuntime.externalAgentId, currentAgent?.name, usesExternal])
 
   const selectBuiltin = () => {
@@ -132,7 +132,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange }: RuntimePickerProps
                   className={`kv-runtime-picker__seg-btn${usesExternal ? ' is-active' : ''}`}
                   onClick={selectLocalCliMode}
                 >
-                  本地 CLI
+                  本機 CLI
                 </button>
               </div>
             </div>
@@ -140,7 +140,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange }: RuntimePickerProps
             <div className="kv-runtime-picker__row">
               <span className="kv-runtime-picker__label">代理</span>
               {agents.length === 0 ? (
-                <span className="kv-runtime-picker__hint">正在檢測本機 CLI…</span>
+                <span className="kv-runtime-picker__hint">正在偵測本機 CLI…</span>
               ) : availableAgents.length === 0 ? (
                 <span className="kv-runtime-picker__hint">PATH 中未發現可用 CLI</span>
               ) : (

@@ -1020,7 +1020,7 @@ function getResultPreview(toolCall: ToolCallRecord): string {
       ? args.relativePath
       : ''
   if (rawName === 'skill_run_script' && relativePath.endsWith('pdf_extract_digest.py')) {
-    return '已提取 PDF 文本並生成摘要上下文'
+    return '已提取 PDF 文字並生成摘要上下文'
   }
   if (rawName === 'todo_write' || rawName === 'todo_update') {
     if (normalizeToolCallStatus(toolCall.status) !== 'completed') return ''

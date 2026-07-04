@@ -414,7 +414,7 @@ export function AssistantCenter({
                       </span>
                     )}
                     <span className="truncate text-[12px] font-medium text-neutral-400 dark:text-neutral-500">
-                      {builtIn ? '內建' : '自定義'}
+                      {builtIn ? '內建' : '自訂'}
                     </span>
                   </div>
                   <p className="mt-0.5 truncate text-[12px] leading-relaxed text-neutral-500 dark:text-neutral-400">
@@ -588,7 +588,7 @@ export function AssistantCenter({
             <div className="min-w-0">
               <h2 className="truncate text-[24px] font-semibold text-neutral-950 dark:text-neutral-50">編輯套件</h2>
               <p className="mt-1 truncate text-[13px] text-neutral-500">
-                {draft.built_in ? '內建套件模板' : '自定義套件'} · {draft.enabled === false ? '已停用' : '可用'}
+                {draft.built_in ? '內建套件範本' : '自訂套件'} · {draft.enabled === false ? '已停用' : '可用'}
               </p>
             </div>
           </div>

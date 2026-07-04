@@ -26,7 +26,7 @@ const PYODIDE_PACKAGE_IMPORTS: Array<[RegExp, string]> = [
   [/(^|\n)\s*(import|from)\s+xlrd\b/, 'xlrd'],
 ]
 const PYTHON_SANDBOX_FAILURE_GUIDANCE =
-  '不要使用 run_command/pip 安裝或修改本機 Python 環境來繞過沙盒；請直接基於已有資料用文本/表格回答，除非使用者明確要求修改本機環境。'
+  '不要使用 run_command/pip 安裝或修改本機 Python 環境來繞過沙盒；請直接基於已有資料用文字/表格回答，除非使用者明確要求修改本機環境。'
 const PYTHON_ARTIFACT_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
   '.csv', '.tsv', '.json', '.md', '.txt', '.html', '.htm',

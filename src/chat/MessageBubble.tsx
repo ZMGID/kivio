@@ -224,18 +224,18 @@ function AgentPlanAction({
   return (
     <div className="not-prose mt-3 flex max-w-full items-center gap-2 border-l-2 border-emerald-400/70 pl-3 text-[12px] leading-5 text-neutral-500 dark:border-emerald-500/60 dark:text-neutral-400">
       <ListChecks size={14} strokeWidth={2} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
-      <span className="min-w-0 flex-1 truncate">{approved ? '已按這條計劃執行' : '計劃草案'}</span>
+      <span className="min-w-0 flex-1 truncate">{approved ? '已按這條計畫執行' : '計畫草案'}</span>
       {!approved && onExecute && (
         <button
           type="button"
           onClick={() => void onExecute(messageId)}
           disabled={disabled}
           className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-neutral-900 px-2.5 text-[12px] font-medium text-white transition-colors hover:bg-neutral-700 disabled:bg-neutral-200 disabled:text-neutral-400 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
-          title="執行這條計劃"
-          aria-label="執行這條計劃"
+          title="執行這條計畫"
+          aria-label="執行這條計畫"
         >
           <Play size={12} strokeWidth={2.2} fill="currentColor" />
-          執行這條計劃
+          執行這條計畫
         </button>
       )}
     </div>

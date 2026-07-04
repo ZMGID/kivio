@@ -5,7 +5,7 @@ import type { ConversationStreamSnapshot } from './conversationRuns'
 // 用外部 store（而非 Context）：60fps 下 Context 會重渲所有 consumer，store 只通知真正訂閱的元件。
 //
 // 切成兩個 slice，按更新頻率分開訂閱：
-// - content：每幀都變（流式文本/推理/工具/分段），僅 MessageList 訂閱。
+// - content：每幀都變（流式文字/推理/工具/分段），僅 MessageList 訂閱。
 // - coarse：邊沿才變（streaming/frozen/cancelling/error 布林），Chat 的 showEmptyHero/drain 與
 //   InputBar 的取消按鈕訂閱——避免它們被每幀的內容更新拖著重渲。
 
@@ -62,7 +62,7 @@ export function getSnapshot(): ConversationStreamSnapshot {
 }
 
 // Chat 每幀傳入的是 streamSnapshotsRef 裡被原地 mutate 的同一個物件引用，必須淺複製出新引用，
-// 否則 useSyncExternalStore 的 Object.is 比較檢測不到變化、不會重渲。
+// 否則 useSyncExternalStore 的 Object.is 比較偵測不到變化、不會重渲。
 export function setSnapshot(next: ConversationStreamSnapshot): void {
   snapshot = { ...next }
   emit(snapshotSubs)

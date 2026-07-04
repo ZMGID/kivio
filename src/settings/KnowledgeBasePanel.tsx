@@ -53,7 +53,7 @@ function EmbeddingModelPicker({
   // surface it explicitly with a readable label so the Select never falls back
   // to showing the raw provider id.
   const options = [
-    { value: '', label: t('選擇提供商…', 'Pick provider…') },
+    { value: '', label: t('選擇供應商…', 'Pick provider…') },
     ...enabled.map((p) => ({ value: p.id, label: p.name || p.id })),
   ]
   if (providerId && !options.some((o) => o.value === providerId)) {
@@ -519,7 +519,7 @@ export function KnowledgeBasePanel({
             <KbPageHeader
               title={t('檔案處理', 'Doc processing')}
               subtitle={t(
-                'Kivio 本地解析檔案，免費離線；圖片需配置 OCR 後入庫。',
+                'Kivio 本機解析檔案，免費離線；圖片需配置 OCR 後入庫。',
                 'Kivio parses documents locally — free and offline; images need OCR enabled.',
               )}
             />

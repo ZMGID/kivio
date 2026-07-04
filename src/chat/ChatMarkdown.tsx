@@ -851,7 +851,7 @@ function renderTex(tex: string, display: boolean): string {
 
 function LazyMath({ tex, display }: { tex: string; display: boolean }) {
   // 即時渲染（不再用 IntersectionObserver 延遲到滾動進視口才渲染）。KaTeX 子樹進入
-  // Shadow DOM，避免已完成公式讓 WebKit 後續全域性 UI 互動反覆掃大段普通 DOM。
+  // Shadow DOM，避免已完成公式讓 WebKit 後續全域 UI 互動反覆掃大段普通 DOM。
   const html = useMemo(() => renderTex(tex, display), [tex, display])
   if (html) {
     return <ShadowKatex html={html} display={display} />
@@ -868,7 +868,7 @@ function KvMath({ node }: { node?: { properties?: { tex?: string; display?: stri
   return <LazyMath tex={String(props.tex ?? '')} display={props.display === 'true'} />
 }
 
-// remark-math 產出的 math/inlineMath 節點 → 自定義 <kvmath> 元素(攜帶 tex + display)，
+// remark-math 產出的 math/inlineMath 節點 → 自訂 <kvmath> 元素(攜帶 tex + display)，
 // 由下方 components 的 kvmath 對映到 <LazyMath>。替代 rehype-katex 的即時渲染。
 const remarkRehypeOptions = {
   handlers: {

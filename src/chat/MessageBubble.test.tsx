@@ -23,9 +23,9 @@ describe('MessageBubble agent plan action', () => {
 
     render(<MessageBubble message={message} onExecuteAgentPlan={(messageId) => { calls.push(messageId) }} />)
 
-    expect(screen.getByText('計劃草案')).toBeInTheDocument()
-    expect(screen.queryByLabelText('計劃內容')).not.toBeInTheDocument()
-    const button = screen.getByRole('button', { name: '執行這條計劃' })
+    expect(screen.getByText('計畫草案')).toBeInTheDocument()
+    expect(screen.queryByLabelText('計畫內容')).not.toBeInTheDocument()
+    const button = screen.getByRole('button', { name: '執行這條計畫' })
     expect(
       button.compareDocumentPosition(screen.getByText('Read code')),
     ).toBe(Node.DOCUMENT_POSITION_PRECEDING)
@@ -37,17 +37,17 @@ describe('MessageBubble agent plan action', () => {
     const message: ChatMessage = {
       id: 'msg-plan-with-process',
       role: 'assistant',
-      content: '## 執行計劃\n\n1. 調研\n2. 實現',
+      content: '## 執行計畫\n\n1. 調研\n2. 實現',
       agent_plan: {
         mode: 'plan',
         status: 'draft',
-        plan: '## 執行計劃\n\n1. 調研\n2. 實現',
+        plan: '## 執行計畫\n\n1. 調研\n2. 實現',
         updated_at: 1,
       },
       segments: [
         { id: 'seg-reasoning', kind: 'reasoning', phase: 'plain', order: 1, text: '先調研一下' },
         { id: 'seg-tool', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'tool-search' },
-        { id: 'seg-text', kind: 'text', phase: 'synthesis', order: 3, text: '## 執行計劃\n\n1. 調研\n2. 實現' },
+        { id: 'seg-text', kind: 'text', phase: 'synthesis', order: 3, text: '## 執行計畫\n\n1. 調研\n2. 實現' },
       ],
       tool_calls: [
         {
@@ -63,12 +63,12 @@ describe('MessageBubble agent plan action', () => {
 
     render(<MessageBubble message={message} onExecuteAgentPlan={() => {}} />)
 
-    expect(screen.queryByLabelText('計劃內容')).not.toBeInTheDocument()
-    const button = screen.getByRole('button', { name: '執行這條計劃' })
+    expect(screen.queryByLabelText('計畫內容')).not.toBeInTheDocument()
+    const button = screen.getByRole('button', { name: '執行這條計畫' })
     expect(
-      button.compareDocumentPosition(screen.getByText('執行計劃')),
+      button.compareDocumentPosition(screen.getByText('執行計畫')),
     ).toBe(Node.DOCUMENT_POSITION_PRECEDING)
-    expect(screen.getByText('計劃草案')).toBeInTheDocument()
+    expect(screen.getByText('計畫草案')).toBeInTheDocument()
   })
 
   it('shows approved state without an execute button', () => {
@@ -87,8 +87,8 @@ describe('MessageBubble agent plan action', () => {
 
     render(<MessageBubble message={message} onExecuteAgentPlan={() => {}} />)
 
-    expect(screen.getByText('已按這條計劃執行')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '執行這條計劃' })).not.toBeInTheDocument()
+    expect(screen.getByText('已按這條計畫執行')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '執行這條計畫' })).not.toBeInTheDocument()
   })
 
   it('does not render execute action for an incomplete non-plan fragment', () => {
@@ -108,19 +108,19 @@ describe('MessageBubble agent plan action', () => {
 
     render(<MessageBubble message={message} onExecuteAgentPlan={() => {}} />)
 
-    expect(screen.queryByText('計劃草案')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '執行這條計劃' })).not.toBeInTheDocument()
+    expect(screen.queryByText('計畫草案')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '執行這條計畫' })).not.toBeInTheDocument()
   })
 
   it('does not render execute action for a non-plan sentence even if persisted as draft', () => {
     const message: ChatMessage = {
       id: 'msg-plan-sentence',
       role: 'assistant',
-      content: '計劃：我會處理這個問題。',
+      content: '計畫：我會處理這個問題。',
       agent_plan: {
         mode: 'plan',
         status: 'draft',
-        plan: '計劃：我會處理這個問題。',
+        plan: '計畫：我會處理這個問題。',
         updated_at: 1,
       },
       timestamp: 1,
@@ -128,8 +128,8 @@ describe('MessageBubble agent plan action', () => {
 
     render(<MessageBubble message={message} onExecuteAgentPlan={() => {}} />)
 
-    expect(screen.queryByText('計劃草案')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '執行這條計劃' })).not.toBeInTheDocument()
+    expect(screen.queryByText('計畫草案')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '執行這條計畫' })).not.toBeInTheDocument()
   })
 })
 

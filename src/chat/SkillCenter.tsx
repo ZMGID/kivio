@@ -260,7 +260,7 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
     }
   }, [onSkillsChanged])
 
-  // 更新 chatTools：本地立即生效，再持久化（文本類編輯防抖，開關/下拉立即儲存）
+  // 更新 chatTools：本機立即生效，再持久化（文字類編輯防抖，開關/下拉立即儲存）
   const persistChatTools = useCallback((updates: Partial<ChatToolsConfig>, debounce = false) => {
     setSettings((prev) => {
       if (!prev) return prev

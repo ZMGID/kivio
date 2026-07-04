@@ -99,11 +99,11 @@ const waitForVisibleIdle = (timeout = LENS_HIDE_IDLE_TIMEOUT_MS) => new Promise<
 
 /**
  * Lens 模式：單 webview 三態機，統一 DOM。
- * - select：webview 全屏 + 灰幕 + hover 應用視窗高亮 + 區域 drag + 底部對話欄（純文字直髮）
+ * - select：webview 全螢幕 + 灰幕 + hover 應用視窗高亮 + 區域 drag + 底部對話欄（純文字直髮）
  * - ready：截圖後對話欄 CSS transition 飛到選區附近，加縮圖，輸入聚焦
  * - answering：對話欄下方展開 answer 區（透明背景，對話欄不動）
  *
- * 關鍵：webview 始終全屏，整個過渡靠 CSS。後端 lens_resolve_anchor 僅算目標座標，不縮視窗。
+ * 關鍵：webview 始終全螢幕，整個過渡靠 CSS。後端 lens_resolve_anchor 僅算目標座標，不縮視窗。
  */
 export default function Lens() {
   const [stage, setStage] = useState<Stage>('select')
@@ -116,7 +116,7 @@ export default function Lens() {
   const [imagePreview, setImagePreview] = useState('')
   const [appLabel, setAppLabel] = useState('')
   const [input, setInput] = useState('')
-  // Lens 啟動前 Rust 端抓到的選中文本：作為本次會話的上下文字首
+  // Lens 啟動前 Rust 端抓到的選中文字：作為本次會話的上下文字首
   // 僅在首輪 chat 訊息傳送時拼接進 prompt；徽章靜態顯示行數；次輪不再注入。
   const [selectionText, setSelectionText] = useState('')
   const [messages, setMessages] = useState<ExplainMessage[]>([])
@@ -142,8 +142,8 @@ export default function Lens() {
   const translateStartRef = useRef<number | null>(null)
   const [freezeFrameImageId, setFreezeFrameImageId] = useState('')
   const [freezeFramePreview, setFreezeFramePreview] = useState('')
-  // 凍結幀用 canvas 渲染：backing store 取圖片原生解析度，保證全屏幀在屏上按裝置畫素 1:1
-  // 柵格化（繞過透明 overlay 下 WebView2 把全屏 <img> 以低光柵倍率放大導致的發虛）。
+  // 凍結幀用 canvas 渲染：backing store 取圖片原生解析度，保證全螢幕幀在屏上按裝置畫素 1:1
+  // 柵格化（繞過透明 overlay 下 WebView2 把全螢幕 <img> 以低光柵倍率放大導致的發虛）。
   const freezeCanvasRef = useRef<HTMLCanvasElement>(null)
   // viewport 大小：監聽 resize（拔顯示器/系統縮放變化都會觸發），所有相對尺寸由此重算
   const [viewport, setViewport] = useState(() => ({
@@ -160,7 +160,7 @@ export default function Lens() {
   const [barIntro, setBarIntro] = useState(false)
   // barNoTransition：reset/drag/視窗裁剪下換時臨時停用 transition，避免上次動畫在 hide 後續播。
   const [barNoTransition, setBarNoTransition] = useState(true)
-  // flyDelta：全屏覆蓋模式下 fly 動畫用 transform translate 取代 left/top 過渡。
+  // flyDelta：全螢幕覆蓋模式下 fly 動畫用 transform translate 取代 left/top 過渡。
   // left/top 不是 GPU 合成屬性，每幀都要走 layout/reflow；Windows 上 webview hide→show 後
   // 合成器剛被喚醒、首個大幅 left/top 過渡極易卡頓（"亂跳"）。改為：left/top 立即 snap 到
   // 最終位置，用 transform: translate(dx, dy) 把視覺位置拉回起點，下一幀再把 delta 過渡到 (0,0)。
@@ -174,7 +174,7 @@ export default function Lens() {
   // arrows / draftArrow 座標系 = capturedFrame 邏輯畫素 (左上角為原點)
   const [drawMode, setDrawMode] = useState(false)
   const [arrows, setArrows] = useState<Arrow[]>([])
-  // 原始碼/渲染切換：false=渲染模式(ChatMarkdown)，true=原始碼模式(原始文本)
+  // 原始碼/渲染切換：false=渲染模式(ChatMarkdown)，true=原始碼模式(原始文字)
   const [sourceMode, setSourceMode] = useState(false)
   const [draftArrow, setDraftArrow] = useState<Arrow | null>(null)
   // 任何 stage 切換時強制清掉 draw 子模式 + 已落箭頭
@@ -186,8 +186,8 @@ export default function Lens() {
     }
   }, [stage])
   // 凍結幀繪製：把 data URL 畫進 canvas，backing store = 圖片原生畫素，CSS 鋪滿 viewport，
-  // 使全屏凍結幀按裝置畫素 1:1 顯示，與即時桌面同等清晰（避免 <img> 被重取樣發虛）。
-  // 全屏態（select 及 keepFullscreen 的 ready/answering）整段會話都保留作背景，直到關閉 Lens。
+  // 使全螢幕凍結幀按裝置畫素 1:1 顯示，與即時桌面同等清晰（避免 <img> 被重取樣發虛）。
+  // 全螢幕態（select 及 keepFullscreen 的 ready/answering）整段會話都保留作背景，直到關閉 Lens。
   useEffect(() => {
     if (!freezeFramePreview) return
     if (stage !== 'select' && !keepFullscreen) return
@@ -237,7 +237,7 @@ export default function Lens() {
   const captureHintEnabledRef = useRef(true)
   const sendToChatRef = useRef(true)
   const screenshotKeepFullscreenRef = useRef(true)
-  // 快速翻譯結果卡寬度（截圖翻譯 + 選中文本翻譯共用，來自設定，預設 480）
+  // 快速翻譯結果卡寬度（截圖翻譯 + 選中文字翻譯共用，來自設定，預設 480）
   const cardWidthRef = useRef(480)
   const prevStreamingRef = useRef(false)
   const preparingSendRef = useRef(false)
@@ -256,7 +256,7 @@ export default function Lens() {
   const translateCardDragRef = useRef<TranslateCardDrag | null>(null)
   // 答案區滾動容器，stream 時自動滾到底部
   const chatScrollRef = useRef<HTMLDivElement>(null)
-  // 浮動模式下儲存截圖時的全屏 metrics，避免視窗縮小後 answerLayout 被壓縮得太小
+  // 浮動模式下儲存截圖時的全螢幕 metrics，避免視窗縮小後 answerLayout 被壓縮得太小
   const fullscreenMetricsRef = useRef<Metrics | null>(null)
   const requestWindowFocus = useWindowInteractionFocus()
 
@@ -286,7 +286,7 @@ export default function Lens() {
     }
   }, [])
 
-  // 選中文本行數：translate 模式不計；空 / 僅空白 → 0（驅動徽章是否顯示）
+  // 選中文字行數：translate 模式不計；空 / 僅空白 → 0（驅動徽章是否顯示）
   const selectionLineCount = useMemo(() => {
     if (mode !== 'chat') return 0
     if (!selectionText.trim()) return 0
@@ -313,7 +313,7 @@ export default function Lens() {
     } catch (err) { console.error('Failed to load settings', err) }
   }, [])
 
-  // 載入設定：普通 Lens 截圖後固定保持全屏覆蓋；截圖翻譯仍讀自己的保留全屏配置。
+  // 載入設定：普通 Lens 截圖後固定保持全螢幕覆蓋；截圖翻譯仍讀自己的保留全螢幕配置。
   useEffect(() => {
     void loadLensSettings()
   }, [loadLensSettings])
@@ -442,7 +442,7 @@ export default function Lens() {
         }
       } catch (err) { console.error('Failed to reload settings', err) }
     })()
-    // 非同步 take 走 Rust 端在 lens_request_internal 中暫存的選中文本。
+    // 非同步 take 走 Rust 端在 lens_request_internal 中暫存的選中文字。
     // token 防禦：take 期間使用者再開一次 Lens / 關閉，老 promise 落地時 myReq 已過期，丟棄。
     // 僅 chat 模式注入；> 200KB 直接丟棄避免上下文爆炸；trim 後非空才 setSelectionText。
     const myReq = ++selectionReqIdRef.current
@@ -662,7 +662,7 @@ export default function Lens() {
     return () => { cancelled = true }
   }, [mode, streaming, messages, imagePreview, appLabel, capturedFrame])
 
-  // history 任意變化：1) 同步 localStorage  2) 檢測淘汰並刪除磁碟上對應的 PNG
+  // history 任意變化：1) 同步 localStorage  2) 偵測淘汰並刪除磁碟上對應的 PNG
   const prevHistoryIdsRef = useRef<Set<string>>(new Set(history.map(h => h.id)))
   useEffect(() => {
     saveHistoryToStorage(history)
@@ -860,7 +860,7 @@ export default function Lens() {
     try { await api.lensClose() } catch (err) { console.error(err) }
   }, [resetBeforeHide])
 
-  // 全域性 Esc：流式時取消流 / 否則關閉
+  // 全域 Esc：流式時取消流 / 否則關閉
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
@@ -903,7 +903,7 @@ export default function Lens() {
       const target = e.target as HTMLElement | null
       const isInput = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
 
-      // Esc:無論焦點在哪都退出 drawMode,並阻止全域性 Esc 關掉 Lens
+      // Esc:無論焦點在哪都退出 drawMode,並阻止全域 Esc 關掉 Lens
       // (輸入欄 autoFocus 時 isInput=true,但 Esc 在輸入框裡沒有合法語義,直接接管)
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -936,13 +936,13 @@ export default function Lens() {
     return () => window.removeEventListener('blur', handleBlur)
   }, [closeAfterReset])
 
-  /** webview client 座標 → 全域性邏輯座標（與 CGWindow bounds 同坐標系） */
+  /** webview client 座標 → 全域邏輯座標（與 CGWindow bounds 同坐標系） */
   const clientToGlobal = (p: Point): Point => ({
     x: winOrigin.x + p.x,
     y: winOrigin.y + p.y,
   })
 
-  /** 命中檢測：找第一個包含該全域性座標的應用視窗 */
+  /** 命中偵測：找第一個包含該全域座標的應用視窗 */
   const hitTest = (gp: Point): LensWindowInfo | null => {
     for (const w of windows) {
       if (gp.x >= w.x && gp.x < w.x + w.width && gp.y >= w.y && gp.y < w.y + w.height) {
@@ -1151,7 +1151,7 @@ export default function Lens() {
           if (isTranslateMode) setBarIntro(true)
         }, TRANSITION_MS + 40)
       } else {
-        // Windows: WebView 始終保持全屏,Rust 用 SetWindowRgn 把視窗可見區域裁剪到 bar 矩形。
+        // Windows: WebView 始終保持全螢幕,Rust 用 SetWindowRgn 把視窗可見區域裁剪到 bar 矩形。
         // 不走 macOS 的逐幀實搬視窗路線是因為多次 lens 會話後 WebView2 內部狀態會退化導致累積型 jitter。
         flushSync(() => {
           setAppLabel(label)
@@ -1419,7 +1419,7 @@ export default function Lens() {
       const newId = result.imageId
       imageIdRef.current = newId
       setFreezeFrameImageId('')
-      // 不清 freezeFramePreview：截圖後仍把凍結幀作為全屏背景保留，直到按 Esc 關閉 Lens
+      // 不清 freezeFramePreview：截圖後仍把凍結幀作為全螢幕背景保留，直到按 Esc 關閉 Lens
       // （enterSelect / resetBeforeHide 會在重開 / 隱藏時清理）。
 
       setCapturedFrame({
@@ -1718,7 +1718,7 @@ export default function Lens() {
       setStreaming(false)
       setStage('answering')
     })
-    // 老 takeLensSelection promise 失效，避免恢復歷史後被新 take 文本汙染
+    // 老 takeLensSelection promise 失效，避免恢復歷史後被新 take 文字汙染
     selectionReqIdRef.current++
     focusLensSurface([50, 140, 260])
   }
@@ -1779,8 +1779,8 @@ export default function Lens() {
       : replacePhase === 'translating'
         ? t.replaceTranslateStatusTranslating
         : t.replaceTranslateStatusDone
-  // 浮動佈局僅用於截圖翻譯關閉全屏覆蓋、或 translateText 文本翻譯卡。
-  // 普通 Lens 截圖後固定保持全屏 overlay，只移動輸入欄。
+  // 浮動佈局僅用於截圖翻譯關閉全螢幕覆蓋、或 translateText 文字翻譯卡。
+  // 普通 Lens 截圖後固定保持全螢幕 overlay，只移動輸入欄。
   // capturedFrame 只在最近一次截圖後非空,而 restoreHistory 會清掉它(歷史項的選區不再相關);
   // 但此時 lens 視窗仍是浮動小尺寸 → 必須疊加 floatingRebased 才能正確反映"視窗當前在浮動態"。
   const isFloatingLayout = mode === 'translateText' || (!keepFullscreen && (capturedFrame !== null || floatingRebased) && stage !== 'select')
@@ -1882,7 +1882,7 @@ export default function Lens() {
     return { placeAbove: false, height: Math.max(180, spaceBelow) }
   }, [barRect, isFloatingLayout, stableAnswerHeight, viewport.h])
 
-  // 浮動模式下：截圖翻譯 / 文本翻譯的 stage 或佈局變化時動態調整視窗尺寸
+  // 浮動模式下：截圖翻譯 / 文字翻譯的 stage 或佈局變化時動態調整視窗尺寸
   useEffect(() => {
     if (keepFullscreen && mode !== 'translateText') return
     if (stage === 'select') return
@@ -1904,7 +1904,7 @@ export default function Lens() {
 
     // history 面板:浮動模式下面板渲染在 bar 下方(top: 100%+18 = bar bottom + 8),
     // 視窗必須擴到 bar bottom + 8 + 面板高度,否則面板被 OS 裁掉。
-    // 全屏模式不需要擴,面板渲染在 bar 上方已有空間。
+    // 全螢幕模式不需要擴,面板渲染在 bar 上方已有空間。
     if (isFloatingLayout && historyOpen && historyPanelH > 0) {
       h = Math.max(h, READY_BAR_H + FLOATING_GAP + historyPanelH + FLOATING_PADDING * 2)
     }
@@ -1913,7 +1913,7 @@ export default function Lens() {
     // 這裡若再傳 x/y 會把視窗搬到螢幕 (0, 0)。只傳 width/height,讓 OS 保持當前 origin。
     // translateText 是天生小窗(開窗即貼遊標 set_size),同樣只改尺寸——絕不 SetWindowRgn,
     // 否則透明無邊框 WebView2 + region 會渲染出黑塊 + 原生標題欄(tauri#14764)。
-    // Windows 的截圖翻譯 / lens 全屏→浮動才走 SetWindowRgn(必須傳 x/y 更新裁剪區)。
+    // Windows 的截圖翻譯 / lens 全螢幕→浮動才走 SetWindowRgn(必須傳 x/y 更新裁剪區)。
     if (isMacPlatform || mode === 'translateText') {
       api.lensSetFloating({ width: w, height: h }).catch(err => console.error('[lens-floating] resize failed:', err))
     } else {
@@ -1954,7 +1954,7 @@ export default function Lens() {
         />
       )}
 
-      {/* select 態全屏覆蓋層：完全透明，僅用於捕獲滑鼠事件，不再加黑色蒙層 */}
+      {/* select 態全螢幕覆蓋層：完全透明，僅用於捕獲滑鼠事件，不再加黑色蒙層 */}
       <div
         className="absolute inset-0 transition-opacity ease-out pointer-events-none"
         style={{
@@ -2244,7 +2244,7 @@ export default function Lens() {
                       </div>
                     ) : (
                       history.map(item => {
-                        // 首條 user 訊息可能含 [已選文本]\n...\n\n[使用者問題]\n... 的拼接形式（chat 啟動注入），
+                        // 首條 user 訊息可能含 [已選文字]\n...\n\n[使用者問題]\n... 的拼接形式（chat 啟動注入），
                         // 歷史預覽只顯示問題原文，剝掉 marker 段
                         const firstUserRaw = item.messages.find(m => m.role === 'user')?.content ?? ''
                         const zhMarker = '[使用者問題]\n'
@@ -2453,7 +2453,7 @@ export default function Lens() {
       )}
 
       {/* translate 模式浮動結果卡：原文 + 譯文，複用 barRect 錨點。
-          外層 select-none 用 select-text 覆蓋，讓使用者可選中複製部分文本。 */}
+          外層 select-none 用 select-text 覆蓋，讓使用者可選中複製部分文字。 */}
       {showTranslateCard && (
         <div
           className="absolute ease-out rounded-2xl bg-white dark:bg-neutral-900 border border-black/[0.07] dark:border-white/[0.08] lens-floating-surface overflow-hidden select-text"

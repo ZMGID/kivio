@@ -407,8 +407,8 @@ function MessageListBase({
               sentModels={item.sentModels}
               onUpdateMessage={msg.role === 'assistant' ? onUpdateMessage : undefined}
               // 編輯/重生成入口在任何 run 在飛時都不可用（AC3）。streamFrozen 也算在飛：
-              // 本地取消後 send invoke 尚未返回，此視窗內觸發只會被 in-flight 兜底靜默吞掉
-              // （編輯文本會被無聲丟棄），所以從入口處直接收起。
+              // 本機取消後 send invoke 尚未返回，此視窗內觸發只會被 in-flight 兜底靜默吞掉
+              // （編輯文字會被無聲丟棄），所以從入口處直接收起。
               onRegenerateMessage={streaming || streamFrozen ? undefined : onRegenerateMessage}
               onDeleteMessage={onDeleteMessage}
               agentPlanOverride={msg.id === legacyPlanMessageId ? agentPlanState : null}

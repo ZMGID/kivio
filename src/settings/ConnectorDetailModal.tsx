@@ -1,6 +1,6 @@
 // 連接器詳情彈層：點選卡片開啟。
-// 左欄概覽/賬戶/連結/開發者，右欄工具列表 + 逐工具允許/停用開關。
-// 已連線才拉工具列表；未連線（可用）只顯示概覽/連結 + 連線按鈕。
+// 左欄總覽/賬戶/連結/開發者，右欄工具列表 + 逐工具允許/停用開關。
+// 已連線才拉工具列表；未連線（可用）只顯示總覽/連結 + 連線按鈕。
 // 複用 .kv-modal-backdrop / .kv-modal 風格（見 ProviderModelsPicker / index.css）。
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -18,9 +18,9 @@ type Props = {
   entry?: ConnectorCatalogEntry
   /** 已連線時存在的 server；未連線為 null。 */
   server: ChatMcpServer | null
-  /** 兜底展示名稱（自定義連接器無 catalog 項時）。 */
+  /** 兜底展示名稱（自訂連接器無 catalog 項時）。 */
   fallbackName: string
-  /** 兜底端點 URL（自定義連接器）。 */
+  /** 兜底端點 URL（自訂連接器）。 */
   fallbackUrl?: string
   onClose: () => void
   /** 寫回某條 server（用於更新 enabledTools）。 */
@@ -31,7 +31,7 @@ type Props = {
   onConnect: () => void
   /** 連線按鈕是否處於忙碌態。 */
   connectBusy: boolean
-  /** vault 類連接器：已儲存的本地路徑。 */
+  /** vault 類連接器：已儲存的本機路徑。 */
   vaultPath?: string
   /** vault 類連接器：斷開（清空路徑）。 */
   onDisconnectVault?: () => void

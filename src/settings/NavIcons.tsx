@@ -1,4 +1,4 @@
-// 設定導航的自定義線性圖示。介面對齊 lucide-react（size / strokeWidth / className），
+// 設定導航的自訂線性圖示。介面對齊 lucide-react（size / strokeWidth / className），
 // 可直接替換 <Icon size={17} strokeWidth={1.75} />。fill=none + stroke=currentColor，
 // 顏色隨上層文字色（選中態 / 深色模式自動跟隨）。
 
@@ -127,7 +127,7 @@ export function CodeIcon(props: IconProps) {
   )
 }
 
-// 本地 CLI Agent：機器人
+// 本機 CLI Agent：機器人
 export function AgentIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>

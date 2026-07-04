@@ -104,7 +104,7 @@ export function SetDialog({
           value={defaultAssistantId}
           onChange={setDefaultAssistantId}
           options={[
-            { value: '', label: '不指定（用全域性預設）' },
+            { value: '', label: '不指定（用全域預設）' },
             ...selectableAssistants.map((assistant) => ({
               value: assistant.id,
               label: assistant.name,

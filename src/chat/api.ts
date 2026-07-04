@@ -516,7 +516,7 @@ const mockChatApi = {
       {
         id: `msg_dev_${crypto.randomUUID()}`,
         role: 'assistant',
-        content: '這是瀏覽器預覽模式的本地回覆。啟動 Tauri 桌面應用後會呼叫真實模型介面。',
+        content: '這是瀏覽器預覽模式的本機回覆。啟動 Tauri 桌面應用後會呼叫真實模型介面。',
         active_skill_id: conversation.active_skill_id,
         timestamp: now,
       },
@@ -585,11 +585,11 @@ const mockChatApi = {
     const messageIndex = messageId
       ? conversations[index].messages.findIndex((message) => message.id === messageId && message.role === 'assistant')
       : -1
-    if (messageId && messageIndex < 0) throw new Error('計劃訊息不存在')
+    if (messageId && messageIndex < 0) throw new Error('計畫訊息不存在')
     const messagePlan = messageIndex >= 0
       ? conversations[index].messages[messageIndex].agent_plan ?? conversations[index].messages[messageIndex].agentPlan ?? null
       : null
-    if (messageId && !isExecutableAgentPlanText(messagePlan?.plan)) throw new Error('該訊息不是可執行計劃')
+    if (messageId && !isExecutableAgentPlanText(messagePlan?.plan)) throw new Error('該訊息不是可執行計畫')
     const current = messagePlan ?? conversations[index].agent_plan_state ?? conversations[index].agentPlanState ?? {
       mode: 'act',
       status: 'empty',
@@ -869,7 +869,7 @@ const mockChatApi = {
 }
 
 export const chatApi = {
-  // 獲取對話列表
+  // 取得對話列表
   async getConversations(
     offset = 0,
     limit = 50,
@@ -900,7 +900,7 @@ export const chatApi = {
     return result.success ? result.conversations : []
   },
 
-  // 獲取對話詳情
+  // 取得對話詳情
   async getConversation(conversationId: string): Promise<Conversation> {
     if (!isTauriRuntime()) return mockChatApi.getConversation(conversationId)
     const result = await invoke<{ success: boolean; conversation: Conversation }>(
@@ -1244,7 +1244,7 @@ export const chatApi = {
         activeSkillId: updates.activeSkillId,
         assistantId: updates.assistantId,
         knowledgeBaseIds: updates.knowledgeBaseIds,
-        // null/未知 → 空串，後端解析為 None（回到「跟隨全域性」）。
+        // null/未知 → 空串，後端解析為 None（回到「跟隨全域」）。
         thinkingLevel: hasThinkingUpdate ? updates.thinkingLevel ?? '' : undefined,
         // 多模型一問多答（任務 06-30）：持久化會話級多答模型集（決策 D2/D4）。
         replyModels: updates.replyModels,

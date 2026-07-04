@@ -16,7 +16,7 @@ function modeIcon(value: string, label: string) {
   if (value === 'always_confirm') return ShieldAlert
   if (value === 'readonly_auto_sensitive_confirm') return ShieldQuestion
   if (value === 'auto') return ShieldCheck
-  if (/計劃|只讀|read|plan/i.test(label)) return Eye
+  if (/計畫|只讀|read|plan/i.test(label)) return Eye
   if (/編輯|edit/i.test(label)) return FilePen
   if (/完全|預設|full|default/i.test(label)) return ShieldCheck
   return ShieldAlert

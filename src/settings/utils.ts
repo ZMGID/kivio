@@ -50,7 +50,7 @@ export const normalizeHotkeyKey = (event: KeyboardEvent) => {
 }
 
 /**
- * 構建完整的快捷鍵字串（如 CommandOrControl+Alt+T）
+ * 建置完整的快捷鍵字串（如 CommandOrControl+Alt+T）
  */
 export const buildHotkey = (event: KeyboardEvent) => {
   const key = normalizeHotkeyKey(event)
@@ -64,7 +64,7 @@ export const buildHotkey = (event: KeyboardEvent) => {
 }
 
 /**
- * 平臺檢測（用於快捷鍵視覺化）
+ * 平臺偵測（用於快捷鍵視覺化）
  */
 export const getPlatform = (): Platform => {
   if (navigator.platform.startsWith('Mac')) return 'macos'

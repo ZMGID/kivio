@@ -19,7 +19,7 @@ export const chatTitlebarMacInsetClass = usesNativeTitlebar ? 'pl-[92px]' : ''
  * 頂欄幽靈控制元件統一規格（去膠囊化方向 A）：
  * - 預設透明，無邊框 / 無陰影；hover 才出淺背景（與圖示鈕 hover-bg 同語彙）。
  * - 統一高度 32px（h-8）、統一圓角 rounded-lg，所有觸發控制元件對齊到同一視覺規格。
- * - 沿用 active:scale 按壓反饋 + --kv-* 令牌；reduced-motion 靠 index.css 末尾全域性兜底。
+ * - 沿用 active:scale 按壓反饋 + --kv-* 令牌；reduced-motion 靠 index.css 末尾全域兜底。
  */
 export const chatTitlebarGhostHoverClass =
   'hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'

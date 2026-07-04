@@ -536,7 +536,7 @@ export const Sidebar = memo(function Sidebar({
     } catch (err) {
       console.error('Failed to delete conversation:', err)
     } finally {
-      // 無論後端刪除成功或拋錯，都本地剔除該 id 並重新整理側欄，確保 ghost 立即消失。
+      // 無論後端刪除成功或拋錯，都本機剔除該 id 並重新整理側欄，確保 ghost 立即消失。
       setConversations((items) => items.filter((item) => item.id !== id))
       onForceDropConversation?.(id)
       if (currentConversationId === id) {

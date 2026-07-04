@@ -92,7 +92,7 @@ export function ProjectDialog({
           maxLength={80}
           onChange={(e) => setName(e.target.value)}
           className="mt-1.5 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-[13px] text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-          placeholder="例如：產品釋出計劃"
+          placeholder="例如：產品釋出計畫"
         />
         <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
           專案資料夾

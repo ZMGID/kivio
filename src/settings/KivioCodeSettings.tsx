@@ -30,7 +30,7 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
   // 「安裝命令列工具」按鈕的狀態:installing 期間停用,result 顯示成功/已裝/失敗提示。
   const [installing, setInstalling] = useState(false)
   const [installMessage, setInstallMessage] = useState<{ ok: boolean; text: string } | null>(null)
-  // 全域性指令的防抖落盤:輸入停止 ~700ms 後寫一次,避免每次按鍵都寫磁碟。
+  // 全域指令的防抖落盤:輸入停止 ~700ms 後寫一次,避免每次按鍵都寫磁碟。
   const instrTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -157,7 +157,7 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
           label={zh ? '讀取 CLAUDE.md / .claude 上下文' : 'Read CLAUDE.md / .claude context'}
           description={
             zh
-              ? '開啟後 kivio-code 會讀取專案與全域性的 CLAUDE.md / .claude 指令檔案(跨工具相容)。'
+              ? '開啟後 kivio-code 會讀取專案與全域的 CLAUDE.md / .claude 指令檔案(跨工具相容)。'
               : "When on, kivio-code reads project and global CLAUDE.md / .claude instruction files for cross-tool compatibility."
           }
         >
@@ -168,10 +168,10 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
         </SettingRow>
       </SettingsGroup>
 
-      <SettingsGroup title={zh ? '全域性指令' : 'Global instructions'}>
+      <SettingsGroup title={zh ? '全域指令' : 'Global instructions'}>
         <div className="px-1 pb-2 text-[12px] leading-relaxed text-neutral-500 dark:text-neutral-400">
           {zh
-            ? '每次執行 kivio-code 都會注入的全域性指令。專案根目錄的 KIVIO.md / AGENTS.md 會在其後疊加。'
+            ? '每次執行 kivio-code 都會注入的全域指令。專案根目錄的 KIVIO.md / AGENTS.md 會在其後疊加。'
             : "Global instructions injected on every kivio-code run. A project's root KIVIO.md / AGENTS.md layers on top."}
         </div>
         <TextArea
@@ -181,7 +181,7 @@ export function KivioCodeSettings({ lang, providers }: KivioCodeSettingsProps) {
           mono
           placeholder={
             zh
-              ? '# 全域性指令\n\n例如:始終用中文回覆;提交資訊遵循 Conventional Commits…'
+              ? '# 全域指令\n\n例如:始終用中文回覆;提交資訊遵循 Conventional Commits…'
               : '# Global instructions\n\ne.g. Always answer in English; follow Conventional Commits for messages…'
           }
         />

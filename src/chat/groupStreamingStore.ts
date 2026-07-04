@@ -49,7 +49,7 @@ function emit() {
 let groupFlushRaf: number | null = null
 let groupFlushPending = false
 
-// 延遲解析全域性 rAF（而非模組載入時繫結），讓測試能 stub requestAnimationFrame；
+// 延遲解析全域 rAF（而非模組載入時繫結），讓測試能 stub requestAnimationFrame；
 // 無 rAF 環境（部分測試/SSR）降級為 0ms 宏任務，仍保留合幀語義（同步累積、非同步通知）。
 function rafSchedule(cb: () => void): number {
   if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(cb)
@@ -118,7 +118,7 @@ export function getActiveGroup(conversationId: string): ActiveGroupState | undef
 }
 
 /**
- * 為某會話的活躍組認領/獲取一條列快照（按 messageId）。
+ * 為某會話的活躍組認領/取得一條列快照（按 messageId）。
  * 若該 messageId 未知：優先認領一個尚未繫結真實 id 的佔位列（pending-*），否則新建一列。
  * 返回被原地 mutate 的列物件（呼叫方累積 delta 後呼叫 touchGroup 觸發重渲）。
  */
@@ -181,7 +181,7 @@ export function endGroup(conversationId: string): void {
   }
 }
 
-/** 清空所有活躍組（解除安裝 / 全域性重置）。 */
+/** 清空所有活躍組（解除安裝 / 全域重置）。 */
 export function resetGroups(): void {
   if (groupFlushRaf != null) {
     rafCancel(groupFlushRaf)

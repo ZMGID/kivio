@@ -375,7 +375,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
   }, [loadStats])
 
   const clearStats = useCallback(async () => {
-    const ok = window.confirm(lang.startsWith('zh') ? '清空所有本地用量統計？' : 'Clear all local usage statistics?')
+    const ok = window.confirm(lang.startsWith('zh') ? '清空所有本機用量統計？' : 'Clear all local usage statistics?')
     if (!ok) return
     setClearing(true)
     setError('')
@@ -456,7 +456,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
 
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
           <SummaryTile label={lang.startsWith('zh') ? '總 Token' : 'Total tokens'} value={formatTokens(summary?.totalTokens)} sub={`${formatCount(summary?.totalRequests)} ${lang.startsWith('zh') ? '次請求' : 'requests'}`} />
-          <SummaryTile label={lang.startsWith('zh') ? '估算成本' : 'Estimated cost'} value={formatCost(summary?.totalCostUsd)} sub={lang.startsWith('zh') ? '按本地模型價格估算' : 'From local model pricing'} />
+          <SummaryTile label={lang.startsWith('zh') ? '估算成本' : 'Estimated cost'} value={formatCost(summary?.totalCostUsd)} sub={lang.startsWith('zh') ? '按本機模型價格估算' : 'From local model pricing'} />
           <SummaryTile label={lang.startsWith('zh') ? '輸入 / 輸出' : 'Input / Output'} value={`${formatTokens(summary?.inputTokens)} / ${formatTokens(summary?.outputTokens)}`} sub={lang.startsWith('zh') ? 'provider 返回 usage 時統計' : 'Provider usage only'} />
           <SummaryTile label={lang.startsWith('zh') ? '可信度' : 'Coverage'} value={`${reportedRatio}%`} sub={`${formatCount(summary?.missingUsageRequests)} ${lang.startsWith('zh') ? '條缺少 usage' : 'missing usage'}`} />
           <SummaryTile label={lang.startsWith('zh') ? '快取命中' : 'Cached input'} value={formatTokens(summary?.cachedInputTokens)} />

@@ -32,7 +32,7 @@ describe('useMultiAnswerViewMode', () => {
     expect(window.localStorage.getItem(MULTI_ANSWER_VIEW_STORAGE_KEY)).toBe('columns')
   })
 
-  it('多個訂閱者即時同步（全域性偏好）', () => {
+  it('多個訂閱者即時同步（全域偏好）', () => {
     const a = renderHook(() => useMultiAnswerViewMode())
     const b = renderHook(() => useMultiAnswerViewMode())
     act(() => {

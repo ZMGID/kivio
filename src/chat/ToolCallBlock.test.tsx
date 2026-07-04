@@ -125,6 +125,7 @@ describe('ToolCallBlock', () => {
     )
     const button = screen.getByRole('button', { name: /搜尋/ })
     expect(within(button).getByText(/正在生成工具引數/)).toBeInTheDocument()
+    expect(within(button).queryByText(/搜尋文字/)).not.toBeInTheDocument()
   })
 
   it('shows the command as the command target', () => {

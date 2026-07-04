@@ -690,10 +690,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
   }, [])
 
-  // 客戶端熱鍵衝突檢測:在儲存前發現"兩個啟用功能用了同一個組合"。
+  // 客戶端熱鍵衝突偵測:在儲存前發現"兩個啟用功能用了同一個組合"。
   // OS 層面的衝突(Spotlight 佔用 Cmd+Space 等)仍需儲存後從後端拿到結果。
   // 返回每個 scope 對應的"和誰衝突"——前端各 HotkeyInput 拿到對應 scope 的夥伴名後,
-  // 用 hotkeyScope* 模板自己拼本地化字串。
+  // 用 hotkeyScope* 範本自己拼本機化字串。
   type HotkeyScopeKey = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'
   const hotkeyConflicts = useMemo<Partial<Record<HotkeyScopeKey, HotkeyScopeKey>>>(() => {
     if (!settings) return {}
@@ -1059,7 +1059,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [])
 
-  // 全域性鍵盤：Esc 關閉、Cmd/Ctrl+S 儲存；彈窗開啟時優先處理彈窗內的 Esc/Enter
+  // 全域鍵盤：Esc 關閉、Cmd/Ctrl+S 儲存；彈窗開啟時優先處理彈窗內的 Esc/Enter
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (recordingTarget) return
@@ -1119,7 +1119,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   ])
 
   /**
-   * 測試提供商連線
+   * 測試供應商連線
    */
   const handleTestConnection = async (providerId: string) => {
     setTestingProviderId(providerId)
@@ -1561,7 +1561,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [activeTab, refreshChatSkills])
 
   /**
-   * 更新指定提供商配置
+   * 更新指定供應商配置
    */
   const updateProvider = useCallback((id: string, updates: Partial<ModelProvider>) => {
     setSettings((prev) => {
@@ -1588,7 +1588,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [])
 
   /**
-   * 新增新提供商
+   * 新增新供應商
    */
   const addProvider = () => {
     if (!settings) return
@@ -1634,7 +1634,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }
 
   /**
-   * 根據 ID 查詢已啟用的提供商（找不到或已停用時返回第一個已啟用的）
+   * 根據 ID 查詢已啟用的供應商（找不到或已停用時返回第一個已啟用的）
    */
   const resolveProvider = (providers: ModelProvider[], providerId: string) => {
     const matched = providers.find(p => p.id === providerId)
@@ -1652,8 +1652,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }
 
   /**
-   * 刪除提供商
-   * 刪除後會自動將使用該提供商的功能切換到第一個可用提供商
+   * 刪除供應商
+   * 刪除後會自動將使用該供應商的功能切換到第一個可用供應商
    */
   const deleteProvider = (id: string) => {
     if (!settings) return
@@ -1789,7 +1789,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }
 
   /**
-   * 儲存模型自定義引數
+   * 儲存模型自訂引數
    */
   const saveModelOverride = useCallback((providerId: string, modelName: string, info: ModelInfo) => {
     if (!settings) return
@@ -1816,7 +1816,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [settings, updateProvider])
 
   /**
-   * 從提供商 API 獲取可用模型列表
+   * 從供應商 API 取得可用模型列表
    */
   const fetchModels = async (providerId: string) => {
     if (!settings || fetchingProviderId) return
@@ -2161,7 +2161,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     },
     lens: {
       title: t.lensTabLabel,
-      subtitle: lang.startsWith('zh') ? '視覺問答的快捷鍵、響應方式和提示詞。' : 'Shortcut, response behavior, and prompts for visual Q&A.',
+      subtitle: lang.startsWith('zh') ? '視覺問答的快捷鍵、回應方式和提示詞。' : 'Shortcut, response behavior, and prompts for visual Q&A.',
     },
     chat: {
       title: t.tabChatClient,
@@ -2189,8 +2189,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     },
     externalAgents: {
       title: t.tabExternalAgents,
-      subtitle: lang === 'zh'
-        ? '檢測並啟用外部 CLI 編碼代理。'
+      subtitle: lang.startsWith('zh')
+        ? '偵測並啟用外部 CLI 編碼代理。'
         : 'Detect and enable external CLI coding agents.',
     },
     mcp: {
@@ -2216,13 +2216,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     webSearch: {
       title: t.tabWebSearch,
       subtitle: lang.startsWith('zh')
-        ? 'Tavily/Exa 金鑰與引數；分別開啟 Lens 與 Chat 的聯網搜尋。'
+        ? 'Tavily/Exa 金鑰與引數；分別開啟 Lens 與 Chat 的網路搜尋。'
         : 'Tavily/Exa keys and parameters; enable web search for Lens and Chat separately.',
     },
     usage: {
       title: lang.startsWith('zh') ? '用量統計' : 'Usage',
       subtitle: lang.startsWith('zh')
-        ? '檢視本地模型請求、Token、成本估算和來源分佈。'
+        ? '檢視本機模型請求、Token、成本估算和來源分佈。'
         : 'Inspect local model requests, tokens, estimated cost, and usage distribution.',
     },
     providers: {
@@ -2516,7 +2516,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {activeTab === 'translate' && (
               <>
                 <SettingsGroup title={t.hotkey}>
-                  <SettingRow label={t.hotkey} description={lang.startsWith('zh') ? '翻譯當前選中文本或剪貼簿內容。' : 'Translates the current selection or clipboard.'} stack>
+                  <SettingRow label={t.hotkey} description={lang.startsWith('zh') ? '翻譯當前選中文字或剪貼簿內容。' : 'Translates the current selection or clipboard.'} stack>
                     <HotkeyInput
                       value={settings.hotkey}
                       placeholder={t.hotkeyPlaceholder}
@@ -2826,7 +2826,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   )}
                 </SettingsGroup>
 
-                <SettingsGroup title={lang.startsWith('zh') ? '響應' : 'Response'}>
+                <SettingsGroup title={lang.startsWith('zh') ? '回應' : 'Response'}>
                   <SettingRow label={t.chatStreamEnabled} description={t.chatStreamHint}>
                     <Toggle
                       checked={chatConfig.streamEnabled !== false}
@@ -3003,7 +3003,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     </span>
                   </SettingRow>
                   <SettingRow
-                    label={lang.startsWith('zh') ? '聯網搜尋' : 'Web search'}
+                    label={lang.startsWith('zh') ? '網路搜尋' : 'Web search'}
                     description={lang.startsWith('zh') ? 'Tavily/Exa 與 Lens、Chat 開關' : 'Tavily/Exa plus Lens and Chat toggles'}
                   >
                     <span className={`kv-tag ${(settings.lens?.webSearch?.enabled || chatTools.nativeTools?.webSearch) ? 'ok' : ''}`}>
@@ -3257,7 +3257,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       checked={chatTools.nativeTools?.webSearch === true}
                       onChange={(webSearch) => {
                         if (!chatProviderSupportsTools) {
-                          setSaveError(lang.startsWith('zh') ? '當前 Chat 模型供應商不支援 tools，無法啟用聯網搜尋。' : 'The current Chat provider does not support tools, so web search cannot be enabled.')
+                          setSaveError(lang.startsWith('zh') ? '當前 Chat 模型供應商不支援 tools，無法啟用網路搜尋。' : 'The current Chat provider does not support tools, so web search cannot be enabled.')
                           return
                         }
                         updateNativeTools({ webSearch })
@@ -4013,7 +4013,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     onClick={() => setUsageView('stats')}
                     data-tauri-drag-region="false"
                   >
-                    {lang === 'zh' ? '用量統計' : 'Usage'}
+                    {lang.startsWith('zh') ? '用量統計' : 'Usage'}
                   </button>
                   <button
                     type="button"
@@ -4021,7 +4021,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     onClick={() => setUsageView('debug')}
                     data-tauri-drag-region="false"
                   >
-                    {lang === 'zh' ? '請求除錯' : 'Request debug'}
+                    {lang.startsWith('zh') ? '請求除錯' : 'Request debug'}
                   </button>
                 </div>
                 {usageView === 'stats' ? (
@@ -4175,7 +4175,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                 {gzipInfoOpen.has(provider.id) && (
                                   <span className="kv-row-desc block mt-1">
                                     {lang.startsWith('zh')
-                                      ? '個別供應商前置的 WAF 會掃描明文請求體，把工具/系統提示裡的 shell 命令、檔案路徑等文本誤判為攻擊而返回 403。開啟後請求體用 gzip 壓縮傳送（多數閘道器可正常解壓）。若該供應商不接受 gzip 請求（如官方 DeepSeek）會返回 400，請保持關閉。'
+                                      ? '個別供應商前置的 WAF 會掃描明文請求體，把工具/系統提示裡的 shell 命令、檔案路徑等文字誤判為攻擊而返回 403。開啟後請求體用 gzip 壓縮傳送（多數閘道器可正常解壓）。若該供應商不接受 gzip 請求（如官方 DeepSeek）會返回 400，請保持關閉。'
                                       : 'Some providers sit behind a WAF that scans the plaintext request body and returns 403 for shell/path text inside tool or system-prompt content. Enable to gzip the request body (most gateways accept it). Keep off for providers that reject gzip requests (e.g. official DeepSeek), which would return 400.'}
                                   </span>
                                 )}
@@ -4309,7 +4309,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             <ul className="kv-enabled-model-list">
                               {provider.enabledModels.length === 0 && (
                                 <li className="kv-enabled-model-empty">
-                                  {lang.startsWith('zh') ? '點選上方「獲取模型列表」拉取並新增模型。' : 'Use "Fetch Models" above to load and add models.'}
+                                  {lang.startsWith('zh') ? '點選上方「取得模型列表」拉取並新增模型。' : 'Use "Fetch Models" above to load and add models.'}
                                 </li>
                               )}
                               {provider.enabledModels.map(model => {
@@ -4569,7 +4569,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             fetching: t.fetching,
             addModel: t.addModel,
             manualAddModel: t.manualAddModel,
-            noModels: lang.startsWith('zh') ? '尚未獲取模型，請點選上方按鈕拉取。' : 'No models yet. Click the button above to fetch.',
+            noModels: lang.startsWith('zh') ? '尚未取得模型，請點選上方按鈕拉取。' : 'No models yet. Click the button above to fetch.',
             noSearchResults: lang.startsWith('zh') ? '沒有匹配的模型' : 'No matching models',
             enabled: lang.startsWith('zh') ? '已啟用' : 'On',
             addAllModels: lang.startsWith('zh') ? '新增當前列表中的全部模型' : 'Add all models in the current list',
@@ -4631,7 +4631,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           </div>
         </div>
       )}
-      {/* 刪除提供商確認彈窗 */}
+      {/* 刪除供應商確認彈窗 */}
       {confirmDeleteProviderId && (
         <div className="kv-modal-backdrop" data-tauri-drag-region="false">
           <div className="kv-modal space-y-3">

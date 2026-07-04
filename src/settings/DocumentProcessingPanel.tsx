@@ -1,5 +1,5 @@
-// 檔案處理設定區（知識庫頁）：僅 Kivio 內建本地解析 + 圖片 OCR。
-// 第三方處理器（MinerU/Doc2X/自定義）已掛起。
+// 檔案處理設定區（知識庫頁）：僅 Kivio 內建本機解析 + 圖片 OCR。
+// 第三方處理器（MinerU/Doc2X/自訂）已掛起。
 import { Download, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
@@ -103,7 +103,7 @@ export function DocumentProcessingPanel({
   )
 }
 
-/** RapidOCR 離線引擎的狀態/下載元件，本地自管狀態。 */
+/** RapidOCR 離線引擎的狀態/下載元件，本機自管狀態。 */
 function RapidOcrWidget({ t }: { t: (zh: string, en: string) => string }) {
   const [status, setStatus] = useState<RapidOcrStatus | null>(null)
   const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'failed'>('idle')

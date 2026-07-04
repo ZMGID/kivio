@@ -1,8 +1,8 @@
 // 連接器面板：目錄化 + 一鍵授權的外部資料來源 UX。
 // 每個連接器最終物化成一條帶 Authorization header 的 ChatMcpServer，寫入
 // chatTools.servers（connectorId 非空），由現有 MCP 管線自動收集工具。
-// token 類（GitHub PAT / Composio key / 自定義 token）直接前端物化；
-// OAuth 類（Notion / 自定義 OAuth）走後端 connector_oauth_connect（PKCE + DCR + loopback）。
+// token 類（GitHub PAT / Composio key / 自訂 token）直接前端物化；
+// OAuth 類（Notion / 自訂 OAuth）走後端 connector_oauth_connect（PKCE + DCR + loopback）。
 
 import { useCallback, useEffect, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -25,7 +25,7 @@ import {
 import { ConnectorDetailModal } from './ConnectorDetailModal'
 import { EmailConnectorModal } from './EmailConnectorModal'
 
-// catalog 項 iconKey → 品牌圖示元件查詢表；未命中（含自定義連接器）回退到通用 link 圖示。
+// catalog 項 iconKey → 品牌圖示元件查詢表；未命中（含自訂連接器）回退到通用 link 圖示。
 const CONNECTOR_ICON_BY_KEY: Record<
   string,
   (props: { size?: number; className?: string }) => JSX.Element
@@ -105,7 +105,7 @@ export function ConnectorsPanel({
   // 每條 server 的工具數（連線後或測試後填充）。
   const [toolCounts, setToolCounts] = useState<Record<string, number>>({})
 
-  // 自定義連接器表單狀態。
+  // 自訂連接器表單狀態。
   const [showCustomForm, setShowCustomForm] = useState(false)
   const [customName, setCustomName] = useState('')
   const [customUrl, setCustomUrl] = useState('')

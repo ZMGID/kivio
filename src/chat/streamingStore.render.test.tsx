@@ -81,7 +81,7 @@ describe('MessageList ← streamingStore 整合', () => {
     await flush()
 
     expect(document.querySelector('[data-chat-message-list-item="plan"]')).not.toBeInTheDocument()
-    const button = screen.getByRole('button', { name: '執行這條計劃' })
+    const button = screen.getByRole('button', { name: '執行這條計畫' })
     expect(button).toBeInTheDocument()
     await act(async () => {
       button.click()
@@ -105,11 +105,11 @@ describe('MessageList ← streamingStore 整合', () => {
     )
     await flush()
 
-    expect(screen.queryByText('計劃草案')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '執行這條計劃' })).not.toBeInTheDocument()
+    expect(screen.queryByText('計畫草案')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '執行這條計畫' })).not.toBeInTheDocument()
   })
 
-  it('applyStreamSnapshotToState 等價：內容快照 + coarse streaming → 渲染流式預覽文本', async () => {
+  it('applyStreamSnapshotToState 等價：內容快照 + coarse streaming → 渲染流式預覽文字', async () => {
     siblingRenders = 0
     mountList()
     expect(siblingRenders).toBe(1)
@@ -139,7 +139,7 @@ describe('MessageList ← streamingStore 整合', () => {
     expect(siblingRenders).toBe(baseline)
   })
 
-  it('cancelCurrentRunLocally 等價：coarse streaming:false+frozen:true + patchSnapshot 凍結保留文本', async () => {
+  it('cancelCurrentRunLocally 等價：coarse streaming:false+frozen:true + patchSnapshot 凍結保留文字', async () => {
     mountList()
     act(() => {
       setSnapshot(snapWith({ content: 'partial answer', streaming: true }))
@@ -153,7 +153,7 @@ describe('MessageList ← streamingStore 整合', () => {
       patchSnapshot({ reasoningStreaming: false })
     })
     await flush()
-    // 凍結態下已生成文本仍在（streamFrozen 讓預覽繼續渲染）。
+    // 凍結態下已生成文字仍在（streamFrozen 讓預覽繼續渲染）。
     expect(screen.getByText(/partial answer/)).toBeInTheDocument()
     expect(getCoarse().streamFrozen).toBe(true)
   })

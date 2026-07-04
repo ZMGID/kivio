@@ -11,7 +11,7 @@ vi.mock('../api/tauri', () => ({
 }))
 
 describe('ThinkingLevelSelector', () => {
-  it('value=null 時按預設檔顯示 High（不再有「跟隨全域性」）', () => {
+  it('value=null 時按預設檔顯示 High（不再有「跟隨全域」）', () => {
     render(
       <ThinkingLevelSelector
         value={null}
@@ -23,7 +23,7 @@ describe('ThinkingLevelSelector', () => {
     expect(screen.getByRole('button')).toHaveTextContent('High')
   })
 
-  it('下拉項為英文標籤且不含「跟隨全域性」', () => {
+  it('下拉項為英文標籤且不含「跟隨全域」', () => {
     render(
       <ThinkingLevelSelector
         value="high"
@@ -35,7 +35,7 @@ describe('ThinkingLevelSelector', () => {
     act(() => {
       fireEvent.click(screen.getByRole('button'))
     })
-    expect(screen.queryByText('跟隨全域性')).not.toBeInTheDocument()
+    expect(screen.queryByText('跟隨全域')).not.toBeInTheDocument()
     // 英文標籤存在（Off + 兜底 low/medium/high）。
     expect(screen.getByText('Off')).toBeInTheDocument()
     expect(screen.getByText('Medium')).toBeInTheDocument()

@@ -183,7 +183,7 @@ export function Select({ value, onChange, options, className = '' }: {
 }
 
 /**
- * 文本輸入 — 預設 sans，需要等寬時呼叫方自行加 font-mono
+ * 文字輸入 — 預設 sans，需要等寬時呼叫方自行加 font-mono
  */
 export function Input({ value, onChange, type = 'text', placeholder = '', className = '', list, mono = false, ...props }: {
   value: string
@@ -210,7 +210,7 @@ export function Input({ value, onChange, type = 'text', placeholder = '', classN
 }
 
 /**
- * 多行文本輸入 — 預設 sans
+ * 多行文字輸入 — 預設 sans
  */
 export function TextArea({ value, onChange, placeholder = '', rows = 2, mono = false }: {
   value: string

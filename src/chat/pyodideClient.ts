@@ -89,7 +89,7 @@ export function runPythonInSandbox(
       pending.delete(id)
       // 卡死則殺掉整個 worker（連同可能 hang 的 pyodide），下次呼叫冷重建。
       terminateWorker()
-      reject(new Error('Python 執行超時：worker 無響應，已重置沙盒，請重試。'))
+      reject(new Error('Python 執行超時：worker 無回應，已重置沙盒，請重試。'))
     }, timeoutMs + COLD_LOAD_BUDGET_MS)
     pending.set(id, { resolve, reject, guard })
     target.postMessage({ id, code, timeoutMs, files })

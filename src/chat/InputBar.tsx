@@ -175,7 +175,7 @@ const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
     description: 'Enter plan mode',
     category: 'Local',
     kind: 'action',
-    keywords: ['plan', 'act', 'mode', '計劃', '模式', '切換'],
+    keywords: ['plan', 'act', 'mode', '計畫', '模式', '切換'],
   },
   {
     id: 'orchestrate',
@@ -288,7 +288,7 @@ const AGENT_MODE_OPTIONS: {
   {
     mode: 'plan',
     label: 'Plan',
-    description: '計劃模式 · Enter plan mode',
+    description: '計畫模式 · Enter plan mode',
     icon: ListChecks,
   },
   {
@@ -1033,7 +1033,7 @@ export function InputBar({
     const selectionEnd = textarea?.selectionEnd ?? input.length
     const valueBeforePaste = textarea?.value ?? input
 
-    // 剪貼簿裡已有 File 物件時可同步攔截；系統檔案路徑只能非同步讀取，後面再精確撤銷檔名文本。
+    // 剪貼簿裡已有 File 物件時可同步攔截；系統檔案路徑只能非同步讀取，後面再精確撤銷檔名文字。
     if (attachableClipboardFiles.length > 0) {
       e.preventDefault()
     }

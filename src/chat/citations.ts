@@ -2,7 +2,7 @@
 // 抽成獨立模組（非元件），既便於單測，也避免 ChatMarkdown.tsx 觸發
 // react-refresh/only-export-components。
 
-// 極簡 mdast 節點檢視：只需 type/value/url/children 來切分文本節點。
+// 極簡 mdast 節點檢視：只需 type/value/url/children 來切分文字節點。
 export interface MdNode {
   type: string
   value?: string
@@ -10,7 +10,7 @@ export interface MdNode {
   children?: MdNode[]
 }
 
-/** 把一個文本節點裡的 `[n]`（且 n 是有效引用）切成 text / link 混排。 */
+/** 把一個文字節點裡的 `[n]`（且 n 是有效引用）切成 text / link 混排。 */
 export function splitCitations(value: string, validNs: Set<number>): MdNode[] {
   const out: MdNode[] = []
   let last = 0

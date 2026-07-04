@@ -3,7 +3,7 @@ import { useCallback, useSyncExternalStore } from 'react'
 // 多模型一問多答（任務 06-30）：多答組的展示模式偏好。
 //  - 'tabs'（切換，預設）：一次只整寬顯示一條答案，組末尾 footer 切換顯示哪條。
 //  - 'columns'（並排）：N 列橫向並排（原有實現）。
-// 這是一個**全域性 UI 偏好**：跨會話共用、重啟保留，寫在 localStorage，不進後端 settings。
+// 這是一個**全域 UI 偏好**：跨會話共用、重啟保留，寫在 localStorage，不進後端 settings。
 // 同一視窗內多個訂閱者（多個多答組的 footer）通過模組級 store 即時同步；其它視窗/標籤頁
 // 通過 storage 事件同步。
 
@@ -76,7 +76,7 @@ function getSnapshot(): MultiAnswerViewMode {
 }
 
 /**
- * 多答組展示模式偏好（全域性，跨會話）。返回 `[mode, setMode]`。
+ * 多答組展示模式偏好（全域，跨會話）。返回 `[mode, setMode]`。
  * 預設 'tabs'（切換）。改動寫 localStorage 並即時同步本視窗所有訂閱者。
  */
 export function useMultiAnswerViewMode(): [MultiAnswerViewMode, (mode: MultiAnswerViewMode) => void] {

@@ -4,7 +4,7 @@
 //   - GitHub：直接複用 lucide-react 的 Github 圖示（倉庫已依賴 lucide-react，準確且省事）。
 //   - Composio：官方圖示（單色蒙版，CSS mask + currentColor，跟隨文字色與其它連接器圖示統一）。
 //   - Linear / Sentry / Atlassian / Obsidian：simple-icons 官方品牌 path（https://cdn.simpleicons.org/<slug>，path 內聯）。
-//   - 自定義連接器：通用 link 圖示（fallback）。
+//   - 自訂連接器：通用 link 圖示（fallback）。
 
 import { Github, Link2, Mail } from 'lucide-react'
 
@@ -59,7 +59,7 @@ export function ComposioBrandIcon({ size = 22, className }: BrandIconProps) {
   )
 }
 
-// 自定義連接器 / 未知：通用 link 圖示。
+// 自訂連接器 / 未知：通用 link 圖示。
 export function CustomConnectorIcon({ size = 22, className }: BrandIconProps) {
   return <Link2 size={size} className={className} />
 }

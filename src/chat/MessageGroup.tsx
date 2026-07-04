@@ -12,7 +12,7 @@ import { useMultiAnswerViewMode } from './multiAnswerViewMode'
 //  - 落庫後：列來自持久化的 assistant 訊息（live=false），各帶 group_id / provider_id / model。
 // virtua 把整組當「一行」item 虛擬化（見 MessageList），不破壞滾動/釘底。
 //
-// 兩種展示模式（全域性偏好 useMultiAnswerViewMode，預設 'tabs'）：
+// 兩種展示模式（全域偏好 useMultiAnswerViewMode，預設 'tabs'）：
 //  - 'tabs'（切換）：一次只整寬顯示**當前選中條**（預設第一條），組末尾 footer 切換顯示哪條。
 //  - 'columns'（並排）：N 列橫向並排（原有實現，視覺/效能完全不變）。
 // 組末尾 footer：檢視切換控制元件 + 一排模型 chip（點 chip = 切顯示條 +「續聊選中條」一舉兩用）。
@@ -264,7 +264,7 @@ function MessageGroupBase({
   const liveGroup = conversationId ? getActiveGroup(conversationId) : undefined
   const live = Boolean(liveGroup && liveGroup.groupId === groupId)
 
-  // 全域性展示模式偏好（預設 tabs）。
+  // 全域展示模式偏好（預設 tabs）。
   const [viewMode, setViewMode] = useMultiAnswerViewMode()
 
   // 聚焦列索引（效能降級 R10，僅 columns 模式用）：hover 哪一列就聚焦哪一列；預設聚焦第一列。

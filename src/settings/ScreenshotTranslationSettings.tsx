@@ -283,7 +283,7 @@ export function ScreenshotTranslationSettings({
 }
 
 /**
- * 自定義提示詞欄位：空值時把預設模板預填進文本框（可編輯起點），
+ * 自訂提示詞欄位：空值時把預設範本預填進文字框（可編輯起點），
  * 使用者未編輯前儲存仍寫空串（執行時用內建預設）；"恢復預設" 清空並復位預填。
  */
 export function PromptField({

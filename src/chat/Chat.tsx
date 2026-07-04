@@ -638,7 +638,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const [draftModel, setDraftModel] = useState('')
   // 歡迎頁（尚無會話）時掛載的知識庫草稿；首次傳送建會話時落到會話上。
   const [draftKnowledgeBaseIds, setDraftKnowledgeBaseIds] = useState<string[]>([])
-  // 歡迎頁思考等級草稿；首次傳送建會話時落到會話上。null=跟隨全域性。
+  // 歡迎頁思考等級草稿；首次傳送建會話時落到會話上。null=跟隨全域。
   const [draftThinkingLevel, setDraftThinkingLevel] = useState<ThinkingLevel | null>(null)
   // 多模型一問多答（任務 06-30）：歡迎頁（尚無會話）時的多答模型草稿；首次傳送建會話時落到會話上。
   const [draftReplyModels, setDraftReplyModels] = useState<ModelRef[]>([])
@@ -714,7 +714,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     syncGeneratingConversationIds()
   }, [syncGeneratingConversationIds])
 
-  // B：徹底把一個會話從所有本地樂觀/in-flight/快照狀態中剔除（ghost 清理）。
+  // B：徹底把一個會話從所有本機樂觀/in-flight/快照狀態中剔除（ghost 清理）。
   // 不觸碰 currentConversation/route，由呼叫方按場景決定。
   const dropConversationLocally = useCallback((conversationId: string) => {
     inFlightConversationsRef.current.delete(conversationId)
@@ -931,7 +931,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
   const cancelCurrentRunLocally = useCallback(() => {
     locallyCancelledConversationIdRef.current = currentConversationIdRef.current
     locallyCancelledRunIdRef.current = activeRunIdRef.current
-    // 立即停掉"生成中"視覺（撤掉取消按鈕 + 停 shimmer），但保留已生成文本：
+    // 立即停掉"生成中"視覺（撤掉取消按鈕 + 停 shimmer），但保留已生成文字：
     // 切到 frozen 態凍結展示，等 send invoke 返回持久化訊息時由
     // finishStreamingRunWithConversation 無縫替換（clearStreamingPreview 會清除 frozen）。
     // 後續遲到的流事件已被 isLocallyCancelledPayload 過濾，預覽不會再變動。
@@ -1112,7 +1112,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       const servers = (settings.chatTools?.servers ?? []).map((server) =>
         server.id === serverId ? { ...server, enabled: !server.enabled } : server,
       )
-      // 樂觀更新本地列表（開關即時反饋），儲存後由 refreshToolIndicator 校正。
+      // 樂觀更新本機列表（開關即時反饋），儲存後由 refreshToolIndicator 校正。
       setMcpServers(servers)
       await api.saveSettings({
         ...settings,
@@ -2774,12 +2774,12 @@ export default function Chat({ onSettingsChange }: ChatProps) {
       applyConversation(updated)
       refreshSidebar()
       void refreshContextStats(updated.id)
-      void handleSendMessage('按這條計劃開始執行。', [], { conversationOverride: updated })
+      void handleSendMessage('按這條計畫開始執行。', [], { conversationOverride: updated })
     } catch (err) {
       console.error('Failed to execute agent plan:', err)
       setStreamErrorForConversation(
         conversation.id,
-        typeof err === 'string' ? err : (err as Error).message || '執行計劃失敗',
+        typeof err === 'string' ? err : (err as Error).message || '執行計畫失敗',
       )
     }
   }, [

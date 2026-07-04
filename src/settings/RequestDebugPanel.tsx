@@ -13,7 +13,7 @@ type RequestDebugPanelProps = {
 
 function formatTime(seconds?: number | null, lang = 'zh') {
   if (!seconds) return '--'
-  return new Date(seconds * 1000).toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', {
+  return new Date(seconds * 1000).toLocaleTimeString(lang.startsWith('zh') ? lang : 'en-US', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -32,13 +32,13 @@ function formatDuration(ms?: number | null) {
 function formatGap(seconds: number, lang: string): string {
   if (seconds >= 3600) {
     const h = Math.floor(seconds / 3600)
-    return lang === 'zh' ? `${h} 小時間隔` : `${h}h gap`
+    return lang.startsWith('zh') ? `${h} 小時間隔` : `${h}h gap`
   }
   if (seconds >= 60) {
     const m = Math.floor(seconds / 60)
-    return lang === 'zh' ? `${m} 分鐘間隔` : `${m} min gap`
+    return lang.startsWith('zh') ? `${m} 分鐘間隔` : `${m} min gap`
   }
-  return lang === 'zh' ? `${Math.round(seconds)} 秒間隔` : `${Math.round(seconds)}s gap`
+  return lang.startsWith('zh') ? `${Math.round(seconds)} 秒間隔` : `${Math.round(seconds)}s gap`
 }
 
 function totalTokens(record: RequestDebugRecord) {
@@ -102,7 +102,7 @@ const SOURCE_BADGE: Record<string, { zh: string; en: string; cls: string }> = {
 
 function sourceBadge(source: string, lang: string): { label: string; cls: string } {
   const m = SOURCE_BADGE[source]
-  if (m) return { label: lang === 'zh' ? m.zh : m.en, cls: m.cls }
+  if (m) return { label: lang.startsWith('zh') ? m.zh : m.en, cls: m.cls }
   return { label: source, cls: 'bg-neutral-500/10 text-neutral-500 dark:text-neutral-400' }
 }
 
@@ -159,7 +159,7 @@ function toYaml(value: unknown, indent = 0): string {
     .join('\n')
 }
 
-/** 按當前格式（json/yaml）把負載轉成文本。 */
+/** 按當前格式（json/yaml）把負載轉成文字。 */
 function formatPayload(value: unknown, mode: 'json' | 'yaml'): string {
   return mode === 'yaml' ? toYaml(value) : prettyJson(value)
 }
@@ -168,7 +168,7 @@ function isObj(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v)
 }
 
-/** content 可能是 string 或 OpenAI/Anthropic 的 block 陣列，盡力拼成純文本。 */
+/** content 可能是 string 或 OpenAI/Anthropic 的 block 陣列，盡力拼成純文字。 */
 function contentToText(content: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -274,7 +274,7 @@ function CopyButton({ text, lang, label }: { text: string; lang: string; label?:
   return (
     <button type="button" className="kv-btn sm" onClick={copy} data-tauri-drag-region="false">
       {copied ? <Check size={11} /> : <Copy size={11} />}
-      {copied ? (lang === 'zh' ? '已複製' : 'Copied') : label ?? (lang === 'zh' ? '複製' : 'Copy')}
+      {copied ? (lang.startsWith('zh') ? '已複製' : 'Copied') : label ?? (lang.startsWith('zh') ? '複製' : 'Copy')}
     </button>
   )
 }
@@ -358,7 +358,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
           {paramKeys.length > 0 && (
             <>
               <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-                {lang === 'zh' ? '引數' : 'Parameters'}
+                {lang.startsWith('zh') ? '引數' : 'Parameters'}
               </div>
               <div className="flex flex-col gap-1.5">
                 {paramKeys.map((key) => {
@@ -376,7 +376,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
                         )}
                         {required.has(key) && (
                           <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                            {lang === 'zh' ? '必填' : 'required'}
+                            {lang.startsWith('zh') ? '必填' : 'required'}
                           </span>
                         )}
                       </div>
@@ -594,7 +594,7 @@ function UsageBar({ record, lang }: { record: RequestDebugRecord; lang: string }
       {items.map((item) => (
         <span key={item.key} className="inline-flex items-center gap-1.5">
           <span className={`size-1.5 rounded-full ${item.dot}`} />
-          <span className="text-neutral-500 dark:text-neutral-400">{lang === 'zh' ? item.zh : item.en}</span>
+          <span className="text-neutral-500 dark:text-neutral-400">{lang.startsWith('zh') ? item.zh : item.en}</span>
           <span className="tabular-nums font-medium text-neutral-700 dark:text-neutral-200">
             {(usage[item.key] as number).toLocaleString()}
           </span>
@@ -605,7 +605,7 @@ function UsageBar({ record, lang }: { record: RequestDebugRecord; lang: string }
 }
 
 export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDebugPanelProps) {
-  const zh = lang === 'zh'
+  const zh = lang.startsWith('zh')
   const [records, setRecords] = useState<RequestDebugRecord[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -678,7 +678,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
           label={zh ? '記錄 provider 請求' : 'Capture provider requests'}
           description={
             zh
-              ? '開啟後每次 provider 呼叫（chat/子agent + 翻譯/截圖/Lens）的請求與響應被記入記憶體（脫敏 key，最多 50 條，不落盤）。改動後請儲存設定生效。'
+              ? '開啟後每次 provider 呼叫（chat/子agent + 翻譯/截圖/Lens）的請求與回應被記入記憶體（脫敏 key，最多 50 條，不落盤）。改動後請儲存設定生效。'
               : 'When on, every provider call (chat/sub-agent + translate/screenshot/Lens) is captured in memory (keys masked, up to 50, never written to disk). Save settings to apply.'
           }
           stack
@@ -837,7 +837,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
 }
 
 function DetailView({ selected, lang }: { selected: RequestDebugRecord; lang: string }) {
-  const zh = lang === 'zh'
+  const zh = lang.startsWith('zh')
   const [view, setView] = useState<'default' | 'trace'>('default')
   const { system, messages } = useMemo(() => splitRequestBody(selected.request.body), [selected])
   const tools = useMemo(() => getRequestTools(selected.request.body), [selected])
@@ -909,7 +909,7 @@ function DetailView({ selected, lang }: { selected: RequestDebugRecord; lang: st
           {/* usage 明細 */}
           <UsageBar record={selected} lang={lang} />
 
-          {/* 可摺疊分割槽：工具 → 系統提示詞 → 訊息 → 響應 → 請求 Body/Headers → 完整 JSON */}
+          {/* 可摺疊分割槽：工具 → 系統提示詞 → 訊息 → 回應 → 請求 Body/Headers → 完整 JSON */}
           {tools.length > 0 && (
             <Section
               title={zh ? '工具' : 'Tools'}
@@ -941,7 +941,7 @@ function DetailView({ selected, lang }: { selected: RequestDebugRecord; lang: st
               <MessagesView messages={messages} />
             </Section>
           )}
-          <Section title={zh ? '響應' : 'Response'} defaultOpen copyText={prettyJson(selected.response)} lang={lang}>
+          <Section title={zh ? '回應' : 'Response'} defaultOpen copyText={prettyJson(selected.response)} lang={lang}>
             <JsonBody value={selected.response} />
           </Section>
           <Section title={zh ? '請求 Body' : 'Request body'} copyText={requestBodyText} lang={lang}>
@@ -1007,7 +1007,7 @@ function TraceView({
   tools: unknown[]
   lang: string
 }) {
-  const zh = lang === 'zh'
+  const zh = lang.startsWith('zh')
   const [mode, setMode] = useState<'json' | 'yaml'>('json')
 
   const inputPayload = useMemo(
@@ -1108,7 +1108,7 @@ function TraceView({
   )
 }
 
-/** 帶自定義圖示的複製按鈕（cURL / 整條記錄）。 */
+/** 帶自訂圖示的複製按鈕（cURL / 整條記錄）。 */
 function CopyButtonIcon({
   text,
   lang,
@@ -1133,7 +1133,7 @@ function CopyButtonIcon({
   return (
     <button type="button" className="kv-btn sm" onClick={copy} data-tauri-drag-region="false">
       {copied ? <Check size={11} /> : icon}
-      {copied ? (lang === 'zh' ? '已複製' : 'Copied') : label}
+      {copied ? (lang.startsWith('zh') ? '已複製' : 'Copied') : label}
     </button>
   )
 }

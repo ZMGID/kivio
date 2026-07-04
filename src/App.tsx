@@ -307,8 +307,8 @@ function App() {
 
     listen('chat-open-request', () => {
       const path = hashPath()
-      // 全域性 listen 會收到 emit_to("chat") 的事件（Tauri v2 的 Any 目標語義），所以 lens/translate/
-      // settings/translator 窗也會收到這條廣播。只有 chat 窗該響應，否則其它視窗會把自己導航成 chat。
+      // 全域 listen 會收到 emit_to("chat") 的事件（Tauri v2 的 Any 目標語義），所以 lens/translate/
+      // settings/translator 窗也會收到這條廣播。只有 chat 窗該回應，否則其它視窗會把自己導航成 chat。
       if (!isChatPath(path)) return
       if (path !== 'chat' && !isChatSettingsPath(path)) return
       const rememberedRoute = getRememberedChatRoute()
