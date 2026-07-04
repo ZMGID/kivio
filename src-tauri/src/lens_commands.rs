@@ -40,7 +40,8 @@ use crate::state::{
     AppState, PendingChatExternalAttachment, PendingChatExternalMessage, PendingChatExternalSend,
 };
 use crate::utils::{
-    language_name, provider_supports_thinking_field, resolve_target_lang_with_preference,
+    language_name, provider_supports_thinking_field, resolve_target_lang,
+    resolve_target_lang_with_preference,
 };
 use crate::web_search::{format_web_context, search_web, WebSearchResult};
 use crate::windows;
