@@ -506,6 +506,7 @@
             lens_pending_reset: Mutex::new(None),
             key_cooldowns: Mutex::new(std::collections::HashMap::new()),
             active_key_idx: Mutex::new(std::collections::HashMap::new()),
+            prompt_cache_key_unsupported: Mutex::new(std::collections::HashSet::new()),
             mcp_sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             usage_dir: std::env::temp_dir().join(format!(
                 "kivio-agent-loop-test-usage-{}",

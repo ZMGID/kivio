@@ -136,6 +136,9 @@ pub struct AppState {
     pub key_cooldowns: Mutex<HashMap<(String, usize), Instant>>,
     /// 每个 provider 当前活跃 key idx：上一次成功的 key 优先继续用。
     pub active_key_idx: Mutex<HashMap<String, usize>>,
+    /// 运行时学习到的"该端点拒绝 `prompt_cache_key`"集合（按 base_url）。
+    /// 某端点首次因该字段 400 后记入，本会话后续请求不再发，避免重复触发 + 无谓重试。
+    pub prompt_cache_key_unsupported: Mutex<HashSet<String>>,
     /// MCP 持久连接池：server_id → 该 server 的长连接会话。
     /// 每会话独立 `Arc<Mutex>`，A 服务器握手不阻塞 B；外层 `tokio::sync::Mutex`
     /// 只在命中判断 / 插入 / 移除时短暂持有，绝不跨握手 await。
@@ -229,6 +232,7 @@ impl AppState {
             lens_pending_reset: Mutex::new(None),
             key_cooldowns: Mutex::new(HashMap::new()),
             active_key_idx: Mutex::new(HashMap::new()),
+            prompt_cache_key_unsupported: Mutex::new(HashSet::new()),
             mcp_sessions: tokio::sync::Mutex::new(HashMap::new()),
             usage_dir,
             http: crate::api::build_http_client(),
@@ -701,6 +705,22 @@ impl AppState {
         killed
     }
 
+    /// 该 base_url 是否已被学习为"拒绝 prompt_cache_key"。
+    pub fn prompt_cache_key_unsupported(&self, base_url: &str) -> bool {
+        self.prompt_cache_key_unsupported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(base_url)
+    }
+
+    /// 记住该 base_url 拒绝 prompt_cache_key（首次 400 后调用）。
+    pub fn mark_prompt_cache_key_unsupported(&self, base_url: &str) {
+        self.prompt_cache_key_unsupported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(base_url.to_string());
+    }
+
     /// 标记某个 key 失败：进入冷却 + 不变更 active_key_idx
     pub fn mark_key_failed(&self, provider_id: &str, idx: usize) {
         let mut cooldowns = self.key_cooldowns.lock().unwrap_or_else(|e| e.into_inner());
@@ -756,6 +776,7 @@ pub(crate) fn test_app_state() -> AppState {
         lens_pending_reset: Mutex::new(None),
         key_cooldowns: Mutex::new(HashMap::new()),
         active_key_idx: Mutex::new(HashMap::new()),
+        prompt_cache_key_unsupported: Mutex::new(HashSet::new()),
         mcp_sessions: tokio::sync::Mutex::new(HashMap::new()),
         usage_dir: std::env::temp_dir().join("kivio-test-usage"),
         http: Client::new(),

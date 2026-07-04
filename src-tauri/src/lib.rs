@@ -280,6 +280,7 @@ pub fn run() {
                 lens_pending_reset: Mutex::new(None),
                 key_cooldowns: Mutex::new(HashMap::new()),
                 active_key_idx: Mutex::new(HashMap::new()),
+                prompt_cache_key_unsupported: Mutex::new(HashSet::new()),
                 mcp_sessions: tokio::sync::Mutex::new(HashMap::new()),
                 usage_dir,
                 http: build_http_client(),

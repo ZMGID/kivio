@@ -55,42 +55,86 @@ impl LanguageModelProvider for OpenAiChatProvider<'_> {
     }
 }
 
+/// 判断错误是否是"端点拒绝 prompt_cache_key 字段"。仅在本次确实发了该字段时配合调用，
+/// 错误体点名该字段即视为命中（NVIDIA NIM / 智谱 GLM 等严格端点的 400 会带上字段名）。
+fn error_rejects_prompt_cache_key(err: &str) -> bool {
+    err.contains("prompt_cache_key")
+}
+
 impl OpenAiChatProvider<'_> {
-    async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
-        let label = request_label(&request, "Chat API");
-        let started_at = chrono::Local::now().timestamp();
-        let started = std::time::Instant::now();
-        let body = self.request_body(&request, false);
-        let response = send_with_failover(
+    /// 发送 chat 请求；若因严格端点拒绝 `prompt_cache_key` 而 400，自动去掉该字段重试一次，
+    /// 并把该 base_url 记入 state（本会话后续 `request_body` 就地跳过，不再触发 / 重试）。
+    async fn send_chat_body(
+        &self,
+        request: &GenerateRequest,
+        stream: bool,
+        label: &str,
+    ) -> Result<reqwest::Response, String> {
+        let body = self.request_body(request, stream);
+        let result = self.post_chat(request, &body, stream, label).await;
+        if let Err(ref err) = result {
+            // 仅当本次确实发了 prompt_cache_key、且错误点名了它，才去掉重试（避免误伤别的 400）。
+            if body.get("prompt_cache_key").is_some() && error_rejects_prompt_cache_key(err) {
+                self.state
+                    .mark_prompt_cache_key_unsupported(&self.provider.base_url);
+                let retry_body = self.request_body(request, stream);
+                return self.post_chat(request, &retry_body, stream, label).await;
+            }
+        }
+        result
+    }
+
+    /// 单次发送（带多 key failover）。非流式套 `with_standard_request_timeout` 总超时；
+    /// 流式不套，避免活跃 SSE 被总超时砍断（与改动前两条路径各自的行为一致）。
+    async fn post_chat(
+        &self,
+        request: &GenerateRequest,
+        body: &Value,
+        stream: bool,
+        label: &str,
+    ) -> Result<reqwest::Response, String> {
+        send_with_failover(
             self.state,
-            &label,
+            label,
             self.retry_attempts,
             &self.provider.id,
             &self.provider.api_keys,
             |key| {
-                with_standard_request_timeout(
-                    crate::api::attach_json_body(
-                        self.with_session_headers(
-                            self.state
-                                .http
-                                .post(self.chat_completions_url())
-                                .bearer_auth(key)
-                                .header(ACCEPT_ENCODING, "identity"),
-                            &request.metadata,
-                        ),
-                        &body,
-                        self.provider.compress_request_body,
+                let req = crate::api::attach_json_body(
+                    self.with_session_headers(
+                        self.state
+                            .http
+                            .post(self.chat_completions_url())
+                            .bearer_auth(key)
+                            .header(ACCEPT_ENCODING, "identity"),
+                        &request.metadata,
                     ),
-                )
-                .send()
+                    body,
+                    self.provider.compress_request_body,
+                );
+                let req = if stream {
+                    req
+                } else {
+                    with_standard_request_timeout(req)
+                };
+                req.send()
             },
         )
         .await
-        .map_err(|err| {
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-            self.record_debug_failure(&request, &label, false, &err, started_at, started.elapsed());
-            ModelError::new(err)
-        })?;
+    }
+
+    async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
+        let label = request_label(&request, "Chat API");
+        let started_at = chrono::Local::now().timestamp();
+        let started = std::time::Instant::now();
+        let response = self
+            .send_chat_body(&request, false, &label)
+            .await
+            .map_err(|err| {
+                self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+                self.record_debug_failure(&request, &label, false, &err, started_at, started.elapsed());
+                ModelError::new(err)
+            })?;
 
         let raw = response.text().await.map_err(|err| {
             let message = format!("{label} read body: {err}");
@@ -128,35 +172,14 @@ impl OpenAiChatProvider<'_> {
         let label = request_label(&request, "Chat stream");
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
-        let body = self.request_body(&request, true);
-        let mut response = send_with_failover(
-            self.state,
-            &label,
-            self.retry_attempts,
-            &self.provider.id,
-            &self.provider.api_keys,
-            |key| {
-                crate::api::attach_json_body(
-                    self.with_session_headers(
-                        self.state
-                            .http
-                            .post(self.chat_completions_url())
-                            .bearer_auth(key)
-                            .header(ACCEPT_ENCODING, "identity"),
-                        &request.metadata,
-                    ),
-                    &body,
-                    self.provider.compress_request_body,
-                )
-                .send()
-            },
-        )
-        .await
-        .map_err(|err| {
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-            self.record_debug_failure(&request, &label, true, &err, started_at, started.elapsed());
-            ModelError::new(err)
-        })?;
+        let mut response = self
+            .send_chat_body(&request, true, &label)
+            .await
+            .map_err(|err| {
+                self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+                self.record_debug_failure(&request, &label, true, &err, started_at, started.elapsed());
+                ModelError::new(err)
+            })?;
 
         let mut buffer = String::new();
         let mut full = String::new();
@@ -420,13 +443,20 @@ impl OpenAiChatProvider<'_> {
         // 只发 OpenAI 官方 snake_case 参数 `prompt_cache_key`——**不**发 AI SDK 风格的
         // 驼峰 `promptCacheKey`：真实 OpenAI / Azure / 校验型代理对未知 body 字段会返回
         // 400（"Unrecognized request argument"），这正是逼出原生 gemini 适配器的同类问题。
-        if let Some(conversation_id) = request
-            .metadata
-            .conversation_id
-            .as_deref()
-            .filter(|id| !id.is_empty())
+        // 少数严格端点连 snake_case 也拒（NVIDIA NIM / 智谱 GLM）：首次 400 后由 stream/generate
+        // 自动去掉该字段重试并记入 state.prompt_cache_key_unsupported，本会话后续就地跳过。
+        if !self
+            .state
+            .prompt_cache_key_unsupported(&self.provider.base_url)
         {
-            body["prompt_cache_key"] = Value::String(conversation_id.to_string());
+            if let Some(conversation_id) = request
+                .metadata
+                .conversation_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+            {
+                body["prompt_cache_key"] = Value::String(conversation_id.to_string());
+            }
         }
         if !request.options.thinking_enabled
             && utils::provider_supports_thinking_field(&self.provider.base_url)
@@ -991,6 +1021,74 @@ mod tests {
         assert!(body.get("prompt_cache_key").is_none());
         assert!(body.get("promptCacheKey").is_none());
         assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn learned_unsupported_endpoint_skips_prompt_cache_key() {
+        // 端点被记入 prompt_cache_key_unsupported 后，即便有会话 id 也不再发该字段；
+        // 未记入的端点照常发。这是自动重试学习后的"就地跳过"行为。
+        let state = AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let make = |base_url: &str| {
+            let provider = ModelProvider {
+                id: "test".into(),
+                name: "Test".into(),
+                api_keys: vec!["sk-test".into()],
+                api_key_legacy: None,
+                base_url: base_url.into(),
+                available_models: vec!["m".into()],
+                enabled_models: vec!["m".into()],
+                supports_tools: true,
+                enabled: true,
+                api_format: "openai_chat".into(),
+                model_overrides: Default::default(),
+                compress_request_body: false,
+            };
+            let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+            let request = GenerateRequest {
+                model: "m".into(),
+                system: "sys".into(),
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: vec![MessagePart::Text { text: "hi".into() }],
+                }],
+                tools: Vec::new(),
+                options: GenerateOptions::default(),
+                metadata: crate::chat::model::RequestMetadata {
+                    conversation_id: Some("conv_abc".into()),
+                    ..Default::default()
+                },
+            };
+            adapter.request_body(&request, false)
+        };
+
+        // 未学习：正常发送。
+        assert_eq!(
+            make("https://integrate.api.nvidia.com/v1")["prompt_cache_key"],
+            "conv_abc"
+        );
+        // 学习该端点拒绝后：就地跳过。
+        state.mark_prompt_cache_key_unsupported("https://integrate.api.nvidia.com/v1");
+        assert!(make("https://integrate.api.nvidia.com/v1")
+            .get("prompt_cache_key")
+            .is_none());
+        // 其它端点不受影响，仍发送。
+        assert_eq!(
+            make("https://api.openai.com/v1")["prompt_cache_key"],
+            "conv_abc"
+        );
+    }
+
+    #[test]
+    fn error_rejects_prompt_cache_key_matches_field_name() {
+        assert!(super::error_rejects_prompt_cache_key(
+            "400 Bad Request - {\"message\":\"Unsupported parameter(s): `prompt_cache_key`\"}"
+        ));
+        assert!(!super::error_rejects_prompt_cache_key(
+            "400 Bad Request - {\"message\":\"some other validation error\"}"
+        ));
     }
 
     #[test]
