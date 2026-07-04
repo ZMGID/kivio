@@ -69,6 +69,68 @@ fn apply_shell_tool_env(cmd: &mut Command, state: Option<&AppState>) {
     }
 }
 
+/// Windows: the PowerShell executable to run agent shell commands through.
+/// Prefer `pwsh` (PowerShell 7+: UTF-8 by default, supports `&&`) when it is on
+/// PATH; otherwise fall back to `powershell` (Windows PowerShell 5.1, always
+/// present on Windows). Cached for the process lifetime. Mirrors opencode's
+/// `win()` shell precedence (pwsh → powershell → …). We run via PowerShell (not
+/// `cmd.exe`) so the model's natural modern one-liners work — `cmd.exe` steers
+/// models toward removed/hanging tools like `wmic`.
+#[cfg(target_os = "windows")]
+fn windows_powershell_exe() -> &'static str {
+    use std::sync::OnceLock;
+    static SHELL: OnceLock<&'static str> = OnceLock::new();
+    SHELL.get_or_init(|| if pwsh_on_path() { "pwsh" } else { "powershell" })
+}
+
+/// Whether `pwsh.exe` (PowerShell 7+) is discoverable on PATH. Scans PATH
+/// directly to avoid pulling a `which` dependency.
+#[cfg(target_os = "windows")]
+fn pwsh_on_path() -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join("pwsh.exe").is_file())
+    })
+}
+
+/// Prefix a PowerShell command so its stdout is emitted as UTF-8. Windows
+/// PowerShell 5.1 defaults `[Console]::OutputEncoding` to the OEM code page, so
+/// without this CJK/non-ASCII output arrives mojibake'd when we read the pipe as
+/// UTF-8. pwsh 7 already defaults to UTF-8, so the prefix is a harmless no-op
+/// there. The `try/catch` guards the rare case where setting the encoding throws
+/// (no console) — the user command still runs.
+#[cfg(target_os = "windows")]
+fn wrap_ps_command(command: &str) -> String {
+    format!("try {{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; {command}")
+}
+
+/// Build the platform shell `Command` that runs `command`. Windows routes through
+/// PowerShell (`<pwsh|powershell> -NoLogo -NoProfile -NonInteractive -Command …`);
+/// every other platform uses `sh -c`. Callers still set cwd/stdio/env/creation
+/// flags/kill_on_drop themselves — this only owns the program + argument shape so
+/// the foreground and background paths cannot drift apart.
+fn build_shell_command(command: &str) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut c = Command::new(windows_powershell_exe());
+        // 用 .arg()(而非 cmd.exe 路径的 raw_arg):PowerShell 用标准 CommandLineToArgvW
+        // 解析自身参数,认 \" 转义。把整段脚本作为**单个带引号参数**传给 -Command,内部
+        // 引号才能原样还原(python -c "..." 不被拆散)。raw_arg 会让脚本裸拼到命令行,
+        // PowerShell 的 argv 分词会在 -Command 处理前吃掉内部引号 → 命令被拆坏。
+        c.arg("-NoLogo");
+        c.arg("-NoProfile");
+        c.arg("-NonInteractive");
+        c.arg("-Command");
+        c.arg(wrap_ps_command(command));
+        c
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut c = Command::new("sh");
+        c.args(["-c", command]);
+        c
+    }
+}
+
 pub async fn run_command(
     workspace: &NativeToolWorkspace,
     default_timeout_ms: u64,
@@ -427,23 +489,7 @@ async fn run_shell_command_background(
         .try_clone()
         .map_err(|err| format!("Failed to clone background log handle: {err}"))?;
 
-    let mut cmd = {
-        #[cfg(target_os = "windows")]
-        {
-            let mut c = Command::new("cmd");
-            // ponytail: raw_arg 而非 args(),绕开 Rust 对参数的 MSVC 转义。
-            // 否则命令里的内部 " 会被转成 \",cmd.exe 不认 → python -c "..." 之类全坏。
-            c.raw_arg("/C");
-            c.raw_arg(command);
-            c
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let mut c = Command::new("sh");
-            c.args(["-c", command]);
-            c
-        }
-    };
+    let mut cmd = build_shell_command(command);
     cmd.current_dir(cwd.as_path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(stdout_file))
@@ -677,23 +723,7 @@ async fn run_shell_command(
     timeout_ms: u64,
     state: Option<&AppState>,
 ) -> Result<CommandOutput, String> {
-    let mut cmd = {
-        #[cfg(target_os = "windows")]
-        {
-            let mut c = Command::new("cmd");
-            // ponytail: raw_arg 而非 args(),绕开 Rust 对参数的 MSVC 转义。
-            // 否则命令里的内部 " 会被转成 \",cmd.exe 不认 → python -c "..." 之类全坏。
-            c.raw_arg("/C");
-            c.raw_arg(command);
-            c
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let mut c = Command::new("sh");
-            c.args(["-c", command]);
-            c
-        }
-    };
+    let mut cmd = build_shell_command(command);
     cmd.current_dir(cwd)
         // stdin 必须为 null:coding-agent 的 shell 命令绝不能读交互终端的 stdin。
         // 否则子进程会继承父进程(TUI 的 pty)stdin,抢占/消费它 → TUI 输入线程 EOF → 会话中途退出。
@@ -964,7 +994,7 @@ mod tests {
         let workspace = NativeToolWorkspace::global(&[]);
         // A long-lived command so it is still running when we kill it.
         #[cfg(target_os = "windows")]
-        let long = "ping -n 30 127.0.0.1 > NUL";
+        let long = "Start-Sleep -Seconds 30";
         #[cfg(not(target_os = "windows"))]
         let long = "sleep 30";
         let started = run_command(
@@ -1171,9 +1201,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_run_command_preserves_embedded_quotes() {
-        // 回归:内部双引号必须原样到达目标程序。
-        // 旧实现 args(["/C", cmd]) 会把 " 转成 \",cmd.exe 不认 → python -c "..." 报
-        // "unterminated string literal"。raw_arg 修复后应原样通过。
+        // 回归:内部双引号必须原样到达目标程序。raw_arg(而非 args())绕开 MSVC 转义,
+        // 让 python -c "..." 的内部引号原样传到 PowerShell,不被转成 \"。
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let out = rt
             .block_on(run_shell_command(
@@ -1196,6 +1225,54 @@ mod tests {
             );
         }
     }
+
+    /// run_command must execute through PowerShell on Windows, not cmd.exe.
+    /// `Write-Output (1+1)` is a PowerShell-only construct — cmd.exe would fail
+    /// to parse it. Success proves we are on PowerShell.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_run_command_executes_via_powershell() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let out = rt
+            .block_on(run_shell_command(
+                "Write-Output (1+1)",
+                std::env::temp_dir(),
+                30_000,
+                None,
+            ))
+            .expect("spawn should succeed");
+        assert_eq!(out.status_code, Some(0), "exit != 0: {out:?}");
+        assert!(
+            out.stdout.contains('2'),
+            "expected PowerShell to evaluate (1+1)=2; stdout={:?} stderr={:?}",
+            out.stdout,
+            out.stderr
+        );
+    }
+
+    /// Non-ASCII stdout must decode as UTF-8. Windows PowerShell 5.1 defaults its
+    /// output encoding to the OEM code page; the UTF-8 prefix in wrap_ps_command
+    /// is what keeps CJK from arriving mojibake'd. Guards that fix.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_run_command_outputs_utf8() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let out = rt
+            .block_on(run_shell_command(
+                "Write-Output '你好'",
+                std::env::temp_dir(),
+                30_000,
+                None,
+            ))
+            .expect("spawn should succeed");
+        assert!(
+            out.stdout.contains("你好"),
+            "non-ASCII output should be UTF-8; got stdout={:?} stderr={:?}",
+            out.stdout,
+            out.stderr
+        );
+    }
+
 
     #[test]
     fn normalize_run_command_rejects_cd_with_spaces() {
