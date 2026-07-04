@@ -29,9 +29,12 @@ describe('theme color presets', () => {
   it('keeps light and dark preview colors for every theme', () => {
     expect(THEME_COLOR_PRESETS.every((preset) => preset.lightHex.startsWith('#'))).toBe(true)
     expect(THEME_COLOR_PRESETS.every((preset) => preset.darkHex.startsWith('#'))).toBe(true)
+    expect(THEME_COLOR_PRESETS.every((preset) => preset.lightAccentHex.startsWith('#'))).toBe(true)
+    expect(THEME_COLOR_PRESETS.every((preset) => preset.darkAccentHex.startsWith('#'))).toBe(true)
     expect(getThemeColorPreset('neutral').lightHex).toBe('#FFFFFF')
     expect(getThemeColorPreset('tokyonight').lightHex).toBe('#E1E2E7')
     expect(getThemeColorPreset('tokyonight').darkHex).toBe('#1A1B26')
-    expect(getThemeColorPreset('ayu').accentHex).toBe('#FFB454')
+    expect(getThemeColorPreset('ayu').lightAccentHex).toBe('#FF9940')
+    expect(getThemeColorPreset('ayu').darkAccentHex).toBe('#FFB454')
   })
 })

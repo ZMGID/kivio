@@ -665,6 +665,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const hasLoadedSettings = settings !== null
   const previewTheme = settings?.theme
   const previewThemeColor = settings?.themeColor
+  const previewThemeIsDark = hasLoadedSettings ? resolveThemePreviewIsDark(previewTheme) : false
   const chatTools = settings?.chatTools || defaultChatTools()
   const nativeBuiltinToolsEnabled = hasEnabledNativeBuiltinTool(chatTools.nativeTools)
   const skillRuntimeEnabled = hasEnabledSkillRuntime(chatTools.nativeTools)
@@ -2377,6 +2378,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     <div className="kv-theme-colors" role="radiogroup" aria-label={t.themeColor}>
                       {THEME_COLOR_PRESETS.map((preset: ThemeColorPreset) => {
                         const active = themeColor === preset.id
+                        const label = preset.labels[lang]
+                        const accentHex = previewThemeIsDark ? preset.darkAccentHex : preset.lightAccentHex
                         return (
                           <button
                             key={preset.id}
@@ -2385,8 +2388,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             onClick={() => updateSettings({ themeColor: preset.id })}
                             role="radio"
                             aria-checked={active}
-                            aria-label={preset.labels[lang]}
-                            title={`${preset.labels[lang]} ${preset.lightHex} / ${preset.darkHex}`}
+                            aria-label={label}
+                            title={label}
                             data-tauri-drag-region="false"
                           >
                             <span
@@ -2394,7 +2397,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                 background: `linear-gradient(135deg, ${preset.lightHex} 0%, ${preset.lightHex} 50%, ${preset.darkHex} 50%, ${preset.darkHex} 100%)`,
                               }}
                             >
-                              <i style={{ background: preset.accentHex }} />
+                              <i style={{ background: accentHex }} />
                             </span>
                           </button>
                         )
