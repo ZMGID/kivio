@@ -1711,7 +1711,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     if !matches!(settings.theme.as_str(), "system" | "light" | "dark") {
         settings.theme = default_theme();
     }
-    if !matches!(settings.theme_color.as_str(), "neutral" | "warm" | "cool") {
+    if !is_valid_theme_color(&settings.theme_color) {
         settings.theme_color = default_theme_color();
     }
     if settings.lens.message_order != "asc" && settings.lens.message_order != "desc" {
@@ -2307,6 +2307,24 @@ fn default_theme_color() -> String {
     "neutral".to_string()
 }
 
+fn is_valid_theme_color(value: &str) -> bool {
+    matches!(
+        value,
+        "neutral"
+            | "warm"
+            | "cool"
+            | "tokyonight"
+            | "everforest"
+            | "ayu"
+            | "catppuccin"
+            | "catppuccin-macchiato"
+            | "gruvbox"
+            | "kanagawa"
+            | "nord"
+            | "one-dark"
+    )
+}
+
 fn default_target_lang() -> String {
     "auto".to_string()
 }
@@ -2478,6 +2496,26 @@ mod tests {
         let s = sanitize_settings(s);
         assert_eq!(s.theme, "system");
         assert_eq!(s.theme_color, "neutral");
+    }
+
+    #[test]
+    fn sanitize_settings_preserves_editor_theme_pack_values() {
+        for theme_color in [
+            "tokyonight",
+            "everforest",
+            "ayu",
+            "catppuccin",
+            "catppuccin-macchiato",
+            "gruvbox",
+            "kanagawa",
+            "nord",
+            "one-dark",
+        ] {
+            let mut s = Settings::default();
+            s.theme_color = theme_color.to_string();
+            let s = sanitize_settings(s);
+            assert_eq!(s.theme_color, theme_color);
+        }
     }
 
     #[test]
