@@ -554,6 +554,7 @@ async fn call_skill_tool(
         &settings.chat_tools,
         &record.meta.id,
         &settings.email_accounts,
+        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
         &skill_name,
     ) {
         return Err(err);

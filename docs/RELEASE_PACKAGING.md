@@ -72,9 +72,18 @@ The final installed app must contain:
 - `skills/pdf/SKILL.md`
 - `skills/docx/SKILL.md`
 - `skills/xlsx/SKILL.md`
+- `skills/obsidian-markdown/SKILL.md` (+ `references/`)
+- `skills/obsidian-bases/SKILL.md` (+ `references/`)
+- `skills/json-canvas/SKILL.md` (+ `references/`)
+- `skills/obsidian-cli/SKILL.md`
 - Pyodide core runtime files
 - `python_stdlib.zip`
 - local Pyodide wheels for common document/data packages
+
+> The four `obsidian-*` / `json-canvas` skills (adapted from kepano/obsidian-skills, MIT —
+> see `resources/skills/NOTICE.md`) are plain markdown and do **not** require the Pyodide
+> runtime. They are gated at runtime on the Obsidian connector (a configured vault path),
+> so they only surface to the model once the user sets an Obsidian vault.
 
 ## Mandatory Python / Pyodide Offline Bundle
 

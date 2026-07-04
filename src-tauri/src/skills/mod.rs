@@ -48,6 +48,9 @@ pub fn chat_skills_list(
                     crate::settings::skill_connector_satisfied(
                         &meta.id,
                         &settings.email_accounts,
+                        crate::settings::obsidian_connector_configured(
+                            &settings.obsidian_vault_path,
+                        ),
                     )
                 })
                 .collect();
@@ -82,6 +85,7 @@ pub fn chat_skills_read(
         &settings.chat_tools,
         &skill_id,
         &settings.email_accounts,
+        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
         &skill_id,
     ) {
         return SkillReadResult {

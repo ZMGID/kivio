@@ -266,10 +266,18 @@ impl CliToolExecutor {
             .cloned()
             .ok_or_else(|| format!("Skill not found: {skill_name}"))?;
 
+        let (email_accounts, obsidian_vault_configured) = {
+            let settings = self.state.settings_read();
+            (
+                settings.email_accounts.clone(),
+                crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
+            )
+        };
         if let Some(err) = crate::settings::skill_global_unavailable_error(
             &self.chat_tools,
             &record.meta.id,
-            &self.state.settings_read().email_accounts,
+            &email_accounts,
+            obsidian_vault_configured,
             &skill_name,
         ) {
             return Err(err);

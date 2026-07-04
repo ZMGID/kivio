@@ -1326,17 +1326,37 @@ pub fn is_skill_enabled(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
 /// Bundled skill id for the email (Himalaya) connector — hidden until configured.
 pub const EMAIL_CONNECTOR_SKILL_ID: &str = "himalaya";
 
+/// Bundled skill ids for the Obsidian connector — hidden until a vault path is
+/// configured. Adapted from kepano/obsidian-skills (see resources/skills/NOTICE.md).
+pub const OBSIDIAN_CONNECTOR_SKILL_IDS: &[&str] = &[
+    "obsidian-markdown",
+    "obsidian-bases",
+    "json-canvas",
+    "obsidian-cli",
+];
+
 pub fn email_connector_configured(accounts: &[EmailAccountConfig]) -> bool {
     !accounts.is_empty()
 }
 
+/// The Obsidian connector is "configured" once a vault path is set.
+pub fn obsidian_connector_configured(vault_path: &str) -> bool {
+    !vault_path.trim().is_empty()
+}
+
 /// Connector-backed skills stay unavailable until their connector is configured.
-pub fn skill_connector_satisfied(skill_id: &str, email_accounts: &[EmailAccountConfig]) -> bool {
+pub fn skill_connector_satisfied(
+    skill_id: &str,
+    email_accounts: &[EmailAccountConfig],
+    obsidian_vault_configured: bool,
+) -> bool {
     if skill_id == EMAIL_CONNECTOR_SKILL_ID {
-        email_connector_configured(email_accounts)
-    } else {
-        true
+        return email_connector_configured(email_accounts);
     }
+    if OBSIDIAN_CONNECTOR_SKILL_IDS.contains(&skill_id) {
+        return obsidian_vault_configured;
+    }
+    true
 }
 
 /// Global skill gate: Settings enable list + connector prerequisites.
@@ -1344,8 +1364,10 @@ pub fn skill_globally_available(
     chat_tools: &ChatToolsConfig,
     skill_id: &str,
     email_accounts: &[EmailAccountConfig],
+    obsidian_vault_configured: bool,
 ) -> bool {
-    is_skill_enabled(chat_tools, skill_id) && skill_connector_satisfied(skill_id, email_accounts)
+    is_skill_enabled(chat_tools, skill_id)
+        && skill_connector_satisfied(skill_id, email_accounts, obsidian_vault_configured)
 }
 
 /// When [`skill_globally_available`] is false, returns a loop/UI-friendly error.
@@ -1353,14 +1375,20 @@ pub fn skill_global_unavailable_error(
     chat_tools: &ChatToolsConfig,
     skill_id: &str,
     email_accounts: &[EmailAccountConfig],
+    obsidian_vault_configured: bool,
     skill_name: &str,
 ) -> Option<String> {
     if !is_skill_enabled(chat_tools, skill_id) {
         return Some(format!("Skill is disabled in Settings: {skill_name}"));
     }
-    if !skill_connector_satisfied(skill_id, email_accounts) {
+    if !skill_connector_satisfied(skill_id, email_accounts, obsidian_vault_configured) {
+        if skill_id == EMAIL_CONNECTOR_SKILL_ID {
+            return Some(format!(
+                "Skill requires a configured email connector: {skill_name}"
+            ));
+        }
         return Some(format!(
-            "Skill requires a configured email connector: {skill_name}"
+            "Skill requires a configured Obsidian connector: {skill_name}"
         ));
     }
     None
@@ -3660,10 +3688,32 @@ mod tests {
             &chat_tools,
             EMAIL_CONNECTOR_SKILL_ID,
             &[],
+            false,
         ));
-        assert!(!skill_connector_satisfied(EMAIL_CONNECTOR_SKILL_ID, &[]));
+        assert!(!skill_connector_satisfied(EMAIL_CONNECTOR_SKILL_ID, &[], false));
         // pdf is not connector-gated
-        assert!(skill_globally_available(&chat_tools, "pdf", &[]));
+        assert!(skill_globally_available(&chat_tools, "pdf", &[], false));
+    }
+
+    #[test]
+    fn skill_globally_available_hides_obsidian_without_vault() {
+        let chat_tools = ChatToolsConfig::default();
+        for id in OBSIDIAN_CONNECTOR_SKILL_IDS {
+            // No vault configured → each Obsidian skill is unavailable.
+            assert!(
+                !skill_globally_available(&chat_tools, id, &[], false),
+                "{id} should be hidden without a vault"
+            );
+            assert!(!skill_connector_satisfied(id, &[], false));
+            // Vault configured → available (email state is irrelevant here).
+            assert!(
+                skill_globally_available(&chat_tools, id, &[], true),
+                "{id} should be available with a vault"
+            );
+            assert!(skill_connector_satisfied(id, &[], true));
+        }
+        // Non-connector skills are unaffected by vault state.
+        assert!(skill_globally_available(&chat_tools, "pdf", &[], false));
     }
 
     #[test]
@@ -3678,6 +3728,7 @@ mod tests {
                     email: "a@example.com".into(),
                     ..Default::default()
                 }],
+                false,
                 "himalaya",
             )
             .as_deref(),
@@ -3686,9 +3737,38 @@ mod tests {
 
         chat_tools.disabled_skill_ids.clear();
         assert_eq!(
-            skill_global_unavailable_error(&chat_tools, EMAIL_CONNECTOR_SKILL_ID, &[], "himalaya")
-                .as_deref(),
+            skill_global_unavailable_error(
+                &chat_tools,
+                EMAIL_CONNECTOR_SKILL_ID,
+                &[],
+                false,
+                "himalaya"
+            )
+            .as_deref(),
             Some("Skill requires a configured email connector: himalaya")
+        );
+
+        // Obsidian skill without a vault → connector error; with a vault → None.
+        assert_eq!(
+            skill_global_unavailable_error(
+                &chat_tools,
+                "obsidian-markdown",
+                &[],
+                false,
+                "obsidian-markdown"
+            )
+            .as_deref(),
+            Some("Skill requires a configured Obsidian connector: obsidian-markdown")
+        );
+        assert_eq!(
+            skill_global_unavailable_error(
+                &chat_tools,
+                "obsidian-markdown",
+                &[],
+                true,
+                "obsidian-markdown"
+            ),
+            None
         );
     }
 }

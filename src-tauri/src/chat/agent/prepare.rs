@@ -113,8 +113,14 @@ pub fn skill_allowed_for_conversation(
     assistant_snapshot: Option<&ChatAssistantSnapshot>,
     skill_id: &str,
     email_accounts: &[EmailAccountConfig],
+    obsidian_vault_configured: bool,
 ) -> bool {
-    if !crate::settings::skill_globally_available(chat_tools, skill_id, email_accounts) {
+    if !crate::settings::skill_globally_available(
+        chat_tools,
+        skill_id,
+        email_accounts,
+        obsidian_vault_configured,
+    ) {
         return false;
     }
     match assistant_snapshot {
@@ -388,9 +394,25 @@ pub fn build_chat_system_prompt_with_segments(
         .filter(|value| !value.is_empty())
     {
         let text = if language.starts_with("zh") {
-            format!("Obsidian 笔记库路径：{path}")
+            format!(
+                "Obsidian 笔记库路径：{path}\n\
+                 这是一个本地 Obsidian markdown 笔记库，请用原生文件工具操作：\
+                 list_dir 浏览目录（条目含修改时间，可找最近修改的笔记）、\
+                 glob_files 按名找 *.md、search_files 按内容/关键词搜索、read_file 读笔记；\
+                 笔记之间用 [[wikilink]] 双链互相引用。\n\
+                 需要 Obsidian 语法或格式细节时，可激活 obsidian-markdown / obsidian-bases / \
+                 json-canvas / obsidian-cli skill。"
+            )
         } else {
-            format!("Obsidian vault path: {path}")
+            format!(
+                "Obsidian vault path: {path}\n\
+                 This is a local Obsidian markdown vault. Use the native file tools: \
+                 list_dir to browse (entries include modified time), glob_files to find *.md by name, \
+                 search_files to search by content/keyword, read_file to read a note; \
+                 notes cross-reference each other via [[wikilink]].\n\
+                 For Obsidian syntax or file-format details, activate the obsidian-markdown / \
+                 obsidian-bases / json-canvas / obsidian-cli skills."
+            )
         };
         append_context_segment(
             &mut prompt,
@@ -537,12 +559,16 @@ pub fn build_chat_system_prompt_with_segments(
         || active_skill_id.is_some()
         || chat_tools.skill_fallback_mode != "legacy_full_body";
     if include_catalog {
+        let obsidian_vault_configured = obsidian_vault_path
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
         let catalog = skills::format_catalog(registry, active_skill_id, tools_available, |skill_id| {
             skill_allowed_for_conversation(
                 chat_tools,
                 assistant_snapshot,
                 skill_id,
                 email_accounts,
+                obsidian_vault_configured,
             )
         });
         if !catalog.is_empty() {
@@ -1173,6 +1199,7 @@ mod tests {
             Some(&assistant),
             "doc",
             &[],
+            false,
         ));
         // 不在白名单内的技能被拒。
         assert!(!skill_allowed_for_conversation(
@@ -1180,9 +1207,10 @@ mod tests {
             Some(&assistant),
             "pdf",
             &[],
+            false,
         ));
         // 无助手 = 不限(只看全局 enable)。
-        assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf", &[]));
+        assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf", &[], false));
     }
 
     #[test]
@@ -1193,6 +1221,7 @@ mod tests {
             None,
             crate::settings::EMAIL_CONNECTOR_SKILL_ID,
             &[],
+            false,
         ));
         let account = crate::settings::EmailAccountConfig {
             id: "a".to_string(),
@@ -1212,6 +1241,28 @@ mod tests {
             None,
             crate::settings::EMAIL_CONNECTOR_SKILL_ID,
             std::slice::from_ref(&account),
+            false,
+        ));
+    }
+
+    #[test]
+    fn skill_allowed_hides_obsidian_skill_without_vault() {
+        let chat_tools = crate::settings::ChatToolsConfig::default();
+        // No vault → Obsidian skills are unavailable at the conversation level.
+        assert!(!skill_allowed_for_conversation(
+            &chat_tools,
+            None,
+            "obsidian-markdown",
+            &[],
+            false,
+        ));
+        // Vault configured → available.
+        assert!(skill_allowed_for_conversation(
+            &chat_tools,
+            None,
+            "obsidian-markdown",
+            &[],
+            true,
         ));
     }
 

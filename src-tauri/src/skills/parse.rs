@@ -175,8 +175,26 @@ pub fn parse_skill_record(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_allowed_tools, parse_list_value, split_frontmatter};
+    use super::{parse_allowed_tools, parse_list_value, parse_skill_markdown, split_frontmatter};
     use std::collections::HashMap;
+
+    /// The vendored Obsidian skills must parse cleanly and their ids must match
+    /// `OBSIDIAN_CONNECTOR_SKILL_IDS`, or the connector gate silently stops
+    /// covering a skill (it would then always be visible, or never).
+    #[test]
+    fn vendored_obsidian_skills_parse_and_ids_match_gate() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/skills");
+        for id in crate::settings::OBSIDIAN_CONNECTOR_SKILL_IDS {
+            let skill_md = root.join(id).join("SKILL.md");
+            let raw = std::fs::read_to_string(&skill_md)
+                .unwrap_or_else(|e| panic!("read {}: {e}", skill_md.display()));
+            let parsed = parse_skill_markdown(&raw, "builtin", None, Vec::new())
+                .unwrap_or_else(|e| panic!("parse {}: {e}", skill_md.display()));
+            assert_eq!(&parsed.meta.id, id, "id mismatch for {}", skill_md.display());
+            assert!(!parsed.meta.description.trim().is_empty());
+            assert!(!parsed.body.trim().is_empty());
+        }
+    }
 
     #[test]
     fn split_frontmatter_returns_raw_when_missing_delimiters() {
