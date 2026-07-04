@@ -3085,12 +3085,14 @@ body {
 }
 
 .kv-theme-colors {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(6, 28px);
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
+  justify-items: center;
   gap: 7px;
-  max-width: 320px;
+  width: max-content;
+  max-width: 100%;
 }
 .kv-theme-colors button {
   width: 28px;
