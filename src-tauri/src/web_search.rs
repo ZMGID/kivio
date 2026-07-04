@@ -250,6 +250,12 @@ fn parse_exa_mcp_results(content: &str, max_results: usize) -> Vec<WebSearchResu
             return results;
         }
     }
+    // Exa MCP 的 web_search_exa 实际返回一段格式化文本：多条结果以单独一行 `---` 分隔，
+    // 每条含 `Title:` / `URL:` / `Published:` / `Author:` / `Highlights:` 头 + 正文。
+    let text_results = parse_exa_mcp_text_blocks(trimmed, max_results);
+    if !text_results.is_empty() {
+        return text_results;
+    }
     vec![WebSearchResult {
         title: "Exa MCP result".to_string(),
         url: "https://mcp.exa.ai/mcp".to_string(),
@@ -257,6 +263,57 @@ fn parse_exa_mcp_results(content: &str, max_results: usize) -> Vec<WebSearchResu
         published_date: None,
         score: None,
     }]
+}
+
+/// 解析 Exa MCP 的文本结果块（见 parse_exa_mcp_results 说明）。
+fn parse_exa_mcp_text_blocks(text: &str, max_results: usize) -> Vec<WebSearchResult> {
+    let mut results: Vec<WebSearchResult> = Vec::new();
+    let lines: Vec<&str> = text.split('\n').collect();
+    // 以单独一行的 `---`（或更长的连字符）分块。
+    for block in lines.split(|line| {
+        let t = line.trim();
+        t.len() >= 3 && t.chars().all(|c| c == '-')
+    }) {
+        if results.len() >= max_results {
+            break;
+        }
+        let mut title = String::new();
+        let mut url = String::new();
+        let mut published: Option<String> = None;
+        let mut body: Vec<String> = Vec::new();
+        let mut in_highlights = false;
+        for &line in block {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("Title:") {
+                title = rest.trim().to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("URL:") {
+                url = rest.trim().to_string();
+            } else if let Some(rest) = trimmed.strip_prefix("Published:") {
+                let v = rest.trim();
+                if !v.is_empty() && v != "N/A" {
+                    published = Some(v.to_string());
+                }
+            } else if trimmed.starts_with("Author:") {
+                // 忽略作者行
+            } else if trimmed.starts_with("Highlights:") {
+                in_highlights = true;
+            } else if in_highlights && trimmed != "..." && !trimmed.is_empty() {
+                body.push(trimmed.to_string());
+            }
+        }
+        if url.is_empty() {
+            continue;
+        }
+        let content: String = body.join("\n").chars().take(1500).collect();
+        results.push(WebSearchResult {
+            title,
+            url,
+            content: content.trim().to_string(),
+            published_date: published,
+            score: None,
+        });
+    }
+    results
 }
 
 async fn search_tavily(
@@ -704,6 +761,21 @@ mod tests {
         let results = parse_exa_mcp_results("plain text answer", 5);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].content, "plain text answer");
+    }
+
+    #[test]
+    fn exa_mcp_parses_formatted_text_blocks() {
+        // Exa MCP 的真实返回形态：Title/URL/Published/Highlights + `---` 分隔。
+        let raw = "Title: First Result\nURL: https://example.com/a\nPublished: 2026-07-03T00:57:48.000Z\nAuthor: Someone\nHighlights:\nFirst Result\n...\nBody snippet one.\n\n---\n\nTitle: Second Result\nURL: https://example.com/b\nPublished: N/A\nAuthor: N/A\nHighlights:\nBody snippet two.";
+        let results = parse_exa_mcp_results(raw, 5);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].url, "https://example.com/a");
+        assert_eq!(results[0].title, "First Result");
+        assert_eq!(results[0].published_date.as_deref(), Some("2026-07-03T00:57:48.000Z"));
+        assert!(results[0].content.contains("Body snippet one."));
+        assert_eq!(results[1].url, "https://example.com/b");
+        // Published: N/A 不应写入
+        assert_eq!(results[1].published_date, None);
     }
 
     #[test]
