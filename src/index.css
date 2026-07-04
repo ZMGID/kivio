@@ -4354,6 +4354,27 @@ body {
   flex-shrink: 0;
 }
 
+.onboarding-footer-error {
+  max-width: 680px;
+  margin: 0 auto 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #dc2626;
+}
+
+.dark .onboarding-footer-error {
+  color: #f87171;
+}
+
+.onboarding-footer-error-detail {
+  opacity: 0.75;
+  font-size: 11px;
+  word-break: break-word;
+}
+
 .onboarding-footer-inner {
   display: flex;
   align-items: center;

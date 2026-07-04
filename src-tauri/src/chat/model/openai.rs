@@ -416,9 +416,10 @@ impl OpenAiChatProvider<'_> {
             );
             body["tool_choice"] = Value::String("auto".to_string());
         }
-        // 会话级缓存键（对齐 opencode/AI SDK）：同一对话每轮同值。OpenAI 官方参数是
-        // `prompt_cache_key`（提升缓存路由命中）；聚合器/代理普遍认 AI SDK 风格的
-        // `promptCacheKey`。两个都发——多余字段会被各家安静忽略，无副作用。
+        // 会话级缓存键（对齐 opencode/AI SDK）：同一对话每轮同值，提升缓存路由命中。
+        // 只发 OpenAI 官方 snake_case 参数 `prompt_cache_key`——**不**发 AI SDK 风格的
+        // 驼峰 `promptCacheKey`：真实 OpenAI / Azure / 校验型代理对未知 body 字段会返回
+        // 400（"Unrecognized request argument"），这正是逼出原生 gemini 适配器的同类问题。
         if let Some(conversation_id) = request
             .metadata
             .conversation_id
@@ -426,7 +427,6 @@ impl OpenAiChatProvider<'_> {
             .filter(|id| !id.is_empty())
         {
             body["prompt_cache_key"] = Value::String(conversation_id.to_string());
-            body["promptCacheKey"] = Value::String(conversation_id.to_string());
         }
         if !request.options.thinking_enabled
             && utils::provider_supports_thinking_field(&self.provider.base_url)
@@ -975,10 +975,11 @@ mod tests {
             },
         };
 
-        // 流式 + 有会话 id + 有工具：缓存键（双写法）、stream_options、tool_choice 齐全。
+        // 流式 + 有会话 id + 有工具：只发标准 snake_case 缓存键（不发驼峰 promptCacheKey，
+        // 避免严格端点对未知字段 400）、stream_options、tool_choice 齐全。
         let body = adapter.request_body(&request, true);
         assert_eq!(body["prompt_cache_key"], "conv_abc");
-        assert_eq!(body["promptCacheKey"], "conv_abc");
+        assert!(body.get("promptCacheKey").is_none());
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["tool_choice"], "auto");
 

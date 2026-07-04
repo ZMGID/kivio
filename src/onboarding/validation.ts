@@ -19,6 +19,7 @@ export function isProviderModelBindingUsable(
 
   const provider = settings.providers.find((item) => item.id === id)
   if (!provider || provider.enabled === false) return false
+  if (!provider.baseUrl || provider.baseUrl.trim() === '') return false
   if (!provider.apiKeys.some((key) => key.trim() !== '')) return false
   if (provider.enabledModels.length === 0) return false
   return provider.enabledModels.includes(modelName)

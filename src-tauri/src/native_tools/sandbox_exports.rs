@@ -25,7 +25,9 @@ const MAX_EXPORT_FILES_PER_RUN: usize = 16;
 /// Per-conversation cap on regular files kept in the persistent delivery dir
 /// `~/Kivio/outputs/<conversation>/`. After each write, the oldest files beyond
 /// this many are evicted by mtime so deliverables can't grow unbounded.
-const DELIVERY_DIR_MAX_FILES: usize = 15;
+/// Must be ≥ [`MAX_EXPORT_FILES_PER_RUN`], otherwise a single run emitting the
+/// max number of artifacts would have its own oldest deliverables pruned away.
+const DELIVERY_DIR_MAX_FILES: usize = MAX_EXPORT_FILES_PER_RUN;
 
 /// Best-effort: after a file lands in the delivery dir, keep only the newest
 /// [`DELIVERY_DIR_MAX_FILES`] **regular files** directly inside `dir` (subdirs
@@ -752,7 +754,7 @@ mod tests {
     fn prune_delivery_dir_keeps_newest_and_drops_oldest() {
         let conv = format!("conv_prune_{}", uuid::Uuid::new_v4().simple());
         let dir = ensure_delivery_dir(&conv).expect("dir");
-        // Write 16 files; oldest (index 0) must be evicted down to 15.
+        // Write DELIVERY_DIR_MAX_FILES + 1 files; the oldest (index 0) must be evicted.
         let paths = write_files_with_increasing_mtime(&dir, DELIVERY_DIR_MAX_FILES + 1);
 
         prune_delivery_dir(&dir);
@@ -762,7 +764,7 @@ mod tests {
             .flatten()
             .filter(|e| e.path().is_file())
             .count();
-        assert_eq!(remaining, DELIVERY_DIR_MAX_FILES, "exactly 15 files remain");
+        assert_eq!(remaining, DELIVERY_DIR_MAX_FILES, "cap-many files remain");
         assert!(!paths[0].exists(), "oldest file was deleted");
         assert!(
             paths[DELIVERY_DIR_MAX_FILES].exists(),

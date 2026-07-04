@@ -116,6 +116,18 @@ describe('onboarding validation', () => {
     expect(canCompleteOnboarding(settings)).toBe(false)
   })
 
+  it('rejects bindings that point to providers without a base URL', () => {
+    const settings = baseSettings({
+      ...configuredBindings,
+      providers: [{
+        ...testProvider,
+        baseUrl: '   ',
+      }],
+    })
+    expect(isProviderModelBindingUsable(settings, 'p1', 'gpt-4o')).toBe(false)
+    expect(canCompleteOnboarding(settings)).toBe(false)
+  })
+
   it('detects configured web search keys', () => {
     const settings = baseSettings({
       lens: {

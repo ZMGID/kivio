@@ -399,7 +399,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
               <Input
                 type="password"
                 value={provider.apiKeys[0] || ''}
-                onChange={(value) => updateProvider({ apiKeys: value.trim() ? [value] : [] })}
+                onChange={(value) => updateProvider({ apiKeys: value.trim() ? [value.trim()] : [] })}
                 placeholder="sk-..."
                 mono
               />

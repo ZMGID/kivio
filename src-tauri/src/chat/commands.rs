@@ -4212,8 +4212,10 @@ async fn try_auto_compress_context_after_update(
             .await
             {
                 Ok(refreshed) => {
+                    // 不清 warning：compute_context_state 已保留 compact_conversation 设好的
+                    // decay_warning_for(count)（R-4 多次压缩准确度提示）；此处若置 None 会把它抹掉，
+                    // 与另一条自动压缩路径（见上方 auto-compress 分支）行为不一致。
                     conversation.context_state = refreshed;
-                    conversation.context_state.warning = None;
                 }
                 Err(err) => {
                     eprintln!("Context usage estimate failed after auto compression: {err}");
@@ -4506,12 +4508,17 @@ fn group_answer_excluded_from_context(conversation: &Conversation, message: &Cha
         .get(group_id)
         .map(String::as_str)
         .or_else(|| {
+            // 无显式选择时，优先保留该组第一条「非错误」assistant 进上下文，跳过
+            // stream_outcome == "error" 的失败臂——否则失败臂的错误文案会作为上一轮
+            // 答案回灌给模型。全组皆 error（罕见）时才退回顺序第一条。
+            let in_group = |m: &&ChatMessage| {
+                m.role == "assistant" && m.group_id.as_deref() == Some(group_id)
+            };
             conversation
                 .messages
                 .iter()
-                .find(|m| {
-                    m.role == "assistant" && m.group_id.as_deref() == Some(group_id)
-                })
+                .find(|m| in_group(m) && m.stream_outcome.as_deref() != Some("error"))
+                .or_else(|| conversation.messages.iter().find(in_group))
                 .map(|m| m.id.as_str())
         });
     selected != Some(message.id.as_str())
@@ -8268,6 +8275,32 @@ mod tests {
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(serialized.contains("answer two"));
         assert!(!serialized.contains("answer three"));
+    }
+
+    #[test]
+    fn build_chat_api_messages_default_skips_errored_arm() {
+        // 首臂报错（stream_outcome=error）+ 次臂正常，且无显式 group_selections：
+        // 默认应保留首个「非错误」臂、跳过错误臂文案，避免把错误回灌给模型（F2 修复）。
+        let mut a1 = grouped_assistant("msg_a1", "arm one failed", "grp_1", 2);
+        a1.stream_outcome = Some("error".to_string());
+        let a2 = grouped_assistant("msg_a2", "arm two ok", "grp_1", 3);
+        let messages = vec![
+            test_chat_message("msg_user", "user", "compare these", 1),
+            a1,
+            a2,
+        ];
+        let conversation = test_conversation_with_messages(messages);
+        let built = build_chat_api_messages("system", &conversation, Some(0), None, &[])
+            .expect("build");
+        let serialized = serde_json::to_string(&built).unwrap();
+        assert!(
+            !serialized.contains("arm one failed"),
+            "errored arm must be excluded from context"
+        );
+        assert!(
+            serialized.contains("arm two ok"),
+            "first non-errored arm is retained"
+        );
     }
 
     #[test]

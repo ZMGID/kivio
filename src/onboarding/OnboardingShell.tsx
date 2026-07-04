@@ -29,6 +29,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [stepIndex, setStepIndex] = useState(0)
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false)
@@ -43,8 +44,12 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
     setLoadError(null)
     try {
       const loaded = await api.getSettings()
-      // 首次运行无需让用户选语言：按系统语言自动设定，欢迎页起即本地化。
-      setSettings({ ...loaded, settingsLanguage: detectSystemLang() })
+      // 首次运行按系统语言自动设定界面语言（欢迎页起即本地化）；但若用户此前已选过语言
+      // （如重跑引导的老用户），沿用其选择，不要用系统 locale 覆盖。
+      setSettings({
+        ...loaded,
+        settingsLanguage: loaded.settingsLanguage || detectSystemLang(),
+      })
     } catch (err) {
       console.error('Failed to load settings for onboarding:', err)
       setLoadError(err instanceof Error ? err.message : String(err))
@@ -80,6 +85,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
   const persistSettings = useCallback(async (status: 'completed' | 'skipped') => {
     if (!settings) return false
     setSaving(true)
+    setSaveError(null)
     try {
       const saved = await api.saveSettings({
         ...settings,
@@ -89,7 +95,10 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
       onSettingsChange?.()
       return true
     } catch (err) {
+      // save_settings 在热键注册失败时会 Err 并回滚——必须把错误呈现给用户，
+      // 否则用户点 Finish/Skip 无反应、卡在页面上不知所以。
       console.error('Failed to save onboarding settings:', err)
+      setSaveError(err instanceof Error ? err.message : String(err))
       return false
     } finally {
       setSaving(false)
@@ -116,10 +125,18 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
   }, [onSettingsChange, onSkip])
 
   const handleFinish = useCallback(async () => {
-    if (!settings || !canCompleteOnboarding(settings)) return
-    const ok = await persistSettings('completed')
-    if (ok) onComplete()
-  }, [onComplete, persistSettings, settings])
+    if (!settings) return
+    // 正常完成需通过供应商校验；若用户显式「继续（跳过校验）」，则以 skipped 状态完成——
+    // 供应商未验证，标 skipped 比 completed 诚实，且同样不会再次弹引导。避免 bypass 后
+    // Finish 永久禁用、只能走 Skip 的死路。
+    if (canCompleteOnboarding(settings)) {
+      const ok = await persistSettings('completed')
+      if (ok) onComplete()
+    } else if (providerBypass) {
+      const ok = await persistSettings('skipped')
+      if (ok) onComplete()
+    }
+  }, [onComplete, persistSettings, providerBypass, settings])
 
   const goNext = () => {
     if (stepIndex >= ONBOARDING_STEPS.length - 1) return
@@ -265,6 +282,12 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
         </div>
 
         <div className="onboarding-footer" data-tauri-drag-region="false">
+          {saveError ? (
+            <div className="onboarding-footer-error" role="alert">
+              <span>{t.onboardingSaveError}</span>
+              <span className="onboarding-footer-error-detail">{saveError}</span>
+            </div>
+          ) : null}
           <div className="onboarding-footer-inner">
             {stepIndex > 0 ? (
               <button
@@ -295,7 +318,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
                 type="button"
                 className="kv-btn primary"
                 onClick={handlePrimary}
-                disabled={saving || (stepId !== 'done' && !canGoNext) || (stepId === 'done' && !canCompleteOnboarding(settings))}
+                disabled={saving || (stepId !== 'done' && !canGoNext) || (stepId === 'done' && !canCompleteOnboarding(settings) && !providerBypass)}
                 data-tauri-drag-region="false"
               >
                 {primaryLabel}

@@ -3044,6 +3044,7 @@ mod tests {
         assert!(s.default_models.image_generation.provider_id.is_empty());
     }
 
+    #[test]
     fn effective_side_models_auto_prefer_session_over_global_chat_default() {
         let mut settings = Settings::default();
         settings.providers.push(ModelProvider {
