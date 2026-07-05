@@ -253,11 +253,30 @@ pub(crate) fn chat_get_conversation(
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
+    reconcile_conversation_orphan_tool_segments(&mut conversation);
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,
         "conversation": conversation,
     }))
+}
+
+/// 读取时对账(只读、不写盘):对每条 assistant 消息补齐孤立工具分段为中断态记录,
+/// 使**存量**坏会话(改动前落库、含「有分段无记录」的消息)打开即正常显示,而不必等
+/// 该消息被重新落库自愈。必须在 [`strip_transcripts_for_frontend`] **之前**跑——它会清空
+/// 已完成消息的 `api_messages`,而这里要靠 `api_messages` 回捞被删工具的 name/arguments。
+/// 中断草稿的 `api_messages` 不被剥,所以最常见的中断场景仍能拿到真名。
+fn reconcile_conversation_orphan_tool_segments(conversation: &mut Conversation) {
+    for message in conversation.messages.iter_mut() {
+        if message.role != "assistant" {
+            continue;
+        }
+        reconcile_orphan_tool_segments(
+            &mut message.tool_calls,
+            &message.segments,
+            &message.api_messages,
+        );
+    }
 }
 
 /// 剥离发给前端的 Conversation 副本里两份转录：`api_messages`（OpenAI 线格式）和
@@ -2579,6 +2598,96 @@ fn direct_image_generation_prompt(
 /// 多答组的列标识：(group_id, provider_id, model)。单模型为 None（字段写 None）。
 type AssistantGroupMeta = (String, String, String);
 
+/// 反向对账:给「有工具分段但无对应记录」的孤立 `tool_call_id` 合成一条中断态
+/// (`Cancelled`)占位记录,追加进 `tool_calls`。
+///
+/// 场景:工具分段在 planning 阶段(解析出调用即)创建并流式推送,记录在 execution
+/// 阶段(工具执行时)创建。若一轮在两者之间被中断(网关掐流/400/取消/超时),落库消息
+/// 就有分段无记录 → 前端渲染「工具记录缺失」。`normalize_assistant_segments` 只补
+/// 「有记录没分段」的正向;此函数补反向,消除困惑呈现,并保留「模型确实发起过该工具」
+/// 的痕迹。能从 `api_messages`(OpenAI 线格式 assistant `tool_calls[]`)按 id 回捞
+/// name/arguments 就用真值,捞不到留空(前端兜底显示「工具调用」)。对无孤立分段的
+/// 消息零副作用(空转)。
+fn reconcile_orphan_tool_segments(
+    tool_calls: &mut Vec<ToolCallRecord>,
+    segments: &[ChatMessageSegment],
+    api_messages: &[Value],
+) {
+    use std::collections::HashSet;
+    let record_ids: HashSet<&str> = tool_calls.iter().map(|record| record.id.as_str()).collect();
+
+    // 孤立工具分段的 (id, round),去重保序。
+    let mut orphan_ids: Vec<(String, u32)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for segment in segments {
+        if segment.kind != ChatMessageSegmentKind::Tool {
+            continue;
+        }
+        let Some(id) = segment.tool_call_id.as_deref() else {
+            continue;
+        };
+        if id.is_empty() || record_ids.contains(id) || !seen.insert(id.to_string()) {
+            continue;
+        }
+        orphan_ids.push((id.to_string(), segment.round.unwrap_or(0)));
+    }
+    if orphan_ids.is_empty() {
+        return;
+    }
+
+    let now = chrono::Local::now().timestamp();
+    for (id, round) in orphan_ids {
+        let (name, arguments) = tool_call_meta_from_api_messages(api_messages, &id);
+        tool_calls.push(ToolCallRecord {
+            id,
+            name,
+            source: String::new(),
+            server_id: None,
+            arguments,
+            status: ToolCallStatus::Cancelled,
+            result_preview: None,
+            error: Some("工具调用未完成（会话中断）".to_string()),
+            duration_ms: Some(0),
+            started_at: Some(now),
+            completed_at: Some(now),
+            round,
+            sensitive: false,
+            artifacts: Vec::new(),
+            trace_id: None,
+            span_id: None,
+            structured_content: None,
+        });
+    }
+}
+
+/// 从 `api_messages`(OpenAI 线格式)里按 `tool_call_id` 回捞工具调用的
+/// `(name, arguments)`。扫每条消息的 `tool_calls[]`,匹配 `id` 命中即返回;未命中
+/// 返回 `(空, 空)`。
+fn tool_call_meta_from_api_messages(api_messages: &[Value], id: &str) -> (String, String) {
+    for message in api_messages {
+        let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+            continue;
+        };
+        for call in calls {
+            if call.get("id").and_then(Value::as_str) == Some(id) {
+                let function = call.get("function");
+                let name = function
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let arguments = function
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                return (name, arguments);
+            }
+        }
+    }
+    (String::new(), String::new())
+}
+
 /// 构造一条 assistant `ChatMessage`（含 segment 归一、model_messages 计算）。
 /// `push_assistant_message`（落盘路径）与多模型臂（返回消息交协调者落盘）共用此函数，
 /// 保证两条路径生成的消息形态一致。`group_meta = Some(..)` 时写入 group_id/provider_id/model。
@@ -2588,7 +2697,7 @@ fn build_assistant_message(
     content: String,
     reasoning: Option<String>,
     artifacts: Vec<ChatToolArtifact>,
-    tool_calls: Vec<ToolCallRecord>,
+    mut tool_calls: Vec<ToolCallRecord>,
     api_messages: Vec<Value>,
     segments: Vec<ChatMessageSegment>,
     active_skill_id: Option<&str>,
@@ -2598,6 +2707,9 @@ fn build_assistant_message(
     agent_plan: Option<AgentPlanState>,
     group_meta: Option<AssistantGroupMeta>,
 ) -> ChatMessage {
+    // 反向对账:补齐「有工具分段无记录」的孤立调用为中断态记录，避免前端显示
+    // 「工具记录缺失」。在 normalize（正向补段）之前跑，使新记录与既有分段自然对上。
+    reconcile_orphan_tool_segments(&mut tool_calls, &segments, &api_messages);
     let segments =
         normalize_assistant_segments(&content, reasoning.as_deref(), &tool_calls, segments);
     let stored_content = content_from_segments(&segments).unwrap_or_else(|| content.clone());
@@ -2800,13 +2912,16 @@ fn persist_partial_assistant_snapshot(
     }
     let mut conversation = load_conversation(app, conversation_id)?;
     let segments = segments.to_vec();
+    // 中断草稿是「永不完成」run 的最终存档，最易出孤立工具分段——同样反向对账补齐。
+    let mut tool_records = tool_records.to_vec();
+    reconcile_orphan_tool_segments(&mut tool_records, &segments, api_messages);
     let content = content_from_segments(&segments).unwrap_or_default();
     let reasoning = reasoning_from_segments(&segments);
     let model_messages = assistant_model_messages_for_storage(
         &content,
         reasoning.as_deref(),
         api_messages,
-        tool_records,
+        &tool_records,
     );
     let draft = ChatMessage {
         id: message_id.to_string(),
@@ -2815,7 +2930,7 @@ fn persist_partial_assistant_snapshot(
         attachments: Vec::new(),
         reasoning,
         artifacts: Vec::new(),
-        tool_calls: tool_records.to_vec(),
+        tool_calls: tool_records,
         segments,
         agent_plan: None,
         api_messages: api_messages.to_vec(),
@@ -6914,6 +7029,72 @@ mod tests {
             span_id: None,
             structured_content: None,
         }
+    }
+
+    fn tool_segment(order: u32, tool_call_id: &str, round: u32) -> ChatMessageSegment {
+        ChatMessageSegment {
+            id: format!("seg_{order}_tool_{tool_call_id}"),
+            kind: ChatMessageSegmentKind::Tool,
+            phase: ChatMessageSegmentPhase::ToolLoop,
+            order,
+            step_number: Some(1),
+            round: Some(round),
+            text: None,
+            tool_call_id: Some(tool_call_id.to_string()),
+        }
+    }
+
+    #[test]
+    fn reconcile_orphan_tool_segments_synthesizes_cancelled_record_with_recovered_meta() {
+        let mut tool_calls = vec![test_tool_record("call_ok", "native", 1, ToolCallStatus::Success)];
+        let segments = vec![
+            tool_segment(1, "call_ok", 1),
+            tool_segment(2, "fc_call_function_4agzr50pp9go_1", 2),
+        ];
+        let api_messages = vec![serde_json::json!({
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "fc_call_function_4agzr50pp9go_1",
+                "type": "function",
+                "function": { "name": "run_python", "arguments": "{\"code\":\"1\"}" }
+            }]
+        })];
+
+        reconcile_orphan_tool_segments(&mut tool_calls, &segments, &api_messages);
+
+        assert_eq!(tool_calls.len(), 2, "orphan segment should get a synthesized record");
+        let synthesized = tool_calls
+            .iter()
+            .find(|r| r.id == "fc_call_function_4agzr50pp9go_1")
+            .expect("synthesized record present");
+        assert!(matches!(synthesized.status, ToolCallStatus::Cancelled));
+        assert_eq!(synthesized.name, "run_python", "name recovered from api_messages");
+        assert_eq!(synthesized.arguments, "{\"code\":\"1\"}");
+        assert_eq!(synthesized.round, 2);
+        assert!(synthesized.error.is_some());
+    }
+
+    #[test]
+    fn reconcile_orphan_tool_segments_falls_back_to_empty_name_without_api_meta() {
+        let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
+        let segments = vec![tool_segment(1, "orphan_no_meta", 1)];
+
+        reconcile_orphan_tool_segments(&mut tool_calls, &segments, &[]);
+
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "orphan_no_meta");
+        assert!(tool_calls[0].name.is_empty(), "no api meta → empty name fallback");
+        assert!(matches!(tool_calls[0].status, ToolCallStatus::Cancelled));
+    }
+
+    #[test]
+    fn reconcile_orphan_tool_segments_noop_when_all_segments_have_records() {
+        let mut tool_calls = vec![test_tool_record("call_ok", "native", 1, ToolCallStatus::Success)];
+        let segments = vec![tool_segment(1, "call_ok", 1)];
+
+        reconcile_orphan_tool_segments(&mut tool_calls, &segments, &[]);
+
+        assert_eq!(tool_calls.len(), 1, "no orphan → tool_calls unchanged");
     }
 
     #[test]
