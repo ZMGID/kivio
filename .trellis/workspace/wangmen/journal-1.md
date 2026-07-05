@@ -308,3 +308,42 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: 上下文压缩正确性修复
+
+**Date**: 2026-07-06
+**Task**: 上下文压缩正确性修复
+**Branch**: `main`
+
+### Summary
+
+审查并修复 compaction.rs 五类缺陷：L2压缩合并注入摘要(防跨轮静默丢上下文)、token估算对齐真实发送内容(图片base64/reasoning/展开工具转录)、落盘摘要过滤多答排除臂、取消≠压缩失败、整洁项。code-review 后补齐 serialize 多模态泄漏 + estimate 去克隆。GUI probe 实测两条压缩路径。已合并 main。基线对比零回归(main 14失败→本次同集，另修好1个既有坏测试)。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9df98de` | (see git log) |
+| `68686e2` | (see git log) |
+| `37149f1` | (see git log) |
+| `bd6c5a6` | (see git log) |
+| `93b216f` | (see git log) |
+| `6e81e8c` | (see git log) |
+| `b67c4af` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

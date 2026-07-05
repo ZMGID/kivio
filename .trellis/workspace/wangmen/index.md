@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
-- **Last Active**: 2026-07-03
+- **Total Sessions**: 10
+- **Last Active**: 2026-07-06
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~310 | Active |
+| `journal-1.md` | ~349 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-07-06 | 上下文压缩正确性修复 | `9df98de`, `68686e2`, `37149f1`, `bd6c5a6`, `93b216f`, `6e81e8c`, `b67c4af` | `main` |
 | 9 | 2026-07-03 | Gemini 原生接口协议适配（generateContent peer adapter） | `06a6f19` | `main` |
 | 8 | 2026-07-03 | Chat GUI 无头测试通道（文件监听 probe） | `e3491e7` | `main` |
 | 7 | 2026-07-03 | 原生工具集精简 MVP：24→20（旧名归一化别名） | `7fbd076` | `main` |
