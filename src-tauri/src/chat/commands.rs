@@ -2296,7 +2296,14 @@ async fn complete_assistant_reply_inner(
     }
     // L2 压缩对齐落盘路径：run 结束时把 L2 产出的 summary 写回 context_state.summary +
     // compression_count（不再只 push boundary）。质量兜底已在 compaction 核心拦截，此处直接采用。
-    if let Some(summary) = result.compaction_summary.clone() {
+    if let Some(mut summary) = result.compaction_summary.clone() {
+        // L2 产出的 summary.source_message_ids 为空（运行时侧拿不到完整 UI id 列表）——
+        // 在此按 source_until_message_id 从 conversation 累积（含旧 summary 覆盖范围），
+        // 与落盘路径 compact_conversation_inner 口径一致。必须在替换 summary **之前**读旧 S1。
+        summary.source_message_ids = crate::chat::agent::compaction::accumulate_source_ids(
+            conversation,
+            &summary.source_until_message_id,
+        );
         conversation.context_state.last_compressed_at = Some(summary.created_at);
         conversation.context_state.compressed_message_count = summary.source_message_ids.len();
         conversation.context_state.compression_count = conversation
@@ -3625,7 +3632,11 @@ fn summary_boundary_index(conversation: &Conversation) -> Option<usize> {
 fn summary_message(summary: &ConversationContextSummary) -> Value {
     serde_json::json!({
         "role": "system",
-        "content": format!("Previous conversation summary:\n{}", summary.content.trim()),
+        "content": format!(
+            "{}\n{}",
+            crate::chat::agent::compaction::PERSISTED_SUMMARY_PREFIX,
+            summary.content.trim()
+        ),
     })
 }
 

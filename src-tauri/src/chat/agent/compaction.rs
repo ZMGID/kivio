@@ -65,6 +65,18 @@ const HEAD_BUDGET_FRACTION: f32 = 0.4;
 /// 上一份摘要，把它作为 `previous_summary` 让模型合并更新，而非从头再摘。
 const SUMMARY_MARKER_PREFIX: &str = "[context summary]";
 
+/// `build_chat_api_messages`（commands.rs）从落盘 `context_state.summary` 注入的
+/// **system** 消息前缀。生成方（`commands.rs::summary_message`）与识别方
+/// （`extract_previous_summary`）**共用同一常量**，防止格式漂移——历史上二者不一致
+/// 曾导致 L2 压缩认不出注入的旧摘要，链式摘要退化为「只摘本轮 old_segment」，
+/// run 结束整体覆盖旧 summary，跨轮静默丢掉早期上下文。
+pub(crate) const PERSISTED_SUMMARY_PREFIX: &str = "Previous conversation summary:";
+
+/// `replace_with_summary` 插入的摘要锚点后紧跟的固定 assistant ack 文案。抽成常量供
+/// 插入方与 `summarize_history` 的 head 剔除方共用——否则链式重摘时上一轮的 ack 会作为
+/// `[Assistant]:` 噪声行进入摘要输入。
+const SUMMARY_ACK_TEXT: &str = "已了解早前对话的摘要，继续当前任务。";
+
 /// 摘要模型调用的 system prompt（R6，逐字对齐 Claude Code 的 `qH1`/`AU2` 流程）。
 const SUMMARY_SYSTEM_PROMPT: &str =
     "You are a helpful AI assistant tasked with summarizing conversations.";
@@ -405,11 +417,24 @@ fn select_recent_by_tokens(
     )
 }
 
-/// 从历史里探测上一份摘要（anchored 链式摘要，R8）：`replace_with_summary` 插入的摘要消息是一条
-/// content 以 `SUMMARY_MARKER_PREFIX` 开头的 user 消息。找到则返回其摘要正文（去掉前缀引导语），
-/// 供作为 `previous_summary` 让模型合并更新；并把它从将进 head 的旧段里剔除（不重复进 head）。
-fn extract_previous_summary(old_segment: &[Value]) -> Option<String> {
-    old_segment.iter().find_map(|message| {
+/// `extract_previous_summary` 的返回：上一份摘要正文 + 它的来源，供 `summarize_history`
+/// 决定如何从压缩后视图里剔除它（锚点在 old_segment→head，注入在 system 前缀→prefix）。
+struct PreviousSummary {
+    text: String,
+    from_injected: bool,
+}
+
+/// 探测上一份摘要（anchored 链式摘要，R8），供作为 `previous_summary` 让模型合并更新。
+/// 两种形态，**锚点优先**（它是同一 run 内更晚的 L2 产物，已含合并结果）：
+/// - **锚点摘要**：`replace_with_summary` 插入 old_segment 的一条 content 以
+///   `SUMMARY_MARKER_PREFIX` 开头的 **user** 消息；
+/// - **注入摘要**：`build_chat_api_messages` 从落盘 summary 注入 system 前缀的一条 content 以
+///   `PERSISTED_SUMMARY_PREFIX` 开头的 **system** 消息。
+///
+/// 无锚点时才回退到注入摘要——否则同 run 第二次 L2 压缩会回退到已过期的落盘 S1。
+fn extract_previous_summary(system_prefix: &[Value], old_segment: &[Value]) -> Option<PreviousSummary> {
+    // 锚点优先：old_segment 里的 user + SUMMARY_MARKER_PREFIX。
+    let anchor = old_segment.iter().find_map(|message| {
         if message.get("role").and_then(Value::as_str) != Some("user") {
             return None;
         }
@@ -418,14 +443,67 @@ fn extract_previous_summary(old_segment: &[Value]) -> Option<String> {
         if !trimmed.starts_with(SUMMARY_MARKER_PREFIX) {
             return None;
         }
-        // 取摘要正文：摘要消息形如 "[context summary] <引导语>：\n<summary>"。
-        // 找第一个换行后的内容；无换行则退回整条（去前缀）。
-        let body = trimmed
-            .split_once('\n')
-            .map(|(_, rest)| rest)
-            .unwrap_or(trimmed);
-        Some(body.trim().to_string())
+        Some(summary_body_after_first_line(trimmed))
+    });
+    if let Some(text) = anchor {
+        return Some(PreviousSummary {
+            text,
+            from_injected: false,
+        });
+    }
+
+    // 回退：system 前缀里的 system + PERSISTED_SUMMARY_PREFIX（注入摘要）。
+    system_prefix.iter().find_map(|message| {
+        if message.get("role").and_then(Value::as_str) != Some("system") {
+            return None;
+        }
+        let content = message.get("content").and_then(Value::as_str)?;
+        let trimmed = content.trim_start();
+        if !trimmed.starts_with(PERSISTED_SUMMARY_PREFIX) {
+            return None;
+        }
+        Some(PreviousSummary {
+            text: summary_body_after_first_line(trimmed),
+            from_injected: true,
+        })
     })
+}
+
+/// 取摘要正文：摘要消息形如 "<前缀引导语>：\n<summary>"。找第一个换行后的内容；
+/// 无换行则退回整条 trim。
+fn summary_body_after_first_line(trimmed: &str) -> String {
+    trimmed
+        .split_once('\n')
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed)
+        .trim()
+        .to_string()
+}
+
+/// 是否为 `replace_with_summary` 插入的锚点摘要（user + `SUMMARY_MARKER_PREFIX`）。
+fn is_anchor_summary(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("user")
+        && message
+            .get("content")
+            .and_then(Value::as_str)
+            .map(|c| c.trim_start().starts_with(SUMMARY_MARKER_PREFIX))
+            .unwrap_or(false)
+}
+
+/// 是否为锚点摘要配对的固定 ack（assistant + `SUMMARY_ACK_TEXT`）。
+fn is_summary_ack(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("assistant")
+        && message.get("content").and_then(Value::as_str).map(str::trim) == Some(SUMMARY_ACK_TEXT)
+}
+
+/// 是否为 `build_chat_api_messages` 注入的落盘摘要（system + `PERSISTED_SUMMARY_PREFIX`）。
+fn is_injected_summary(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("system")
+        && message
+            .get("content")
+            .and_then(Value::as_str)
+            .map(|c| c.trim_start().starts_with(PERSISTED_SUMMARY_PREFIX))
+            .unwrap_or(false)
 }
 
 /// 用摘要替换旧段，返回新的消息序列：系统前缀 + summary(user)/ack(assistant) 对 + 尾段。
@@ -441,7 +519,7 @@ fn replace_with_summary(system_prefix: Vec<Value>, summary: &str, recent: Vec<Va
     }));
     out.push(json!({
         "role": "assistant",
-        "content": "已了解早前对话的摘要，继续当前任务。",
+        "content": SUMMARY_ACK_TEXT,
     }));
     out.extend(recent);
     out
@@ -891,22 +969,33 @@ async fn summarize_history(
         return None;
     }
 
-    // anchored 链式摘要（R8）：若旧段含上一份摘要，作为 previous_summary 合并更新，且不重复进 head。
-    let previous_summary = extract_previous_summary(&old_segment);
+    // anchored 链式摘要（R8）：若历史含上一份摘要（old_segment 锚点 或 system 前缀注入），
+    // 作为 previous_summary 合并更新，且不重复进摘要输入 / 压缩后视图。
+    let previous_summary = extract_previous_summary(&system_prefix, &old_segment);
+
+    // head：从 old_segment 剔除锚点摘要及其配对 ack（避免上一轮摘要/ack 作为噪声再进摘要输入）。
     let head: Vec<Value> = if previous_summary.is_some() {
         old_segment
             .iter()
-            .filter(|m| {
-                !(m.get("role").and_then(Value::as_str) == Some("user")
-                    && m.get("content")
-                        .and_then(Value::as_str)
-                        .map(|c| c.trim_start().starts_with(SUMMARY_MARKER_PREFIX))
-                        .unwrap_or(false))
-            })
+            .filter(|m| !is_anchor_summary(m) && !is_summary_ack(m))
             .cloned()
             .collect()
     } else {
         old_segment.clone()
+    };
+
+    // 注入摘要来自 system 前缀——它已并入新摘要，从压缩后视图的 system 前缀里剔除，避免重复。
+    let system_prefix: Vec<Value> = if previous_summary
+        .as_ref()
+        .map(|p| p.from_injected)
+        .unwrap_or(false)
+    {
+        system_prefix
+            .into_iter()
+            .filter(|m| !is_injected_summary(m))
+            .collect()
+    } else {
+        system_prefix
     };
 
     // 序列化旧段 head（未裁剪），统一交由 `compact_with_summary_model` 做预算封顶 + 流式调用 + 质量兜底。
@@ -916,7 +1005,7 @@ async fn summarize_history(
         provider,
         model,
         &serialized_head,
-        previous_summary.as_deref(),
+        previous_summary.as_ref().map(|p| p.text.as_str()),
         focus,
         window,
         config_max_output_tokens,
@@ -1164,6 +1253,42 @@ fn manual_fallback_split(
     Some(last_user - 1)
 }
 
+/// 累积 `source_message_ids`：上一份未过期 summary 的 ids ∪ 其 boundary 之后至 `until_id`
+///（含）的全部消息 id（**按原始序列**，含多答排除臂）。落盘路径 `compact_conversation_inner`
+/// 与 L2 run 结束写回（commands.rs）**共用**，防止两处累积口径分叉。
+/// 找不到 `until_id` → 仅返回旧 ids（防御，不 panic）。
+pub(crate) fn accumulate_source_ids(conversation: &Conversation, until_id: &str) -> Vec<String> {
+    let prev = conversation
+        .context_state
+        .summary
+        .as_ref()
+        .filter(|s| !s.stale);
+    let mut ids = prev
+        .map(|s| s.source_message_ids.clone())
+        .unwrap_or_default();
+    let summary_start = prev
+        .and_then(|s| {
+            conversation
+                .messages
+                .iter()
+                .position(|m| m.id == s.source_until_message_id)
+        })
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let Some(until_idx) = conversation.messages.iter().position(|m| m.id == until_id) else {
+        return ids;
+    };
+    if until_idx < summary_start {
+        return ids;
+    }
+    ids.extend(
+        conversation.messages[summary_start..=until_idx]
+            .iter()
+            .map(|m| m.id.clone()),
+    );
+    ids
+}
+
 /// 落盘压缩统一入口（手动 `chat_compress_context` / 自动发送前 / L2 run 结束三处共用）。
 /// 按 token 尾窗切 old_segment / recent_tail，序列化 old_segment（含完整工具转录，工具结果截 2000 字），
 /// 调统一核心 `compact_with_summary_model`（Claude 9 段 prompt + 流式 + 质量兜底），写回
@@ -1283,15 +1408,12 @@ async fn compact_conversation_inner(
         + estimate_tokens(&serialized_head);
     let token_estimate_after = estimate_tokens(&summary_text);
 
-    let mut source_message_ids = conversation
-        .context_state
-        .summary
-        .as_ref()
-        .filter(|s| !s.stale)
-        .map(|s| s.source_message_ids.clone())
-        .unwrap_or_default();
-    source_message_ids.extend(old_segment.iter().map(|m| m.id.clone()));
+    // 累积覆盖范围的全部消息 id（含多答排除臂——它们同样被 boundary 覆盖、不再 replay）。
+    // 用共享 helper 而非 `old_segment.iter()`：批次 C 后 old_segment 会过滤掉排除臂，
+    // 但 source_message_ids 必须按原始序列收集，两处口径由 helper 统一。
+    let source_message_ids = accumulate_source_ids(conversation, &source_until_message_id);
     let compressed_message_count = source_message_ids.len();
+
 
     conversation.context_state.summary = Some(ConversationContextSummary {
         id: format!("ctxsum_{}", uuid::Uuid::new_v4()),
@@ -1424,6 +1546,33 @@ mod tests {
             provider_id: None,
             model: None,
             timestamp: 0,
+        }
+    }
+
+    fn test_conversation(messages: Vec<ChatMessage>) -> Conversation {
+        Conversation {
+            id: "conv_test".to_string(),
+            title: "t".to_string(),
+            provider_id: "p".to_string(),
+            model: "m".to_string(),
+            messages,
+            agent_runtime: Default::default(),
+            active_skill_id: None,
+            assistant_id: None,
+            assistant_snapshot: None,
+            created_at: 0,
+            updated_at: 0,
+            pinned: false,
+            folder: None,
+            project_id: None,
+            set_id: None,
+            context_state: Default::default(),
+            agent_todo_state: Default::default(),
+            agent_plan_state: Default::default(),
+            knowledge_base_ids: Vec::new(),
+            thinking_level: None,
+            reply_models: Vec::new(),
+            group_selections: Default::default(),
         }
     }
 
@@ -1891,14 +2040,115 @@ mod tests {
     fn extract_previous_summary_detects_anchored_marker() {
         let old = vec![
             json!({ "role": "user", "content": format!("{SUMMARY_MARKER_PREFIX} 引导语：\n1. Primary Request: build X") }),
-            json!({ "role": "assistant", "content": "已了解" }),
+            json!({ "role": "assistant", "content": SUMMARY_ACK_TEXT }),
             json!({ "role": "user", "content": "next question" }),
         ];
-        let previous = extract_previous_summary(&old).expect("prior summary detected");
-        assert!(previous.contains("Primary Request: build X"));
+        let previous = extract_previous_summary(&[], &old).expect("prior summary detected");
+        assert!(previous.text.contains("Primary Request: build X"));
+        assert!(!previous.from_injected, "anchor is not an injected summary");
         // No marker present → None.
         let fresh = vec![json!({ "role": "user", "content": "just a question" })];
-        assert!(extract_previous_summary(&fresh).is_none());
+        assert!(extract_previous_summary(&[], &fresh).is_none());
+    }
+
+    #[test]
+    fn extract_previous_summary_detects_injected_system_summary() {
+        // 落盘 summary 被 build_chat_api_messages 注入为 system 前缀消息（PERSISTED_SUMMARY_PREFIX）。
+        let system_prefix = vec![
+            json!({ "role": "system", "content": "you are a helpful assistant" }),
+            json!({
+                "role": "system",
+                "content": format!("{PERSISTED_SUMMARY_PREFIX}\n1. Primary Request: earlier goal")
+            }),
+        ];
+        let old_segment = vec![json!({ "role": "user", "content": "later question" })];
+        let previous =
+            extract_previous_summary(&system_prefix, &old_segment).expect("injected summary detected");
+        assert!(previous.text.contains("Primary Request: earlier goal"));
+        assert!(previous.from_injected, "must be flagged as injected for prefix stripping");
+    }
+
+    #[test]
+    fn extract_previous_summary_prefers_anchor_over_injected() {
+        // 同 run 内既有注入摘要（system 前缀，过期 S1）又有锚点摘要（old_segment，本轮更新）
+        // → 取锚点，避免回退到已过期的落盘 summary。
+        let system_prefix = vec![json!({
+            "role": "system",
+            "content": format!("{PERSISTED_SUMMARY_PREFIX}\nSTALE injected summary")
+        })];
+        let old_segment = vec![
+            json!({ "role": "user", "content": format!("{SUMMARY_MARKER_PREFIX} 引导语：\nFRESH anchor summary") }),
+            json!({ "role": "assistant", "content": SUMMARY_ACK_TEXT }),
+        ];
+        let previous =
+            extract_previous_summary(&system_prefix, &old_segment).expect("summary detected");
+        assert!(previous.text.contains("FRESH anchor summary"));
+        assert!(!previous.text.contains("STALE"));
+        assert!(!previous.from_injected);
+    }
+
+    #[test]
+    fn injected_summary_stripped_from_view_and_head() {
+        // 注入摘要识别后：head 序列化不含其正文，压缩后视图的 system 前缀不再含注入消息。
+        let injected = json!({
+            "role": "system",
+            "content": format!("{PERSISTED_SUMMARY_PREFIX}\nEARLIER_SUMMARY_BODY")
+        });
+        let system_prefix = vec![json!({ "role": "system", "content": "sys" }), injected];
+        assert!(is_injected_summary(&system_prefix[1]));
+        // 剔除后前缀只剩真正的 system prompt。
+        let stripped: Vec<Value> = system_prefix
+            .iter()
+            .filter(|m| !is_injected_summary(m))
+            .cloned()
+            .collect();
+        assert_eq!(stripped.len(), 1);
+        assert_eq!(stripped[0]["content"], "sys");
+    }
+
+    #[test]
+    fn accumulate_source_ids_unions_previous_and_new_range() {
+        use crate::chat::types::ConversationContextState;
+        let messages: Vec<ChatMessage> = ["m0", "m1", "m2", "m3", "m4"]
+            .iter()
+            .map(|id| chat_msg(id, "user", "x"))
+            .collect();
+        let mut conversation = test_conversation(messages);
+        // 已有 S1 覆盖 m0..=m1（source_until = m1，ids = [m0, m1]）。
+        conversation.context_state = ConversationContextState {
+            summary: Some(ConversationContextSummary {
+                id: "ctxsum_prev".to_string(),
+                content: "prev".to_string(),
+                source_message_ids: vec!["m0".to_string(), "m1".to_string()],
+                source_until_message_id: "m1".to_string(),
+                token_estimate_before: 0,
+                token_estimate_after: 0,
+                created_at: 0,
+                provider_id: "p".to_string(),
+                model: "m".to_string(),
+                stale: false,
+            }),
+            ..Default::default()
+        };
+        // 新压缩覆盖到 m3 → ids = S1.ids ∪ (m2, m3)。
+        let ids = accumulate_source_ids(&conversation, "m3");
+        assert_eq!(ids, vec!["m0", "m1", "m2", "m3"]);
+        // until_id 未找到 → 仅旧 ids。
+        assert_eq!(
+            accumulate_source_ids(&conversation, "nope"),
+            vec!["m0", "m1"]
+        );
+    }
+
+    #[test]
+    fn accumulate_source_ids_no_previous_summary() {
+        let messages: Vec<ChatMessage> = ["a", "b", "c"]
+            .iter()
+            .map(|id| chat_msg(id, "user", "x"))
+            .collect();
+        let conversation = test_conversation(messages);
+        // 无旧 summary → 从头累积到 until_id。
+        assert_eq!(accumulate_source_ids(&conversation, "b"), vec!["a", "b"]);
     }
 
     #[test]
