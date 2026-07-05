@@ -45,7 +45,7 @@ const SUMMARY_OUTPUT_TOKENS: u32 = 8_192;
 /// 取保守的 0.5 而非更高比例的理由：
 /// - 模型窗口元数据常偏乐观（实测标称 128k 的模型真实可用 ~100k）；
 /// - Responses API 等有额外 token 计数开销（工具 schema、system、role 标注）；
-/// - 近期 8k 窗口本就在摘要请求之外逐字保留，预算只需覆盖旧段摘要本身。
+/// - 近期窗口本就在摘要请求之外逐字保留（`RECENT_KEEP_TOKENS` ≈ 20k），预算只需覆盖旧段摘要本身。
 ///
 /// 0.5×window 给足余量，保证摘要请求恒定放得进窗口。
 const SUMMARY_INPUT_BUDGET_RATIO: f32 = 0.5;
@@ -366,7 +366,9 @@ fn take_chars_tail(text: &str, n: usize) -> String {
 ///
 /// 在 token 预算上工作，但裁剪以字符为粒度：用 `estimate_tokens` 的 ASCII≈4 chars/token
 /// 启发式把 token 预算换算成字符预算（保守按 4 倍），裁剪后再用 `estimate_tokens` 校验，
-/// 若仍超预算则迭代收紧——硬保证返回结果 `estimate_tokens <= budget_tokens`（R2 兜底）。
+/// 若仍超预算则迭代收紧——返回结果 `estimate_tokens <= budget_tokens`（R2 兜底），
+/// 唯一例外是 `budget_tokens` 小于省略标记自身 token 数的不可达极端（`char_budget <= 1` 退出，
+/// 保留头尾各 <1 字符 + 标记）；实际 `head_budget` 有 `summary_input_budget/4` 下限，触达不到。
 fn clip_serialized_to_budget(serialized: &str, budget_tokens: usize) -> String {
     if estimate_tokens(serialized) <= budget_tokens {
         return serialized.to_string();
@@ -666,8 +668,8 @@ fn summary_output_tokens(config_max: u32) -> u32 {
 /// 成功返回压缩后的完整消息序列；空摘要 / 失败 / 无可摘要旧段时返回 None（调用方据此降级）。
 ///
 /// 自动路径（`maybe_compact_send_view`）与手动路径（`force_compact`）都走这里，避免重复摘要逻辑。
-/// `keep_tokens`：受保护近期窗口大小——自动路径传 `min(RECENT_KEEP_TOKENS, budget)`（窗口比 8000 还小的
-/// 模型上，近期窗口不能大过压缩预算，否则压完仍超窗），手动路径传 `RECENT_KEEP_TOKENS`。
+/// `keep_tokens`：受保护近期窗口大小——自动路径传 `min(RECENT_KEEP_TOKENS, budget)`（窗口比
+/// `RECENT_KEEP_TOKENS` 还小的模型上，近期窗口不能大过压缩预算，否则压完仍超窗），手动路径传 `RECENT_KEEP_TOKENS`。
 /// `window`：模型上下文窗口（tokens）——据此把**摘要请求自身的输入**封顶到
 /// `window * SUMMARY_INPUT_BUDGET_RATIO`（R1/R2），保证摘要调用绝不超窗（"用超窗请求救超窗"的根因）。
 /// `window == 0`（未知）时用 `SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS` 兜底。
@@ -1960,9 +1962,10 @@ mod tests {
 
     #[test]
     fn summary_quality_guard_rejects_degraded_vs_previous() {
-        // 旧 summary 达标（300 字），新 summary 仅 50 字 < 30%×300=90 → Degraded。
-        let previous = "p".repeat(300);
-        let degraded = "n".repeat(50);
+        // 新 summary 必须先过 TooShort 闸（≥ MIN_SUMMARY_CHARS=200）才可能命中 Degraded：
+        // 旧 summary 1000 字达标，新 summary 250 字（≥200 但 < 30%×1000=300）→ Degraded。
+        let previous = "p".repeat(1_000);
+        let degraded = "n".repeat(250);
         assert_eq!(
             summary_quality_guard(&degraded, Some(&previous)),
             SummaryQuality::Degraded
@@ -2311,6 +2314,26 @@ mod tests {
     }
 
     #[test]
+    fn chained_summary_head_excludes_anchor_and_ack() {
+        // 缺陷 5.2 / AC5.1：链式重摘时，上一轮的锚点摘要 user 及其配对 ack assistant
+        // 都要从摘要输入 head 剔除（同 summarize_history 的 filter），只留真正的早前消息。
+        let old = vec![
+            json!({ "role": "user", "content": format!("{SUMMARY_MARKER_PREFIX} 引导语：\nPREVIOUS_SUMMARY_BODY") }),
+            json!({ "role": "assistant", "content": SUMMARY_ACK_TEXT }),
+            json!({ "role": "user", "content": "REAL_EARLIER_MESSAGE" }),
+        ];
+        let head: Vec<Value> = old
+            .iter()
+            .filter(|m| !is_anchor_summary(m) && !is_summary_ack(m))
+            .cloned()
+            .collect();
+        let serialized = serialize_for_summary(&head);
+        assert!(!serialized.contains("PREVIOUS_SUMMARY_BODY"), "old anchor dropped");
+        assert!(!serialized.contains(SUMMARY_ACK_TEXT), "paired ack dropped");
+        assert!(serialized.contains("REAL_EARLIER_MESSAGE"), "real message kept");
+    }
+
+    #[test]
     fn extract_previous_summary_prefers_anchor_over_injected() {
         // 同 run 内既有注入摘要（system 前缀，过期 S1）又有锚点摘要（old_segment，本轮更新）
         // → 取锚点，避免回退到已过期的落盘 summary。
@@ -2580,7 +2603,8 @@ mod tests {
     }
 
     #[test]
-    fn summary_output_tokens_caps_at_4096() {
+    fn summary_output_tokens_respects_model_cap() {
+        // 大 config_max → 封顶到 SUMMARY_OUTPUT_TOKENS；小 config_max → 保留 min() 语义。
         assert_eq!(summary_output_tokens(100_000), SUMMARY_OUTPUT_TOKENS);
         assert_eq!(summary_output_tokens(1_000), 1_000);
     }
