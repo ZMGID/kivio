@@ -120,6 +120,14 @@ export const ConversationList = memo(function ConversationList({
           const isGenerating = generatingConversationIds.has(conv.id)
           const isRenaming = renamingId === conv.id
           const folderLabel = showFolderLabel ? conversationFolderLabel(conv, projects, sets) : ''
+          // 分支对话：把「（分支）」后缀从可截断的标题里拆出，做成不缩的固定标签，
+          // 避免侧栏窄宽时被省略号吃掉（forked_from 字段判定，不依赖标题文字）。
+          const isFork = Boolean(conv.forked_from ?? conv.forkedFrom)
+          const FORK_SUFFIX = '（分支）'
+          const displayTitle =
+            isFork && conv.title.endsWith(FORK_SUFFIX)
+              ? conv.title.slice(0, -FORK_SUFFIX.length)
+              : conv.title
 
           if (isRenaming) {
             return (
@@ -174,7 +182,15 @@ export const ConversationList = memo(function ConversationList({
                 title={isGenerating ? `${conv.title}（正在生成…）` : conv.title}
               >
                 <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="block min-w-0 flex-1 truncate">{conv.title}</span>
+                  <span className="block min-w-0 flex-1 truncate">{displayTitle}</span>
+                  {isFork && (
+                    <span
+                      className="shrink-0 text-[11px] font-normal text-neutral-400 dark:text-neutral-500"
+                      title="分叉自其它对话"
+                    >
+                      （分支）
+                    </span>
+                  )}
                   {folderLabel && (
                     <span
                       className="max-w-[96px] shrink-0 truncate text-[11px] font-normal text-neutral-400 dark:text-neutral-500"

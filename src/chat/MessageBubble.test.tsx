@@ -488,3 +488,39 @@ describe('MessageBubble 用户消息编辑并重新生成', () => {
     expect(screen.queryByRole('button', { name: '编辑并重新生成' })).not.toBeInTheDocument()
   })
 })
+
+describe('MessageBubble 建分支', () => {
+  const userMessage: ChatMessage = {
+    id: 'msg-user-fork',
+    role: 'user',
+    content: '用户问题',
+    timestamp: 1,
+  }
+  const assistantMessage: ChatMessage = {
+    id: 'msg-asst-fork',
+    role: 'assistant',
+    content: '助手回答',
+    timestamp: 2,
+  }
+
+  it('用户消息点分支按钮调用 onForkMessage(id)', async () => {
+    const onForkMessage = vi.fn().mockResolvedValue(undefined)
+    render(<MessageBubble message={userMessage} onForkMessage={onForkMessage} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '建分支' }))
+    expect(onForkMessage).toHaveBeenCalledWith('msg-user-fork')
+  })
+
+  it('助手消息点分支按钮调用 onForkMessage(id)', async () => {
+    const onForkMessage = vi.fn().mockResolvedValue(undefined)
+    render(<MessageBubble message={assistantMessage} onForkMessage={onForkMessage} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '建分支' }))
+    expect(onForkMessage).toHaveBeenCalledWith('msg-asst-fork')
+  })
+
+  it('无 onForkMessage 时用户消息不渲染分支按钮', () => {
+    render(<MessageBubble message={userMessage} />)
+    expect(screen.queryByRole('button', { name: '建分支' })).not.toBeInTheDocument()
+  })
+})

@@ -46,7 +46,7 @@ use super::storage::{
 use super::{
     AgentPlanState, AgentTodoState, Attachment, ChatAssistant, ChatMessage, ChatMessageSegment,
     ChatMessageSegmentKind, ChatMessageSegmentPhase, ContextUsageSegment, Conversation,
-    ConversationContextState, ConversationContextSummary, CompactionBoundaryRecord, ToolCallRecord, ToolCallStatus,
+    ConversationContextState, ConversationContextSummary, CompactionBoundaryRecord, ForkOrigin, ToolCallRecord, ToolCallStatus,
 };
 
 const DIRECT_IMAGE_GENERATION_PENDING: &str = "[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]";
@@ -464,6 +464,7 @@ pub(crate) fn create_chat_conversation_internal(
                 thinking_level: None,
                 reply_models: Vec::new(),
                 group_selections: std::collections::HashMap::new(),
+                forked_from: None,
                 agent_runtime: settings.chat.default_agent_runtime.clone(),
             };
 
@@ -800,6 +801,7 @@ pub(crate) fn chat_create_builder_conversation(
         thinking_level: None,
         reply_models: Vec::new(),
         group_selections: std::collections::HashMap::new(),
+        forked_from: None,
         agent_runtime: crate::chat::AgentRuntimeConfig::default(),
     };
     save_conversation(&app, &conversation)?;
@@ -6216,6 +6218,169 @@ pub(crate) async fn chat_delete_message(
     }))
 }
 
+/// 组装分叉分支的消息前缀（纯函数，便于单测）：
+/// - 取 `messages[0..=anchor_idx]`（含锚点）。
+/// - 若锚点属于某多模型多答组（`group_id = Some(g)`，决策 Q2）：只保留锚点那一列，
+///   移除前缀内其余同组兄弟列（组内更晚的列已被切片排除），并把锚点的 `group_id` 置 None
+///   转为普通单答，使新对话该轮成为干净的线性单答。
+/// - 保留原 message id（跨对话无需唯一，`group_selections` 引用因此仍有效）。
+fn build_fork_messages(messages: &[ChatMessage], anchor_idx: usize) -> Vec<ChatMessage> {
+    let anchor_id = messages[anchor_idx].id.clone();
+    let anchor_group = messages[anchor_idx].group_id.clone();
+    let mut out: Vec<ChatMessage> = messages[..=anchor_idx].to_vec();
+
+    if let Some(group) = anchor_group {
+        // 丢弃同组的其它兄弟列，仅留锚点那条。
+        out.retain(|m| m.group_id.as_deref() != Some(group.as_str()) || m.id == anchor_id);
+        // 锚点转普通单答。
+        if let Some(anchor) = out.iter_mut().find(|m| m.id == anchor_id) {
+            anchor.group_id = None;
+        }
+    }
+
+    out
+}
+
+/// 分叉成新对话（方案 B）：把源对话某消息及其之前的消息复制进一个全新对话，之后独立继续。
+/// 纯复制 + 打开，不自动发送（决策 Q1）。新对话继承源的会话级配置、深拷被引用的附件/图片
+/// artifact，并记录 `forked_from` 供 UI 面包屑回跳。源对话完全只读、不受影响。
+#[tauri::command]
+pub(crate) fn chat_fork_conversation(
+    app: AppHandle,
+    conversation_id: String,
+    message_id: String,
+) -> Result<serde_json::Value, String> {
+    let source = load_conversation(&app, &conversation_id)?;
+    let anchor_idx = find_message_index(&source, &message_id)?;
+
+    let now = chrono::Local::now().timestamp();
+    let new_id = format!("conv_{}", Uuid::new_v4());
+    let messages = build_fork_messages(&source.messages, anchor_idx);
+
+    // 深拷被复制消息引用的附件 / 图片 artifact 文件到新对话目录（裸文件名同名拷贝，路径保持有效）。
+    // 缺文件容错跳过（记 warning，不阻断分叉）。沙箱导出的生成文件（~/Kivio/outputs/<id>/）不拷——见 design 限制。
+    copy_forked_conversation_files(&app, &conversation_id, &new_id, &messages);
+
+    // 清理 group_selections：仅保留其选中 message_id 仍存在于新 messages、且该消息仍带 group_id 的条目。
+    let existing_groups: std::collections::HashMap<&str, &str> = messages
+        .iter()
+        .filter_map(|m| m.group_id.as_deref().map(|g| (m.id.as_str(), g)))
+        .collect();
+    let mut group_selections = source.group_selections.clone();
+    group_selections.retain(|group_id, sel_msg_id| {
+        existing_groups.get(sel_msg_id.as_str()) == Some(&group_id.as_str())
+    });
+
+    // 标题加「（分支）」后缀（R7）。先把源标题截到留出后缀空间，保证后缀在 40 字上限内始终可见。
+    const FORK_SUFFIX: &str = "（分支）";
+    let base = truncate_chars(&source.title, 40 - FORK_SUFFIX.chars().count());
+    let title = format!("{base}{FORK_SUFFIX}");
+
+    let conversation = Conversation {
+        id: new_id,
+        title,
+        provider_id: source.provider_id.clone(),
+        model: source.model.clone(),
+        messages,
+        agent_runtime: source.agent_runtime.clone(),
+        active_skill_id: source.active_skill_id.clone(),
+        assistant_id: source.assistant_id.clone(),
+        assistant_snapshot: source.assistant_snapshot.clone(),
+        created_at: now,
+        updated_at: now,
+        pinned: false,
+        folder: source.folder.clone(),
+        project_id: source.project_id.clone(),
+        set_id: source.set_id.clone(),
+        context_state: ConversationContextState::default(),
+        agent_todo_state: AgentTodoState::default(),
+        agent_plan_state: AgentPlanState::default(),
+        knowledge_base_ids: source.knowledge_base_ids.clone(),
+        thinking_level: source.thinking_level.clone(),
+        reply_models: source.reply_models.clone(),
+        group_selections,
+        forked_from: Some(ForkOrigin {
+            conversation_id: source.id.clone(),
+            message_id: source.messages[anchor_idx].id.clone(),
+            title: source.title.clone(),
+        }),
+    };
+
+    save_conversation(&app, &conversation)?;
+
+    let mut conversation = conversation;
+    // 与 chat_get_conversation 一致：返回前做读时孤立工具分段对账（必须在 strip 之前——
+    // strip 会清掉已完成消息的 api_messages，而回捞工具名依赖它）。源存量文件若有孤立分段，
+    // 分叉后的即时展示也能正常显示工具卡（tool-segment-record-reconcile 契约）。
+    reconcile_conversation_orphan_tool_segments(&mut conversation);
+    strip_transcripts_for_frontend(&mut conversation);
+    Ok(serde_json::json!({
+        "success": true,
+        "conversation": conversation,
+    }))
+}
+
+/// 深拷分叉消息引用的对话目录文件（附件 + 图片 artifact）到新对话附件目录。
+/// path 为裸文件名（相对源对话附件目录），同名拷贝到新目录后引用保持有效。
+fn copy_forked_conversation_files(
+    app: &AppHandle,
+    source_id: &str,
+    new_id: &str,
+    messages: &[ChatMessage],
+) {
+    // 收集所有被引用的裸文件名（附件 + 消息级 artifact + 各 tool_call 内 artifact）。
+    let mut names: Vec<&str> = Vec::new();
+    for message in messages {
+        for att in &message.attachments {
+            if !att.path.is_empty() {
+                names.push(att.path.as_str());
+            }
+        }
+        for artifact in &message.artifacts {
+            if let Some(p) = artifact.path.as_deref().filter(|p| !p.is_empty()) {
+                names.push(p);
+            }
+        }
+        for tool_call in &message.tool_calls {
+            for artifact in &tool_call.artifacts {
+                if let Some(p) = artifact.path.as_deref().filter(|p| !p.is_empty()) {
+                    names.push(p);
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        return;
+    }
+    names.sort_unstable();
+    names.dedup();
+
+    let (Ok(src_dir), Ok(dst_dir)) = (
+        conversation_attachments_dir(app, source_id),
+        conversation_attachments_dir(app, new_id),
+    ) else {
+        eprintln!("fork: 无法解析附件目录，跳过附件深拷（source={source_id} new={new_id}）");
+        return;
+    };
+
+    for name in names {
+        // 只接受裸文件名，拒绝任何路径分隔符（防越目录）。
+        if name.contains('/') || name.contains('\\') {
+            eprintln!("fork: 跳过非法附件路径 {name}");
+            continue;
+        }
+        let src = src_dir.join(name);
+        let dst = dst_dir.join(name);
+        if !src.is_file() {
+            eprintln!("fork: 源附件不存在，跳过 {name}");
+            continue;
+        }
+        if let Err(e) = std::fs::copy(&src, &dst) {
+            eprintln!("fork: 拷贝附件失败 {name}: {e}");
+        }
+    }
+}
+
 /// 删除对话
 #[tauri::command]
 pub(crate) fn chat_delete_conversation(
@@ -7512,6 +7677,7 @@ mod tests {
             thinking_level: None,
             reply_models: Vec::new(),
             group_selections: std::collections::HashMap::new(),
+            forked_from: None,
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         }
     }
@@ -7866,6 +8032,7 @@ mod tests {
         thinking_level: None,
             reply_models: Vec::new(),
             group_selections: std::collections::HashMap::new(),
+            forked_from: None,
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         };
         let result = AuxiliaryVisionResult {
@@ -8054,6 +8221,7 @@ mod tests {
             thinking_level: None,
             reply_models: Vec::new(),
             group_selections: std::collections::HashMap::new(),
+            forked_from: None,
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         };
 
@@ -8178,6 +8346,7 @@ mod tests {
         thinking_level: None,
             reply_models: Vec::new(),
             group_selections: std::collections::HashMap::new(),
+            forked_from: None,
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         };
 
@@ -8271,6 +8440,7 @@ mod tests {
             thinking_level: None,
             reply_models: Vec::new(),
             group_selections: std::collections::HashMap::new(),
+            forked_from: None,
             agent_runtime: crate::chat::AgentRuntimeConfig::default(),
         }
     }
@@ -8556,5 +8726,77 @@ mod tests {
             .expect("build");
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(serialized.contains("answer one"));
+    }
+
+    // ===== 对话分支（方案 B）=====
+
+    #[test]
+    fn build_fork_messages_keeps_prefix_including_anchor() {
+        let messages = vec![
+            test_chat_message("m0", "user", "q1", 1),
+            test_chat_message("m1", "assistant", "a1", 2),
+            test_chat_message("m2", "user", "q2", 3),
+            test_chat_message("m3", "assistant", "a2", 4),
+        ];
+        // 在 m2（user）建分支：保留 m0..=m2，丢弃其后。
+        let forked = build_fork_messages(&messages, 2);
+        let ids: Vec<&str> = forked.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["m0", "m1", "m2"]);
+        // 源不变。
+        assert_eq!(messages.len(), 4);
+    }
+
+    #[test]
+    fn build_fork_messages_collapses_group_to_selected_column() {
+        // 一轮多模型多答：m0 user，m1/m2/m3 同组三列答案。锚点选中 m2。
+        let messages = vec![
+            test_chat_message("m0", "user", "q", 1),
+            grouped_assistant("m1", "col1", "grp", 2),
+            grouped_assistant("m2", "col2", "grp", 3),
+            grouped_assistant("m3", "col3", "grp", 4),
+        ];
+        let forked = build_fork_messages(&messages, 2);
+        let ids: Vec<&str> = forked.iter().map(|m| m.id.as_str()).collect();
+        // 只留 user + 选中列 m2，丢弃 m1（前序兄弟列）与 m3（切片外）。
+        assert_eq!(ids, vec!["m0", "m2"]);
+        // 锚点转普通单答（去 group_id）。
+        assert_eq!(forked.last().unwrap().group_id, None);
+    }
+
+    #[test]
+    fn build_fork_messages_non_group_anchor_leaves_group_id_untouched() {
+        let messages = vec![
+            test_chat_message("m0", "user", "q", 1),
+            test_chat_message("m1", "assistant", "a", 2),
+        ];
+        let forked = build_fork_messages(&messages, 1);
+        assert_eq!(forked.len(), 2);
+        assert_eq!(forked[1].group_id, None);
+    }
+
+    #[test]
+    fn fork_group_selection_cleanup_drops_dangling_and_collapsed() {
+        // 模拟 chat_fork_conversation 内的 group_selections 清理逻辑。
+        // 新前缀：g1 组完整保留（选中 s1）；g2 组被折叠成单答（锚点去 group_id）。
+        let messages = vec![
+            test_chat_message("u1", "user", "q1", 1),
+            grouped_assistant("s1", "g1a", "g1", 2),
+            grouped_assistant("s2", "g1b", "g1", 3),
+            test_chat_message("u2", "user", "q2", 4),
+            // g2 折叠后：这条已去 group_id（模拟 build_fork_messages 结果）。
+            test_chat_message("s3", "assistant", "g2sel", 5),
+        ];
+        let existing_groups: std::collections::HashMap<&str, &str> = messages
+            .iter()
+            .filter_map(|m| m.group_id.as_deref().map(|g| (m.id.as_str(), g)))
+            .collect();
+        let mut selections: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        selections.insert("g1".to_string(), "s1".to_string()); // 有效：s1 仍在且仍属 g1
+        selections.insert("g2".to_string(), "s3".to_string()); // 失效：s3 已去 group_id（组被折叠）
+        selections.insert("g3".to_string(), "gone".to_string()); // 失效：消息已不存在
+        selections.retain(|group_id, sel| existing_groups.get(sel.as_str()) == Some(&group_id.as_str()));
+
+        assert_eq!(selections.len(), 1);
+        assert_eq!(selections.get("g1").map(String::as_str), Some("s1"));
     }
 }

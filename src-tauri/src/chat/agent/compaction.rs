@@ -1766,6 +1766,7 @@ mod tests {
             thinking_level: None,
             reply_models: Vec::new(),
             group_selections: Default::default(),
+            forked_from: None,
         }
     }
 

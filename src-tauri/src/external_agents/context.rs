@@ -269,6 +269,7 @@ mod tests {
             thinking_level: None,
             reply_models: Vec::new(),
             group_selections: std::collections::HashMap::new(),
+            forked_from: None,
         }
     }
 

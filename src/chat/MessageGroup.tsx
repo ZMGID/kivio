@@ -32,6 +32,7 @@ interface MessageGroupProps {
   onSelectColumn?: (groupId: string, messageId: string) => void
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string) => Promise<void>
+  onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
 }
 
@@ -86,6 +87,7 @@ function GroupColumnView({
   onSelectColumn,
   onUpdateMessage,
   onRegenerateMessage,
+  onForkMessage,
   onDeleteMessage,
 }: {
   column: GroupColumn
@@ -100,6 +102,7 @@ function GroupColumnView({
   onSelectColumn?: (groupId: string, messageId: string) => void
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string) => Promise<void>
+  onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
 }) {
   const { message, streaming } = column
@@ -156,6 +159,7 @@ function GroupColumnView({
             reasoningStreaming={streaming && isFocused}
             onUpdateMessage={!live ? onUpdateMessage : undefined}
             onRegenerateMessage={!live ? onRegenerateMessage : undefined}
+            onForkMessage={!live ? onForkMessage : undefined}
             onDeleteMessage={!live ? onDeleteMessage : undefined}
           />
         </ColumnScrollBody>
@@ -168,6 +172,7 @@ function GroupColumnView({
           reasoningStreaming={streaming && isFocused}
           onUpdateMessage={!live ? onUpdateMessage : undefined}
           onRegenerateMessage={!live ? onRegenerateMessage : undefined}
+          onForkMessage={!live ? onForkMessage : undefined}
           onDeleteMessage={!live ? onDeleteMessage : undefined}
         />
       )}
@@ -257,6 +262,7 @@ function MessageGroupBase({
   onSelectColumn,
   onUpdateMessage,
   onRegenerateMessage,
+  onForkMessage,
   onDeleteMessage,
 }: MessageGroupProps) {
   // 订阅 group store 版本号：流式列内容更新时驱动重渲。
@@ -321,6 +327,7 @@ function MessageGroupBase({
               onSelectColumn={onSelectColumn}
               onUpdateMessage={onUpdateMessage}
               onRegenerateMessage={onRegenerateMessage}
+              onForkMessage={onForkMessage}
               onDeleteMessage={onDeleteMessage}
             />
           ))}
@@ -339,6 +346,7 @@ function MessageGroupBase({
           onSelectColumn={onSelectColumn}
           onUpdateMessage={onUpdateMessage}
           onRegenerateMessage={onRegenerateMessage}
+          onForkMessage={onForkMessage}
           onDeleteMessage={onDeleteMessage}
         />
       )}

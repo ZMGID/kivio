@@ -481,6 +481,18 @@ export interface Conversation {
   /** 多答组「选中条」（D5）：group_id → 被采纳进下一轮历史的 assistant message id。无记录取该组第一条。 */
   group_selections?: Record<string, string>
   groupSelections?: Record<string, string>
+  /** 对话分支来源（方案 B）：本对话由某对话某消息处分叉而来。 */
+  forked_from?: ForkOrigin | null
+  forkedFrom?: ForkOrigin | null
+}
+
+/** 对话分支来源快照（方案 B）。 */
+export interface ForkOrigin {
+  conversation_id?: string
+  conversationId?: string
+  message_id?: string
+  messageId?: string
+  title: string
 }
 
 /** 一次回答所用的 (provider, model) 引用。多模型一问多答的会话级模型集元素。 */
@@ -510,6 +522,8 @@ export interface ConversationListItem {
   assistantId?: string | null
   assistant_name?: string | null
   assistantName?: string | null
+  forked_from?: ForkOrigin | null
+  forkedFrom?: ForkOrigin | null
 }
 
 export interface ConversationGroup {

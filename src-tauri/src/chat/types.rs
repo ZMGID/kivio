@@ -430,6 +430,10 @@ pub struct Conversation {
     /// 无记录时取该组顺序第一条。serde default 为空（旧会话兼容）。
     #[serde(default)]
     pub group_selections: HashMap<String, String>,
+    /// 对话分支来源（方案 B）：非 None 表示本对话是从某对话某消息处分叉而来。
+    /// serde default ⇒ 旧对话 JSON 缺字段正常反序列化。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkOrigin>,
 }
 
 /// 一次回答所用的 (provider, model) 引用。多模型一问多答的会话级模型集元素。
@@ -437,6 +441,18 @@ pub struct Conversation {
 pub struct ModelRef {
     pub provider_id: String,
     pub model: String,
+}
+
+/// 对话分支来源（方案 B）：本对话由某条对话在某消息处分叉而来。
+/// 全部为分叉时的快照——源对话后续改名/删除都不影响此处显示与回跳。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForkOrigin {
+    /// 源对话 id（回跳目标）。
+    pub conversation_id: String,
+    /// 分叉锚点消息 id（源对话中被「建分支」的那条）。
+    pub message_id: String,
+    /// 分叉时的源对话标题快照（面包屑显示用）。
+    pub title: String,
 }
 
 /// 对话列表项（index.json 中的元数据）
@@ -465,6 +481,9 @@ pub struct ConversationListItem {
     pub assistant_name: Option<String>,
     #[serde(default)]
     pub agent_runtime: AgentRuntimeConfig,
+    /// 对话分支来源（方案 B）。旧索引缺字段正常反序列化。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkOrigin>,
 }
 
 /// 对话索引文件结构
@@ -636,6 +655,7 @@ impl From<&Conversation> for ConversationListItem {
                 .as_ref()
                 .map(|snapshot| snapshot.name.clone()),
             agent_runtime: conv.agent_runtime.clone(),
+            forked_from: conv.forked_from.clone(),
         }
     }
 }

@@ -29,6 +29,7 @@ interface MessageListProps {
   assistantStreamStatsByMessageId?: Record<string, AssistantStreamStats>
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string, newContent?: string) => Promise<void>
+  onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
   onExecuteAgentPlan?: (messageId: string) => Promise<void> | void
   // 失败发送后线程末尾留下的孤儿用户消息：点「重试」用它的 id 重新生成。
@@ -68,6 +69,7 @@ function MessageListBase({
   assistantStreamStatsByMessageId = {},
   onUpdateMessage,
   onRegenerateMessage,
+  onForkMessage,
   onDeleteMessage,
   onExecuteAgentPlan,
   onRetryLastUser,
@@ -410,6 +412,7 @@ function MessageListBase({
               // 本地取消后 send invoke 尚未返回，此窗口内触发只会被 in-flight 兜底静默吞掉
               // （编辑文本会被无声丢弃），所以从入口处直接收起。
               onRegenerateMessage={streaming || streamFrozen ? undefined : onRegenerateMessage}
+              onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
               onDeleteMessage={onDeleteMessage}
               agentPlanOverride={msg.id === legacyPlanMessageId ? agentPlanState : null}
               onExecuteAgentPlan={msg.role === 'assistant' ? onExecuteAgentPlan : undefined}
@@ -427,6 +430,7 @@ function MessageListBase({
               onSelectColumn={onSetGroupSelection}
               onUpdateMessage={onUpdateMessage}
               onRegenerateMessage={streaming || streamFrozen ? undefined : onRegenerateMessage}
+              onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
               onDeleteMessage={onDeleteMessage}
             />
           )
@@ -500,6 +504,7 @@ function MessageListBase({
       legacyPlanMessageId,
       onUpdateMessage,
       onRegenerateMessage,
+      onForkMessage,
       onDeleteMessage,
       onExecuteAgentPlan,
       onRetryLastUser,

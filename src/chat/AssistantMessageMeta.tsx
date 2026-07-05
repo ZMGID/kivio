@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, Copy, Gauge, Pencil, RotateCcw, Trash2 } from 'lucide-react'
+import { Check, Copy, Gauge, GitBranch, Pencil, RotateCcw, Trash2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { estimateTokens } from '../utils/tokens'
 import { formatAssistantMessageTime } from './messageFormat'
@@ -15,6 +15,7 @@ interface AssistantMessageMetaProps {
   usage?: MessageUsage | null
   onEdit?: () => void
   onRegenerate?: () => void
+  onFork?: () => void
   onDelete?: () => void
 }
 
@@ -42,6 +43,7 @@ export function AssistantMessageMeta({
   usage,
   onEdit,
   onRegenerate,
+  onFork,
   onDelete,
 }: AssistantMessageMetaProps) {
   const [copied, setCopied] = useState(false)
@@ -110,6 +112,16 @@ export function AssistantMessageMeta({
           aria-label="重新生成"
         >
           <RotateCcw size={14} strokeWidth={2} />
+        </button>
+        <button
+          type="button"
+          onClick={onFork}
+          disabled={!onFork}
+          className={iconBtn}
+          title="从这里建分支（复制到新对话）"
+          aria-label="建分支"
+        >
+          <GitBranch size={14} strokeWidth={2} />
         </button>
         <button
           type="button"

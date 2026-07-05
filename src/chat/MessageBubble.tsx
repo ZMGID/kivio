@@ -13,6 +13,7 @@ import {
   FolderInput,
   FolderOpen,
   Globe,
+  GitBranch,
   ImagePlus,
   ListChecks,
   Pencil,
@@ -63,6 +64,7 @@ interface MessageBubbleProps {
   sentModels?: { providerId: string | null; model: string | null }[]
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string, newContent?: string) => Promise<void>
+  onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
   agentPlanOverride?: AgentPlanState | null
   onExecuteAgentPlan?: (messageId: string) => Promise<void> | void
@@ -645,6 +647,7 @@ function MessageBubbleComponent({
   sentModels,
   onUpdateMessage,
   onRegenerateMessage,
+  onForkMessage,
   onDeleteMessage,
   agentPlanOverride = null,
   onExecuteAgentPlan,
@@ -799,6 +802,17 @@ function MessageBubbleComponent({
                   aria-label="编辑并重新生成"
                 >
                   <Pencil size={14} strokeWidth={2} />
+                </button>
+              )}
+              {onForkMessage && (
+                <button
+                  type="button"
+                  onClick={() => void onForkMessage(message.id)}
+                  className={bubbleActionBtn}
+                  title="从这里建分支（复制到新对话）"
+                  aria-label="建分支"
+                >
+                  <GitBranch size={14} strokeWidth={2} />
                 </button>
               )}
               {onDeleteMessage && (
@@ -992,6 +1006,13 @@ function MessageBubbleComponent({
               canMutate
                 ? () => {
                     void onRegenerateMessage!(message.id)
+                  }
+                : undefined
+            }
+            onFork={
+              onForkMessage
+                ? () => {
+                    void onForkMessage(message.id)
                   }
                 : undefined
             }

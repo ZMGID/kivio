@@ -1325,6 +1325,22 @@ export const chatApi = {
     return result.conversation
   },
 
+  // 对话分支（方案 B）：把源对话某消息及其之前的消息复制进一个新对话，返回新对话。不自动发送。
+  async forkConversation(conversationId: string, messageId: string): Promise<Conversation> {
+    if (!isTauriRuntime()) {
+      return mockChatApi.createConversation(undefined, undefined, undefined, null, null)
+    }
+    const result = await invoke<{
+      success: boolean
+      conversation?: Conversation
+      error?: string
+    }>('chat_fork_conversation', { conversationId, messageId })
+    if (!result.success || !result.conversation) {
+      throw new Error(result.error || 'Failed to fork conversation')
+    }
+    return result.conversation
+  },
+
   async getContextStats(conversationId: string): Promise<{ contextState: ConversationContextState; conversation: Conversation }> {
     if (!isTauriRuntime()) return mockChatApi.getContextStats(conversationId)
     const result = await invoke<{

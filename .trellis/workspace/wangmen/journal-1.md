@@ -347,3 +347,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: 对话分支：分叉成新对话（方案 B）
+
+**Date**: 2026-07-06
+**Task**: 对话分支：分叉成新对话（方案 B）
+**Branch**: `main`
+
+### Summary
+
+新增 chat_fork_conversation：在任意消息处把 [0..=锚点] 复制进独立新对话（多答组折叠为选中列去 group_id、深拷附件/图片 artifact、继承会话级配置、标题加（分支）、记 forked_from、返回前 reconcile 再 strip）。前端 api.forkConversation + handleForkMessage + GitBranch 按钮透传链 + 分叉自面包屑 + 侧栏（分支）不缩标签。含 4 Rust + 3 前端测试，新增 spec/chat/conversation-fork.md。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8528740` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

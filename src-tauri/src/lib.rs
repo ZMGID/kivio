@@ -523,6 +523,7 @@ pub fn run() {
             chat::commands::chat_delete_message,
             chat::commands::chat_set_group_selection,
             chat::commands::chat_regenerate_message,
+            chat::commands::chat_fork_conversation,
             external_agents::commands::chat_detect_external_agents,
             external_agents::commands::chat_list_external_cli_slash_commands,
             external_agents::commands::chat_set_agent_runtime,

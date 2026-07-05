@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Wrench, X } from 'lucide-react'
+import { GitBranch, Wrench, X } from 'lucide-react'
 import { Sidebar, type ExtensionsNavItem } from './Sidebar'
 import { ChatImageViewer } from './ChatImageViewer'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
@@ -2888,6 +2888,29 @@ export default function Chat({ onSettingsChange }: ChatProps) {
     [applyConversation, refreshSidebar],
   )
 
+  // 对话分支（方案 B）：在某条消息处建分支——把该消息及之前的消息复制进新对话，
+  // 立即打开新对话（不自动发送）。源对话只读、不受影响。
+  const handleForkMessage = useCallback(
+    async (messageId: string) => {
+      const conv = currentConversationRef.current
+      if (!conv) return
+      try {
+        const forked = await chatApi.forkConversation(conv.id, messageId)
+        setAssistantStreamStatsByMessageId({})
+        currentConversationIdRef.current = forked.id
+        applyConversation(forked)
+        restoreStreamingPreview(forked.id)
+        syncConversationRoute(forked.id)
+        setStreamError('')
+        refreshSidebar()
+      } catch (err) {
+        console.error('Failed to fork conversation:', err)
+        setStreamError(typeof err === 'string' ? err : (err as Error).message || '建分支失败')
+      }
+    },
+    [applyConversation, refreshSidebar, restoreStreamingPreview, syncConversationRoute],
+  )
+
   // 多答组「选中条」（任务 06-30 / D5）：标记某组进下一轮历史的列。默认第一列；用户点选改。
   const handleSetGroupSelection = useCallback(
     async (groupId: string, messageId: string) => {
@@ -3488,6 +3511,25 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                 </div>
                   ) : (
                     <>
+                  {(() => {
+                    const origin = currentConversation?.forked_from ?? currentConversation?.forkedFrom
+                    if (!origin) return null
+                    const sourceId = origin.conversation_id ?? origin.conversationId
+                    if (!sourceId) return null
+                    return (
+                      <div className="flex justify-center px-4 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSelectConversation(sourceId)}
+                          className="inline-flex max-w-full items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-700 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+                          title={`分叉自「${origin.title}」，点击回到源对话`}
+                        >
+                          <GitBranch size={12} strokeWidth={2} className="shrink-0" />
+                          <span className="truncate">分叉自 {origin.title}</span>
+                        </button>
+                      </div>
+                    )
+                  })()}
                   <Suspense fallback={<MessageListLoading />}>
                     <MessageList
                       key={currentConversation?.id ?? 'empty'}
@@ -3497,6 +3539,7 @@ export default function Chat({ onSettingsChange }: ChatProps) {
                       assistantStreamStatsByMessageId={assistantStreamStatsByMessageId}
                       onUpdateMessage={handleUpdateMessage}
                       onRegenerateMessage={handleRegenerateMessage}
+                      onForkMessage={handleForkMessage}
                       onDeleteMessage={handleDeleteMessage}
                       onRetryLastUser={handleRegenerateMessage}
                       onExecuteAgentPlan={handleExecuteAgentPlan}
