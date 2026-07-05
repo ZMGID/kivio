@@ -3658,27 +3658,9 @@ fn mark_summary_stale_if_needed(conversation: &mut Conversation, changed_index: 
 }
 
 fn count_tokens_in_value(value: &Value) -> usize {
-    match value {
-        Value::String(text) => agent_prepare::estimate_tokens(text),
-        Value::Array(items) => items.iter().map(count_tokens_in_value).sum(),
-        Value::Object(map) => {
-            if let Some(kind) = map.get("type").and_then(|value| value.as_str()) {
-                match kind {
-                    "image_url" | "input_image" | "image" => return 0,
-                    "text" | "input_text" => {
-                        return map.get("text").map(count_tokens_in_value).unwrap_or(0);
-                    }
-                    _ => {}
-                }
-            }
-            map.iter()
-                .map(|(key, value)| {
-                    agent_prepare::estimate_tokens(key) + count_tokens_in_value(value)
-                })
-                .sum()
-        }
-        _ => agent_prepare::estimate_tokens(&value.to_string()),
-    }
+    // 口径统一：委托压缩侧共用的 estimate_value_tokens（图片部件记 0，文本按文本，
+    // 对象递归）。曾经两处各写一份，压缩侧漏了图片归零导致 base64 打爆估算。
+    agent_prepare::estimate_value_tokens(value)
 }
 
 fn ceil_div_u32(value: u32, divisor: u32) -> usize {

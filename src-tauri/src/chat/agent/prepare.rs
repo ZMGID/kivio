@@ -749,6 +749,37 @@ pub fn estimate_tokens(text: &str) -> usize {
     ascii.div_ceil(4) + non_ascii
 }
 
+/// content-part `type` 值：图片部件（估算记 0 token——图片按 provider 的 tile 计费，
+/// 而非 base64 体积；把 base64 长度算进 token 会把估算打爆几个数量级）。
+pub(crate) const IMAGE_PART_TYPES: [&str; 3] = ["image_url", "input_image", "image"];
+/// content-part `type` 值：文本部件（按其 `text` 字段估算）。
+pub(crate) const TEXT_PART_TYPES: [&str; 2] = ["text", "input_text"];
+
+/// 估算任意 `Value`（含多模态数组 content）的 token 数。**图片部件记 0**、文本部件按文本、
+/// 对象按 key+value 递归、字符串按 `estimate_tokens`。压缩侧（estimate_message_tokens /
+/// serialize）与上下文用量条（commands.rs::count_tokens_in_value 委托本函数）**共用同一口径**，
+/// 防止 base64 图片把 token 估算打爆导致徒劳压缩 / anti-thrashing 误收尾。
+pub(crate) fn estimate_value_tokens(value: &Value) -> usize {
+    match value {
+        Value::String(text) => estimate_tokens(text),
+        Value::Array(items) => items.iter().map(estimate_value_tokens).sum(),
+        Value::Object(map) => {
+            if let Some(kind) = map.get("type").and_then(Value::as_str) {
+                if IMAGE_PART_TYPES.contains(&kind) {
+                    return 0;
+                }
+                if TEXT_PART_TYPES.contains(&kind) {
+                    return map.get("text").map(estimate_value_tokens).unwrap_or(0);
+                }
+            }
+            map.iter()
+                .map(|(key, value)| estimate_tokens(key) + estimate_value_tokens(value))
+                .sum()
+        }
+        _ => estimate_tokens(&value.to_string()),
+    }
+}
+
 pub(crate) fn tool_matches_recommended_name(tool: &ChatToolDefinition, recommended: &str) -> bool {
     let recommended = recommended.trim();
     if recommended.is_empty() {
