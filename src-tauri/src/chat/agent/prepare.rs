@@ -751,6 +751,11 @@ pub fn estimate_tokens(text: &str) -> usize {
 
 /// content-part `type` 值：图片部件（估算记 0 token——图片按 provider 的 tile 计费，
 /// 而非 base64 体积；把 base64 长度算进 token 会把估算打爆几个数量级）。
+/// **务必保持 0**：上下文用量条（`compute_context_state`）已用
+/// `estimate_image_attachment_tokens`（按图片真实尺寸/tile）**另行**累加图片 token，
+/// `count_tokens_in_value` 委托本函数、对内联图片返回 0 正是为了**不重复计**。
+/// 若在此给图片一个非 0 常量，用量条会双重计数；而 L2 循环内估算对内联图片的欠计
+/// 由 auto 触发路径（usage_ratio 已含图片）兜住，无需在此 hedge。
 pub(crate) const IMAGE_PART_TYPES: [&str; 3] = ["image_url", "input_image", "image"];
 /// content-part `type` 值：文本部件（按其 `text` 字段估算）。
 pub(crate) const TEXT_PART_TYPES: [&str; 2] = ["text", "input_text"];

@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter};
 use super::loop_::{LoopEnv, RunState};
 use super::planning::call_chat_completion_message_streamed;
 use super::prepare::{estimate_tokens, estimate_value_tokens, IMAGE_PART_TYPES, TEXT_PART_TYPES};
-use crate::chat::model::openai_messages_from_model_messages;
+use crate::chat::model::{MessagePart, ModelMessage};
 
 /// 近期窗口（tokens）：从尾部往前累积整条消息，~该预算内的为受保护近期窗口、原样保留，
 /// 其余旧段才进摘要。取代旧的固定 `KEEP_RECENT_RAW_MESSAGES` 条数（R7）。对齐 Codex
@@ -270,6 +270,12 @@ fn serialize_message(message: &Value) -> String {
                 if !text.trim().is_empty() {
                     lines.push(format!("[Assistant]: {text}"));
                 }
+            } else if let Some(content) = message.get("content") {
+                // 非字符串 content（罕见的多模态 assistant）：渲染文本 + 图片占位，不整段丢弃、不泄漏 base64。
+                let rendered = render_multimodal_content(content);
+                if !rendered.trim().is_empty() {
+                    lines.push(format!("[Assistant]: {rendered}"));
+                }
             }
             if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str) {
                 if !reasoning.trim().is_empty() {
@@ -298,10 +304,12 @@ fn serialize_message(message: &Value) -> String {
         "tool" => {
             let content = match message.get("content").and_then(Value::as_str) {
                 Some(text) => text.to_string(),
-                None => message
-                    .get("content")
-                    .map(Value::to_string)
-                    .unwrap_or_default(),
+                // 非字符串 content（多模态工具结果，如 MCP 返回的图片块）：走 render_multimodal_content
+                // 而非 to_string()，避免 base64 泄漏进摘要输入（与 user 分支同处理）。
+                None => match message.get("content") {
+                    Some(content) => render_multimodal_content(content),
+                    None => String::new(),
+                },
             };
             let is_error = message
                 .get("is_error")
@@ -711,16 +719,44 @@ pub(crate) fn source_until_message_id_for_split(
         .map(str::to_string)
 }
 
+/// 直接按 `MessagePart` 估算 `model_messages` 的 token 数，避免
+/// `openai_messages_from_model_messages` 每次调用把整段工具转录克隆成 `Vec<Value>`
+/// （`estimate_chat_message_tokens` 在 token 尾窗循环里逐条调用、且近满窗每轮都跑）。
+/// 口径与 `estimate_message_tokens` 一致：文本/推理/工具入参/工具结果按字符估算，
+/// 图片部件记 0，每条消息 +4 固定开销。
+fn estimate_model_messages_tokens(messages: &[ModelMessage]) -> usize {
+    messages
+        .iter()
+        .map(|message| {
+            let parts: usize = message
+                .content
+                .iter()
+                .map(|part| match part {
+                    MessagePart::Text { text } | MessagePart::Reasoning { text } => {
+                        estimate_tokens(text)
+                    }
+                    MessagePart::ToolCall {
+                        name,
+                        arguments_raw,
+                        ..
+                    } => estimate_tokens(name) + estimate_tokens(arguments_raw),
+                    MessagePart::ToolResult { content, .. } => estimate_tokens(content),
+                    // 图片部件记 0（与 estimate_value_tokens 同口径，不把 base64 算进 token）。
+                    MessagePart::Image { .. } | MessagePart::ImageUrl { .. } => 0,
+                })
+                .sum();
+            parts + 4
+        })
+        .sum()
+}
+
 /// 把单条 UI `ChatMessage` 估算成 token 数。**优先按展开形态**（model_messages /
 /// api_messages）估算——真实 replay 发给模型的是这些里的完整工具转录，而非截断的
 /// `result_preview`；分支顺序与 `build_chat_api_messages` 的展开路径同源对齐。
 /// 无展开数据时退回 content + reasoning + 工具入参 + 结果预览口径。
 fn estimate_chat_message_tokens(message: &ChatMessage) -> usize {
     if !message.model_messages.is_empty() {
-        return openai_messages_from_model_messages(&message.model_messages)
-            .iter()
-            .map(estimate_message_tokens)
-            .sum();
+        return estimate_model_messages_tokens(&message.model_messages);
     }
     if !message.api_messages.is_empty() {
         return message
@@ -1680,6 +1716,7 @@ fn chat_missing_model_error() -> String {
 mod tests {
     use super::*;
     use crate::chat::types::{ToolCallRecord, ToolCallStatus};
+    use crate::chat::model::ModelRole;
 
     fn chat_msg(id: &str, role: &str, content: &str) -> ChatMessage {
         ChatMessage {
@@ -1846,6 +1883,73 @@ mod tests {
         let expanded_sum: usize = m.api_messages.iter().map(estimate_message_tokens).sum();
         assert_eq!(tokens, expanded_sum, "must estimate expanded api_messages");
         assert!(tokens > 9_000, "40k-char tool output ~10k tokens, far above preview");
+    }
+
+    #[test]
+    fn estimate_model_messages_tokens_ignores_image_base64() {
+        // #2 修复：model_messages 分支直接按 MessagePart 估算，不把 base64 图片算进 token
+        //（也不再克隆整段转录成 Vec<Value>）。
+        let big_b64 = "A".repeat(1_400_000);
+        let mut m = chat_msg("m1", "assistant", "ignored (model_messages wins)");
+        m.model_messages = vec![
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: vec![
+                    MessagePart::Text { text: "看这张图".to_string() },
+                    MessagePart::Image {
+                        mime_type: "image/png".to_string(),
+                        data: big_b64.clone(),
+                    },
+                ],
+            },
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: vec![MessagePart::ToolResult {
+                    tool_call_id: "c1".to_string(),
+                    content: "T".repeat(4_000),
+                    is_error: false,
+                    artifacts: Vec::new(),
+                }],
+            },
+        ];
+        let tokens = estimate_chat_message_tokens(&m);
+        // 文本(~2 CJK*? ) + 工具结果 4000/4=1000 + 2*4 开销 ≈ 1010 量级；绝不含 base64 的 35 万级。
+        assert!(tokens < 2_000, "image base64 must not inflate estimate (was {tokens})");
+        assert!(tokens > 900, "tool result content must be counted (was {tokens})");
+    }
+
+    #[test]
+    fn serialize_message_tool_result_multimodal_no_base64_leak() {
+        // #1 修复：工具结果为多模态数组（如 MCP 图片块）时，序列化走占位符而非 to_string() 泄漏 base64。
+        let msg = json!({
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": [
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAABBBBCCCC" } },
+                { "type": "text", "text": "图里是一只猫" }
+            ]
+        });
+        let s = serialize_message(&msg);
+        assert!(s.starts_with("[Tool result]:"));
+        assert!(s.contains("图里是一只猫"), "text part preserved");
+        assert!(s.contains(IMAGE_PART_PLACEHOLDER), "image → placeholder");
+        assert!(!s.contains(";base64,"), "no base64 leaks into summary input");
+    }
+
+    #[test]
+    fn serialize_message_assistant_multimodal_no_base64_leak() {
+        // #1 修复：assistant 数组 content 不再被整段丢弃，且图片换占位符。
+        let msg = json!({
+            "role": "assistant",
+            "content": [
+                { "type": "text", "text": "看这个" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,ZZZZ" } }
+            ]
+        });
+        let s = serialize_message(&msg);
+        assert!(s.contains("[Assistant]: 看这个"), "assistant text preserved, not dropped");
+        assert!(s.contains(IMAGE_PART_PLACEHOLDER));
+        assert!(!s.contains(";base64,"));
     }
 
     #[test]
