@@ -27,18 +27,13 @@ pub fn is_agent_todo_tool_name(name: &str) -> bool {
 }
 
 pub fn append_tool_definitions(tools: &mut Vec<ChatToolDefinition>) {
-    for tool in tool_definitions() {
-        if !tools
-            .iter()
-            .any(|existing| existing.openai_tool_name() == tool.openai_tool_name())
-        {
-            tools.push(tool);
-        }
+    let tool = todo_write_tool();
+    if !tools
+        .iter()
+        .any(|existing| existing.openai_tool_name() == tool.openai_tool_name())
+    {
+        tools.push(tool);
     }
-}
-
-pub fn tool_definitions() -> Vec<ChatToolDefinition> {
-    vec![todo_write_tool()]
 }
 
 pub fn todo_write_tool() -> ChatToolDefinition {
@@ -68,17 +63,6 @@ pub fn todo_write_tool() -> ChatToolDefinition {
             "openWorldHint": false
         })),
         output_schema: Some(todo_output_schema()),
-    }
-}
-
-pub fn apply_tool(
-    _current: &AgentTodoState,
-    tool_name: &str,
-    arguments: Value,
-) -> Result<TodoToolOutcome, String> {
-    match tool_name {
-        TODO_WRITE_TOOL_NAME => apply_todo_write(arguments),
-        other => Err(format!("Unknown todo tool: {other}")),
     }
 }
 
@@ -126,7 +110,10 @@ pub fn handle_conversation_tool_call(
     arguments: Value,
 ) -> Result<McpToolCallResult, String> {
     let mut conversation = crate::chat::storage::load_conversation(app, conversation_id)?;
-    let outcome = apply_tool(&conversation.agent_todo_state, tool_name, arguments)?;
+    if !is_agent_todo_tool_name(tool_name) {
+        return Err(format!("Unknown todo tool: {tool_name}"));
+    }
+    let outcome = apply_todo_write(arguments)?;
     conversation.agent_todo_state = outcome.state.clone();
     conversation.updated_at = chrono::Local::now().timestamp();
     crate::chat::storage::save_conversation(app, &conversation)?;

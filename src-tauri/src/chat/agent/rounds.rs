@@ -15,7 +15,7 @@ use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
 use super::planning::PlannedToolRound;
 use super::stop::{assistant_api_message_for_tool_calls, step_limit_system_message};
-use super::types::{AgentPhase, AgentRunResult, AgentStepResult, AgentStopReason};
+use super::types::AgentRunResult;
 
 /// 单回合内并行工具调用的批宽上限。与 `SubAgentManager` 的默认并发(12)对齐,
 /// 使一回合 fan-out 多个 subagent 时信号量成为真正的瓶颈而非这里。批内用
@@ -51,8 +51,6 @@ pub(crate) async fn run_tool_round(
     state
         .generated_api_messages
         .push(state.runtime_messages.last().cloned().unwrap_or(Value::Null));
-    let mut step_response_messages =
-        vec![state.runtime_messages.last().cloned().unwrap_or(Value::Null)];
     let round_result = execute_tool_round(
         host,
         env.executor,
@@ -83,22 +81,7 @@ pub(crate) async fn run_tool_round(
     state
         .generated_api_messages
         .extend(round_result.response_messages.iter().cloned());
-    step_response_messages.extend(round_result.response_messages);
-    let step_tool_records = round_result.tool_records;
-    state.tool_records.extend(step_tool_records.iter().cloned());
-    state.steps.push(AgentStepResult {
-        step_number: state.step_number,
-        phase: AgentPhase::ToolLoop,
-        response_messages: step_response_messages,
-        tool_records: step_tool_records,
-        segments: planned.step_segments,
-        streamed: config.stream_enabled,
-        stop_reason: if round_cancelled {
-            Some(AgentStopReason::Cancelled)
-        } else {
-            None
-        },
-    });
+    state.tool_records.extend(round_result.tool_records);
     if round_cancelled {
         host.emit_stream_done(
             &config.conversation_id,
@@ -113,14 +96,10 @@ pub(crate) async fn run_tool_round(
             std::mem::take(&mut state.tool_records),
             std::mem::take(&mut state.segment_builder).all(),
             std::mem::take(&mut state.generated_api_messages),
-            std::mem::take(&mut state.steps),
         ));
     }
     if tool_round_limit_reached(config.effective_chat_tools.max_tool_rounds, round) {
         state.runtime_messages.push(step_limit_system_message());
-        if let Some(last_step) = state.steps.last_mut() {
-            last_step.stop_reason = Some(AgentStopReason::StepLimit);
-        }
         return ToolRoundOutcome::RoundLimit;
     }
     ToolRoundOutcome::Continue

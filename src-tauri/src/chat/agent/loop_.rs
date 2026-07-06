@@ -13,7 +13,7 @@ use super::planning::{planning_step, PlanningStepOutcome};
 use super::rounds::{run_tool_round, ToolRoundOutcome};
 use super::stop::patch_system_message;
 use super::synthesis::{synthesis_step, SynthesisFlow};
-use super::types::{AgentRunConfig, AgentRunResult, AgentStepResult};
+use super::types::{AgentRunConfig, AgentRunResult};
 
 /// Immutable per-run environment shared by every loop phase.
 pub(crate) struct LoopEnv<'a> {
@@ -53,7 +53,6 @@ pub(crate) struct RunState {
     pub(crate) generated_api_messages: Vec<Value>,
     pub(crate) tool_records: Vec<ToolCallRecord>,
     pub(crate) planning_reasoning_parts: Vec<String>,
-    pub(crate) steps: Vec<AgentStepResult>,
     pub(crate) segment_builder: SegmentBuilder,
     pub(crate) step_number: u8,
     pub(crate) provider_tools_unsupported: bool,
@@ -165,7 +164,6 @@ pub async fn run_agent_loop(
         generated_api_messages: Vec::new(),
         tool_records: Vec::new(),
         planning_reasoning_parts: Vec::new(),
-        steps: Vec::new(),
         segment_builder: SegmentBuilder::new(),
         step_number: 0,
         provider_tools_unsupported: false,
@@ -315,8 +313,6 @@ pub(crate) use super::rounds::{
 };
 #[cfg(test)]
 pub(crate) use super::stream::{AgentStreamSink, ToolCallDraftTracker};
-#[cfg(test)]
-pub(crate) use super::types::{AgentPhase, AgentStopReason};
 #[cfg(test)]
 pub(crate) use crate::chat::model::PendingToolCall;
 #[cfg(test)]

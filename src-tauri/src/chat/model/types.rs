@@ -72,17 +72,6 @@ impl ModelMessage {
             content: vec![MessagePart::Text { text: text.into() }],
         }
     }
-
-    pub fn text_content(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|part| match part {
-                MessagePart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,19 +136,10 @@ impl From<&ChatToolDefinition> for ModelTool {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProviderCapabilities {
-    pub tool_calling: bool,
-    pub vision: bool,
-    pub streaming: bool,
-    pub reasoning: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateOptions {
     pub temperature: f32,
     pub max_tokens: u32,
-    pub stream: bool,
     pub thinking_enabled: bool,
     /// 每对话「思考等级」(`"low"|"medium"|"high"`)。`None` = 未显式设置，维持现状
     /// （仅受 `thinking_enabled` 控制，不发任何 effort/reasoning 字段）。仅在用户显式
@@ -175,7 +155,6 @@ impl Default for GenerateOptions {
         Self {
             temperature: 0.7,
             max_tokens: 8192,
-            stream: false,
             thinking_enabled: true,
             thinking_level: None,
             provider_options: Value::Object(Default::default()),
@@ -445,7 +424,6 @@ pub trait LanguageModelProvider {
         request: GenerateRequest,
         sink: &'a mut (dyn StreamSink + Send),
     ) -> ModelFuture<'a, GenerateOutput>;
-    fn capabilities(&self) -> ProviderCapabilities;
 }
 
 pub fn parse_tool_arguments(arguments_raw: &str) -> (Value, Option<String>) {

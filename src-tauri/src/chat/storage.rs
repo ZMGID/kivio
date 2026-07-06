@@ -225,7 +225,6 @@ pub fn conversation_file_path(app: &AppHandle, id: &str) -> Result<PathBuf, Stri
 }
 
 /// 获取对话附件目录
-#[allow(dead_code)]
 pub fn conversation_attachments_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     validate_conversation_id(id)?;
     let dir = conversations_dir(app)?.join(format!("{}_attachments", id));

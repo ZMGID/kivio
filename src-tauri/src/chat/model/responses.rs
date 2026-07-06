@@ -25,7 +25,7 @@ use crate::usage::{
 use super::{
     parse_tool_arguments, responses_input_from_model_messages, stream_read_error, GenerateOutput,
     GenerateRequest, LanguageModelProvider, ModelError, ModelFuture, ModelUsage, PendingToolCall,
-    ProviderCapabilities, StreamPart, StreamSink,
+    StreamPart, StreamSink,
 };
 
 pub struct OpenAiResponsesProvider<'a> {
@@ -55,15 +55,6 @@ impl LanguageModelProvider for OpenAiResponsesProvider<'_> {
         sink: &'a mut (dyn StreamSink + Send),
     ) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move { self.stream_inner(request, sink).await })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            tool_calling: self.provider.supports_tools,
-            vision: true,
-            streaming: true,
-            reasoning: true,
-        }
     }
 }
 

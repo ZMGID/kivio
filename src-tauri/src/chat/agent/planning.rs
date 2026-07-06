@@ -15,7 +15,6 @@ use super::finalize::{
 };
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
-use super::prepare::{prepare_agent_step, PrepareStepInput};
 use super::rounds::visible_tool_segment_calls;
 use super::stop::{
     assistant_content_from_api_message, extract_reasoning_content, extract_tool_calls,
@@ -25,9 +24,7 @@ use super::stream::{
     should_emit_done, validate_stream_output, AgentStreamSink, ChatStreamOutput,
     ToolCallDraftTracker,
 };
-use super::types::{
-    AgentPhase, AgentRunResult, AgentStepResult, AgentStopReason, AgentStreamPolicy,
-};
+use super::types::{AgentRunResult, AgentStreamPolicy};
 
 pub(crate) struct ChatPlanningStep {
     pub(crate) message: Value,
@@ -37,7 +34,6 @@ pub(crate) struct ChatPlanningStep {
 pub(crate) struct PlannedToolRound {
     pub(crate) message: Value,
     pub(crate) tool_calls: Vec<PendingToolCall>,
-    pub(crate) step_segments: Vec<ChatMessageSegment>,
 }
 
 pub(crate) enum PlanningStepOutcome {
@@ -118,18 +114,12 @@ pub(crate) async fn planning_step(
                     &state.planning_reasoning_parts,
                     std::mem::take(&mut state.tool_records),
                     std::mem::take(&mut state.generated_api_messages),
-                    std::mem::take(&mut state.steps),
                 ),
         ));
     }
 
-    let prepared = prepare_agent_step(PrepareStepInput {
-        step_number,
-        previous_steps: &state.steps,
-        runtime_messages: &send_messages,
-        tools: &state.tools,
-        phase: AgentPhase::ToolLoop,
-    });
+    let active_tools = state.tools.clone();
+    let stream_policy = AgentStreamPolicy::PlanningNoDoneUntilNoTools;
     let planning_reasoning_segment = state.segment_builder.reserve(
         ChatMessageSegmentKind::Reasoning,
         ChatMessageSegmentPhase::ToolLoop,
@@ -145,7 +135,7 @@ pub(crate) async fn planning_step(
         &format!("step_{step_number}_text"),
     );
     let planning_tool_drafts = ToolCallDraftTracker::new(
-        prepared.active_tools.clone(),
+        active_tools.clone(),
         round,
         Some(step_number),
         state.segment_builder.next_order(),
@@ -156,8 +146,8 @@ pub(crate) async fn planning_step(
             host,
             &config.provider,
             &config.model,
-            prepared.runtime_messages.clone(),
-            Some(&prepared.active_tools),
+            send_messages.clone(),
+            Some(&active_tools),
             config.retry_attempts,
             config.thinking_enabled,
             config.thinking_level.clone(),
@@ -167,7 +157,7 @@ pub(crate) async fn planning_step(
             &config.message_id,
             config.generation,
             "Chat tools planning",
-            prepared.stream_policy,
+            stream_policy,
             Some(planning_text_segment.clone()),
             Some(planning_reasoning_segment.clone()),
             Some(planning_tool_drafts.clone()),
@@ -192,7 +182,6 @@ pub(crate) async fn planning_step(
                                 std::mem::take(&mut state.tool_records),
                                 std::mem::take(&mut state.segment_builder).all(),
                                 std::mem::take(&mut state.generated_api_messages),
-                                std::mem::take(&mut state.steps),
                             ),
                         ));
                     }
@@ -228,7 +217,6 @@ pub(crate) async fn planning_step(
                                 &state.planning_reasoning_parts,
                                 std::mem::take(&mut state.tool_records),
                                 std::mem::take(&mut state.generated_api_messages),
-                                std::mem::take(&mut state.steps),
                             ),
                     ));
                 }
@@ -252,7 +240,6 @@ pub(crate) async fn planning_step(
                         planning_tool_drafts,
                         &state.planning_reasoning_parts,
                         std::mem::take(&mut state.generated_api_messages),
-                        std::mem::take(&mut state.steps),
                         err.to_string(),
                     ),
                 ));
@@ -269,8 +256,8 @@ pub(crate) async fn planning_step(
                         config.state,
                         &config.provider,
                         &config.model,
-                        prepared.runtime_messages.clone(),
-                        Some(&prepared.active_tools),
+                        send_messages.clone(),
+                        Some(&active_tools),
                         config.retry_attempts,
                         config.thinking_enabled,
                         config.thinking_level.clone(),
@@ -300,8 +287,8 @@ pub(crate) async fn planning_step(
                 config.state,
                 &config.provider,
                 &config.model,
-                prepared.runtime_messages.clone(),
-                Some(&prepared.active_tools),
+                send_messages.clone(),
+                Some(&active_tools),
                 config.retry_attempts,
                 config.thinking_enabled,
                 config.thinking_level.clone(),
@@ -356,15 +343,6 @@ pub(crate) async fn planning_step(
                 config.provider.id
             );
             state.provider_tools_unsupported = true;
-            state.steps.push(AgentStepResult {
-                step_number,
-                phase: AgentPhase::ToolLoop,
-                response_messages: Vec::new(),
-                tool_records: Vec::new(),
-                segments: Vec::new(),
-                streamed: false,
-                stop_reason: Some(AgentStopReason::ProviderToolsUnsupported),
-            });
             return Ok(PlanningStepOutcome::ToolsUnsupported);
         }
         Err(err) => {
@@ -385,7 +363,6 @@ pub(crate) async fn planning_step(
                                 &state.planning_reasoning_parts,
                                 std::mem::take(&mut state.tool_records),
                                 std::mem::take(&mut state.generated_api_messages),
-                                std::mem::take(&mut state.steps),
                             ),
                     ));
                 }
@@ -405,7 +382,6 @@ pub(crate) async fn planning_step(
             eprintln!("Chat tools planning returned an empty response; retrying once");
             return Ok(PlanningStepOutcome::RetryEmptyResponse);
         }
-        let mut step_segments = Vec::new();
         if !response.trim().is_empty() {
             let mut segment = planning_text_segment.clone();
             segment.phase = ChatMessageSegmentPhase::Plain;
@@ -419,12 +395,9 @@ pub(crate) async fn planning_step(
                     Some(&segment),
                 );
             }
-            if let Some(segment) = state
+            state
                 .segment_builder
-                .append_text_from_template(&segment, response)
-            {
-                step_segments.push(segment);
-            }
+                .append_text_from_template(&segment, response);
         }
         if let Some(reasoning) = extract_reasoning_content(&message) {
             let mut segment = planning_reasoning_segment.clone();
@@ -439,36 +412,20 @@ pub(crate) async fn planning_step(
                     Some(&segment),
                 );
             }
-            if let Some(segment) = state
+            state
                 .segment_builder
-                .append_text_from_template(&segment, reasoning)
-            {
-                step_segments.push(segment);
-            }
+                .append_text_from_template(&segment, reasoning);
         }
-        state.planning_final_message = Some(message.clone());
-        state.steps.push(AgentStepResult {
-            step_number,
-            phase: AgentPhase::ToolLoop,
-            response_messages: vec![message],
-            tool_records: Vec::new(),
-            segments: step_segments,
-            streamed: state.planning_final_streamed,
-            stop_reason: Some(AgentStopReason::Natural),
-        });
+        state.planning_final_message = Some(message);
         return Ok(PlanningStepOutcome::FinalAnswer);
     }
     state.planning_final_streamed = false;
     let planning_text =
         sanitize_assistant_text_response(&assistant_content_from_api_message(&message));
-    let mut step_segments = Vec::new();
     if !planning_text.trim().is_empty() {
-        if let Some(segment) = state
+        state
             .segment_builder
-            .append_text_from_template(&planning_text_segment, planning_text)
-        {
-            step_segments.push(segment);
-        }
+            .append_text_from_template(&planning_text_segment, planning_text);
     }
     if let Some(reasoning) = extract_reasoning_content(&message) {
         if !config.stream_enabled {
@@ -481,19 +438,16 @@ pub(crate) async fn planning_step(
                 Some(&planning_reasoning_segment),
             );
         }
-        if let Some(segment) = state
+        state
             .segment_builder
-            .append_text_from_template(&planning_reasoning_segment, reasoning.clone())
-        {
-            step_segments.push(segment);
-        }
+            .append_text_from_template(&planning_reasoning_segment, reasoning.clone());
         state.planning_reasoning_parts.push(reasoning);
     }
 
     let visible_tool_calls =
         visible_tool_segment_calls(&state.tools, &state.blocked_tool_calls, &tool_calls);
     let draft_tool_segments = planning_tool_drafts.segments();
-    let tool_segments = if draft_tool_segments.is_empty() {
+    if draft_tool_segments.is_empty() {
         let tool_segments = state.segment_builder.append_tool_calls(
             ChatMessageSegmentPhase::ToolLoop,
             Some(step_number),
@@ -510,17 +464,14 @@ pub(crate) async fn planning_step(
                 Some(segment),
             );
         }
-        tool_segments
     } else {
         state
             .segment_builder
-            .append_existing_segments(draft_tool_segments)
-    };
-    step_segments.extend(tool_segments);
+            .append_existing_segments(draft_tool_segments);
+    }
     Ok(PlanningStepOutcome::ToolCalls(PlannedToolRound {
         message,
         tool_calls,
-        step_segments,
     }))
 }
 
@@ -590,7 +541,6 @@ pub(crate) async fn call_chat_completion_message_streamed(
         messages,
         tools,
         GenerateOptions {
-            stream: true,
             thinking_enabled,
             max_tokens: max_output_tokens,
             ..GenerateOptions::default()
@@ -660,7 +610,6 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
         messages,
         tools,
         GenerateOptions {
-            stream: true,
             thinking_enabled,
             thinking_level,
             max_tokens: max_output_tokens,

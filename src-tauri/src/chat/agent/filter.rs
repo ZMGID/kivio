@@ -9,7 +9,7 @@
 use crate::agents::AgentDefinition;
 use crate::mcp::ChatToolDefinition;
 
-use super::prepare::{is_kivio_builtin_tool, tool_matches_recommended_name};
+use super::prepare::tool_matches_recommended_name;
 
 /// Filter `tools` in place for a sub-agent run. Returns the removed tools (for
 /// transparency/logging), mirroring `apply_agent_plan_tool_filter`.
@@ -55,15 +55,6 @@ pub fn filter_tools_for_agent(
 /// table: a worker cannot spawn sibling agents.
 fn is_sub_agent_control_tool(tool: &ChatToolDefinition) -> bool {
     tool.source == "native" && crate::chat::sub_agent::is_sub_agent_tool_name(&tool.name)
-}
-
-/// Keep the public surface honest: `is_kivio_builtin_tool` is intentionally not
-/// used to widen the allow-list here (unlike skills) because a coder/researcher
-/// agent should genuinely be limited to its declared tools; reference it so the
-/// import is not flagged and future callers can opt in.
-#[allow(dead_code)]
-fn _builtin_marker(tool: &ChatToolDefinition) -> bool {
-    is_kivio_builtin_tool(tool)
 }
 
 #[cfg(test)]

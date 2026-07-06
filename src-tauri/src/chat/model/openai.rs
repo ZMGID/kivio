@@ -13,7 +13,7 @@ use crate::utils;
 use super::{
     openai_messages_from_generate_request, pending_tool_calls_from_openai_message,
     stream_read_error, GenerateOutput, GenerateRequest, LanguageModelProvider, ModelError,
-    ModelFuture, ModelUsage, PendingToolCall, ProviderCapabilities, StreamPart, StreamSink,
+    ModelFuture, ModelUsage, PendingToolCall, StreamPart, StreamSink,
 };
 
 pub struct OpenAiChatProvider<'a> {
@@ -43,15 +43,6 @@ impl LanguageModelProvider for OpenAiChatProvider<'_> {
         sink: &'a mut (dyn StreamSink + Send),
     ) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move { self.stream_inner(request, sink).await })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            tool_calling: self.provider.supports_tools,
-            vision: true,
-            streaming: true,
-            reasoning: true,
-        }
     }
 }
 

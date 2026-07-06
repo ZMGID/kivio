@@ -638,7 +638,7 @@ impl From<&Conversation> for ConversationListItem {
             .find(|m| m.role == "user" || m.role == "assistant")
             .map(|m| {
                 let text = m.content.trim();
-                truncate_preview(text, 100)
+                crate::chat::agent::execute::truncate_chars(text, 100)
             })
             .unwrap_or_default();
 
@@ -664,14 +664,6 @@ impl From<&Conversation> for ConversationListItem {
             forked_from: conv.forked_from.clone(),
         }
     }
-}
-
-fn truncate_preview(text: &str, max_chars: usize) -> String {
-    let mut out: String = text.chars().take(max_chars).collect();
-    if text.chars().count() > max_chars {
-        out.push_str("...");
-    }
-    out
 }
 
 #[cfg(test)]

@@ -12,9 +12,7 @@ use super::stop::{
 };
 use super::stream::ToolCallDraftTracker;
 use super::synthesis::SynthesisCompleted;
-use super::types::{
-    AgentPhase, AgentRunConfig, AgentRunResult, AgentStepResult, AgentStopReason,
-};
+use super::types::{AgentPhase, AgentRunConfig, AgentRunResult};
 
 /// Converges the repeated "emit fallback + push api message + build AgentRunResult"
 /// blocks in the agent loop. Emit order is fixed: stream delta (with optional
@@ -135,7 +133,6 @@ impl<'a> RunResultBuilder<'a> {
         planning_reasoning_parts: &[String],
         tool_records: Vec<ToolCallRecord>,
         mut generated_api_messages: Vec<Value>,
-        steps: Vec<AgentStepResult>,
     ) -> AgentRunResult {
         self.emit();
         self.push_api_message(&mut generated_api_messages);
@@ -148,7 +145,6 @@ impl<'a> RunResultBuilder<'a> {
             tool_records,
             segments: segment_builder.all(),
             api_messages: generated_api_messages,
-            steps,
             stream_outcome: self.outcome.to_string(),
             usage: None,
             last_step_usage: None,
@@ -313,7 +309,6 @@ pub(crate) fn finalize_planning_final(
         tool_records: std::mem::take(&mut state.tool_records),
         segments: std::mem::take(&mut state.segment_builder).all(),
         api_messages: std::mem::take(&mut state.generated_api_messages),
-        steps: std::mem::take(&mut state.steps),
         stream_outcome: "completed".to_string(),
         usage: None,
         last_step_usage: None,
@@ -326,7 +321,7 @@ pub(crate) fn finalize_planning_final(
 /// Common loop tail: append final segments, push the closing step and build the
 /// completed run result.
 pub(crate) fn finalize_completed(
-    env: &LoopEnv<'_>,
+    _env: &LoopEnv<'_>,
     state: &mut RunState,
     completed: SynthesisCompleted,
 ) -> AgentRunResult {
@@ -334,41 +329,23 @@ pub(crate) fn finalize_completed(
         response,
         reasoning,
         response_reasoning,
-        phase,
         response_segment,
         response_reasoning_segment,
     } = completed;
-    let mut final_step_segments = Vec::new();
     if !response.trim().is_empty() {
-        if let Some(segment) = state
+        state
             .segment_builder
-            .append_text_from_template(&response_segment, response.clone())
-        {
-            final_step_segments.push(segment);
-        }
+            .append_text_from_template(&response_segment, response.clone());
     }
     if let Some(reasoning_part) = response_reasoning
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        if let Some(segment) = state
+        state
             .segment_builder
-            .append_text_from_template(&response_reasoning_segment, reasoning_part)
-        {
-            final_step_segments.push(segment);
-        }
+            .append_text_from_template(&response_reasoning_segment, reasoning_part);
     }
-
-    state.steps.push(AgentStepResult {
-        step_number: state.step_number,
-        phase,
-        response_messages: Vec::new(),
-        tool_records: Vec::new(),
-        segments: final_step_segments,
-        streamed: env.config.stream_enabled,
-        stop_reason: Some(AgentStopReason::Natural),
-    });
 
     AgentRunResult {
         content: response,
@@ -376,7 +353,6 @@ pub(crate) fn finalize_completed(
         tool_records: std::mem::take(&mut state.tool_records),
         segments: std::mem::take(&mut state.segment_builder).all(),
         api_messages: std::mem::take(&mut state.generated_api_messages),
-        steps: std::mem::take(&mut state.steps),
         stream_outcome: "completed".to_string(),
         usage: None,
         last_step_usage: None,
@@ -426,7 +402,6 @@ pub(crate) fn tool_planning_failed_run_result(
     tool_draft_tracker: ToolCallDraftTracker,
     planning_reasoning_parts: &[String],
     generated_api_messages: Vec<Value>,
-    mut steps: Vec<AgentStepResult>,
     error: String,
 ) -> AgentRunResult {
     let failed_records = tool_draft_tracker.mark_error(&error);
@@ -439,25 +414,13 @@ pub(crate) fn tool_planning_failed_run_result(
         );
     }
 
-    let mut step_segments = segment_builder.append_existing_segments(tool_draft_tracker.segments());
+    segment_builder.append_existing_segments(tool_draft_tracker.segments());
     let content = tool_planning_failed_fallback_response(&config.language);
     let mut final_segment = planning_text_segment;
     final_segment.phase = ChatMessageSegmentPhase::Synthesis;
     final_segment.round = None;
     let appended_segment =
         segment_builder.append_text_from_template(&final_segment, content.clone());
-    if let Some(segment) = &appended_segment {
-        step_segments.push(segment.clone());
-    }
-    steps.push(AgentStepResult {
-        step_number: final_segment.step_number.unwrap_or_default(),
-        phase: AgentPhase::ToolLoop,
-        response_messages: Vec::new(),
-        tool_records: failed_records.clone(),
-        segments: step_segments,
-        streamed: config.stream_enabled,
-        stop_reason: Some(AgentStopReason::Natural),
-    });
 
     RunResultBuilder::new(
         host,
@@ -477,7 +440,6 @@ pub(crate) fn tool_planning_failed_run_result(
         planning_reasoning_parts,
         failed_records,
         generated_api_messages,
-        steps,
     )
 }
 
@@ -487,7 +449,6 @@ pub(crate) fn cancelled_tool_round_run_result(
     tool_records: Vec<ToolCallRecord>,
     mut segments: Vec<ChatMessageSegment>,
     mut generated_api_messages: Vec<Value>,
-    steps: Vec<AgentStepResult>,
 ) -> AgentRunResult {
     let stopped_content = stopped_generation_content(language);
     let next_order = segments
@@ -515,7 +476,6 @@ pub(crate) fn cancelled_tool_round_run_result(
         tool_records,
         segments,
         api_messages: generated_api_messages,
-        steps,
         stream_outcome: "cancelled".to_string(),
         usage: None,
         last_step_usage: None,
@@ -550,6 +510,5 @@ pub(crate) fn cancelled_run_result_from_state(
         std::mem::take(&mut state.tool_records),
         std::mem::take(&mut state.segment_builder).all(),
         std::mem::take(&mut state.generated_api_messages),
-        std::mem::take(&mut state.steps),
     )
 }

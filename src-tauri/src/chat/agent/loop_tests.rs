@@ -8,7 +8,6 @@
     use tokio::time::{sleep, Duration};
 
     use super::*;
-    use crate::chat::agent::types::AgentRunEntry;
     use crate::chat::model::{StreamPart, StreamSink as _};
     use crate::chat::types::ToolCallStatus;
     use crate::mcp::types::{
@@ -477,51 +476,17 @@
     /// memory and usage records go to a unique temp dir, so user settings/providers
     /// are never touched.
     fn test_app_state() -> AppState {
-        AppState {
-            settings: std::sync::RwLock::new(Settings::default()),
-            explain_images: Mutex::new(std::collections::HashMap::new()),
-            current_explain_image_id: Mutex::new(None),
-            lens_busy: AtomicBool::new(false),
-            prev_frontmost_pid_lens: std::sync::atomic::AtomicI32::new(0),
-            prev_frontmost_pid_main: std::sync::atomic::AtomicI32::new(0),
-            explain_stream_generation: std::sync::atomic::AtomicU64::new(0),
-            chat_stream_generations: Mutex::new(std::collections::HashMap::new()),
-            chat_active_generations: Mutex::new(std::collections::HashMap::new()),
-            chat_active_replies: Mutex::new(std::collections::HashMap::new()),
-            pending_chat_tool_approvals: Mutex::new(std::collections::HashMap::new()),
-            chat_session_consent: Mutex::new(std::collections::HashSet::new()),
-            pending_chat_session_consents: Mutex::new(std::collections::HashMap::new()),
-            chat_consent_prompt_lock: tokio::sync::Mutex::new(()),
-            pending_chat_user_prompts: Mutex::new(std::collections::HashMap::new()),
-            pending_python_runs: Mutex::new(std::collections::HashMap::new()),
-            chat_create_conversation_lock: Mutex::new(()),
-            chat_tool_list_cache: Mutex::new(std::collections::HashMap::new()),
-            external_slash_commands_cache: Mutex::new(std::collections::HashMap::new()),
-            external_agent_models_cache: Mutex::new(std::collections::HashMap::new()),
-            external_detected_agents_cache: Mutex::new(None),
-            external_live_sessions: Mutex::new(std::collections::HashMap::new()),
-            pending_chat_external_sends: Mutex::new(Vec::new()),
-            pending_selection: Mutex::new(None),
-            lens_freeze_frame_image_id: Mutex::new(None),
-            lens_pending_reset: Mutex::new(None),
-            key_cooldowns: Mutex::new(std::collections::HashMap::new()),
-            active_key_idx: Mutex::new(std::collections::HashMap::new()),
-            prompt_cache_key_unsupported: Mutex::new(std::collections::HashSet::new()),
-            mcp_sessions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-            usage_dir: std::env::temp_dir().join(format!(
+        AppState::base(
+            Settings::default(),
+            std::env::temp_dir().join(format!(
                 "kivio-agent-loop-test-usage-{}",
                 uuid::Uuid::new_v4()
             )),
-            http: reqwest::Client::new(),
+            reqwest::Client::new(),
             #[cfg(target_os = "macos")]
-            macos_ocr: crate::macos_ocr::MacOcrClient::disabled(),
-            rapidocr: crate::rapidocr::RapidOcrClient::disabled(),
-            sub_agents: crate::chat::sub_agent::SubAgentManager::default(),
-            background_commands: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
-            request_debug: Mutex::new(std::collections::VecDeque::new()),
-        }
+            crate::macos_ocr::MacOcrClient::disabled(),
+            crate::rapidocr::RapidOcrClient::disabled(),
+        )
     }
 
     fn test_provider(base_url: &str) -> ModelProvider {
@@ -547,7 +512,6 @@
         stream_enabled: bool,
     ) -> AgentRunConfig<'a> {
         AgentRunConfig {
-            entry: AgentRunEntry::Send,
             state,
             conversation_id: "conversation".to_string(),
             tool_conversation_id: "conversation".to_string(),
@@ -569,17 +533,12 @@
                 ..ChatToolsConfig::default()
             },
             language: "zh-CN".to_string(),
-            has_image: false,
             thinking_enabled: false,
             thinking_level: None,
             stream_enabled,
             max_output_tokens: 1024,
             retry_attempts: 1,
-            skill_registry: skills::SkillRegistry::default(),
-            active_skill_id: None,
-            active_skill_detail: None,
             assistant_snapshot: None,
-            custom_system_prompt: String::new(),
             provider_tools_fallback_system_prompt: String::new(),
             initial_anchor_total_tokens: None,
             initial_anchor_trailing_estimate: 0,
@@ -1268,15 +1227,6 @@
                 tool_call_id: Some("call_read".to_string()),
             }],
             vec![assistant_message.clone(), tool_response.clone()],
-            vec![AgentStepResult {
-                step_number: 1,
-                phase: AgentPhase::ToolLoop,
-                response_messages: vec![assistant_message.clone(), tool_response.clone()],
-                tool_records: vec![tool_record],
-                segments: Vec::new(),
-                streamed: true,
-                stop_reason: Some(AgentStopReason::Cancelled),
-            }],
         );
 
         assert_eq!(result.content, "已停止生成。");
@@ -1314,10 +1264,6 @@
                 .get("content")
                 .and_then(Value::as_str),
             Some("已停止生成。")
-        );
-        assert_eq!(
-            result.steps[0].stop_reason,
-            Some(AgentStopReason::Cancelled)
         );
     }
 
@@ -1461,7 +1407,6 @@
             tracker,
             &["planning thought".to_string()],
             Vec::new(),
-            Vec::new(),
             "Chat tools planning read body failed".to_string(),
         );
 
@@ -1521,9 +1466,8 @@
             Some(fallback.as_str())
         );
 
-        let last_step = result.steps.last().expect("fallback step");
-        assert_eq!(last_step.stop_reason, Some(AgentStopReason::Natural));
-        assert_eq!(last_step.tool_records.len(), 1);
+        // The whole turn is preserved: exactly the one failed tool record.
+        assert_eq!(result.tool_records.len(), 1);
     }
 
     /// Fallback A (integration): the provider stream breaks mid-connection after a
@@ -1624,9 +1568,6 @@
         let segment = fallback_delta.segment.expect("fallback delta has segment");
         assert_eq!(segment.kind, ChatMessageSegmentKind::Text);
         assert_eq!(segment.phase, ChatMessageSegmentPhase::Synthesis);
-
-        assert_eq!(result.steps.len(), 1);
-        assert_eq!(result.steps[0].stop_reason, Some(AgentStopReason::StepLimit));
     }
 
     /// Fallback C: streamed synthesis is cancelled after tool results exist; the run
@@ -2475,12 +2416,6 @@
             vec![("done".to_string(), recovered.clone())]
         );
 
-        assert_eq!(result.steps.len(), 2);
-        assert_eq!(result.steps[0].stop_reason, Some(AgentStopReason::StepLimit));
-        let final_step = &result.steps[1];
-        assert_eq!(final_step.phase, AgentPhase::Synthesis);
-        assert_eq!(final_step.stop_reason, Some(AgentStopReason::Natural));
-
         assert!(result.segments.iter().any(|segment| {
             segment.kind == ChatMessageSegmentKind::Text
                 && segment.phase == ChatMessageSegmentPhase::Synthesis
@@ -2691,10 +2626,6 @@
                 .and_then(Value::as_str),
             Some("synthesis reasoning")
         );
-
-        let final_step = result.steps.last().expect("final step");
-        assert_eq!(final_step.phase, AgentPhase::Synthesis);
-        assert_eq!(final_step.stop_reason, Some(AgentStopReason::Natural));
     }
 
     /// Build a minimal RunState carrying only the tool fields under test.
@@ -2707,7 +2638,6 @@
             generated_api_messages: Vec::new(),
             tool_records: Vec::new(),
             planning_reasoning_parts: Vec::new(),
-            steps: Vec::new(),
             segment_builder: SegmentBuilder::new(),
             step_number: 0,
             provider_tools_unsupported: false,

@@ -404,7 +404,7 @@ fn clip_serialized_to_budget(serialized: &str, budget_tokens: usize) -> String {
 }
 
 /// 一条 assistant 消息是否携带 tool_calls（其后的 role=="tool" 结果不能与它拆到摘要/保留两侧）。
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn has_tool_calls(message: &Value) -> bool {
     message
         .get("tool_calls")
@@ -789,7 +789,7 @@ pub(crate) fn estimate_chat_message_tokens(message: &ChatMessage) -> usize {
 /// 与 L2 `select_recent_by_tokens` 同语义：不切断单条消息；越预算的那条整体归入旧段。
 /// 内部委托 `token_split_over_indices`——落盘路径过滤多答排除臂后走同一切分核心。
 /// 非过滤（连续区间）调用保留给直接单测 / commands.rs 测试用。
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn token_split_chat_messages(
     messages: &[ChatMessage],
     summary_start: usize,
@@ -1415,7 +1415,7 @@ pub(crate) async fn force_compact(
 /// auto / agent_loop 触发条件不受影响（它们要超 90% 窗口才会走到这里）。
 /// 内部委托 `manual_fallback_split_over_indices`——落盘路径过滤多答排除臂后走同一逻辑。
 /// 非过滤（连续区间）调用保留给直接单测用。
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn manual_fallback_split(
     messages: &[ChatMessage],
     summary_start: usize,

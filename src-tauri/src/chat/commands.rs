@@ -2222,7 +2222,6 @@ async fn complete_assistant_reply_inner(
         resolve_usage_anchor(conversation, Some(&provider));
     let result = crate::chat::agent::run_agent_loop(
         crate::chat::agent::AgentRunConfig {
-            entry,
             state: state.inner(),
             conversation_id: conversation.id.clone(),
             tool_conversation_id: conversation.id.clone(),
@@ -2238,17 +2237,12 @@ async fn complete_assistant_reply_inner(
             settings: settings.clone(),
             effective_chat_tools,
             language,
-            has_image: !main_image_paths.is_empty(),
             thinking_enabled,
             thinking_level,
             stream_enabled,
             max_output_tokens,
             retry_attempts,
-            skill_registry,
-            active_skill_id: skill_id.clone(),
-            active_skill_detail,
             assistant_snapshot: conversation.assistant_snapshot.clone(),
-            custom_system_prompt: settings.chat.system_prompt.clone(),
             provider_tools_fallback_system_prompt,
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,
@@ -5968,13 +5962,7 @@ pub(crate) fn emit_chat_stream_done(
     );
 }
 
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    let mut out = value.chars().take(max_chars).collect::<String>();
-    if value.chars().count() > max_chars {
-        out.push_str("...");
-    }
-    out
-}
+use crate::chat::agent::execute::truncate_chars;
 
 fn format_chat_missing_api_key_error(provider_name: &str) -> String {
     let provider = provider_name.trim();

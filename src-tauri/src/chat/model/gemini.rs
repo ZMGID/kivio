@@ -12,7 +12,7 @@ use crate::usage::{
 use super::{
     parse_tool_arguments, stream_read_error, GenerateOutput, GenerateRequest,
     LanguageModelProvider, MessagePart, ModelError, ModelFuture, ModelMessage, ModelRole,
-    ModelTool, ModelUsage, PendingToolCall, ProviderCapabilities, StreamPart, StreamSink,
+    ModelTool, ModelUsage, PendingToolCall, StreamPart, StreamSink,
 };
 
 /// Google Gemini **原生** `generateContent` adapter（peer of openai/anthropic）。
@@ -46,15 +46,6 @@ impl LanguageModelProvider for GeminiProvider<'_> {
         sink: &'a mut (dyn StreamSink + Send),
     ) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move { self.stream_inner(request, sink).await })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            tool_calling: self.provider.supports_tools,
-            vision: true,
-            streaming: true,
-            reasoning: true,
-        }
     }
 }
 

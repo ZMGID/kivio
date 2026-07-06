@@ -1,9 +1,6 @@
 use std::{
     fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-    thread,
-    time::Duration,
+    path::PathBuf,
 };
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +15,6 @@ pub const L1_MAX_BYTES: usize = 5_000;
 const MEMORY_DIR: &str = "chat-memory";
 const L1_FILE: &str = "L1.md";
 const L2_FILE: &str = "L2.md";
-const WRITE_RETRY_ATTEMPTS: usize = 3;
 
 const DEFAULT_L1: &str = "# L1 Online Memory\n\n";
 const DEFAULT_L2: &str = "# L2 Long-Term Memory\n\n";
@@ -110,7 +106,7 @@ fn memory_file_path(app: &AppHandle, layer: MemoryLayer) -> Result<PathBuf, Stri
 fn ensure_memory_file(app: &AppHandle, layer: MemoryLayer) -> Result<PathBuf, String> {
     let path = memory_file_path(app, layer)?;
     if !path.exists() {
-        atomic_write(&path, layer.default_content(), "memory")?;
+        crate::chat::storage::atomic_write(&path, layer.default_content(), "memory")?;
     }
     Ok(path)
 }
@@ -144,7 +140,7 @@ pub fn save_layer(
 ) -> Result<MemoryLayerContent, String> {
     validate_memory_content(layer, content)?;
     let path = memory_file_path(app, layer)?;
-    atomic_write(&path, content, "memory")?;
+    crate::chat::storage::atomic_write(&path, content, "memory")?;
     read_layer(app, layer)
 }
 
@@ -671,45 +667,7 @@ fn truncate_bytes(content: &str, max_bytes: usize) -> String {
     )
 }
 
-fn atomic_write(path: &Path, content: &str, label: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{label} path has no parent"))?;
-    fs::create_dir_all(parent).map_err(|e| format!("create {label} dir: {e}"))?;
 
-    for attempt in 0..WRITE_RETRY_ATTEMPTS {
-        let tmp_path = parent.join(format!(
-            ".{}.tmp.{}",
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("memory"),
-            attempt
-        ));
-        let write_result = fs::write(&tmp_path, content).and_then(|_| {
-            fs::rename(&tmp_path, path).or_else(|_| {
-                if path.exists() {
-                    fs::remove_file(path)?;
-                }
-                fs::rename(&tmp_path, path)
-            })
-        });
-        match write_result {
-            Ok(()) => return Ok(()),
-            Err(e) if attempt + 1 < WRITE_RETRY_ATTEMPTS => {
-                let _ = fs::remove_file(&tmp_path);
-                thread::sleep(Duration::from_millis(20 * (attempt as u64 + 1)));
-                if e.kind() == ErrorKind::NotFound {
-                    fs::create_dir_all(parent).map_err(|e| format!("create {label} dir: {e}"))?;
-                }
-            }
-            Err(e) => {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(format!("write {label} file: {e}"));
-            }
-        }
-    }
-    Err(format!("write {label} file failed"))
-}
 
 #[cfg(test)]
 mod tests {

@@ -45,7 +45,7 @@ use tokio::sync::Semaphore;
 use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_system_prompt};
 use crate::chat::agent::types::AgentRunResult;
 use crate::chat::agent::{
-    run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, AgentRunEntry, ToolExecutionContext,
+    run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, ToolExecutionContext,
     ToolExecutor, ToolExecutorFuture,
 };
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
@@ -683,7 +683,6 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         let effective_chat_tools = req.settings.chat_tools.clone();
 
         let config = AgentRunConfig {
-            entry: AgentRunEntry::Send,
             state,
             conversation_id: sub_conversation_id.clone(),
             tool_conversation_id: req.parent_conversation_id.clone(),
@@ -699,17 +698,12 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
             settings: req.settings.clone(),
             effective_chat_tools,
             language: req.language.clone(),
-            has_image: false,
             thinking_enabled,
             thinking_level: None,
             stream_enabled,
             max_output_tokens,
             retry_attempts,
-            skill_registry: SkillRegistry::default(),
-            active_skill_id: None,
-            active_skill_detail: None,
             assistant_snapshot: None,
-            custom_system_prompt: String::new(),
             provider_tools_fallback_system_prompt: req.system_prompt.clone(),
             initial_anchor_total_tokens: None,
             initial_anchor_trailing_estimate: 0,
@@ -722,7 +716,7 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         let outcome = run_agent_loop(config, &host, &executor).await;
         // Retire this attempt's generation on every exit path (success or failure).
         // Otherwise the synthetic generation reads "active" forever and entries
-        // accumulate in chat_stream_generations.
+        // accumulate in chat_active_generations.
         state.cancel_chat_generation(&sub_conversation_id);
 
         // Success or cancellation → return immediately.
@@ -1452,7 +1446,6 @@ mod tests {
             tool_records: Vec::new(),
             segments: Vec::new(),
             api_messages: Vec::new(),
-            steps: Vec::new(),
             stream_outcome: String::new(),
             usage: None,
             last_step_usage: None,
@@ -1474,7 +1467,6 @@ mod tests {
             tool_records: Vec::new(),
             segments: Vec::new(),
             api_messages: Vec::new(),
-            steps: Vec::new(),
             stream_outcome: "cancelled".to_string(),
             usage: None,
             last_step_usage: None,
@@ -1614,7 +1606,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::chat::agent::{
-        run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, AgentRunEntry,
+        run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig,
         ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
     };
     use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
@@ -1897,7 +1889,6 @@ mod tests {
         conversation_id: &str,
     ) -> AgentRunConfig<'a> {
         AgentRunConfig {
-            entry: AgentRunEntry::Send,
             state,
             conversation_id: conversation_id.to_string(),
             tool_conversation_id: conversation_id.to_string(),
@@ -1919,17 +1910,12 @@ mod tests {
                 ..ChatToolsConfig::default()
             },
             language: "zh-CN".to_string(),
-            has_image: false,
             thinking_enabled: false,
             thinking_level: None,
             stream_enabled: false,
             max_output_tokens: 1024,
             retry_attempts: 1,
-            skill_registry: SkillRegistry::default(),
-            active_skill_id: None,
-            active_skill_detail: None,
             assistant_snapshot: None,
-            custom_system_prompt: String::new(),
             provider_tools_fallback_system_prompt: String::new(),
             initial_anchor_total_tokens: None,
             initial_anchor_trailing_estimate: 0,

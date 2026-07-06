@@ -7,40 +7,6 @@ use crate::settings::{
 };
 use crate::skills;
 
-use super::types::{AgentPhase, AgentStepResult, AgentStreamPolicy};
-
-pub struct PrepareStepInput<'a> {
-    pub step_number: u8,
-    pub previous_steps: &'a [AgentStepResult],
-    pub runtime_messages: &'a [Value],
-    pub tools: &'a [ChatToolDefinition],
-    pub phase: AgentPhase,
-}
-
-pub struct PreparedStep {
-    pub active_tools: Vec<ChatToolDefinition>,
-    pub runtime_messages: Vec<Value>,
-    pub phase: AgentPhase,
-    pub stream_policy: AgentStreamPolicy,
-}
-
-pub fn prepare_agent_step(input: PrepareStepInput<'_>) -> PreparedStep {
-    let active_tools = match input.phase {
-        AgentPhase::ToolLoop => input.tools.to_vec(),
-        AgentPhase::Synthesis | AgentPhase::Plain => Vec::new(),
-    };
-    let stream_policy = match input.phase {
-        AgentPhase::ToolLoop => AgentStreamPolicy::PlanningNoDoneUntilNoTools,
-        AgentPhase::Synthesis | AgentPhase::Plain => AgentStreamPolicy::SynthesisAlwaysDone,
-    };
-    PreparedStep {
-        active_tools,
-        runtime_messages: input.runtime_messages.to_vec(),
-        phase: input.phase,
-        stream_policy,
-    }
-}
-
 pub fn chat_tools_capable(
     provider: &crate::settings::ModelProvider,
     chat_tools: &ChatToolsConfig,

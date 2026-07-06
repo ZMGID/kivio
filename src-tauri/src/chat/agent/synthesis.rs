@@ -8,7 +8,6 @@ use super::finalize::{
 };
 use super::loop_::{LoopEnv, RunState};
 use super::planning::{call_chat_completion_message_with_usage, stream_scoped_chat_completion_inner};
-use super::prepare::{prepare_agent_step, PrepareStepInput};
 use super::recovery::{self, RecoveryAction};
 use super::stop::{
     empty_assistant_response_error, extract_reasoning_content, final_assistant_api_message,
@@ -21,7 +20,6 @@ pub(crate) struct SynthesisCompleted {
     pub(crate) response: String,
     pub(crate) reasoning: Option<String>,
     pub(crate) response_reasoning: Option<String>,
-    pub(crate) phase: AgentPhase,
     pub(crate) response_segment: ChatMessageSegment,
     pub(crate) response_reasoning_segment: ChatMessageSegment,
 }
@@ -46,13 +44,6 @@ pub(crate) async fn synthesis_step(
     };
     // 循环内上下文治理：超限时先 snip / 摘要（与 planning_step 相同的发送视图）。
     let send_messages = super::compaction::maybe_compact_send_view(env, state).await;
-    let prepared = prepare_agent_step(PrepareStepInput {
-        step_number,
-        previous_steps: &state.steps,
-        runtime_messages: &send_messages,
-        tools: &[],
-        phase,
-    });
     let synthesis_stream_policy = if state.tool_records.is_empty() {
         AgentStreamPolicy::SynthesisAlwaysDone
     } else {
@@ -80,7 +71,7 @@ pub(crate) async fn synthesis_step(
             host,
             &config.provider,
             &config.model,
-            prepared.runtime_messages,
+            send_messages,
             None,
             config.retry_attempts,
             config.thinking_enabled,
@@ -118,7 +109,6 @@ pub(crate) async fn synthesis_step(
                             &state.planning_reasoning_parts,
                             std::mem::take(&mut state.tool_records),
                             std::mem::take(&mut state.generated_api_messages),
-                            std::mem::take(&mut state.steps),
                         ),
                 ));
             }
@@ -142,7 +132,6 @@ pub(crate) async fn synthesis_step(
                             &state.planning_reasoning_parts,
                             std::mem::take(&mut state.tool_records),
                             std::mem::take(&mut state.generated_api_messages),
-                            std::mem::take(&mut state.steps),
                         ),
                 ));
             }
@@ -164,7 +153,6 @@ pub(crate) async fn synthesis_step(
                         &state.planning_reasoning_parts,
                         std::mem::take(&mut state.tool_records),
                         std::mem::take(&mut state.generated_api_messages),
-                        std::mem::take(&mut state.steps),
                     ),
             ));
         }
@@ -201,9 +189,9 @@ pub(crate) async fn synthesis_step(
         }
     } else {
         // 有意行为统一：此前非流式分支发送原始 state.runtime_messages（历史 quirk），
-        // 接入压缩后改为与流式分支相同的发送视图（prepared.runtime_messages 即压缩后
-        // 的 send_messages），保证两条合成路径在超限场景行为一致。
-        let runtime_messages = prepared.runtime_messages.clone();
+        // 接入压缩后改为与流式分支相同的发送视图（send_messages 即压缩后的发送视图），
+        // 保证两条合成路径在超限场景行为一致。
+        let runtime_messages = send_messages.clone();
         let message_result = tokio::select! {
             result = call_chat_completion_message_with_usage(
                 config.state,
@@ -253,7 +241,6 @@ pub(crate) async fn synthesis_step(
                             &state.planning_reasoning_parts,
                             std::mem::take(&mut state.tool_records),
                             std::mem::take(&mut state.generated_api_messages),
-                            std::mem::take(&mut state.steps),
                         ),
                 ));
             }
@@ -332,7 +319,6 @@ pub(crate) async fn synthesis_step(
         response,
         reasoning,
         response_reasoning,
-        phase,
         response_segment,
         response_reasoning_segment,
     }))

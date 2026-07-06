@@ -3,16 +3,6 @@ use serde_json::Value;
 use crate::api::extract_status_code;
 use crate::chat::model::{pending_tool_calls_from_openai_message, PendingToolCall};
 
-use super::types::AgentStopReason;
-
-pub fn evaluate_stop_after_model_step(message: &Value) -> AgentStopReason {
-    if extract_tool_calls(message).is_empty() {
-        AgentStopReason::Natural
-    } else {
-        AgentStopReason::StepLimit
-    }
-}
-
 pub fn step_limit_system_message() -> Value {
     serde_json::json!({
         "role": "system",
@@ -184,30 +174,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn natural_stop_when_no_tool_calls_or_dsml() {
-        let message = serde_json::json!({
-            "role": "assistant",
-            "content": "直接回答"
-        });
-
-        assert_eq!(
-            evaluate_stop_after_model_step(&message),
-            AgentStopReason::Natural
-        );
-    }
-
-    #[test]
-    fn detects_dsml_tool_calls_before_natural_stop() {
+    fn detects_dsml_tool_calls() {
         let message = serde_json::json!({
             "role": "assistant",
             "content": "<|DSML|tool_calls><|DSML|invoke name=\"skill\"><|DSML|parameter name=\"name\">doc</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>"
         });
 
         assert_eq!(extract_tool_calls(&message).len(), 1);
-        assert_ne!(
-            evaluate_stop_after_model_step(&message),
-            AgentStopReason::Natural
-        );
     }
 
     #[test]
