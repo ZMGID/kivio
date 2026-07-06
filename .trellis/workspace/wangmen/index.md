@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
+- **Total Sessions**: 13
 - **Last Active**: 2026-07-06
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~416 | Active |
+| `journal-1.md` | ~449 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-07-06 | Windows 启动读取 PowerShell profile PATH 支持 fnm/nvm | `5b6df68` | `main` |
 | 12 | 2026-07-06 | 上下文 token 计量:真实用量锚点回喂(对齐 pi)+ gpt-5.x 窗口修正 | `ea15877`, `85a3056` | `feat/context-token-ground-truth` |
 | 11 | 2026-07-06 | 对话分支：分叉成新对话（方案 B） | `8528740` | `main` |
 | 10 | 2026-07-06 | 上下文压缩正确性修复 | `9df98de`, `68686e2`, `37149f1`, `bd6c5a6`, `93b216f`, `6e81e8c`, `b67c4af` | `main` |

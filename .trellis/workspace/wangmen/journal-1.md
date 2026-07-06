@@ -414,3 +414,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Windows 启动读取 PowerShell profile PATH 支持 fnm/nvm
+
+**Date**: 2026-07-06
+**Task**: Windows 启动读取 PowerShell profile PATH 支持 fnm/nvm
+**Branch**: `main`
+
+### Summary
+
+为 enrich_path_windows 增加两段式修复:注册表合并后再跑一次加载 profile 的 powershell 探测 $env:PATH(不加 -NoProfile,3s 超时,失败降级),使 fnm/nvm 从 PowerShell profile 动态注入的 node 目录进入 kivio 进程 PATH;run_command 保留 -NoProfile。common_dirs_windows 增补 nvm/fnm 稳定别名兜底。经 GUI chat-probe 通道用模拟 fnm profile 端到端验证通过。新增 spec .trellis/spec/tauri/process-path-enrichment.md。已合并并推送 main。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5b6df68` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
