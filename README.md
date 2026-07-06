@@ -171,12 +171,12 @@ Kivio checks GitHub Releases for updates shortly after launch (can be disabled) 
 ## What's New — v2.7.6
 
 - **Conversation branching** — fork a new conversation from any message; the source stays untouched and attachments are copied.
-- **Accurate context metering** — context usage is now anchored to real provider-reported token counts (aligned with pi), with a conservative floor so it never under-reports.
+- **Accurate context metering** — context usage is now anchored to real provider-reported token counts, with a conservative floor so it never under-reports.
 - **Model favorites** — star models to pin them at the top of the selector.
 - **Windows: fnm / nvm node support** — Kivio loads your PowerShell profile PATH at startup, so node and CLIs installed via fnm or nvm are found without manual env injection.
 - **Windows: `run_command` via PowerShell** — shell commands run through PowerShell (pwsh → powershell) with correct quoting and UTF-8 output.
 - **Obsidian connector** — built-in Obsidian skills (markdown / bases / canvas / CLI), gated until you configure a vault.
-- **Leaner system prompt** — aligned with opencode: more concise with clearer work discipline, applied across chat and sub-agents.
+- **Leaner system prompt** — more concise with clearer work discipline, applied across chat and sub-agents.
 - **Reliability** — conversation index self-heal (no more lost history when starting a new chat), image preview keeps composer attachments, streaming tool-call id fix (SenseNova), auto-retry when an endpoint rejects the cache key, and a GitHub update-check fallback.
 
 Full history: [GitHub Releases](https://github.com/ZMGID/kivio/releases).
@@ -201,7 +201,7 @@ npm test             # Vitest frontend suite
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust tests
 ```
 
-Architecture notes: [CLAUDE.md](CLAUDE.md) and `docs/`. Release flow ([docs/RELEASE_PACKAGING.md](docs/RELEASE_PACKAGING.md)): GitHub Actions builds the macOS Apple Silicon DMG on `v*` tags; the Windows NSIS `.exe` is built locally and uploaded to the same release.
+Architecture notes: [CLAUDE.md](CLAUDE.md) and `docs/`.
 
 ## License
 
@@ -377,12 +377,12 @@ Kivio 启动后会检查 GitHub Releases 的新版本（可关闭），并支持
 ## 新版本 —— v2.7.6
 
 - **对话分支** —— 从任意消息分叉出新对话;源对话保持不变,附件自动拷贝。
-- **上下文计量校准** —— 上下文用量以服务商返回的真实 token 数为锚点(对齐 pi),并设保守下限,绝不少报。
+- **上下文计量校准** —— 上下文用量以服务商返回的真实 token 数为锚点,并设保守下限,绝不少报。
 - **模型收藏** —— 收藏模型,置顶到选择器最上方,快速切换。
 - **Windows:支持 fnm / nvm 的 node** —— 启动时读取 PowerShell profile 的 PATH,fnm/nvm 安装的 node 与各类 CLI 无需手动注入环境即可识别。
 - **Windows:`run_command` 改走 PowerShell** —— 命令经 PowerShell(pwsh → powershell)执行,参数引用正确、输出 UTF-8。
 - **Obsidian 连接器** —— 内置 Obsidian 技能(markdown / bases / canvas / CLI),配置 vault 后才对模型开放。
-- **系统提示词精简** —— 对齐 opencode:更精简、工作纪律更清晰,作用于 Chat 与子代理。
+- **系统提示词精简** —— 更精简、工作纪律更清晰,作用于 Chat 与子代理。
 - **稳定性** —— 对话索引自愈(新建对话不再丢历史)、图片预览后输入框附件不丢、流式工具调用 id 修复(商汤)、端点拒绝缓存键时自动重试、GitHub 更新检查回退。
 
 完整历史:[GitHub Releases](https://github.com/ZMGID/kivio/releases)。
@@ -407,7 +407,7 @@ npm test             # Vitest 前端测试
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
 ```
 
-架构说明：[CLAUDE.md](CLAUDE.md) 与 `docs/`。发布流程（[docs/RELEASE_PACKAGING.md](docs/RELEASE_PACKAGING.md)）：推 `v*` 标签后 GitHub Actions 构建 macOS Apple Silicon DMG；Windows NSIS `.exe` 本地构建后上传到同一 Release。
+架构说明：[CLAUDE.md](CLAUDE.md) 与 `docs/`。
 
 ## 许可证
 
