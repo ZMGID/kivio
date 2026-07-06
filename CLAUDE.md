@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kivio (formerly KeyLingo through v2.4.4; currently v2.7.x) is a desktop **AI assistant** built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows. It began as a screen-level utility — global hotkey-triggered text translation, screenshot OCR/translation, and a Lens capture-then-ask vision overlay — and has grown a full **agentic chat application** (`src/chat/` + `src-tauri/src/chat/`) with a tool-calling agent loop, MCP servers, Skills, sub-agents, a Pyodide code sandbox, and a provider-agnostic model layer (OpenAI-compatible **and** Anthropic Messages). All AI calls go through user-configured providers.
+Kivio (formerly KeyLingo through v2.4.4; currently v2.7.x) is a desktop **AI assistant** built with **Tauri v2** (Rust backend) and **React 18 + Vite + TailwindCSS v4** (frontend). It runs on macOS and Windows. It began as a screen-level utility — global hotkey-triggered text translation, screenshot OCR/translation, and a Lens capture-then-ask vision overlay — and has grown a full **agentic chat application** (`src/chat/` + `src-tauri/src/chat/`) with a tool-calling agent loop, MCP servers, Skills, sub-agents, a Pyodide code sandbox, and a provider-agnostic model layer (OpenAI-compatible, Anthropic Messages, Gemini native, and OpenAI Responses). All AI calls go through user-configured providers.
+
+**The codebase is now several products sharing one agent core.** The `chat::agent::run_agent_loop` loop is decoupled via the `AgentHost` trait and reused, unchanged, across four surfaces:
+- **GUI chat** (`chat/`) — the primary in-window agentic chat.
+- **Kivio Code** (`kivio_code/` + the `kivio-code` binary / `kivio code` subcommand) — a headless + TUI **terminal coding agent** built on the same loop.
+- **External CLI agents** (`external_agents/`) — drives *other* installed coding CLIs (claude, codex, cursor, opencode, gemini, kimi, pi, hermes) as chat backends over their own stream protocols.
+- **Sub-agents** (`agents/` + `chat/sub_agent.rs`) — named personas spawned by the parent agent.
+
+Plus **connectors** (`connectors/`) — one-click OAuth onboarding for remote MCP data sources (Notion, Obsidian, Himalaya). Keep this "one loop, many hosts" abstraction intact when touching the agent runtime — a change to the loop affects all four surfaces.
 
 ## Common Commands
 
@@ -20,9 +28,11 @@ Use `npm` (lockfile is `package-lock.json`). Rust tooling is managed by Tauri.
 - `npm run lint` — run ESLint on `.ts` and `.tsx` files (`--max-warnings 0`, so warnings fail).
 - `npm run typecheck` — run `tsc --noEmit` for strict TypeScript checks.
 - `npm test` — run the **Vitest** frontend test suite once (`npm run test:watch` for watch mode). Run a single file with `npx vitest run src/chat/segments.test.ts`; filter by name with `-t "<pattern>"`.
-- `cargo test --manifest-path src-tauri/Cargo.toml` — run Rust unit tests (the agent loop has substantial coverage in `chat/agent/loop_tests.rs`).
+- `cargo test --manifest-path src-tauri/Cargo.toml` — run Rust unit tests (the agent loop has substantial coverage in `chat/agent/loop_tests.rs`; `kivio_code/` and `external_agents/` also carry meaningful test suites).
 
 There is no e2e runner; manual smoke testing is still required after changes that affect app flows (capture, hotkeys, streaming).
+
+**Two binaries** (see `[[bin]]` in `src-tauri/Cargo.toml`): `kivio` (`src/main.rs`, the GUI app) and `kivio-code` (`src/bin/kivio-code.rs`, the standalone terminal agent — a thin wrapper that forwards args into `kivio_code::cli::run`). The GUI binary also dispatches the `kivio code <args>` subcommand into that same code path, so there is no separate shipped executable for the terminal agent in packaged builds. Build the CLI alone with `cargo build --manifest-path src-tauri/Cargo.toml --bin kivio-code`.
 
 ## Architecture
 
@@ -63,7 +73,7 @@ The app supports multiple AI providers. Each feature can use a different provide
 - **Lens** (`lens.providerId` + `lens.model`; both blank ⇒ falls back to translator provider/model)
 - **Chat** — selected per-conversation in the chat UI (`ModelSelector`); see the Chat/Agent section.
 
-Providers are mostly OpenAI-compatible, but the chat runtime is provider-agnostic and also speaks the **Anthropic Messages** API natively (`chat/model/anthropic.rs`). Providers have `availableModels` (fetched from `/models`) and `enabledModels` (user-selected subset shown in dropdowns). Model selection UI uses colon-delimited values like `providerId:modelName`.
+Providers are mostly OpenAI-compatible, but the chat runtime is provider-agnostic and speaks four wire protocols natively via peer adapters in `chat/model/`: **OpenAI Chat Completions** (`openai.rs`), **Anthropic Messages** (`anthropic.rs`), **Gemini `generateContent`** (`gemini.rs`), and **OpenAI Responses** (`responses.rs`). Providers have `availableModels` (fetched from `/models`) and `enabledModels` (user-selected subset shown in dropdowns). Model selection UI uses colon-delimited values like `providerId:modelName`.
 
 Each provider stores `apiKeys: string[]` (a pool of keys for failover), not a single key. The first entry is the primary; subsequent entries are backups.
 
@@ -82,7 +92,7 @@ When a request fails with a quota/rate-limit/auth error, the backend automatical
 
 The chat app (`src-tauri/src/chat/`) is the largest subsystem. It runs a **provider-agnostic agentic tool loop**, with `src/chat/` (esp. `Chat.tsx`) as the frontend.
 
-**Model abstraction (`chat/model/`).** Read `chat/model/README.md` — it's the binding contract. Runtime code never inspects provider JSON: it builds a `GenerateRequest`, hands it to a `LanguageModelProvider`, and consumes `GenerateOutput` + `StreamPart` events. `openai.rs` (OpenAI-compatible) and `anthropic.rs` (Anthropic Messages) are **peer adapters** that own all wire-format details. Do not leak `choices`, Anthropic `content` blocks, or SSE event names into loop/tool code.
+**Model abstraction (`chat/model/`).** Read `chat/model/README.md` — it's the binding contract. Runtime code never inspects provider JSON: it builds a `GenerateRequest`, hands it to a `LanguageModelProvider`, and consumes `GenerateOutput` + `StreamPart` events. `openai.rs` (Chat Completions), `anthropic.rs` (Anthropic Messages), `gemini.rs` (Gemini native `generateContent`), and `responses.rs` (OpenAI Responses `/v1/responses`) are **peer adapters** that own all wire-format details. Do not leak `choices`, Anthropic `content` blocks, Gemini `parts`, Responses `function_call` items, or SSE event names into loop/tool code. The Gemini and Responses adapters exist because some models only behave correctly on their native protocol — Gemini's OpenAI-compat endpoint 400s on unknown body fields (`promptCacheKey`/`tool_choice`), and Responses-native/Codex models emit tool-call arguments **only** over Responses streaming events (empty `arguments` on Chat Completions).
 
 **Agent loop (`chat/agent/`).** Orchestration is split into phases threaded by `loop_.rs`: `prepare` → `planning` → `rounds` (tool execution) → `synthesis` → `finalize`, with `compaction.rs` for context window compaction, `stream.rs` for streaming, `stop.rs` for cancellation/system-message patching, and `filter.rs` for per-agent tool allow-listing. The loop is decoupled from Tauri via the **`AgentHost` trait (`host.rs`)** — it emits stream deltas, tool records, and approval requests through that trait, and executes tools through a `ToolExecutor` (`execute.rs`). `loop_tests.rs` exercises the phases with fake hosts; prefer extending it over manual testing for loop changes.
 
@@ -127,7 +137,26 @@ A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent over
 - **Windows system OCR** (`windows_ocr.rs`) — calls `Windows.Media.Ocr` APIs directly via Windows Runtime bindings.
 - **RapidOCR offline** (`rapidocr.rs`) — cross-platform PaddleOCR ONNX pipeline for users who want fully offline OCR without system dependencies. Downloads ONNX Runtime + models on first use. User-initiated install only; no automatic fallback.
 
-### Rust Backend Structure
+### Kivio Code — terminal coding agent (`kivio_code/`)
+
+A second product surface: a **headless + TUI terminal coding agent** that reuses `chat::agent::run_agent_loop` unchanged, via its own `AgentHost` implementations. Shipped as the `kivio-code` binary and the `kivio code` subcommand of the GUI binary (both route through `kivio_code/cli.rs::run`).
+
+- **Two run modes.** Print mode (`-p "<prompt>"`) runs one full agent turn to stdout; interactive mode launches a differential-render **TUI** (`kivio_code/tui/` + `interactive/`) with its own event loop (dedicated stdin thread + agent-event mpsc + resize poll all funneling into one loop). Hosts: `kivio_code/host.rs::CliAgentHost` (print) and `interactive/agent_host.rs::InteractiveAgentHost` (TUI). Each submit spawns a background `run_agent_loop` on a tokio runtime; `AgentUiEvent`s stream back to the render loop; cancellation flips a `RunCancel` the loop checks at its next checkpoint.
+- **Config & settings.** `settings_loader.rs` reads the same per-app data dir as the GUI (`com.zmair.kivio` via the `directories` crate); `config.rs`/`resolve_provider_model` pick the provider/model; `mcp_setup.rs` + `skill_setup.rs` wire MCP servers and Skills into the CLI's tool set; `project_context.rs` injects repo context; `vision.rs` handles image inputs.
+- **Sessions (`session/`).** Append-only JSONL per session (PI-style), grouped on disk under `<app_data>/kivio-code/sessions/<cwd-slug>/<timestamp>_<uuid>.jsonl`: a header line then one typed `SessionRecord` (`message`/`tool_call`/`tool_result`/`compaction`/`model_change`) per line. Resumable.
+- **Windows console attach.** The GUI `kivio.exe` is a `windows`-subsystem program with no console when launched from a terminal, so `cli.rs::run` first `AttachConsole(ATTACH_PARENT_PROCESS)` (falling back to `AllocConsole`) and re-syncs std handles before any output. The standalone `kivio-code` bin is console-subsystem and no-ops the attach.
+- **PATH install** is `cli_install.rs` (see below), triggered from the Kivio Code settings page.
+
+### External CLI agents (`external_agents/`)
+
+Lets a chat conversation be backed by an **externally-installed coding CLI** instead of Kivio's own loop. `registry.rs` defines 8 agents (`defs/`: claude, codex, cursor, opencode, gemini, kimi, pi, hermes). `detection.rs` probes each concurrently (binary lookup + version + auth + model list, cached 5 min). `run.rs` spawns the CLI, feeds the composed prompt, and normalizes its output into the same `chat-stream`/`chat-tool` events the built-in loop emits — so the chat UI renders both identically.
+
+- **Stream protocols (`types.rs::StreamFormat` + `session/`).** Each CLI speaks a different wire format: `ClaudeStreamJson`, `JsonEventStream` (with per-CLI `JsonEventParser`: codex/cursor/opencode/gemini/kimi), `PiRpc` (`session/pi_rpc.rs`), `AcpJsonRpc` (Agent Client Protocol, `session/acp.rs`), `CodexAppServer` (`session/codex_app_server.rs`). Slash-command discovery is per-CLI (`SlashStrategy`: probe Claude `system/init`, or ACP `initialize`→`session/new`→`available_commands_update`).
+- **Sessions** persist per conversation at `<app_data>/external-agent-sessions/<conversation_id>.json` (`session/mod.rs`); `resolve_agent_resume_context` lets a CLI resume its native session. `workspace.rs` resolves the effective cwd + extra allowed dirs; `skill_stage.rs` stages an active Kivio Skill into the CLI's cwd; `compact.rs`/`context.rs` handle context assembly.
+
+### Connectors (`connectors/`)
+
+One-click OAuth onboarding for remote MCP data sources. Phase A (token-type) is pure frontend (writes an `Authorization`-header `ChatMcpServer` into `settings.chat_tools.servers`). Phase B (`oauth.rs`) implements **remote-MCP OAuth: PKCE + dynamic client registration (DCR) + loopback callback + token refresh**, enabling Notion (built-in catalog) and any DCR-capable remote MCP. `connector_oauth_connect` runs the flow and **returns** a materialized `ChatMcpServer` to the frontend (it does not write settings itself — the frontend merges + saves, matching the existing settings flow). `obsidian.rs` (local vault listing) and `himalaya.rs` (email CLI) are non-OAuth local connectors. Frontend catalog is `connectorCatalog.ts` + `ConnectorsPanel.tsx`.
 
 - **`main.rs`** — Tauri commands, update flow, hotkey registration, tray setup, window lifecycle, capture orchestration, and app startup.
 - **`api.rs`** — HTTP client setup, provider credential resolution, retry/failover, OpenAI-compatible text/OCR/vision calls, and SSE stream parsing.
@@ -145,7 +174,13 @@ A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent over
 - **`prompts.rs`** — Default prompt templates for translator, screenshot translation, and Lens features.
 - **`web_search.rs`** — Lens web search integration (Tavily / Exa providers). Called when Lens decides to search for current facts, unfamiliar visible text, or external context.
 - **`usage.rs`** — Per-call token-usage logging (`usage/` dir) and aggregation for the Settings usage panel.
-- **`chat/`** — the agentic chat subsystem (see Chat / Agent Runtime): `agent/` (loop phases), `model/` (provider adapters), plus `storage`, `memory`, `todo`, `plan`, `ask_user`, `attachments`, `image_generation`, `sub_agent`, `commands`, etc.
+- **`chat/`** — the agentic chat subsystem (see Chat / Agent Runtime): `agent/` (loop phases), `model/` (provider adapters), plus `storage`, `memory`, `todo`, `plan`, `ask_user`, `attachments`, `image_generation`, `sub_agent`, `request_debug`, `commands`, etc.
+- **`kivio_code/`** — the `kivio-code` terminal coding agent (see Kivio Code section): CLI + TUI + sessions, reusing the shared agent loop through its own `AgentHost`s.
+- **`external_agents/`** — drive externally-installed coding CLIs as chat backends (see External CLI agents section).
+- **`connectors/`** — one-click OAuth onboarding for remote MCP data sources (see Connectors section).
+- **`cli_install.rs`** — register `kivio` on the user's PATH so `kivio code` works from any terminal (Windows: per-user `HKCU\Environment\Path` + `WM_SETTINGCHANGE` broadcast; macOS: `~/.local/bin/kivio` symlink). Triggered from the Kivio Code settings page, never at install time.
+- **`path_env.rs`** — one-shot startup `PATH` enrichment so GUI launches can find user-installed CLIs (macOS `.app` gets a minimal `PATH`; Windows `explorer.exe` env is a stale login snapshot). Read-only, never panics/blocks; every downstream subprocess inherits the fix.
+- **`proc.rs`** — `NoConsoleWindow` extension trait applying `CREATE_NO_WINDOW` to `std`/`tokio` `Command`s on Windows (no-op elsewhere), so spawning external CLIs / MCP stdio servers / probes doesn't flash console windows.
 - **`mcp/`** — MCP client/manager and the unified `ChatToolDefinition` tool registry (`native_registry` + external servers).
 - **`native_tools/`** — built-in agent tools (web fetch, file ops, shell, sandbox export) with path/size security guards.
 - **`skills/`** — Skill discovery/parse/activation/run (markdown-defined skills).
