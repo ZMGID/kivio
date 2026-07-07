@@ -15,6 +15,8 @@ import {
   Wrench,
 } from 'lucide-react'
 import { api, type ModelProvider } from '../api/tauri'
+import { getSettingsCached } from '../api/settingsCache'
+import { Button, IconButton } from '../components/Button'
 import { isProviderEnabled } from '../settings/utils'
 import { Select } from '../settings/components'
 import { builtinAssistantGlyph } from './assistantIcons'
@@ -194,7 +196,7 @@ export function AssistantCenter({
 
   const loadProviders = useCallback(async () => {
     try {
-      const settings = await api.getSettings()
+      const settings = await getSettingsCached()
       setProviders(settings.providers || [])
       setMcpServers(
         (settings.chatTools?.servers ?? []).map((server) => ({ id: server.id, name: server.name })),
@@ -427,16 +429,15 @@ export function AssistantCenter({
                     <span className="ml-auto shrink-0">{assistant.enabled === false ? '已停用' : '可用'}</span>
                   </div>
                 </button>
-                <button
-                  type="button"
+                <IconButton
+                  size="md"
                   onClick={() => void handleStartChat(assistant)}
                   disabled={assistant.enabled === false}
-                  className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-900 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-100 dark:hover:bg-neutral-800"
-                  aria-label={`使用 ${assistant.name} 开始聊天`}
+                  label={`使用 ${assistant.name} 开始聊天`}
                   title="开始聊天"
                 >
                   <Plus size={18} />
-                </button>
+                </IconButton>
               </article>
             )
           })}
@@ -457,14 +458,14 @@ export function AssistantCenter({
       <div className="space-y-7">
         <div className="flex flex-col gap-4 border-b border-neutral-200 pb-5 dark:border-neutral-800 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 gap-4">
-            <button
-              type="button"
+            <IconButton
+              size="md"
               onClick={() => setView('list')}
-              className="mt-1 grid size-8 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-              aria-label="返回列表"
+              className="mt-1"
+              label="返回列表"
             >
               <ArrowLeft size={18} />
-            </button>
+            </IconButton>
             <div
               className="grid size-16 shrink-0 place-items-center rounded-md text-[26px] font-semibold text-white"
               style={{ backgroundColor: assistant.color || '#6A8FBD' }}
@@ -484,46 +485,40 @@ export function AssistantCenter({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <button
-              type="button"
+            <Button
               onClick={() => {
                 setDraft(normalizeAssistantForDraft(assistant))
                 setView('edit')
               }}
-              className="flex h-9 items-center gap-2 rounded-md bg-neutral-100 px-3 text-[13px] font-medium text-neutral-800 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700"
             >
               <Pencil size={15} />
               编辑
-            </button>
-            <button
-              type="button"
+            </Button>
+            <IconButton
+              size="sm"
               onClick={() => void handleDuplicate(assistant)}
-              className="grid h-9 w-9 place-items-center rounded-md bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
-              title="复制助手"
-              aria-label="复制助手"
+              label="复制助手"
             >
               <Copy size={15} />
-            </button>
+            </IconButton>
             {canApplyCurrent && (
-              <button
-                type="button"
+              <Button
+                variant="ghost"
                 onClick={() => void handleApplyAssistant(assistant)}
                 disabled={assistant.enabled === false}
-                className="flex h-9 items-center gap-2 rounded-md px-3 text-[13px] font-medium text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-neutral-800"
               >
                 <Check size={15} />
                 应用到当前对话
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={() => void handleStartChat(assistant)}
               disabled={assistant.enabled === false}
-              className="flex h-9 items-center gap-2 rounded-md bg-neutral-950 px-3 text-[13px] font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-neutral-200"
             >
               <Play size={15} />
               开始聊天
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -577,14 +572,13 @@ export function AssistantCenter({
       <div className="space-y-6">
         <div className="flex flex-col gap-4 border-b border-neutral-200 pb-4 dark:border-neutral-800 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex min-w-0 items-center gap-3">
-            <button
-              type="button"
+            <IconButton
+              size="md"
               onClick={() => setView(selectedAssistant ? 'detail' : 'list')}
-              className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-              aria-label="返回"
+              label="返回"
             >
               <ArrowLeft size={18} />
-            </button>
+            </IconButton>
             <div className="min-w-0">
               <h2 className="truncate text-[24px] font-semibold text-neutral-950 dark:text-neutral-50">编辑套件</h2>
               <p className="mt-1 truncate text-[13px] text-neutral-500">
@@ -593,36 +587,34 @@ export function AssistantCenter({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <button
-              type="button"
+            <IconButton
+              size="sm"
+              variant="danger"
               onClick={() => void handleDelete()}
               disabled={saving}
-              className="grid h-9 w-9 place-items-center rounded-md text-neutral-500 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+              label="删除套件"
               title="删除"
-              aria-label="删除套件"
             >
               <Trash2 size={15} />
-            </button>
-            <button
-              type="button"
+            </IconButton>
+            <Button
+              variant="ghost"
               onClick={() => void saveDraft().then((saved) => {
                 if (saved) setView('detail')
               })}
               disabled={saving}
-              className="flex h-9 items-center gap-2 rounded-md px-3 text-[13px] font-medium text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-200 dark:hover:bg-neutral-800"
             >
               <Save size={15} />
               保存
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
               onClick={() => void handleStartChat()}
               disabled={saving || draft.enabled === false}
-              className="flex h-9 items-center gap-2 rounded-md bg-neutral-950 px-3 text-[13px] font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-neutral-200"
             >
               <Play size={15} />
               开始聊天
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -804,15 +796,15 @@ export function AssistantCenter({
         }`}
         data-tauri-drag-region
       >
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onClose}
-          className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-neutral-600 transition-colors hover:bg-black/[0.06] hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-white/[0.08] dark:hover:text-neutral-100"
           data-tauri-drag-region="false"
         >
           <ArrowLeft size={15} />
           返回聊天
-        </button>
+        </Button>
         <div className="h-full min-w-5 flex-1" data-tauri-drag-region />
       </div>
 
@@ -824,15 +816,14 @@ export function AssistantCenter({
                 <h1 className="truncate text-[24px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
                   专家套件
                 </h1>
-                <button
-                  type="button"
+                <IconButton
+                  size="lg"
                   onClick={() => void loadAssistants(selectedId)}
-                  className="grid size-9 shrink-0 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                  aria-label="刷新套件"
+                  label="刷新套件"
                   title="刷新"
                 >
                   <RefreshCw size={16} />
-                </button>
+                </IconButton>
               </div>
               <div className="assistant-center-toolbar ml-auto flex min-w-0 flex-1 items-center justify-end gap-2">
                 <div className="assistant-center-search relative min-w-[180px] flex-1 sm:max-w-[360px]">
@@ -849,24 +840,21 @@ export function AssistantCenter({
                   />
                 </div>
                 {onStartBuilder && (
-                  <button
-                    type="button"
+                  <Button
                     onClick={() => onStartBuilder()}
-                    className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-neutral-200 bg-white px-3 text-[13px] font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
                     title="通过对话搭建一个新专家"
                   >
                     <Sparkles size={16} />
                     AI 创建
-                  </button>
+                  </Button>
                 )}
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
                   onClick={handleCreate}
-                  className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-neutral-950 px-3 text-[13px] font-medium text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-neutral-200"
                 >
                   <Plus size={16} />
                   创建
-                </button>
+                </Button>
               </div>
             </header>
 

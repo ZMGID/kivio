@@ -36,6 +36,42 @@ body {
   --theme-surface-border-strong: #d4d4d8;
 }
 
+/* ===== 全局按钮/组件语义 token（kv-btn / kv-icon-btn 依赖）=====
+   这些原本只定义在 .kv / .settings-embedded / .onboarding-shell 作用域。共享按钮组件
+   <Button>/<IconButton>（src/components/Button.tsx）在聊天窗口(.chat-window-shell)、Lens
+   (.lens-floating-surface) 等非设置作用域也要用，故在此提供全局默认，让组件到处可用。
+   设置/onboarding 作用域（.kv 等，位于本文件更靠后 + 更高特异性）会覆盖这些值，观感不变。
+   亮色映射 --theme-surface 以随暖/冷主题着色；暗色由下方 .dark 显式覆盖（--theme-surface 无暗色态）。 */
+:root {
+  --bg-input: var(--theme-surface);
+  --bg-hover: var(--theme-surface-hover);
+  --border-input: var(--theme-surface-border-strong);
+  --text: #1d1d1f;
+  --text-faint: #9c9ca3;
+  --accent: #2f6ff0;
+  --accent-hover: #2960d8;
+  --accent-soft: #e6efff;
+  --text-onaccent: #ffffff;
+  --danger: #c4341c;
+  --danger-soft: #fdecea;
+  --shadow-sm: 0 1px 1px rgba(15, 15, 20, 0.04);
+}
+
+.dark {
+  --bg-input: #2a2a2d;
+  --bg-hover: #2c2c30;
+  --border-input: #3a3a40;
+  --text: #f0f0f3;
+  --text-faint: #6e6e76;
+  --accent: #5c8df7;
+  --accent-hover: #6f9bf8;
+  --accent-soft: rgba(92, 141, 247, 0.16);
+  --text-onaccent: #ffffff;
+  --danger: #ef6a5a;
+  --danger-soft: rgba(239, 106, 90, 0.14);
+  --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
 /* ===== Motion tokens =====
    Chat UI 动效的单一来源：缓动曲线 + 时长。新增动效一律引用这些 token，
    保持克制的 macOS 原生质感与全局一致性。改这里即可全局调速/换曲线。
@@ -2799,15 +2835,24 @@ body {
   margin-left: 2px;
 }
 .kv-hotkey-clear:hover,
-.kv-icon-btn:hover {
+.kv-icon-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text);
 }
-.kv-icon-btn.danger:hover {
+.kv-icon-btn.danger:hover:not(:disabled) {
   background: var(--danger-soft);
   color: var(--danger);
 }
 .kv-icon-btn svg { width: 13px; height: 13px; }
+/* 尺寸/形状修饰（供 <IconButton> 使用）；无修饰时保持 22×22 基类给设置域既有用法 */
+.kv-icon-btn.sm { width: 28px; height: 28px; border-radius: 6px; }
+.kv-icon-btn.md { width: 32px; height: 32px; border-radius: 7px; }
+.kv-icon-btn.lg { width: 36px; height: 36px; border-radius: 8px; }
+.kv-icon-btn.circle { border-radius: 9999px; }
+.kv-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.kv-icon-btn.sm svg,
+.kv-icon-btn.md svg,
+.kv-icon-btn.lg svg { width: 15px; height: 15px; }
 .kv-hotkey-record-label {
   font-size: 11.5px;
   color: var(--accent);

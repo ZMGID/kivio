@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Layers, X } from 'lucide-react'
-import { api, type ModelProvider } from '../api/tauri'
+import { type ModelProvider } from '../api/tauri'
+import { getSettingsCached } from '../api/settingsCache'
 import { isProviderEnabled } from '../settings/utils'
 import { ModelIcon } from './ModelIcon'
 import type { ModelRef } from './types'
@@ -30,7 +31,7 @@ function MultiModelSelectorBase({ value, onChange, placement = 'up', anchorRef }
 
   const loadProviders = useCallback(async () => {
     try {
-      const settings = await api.getSettings()
+      const settings = await getSettingsCached()
       setProviders(settings.providers || [])
     } catch (err) {
       console.error('Failed to load providers:', err)

@@ -14,6 +14,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { api } from '../api/tauri'
+import { Button } from '../components/Button'
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -508,49 +509,49 @@ export function AskUserBlock({ toolCall }: AskUserBlockProps) {
 
       {awaiting && (
         <div className="mt-2 flex items-center justify-between gap-2">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onMouseDown={preventMouseFocus}
             onClick={goPrevious}
             disabled={visibleIndex === 0 || submitting}
-            className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[11.5px] text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
           >
             <ArrowLeft size={12} strokeWidth={1.9} />
             上一题
-          </button>
+          </Button>
           <div className="flex items-center gap-1.5">
             {!isLastQuestion && (
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="sm"
                 onMouseDown={preventMouseFocus}
                 onClick={goNext}
                 disabled={!currentAnswered || submitting}
-                className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[11.5px] text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
               >
                 下一题
                 <ArrowRight size={12} strokeWidth={1.9} />
-              </button>
+              </Button>
             )}
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onMouseDown={preventMouseFocus}
             onClick={() => void submit(true)}
             disabled={submitting}
-            className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[11.5px] text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-60 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
           >
             <SkipForward size={12} strokeWidth={1.9} />
             跳过
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
             onMouseDown={preventMouseFocus}
             onClick={() => void submit(false)}
             disabled={!allAnswered || submitting}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-neutral-900 px-2.5 text-[11.5px] font-medium text-white transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:bg-neutral-200 disabled:text-neutral-400 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-white dark:disabled:bg-neutral-800 dark:disabled:text-neutral-500"
           >
             {submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} strokeWidth={1.9} />}
             提交
-          </button>
+          </Button>
           </div>
         </div>
       )}

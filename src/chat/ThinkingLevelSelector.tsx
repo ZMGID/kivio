@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Brain, Check, ChevronDown } from 'lucide-react'
 import { api } from '../api/tauri'
+import { getSettingsCached } from '../api/settingsCache'
 import { isProviderEnabled } from '../settings/utils'
 import { chatTitlebarPillButtonClass } from './platform'
 import type { ThinkingLevel } from './types'
@@ -49,7 +50,7 @@ function ThinkingLevelSelectorBase({
         return
       }
       try {
-        const settings = await api.getSettings()
+        const settings = await getSettingsCached()
         const apiFormat = (settings.providers || [])
           .filter(isProviderEnabled)
           .find((p) => p.id === currentProviderId)?.apiFormat

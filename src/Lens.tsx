@@ -3,7 +3,9 @@ import { flushSync } from 'react-dom'
 import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, MessageSquarePlus } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensReplaceLine, type LensReplaceStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
+import { getSettingsCached } from './api/settingsCache'
 import { ChatMarkdown } from './chat/ChatMarkdown'
+import { Button } from './components/Button'
 import { i18n, type Lang } from './settings/i18n'
 import { copyToClipboard } from './utils/clipboard'
 
@@ -295,7 +297,7 @@ export default function Lens() {
 
   const loadLensSettings = useCallback(async (curMode: Mode = readModeFromHash()) => {
     try {
-      const settings = await api.getSettings()
+      const settings = await getSettingsCached()
       setLang((settings.settingsLanguage as Lang) || 'zh')
       setMessageOrder(settings.lens?.messageOrder === 'desc' ? 'desc' : 'asc')
       const webSearch = settings.lens?.webSearch
@@ -431,7 +433,7 @@ export default function Lens() {
     // 必须放在 reset DOM 之后，避免 await 期间 Rust 已 show 导致旧 ready/answering surface 露出首帧。
     void (async () => {
       try {
-        const settings = await api.getSettings()
+        const settings = await getSettingsCached()
         if (motionSeq !== motionSeqRef.current) return
         screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
       cardWidthRef.current = settings.screenshotTranslation?.cardWidth ?? 480
@@ -2336,41 +2338,37 @@ export default function Lens() {
               const showActions = lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content
               const Actions = (
                 <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => void handleCopy()}
-                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => void handleCopy()}>
                     {copied ? <Check size={11} /> : <Copy size={11} />}
                     <span>{copied ? t.lensCopied : t.lensCopy}</span>
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() => setSourceMode(v => !v)}
                     title={sourceMode ? t.lensRenderMode : t.lensSourceMode}
-                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                   >
                     {sourceMode ? <Eye size={11} /> : <Code size={11} />}
                     <span>{sourceMode ? t.lensRenderMode : t.lensSourceMode}</span>
-                  </button>
+                  </Button>
                   {streaming && (
-                    <button
-                      onClick={() => void handleStop()}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-red-500 dark:text-neutral-400 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => void handleStop()}>
                       <Square size={10} strokeWidth={2.5} fill="currentColor" />
                       <span>{t.lensStop}</span>
-                    </button>
+                    </Button>
                   )}
                   {/* 「发送到 AI 客户端」关闭时：把当前完整多轮历史 + 截图转交客户端继续聊。
                       仅 chat 模式、非流式、且已有完成问答（showActions 保证）时显示。 */}
                   {mode === 'chat' && sendToChatRef.current === false && !streaming && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => void handleContinueInChat()}
                       title={t.lensContinueInChat}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-neutral-500 hover:text-[#D97757] dark:text-neutral-400 dark:hover:text-[#D97757] rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                     >
                       <MessageSquarePlus size={11} />
                       <span>{t.lensContinueInChat}</span>
-                    </button>
+                    </Button>
                   )}
                 </div>
               )
@@ -2553,7 +2551,9 @@ export default function Lens() {
           {/* 底部操作栏：复制译文 */}
           {stage === 'translated' && translateText && !translateError && (
             <div className="flex items-center gap-1 px-3 py-1.5 border-t border-black/[0.05] dark:border-white/[0.06]">
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={async () => {
                   if (await copyToClipboard(translateText)) {
                     setCopied(true)
@@ -2561,11 +2561,10 @@ export default function Lens() {
                     copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
                   }
                 }}
-                className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
               >
                 {copied ? <Check size={12} /> : <Copy size={12} />}
                 <span>{copied ? t.lensCopied : t.lensCopy}</span>
-              </button>
+              </Button>
             </div>
           )}
         </div>

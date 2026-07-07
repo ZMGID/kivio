@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft, ImageIcon, Minus, Plus, RotateCcw } from 'lucide-react'
 import type { ChatImageViewerItem } from './imageViewer'
 import { loadArtifactDataUrl } from './attachmentPreview'
+import { IconButton } from '../components/Button'
 
 type ChatImageViewerProps = {
   item: ChatImageViewerItem
@@ -47,16 +48,14 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
         className="flex h-[52px] shrink-0 items-center gap-2 border-b border-neutral-200/80 bg-white/90 px-4 backdrop-blur dark:border-neutral-800 dark:bg-[#202020]/92"
         data-tauri-drag-region
       >
-        <button
-          type="button"
+        <IconButton
+          size="md"
           onClick={onClose}
           data-tauri-drag-region="false"
-          className="grid h-8 w-8 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-          title="返回对话"
-          aria-label="返回对话"
+          label="返回对话"
         >
           <ArrowLeft size={18} strokeWidth={1.9} />
-        </button>
+        </IconButton>
         <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
           <ImageIcon size={16} strokeWidth={1.8} />
         </div>
@@ -72,36 +71,33 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
           className="flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-50 p-1 dark:border-neutral-700 dark:bg-neutral-900"
           data-tauri-drag-region="false"
         >
-          <button
-            type="button"
+          <IconButton
+            size="sm"
+            shape="circle"
             onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))}
-            className="grid h-7 w-7 place-items-center rounded-full text-neutral-500 hover:bg-white hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-            title="缩小"
-            aria-label="缩小"
+            label="缩小"
           >
             <Minus size={15} strokeWidth={1.9} />
-          </button>
+          </IconButton>
           <span className="w-12 text-center text-[12px] tabular-nums text-neutral-500 dark:text-neutral-400">
             {Math.round(zoom * 100)}%
           </span>
-          <button
-            type="button"
+          <IconButton
+            size="sm"
+            shape="circle"
             onClick={() => setZoom((value) => Math.min(3, Number((value + 0.25).toFixed(2))))}
-            className="grid h-7 w-7 place-items-center rounded-full text-neutral-500 hover:bg-white hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-            title="放大"
-            aria-label="放大"
+            label="放大"
           >
             <Plus size={15} strokeWidth={1.9} />
-          </button>
-          <button
-            type="button"
+          </IconButton>
+          <IconButton
+            size="sm"
+            shape="circle"
             onClick={() => setZoom(1)}
-            className="grid h-7 w-7 place-items-center rounded-full text-neutral-500 hover:bg-white hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-            title="重置缩放"
-            aria-label="重置缩放"
+            label="重置缩放"
           >
             <RotateCcw size={14} strokeWidth={1.9} />
-          </button>
+          </IconButton>
         </div>
       </div>
       <div className="custom-scrollbar min-h-0 flex-1 overflow-auto px-6 py-7">

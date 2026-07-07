@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Check, Copy, Gauge, GitBranch, Pencil, RotateCcw, Trash2 } from 'lucide-react'
+import { IconButton } from '../components/Button'
 import { copyToClipboard } from '../utils/clipboard'
 import { estimateTokens } from '../utils/tokens'
 import { formatAssistantMessageTime } from './messageFormat'
@@ -64,9 +65,6 @@ export function AssistantMessageMeta({
     window.setTimeout(() => setCopied(false), 2000)
   }
 
-  const iconBtn =
-    'rounded p-1 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-neutral-800 dark:hover:text-neutral-300'
-
   const runEntryLabel = runEntry === 'regenerate' ? '已重新生成' : null
   const streamOutcomeLabel =
     streamOutcome === 'cancelled'
@@ -84,55 +82,46 @@ export function AssistantMessageMeta({
       {streamOutcomeLabel && <span className="shrink-0">{streamOutcomeLabel}</span>}
 
       <div className="flex items-center gap-0.5">
-        <button
-          type="button"
+        <IconButton
+          size="sm"
           onClick={() => void handleCopy()}
-          className={iconBtn}
-          title={copied ? '已复制' : '复制'}
-          aria-label={copied ? '已复制' : '复制'}
+          label={copied ? '已复制' : '复制'}
         >
           {copied ? <Check size={14} strokeWidth={2} className="chat-motion-pop" /> : <Copy size={14} strokeWidth={2} />}
-        </button>
-        <button
-          type="button"
+        </IconButton>
+        <IconButton
+          size="sm"
           onClick={onEdit}
           disabled={!onEdit}
-          className={iconBtn}
-          title="编辑"
-          aria-label="编辑"
+          label="编辑"
         >
           <Pencil size={14} strokeWidth={2} />
-        </button>
-        <button
-          type="button"
+        </IconButton>
+        <IconButton
+          size="sm"
           onClick={onRegenerate}
           disabled={!onRegenerate}
-          className={iconBtn}
-          title="重新生成"
-          aria-label="重新生成"
+          label="重新生成"
         >
           <RotateCcw size={14} strokeWidth={2} />
-        </button>
-        <button
-          type="button"
+        </IconButton>
+        <IconButton
+          size="sm"
           onClick={onFork}
           disabled={!onFork}
-          className={iconBtn}
+          label="建分支"
           title="从这里建分支（复制到新对话）"
-          aria-label="建分支"
         >
           <GitBranch size={14} strokeWidth={2} />
-        </button>
-        <button
-          type="button"
+        </IconButton>
+        <IconButton
+          size="sm"
           onClick={onDelete}
           disabled={!onDelete}
-          className={iconBtn}
-          title="删除"
-          aria-label="删除"
+          label="删除"
         >
           <Trash2 size={14} strokeWidth={2} />
-        </button>
+        </IconButton>
       </div>
 
       {speed != null && (

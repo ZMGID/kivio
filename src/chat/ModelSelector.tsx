@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { ChevronDown, Star } from 'lucide-react'
-import { api, type ModelProvider } from '../api/tauri'
+import { type ModelProvider } from '../api/tauri'
+import { getSettingsCached, setFavoriteModelsCached } from '../api/settingsCache'
 import { isProviderEnabled } from '../settings/utils'
 import { ModelIcon } from './ModelIcon'
 import { chatTitlebarPillButtonClass } from './platform'
@@ -30,7 +31,7 @@ function ModelSelectorBase({
 
   const loadSettings = useCallback(async () => {
     try {
-      const settings = await api.getSettings()
+      const settings = await getSettingsCached()
       setProviders(settings.providers || [])
       setFavorites(settings.favoriteModels || [])
     } catch (err) {
@@ -88,7 +89,7 @@ function ModelSelectorBase({
         : [...favorites, key]
       const previous = favorites
       setFavorites(next) // 乐观更新
-      api.setFavoriteModels(next).catch((err) => {
+      setFavoriteModelsCached(next).catch((err) => {
         console.error('Failed to save favorite models:', err)
         setFavorites(previous) // 回滚
       })

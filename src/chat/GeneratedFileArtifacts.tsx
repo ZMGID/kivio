@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { Check, Clipboard, FileJson, FileSpreadsheet, FileText, FolderOpen, MoreHorizontal } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
+import { IconButton } from '../components/Button'
 import { artifactDataUrl, artifactMimeType, isFileArtifact } from './artifacts'
 import type { ChatToolArtifact } from './types'
 
@@ -176,19 +177,17 @@ function GeneratedFileCard({
       </button>
 
       <div ref={menuRef} className="absolute right-1.5 top-1.5">
-        <button
-          type="button"
-          className="flex h-6 w-6 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+        <IconButton
+          size="sm"
           onClick={(event) => {
             event.stopPropagation()
             setMenuOpen((value) => !value)
           }}
-          aria-label="文件操作"
           aria-expanded={menuOpen}
-          title="文件操作"
+          label="文件操作"
         >
           <MoreHorizontal size={16} strokeWidth={2} />
-        </button>
+        </IconButton>
         {menuOpen && (
           <div className="absolute right-0 top-7 z-20 w-44 overflow-hidden rounded-lg border border-neutral-200 bg-white py-1 shadow-lg shadow-black/10 dark:border-neutral-700 dark:bg-neutral-900 dark:shadow-black/30">
             <button

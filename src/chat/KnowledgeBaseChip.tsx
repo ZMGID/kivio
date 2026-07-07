@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Library, Check } from 'lucide-react'
 import { kbListLibraries, onKbIndex, type KnowledgeLibrary } from './knowledgeBase'
+import { IconButton } from '../components/Button'
 
 export function KnowledgeBaseChip({
   value,
@@ -135,11 +136,12 @@ export function KnowledgeBaseChip({
 
   return (
     <div className="relative" ref={ref}>
-      <button
-        type="button"
+      <IconButton
+        size="sm"
+        shape="circle"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className={`relative grid size-7 shrink-0 place-items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 disabled:cursor-default disabled:opacity-50 dark:focus-visible:ring-neutral-600 ${
+        className={`relative focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
           open
             ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100'
             : hasMounted
@@ -148,15 +150,15 @@ export function KnowledgeBaseChip({
         }`}
         aria-expanded={open}
         aria-haspopup="menu"
-        title={hasMounted ? `知识库 · 已挂载 ${value.length} 个` : '选择本会话使用的知识库'}
+        label={hasMounted ? `知识库 · 已挂载 ${value.length} 个` : '选择本会话使用的知识库'}
       >
-        <Library size={18} strokeWidth={1.75} />
+        <Library size={15} strokeWidth={1.75} />
         {hasMounted && (
           <span className="absolute -right-0.5 -top-0.5 grid min-w-[14px] place-items-center rounded-full bg-indigo-500 px-1 text-[9px] font-bold leading-[14px] text-white">
             {value.length}
           </span>
         )}
-      </button>
+      </IconButton>
       {panel}
     </div>
   )
