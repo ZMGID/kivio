@@ -20,6 +20,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [State Management](./state-management.md) | Local state, global state, server state | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
+| [Settings 缓存契约](./settings-cache.md) | settingsCache 读写约定（现读 vs 缓存、写通、OAuth 覆盖防范） | Filled |
 
 ---
 
