@@ -23,9 +23,11 @@
 //! its own todo tools to set `owner` (= sub-agent name) and status itself.
 //!
 //! Safety rails (research doc 05 + architecture P3):
-//! - depth guard (`MAX_SUB_AGENT_DEPTH`): an agent at depth ≥ 3 cannot spawn.
 //! - the `agent` tool is stripped from every sub-agent's tool table
-//!   (`filter::filter_tools_for_agent`), a second guard against recursion.
+//!   (`filter::filter_tools_for_agent`), so in practice nesting is a single
+//!   level: only the top-level chat (depth 0) can spawn.
+//! - depth guard (`MAX_SUB_AGENT_DEPTH`): defense-in-depth backstop should the
+//!   strip ever regress; with the strip in place depth ≥ 2 is unreachable.
 //! - a `Semaphore` caps concurrent sub-agents (desktop API-quota sensitive);
 //!   the cap defaults to `DEFAULT_SUB_AGENT_CONCURRENCY` and is user-overridable
 //!   live via `settings.chat_tools.sub_agent_concurrency`.
@@ -58,8 +60,10 @@ use crate::skills::SkillRegistry;
 use crate::state::AppState;
 
 /// An agent at depth ≥ this cannot spawn another sub-agent. Top-level chat is
-/// depth 0; a spawned sub-agent runs at depth 1. With 3, a (hypothetical)
-/// chain general→sub→sub→sub is the hard ceiling.
+/// depth 0; a spawned sub-agent runs at depth 1. NOTE: this is a
+/// defense-in-depth backstop, not the real limiter — `filter_tools_for_agent`
+/// always strips the `agent` tool from sub-agents, so actual nesting is one
+/// level and depth ≥ 2 is unreachable unless that strip regresses.
 pub const MAX_SUB_AGENT_DEPTH: u8 = 3;
 /// Default concurrent sub-agent cap. User-overridable (live) via
 /// `settings.chat_tools.sub_agent_concurrency`, clamped to
@@ -993,6 +997,15 @@ pub fn handle_agent_spawn<'a>(
             usage: None,
         });
 
+        // Arm the drop backstop as soon as the record exists: a drop while
+        // queued on the semaphore below would otherwise leave it stuck in
+        // Pending (uncollectable — eviction only drops completed records).
+        let mut drop_guard = SpawnDropGuard {
+            app: ctx.app.clone(),
+            task_id: task_id.clone(),
+            armed: true,
+        };
+
         // Concurrency gate: an OWNED permit, held for the lifetime of the run.
         // acquire_owned only errors if the semaphore is closed (never — it lives
         // on AppState). Held across the await below so concurrent fan-out is
@@ -1038,9 +1051,12 @@ pub fn handle_agent_spawn<'a>(
         };
 
         // Blocking + single-result: await completion and return the result
-        // inline. The permit is held for the duration of this await.
+        // inline. The permit is held for the duration of this await. The drop
+        // guard covers the paths where this future is dropped instead of
+        // resuming (user stop / outer timeout) — see finalize_dropped_spawn.
         let app = ctx.app.clone();
         let outcome = run_sub_agent(app, request).await;
+        drop_guard.armed = false;
         Ok(finalize_sub_agent_outcome(finalize_ctx, outcome))
     })
 }
@@ -1051,6 +1067,42 @@ struct FinalizeCtx {
     task_id: String,
     name: String,
     agent_type: String,
+}
+
+/// Backstop cleanup when the `agent` spawn future is dropped mid-run instead of
+/// returning: the tool scheduler's `tokio::select!` drops it when the user stops
+/// the parent generation (that branch always wins the race against the loop's
+/// own cascade-cancel checkpoint) or when the outer 660s backstop timeout
+/// fires. A dropped future never reaches `run_sub_agent`'s post-await cleanup
+/// nor `finalize_sub_agent_outcome`, which would leak (a) a task record stuck
+/// in `Running` forever — uncollectable, since eviction only drops completed
+/// records — and (b) the synthetic sub-conversation's active generation.
+fn finalize_dropped_spawn(state: &AppState, task_id: &str) {
+    state.sub_agents.finish(
+        task_id,
+        SubAgentStatus::Cancelled,
+        None,
+        Some("cancelled".to_string()),
+        None,
+    );
+    state.cancel_chat_generation(&format!("subagent-{task_id}"));
+}
+
+/// RAII wrapper arming [`finalize_dropped_spawn`]. Disarmed on the normal
+/// return path right after `run_sub_agent` resolves (no await between the two,
+/// so the window is drop-free).
+struct SpawnDropGuard {
+    app: AppHandle,
+    task_id: String,
+    armed: bool,
+}
+
+impl Drop for SpawnDropGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            finalize_dropped_spawn(&self.app.state::<AppState>(), &self.task_id);
+        }
+    }
 }
 
 /// Turn a sub-agent run outcome into the task record update + tool result.
@@ -1412,6 +1464,32 @@ mod tests {
         assert!(!depth_allows_spawn(3));
         assert!(!depth_allows_spawn(4));
         assert_eq!(MAX_SUB_AGENT_DEPTH, 3);
+    }
+
+    #[test]
+    fn dropped_spawn_backstop_cancels_record_and_retires_generation() {
+        // The tool scheduler's select! drops the spawn future on user stop /
+        // outer timeout. The backstop must (a) move the record out of
+        // Pending/Running so it stays evictable, and (b) retire the synthetic
+        // sub-conversation's generation so chat_active_generations doesn't leak.
+        let state = crate::state::test_app_state();
+        state.sub_agents.register(running_record("agent-drop"));
+        let sub_gen = state.next_chat_generation("subagent-agent-drop");
+        assert!(state.is_chat_generation_active("subagent-agent-drop", sub_gen));
+
+        finalize_dropped_spawn(&state, "agent-drop");
+
+        assert_eq!(
+            state.sub_agents.get("agent-drop").unwrap().status,
+            SubAgentStatus::Cancelled
+        );
+        assert!(!state.is_chat_generation_active("subagent-agent-drop", sub_gen));
+        // The one-shot synthetic conversation key itself is gone (no map growth).
+        assert!(!state
+            .chat_active_generations
+            .lock()
+            .unwrap()
+            .contains_key("subagent-agent-drop"));
     }
 
     #[test]

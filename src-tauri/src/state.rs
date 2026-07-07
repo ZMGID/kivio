@@ -356,27 +356,28 @@ impl AppState {
 
     /// 取消指定 conversation 的**所有**当前 Chat 运行：清空其活跃 generation 集合，
     /// 使任何持旧 generation 的 run（含同会话并发的多模型 run）在下一个检查点判失效。
+    /// 直接移除键：空集合与无键语义等价（is_active 都判 false），且 sub-agent 每次
+    /// spawn 用一次性合成 conversation_id，留空集合会无界累积。
     pub fn cancel_chat_generation(&self, conversation_id: &str) {
-        if let Some(active) = self
-            .chat_active_generations
+        self.chat_active_generations
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get_mut(conversation_id)
-        {
-            active.clear();
-        }
+            .remove(conversation_id);
     }
 
     /// 单条 run 自然结束时退役其 generation（不影响同会话其它在跑 run）。
     /// 单模型路径下集合恒只含本 run 的一个号，移除后即变空，与旧「cancel 推代号」等价。
+    /// 集合变空时移除键，防止一次性 conversation_id（sub-agent 合成会话）留下空条目。
     pub fn end_chat_generation(&self, conversation_id: &str, generation: u64) {
-        if let Some(active) = self
+        let mut map = self
             .chat_active_generations
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_mut(conversation_id)
-        {
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(active) = map.get_mut(conversation_id) {
             active.remove(&generation);
+            if active.is_empty() {
+                map.remove(conversation_id);
+            }
         }
     }
 
