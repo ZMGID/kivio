@@ -6,6 +6,7 @@ import { chatApi, type DetectedExternalAgent } from '../chat/api'
 import type { SettingsTab } from './SettingsShell'
 import { Select, SettingRow, SettingsGroup } from './components'
 import { i18n, type Lang } from './i18n'
+import { Button } from '../components/Button'
 
 const BUILTIN_RUNTIME: AgentRuntimeConfig = {
   kind: 'builtin',
@@ -109,16 +110,16 @@ export function ExternalAgentsSettings({
     <>
       <SettingsGroup title={t.externalAgentsDefaultSection}>
         <div className="mb-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            className={`kv-btn sm ${!usesExternal ? 'primary' : ''}`}
+          <Button
+            size="sm"
+            variant={!usesExternal ? 'primary' : 'default'}
             onClick={selectBuiltin}
           >
             {t.externalAgentsModeBuiltin}
-          </button>
-          <button
-            type="button"
-            className={`kv-btn sm ${usesExternal ? 'primary' : ''}`}
+          </Button>
+          <Button
+            size="sm"
+            variant={usesExternal ? 'primary' : 'default'}
             onClick={() => {
               if (usesExternal && runtime.externalAgentId) return
               const first = availableAgents[0]
@@ -127,7 +128,7 @@ export function ExternalAgentsSettings({
             disabled={installedCount === 0}
           >
             {t.externalAgentsModeExternal}
-          </button>
+          </Button>
         </div>
 
         {usesExternal && (
@@ -185,30 +186,28 @@ export function ExternalAgentsSettings({
 
       <SettingsGroup title={t.externalAgentsMcpSection}>
         <div className="px-1 pb-2">
-          <button
-            type="button"
-            className="kv-btn sm"
+          <Button
+            size="sm"
             onClick={() => onNavigateTab('mcp')}
             data-tauri-drag-region="false"
           >
             <Wrench size={11} />
             {t.externalAgentsOpenMcp}
-          </button>
+          </Button>
         </div>
       </SettingsGroup>
 
       <SettingsGroup title={t.externalAgentsDetectSection}>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
-          <button
-            type="button"
-            className="kv-btn sm"
+          <Button
+            size="sm"
             onClick={() => void loadAgents(true)}
             disabled={scanning}
             data-tauri-drag-region="false"
           >
             <RefreshCw size={12} className={scanning ? 'animate-spin' : ''} />
             {scanning ? t.externalAgentsRescanning : t.externalAgentsRescan}
-          </button>
+          </Button>
         </div>
 
         {agents.length === 0 && !scanning ? (

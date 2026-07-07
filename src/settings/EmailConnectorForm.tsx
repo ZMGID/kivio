@@ -3,6 +3,7 @@ import { Loader2, X } from 'lucide-react'
 import { api, type EmailAccountConfig, type EmailProviderPreset } from '../api/tauri'
 import { i18n, type Lang } from './i18n'
 import { Input, Select } from './components'
+import { Button } from '../components/Button'
 
 const ENCRYPTION_OPTIONS = [
   { value: 'tls', label: 'TLS' },
@@ -161,33 +162,31 @@ export function EmailConnectorForm({ lang, initial, existingAccounts = [], onSav
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="kv-btn sm"
+        <Button
+          size="sm"
           disabled={!canSave || testing}
           onClick={() => void runTest()}
           data-tauri-drag-region="false"
         >
           {testing ? <Loader2 size={10} className="animate-spin" /> : null}
           {t.connectorsEmailTest}
-        </button>
-        <button
-          type="button"
-          className="kv-btn sm primary"
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
           disabled={!canSave}
           onClick={() => onSave(draft)}
           data-tauri-drag-region="false"
         >
           {t.connectorsEmailSave}
-        </button>
-        <button
-          type="button"
-          className="kv-btn sm"
+        </Button>
+        <Button
+          size="sm"
           onClick={onCancel}
           data-tauri-drag-region="false"
         >
           <X size={10} />
-        </button>
+        </Button>
       </div>
     </div>
   )

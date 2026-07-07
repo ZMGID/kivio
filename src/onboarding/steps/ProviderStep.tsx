@@ -3,6 +3,7 @@ import type { I18n } from '../../settings/i18n'
 import type { Lang } from '../../settings/i18n'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'
 import { ProviderSetupPanel } from '../ProviderSetupPanel'
+import { Button } from '../../components/Button'
 
 type ProviderStepProps = {
   t: I18n
@@ -30,14 +31,12 @@ export function ProviderStep({
         <div className="onboarding-callout">
           <p className="onboarding-panel-note">{t.onboardingProviderRequired}</p>
           {!validationBypassed && onBypassValidation ? (
-            <button
-              type="button"
-              className="kv-btn"
+            <Button
               onClick={onBypassValidation}
               data-tauri-drag-region="false"
             >
               {t.onboardingProviderContinueAnyway}
-            </button>
+            </Button>
           ) : null}
         </div>
       ) : null}

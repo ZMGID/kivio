@@ -45,12 +45,12 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 })
 
 type IconButtonVariant = 'default' | 'ghost' | 'danger'
-type IconButtonSize = 'sm' | 'md' | 'lg'
+type IconButtonSize = 'xs' | 'sm' | 'md' | 'lg'
 type IconButtonShape = 'square' | 'circle'
 
 type IconButtonProps = {
   variant?: IconButtonVariant
-  /** sm=28 / md=32 / lg=36（外框尺寸由 `.kv-icon-btn.<size>` 控制）。 */
+  /** xs=22（裸基类，设置域既有用法）/ sm=28 / md=32 / lg=36（外框尺寸由 `.kv-icon-btn.<size>` 控制）。 */
   size?: IconButtonSize
   shape?: IconButtonShape
   /** 必填：同时用作 aria-label 与 title，保证可访问性。 */
@@ -74,7 +74,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
 ) {
   const classes = [
     'kv-icon-btn',
-    size,
+    size !== 'xs' && size,
     shape === 'circle' && 'circle',
     variant !== 'default' && variant,
     className,

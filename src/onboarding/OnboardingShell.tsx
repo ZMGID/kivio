@@ -4,6 +4,7 @@ import { type Settings } from '../api/tauri'
 import { getSettingsCached, saveSettingsCached } from '../api/settingsCache'
 import { i18n, type Lang } from '../settings/i18n'
 import { usesNativeTitlebar } from '../chat/platform'
+import { Button } from '../components/Button'
 import { ONBOARDING_STEPS, type OnboardingStepId } from './types'
 import { canCompleteOnboarding, validateProviderStep } from './validation'
 import { DoneStep } from './steps/DoneStep'
@@ -165,24 +166,22 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
           <p className="onboarding-subtitle">{errorT.onboardingLoadErrorDesc}</p>
           {loadError ? <p className="onboarding-panel-note">{loadError}</p> : null}
           <div className="onboarding-error-actions">
-            <button
-              type="button"
-              className="kv-btn primary"
+            <Button
+              variant="primary"
               onClick={() => void loadSettings()}
               disabled={saving}
               data-tauri-drag-region="false"
             >
               {errorT.onboardingRetry}
-            </button>
-            <button
-              type="button"
-              className="kv-btn ghost"
+            </Button>
+            <Button
+              variant="ghost"
               onClick={() => void handleSkipAfterLoadFailure()}
               disabled={saving}
               data-tauri-drag-region="false"
             >
               {errorT.onboardingSkip}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -249,14 +248,13 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
 
       <div className="onboarding-main">
         <div className="onboarding-topbar" data-tauri-drag-region>
-          <button
-            type="button"
-            className="kv-btn ghost"
+          <Button
+            variant="ghost"
             onClick={() => setSkipConfirmOpen(true)}
             data-tauri-drag-region="false"
           >
             {t.onboardingSkip}
-          </button>
+          </Button>
         </div>
 
         <div className="onboarding-body kv-scroll" data-tauri-drag-region="false">
@@ -290,40 +288,37 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
           ) : null}
           <div className="onboarding-footer-inner">
             {stepIndex > 0 ? (
-              <button
-                type="button"
-                className="kv-btn ghost"
+              <Button
+                variant="ghost"
                 onClick={goBack}
                 disabled={saving}
                 data-tauri-drag-region="false"
               >
                 <ArrowLeft size={14} />
                 {t.onboardingBack}
-              </button>
+              </Button>
             ) : null}
             <div className="onboarding-footer-spacer" />
             <div className="onboarding-footer-actions">
               {stepId === 'webSearch' ? (
-                <button
-                  type="button"
-                  className="kv-btn ghost"
+                <Button
+                  variant="ghost"
                   onClick={goNext}
                   disabled={saving}
                   data-tauri-drag-region="false"
                 >
                   {t.onboardingWebSearchSkipStep}
-                </button>
+                </Button>
               ) : null}
-              <button
-                type="button"
-                className="kv-btn primary"
+              <Button
+                variant="primary"
                 onClick={handlePrimary}
                 disabled={saving || (stepId !== 'done' && !canGoNext) || (stepId === 'done' && !canCompleteOnboarding(settings) && !providerBypass)}
                 data-tauri-drag-region="false"
               >
                 {primaryLabel}
                 {stepId !== 'done' ? <ArrowRight size={14} /> : null}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -347,17 +342,15 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
             <h3 className="kv-modal-title">{t.onboardingSkipConfirmTitle}</h3>
             <p className="kv-row-desc">{t.onboardingSkipConfirmDesc}</p>
             <div className="flex justify-end gap-2 pt-4">
-              <button
-                type="button"
-                className="kv-btn ghost"
+              <Button
+                variant="ghost"
                 onClick={() => setSkipConfirmOpen(false)}
                 data-tauri-drag-region="false"
               >
                 {t.cancel}
-              </button>
-              <button
-                type="button"
-                className="kv-btn primary"
+              </Button>
+              <Button
+                variant="primary"
                 onClick={() => {
                   setSkipConfirmOpen(false)
                   void handleSkip()
@@ -366,7 +359,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
                 data-tauri-drag-region="false"
               >
                 {t.onboardingSkipConfirm}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Minus, Plus, RefreshCw, Search, X } from 'lucide-react'
 import type { ModelProvider } from '../api/tauri'
+import { Button, IconButton } from '../components/Button'
 import { ModelIcon } from '../chat/ModelIcon'
 import { Input } from './components'
 
@@ -112,15 +113,14 @@ export function ProviderModelsPicker({
             </h3>
             <span className="kv-tag">{provider.enabledModels.length}</span>
           </div>
-          <button
-            type="button"
-            className="kv-icon-btn"
+          <IconButton
+            size="xs"
             onClick={onClose}
             data-tauri-drag-region="false"
-            aria-label={labels.close}
+            label={labels.close}
           >
             <X size={14} />
-          </button>
+          </IconButton>
         </div>
 
         <div className="kv-model-picker-search">
@@ -134,26 +134,26 @@ export function ProviderModelsPicker({
         </div>
 
         <div className="kv-model-picker-toolbar">
-          <button
-            type="button"
-            className="kv-btn sm kv-model-picker-fetch"
+          <Button
+            size="sm"
+            className="kv-model-picker-fetch"
             onClick={onFetch}
             disabled={fetching}
             data-tauri-drag-region="false"
           >
             <RefreshCw size={12} className={fetching ? 'animate-spin' : ''} />
             {fetching ? labels.fetching : labels.fetchModels}
-          </button>
-          <button
-            type="button"
-            className="kv-btn sm kv-model-picker-add-toggle"
+          </Button>
+          <Button
+            size="sm"
+            className="kv-model-picker-add-toggle"
             onClick={() => setManualOpen((open) => !open)}
             data-tauri-drag-region="false"
             aria-expanded={manualOpen}
             aria-label={labels.addModel}
           >
             <Plus size={14} strokeWidth={2.25} />
-          </button>
+          </Button>
         </div>
 
         {manualOpen && (
@@ -170,14 +170,13 @@ export function ProviderModelsPicker({
                 submitManual()
               }}
             />
-            <button
-              type="button"
-              className="kv-btn sm"
+            <Button
+              size="sm"
               onClick={submitManual}
               data-tauri-drag-region="false"
             >
               {labels.addModel}
-            </button>
+            </Button>
           </div>
         )}
 

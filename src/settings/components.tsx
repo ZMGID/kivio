@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, ExternalLink, X } from 'lucide-react'
 import { formatHotkey, getPlatform, type SelectOption } from './utils'
+import { Button } from '../components/Button'
 
 const MENU_GAP = 6
 const MENU_MARGIN = 8
@@ -311,15 +312,14 @@ export function PermissionItem({
         </div>
       </div>
       {!granted && (
-        <button
-          type="button"
+        <Button
+          size="sm"
           onClick={onOpen}
-          className="kv-btn sm"
           data-tauri-drag-region="false"
         >
           <ExternalLink size={11} />
           {actionLabel}
-        </button>
+        </Button>
       )}
     </div>
   )

@@ -8,6 +8,7 @@ import {
 import { i18n, type Lang } from './i18n'
 import { EmailConnectorForm } from './EmailConnectorForm'
 import { EmailBrandIcon } from './ConnectorBrandIcons'
+import { Button, IconButton } from '../components/Button'
 
 type Props = {
   lang: Lang
@@ -115,15 +116,15 @@ export function EmailConnectorModal({
             <EmailBrandIcon size={20} className="shrink-0 opacity-90" />
             <div className="truncate text-sm font-medium">Email</div>
           </div>
-          <button
-            type="button"
-            className="kv-icon-btn shrink-0"
+          <IconButton
+            size="xs"
+            className="shrink-0"
             onClick={onClose}
             data-tauri-drag-region="false"
-            aria-label={t.connectorsDetailClose}
+            label={t.connectorsDetailClose}
           >
             <X size={14} />
-          </button>
+          </IconButton>
         </div>
 
         <div className="kv-connector-detail-body custom-scrollbar space-y-4 p-4">
@@ -138,9 +139,9 @@ export function EmailConnectorModal({
               <div className="kv-row-desc text-[12px] opacity-80">{t.connectorsEmailRuntimeMissing}</div>
             )}
             {!himalayaReady && (
-              <button
-                type="button"
-                className="kv-btn sm primary"
+              <Button
+                variant="primary"
+                size="sm"
                 disabled={installing}
                 onClick={() => void handleInstall()}
                 data-tauri-drag-region="false"
@@ -153,7 +154,7 @@ export function EmailConnectorModal({
                 ) : (
                   t.connectorsEmailInstall
                 )}
-              </button>
+              </Button>
             )}
             {installError && (
               <div className="kv-row-desc text-[12px] text-red-500 dark:text-red-400">{installError}</div>
@@ -173,9 +174,8 @@ export function EmailConnectorModal({
                         {account.isDefault ? ` · ${t.connectorsEmailDefaultBadge}` : ''}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    <Button
+                      size="sm"
                       disabled={!himalayaReady}
                       onClick={() => {
                         setEditingIndex(index)
@@ -184,15 +184,15 @@ export function EmailConnectorModal({
                       data-tauri-drag-region="false"
                     >
                       {t.connectorsEmailEdit}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm danger"
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={() => removeAccount(index)}
                       data-tauri-drag-region="false"
                     >
                       <Trash2 size={10} />
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>
@@ -200,9 +200,8 @@ export function EmailConnectorModal({
           )}
 
           {himalayaReady && !showAddForm && (
-            <button
-              type="button"
-              className="kv-btn sm"
+            <Button
+              size="sm"
               onClick={() => {
                 setEditingIndex(null)
                 setShowAddForm(true)
@@ -211,7 +210,7 @@ export function EmailConnectorModal({
             >
               <Plus size={10} />
               {t.connectorsEmailAddAccount}
-            </button>
+            </Button>
           )}
 
           {himalayaReady && showAddForm && (

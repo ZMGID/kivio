@@ -1,6 +1,7 @@
 import { Download, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { type DefaultPromptTemplates, type RapidOcrStatus, type Settings } from '../api/tauri'
+import { Button, IconButton } from '../components/Button'
 import { ModelPairSelect } from './ModelPairSelect'
 import {
   HotkeyInput,
@@ -311,9 +312,9 @@ export function PromptField({
           <div className="kv-row-label">{label}</div>
           {description && <p className="kv-row-desc">{description}</p>}
         </div>
-        <button
-          type="button"
-          className="kv-btn sm shrink-0"
+        <Button
+          size="sm"
+          className="shrink-0"
           onClick={() => {
             setInteracted(false)
             onChange('')
@@ -323,7 +324,7 @@ export function PromptField({
         >
           <RefreshCw size={10} />
           {restoreLabel}
-        </button>
+        </Button>
       </div>
       <TextArea
         value={shown}
@@ -367,13 +368,13 @@ function RapidOcrStatusPanel({
               </div>
             )}
           </div>
-          <button
+          <IconButton
+            size="xs"
             onClick={onRefresh}
-            className="kv-icon-btn"
-            title={t.rapidOcrRefresh}
+            label={t.rapidOcrRefresh}
           >
             <RefreshCw size={12} strokeWidth={2.25} />
-          </button>
+          </IconButton>
         </div>
       ) : (
         <div className="space-y-2.5">
@@ -382,14 +383,15 @@ function RapidOcrStatusPanel({
             <div className="flex-1 kv-panel-title !mb-0">
               {t.rapidOcrModelsNotFound}
             </div>
-            <button
+            <IconButton
+              size="xs"
+              className="disabled:opacity-40"
               onClick={onRefresh}
               disabled={downloadState === 'downloading'}
-              className="kv-icon-btn disabled:opacity-40"
-              title={t.rapidOcrRefresh}
+              label={t.rapidOcrRefresh}
             >
               <RefreshCw size={12} strokeWidth={2.25} />
-            </button>
+            </IconButton>
           </div>
 
           {downloadState === 'downloading' ? (
@@ -399,13 +401,13 @@ function RapidOcrStatusPanel({
             </div>
           ) : (
             <div className="pl-3.5">
-              <button
+              <Button
+                variant="primary"
                 onClick={onDownload}
-                className="kv-btn primary"
               >
                 <Download size={12} strokeWidth={2.5} />
                 {t.rapidOcrDownloadButton}
-              </button>
+              </Button>
             </div>
           )}
 

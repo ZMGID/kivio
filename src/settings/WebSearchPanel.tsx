@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Info, Loader2, Pl
 import { api, type Settings } from '../api/tauri'
 import type { I18n, Lang } from './i18n'
 import { Input, Select, SettingRow, SettingsGroup, TextArea, Toggle } from './components'
+import { Button } from '../components/Button'
 
 type WebSearchConfig = NonNullable<Settings['lens']['webSearch']>
 /** 后端已接入的搜索源（settings 的 provider 枚举值）。 */
@@ -331,14 +332,13 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
                 {t.webSearchDefaultBadge}
               </span>
             ) : (
-              <button
-                type="button"
+              <Button
+                variant="primary"
                 onClick={() => onChange({ provider: selected.id })}
-                className="kv-btn primary"
                 data-tauri-drag-region="false"
               >
                 {t.webSearchSetDefault}
-              </button>
+              </Button>
             )}
           </div>
         </div>

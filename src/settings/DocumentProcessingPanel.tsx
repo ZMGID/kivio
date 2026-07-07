@@ -11,6 +11,7 @@ import {
 } from '../api/tauri'
 import { type Lang } from './i18n'
 import { SettingsGroup, Select, SettingRow } from './components'
+import { Button, IconButton } from '../components/Button'
 
 const EMPTY: DocumentProcessingConfig = {
   ocrEngine: 'off',
@@ -143,9 +144,9 @@ function RapidOcrWidget({ t }: { t: (zh: string, en: string) => string }) {
               <div className="mt-0.5 break-all font-mono text-[11px] text-zinc-500">{status.modelDir}</div>
             )}
           </div>
-          <button onClick={refresh} className="kv-icon-btn" title={t('刷新', 'Refresh')}>
+          <IconButton size="xs" onClick={refresh} label={t('刷新', 'Refresh')}>
             <RefreshCw size={12} strokeWidth={2.25} />
-          </button>
+          </IconButton>
         </div>
       ) : (
         <div className="space-y-2">
@@ -154,14 +155,15 @@ function RapidOcrWidget({ t }: { t: (zh: string, en: string) => string }) {
             <div className="flex-1 text-sm font-medium text-zinc-700 dark:text-zinc-200">
               {t('RapidOCR 模型未下载', 'RapidOCR models not downloaded')}
             </div>
-            <button
+            <IconButton
+              size="xs"
               onClick={refresh}
               disabled={downloadState === 'downloading'}
-              className="kv-icon-btn disabled:opacity-40"
-              title={t('刷新', 'Refresh')}
+              className="disabled:opacity-40"
+              label={t('刷新', 'Refresh')}
             >
               <RefreshCw size={12} strokeWidth={2.25} />
-            </button>
+            </IconButton>
           </div>
 
           {downloadState === 'downloading' ? (
@@ -171,10 +173,10 @@ function RapidOcrWidget({ t }: { t: (zh: string, en: string) => string }) {
             </div>
           ) : (
             <div className="pl-3.5">
-              <button onClick={download} className="kv-btn primary sm">
+              <Button variant="primary" size="sm" onClick={download}>
                 <Download size={12} strokeWidth={2.5} />
                 {t('下载离线模型', 'Download models')}
-              </button>
+              </Button>
             </div>
           )}
 

@@ -3,6 +3,7 @@ import { Check, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, type ModelProvider, type Settings } from '../api/tauri'
 import { ProviderModelsPicker } from '../settings/ProviderModelsPicker'
 import { ModelPairSelect } from '../settings/ModelPairSelect'
+import { Button, IconButton } from '../components/Button'
 import { Input, Label } from '../settings/components'
 import type { I18n } from '../settings/i18n'
 import type { Lang } from '../settings/i18n'
@@ -423,38 +424,36 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
             </div>
 
             <div className="onboarding-action-row">
-              <button
-                type="button"
-                className="kv-btn"
+              <Button
                 onClick={() => void handleTestConnection()}
                 disabled={testing}
                 data-tauri-drag-region="false"
               >
                 {testing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                 {t.onboardingProviderTest}
-              </button>
-              <button
-                type="button"
-                className="kv-btn primary"
+              </Button>
+              <Button
+                variant="primary"
                 onClick={openModelPicker}
                 data-tauri-drag-region="false"
               >
                 {t.onboardingProviderManageModels}
                 {provider.enabledModels.length > 0 ? ` · ${provider.enabledModels.length}` : ''}
-              </button>
+              </Button>
               {testFeedback ? (
                 <span className={`kv-tag ${testFeedback.ok ? 'ok' : 'danger'}`}>{testFeedback.message}</span>
               ) : null}
-              <button
-                type="button"
-                className="kv-icon-btn danger onboarding-action-trailing"
+              <IconButton
+                variant="danger"
+                size="xs"
+                className="onboarding-action-trailing"
                 onClick={() => setConfirmDelete(true)}
                 data-tauri-drag-region="false"
                 title={t.deleteProvider}
-                aria-label={t.deleteProvider}
+                label={t.deleteProvider}
               >
                 <Trash2 size={13} />
-              </button>
+              </IconButton>
             </div>
 
             {provider.enabledModels.length > 0 ? (
@@ -552,22 +551,19 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
             <h3 className="text-[14px] font-semibold">{t.confirmDeleteProvider}</h3>
             <p className="kv-panel-body">{t.onboardingProviderDeleteDesc}</p>
             <div className="flex justify-end gap-2 pt-1">
-              <button
-                type="button"
-                className="kv-btn"
+              <Button
                 onClick={() => setConfirmDelete(false)}
                 data-tauri-drag-region="false"
               >
                 {t.cancel}
-              </button>
-              <button
-                type="button"
-                className="kv-btn danger"
+              </Button>
+              <Button
+                variant="danger"
                 onClick={handleDeleteProvider}
                 data-tauri-drag-region="false"
               >
                 {t.deleteProvider}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

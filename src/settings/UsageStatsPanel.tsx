@@ -8,6 +8,7 @@ import {
   type UsageStatsResponse,
   type UsageTrendPoint,
 } from '../api/tauri'
+import { Button } from '../components/Button'
 import { Input, Select, SettingsGroup } from './components'
 
 type UsageView = 'logs' | 'providers' | 'models'
@@ -437,14 +438,14 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
             ))}
           </div>
           <div className="flex items-center gap-1.5">
-            <button type="button" className="kv-btn sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
+            <Button size="sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
               <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
               {lang === 'zh' ? '刷新' : 'Refresh'}
-            </button>
-            <button type="button" className="kv-btn sm danger" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
+            </Button>
+            <Button variant="danger" size="sm" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
               <Trash2 size={11} />
               {lang === 'zh' ? '清空' : 'Clear'}
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -521,9 +522,8 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
                 : `Showing ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)}`}
             </span>
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                className="kv-btn sm"
+              <Button
+                size="sm"
                 onClick={() => setLogPageIndex(page => Math.max(0, page - 1))}
                 disabled={!canGoPrev}
                 data-tauri-drag-region="false"
@@ -531,13 +531,12 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
               >
                 <ChevronLeft size={11} />
                 {lang === 'zh' ? '上一页' : 'Prev'}
-              </button>
+              </Button>
               <span className="min-w-12 text-center tabular-nums">
                 {logPageIndex + 1} / {pageCount}
               </span>
-              <button
-                type="button"
-                className="kv-btn sm"
+              <Button
+                size="sm"
                 onClick={() => setLogPageIndex(page => Math.min(pageCount - 1, page + 1))}
                 disabled={!canGoNext}
                 data-tauri-drag-region="false"
@@ -545,7 +544,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
               >
                 {lang === 'zh' ? '下一页' : 'Next'}
                 <ChevronRight size={11} />
-              </button>
+              </Button>
             </div>
           </div>
         )}

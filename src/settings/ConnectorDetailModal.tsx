@@ -8,6 +8,7 @@ import { Loader2, Search, Trash2, UserRound, X } from 'lucide-react'
 import { api, type ChatMcpServer } from '../api/tauri'
 import { i18n, type Lang } from './i18n'
 import { Input } from './components'
+import { Button, IconButton } from '../components/Button'
 import type { ConnectorCatalogEntry } from './connectorCatalog'
 import { isToolAllowed, toggleTool } from './connectorToolToggle'
 
@@ -152,15 +153,15 @@ export function ConnectorDetailModal({
               <div className="kv-row-desc mt-1 text-[12px]">{description}</div>
             )}
           </div>
-          <button
-            type="button"
-            className="kv-icon-btn shrink-0"
+          <IconButton
+            size="xs"
+            className="shrink-0"
             onClick={onClose}
             data-tauri-drag-region="false"
-            aria-label={t.connectorsDetailClose}
+            label={t.connectorsDetailClose}
           >
             <X size={14} />
-          </button>
+          </IconButton>
         </div>
 
         <div className="kv-connector-detail-body custom-scrollbar">
@@ -240,9 +241,9 @@ export function ConnectorDetailModal({
             {/* 连接 / 断开操作 */}
             <div className="pt-1">
               {connected ? (
-                <button
-                  type="button"
-                  className="kv-btn sm danger"
+                <Button
+                  variant="danger"
+                  size="sm"
                   onClick={() => {
                     if (server) onDisconnect(server.id)
                     else onDisconnectVault?.()
@@ -251,11 +252,11 @@ export function ConnectorDetailModal({
                 >
                   <Trash2 size={10} />
                   {t.connectorsDisconnect}
-                </button>
+                </Button>
               ) : (
-                <button
-                  type="button"
-                  className="kv-btn sm primary"
+                <Button
+                  variant="primary"
+                  size="sm"
                   disabled={connectBusy}
                   onClick={onConnect}
                   data-tauri-drag-region="false"
@@ -270,7 +271,7 @@ export function ConnectorDetailModal({
                   ) : (
                     t.connectorsConnect
                   )}
-                </button>
+                </Button>
               )}
             </div>
           </div>

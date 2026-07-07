@@ -49,6 +49,7 @@ import { RequestDebugPanel } from './RequestDebugPanel'
 import { KivioCodeSettings } from './KivioCodeSettings'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { ModelDetailDrawer } from '../components/ModelDetailDrawer'
+import { Button, IconButton } from '../components/Button'
 import { resolveModelInfo } from '../data/modelMatching'
 import { useWindowInteractionFocus } from '../utils/windowFocus'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
@@ -209,25 +210,24 @@ function MemoryEditor({
           <div className="kv-panel-body">{description}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            className="kv-btn sm"
+          <Button
+            size="sm"
             onClick={onReload}
             disabled={loading || saving}
             data-tauri-drag-region="false"
           >
             <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
             {lang === 'zh' ? '重载' : 'Reload'}
-          </button>
-          <button
-            type="button"
-            className="kv-btn primary sm"
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             onClick={onSave}
             disabled={loading || saving || !dirty || overLimit}
             data-tauri-drag-region="false"
           >
             {saving ? (lang === 'zh' ? '保存中' : 'Saving') : (lang === 'zh' ? '保存' : 'Save')}
-          </button>
+          </Button>
         </div>
       </div>
       <textarea
@@ -407,15 +407,15 @@ function SkillRow({
               <span key={tool} className="kv-chip">{tool}</span>
             ))}
           </div>
-          <button
-            type="button"
-            className="kv-btn sm mt-2"
+          <Button
+            size="sm"
+            className="mt-2"
             onClick={() => onPreview(skill.id)}
             data-tauri-drag-region="false"
           >
             <ExternalLink size={10} />
             {lang === 'zh' ? '查看完整内容' : 'View details'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -2438,14 +2438,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     label={lang === 'zh' ? '首次使用引导' : 'Setup wizard'}
                     description={t.onboardingRestartDesc}
                   >
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    <Button
+                      size="sm"
                       onClick={() => void handleRestartOnboarding()}
                       data-tauri-drag-region="false"
                     >
                       {t.onboardingRestart}
-                    </button>
+                    </Button>
                   </SettingRow>
                 </SettingsGroup>
 
@@ -2457,24 +2456,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       : 'Export/import all settings (incl. API keys).'}
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        className="kv-btn sm"
+                      <Button
+                        size="sm"
                         onClick={handleExportSettings}
                         data-tauri-drag-region="false"
                       >
                         <Download size={11} />
                         {lang === 'zh' ? '导出设置' : 'Export'}
-                      </button>
-                      <button
-                        type="button"
-                        className="kv-btn sm"
+                      </Button>
+                      <Button
+                        size="sm"
                         onClick={handleImportSettings}
                         data-tauri-drag-region="false"
                       >
                         <Upload size={11} />
                         {lang === 'zh' ? '导入设置' : 'Import'}
-                      </button>
+                      </Button>
                       {backupStatus && (
                         <span className={`text-[12px] ${backupStatus.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
                           {backupStatus.msg}
@@ -2503,16 +2500,15 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       onOpen={() => handleOpenPermissionSettings('screen-recording')}
                     />
                     <div className="flex justify-end py-2">
-                      <button
-                        type="button"
+                      <Button
+                        size="sm"
                         onClick={refreshPermissions}
                         disabled={permissionsLoading}
-                        className="kv-btn sm"
                         data-tauri-drag-region="false"
                       >
                         <RefreshCw size={10} className={permissionsLoading ? 'animate-spin' : ''} />
                         {t.refreshPermissions}
-                      </button>
+                      </Button>
                     </div>
                   </SettingsGroup>
                 )}
@@ -2735,8 +2731,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               onChange={(v) => updateSettings({ imageArchivePath: v })}
                               placeholder={t.imageArchivePathPlaceholder}
                             />
-                            <button
-                              type="button"
+                            <Button
                               onClick={async () => {
                                 try {
                                   const selected = await open({ directory: true, multiple: false })
@@ -2747,11 +2742,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                   console.error('Failed to pick directory:', err)
                                 }
                               }}
-                              className="kv-btn"
                               data-tauri-drag-region="false"
                             >
                               {t.imageArchiveBrowse}
-                            </button>
+                            </Button>
                           </div>
                         </SettingRow>
                       )}
@@ -2894,9 +2888,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 <SettingsGroup title={t.customPrompts}>
                   <FieldBlock label={t.chatSystemPrompt} description={t.chatSystemPromptHint}>
                     <div className="mb-2 flex justify-end">
-                      <button
-                        type="button"
-                        className="kv-btn sm"
+                      <Button
+                        size="sm"
                         onClick={() => {
                           setChatSystemPromptInteracted(false)
                           updateChat({ systemPrompt: '' })
@@ -2906,7 +2899,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       >
                         <RefreshCw size={10} />
                         {t.restoreDefaultPrompt}
-                      </button>
+                      </Button>
                     </div>
                     <TextArea
                       value={chatSystemPromptValue}
@@ -2921,51 +2914,46 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
                 <SettingsGroup title={t.chatToolsSection}>
                   <div className="flex flex-wrap gap-2 pb-2">
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    <Button
+                      size="sm"
                       onClick={() => setActiveTab('mcp')}
                       data-tauri-drag-region="false"
                     >
                       <McpIcon size={11} />
                       {t.chatOpenMcp}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => setActiveTab('skill')}
                       data-tauri-drag-region="false"
                     >
                       <SkillIcon size={11} />
                       {t.chatOpenSkill}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => setActiveTab('memory')}
                       data-tauri-drag-region="false"
                     >
                       <MemoryIcon size={11} />
                       {t.tabMemory}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => setActiveTab('externalAgents')}
                       data-tauri-drag-region="false"
                     >
                       <AgentIcon size={11} />
                       {t.chatOpenExternalAgents}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => setActiveTab('providers')}
                       data-tauri-drag-region="false"
                     >
                       <ProvidersIcon size={11} />
                       {t.chatOpenProviders}
-                    </button>
+                    </Button>
                   </div>
                   <SettingRow
                     label={lang === 'zh' ? 'MCP 工具' : 'MCP tools'}
@@ -3033,25 +3021,23 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </SettingRow>
                   <SettingRow label={lang === 'zh' ? '记忆文件夹' : 'Memory folder'} stack>
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        className="kv-btn sm"
+                      <Button
+                        size="sm"
                         onClick={() => void refreshChatMemory()}
                         disabled={memoryLoading}
                         data-tauri-drag-region="false"
                       >
                         <RefreshCw size={10} className={memoryLoading ? 'animate-spin' : ''} />
                         {lang === 'zh' ? '刷新' : 'Refresh'}
-                      </button>
-                      <button
-                        type="button"
-                        className="kv-btn sm"
+                      </Button>
+                      <Button
+                        size="sm"
                         onClick={() => void handleOpenMemoryFolder()}
                         data-tauri-drag-region="false"
                       >
                         <FolderOpen size={11} />
                         {lang === 'zh' ? '打开文件夹' : 'Open folder'}
-                      </button>
+                      </Button>
                       {memoryDir && <span className="kv-row-desc min-w-0 break-all">{memoryDir}</span>}
                     </div>
                   </SettingRow>
@@ -3118,9 +3104,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     {t.mixerSectionHint ? (
                       <p className="kv-row-desc max-w-[560px]">{t.mixerSectionHint}</p>
                     ) : <span />}
-                    <button
-                      type="button"
-                      className="kv-btn sm shrink-0"
+                    <Button
+                      size="sm"
+                      className="shrink-0"
                       onClick={() => {
                         updateDefaultModel('vision', '', '')
                         updateDefaultModel('titleSummary', '', '')
@@ -3130,7 +3116,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       data-tauri-drag-region="false"
                     >
                       {t.mixerResetAuto}
-                    </button>
+                    </Button>
                   </div>
                   <SettingRow
                     label={t.auxiliaryVisionModel}
@@ -3290,9 +3276,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               updateNativeTools({ workspaceRoots: roots })
                             }}
                           />
-                          <button
-                            type="button"
-                            className="kv-btn sm shrink-0"
+                          <Button
+                            size="sm"
+                            className="shrink-0"
                             onClick={() => {
                               const roots = (chatTools.nativeTools?.workspaceRoots ?? []).filter((_, i) => i !== index)
                               updateNativeTools({ workspaceRoots: roots })
@@ -3300,12 +3286,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             data-tauri-drag-region="false"
                           >
                             <Minus size={11} />
-                          </button>
+                          </Button>
                         </div>
                       ))}
-                      <button
-                        type="button"
-                        className="kv-btn sm self-start"
+                      <Button
+                        size="sm"
+                        className="self-start"
                         onClick={async () => {
                           const selected = await open({ directory: true, multiple: false })
                           if (!selected || typeof selected !== 'string') return
@@ -3316,7 +3302,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       >
                         <FolderOpen size={11} />
                         {lang === 'zh' ? '添加工作区目录' : 'Add workspace folder'}
-                      </button>
+                      </Button>
                     </div>
                   </SettingRow>
                 </SettingsGroup>
@@ -3506,24 +3492,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
                 <SettingsGroup title={lang === 'zh' ? 'MCP 服务器' : 'MCP Servers'}>
                   <div className="flex flex-wrap gap-2 py-2">
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    <Button
+                      size="sm"
                       onClick={() => updateChatTools({ servers: [...chatTools.servers, newMcpServer()] })}
                       data-tauri-drag-region="false"
                     >
                       <Plus size={11} />
                       {lang === 'zh' ? '添加服务器' : 'Add server'}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => void handleImportMcpJson()}
                       data-tauri-drag-region="false"
                     >
                       <FolderOpen size={11} />
                       {lang === 'zh' ? '导入 mcp.json' : 'Import mcp.json'}
-                    </button>
+                    </Button>
                   </div>
 
                   {chatTools.servers.length === 0 && (
@@ -3588,18 +3572,18 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               checked={server.enabled}
                               onChange={(enabled) => updateMcpServer(server.id, { enabled })}
                             />
-                            <button
-                              type="button"
-                              className="kv-icon-btn danger"
+                            <IconButton
+                              variant="danger"
+                              size="xs"
                               onClick={() => updateChatTools({
                                 servers: chatTools.servers.filter((item) => item.id !== server.id),
                               })}
                               title={lang === 'zh' ? '删除服务器' : 'Delete server'}
-                              aria-label={lang === 'zh' ? '删除服务器' : 'Delete server'}
+                              label={lang === 'zh' ? '删除服务器' : 'Delete server'}
                               data-tauri-drag-region="false"
                             >
                               <Trash2 size={12} />
-                            </button>
+                            </IconButton>
                           </div>
                           <FieldBlock label={lang === 'zh' ? '传输' : 'Transport'}>
                             <Select
@@ -3680,16 +3664,15 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             </>
                           )}
                           <div className="flex flex-wrap items-center gap-2 pt-1">
-                            <button
-                              type="button"
-                              className="kv-btn sm"
+                            <Button
+                              size="sm"
                               disabled={testingMcpServerId === server.id || (isHttpTransport ? !server.url.trim() : !server.command.trim())}
                               onClick={() => void handleTestMcpServer(server)}
                               data-tauri-drag-region="false"
                             >
                               <RefreshCw size={10} className={testingMcpServerId === server.id ? 'animate-spin' : ''} />
                               {testingMcpServerId === server.id ? (lang === 'zh' ? '测试中' : 'Testing') : (lang === 'zh' ? '测试连接' : 'Test')}
-                            </button>
+                            </Button>
                             {feedback && (
                               <span className={`kv-tag ${feedback.ok ? 'ok' : 'warn'}`}>
                                 {feedback.message}
@@ -3705,20 +3688,19 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               <span className={`kv-provider-dot ${stateDotClass}`} />
                               {stateLabel}
                             </span>
-                            <button
-                              type="button"
-                              className="kv-btn sm"
+                            <Button
+                              size="sm"
                               disabled={reloadingMcpServerId === server.id}
                               onClick={() => void handleReloadMcpServer(server)}
                               data-tauri-drag-region="false"
                             >
                               <RefreshCw size={10} className={reloadingMcpServerId === server.id ? 'animate-spin' : ''} />
                               {lang === 'zh' ? '重连' : 'Reconnect'}
-                            </button>
+                            </Button>
                             {stderrTail.trim() && (
-                              <button
-                                type="button"
-                                className="kv-btn sm ghost"
+                              <Button
+                                variant="ghost"
+                                size="sm"
                                 onClick={() => setExpandedMcpStderrIds((prev) => (
                                   prev.includes(server.id)
                                     ? prev.filter((id) => id !== server.id)
@@ -3729,7 +3711,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                 {stderrExpanded
                                   ? (lang === 'zh' ? '隐藏日志' : 'Hide log')
                                   : (lang === 'zh' ? '查看 stderr' : 'View stderr')}
-                              </button>
+                              </Button>
                             )}
                           </div>
                           {stateError && (
@@ -3823,43 +3805,39 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               <>
                 <SettingsGroup title="Skill">
                   <div className="flex flex-wrap gap-2 py-2">
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    <Button
+                      size="sm"
                       onClick={() => void refreshChatSkills()}
                       disabled={skillsLoading}
                       data-tauri-drag-region="false"
                     >
                       <RefreshCw size={10} className={skillsLoading ? 'animate-spin' : ''} />
                       {lang === 'zh' ? '刷新列表' : 'Refresh'}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => void handleImportSkill()}
                       data-tauri-drag-region="false"
                     >
                       <FolderOpen size={11} />
                       {lang === 'zh' ? '导入文件夹' : 'Import folder'}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => void handleImportSkillZip()}
                       data-tauri-drag-region="false"
                     >
                       <Download size={11} />
                       {lang === 'zh' ? '导入 zip' : 'Import zip'}
-                    </button>
-                    <button
-                      type="button"
-                      className="kv-btn sm"
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => void handleOpenSkillFolder()}
                       data-tauri-drag-region="false"
                     >
                       <ExternalLink size={11} />
                       {lang === 'zh' ? '打开 Skill 文件夹' : 'Open skill folder'}
-                    </button>
+                    </Button>
                   </div>
                   <SettingRow label={lang === 'zh' ? '额外扫描路径' : 'Extra scan paths'} stack>
                     <div className="space-y-1.5">
@@ -3875,22 +3853,21 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             }}
                             placeholder="/path/to/skills"
                           />
-                          <button
-                            type="button"
-                            className="kv-icon-btn danger"
+                          <IconButton
+                            variant="danger"
+                            size="xs"
                             onClick={() => updateChatTools({
                               skillScanPaths: chatTools.skillScanPaths.filter((_, i) => i !== index),
                             })}
                             data-tauri-drag-region="false"
-                            aria-label={lang === 'zh' ? '移除路径' : 'Remove path'}
+                            label={lang === 'zh' ? '移除路径' : 'Remove path'}
                           >
                             <Trash2 size={12} />
-                          </button>
+                          </IconButton>
                         </div>
                       ))}
-                      <button
-                        type="button"
-                        className="kv-btn sm"
+                      <Button
+                        size="sm"
                         onClick={async () => {
                           const selected = await open({ directory: true, multiple: false })
                           if (typeof selected === 'string') {
@@ -3901,7 +3878,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       >
                         <Plus size={11} />
                         {lang === 'zh' ? '添加扫描路径' : 'Add scan path'}
-                      </button>
+                      </Button>
                     </div>
                   </SettingRow>
                   <SettingRow
@@ -4081,16 +4058,16 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                   ? (lang === 'zh' ? '已禁用' : 'Disabled')
                                   : configured ? t.connectionOk : t.permissionMissing}
                               </span>
-                              <button
-                                type="button"
+                              <IconButton
+                                variant="danger"
+                                size="xs"
                                 onClick={() => setConfirmDeleteProviderId(provider.id)}
-                                className="kv-icon-btn danger"
                                 data-tauri-drag-region="false"
                                 title={t.deleteProvider}
-                                aria-label={t.deleteProvider}
+                                label={t.deleteProvider}
                               >
                                 <Trash2 size={12} />
-                              </button>
+                              </IconButton>
                             </div>
                           </div>
                           <Input
@@ -4139,10 +4116,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               <span className="flex flex-col gap-1">
                                 <span className="flex items-center gap-1">
                                   <span>{lang === 'zh' ? '压缩请求体 (gzip)' : 'Compress request body (gzip)'}</span>
-                                  <button
-                                    type="button"
-                                    aria-label={lang === 'zh' ? '显示说明' : 'Show details'}
-                                    className="kv-icon-btn"
+                                  <IconButton
+                                    size="xs"
+                                    label={lang === 'zh' ? '显示说明' : 'Show details'}
                                     onClick={() => setGzipInfoOpen((prev) => {
                                       const next = new Set(prev)
                                       if (next.has(provider.id)) next.delete(provider.id)
@@ -4151,7 +4127,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                     })}
                                   >
                                     <Info size={12} />
-                                  </button>
+                                  </IconButton>
                                 </span>
                                 {gzipInfoOpen.has(provider.id) && (
                                   <span className="kv-row-desc block mt-1">
@@ -4205,45 +4181,46 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                       }}
                                       placeholder={idx === 0 ? `sk-... (${t.apiKeyPrimary})` : `sk-... (${t.apiKeyBackup})`}
                                     />
-                                    <button
-                                      type="button"
+                                    <IconButton
+                                      size="xs"
                                       onClick={() => toggleKeyReveal(keyId)}
-                                      className="kv-icon-btn"
                                       title={revealed ? (lang === 'zh' ? '隐藏密钥' : 'Hide key') : (lang === 'zh' ? '显示密钥' : 'Show key')}
+                                      label={revealed ? (lang === 'zh' ? '隐藏密钥' : 'Hide key') : (lang === 'zh' ? '显示密钥' : 'Show key')}
                                       data-tauri-drag-region="false"
                                     >
                                       {revealed ? <EyeOff size={12} /> : <Eye size={12} />}
-                                    </button>
+                                    </IconButton>
                                     {total > 1 && (
-                                      <button
-                                        type="button"
+                                      <IconButton
+                                        variant="danger"
+                                        size="xs"
                                         onClick={() => {
                                           const next = provider.apiKeys.filter((_, i) => i !== idx)
                                           updateProvider(provider.id, { apiKeys: next })
                                         }}
-                                        className="kv-icon-btn danger"
                                         title={t.removeKey}
+                                        label={t.removeKey}
                                         data-tauri-drag-region="false"
                                       >
                                         <Trash2 size={12} />
-                                      </button>
+                                      </IconButton>
                                     )}
                                   </div>
                                 )
                               })}
                             </div>
-                            <button
-                              type="button"
+                            <Button
+                              size="sm"
+                              className="mt-2"
                               onClick={() => {
                                 const base = provider.apiKeys.length > 0 ? provider.apiKeys : ['']
                                 updateProvider(provider.id, { apiKeys: [...base, ''] })
                               }}
-                              className="kv-btn sm mt-2"
                               data-tauri-drag-region="false"
                             >
                               <Plus size={11} />
                               {t.addKey}
-                            </button>
+                            </Button>
                           </FieldBlock>
 
                           <div className="kv-row">
@@ -4254,27 +4231,25 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               )}
                             </div>
                             <div className="kv-row-control kv-row-control-cluster">
-                              <button
-                                type="button"
+                              <Button
+                                size="sm"
                                 onClick={() => openModelPicker(provider.id)}
-                                className="kv-btn sm"
                                 data-tauri-drag-region="false"
                               >
                                 <RefreshCw size={10} className={fetchingProviderId === provider.id ? 'animate-spin' : ''} />
                                 {provider.availableModels.length > 0
                                   ? (lang === 'zh' ? '管理模型' : 'Models')
                                   : t.fetchModels}
-                              </button>
-                              <button
-                                type="button"
+                              </Button>
+                              <Button
+                                size="sm"
                                 onClick={() => handleTestConnection(provider.id)}
                                 disabled={testingProviderId === provider.id}
-                                className="kv-btn sm"
                                 data-tauri-drag-region="false"
                               >
                                 <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
                                 {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
-                              </button>
+                              </Button>
                             </div>
                           </div>
 
@@ -4361,16 +4336,15 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     label={t.checkUpdate}
                     description={updateStatus === 'up-to-date' ? t.upToDate : undefined}
                   >
-                    <button
-                      type="button"
+                    <Button
+                      size="sm"
                       onClick={handleCheckUpdate}
                       disabled={updateStatus === 'checking'}
-                      className="kv-btn sm"
                       data-tauri-drag-region="false"
                     >
                       <RefreshCw size={11} className={updateStatus === 'checking' ? 'animate-spin' : ''} />
                       {updateStatus === 'checking' ? t.checkingUpdate : t.checkUpdate}
-                    </button>
+                    </Button>
                   </SettingRow>
 
                   {updateStatus === 'check-failed' && (
@@ -4378,14 +4352,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       <div className="kv-panel-body mb-2 text-amber-700 dark:text-amber-400">
                         {t.updateCheckFailed}
                       </div>
-                      <button
-                        type="button"
+                      <Button
+                        size="sm"
                         onClick={handleOpenGithubReleases}
-                        className="kv-btn sm"
                         data-tauri-drag-region="false"
                       >
                         {t.downloadFromGithub}
-                      </button>
+                      </Button>
                     </div>
                   )}
 
@@ -4422,78 +4395,70 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       <div className="flex gap-2 flex-wrap">
                         {downloadState === 'idle' && (
                           <>
-                            <button
-                              type="button"
+                            <Button
+                              variant="primary"
                               onClick={handleDownloadAndInstall}
-                              className="kv-btn primary"
                               data-tauri-drag-region="false"
                             >
                               <Download size={12} />
                               {t.downloadAndInstall}
-                            </button>
-                            <button
-                              type="button"
+                            </Button>
+                            <Button
                               onClick={handleOpenReleasePage}
-                              className="kv-btn"
                               data-tauri-drag-region="false"
                             >
                               <ExternalLink size={12} />
                               {t.downloadFromGithub}
-                            </button>
+                            </Button>
                           </>
                         )}
                         {downloadState === 'downloading' && (
-                          <button type="button" disabled className="kv-btn">
+                          <Button disabled>
                             <RefreshCw size={12} className="animate-spin" />
                             {t.downloading}
-                          </button>
+                          </Button>
                         )}
                         {downloadState === 'downloaded' && (
-                          <button
-                            type="button"
+                          <Button
+                            variant="primary"
                             onClick={handleInstall}
-                            className="kv-btn primary"
                             data-tauri-drag-region="false"
                           >
                             <Download size={12} />
                             {t.installAndRestart}
-                          </button>
+                          </Button>
                         )}
                         {downloadState === 'failed' && (
                           <>
-                            <button
-                              type="button"
+                            <Button
+                              variant="primary"
                               onClick={handleDownloadAndInstall}
-                              className="kv-btn primary"
                               data-tauri-drag-region="false"
                             >
                               <RefreshCw size={12} />
                               {t.retryDownload}
-                            </button>
-                            <button
-                              type="button"
+                            </Button>
+                            <Button
                               onClick={handleOpenReleasePage}
-                              className="kv-btn"
                               data-tauri-drag-region="false"
                             >
                               <ExternalLink size={12} />
                               {t.downloadFromGithub}
-                            </button>
+                            </Button>
                           </>
                         )}
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
                           onClick={() => {
                             setUpdateStatus('idle')
                             setDownloadState('idle')
                             setDownloadPercent(0)
                             setDownloadError('')
                           }}
-                          className="kv-btn ghost"
                           data-tauri-drag-region="false"
                         >
                           {t.updateLater}
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -4526,23 +4491,20 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 </>
               )}
             </div>
-            <button
-              type="button"
+            <Button
               onClick={handleCloseRequest}
-              className="kv-btn"
               data-tauri-drag-region="false"
             >
               {t.cancel}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
               onClick={handleSave}
               disabled={saving || !hasUnsavedChanges}
-              className="kv-btn primary"
               data-tauri-drag-region="false"
             >
               {saving ? t.saving : t.save}
-            </button>
+            </Button>
           </div>
         </main>
   )
@@ -4600,29 +4562,25 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <h3 className="text-[14px] font-semibold">{t.unsavedChanges}</h3>
             <p className="kv-panel-body">{t.unsavedChangesDesc}</p>
             <div className="flex justify-end gap-2 pt-1">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
                 onClick={() => setCloseConfirmOpen(false)}
-                className="kv-btn ghost"
               >
                 {t.continueEditing}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
                 onClick={handleDiscardAndClose}
-                className="kv-btn"
               >
                 {t.discardAndClose}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="primary"
                 onClick={handleSaveAndClose}
                 disabled={saving}
-                className="kv-btn primary"
                 autoFocus
               >
                 {saving ? t.saving : t.saveAndClose}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -4634,25 +4592,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <h3 className="text-[14px] font-semibold">{t.confirmDeleteProvider}</h3>
             <p className="kv-panel-body">{t.confirmDeleteProviderDesc}</p>
             <div className="flex justify-end gap-2 pt-1">
-              <button
-                type="button"
+              <Button
                 onClick={() => setConfirmDeleteProviderId(null)}
-                className="kv-btn"
                 data-tauri-drag-region="false"
               >
                 {t.cancel}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="danger"
                 onClick={() => {
                   if (confirmDeleteProviderId) deleteProvider(confirmDeleteProviderId)
                   setConfirmDeleteProviderId(null)
                 }}
-                className="kv-btn danger"
                 data-tauri-drag-region="false"
               >
                 {t.deleteProvider}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -4666,15 +4621,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 <h3 className="truncate text-[14px] font-semibold">{selectedSkillPreview.name}</h3>
                 <p className="kv-panel-body">{selectedSkillPreview.description}</p>
               </div>
-              <button
-                type="button"
-                className="kv-icon-btn"
+              <IconButton
+                size="xs"
                 onClick={() => setSelectedSkillPreview(null)}
                 data-tauri-drag-region="false"
-                aria-label={lang === 'zh' ? '关闭' : 'Close'}
+                label={lang === 'zh' ? '关闭' : 'Close'}
               >
                 <X size={12} />
-              </button>
+              </IconButton>
             </div>
             {selectedSkillPreview.recommendedTools.length > 0 && (
               <div className="flex flex-wrap gap-1">

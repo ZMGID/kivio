@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, Trash2, Download, Copy, Check, ChevronRight, Search, Terminal, FileJson } from 'lucide-react'
 import { api, type RequestDebugRecord } from '../api/tauri'
+import { Button } from '../components/Button'
 import { SettingRow, SettingsGroup, Toggle } from './components'
 
 type RequestDebugPanelProps = {
@@ -272,10 +273,10 @@ function CopyButton({ text, lang, label }: { text: string; lang: string; label?:
     [text],
   )
   return (
-    <button type="button" className="kv-btn sm" onClick={copy} data-tauri-drag-region="false">
+    <Button size="sm" onClick={copy} data-tauri-drag-region="false">
       {copied ? <Check size={11} /> : <Copy size={11} />}
       {copied ? (lang === 'zh' ? '已复制' : 'Copied') : label ?? (lang === 'zh' ? '复制' : 'Copy')}
-    </button>
+    </Button>
   )
 }
 
@@ -688,30 +689,28 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
       </SettingsGroup>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className="kv-btn sm" onClick={() => void refresh()} data-tauri-drag-region="false">
+        <Button size="sm" onClick={() => void refresh()} data-tauri-drag-region="false">
           <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
           {zh ? '刷新' : 'Refresh'}
-        </button>
-        <button
-          type="button"
-          className="kv-btn sm"
+        </Button>
+        <Button
+          size="sm"
           onClick={exportJson}
           disabled={records.length === 0}
           data-tauri-drag-region="false"
         >
           <Download size={11} />
           {zh ? '导出 JSON' : 'Export JSON'}
-        </button>
-        <button
-          type="button"
-          className="kv-btn sm"
+        </Button>
+        <Button
+          size="sm"
           onClick={() => void clearAll()}
           disabled={records.length === 0}
           data-tauri-drag-region="false"
         >
           <Trash2 size={11} />
           {zh ? '清空' : 'Clear'}
-        </button>
+        </Button>
         <span className="ml-auto text-[11px] text-neutral-500 dark:text-neutral-400">
           {zh ? `${records.length} 条记录` : `${records.length} records`}
         </span>
@@ -1131,10 +1130,10 @@ function CopyButtonIcon({
     }
   }, [text])
   return (
-    <button type="button" className="kv-btn sm" onClick={copy} data-tauri-drag-region="false">
+    <Button size="sm" onClick={copy} data-tauri-drag-region="false">
       {copied ? <Check size={11} /> : icon}
       {copied ? (lang === 'zh' ? '已复制' : 'Copied') : label}
-    </button>
+    </Button>
   )
 }
 

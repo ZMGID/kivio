@@ -3,6 +3,7 @@ import { ArrowLeft, RotateCcw } from 'lucide-react'
 import type { ModelInfo } from '../api/tauri'
 import { resolveModelInfo, matchModel } from '../data/modelMatching'
 import { Toggle, Input } from '../settings/components'
+import { Button, IconButton } from './Button'
 
 type Lang = 'zh' | 'en'
 
@@ -99,15 +100,14 @@ export function ModelDetailDrawer({
     >
       <div className="kv-drawer" data-tauri-drag-region="false" onMouseDown={(e) => e.stopPropagation()}>
         <div className="kv-drawer-header">
-          <button
-            type="button"
-            className="kv-icon-btn"
+          <IconButton
+            size="xs"
             onClick={onClose}
             data-tauri-drag-region="false"
-            aria-label={t.back}
+            label={t.back}
           >
             <ArrowLeft size={14} />
-          </button>
+          </IconButton>
           <span className="kv-drawer-title truncate">{modelName}</span>
           <span style={{ width: 28 }} />
         </div>
@@ -196,26 +196,24 @@ export function ModelDetailDrawer({
 
         <div className="kv-drawer-footer">
           {hasOverride && (
-            <button
-              type="button"
-              className="kv-btn ghost"
+            <Button
+              variant="ghost"
               onClick={handleReset}
               data-tauri-drag-region="false"
             >
               <RotateCcw size={12} />
               {t.reset}
-            </button>
+            </Button>
           )}
           <div className="flex-1" />
-          <button
-            type="button"
-            className="kv-btn primary"
+          <Button
+            variant="primary"
             onClick={handleSave}
             disabled={!isDirty}
             data-tauri-drag-region="false"
           >
             {t.save}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

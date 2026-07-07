@@ -224,6 +224,7 @@ Bundled document Skills require their execution runtime in the installer. If `pd
 - 2-space indentation, single quotes, no semicolons.
 - Components use `PascalCase.tsx`; utilities/services use `camelCase.ts`.
 - Tailwind utility classes for UI; shared styles in `src/index.css`, component-specific in `src/App.css`.
+- **Action buttons**: use `<Button>` / `<IconButton>` from `src/components/Button.tsx` (they render the shared `kv-btn` / `kv-icon-btn` CSS). Don't hand-write inline button styles for CTAs / toolbar / dialog buttons. `IconButton` sizes: `xs`=22 (bare base, settings density) / `sm`=28 / `md`=32 / `lg`=36. Not applicable to list rows, menu items, segmented controls/tabs, window controls, or the chat send key — those are separate interaction modes.
 - Dark mode uses a `.dark` class on `document.documentElement` (configured via `@custom-variant dark` in Tailwind v4).
 - Git commits follow Conventional Commits (`feat:`, `fix:`, `refactor:`, `chore:`).
 

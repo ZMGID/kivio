@@ -24,6 +24,7 @@ import {
 } from './ConnectorBrandIcons'
 import { ConnectorDetailModal } from './ConnectorDetailModal'
 import { EmailConnectorModal } from './EmailConnectorModal'
+import { Button } from '../components/Button'
 
 // catalog 项 iconKey → 品牌图标组件查找表；未命中（含自定义连接器）回退到通用 link 图标。
 const CONNECTOR_ICON_BY_KEY: Record<
@@ -377,9 +378,9 @@ export function ConnectorsPanel({
                     : t.connectorsConnected}
               </span>
             </div>
-            <button
-              type="button"
-              className="kv-btn sm danger"
+            <Button
+              variant="danger"
+              size="sm"
               onClick={(e) => {
                 e.stopPropagation()
                 removeServer(server.id)
@@ -388,7 +389,7 @@ export function ConnectorsPanel({
             >
               <Trash2 size={10} />
               {t.connectorsDisconnect}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -426,9 +427,9 @@ export function ConnectorsPanel({
               <Check size={12} />
               <span>{t.connectorsConnected}</span>
             </div>
-            <button
-              type="button"
-              className="kv-btn sm danger"
+            <Button
+              variant="danger"
+              size="sm"
               onClick={(e) => {
                 e.stopPropagation()
                 onObsidianVaultPathChange('')
@@ -437,7 +438,7 @@ export function ConnectorsPanel({
             >
               <Trash2 size={10} />
               {t.connectorsDisconnect}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -477,9 +478,8 @@ export function ConnectorsPanel({
                 {emailAccounts.length} {t.connectorsEmailAccountsTitle}
               </span>
             </div>
-            <button
-              type="button"
-              className="kv-btn sm"
+            <Button
+              size="sm"
               onClick={(e) => {
                 e.stopPropagation()
                 setEmailModalOpen(true)
@@ -487,7 +487,7 @@ export function ConnectorsPanel({
               data-tauri-drag-region="false"
             >
               {t.connectorsEmailEdit}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -542,9 +542,10 @@ export function ConnectorsPanel({
             )}
           </div>
           {isOauth ? (
-            <button
-              type="button"
-              className="kv-btn sm primary shrink-0"
+            <Button
+              variant="primary"
+              size="sm"
+              className="shrink-0"
               disabled={oauthBusy}
               onClick={(e) => {
                 e.stopPropagation()
@@ -560,12 +561,13 @@ export function ConnectorsPanel({
               ) : (
                 t.connectorsOauthAuthorize
               )}
-            </button>
+            </Button>
           ) : isVault ? (
             !isVaultInput && (
-              <button
-                type="button"
-                className="kv-btn sm primary shrink-0"
+              <Button
+                variant="primary"
+                size="sm"
+                className="shrink-0"
                 onClick={(e) => {
                   e.stopPropagation()
                   setVaultDraft(obsidianVaultPath)
@@ -574,12 +576,13 @@ export function ConnectorsPanel({
                 data-tauri-drag-region="false"
               >
                 {t.connectorsConnect}
-              </button>
+              </Button>
             )
           ) : isEmail ? (
-            <button
-              type="button"
-              className="kv-btn sm primary shrink-0"
+            <Button
+              variant="primary"
+              size="sm"
+              className="shrink-0"
               onClick={(e) => {
                 e.stopPropagation()
                 setEmailModalOpen(true)
@@ -587,12 +590,13 @@ export function ConnectorsPanel({
               data-tauri-drag-region="false"
             >
               {emailConnected ? t.connectorsEmailEdit : t.connectorsConnect}
-            </button>
+            </Button>
           ) : (
             !isTokenInput && (
-              <button
-                type="button"
-                className="kv-btn sm primary shrink-0"
+              <Button
+                variant="primary"
+                size="sm"
+                className="shrink-0"
                 onClick={(e) => {
                   e.stopPropagation()
                   setTokenDraft('')
@@ -601,7 +605,7 @@ export function ConnectorsPanel({
                 data-tauri-drag-region="false"
               >
                 {t.connectorsConnect}
-              </button>
+              </Button>
             )
           )}
         </div>
@@ -635,27 +639,25 @@ export function ConnectorsPanel({
                 mono
                 placeholder={t.connectorsVaultSelect}
               />
-              <button
-                type="button"
-                className="kv-btn sm"
+              <Button
+                size="sm"
                 onClick={() => void browseVaultFolder()}
                 data-tauri-drag-region="false"
               >
                 <FolderOpen size={10} />
                 {t.connectorsVaultBrowse}
-              </button>
-              <button
-                type="button"
-                className="kv-btn sm primary"
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
                 disabled={!vaultDraft.trim()}
                 onClick={() => connectVault(vaultDraft)}
                 data-tauri-drag-region="false"
               >
                 {t.connectorsVaultSave}
-              </button>
-              <button
-                type="button"
-                className="kv-btn sm"
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => {
                   setVaultInputFor(false)
                   setVaultDraft('')
@@ -663,7 +665,7 @@ export function ConnectorsPanel({
                 data-tauri-drag-region="false"
               >
                 <X size={10} />
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -679,9 +681,9 @@ export function ConnectorsPanel({
               mono
               placeholder={entry.tokenHint?.[lang] ?? t.connectorsTokenPlaceholder}
             />
-            <button
-              type="button"
-              className="kv-btn sm primary"
+            <Button
+              variant="primary"
+              size="sm"
               disabled={!tokenDraft.trim()}
               onClick={(e) => {
                 e.stopPropagation()
@@ -690,10 +692,9 @@ export function ConnectorsPanel({
               data-tauri-drag-region="false"
             >
               {t.connectorsTokenSubmit}
-            </button>
-            <button
-              type="button"
-              className="kv-btn sm"
+            </Button>
+            <Button
+              size="sm"
               onClick={(e) => {
                 e.stopPropagation()
                 setTokenInputFor(null)
@@ -702,7 +703,7 @@ export function ConnectorsPanel({
               data-tauri-drag-region="false"
             >
               <X size={10} />
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -731,15 +732,14 @@ export function ConnectorsPanel({
           {availableEntries.map(renderAvailableCard)}
         </div>
         <div className="pt-1">
-          <button
-            type="button"
-            className="kv-btn sm"
+          <Button
+            size="sm"
             onClick={() => setShowCustomForm((v) => !v)}
             data-tauri-drag-region="false"
           >
             {showCustomForm ? <X size={10} /> : <Plus size={10} />}
             {t.connectorsAddCustomToggle}
-          </button>
+          </Button>
         </div>
         {showCustomForm && (
           <div className="kv-panel mt-2 space-y-2">
@@ -772,9 +772,9 @@ export function ConnectorsPanel({
                 {t.connectorsOauthFailed}: {oauthError.message}
               </div>
             )}
-            <button
-              type="button"
-              className="kv-btn sm primary"
+            <Button
+              variant="primary"
+              size="sm"
               disabled={!customName.trim() || !customUrl.trim() || oauthBusyFor === 'custom'}
               onClick={() => void addCustomConnector()}
               data-tauri-drag-region="false"
@@ -787,7 +787,7 @@ export function ConnectorsPanel({
               ) : (
                 t.connectorsCustomAdd
               )}
-            </button>
+            </Button>
           </div>
         )}
       </SettingsGroup>
