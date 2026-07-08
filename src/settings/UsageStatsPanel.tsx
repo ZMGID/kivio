@@ -708,7 +708,9 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
               <td className="max-w-[140px] px-3 py-2 truncate">{record.providerName || record.providerId}</td>
               <td className="max-w-[180px] px-3 py-2 truncate font-mono text-[11.5px]">{record.model}</td>
               <td className="px-3 py-2 tabular-nums">{formatTokens(record.inputTokens)}</td>
-              <td className="px-3 py-2 tabular-nums">{formatTokens(record.outputTokens)}</td>
+              <td className="px-3 py-2 tabular-nums">
+                {record.source === 'knowledge_base' ? '—' : formatTokens(record.outputTokens)}
+              </td>
               <td className="px-3 py-2 tabular-nums">{formatTokens(recordTotalTokens(record))}</td>
               <td className="px-3 py-2 tabular-nums">{record.costUsd == null ? '--' : formatCost(record.costUsd)}</td>
               <td className="px-3 py-2 tabular-nums">{formatDuration(record.durationMs)}</td>
