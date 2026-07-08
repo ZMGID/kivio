@@ -5,8 +5,8 @@ use crate::external_agents::session::acp::detect_acp_models;
 use crate::external_agents::session::claude_init::detect_claude_models;
 use crate::external_agents::session::pi_rpc::parse_pi_models;
 use crate::external_agents::types::{
-    DetectedAgent, ModelProbeStrategy, RuntimeAgentDef, RuntimeModelOption, default_model_option,
-    fallback_models_from_pairs, reasoning_options_from_pairs,
+    fallback_models_from_pairs, reasoning_options_from_pairs, DetectedAgent, ModelProbeStrategy,
+    RuntimeAgentDef, RuntimeModelOption,
 };
 use crate::proc::NoConsoleWindow;
 
@@ -173,7 +173,11 @@ async fn probe_models(
     if def.models_from_stderr {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let text = if !stdout.trim().is_empty() { stdout } else { stderr };
+        let text = if !stdout.trim().is_empty() {
+            stdout
+        } else {
+            stderr
+        };
         return parse_pi_models(text.as_ref());
     }
 
@@ -189,11 +193,13 @@ fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOpt
     if trimmed.is_empty() || trimmed.to_lowercase().contains("no models available") {
         return None;
     }
-    let mut out = vec![default_model_option()];
+    // No seeded "Default" entry — return only the real models the CLI reports.
+    let mut out: Vec<RuntimeModelOption> = Vec::new();
     match agent_id {
         "cursor-agent" => {
             for line in trimmed.lines().map(str::trim).filter(|l| !l.is_empty()) {
-                if line.eq_ignore_ascii_case("available models") || line.eq_ignore_ascii_case("models")
+                if line.eq_ignore_ascii_case("available models")
+                    || line.eq_ignore_ascii_case("models")
                 {
                     continue;
                 }
@@ -238,10 +244,10 @@ fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOpt
         }
         _ => {}
     }
-    if out.len() > 1 {
-        Some(out)
-    } else {
+    if out.is_empty() {
         None
+    } else {
+        Some(out)
     }
 }
 
@@ -261,7 +267,9 @@ mod tests {
         }
         // Real discovered models, not the bogus generic fallback.
         assert!(
-            detected.models.iter().any(|m| m.id.contains('/') && !m.id.starts_with("anthropic/") && !m.id.starts_with("openai/")),
+            detected.models.iter().any(|m| m.id.contains('/')
+                && !m.id.starts_with("anthropic/")
+                && !m.id.starts_with("openai/")),
             "expected user-configured pi models, got: {:?}",
             detected.models.iter().map(|m| &m.id).collect::<Vec<_>>()
         );
@@ -280,11 +288,8 @@ mod tests {
 
     #[test]
     fn parse_opencode_line_models() {
-        let models = parse_models_list(
-            "opencode",
-            "anthropic/claude-sonnet-4-5\nopenai/gpt-5",
-        )
-        .unwrap();
+        let models =
+            parse_models_list("opencode", "anthropic/claude-sonnet-4-5\nopenai/gpt-5").unwrap();
         assert!(models.iter().any(|m| m.id == "anthropic/claude-sonnet-4-5"));
     }
 }

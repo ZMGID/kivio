@@ -105,11 +105,24 @@ pub struct AppState {
     /// Chat MCP/native tool 列表缓存。key 由工具相关 settings 生成，避免每轮对话重复冷启动 server。
     pub chat_tool_list_cache: Mutex<HashMap<String, (Instant, Vec<ChatToolDefinition>)>>,
     /// 外部 CLI 斜杠命令探测缓存（agent_id:cwd → 命令列表）。
-    pub external_slash_commands_cache:
-        Mutex<HashMap<String, (Instant, Vec<crate::external_agents::types::ExternalCliSlashCommand>)>>,
+    pub external_slash_commands_cache: Mutex<
+        HashMap<
+            String,
+            (
+                Instant,
+                Vec<crate::external_agents::types::ExternalCliSlashCommand>,
+            ),
+        >,
+    >,
     /// 外部 CLI 模型列表探测缓存（agent_id → 模型选项）。
     pub external_agent_models_cache: Mutex<
-        HashMap<String, (Instant, Vec<crate::external_agents::types::RuntimeModelOption>)>,
+        HashMap<
+            String,
+            (
+                Instant,
+                Vec<crate::external_agents::types::RuntimeModelOption>,
+            ),
+        >,
     >,
     /// 外部 CLI 全量检测结果缓存（available/version/auth/models）。避免 RuntimePicker / 设置页
     /// 每次打开都串行重探 8 个 CLI（含 auth 探测超时）。force_refresh 时跳过。
@@ -159,8 +172,7 @@ pub struct AppState {
     /// 与后台 subagent 不同：这些命令**跨 turn 存活**，只由显式 `kill_background`
     /// 或 app 退出 sweep 清理（对齐 Claude Code background bash，dev-server 友好），
     /// 不随发起的 run 取消。仅在 insert/lookup/sweep 时短暂持锁。
-    pub background_commands:
-        Arc<Mutex<HashMap<String, crate::native_tools::BackgroundCommand>>>,
+    pub background_commands: Arc<Mutex<HashMap<String, crate::native_tools::BackgroundCommand>>>,
     /// 开发者「请求调试」内存环形缓冲：最近 [`REQUEST_DEBUG_CAPACITY`] 条 provider 调用的
     /// 请求（脱敏 headers + body）+ 响应摘要。默认关闭（`chat_tools.request_debug_enabled`），
     /// 关闭时 adapter 短路、不构造记录。仅内存、不落盘，进程退出即清。
@@ -549,7 +561,8 @@ impl AppState {
         conversation_id: &str,
         agent_id: &str,
         cwd: &str,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>> {
+    ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
+    {
         let mut map = self
             .external_live_sessions
             .lock()
@@ -633,10 +646,7 @@ impl AppState {
     /// opportunistically so the map does not grow unbounded across a long
     /// session, but keeps the most recent terminal jobs so `bash_output` can
     /// still return their final output + exit code right after they finish.
-    pub fn register_background_command(
-        &self,
-        job: crate::native_tools::BackgroundCommand,
-    ) {
+    pub fn register_background_command(&self, job: crate::native_tools::BackgroundCommand) {
         const MAX_TRACKED_BACKGROUND_COMMANDS: usize = 64;
         let mut map = self
             .background_commands
@@ -647,7 +657,12 @@ impl AppState {
         while map.len() >= MAX_TRACKED_BACKGROUND_COMMANDS {
             let oldest_terminal = map
                 .values()
-                .filter(|j| !matches!(j.status, crate::native_tools::BackgroundCommandStatus::Running))
+                .filter(|j| {
+                    !matches!(
+                        j.status,
+                        crate::native_tools::BackgroundCommandStatus::Running
+                    )
+                })
                 .min_by_key(|j| j.started_at)
                 .map(|j| j.job_id.clone());
             match oldest_terminal {

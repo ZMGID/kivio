@@ -30,9 +30,7 @@ pub fn compose_external_prompt(
     latest_user_message: &str,
 ) -> ComposedExternalPrompt {
     let skill_section = match (skill_body, skill_dir, skill_folder) {
-        (Some(body), Some(dir), Some(folder)) => {
-            with_skill_root_preamble(body, dir, folder)
-        }
+        (Some(body), Some(dir), Some(folder)) => with_skill_root_preamble(body, dir, folder),
         (Some(body), _, _) => body.to_string(),
         _ => String::new(),
     };

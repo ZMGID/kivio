@@ -2,11 +2,10 @@ use super::super::types::{
     PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, StreamFormat,
 };
 
-const FALLBACK_MODELS: &[(&str, &str)] = &[
-    // Pi's real models are user-configured and discovered via `pi --list-models`; if that fails
-    // we only offer Default rather than inventing provider models the user never set up.
-    ("default", "Default"),
-];
+// Pi's real models are user-configured and discovered via `pi --list-models`. When that fails,
+// leave the list empty rather than inventing provider models the user never set up (or a
+// meaningless "Default" that maps to whatever the CLI happens to pick).
+const FALLBACK_MODELS: &[(&str, &str)] = &[];
 
 const REASONING: &[(&str, &str)] = &[
     ("default", "Default"),
@@ -24,7 +23,11 @@ pub fn build_pi_args(
     _prompt: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), "rpc".to_string()];
-    if let Some(model) = options.model.as_ref().filter(|m| *m != "default" && !m.is_empty()) {
+    if let Some(model) = options
+        .model
+        .as_ref()
+        .filter(|m| *m != "default" && !m.is_empty())
+    {
         args.push("--model".to_string());
         args.push(model.clone());
     }

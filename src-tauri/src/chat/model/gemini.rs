@@ -94,7 +94,14 @@ impl GeminiProvider<'_> {
         let raw = response.text().await.map_err(|err| {
             let message = format!("{label} read body: {err}");
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            self.record_debug_failure(&request, &label, false, &message, started_at, started.elapsed());
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &message,
+                started_at,
+                started.elapsed(),
+            );
             ModelError::new(message)
         })?;
         let value: Value = serde_json::from_str(&raw).map_err(|err| {
@@ -104,7 +111,14 @@ impl GeminiProvider<'_> {
                 raw.chars().take(500).collect::<String>()
             );
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            self.record_debug_failure(&request, &label, false, &message, started_at, started.elapsed());
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &message,
+                started_at,
+                started.elapsed(),
+            );
             ModelError::new(message)
         })?;
         let output = output_from_gemini_response(&value, &label)?;
@@ -115,7 +129,14 @@ impl GeminiProvider<'_> {
             started.elapsed(),
             output.usage.clone(),
         );
-        self.record_debug_success(&request, &label, false, &output, started_at, started.elapsed());
+        self.record_debug_success(
+            &request,
+            &label,
+            false,
+            &output,
+            started_at,
+            started.elapsed(),
+        );
         Ok(output)
     }
 
@@ -263,7 +284,14 @@ impl GeminiProvider<'_> {
             started.elapsed(),
             output.usage.clone(),
         );
-        self.record_debug_success(&request, &label, true, &output, started_at, started.elapsed());
+        self.record_debug_success(
+            &request,
+            &label,
+            true,
+            &output,
+            started_at,
+            started.elapsed(),
+        );
         Ok(output)
     }
 
@@ -608,7 +636,10 @@ fn merge_consecutive_gemini_roles(contents: &mut Vec<Value>) {
             .get("role")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let curr_role = contents[i].get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let curr_role = contents[i]
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if prev_role == curr_role {
             let curr_parts = contents[i]
                 .get("parts")
@@ -696,7 +727,10 @@ fn normalize_gemini_schema(schema: Value) -> Value {
     }
 }
 
-pub fn output_from_gemini_response(value: &Value, label: &str) -> Result<GenerateOutput, ModelError> {
+pub fn output_from_gemini_response(
+    value: &Value,
+    label: &str,
+) -> Result<GenerateOutput, ModelError> {
     if let Some(msg) = gemini_error_message(value) {
         return Err(ModelError::new(format!("{label}: {msg}")));
     }
@@ -730,8 +764,12 @@ pub fn output_from_gemini_response(value: &Value, label: &str) -> Result<Generat
         Some(reasoning_parts.join(""))
     };
     let usage = gemini_usage(value);
-    let provider_message =
-        openai_compatible_message(&content, reasoning.as_deref(), &tool_calls, Some(&finish_reason));
+    let provider_message = openai_compatible_message(
+        &content,
+        reasoning.as_deref(),
+        &tool_calls,
+        Some(&finish_reason),
+    );
     Ok(GenerateOutput {
         text: content,
         reasoning,
@@ -896,8 +934,12 @@ fn stream_output(
     usage: Option<ModelUsage>,
 ) -> GenerateOutput {
     let reasoning = non_empty(reasoning);
-    let provider_message =
-        openai_compatible_message(&text, reasoning.as_deref(), &tool_calls, Some(&finish_reason));
+    let provider_message = openai_compatible_message(
+        &text,
+        reasoning.as_deref(),
+        &tool_calls,
+        Some(&finish_reason),
+    );
     GenerateOutput {
         text,
         reasoning,
@@ -1011,7 +1053,10 @@ mod tests {
         // schema 归一化：JSON Schema 专有键被剥掉。
         assert!(decl["parameters"].get("$schema").is_none());
         assert!(decl["parameters"].get("additionalProperties").is_none());
-        assert_eq!(decl["parameters"]["properties"]["pattern"]["type"], "string");
+        assert_eq!(
+            decl["parameters"]["properties"]["pattern"]["type"],
+            "string"
+        );
         // 绝不含 OpenAI 专有字段（撞 Gemini 400 的元凶）。
         assert!(body.get("promptCacheKey").is_none());
         assert!(body.get("prompt_cache_key").is_none());

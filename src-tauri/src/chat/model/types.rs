@@ -100,11 +100,9 @@ pub struct ModelTool {
 impl ModelTool {
     pub fn openai_tool_name(&self) -> String {
         match self.source.as_str() {
-            "native" | "skill" | "mixer" => {
-                mcp::types::apply_reserved_wire_alias(&mcp::types::sanitize_openai_tool_name(
-                    &self.name,
-                ))
-            }
+            "native" | "skill" | "mixer" => mcp::types::apply_reserved_wire_alias(
+                &mcp::types::sanitize_openai_tool_name(&self.name),
+            ),
             _ => mcp::types::sanitize_openai_tool_name(&self.id),
         }
     }
@@ -839,7 +837,11 @@ fn responses_items_from_model_message(message: &ModelMessage, items: &mut Vec<Va
     }
 
     let is_assistant = message.role == ModelRole::Assistant;
-    let text_part_type = if is_assistant { "output_text" } else { "input_text" };
+    let text_part_type = if is_assistant {
+        "output_text"
+    } else {
+        "input_text"
+    };
     let mut content_parts: Vec<Value> = Vec::new();
     // Tool calls are sibling items, emitted AFTER the assistant's text content so the
     // ordering matches a natural turn (message, then the calls it made).
@@ -988,8 +990,12 @@ mod tests {
         let messages = vec![ModelMessage {
             role: ModelRole::User,
             content: vec![
-                MessagePart::ImageUrl { url: "data:image/png;base64,AAAA".to_string() },
-                MessagePart::Text { text: "what is this?".to_string() },
+                MessagePart::ImageUrl {
+                    url: "data:image/png;base64,AAAA".to_string(),
+                },
+                MessagePart::Text {
+                    text: "what is this?".to_string(),
+                },
             ],
         }];
         let items = responses_input_from_model_messages(&messages);

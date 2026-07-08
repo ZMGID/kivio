@@ -225,7 +225,9 @@ pub fn encode_cwd(cwd: &Path) -> String {
 pub fn sessions_root() -> PathBuf {
     match app_data_dir() {
         Some(dir) => dir.join(SESSIONS_SUBDIR),
-        None => std::env::temp_dir().join("com.zmair.kivio").join(SESSIONS_SUBDIR),
+        None => std::env::temp_dir()
+            .join("com.zmair.kivio")
+            .join(SESSIONS_SUBDIR),
     }
 }
 
@@ -304,8 +306,7 @@ impl Session {
             .map_err(|e| format!("failed to serialize session header: {e}"))?;
         let mut file = File::create(&self.path)
             .map_err(|e| format!("failed to create session file {}: {e}", self.path.display()))?;
-        writeln!(file, "{line}")
-            .map_err(|e| format!("failed to write session header: {e}"))?;
+        writeln!(file, "{line}").map_err(|e| format!("failed to write session header: {e}"))?;
         file.flush()
             .map_err(|e| format!("failed to flush session header: {e}"))?;
         Ok(())
@@ -338,8 +339,7 @@ impl Session {
             .append(true)
             .open(&self.path)
             .map_err(|e| format!("failed to open session file {}: {e}", self.path.display()))?;
-        writeln!(file, "{line}")
-            .map_err(|e| format!("failed to append session record: {e}"))?;
+        writeln!(file, "{line}").map_err(|e| format!("failed to append session record: {e}"))?;
         file.flush()
             .map_err(|e| format!("failed to flush session record: {e}"))?;
 
@@ -390,8 +390,9 @@ impl Session {
             match iter.next() {
                 Some((_, line)) if line.trim().is_empty() => continue,
                 Some((_, line)) => {
-                    break serde_json::from_str::<SessionRecord>(line)
-                        .map_err(|e| format!("invalid session header in {}: {e}", path.display()))?;
+                    break serde_json::from_str::<SessionRecord>(line).map_err(|e| {
+                        format!("invalid session header in {}: {e}", path.display())
+                    })?;
                 }
                 None => return Err(format!("empty session file {}", path.display())),
             }
@@ -836,9 +837,13 @@ mod tests {
         // Create three sessions; force distinct created_at so ordering is
         // deterministic regardless of filename-timestamp granularity.
         let mut paths = Vec::new();
-        for (i, ts) in ["2026-01-01T00:00:00Z", "2026-06-01T00:00:00Z", "2026-03-01T00:00:00Z"]
-            .iter()
-            .enumerate()
+        for (i, ts) in [
+            "2026-01-01T00:00:00Z",
+            "2026-06-01T00:00:00Z",
+            "2026-03-01T00:00:00Z",
+        ]
+        .iter()
+        .enumerate()
         {
             let mut s = Session::create(&cwd, &format!("m{i}")).expect("create");
             // Rewrite header with a controlled created_at by appending a marker
@@ -872,7 +877,11 @@ mod tests {
         assert_eq!(listed[1].created_at, "2026-03-01T00:00:00Z");
         assert_eq!(listed[2].created_at, "2026-01-01T00:00:00Z");
         // Preview captured the first user message.
-        assert!(listed[0].first_user_message.as_deref().unwrap().starts_with("hello"));
+        assert!(listed[0]
+            .first_user_message
+            .as_deref()
+            .unwrap()
+            .starts_with("hello"));
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(session_dir_for_cwd(&cwd));
@@ -883,7 +892,10 @@ mod tests {
         let cwd = unique_cwd("resume");
         assert!(resume_recent(&cwd).is_none(), "no sessions yet");
 
-        for (i, ts) in ["2026-01-01T00:00:00Z", "2026-09-01T00:00:00Z"].iter().enumerate() {
+        for (i, ts) in ["2026-01-01T00:00:00Z", "2026-09-01T00:00:00Z"]
+            .iter()
+            .enumerate()
+        {
             let mut s = Session::create(&cwd, &format!("m{i}")).expect("create");
             std::fs::create_dir_all(session_dir_for_cwd(&cwd)).unwrap();
             let header = SessionRecord::Header {
@@ -1108,10 +1120,7 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0]["role"], "user");
         assert!(msgs[0]["content"].as_str().unwrap().contains("<summary>"));
-        assert!(msgs[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("resolved"));
+        assert!(msgs[0]["content"].as_str().unwrap().contains("resolved"));
         assert_eq!(msgs[1]["content"], "new question");
 
         let _ = std::fs::remove_dir_all(&cwd);
@@ -1199,8 +1208,11 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             model: "old".to_string(),
         };
-        std::fs::write(&old.path, format!("{}\n", serde_json::to_string(&old_header).unwrap()))
-            .unwrap();
+        std::fs::write(
+            &old.path,
+            format!("{}\n", serde_json::to_string(&old_header).unwrap()),
+        )
+        .unwrap();
         old.append(SessionRecord::Message {
             id: String::new(),
             parent_id: None,
@@ -1294,8 +1306,11 @@ mod tests {
             created_at: now_rfc3339(),
             model: "m".to_string(),
         };
-        std::fs::write(&empty.path, format!("{}\n", serde_json::to_string(&header).unwrap()))
-            .unwrap();
+        std::fs::write(
+            &empty.path,
+            format!("{}\n", serde_json::to_string(&header).unwrap()),
+        )
+        .unwrap();
         assert!(is_header_only_session(&empty.path));
 
         // With a message → false.

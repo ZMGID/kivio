@@ -384,7 +384,8 @@ description: Test skill.
     #[cfg(unix)]
     #[test]
     fn bundled_skills_dir_resolves_through_path_symlink() {
-        let base = std::env::temp_dir().join(format!("kivio-skill-symlink-{}", uuid::Uuid::new_v4()));
+        let base =
+            std::env::temp_dir().join(format!("kivio-skill-symlink-{}", uuid::Uuid::new_v4()));
         // Real binary lives in `bin_dir`, with `bin_dir/skills/<name>/SKILL.md`.
         let bin_dir = base.join("real");
         let skills_dir = bin_dir.join("skills").join("demo");

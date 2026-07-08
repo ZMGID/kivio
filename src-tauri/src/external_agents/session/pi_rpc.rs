@@ -9,7 +9,7 @@ use tokio::time::timeout;
 use crate::external_agents::context::parse_context_window_label;
 use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::{
-    default_model_option, ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent,
+    ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent,
 };
 use crate::proc::NoConsoleWindow;
 
@@ -124,8 +124,9 @@ pub fn parse_pi_models(stderr: &str) -> Option<Vec<RuntimeModelOption>> {
     if lines.len() <= 1 {
         return None;
     }
-    let mut out = vec![default_model_option()];
-    let mut seen = std::collections::HashSet::from(["default".to_string()]);
+    // Only the CLI's real configured models — no synthetic "Default" seed.
+    let mut out: Vec<RuntimeModelOption> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in lines.iter().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 2 {
@@ -133,7 +134,9 @@ pub fn parse_pi_models(stderr: &str) -> Option<Vec<RuntimeModelOption>> {
         }
         let full_id = format!("{}/{}", parts[0], parts[1]);
         if seen.insert(full_id.clone()) {
-            let context_window_tokens = parts.get(2).and_then(|label| parse_context_window_label(label));
+            let context_window_tokens = parts
+                .get(2)
+                .and_then(|label| parse_context_window_label(label));
             out.push(RuntimeModelOption {
                 id: full_id.clone(),
                 label: full_id,
@@ -141,10 +144,10 @@ pub fn parse_pi_models(stderr: &str) -> Option<Vec<RuntimeModelOption>> {
             });
         }
     }
-    if out.len() > 1 {
-        Some(out)
-    } else {
+    if out.is_empty() {
         None
+    } else {
+        Some(out)
     }
 }
 
@@ -255,7 +258,10 @@ pub fn map_pi_rpc_event(value: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) 
                     _ => c.to_string(),
                 })
                 .unwrap_or_default();
-            let is_error = obj.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_error = obj
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if !tool_use_id.is_empty() {
                 sink(UnifiedAgentEvent::ToolResult {
                     tool_use_id,
@@ -353,7 +359,10 @@ async fn reply_extension_ui(
     }
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
-    stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub async fn run_pi_rpc_session(
@@ -515,8 +524,12 @@ mod tests {
                    zmfooogreencloud  mimo-v2.5-pro  128K     8.2K     no        no\n\
                    zmfooogreencloud  minimax-m2.7   128K     8.2K     no        no";
         let models = parse_pi_models(out).unwrap();
-        assert!(models.iter().any(|m| m.id == "zmfooogreencloud/mimo-v2.5-pro"));
-        assert!(models.iter().any(|m| m.id == "zmfooogreencloud/minimax-m2.7"));
+        assert!(models
+            .iter()
+            .any(|m| m.id == "zmfooogreencloud/mimo-v2.5-pro"));
+        assert!(models
+            .iter()
+            .any(|m| m.id == "zmfooogreencloud/minimax-m2.7"));
         // Generic provider models must NOT appear (those were the bogus fallback).
         assert!(!models.iter().any(|m| m.id.starts_with("anthropic/")));
     }

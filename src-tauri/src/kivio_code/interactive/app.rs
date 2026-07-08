@@ -15,8 +15,8 @@
 //! （把 transcript + editor + footer 组合成行）。5a 阶段 submit 不真正调用 agent，而是把输入回显为
 //! 一条助手通知（真正接 agent loop 留待 5b）。
 
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::kivio_code::tui::components::{
     ColorFn, Editor, EditorTheme, Loader, Markdown, MarkdownTheme, SelectItem, SelectList,
@@ -26,7 +26,7 @@ use crate::kivio_code::tui::render::Component;
 use crate::kivio_code::tui::text_width::visible_width;
 
 use super::agent_host::AgentUiEvent;
-use super::slash::{dispatch_slash, SlashOutcome, SlashCommandSpec, SLASH_COMMANDS, INIT_PROMPT};
+use super::slash::{dispatch_slash, SlashCommandSpec, SlashOutcome, INIT_PROMPT, SLASH_COMMANDS};
 use super::tool_card::render_tool_card;
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 use crate::kivio_code::tui::fuzzy::fuzzy_filter;
@@ -126,10 +126,7 @@ pub enum AppEffect {
     /// 用户提交了一条消息，事件循环应交给 agent loop 跑。`text` 是占位符已替换的用户文字
     /// （`[Image #N]` 占位符 verbatim 保留）；`images` 是本轮附带的图片文件路径（按 `[Image #N]`
     /// 编号顺序），事件循环把它交给视觉 mixer 预分析。无图时 `images` 为空。
-    Submitted {
-        text: String,
-        images: Vec<PathBuf>,
-    },
+    Submitted { text: String, images: Vec<PathBuf> },
     /// 用户请求中断当前生成（Esc / generating 中的 Ctrl+C）。事件循环翻 cancel flag。
     Cancel,
     /// 请求打开模型选择器（事件循环从 settings 取 enabled 模型列表，调
@@ -489,11 +486,7 @@ impl App {
             "Read .claude / CLAUDE.md context  [{}]",
             if on { "on" } else { "off" }
         );
-        let select_items = vec![SelectItem::new(
-            "read_claude_dir".to_string(),
-            label,
-            None,
-        )];
+        let select_items = vec![SelectItem::new("read_claude_dir".to_string(), label, None)];
         let mut list = SelectList::new(
             select_items,
             10,
@@ -522,12 +515,19 @@ impl App {
         for record in session.branch_records() {
             match record {
                 SessionRecord::Message { role, content, .. } => match role.as_str() {
-                    "user" => self.transcript.push(TranscriptItem::UserMessage(content.clone())),
+                    "user" => self
+                        .transcript
+                        .push(TranscriptItem::UserMessage(content.clone())),
                     "assistant" => self.push_assistant(content.clone()),
                     // system messages aren't shown in the transcript.
                     _ => {}
                 },
-                SessionRecord::ToolCall { call_id, name, arguments, .. } => {
+                SessionRecord::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => {
                     let summary = summarize_arguments(name, &arguments.to_string());
                     self.transcript.push(TranscriptItem::ToolCard(ToolCard {
                         id: call_id.clone(),
@@ -539,13 +539,17 @@ impl App {
                         structured_content: None,
                     }));
                 }
-                SessionRecord::ToolResult { call_id, is_error, content, .. } => {
+                SessionRecord::ToolResult {
+                    call_id,
+                    is_error,
+                    content,
+                    ..
+                } => {
                     // Attach the result to the matching card (upsert by call_id).
-                    if let Some(TranscriptItem::ToolCard(card)) = self
-                        .transcript
-                        .iter_mut()
-                        .rev()
-                        .find(|it| matches!(it, TranscriptItem::ToolCard(c) if &c.id == call_id))
+                    if let Some(TranscriptItem::ToolCard(card)) =
+                        self.transcript.iter_mut().rev().find(
+                            |it| matches!(it, TranscriptItem::ToolCard(c) if &c.id == call_id),
+                        )
                     {
                         card.status = if *is_error {
                             ToolCallStatus::Error
@@ -596,13 +600,14 @@ impl App {
 
     /// 追加一条已完成的助手消息（通知 / 测试用；流式由 [`apply_agent_event`] 驱动）。
     pub fn push_assistant(&mut self, text: impl Into<String>) {
-        self.transcript.push(TranscriptItem::AssistantMessage(AssistantMessage {
-            message_id: String::new(),
-            content: text.into(),
-            reasoning: String::new(),
-            streaming: false,
-            thought_secs: None,
-        }));
+        self.transcript
+            .push(TranscriptItem::AssistantMessage(AssistantMessage {
+                message_id: String::new(),
+                content: text.into(),
+                reasoning: String::new(),
+                streaming: false,
+                thought_secs: None,
+            }));
     }
 
     /// 追加一条通知。
@@ -641,8 +646,7 @@ impl App {
     /// 确定值（避免依赖真实时间流逝），从而对 footer 计时做可重复断言。
     #[cfg(test)]
     pub fn set_generating_elapsed_for_test(&mut self, elapsed: std::time::Duration) {
-        self.generating_started =
-            std::time::Instant::now().checked_sub(elapsed);
+        self.generating_started = std::time::Instant::now().checked_sub(elapsed);
     }
 
     /// 设置 spinner 的相位标签（基础串），并同步到 loader。reasoning 尾巴预览在 render 时叠加。
@@ -678,9 +682,9 @@ impl App {
 
     /// 当前是否有一条正在流式写入的助手消息（测试 / 收尾判断用）。
     pub fn assistant_streaming(&self) -> bool {
-        self.transcript.iter().any(|item| {
-            matches!(item, TranscriptItem::AssistantMessage(m) if m.streaming)
-        })
+        self.transcript
+            .iter()
+            .any(|item| matches!(item, TranscriptItem::AssistantMessage(m) if m.streaming))
     }
 
     /// 取最后一条助手消息的累积文本（`/copy` 与测试用）。纯方法，不触剪贴板。
@@ -743,17 +747,15 @@ impl App {
 
         let width = image.width;
         let height = image.height;
-        let rgba = match image::RgbaImage::from_raw(
-            width as u32,
-            height as u32,
-            image.bytes.into_owned(),
-        ) {
-            Some(buf) => buf,
-            None => {
-                self.push_notice("Could not read clipboard image (bad dimensions)");
-                return;
-            }
-        };
+        let rgba =
+            match image::RgbaImage::from_raw(width as u32, height as u32, image.bytes.into_owned())
+            {
+                Some(buf) => buf,
+                None => {
+                    self.push_notice("Could not read clipboard image (bad dimensions)");
+                    return;
+                }
+            };
 
         let mut png_bytes: Vec<u8> = Vec::new();
         if let Err(err) = rgba.write_to(
@@ -806,7 +808,11 @@ impl App {
     /// - [`AgentUiEvent::Done`]：把对应助手消息 finalize（停止流式）。
     pub fn apply_agent_event(&mut self, event: AgentUiEvent) {
         match event {
-            AgentUiEvent::StreamDelta { message_id, delta, reasoning } => {
+            AgentUiEvent::StreamDelta {
+                message_id,
+                delta,
+                reasoning,
+            } => {
                 self.stream_assistant_delta(&message_id, &delta, &reasoning);
             }
             AgentUiEvent::ToolRecord(record) => {
@@ -937,10 +943,9 @@ impl App {
         let mut cfg = crate::kivio_code::config::load();
         cfg.read_claude_dir = next;
         match crate::kivio_code::config::save(&cfg) {
-            Ok(()) => self.push_notice(format!(
-                "Read .claude: {}",
-                if next { "on" } else { "off" }
-            )),
+            Ok(()) => {
+                self.push_notice(format!("Read .claude: {}", if next { "on" } else { "off" }))
+            }
             Err(err) => self.push_notice(format!("Could not save settings: {err}")),
         }
     }
@@ -961,10 +966,9 @@ impl App {
                 let mut cfg = crate::kivio_code::config::load();
                 cfg.auto_plan = next;
                 match crate::kivio_code::config::save(&cfg) {
-                    Ok(()) => self.push_notice(format!(
-                        "Auto plan: {}",
-                        if next { "on" } else { "off" }
-                    )),
+                    Ok(()) => {
+                        self.push_notice(format!("Auto plan: {}", if next { "on" } else { "off" }))
+                    }
                     Err(err) => self.push_notice(format!("Could not save settings: {err}")),
                 }
             }
@@ -1039,7 +1043,8 @@ impl App {
                 return AppEffect::None;
             }
             // Up/Down：在弹窗内导航。
-            if matches_key(data, "up", self.kitty_active) || matches_key(data, "down", self.kitty_active)
+            if matches_key(data, "up", self.kitty_active)
+                || matches_key(data, "down", self.kitty_active)
             {
                 if let Some(popup) = self.slash_popup.as_mut() {
                     popup.handle_input(data);
@@ -1151,13 +1156,13 @@ impl App {
     /// `pending_images`（下一条消息从 `[Image #1]` 重新计数）。普通用户输入与 `/init` 共用此路径；
     /// 调用方负责 generating-gate。
     fn submit_message(&mut self, text: String) -> AppEffect {
-        self.transcript.push(TranscriptItem::UserMessage(text.clone()));
+        self.transcript
+            .push(TranscriptItem::UserMessage(text.clone()));
         self.last_submitted = Some(text.clone());
-        let images: Vec<PathBuf> =
-            std::mem::take(&mut self.pending_images)
-                .into_iter()
-                .map(|img| img.path)
-                .collect();
+        let images: Vec<PathBuf> = std::mem::take(&mut self.pending_images)
+            .into_iter()
+            .map(|img| img.path)
+            .collect();
         AppEffect::Submitted { text, images }
     }
 
@@ -1210,7 +1215,9 @@ impl App {
                 AppEffect::Compact { focus }
             }
             SlashOutcome::Unknown(name) => {
-                self.push_notice(format!("Unknown command: /{name}. Type /help for the list."));
+                self.push_notice(format!(
+                    "Unknown command: /{name}. Type /help for the list."
+                ));
                 AppEffect::None
             }
         }
@@ -1347,7 +1354,8 @@ impl App {
         if self.mode == AppMode::Generating {
             if self.show_reasoning {
                 if let Some(reasoning) = self.latest_reasoning_tail() {
-                    self.loader.set_message(format!("{} {reasoning}", self.phase_label));
+                    self.loader
+                        .set_message(format!("{} {reasoning}", self.phase_label));
                 } else {
                     self.loader.set_message(self.phase_label.clone());
                 }
@@ -1363,9 +1371,7 @@ impl App {
                 Overlay::Session(list) => {
                     ("Resume a session (Enter to choose · Esc to cancel)", list)
                 }
-                Overlay::Settings(list) => {
-                    ("Settings (Enter to toggle · Esc to close)", list)
-                }
+                Overlay::Settings(list) => ("Settings (Enter to toggle · Esc to close)", list),
             };
             let mut h = Text::new(heading.to_string(), 1, 0, None);
             dynamic_lines.extend(h.render(width));
@@ -1382,7 +1388,10 @@ impl App {
         dynamic_lines.extend(spacer.render(width));
         dynamic_lines.extend(self.render_footer(width));
 
-        Frame { static_lines, dynamic_lines }
+        Frame {
+            static_lines,
+            dynamic_lines,
+        }
     }
 
     /// 一条 transcript item 是否「已定稿」（可提交进 scrollback 不再 diff）：
@@ -1485,8 +1494,13 @@ impl App {
         };
         // 不在 footer 行展示模型/provider（已在欢迎头里给出），也不展示单轮 token usage
         // （`N in · N out`，用户不需要）；footer 仅 cwd · mode · 状态 · ctx。
-        let mut text = format!("{}  ·  {}  ·  {}", self.footer.cwd_display, mode_chip, status);
-        if let Some(ctx) = format_context_usage(self.footer.context_tokens, self.footer.context_window) {
+        let mut text = format!(
+            "{}  ·  {}  ·  {}",
+            self.footer.cwd_display, mode_chip, status
+        );
+        if let Some(ctx) =
+            format_context_usage(self.footer.context_tokens, self.footer.context_window)
+        {
             text.push_str(&format!("  ·  {ctx}"));
         }
         let mut footer = Text::new(text, 1, 0, None);
@@ -1556,7 +1570,12 @@ fn tool_phase_label(tool_name: &str, arguments: &str) -> String {
         "edit" | "edit_file" => with_target("editing", basename("path")),
         "ls" | "list_dir" => {
             let target = basename("path").or_else(|| basename("dir"));
-            with_target("listing", target.filter(|t| !t.is_empty()).or_else(|| Some(".".to_string())))
+            with_target(
+                "listing",
+                target
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| Some(".".to_string())),
+            )
         }
         "find" | "glob_files" | "glob" => "finding files".to_string(),
         "grep" | "search_files" => {
@@ -1575,9 +1594,10 @@ fn tool_phase_label(tool_name: &str, arguments: &str) -> String {
             let host = str_arg("url").and_then(|u| host_of(&u));
             with_target("fetching", host)
         }
-        "skill" | "skill_activate" => {
-            with_target("activating skill", str_arg("name").or_else(|| str_arg("skill")))
-        }
+        "skill" | "skill_activate" => with_target(
+            "activating skill",
+            str_arg("name").or_else(|| str_arg("skill")),
+        ),
         other => format!("running {other}"),
     };
     clip(&label, 40)
@@ -1632,7 +1652,10 @@ fn summarize_arguments(tool_name: &str, arguments: &str) -> String {
 /// `tool_card.rs`）。非文件改动工具返回 `None`。保留为 `card.diff` 兜底字段（当
 /// structured_content 缺 diff 时仍可用）。
 fn extract_diff(record: &ToolCallRecord) -> Option<String> {
-    if !matches!(record.name.as_str(), "write" | "edit" | "write_file" | "edit_file") {
+    if !matches!(
+        record.name.as_str(),
+        "write" | "edit" | "write_file" | "edit_file"
+    ) {
         return None;
     }
     let structured = record.structured_content.as_ref()?;
@@ -1648,7 +1671,9 @@ fn extract_diff(record: &ToolCallRecord) -> Option<String> {
 /// [`App::copy_last_assistant_to_clipboard`] 转成一条通知而非 panic。
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard.set_text(text.to_string()).map_err(|e| e.to_string())
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// 受支持的图片扩展名（拖入路径检测用）。
@@ -1734,10 +1759,7 @@ fn is_existing_image_path(path: &str) -> bool {
 ///
 /// 返回 `(替换后的文本, 新识别出的图片路径列表)`。识别到的 token 在文本里被替换为 `[Image #N]`
 /// 占位符，N 从 `start_number` 起按出现顺序递增。其余文本（含换行 / 连续空白）原样保留。纯函数，便于单测。
-fn extract_image_paths_from_text(
-    text: &str,
-    start_number: usize,
-) -> (String, Vec<PathBuf>) {
+fn extract_image_paths_from_text(text: &str, start_number: usize) -> (String, Vec<PathBuf>) {
     let mut images = Vec::new();
     let mut next_number = start_number;
     let mut out = String::with_capacity(text.len());
@@ -2169,11 +2191,7 @@ mod tests {
     /// 在临时目录建一个真实的 `.png` 文件，返回其绝对路径串。
     fn temp_png(tag: &str) -> String {
         let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "kivio-code-imgtest-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        dir.push(format!("kivio-code-imgtest-{}-{}", tag, std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir temp");
         let path = dir.join(format!("{tag}.png"));
         // 1x1 PNG 不必有效——检测只看扩展名 + 文件存在。
@@ -2268,8 +2286,14 @@ mod tests {
     #[test]
     fn attach_pending_image_increments_label() {
         let mut a = app();
-        assert_eq!(a.attach_pending_image(PathBuf::from("/a.png")), "[Image #1]");
-        assert_eq!(a.attach_pending_image(PathBuf::from("/b.png")), "[Image #2]");
+        assert_eq!(
+            a.attach_pending_image(PathBuf::from("/a.png")),
+            "[Image #1]"
+        );
+        assert_eq!(
+            a.attach_pending_image(PathBuf::from("/b.png")),
+            "[Image #2]"
+        );
         assert_eq!(a.pending_image_count(), 2);
     }
 
@@ -2322,7 +2346,10 @@ mod tests {
         a.clear_transcript();
         assert_eq!(a.pending_image_count(), 0);
         // Numbering restarts at 1 after a /new.
-        assert_eq!(a.attach_pending_image(PathBuf::from("/c.png")), "[Image #1]");
+        assert_eq!(
+            a.attach_pending_image(PathBuf::from("/c.png")),
+            "[Image #1]"
+        );
     }
 
     #[test]
@@ -2379,7 +2406,11 @@ mod tests {
         let mut a = app();
         a.set_mode(AppMode::Generating);
         a.handle_key("\x1b[Z");
-        assert_eq!(a.agent_mode(), AgentMode::Build, "no toggle while generating");
+        assert_eq!(
+            a.agent_mode(),
+            AgentMode::Build,
+            "no toggle while generating"
+        );
     }
 
     #[test]
@@ -2392,7 +2423,11 @@ mod tests {
         )]);
         assert!(a.overlay_open());
         a.handle_key("\x1b[Z");
-        assert_eq!(a.agent_mode(), AgentMode::Build, "no toggle while overlay open");
+        assert_eq!(
+            a.agent_mode(),
+            AgentMode::Build,
+            "no toggle while overlay open"
+        );
     }
 
     #[test]
@@ -2416,7 +2451,10 @@ mod tests {
             .into_iter()
             .rfind(|l| l.contains("~/proj"))
             .expect("footer line");
-        assert!(footer_build.contains("build"), "footer shows build chip: {footer_build}");
+        assert!(
+            footer_build.contains("build"),
+            "footer shows build chip: {footer_build}"
+        );
         // switch to plan → plan chip.
         a.set_agent_mode(AgentMode::Plan);
         let footer_plan = a
@@ -2424,7 +2462,10 @@ mod tests {
             .into_iter()
             .rfind(|l| l.contains("~/proj"))
             .expect("footer line");
-        assert!(footer_plan.contains("plan"), "footer shows plan chip: {footer_plan}");
+        assert!(
+            footer_plan.contains("plan"),
+            "footer shows plan chip: {footer_plan}"
+        );
     }
 
     #[test]
@@ -2460,7 +2501,10 @@ mod tests {
         assert!(!a.overlay_open(), "overlay closed after toggle");
         assert!(!a.read_claude_dir(), "in-memory value flipped to off");
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("Read .claude: off"), "notice reflects new state");
+        assert!(
+            joined.contains("Read .claude: off"),
+            "notice reflects new state"
+        );
         // The new value is persisted so the next turn's system prompt honors it.
         assert!(!crate::kivio_code::config::load().read_claude_dir);
 
@@ -2519,7 +2563,10 @@ mod tests {
             .expect("footer line present");
         assert!(footer_line.contains("~/proj"), "footer cwd present");
         assert!(footer_line.contains("ready"), "footer status present");
-        assert!(!footer_line.contains("gpt-4o"), "footer must not show the model");
+        assert!(
+            !footer_line.contains("gpt-4o"),
+            "footer must not show the model"
+        );
         // every line within width
         for l in &lines {
             assert!(
@@ -2629,7 +2676,10 @@ mod tests {
             ToolCallStatus::Pending,
         ))));
         assert_eq!(a.tool_card_count(), 1);
-        assert_eq!(a.tool_card("call_1").unwrap().status, ToolCallStatus::Pending);
+        assert_eq!(
+            a.tool_card("call_1").unwrap().status,
+            ToolCallStatus::Pending
+        );
 
         a.apply_agent_event(AgentUiEvent::ToolRecord(Box::new(tool_record(
             "call_1",
@@ -2643,7 +2693,10 @@ mod tests {
         ))));
         // Same id → still one card, now Success.
         assert_eq!(a.tool_card_count(), 1);
-        assert_eq!(a.tool_card("call_1").unwrap().status, ToolCallStatus::Success);
+        assert_eq!(
+            a.tool_card("call_1").unwrap().status,
+            ToolCallStatus::Success
+        );
         assert_eq!(a.tool_card("call_1").unwrap().summary, "path=src/lib.rs");
     }
 
@@ -2675,7 +2728,10 @@ mod tests {
         let mut a = app();
         a.push_tool_card(card);
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("new line"), "diff rendered in card: {joined}");
+        assert!(
+            joined.contains("new line"),
+            "diff rendered in card: {joined}"
+        );
     }
 
     #[test]
@@ -2719,12 +2775,21 @@ mod tests {
             .rfind(|l| l.contains("~/proj"))
             .expect("footer line present");
         // no per-turn token usage text anywhere in the footer.
-        assert!(!footer_line.contains(" in "), "footer must not show `… in …` usage");
-        assert!(!footer_line.contains(" out"), "footer must not show `… out` usage");
+        assert!(
+            !footer_line.contains(" in "),
+            "footer must not show `… in …` usage"
+        );
+        assert!(
+            !footer_line.contains(" out"),
+            "footer must not show `… out` usage"
+        );
         // cwd + status + ctx are still present.
         assert!(footer_line.contains("~/proj"), "footer cwd present");
         assert!(footer_line.contains("ready"), "footer status present");
-        assert!(joined.contains("ctx 61.2k/128k (48%)"), "footer ctx present");
+        assert!(
+            joined.contains("ctx 61.2k/128k (48%)"),
+            "footer ctx present"
+        );
     }
 
     // ---- FIX 3: context-window occupancy in footer ----
@@ -2783,7 +2848,10 @@ mod tests {
         a.set_context_window(Some(128_000));
         a.set_context_tokens(Some(61_200));
         let joined = a.render(120).join("\n");
-        assert!(joined.contains("ctx 61.2k/128k (48%)"), "footer shows ctx occupancy: {joined}");
+        assert!(
+            joined.contains("ctx 61.2k/128k (48%)"),
+            "footer shows ctx occupancy: {joined}"
+        );
     }
 
     #[test]
@@ -2792,7 +2860,10 @@ mod tests {
         a.set_context_window(None);
         a.set_context_tokens(Some(61_200));
         let joined = a.render(120).join("\n");
-        assert!(joined.contains("ctx 61.2k"), "raw tokens only when window unknown");
+        assert!(
+            joined.contains("ctx 61.2k"),
+            "raw tokens only when window unknown"
+        );
         assert!(!joined.contains('%'), "no percent without a known window");
     }
 
@@ -2800,8 +2871,16 @@ mod tests {
 
     fn model_items() -> Vec<(String, String, Option<String>)> {
         vec![
-            ("openai:gpt-4o".into(), "gpt-4o".into(), Some("OpenAI".into())),
-            ("anthropic:claude".into(), "claude".into(), Some("Anthropic".into())),
+            (
+                "openai:gpt-4o".into(),
+                "gpt-4o".into(),
+                Some("OpenAI".into()),
+            ),
+            (
+                "anthropic:claude".into(),
+                "claude".into(),
+                Some("Anthropic".into()),
+            ),
         ]
     }
 
@@ -2846,7 +2925,10 @@ mod tests {
         // selection starts at current model (openai:gpt-4o); move down to anthropic.
         a.handle_key("\x1b[B"); // down
         let effect = a.handle_key("\r"); // confirm
-        assert_eq!(effect, AppEffect::ModelSelected("anthropic:claude".to_string()));
+        assert_eq!(
+            effect,
+            AppEffect::ModelSelected("anthropic:claude".to_string())
+        );
         assert!(!a.overlay_open(), "overlay closed after confirm");
     }
 
@@ -2857,7 +2939,10 @@ mod tests {
         a.open_model_selector(model_items());
         // current is the second item → selecting immediately returns it.
         let effect = a.handle_key("\r");
-        assert_eq!(effect, AppEffect::ModelSelected("anthropic:claude".to_string()));
+        assert_eq!(
+            effect,
+            AppEffect::ModelSelected("anthropic:claude".to_string())
+        );
     }
 
     #[test]
@@ -2887,7 +2972,10 @@ mod tests {
         // …while the footer renders the separate human-readable display label (FIX 2).
         a.set_model_display("Anthropic · claude-3");
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("Anthropic · claude-3"), "footer shows display label");
+        assert!(
+            joined.contains("Anthropic · claude-3"),
+            "footer shows display label"
+        );
         // resolution value still resolves the provider id, unaffected by display.
         assert_eq!(a.model(), "anthropic:claude-3");
     }
@@ -2902,7 +2990,10 @@ mod tests {
         )]);
         assert!(a.overlay_open());
         let effect = a.handle_key("\r");
-        assert_eq!(effect, AppEffect::SessionSelected("/path/to/a.jsonl".to_string()));
+        assert_eq!(
+            effect,
+            AppEffect::SessionSelected("/path/to/a.jsonl".to_string())
+        );
         assert!(!a.overlay_open());
     }
 
@@ -2927,7 +3018,11 @@ mod tests {
 
     // ---- phase-aware spinner label ----
 
-    fn record_with_args(name: &str, status: ToolCallStatus, args: serde_json::Value) -> ToolCallRecord {
+    fn record_with_args(
+        name: &str,
+        status: ToolCallStatus,
+        args: serde_json::Value,
+    ) -> ToolCallRecord {
         let mut r = tool_record("call_x", name, status);
         r.arguments = args.to_string();
         r
@@ -3090,7 +3185,10 @@ mod tests {
             ToolCallStatus::Running,
             serde_json::json!({ "command": "a".repeat(200) }),
         ))));
-        assert!(a.phase_label().chars().count() <= 41, "trimmed to ~40 + ellipsis");
+        assert!(
+            a.phase_label().chars().count() <= 41,
+            "trimmed to ~40 + ellipsis"
+        );
         assert!(a.phase_label().ends_with('…'));
     }
 
@@ -3104,7 +3202,10 @@ mod tests {
             serde_json::json!({ "path": "lib.rs" }),
         ))));
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("reading lib.rs"), "spinner shows current phase: {joined}");
+        assert!(
+            joined.contains("reading lib.rs"),
+            "spinner shows current phase: {joined}"
+        );
     }
 
     // ---- Phase 5c: input history cycling (editor-backed) ----
@@ -3179,10 +3280,16 @@ mod tests {
         a.rebuild_from_session(&session);
         let joined = a.render(80).join("\n");
         assert!(joined.contains("read main.rs"), "user message restored");
-        assert!(joined.contains("It is empty."), "assistant message restored");
+        assert!(
+            joined.contains("It is empty."),
+            "assistant message restored"
+        );
         // tool card present and carries its result via summary/path.
         assert!(joined.contains("main.rs"), "tool card restored");
-        assert_eq!(a.tool_card("call_1").map(|c| c.status.clone()), Some(ToolCallStatus::Success));
+        assert_eq!(
+            a.tool_card("call_1").map(|c| c.status.clone()),
+            Some(ToolCallStatus::Success)
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -3241,7 +3348,10 @@ mod tests {
             reasoning: String::new(),
         });
         // No tool between → single coalesced segment.
-        assert_eq!(a.transcript_shape(), vec![("assistant", "Hello".to_string())]);
+        assert_eq!(
+            a.transcript_shape(),
+            vec![("assistant", "Hello".to_string())]
+        );
     }
 
     #[test]
@@ -3266,7 +3376,10 @@ mod tests {
             message_id: "m1".to_string(),
             reason: "completed".to_string(),
         });
-        assert!(!a.assistant_streaming(), "all turn segments sealed after Done");
+        assert!(
+            !a.assistant_streaming(),
+            "all turn segments sealed after Done"
+        );
     }
 
     // ---- BUG 2: branded welcome header ----
@@ -3276,7 +3389,10 @@ mod tests {
         let mut a = app();
         let joined = a.render(80).join("\n");
         assert!(joined.contains("Kivio Code"), "title present");
-        assert!(joined.contains(env!("CARGO_PKG_VERSION")), "version present");
+        assert!(
+            joined.contains(env!("CARGO_PKG_VERSION")),
+            "version present"
+        );
         assert!(joined.contains("~/proj"), "cwd present");
         assert!(joined.contains("openai:gpt-4o"), "active model present");
         assert!(joined.contains("/help"), "tips line present");
@@ -3302,7 +3418,10 @@ mod tests {
             reasoning: "considering options".to_string(),
         });
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("considering options"), "reasoning visible while streaming");
+        assert!(
+            joined.contains("considering options"),
+            "reasoning visible while streaming"
+        );
         // dim+italic ANSI escape is applied (\x1b[2;3m).
         assert!(joined.contains("\x1b[2;3m"), "reasoning is dim/italic");
         assert!(joined.contains("answer"), "answer still rendered");
@@ -3321,8 +3440,14 @@ mod tests {
             reason: "completed".to_string(),
         });
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("thought for a moment"), "collapsed thought summary shown");
-        assert!(!joined.contains("long chain of thought"), "full reasoning hidden once done");
+        assert!(
+            joined.contains("thought for a moment"),
+            "collapsed thought summary shown"
+        );
+        assert!(
+            !joined.contains("long chain of thought"),
+            "full reasoning hidden once done"
+        );
         // No emoji in the collapsed reasoning line (the 💭 was removed).
         assert!(!joined.contains('💭'), "reasoning line is emoji-free");
     }
@@ -3346,8 +3471,14 @@ mod tests {
     #[test]
     fn slash_candidates_none_when_not_slash_or_has_args() {
         assert!(slash_candidates("hello").is_none());
-        assert!(slash_candidates("/model gpt").is_none(), "args → no command completion");
-        assert!(slash_candidates("line\n/model").is_none(), "multiline → no completion");
+        assert!(
+            slash_candidates("/model gpt").is_none(),
+            "args → no command completion"
+        );
+        assert!(
+            slash_candidates("line\n/model").is_none(),
+            "multiline → no completion"
+        );
     }
 
     #[test]
@@ -3356,7 +3487,10 @@ mod tests {
         type_str(&mut a, "/mo");
         let joined = a.render(80).join("\n");
         assert!(joined.contains("/model"), "popup lists matching command");
-        assert!(joined.contains("Switch the active model"), "popup shows description");
+        assert!(
+            joined.contains("Switch the active model"),
+            "popup shows description"
+        );
     }
 
     #[test]
@@ -3386,7 +3520,10 @@ mod tests {
         // editor text retained; popup gone.
         assert_eq!(a.editor_text(), "/mo");
         let joined = a.render(80).join("\n");
-        assert!(!joined.contains("Switch the active model"), "popup dismissed");
+        assert!(
+            !joined.contains("Switch the active model"),
+            "popup dismissed"
+        );
     }
 
     #[test]
@@ -3431,8 +3568,14 @@ mod tests {
             .into_iter()
             .rfind(|l| l.contains("~/proj"))
             .expect("footer line");
-        assert!(footer.contains("0:12"), "footer shows elapsed mm:ss: {footer}");
-        assert!(footer.contains("Esc to cancel"), "footer keeps cancel hint: {footer}");
+        assert!(
+            footer.contains("0:12"),
+            "footer shows elapsed mm:ss: {footer}"
+        );
+        assert!(
+            footer.contains("Esc to cancel"),
+            "footer keeps cancel hint: {footer}"
+        );
 
         // Back to idle → timer cleared, status reverts to the static ready text.
         a.set_mode(AppMode::Idle);
@@ -3442,8 +3585,14 @@ mod tests {
             .into_iter()
             .rfind(|l| l.contains("~/proj"))
             .expect("footer line");
-        assert!(footer_idle.contains("ready"), "idle footer reverts: {footer_idle}");
-        assert!(!footer_idle.contains("Esc to cancel"), "no cancel hint when idle: {footer_idle}");
+        assert!(
+            footer_idle.contains("ready"),
+            "idle footer reverts: {footer_idle}"
+        );
+        assert!(
+            !footer_idle.contains("Esc to cancel"),
+            "no cancel hint when idle: {footer_idle}"
+        );
     }
 
     // ---- B4: streaming reasoning block + collapsed thought line ----
@@ -3459,13 +3608,22 @@ mod tests {
         });
         let joined = a.render(80).join("\n");
         // `┄ thinking` header + dim/italic + only the most recent ~3 lines.
-        assert!(joined.contains("┄ thinking"), "thinking header shown: {joined}");
+        assert!(
+            joined.contains("┄ thinking"),
+            "thinking header shown: {joined}"
+        );
         assert!(joined.contains("\x1b[2;3m"), "reasoning dim/italic");
         assert!(joined.contains("step four"), "most recent line shown");
         assert!(joined.contains("step two"), "recent tail shown");
         // The oldest line is dropped (only the last 3 are shown).
-        assert!(!joined.contains("step one"), "oldest reasoning line trimmed: {joined}");
-        assert!(joined.contains("the answer"), "answer still rendered alongside");
+        assert!(
+            !joined.contains("step one"),
+            "oldest reasoning line trimmed: {joined}"
+        );
+        assert!(
+            joined.contains("the answer"),
+            "answer still rendered alongside"
+        );
     }
 
     #[test]
@@ -3485,8 +3643,14 @@ mod tests {
         });
         a.set_mode(AppMode::Idle);
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("thought for 9s"), "collapsed with elapsed: {joined}");
-        assert!(!joined.contains("deliberating"), "full reasoning hidden once done");
+        assert!(
+            joined.contains("thought for 9s"),
+            "collapsed with elapsed: {joined}"
+        );
+        assert!(
+            !joined.contains("deliberating"),
+            "full reasoning hidden once done"
+        );
     }
 
     #[test]
@@ -3503,7 +3667,10 @@ mod tests {
             reason: "completed".to_string(),
         });
         let joined = a.render(80).join("\n");
-        assert!(joined.contains("thought for a moment"), "fallback summary: {joined}");
+        assert!(
+            joined.contains("thought for a moment"),
+            "fallback summary: {joined}"
+        );
     }
 
     #[test]
@@ -3521,6 +3688,9 @@ mod tests {
         let joined = a.render(80).join("\n");
         assert!(joined.contains("just an answer"), "answer rendered");
         assert!(!joined.contains("thinking"), "no thinking block: {joined}");
-        assert!(!joined.contains("thought for"), "no collapsed thought line: {joined}");
+        assert!(
+            !joined.contains("thought for"),
+            "no collapsed thought line: {joined}"
+        );
     }
 }

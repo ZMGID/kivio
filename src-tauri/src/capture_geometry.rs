@@ -15,6 +15,7 @@ pub(crate) struct CaptureDisplay {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 pub(crate) struct MappedSourceRect {
     pub(crate) display_index: usize,
     pub(crate) source_rect: CaptureRect,
@@ -39,6 +40,7 @@ pub(crate) struct CaptureRegionPx {
     pub(crate) height: u32,
 }
 
+#[allow(dead_code)]
 pub(crate) fn source_rect_for_region(
     region: CaptureRect,
     displays: &[CaptureDisplay],

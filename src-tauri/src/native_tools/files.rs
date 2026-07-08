@@ -1171,9 +1171,7 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         .and_then(|v| v.as_str())
         .unwrap_or("content");
     if !matches!(output_mode, "content" | "files_with_matches" | "count") {
-        return Err(
-            "output_mode must be one of: content, files_with_matches, count".to_string(),
-        );
+        return Err("output_mode must be one of: content, files_with_matches, count".to_string());
     }
     // Optional context lines emitted before/after each content match (default 0).
     let context = arguments
@@ -1187,9 +1185,7 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         .map(str::trim)
         .filter(|g| !g.is_empty());
     // `*.{py,ts}` 花括号展开：把单个 glob 展开成多个候选 patterns，每个文件满足任一即通过。
-    let glob_patterns: Vec<String> = glob
-        .map(expand_glob_braces)
-        .unwrap_or_default();
+    let glob_patterns: Vec<String> = glob.map(expand_glob_braces).unwrap_or_default();
 
     // 匹配器：regex 为可选（默认 false 走字面量子串，保持向后兼容的旧行为）。
     enum Matcher {
@@ -1227,7 +1223,9 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
         (scan_root, vec![search_root.clone()], false)
     } else {
         let display = workspace_display_path(workspace, &search_root);
-        return Err(format!("search_files path is neither a file nor a directory: {display}"));
+        return Err(format!(
+            "search_files path is neither a file nor a directory: {display}"
+        ));
     };
     let mut files_scanned = 0usize;
     let mut content_matches = Vec::new();
@@ -1245,10 +1243,9 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("");
-            let matches_any = glob_patterns.iter().any(|p| {
-                glob_match(p, &rel)
-                    || (!p.contains('/') && glob_match(p, file_name))
-            });
+            let matches_any = glob_patterns
+                .iter()
+                .any(|p| glob_match(p, &rel) || (!p.contains('/') && glob_match(p, file_name)));
             if !matches_any {
                 continue;
             }
@@ -1328,10 +1325,7 @@ pub fn search_files(workspace: &NativeToolWorkspace, arguments: &Value) -> Resul
             out["files"] = json!(files_with_matches);
         }
         "count" => {
-            let total: u64 = counts
-                .iter()
-                .filter_map(|c| c["count"].as_u64())
-                .sum();
+            let total: u64 = counts.iter().filter_map(|c| c["count"].as_u64()).sum();
             out["counts"] = json!(counts);
             out["total"] = json!(total);
         }
@@ -1569,9 +1563,13 @@ mod tests {
         fs::create_dir_all(proj.join("src")).expect("mkdir src");
         fs::create_dir_all(proj.join("node_modules/leftpad")).expect("mkdir node_modules");
         fs::write(proj.join(".gitignore"), "node_modules/\ndist/\n").expect("write gitignore");
-        fs::write(proj.join("src/app.rs"), "fn main() {\n    // TODO: wire up the CLI\n}\n")
-            .expect("write app.rs");
-        fs::write(proj.join("src/util.rs"), "pub fn helper() -> u32 { 42 }\n").expect("write util.rs");
+        fs::write(
+            proj.join("src/app.rs"),
+            "fn main() {\n    // TODO: wire up the CLI\n}\n",
+        )
+        .expect("write app.rs");
+        fs::write(proj.join("src/util.rs"), "pub fn helper() -> u32 { 42 }\n")
+            .expect("write util.rs");
         fs::write(
             proj.join("node_modules/leftpad/index.js"),
             "// TODO: vendored junk that must NOT show up\n",
@@ -1627,7 +1625,8 @@ mod tests {
         assert!(outside.is_file(), "file written outside project root");
 
         // 5) read it back.
-        let read = read_file(&ws, &json!({ "path": outside.to_string_lossy() })).expect("read back");
+        let read =
+            read_file(&ws, &json!({ "path": outside.to_string_lossy() })).expect("read back");
         println!("[5] read back content: {:?}", read.content.trim());
         assert_eq!(read.content, "escaped the project root\n");
 
@@ -2016,7 +2015,10 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert!(err.contains("appears"), "ambiguous fuzzy match must error: {err}");
+        assert!(
+            err.contains("appears"),
+            "ambiguous fuzzy match must error: {err}"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2068,7 +2070,10 @@ mod tests {
             }),
         )
         .unwrap_err();
-        assert!(err.contains("not found"), "no fuzzy match must error: {err}");
+        assert!(
+            err.contains("not found"),
+            "no fuzzy match must error: {err}"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2081,7 +2086,10 @@ mod tests {
         let capped = cap_grep_line(&long);
         assert!(capped.starts_with(&"x".repeat(MAX_GREP_LINE_CHARS)));
         assert!(capped.contains("line truncated"));
-        assert_eq!(capped.chars().filter(|c| *c == 'x').count(), MAX_GREP_LINE_CHARS);
+        assert_eq!(
+            capped.chars().filter(|c| *c == 'x').count(),
+            MAX_GREP_LINE_CHARS
+        );
     }
 
     #[test]
@@ -2109,7 +2117,10 @@ mod tests {
         assert_eq!(m["line"], 3);
         // Long matching line is capped.
         let text = m["text"].as_str().unwrap();
-        assert!(text.contains("line truncated"), "long line must be capped: {text}");
+        assert!(
+            text.contains("line truncated"),
+            "long line must be capped: {text}"
+        );
         // context=1 → one before (l2) + one after (l4).
         let before = m["before"].as_array().expect("before");
         let after = m["after"].as_array().expect("after");
@@ -2167,8 +2178,11 @@ mod tests {
 
         // count：总命中 3。
         let out = parse(
-            search_files(&workspace, &json!({ "query": "alpha", "output_mode": "count" }))
-                .expect("count"),
+            search_files(
+                &workspace,
+                &json!({ "query": "alpha", "output_mode": "count" }),
+            )
+            .expect("count"),
         );
         assert_eq!(out["total"], 3);
 
@@ -2182,17 +2196,19 @@ mod tests {
         assert!(search_files(&workspace, &json!({ "query": "(", "regex": true })).is_err());
 
         // pattern 作为 query 的别名（模型受 grep 习惯传 pattern 时不再白白失败一轮）。
-        let out = parse(
-            search_files(&workspace, &json!({ "pattern": "alpha" })).expect("pattern alias"),
-        );
+        let out =
+            parse(search_files(&workspace, &json!({ "pattern": "alpha" })).expect("pattern alias"));
         assert_eq!(out["matches"].as_array().unwrap().len(), 3);
         // 两者都缺则报错。
         assert!(search_files(&workspace, &json!({ "path": "." })).is_err());
 
         // 花括号 glob：`*.{rs,txt}` 只命中两种扩展名，不命中 .py。
         let out = parse(
-            search_files(&workspace, &json!({ "query": "alpha", "glob": "*.{rs,txt}" }))
-                .expect("brace glob"),
+            search_files(
+                &workspace,
+                &json!({ "query": "alpha", "glob": "*.{rs,txt}" }),
+            )
+            .expect("brace glob"),
         );
         // 只有 a.rs 有 alpha，b.txt 没有（内容是 "alpha beta..."）——实际有匹配
         // 关键断言：b.txt 和 a.rs 都在匹配范围内，但 a.rs 的 alpha 一定命中。
@@ -2203,7 +2219,9 @@ mod tests {
             .filter_map(|m| m["path"].as_str())
             .collect();
         assert!(
-            paths.iter().all(|p| p.ends_with(".rs") || p.ends_with(".txt")),
+            paths
+                .iter()
+                .all(|p| p.ends_with(".rs") || p.ends_with(".txt")),
             "brace glob must only match .rs and .txt files, got: {paths:?}"
         );
 
@@ -2229,13 +2247,19 @@ mod tests {
         let parse = |s: String| serde_json::from_str::<Value>(&s).expect("json");
 
         let literal = parse(
-            search_files(&workspace, &json!({ "query": "ClaudeAgentClient", "path": file_path }))
-                .expect("literal file"),
+            search_files(
+                &workspace,
+                &json!({ "query": "ClaudeAgentClient", "path": file_path }),
+            )
+            .expect("literal file"),
         );
         assert_eq!(literal["files_scanned"], 1);
         assert_eq!(literal["walk_truncated"], false);
         assert_eq!(literal["matches"].as_array().unwrap().len(), 1);
-        assert!(literal["matches"][0]["path"].as_str().unwrap().ends_with("one.ts"));
+        assert!(literal["matches"][0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("one.ts"));
 
         let regex = parse(
             search_files(
@@ -2255,7 +2279,10 @@ mod tests {
         );
         let m = &with_context["matches"].as_array().unwrap()[0];
         assert_eq!(m["line"], 3);
-        assert_eq!(m["before"].as_array().unwrap()[0]["text"], "const ClaudeAgentClient = 1;");
+        assert_eq!(
+            m["before"].as_array().unwrap()[0]["text"],
+            "const ClaudeAgentClient = 1;"
+        );
         assert_eq!(m["after"].as_array().unwrap()[0]["text"], "last");
 
         let count = parse(
@@ -2301,7 +2328,10 @@ mod tests {
             &json!({ "query": "ClaudeAgentClient", "path": root.join("missing.ts").to_string_lossy().into_owned() }),
         )
         .unwrap_err();
-        assert!(missing.contains("path not found"), "missing path must mention not found: {missing}");
+        assert!(
+            missing.contains("path not found"),
+            "missing path must mention not found: {missing}"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2317,7 +2347,8 @@ mod tests {
         fs::create_dir_all(root.join("node_modules/pkg")).expect("mkdir node_modules");
         fs::write(root.join(".gitignore"), "node_modules/\n").expect("write gitignore");
         fs::write(root.join("src/app.rs"), "let needle = 1;\n").expect("write app");
-        fs::write(root.join("node_modules/pkg/index.js"), "needle vendored\n").expect("write vendor");
+        fs::write(root.join("node_modules/pkg/index.js"), "needle vendored\n")
+            .expect("write vendor");
         // A regular FILE named "build" must not be pruned by the dir floor list.
         fs::write(root.join("build"), "needle in a file named build\n").expect("write build file");
         let workspace = NativeToolWorkspace::project(
@@ -2328,8 +2359,11 @@ mod tests {
 
         let parse = |s: String| serde_json::from_str::<Value>(&s).expect("json");
         let out = parse(
-            search_files(&workspace, &json!({ "query": "needle", "output_mode": "files_with_matches" }))
-                .expect("search"),
+            search_files(
+                &workspace,
+                &json!({ "query": "needle", "output_mode": "files_with_matches" }),
+            )
+            .expect("search"),
         );
         let files: Vec<String> = out["files"]
             .as_array()
@@ -2338,11 +2372,20 @@ mod tests {
             .filter_map(|f| f.as_str().map(str::to_string))
             .collect();
         // Root walked (not pruned by its "build" name): src/app.rs found.
-        assert!(files.iter().any(|f| f.ends_with("app.rs")), "root must be walked: {files:?}");
+        assert!(
+            files.iter().any(|f| f.ends_with("app.rs")),
+            "root must be walked: {files:?}"
+        );
         // The file literally named "build" is found (only DIRS are floor-pruned).
-        assert!(files.iter().any(|f| f.ends_with("build")), "same-named file kept: {files:?}");
+        assert!(
+            files.iter().any(|f| f.ends_with("build")),
+            "same-named file kept: {files:?}"
+        );
         // node_modules is gitignored → its file is skipped.
-        assert!(!files.iter().any(|f| f.contains("node_modules")), "gitignored dir skipped: {files:?}");
+        assert!(
+            !files.iter().any(|f| f.contains("node_modules")),
+            "gitignored dir skipped: {files:?}"
+        );
 
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
@@ -2355,7 +2398,11 @@ mod tests {
         );
         assert_eq!(
             expand_glob_braces("src/{a,b,c}.rs"),
-            vec!["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()]
+            vec![
+                "src/a.rs".to_string(),
+                "src/b.rs".to_string(),
+                "src/c.rs".to_string()
+            ]
         );
         assert_eq!(expand_glob_braces("*.rs"), vec!["*.rs".to_string()]);
         assert_eq!(expand_glob_braces("*.{rs}"), vec!["*.rs".to_string()]);

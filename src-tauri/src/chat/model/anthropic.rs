@@ -69,17 +69,15 @@ impl AnthropicMessagesProvider<'_> {
             &self.provider.id,
             &self.provider.api_keys,
             |key| {
-                with_standard_request_timeout(
-                    crate::api::attach_json_body(
-                        self.state
-                            .http
-                            .post(self.messages_url())
-                            .headers(anthropic_headers(key).unwrap_or_default())
-                            .header(ACCEPT_ENCODING, "identity"),
-                        &body,
-                        self.provider.compress_request_body,
-                    ),
-                )
+                with_standard_request_timeout(crate::api::attach_json_body(
+                    self.state
+                        .http
+                        .post(self.messages_url())
+                        .headers(anthropic_headers(key).unwrap_or_default())
+                        .header(ACCEPT_ENCODING, "identity"),
+                    &body,
+                    self.provider.compress_request_body,
+                ))
                 .send()
             },
         )
@@ -93,7 +91,14 @@ impl AnthropicMessagesProvider<'_> {
         let raw = response.text().await.map_err(|err| {
             let message = format!("{label} read body: {err}");
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            self.record_debug_failure(&request, &label, false, &message, started_at, started.elapsed());
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &message,
+                started_at,
+                started.elapsed(),
+            );
             ModelError::new(message)
         })?;
         let value: Value = serde_json::from_str(&raw).map_err(|err| {
@@ -103,7 +108,14 @@ impl AnthropicMessagesProvider<'_> {
                 raw.chars().take(500).collect::<String>()
             );
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            self.record_debug_failure(&request, &label, false, &message, started_at, started.elapsed());
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &message,
+                started_at,
+                started.elapsed(),
+            );
             ModelError::new(message)
         })?;
         let output = output_from_anthropic_message(&value, &label)?;
@@ -114,7 +126,14 @@ impl AnthropicMessagesProvider<'_> {
             started.elapsed(),
             output.usage.clone(),
         );
-        self.record_debug_success(&request, &label, false, &output, started_at, started.elapsed());
+        self.record_debug_success(
+            &request,
+            &label,
+            false,
+            &output,
+            started_at,
+            started.elapsed(),
+        );
         Ok(output)
     }
 
@@ -1137,7 +1156,10 @@ mod tests {
         eprintln!("[anthropic effort=high] {high}");
         assert_eq!(high["thinking"]["type"], "adaptive");
         assert_eq!(high["output_config"]["effort"], "high");
-        assert!(high.get("budget_tokens").is_none(), "must not send budget_tokens");
+        assert!(
+            high.get("budget_tokens").is_none(),
+            "must not send budget_tokens"
+        );
     }
 
     #[test]

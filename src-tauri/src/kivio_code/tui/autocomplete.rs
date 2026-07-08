@@ -16,8 +16,16 @@ pub struct AutocompleteItem {
 }
 
 impl AutocompleteItem {
-    pub fn new(value: impl Into<String>, label: impl Into<String>, description: Option<String>) -> Self {
-        Self { value: value.into(), label: label.into(), description }
+    pub fn new(
+        value: impl Into<String>,
+        label: impl Into<String>,
+        description: Option<String>,
+    ) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+            description,
+        }
     }
 }
 
@@ -43,7 +51,12 @@ pub trait AutocompleteProvider {
     }
 
     /// 取当前光标位置的补全建议。
-    fn get_suggestions(&self, lines: &[String], cursor_line: usize, cursor_col: usize) -> AutocompleteSuggestions;
+    fn get_suggestions(
+        &self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+    ) -> AutocompleteSuggestions;
 
     /// 应用选中项，返回新的 (lines, cursor_line, cursor_col)。
     fn apply_completion(
@@ -65,7 +78,10 @@ pub struct SlashCommand {
 
 impl SlashCommand {
     pub fn new(name: impl Into<String>, description: Option<String>) -> Self {
-        Self { name: name.into(), description }
+        Self {
+            name: name.into(),
+            description,
+        }
     }
 }
 
@@ -87,7 +103,12 @@ impl StaticAutocompleteProvider {
 }
 
 impl AutocompleteProvider for StaticAutocompleteProvider {
-    fn get_suggestions(&self, lines: &[String], cursor_line: usize, cursor_col: usize) -> AutocompleteSuggestions {
+    fn get_suggestions(
+        &self,
+        lines: &[String],
+        cursor_line: usize,
+        cursor_col: usize,
+    ) -> AutocompleteSuggestions {
         let before = Self::text_before_cursor(lines, cursor_line, cursor_col);
         // slash 命令仅在首行行首生效
         let trimmed = before.trim_start();
@@ -102,9 +123,18 @@ impl AutocompleteProvider for StaticAutocompleteProvider {
         let filtered = fuzzy_filter(self.commands.clone(), query, |c| c.name.clone());
         let items: Vec<AutocompleteItem> = filtered
             .into_iter()
-            .map(|c| AutocompleteItem::new(format!("/{}", c.name), format!("/{}", c.name), c.description))
+            .map(|c| {
+                AutocompleteItem::new(
+                    format!("/{}", c.name),
+                    format!("/{}", c.name),
+                    c.description,
+                )
+            })
             .collect();
-        AutocompleteSuggestions { items, prefix: trimmed.to_string() }
+        AutocompleteSuggestions {
+            items,
+            prefix: trimmed.to_string(),
+        }
     }
 
     fn apply_completion(
@@ -185,7 +215,12 @@ mod tests {
         let p = provider();
         let lines = vec!["/co".to_string()];
         let s = p.get_suggestions(&lines, 0, 3);
-        let item = s.items.iter().find(|i| i.value == "/compact").unwrap().clone();
+        let item = s
+            .items
+            .iter()
+            .find(|i| i.value == "/compact")
+            .unwrap()
+            .clone();
         let (new_lines, _l, col) = p.apply_completion(&lines, 0, 3, &item, &s.prefix);
         assert_eq!(new_lines[0], "/compact ");
         assert_eq!(col, "/compact ".len());

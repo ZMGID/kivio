@@ -63,8 +63,10 @@ impl JsonEventStreamState {
                             }
                         }
                         Some("reasoning") => {
-                            if let Some(text) =
-                                item.get("text").and_then(|v| v.as_str()).filter(|t| !t.is_empty())
+                            if let Some(text) = item
+                                .get("text")
+                                .and_then(|v| v.as_str())
+                                .filter(|t| !t.is_empty())
                             {
                                 sink(UnifiedAgentEvent::ThinkingDelta {
                                     delta: text.to_string(),
@@ -107,7 +109,11 @@ impl JsonEventStreamState {
         if item.get("type").and_then(|v| v.as_str()) != Some("command_execution") {
             return;
         }
-        let id = match item.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        let id = match item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
             Some(id) => id.to_string(),
             None => return,
         };
@@ -320,7 +326,10 @@ impl JsonEventStreamState {
         if kind == "init" {
             sink(UnifiedAgentEvent::Status {
                 label: "initializing".to_string(),
-                model: obj.get("model").and_then(|v| v.as_str()).map(str::to_string),
+                model: obj
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
             });
             return;
         }
@@ -348,10 +357,7 @@ impl JsonEventStreamState {
                 .unwrap_or("")
                 .to_string();
             if !id.is_empty() && !name.is_empty() {
-                let input = obj
-                    .get("parameters")
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                let input = obj.get("parameters").cloned().unwrap_or(Value::Null);
                 sink(UnifiedAgentEvent::ToolUse { id, name, input });
             }
         }
@@ -438,14 +444,12 @@ mod tests {
         let completed = r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","command":"ls","aggregated_output":"ok\n","exit_code":0,"status":"completed"}}"#;
         let mut state = JsonEventStreamState::new(JsonEventParser::Codex);
         let mut events = Vec::new();
-        state.handle_value(
-            &serde_json::from_str(started).unwrap(),
-            &mut |e| events.push(e),
-        );
-        state.handle_value(
-            &serde_json::from_str(completed).unwrap(),
-            &mut |e| events.push(e),
-        );
+        state.handle_value(&serde_json::from_str(started).unwrap(), &mut |e| {
+            events.push(e)
+        });
+        state.handle_value(&serde_json::from_str(completed).unwrap(), &mut |e| {
+            events.push(e)
+        });
         assert!(matches!(
             events.first(),
             Some(UnifiedAgentEvent::ToolUse { id, name, .. }) if id == "cmd-1" && name == "Bash"
@@ -485,7 +489,8 @@ mod tests {
 
     #[test]
     fn codex_reasoning_emits_thinking_delta() {
-        let raw = r#"{"type":"item.completed","item":{"type":"reasoning","text":"weighing options"}}"#;
+        let raw =
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"weighing options"}}"#;
         let value: Value = serde_json::from_str(raw).unwrap();
         let mut events = Vec::new();
         JsonEventStreamState::new(JsonEventParser::Codex)

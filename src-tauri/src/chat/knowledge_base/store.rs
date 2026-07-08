@@ -138,7 +138,9 @@ const DOC_COLS: &str = "id, name, size_bytes, hash, chunk_count, status, error, 
 
 pub fn load_docs(conn: &Connection) -> Result<Vec<KnowledgeDocument>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {DOC_COLS} FROM documents ORDER BY created_at"))
+        .prepare(&format!(
+            "SELECT {DOC_COLS} FROM documents ORDER BY created_at"
+        ))
         .map_err(|e| e.to_string())?;
     let docs = stmt
         .query_map([], row_to_doc)
@@ -152,7 +154,9 @@ pub fn doc_by_hash(conn: &Connection, hash: &str) -> Result<Option<KnowledgeDocu
     let mut stmt = conn
         .prepare(&format!("SELECT {DOC_COLS} FROM documents WHERE hash = ?1"))
         .map_err(|e| e.to_string())?;
-    let mut rows = stmt.query_map([hash], row_to_doc).map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([hash], row_to_doc)
+        .map_err(|e| e.to_string())?;
     match rows.next() {
         Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
         None => Ok(None),
@@ -404,7 +408,9 @@ pub fn hybrid_search(
     let mut chunk_by_id: HashMap<i64, KnowledgeChunk> = HashMap::new();
 
     if weight_vector > 0.0 {
-        for (rank, (rowid, chunk, _dist)) in vector_rows(conn, query_vec, fetch)?.into_iter().enumerate() {
+        for (rank, (rowid, chunk, _dist)) in
+            vector_rows(conn, query_vec, fetch)?.into_iter().enumerate()
+        {
             *score.entry(rowid).or_insert(0.0) += weight_vector / (RRF_K + (rank as f32 + 1.0));
             chunk_by_id.entry(rowid).or_insert(chunk);
         }
@@ -447,7 +453,11 @@ mod tests {
         .expect("FTS5 + vec0 must be available");
 
         // vector rows
-        for (rowid, v) in [(1i64, [1.0f32, 0.0, 0.0]), (2, [0.0, 1.0, 0.0]), (3, [0.9, 0.1, 0.0])] {
+        for (rowid, v) in [
+            (1i64, [1.0f32, 0.0, 0.0]),
+            (2, [0.0, 1.0, 0.0]),
+            (3, [0.9, 0.1, 0.0]),
+        ] {
             conn.execute(
                 "INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)",
                 params![rowid, embedding_to_blob(&v)],
@@ -457,7 +467,9 @@ mod tests {
         // KNN: query near [1,0,0] → rowid 1 then 3
         let q = embedding_to_blob(&[1.0, 0.0, 0.0]);
         let rows: Vec<i64> = conn
-            .prepare("SELECT rowid FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT 2")
+            .prepare(
+                "SELECT rowid FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT 2",
+            )
             .unwrap()
             .query_map(params![q], |r| r.get::<_, i64>(0))
             .unwrap()
@@ -466,10 +478,16 @@ mod tests {
         assert_eq!(rows, vec![1, 3]);
 
         // FTS5 BM25
-        conn.execute("INSERT INTO chunks(id, text) VALUES (1, 'the quick brown fox')", [])
-            .unwrap();
-        conn.execute("INSERT INTO chunks(id, text) VALUES (2, 'lazy dog sleeps')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO chunks(id, text) VALUES (1, 'the quick brown fox')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunks(id, text) VALUES (2, 'lazy dog sleeps')",
+            [],
+        )
+        .unwrap();
         let hits: Vec<i64> = conn
             .prepare("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rank")
             .unwrap()
@@ -519,8 +537,14 @@ mod tests {
         // matches c1 — hybrid must surface BOTH (vector lane c2, keyword lane c1).
         let hits = hybrid_search(&conn, &[0.0, 1.0], "memory", 3, 1.0, 1.0).unwrap();
         let ids: Vec<&str> = hits.iter().map(|(c, _)| c.id.as_str()).collect();
-        assert!(ids.contains(&"c1"), "keyword lane should surface c1: {ids:?}");
-        assert!(ids.contains(&"c2"), "vector lane should surface c2: {ids:?}");
+        assert!(
+            ids.contains(&"c1"),
+            "keyword lane should surface c1: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"c2"),
+            "vector lane should surface c2: {ids:?}"
+        );
 
         // Pure vector (keyword weight 0): query [1,0] → c1 ranks first, keyword ignored.
         let v = hybrid_search(&conn, &[1.0, 0.0], "nonexistentword", 3, 1.0, 0.0).unwrap();

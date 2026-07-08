@@ -30,7 +30,7 @@
 
 use super::app::ToolCard;
 use crate::chat::types::ToolCallStatus;
-use crate::kivio_code::tui::components::{Text, Markdown, MarkdownTheme};
+use crate::kivio_code::tui::components::{Markdown, MarkdownTheme, Text};
 use crate::kivio_code::tui::render::Component;
 use serde_json::Value;
 
@@ -128,7 +128,10 @@ pub fn render_tool_card(card: &ToolCard, width: u16) -> Vec<String> {
     }
 
     // Still running / pending: no body yet.
-    if matches!(card.status, ToolCallStatus::Pending | ToolCallStatus::Running) {
+    if matches!(
+        card.status,
+        ToolCallStatus::Pending | ToolCallStatus::Running
+    ) {
         return lines;
     }
 
@@ -399,10 +402,16 @@ fn listing_names(value: &Value) -> Option<Vec<ListEntry>> {
                     .and_then(Value::as_str)
                     .map(|t| t == "dir" || t == "directory")
                     .unwrap_or(false);
-                Some(ListEntry { name: basename(path), is_dir })
+                Some(ListEntry {
+                    name: basename(path),
+                    is_dir,
+                })
             }
             // `files_with_matches` (or a plain glob list) is an array of strings.
-            Value::String(path) => Some(ListEntry { name: basename(path), is_dir: false }),
+            Value::String(path) => Some(ListEntry {
+                name: basename(path),
+                is_dir: false,
+            }),
             _ => None,
         })
         .collect();
@@ -468,7 +477,10 @@ fn listing_names_from_text(text: &str) -> Option<Vec<ListEntry>> {
     Some(
         paths
             .into_iter()
-            .map(|p| ListEntry { name: basename(&p), is_dir: false })
+            .map(|p| ListEntry {
+                name: basename(&p),
+                is_dir: false,
+            })
             .collect(),
     )
 }
@@ -619,7 +631,10 @@ fn bash_body(card: &ToolCard, width: u16) -> Vec<String> {
     if let Some(cmd) = arg_after_eq(&card.summary, "command") {
         // The command line, prefixed with a cyan `$` prompt so it reads as the
         // invocation rather than output.
-        lines.extend(body_line(&format!("{CYAN}${COLOR_OFF} {BOLD}{cmd}{BOLD_OFF}"), width));
+        lines.extend(body_line(
+            &format!("{CYAN}${COLOR_OFF} {BOLD}{cmd}{BOLD_OFF}"),
+            width,
+        ));
     }
     if let Some(detail) = &card.detail {
         let output: Vec<&str> = detail.lines().collect();
@@ -692,7 +707,10 @@ fn parse_web_results(text: &str) -> Option<Vec<WebResult>> {
     for raw in text.lines() {
         let line = raw.trim();
         if let Some(title) = parse_numbered_title(line) {
-            results.push(WebResult { title, url: String::new() });
+            results.push(WebResult {
+                title,
+                url: String::new(),
+            });
         } else if let Some(url) = line.strip_prefix("URL:") {
             if let Some(last) = results.last_mut() {
                 if last.url.is_empty() {
@@ -825,8 +843,7 @@ mod tests {
     /// A unique scratch project dir for a single test, returned with a workspace
     /// scoped to it.
     fn scratch() -> (std::path::PathBuf, NativeToolWorkspace) {
-        let dir =
-            std::env::temp_dir().join(format!("kivio_card_{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("kivio_card_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("mkdir scratch");
         let ws = NativeToolWorkspace::project(
             "card".into(),
@@ -918,11 +935,24 @@ mod tests {
         // Header names the skill; body is the single confirmation line.
         assert!(text.contains("loaded skill: frontend-design"), "{text}");
         // The full body must be gone.
-        assert!(!text.contains("skill_content"), "raw skill body leaked: {text}");
-        assert!(!text.contains("Design Thinking"), "raw skill body leaked: {text}");
-        assert!(!text.contains("more lines"), "should not need a truncation footer: {text}");
+        assert!(
+            !text.contains("skill_content"),
+            "raw skill body leaked: {text}"
+        );
+        assert!(
+            !text.contains("Design Thinking"),
+            "raw skill body leaked: {text}"
+        );
+        assert!(
+            !text.contains("more lines"),
+            "should not need a truncation footer: {text}"
+        );
         // Compact: glyph/header line + one body line (≤ 3 lines total).
-        assert!(lines.len() <= 3, "expected a compact card, got {} lines: {text}", lines.len());
+        assert!(
+            lines.len() <= 3,
+            "expected a compact card, got {} lines: {text}",
+            lines.len()
+        );
     }
 
     #[test]
@@ -976,12 +1006,24 @@ mod tests {
 
         let text = strip_ansi(&joined(&c, 80));
         // Clean basenames, NOT raw JSON keys.
-        assert!(text.contains("sub/"), "dir should render with trailing slash: {text}");
+        assert!(
+            text.contains("sub/"),
+            "dir should render with trailing slash: {text}"
+        );
         assert!(text.contains("alpha.rs"), "{text}");
         assert!(text.contains("beta.rs"), "{text}");
-        assert!(!text.contains("\"entries\""), "must not dump raw JSON: {text}");
-        assert!(!text.contains("sizeBytes"), "must not dump raw JSON: {text}");
-        assert!(!text.contains("modifiedAt"), "must not dump raw JSON: {text}");
+        assert!(
+            !text.contains("\"entries\""),
+            "must not dump raw JSON: {text}"
+        );
+        assert!(
+            !text.contains("sizeBytes"),
+            "must not dump raw JSON: {text}"
+        );
+        assert!(
+            !text.contains("modifiedAt"),
+            "must not dump raw JSON: {text}"
+        );
         // Directory listed before files.
         let dir_pos = text.find("sub/").unwrap();
         let file_pos = text.find("alpha.rs").unwrap();
@@ -1011,7 +1053,10 @@ mod tests {
             "expected real count +{} more: {text}",
             30 - MAX_LIST_LINES
         );
-        assert!(!text.contains("\"entries\""), "must not dump raw JSON: {text}");
+        assert!(
+            !text.contains("\"entries\""),
+            "must not dump raw JSON: {text}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1033,7 +1078,10 @@ mod tests {
         assert!(text.contains("main.rs"), "{text}");
         assert!(text.contains("lib.rs"), "{text}");
         assert!(!text.contains("README"), "glob filtered to *.rs: {text}");
-        assert!(!text.contains("\"matches\""), "must not dump raw JSON: {text}");
+        assert!(
+            !text.contains("\"matches\""),
+            "must not dump raw JSON: {text}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1071,7 +1119,10 @@ mod tests {
         // file:line references, not raw JSON braces.
         assert!(text.contains("a.rs:2"), "expected file:line ref: {text}");
         assert!(text.contains("a.rs:4"), "expected file:line ref: {text}");
-        assert!(!text.contains("\"matches\""), "must not dump raw JSON: {text}");
+        assert!(
+            !text.contains("\"matches\""),
+            "must not dump raw JSON: {text}"
+        );
         assert!(!text.contains("\"text\""), "must not dump raw JSON: {text}");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1138,8 +1189,14 @@ mod tests {
 
         let text = strip_ansi(&joined(&c, 80));
         assert!(text.contains("file00.rs"), "recovered a name: {text}");
-        assert!(!text.contains("\"path\""), "must not dump raw JSON keys: {text}");
-        assert!(!text.contains("sizeBytes"), "must not dump raw JSON: {text}");
+        assert!(
+            !text.contains("\"path\""),
+            "must not dump raw JSON keys: {text}"
+        );
+        assert!(
+            !text.contains("sizeBytes"),
+            "must not dump raw JSON: {text}"
+        );
         assert!(!text.contains('{'), "must not dump JSON braces: {text}");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1167,7 +1224,10 @@ mod tests {
         let text = strip_ansi(&joined(&c, 80));
         assert!(text.contains("more diff line(s)"), "{text}");
         // The diff's own marker reflects MAX_DIFF_LINES of 100 shown.
-        assert!(text.contains(&format!("{MAX_DIFF_LINES} of 100 shown")), "{text}");
+        assert!(
+            text.contains(&format!("{MAX_DIFF_LINES} of 100 shown")),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1214,7 +1274,12 @@ mod tests {
     fn every_line_within_width() {
         let mut c = card("grep", ToolCallStatus::Success);
         let lines: Vec<String> = (0..5)
-            .map(|i| format!("src/very/long/path/that/keeps/going/file{i}.rs:{i}: {}", "x".repeat(120)))
+            .map(|i| {
+                format!(
+                    "src/very/long/path/that/keeps/going/file{i}.rs:{i}: {}",
+                    "x".repeat(120)
+                )
+            })
             .collect();
         c.detail = Some(lines.join("\n"));
         for line in render_tool_card(&c, 50) {
@@ -1251,7 +1316,10 @@ mod tests {
         // Content is preserved across wraps (the head of the long line is present),
         // not clipped away — wrap, don't drop.
         let text = strip_ansi(&rendered.join("\n"));
-        assert!(text.contains("error[E0599]"), "long line head preserved: {text}");
+        assert!(
+            text.contains("error[E0599]"),
+            "long line head preserved: {text}"
+        );
         assert!(text.contains("aborting"), "tail line preserved: {text}");
     }
 
@@ -1282,7 +1350,11 @@ mod tests {
         c.summary = "path=src/main.rs".to_string();
         let rendered = render_tool_card(&c, 60);
         assert!(!rendered.is_empty());
-        assert_eq!(strip_ansi(&rendered[0]).trim(), "", "first line should be blank");
+        assert_eq!(
+            strip_ansi(&rendered[0]).trim(),
+            "",
+            "first line should be blank"
+        );
     }
 
     /// The header carries the themed status glyph (green ✓ on success) and the
@@ -1295,13 +1367,22 @@ mod tests {
         let rendered = render_tool_card(&c, 70);
         // header is the line right after the blank separator
         let header = &rendered[1];
-        assert!(header.contains(GREEN), "success glyph should be green: {header:?}");
-        assert!(header.contains(BOLD), "tool name should be bold: {header:?}");
+        assert!(
+            header.contains(GREEN),
+            "success glyph should be green: {header:?}"
+        );
+        assert!(
+            header.contains(BOLD),
+            "tool name should be bold: {header:?}"
+        );
         let plain = strip_ansi(header);
         assert!(plain.contains('✓'), "{plain}");
         assert!(plain.contains("ls"), "tool name present: {plain}");
         // no redundant tag word before the name (the old `list ls` form).
-        assert!(!plain.contains("list ls"), "no duplicated tag+name: {plain}");
+        assert!(
+            !plain.contains("list ls"),
+            "no duplicated tag+name: {plain}"
+        );
         assert!(!plain.contains("list"), "no separate category tag: {plain}");
         // no leftover em-dash separator from the old layout
         assert!(!plain.contains('—'), "old em-dash layout removed: {plain}");
@@ -1328,7 +1409,11 @@ mod tests {
         let mut c = card("read", ToolCallStatus::Error);
         c.detail = Some("boom".to_string());
         let rendered = render_tool_card(&c, 60);
-        assert!(rendered[1].contains(RED), "error glyph should be red: {:?}", rendered[1]);
+        assert!(
+            rendered[1].contains(RED),
+            "error glyph should be red: {:?}",
+            rendered[1]
+        );
         assert!(strip_ansi(&rendered[1]).contains('✗'));
     }
 
@@ -1348,7 +1433,10 @@ mod tests {
 
         let rendered = render_tool_card(&c, 80);
         // lines[0] blank, lines[1] header (no gutter), lines[2..] body (gutter)
-        assert!(!strip_ansi(&rendered[1]).starts_with('│'), "header has no gutter");
+        assert!(
+            !strip_ansi(&rendered[1]).starts_with('│'),
+            "header has no gutter"
+        );
         let body: Vec<&String> = rendered[2..].iter().collect();
         assert!(!body.is_empty(), "expected body lines");
         for line in &body {
@@ -1369,10 +1457,16 @@ mod tests {
         }));
         let rendered = render_tool_card(&c, 80);
         let raw = rendered.join("\n");
-        assert!(raw.contains(GREEN) && raw.contains(RED), "diff keeps +/- colors");
+        assert!(
+            raw.contains(GREEN) && raw.contains(RED),
+            "diff keeps +/- colors"
+        );
         // each diff line is guttered
         for line in &rendered[2..] {
-            assert!(strip_ansi(line).starts_with('│'), "diff line guttered: {line:?}");
+            assert!(
+                strip_ansi(line).starts_with('│'),
+                "diff line guttered: {line:?}"
+            );
         }
         // no raw JSON braces leaked into the card
         assert!(!strip_ansi(&raw).contains('{'), "no JSON braces: {raw}");
@@ -1392,8 +1486,14 @@ mod tests {
                 plain.starts_with('│') && plain.contains("$ echo hi")
             })
             .expect("command line present");
-        assert!(strip_ansi(cmd_line).starts_with('│'), "command line guttered: {cmd_line:?}");
-        assert!(strip_ansi(cmd_line).contains('$'), "shows $ prompt: {cmd_line:?}");
+        assert!(
+            strip_ansi(cmd_line).starts_with('│'),
+            "command line guttered: {cmd_line:?}"
+        );
+        assert!(
+            strip_ansi(cmd_line).contains('$'),
+            "shows $ prompt: {cmd_line:?}"
+        );
     }
 
     // ---- web_search card (result list) ----
@@ -1416,12 +1516,21 @@ mod tests {
         );
         let text = strip_ansi(&joined(&c, 80));
         assert!(text.contains("Rust 2024 release notes"), "title 1: {text}");
-        assert!(text.contains("https://blog.rust-lang.org/2024"), "url 1: {text}");
+        assert!(
+            text.contains("https://blog.rust-lang.org/2024"),
+            "url 1: {text}"
+        );
         assert!(text.contains("Tokio async runtime"), "title 2: {text}");
         assert!(text.contains("https://tokio.rs"), "url 2: {text}");
         // The instructional header / snippet body is NOT dumped as-is.
-        assert!(!text.contains("Use only these sources"), "header omitted: {text}");
-        assert!(!text.contains("lots of detail here"), "snippet omitted: {text}");
+        assert!(
+            !text.contains("Use only these sources"),
+            "header omitted: {text}"
+        );
+        assert!(
+            !text.contains("lots of detail here"),
+            "snippet omitted: {text}"
+        );
         // URLs are dim.
         let raw = joined(&c, 80);
         assert!(raw.contains(DIM), "urls dim");
@@ -1452,7 +1561,10 @@ mod tests {
         let mut c = card("web_search", ToolCallStatus::Success);
         c.detail = Some("No results found for the query.".to_string());
         let text = strip_ansi(&joined(&c, 80));
-        assert!(text.contains("No results found"), "preview fallback: {text}");
+        assert!(
+            text.contains("No results found"),
+            "preview fallback: {text}"
+        );
     }
 
     // ---- unified long-output collapse ----
@@ -1481,9 +1593,15 @@ mod tests {
             "body capped to ~{MAX_BODY_LINES} (+marker): got {body_count}"
         );
         let text = strip_ansi(&rendered.join("\n"));
-        assert!(text.contains("more lines"), "uniform +N more lines marker: {text}");
+        assert!(
+            text.contains("more lines"),
+            "uniform +N more lines marker: {text}"
+        );
         for line in &rendered {
-            assert!(visible_width(line) <= width as usize, "line exceeds width: {line:?}");
+            assert!(
+                visible_width(line) <= width as usize,
+                "line exceeds width: {line:?}"
+            );
         }
     }
 }

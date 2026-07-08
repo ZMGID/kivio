@@ -52,8 +52,7 @@ pub struct PkcePair {
 /// 生成 PKCE：code_verifier 为 43–128 个 unreserved 字符；
 /// code_challenge = base64url-nopad(SHA256(verifier))，method S256。
 pub fn generate_pkce() -> PkcePair {
-    const UNRESERVED: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     let mut rng = rand::thread_rng();
     // 取 64 字符（落在 43–128 区间）。
     let verifier: String = (0..64)
@@ -123,8 +122,8 @@ pub fn parse_auth_server_metadata(value: &serde_json::Value) -> Option<AuthServe
 
 /// 由 resource URL 推导发现起点的 origin（scheme://host[:port]）与 path。
 pub fn split_origin_and_path(resource_url: &str) -> Result<(String, String), String> {
-    let parsed = url::Url::parse(resource_url)
-        .map_err(|err| format!("Invalid connector URL: {err}"))?;
+    let parsed =
+        url::Url::parse(resource_url).map_err(|err| format!("Invalid connector URL: {err}"))?;
     let scheme = parsed.scheme();
     let host = parsed
         .host_str()
@@ -141,7 +140,9 @@ pub fn split_origin_and_path(resource_url: &str) -> Result<(String, String), Str
 pub fn protected_resource_well_known_urls(origin: &str, path: &str) -> Vec<String> {
     let mut urls = Vec::new();
     if !path.is_empty() {
-        urls.push(format!("{origin}/.well-known/oauth-protected-resource{path}"));
+        urls.push(format!(
+            "{origin}/.well-known/oauth-protected-resource{path}"
+        ));
     }
     urls.push(format!("{origin}/.well-known/oauth-protected-resource"));
     urls
@@ -265,7 +266,13 @@ pub fn needs_refresh(auth: &ConnectorAuth, now_unix: i64, leeway_secs: i64) -> b
     {
         return false;
     }
-    if auth.token_endpoint.as_deref().unwrap_or("").trim().is_empty() {
+    if auth
+        .token_endpoint
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
         return false;
     }
     match auth.expires_at {
@@ -360,7 +367,10 @@ pub fn extract_account(value: &serde_json::Value) -> Option<String> {
 
 /// 取 JSON 顶层字符串字段。
 fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
-    value.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// 去除首尾空白后非空才保留。
@@ -456,7 +466,13 @@ pub async fn run_oauth_connect(
     })?;
 
     // 3. DCR 注册公有客户端。
-    let client_id = register_client(http, &registration_endpoint, &redirect_uri, &metadata.scopes_supported).await?;
+    let client_id = register_client(
+        http,
+        &registration_endpoint,
+        &redirect_uri,
+        &metadata.scopes_supported,
+    )
+    .await?;
 
     // 4. PKCE + state。
     let pkce = generate_pkce();
@@ -549,7 +565,10 @@ async fn discover_auth_server(
 
 /// GET 一个 well-known URL 并尝试解析 JSON；失败返回 None（让上层试下一个候选）。
 async fn fetch_json(http: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
-    let response = timeout(DISCOVERY_TIMEOUT, http.get(url).send()).await.ok()?.ok()?;
+    let response = timeout(DISCOVERY_TIMEOUT, http.get(url).send())
+        .await
+        .ok()?
+        .ok()?;
     if !response.status().is_success() {
         return None;
     }
@@ -708,10 +727,13 @@ async fn exchange_code(
         ("client_id", client_id),
         ("code_verifier", code_verifier),
     ];
-    let response = timeout(DISCOVERY_TIMEOUT, http.post(token_endpoint).form(&form).send())
-        .await
-        .map_err(|_| "Token exchange timed out".to_string())?
-        .map_err(|err| format!("Token exchange failed: {err}"))?;
+    let response = timeout(
+        DISCOVERY_TIMEOUT,
+        http.post(token_endpoint).form(&form).send(),
+    )
+    .await
+    .map_err(|_| "Token exchange timed out".to_string())?
+    .map_err(|err| format!("Token exchange failed: {err}"))?;
     let status = response.status();
     let value = response
         .json::<serde_json::Value>()
@@ -736,9 +758,7 @@ async fn fetch_userinfo_account(
 ) -> Option<String> {
     let response = timeout(
         DISCOVERY_TIMEOUT,
-        http.get(userinfo_endpoint)
-            .bearer_auth(access_token)
-            .send(),
+        http.get(userinfo_endpoint).bearer_auth(access_token).send(),
     )
     .await
     .ok()?
@@ -759,10 +779,13 @@ pub async fn refresh_access_token(
     client_id: Option<&str>,
 ) -> Result<TokenResponse, String> {
     let form = build_refresh_form(refresh_token, client_id);
-    let response = timeout(DISCOVERY_TIMEOUT, http.post(token_endpoint).form(&form).send())
-        .await
-        .map_err(|_| "Token refresh timed out".to_string())?
-        .map_err(|err| format!("Token refresh failed: {err}"))?;
+    let response = timeout(
+        DISCOVERY_TIMEOUT,
+        http.post(token_endpoint).form(&form).send(),
+    )
+    .await
+    .map_err(|_| "Token refresh timed out".to_string())?
+    .map_err(|err| format!("Token refresh failed: {err}"))?;
     let status = response.status();
     let value = response
         .json::<serde_json::Value>()
@@ -822,7 +845,10 @@ mod tests {
             "scopes_supported": ["read", "write"],
         });
         let meta = parse_auth_server_metadata(&value).expect("metadata");
-        assert_eq!(meta.authorization_endpoint, "https://auth.example.com/authorize");
+        assert_eq!(
+            meta.authorization_endpoint,
+            "https://auth.example.com/authorize"
+        );
         assert_eq!(meta.token_endpoint, "https://auth.example.com/token");
         assert_eq!(
             meta.registration_endpoint.as_deref(),
@@ -919,15 +945,35 @@ mod tests {
     fn needs_refresh_only_when_expiring_with_refresh_token() {
         let now = 1000;
         // 已过期 → 需要刷新。
-        assert!(needs_refresh(&oauth_auth(Some("rt"), Some(900)), now, REFRESH_LEEWAY_SECS));
+        assert!(needs_refresh(
+            &oauth_auth(Some("rt"), Some(900)),
+            now,
+            REFRESH_LEEWAY_SECS
+        ));
         // leeway 内将过期 → 需要刷新。
-        assert!(needs_refresh(&oauth_auth(Some("rt"), Some(1030)), now, REFRESH_LEEWAY_SECS));
+        assert!(needs_refresh(
+            &oauth_auth(Some("rt"), Some(1030)),
+            now,
+            REFRESH_LEEWAY_SECS
+        ));
         // 远未过期 → 不刷新。
-        assert!(!needs_refresh(&oauth_auth(Some("rt"), Some(99999)), now, REFRESH_LEEWAY_SECS));
+        assert!(!needs_refresh(
+            &oauth_auth(Some("rt"), Some(99999)),
+            now,
+            REFRESH_LEEWAY_SECS
+        ));
         // 无 refresh_token → 不刷新。
-        assert!(!needs_refresh(&oauth_auth(None, Some(900)), now, REFRESH_LEEWAY_SECS));
+        assert!(!needs_refresh(
+            &oauth_auth(None, Some(900)),
+            now,
+            REFRESH_LEEWAY_SECS
+        ));
         // 无 expires_at → 不刷新（保守用旧 token）。
-        assert!(!needs_refresh(&oauth_auth(Some("rt"), None), now, REFRESH_LEEWAY_SECS));
+        assert!(!needs_refresh(
+            &oauth_auth(Some("rt"), None),
+            now,
+            REFRESH_LEEWAY_SECS
+        ));
         // token 类（非 oauth）→ 不刷新。
         let mut token = oauth_auth(Some("rt"), Some(900));
         token.kind = "token".to_string();
@@ -994,7 +1040,10 @@ mod tests {
         assert_eq!(auth.kind, "oauth");
         assert_eq!(auth.refresh_token.as_deref(), Some("rt-1"));
         assert_eq!(auth.expires_at, Some(4600));
-        assert_eq!(auth.token_endpoint.as_deref(), Some("https://auth.example.com/token"));
+        assert_eq!(
+            auth.token_endpoint.as_deref(),
+            Some("https://auth.example.com/token")
+        );
         // scope 缺省时回退到请求的 scopes。
         assert_eq!(auth.scopes, vec!["read"]);
         // account 从 token 响应透传。

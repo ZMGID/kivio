@@ -57,7 +57,11 @@ impl Loader {
         let render_verbatim = false; // 默认非 verbatim（用 default frames）
         Self {
             frames: ind.frames,
-            interval_ms: if ind.interval_ms > 0 { ind.interval_ms } else { DEFAULT_INTERVAL_MS },
+            interval_ms: if ind.interval_ms > 0 {
+                ind.interval_ms
+            } else {
+                DEFAULT_INTERVAL_MS
+            },
             current_frame: 0,
             render_verbatim,
             spinner_color_fn,
@@ -71,7 +75,11 @@ impl Loader {
     pub fn set_indicator(&mut self, indicator: LoaderIndicator) {
         self.render_verbatim = true;
         self.frames = indicator.frames;
-        self.interval_ms = if indicator.interval_ms > 0 { indicator.interval_ms } else { DEFAULT_INTERVAL_MS };
+        self.interval_ms = if indicator.interval_ms > 0 {
+            indicator.interval_ms
+        } else {
+            DEFAULT_INTERVAL_MS
+        };
         self.current_frame = 0;
     }
 
@@ -93,11 +101,19 @@ impl Loader {
     }
 
     fn line(&self) -> String {
-        let frame = self.frames.get(self.current_frame).cloned().unwrap_or_default();
+        let frame = self
+            .frames
+            .get(self.current_frame)
+            .cloned()
+            .unwrap_or_default();
         let indicator = if frame.is_empty() {
             String::new()
         } else {
-            let rendered = if self.render_verbatim { frame } else { (self.spinner_color_fn)(&frame) };
+            let rendered = if self.render_verbatim {
+                frame
+            } else {
+                (self.spinner_color_fn)(&frame)
+            };
             format!("{rendered} ")
         };
         let msg = (self.message_color_fn)(&self.message);
@@ -111,7 +127,11 @@ impl Component for Loader {
         let line = self.line();
         let w = width as usize;
         let vis = visible_width(&line);
-        let padded = if vis < w { format!("{line}{}", " ".repeat(w - vis)) } else { line };
+        let padded = if vis < w {
+            format!("{line}{}", " ".repeat(w - vis))
+        } else {
+            line
+        };
         // PI 在内容上方留一行空行
         vec![String::new(), padded]
     }
@@ -170,7 +190,10 @@ impl CancellableLoader {
 
 impl Component for CancellableLoader {
     fn handle_input(&mut self, data: &str) {
-        if self.kb.matches(data, "tui.select.cancel", self.kitty_active) {
+        if self
+            .kb
+            .matches(data, "tui.select.cancel", self.kitty_active)
+        {
             self.aborted.store(true, Ordering::SeqCst);
             if let Some(cb) = self.on_abort.as_mut() {
                 cb();
@@ -215,7 +238,10 @@ mod tests {
     #[test]
     fn tick_noop_with_single_frame() {
         let mut l = Loader::new(id(), id(), "x", None);
-        l.set_indicator(LoaderIndicator { frames: vec!["*".into()], interval_ms: 100 });
+        l.set_indicator(LoaderIndicator {
+            frames: vec!["*".into()],
+            interval_ms: 100,
+        });
         assert!(!l.tick());
     }
 
@@ -233,7 +259,10 @@ mod tests {
     #[test]
     fn empty_frames_hides_indicator() {
         let mut l = Loader::new(id(), id(), "msg", None);
-        l.set_indicator(LoaderIndicator { frames: vec![], interval_ms: 80 });
+        l.set_indicator(LoaderIndicator {
+            frames: vec![],
+            interval_ms: 80,
+        });
         let lines = l.render(40);
         assert!(lines[1].contains("msg"));
         assert!(!lines[1].contains("⠋"));

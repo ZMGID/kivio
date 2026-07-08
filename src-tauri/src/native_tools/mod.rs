@@ -3,17 +3,17 @@ mod files;
 mod sandbox_exports;
 mod shell;
 
-pub use fetch::web_fetch;
 pub(crate) use fetch::html_to_text;
+pub use fetch::web_fetch;
 pub use files::{
     edit_file, glob_files, list_dir, read_file, search_files, write_file, FileMutationResult,
     ReadFileResult, ReadFileState,
 };
 pub use sandbox_exports::{
     build_delivery_artifact_for_path, cleanup_stale_sandbox_exports, delivery_dir,
-    export_sandbox_artifacts, format_export_error, format_exported_paths,
-    path_under_delivery_dir, remove_sandbox_exports_for_conversation,
-    resolve_sandbox_export_file_path, SandboxExportContext,
+    export_sandbox_artifacts, format_export_error, format_exported_paths, path_under_delivery_dir,
+    remove_sandbox_exports_for_conversation, resolve_sandbox_export_file_path,
+    SandboxExportContext,
 };
 pub use shell::run_command;
 pub use shell::{

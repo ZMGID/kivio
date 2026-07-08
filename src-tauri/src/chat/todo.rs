@@ -152,7 +152,10 @@ pub fn tool_result(state: &AgentTodoState, changed: &[String]) -> McpToolCallRes
         format!("Changed: {}\n\n", changed.join(", "))
     };
     McpToolCallResult {
-        content: format!("Todo list updated.\n\n{changed_line}{}", format_state_lines(state)),
+        content: format!(
+            "Todo list updated.\n\n{changed_line}{}",
+            format_state_lines(state)
+        ),
         is_error: false,
         raw: structured.clone(),
         artifacts: Vec::new(),

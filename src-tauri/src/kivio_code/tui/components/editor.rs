@@ -47,8 +47,11 @@ fn is_paste_marker(seg: &str) -> bool {
     match parts.next() {
         None => true,
         Some(rest) => {
-            (rest.starts_with('+') && rest.ends_with(" lines") && rest[1..rest.len() - 6].chars().all(|c| c.is_ascii_digit()))
-                || (rest.ends_with(" chars") && rest[..rest.len() - 6].chars().all(|c| c.is_ascii_digit()))
+            (rest.starts_with('+')
+                && rest.ends_with(" lines")
+                && rest[1..rest.len() - 6].chars().all(|c| c.is_ascii_digit()))
+                || (rest.ends_with(" chars")
+                    && rest[..rest.len() - 6].chars().all(|c| c.is_ascii_digit()))
         }
     }
 }
@@ -86,19 +89,34 @@ pub struct TextChunk {
 
 /// 把一条逻辑行（无内嵌换行）按 `max_width` 可见列切成 chunk。`pre_segmented` 提供（byte_index, grapheme）
 /// 列表（含 paste-marker 合并）；省略时用默认 grapheme 切分。
-pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[(usize, String)]>) -> Vec<TextChunk> {
+pub fn word_wrap_line(
+    line: &str,
+    max_width: usize,
+    pre_segmented: Option<&[(usize, String)]>,
+) -> Vec<TextChunk> {
     if line.is_empty() || max_width == 0 {
-        return vec![TextChunk { text: String::new(), start_index: 0, end_index: 0 }];
+        return vec![TextChunk {
+            text: String::new(),
+            start_index: 0,
+            end_index: 0,
+        }];
     }
     if visible_width(line) <= max_width {
-        return vec![TextChunk { text: line.to_string(), start_index: 0, end_index: line.len() }];
+        return vec![TextChunk {
+            text: line.to_string(),
+            start_index: 0,
+            end_index: line.len(),
+        }];
     }
 
     let owned: Vec<(usize, String)>;
     let segments: &[(usize, String)] = match pre_segmented {
         Some(s) => s,
         None => {
-            owned = line.grapheme_indices(true).map(|(i, g)| (i, g.to_string())).collect();
+            owned = line
+                .grapheme_indices(true)
+                .map(|(i, g)| (i, g.to_string()))
+                .collect();
             &owned
         }
     };
@@ -117,11 +135,19 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[(usi
         if current_width + g_width > max_width {
             if wrap_opp_index >= 0 && current_width - wrap_opp_width + g_width <= max_width {
                 let wo = wrap_opp_index as usize;
-                chunks.push(TextChunk { text: line[chunk_start..wo].to_string(), start_index: chunk_start, end_index: wo });
+                chunks.push(TextChunk {
+                    text: line[chunk_start..wo].to_string(),
+                    start_index: chunk_start,
+                    end_index: wo,
+                });
                 chunk_start = wo;
                 current_width -= wrap_opp_width;
             } else if chunk_start < char_index {
-                chunks.push(TextChunk { text: line[chunk_start..char_index].to_string(), start_index: chunk_start, end_index: char_index });
+                chunks.push(TextChunk {
+                    text: line[chunk_start..char_index].to_string(),
+                    start_index: chunk_start,
+                    end_index: char_index,
+                });
                 chunk_start = char_index;
                 current_width = 0;
             }
@@ -168,7 +194,11 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[(usi
         }
     }
 
-    chunks.push(TextChunk { text: line[chunk_start..].to_string(), start_index: chunk_start, end_index: line.len() });
+    chunks.push(TextChunk {
+        text: line[chunk_start..].to_string(),
+        start_index: chunk_start,
+        end_index: line.len(),
+    });
     chunks
 }
 
@@ -260,7 +290,11 @@ pub struct Editor {
 impl Editor {
     pub fn new(theme: EditorTheme) -> Self {
         Self {
-            state: EditorState { lines: vec![String::new()], cursor_line: 0, cursor_col: 0 },
+            state: EditorState {
+                lines: vec![String::new()],
+                cursor_line: 0,
+                cursor_col: 0,
+            },
             focused: false,
             border_color: theme.border_color,
             select_list_theme: Some(theme.select_list),
@@ -365,12 +399,18 @@ impl Editor {
     fn segment_graphemes(&self, text: &str) -> Vec<(usize, String)> {
         let ids = self.valid_paste_ids();
         if ids.is_empty() || !text.contains("[paste #") {
-            return text.grapheme_indices(true).map(|(i, g)| (i, g.to_string())).collect();
+            return text
+                .grapheme_indices(true)
+                .map(|(i, g)| (i, g.to_string()))
+                .collect();
         }
         // 找出所有有效 marker 的字节区间
         let markers = self.find_markers(text, &ids);
         if markers.is_empty() {
-            return text.grapheme_indices(true).map(|(i, g)| (i, g.to_string())).collect();
+            return text
+                .grapheme_indices(true)
+                .map(|(i, g)| (i, g.to_string()))
+                .collect();
         }
         let mut result: Vec<(usize, String)> = Vec::new();
         let mut marker_idx = 0;
@@ -391,7 +431,11 @@ impl Editor {
         result
     }
 
-    fn find_markers(&self, text: &str, ids: &std::collections::HashSet<u64>) -> Vec<(usize, usize)> {
+    fn find_markers(
+        &self,
+        text: &str,
+        ids: &std::collections::HashSet<u64>,
+    ) -> Vec<(usize, usize)> {
         let mut markers: Vec<(usize, usize)> = Vec::new();
         let bytes = text.as_bytes();
         let needle = b"[paste #";
@@ -404,7 +448,11 @@ impl Editor {
                     let seg = &text[i..end];
                     if is_paste_marker(seg) {
                         // 提取 id
-                        if let Some(id) = seg[8..].split([' ', ']']).next().and_then(|s| s.parse::<u64>().ok()) {
+                        if let Some(id) = seg[8..]
+                            .split([' ', ']'])
+                            .next()
+                            .and_then(|s| s.parse::<u64>().ok())
+                        {
                             if ids.contains(&id) {
                                 markers.push((i, end));
                                 i = end;
@@ -446,7 +494,9 @@ impl Editor {
     }
 
     fn normalize_text(text: &str) -> String {
-        text.replace("\r\n", "\n").replace('\r', "\n").replace('\t', "    ")
+        text.replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\t', "    ")
     }
 
     pub fn set_text(&mut self, text: &str) {
@@ -480,9 +530,21 @@ impl Editor {
 
     fn set_text_internal(&mut self, text: &str, cursor_at_start: bool) {
         let lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
-        self.state.lines = if lines.is_empty() { vec![String::new()] } else { lines };
-        self.state.cursor_line = if cursor_at_start { 0 } else { self.state.lines.len() - 1 };
-        let col = if cursor_at_start { 0 } else { self.state.lines[self.state.cursor_line].len() };
+        self.state.lines = if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        };
+        self.state.cursor_line = if cursor_at_start {
+            0
+        } else {
+            self.state.lines.len() - 1
+        };
+        let col = if cursor_at_start {
+            0
+        } else {
+            self.state.lines[self.state.cursor_line].len()
+        };
         self.set_cursor_col(col);
         self.scroll_offset = 0;
         self.fire_change();
@@ -507,7 +569,10 @@ impl Editor {
             self.update_autocomplete();
         } else if ch == "/" && self.is_at_start_of_message() {
             self.try_trigger_autocomplete();
-        } else if ch.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')) {
+        } else if ch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        {
             let before = self.text_before_cursor();
             if self.is_in_slash_command_context(&before) {
                 self.try_trigger_autocomplete();
@@ -554,8 +619,15 @@ impl Editor {
 
     fn submit_value(&mut self) {
         self.cancel_autocomplete();
-        let result = self.expand_paste_markers(&self.state.lines.join("\n")).trim().to_string();
-        self.state = EditorState { lines: vec![String::new()], cursor_line: 0, cursor_col: 0 };
+        let result = self
+            .expand_paste_markers(&self.state.lines.join("\n"))
+            .trim()
+            .to_string();
+        self.state = EditorState {
+            lines: vec![String::new()],
+            cursor_line: 0,
+            cursor_col: 0,
+        };
         self.pastes.clear();
         self.paste_counter = 0;
         self.exit_history_browsing();
@@ -577,7 +649,9 @@ impl Editor {
             // 找 marker 并替换
             loop {
                 let markers = self.find_markers(&result, &ids);
-                let Some(&(start, end)) = markers.first() else { break };
+                let Some(&(start, end)) = markers.first() else {
+                    break;
+                };
                 result.replace_range(start..end, content);
             }
         }
@@ -596,7 +670,11 @@ impl Editor {
             let line = self.state.lines[self.state.cursor_line].clone();
             let before = &line[..self.state.cursor_col];
             let glen = self.last_grapheme_len(before);
-            let new_line = format!("{}{}", &line[..self.state.cursor_col - glen], &line[self.state.cursor_col..]);
+            let new_line = format!(
+                "{}{}",
+                &line[..self.state.cursor_col - glen],
+                &line[self.state.cursor_col..]
+            );
             self.state.lines[self.state.cursor_line] = new_line;
             self.set_cursor_col(self.state.cursor_col - glen);
         } else if self.state.cursor_line > 0 {
@@ -626,7 +704,11 @@ impl Editor {
         if self.state.cursor_col < line.len() {
             self.push_undo();
             let glen = self.first_grapheme_len(&line[self.state.cursor_col..]);
-            let new_line = format!("{}{}", &line[..self.state.cursor_col], &line[self.state.cursor_col + glen..]);
+            let new_line = format!(
+                "{}{}",
+                &line[..self.state.cursor_col],
+                &line[self.state.cursor_col + glen..]
+            );
             self.state.lines[self.state.cursor_line] = new_line;
         } else if self.state.cursor_line < self.state.lines.len() - 1 {
             self.push_undo();
@@ -710,7 +792,8 @@ impl Editor {
             let deleted = line[delete_from..old_col].to_string();
             self.kill_ring.push(&deleted, true, was_kill);
             self.last_action = Some(LastAction::Kill);
-            self.state.lines[self.state.cursor_line] = format!("{}{}", &line[..delete_from], &line[old_col..]);
+            self.state.lines[self.state.cursor_line] =
+                format!("{}{}", &line[..delete_from], &line[old_col..]);
             self.set_cursor_col(delete_from);
         }
         self.fire_change();
@@ -732,11 +815,16 @@ impl Editor {
         } else {
             self.push_undo();
             let was_kill = self.last_action == Some(LastAction::Kill);
-            let delete_to = find_word_forward(&line, self.state.cursor_col, Some(Self::marker_is_atomic_fn()));
+            let delete_to = find_word_forward(
+                &line,
+                self.state.cursor_col,
+                Some(Self::marker_is_atomic_fn()),
+            );
             let deleted = line[self.state.cursor_col..delete_to].to_string();
             self.kill_ring.push(&deleted, false, was_kill);
             self.last_action = Some(LastAction::Kill);
-            self.state.lines[self.state.cursor_line] = format!("{}{}", &line[..self.state.cursor_col], &line[delete_to..]);
+            self.state.lines[self.state.cursor_line] =
+                format!("{}{}", &line[..self.state.cursor_col], &line[delete_to..]);
         }
         self.fire_change();
     }
@@ -763,7 +851,11 @@ impl Editor {
             return;
         }
         let line = self.state.lines[self.state.cursor_line].clone();
-        self.set_cursor_col(find_word_backward(&line, self.state.cursor_col, Some(Self::marker_is_atomic_fn())));
+        self.set_cursor_col(find_word_backward(
+            &line,
+            self.state.cursor_col,
+            Some(Self::marker_is_atomic_fn()),
+        ));
     }
 
     fn move_word_forwards(&mut self) {
@@ -776,7 +868,11 @@ impl Editor {
             }
             return;
         }
-        self.set_cursor_col(find_word_forward(&line, self.state.cursor_col, Some(Self::marker_is_atomic_fn())));
+        self.set_cursor_col(find_word_forward(
+            &line,
+            self.state.cursor_col,
+            Some(Self::marker_is_atomic_fn()),
+        ));
     }
 
     // ---- kill ring yank ----
@@ -814,10 +910,15 @@ impl Editor {
         } else {
             self.state.lines[self.state.cursor_line] = format!("{before}{}", lines[0]);
             for (i, &mid) in lines[1..lines.len() - 1].iter().enumerate() {
-                self.state.lines.insert(self.state.cursor_line + 1 + i, mid.to_string());
+                self.state
+                    .lines
+                    .insert(self.state.cursor_line + 1 + i, mid.to_string());
             }
             let last_line_index = self.state.cursor_line + lines.len() - 1;
-            self.state.lines.insert(last_line_index, format!("{}{after}", lines[lines.len() - 1]));
+            self.state.lines.insert(
+                last_line_index,
+                format!("{}{after}", lines[lines.len() - 1]),
+            );
             self.state.cursor_line = last_line_index;
             self.set_cursor_col(lines[lines.len() - 1].len());
         }
@@ -825,21 +926,30 @@ impl Editor {
     }
 
     fn delete_yanked_text(&mut self) {
-        let Some(yanked) = self.kill_ring.peek().map(|s| s.to_string()) else { return };
+        let Some(yanked) = self.kill_ring.peek().map(|s| s.to_string()) else {
+            return;
+        };
         let yank_lines: Vec<&str> = yanked.split('\n').collect();
         if yank_lines.len() == 1 {
             let current = self.state.lines[self.state.cursor_line].clone();
             let del_len = yanked.len();
             let start = self.state.cursor_col.saturating_sub(del_len);
-            self.state.lines[self.state.cursor_line] = format!("{}{}", &current[..start], &current[self.state.cursor_col..]);
+            self.state.lines[self.state.cursor_line] =
+                format!("{}{}", &current[..start], &current[self.state.cursor_col..]);
             self.set_cursor_col(start);
         } else {
             let start_line = self.state.cursor_line - (yank_lines.len() - 1);
-            let start_col = self.state.lines[start_line].len().saturating_sub(yank_lines[0].len());
-            let after_cursor = self.state.lines[self.state.cursor_line][self.state.cursor_col..].to_string();
+            let start_col = self.state.lines[start_line]
+                .len()
+                .saturating_sub(yank_lines[0].len());
+            let after_cursor =
+                self.state.lines[self.state.cursor_line][self.state.cursor_col..].to_string();
             let before_yank = self.state.lines[start_line][..start_col].to_string();
             let merged = format!("{before_yank}{after_cursor}");
-            self.state.lines.splice(start_line..start_line + yank_lines.len(), std::iter::once(merged));
+            self.state.lines.splice(
+                start_line..start_line + yank_lines.len(),
+                std::iter::once(merged),
+            );
             self.state.cursor_line = start_line;
             self.set_cursor_col(start_col);
         }
@@ -865,14 +975,22 @@ impl Editor {
             let line = &self.state.lines[line_idx as usize];
             let is_current = line_idx as usize == self.state.cursor_line;
             let found = if forward {
-                let from = if is_current { self.state.cursor_col + 1 } else { 0 };
+                let from = if is_current {
+                    self.state.cursor_col + 1
+                } else {
+                    0
+                };
                 if from <= line.len() {
                     line[from..].find(ch).map(|i| i + from)
                 } else {
                     None
                 }
             } else {
-                let to = if is_current { self.state.cursor_col } else { line.len() };
+                let to = if is_current {
+                    self.state.cursor_col
+                } else {
+                    line.len()
+                };
                 line[..to.min(line.len())].rfind(ch)
             };
             if let Some(idx) = found {
@@ -889,9 +1007,17 @@ impl Editor {
         let mut vls: Vec<VisualLine> = Vec::new();
         for (i, line) in self.state.lines.iter().enumerate() {
             if line.is_empty() {
-                vls.push(VisualLine { logical_line: i, start_col: 0, length: 0 });
+                vls.push(VisualLine {
+                    logical_line: i,
+                    start_col: 0,
+                    length: 0,
+                });
             } else if visible_width(line) <= width {
-                vls.push(VisualLine { logical_line: i, start_col: 0, length: line.len() });
+                vls.push(VisualLine {
+                    logical_line: i,
+                    start_col: 0,
+                    length: line.len(),
+                });
             } else {
                 let segs = self.segment_graphemes(line);
                 for chunk in word_wrap_line(line, width, Some(&segs)) {
@@ -966,8 +1092,12 @@ impl Editor {
     }
 
     fn move_to_visual_line(&mut self, vls: &[VisualLine], current_vl: usize, target_vl: usize) {
-        let Some(&current) = vls.get(current_vl) else { return };
-        let Some(&target) = vls.get(target_vl) else { return };
+        let Some(&current) = vls.get(current_vl) else {
+            return;
+        };
+        let Some(&target) = vls.get(target_vl) else {
+            return;
+        };
 
         let current_visual_col = if let Some(snap) = self.snapped_from_cursor_col {
             let vl_idx = Self::find_visual_line_at(vls, current.logical_line, snap);
@@ -976,12 +1106,23 @@ impl Editor {
             self.state.cursor_col - current.start_col
         };
 
-        let is_last_source = current_vl == vls.len() - 1 || vls[current_vl + 1].logical_line != current.logical_line;
-        let source_max = if is_last_source { current.length } else { current.length.saturating_sub(1) };
-        let is_last_target = target_vl == vls.len() - 1 || vls[target_vl + 1].logical_line != target.logical_line;
-        let target_max = if is_last_target { target.length } else { target.length.saturating_sub(1) };
+        let is_last_source =
+            current_vl == vls.len() - 1 || vls[current_vl + 1].logical_line != current.logical_line;
+        let source_max = if is_last_source {
+            current.length
+        } else {
+            current.length.saturating_sub(1)
+        };
+        let is_last_target =
+            target_vl == vls.len() - 1 || vls[target_vl + 1].logical_line != target.logical_line;
+        let target_max = if is_last_target {
+            target.length
+        } else {
+            target.length.saturating_sub(1)
+        };
 
-        let move_to_visual_col = self.compute_vertical_move_column(current_visual_col, source_max, target_max);
+        let move_to_visual_col =
+            self.compute_vertical_move_column(current_visual_col, source_max, target_max);
 
         self.state.cursor_line = target.logical_line;
         let target_col = target.start_col + move_to_visual_col;
@@ -1107,7 +1248,10 @@ impl Editor {
         self.last_action = None;
         self.push_undo();
         let clean = Self::normalize_text(pasted);
-        let filtered: String = clean.chars().filter(|&c| c == '\n' || (c as u32) >= 32).collect();
+        let filtered: String = clean
+            .chars()
+            .filter(|&c| c == '\n' || (c as u32) >= 32)
+            .collect();
         let pasted_lines: Vec<&str> = filtered.split('\n').collect();
         let total_chars = filtered.chars().count();
         if pasted_lines.len() > 10 || total_chars > 1000 {
@@ -1141,9 +1285,20 @@ impl Editor {
             let mut new_lines: Vec<String> = Vec::new();
             new_lines.extend(self.state.lines[..self.state.cursor_line].iter().cloned());
             new_lines.push(format!("{before}{}", inserted_lines[0]));
-            new_lines.extend(inserted_lines[1..inserted_lines.len() - 1].iter().map(|s| s.to_string()));
-            new_lines.push(format!("{}{after}", inserted_lines[inserted_lines.len() - 1]));
-            new_lines.extend(self.state.lines[self.state.cursor_line + 1..].iter().cloned());
+            new_lines.extend(
+                inserted_lines[1..inserted_lines.len() - 1]
+                    .iter()
+                    .map(|s| s.to_string()),
+            );
+            new_lines.push(format!(
+                "{}{after}",
+                inserted_lines[inserted_lines.len() - 1]
+            ));
+            new_lines.extend(
+                self.state.lines[self.state.cursor_line + 1..]
+                    .iter()
+                    .cloned(),
+            );
             self.state.cursor_line += inserted_lines.len() - 1;
             let col = inserted_lines[inserted_lines.len() - 1].len();
             self.state.lines = new_lines;
@@ -1154,8 +1309,14 @@ impl Editor {
 
     // ---- autocomplete ----
     fn try_trigger_autocomplete(&mut self) {
-        let Some(provider) = self.autocomplete_provider.as_ref() else { return };
-        let suggestions = provider.get_suggestions(&self.state.lines, self.state.cursor_line, self.state.cursor_col);
+        let Some(provider) = self.autocomplete_provider.as_ref() else {
+            return;
+        };
+        let suggestions = provider.get_suggestions(
+            &self.state.lines,
+            self.state.cursor_line,
+            self.state.cursor_col,
+        );
         if suggestions.items.is_empty() {
             self.cancel_autocomplete();
             return;
@@ -1163,10 +1324,15 @@ impl Editor {
         self.autocomplete_prefix = suggestions.prefix;
         let items: Vec<SelectItem> = suggestions.items.into_iter().map(Into::into).collect();
         if let Some(theme) = self.select_list_theme.take() {
-            let mut list = SelectList::new(items, self.autocomplete_max_visible, theme, SelectListLayoutOptions {
-                min_primary_column_width: Some(12),
-                max_primary_column_width: Some(32),
-            });
+            let mut list = SelectList::new(
+                items,
+                self.autocomplete_max_visible,
+                theme,
+                SelectListLayoutOptions {
+                    min_primary_column_width: Some(12),
+                    max_primary_column_width: Some(32),
+                },
+            );
             list.set_kitty_active(self.kitty_active);
             self.autocomplete_list = Some(list);
         } else if let Some(list) = self.autocomplete_list.as_mut() {
@@ -1180,7 +1346,11 @@ impl Editor {
             self.cancel_autocomplete();
             return;
         };
-        let suggestions = provider.get_suggestions(&self.state.lines, self.state.cursor_line, self.state.cursor_col);
+        let suggestions = provider.get_suggestions(
+            &self.state.lines,
+            self.state.cursor_line,
+            self.state.cursor_col,
+        );
         if suggestions.items.is_empty() {
             self.cancel_autocomplete();
             return;
@@ -1206,7 +1376,11 @@ impl Editor {
     }
 
     fn apply_autocomplete_selection(&mut self) -> bool {
-        let Some(selected) = self.autocomplete_list.as_ref().and_then(|l| l.get_selected_item()) else {
+        let Some(selected) = self
+            .autocomplete_list
+            .as_ref()
+            .and_then(|l| l.get_selected_item())
+        else {
             return false;
         };
         if self.autocomplete_provider.is_none() {
@@ -1238,7 +1412,11 @@ impl Editor {
     fn layout_text(&self, content_width: usize) -> Vec<LayoutLine> {
         let mut layout: Vec<LayoutLine> = Vec::new();
         if self.state.lines.len() == 1 && self.state.lines[0].is_empty() {
-            layout.push(LayoutLine { text: String::new(), has_cursor: true, cursor_pos: Some(0) });
+            layout.push(LayoutLine {
+                text: String::new(),
+                has_cursor: true,
+                cursor_pos: Some(0),
+            });
             return layout;
         }
         for (i, line) in self.state.lines.iter().enumerate() {
@@ -1247,7 +1425,11 @@ impl Editor {
                 layout.push(LayoutLine {
                     text: line.clone(),
                     has_cursor: is_current,
-                    cursor_pos: if is_current { Some(self.state.cursor_col) } else { None },
+                    cursor_pos: if is_current {
+                        Some(self.state.cursor_col)
+                    } else {
+                        None
+                    },
                 });
             } else {
                 let segs = self.segment_graphemes(line);
@@ -1263,7 +1445,8 @@ impl Editor {
                             has_cursor = cursor_pos >= chunk.start_index;
                             adjusted = cursor_pos.saturating_sub(chunk.start_index);
                         } else {
-                            has_cursor = cursor_pos >= chunk.start_index && cursor_pos < chunk.end_index;
+                            has_cursor =
+                                cursor_pos >= chunk.start_index && cursor_pos < chunk.end_index;
                             if has_cursor {
                                 adjusted = (cursor_pos - chunk.start_index).min(chunk.text.len());
                             }
@@ -1285,13 +1468,21 @@ impl Editor {
         if self.jump_mode.is_none() {
             return false;
         }
-        if self.matches(data, "tui.editor.jumpForward") || self.matches(data, "tui.editor.jumpBackward") {
+        if self.matches(data, "tui.editor.jumpForward")
+            || self.matches(data, "tui.editor.jumpBackward")
+        {
             self.jump_mode = None;
             return true;
         }
         let printable = decode_printable_key(data)
             .map(|c| c.to_string())
-            .or_else(|| if data.chars().next().map(|c| c as u32 >= 32).unwrap_or(false) { Some(data.to_string()) } else { None });
+            .or_else(|| {
+                if data.chars().next().map(|c| c as u32 >= 32).unwrap_or(false) {
+                    Some(data.to_string())
+                } else {
+                    None
+                }
+            });
         if let Some(p) = printable {
             let dir = self.jump_mode.take().unwrap();
             self.jump_to_char(&p, dir == JumpMode::Forward);
@@ -1391,11 +1582,15 @@ impl Component for Editor {
             self.delete_word_forward();
             return;
         }
-        if self.matches(&data, "tui.editor.deleteCharBackward") || matches_key(&data, "shift+backspace", self.kitty_active) {
+        if self.matches(&data, "tui.editor.deleteCharBackward")
+            || matches_key(&data, "shift+backspace", self.kitty_active)
+        {
             self.handle_backspace();
             return;
         }
-        if self.matches(&data, "tui.editor.deleteCharForward") || matches_key(&data, "shift+delete", self.kitty_active) {
+        if self.matches(&data, "tui.editor.deleteCharForward")
+            || matches_key(&data, "shift+delete", self.kitty_active)
+        {
             self.handle_forward_delete();
             return;
         }
@@ -1445,7 +1640,9 @@ impl Component for Editor {
             }
             // 反斜杠+回车换行 workaround
             let current = &self.state.lines[self.state.cursor_line];
-            if self.state.cursor_col > 0 && current.as_bytes().get(self.state.cursor_col - 1) == Some(&b'\\') {
+            if self.state.cursor_col > 0
+                && current.as_bytes().get(self.state.cursor_col - 1) == Some(&b'\\')
+            {
                 self.handle_backspace();
                 self.add_new_line();
                 return;
@@ -1521,7 +1718,9 @@ impl Component for Editor {
         let max_padding = (width.saturating_sub(1)) / 2;
         let padding_x = self.padding_x.min(max_padding);
         let content_width = width.saturating_sub(padding_x * 2).max(1);
-        let layout_width = content_width.saturating_sub(if padding_x > 0 { 0 } else { 1 }).max(1);
+        let layout_width = content_width
+            .saturating_sub(if padding_x > 0 { 0 } else { 1 })
+            .max(1);
         self.last_width = layout_width;
 
         let horizontal = (self.border_color)("─");
@@ -1551,9 +1750,14 @@ impl Component for Editor {
             let indicator = format!("─── ↑ {} more ", self.scroll_offset);
             let remaining = width as i64 - visible_width(&indicator) as i64;
             if remaining >= 0 {
-                result.push((self.border_color)(&format!("{indicator}{}", "─".repeat(remaining as usize))));
+                result.push((self.border_color)(&format!(
+                    "{indicator}{}",
+                    "─".repeat(remaining as usize)
+                )));
             } else {
-                result.push((self.border_color)(&truncate_to_width(&indicator, width, "", false)));
+                result.push((self.border_color)(&truncate_to_width(
+                    &indicator, width, "", false,
+                )));
             }
         } else {
             result.push(horizontal.repeat(width));
@@ -1594,15 +1798,21 @@ impl Component for Editor {
             } else {
                 &right_padding[..]
             };
-            result.push(format!("{left_padding}{display_text}{padding}{line_right_padding}"));
+            result.push(format!(
+                "{left_padding}{display_text}{padding}{line_right_padding}"
+            ));
         }
 
         // bottom border
-        let lines_below = layout_lines.len() as i64 - (self.scroll_offset + visible_lines.len()) as i64;
+        let lines_below =
+            layout_lines.len() as i64 - (self.scroll_offset + visible_lines.len()) as i64;
         if lines_below > 0 {
             let indicator = format!("─── ↓ {} more ", lines_below);
             let remaining = (width as i64 - visible_width(&indicator) as i64).max(0) as usize;
-            result.push((self.border_color)(&format!("{indicator}{}", "─".repeat(remaining))));
+            result.push((self.border_color)(&format!(
+                "{indicator}{}",
+                "─".repeat(remaining)
+            )));
         } else {
             result.push(horizontal.repeat(width));
         }
@@ -1708,7 +1918,10 @@ mod tests {
     #[test]
     fn wrapping_breaks_long_word() {
         let chunks = word_wrap_line("abcdefghij", 4, None);
-        assert_eq!(chunks.iter().map(|c| c.text.clone()).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(
+            chunks.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+            vec!["abcd", "efgh", "ij"]
+        );
     }
 
     #[test]
@@ -1736,7 +1949,10 @@ mod tests {
         let (_l0, c0) = e.get_cursor();
         e.handle_input("\x1b[A"); // up one visual line
         let (_l1, c1) = e.get_cursor();
-        assert!(c1 < c0, "cursor should move earlier in the logical line when going up a visual line");
+        assert!(
+            c1 < c0,
+            "cursor should move earlier in the logical line when going up a visual line"
+        );
     }
 
     #[test]
@@ -1750,7 +1966,10 @@ mod tests {
             }
         }
         e.render(40);
-        assert!(e.scroll_offset > 0, "expected viewport to scroll down with cursor at the bottom");
+        assert!(
+            e.scroll_offset > 0,
+            "expected viewport to scroll down with cursor at the bottom"
+        );
     }
 
     #[test]
@@ -1828,7 +2047,10 @@ mod tests {
     #[test]
     fn paste_marker_for_large_paste() {
         let mut e = editor();
-        let big = (0..20).map(|i| format!("row{i}")).collect::<Vec<_>>().join("\n");
+        let big = (0..20)
+            .map(|i| format!("row{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         e.handle_input(&format!("\x1b[200~{big}\x1b[201~"));
         // editor text shows a marker, expanded text is the full paste
         assert!(e.get_text().contains("[paste #1 +"));

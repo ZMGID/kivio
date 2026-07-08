@@ -295,7 +295,8 @@ mod tests {
 
     #[test]
     fn markdown_chunks_carry_heading_path() {
-        let md = "# Guide\n\n## Setup\nInstall the thing.\nRun it.\n\n## Usage\nUse the thing daily.";
+        let md =
+            "# Guide\n\n## Setup\nInstall the thing.\nRun it.\n\n## Usage\nUse the thing daily.";
         let chunks = chunk_document(md, true);
         assert!(!chunks.is_empty());
         let setup = chunks.iter().find(|c| c.text.contains("Install")).unwrap();

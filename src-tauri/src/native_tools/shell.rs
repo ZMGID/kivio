@@ -100,7 +100,9 @@ fn pwsh_on_path() -> bool {
 /// (no console) — the user command still runs.
 #[cfg(target_os = "windows")]
 fn wrap_ps_command(command: &str) -> String {
-    format!("try {{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; {command}")
+    format!(
+        "try {{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; {command}"
+    )
 }
 
 /// Build the platform shell `Command` that runs `command`. Windows routes through
@@ -247,10 +249,7 @@ fn tail_truncate(text: &str) -> (String, usize) {
     let mut start = total.saturating_sub(TAIL_MAX_LINES);
     // Then walk backward dropping leading lines until the kept tail fits the byte
     // budget (counting the trailing newline each line contributes).
-    let mut kept_bytes: usize = lines[start..]
-        .iter()
-        .map(|line| line.len() + 1)
-        .sum();
+    let mut kept_bytes: usize = lines[start..].iter().map(|line| line.len() + 1).sum();
     while kept_bytes > TAIL_MAX_BYTES && start < total {
         kept_bytes -= lines[start].len() + 1;
         start += 1;
@@ -611,7 +610,11 @@ pub fn bash_output(state: &AppState, arguments: &Value) -> Result<String, String
         let job = map
             .get(job_id)
             .ok_or_else(|| format!("No background job with job_id {job_id}"))?;
-        (job.status.clone(), job.log_path.clone(), job.command.clone())
+        (
+            job.status.clone(),
+            job.log_path.clone(),
+            job.command.clone(),
+        )
     };
 
     let bytes = std::fs::read(&log_path).unwrap_or_default();
@@ -934,7 +937,10 @@ mod tests {
         .expect("background run_command should return immediately");
 
         // The dispatch result carries a job_id and tells the model how to poll.
-        assert!(started.contains("background: true"), "missing banner: {started}");
+        assert!(
+            started.contains("background: true"),
+            "missing banner: {started}"
+        );
         let job_id = started
             .lines()
             .find_map(|l| l.strip_prefix("job_id: "))
@@ -951,7 +957,10 @@ mod tests {
         let out = poll_until_terminal(&state, &args).await;
         assert!(out.contains("status: exited"), "expected exit: {out}");
         assert!(out.contains("exit_code: 0"), "expected exit_code 0: {out}");
-        assert!(out.contains(token), "captured output should contain token: {out}");
+        assert!(
+            out.contains(token),
+            "captured output should contain token: {out}"
+        );
     }
 
     #[tokio::test]
@@ -978,11 +987,16 @@ mod tests {
 
         // Append more, then read from the prior offset → only the new bytes.
         std::fs::write(&log_path, b"helloWORLD").expect("append log");
-        let second =
-            bash_output(&state, &serde_json::json!({ "job_id": job_id, "since_offset": 5 }))
-                .unwrap();
+        let second = bash_output(
+            &state,
+            &serde_json::json!({ "job_id": job_id, "since_offset": 5 }),
+        )
+        .unwrap();
         assert!(second.contains("WORLD"), "{second}");
-        assert!(!second.contains("hello\n"), "should not re-read old bytes: {second}");
+        assert!(
+            !second.contains("hello\n"),
+            "should not re-read old bytes: {second}"
+        );
         assert!(second.contains("next_offset: 10"), "{second}");
 
         let _ = std::fs::remove_file(&log_path);
@@ -1021,7 +1035,10 @@ mod tests {
         // Status is Killed and stays Killed even after the waiter reaps the child.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let out = bash_output(&state, &serde_json::json!({ "job_id": job_id })).unwrap();
-        assert!(out.contains("status: killed"), "expected killed status: {out}");
+        assert!(
+            out.contains("status: killed"),
+            "expected killed status: {out}"
+        );
 
         // Killing an already-terminal job is a no-op (no error).
         let again = kill_background(&state, &serde_json::json!({ "job_id": job_id })).unwrap();
@@ -1190,7 +1207,10 @@ mod tests {
         let path = result
             .lines()
             .next()
-            .and_then(|line| line.find("saved to ").map(|i| &line[i + "saved to ".len()..]))
+            .and_then(|line| {
+                line.find("saved to ")
+                    .map(|i| &line[i + "saved to ".len()..])
+            })
             .and_then(|rest| rest.split(". Read it").next())
             .map(|p| p.to_string())
             .expect("temp path in note");
@@ -1273,7 +1293,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn normalize_run_command_rejects_cd_with_spaces() {
         let err = normalize_run_command("cd /Users/zmair/ZM database/foo && npm install", None)
@@ -1332,8 +1351,7 @@ mod tests {
     async fn run_command_stdin_is_null_so_readers_get_eof() {
         let dir = std::env::temp_dir().join(format!("kivio_stdin_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("mkdir");
-        let workspace =
-            NativeToolWorkspace::global(&[dir.to_string_lossy().into_owned()]);
+        let workspace = NativeToolWorkspace::global(&[dir.to_string_lossy().into_owned()]);
 
         // `cat` with no args reads stdin to EOF. With null stdin this returns immediately.
         // Wrap in tokio::time::timeout as a hard backstop so a regression fails fast
@@ -1403,7 +1421,9 @@ mod tests {
     fn offload_large_output_tail_truncates_and_marks() {
         let mut body = String::new();
         for i in 0..(TAIL_MAX_LINES + 1000) {
-            body.push_str(&format!("row {i} ----------------------------------------\n"));
+            body.push_str(&format!(
+                "row {i} ----------------------------------------\n"
+            ));
         }
         assert!(body.len() > MAX_INLINE_COMMAND_OUTPUT_BYTES);
         let result = offload_large_output(body);
@@ -1419,7 +1439,10 @@ mod tests {
         if let Some(path) = result
             .lines()
             .find(|l| l.contains("complete log saved to"))
-            .and_then(|line| line.find("saved to ").map(|i| &line[i + "saved to ".len()..]))
+            .and_then(|line| {
+                line.find("saved to ")
+                    .map(|i| &line[i + "saved to ".len()..])
+            })
             .and_then(|rest| rest.split(". Read it").next())
         {
             let _ = std::fs::remove_file(path);

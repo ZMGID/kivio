@@ -206,7 +206,10 @@ pub fn build_replace_translation_batch_prompt(lines: &[&str], lang_name: &str) -
 }
 
 /// 从模型输出解析 JSON 字符串数组；容忍前后缀与 markdown 代码块。
-pub fn parse_replace_translation_json(raw: &str, expected_len: usize) -> Result<Vec<String>, String> {
+pub fn parse_replace_translation_json(
+    raw: &str,
+    expected_len: usize,
+) -> Result<Vec<String>, String> {
     let trimmed = raw.trim();
     let json_str = if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
         &trimmed[start..=end]

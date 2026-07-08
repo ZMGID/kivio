@@ -1,13 +1,13 @@
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
-pub mod api;
 pub mod agents;
+pub mod api;
 pub mod capture_geometry;
 pub mod chat;
 pub mod cli_install;
-pub mod external_agents;
 pub mod commands;
 pub mod connectors;
+pub mod external_agents;
 pub mod kivio_code;
 pub mod lens;
 pub mod lens_commands;
@@ -82,7 +82,7 @@ fn first_visible_user_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWin
 #[cfg(target_os = "windows")]
 fn disable_process_power_throttling() {
     use ::windows::Win32::System::Threading::{
-        GetCurrentProcess, SetProcessInformation, ProcessPowerThrottling,
+        GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
         PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         PROCESS_POWER_THROTTLING_STATE,
     };

@@ -394,9 +394,9 @@ pub fn guess_mime_from_name(name: &str) -> String {
 /// or under the export size cap so previews/downloads of small files work; for
 /// larger files only `path`/`size_bytes` are set (the UI can still open it).
 pub fn build_delivery_artifact_for_path(path: &Path) -> Result<ChatToolArtifact, String> {
-    let metadata =
-        fs::metadata(path).map_err(|err| format!("Stat delivery file failed: {err}"))?;
-    let size_bytes = metadata.len();    let name = path
+    let metadata = fs::metadata(path).map_err(|err| format!("Stat delivery file failed: {err}"))?;
+    let size_bytes = metadata.len();
+    let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("output")
@@ -629,7 +629,10 @@ mod tests {
         // the outputs root — it cannot escape into a sibling/parent directory.
         let dir = delivery_dir("../../etc").expect("dir");
         let root = outputs_root().expect("root");
-        assert!(dir.starts_with(&root), "must stay under outputs root: {dir:?}");
+        assert!(
+            dir.starts_with(&root),
+            "must stay under outputs root: {dir:?}"
+        );
         assert!(!dir.to_string_lossy().contains(".."));
     }
 
@@ -642,7 +645,8 @@ mod tests {
         assert!(path_under_delivery_dir(&conv, &inside));
 
         // A path in the project/temp area is NOT under the delivery dir.
-        let outside = std::env::temp_dir().join(format!("kivio_outside_{}.txt", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("kivio_outside_{}.txt", uuid::Uuid::new_v4()));
         fs::write(&outside, "x").expect("write outside");
         assert!(!path_under_delivery_dir(&conv, &outside));
 
@@ -665,7 +669,10 @@ mod tests {
         assert_eq!(artifact.name, "notes.md");
         assert_eq!(artifact.mime_type, "text/markdown");
         assert_eq!(artifact.size_bytes, Some("# Hello\n\nWorld\n".len() as u64));
-        assert_eq!(artifact.path.as_deref(), Some(file.to_string_lossy().as_ref()));
+        assert_eq!(
+            artifact.path.as_deref(),
+            Some(file.to_string_lossy().as_ref())
+        );
         assert!(artifact.data_url.starts_with("data:text/markdown;base64,"));
         let payload = artifact.data_url.split_once(',').expect("data url").1;
         let decoded = general_purpose::STANDARD.decode(payload).expect("decode");
@@ -685,7 +692,10 @@ mod tests {
         let artifact = build_delivery_artifact_for_path(&file).expect("artifact");
         assert_eq!(artifact.size_bytes, Some(MAX_EXPORT_FILE_BYTES + 1));
         assert!(artifact.data_url.is_empty(), "oversize file omits data_url");
-        assert_eq!(artifact.path.as_deref(), Some(file.to_string_lossy().as_ref()));
+        assert_eq!(
+            artifact.path.as_deref(),
+            Some(file.to_string_lossy().as_ref())
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

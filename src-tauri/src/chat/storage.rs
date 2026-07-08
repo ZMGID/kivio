@@ -440,11 +440,7 @@ pub fn save_conversation(app: &AppHandle, conversation: &Conversation) -> Result
     let mut index = load_index_or_scan(app)?;
     let list_item = ConversationListItem::from(to_save);
 
-    if let Some(pos) = index
-        .conversations
-        .iter()
-        .position(|c| c.id == to_save.id)
-    {
+    if let Some(pos) = index.conversations.iter().position(|c| c.id == to_save.id) {
         index.conversations[pos] = list_item;
     } else {
         index.conversations.insert(0, list_item);
@@ -558,8 +554,7 @@ pub fn search_conversations(
     index.conversations.retain(|c| {
         c.title.to_lowercase().contains(&needle)
             || c.preview.to_lowercase().contains(&needle)
-            || c
-                .folder
+            || c.folder
                 .as_deref()
                 .map(|f| f.to_lowercase().contains(&needle))
                 .unwrap_or(false)
@@ -1257,18 +1252,30 @@ mod builtin_assistant_tests {
         let mut ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), defs.len(), "built-in assistant ids must be unique");
+        assert_eq!(
+            ids.len(),
+            defs.len(),
+            "built-in assistant ids must be unique"
+        );
 
         for d in &defs {
             // ids must satisfy validate_assistant_id (asst_ prefix + safe chars).
-            assert!(d.id.starts_with("asst_") && d.id.len() > "asst_".len(), "{}", d.id);
+            assert!(
+                d.id.starts_with("asst_") && d.id.len() > "asst_".len(),
+                "{}",
+                d.id
+            );
             assert!(d.built_in, "{} must be built_in", d.id);
             assert_eq!(d.source, "builtin", "{}", d.id);
             assert!(d.enabled && d.installed && !d.archived, "{}", d.id);
             // Inherit the user's selected model — never pin a provider/model.
             assert!(d.provider_id.is_empty() && d.model.is_empty(), "{}", d.id);
             // Honor normalize_assistant constraints so a later edit won't reject them.
-            assert!(!d.name.trim().is_empty() && d.name.chars().count() <= 64, "{}", d.id);
+            assert!(
+                !d.name.trim().is_empty() && d.name.chars().count() <= 64,
+                "{}",
+                d.id
+            );
             assert!(d.description.chars().count() <= 240, "{}", d.id);
             assert!(d.icon.chars().count() <= 8, "{}", d.id);
             assert!(!d.system_prompt.trim().is_empty(), "{}", d.id);
@@ -1280,7 +1287,10 @@ mod builtin_assistant_tests {
         let defs = builtin_assistant_definitions(1_700_000_000);
         let data = defs.iter().find(|d| d.id == "asst_builtin_data").unwrap();
         for skill in ["pdf", "docx", "xlsx"] {
-            assert!(data.skill_ids.iter().any(|s| s == skill), "missing skill {skill}");
+            assert!(
+                data.skill_ids.iter().any(|s| s == skill),
+                "missing skill {skill}"
+            );
         }
         // Researcher/coder need no document skills.
         let coder = defs.iter().find(|d| d.id == "asst_builtin_coder").unwrap();

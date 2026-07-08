@@ -1,17 +1,9 @@
 use super::super::types::{
-    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef,
-    RuntimeBuildOptions, RuntimeContext, SlashStrategy, StreamFormat,
+    PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, SlashStrategy,
+    StreamFormat,
 };
 
-const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
-    (
-        "anthropic/claude-sonnet-4-5",
-        "anthropic/claude-sonnet-4-5",
-    ),
-    ("openai/gpt-5", "openai/gpt-5"),
-    ("google/gemini-2.5-pro", "google/gemini-2.5-pro"),
-];
+const FALLBACK_MODELS: &[(&str, &str)] = &[];
 
 pub fn build_opencode_args(
     _ctx: &RuntimeContext,
@@ -31,11 +23,11 @@ pub const OPENCODE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     auth_probe_args: None,
     fallback_models: FALLBACK_MODELS,
     reasoning_options: &[],
-    list_models_args: None,
-    list_models_timeout_secs: Some(15),
+    list_models_args: Some(&["models"]),
+    list_models_timeout_secs: Some(30),
     models_from_stderr: false,
-    model_probe: Some(ModelProbeStrategy::Acp),
-    model_probe_args: Some(&["acp"]),
+    model_probe: None,
+    model_probe_args: None,
     slash_strategy: SlashStrategy::Acp,
     env: &[],
     max_prompt_arg_bytes: None,

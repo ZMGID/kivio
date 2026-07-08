@@ -33,7 +33,10 @@ pub async fn rerank(
         .cloned()
         .collect();
     if keys.is_empty() {
-        return Err(format!("Rerank provider '{}' has no API key", provider.name));
+        return Err(format!(
+            "Rerank provider '{}' has no API key",
+            provider.name
+        ));
     }
     let url = format!("{}/rerank", provider.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -44,7 +47,8 @@ pub async fn rerank(
     });
 
     let response = send_with_failover(state, "Rerank API", attempts, &provider.id, &keys, |key| {
-        with_standard_request_timeout(state.http.post(url.clone()).bearer_auth(key).json(&body)).send()
+        with_standard_request_timeout(state.http.post(url.clone()).bearer_auth(key).json(&body))
+            .send()
     })
     .await?;
 

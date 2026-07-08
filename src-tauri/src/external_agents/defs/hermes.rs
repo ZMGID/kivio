@@ -1,10 +1,9 @@
 use super::super::types::{
-    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef,
-    RuntimeBuildOptions, RuntimeContext, StreamFormat,
+    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
+    StreamFormat,
 };
 
 const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
     ("grok-4.3", "grok-4.3 (xAI · default)"),
     ("grok-4.20-reasoning", "grok-4.20-reasoning (xAI · deep)"),
     (

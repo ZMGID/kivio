@@ -56,10 +56,7 @@ impl SkillRunCache {
         if self.registry.is_none() {
             self.registry = Some(build()?);
         }
-        Ok(self
-            .registry
-            .as_ref()
-            .expect("registry was just populated"))
+        Ok(self.registry.as_ref().expect("registry was just populated"))
     }
 
     /// Accumulate a skill's allowed-tools into the run-wide set, de-duplicated.
@@ -279,7 +276,11 @@ mod tests {
         cache.registry_or_build(build).unwrap();
         cache.registry_or_build(build).unwrap();
 
-        assert_eq!(builds.get(), 1, "registry must be built at most once per run");
+        assert_eq!(
+            builds.get(),
+            1,
+            "registry must be built at most once per run"
+        );
     }
 
     #[test]

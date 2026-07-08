@@ -380,7 +380,11 @@ fn lens_set_interactive_region(
 
 fn lens_position_text_floating(app: &AppHandle, window: &WebviewWindow) {
     // 浮动窗 = 卡片宽 + 左右 padding（前端 FLOATING_PADDING=24/边）。卡宽来自设置，与截图翻译统一。
-    let card_w = app.state::<AppState>().settings_read().screenshot_translation.card_width as f64;
+    let card_w = app
+        .state::<AppState>()
+        .settings_read()
+        .screenshot_translation
+        .card_width as f64;
     let width = card_w + 48.0;
     const HEIGHT: f64 = 320.0;
     const GAP: f64 = 12.0;
@@ -461,7 +465,10 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     } else {
         None
     };
-    eprintln!("[lens-timing] after_selection_capture +{}ms", __t0.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing] after_selection_capture +{}ms",
+        __t0.elapsed().as_millis()
+    );
     if mode == "translateText" && pending_selection.is_none() {
         if let Ok(mut guard) = state.pending_selection.lock() {
             *guard = None;
@@ -513,10 +520,16 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         // 先在 hidden 状态下尝试定位：即便部分系统下 hidden 窗口 set_position 被忽略，也比
         // 不调强（成功则消除"先在旧位置闪一帧再跳到全屏"的可见跳变）。
         let frame = lens_position_fullscreen(app, &window);
-        eprintln!("[lens-timing]   ..after_position +{}ms", __t0.elapsed().as_millis());
+        eprintln!(
+            "[lens-timing]   ..after_position +{}ms",
+            __t0.elapsed().as_millis()
+        );
         freeze_frame_image_id = prepare_windows_freeze_frame(app, frame);
     }
-    eprintln!("[lens-timing] after_freeze_capture +{}ms", __t0.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing] after_freeze_capture +{}ms",
+        __t0.elapsed().as_millis()
+    );
     #[cfg(target_os = "macos")]
     {
         windows::ensure_overlay_panel(&window);
@@ -573,7 +586,10 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         );
         let _ = window.eval(&script);
     }
-    eprintln!("[lens-timing] after_show_and_emit +{}ms", __t0.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing] after_show_and_emit +{}ms",
+        __t0.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -2448,7 +2464,10 @@ fn capture_region_image(
     let _ = (x, y, scale_factor);
     let __tc = std::time::Instant::now();
     let monitors = Monitor::all().map_err(|e| e.to_string())?;
-    eprintln!("[lens-timing]     ...Monitor::all +{}ms", __tc.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing]     ...Monitor::all +{}ms",
+        __tc.elapsed().as_millis()
+    );
     let monitor_geometry = monitors
         .iter()
         .map(|m| {
@@ -2482,12 +2501,18 @@ fn capture_region_image(
             capture_region.height,
         )
         .map_err(|e| e.to_string())?;
-    eprintln!("[lens-timing]     ...xcap.capture_region +{}ms", __tcap.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing]     ...xcap.capture_region +{}ms",
+        __tcap.elapsed().as_millis()
+    );
 
     let temp_path = std::env::temp_dir().join(format!("screenshot-{}.png", Uuid::new_v4()));
     let __tsave = std::time::Instant::now();
     write_png_fast(&temp_path, image.as_raw(), image.width(), image.height())?;
-    eprintln!("[lens-timing]     ...png.save +{}ms", __tsave.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing]     ...png.save +{}ms",
+        __tsave.elapsed().as_millis()
+    );
     Ok(temp_path)
 }
 

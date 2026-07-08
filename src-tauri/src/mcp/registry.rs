@@ -242,7 +242,10 @@ pub async fn list_enabled_tool_defs(
                     tools.extend(tools_from_mcp(server, server_tools));
                 }
                 Err(err) => {
-                    eprintln!("MCP server {} failed while listing tools: {err}", server.name);
+                    eprintln!(
+                        "MCP server {} failed while listing tools: {err}",
+                        server.name
+                    );
                 }
             }
         }
@@ -432,7 +435,9 @@ pub async fn call_tool(
         .cloned()
         .ok_or_else(|| "MCP server is disabled or missing".to_string())?;
     // 走持久连接池：复用长连接、liveness 探活 + 透明重连、按 server_id 隔离。
-    state.mcp_call_tool(app, &server, &tool.name, arguments).await
+    state
+        .mcp_call_tool(app, &server, &tool.name, arguments)
+        .await
 }
 
 async fn list_server_tools(
@@ -503,8 +508,13 @@ async fn call_mixer_tool(
     match tool.name.as_str() {
         "mixer_generate_image" => {
             let conversation_id = native_ctx.as_ref().map(|ctx| ctx.conversation_id.as_str());
-            crate::chat::image_generation::tool_generate_image(app, state, conversation_id, &arguments)
-                .await
+            crate::chat::image_generation::tool_generate_image(
+                app,
+                state,
+                conversation_id,
+                &arguments,
+            )
+            .await
         }
         other => Err(format!("Unknown mixer tool: {other}")),
     }
@@ -530,8 +540,7 @@ async fn call_skill_tool(
             .cloned()
             .ok_or_else(|| format!("Skill not found: {skill_name}"))?
     } else {
-        let registry =
-            crate::skills::build_registry(app, &settings.chat_tools.skill_scan_paths)?;
+        let registry = crate::skills::build_registry(app, &settings.chat_tools.skill_scan_paths)?;
         crate::skills::lookup_skill(&registry, &skill_name)
             .cloned()
             .ok_or_else(|| format!("Skill not found: {skill_name}"))?
@@ -905,8 +914,7 @@ pub(super) async fn run_python_via_pyodide(
             } else {
                 let mut content = result.content;
                 let mut artifacts = result.artifacts;
-                match crate::native_tools::export_sandbox_artifacts(&export_ctx, &artifacts)
-                {
+                match crate::native_tools::export_sandbox_artifacts(&export_ctx, &artifacts) {
                     Ok(exported_artifacts) => {
                         for exported in &exported_artifacts {
                             if let Some(artifact) = artifacts.get_mut(exported.artifact_index) {

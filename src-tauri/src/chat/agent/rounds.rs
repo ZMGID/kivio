@@ -48,11 +48,18 @@ pub(crate) async fn run_tool_round(
     // 增量（`runtime_messages[runtime_len_at_last_call..]`）。响应本身用锚点里的真实 output 计入，
     // 故切点设在响应**之后**，避免与 output 双算（对齐 pi 的「anchor + 响应后消息估算」）。
     state.runtime_len_at_last_call = state.runtime_messages.len();
-    state
-        .generated_api_messages
-        .push(state.runtime_messages.last().cloned().unwrap_or(Value::Null));
-    let mut step_response_messages =
-        vec![state.runtime_messages.last().cloned().unwrap_or(Value::Null)];
+    state.generated_api_messages.push(
+        state
+            .runtime_messages
+            .last()
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    let mut step_response_messages = vec![state
+        .runtime_messages
+        .last()
+        .cloned()
+        .unwrap_or(Value::Null)];
     let round_result = execute_tool_round(
         host,
         env.executor,

@@ -56,8 +56,14 @@ mod tests {
     #[test]
     fn push_pop_roundtrip() {
         let mut s = UndoStack::new();
-        let a = State { value: "a".into(), cursor: 1 };
-        let b = State { value: "ab".into(), cursor: 2 };
+        let a = State {
+            value: "a".into(),
+            cursor: 1,
+        };
+        let b = State {
+            value: "ab".into(),
+            cursor: 2,
+        };
         s.push(&a);
         s.push(&b);
         assert_eq!(s.len(), 2);
@@ -69,20 +75,35 @@ mod tests {
     #[test]
     fn push_clones_independent_of_caller() {
         let mut s = UndoStack::new();
-        let mut state = State { value: "x".into(), cursor: 0 };
+        let mut state = State {
+            value: "x".into(),
+            cursor: 0,
+        };
         s.push(&state);
         // mutate caller's copy after push
         state.value.push_str("yz");
         state.cursor = 9;
         // snapshot must be unchanged
-        assert_eq!(s.pop(), Some(State { value: "x".into(), cursor: 0 }));
+        assert_eq!(
+            s.pop(),
+            Some(State {
+                value: "x".into(),
+                cursor: 0
+            })
+        );
     }
 
     #[test]
     fn clear_empties() {
         let mut s = UndoStack::new();
-        s.push(&State { value: "a".into(), cursor: 0 });
-        s.push(&State { value: "b".into(), cursor: 0 });
+        s.push(&State {
+            value: "a".into(),
+            cursor: 0,
+        });
+        s.push(&State {
+            value: "b".into(),
+            cursor: 0,
+        });
         s.clear();
         assert!(s.is_empty());
         assert_eq!(s.pop(), None);

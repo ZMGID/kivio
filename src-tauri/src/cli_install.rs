@@ -383,7 +383,9 @@ mod tests {
     fn zsh_targets_zshrc_with_export() {
         let plan = macos_rc_plan(Some("/bin/zsh"), &home()).expect("zsh plan");
         assert_eq!(plan.rc_path, home().join(".zshrc"));
-        assert!(plan.block.contains(r#"export PATH="$HOME/.local/bin:$PATH""#));
+        assert!(plan
+            .block
+            .contains(r#"export PATH="$HOME/.local/bin:$PATH""#));
         assert!(plan.block.starts_with(RC_BLOCK_START));
         assert!(plan.block.trim_end().ends_with(RC_BLOCK_END));
     }
@@ -392,7 +394,9 @@ mod tests {
     fn bash_targets_bash_profile_with_export() {
         let plan = macos_rc_plan(Some("/usr/local/bin/bash"), &home()).expect("bash plan");
         assert_eq!(plan.rc_path, home().join(".bash_profile"));
-        assert!(plan.block.contains(r#"export PATH="$HOME/.local/bin:$PATH""#));
+        assert!(plan
+            .block
+            .contains(r#"export PATH="$HOME/.local/bin:$PATH""#));
     }
 
     #[test]
@@ -414,11 +418,7 @@ mod tests {
 
     fn write_temp_rc(name: &str, contents: Option<&str>) -> PathBuf {
         let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "kivio-cli-test-{}-{}",
-            std::process::id(),
-            name
-        ));
+        dir.push(format!("kivio-cli-test-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rc");

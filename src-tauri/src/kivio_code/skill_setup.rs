@@ -149,7 +149,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kivio-code-skillsetup-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("kivio-code-skillsetup-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -166,7 +167,9 @@ mod tests {
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: {description}\n---\n\n# {name}\nDo the thing.\n"),
+            format!(
+                "---\nname: {name}\ndescription: {description}\n---\n\n# {name}\nDo the thing.\n"
+            ),
         )
         .unwrap();
     }
@@ -383,7 +386,14 @@ mod tests {
             dup.meta.description
         );
         // Exactly one record for the id (the project copy).
-        assert_eq!(registry.records.iter().filter(|r| r.meta.id == "dup").count(), 1);
+        assert_eq!(
+            registry
+                .records
+                .iter()
+                .filter(|r| r.meta.id == "dup")
+                .count(),
+            1
+        );
 
         let _ = fs::remove_dir_all(&scan_dir);
         let _ = fs::remove_dir_all(&cwd);

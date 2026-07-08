@@ -343,11 +343,11 @@ mod tests {
             None,
         );
         assert_eq!(state.estimated_input_tokens, 1439);
+        assert_eq!(state.token_count_source.as_deref(), Some(TOKEN_COUNT_CLI));
         assert_eq!(
-            state.token_count_source.as_deref(),
-            Some(TOKEN_COUNT_CLI)
+            state.context_source.as_deref(),
+            Some(CONTEXT_SOURCE_EXTERNAL)
         );
-        assert_eq!(state.context_source.as_deref(), Some(CONTEXT_SOURCE_EXTERNAL));
         assert!(state.summary.is_none());
         assert!(state.usage_ratio.unwrap() > 0.0);
     }

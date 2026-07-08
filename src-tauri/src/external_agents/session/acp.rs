@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use crate::external_agents::session::live::SessionCommand;
 use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::{
-    ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent, default_model_option,
+    ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent,
 };
 use crate::proc::NoConsoleWindow;
 
@@ -59,7 +59,10 @@ async fn write_rpc(
     });
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
-    stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn write_rpc_result(
@@ -74,7 +77,10 @@ async fn write_rpc_result(
     });
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
-    stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn rpc_error_message(value: &Value) -> Option<String> {
@@ -82,14 +88,13 @@ fn rpc_error_message(value: &Value) -> Option<String> {
     if let Some(message) = error.get("message").and_then(|v| v.as_str()) {
         return Some(message.to_string());
     }
-    error
-        .get("code")
-        .map(|c| c.to_string())
+    error.get("code").map(|c| c.to_string())
 }
 
 fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
-    let mut out = vec![default_model_option()];
-    let mut seen = HashSet::from(["default".to_string()]);
+    // Only the CLI's real reported models — no synthetic "Default" seed.
+    let mut out: Vec<RuntimeModelOption> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
     if let Some(config_options) = result.get("configOptions").and_then(|v| v.as_array()) {
         for raw_option in config_options {
@@ -98,7 +103,9 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                 None => continue,
             };
             let config_id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if config_id != "model" && option.get("category").and_then(|v| v.as_str()) != Some("model") {
+            if config_id != "model"
+                && option.get("category").and_then(|v| v.as_str()) != Some("model")
+            {
                 continue;
             }
             if let Some(values) = option.get("options").and_then(|v| v.as_array()) {
@@ -127,7 +134,7 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                     });
                 }
             }
-            if out.len() > 1 {
+            if !out.is_empty() {
                 return out;
             }
         }
@@ -136,10 +143,7 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
     if let Some(models) = result.get("models").and_then(|v| v.as_object()) {
         if let Some(available) = models.get("availableModels").and_then(|v| v.as_array()) {
             for model in available {
-                let id = model
-                    .get("modelId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let id = model.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
                 if id.is_empty() || !seen.insert(id.to_string()) {
                     continue;
                 }
@@ -186,11 +190,16 @@ pub async fn detect_acp_models(
     let mut models: Option<Vec<RuntimeModelOption>> = None;
     let deadline = Duration::from_secs(timeout_secs);
 
-    write_rpc(&mut stdin, 1, "initialize", json!({
-        "protocolVersion": ACP_PROTOCOL_VERSION,
-        "clientCapabilities": { "terminal": false },
-        "clientInfo": { "name": "kivio", "version": "external-agents" },
-    }))
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": ACP_PROTOCOL_VERSION,
+            "clientCapabilities": { "terminal": false },
+            "clientInfo": { "name": "kivio", "version": "external-agents" },
+        }),
+    )
     .await
     .ok()?;
 
@@ -238,13 +247,18 @@ pub async fn detect_acp_models(
         }
     }
 
-    models.filter(|m| m.len() > 1)
+    models.filter(|m| !m.is_empty())
 }
 
-fn parse_available_commands(update: &serde_json::Map<String, Value>) -> Vec<ExternalCliSlashCommand> {
+fn parse_available_commands(
+    update: &serde_json::Map<String, Value>,
+) -> Vec<ExternalCliSlashCommand> {
     let list = update
         .get("availableCommands")
         .or_else(|| update.get("available_commands"))
+        .or_else(|| update.get("slashCommands"))
+        .or_else(|| update.get("slash_commands"))
+        .or_else(|| update.get("commands"))
         .and_then(|v| v.as_array());
     let Some(list) = list else {
         return Vec::new();
@@ -278,10 +292,12 @@ fn parse_available_commands(update: &serde_json::Map<String, Value>) -> Vec<Exte
     out
 }
 
-/// Discover an ACP agent's slash commands. Mirrors `detect_acp_models`: run `initialize`
-/// → `session/new`, then keep reading `session/update` *notifications* and capture the one
-/// whose `sessionUpdate == "available_commands_update"` (cursor pushes this asynchronously,
-/// up to ~10s after the session is created). Returns the deduped, sorted command list.
+/// Discover an ACP agent's slash commands. Runs `initialize` → `session/new`, then keeps
+/// accumulating commands from every `session/update` notification whose `sessionUpdate ==
+/// "available_commands_update"` until the timeout window closes. ACP allows agents to push
+/// multiple increments (e.g. core commands first, then MCP-contributed ones after plugins
+/// finish loading), so we merge across updates instead of returning the first non-empty batch.
+/// A short quiet window (`QUIET_MS`) after the latest update short-circuits the timeout.
 pub async fn detect_acp_commands(
     bin: &Path,
     args: &[&str],
@@ -305,14 +321,31 @@ pub async fn detect_acp_commands(
 
     let mut expected_id: u64 = 1;
     let mut next_id: u64 = 2;
-    let mut commands: Option<Vec<ExternalCliSlashCommand>> = None;
+    // Ordered accumulator: preserve first-seen insertion order, later batches update
+    // description in place. Some agents push a bare-name batch first, then a
+    // descriptions-attached batch — we want the fuller version to win.
+    let mut collected: std::collections::BTreeMap<usize, ExternalCliSlashCommand> =
+        std::collections::BTreeMap::new();
+    let mut name_to_key: HashSet<String> = HashSet::new();
     let deadline = Duration::from_secs(timeout_secs);
+    // If no new commands arrive for this long AFTER the first non-empty batch, return early.
+    const QUIET_MS: u128 = 800;
+    let mut last_update_at: Option<std::time::Instant> = None;
 
-    write_rpc(&mut stdin, 1, "initialize", json!({
-        "protocolVersion": ACP_PROTOCOL_VERSION,
-        "clientCapabilities": { "terminal": false },
-        "clientInfo": { "name": "kivio", "version": "external-agents" },
-    }))
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": ACP_PROTOCOL_VERSION,
+            "clientCapabilities": {
+                "terminal": false,
+                "fs": { "readTextFile": true, "writeTextFile": true },
+                "promptCapabilities": { "slashCommands": true, "embeddedContext": true },
+            },
+            "clientInfo": { "name": "kivio", "version": "external-agents" },
+        }),
+    )
     .await
     .ok()?;
 
@@ -321,6 +354,14 @@ pub async fn detect_acp_commands(
         if started.elapsed() > deadline {
             let _ = child.start_kill();
             break;
+        }
+        // Once we've got a non-empty batch and things go quiet, exit early rather than
+        // burning the whole timeout window on nothing.
+        if let Some(when) = last_update_at {
+            if !collected.is_empty() && when.elapsed().as_millis() > QUIET_MS {
+                let _ = child.start_kill();
+                break;
+            }
         }
         let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
             Ok(Ok(Some(line))) => line,
@@ -336,7 +377,8 @@ pub async fn detect_acp_commands(
             Err(_) => continue,
         };
 
-        // Capture the asynchronously-pushed available_commands_update notification.
+        // Capture every asynchronously-pushed available_commands_update notification. ACP
+        // agents may emit several increments (core + MCP + plugin loads) — merge them all.
         if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
             if let Some(update) = value
                 .get("params")
@@ -355,9 +397,8 @@ pub async fn detect_acp_commands(
                 {
                     let parsed = parse_available_commands(update);
                     if !parsed.is_empty() {
-                        commands = Some(parsed);
-                        let _ = child.start_kill();
-                        break;
+                        merge_commands(&mut collected, &mut name_to_key, parsed);
+                        last_update_at = Some(std::time::Instant::now());
                     }
                 }
             }
@@ -369,7 +410,10 @@ pub async fn detect_acp_commands(
                 continue;
             }
             let _ = child.start_kill();
-            return None;
+            if collected.is_empty() {
+                return None;
+            }
+            break;
         }
         if value.get("id").and_then(|v| v.as_u64()) != Some(expected_id) {
             continue;
@@ -389,26 +433,59 @@ pub async fn detect_acp_commands(
             continue;
         }
         if expected_id == 2 {
-            // session/new acknowledged; some agents include commands inline in the result.
+            // session/new acknowledged; some agents include commands inline in the result
+            // under a few different keys (availableCommands / available_commands / commands
+            // / slashCommands). Feed them into the accumulator too.
             if let Some(update) = result.as_object() {
                 let parsed = parse_available_commands(update);
                 if !parsed.is_empty() {
-                    commands = Some(parsed);
-                    let _ = child.start_kill();
-                    break;
+                    merge_commands(&mut collected, &mut name_to_key, parsed);
+                    last_update_at = Some(std::time::Instant::now());
                 }
             }
-            // Otherwise keep reading notifications until the agent pushes them or we time out.
-            expected_id = 0; // no further responses expected
+            // Keep reading notifications until either the quiet window elapses (early exit)
+            // or the overall timeout fires.
+            expected_id = 0;
             continue;
         }
     }
 
-    commands.map(|mut cmds| {
+    if collected.is_empty() {
+        None
+    } else {
+        let mut cmds: Vec<ExternalCliSlashCommand> = collected.into_values().collect();
         cmds.sort_by(|a, b| a.name.cmp(&b.name));
         cmds.dedup_by(|a, b| a.name == b.name);
-        cmds
-    })
+        Some(cmds)
+    }
+}
+
+/// Merge one batch of ACP commands into the running accumulator. First-seen wins on
+/// insertion order (drives eventual sort — really just for stable diagnostics), but a
+/// later batch with a non-empty description overwrites an earlier bare entry.
+fn merge_commands(
+    collected: &mut std::collections::BTreeMap<usize, ExternalCliSlashCommand>,
+    name_to_key: &mut HashSet<String>,
+    batch: Vec<ExternalCliSlashCommand>,
+) {
+    for cmd in batch {
+        if let Some(existing) = collected
+            .values_mut()
+            .find(|existing| existing.name == cmd.name)
+        {
+            if existing.description.is_none() && cmd.description.is_some() {
+                existing.description = cmd.description;
+            }
+            if existing.argument_hint.is_none() && cmd.argument_hint.is_some() {
+                existing.argument_hint = cmd.argument_hint;
+            }
+            continue;
+        }
+        if name_to_key.insert(cmd.name.clone()) {
+            let key = collected.len();
+            collected.insert(key, cmd);
+        }
+    }
 }
 
 fn choose_permission_outcome(options: Option<&Value>) -> Option<String> {
@@ -436,8 +513,14 @@ fn choose_permission_outcome(options: Option<&Value>) -> Option<String> {
 }
 
 fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
-    let input = usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
-    let output = usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let input = usage
+        .get("inputTokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("outputTokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if input == 0 && output == 0 {
         None
     } else {
@@ -446,12 +529,10 @@ fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
 }
 
 fn acp_update_status(update: &serde_json::Map<String, Value>) -> Option<String> {
-    update.get("status").and_then(|v| v.as_str()).map(|status| {
-        status
-            .trim()
-            .to_lowercase()
-            .replace([' ', '-'], "_")
-    })
+    update
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|status| status.trim().to_lowercase().replace([' ', '-'], "_"))
 }
 
 fn acp_tool_call_id(update: &serde_json::Map<String, Value>) -> Option<String> {
@@ -477,10 +558,7 @@ fn acp_tool_name(update: &serde_json::Map<String, Value>) -> String {
 }
 
 fn acp_is_terminal_success(status: &str) -> bool {
-    matches!(
-        status,
-        "completed" | "complete" | "succeeded" | "success"
-    )
+    matches!(status, "completed" | "complete" | "succeeded" | "success")
 }
 
 fn acp_is_terminal_failure(status: &str) -> bool {
@@ -600,7 +678,13 @@ pub async fn run_acp_session(
     while !finished {
         if cancel_check() {
             if let Some(ref sid) = session_id {
-                let _ = write_rpc(&mut stdin, next_id, "session/cancel", json!({ "sessionId": sid })).await;
+                let _ = write_rpc(
+                    &mut stdin,
+                    next_id,
+                    "session/cancel",
+                    json!({ "sessionId": sid }),
+                )
+                .await;
             }
             let _ = stdin.shutdown().await;
             let _ = child.start_kill();
@@ -622,12 +706,13 @@ pub async fn run_acp_session(
             continue;
         }
 
-        let value: Value = serde_json::from_str(line.trim())
-            .map_err(|e| format!("invalid ACP json: {e}"))?;
+        let value: Value =
+            serde_json::from_str(line.trim()).map_err(|e| format!("invalid ACP json: {e}"))?;
 
         if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
             if method == "session/request_permission" {
-                let option_id = choose_permission_outcome(value.get("params").and_then(|p| p.get("options")));
+                let option_id =
+                    choose_permission_outcome(value.get("params").and_then(|p| p.get("options")));
                 if let (Some(id), Some(option_id)) = (value.get("id"), option_id) {
                     write_rpc_result(
                         &mut stdin,
@@ -736,7 +821,9 @@ pub async fn run_acp_session(
                 for raw_option in config_options {
                     if let Some(option) = raw_option.as_object() {
                         let id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        if id == "model" || option.get("category").and_then(|v| v.as_str()) == Some("model") {
+                        if id == "model"
+                            || option.get("category").and_then(|v| v.as_str()) == Some("model")
+                        {
                             model_config_id = Some(id.to_string());
                             break;
                         }
@@ -795,7 +882,9 @@ pub async fn run_acp_session(
             continue;
         }
 
-        if set_model_request_id.is_some() && value.get("id").and_then(|v| v.as_u64()) == set_model_request_id {
+        if set_model_request_id.is_some()
+            && value.get("id").and_then(|v| v.as_u64()) == set_model_request_id
+        {
             set_model_request_id = None;
             prompt_request_id = Some(next_id);
             expected_id = next_id;
@@ -817,7 +906,9 @@ pub async fn run_acp_session(
             continue;
         }
 
-        if prompt_request_id.is_some() && value.get("id").and_then(|v| v.as_u64()) == prompt_request_id {
+        if prompt_request_id.is_some()
+            && value.get("id").and_then(|v| v.as_u64()) == prompt_request_id
+        {
             if let Some(usage) = result.get("usage").and_then(format_acp_usage) {
                 sink(UnifiedAgentEvent::Usage { usage });
             }
@@ -836,12 +927,46 @@ pub async fn run_acp_session(
 
 /// A live ACP connection: one `session/new` (or `session/load`) + `set_model`, then many
 /// `session/prompt` turns over the same process. Owned exclusively by its actor task.
+///
+/// `active_model` tracks the model that was last successfully applied to this session so
+/// `apply_model` can skip a redundant `set_model` when the user hasn't switched. This is the
+/// piece that fixes mid-conversation model switches: without it, `set_model` was only sent
+/// once at `connect` time and the second turn's model change was silently ignored.
 pub struct AcpSession {
     child: Child,
     stdin: ChildStdin,
     reader: Lines<BufReader<ChildStdout>>,
     session_id: String,
     next_id: u64,
+    /// Cached `configOptions` model entry id from `session/new` (if the agent exposes model as
+    /// a config option) — used to prefer `session/set_config_option` over `session/set_model`.
+    /// Captured once at connect; ACP treats configOptions as session-static.
+    model_config_id: Option<String>,
+    /// Currently-applied model id, normalized (`None` == "let the CLI pick"). Compared against
+    /// each turn's requested model; `apply_model` no-ops on equality.
+    active_model: Option<String>,
+}
+
+/// Normalize a user-provided model id: trim, drop empty / `"default"` sentinels.
+fn normalize_acp_model(model: Option<&str>) -> Option<String> {
+    model
+        .map(str::trim)
+        .filter(|m| !m.is_empty() && *m != "default")
+        .map(str::to_string)
+}
+
+/// Scan a `session/new` (or `session/load`) result for a `configOptions` entry that represents
+/// the "model" knob, returning its id if any.
+fn extract_model_config_id(result: &Value) -> Option<String> {
+    let options = result.get("configOptions").and_then(|v| v.as_array())?;
+    for raw in options {
+        let option = raw.as_object()?;
+        let id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if id == "model" || option.get("category").and_then(|v| v.as_str()) == Some("model") {
+            return Some(id.to_string());
+        }
+    }
+    None
 }
 
 impl AcpSession {
@@ -863,8 +988,14 @@ impl AcpSession {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn acp agent: {e}"))?;
-        let mut stdin = child.stdin.take().ok_or_else(|| "stdin unavailable".to_string())?;
-        let stdout = child.stdout.take().ok_or_else(|| "stdout unavailable".to_string())?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "stdin unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "stdout unavailable".to_string())?;
         let mut reader = BufReader::new(stdout).lines();
 
         write_rpc(
@@ -904,45 +1035,53 @@ impl AcpSession {
                 .ok_or_else(|| "invalid session/new response".to_string())?,
         };
 
-        // Optional model selection (set_config_option / set_model), mirroring run_acp_session.
-        if let Some(chosen) = model.filter(|m| !m.is_empty() && *m != "default") {
-            let mut model_config_id: Option<String> = None;
-            if let Some(config_options) = result.get("configOptions").and_then(|v| v.as_array()) {
-                for raw in config_options {
-                    if let Some(option) = raw.as_object() {
-                        let id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        if id == "model"
-                            || option.get("category").and_then(|v| v.as_str()) == Some("model")
-                        {
-                            model_config_id = Some(id.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-            let (set_method, set_params) = match &model_config_id {
-                Some(cfg) => (
-                    "session/set_config_option",
-                    json!({ "sessionId": session_id, "configId": cfg, "value": chosen }),
-                ),
-                None => (
-                    "session/set_model",
-                    json!({ "sessionId": session_id, "modelId": chosen }),
-                ),
-            };
-            write_rpc(&mut stdin, next_id, set_method, set_params).await?;
-            // Best-effort: wait for the ack but don't fail the session if the agent ignores it.
-            let _ = acp_read_until_id(&mut reader, &mut stdin, next_id, Duration::from_secs(10)).await;
-            next_id += 1;
-        }
+        // Capture the model config option id (if any) once — configOptions is session-static.
+        let model_config_id = extract_model_config_id(&result);
 
-        Ok(Self {
+        let mut session = Self {
             child,
             stdin,
             reader,
             session_id,
             next_id,
-        })
+            model_config_id,
+            active_model: None,
+        };
+
+        // Best-effort initial model selection. Failure here is non-fatal (the CLI may ignore
+        // set_model and fall back to its default); a later turn can retry via apply_model.
+        if let Some(chosen) = normalize_acp_model(model) {
+            let _ = session.apply_model(&chosen).await;
+        }
+
+        Ok(session)
+    }
+
+    /// Apply a model change to this session, no-op if it matches `active_model`. Uses the
+    /// cached `model_config_id` when present (`session/set_config_option`), else falls back to
+    /// `session/set_model`. Ack read is best-effort — some agents ignore the ack.
+    async fn apply_model(&mut self, chosen: &str) -> Result<(), String> {
+        if self.active_model.as_deref() == Some(chosen) {
+            return Ok(());
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let (set_method, set_params) = match &self.model_config_id {
+            Some(cfg) => (
+                "session/set_config_option",
+                json!({ "sessionId": self.session_id, "configId": cfg, "value": chosen }),
+            ),
+            None => (
+                "session/set_model",
+                json!({ "sessionId": self.session_id, "modelId": chosen }),
+            ),
+        };
+        write_rpc(&mut self.stdin, id, set_method, set_params).await?;
+        // Best-effort ack read — an agent that never acks shouldn't block the turn.
+        let _ = acp_read_until_id(&mut self.reader, &mut self.stdin, id, Duration::from_secs(10))
+            .await;
+        self.active_model = Some(chosen.to_string());
+        Ok(())
     }
 
     pub fn session_id(&self) -> &str {
@@ -950,13 +1089,21 @@ impl AcpSession {
     }
 
     /// Run one prompt turn over the live session. Emits events into `events`; an incoming
-    /// `Cancel` on `control` sends `session/cancel` without killing the process.
+    /// `Cancel` on `control` sends `session/cancel` without killing the process. If `model`
+    /// differs from the session's currently-applied model, a `set_model` is sent first so a
+    /// mid-conversation model switch actually takes effect.
     pub async fn run_turn(
         &mut self,
         prompt: &str,
+        model: Option<&str>,
         events: &mpsc::Sender<UnifiedAgentEvent>,
         control: &mut mpsc::Receiver<SessionCommand>,
     ) -> Result<(), String> {
+        if let Some(chosen) = normalize_acp_model(model) {
+            // Best-effort: a failed set_model shouldn't tank the turn. The agent will just
+            // stay on its previous model and the user sees the mismatch in the UI.
+            let _ = self.apply_model(&chosen).await;
+        }
         let prompt_id = self.next_id;
         self.next_id += 1;
         write_rpc(
@@ -1039,9 +1186,12 @@ impl AcpSession {
                         .and_then(|v| v.as_object())
                     {
                         let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
-                        acp_apply_turn_update(update, &mut emitted_text, &mut emitted_tools, &mut |e| {
-                            buf.push(e)
-                        });
+                        acp_apply_turn_update(
+                            update,
+                            &mut emitted_text,
+                            &mut emitted_tools,
+                            &mut |e| buf.push(e),
+                        );
                         for e in buf {
                             let _ = events.send(e).await;
                         }
@@ -1086,18 +1236,29 @@ fn acp_apply_turn_update(
     emitted_tools: &mut HashSet<String>,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) {
-    let session_update = update.get("sessionUpdate").and_then(|v| v.as_str()).unwrap_or("");
+    let session_update = update
+        .get("sessionUpdate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if session_update == "agent_thought_chunk" {
-        if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|v| v.as_str())
+        if let Some(text) = update
+            .get("content")
+            .and_then(|c| c.get("text"))
+            .and_then(|v| v.as_str())
         {
             if !text.is_empty() {
-                sink(UnifiedAgentEvent::ThinkingDelta { delta: text.to_string() });
+                sink(UnifiedAgentEvent::ThinkingDelta {
+                    delta: text.to_string(),
+                });
             }
         }
         return;
     }
     if session_update == "agent_message_chunk" {
-        if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|v| v.as_str())
+        if let Some(text) = update
+            .get("content")
+            .and_then(|c| c.get("text"))
+            .and_then(|v| v.as_str())
         {
             if !text.is_empty() {
                 let delta = if text.starts_with(emitted_text.as_str()) {
@@ -1183,11 +1344,14 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionC
             match cmd {
                 SessionCommand::RunTurn {
                     prompt,
+                    model,
                     events,
                     done,
                     ..
                 } => {
-                    let result = session.run_turn(&prompt, &events, &mut rx).await;
+                    let result = session
+                        .run_turn(&prompt, model.as_deref(), &events, &mut rx)
+                        .await;
                     let _ = done.send(result);
                 }
                 SessionCommand::Cancel => {}
@@ -1264,12 +1428,18 @@ mod tests {
         )
         .await;
         eprintln!("acp turn2 reply: {t2:?}");
-        assert!(t2.contains("42"), "turn 2 should recall 42 from turn 1, got: {t2:?}");
+        assert!(
+            t2.contains("42"),
+            "turn 2 should recall 42 from turn 1, got: {t2:?}"
+        );
         let _ = control.send(SessionCommand::Close).await;
     }
 
     fn which_bin(name: &str) -> Option<std::path::PathBuf> {
-        let out = std::process::Command::new("which").arg(name).output().ok()?;
+        let out = std::process::Command::new("which")
+            .arg(name)
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
@@ -1297,12 +1467,20 @@ mod tests {
         ]);
         let mut emitted = HashSet::new();
         let mut events = Vec::new();
-        assert!(apply_acp_session_update(&started, &mut emitted, &mut |event| {
-            events.push(event);
-        }));
-        assert!(apply_acp_session_update(&finished, &mut emitted, &mut |event| {
-            events.push(event);
-        }));
+        assert!(apply_acp_session_update(
+            &started,
+            &mut emitted,
+            &mut |event| {
+                events.push(event);
+            }
+        ));
+        assert!(apply_acp_session_update(
+            &finished,
+            &mut emitted,
+            &mut |event| {
+                events.push(event);
+            }
+        ));
         assert!(events.iter().any(|event| matches!(
             event,
             UnifiedAgentEvent::ToolUse { id, name, .. } if id == "acp-1" && name == "Write"
