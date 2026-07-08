@@ -742,13 +742,7 @@ export function KnowledgeBasePanel({
             </SettingsGroup>
 
             <SettingsGroup title={t('文档', 'Documents')}>
-              <div ref={dropZoneRef} className="relative space-y-3 py-2">
-                {dragActive && (
-                  <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-indigo-400 bg-indigo-50/95 text-indigo-600 dark:border-indigo-500 dark:bg-indigo-950/95 dark:text-indigo-300">
-                    <Upload size={22} />
-                    <span className="text-sm font-medium">{t('松开以导入', 'Drop to import')}</span>
-                  </div>
-                )}
+              <div ref={dropZoneRef} className="space-y-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -789,25 +783,30 @@ export function KnowledgeBasePanel({
                   </button>
                 </div>
 
-                {docs.length === 0 ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={handleUpload}
-                    className="flex w-full flex-col items-center gap-2 rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 px-4 py-8 text-center transition hover:border-indigo-300 hover:bg-indigo-50/40 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900/30 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/20"
-                  >
-                    <Upload size={20} className="text-zinc-400" />
-                    <span className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
-                      {t('点击导入文档', 'Click to add documents')}
-                    </span>
-                    <span className="max-w-md text-xs leading-relaxed text-zinc-400">
-                      {t(
-                        '点击或拖拽文件到此处；支持 txt / md / pdf / docx / xlsx / html、图片（需开启 OCR），或使用上方网址导入',
-                        'Click or drag files here; txt, md, pdf, docx, xlsx, html, images (OCR required), or import a URL above',
-                      )}
-                    </span>
-                  </button>
-                ) : (
+                {/* 大虚线框常驻：点击选文件 / 拖拽到此；拖拽悬停时高亮框本身。 */}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={handleUpload}
+                  className={`flex w-full flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition disabled:opacity-50 ${
+                    dragActive
+                      ? 'border-indigo-400 bg-indigo-50/70 dark:border-indigo-500 dark:bg-indigo-950/40'
+                      : 'border-zinc-300 bg-zinc-50/50 hover:border-indigo-300 hover:bg-indigo-50/40 dark:border-zinc-700 dark:bg-zinc-900/30 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/20'
+                  }`}
+                >
+                  <Upload size={20} className={dragActive ? 'text-indigo-500' : 'text-zinc-400'} />
+                  <span className={`text-sm font-medium ${dragActive ? 'text-indigo-600 dark:text-indigo-300' : 'text-zinc-600 dark:text-zinc-300'}`}>
+                    {dragActive ? t('松开以导入', 'Drop to import') : t('点击导入文档', 'Click to add documents')}
+                  </span>
+                  <span className="max-w-md text-xs leading-relaxed text-zinc-400">
+                    {t(
+                      '点击或拖拽文件到此处；支持 txt / md / pdf / docx / xlsx / html、图片（需开启 OCR），或使用上方网址导入',
+                      'Click or drag files here; txt, md, pdf, docx, xlsx, html, images (OCR required), or import a URL above',
+                    )}
+                  </span>
+                </button>
+
+                {docs.length > 0 && (
                   <div className="divide-y divide-zinc-100 overflow-hidden rounded-lg border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">
                     {docs.map((doc) => (
                       <DocRow
