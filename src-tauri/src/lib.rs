@@ -503,6 +503,8 @@ pub fn run() {
             skills::chat_skills_read,
             skills::chat_skills_import,
             skills::chat_skills_open_folder,
+            skills::marketplace::chat_skills_market_fetch,
+            skills::marketplace::chat_skills_market_install,
             chat::knowledge_base::commands::kb_list_libraries,
             chat::knowledge_base::commands::kb_create_library,
             chat::knowledge_base::commands::kb_rename_library,

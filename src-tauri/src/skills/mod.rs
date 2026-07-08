@@ -1,5 +1,6 @@
 mod catalog;
 mod discover;
+pub mod marketplace;
 pub mod parse;
 mod runtime;
 mod types;
@@ -214,6 +215,13 @@ fn import_skill_dir(source: &Path, skills_dir: &Path) -> Result<SkillMeta, Strin
 
 fn import_skill_zip(source: &Path, skills_dir: &Path) -> Result<SkillMeta, String> {
     let bytes = fs::read(source).map_err(|err| format!("Read zip failed: {err}"))?;
+    install_skill_zip_bytes(bytes, skills_dir)
+}
+
+/// 从内存中的 zip 字节解压一个 Skill 到 `{skills_dir}/{id}`。本地导入与技能市场安装共用。
+/// ponytail: 失败时删掉刚建的目标目录以免留半个技能；未做 temp+rename 原子安装（技能包小、
+/// 单用户本地操作，冲突概率低）——若将来并发安装需要，改成解压到临时目录再 rename。
+pub fn install_skill_zip_bytes(bytes: Vec<u8>, skills_dir: &Path) -> Result<SkillMeta, String> {
     let reader = Cursor::new(bytes);
     let mut archive =
         zip::ZipArchive::new(reader).map_err(|err| format!("Open zip failed: {err}"))?;
@@ -233,7 +241,28 @@ fn import_skill_zip(source: &Path, skills_dir: &Path) -> Result<SkillMeta, Strin
     }
     let parsed = parse_skill_markdown(&skill_raw, "user", None, Vec::new())?;
     let dest = skills_dir.join(&parsed.meta.id);
-    fs::create_dir_all(&dest).map_err(|err| format!("create skill dir failed: {err}"))?;
+    // 更新/重装：先清掉旧目录，保证覆盖而不是残留混合。
+    if dest.exists() {
+        fs::remove_dir_all(&dest).map_err(|err| format!("clear old skill dir failed: {err}"))?;
+    }
+    match extract_zip_into(&mut archive, &skill_path, &dest) {
+        Ok(()) => Ok(SkillMeta {
+            path: Some(dest.join("SKILL.md").display().to_string()),
+            ..parsed.meta
+        }),
+        Err(err) => {
+            let _ = fs::remove_dir_all(&dest);
+            Err(err)
+        }
+    }
+}
+
+fn extract_zip_into<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    skill_path: &str,
+    dest: &Path,
+) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|err| format!("create skill dir failed: {err}"))?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|err| err.to_string())?;
         if file.is_dir() {
@@ -259,10 +288,7 @@ fn import_skill_zip(source: &Path, skills_dir: &Path) -> Result<SkillMeta, Strin
         let mut output = fs::File::create(&out).map_err(|err| err.to_string())?;
         std::io::copy(&mut file, &mut output).map_err(|err| err.to_string())?;
     }
-    Ok(SkillMeta {
-        path: Some(dest.join("SKILL.md").display().to_string()),
-        ..parsed.meta
-    })
+    Ok(())
 }
 
 fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
@@ -283,6 +309,50 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn zip_with_skill(id: &str) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            z.start_file("SKILL.md", opts).unwrap();
+            let md = format!("---\nname: {id}\ndescription: A test skill.\n---\n# Body\n");
+            std::io::Write::write_all(&mut z, md.as_bytes()).unwrap();
+            z.start_file("script.py", opts).unwrap();
+            std::io::Write::write_all(&mut z, b"print('hi')\n").unwrap();
+            z.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn install_skill_zip_bytes_lands_skill_and_files() {
+        let dir = std::env::temp_dir().join(format!("kivio-skilltest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let meta = install_skill_zip_bytes(zip_with_skill("zip-skill"), &dir).unwrap();
+        assert_eq!(meta.id, "zip-skill");
+        assert!(dir.join("zip-skill/SKILL.md").is_file());
+        assert!(dir.join("zip-skill/script.py").is_file());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_skill_zip_bytes_bad_zip_errors_without_dir() {
+        let dir = std::env::temp_dir().join(format!("kivio-skilltest-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let err = install_skill_zip_bytes(b"not a zip".to_vec(), &dir);
+        assert!(err.is_err());
+        // 目录里不该留下任何技能子目录
+        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
+        assert!(leftovers.is_empty(), "bad zip left files behind");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parse_skill_supports_recommended_tools_and_mcp_tools_alias() {

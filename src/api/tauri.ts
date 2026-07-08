@@ -406,6 +406,7 @@ export type ChatNativeToolsConfig = {
   editFile?: boolean
   runCommand?: boolean
   runPython?: boolean
+  knowledgeSearch?: boolean
   workspaceRoots?: string[]
 }
 
@@ -446,6 +447,7 @@ export function defaultNativeTools(): ChatNativeToolsConfig {
     editFile: true,
     runCommand: true,
     runPython: true,
+    knowledgeSearch: true,
     workspaceRoots: [],
   }
 }
@@ -513,7 +515,33 @@ export type ChatToolsConfig = {
   subAgentConcurrency?: number
   /** 开发者「请求调试」开关：开启后每次 provider 调用被记录到内存环形缓冲（脱敏）。默认关。 */
   requestDebugEnabled?: boolean
+  /** 技能市场配置：远程 JSON 索引地址。空 = 未接入市场。 */
+  skillMarket?: { indexUrl?: string }
   nativeTools: ChatNativeToolsConfig
+}
+
+/** 技能市场索引里的一条技能。 */
+export type MarketSkill = {
+  id: string
+  name: string
+  description: string
+  author?: string | null
+  version: string
+  category?: string | null
+  tags: string[]
+  downloadUrl: string
+  iconUrl?: string | null
+  previewUrl?: string | null
+  homepage?: string | null
+}
+
+export type MarketInstalledInfo = { id: string; version: string }
+
+export type MarketFetchResult = {
+  success: boolean
+  skills: MarketSkill[]
+  installed: MarketInstalledInfo[]
+  error?: string | null
 }
 
 export type SkillMeta = {
@@ -658,10 +686,26 @@ export type DefaultModelsConfig = {
 export type OcrEngine = 'off' | 'system' | 'rapid_ocr'
 export type PdfStrategy = 'text' | 'force_ocr'
 
-/** 知识库文档处理配置（仅 Kivio 内置）。第三方处理器已挂起。 */
+/** 第三方文档解析服务（MinerU / LlamaParse）。 */
+export type DocProcessorProvider = {
+  id: string
+  name: string
+  /** 'mineru' | 'llamaparse' */
+  kind: string
+  apiKeys: string[]
+  baseUrl: string
+  enabled: boolean
+}
+
+/** 知识库文档处理配置：Kivio 内置解析 + 可选第三方解析服务。 */
 export type DocumentProcessingConfig = {
   ocrEngine: OcrEngine
   pdfStrategy: PdfStrategy
+  /** '' = Kivio 内置；否则为某第三方 provider id。 */
+  activeProcessor: string
+  /** 内置解析失败（如扫描版 PDF）时回退到第一个启用的第三方服务。 */
+  fallbackToThirdParty: boolean
+  providers: DocProcessorProvider[]
 }
 
 /** 知识库检索配置：hybrid(向量+关键词 RRF) 权重 + 可选全局 rerank。 */
@@ -673,6 +717,10 @@ export type KnowledgeBaseConfig = {
   /** 全局 rerank：留空即关闭。providerId 引用 providers[]。 */
   rerankProviderId: string
   rerankModel: string
+  /** 入库分块目标 tokens（256–8192；只影响新导入/重建）。 */
+  chunkTokens: number
+  /** knowledge_search 默认返回片段数（1–20）。 */
+  topK: number
 }
 
 export type Settings = {
@@ -1048,6 +1096,7 @@ function normalizeChatTools(config?: Partial<ChatToolsConfig> | null): ChatTools
     approvalPolicy: current.approvalPolicy || 'readonly_auto_sensitive_confirm',
     subAgentConcurrency: Math.min(64, Math.max(1, Math.round(current.subAgentConcurrency ?? 12))),
     requestDebugEnabled: current.requestDebugEnabled ?? false,
+    skillMarket: { indexUrl: current.skillMarket?.indexUrl ?? '' },
     nativeTools: {
       ...defaultNativeTools(),
       ...current.nativeTools,
@@ -1486,6 +1535,13 @@ export const api = {
   chatSkillsOpenFolder: () =>
     invoke<{ success: boolean; path?: string | null; error?: string | null }>(
       'chat_skills_open_folder',
+    ),
+  chatSkillsMarketFetch: (indexUrl: string) =>
+    invoke<MarketFetchResult>('chat_skills_market_fetch', { indexUrl }),
+  chatSkillsMarketInstall: (skill: MarketSkill, indexUrl: string) =>
+    invoke<{ success: boolean; skill?: SkillMeta | null; error?: string | null }>(
+      'chat_skills_market_install',
+      { skill, indexUrl },
     ),
   /** 当前仍在运行的后台命令（chat agent run_command background:true 起的）。空数组 = 无。 */
   chatListBackgroundCommands: () =>

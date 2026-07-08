@@ -859,7 +859,18 @@ pub struct ChatToolsConfig {
     /// 默认关闭；关闭时 adapter 零开销（不构造记录）。仅内存、不落盘。
     #[serde(default)]
     pub request_debug_enabled: bool,
+    /// 技能市场配置（远程 JSON 索引地址）。为空表示未接入市场。
+    #[serde(default)]
+    pub skill_market: SkillMarketConfig,
     pub native_tools: ChatNativeToolsConfig,
+}
+
+/// 技能市场设置：货源索引地址由用户配置，代码不写死来源。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillMarketConfig {
+    #[serde(default)]
+    pub index_url: String,
 }
 
 impl Default for ChatToolsConfig {
@@ -878,12 +889,26 @@ impl Default for ChatToolsConfig {
             approval_policy: default_chat_approval_policy(),
             sub_agent_concurrency: default_sub_agent_concurrency(),
             request_debug_enabled: false,
+            skill_market: SkillMarketConfig::default(),
             native_tools: ChatNativeToolsConfig::default(),
         }
     }
 }
 
-/// 知识库文档处理（仅 Kivio 内置）。第三方处理器已挂起。
+/// 第三方文档解析服务（MinerU / Doc2X / LlamaParse / 自定义端点）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DocProcessorProvider {
+    pub id: String,
+    pub name: String,
+    /// "mineru" | "doc2x" | "llamaparse" | "custom"
+    pub kind: String,
+    pub api_keys: Vec<String>,
+    pub base_url: String,
+    pub enabled: bool,
+}
+
+/// 知识库文档处理：Kivio 内置解析 + 可选第三方解析服务及路由策略。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DocumentProcessingConfig {
@@ -891,6 +916,11 @@ pub struct DocumentProcessingConfig {
     pub ocr_engine: String,
     /// PDF 处理: "text"(默认,文字层) | "force_ocr"(扫描版重扫——内置未启用,会报错)
     pub pdf_strategy: String,
+    /// "" = Kivio 内置（本地 Rust）；否则为某第三方 provider id
+    pub active_processor: String,
+    /// 内置解析失败（如扫描版 PDF）时自动回退到第一个启用的第三方服务。
+    pub fallback_to_third_party: bool,
+    pub providers: Vec<DocProcessorProvider>,
 }
 
 impl Default for DocumentProcessingConfig {
@@ -898,6 +928,9 @@ impl Default for DocumentProcessingConfig {
         Self {
             ocr_engine: "off".into(),
             pdf_strategy: "text".into(),
+            active_processor: String::new(),
+            fallback_to_third_party: false,
+            providers: Vec::new(),
         }
     }
 }
@@ -915,6 +948,10 @@ pub struct KnowledgeBaseConfig {
     /// 全局 rerank：留空即关闭。provider 引用 providers[]，model 为该 provider 的 rerank 模型。
     pub rerank_provider_id: String,
     pub rerank_model: String,
+    /// 入库分块目标 tokens（使用处 clamp 到 256..=8192；只影响新导入/重建）。
+    pub chunk_tokens: u32,
+    /// knowledge_search 默认返回片段数（使用处 clamp 到 1..=20；工具入参可覆盖）。
+    pub top_k: u32,
 }
 
 impl Default for KnowledgeBaseConfig {
@@ -925,6 +962,8 @@ impl Default for KnowledgeBaseConfig {
             weight_keyword: 1.0,
             rerank_provider_id: String::new(),
             rerank_model: String::new(),
+            chunk_tokens: 480,
+            top_k: 5,
         }
     }
 }
