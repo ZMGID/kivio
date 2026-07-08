@@ -591,8 +591,7 @@ body {
   container-type: size;
   container-name: chat-main;
   overflow: hidden;
-  /* 表面层级第 2 层：比输入框/卡片（--theme-surface，最亮）低半档 */
-  background: var(--theme-surface-soft);
+  background: var(--theme-surface);
 }
 
 .chat-themed-surface,
