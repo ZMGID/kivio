@@ -39,12 +39,12 @@ function resolveChatUserProfile(
 
 const modLabel = isMac ? '⌘' : 'Ctrl'
 
-export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp'
+export type ExtensionsNavItem = 'assistants' | 'skill' | 'knowledge'
 
 const extensionSubItems: Array<{ id: ExtensionsNavItem; label: string }> = [
   { id: 'assistants', label: '助手' },
   { id: 'skill', label: '技能' },
-  { id: 'mcp', label: '连接器' },
+  { id: 'knowledge', label: '知识库' },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5

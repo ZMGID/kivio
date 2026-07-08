@@ -1303,7 +1303,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const extensionsActive = useMemo<ExtensionsNavItem | null>(() => {
     if (chatView === 'assistants') return 'assistants'
     if (chatView === 'skill') return 'skill'
-    if (chatView === 'settings' && extensionsNavItem === 'mcp') return 'mcp'
+    if (chatView === 'settings' && extensionsNavItem === 'knowledge') return 'knowledge'
     return null
   }, [chatView, extensionsNavItem])
 
