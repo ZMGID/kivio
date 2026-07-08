@@ -894,7 +894,7 @@ export const Sidebar = memo(function Sidebar({
         ) : (
           <>
             <div className="flex items-center justify-between px-4 pb-1 pt-3">
-              <div className="flex items-center gap-1.5 text-[13px] font-semibold">
+              <div className="flex items-center gap-2 text-[13px] font-semibold">
                 {([
                   ['conversations', '最近'],
                   ['sets', '集'],
@@ -905,7 +905,7 @@ export const Sidebar = memo(function Sidebar({
                       key={tab}
                       type="button"
                       onClick={() => setActiveTab(tab)}
-                      className={`rounded-md px-1 py-0.5 transition-colors ${
+                      className={`rounded-md px-1.5 py-0.5 transition-colors ${
                         activeTab === tab
                           ? 'text-neutral-900 dark:text-neutral-100'
                           : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300'

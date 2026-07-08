@@ -591,7 +591,8 @@ body {
   container-type: size;
   container-name: chat-main;
   overflow: hidden;
-  background: var(--theme-surface);
+  /* 表面层级第 2 层：比输入框/卡片（--theme-surface，最亮）低半档 */
+  background: var(--theme-surface-soft);
 }
 
 .chat-themed-surface,
@@ -600,9 +601,10 @@ body {
 }
 
 .chat-sidebar-shell {
-  /* 比白色主区明显深一档（~10%），三套浅色主题各自从 --theme-surface-muted 派生，保持色相 */
-  background: color-mix(in srgb, var(--theme-surface-muted) 90%, #000);
-  border-right: 1px solid var(--border);
+  /* 表面层级第 3 层（最深）：比主区再低一档，三套浅色主题各自从 --theme-surface-muted 派生，保持色相 */
+  background: color-mix(in srgb, var(--theme-surface-muted) 92%, #000);
+  /* 注意：--border 变量只在 settings-embedded 作用域定义，这里必须直接引用主题变量 */
+  border-right: 1px solid var(--theme-surface-border);
   /* 折叠动画：负 margin 把固定宽度（240px，与 w-[240px] 同步）的侧栏整体滑出左侧，
      由 .chat-window-shell 的 overflow:hidden 裁剪；width 不变 → 内容不被压缩。 */
   transition:
@@ -631,6 +633,7 @@ body {
 
 .dark .chat-sidebar-shell {
   background: #1c1c1e;
+  border-right-color: rgba(255, 255, 255, 0.07);
 }
 
 .dark .chat-composer-shell {
