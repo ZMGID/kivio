@@ -570,16 +570,10 @@ fn resolve_mixer_side_model(
     settings: &Settings,
 ) -> (String, String) {
     if selection.is_configured() {
-        return (
-            selection.provider_id.clone(),
-            selection.model.clone(),
-        );
+        return (selection.provider_id.clone(), selection.model.clone());
     }
     if let Some(session) = session.filter(|session| session.is_set()) {
-        return (
-            session.provider_id.to_string(),
-            session.model.to_string(),
-        );
+        return (session.provider_id.to_string(), session.model.to_string());
     }
     settings.effective_chat_model()
 }
@@ -993,13 +987,7 @@ pub fn email_account_id_from_address(email: &str) -> String {
         .trim()
         .to_lowercase()
         .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     let trimmed = slug.trim_matches('-');
     if trimmed.is_empty() {
@@ -1780,7 +1768,13 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
             trimmed.to_string()
         }
     };
-    if settings.lens.web_search.grok_system_prompt.trim().is_empty() {
+    if settings
+        .lens
+        .web_search
+        .grok_system_prompt
+        .trim()
+        .is_empty()
+    {
         settings.lens.web_search.grok_system_prompt = default_grok_system_prompt();
     }
     settings.lens.web_search.exa_mcp_url = {
@@ -1792,7 +1786,10 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         }
     };
     // 未知/占位服务商回退到 Tavily，避免选中尚未接入的源导致搜索直接报错。
-    if matches!(settings.lens.web_search.provider, WebSearchProvider::Unknown) {
+    if matches!(
+        settings.lens.web_search.provider,
+        WebSearchProvider::Unknown
+    ) {
         settings.lens.web_search.provider = WebSearchProvider::Tavily;
     }
     settings.lens.web_search.max_results = settings.lens.web_search.max_results.clamp(1, 10);
@@ -2791,7 +2788,10 @@ mod tests {
             serde_json::from_str("{}").expect("empty chat tools config should load");
         assert_eq!(cfg.max_tool_rounds, Some(CHAT_TOOL_DEFAULT_ROUNDS));
         // 缺省字段经 serde default 补成默认截断值（而非 None/不截断）。
-        assert_eq!(cfg.max_tool_output_chars, Some(DEFAULT_MAX_TOOL_OUTPUT_CHARS));
+        assert_eq!(
+            cfg.max_tool_output_chars,
+            Some(DEFAULT_MAX_TOOL_OUTPUT_CHARS)
+        );
     }
 
     #[test]
@@ -3672,7 +3672,11 @@ mod tests {
             &[],
             false,
         ));
-        assert!(!skill_connector_satisfied(EMAIL_CONNECTOR_SKILL_ID, &[], false));
+        assert!(!skill_connector_satisfied(
+            EMAIL_CONNECTOR_SKILL_ID,
+            &[],
+            false
+        ));
         // pdf is not connector-gated
         assert!(skill_globally_available(&chat_tools, "pdf", &[], false));
     }

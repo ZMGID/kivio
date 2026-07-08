@@ -62,7 +62,10 @@ fn extract_ansi_code_chars(chars: &[char], pos: usize) -> Option<AnsiCode> {
             }
             if j < chars.len() {
                 let code: String = chars[pos..=j].iter().collect();
-                Some(AnsiCode { code, length: j + 1 - pos })
+                Some(AnsiCode {
+                    code,
+                    length: j + 1 - pos,
+                })
             } else {
                 None
             }
@@ -73,11 +76,17 @@ fn extract_ansi_code_chars(chars: &[char], pos: usize) -> Option<AnsiCode> {
             while j < chars.len() {
                 if chars[j] == '\x07' {
                     let code: String = chars[pos..=j].iter().collect();
-                    return Some(AnsiCode { code, length: j + 1 - pos });
+                    return Some(AnsiCode {
+                        code,
+                        length: j + 1 - pos,
+                    });
                 }
                 if chars[j] == '\x1b' && chars.get(j + 1) == Some(&'\\') {
                     let code: String = chars[pos..=j + 1].iter().collect();
-                    return Some(AnsiCode { code, length: j + 2 - pos });
+                    return Some(AnsiCode {
+                        code,
+                        length: j + 2 - pos,
+                    });
                 }
                 j += 1;
             }
@@ -230,7 +239,11 @@ impl AnsiCodeTracker {
                 // close
                 self.hyperlink = None;
             } else {
-                self.hyperlink = Some(ActiveHyperlink { params, url, st_terminator: st });
+                self.hyperlink = Some(ActiveHyperlink {
+                    params,
+                    url,
+                    st_terminator: st,
+                });
             }
         }
         true
@@ -621,7 +634,11 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
     let mut tracker = AnsiCodeTracker::new();
 
     for input_line in &input_lines {
-        let prefix = if result.is_empty() { String::new() } else { tracker.active_codes() };
+        let prefix = if result.is_empty() {
+            String::new()
+        } else {
+            tracker.active_codes()
+        };
         let combined = format!("{prefix}{input_line}");
         for wl in wrap_single_line(&combined, width) {
             result.push(wl);
@@ -636,7 +653,11 @@ pub fn wrap_text_with_ansi(text: &str, width: usize) -> Vec<String> {
 }
 
 /// 给一行加背景色并 padding 到 `width` 列。`bg_fn` 接收「内容+padding」返回带背景的字符串。
-pub fn apply_background_to_line(line: &str, width: usize, bg_fn: &dyn Fn(&str) -> String) -> String {
+pub fn apply_background_to_line(
+    line: &str,
+    width: usize,
+    bg_fn: &dyn Fn(&str) -> String,
+) -> String {
     let vis = visible_width(line);
     let pad = width.saturating_sub(vis);
     let with_padding = format!("{}{}", line, " ".repeat(pad));
@@ -692,7 +713,11 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
         return String::new();
     }
     if text.is_empty() {
-        return if pad { " ".repeat(max_width) } else { String::new() };
+        return if pad {
+            " ".repeat(max_width)
+        } else {
+            String::new()
+        };
     }
 
     let ellipsis_width = visible_width(ellipsis);
@@ -707,7 +732,11 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
         }
         let (clipped, w) = truncate_fragment(ellipsis, max_width);
         if w == 0 {
-            return if pad { " ".repeat(max_width) } else { String::new() };
+            return if pad {
+                " ".repeat(max_width)
+            } else {
+                String::new()
+            };
         }
         return finalize_truncated("", 0, &clipped, w, max_width, pad);
     }
@@ -749,7 +778,10 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
             continue;
         }
         let mut end = i;
-        while end < chars.len() && chars[end] != '\t' && extract_ansi_code_chars(&chars, end).is_none() {
+        while end < chars.len()
+            && chars[end] != '\t'
+            && extract_ansi_code_chars(&chars, end).is_none()
+        {
             end += 1;
         }
         let chunk: String = chars[i..end].iter().collect();
@@ -781,12 +813,23 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
 
     if !overflowed && exhausted {
         return if pad {
-            format!("{}{}", text, " ".repeat(max_width.saturating_sub(visible_so_far)))
+            format!(
+                "{}{}",
+                text,
+                " ".repeat(max_width.saturating_sub(visible_so_far))
+            )
         } else {
             text.to_string()
         };
     }
-    finalize_truncated(&result, kept_width, ellipsis, ellipsis_width, max_width, pad)
+    finalize_truncated(
+        &result,
+        kept_width,
+        ellipsis,
+        ellipsis_width,
+        max_width,
+        pad,
+    )
 }
 
 // =============================================================================
@@ -795,7 +838,12 @@ pub fn truncate_to_width(text: &str, max_width: usize, ellipsis: &str, pad: bool
 
 /// 从 `line` 提取 `[start_col, start_col+length)` 范围的可见列，ANSI-aware。
 /// `strict=true` 时排除会越界的宽字符。返回 (text, visible_width)。
-pub fn slice_with_width(line: &str, start_col: usize, length: usize, strict: bool) -> (String, usize) {
+pub fn slice_with_width(
+    line: &str,
+    start_col: usize,
+    length: usize,
+    strict: bool,
+) -> (String, usize) {
     if length == 0 {
         return (String::new(), 0);
     }
@@ -912,14 +960,22 @@ pub fn extract_segments(
                 }
             }
             current_col += w;
-            let done = if after_len == 0 { current_col >= before_end } else { current_col >= after_end };
+            let done = if after_len == 0 {
+                current_col >= before_end
+            } else {
+                current_col >= after_end
+            };
             if done {
                 broke = true;
                 break;
             }
         }
         i = end;
-        let done = if after_len == 0 { current_col >= before_end } else { current_col >= after_end };
+        let done = if after_len == 0 {
+            current_col >= before_end
+        } else {
+            current_col >= after_end
+        };
         if broke || done {
             break;
         }
@@ -962,7 +1018,10 @@ mod tests {
         // 256-color
         assert_eq!(visible_width("\x1b[38;5;240mx\x1b[0m"), 1);
         // OSC 8 hyperlink
-        assert_eq!(visible_width("\x1b]8;;https://x.com\x07link\x1b]8;;\x07"), 4);
+        assert_eq!(
+            visible_width("\x1b]8;;https://x.com\x07link\x1b]8;;\x07"),
+            4
+        );
     }
 
     #[test]

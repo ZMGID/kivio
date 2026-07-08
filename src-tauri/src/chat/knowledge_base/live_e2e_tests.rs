@@ -40,8 +40,10 @@ async fn live_retrieval_stack_e2e() {
     }))
     .unwrap();
 
-    let state =
-        crate::state::AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
+    let state = crate::state::AppState::new_headless(
+        crate::settings::Settings::default(),
+        std::env::temp_dir(),
+    );
 
     // A small Chinese corpus: exactly one passage is the right answer to the
     // query; the rest are distractors (weather / recipe / sports / history)
@@ -100,10 +102,7 @@ async fn live_retrieval_stack_e2e() {
         });
     }
 
-    let db = std::env::temp_dir().join(format!(
-        "kb_e2e_{}.db",
-        uuid::Uuid::new_v4().simple()
-    ));
+    let db = std::env::temp_dir().join(format!("kb_e2e_{}.db", uuid::Uuid::new_v4().simple()));
     let _ = std::fs::remove_file(&db);
     let conn = super::store::open_db(&db).unwrap();
     super::store::replace_doc_chunks(&conn, "doc1", dim, &chunks).unwrap();
@@ -157,12 +156,18 @@ async fn live_retrieval_stack_e2e() {
 
 #[test]
 fn builtin_docx_parse_extracts_paragraph_text() {
-    let path = std::env::temp_dir().join(format!("kb_e2e_fixture_{}.docx", uuid::Uuid::new_v4().simple()));
+    let path = std::env::temp_dir().join(format!(
+        "kb_e2e_fixture_{}.docx",
+        uuid::Uuid::new_v4().simple()
+    ));
     {
         let f = std::fs::File::create(&path).unwrap();
         let mut z = zip::ZipWriter::new(f);
-        z.start_file("word/document.xml", zip::write::SimpleFileOptions::default())
-            .unwrap();
+        z.start_file(
+            "word/document.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         z.write_all(
             r#"<?xml version="1.0"?><w:document><w:body><w:p><w:r><w:t>知识库测试文档</w:t></w:r></w:p></w:body></w:document>"#.as_bytes(),
         )
@@ -184,7 +189,10 @@ fn builtin_docx_parse_extracts_paragraph_text() {
 
 #[test]
 fn builtin_html_parse_extracts_body_text() {
-    let path = std::env::temp_dir().join(format!("kb_e2e_fixture_{}.html", uuid::Uuid::new_v4().simple()));
+    let path = std::env::temp_dir().join(format!(
+        "kb_e2e_fixture_{}.html",
+        uuid::Uuid::new_v4().simple()
+    ));
     std::fs::write(
         &path,
         r#"<html><head><title>页面标题</title></head><body><article><p>正文内容一二三</p></article></body></html>"#,

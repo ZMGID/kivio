@@ -157,7 +157,10 @@ pub fn record_triggers(meta: &SkillMeta) -> Vec<String> {
         .map(|t| normalize_trigger(t))
         .filter(|t| t.len() > 1)
         .collect();
-    for default in [normalize_trigger(&meta.id), normalize_trigger(&slugify(&meta.name))] {
+    for default in [
+        normalize_trigger(&meta.id),
+        normalize_trigger(&slugify(&meta.name)),
+    ] {
         if default.len() > 1 && !out.contains(&default) {
             out.push(default);
         }
@@ -291,4 +294,3 @@ mod tests {
         assert!(reg.find_by_trigger("/comm").is_none());
     }
 }
-

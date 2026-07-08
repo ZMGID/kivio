@@ -1,10 +1,9 @@
 use super::super::types::{
-    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef,
-    RuntimeBuildOptions, RuntimeContext, SlashStrategy, StreamFormat,
+    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
+    SlashStrategy, StreamFormat,
 };
 
 const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
     ("auto", "auto"),
     ("sonnet-4", "sonnet-4"),
     ("gpt-5", "gpt-5"),

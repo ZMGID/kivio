@@ -183,30 +183,29 @@ pub struct ExternalAgentSession {
     pub conversation_id: String,
     pub agent_id: String,
     pub session_id: String,
+    #[serde(default)]
     pub stable_prompt_hash: Option<String>,
-}
-
-pub fn default_model_option() -> RuntimeModelOption {
-    RuntimeModelOption {
-        id: "default".to_string(),
-        label: "Default".to_string(),
-        context_window_tokens: None,
-    }
+    /// Model this native session was created with. When the user's currently-selected model
+    /// differs, we start a fresh session instead of resuming (some CLIs — notably Claude — bake
+    /// the model into the session at create time and ignore `--model` on `--resume`). `None`
+    /// means "let the CLI use its default" (i.e. `--model` was not passed).
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 pub fn fallback_models_from_pairs(pairs: &[(&str, &str)]) -> Vec<RuntimeModelOption> {
-    let mut out = vec![default_model_option()];
-    for (id, label) in pairs {
-        if *id == "default" {
-            continue;
-        }
-        out.push(RuntimeModelOption {
+    // No implicit "Default" entry — each agent lists its real models, and probes handle live
+    // discovery. When neither yields anything the picker simply has no options rather than a
+    // meaningless "Default" that maps to whatever the CLI decides.
+    pairs
+        .iter()
+        .filter(|(id, _)| *id != "default")
+        .map(|(id, label)| RuntimeModelOption {
             id: (*id).to_string(),
             label: (*label).to_string(),
             context_window_tokens: None,
-        });
-    }
-    out
+        })
+        .collect()
 }
 
 pub fn reasoning_options_from_pairs(pairs: &[(&str, &str)]) -> Vec<RuntimeModelOption> {

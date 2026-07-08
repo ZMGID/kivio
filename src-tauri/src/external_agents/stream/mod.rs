@@ -14,11 +14,13 @@ pub fn create_stream_handler(
         StreamFormat::ClaudeStreamJson => {
             StreamHandler::Claude(claude::ClaudeStreamState::default())
         }
-        StreamFormat::JsonEventStream => StreamHandler::Json(json_events::JsonEventStreamState::new(
-            parser.unwrap_or(JsonEventParser::Codex),
-        )),
+        StreamFormat::JsonEventStream => StreamHandler::Json(
+            json_events::JsonEventStreamState::new(parser.unwrap_or(JsonEventParser::Codex)),
+        ),
         StreamFormat::PiRpc | StreamFormat::AcpJsonRpc | StreamFormat::CodexAppServer => {
-            StreamHandler::Json(json_events::JsonEventStreamState::new(JsonEventParser::Codex))
+            StreamHandler::Json(json_events::JsonEventStreamState::new(
+                JsonEventParser::Codex,
+            ))
         }
     }
 }

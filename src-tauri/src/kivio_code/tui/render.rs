@@ -210,7 +210,10 @@ impl<T: Terminal> Tui<T> {
         }
         let width = self.terminal.columns();
         let height = self.terminal.rows() as usize;
-        let Frame { static_lines, mut dynamic_lines } = frame;
+        let Frame {
+            static_lines,
+            mut dynamic_lines,
+        } = frame;
 
         let cursor_pos = extract_cursor_position(&mut dynamic_lines, height);
         apply_line_resets(&mut dynamic_lines);
@@ -229,7 +232,14 @@ impl<T: Terminal> Tui<T> {
             self.previous_width = width;
             self.previous_height = height as u16;
             self.hardware_cursor_row = 0;
-            self.full_render(false, lead_newline, &dynamic_lines, cursor_pos, width, height);
+            self.full_render(
+                false,
+                lead_newline,
+                &dynamic_lines,
+                cursor_pos,
+                width,
+                height,
+            );
             return;
         }
         // 新定稿前缀出现：把「新 static 尾段 + dynamic」就地重画到上一帧 dynamic 区的位置（覆盖旧
@@ -274,7 +284,11 @@ impl<T: Terminal> Tui<T> {
 
         // 就地写出 new_static_tail ++ dynamic_lines（每行先 \x1b[2K 清掉旧 dynamic 残留）。
         let combined_len = new_static_tail.len() + dynamic_lines.len();
-        for (written, line) in new_static_tail.iter().chain(dynamic_lines.iter()).enumerate() {
+        for (written, line) in new_static_tail
+            .iter()
+            .chain(dynamic_lines.iter())
+            .enumerate()
+        {
             if written > 0 {
                 buffer.push_str("\r\n");
             }
@@ -358,7 +372,15 @@ impl<T: Terminal> Tui<T> {
         self.hardware_cursor_row = row;
     }
 
-    fn full_render(&mut self, clear: bool, lead_newline: bool, new_lines: &[String], cursor_pos: Option<(usize, usize)>, width: u16, height: usize) {
+    fn full_render(
+        &mut self,
+        clear: bool,
+        lead_newline: bool,
+        new_lines: &[String],
+        cursor_pos: Option<(usize, usize)>,
+        width: u16,
+        height: usize,
+    ) {
         self.full_redraw_count += 1;
         let mut buffer = String::from("\x1b[?2026h"); // begin synchronized output
         if clear {
@@ -391,7 +413,13 @@ impl<T: Terminal> Tui<T> {
         self.previous_height = height as u16;
     }
 
-    fn do_render(&mut self, new_lines: Vec<String>, cursor_pos: Option<(usize, usize)>, width: u16, height: usize) {
+    fn do_render(
+        &mut self,
+        new_lines: Vec<String>,
+        cursor_pos: Option<(usize, usize)>,
+        width: u16,
+        height: usize,
+    ) {
         let width_changed = self.previous_width != 0 && self.previous_width != width;
         let height_changed = self.previous_height != 0 && self.previous_height as usize != height;
 
@@ -400,8 +428,11 @@ impl<T: Terminal> Tui<T> {
         } else {
             height
         };
-        let mut prev_viewport_top =
-            if height_changed { previous_buffer_len.saturating_sub(height) } else { self.previous_viewport_top };
+        let mut prev_viewport_top = if height_changed {
+            previous_buffer_len.saturating_sub(height)
+        } else {
+            self.previous_viewport_top
+        };
         let mut viewport_top = prev_viewport_top;
         let mut hardware_cursor_row = self.hardware_cursor_row;
 
@@ -442,8 +473,9 @@ impl<T: Terminal> Tui<T> {
             }
             last_changed = new_lines.len() as i64 - 1;
         }
-        let append_start =
-            appended_lines && first_changed == self.previous_lines.len() as i64 && first_changed > 0;
+        let append_start = appended_lines
+            && first_changed == self.previous_lines.len() as i64
+            && first_changed > 0;
 
         // 无变化：仅更新硬件光标
         if first_changed == -1 {
@@ -511,10 +543,14 @@ impl<T: Terminal> Tui<T> {
         // 差分输出
         let mut buffer = String::from("\x1b[?2026h");
         let prev_viewport_bottom = prev_viewport_top + height - 1;
-        let move_target_row = if append_start { (first_changed - 1) as usize } else { first_changed as usize };
+        let move_target_row = if append_start {
+            (first_changed - 1) as usize
+        } else {
+            first_changed as usize
+        };
         if move_target_row > prev_viewport_bottom {
-            let current_screen_row =
-                ((hardware_cursor_row as i64 - prev_viewport_top as i64).clamp(0, height as i64 - 1)) as usize;
+            let current_screen_row = ((hardware_cursor_row as i64 - prev_viewport_top as i64)
+                .clamp(0, height as i64 - 1)) as usize;
             let move_to_bottom = height - 1 - current_screen_row;
             if move_to_bottom > 0 {
                 buffer.push_str(&format!("\x1b[{move_to_bottom}B"));
@@ -545,8 +581,8 @@ impl<T: Terminal> Tui<T> {
                 buffer.push_str("\r\n");
             }
             buffer.push_str("\x1b[2K"); // clear current line
-            // 防御性裁剪：差分模型要求每个物理行 ≤ width。无论组件 emit 了什么（如 bash/rustc
-            // 的超宽输出行），都先裁到 width 再写——绝不 panic、绝不让超宽行破坏 diff。
+                                        // 防御性裁剪：差分模型要求每个物理行 ≤ width。无论组件 emit 了什么（如 bash/rustc
+                                        // 的超宽输出行），都先裁到 width 再写——绝不 panic、绝不让超宽行破坏 diff。
             let clipped = clip_line_to_width(&new_lines[i], width);
             buffer.push_str(&clipped);
             debug_assert!(
@@ -659,8 +695,8 @@ mod tests {
         // Should NOT be a full redraw (no scrollback clear)
         assert!(!out.contains("\x1b[3J"));
         assert_eq!(tui.full_redraws(), 1); // only the first frame was a full redraw
-        // After a full render the hardware cursor sits on the last line (row 2);
-        // rewriting row 1 means moving UP 1 line, then clear + write XXX.
+                                           // After a full render the hardware cursor sits on the last line (row 2);
+                                           // rewriting row 1 means moving UP 1 line, then clear + write XXX.
         assert!(out.contains("\x1b[1A"));
         assert!(out.contains("\x1b[2KXXX"));
         // Must NOT rewrite the unchanged lines aaa/ccc
@@ -847,7 +883,10 @@ mod tests {
     }
 
     fn frame(static_l: &[&str], dynamic_l: &[&str]) -> Frame {
-        Frame { static_lines: lines(static_l), dynamic_lines: lines(dynamic_l) }
+        Frame {
+            static_lines: lines(static_l),
+            dynamic_lines: lines(dynamic_l),
+        }
     }
 
     /// 双区：static 行随帧增长时，每行只提交（写出）一次进 scrollback，且不在后续帧重写。
@@ -861,8 +900,14 @@ mod tests {
         // 帧2：static 增长到 2 行（history-1 已提交，不应再出现），新增 history-2。
         tui.render_frame(frame(&["history-1", "history-2"], &["footer"]));
         let out2 = tui.terminal.take_output();
-        assert!(out2.contains("history-2"), "new static line must be committed");
-        assert!(!out2.contains("history-1"), "already-committed static must NOT be rewritten");
+        assert!(
+            out2.contains("history-2"),
+            "new static line must be committed"
+        );
+        assert!(
+            !out2.contains("history-1"),
+            "already-committed static must NOT be rewritten"
+        );
         // 帧3：static 不变、dynamic 不变 —— 无输出。
         tui.render_frame(frame(&["history-1", "history-2"], &["footer"]));
         let out3 = tui.terminal.take_output();
@@ -876,9 +921,18 @@ mod tests {
         let mut tui = Tui::new(BufferTerminal::new(40, 10));
         tui.render_frame(frame(&["resumed-1", "resumed-2"], &["prompt>", "footer"]));
         let out = tui.terminal.take_output();
-        assert!(!out.contains("\x1b[3J"), "first frame must not clear scrollback");
-        assert!(out.contains("resumed-1") && out.contains("resumed-2"), "static committed");
-        assert!(out.contains("prompt>") && out.contains("footer"), "dynamic drawn below static");
+        assert!(
+            !out.contains("\x1b[3J"),
+            "first frame must not clear scrollback"
+        );
+        assert!(
+            out.contains("resumed-1") && out.contains("resumed-2"),
+            "static committed"
+        );
+        assert!(
+            out.contains("prompt>") && out.contains("footer"),
+            "dynamic drawn below static"
+        );
         assert_eq!(tui.committed_static_count, 2);
         // 下一帧仅 spinner 推进 → 已提交 static 不重写。
         tui.render_frame(frame(&["resumed-1", "resumed-2"], &["thinking…", "footer"]));
@@ -899,9 +953,15 @@ mod tests {
         let out = tui.terminal.take_output();
         assert!(out.contains("item-done"), "graduated static drawn");
         // 新内容 = 1 static + 2 dynamic = 3 行；旧 dynamic 5 行 → 需额外清 2 行（\r\n\x1b[2K ×2）。
-        assert!(out.contains("\r\n\x1b[2K"), "extra stale dynamic tail lines cleared");
+        assert!(
+            out.contains("\r\n\x1b[2K"),
+            "extra stale dynamic tail lines cleared"
+        );
         // 末尾把光标移回新内容末行（多走的 extra 行回退）。
-        assert!(out.contains("\x1b[2A"), "cursor moved back up over cleared extra lines");
+        assert!(
+            out.contains("\x1b[2A"),
+            "cursor moved back up over cleared extra lines"
+        );
     }
 
     /// 双区：dynamic-only 帧（无 static）→ 首次出现 static 前缀的「过渡帧」：新 static 必须**就地覆盖**
@@ -916,7 +976,10 @@ mod tests {
         tui.render_frame(frame(&["welcome", "> hello"], &["prompt>", "footer"]));
         let out = tui.terminal.take_output();
         // 过渡帧必须先把光标移回上一帧 dynamic 顶部（\x1b[{n}A）再就地覆盖，而不是只往下追加。
-        assert!(out.contains("\x1b["), "must reposition cursor for in-place overwrite");
+        assert!(
+            out.contains("\x1b["),
+            "must reposition cursor for in-place overwrite"
+        );
         assert!(out.contains("> hello"), "new static line drawn");
         // 不应出现“在旧 footer 之下又写一遍 welcome”的重复。welcome 在帧1已画，帧2作为 static 提交一次。
         assert_eq!(out.matches("> hello").count(), 1);
@@ -932,10 +995,17 @@ mod tests {
         // 帧2：static 不变；spinner 推进一相位，footer 不变。应只重写 spinner 行。
         tui.render_frame(frame(&["history"], &["thinking… 1s", "footer"]));
         let out = tui.terminal.take_output();
-        assert!(!out.contains("history"), "committed static must not be touched");
+        assert!(
+            !out.contains("history"),
+            "committed static must not be touched"
+        );
         assert!(out.contains("thinking… 1s"), "spinner line rewritten");
         // 未变的 footer 不应被重写（diff 只覆盖到首末改动行；footer 在 spinner 之后未变 → 不重写）。
-        assert_eq!(out.matches("\x1b[2K").count(), 1, "only the spinner line rewritten");
+        assert_eq!(
+            out.matches("\x1b[2K").count(),
+            1,
+            "only the spinner line rewritten"
+        );
     }
 
     /// 双区：CURSOR_MARKER 在 dynamic 区内被正确提取/剥离，硬件光标据此相对定位（IME 候选窗）。
@@ -951,10 +1021,16 @@ mod tests {
         });
         let out = tui.terminal.take_output();
         // 标记已剥离（不出现在输出里），且写出了去标记后的 editor 行。
-        assert!(!out.contains(CURSOR_MARKER), "cursor marker must be stripped");
+        assert!(
+            !out.contains(CURSOR_MARKER),
+            "cursor marker must be stripped"
+        );
         assert!(out.contains("editline"));
         // 出现绝对列定位（\x1b[{col}C），col = "edit" 的可见宽度 4 → \x1b[4C。
-        assert!(out.contains("\x1b[4C"), "hardware cursor positioned at marker column");
+        assert!(
+            out.contains("\x1b[4C"),
+            "hardware cursor positioned at marker column"
+        );
     }
 
     /// **核心 repro 回归测试**（修「generating 期间多行冻结 spinner 堆叠」）：
@@ -976,18 +1052,26 @@ mod tests {
             // 已定稿前缀随帧增长（超过一屏 → 触发 scrollback 滚动）。
             let static_lines: Vec<String> = history[..=f].to_vec();
             let dynamic_lines = vec![spinner_glyph.to_string(), "footer".to_string()];
-            tui.render_frame(Frame { static_lines, dynamic_lines });
+            tui.render_frame(Frame {
+                static_lines,
+                dynamic_lines,
+            });
             let out = tui.terminal.take_output();
             // 不变式 A：本帧 spinner 至多写一次（就地重写）。滚动溢出绝不再多打一份 spinner 快照。
             let n = out.matches(spinner_glyph).count();
-            assert!(n <= 1, "frame {f}: spinner written {n} times (frozen duplicate from scroll?)");
+            assert!(
+                n <= 1,
+                "frame {f}: spinner written {n} times (frozen duplicate from scroll?)"
+            );
             total_spinner_writes += n;
             // 不变式 B（物理根因，强断言）：本帧新定稿的历史行 tool-output-line-{f} 必须被写出（提交进
             // scrollback），且在字节流里**严格出现在 spinner 之前**——历史在 static 区（上方、随后滚入
             // scrollback），spinner 在其下的 dynamic 区。若有回归把 spinner 误判为 static，它会被写进
             // new_static_tail（在 footer 之后、且会被 committed 永久冻结），本断言即可捕获。
             let new_hist = format!("tool-output-line-{f}");
-            let hist_pos = out.find(&new_hist).expect("newly graduated history line must be committed");
+            let hist_pos = out
+                .find(&new_hist)
+                .expect("newly graduated history line must be committed");
             if let Some(sp_pos) = out.find(spinner_glyph) {
                 assert!(
                     hist_pos < sp_pos,
@@ -1031,8 +1115,14 @@ mod tests {
         tui.terminal.set_size(30, 10);
         tui.render_frame(frame(&["history-1", "history-2"], &["footer"]));
         let out = tui.terminal.take_output();
-        assert!(out.contains("\x1b[2J\x1b[H\x1b[3J"), "width change clears screen + scrollback");
-        assert!(out.contains("history-1") && out.contains("history-2"), "static re-committed");
+        assert!(
+            out.contains("\x1b[2J\x1b[H\x1b[3J"),
+            "width change clears screen + scrollback"
+        );
+        assert!(
+            out.contains("history-1") && out.contains("history-2"),
+            "static re-committed"
+        );
         assert!(out.contains("footer"), "dynamic re-drawn");
         assert!(tui.full_redraws() > redraws_before);
     }

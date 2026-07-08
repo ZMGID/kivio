@@ -28,11 +28,7 @@ pub fn skill_cwd_alias_segment(dir: &str) -> String {
     format!("{folder}-{digest}")
 }
 
-pub fn stage_active_skill(
-    cwd: &Path,
-    folder_name: &str,
-    source_dir: &Path,
-) -> SkillStagingResult {
+pub fn stage_active_skill(cwd: &Path, folder_name: &str, source_dir: &Path) -> SkillStagingResult {
     if folder_name.is_empty()
         || folder_name.contains('/')
         || folder_name.contains('\\')

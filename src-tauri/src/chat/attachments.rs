@@ -309,7 +309,11 @@ fn externalize_image_artifact(
         Ok(dir) => dir,
         Err(_) => return false,
     };
-    let file_name = format!("artifact-{}.{}", Uuid::new_v4(), extension_for_image_mime(&mime));
+    let file_name = format!(
+        "artifact-{}.{}",
+        Uuid::new_v4(),
+        extension_for_image_mime(&mime)
+    );
     if fs::write(dir.join(&file_name), &bytes).is_err() {
         return false;
     }
@@ -729,7 +733,10 @@ mod tests {
         assert!(message_has_inline_image_to_externalize(&msg));
 
         // 已有 path → 跳过
-        let msg = make_message(&format!("data:image/png;base64,{big_payload}"), Some("artifact-x.png"));
+        let msg = make_message(
+            &format!("data:image/png;base64,{big_payload}"),
+            Some("artifact-x.png"),
+        );
         assert!(!message_has_inline_image_to_externalize(&msg));
 
         // 小图 → 跳过

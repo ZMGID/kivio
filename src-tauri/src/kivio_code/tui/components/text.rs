@@ -4,7 +4,9 @@
 //! 的 [`BoxView`] 与之一致（任务简述里写的 "Box (border)" 与 PI 实际语义不符，这里以对齐 PI 为准）。
 
 use super::super::render::Component;
-use super::super::text_width::{apply_background_to_line, truncate_to_width, visible_width, wrap_text_with_ansi};
+use super::super::text_width::{
+    apply_background_to_line, truncate_to_width, visible_width, wrap_text_with_ansi,
+};
 use super::ColorFn;
 
 /// 多行文本组件，word-wrap + 可选水平/垂直 padding + 可选背景色，按 (text,width) 缓存。
@@ -17,8 +19,19 @@ pub struct Text {
 }
 
 impl Text {
-    pub fn new(text: impl Into<String>, padding_x: usize, padding_y: usize, bg_fn: Option<ColorFn>) -> Self {
-        Self { text: text.into(), padding_x, padding_y, bg_fn, cached: None }
+    pub fn new(
+        text: impl Into<String>,
+        padding_x: usize,
+        padding_y: usize,
+        bg_fn: Option<ColorFn>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            padding_x,
+            padding_y,
+            bg_fn,
+            cached: None,
+        }
     }
 
     pub fn set_text(&mut self, text: impl Into<String>) {
@@ -120,7 +133,11 @@ pub struct TruncatedText {
 
 impl TruncatedText {
     pub fn new(text: impl Into<String>, padding_x: usize, padding_y: usize) -> Self {
-        Self { text: text.into(), padding_x, padding_y }
+        Self {
+            text: text.into(),
+            padding_x,
+            padding_y,
+        }
     }
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
@@ -163,7 +180,12 @@ pub struct BoxView {
 
 impl BoxView {
     pub fn new(padding_x: usize, padding_y: usize, bg_fn: Option<ColorFn>) -> Self {
-        Self { children: Vec::new(), padding_x, padding_y, bg_fn }
+        Self {
+            children: Vec::new(),
+            padding_x,
+            padding_y,
+            bg_fn,
+        }
     }
     pub fn add_child(&mut self, c: Box<dyn Component>) {
         self.children.push(c);

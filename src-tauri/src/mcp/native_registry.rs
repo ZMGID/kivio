@@ -36,12 +36,11 @@ use crate::state::AppState;
 use super::registry::NativeToolContext;
 use super::types::{
     native_bash_output_tool, native_edit_file_tool, native_glob_files_tool,
-    native_kill_background_tool,
-    native_knowledge_search_tool, native_memory_modify_tool, native_memory_read_tool,
-    native_memory_search_tool, native_read_file_tool, native_run_command_tool,
-    native_run_python_tool, native_save_assistant_tool, native_search_files_tool,
-    native_web_fetch_tool, native_web_search_tool, native_write_file_tool, ChatToolDefinition,
-    McpToolCallResult,
+    native_kill_background_tool, native_knowledge_search_tool, native_memory_modify_tool,
+    native_memory_read_tool, native_memory_search_tool, native_read_file_tool,
+    native_run_command_tool, native_run_python_tool, native_save_assistant_tool,
+    native_search_files_tool, native_web_fetch_tool, native_web_search_tool,
+    native_write_file_tool, ChatToolDefinition, McpToolCallResult,
 };
 
 /// Gate signature mirrors `list_native_builtin_tool_defs(native,
@@ -466,8 +465,8 @@ fn call_web_fetch(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
 fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         use crate::chat::knowledge_base as kb;
-        use std::collections::BTreeMap;
         use std::cmp::Ordering;
+        use std::collections::BTreeMap;
 
         let query = ctx
             .arguments
@@ -501,7 +500,8 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             .unwrap_or_default();
         if kb_ids.is_empty() {
             if let Some(nc) = ctx.native_ctx {
-                if let Ok(conv) = crate::chat::storage::load_conversation(ctx.app, &nc.conversation_id)
+                if let Ok(conv) =
+                    crate::chat::storage::load_conversation(ctx.app, &nc.conversation_id)
                 {
                     kb_ids = conv.knowledge_base_ids.clone();
                 }
@@ -546,7 +546,11 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         let rerank_on =
             !kbcfg.rerank_provider_id.trim().is_empty() && !kbcfg.rerank_model.trim().is_empty();
         // Over-fetch when reranking so the cross-encoder has candidates to reorder.
-        let fetch_k = if rerank_on { (top_k * 4).max(20) } else { top_k };
+        let fetch_k = if rerank_on {
+            (top_k * 4).max(20)
+        } else {
+            top_k
+        };
 
         let mut all_hits: Vec<kb::ScoredChunk> = Vec::new();
         for ((provider_id, model), ids) in groups {
@@ -555,7 +559,9 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             };
             let qvec =
                 kb::embeddings::embed_query(ctx.state, &provider, &model, &query, attempts).await?;
-            all_hits.extend(kb::search(ctx.app, &ids, &qvec, &query, fetch_k, w_vec, w_kw)?);
+            all_hits.extend(kb::search(
+                ctx.app, &ids, &qvec, &query, fetch_k, w_vec, w_kw,
+            )?);
         }
         all_hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         all_hits.retain(|h| h.score > 0.0);
@@ -564,7 +570,11 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         // Optional rerank: reorder candidates by a cross-encoder; on any failure
         // keep the fused order (never block retrieval on rerank).
         if rerank_on && !all_hits.is_empty() {
-            if let Some(rp) = ctx.settings.get_provider(&kbcfg.rerank_provider_id).cloned() {
+            if let Some(rp) = ctx
+                .settings
+                .get_provider(&kbcfg.rerank_provider_id)
+                .cloned()
+            {
                 let docs: Vec<String> = all_hits.iter().map(|h| h.chunk.text.clone()).collect();
                 match kb::rerank::rerank(
                     ctx.state,
@@ -629,7 +639,6 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         })
     })
 }
-
 
 fn call_memory_read(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
@@ -954,10 +963,7 @@ mod tests {
         // read_file gate exposes the whole read-side group, in order.
         let mut read_only = off.clone();
         read_only.read_file = true;
-        assert_eq!(
-            names(&read_only, false, false),
-            ["read", "grep", "glob"]
-        );
+        assert_eq!(names(&read_only, false, false), ["read", "grep", "glob"]);
 
         // write gate exposes the whole-file write tool only. Deliverables are a
         // path-driven channel (writing into ~/Kivio/outputs/<conv>/), not a tool.

@@ -2,12 +2,9 @@ use super::super::types::{
     PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, StreamFormat,
 };
 
-const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
-    ("gpt-5.3-codex", "gpt-5.3-codex"),
-    ("gpt-5", "gpt-5"),
-    ("o3", "o3"),
-];
+// No fallback models — codex's `debug models` output is the source of truth. If discovery
+// fails, the dropdown stays empty (the CLI defaults to whichever model the user configured).
+const FALLBACK_MODELS: &[(&str, &str)] = &[];
 
 const REASONING: &[(&str, &str)] = &[
     ("default", "Default"),
@@ -61,7 +58,7 @@ pub const CODEX_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
     list_models_args: Some(&["debug", "models"]),
-    list_models_timeout_secs: None,
+    list_models_timeout_secs: Some(30),
     models_from_stderr: false,
     model_probe: None,
     model_probe_args: None,

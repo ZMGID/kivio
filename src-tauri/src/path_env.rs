@@ -45,7 +45,12 @@ use std::collections::HashSet;
 /// Push `seg` onto `out` if non-empty and not already present (case-sensitive
 /// on macOS, but Windows paths fold below). Used by all platforms' merge logic.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn push_unique(seg: &str, seen: &mut HashSet<String>, out: &mut Vec<String>, key: impl Fn(&str) -> String) {
+fn push_unique(
+    seg: &str,
+    seen: &mut HashSet<String>,
+    out: &mut Vec<String>,
+    key: impl Fn(&str) -> String,
+) {
     let seg = seg.trim();
     if seg.is_empty() {
         return;
@@ -732,7 +737,8 @@ mod tests {
         let current = "C:\\Windows\\system32";
         let user = "C:\\Users\\tester\\AppData\\Roaming\\npm";
         // fnm's per-shell dir plus an overlap with current (different case).
-        let profile = "C:\\Users\\tester\\AppData\\Local\\fnm_multishells\\123_456;c:\\windows\\system32";
+        let profile =
+            "C:\\Users\\tester\\AppData\\Local\\fnm_multishells\\123_456;c:\\windows\\system32";
         let defaults = vec!["C:\\Users\\tester\\.cargo\\bin".to_string()];
 
         let result = merge_paths_windows(current, None, Some(user), Some(profile), &defaults);
@@ -741,7 +747,10 @@ mod tests {
         // Order: current, then user, then profile-only entry, then default last.
         assert_eq!(segs[0], "C:\\Windows\\system32");
         assert_eq!(segs[1], "C:\\Users\\tester\\AppData\\Roaming\\npm");
-        assert_eq!(segs[2], "C:\\Users\\tester\\AppData\\Local\\fnm_multishells\\123_456");
+        assert_eq!(
+            segs[2],
+            "C:\\Users\\tester\\AppData\\Local\\fnm_multishells\\123_456"
+        );
         assert_eq!(segs.last(), Some(&"C:\\Users\\tester\\.cargo\\bin"));
         // system32 not duplicated despite the case-different profile entry.
         assert_eq!(
@@ -761,8 +770,7 @@ mod tests {
         let user = "C:\\Users\\tester\\AppData\\Roaming\\npm";
         let defaults = vec!["C:\\Users\\tester\\.cargo\\bin".to_string()];
 
-        let with_none =
-            merge_paths_windows(current, Some(system), Some(user), None, &defaults);
+        let with_none = merge_paths_windows(current, Some(system), Some(user), None, &defaults);
         let with_empty =
             merge_paths_windows(current, Some(system), Some(user), Some(""), &defaults);
         assert_eq!(with_none, with_empty);
@@ -787,7 +795,10 @@ mod tests {
     fn parse_profile_path_takes_last_line_after_banner() {
         // A profile may print greetings before the PATH is echoed on the last line.
         let out = "Loading fnm...\nWelcome back!\nC:\\a;C:\\b\n\n";
-        assert_eq!(parse_profile_path_output(out), Some("C:\\a;C:\\b".to_string()));
+        assert_eq!(
+            parse_profile_path_output(out),
+            Some("C:\\a;C:\\b".to_string())
+        );
     }
 
     #[test]
@@ -845,7 +856,10 @@ mod tests {
     #[test]
     fn expand_env_vars_handles_no_vars_and_double_percent() {
         let lookup = |_: &str| Some("X".to_string());
-        assert_eq!(expand_env_vars_with("C:\\plain\\path", &lookup), "C:\\plain\\path");
+        assert_eq!(
+            expand_env_vars_with("C:\\plain\\path", &lookup),
+            "C:\\plain\\path"
+        );
         // "%%" is a literal percent, not a lookup.
         assert_eq!(expand_env_vars_with("100%%done", &lookup), "100%done");
     }

@@ -1,15 +1,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
-use uuid::Uuid;
 
-use crate::external_agents::registry::get_agent_def;
-use crate::external_agents::slash::is_claude_init;
-use crate::external_agents::spawn::{parse_json_line, spawn_agent, write_probe_stdin};
-use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext, RuntimeModelOption};
+use crate::external_agents::types::RuntimeModelOption;
 
 /// `--model` aliases accepted by Claude Code, used to build a static model catalog with
 /// labels + context windows (no per-alias process probe). The CLI validates the alias at
@@ -27,7 +21,7 @@ const CLAUDE_MODEL_ALIASES: &[&str] = &[
 /// `env.*` keys in `~/.claude/settings.json` (and the matching process env vars) that
 /// point Claude Code at a custom/third-party model. We surface these as extra `--model`
 /// targets so a user's gateway/bedrock setup shows up in the picker. These are the
-/// Claude CLI's own public env interface — not paseo's code.
+/// Claude CLI's own public env interface.
 const CLAUDE_ENV_MODEL_KEYS: &[&str] = &[
     "ANTHROPIC_MODEL",
     "ANTHROPIC_SMALL_FAST_MODEL",
@@ -35,17 +29,6 @@ const CLAUDE_ENV_MODEL_KEYS: &[&str] = &[
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 ];
-
-/// Upper bound on the single best-effort "default" probe. Discovery no longer spawns a
-/// process per alias — the alias catalog is static — so this is the only spawn, kept short
-/// so the model picker stays responsive even when the CLI is slow to emit its init event.
-const DEFAULT_PROBE_TIMEOUT_SECS: u64 = 8;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaudeInitInfo {
-    pub resolved_model: String,
-    pub context_window_tokens: Option<u32>,
-}
 
 pub fn context_window_from_claude_resolved_model(resolved: &str) -> Option<u32> {
     let trimmed = resolved.trim();
@@ -63,7 +46,7 @@ pub fn context_window_from_claude_resolved_model(resolved: &str) -> Option<u32> 
 
 pub fn context_window_from_claude_model_alias(alias: &str) -> Option<u32> {
     let alias = alias.trim();
-    if alias.is_empty() || alias == "default" {
+    if alias.is_empty() {
         return None;
     }
     if alias.to_ascii_lowercase().contains("[1m]") {
@@ -73,53 +56,6 @@ pub fn context_window_from_claude_model_alias(alias: &str) -> Option<u32> {
         return Some(200_000);
     }
     None
-}
-
-pub fn label_for_claude_model(alias: &str, resolved: &str) -> String {
-    let human = humanize_claude_resolved_model(resolved);
-    if alias == "default" {
-        format!("Default ({human})")
-    } else if alias == "sonnet[1m]" {
-        format!("Sonnet (1M context)")
-    } else {
-        human
-    }
-}
-
-fn humanize_claude_resolved_model(resolved: &str) -> String {
-    let mut base = resolved.trim().to_string();
-    let has_1m = base.to_ascii_lowercase().ends_with("[1m]");
-    if has_1m {
-        base.truncate(base.len().saturating_sub(4));
-    }
-    if let Some(rest) = base.strip_prefix("claude-") {
-        base = rest.to_string();
-    }
-    let parts: Vec<&str> = base.split('-').filter(|part| !part.is_empty()).collect();
-    let label = if parts.is_empty() {
-        base
-    } else {
-        let family = title_case_token(parts[0]);
-        if parts.len() >= 3
-            && parts[1].chars().all(|ch| ch.is_ascii_digit())
-            && parts[2].chars().all(|ch| ch.is_ascii_digit())
-        {
-            format!("{family} {}.{}", parts[1], parts[2])
-        } else if parts.len() >= 2 && parts[1].chars().all(|ch| ch.is_ascii_digit()) {
-            format!("{family} {}", parts[1])
-        } else {
-            parts
-                .iter()
-                .map(|part| title_case_token(part))
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    };
-    if has_1m {
-        format!("{label} (1M context)")
-    } else {
-        label
-    }
 }
 
 fn title_case_token(token: &str) -> String {
@@ -132,72 +68,24 @@ fn title_case_token(token: &str) -> String {
     first + chars.as_str()
 }
 
-pub async fn probe_claude_init(
-    resolved_bin: &Path,
-    cwd: &Path,
-    model_alias: Option<&str>,
-) -> Option<ClaudeInitInfo> {
-    let def = get_agent_def("claude")?;
-    let runtime_ctx = RuntimeContext {
-        cwd: Some(cwd.to_string_lossy().into_owned()),
-        extra_allowed_dirs: Vec::new(),
-        resume_session_id: None,
-        new_session_id: Some(Uuid::new_v4().to_string()),
-        include_partial_messages: false,
-    };
-    let build_options = RuntimeBuildOptions {
-        model: model_alias
-            .filter(|value| !value.is_empty() && *value != "default")
-            .map(str::to_string),
-        reasoning: None,
-        sandbox: None,
-    };
-    let args = (def.build_args)(&runtime_ctx, &build_options, None);
-    let extra_env = std::collections::HashMap::new();
-    let mut spawned = spawn_agent(def, resolved_bin, &args, cwd, &extra_env)
-        .await
-        .ok()?;
-    write_probe_stdin(&mut spawned.child).await.ok()?;
+/// Build Claude's model picker list. Entirely static — the CLI's `system/init` event used to
+/// be probed to label a synthetic "Default" option, but that duplicated whichever alias the CLI
+/// already resolves to (Opus / Fable / etc.) and made "Default" mean different things after the
+/// user changed their gateway model. The current list is: built-in aliases + any custom model
+/// ids the user configured through Claude Code's own env / settings.json interface.
+pub async fn detect_claude_models(
+    _resolved_bin: &Path,
+    _cwd: &Path,
+) -> Option<Vec<RuntimeModelOption>> {
+    let mut out: Vec<RuntimeModelOption> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
-    let init = read_claude_init_value(&mut spawned.child, Duration::from_secs(20)).await?;
-    let _ = spawned.child.start_kill();
-    let _ = spawned.child.wait().await;
-
-    parse_claude_init_info(&init)
-}
-
-pub async fn detect_claude_models(resolved_bin: &Path, cwd: &Path) -> Option<Vec<RuntimeModelOption>> {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-
-    // 1. Default option — one best-effort probe (short timeout). The CLI reports the model
-    //    it actually resolves "default" to, which gives an accurate label + context window.
-    //    Failure is non-fatal: we still ship a generic "Default" entry.
-    let default_info = tokio::time::timeout(
-        Duration::from_secs(DEFAULT_PROBE_TIMEOUT_SECS),
-        probe_claude_init(resolved_bin, cwd, None),
-    )
-    .await
-    .ok()
-    .flatten();
-    out.push(RuntimeModelOption {
-        id: "default".to_string(),
-        label: match &default_info {
-            Some(info) => label_for_claude_model("default", &info.resolved_model),
-            None => "Default".to_string(),
-        },
-        context_window_tokens: default_info.as_ref().and_then(|info| info.context_window_tokens),
-    });
-    seen.insert("default".to_string());
-
-    // 2. Built-in alias catalog — entirely static, no process spawn.
     for &alias in CLAUDE_MODEL_ALIASES {
         if seen.insert(alias.to_string()) {
             out.push(catalog_model_option(alias));
         }
     }
 
-    // 3. Custom models configured via ~/.claude/settings.json `env.*` + process env.
     for model in claude_config_models() {
         if seen.insert(model.clone()) {
             out.push(RuntimeModelOption {
@@ -208,7 +96,11 @@ pub async fn detect_claude_models(resolved_bin: &Path, cwd: &Path) -> Option<Vec
         }
     }
 
-    Some(out)
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// Static catalog entry for a Claude `--model` alias — label + context window with no probe.
@@ -252,8 +144,8 @@ fn claude_config_models() -> Vec<String> {
         }
     };
 
-    if let Some(text) = claude_config_dir()
-        .and_then(|dir| std::fs::read_to_string(dir.join("settings.json")).ok())
+    if let Some(text) =
+        claude_config_dir().and_then(|dir| std::fs::read_to_string(dir.join("settings.json")).ok())
     {
         if let Ok(value) = serde_json::from_str::<Value>(&text) {
             if let Some(env) = value.get("env").and_then(|v| v.as_object()) {
@@ -275,51 +167,9 @@ fn claude_config_models() -> Vec<String> {
     out
 }
 
-pub fn parse_claude_init_info(value: &Value) -> Option<ClaudeInitInfo> {
-    if !is_claude_init(value) {
-        return None;
-    }
-    let resolved_model = value.get("model").and_then(|v| v.as_str())?.trim();
-    if resolved_model.is_empty() {
-        return None;
-    }
-    Some(ClaudeInitInfo {
-        resolved_model: resolved_model.to_string(),
-        context_window_tokens: context_window_from_claude_resolved_model(resolved_model),
-    })
-}
-
-async fn read_claude_init_value(
-    child: &mut tokio::process::Child,
-    timeout: Duration,
-) -> Option<Value> {
-    let stdout = child.stdout.as_mut()?;
-    let mut reader = tokio::io::BufReader::new(stdout).lines();
-    let deadline = tokio::time::Instant::now() + timeout;
-    while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(500), reader.next_line()).await {
-            Ok(Ok(Some(line))) => {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Some(value) = parse_json_line(&line) {
-                    if is_claude_init(&value) {
-                        return Some(value);
-                    }
-                }
-            }
-            Ok(Ok(None)) => break,
-            Ok(Err(_)) => break,
-            Err(_) => continue,
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn context_window_from_resolved_model() {
@@ -335,9 +185,15 @@ mod tests {
 
     #[test]
     fn context_window_from_alias() {
-        assert_eq!(context_window_from_claude_model_alias("sonnet[1m]"), Some(1_000_000));
-        assert_eq!(context_window_from_claude_model_alias("sonnet"), Some(200_000));
-        assert_eq!(context_window_from_claude_model_alias("default"), None);
+        assert_eq!(
+            context_window_from_claude_model_alias("sonnet[1m]"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            context_window_from_claude_model_alias("sonnet"),
+            Some(200_000)
+        );
+        assert_eq!(context_window_from_claude_model_alias(""), None);
     }
 
     #[test]
@@ -355,37 +211,12 @@ mod tests {
 
     #[test]
     fn full_catalog_covers_every_alias_without_spawn() {
-        // Every alias must yield a catalog entry — discovery no longer probes per alias.
         for &alias in CLAUDE_MODEL_ALIASES {
             let option = catalog_model_option(alias);
             assert_eq!(option.id, alias);
             assert!(!option.label.is_empty());
             assert!(option.context_window_tokens.is_some());
         }
-    }
-
-    #[test]
-    fn labels_match_cli_picker() {
-        assert_eq!(
-            label_for_claude_model("default", "claude-opus-4-8[1m]"),
-            "Default (Opus 4.8 (1M context))"
-        );
-        assert_eq!(
-            label_for_claude_model("sonnet[1m]", "claude-sonnet-4-6[1m]"),
-            "Sonnet (1M context)"
-        );
-    }
-
-    #[test]
-    fn parse_init_info() {
-        let init = json!({
-            "type": "system",
-            "subtype": "init",
-            "model": "claude-opus-4-8[1m]"
-        });
-        let info = parse_claude_init_info(&init).unwrap();
-        assert_eq!(info.resolved_model, "claude-opus-4-8[1m]");
-        assert_eq!(info.context_window_tokens, Some(1_000_000));
     }
 
     #[test]
@@ -396,62 +227,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires local claude CLI on PATH"]
-    async fn live_detect_claude_models_from_cli() {
-        use crate::external_agents::detection::detect_single_agent;
-        use crate::external_agents::registry::get_agent_def;
-
-        let def = get_agent_def("claude").expect("claude agent def");
-        let detected = detect_single_agent(def).await;
-        assert!(detected.available, "claude CLI should be available on PATH");
-        for model in &detected.models {
-            println!(
-                "  {} -> {} ({} tokens)",
-                model.id,
-                model.label,
-                model
-                    .context_window_tokens
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "?".to_string())
-            );
-        }
-        assert!(
-            detected.models.len() >= 4,
-            "expected multiple probed models, got {:?}",
-            detected.models
-        );
-
-        let default = detected
-            .models
-            .iter()
-            .find(|model| model.id == "default")
-            .expect("default model option");
-        assert_eq!(
-            default.context_window_tokens,
-            Some(1_000_000),
-            "default should resolve to 1M context"
-        );
-
-        let sonnet = detected
-            .models
-            .iter()
-            .find(|model| model.id == "sonnet")
-            .expect("sonnet model option");
-        assert_eq!(
-            sonnet.context_window_tokens,
-            Some(200_000),
-            "standard sonnet should be 200K"
-        );
-
-        let sonnet_1m = detected
-            .models
-            .iter()
-            .find(|model| model.id == "sonnet[1m]")
-            .expect("sonnet[1m] model option");
-        assert_eq!(
-            sonnet_1m.context_window_tokens,
-            Some(1_000_000),
-            "sonnet[1m] should be 1M"
-        );
+    async fn detect_claude_models_returns_full_catalog_without_default() {
+        // The picker is purely static now — no CLI probe, no synthetic "default" entry.
+        let cwd = std::env::temp_dir();
+        let models = detect_claude_models(std::path::Path::new(""), &cwd)
+            .await
+            .expect("catalog is never empty");
+        assert!(models.iter().all(|m| m.id != "default"));
+        assert!(models.iter().any(|m| m.id == "opus"));
+        assert!(models.iter().any(|m| m.id == "sonnet[1m]"));
     }
 }

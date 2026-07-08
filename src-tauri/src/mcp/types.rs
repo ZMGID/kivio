@@ -36,11 +36,11 @@ pub fn resolve_reserved_wire_alias(name: &str) -> &str {
 /// **方向与 `RESERVED_WIRE_ALIASES` 相反**：wire 别名是"内部名 → 模型可见名"（改对外暴露）；
 /// 这里是"旧输入名 → 现内部名"（把历史输入规整到现工具），**不参与**工具声明/提示词渲染。
 const LEGACY_TOOL_ALIASES: &[(&str, &str)] = &[
-    ("ls", "read"),                    // ls 并入 read（read 现在可读目录）
-    ("find", "glob"),                  // find 改名 glob
+    ("ls", "read"),                     // ls 并入 read（read 现在可读目录）
+    ("find", "glob"),                   // find 改名 glob
     ("list_background", "bash_output"), // list_background 并入 bash_output（无 job_id=列表）
-    ("todo_update", "todo_write"),     // todo_update 并入 todo_write（整表替换）
-    ("skill_activate", "skill"),       // skill_activate 改名 skill（合并 read_file/run_script 后）
+    ("todo_update", "todo_write"),      // todo_update 并入 todo_write（整表替换）
+    ("skill_activate", "skill"),        // skill_activate 改名 skill（合并 read_file/run_script 后）
 ];
 
 /// 旧工具名规整为现工具名（无命中原样返回）。
@@ -51,7 +51,6 @@ pub fn canonical_tool_name(name: &str) -> &str {
         .map(|(_, to)| *to)
         .unwrap_or(name)
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -97,7 +97,8 @@ pub async fn search_web(
     config: &LensWebSearchConfig,
     query: &str,
     retry_attempts: usize,
-) -> Result<Vec<WebSearchResult>, String> {    let query = query.trim();
+) -> Result<Vec<WebSearchResult>, String> {
+    let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
@@ -532,7 +533,10 @@ async fn search_grok(
     if !answer.is_empty() {
         results.push(WebSearchResult {
             title: "Grok answer".to_string(),
-            url: citations.first().cloned().unwrap_or_else(|| "https://x.ai".to_string()),
+            url: citations
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "https://x.ai".to_string()),
             content: answer,
             published_date: None,
             score: None,
@@ -771,7 +775,10 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].url, "https://example.com/a");
         assert_eq!(results[0].title, "First Result");
-        assert_eq!(results[0].published_date.as_deref(), Some("2026-07-03T00:57:48.000Z"));
+        assert_eq!(
+            results[0].published_date.as_deref(),
+            Some("2026-07-03T00:57:48.000Z")
+        );
         assert!(results[0].content.contains("Body snippet one."));
         assert_eq!(results[1].url, "https://example.com/b");
         // Published: N/A 不应写入
@@ -818,7 +825,10 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(raw).unwrap();
         let (answer, citations) = parse_grok_response(&value);
         assert_eq!(answer, "Grok found the answer.");
-        assert_eq!(citations, vec!["https://example.com/a", "https://example.com/b"]);
+        assert_eq!(
+            citations,
+            vec!["https://example.com/a", "https://example.com/b"]
+        );
     }
 
     #[test]

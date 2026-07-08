@@ -2,7 +2,7 @@ use tauri::AppHandle;
 
 use crate::chat::storage::{load_conversation, save_conversation};
 use crate::chat::types::AgentRuntimeConfig;
-use crate::external_agents::detection::{EXTERNAL_AGENT_MODELS_CACHE_TTL, detect_all_agents};
+use crate::external_agents::detection::{detect_all_agents, EXTERNAL_AGENT_MODELS_CACHE_TTL};
 use crate::external_agents::slash::list_external_cli_slash_commands;
 use crate::state::AppState;
 
@@ -44,7 +44,8 @@ pub async fn chat_list_external_cli_slash_commands(
     conversation_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let (supports, commands, message) =
-        list_external_cli_slash_commands(&app, &state, &agent_id, conversation_id.as_deref()).await?;
+        list_external_cli_slash_commands(&app, &state, &agent_id, conversation_id.as_deref())
+            .await?;
     Ok(serde_json::json!({
         "success": true,
         "supportsSlashCommands": supports,

@@ -191,7 +191,9 @@ fn load_libraries_at(root: &Path) -> Result<Vec<KnowledgeLibrary>, String> {
             // libraries.json is the root of every KB operation. If it's
             // corrupt (manual edit / FS damage), don't brick the whole panel:
             // back the bad file up and start empty so the user can rebuild.
-            eprintln!("libraries.json corrupt ({e}); backing up to libraries.json.bak and starting empty");
+            eprintln!(
+                "libraries.json corrupt ({e}); backing up to libraries.json.bak and starting empty"
+            );
             let _ = fs::rename(&path, root.join("libraries.json.bak"));
             Ok(Vec::new())
         }
@@ -347,7 +349,10 @@ fn migrate_json_if_needed(
     }
     let _ = fs::rename(&docs_json, dir.join("docs.json.migrated"));
     let _ = fs::rename(&chunks_json, dir.join("chunks.json.migrated"));
-    eprintln!("knowledge_base: migrated {kb_id} JSON → store.db ({} docs)", docs.len());
+    eprintln!(
+        "knowledge_base: migrated {kb_id} JSON → store.db ({} docs)",
+        docs.len()
+    );
     Ok(())
 }
 
@@ -427,9 +432,9 @@ fn search_at(
     for kb_id in kb_ids {
         // Tolerate a single broken/corrupt library: skip (logged) so it can't
         // starve the rest of a cross-library search.
-        match open_kb_at(root, kb_id)
-            .and_then(|c| store::hybrid_search(&c, query, query_text, top_k, weight_vector, weight_keyword))
-        {
+        match open_kb_at(root, kb_id).and_then(|c| {
+            store::hybrid_search(&c, query, query_text, top_k, weight_vector, weight_keyword)
+        }) {
             Ok(hits) => {
                 for (chunk, score) in hits {
                     all.push(ScoredChunk {
@@ -619,7 +624,11 @@ pub fn mount_system_prompt(app: &AppHandle, kb_ids: &[String], language: &str) -
     if names.is_empty() {
         return None;
     }
-    let names_str = names.join(if language.starts_with("zh") { "、" } else { ", " });
+    let names_str = names.join(if language.starts_with("zh") {
+        "、"
+    } else {
+        ", "
+    });
     Some(if language.starts_with("zh") {
         format!(
             "本会话已挂载知识库：{names_str}。当用户的问题可能涉及这些文档时，**优先调用 knowledge_search 检索**——文档已在知识库里，不要让用户重新上传文件。用到检索到的片段时，必须在正文中用 [n] 行内标注其来源编号（n 为该工具返回片段前的编号），让用户能溯源；只有检索不到相关内容时才如实说明知识库里没有。"
@@ -630,7 +639,6 @@ pub fn mount_system_prompt(app: &AppHandle, kb_ids: &[String], language: &str) -
         )
     })
 }
-
 
 /// Hybrid (vector + keyword RRF) search across libraries, top-k best-first.
 /// `weight_keyword = 0` ⇒ pure vector.
@@ -688,7 +696,13 @@ mod tests {
         }
     }
 
-    fn chunk_emb(id: &str, doc_id: &str, name: &str, heading: Option<&str>, emb: Vec<f32>) -> KnowledgeChunk {
+    fn chunk_emb(
+        id: &str,
+        doc_id: &str,
+        name: &str,
+        heading: Option<&str>,
+        emb: Vec<f32>,
+    ) -> KnowledgeChunk {
         KnowledgeChunk {
             id: id.to_string(),
             doc_id: doc_id.to_string(),
@@ -721,7 +735,13 @@ mod tests {
             "doc_a",
             3,
             &[
-                chunk_emb("c1", "doc_a", "a.md", Some("Intro > Setup"), vec![1.0, 0.0, 0.0]),
+                chunk_emb(
+                    "c1",
+                    "doc_a",
+                    "a.md",
+                    Some("Intro > Setup"),
+                    vec![1.0, 0.0, 0.0],
+                ),
                 chunk_emb("c2", "doc_a", "a.md", None, vec![0.0, 1.0, 0.0]),
             ],
         )
@@ -777,8 +797,22 @@ mod tests {
         let root = temp_root();
         let a = create_library_at(&root, "A", "openai", "m").unwrap().id;
         let b = create_library_at(&root, "B", "openai", "m").unwrap().id;
-        replace_doc_chunks_at(&root, &a, "d", 2, &[chunk_emb("a1", "d", "a.md", None, vec![1.0, 0.0])]).unwrap();
-        replace_doc_chunks_at(&root, &b, "d", 2, &[chunk_emb("b1", "d", "b.md", None, vec![0.2, 1.0])]).unwrap();
+        replace_doc_chunks_at(
+            &root,
+            &a,
+            "d",
+            2,
+            &[chunk_emb("a1", "d", "a.md", None, vec![1.0, 0.0])],
+        )
+        .unwrap();
+        replace_doc_chunks_at(
+            &root,
+            &b,
+            "d",
+            2,
+            &[chunk_emb("b1", "d", "b.md", None, vec![0.2, 1.0])],
+        )
+        .unwrap();
 
         // Query closest to a1; both libraries searched, hit tagged with its kb id.
         let hits = search_at(&root, &[a.clone(), b.clone()], &[1.0, 0.0], "", 5, 1.0, 0.0).unwrap();
@@ -795,7 +829,14 @@ mod tests {
         // Models the index_one replace step: drop a doc's old chunks, add new.
         let root = temp_root();
         let kb = create_library_at(&root, "L", "openai", "m").unwrap().id;
-        replace_doc_chunks_at(&root, &kb, "doc_x", 1, &[chunk_emb("old1", "doc_x", "x.md", None, vec![1.0])]).unwrap();
+        replace_doc_chunks_at(
+            &root,
+            &kb,
+            "doc_x",
+            1,
+            &[chunk_emb("old1", "doc_x", "x.md", None, vec![1.0])],
+        )
+        .unwrap();
         replace_doc_chunks_at(
             &root,
             &kb,
@@ -853,7 +894,10 @@ mod tests {
         assert_eq!(stuck.status, DocStatus::Error);
         assert!(stuck.error.is_some());
         // healthy doc untouched
-        assert_eq!(docs.iter().find(|d| d.id == "doc_ok").unwrap().status, DocStatus::Ready);
+        assert_eq!(
+            docs.iter().find(|d| d.id == "doc_ok").unwrap().status,
+            DocStatus::Ready
+        );
         // idempotent: nothing left to heal
         assert_eq!(heal_stale_indexing_at(&root), 0);
         std::fs::remove_dir_all(&root).ok();
@@ -864,14 +908,34 @@ mod tests {
         let root = temp_root();
         let good = create_library_at(&root, "good", "openai", "m").unwrap().id;
         let bad = create_library_at(&root, "bad", "openai", "m").unwrap().id;
-        replace_doc_chunks_at(&root, &good, "d", 2, &[chunk_emb("g1", "d", "g.md", None, vec![1.0, 0.0])]).unwrap();
+        replace_doc_chunks_at(
+            &root,
+            &good,
+            "d",
+            2,
+            &[chunk_emb("g1", "d", "g.md", None, vec![1.0, 0.0])],
+        )
+        .unwrap();
         // Corrupt the bad library's store.db with non-SQLite garbage.
         let bad_db = kb_db_path(&root, &bad).unwrap();
         std::fs::create_dir_all(bad_db.parent().unwrap()).unwrap();
         std::fs::write(&bad_db, "not a sqlite database").unwrap();
 
-        let hits = search_at(&root, &[good.clone(), bad.clone()], &[1.0, 0.0], "", 5, 1.0, 0.0).unwrap();
-        assert_eq!(hits.len(), 1, "healthy library's hit must survive a corrupt sibling");
+        let hits = search_at(
+            &root,
+            &[good.clone(), bad.clone()],
+            &[1.0, 0.0],
+            "",
+            5,
+            1.0,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "healthy library's hit must survive a corrupt sibling"
+        );
         assert_eq!(hits[0].chunk.id, "g1");
         std::fs::remove_dir_all(&root).ok();
     }

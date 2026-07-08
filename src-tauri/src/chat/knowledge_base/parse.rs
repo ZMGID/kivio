@@ -22,7 +22,8 @@ pub fn is_supported_ext(path: &Path) -> bool {
 
 const SUPPORTED: &[&str] = &[
     "txt", "text", "log", "csv", "tsv", "md", "markdown", "mdown", "mkd", "pdf", "docx", "xlsx",
-    "html", "htm", // image exts: accepted at upload time, OCR'd by process_document before parse.
+    "html",
+    "htm", // image exts: accepted at upload time, OCR'd by process_document before parse.
     "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif",
 ];
 
@@ -186,6 +187,9 @@ mod tests {
         assert!(text.contains("Hello world"), "got: {text:?}");
         assert!(text.contains("第二段 & 实体"), "got: {text:?}");
         // paragraph boundary preserved
-        assert!(text.contains("world\n第二段") || text.contains("world \n第二段"), "got: {text:?}");
+        assert!(
+            text.contains("world\n第二段") || text.contains("world \n第二段"),
+            "got: {text:?}"
+        );
     }
 }

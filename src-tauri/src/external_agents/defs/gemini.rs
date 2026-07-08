@@ -1,12 +1,11 @@
 use super::super::types::{
-    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef,
-    RuntimeBuildOptions, RuntimeContext, SlashStrategy, StreamFormat,
+    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
+    SlashStrategy, StreamFormat,
 };
 
 const GEMINI_ENV: &[(&str, &str)] = &[("GEMINI_CLI_TRUST_WORKSPACE", "true")];
 
 const FALLBACK_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
     ("gemini-3-pro-preview", "gemini-3-pro-preview"),
     ("gemini-3-flash-preview", "gemini-3-flash-preview"),
     ("gemini-2.5-pro", "gemini-2.5-pro"),

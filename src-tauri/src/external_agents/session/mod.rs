@@ -56,6 +56,17 @@ pub struct AgentResumeContext {
     pub is_resuming: bool,
     pub stored_stable_prompt_hash: Option<String>,
     pub skip_instructions: bool,
+    /// Effective model at delivery time, normalized (empty / "default" → `None`). Persisted
+    /// alongside the session so a later turn that picks a different model can detect it and
+    /// start a fresh session instead of resuming (Claude bakes model into the resumed session).
+    pub delivered_model: Option<String>,
+}
+
+fn normalize_model(model: Option<&str>) -> Option<String> {
+    model
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "default")
+        .map(str::to_string)
 }
 
 pub fn resolve_agent_resume_context(
@@ -64,7 +75,10 @@ pub fn resolve_agent_resume_context(
     agent_id: &str,
     resumes_via_cli: bool,
     instructions: &str,
+    current_model: Option<&str>,
+    is_slash: bool,
 ) -> AgentResumeContext {
+    let delivered_model = normalize_model(current_model);
     if !resumes_via_cli {
         return AgentResumeContext {
             resume_session_id: None,
@@ -72,11 +86,33 @@ pub fn resolve_agent_resume_context(
             is_resuming: false,
             stored_stable_prompt_hash: None,
             skip_instructions: false,
+            delivered_model,
         };
     }
 
     let hash = stable_prompt_hash(instructions);
     if let Some(stored) = load_session(app, conversation_id).filter(|s| s.agent_id == agent_id) {
+        // Model mismatch → the CLI's stored session is pinned to the old model; force a fresh
+        // one so the newly-selected model actually takes effect. Exception: a slash command
+        // (`/compact`, `/clear`, …) is meta-work on the CURRENT session — starting a new one
+        // would send the slash into an empty context and produce nothing useful. Keep resuming
+        // and let the next non-slash turn pick up the model switch instead. In that case the
+        // effective delivered model is still the stored one (the CLI ignores `--model` on
+        // `--resume`), so surface it as such and let `persist_delivered_session` skip writing.
+        let effective_delivered = if is_slash {
+            stored.model.clone()
+        } else if stored.model != delivered_model {
+            return AgentResumeContext {
+                resume_session_id: None,
+                new_session_id: Some(Uuid::new_v4().to_string()),
+                is_resuming: false,
+                stored_stable_prompt_hash: None,
+                skip_instructions: false,
+                delivered_model,
+            };
+        } else {
+            delivered_model
+        };
         let skip = stored
             .stable_prompt_hash
             .as_ref()
@@ -87,6 +123,7 @@ pub fn resolve_agent_resume_context(
             is_resuming: true,
             stored_stable_prompt_hash: stored.stable_prompt_hash.clone(),
             skip_instructions: skip,
+            delivered_model: effective_delivered,
         };
     }
 
@@ -96,6 +133,7 @@ pub fn resolve_agent_resume_context(
         is_resuming: false,
         stored_stable_prompt_hash: None,
         skip_instructions: false,
+        delivered_model,
     }
 }
 
@@ -105,7 +143,15 @@ pub fn persist_delivered_session(
     agent_id: &str,
     resume_ctx: &AgentResumeContext,
     instructions: &str,
+    is_slash: bool,
 ) -> Result<(), String> {
+    // Slash turns pass the raw slash text as `instructions` (no daemon prompt, no memory), so
+    // rewriting the stored hash from them would poison the next non-slash turn's diff check.
+    // Same reasoning for `delivered_model`: on a resume-under-slash we intentionally kept it as
+    // the stored model, so there's nothing to write.
+    if is_slash {
+        return Ok(());
+    }
     if !resume_ctx.is_resuming {
         if let Some(session_id) = resume_ctx.new_session_id.as_ref() {
             save_session(
@@ -115,6 +161,7 @@ pub fn persist_delivered_session(
                     agent_id: agent_id.to_string(),
                     session_id: session_id.clone(),
                     stable_prompt_hash: Some(stable_prompt_hash(instructions)),
+                    model: resume_ctx.delivered_model.clone(),
                 },
             )?;
         }
@@ -123,6 +170,7 @@ pub fn persist_delivered_session(
     {
         if let Some(mut stored) = load_session(app, conversation_id) {
             stored.stable_prompt_hash = Some(stable_prompt_hash(instructions));
+            stored.model = resume_ctx.delivered_model.clone();
             save_session(app, &stored)?;
         }
     }

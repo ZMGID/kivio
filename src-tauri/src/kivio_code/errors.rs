@@ -29,7 +29,8 @@ pub fn friendly_error(raw: &str) -> String {
         || lower.contains("insufficient balance")
         || lower.contains("payment required")
     {
-        return "供应商余额不足 (402)。请充值、更换 API key，或用 /model 切换到其他模型。".to_string();
+        return "供应商余额不足 (402)。请充值、更换 API key，或用 /model 切换到其他模型。"
+            .to_string();
     }
 
     // 401 / 403 鉴权失败。
@@ -145,7 +146,10 @@ mod tests {
         // The raw JSON blob and the retry-count noise must be gone.
         assert!(!out.contains('{'), "must not leak raw JSON: {out}");
         assert!(!out.contains("attempt"), "must strip (attempt N/M): {out}");
-        assert!(!out.contains("Insufficient Balance"), "must not echo raw msg: {out}");
+        assert!(
+            !out.contains("Insufficient Balance"),
+            "must not echo raw msg: {out}"
+        );
     }
 
     #[test]
@@ -188,7 +192,10 @@ mod tests {
         let raw = "something totally unexpected went wrong here";
         let out = friendly_error(raw);
         assert!(out.starts_with("请求失败"), "got: {out}");
-        assert!(out.contains("something totally unexpected"), "keeps the useful text: {out}");
+        assert!(
+            out.contains("something totally unexpected"),
+            "keeps the useful text: {out}"
+        );
         assert!(!out.contains('{'));
     }
 
@@ -197,7 +204,10 @@ mod tests {
         let raw = "weird provider failure - {\"error\":{\"message\":\"a very long blob that should not be shown to the user at all because it is huge and noisy\"}}";
         let out = friendly_error(raw);
         assert!(!out.contains('{'), "must not show the JSON blob: {out}");
-        assert!(out.contains("weird provider failure"), "keeps the head: {out}");
+        assert!(
+            out.contains("weird provider failure"),
+            "keeps the head: {out}"
+        );
     }
 
     #[test]

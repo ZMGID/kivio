@@ -30,7 +30,7 @@ pub mod slash;
 pub mod tool_card;
 
 pub use agent_host::{AgentUiEvent, Generations, InteractiveAgentHost, RunCancel};
-pub use app::{App, AppEffect, AppMode, AgentMode, ToolCard, ToolCardPlaceholder};
+pub use app::{AgentMode, App, AppEffect, AppMode, ToolCard, ToolCardPlaceholder};
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -195,7 +195,13 @@ impl TurnRuntime {
         self.runtime_messages
             .push(json!({ "role": "user", "content": text.clone() }));
 
-        self.spawn_turn(text, image_paths, agent_tx, plan_mode, offer_enter_plan_mode);
+        self.spawn_turn(
+            text,
+            image_paths,
+            agent_tx,
+            plan_mode,
+            offer_enter_plan_mode,
+        );
     }
 
     /// Spawn 一轮 agent loop，**不** push 新 user 消息——上下文（含最后一条 user）已在
@@ -267,8 +273,7 @@ impl TurnRuntime {
                     let (parts, errors) =
                         crate::kivio_code::vision::inline_image_parts(&image_paths);
                     if !parts.is_empty() {
-                        messages =
-                            crate::kivio_code::vision::inject_inline_images(messages, parts);
+                        messages = crate::kivio_code::vision::inject_inline_images(messages, parts);
                     }
                     if !errors.is_empty() {
                         // best-effort：读图失败（极罕见，路径来自刚校验的 pending image）不致命，
@@ -549,18 +554,21 @@ impl TurnRuntime {
     /// `runtime_messages` 并把 footer ctx gauge 刷到压缩后的小值，推一条 transcript 通知。
     /// 无可摘要旧段 / 空摘要 / 失败时不改 runtime_messages，仅推一条说明。
     fn compact_now(&mut self, focus: Option<&str>, app: &mut App) {
-        let before = crate::chat::agent::compaction::estimate_messages_tokens(&self.runtime_messages);
-        let compacted = self.handle.block_on(crate::chat::agent::compaction::force_compact(
-            &self.state,
-            &self.assembly.provider,
-            &self.assembly.model,
-            &self.runtime_messages,
-            self.assembly.max_output_tokens,
-            self.assembly.retry_attempts,
-            "kivio-code",
-            "kivio-code-compact",
-            focus,
-        ));
+        let before =
+            crate::chat::agent::compaction::estimate_messages_tokens(&self.runtime_messages);
+        let compacted = self
+            .handle
+            .block_on(crate::chat::agent::compaction::force_compact(
+                &self.state,
+                &self.assembly.provider,
+                &self.assembly.model,
+                &self.runtime_messages,
+                self.assembly.max_output_tokens,
+                self.assembly.retry_attempts,
+                "kivio-code",
+                "kivio-code-compact",
+                focus,
+            ));
         match compacted {
             Some(compacted) => {
                 self.runtime_messages = compacted;
@@ -621,9 +629,8 @@ impl TurnRuntime {
                 // agent loop's compaction uses (compaction::estimate_messages_tokens), so
                 // the displayed % lines up with the 0.85 compaction trigger.
                 app.set_context_tokens(Some(
-                    crate::chat::agent::compaction::estimate_messages_tokens(
-                        &self.runtime_messages,
-                    ) as u64,
+                    crate::chat::agent::compaction::estimate_messages_tokens(&self.runtime_messages)
+                        as u64,
                 ));
 
                 // build→plan 自动切换判定（仅成功轮）：
@@ -705,7 +712,10 @@ impl TurnRuntime {
     /// 持久化一条工具调用 + 结果（一个 call_id 只落一次，取其终态）。
     fn persist_tool_record(&mut self, record: &ToolCallRecord) {
         // 仅在终态落盘，且每个 call_id 只落一次。
-        if matches!(record.status, ToolCallStatus::Pending | ToolCallStatus::Running) {
+        if matches!(
+            record.status,
+            ToolCallStatus::Pending | ToolCallStatus::Running
+        ) {
             return;
         }
         if !self.persisted_tool_calls.insert(record.id.clone()) {
@@ -812,11 +822,12 @@ pub fn run(options: InteractiveOptions) -> std::io::Result<()> {
             // async), then merged into the per-turn tool set by `into_config`.
             // Block on the runtime since `run()` itself is sync. Stub returns
             // empty, so this is a no-op until MCP is wired up.
-            let mcp_tools = runtime
-                .handle()
-                .block_on(crate::kivio_code::mcp_setup::collect_mcp_tools(
-                    &state, &settings,
-                ));
+            let mcp_tools =
+                runtime
+                    .handle()
+                    .block_on(crate::kivio_code::mcp_setup::collect_mcp_tools(
+                        &state, &settings,
+                    ));
             assembly.set_mcp_tools(mcp_tools);
             let timeout_ms = assembly.effective_chat_tools.tool_timeout_ms;
             // The branded welcome header (rendered by App::render) replaces the old
@@ -1056,7 +1067,10 @@ fn format_mcp_summary(
         } else if s.connected {
             format!("connected · {} tools", s.tools.len())
         } else {
-            format!("error: {}", s.error.as_deref().unwrap_or("connection failed"))
+            format!(
+                "error: {}",
+                s.error.as_deref().unwrap_or("connection failed")
+            )
         };
         let line = format!(
             "  {BOLD}{}{BOLD_OFF}  {DIM}[{}]{DIM_OFF}  {DIM}{}{DIM_OFF}",
@@ -1387,8 +1401,16 @@ fn spawn_input_thread(tx: Sender<InputEvent>) {
 
         loop {
             // 若缓冲里有残留（不完整序列），只等 ESC_DISAMBIGUATION_MS；否则无限等待。
-            let timeout_ms: i32 = if buffer.pending().is_empty() { -1 } else { ESC_DISAMBIGUATION_MS };
-            let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            let timeout_ms: i32 = if buffer.pending().is_empty() {
+                -1
+            } else {
+                ESC_DISAMBIGUATION_MS
+            };
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
             // SAFETY: 单个有效 pollfd，count=1。
             let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
 
@@ -1538,7 +1560,10 @@ mod tests {
             split_model_label("openai:gpt-4o"),
             (Some("openai".to_string()), Some("gpt-4o".to_string()))
         );
-        assert_eq!(split_model_label("gpt-4o"), (None, Some("gpt-4o".to_string())));
+        assert_eq!(
+            split_model_label("gpt-4o"),
+            (None, Some("gpt-4o".to_string()))
+        );
         assert_eq!(split_model_label("<no model>"), (None, None));
         assert_eq!(split_model_label(""), (None, None));
     }
@@ -1591,9 +1616,15 @@ mod tests {
             single line width so it must be cut and never shows later sentences. Second one here.";
         let out = format_skill_summary(&[skill("alpha", long, true)], 60);
         // No second sentence text survives (first-sentence + cap drop it).
-        assert!(!out.contains("Second one"), "should not keep later sentences:\n{out}");
+        assert!(
+            !out.contains("Second one"),
+            "should not keep later sentences:\n{out}"
+        );
         // It was truncated → ellipsis present.
-        assert!(out.contains('…'), "long desc should be truncated with ellipsis:\n{out}");
+        assert!(
+            out.contains('…'),
+            "long desc should be truncated with ellipsis:\n{out}"
+        );
     }
 
     /// Disabled skills are marked `(off)`.
@@ -1618,7 +1649,11 @@ mod tests {
             enabled: true,
             connected,
             tools: tools.iter().map(|t| t.to_string()).collect(),
-            error: if connected { None } else { Some("boom".to_string()) },
+            error: if connected {
+                None
+            } else {
+                Some("boom".to_string())
+            },
         }
     }
 
@@ -1677,8 +1712,14 @@ mod tests {
         let s1 = ctx_estimate(&messages);
         messages.push(json!({ "role": "assistant", "content": "Here is a summary of the file." }));
         let s2 = ctx_estimate(&messages);
-        assert!(s0 < s1, "user message should grow the estimate ({s0} < {s1})");
-        assert!(s1 < s2, "assistant message should grow the estimate ({s1} < {s2})");
+        assert!(
+            s0 < s1,
+            "user message should grow the estimate ({s0} < {s1})"
+        );
+        assert!(
+            s1 < s2,
+            "assistant message should grow the estimate ({s1} < {s2})"
+        );
     }
 
     #[test]
@@ -1689,7 +1730,10 @@ mod tests {
         let messages = vec![json!({ "role": "user", "content": content })];
         let est = ctx_estimate(&messages);
         // 400 ASCII chars div_ceil 4 = 100, + 4 per-message overhead = 104.
-        assert!((100..=110).contains(&est), "estimate {est} should be ~chars/4");
+        assert!(
+            (100..=110).contains(&est),
+            "estimate {est} should be ~chars/4"
+        );
     }
 
     #[test]
@@ -1743,8 +1787,8 @@ mod tests {
     }
 
     fn unique_cwd(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("kivio-code-turn-{tag}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("kivio-code-turn-{tag}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp cwd");
         dir
     }
@@ -1777,7 +1821,11 @@ mod tests {
         (rt, done_rx)
     }
 
-    fn result_with(content: &str, api_messages: Vec<Value>, tool_records: Vec<ToolCallRecord>) -> AgentRunResult {
+    fn result_with(
+        content: &str,
+        api_messages: Vec<Value>,
+        tool_records: Vec<ToolCallRecord>,
+    ) -> AgentRunResult {
         AgentRunResult {
             content: content.to_string(),
             reasoning: None,
@@ -1868,13 +1916,21 @@ mod tests {
         // Turn 1.
         rt.runtime_messages
             .push(json!({ "role": "user", "content": "first" }));
-        let r1 = result_with("answer one", vec![json!({ "role": "assistant", "content": "answer one" })], Vec::new());
+        let r1 = result_with(
+            "answer one",
+            vec![json!({ "role": "assistant", "content": "answer one" })],
+            Vec::new(),
+        );
         rt.accumulate_runtime_messages(&r1);
 
         // Turn 2 carries turn-1 context.
         rt.runtime_messages
             .push(json!({ "role": "user", "content": "second" }));
-        let r2 = result_with("answer two", vec![json!({ "role": "assistant", "content": "answer two" })], Vec::new());
+        let r2 = result_with(
+            "answer two",
+            vec![json!({ "role": "assistant", "content": "answer two" })],
+            Vec::new(),
+        );
         rt.accumulate_runtime_messages(&r2);
 
         // system + (user1 + assistant1) + (user2 + assistant2) = base + 4
@@ -2063,8 +2119,15 @@ mod tests {
         // Applying the followup switches back to build and pauses (Idle, no new turn).
         let (agent_tx, _agent_rx) = mpsc::channel::<AgentUiEvent>();
         apply_turn_followup(followup, &mut app, &agent_tx, &mut rt);
-        assert_eq!(app.agent_mode(), AgentMode::Build, "paused back in build mode");
-        assert!(!rt.is_generating(), "must NOT auto-start a build turn — pause point");
+        assert_eq!(
+            app.agent_mode(),
+            AgentMode::Build,
+            "paused back in build mode"
+        );
+        assert!(
+            !rt.is_generating(),
+            "must NOT auto-start a build turn — pause point"
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -2091,7 +2154,11 @@ mod tests {
             message_id: "m1".to_string(),
         };
         let followup = rt.finish_turn(done, &mut app);
-        assert_eq!(followup, TurnFollowup::None, "auto_plan off → no auto switch");
+        assert_eq!(
+            followup,
+            TurnFollowup::None,
+            "auto_plan off → no auto switch"
+        );
         assert!(!app.auto_plan_pending());
         assert_eq!(app.agent_mode(), AgentMode::Build, "mode unchanged");
 
@@ -2118,8 +2185,16 @@ mod tests {
             message_id: "m1".to_string(),
         };
         let followup = rt.finish_turn(done, &mut app);
-        assert_eq!(followup, TurnFollowup::None, "manual plan must not auto-pause back");
-        assert_eq!(app.agent_mode(), AgentMode::Plan, "stays in plan after manual plan turn");
+        assert_eq!(
+            followup,
+            TurnFollowup::None,
+            "manual plan must not auto-pause back"
+        );
+        assert_eq!(
+            app.agent_mode(),
+            AgentMode::Plan,
+            "stays in plan after manual plan turn"
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -2236,7 +2311,10 @@ mod tests {
         // Must be the small conversation estimate, NOT the 900k summed usage. (The system
         // prompt includes the auto-plan guidance note when auto_plan is on, so the floor is
         // a couple thousand tokens — still orders of magnitude below the summed usage.)
-        assert!(ctx < 5_000, "ctx {ctx} must reflect the small conversation, not summed usage");
+        assert!(
+            ctx < 5_000,
+            "ctx {ctx} must reflect the small conversation, not summed usage"
+        );
         // And it must match the compaction estimator over the accumulated transcript.
         assert_eq!(ctx, ctx_estimate(&rt.runtime_messages));
 
@@ -2284,7 +2362,10 @@ mod tests {
         // ctx gauge is the small system-prompt baseline, NOT the prior large value.
         let ctx = app.context_tokens().expect("ctx set after reset");
         assert_eq!(ctx, ctx_estimate(&rt.runtime_messages));
-        assert!(ctx < big, "ctx {ctx} must drop below the prior large value {big}");
+        assert!(
+            ctx < big,
+            "ctx {ctx} must drop below the prior large value {big}"
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -2342,7 +2423,10 @@ mod tests {
         let ctx = app.context_tokens().expect("startup ctx set");
         assert_eq!(ctx, ctx_estimate(&rt.runtime_messages));
         // The system-prompt baseline is small (a few k at most), not nothing/huge.
-        assert!(ctx < 5_000, "startup ctx {ctx} should be the small system-prompt baseline");
+        assert!(
+            ctx < 5_000,
+            "startup ctx {ctx} should be the small system-prompt baseline"
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -2456,7 +2540,10 @@ mod tests {
         // Resolution value (selector / resume) is id-based.
         assert_eq!(rt.model_label(), "provider-1780492912291:deepseek-v4-flash");
         // Display label is the human-readable provider name.
-        assert_eq!(rt.model_display_label(), "DeepSeek Pool · deepseek-v4-flash");
+        assert_eq!(
+            rt.model_display_label(),
+            "DeepSeek Pool · deepseek-v4-flash"
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -2476,7 +2563,10 @@ mod tests {
         let label = rt.switch_model(&value).expect("switch resolves");
         assert_eq!(label, "provider-1780492912291:deepseek-v4-flash");
         // …and the display label is still name-based.
-        assert_eq!(rt.model_display_label(), "DeepSeek Pool · deepseek-v4-flash");
+        assert_eq!(
+            rt.model_display_label(),
+            "DeepSeek Pool · deepseek-v4-flash"
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -2556,7 +2646,9 @@ mod tests {
         assert!(session.is_some());
         // system + user
         assert!(messages.iter().any(|m| m["role"] == "system"));
-        assert!(messages.iter().any(|m| m["content"] == "summarize the readme"));
+        assert!(messages
+            .iter()
+            .any(|m| m["content"] == "summarize the readme"));
         // transcript shows the user message.
         assert!(app.render(80).join("\n").contains("summarize the readme"));
 
@@ -2629,8 +2721,11 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             model: "chat:m1".to_string(),
         };
-        std::fs::write(&empty.path, format!("{}\n", serde_json::to_string(&header).unwrap()))
-            .unwrap();
+        std::fs::write(
+            &empty.path,
+            format!("{}\n", serde_json::to_string(&header).unwrap()),
+        )
+        .unwrap();
 
         let settings = test_settings();
         let assembly = TurnAssembly::resolve(&settings, None, None, &cwd, true).unwrap();
@@ -2643,7 +2738,10 @@ mod tests {
         assert!(session.is_some());
         assert!(messages.is_empty());
         let rendered = app.render(80).join("\n");
-        assert!(!rendered.contains("Resumed session."), "no false resume notice");
+        assert!(
+            !rendered.contains("Resumed session."),
+            "no false resume notice"
+        );
 
         let _ = std::fs::remove_dir_all(&cwd);
         let _ = std::fs::remove_dir_all(crate::kivio_code::session::session_dir_for_cwd(&cwd));
@@ -2663,8 +2761,11 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             model: "chat:m1".to_string(),
         };
-        std::fs::write(&empty.path, format!("{}\n", serde_json::to_string(&header).unwrap()))
-            .unwrap();
+        std::fs::write(
+            &empty.path,
+            format!("{}\n", serde_json::to_string(&header).unwrap()),
+        )
+        .unwrap();
 
         // A real session with a user message.
         let mut real = Session::create(&cwd, "chat:m1").unwrap();
@@ -2708,10 +2809,16 @@ mod tests {
         app.set_terminal_rows(24);
         assert!(rt.resume_session_path(&other_path, &mut app));
         // runtime_messages rebuilt from the chosen session (system + user).
-        assert!(rt.runtime_messages.iter().any(|m| m["content"] == "earlier question"));
+        assert!(rt
+            .runtime_messages
+            .iter()
+            .any(|m| m["content"] == "earlier question"));
         assert!(rt.runtime_messages.iter().any(|m| m["role"] == "system"));
         // session now points at the resumed file.
-        assert_eq!(rt.session.as_ref().unwrap().path.to_string_lossy(), other_path);
+        assert_eq!(
+            rt.session.as_ref().unwrap().path.to_string_lossy(),
+            other_path
+        );
         // ctx gauge is refreshed from the resumed conversation size immediately,
         // using the same compaction estimator.
         assert_eq!(

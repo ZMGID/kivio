@@ -39,14 +39,16 @@ use crate::state::AppState;
 use super::storage::{
     archive_assistant, assistant_snapshot, conversation_attachments_dir, create_assistant,
     create_project, create_set, delete_conversation as delete_conv, delete_project, delete_set,
-    duplicate_assistant, find_project_by_id, find_project_by_name, find_reusable_blank_conversation,
-    find_set_by_id, get_assistants, get_conversations as get_convs, get_projects, get_sets,
-    load_conversation, save_conversation, update_assistant, update_project, update_set,
+    duplicate_assistant, find_project_by_id, find_project_by_name,
+    find_reusable_blank_conversation, find_set_by_id, get_assistants,
+    get_conversations as get_convs, get_projects, get_sets, load_conversation, save_conversation,
+    update_assistant, update_project, update_set,
 };
 use super::{
     AgentPlanState, AgentTodoState, Attachment, ChatAssistant, ChatMessage, ChatMessageSegment,
-    ChatMessageSegmentKind, ChatMessageSegmentPhase, ContextUsageSegment, Conversation,
-    ConversationContextState, ConversationContextSummary, CompactionBoundaryRecord, ForkOrigin, ToolCallRecord, ToolCallStatus,
+    ChatMessageSegmentKind, ChatMessageSegmentPhase, CompactionBoundaryRecord, ContextUsageSegment,
+    Conversation, ConversationContextState, ConversationContextSummary, ForkOrigin, ToolCallRecord,
+    ToolCallStatus,
 };
 
 const DIRECT_IMAGE_GENERATION_PENDING: &str = "[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]";
@@ -123,7 +125,8 @@ impl<'a> ChatSendReservation<'a> {
 
 impl Drop for ChatSendReservation<'_> {
     fn drop(&mut self) {
-        self.state.end_chat_reply(&self.conversation_id, &self.run_id);
+        self.state
+            .end_chat_reply(&self.conversation_id, &self.run_id);
     }
 }
 
@@ -159,7 +162,8 @@ impl<'a> ChatReplyGuard<'a> {
 
 impl Drop for ChatReplyGuard<'_> {
     fn drop(&mut self) {
-        self.state.end_chat_reply(&self.conversation_id, &self.run_id);
+        self.state
+            .end_chat_reply(&self.conversation_id, &self.run_id);
         self.state
             .end_chat_generation(&self.conversation_id, self.generation);
     }
@@ -757,10 +761,16 @@ pub(crate) fn chat_create_builder_conversation(
 ) -> Result<serde_json::Value, String> {
     let settings = state.settings_read().clone();
     let (default_provider_id, default_model) = settings.effective_chat_model();
-    let provider_id = provider_id.and_then(non_empty_string).unwrap_or(default_provider_id);
+    let provider_id = provider_id
+        .and_then(non_empty_string)
+        .unwrap_or(default_provider_id);
     let model = model.and_then(non_empty_string).unwrap_or(default_model);
 
-    let project = match project_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let project = match project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(pid) => Some(find_project_by_id(&app, pid)?),
         None => None,
     };
@@ -1005,10 +1015,7 @@ pub(crate) fn chat_update_set(
 }
 
 #[tauri::command]
-pub(crate) fn chat_delete_set(
-    app: AppHandle,
-    set_id: String,
-) -> Result<serde_json::Value, String> {
+pub(crate) fn chat_delete_set(app: AppHandle, set_id: String) -> Result<serde_json::Value, String> {
     delete_set(&app, &set_id)?;
     Ok(serde_json::json!({ "success": true }))
 }
@@ -1049,8 +1056,12 @@ pub(crate) async fn chat_compress_context(
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
     if conversation.agent_runtime.is_external() {
-        crate::external_agents::compact::request_external_compaction(&app, &state, &mut conversation)
-            .await?;
+        crate::external_agents::compact::request_external_compaction(
+            &app,
+            &state,
+            &mut conversation,
+        )
+        .await?;
         conversation.updated_at = chrono::Local::now().timestamp();
         save_conversation(&app, &conversation)?;
         let context_state = conversation.context_state.clone();
@@ -1141,32 +1152,30 @@ fn approve_agent_plan_for_execution(
     conversation: &mut Conversation,
     message_id: Option<&str>,
 ) -> Result<(), String> {
-    let selected_plan = if let Some(message_id) = message_id
-        .map(str::trim)
-        .filter(|id| !id.is_empty()) {
-        Some({
-            let message = conversation
-                .messages
-                .iter_mut()
-                .find(|message| message.id == message_id && message.role == "assistant")
-                .ok_or_else(|| "计划消息不存在".to_string())?;
-            let plan_state = message
-                .agent_plan
-                .as_ref()
-                .ok_or_else(|| "该消息不是可执行计划".to_string())?;
-            if crate::chat::plan::executable_plan_text(plan_state).is_none() {
-                return Err("该消息不是可执行计划".to_string());
-            }
-            let approved = crate::chat::plan::approve(plan_state);
-            message.agent_plan = Some(approved.clone());
-            approved
-        })
-    } else {
-        None
-    };
-    conversation.agent_plan_state = selected_plan.unwrap_or_else(|| {
-        crate::chat::plan::approve(&conversation.agent_plan_state)
-    });
+    let selected_plan =
+        if let Some(message_id) = message_id.map(str::trim).filter(|id| !id.is_empty()) {
+            Some({
+                let message = conversation
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id && message.role == "assistant")
+                    .ok_or_else(|| "计划消息不存在".to_string())?;
+                let plan_state = message
+                    .agent_plan
+                    .as_ref()
+                    .ok_or_else(|| "该消息不是可执行计划".to_string())?;
+                if crate::chat::plan::executable_plan_text(plan_state).is_none() {
+                    return Err("该消息不是可执行计划".to_string());
+                }
+                let approved = crate::chat::plan::approve(plan_state);
+                message.agent_plan = Some(approved.clone());
+                approved
+            })
+        } else {
+            None
+        };
+    conversation.agent_plan_state =
+        selected_plan.unwrap_or_else(|| crate::chat::plan::approve(&conversation.agent_plan_state));
     Ok(())
 }
 
@@ -1502,7 +1511,12 @@ pub(crate) fn chat_list_background_commands(state: State<AppState>) -> Vec<serde
     let map = map.lock().unwrap_or_else(|e| e.into_inner());
     let mut jobs: Vec<&crate::native_tools::BackgroundCommand> = map
         .values()
-        .filter(|j| matches!(j.status, crate::native_tools::BackgroundCommandStatus::Running))
+        .filter(|j| {
+            matches!(
+                j.status,
+                crate::native_tools::BackgroundCommandStatus::Running
+            )
+        })
         .collect();
     jobs.sort_by_key(|j| j.started_at);
     jobs.into_iter()
@@ -1524,7 +1538,8 @@ pub(crate) fn chat_kill_background_command(
     state: State<AppState>,
     job_id: String,
 ) -> Result<(), String> {
-    crate::native_tools::kill_background(&state, &serde_json::json!({ "job_id": job_id })).map(|_| ())
+    crate::native_tools::kill_background(&state, &serde_json::json!({ "job_id": job_id }))
+        .map(|_| ())
 }
 
 /// 响应会话级文件/命令工具授权请求(按 conversation_id)。
@@ -1833,8 +1848,10 @@ async fn complete_assistant_reply_inner(
     let language = crate::settings::resolve_chat_language(&settings);
     let stream_enabled = settings.chat.stream_enabled;
     // 思考：每对话等级覆盖全局开关。None=跟随全局（现状）；"off"=强制关；low/medium/high=按家族注入。
-    let (thinking_enabled, thinking_level) =
-        resolve_thinking(conversation.thinking_level.as_deref(), settings.chat.thinking_enabled);
+    let (thinking_enabled, thinking_level) = resolve_thinking(
+        conversation.thinking_level.as_deref(),
+        settings.chat.thinking_enabled,
+    );
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
     } else {
@@ -2109,10 +2126,9 @@ async fn complete_assistant_reply_inner(
         .filter(|prompt| !prompt.trim().is_empty());
     let obsidian_vault_path = (!settings.obsidian_vault_path.trim().is_empty())
         .then_some(settings.obsidian_vault_path.as_str());
-    let himalaya_binary = crate::connectors::himalaya::resolve_himalaya_binary_when_active(
-        &settings.email_accounts,
-    )
-    .map(|path| path.display().to_string());
+    let himalaya_binary =
+        crate::connectors::himalaya::resolve_himalaya_binary_when_active(&settings.email_accounts)
+            .map(|path| path.display().to_string());
     let email_accounts_prompt = crate::settings::email_accounts_system_prompt(
         &settings.email_accounts,
         &language,
@@ -2191,7 +2207,9 @@ async fn complete_assistant_reply_inner(
     // probe（无头测试通道，仅 debug）：换用自动放行审批/consent/ask_user 的 host，
     // 否则模型调用敏感工具或 ask_user 会 await GUI 应答而永久挂起。
     #[cfg(debug_assertions)]
-    let probe_host = ProbeAgentHost { state: state.inner() };
+    let probe_host = ProbeAgentHost {
+        state: state.inner(),
+    };
     let host: &dyn crate::chat::agent::AgentHost = {
         #[cfg(debug_assertions)]
         {
@@ -2428,8 +2446,14 @@ async fn run_reply_fan_out(
             Err(err) => {
                 // 报错臂也保留为一列：否则整列被吞、只剩能正常回答的模型。合成一条
                 // content=错误信息、stream_outcome="error" 的 assistant 列消息落库。
-                let message =
-                    build_error_arm_message(group_id, provider_id, model, err.clone(), run_entry, active_skill_id);
+                let message = build_error_arm_message(
+                    group_id,
+                    provider_id,
+                    model,
+                    err.clone(),
+                    run_entry,
+                    active_skill_id,
+                );
                 upsert_assistant_message(conversation, message);
                 produced += 1;
                 if first_error.is_none() {
@@ -3572,8 +3596,7 @@ fn try_apply_skill_slash_trigger(
         &record.meta.id,
         email_accounts,
         obsidian_vault_configured,
-    )
-    {
+    ) {
         // A disabled or out-of-allow-list skill's slash command is left as ordinary text.
         return None;
     }
@@ -4067,7 +4090,10 @@ fn resolve_usage_anchor(
             }
             let usage = message.anchor_usage.as_ref()?;
             // provider 切换后旧锚点作废：单模型回退会话级 provider_id；多模型每条自带 provider_id。
-            let msg_provider = message.provider_id.as_deref().unwrap_or(&conversation.provider_id);
+            let msg_provider = message
+                .provider_id
+                .as_deref()
+                .unwrap_or(&conversation.provider_id);
             if msg_provider != provider.id {
                 return None;
             }
@@ -4226,10 +4252,9 @@ async fn compute_context_state(
     );
     let obsidian_vault_path = (!settings.obsidian_vault_path.trim().is_empty())
         .then_some(settings.obsidian_vault_path.as_str());
-    let himalaya_binary = crate::connectors::himalaya::resolve_himalaya_binary_when_active(
-        &settings.email_accounts,
-    )
-    .map(|path| path.display().to_string());
+    let himalaya_binary =
+        crate::connectors::himalaya::resolve_himalaya_binary_when_active(&settings.email_accounts)
+            .map(|path| path.display().to_string());
     let email_accounts_prompt = crate::settings::email_accounts_system_prompt(
         &settings.email_accounts,
         &language,
@@ -4439,9 +4464,8 @@ async fn try_auto_compress_context_after_update(
         }
         Err(err) => {
             eprintln!("Auto context compression failed: {err}");
-            conversation.context_state.warning = Some(format!(
-                "Automatic compression failed: {err}."
-            ));
+            conversation.context_state.warning =
+                Some(format!("Automatic compression failed: {err}."));
         }
     }
 }
@@ -4558,10 +4582,7 @@ async fn list_tools_for_chat(
     if let Some((provider_id, model)) =
         crate::chat::model_metadata::image_generation_model_for_session(settings, session)
     {
-        if !tools
-            .iter()
-            .any(|tool| tool.name == "mixer_generate_image")
-        {
+        if !tools.iter().any(|tool| tool.name == "mixer_generate_image") {
             let mut tool = mcp::types::mixer_generate_image_tool();
             let provider_name = settings
                 .get_provider(&provider_id)
@@ -4730,9 +4751,8 @@ pub(crate) fn group_answer_excluded_from_context(
             // 无显式选择时，优先保留该组第一条「非错误」assistant 进上下文，跳过
             // stream_outcome == "error" 的失败臂——否则失败臂的错误文案会作为上一轮
             // 答案回灌给模型。全组皆 error（罕见）时才退回顺序第一条。
-            let in_group = |m: &&ChatMessage| {
-                m.role == "assistant" && m.group_id.as_deref() == Some(group_id)
-            };
+            let in_group =
+                |m: &&ChatMessage| m.role == "assistant" && m.group_id.as_deref() == Some(group_id);
             conversation
                 .messages
                 .iter()
@@ -5413,7 +5433,9 @@ pub(crate) async fn run_chat_probe(
                 crate::chat::types::ChatProject {
                     id: PROBE_PROJECT_ID.to_string(),
                     name: "Chat Probe".to_string(),
-                    description: Some("无头测试通道（debug）的会话都在这里，可点开观察".to_string()),
+                    description: Some(
+                        "无头测试通道（debug）的会话都在这里，可点开观察".to_string(),
+                    ),
                     color: None,
                     root_path: Some(cwd.to_string()),
                     created_at: now,
@@ -6200,8 +6222,11 @@ pub(crate) async fn chat_regenerate_message(
     // 留下指向已删消息的 group_selections，会让 group_answer_excluded_from_context 把残余
     // 答案全排除出上下文。清掉任何指向已不存在消息的选中记录，回退到「组内第一条」默认。
     if !conversation.group_selections.is_empty() {
-        let existing_ids: std::collections::HashSet<&str> =
-            conversation.messages.iter().map(|m| m.id.as_str()).collect();
+        let existing_ids: std::collections::HashSet<&str> = conversation
+            .messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
         conversation
             .group_selections
             .retain(|_, msg_id| existing_ids.contains(msg_id.as_str()));
@@ -6300,7 +6325,12 @@ pub(crate) async fn chat_delete_message(
     // group_selections 会指向已删除的 message_id，导致 group_answer_excluded_from_context
     // 把整组答案都排除出下一轮上下文（无任何答案进历史）。
     if let Some(group_id) = removed.group_id.as_deref() {
-        if conversation.group_selections.get(group_id).map(String::as_str) == Some(removed.id.as_str()) {
+        if conversation
+            .group_selections
+            .get(group_id)
+            .map(String::as_str)
+            == Some(removed.id.as_str())
+        {
             conversation.group_selections.remove(group_id);
         }
     }
@@ -6660,9 +6690,7 @@ pub(crate) fn chat_set_group_selection(
     }
     // 校验：该消息必须存在、是 assistant、且属于这个 group。
     let valid = conversation.messages.iter().any(|m| {
-        m.id == message_id
-            && m.role == "assistant"
-            && m.group_id.as_deref() == Some(group_id)
+        m.id == message_id && m.role == "assistant" && m.group_id.as_deref() == Some(group_id)
     });
     if !valid {
         return Err("选中的回答不属于该多答组".to_string());
@@ -6701,8 +6729,14 @@ mod tests {
     #[test]
     fn resolve_thinking_maps_levels_and_defaults_to_high() {
         // 未设置 → 默认档 high，不再跟随全局（全局只服务 lens / 翻译）。
-        assert_eq!(resolve_thinking(None, true), (true, Some("high".to_string())));
-        assert_eq!(resolve_thinking(None, false), (true, Some("high".to_string())));
+        assert_eq!(
+            resolve_thinking(None, true),
+            (true, Some("high".to_string()))
+        );
+        assert_eq!(
+            resolve_thinking(None, false),
+            (true, Some("high".to_string()))
+        );
         // off → 强制关。
         assert_eq!(resolve_thinking(Some("off"), true), (false, None));
         // 具体等级 → 开 + 带等级。
@@ -6724,7 +6758,10 @@ mod tests {
             (true, Some("max".to_string()))
         );
         // 未知值 → 当作未设置，落默认档 high。
-        assert_eq!(resolve_thinking(Some("ultra"), true), (true, Some("high".to_string())));
+        assert_eq!(
+            resolve_thinking(Some("ultra"), true),
+            (true, Some("high".to_string()))
+        );
     }
 
     #[test]
@@ -6750,10 +6787,10 @@ mod tests {
     fn builder_args_reject_missing_required() {
         assert!(assistant_from_builder_args(&serde_json::json!({ "system_prompt": "x" })).is_err());
         assert!(assistant_from_builder_args(&serde_json::json!({ "name": "x" })).is_err());
-        assert!(
-            assistant_from_builder_args(&serde_json::json!({ "name": "x", "system_prompt": "  " }))
-                .is_err()
-        );
+        assert!(assistant_from_builder_args(
+            &serde_json::json!({ "name": "x", "system_prompt": "  " })
+        )
+        .is_err());
     }
     fn slash_skill_record(id: &str, name: &str, triggers: Vec<&str>) -> skills::SkillRecord {
         skills::SkillRecord {
@@ -6786,12 +6823,19 @@ mod tests {
 
     #[test]
     fn slash_trigger_rewrites_body_and_pins_skill() {
-        let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
+        let registry =
+            slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
         let chat_tools = crate::settings::ChatToolsConfig::default();
 
-        let (skill_id, rewritten) =
-            try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix login", &[], false)
-                .expect("slash trigger should match");
+        let (skill_id, rewritten) = try_apply_skill_slash_trigger(
+            &registry,
+            &chat_tools,
+            None,
+            "/commit fix login",
+            &[],
+            false,
+        )
+        .expect("slash trigger should match");
 
         assert_eq!(skill_id, "commit");
         assert!(rewritten.starts_with("[Skill: Commit]\n\n"));
@@ -6802,20 +6846,46 @@ mod tests {
 
     #[test]
     fn slash_trigger_ignores_non_slash_and_unknown() {
-        let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
+        let registry =
+            slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
         let chat_tools = crate::settings::ChatToolsConfig::default();
 
-        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "commit fix", &[], false).is_none());
-        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/unknown x", &[], false).is_none());
+        assert!(try_apply_skill_slash_trigger(
+            &registry,
+            &chat_tools,
+            None,
+            "commit fix",
+            &[],
+            false
+        )
+        .is_none());
+        assert!(try_apply_skill_slash_trigger(
+            &registry,
+            &chat_tools,
+            None,
+            "/unknown x",
+            &[],
+            false
+        )
+        .is_none());
     }
 
     #[test]
     fn slash_trigger_skips_disabled_skill() {
-        let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
+        let registry =
+            slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
         let mut chat_tools = crate::settings::ChatToolsConfig::default();
         chat_tools.disabled_skill_ids = vec!["commit".to_string()];
 
-        assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix", &[], false).is_none());
+        assert!(try_apply_skill_slash_trigger(
+            &registry,
+            &chat_tools,
+            None,
+            "/commit fix",
+            &[],
+            false
+        )
+        .is_none());
     }
 
     fn test_provider(id: &str, name: &str, enabled_models: Vec<&str>) -> ModelProvider {
@@ -7307,7 +7377,12 @@ mod tests {
 
     #[test]
     fn reconcile_orphan_tool_segments_synthesizes_cancelled_record_with_recovered_meta() {
-        let mut tool_calls = vec![test_tool_record("call_ok", "native", 1, ToolCallStatus::Success)];
+        let mut tool_calls = vec![test_tool_record(
+            "call_ok",
+            "native",
+            1,
+            ToolCallStatus::Success,
+        )];
         let segments = vec![
             tool_segment(1, "call_ok", 1),
             tool_segment(2, "fc_call_function_4agzr50pp9go_1", 2),
@@ -7323,13 +7398,20 @@ mod tests {
 
         reconcile_orphan_tool_segments(&mut tool_calls, &segments, &api_messages);
 
-        assert_eq!(tool_calls.len(), 2, "orphan segment should get a synthesized record");
+        assert_eq!(
+            tool_calls.len(),
+            2,
+            "orphan segment should get a synthesized record"
+        );
         let synthesized = tool_calls
             .iter()
             .find(|r| r.id == "fc_call_function_4agzr50pp9go_1")
             .expect("synthesized record present");
         assert!(matches!(synthesized.status, ToolCallStatus::Cancelled));
-        assert_eq!(synthesized.name, "run_python", "name recovered from api_messages");
+        assert_eq!(
+            synthesized.name, "run_python",
+            "name recovered from api_messages"
+        );
         assert_eq!(synthesized.arguments, "{\"code\":\"1\"}");
         assert_eq!(synthesized.round, 2);
         assert!(synthesized.error.is_some());
@@ -7344,13 +7426,21 @@ mod tests {
 
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].id, "orphan_no_meta");
-        assert!(tool_calls[0].name.is_empty(), "no api meta → empty name fallback");
+        assert!(
+            tool_calls[0].name.is_empty(),
+            "no api meta → empty name fallback"
+        );
         assert!(matches!(tool_calls[0].status, ToolCallStatus::Cancelled));
     }
 
     #[test]
     fn reconcile_orphan_tool_segments_noop_when_all_segments_have_records() {
-        let mut tool_calls = vec![test_tool_record("call_ok", "native", 1, ToolCallStatus::Success)];
+        let mut tool_calls = vec![test_tool_record(
+            "call_ok",
+            "native",
+            1,
+            ToolCallStatus::Success,
+        )];
         let segments = vec![tool_segment(1, "call_ok", 1)];
 
         reconcile_orphan_tool_segments(&mut tool_calls, &segments, &[]);
@@ -7840,12 +7930,15 @@ mod tests {
     #[test]
     fn approve_agent_plan_rejects_non_plan_message_target() {
         let mut conversation = test_conversation_with_summary(false);
-        conversation
-            .messages
-            .push(test_chat_message("msg_plain", "assistant", "plain answer", 10));
+        conversation.messages.push(test_chat_message(
+            "msg_plain",
+            "assistant",
+            "plain answer",
+            10,
+        ));
 
-        let error = approve_agent_plan_for_execution(&mut conversation, Some("msg_plain"))
-            .unwrap_err();
+        let error =
+            approve_agent_plan_for_execution(&mut conversation, Some("msg_plain")).unwrap_err();
 
         assert_eq!(error, "该消息不是可执行计划");
     }
@@ -7893,8 +7986,7 @@ mod tests {
             "role": "assistant",
             "content": "final answer"
         })];
-        completed.model_messages =
-            vec![ModelMessage::text(ModelRole::Assistant, "final answer")];
+        completed.model_messages = vec![ModelMessage::text(ModelRole::Assistant, "final answer")];
         completed.stream_outcome = Some("completed".to_string());
 
         let mut draft = test_chat_message("msg_draft", "assistant", "partial answer", 4);
@@ -7907,8 +7999,7 @@ mod tests {
                 "function": { "name": "read_file", "arguments": "{}" }
             }]
         })];
-        draft.model_messages =
-            vec![ModelMessage::text(ModelRole::Assistant, "partial answer")];
+        draft.model_messages = vec![ModelMessage::text(ModelRole::Assistant, "partial answer")];
         draft.stream_outcome = Some("interrupted".to_string());
 
         // 旧对话：完成但没有 model_messages，回放需回落 api_messages，DTO 不应剥。
@@ -7947,7 +8038,9 @@ mod tests {
             "Global",
             vec!["gemini-3.1-flash-lite"],
         ));
-        settings.providers.push(test_provider("session", "Session", vec!["gpt-4.1"]));
+        settings
+            .providers
+            .push(test_provider("session", "Session", vec!["gpt-4.1"]));
         settings.default_models.chat.provider_id = "global".to_string();
         settings.default_models.chat.model = "gemini-3.1-flash-lite".to_string();
 
@@ -7993,10 +8086,7 @@ mod tests {
 
         assert_eq!(
             settings.effective_compression_model_for_session(Some(session)),
-            (
-                "cheap".to_string(),
-                "gemini-3.1-flash-lite".to_string()
-            )
+            ("cheap".to_string(), "gemini-3.1-flash-lite".to_string())
         );
     }
 
@@ -8131,7 +8221,7 @@ mod tests {
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
             knowledge_base_ids: Vec::new(),
-        thinking_level: None,
+            thinking_level: None,
             reply_models: Vec::new(),
             group_selections: std::collections::HashMap::new(),
             forked_from: None,
@@ -8200,8 +8290,12 @@ mod tests {
 
         // 编辑被摘要覆盖的 msg_user_1（index 0）：摘要必须标 stale（内容变了摘要即过期）。
         let mut covered = test_conversation_with_summary(false);
-        apply_regenerate_truncation(&mut covered, 0, Some("rewritten first question".to_string()))
-            .unwrap();
+        apply_regenerate_truncation(
+            &mut covered,
+            0,
+            Some("rewritten first question".to_string()),
+        )
+        .unwrap();
         assert_eq!(covered.messages.len(), 1);
         assert_eq!(covered.messages[0].content, "rewritten first question");
         assert_eq!(
@@ -8214,8 +8308,8 @@ mod tests {
     fn regenerate_truncation_rejects_bad_edit_targets() {
         // 空内容 → 报错且对话未被改动。
         let mut conversation = test_conversation_with_summary(false);
-        let err = apply_regenerate_truncation(&mut conversation, 2, Some("   ".to_string()))
-            .unwrap_err();
+        let err =
+            apply_regenerate_truncation(&mut conversation, 2, Some("   ".to_string())).unwrap_err();
         assert_eq!(err, "消息内容不能为空");
         assert_eq!(conversation.messages.len(), 4);
 
@@ -8675,10 +8769,22 @@ mod tests {
 
         // 去重（相同 provider+model）、保序、丢空、丢未知 provider。
         let many = vec![
-            ModelRef { provider_id: "openai".to_string(), model: "gpt-4o".to_string() },
-            ModelRef { provider_id: "openai".to_string(), model: "gpt-4o".to_string() }, // dup
-            ModelRef { provider_id: "anthropic".to_string(), model: "claude-3".to_string() },
-            ModelRef { provider_id: "ghost".to_string(), model: "y".to_string() }, // unknown provider
+            ModelRef {
+                provider_id: "openai".to_string(),
+                model: "gpt-4o".to_string(),
+            },
+            ModelRef {
+                provider_id: "openai".to_string(),
+                model: "gpt-4o".to_string(),
+            }, // dup
+            ModelRef {
+                provider_id: "anthropic".to_string(),
+                model: "claude-3".to_string(),
+            },
+            ModelRef {
+                provider_id: "ghost".to_string(),
+                model: "y".to_string(),
+            }, // unknown provider
         ];
         let arms = resolve_reply_arms(&settings, &many).unwrap();
         assert_eq!(
@@ -8691,8 +8797,14 @@ mod tests {
 
         // 空 provider 也被丢弃（单独验证，避免与上面的 4 条上限冲突）。
         let with_empty = vec![
-            ModelRef { provider_id: "openai".to_string(), model: "gpt-4o".to_string() },
-            ModelRef { provider_id: "".to_string(), model: "x".to_string() },
+            ModelRef {
+                provider_id: "openai".to_string(),
+                model: "gpt-4o".to_string(),
+            },
+            ModelRef {
+                provider_id: "".to_string(),
+                model: "x".to_string(),
+            },
         ];
         assert_eq!(resolve_reply_arms(&settings, &with_empty).unwrap().len(), 1);
 
@@ -8785,8 +8897,8 @@ mod tests {
         ];
         let mut conversation = test_conversation_with_messages(messages);
 
-        let built = build_chat_api_messages("system", &conversation, Some(0), None, &[])
-            .expect("build");
+        let built =
+            build_chat_api_messages("system", &conversation, Some(0), None, &[]).expect("build");
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(serialized.contains("answer one"));
         assert!(!serialized.contains("answer two"));
@@ -8796,8 +8908,8 @@ mod tests {
         conversation
             .group_selections
             .insert("grp_1".to_string(), "msg_a2".to_string());
-        let built = build_chat_api_messages("system", &conversation, Some(0), None, &[])
-            .expect("build");
+        let built =
+            build_chat_api_messages("system", &conversation, Some(0), None, &[]).expect("build");
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(!serialized.contains("answer one"));
         assert!(serialized.contains("answer two"));
@@ -8813,8 +8925,8 @@ mod tests {
             grouped_assistant("msg_a3", "answer three", "grp_1", 4),
         ];
         let conversation = test_conversation_with_messages(messages);
-        let built = build_chat_api_messages("system", &conversation, Some(0), None, &[])
-            .expect("build");
+        let built =
+            build_chat_api_messages("system", &conversation, Some(0), None, &[]).expect("build");
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(serialized.contains("answer two"));
         assert!(!serialized.contains("answer three"));
@@ -8833,8 +8945,8 @@ mod tests {
             a2,
         ];
         let conversation = test_conversation_with_messages(messages);
-        let built = build_chat_api_messages("system", &conversation, Some(0), None, &[])
-            .expect("build");
+        let built =
+            build_chat_api_messages("system", &conversation, Some(0), None, &[]).expect("build");
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(
             !serialized.contains("arm one failed"),
@@ -8854,8 +8966,8 @@ mod tests {
             test_chat_message("msg_a", "assistant", "world", 2),
         ];
         let conversation = test_conversation_with_messages(messages);
-        let built = build_chat_api_messages("system", &conversation, Some(0), None, &[])
-            .expect("build");
+        let built =
+            build_chat_api_messages("system", &conversation, Some(0), None, &[]).expect("build");
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(serialized.contains("hello"));
         assert!(serialized.contains("world"));
@@ -8881,7 +8993,10 @@ mod tests {
         // user 消息（即便带 group_id）永不被该过滤排除。
         let mut user_in_group = test_chat_message("msg_u2", "user", "uq", 4);
         user_in_group.group_id = Some("grp_1".to_string());
-        assert!(!group_answer_excluded_from_context(&conversation, &user_in_group));
+        assert!(!group_answer_excluded_from_context(
+            &conversation,
+            &user_in_group
+        ));
     }
 
     #[test]
@@ -8915,8 +9030,8 @@ mod tests {
             &conversation,
             &conversation.messages[1]
         ));
-        let built = build_chat_api_messages("system", &conversation, Some(0), None, &[])
-            .expect("build");
+        let built =
+            build_chat_api_messages("system", &conversation, Some(0), None, &[]).expect("build");
         let serialized = serde_json::to_string(&built).unwrap();
         assert!(serialized.contains("answer one"));
     }
@@ -8983,11 +9098,13 @@ mod tests {
             .iter()
             .filter_map(|m| m.group_id.as_deref().map(|g| (m.id.as_str(), g)))
             .collect();
-        let mut selections: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut selections: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         selections.insert("g1".to_string(), "s1".to_string()); // 有效：s1 仍在且仍属 g1
         selections.insert("g2".to_string(), "s3".to_string()); // 失效：s3 已去 group_id（组被折叠）
         selections.insert("g3".to_string(), "gone".to_string()); // 失效：消息已不存在
-        selections.retain(|group_id, sel| existing_groups.get(sel.as_str()) == Some(&group_id.as_str()));
+        selections
+            .retain(|group_id, sel| existing_groups.get(sel.as_str()) == Some(&group_id.as_str()));
 
         assert_eq!(selections.len(), 1);
         assert_eq!(selections.get("g1").map(String::as_str), Some("s1"));

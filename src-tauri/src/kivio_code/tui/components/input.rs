@@ -97,7 +97,10 @@ impl Input {
     }
 
     fn push_undo(&mut self) {
-        self.undo_stack.push(&InputState { value: self.value.clone(), cursor: self.cursor });
+        self.undo_stack.push(&InputState {
+            value: self.value.clone(),
+            cursor: self.cursor,
+        });
     }
 
     fn undo(&mut self) {
@@ -134,7 +137,8 @@ impl Input {
         if self.cursor < self.value.len() {
             self.push_undo();
             let glen = Self::first_grapheme_len(&self.value[self.cursor..]);
-            self.value.replace_range(self.cursor..self.cursor + glen, "");
+            self.value
+                .replace_range(self.cursor..self.cursor + glen, "");
         }
     }
 
@@ -209,12 +213,20 @@ impl Input {
             return;
         }
         self.push_undo();
-        let prev = self.kill_ring.peek().map(|s| s.to_string()).unwrap_or_default();
+        let prev = self
+            .kill_ring
+            .peek()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         let start = self.cursor.saturating_sub(prev.len());
         self.value.replace_range(start..self.cursor, "");
         self.cursor = start;
         self.kill_ring.rotate();
-        let text = self.kill_ring.peek().map(|s| s.to_string()).unwrap_or_default();
+        let text = self
+            .kill_ring
+            .peek()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         self.value.insert_str(self.cursor, &text);
         self.cursor += text.len();
         self.last_action = Some(LastAction::Yank);
@@ -408,7 +420,12 @@ impl Component for Input {
                     cursor_col.saturating_sub(half)
                 };
                 visible_text = slice_by_column(&self.value, start_col, scroll_width, true);
-                let before = slice_by_column(&self.value, start_col, cursor_col.saturating_sub(start_col), true);
+                let before = slice_by_column(
+                    &self.value,
+                    start_col,
+                    cursor_col.saturating_sub(start_col),
+                    true,
+                );
                 cursor_display = before.len();
             } else {
                 visible_text = String::new();
@@ -509,7 +526,7 @@ mod tests {
         type_str(&mut input, "abc");
         input.handle_input(" "); // space captures pre-space state "abc" then becomes "abc "
         type_str(&mut input, "def"); // coalesces with the space's undo unit
-        // one undo removes the space+word unit back to "abc"
+                                     // one undo removes the space+word unit back to "abc"
         input.handle_input("\x1f"); // ctrl+- undo
         assert_eq!(input.get_value(), "abc");
     }

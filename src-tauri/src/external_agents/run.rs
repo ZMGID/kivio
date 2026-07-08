@@ -28,14 +28,14 @@ use crate::external_agents::session::pi_rpc::run_pi_rpc_session;
 use crate::external_agents::session::{persist_delivered_session, resolve_agent_resume_context};
 use crate::external_agents::skill_stage::{skill_cwd_alias_segment, stage_active_skill};
 use crate::external_agents::slash::{self};
-use crate::external_agents::spawn::{read_stdout_lines, resolve_binary, spawn_agent, write_prompt_stdin};
+use crate::external_agents::spawn::{
+    drain_stderr, read_stdout_lines, resolve_binary, spawn_agent, write_prompt_stdin,
+};
 use crate::external_agents::stream::create_stream_handler;
 use crate::external_agents::types::{
     RuntimeBuildOptions, RuntimeContext, StreamFormat, UnifiedAgentEvent,
 };
-use crate::external_agents::workspace::{
-    extra_allowed_dirs_for_agent, resolve_effective_cwd,
-};
+use crate::external_agents::workspace::{extra_allowed_dirs_for_agent, resolve_effective_cwd};
 use crate::skills::read_skill_detail;
 use crate::state::AppState;
 
@@ -91,15 +91,12 @@ pub async fn run_external_cli_reply(
         ));
     }
 
-    let resolved_bin = resolve_binary(def).await.ok_or_else(|| {
-        format!("无法定位 {} 可执行文件", def.bin)
-    })?;
+    let resolved_bin = resolve_binary(def)
+        .await
+        .ok_or_else(|| format!("无法定位 {} 可执行文件", def.bin))?;
 
-    let workspace = resolve_effective_cwd(
-        app,
-        &conversation.id,
-        conversation.project_id.as_deref(),
-    )?;
+    let workspace =
+        resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
     let cwd = workspace.cwd.clone();
     let is_slash = is_cli_slash_input(latest_user_message);
 
@@ -137,11 +134,11 @@ pub async fn run_external_cli_reply(
         def.id,
         def.resumes_session_via_cli,
         &daemon_instructions,
+        conversation.agent_runtime.external_model.as_deref(),
+        is_slash,
     );
 
-    let skill_dir = skill_detail
-        .as_ref()
-        .and_then(|d| d.meta.path.clone());
+    let skill_dir = skill_detail.as_ref().and_then(|d| d.meta.path.clone());
     let skill_body = skill_detail.as_ref().map(|d| d.body.clone());
     let skill_folder = skill_dir.as_deref().map(skill_cwd_alias_segment);
 
@@ -217,6 +214,7 @@ pub async fn run_external_cli_reply(
         Some(spawn_agent(def, &resolved_bin, &args, &cwd, &extra_env).await?)
     };
     let mut content = String::new();
+    let mut raw_output = String::new();
     let mut reasoning = String::new();
     let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
     let mut tool_map: HashMap<String, usize> = HashMap::new();
@@ -240,6 +238,8 @@ pub async fn run_external_cli_reply(
             &assistant_message_id,
             &mut content,
             &mut reasoning,
+            &mut raw_output,
+            &mut stream_outcome,
             &mut tool_calls,
             &mut tool_map,
             &mut usage,
@@ -251,6 +251,9 @@ pub async fn run_external_cli_reply(
     };
 
     let cancel_check = || !state.is_chat_generation_active(&conversation_id, run_generation);
+    let stderr_task = spawned_opt
+        .as_mut()
+        .map(|spawned| drain_stderr(&mut spawned.child));
 
     let read_result = if persistent {
         let persistent_mcp: Vec<AcpMcpServer> = vec![];
@@ -274,62 +277,71 @@ pub async fn run_external_cli_reply(
         )
         .await
     } else {
-        let spawned = spawned_opt.as_mut().expect("non-persistent path spawns a child");
+        let spawned = spawned_opt
+            .as_mut()
+            .expect("non-persistent path spawns a child");
         match def.stream_format {
-        StreamFormat::PiRpc => {
-            let model = conversation.agent_runtime.external_model.as_deref();
-            run_pi_rpc_session(
-                &mut spawned.child,
-                &composed.full_prompt,
-                model,
-                |event| emit_event(event),
-                cancel_check,
-            )
-            .await
-        }
-        StreamFormat::CodexAppServer => {
-            let model = conversation.agent_runtime.external_model.as_deref();
-            let reasoning = conversation.agent_runtime.external_reasoning.as_deref();
-            run_codex_app_server_session(
-                &mut spawned.child,
-                &composed.full_prompt,
-                model,
-                reasoning,
-                &cwd,
-                |event| emit_event(event),
-                cancel_check,
-            )
-            .await
-        }
-        StreamFormat::AcpJsonRpc => {
-            let model = conversation.agent_runtime.external_model.as_deref();
-            let mcp_servers: Vec<AcpMcpServer> = vec![];
-            run_acp_session(
-                &mut spawned.child,
-                &composed.full_prompt,
-                &cwd,
-                model,
-                &mcp_servers,
-                |event| emit_event(event),
-                cancel_check,
-            )
-            .await
-        }
-        _ => {
-            if def.prompt_via_stdin {
-                write_prompt_stdin(&mut spawned.child, def, &composed.full_prompt).await?;
+            StreamFormat::PiRpc => {
+                let model = conversation.agent_runtime.external_model.as_deref();
+                run_pi_rpc_session(
+                    &mut spawned.child,
+                    &composed.full_prompt,
+                    model,
+                    |event| emit_event(event),
+                    cancel_check,
+                )
+                .await
             }
-            let mut handler = create_stream_handler(def.stream_format, def.json_event_parser);
-            read_stdout_lines(
-                &mut spawned.child,
-                |line| {
-                    handler.handle_line(line, &mut |event| emit_event(event));
+            StreamFormat::CodexAppServer => {
+                let model = conversation.agent_runtime.external_model.as_deref();
+                let reasoning = conversation.agent_runtime.external_reasoning.as_deref();
+                run_codex_app_server_session(
+                    &mut spawned.child,
+                    &composed.full_prompt,
+                    model,
+                    reasoning,
+                    &cwd,
+                    |event| emit_event(event),
+                    cancel_check,
+                )
+                .await
+            }
+            StreamFormat::AcpJsonRpc => {
+                let model = conversation.agent_runtime.external_model.as_deref();
+                let mcp_servers: Vec<AcpMcpServer> = vec![];
+                run_acp_session(
+                    &mut spawned.child,
+                    &composed.full_prompt,
+                    &cwd,
+                    model,
+                    &mcp_servers,
+                    |event| emit_event(event),
+                    cancel_check,
+                )
+                .await
+            }
+            _ => {
+                let write_result = if def.prompt_via_stdin {
+                    write_prompt_stdin(&mut spawned.child, def, &composed.full_prompt).await
+                } else {
                     Ok(())
-                },
-                cancel_check,
-            )
-            .await
-        }
+                };
+                if let Err(err) = write_result {
+                    Err(err)
+                } else {
+                    let mut handler =
+                        create_stream_handler(def.stream_format, def.json_event_parser);
+                    read_stdout_lines(
+                        &mut spawned.child,
+                        |line| {
+                            handler.handle_line(line, &mut |event| emit_event(event));
+                            Ok(())
+                        },
+                        cancel_check,
+                    )
+                    .await
+                }
+            }
         }
     };
 
@@ -342,25 +354,62 @@ pub async fn run_external_cli_reply(
         }
         None => None,
     };
-    if read_result.is_err() {
-        stream_outcome = "cancelled".to_string();
+    let stderr_output = match stderr_task {
+        Some(task) => task.await.unwrap_or_default(),
+        None => String::new(),
+    };
+    if let Err(err) = &read_result {
+        stream_outcome = if err == "cancelled" {
+            "cancelled"
+        } else {
+            "error"
+        }
+        .to_string();
+        if err != "cancelled" && content.trim().is_empty() && raw_output.trim().is_empty() {
+            raw_output = format!("{} 读取输出失败：{}", def.name, err);
+        }
     } else if exit_code.map(|code| code != 0).unwrap_or(false) {
         if content.trim().is_empty() {
             stream_outcome = "error".to_string();
         }
     }
 
-    if content.trim().is_empty() && stream_outcome == "completed" {
-        if is_slash {
-            content = format!("{} 命令已执行", def.name);
-        } else {
+    if content.trim().is_empty() {
+        if !raw_output.trim().is_empty() {
+            content = raw_output.trim().to_string();
+        } else if !stderr_output.trim().is_empty() {
             stream_outcome = "error".to_string();
             content = format!(
-                "{} 未产生输出（exit={:?}，耗时 {}ms）",
+                "{} 执行失败：\n\n{}",
                 def.name,
-                exit_code,
-                started_at.elapsed().as_millis()
+                truncate_for_preview(stderr_output.trim(), 4000)
             );
+        } else if stream_outcome == "completed" {
+            if is_slash {
+                content = format!("{} 命令已执行", def.name);
+            } else {
+                stream_outcome = "error".to_string();
+                content = format!(
+                    "{} 未产生输出（exit={:?}，耗时 {}ms）",
+                    def.name,
+                    exit_code,
+                    started_at.elapsed().as_millis()
+                );
+            }
+        }
+    }
+
+    if exit_code.map(|code| code != 0).unwrap_or(false) && !stderr_output.trim().is_empty() {
+        stream_outcome = "error".to_string();
+        if !content.contains(stderr_output.trim()) {
+            if !content.trim().is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str(&format!(
+                "{} stderr：\n\n{}",
+                def.name,
+                truncate_for_preview(stderr_output.trim(), 4000)
+            ));
         }
     }
 
@@ -383,6 +432,7 @@ pub async fn run_external_cli_reply(
         } else {
             &composed.instructions_block
         },
+        is_slash,
     )?;
 
     push_assistant_message(
@@ -458,11 +508,7 @@ impl StreamSegmentTracker {
             phase,
             order: *segment_order,
             step_number: None,
-            round: if tool_calls_len == 0 {
-                None
-            } else {
-                Some(1)
-            },
+            round: if tool_calls_len == 0 { None } else { Some(1) },
             text: Some(delta.to_string()),
             tool_call_id: None,
         };
@@ -496,11 +542,7 @@ impl StreamSegmentTracker {
             phase,
             order: *segment_order,
             step_number: None,
-            round: if tool_calls_len == 0 {
-                None
-            } else {
-                Some(1)
-            },
+            round: if tool_calls_len == 0 { None } else { Some(1) },
             text: Some(delta.to_string()),
             tool_call_id: None,
         };
@@ -687,22 +729,31 @@ async fn connect_persistent_session(
     match protocol {
         StreamFormat::CodexAppServer => {
             if let Some(tid) = resume_native.as_deref() {
-                if let Ok(session) =
-                    CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, Some(tid)).await
+                if let Ok(session) = CodexAppServerSession::connect(
+                    resolved_bin,
+                    args,
+                    cwd,
+                    model,
+                    sandbox,
+                    Some(tid),
+                )
+                .await
                 {
                     let id = session.thread_id().to_string();
                     return Ok((spawn_codex_session_actor(session), id, true));
                 }
             }
             let session =
-                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None).await?;
+                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None)
+                    .await?;
             let id = session.thread_id().to_string();
             Ok((spawn_codex_session_actor(session), id, false))
         }
         StreamFormat::AcpJsonRpc => {
             if let Some(sid) = resume_native.as_deref() {
                 if let Ok(session) =
-                    AcpSession::connect(resolved_bin, args, cwd, model, mcp_servers, Some(sid)).await
+                    AcpSession::connect(resolved_bin, args, cwd, model, mcp_servers, Some(sid))
+                        .await
                 {
                     let id = session.session_id().to_string();
                     return Ok((spawn_acp_session_actor(session), id, true));
@@ -752,6 +803,8 @@ fn apply_unified_event(
     message_id: &str,
     content: &mut String,
     reasoning: &mut String,
+    raw_output: &mut String,
+    stream_outcome: &mut String,
     tool_calls: &mut Vec<ToolCallRecord>,
     tool_map: &mut HashMap<String, usize>,
     usage: &mut Option<ModelUsage>,
@@ -764,12 +817,8 @@ fn apply_unified_event(
     match event {
         UnifiedAgentEvent::TextDelta { delta } => {
             content.push_str(&delta);
-            let segment = segment_tracker.append_text(
-                segments,
-                segment_order,
-                tool_calls.len(),
-                &delta,
-            );
+            let segment =
+                segment_tracker.append_text(segments, segment_order, tool_calls.len(), &delta);
             emit_chat_stream_delta(
                 app,
                 conversation_id,
@@ -782,12 +831,8 @@ fn apply_unified_event(
         }
         UnifiedAgentEvent::ThinkingDelta { delta } => {
             reasoning.push_str(&delta);
-            let segment = segment_tracker.append_reasoning(
-                segments,
-                segment_order,
-                tool_calls.len(),
-                &delta,
-            );
+            let segment =
+                segment_tracker.append_reasoning(segments, segment_order, tool_calls.len(), &delta);
             emit_chat_stream_delta(
                 app,
                 conversation_id,
@@ -857,6 +902,29 @@ fn apply_unified_event(
         }
         UnifiedAgentEvent::Error { message, .. } => {
             eprintln!("[external-agent] stream error: {message}");
+            *stream_outcome = "error".to_string();
+            let delta = format!("外部 CLI 报错：{message}");
+            content.push_str(&delta);
+            let segment =
+                segment_tracker.append_text(segments, segment_order, tool_calls.len(), &delta);
+            emit_chat_stream_delta(
+                app,
+                conversation_id,
+                run_id,
+                message_id,
+                &delta,
+                None,
+                Some(&segment),
+            );
+        }
+        UnifiedAgentEvent::Raw { line } => {
+            if !raw_output.is_empty() {
+                raw_output.push('\n');
+            }
+            raw_output.push_str(&line);
+            if raw_output.chars().count() > 8192 {
+                *raw_output = tail_chars(raw_output, 8192);
+            }
         }
         _ => {}
     }
@@ -868,6 +936,12 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
         out.push_str("...");
     }
     out
+}
+
+fn tail_chars(value: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let start = chars.len().saturating_sub(max_chars);
+    chars[start..].iter().collect()
 }
 
 #[cfg(test)]

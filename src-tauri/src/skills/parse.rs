@@ -190,7 +190,12 @@ mod tests {
                 .unwrap_or_else(|e| panic!("read {}: {e}", skill_md.display()));
             let parsed = parse_skill_markdown(&raw, "builtin", None, Vec::new())
                 .unwrap_or_else(|e| panic!("parse {}: {e}", skill_md.display()));
-            assert_eq!(&parsed.meta.id, id, "id mismatch for {}", skill_md.display());
+            assert_eq!(
+                &parsed.meta.id,
+                id,
+                "id mismatch for {}",
+                skill_md.display()
+            );
             assert!(!parsed.meta.description.trim().is_empty());
             assert!(!parsed.body.trim().is_empty());
         }

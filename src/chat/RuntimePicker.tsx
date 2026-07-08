@@ -205,18 +205,18 @@ function ExternalModelSelectorBase({
   }, [])
 
   const agent = agents.find((item) => item.id === agentRuntime.externalAgentId)
-  const models = useMemo(
-    () => agent?.models ?? [{ id: 'default', label: 'Default' }],
-    [agent],
-  )
+  // Empty list means the CLI didn't report any models — render an explicit empty state instead
+  // of injecting a synthetic "Default" that the backend will reject / ignore anyway.
+  const models = useMemo(() => agent?.models ?? [], [agent])
   const reasoningOptions = useMemo(() => agent?.reasoningOptions ?? [], [agent])
   const currentReasoning = agentRuntime.externalReasoning ?? 'default'
   const displayName = useMemo(() => {
-    const selected = models.find((item) => item.id === (agentRuntime.externalModel || 'default'))
+    const currentId = agentRuntime.externalModel
+    const selected = currentId ? models.find((item) => item.id === currentId) : undefined
     // On the pill, show the model name only — drop the provider prefix (e.g.
     // "zmfooogreencloud/mimo-v2.5-pro" → "mimo-v2.5-pro") so the meaningful tail isn't truncated.
     // The dropdown keeps the full id.
-    const rawLabel = selected?.label ?? (agentRuntime.externalModel || 'default')
+    const rawLabel = selected?.label ?? currentId ?? '选择模型'
     const slash = rawLabel.lastIndexOf('/')
     const base = slash >= 0 ? rawLabel.slice(slash + 1) : rawLabel
     // Append the active thinking level (when set to a non-default level) so it's visible on the pill.
@@ -250,21 +250,27 @@ function ExternalModelSelectorBase({
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
           <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 max-h-[min(320px,50vh)] min-w-[200px] overflow-y-auto rounded-2xl border border-neutral-200/90 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
-            {models.map((model) => (
-              <button
-                key={model.id}
-                type="button"
-                onClick={() => {
-                  onModelChange(model.id)
-                  setOpen(false)
-                }}
-                className={`block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
-                  displayName === model.id ? 'font-semibold' : ''
-                }`}
-              >
-                {formatModelLabel(model)}
-              </button>
-            ))}
+            {models.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">
+                该 CLI 未上报可用模型
+              </div>
+            ) : (
+              models.map((model) => (
+                <button
+                  key={model.id}
+                  type="button"
+                  onClick={() => {
+                    onModelChange(model.id)
+                    setOpen(false)
+                  }}
+                  className={`block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
+                    agentRuntime.externalModel === model.id ? 'font-semibold' : ''
+                  }`}
+                >
+                  {formatModelLabel(model)}
+                </button>
+              ))
+            )}
             {reasoningOptions.length > 0 && (
               <>
                 <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />

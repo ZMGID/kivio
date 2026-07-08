@@ -1,8 +1,6 @@
 use serde_json::{json, Value};
 
-use crate::chat::model_metadata::{
-    chat_max_output_tokens_for_model, context_window_for_model,
-};
+use crate::chat::model_metadata::{chat_max_output_tokens_for_model, context_window_for_model};
 use crate::chat::types::{
     ChatMessage, CompactionBoundaryRecord, Conversation, ConversationContextSummary,
 };
@@ -483,7 +481,10 @@ struct PreviousSummary {
 ///   `PERSISTED_SUMMARY_PREFIX` 开头的 **system** 消息。
 ///
 /// 无锚点时才回退到注入摘要——否则同 run 第二次 L2 压缩会回退到已过期的落盘 S1。
-fn extract_previous_summary(system_prefix: &[Value], old_segment: &[Value]) -> Option<PreviousSummary> {
+fn extract_previous_summary(
+    system_prefix: &[Value],
+    old_segment: &[Value],
+) -> Option<PreviousSummary> {
     // 锚点优先：old_segment 里的 user + SUMMARY_MARKER_PREFIX。
     let anchor = old_segment.iter().find_map(|message| {
         if message.get("role").and_then(Value::as_str) != Some("user") {
@@ -544,7 +545,11 @@ fn is_anchor_summary(message: &Value) -> bool {
 /// 是否为锚点摘要配对的固定 ack（assistant + `SUMMARY_ACK_TEXT`）。
 fn is_summary_ack(message: &Value) -> bool {
     message.get("role").and_then(Value::as_str) == Some("assistant")
-        && message.get("content").and_then(Value::as_str).map(str::trim) == Some(SUMMARY_ACK_TEXT)
+        && message
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(SUMMARY_ACK_TEXT)
 }
 
 /// 是否为 `build_chat_api_messages` 注入的落盘摘要（system + `PERSISTED_SUMMARY_PREFIX`）。
@@ -560,7 +565,11 @@ fn is_injected_summary(message: &Value) -> bool {
 /// 用摘要替换旧段，返回新的消息序列：系统前缀 + summary(user)/ack(assistant) 对 + 尾段。
 /// user/assistant 成对插入保证 role 交替对严格 provider 合法。摘要 user 消息以
 /// `SUMMARY_MARKER_PREFIX` 开头，供后续轮的 anchored 链式摘要识别。
-fn replace_with_summary(system_prefix: Vec<Value>, summary: &str, recent: Vec<Value>) -> Vec<Value> {
+fn replace_with_summary(
+    system_prefix: Vec<Value>,
+    summary: &str,
+    recent: Vec<Value>,
+) -> Vec<Value> {
     let mut out = system_prefix;
     out.push(json!({
         "role": "user",
@@ -599,8 +608,8 @@ fn microcompact_send_view(
             if !is_tool_result(&message) {
                 return message;
             }
-            let already_marker = message.get("content").and_then(Value::as_str)
-                == Some(MICROCOMPACT_TOOL_MARKER);
+            let already_marker =
+                message.get("content").and_then(Value::as_str) == Some(MICROCOMPACT_TOOL_MARKER);
             if already_marker {
                 return message;
             }
@@ -1215,12 +1224,8 @@ pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunSt
         "Chat context compaction: est {estimated} tokens over budget {budget} (window {window}); summarizing old history"
     );
 
-    env.host.emit_compaction_status(
-        &config.conversation_id,
-        "started",
-        Some("agent_loop"),
-        None,
-    );
+    env.host
+        .emit_compaction_status(&config.conversation_id, "started", Some("agent_loop"), None);
 
     // 受保护近期窗口默认 20k token，但不得超过压缩预算——否则小窗口模型上整段历史会被近期窗口
     // 吞掉，没有可摘要的旧段，压缩永远救不了超窗。
@@ -1230,7 +1235,9 @@ pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunSt
     // （对齐 Claude Code "能拖就拖、便宜优先"）。仅当降级足以回到预算内才走此分支。
     if let Some(degraded) = microcompact_send_view(&state.runtime_messages, keep_tokens, budget) {
         let after = estimate_messages_tokens(&degraded);
-        eprintln!("Chat context microcompaction: est {estimated} -> {after} tokens (skipped summary)");
+        eprintln!(
+            "Chat context microcompaction: est {estimated} -> {after} tokens (skipped summary)"
+        );
         state.runtime_messages = degraded.clone();
         state.compacted = true;
         state.compaction_unresolved_rounds = 0;
@@ -1521,7 +1528,8 @@ pub(crate) async fn compact_conversation(
     focus: Option<&str>,
 ) -> Result<(), String> {
     emit_compaction_event(app, &conversation.id, "started", Some(trigger), None);
-    let result = compact_conversation_inner(app, state, settings, conversation, trigger, focus).await;
+    let result =
+        compact_conversation_inner(app, state, settings, conversation, trigger, focus).await;
     if result.is_err() {
         emit_compaction_event(app, &conversation.id, "failed", Some(trigger), None);
     }
@@ -1608,11 +1616,7 @@ async fn compact_conversation_inner(
         previous_summary.as_deref(),
         focus,
         window,
-        chat_max_output_tokens_for_model(
-            Some(&provider),
-            &model,
-            settings.chat.max_output_tokens,
-        ),
+        chat_max_output_tokens_for_model(Some(&provider), &model, settings.chat.max_output_tokens),
         retry_attempts,
         &conversation.id,
         &message_id,
@@ -1623,9 +1627,7 @@ async fn compact_conversation_inner(
         // 落盘/手动路径 cancel=None → Cancelled 不可达；与 Failed 同样报错、不覆盖旧 summary。
         CompactAttempt::Summary(text) => text,
         CompactAttempt::Cancelled | CompactAttempt::Failed => {
-            return Err(
-                "Compression model returned an overly short or empty summary".to_string(),
-            )
+            return Err("Compression model returned an overly short or empty summary".to_string())
         }
     };
 
@@ -1642,7 +1644,6 @@ async fn compact_conversation_inner(
     // 但 source_message_ids 必须按原始序列收集，两处口径由 helper 统一。
     let source_message_ids = accumulate_source_ids(conversation, &source_until_message_id);
     let compressed_message_count = source_message_ids.len();
-
 
     conversation.context_state.summary = Some(ConversationContextSummary {
         id: format!("ctxsum_{}", uuid::Uuid::new_v4()),
@@ -1754,8 +1755,8 @@ fn chat_missing_model_error() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::types::{ToolCallRecord, ToolCallStatus};
     use crate::chat::model::ModelRole;
+    use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 
     fn chat_msg(id: &str, role: &str, content: &str) -> ChatMessage {
         ChatMessage {
@@ -1888,7 +1889,10 @@ mod tests {
         let s = serialize_message(&msg);
         assert!(s.contains("看这张截图"), "text part preserved");
         assert!(s.contains(IMAGE_PART_PLACEHOLDER), "image → placeholder");
-        assert!(!s.contains(";base64,"), "no base64 leaks into summary input");
+        assert!(
+            !s.contains(";base64,"),
+            "no base64 leaks into summary input"
+        );
     }
 
     #[test]
@@ -1923,7 +1927,10 @@ mod tests {
         let tokens = estimate_chat_message_tokens(&m);
         let expanded_sum: usize = m.api_messages.iter().map(estimate_message_tokens).sum();
         assert_eq!(tokens, expanded_sum, "must estimate expanded api_messages");
-        assert!(tokens > 9_000, "40k-char tool output ~10k tokens, far above preview");
+        assert!(
+            tokens > 9_000,
+            "40k-char tool output ~10k tokens, far above preview"
+        );
     }
 
     #[test]
@@ -1936,7 +1943,9 @@ mod tests {
             ModelMessage {
                 role: ModelRole::Assistant,
                 content: vec![
-                    MessagePart::Text { text: "看这张图".to_string() },
+                    MessagePart::Text {
+                        text: "看这张图".to_string(),
+                    },
                     MessagePart::Image {
                         mime_type: "image/png".to_string(),
                         data: big_b64.clone(),
@@ -1955,8 +1964,14 @@ mod tests {
         ];
         let tokens = estimate_chat_message_tokens(&m);
         // 文本(~2 CJK*? ) + 工具结果 4000/4=1000 + 2*4 开销 ≈ 1010 量级；绝不含 base64 的 35 万级。
-        assert!(tokens < 2_000, "image base64 must not inflate estimate (was {tokens})");
-        assert!(tokens > 900, "tool result content must be counted (was {tokens})");
+        assert!(
+            tokens < 2_000,
+            "image base64 must not inflate estimate (was {tokens})"
+        );
+        assert!(
+            tokens > 900,
+            "tool result content must be counted (was {tokens})"
+        );
     }
 
     #[test]
@@ -1974,7 +1989,10 @@ mod tests {
         assert!(s.starts_with("[Tool result]:"));
         assert!(s.contains("图里是一只猫"), "text part preserved");
         assert!(s.contains(IMAGE_PART_PLACEHOLDER), "image → placeholder");
-        assert!(!s.contains(";base64,"), "no base64 leaks into summary input");
+        assert!(
+            !s.contains(";base64,"),
+            "no base64 leaks into summary input"
+        );
     }
 
     #[test]
@@ -1988,7 +2006,10 @@ mod tests {
             ]
         });
         let s = serialize_message(&msg);
-        assert!(s.contains("[Assistant]: 看这个"), "assistant text preserved, not dropped");
+        assert!(
+            s.contains("[Assistant]: 看这个"),
+            "assistant text preserved, not dropped"
+        );
         assert!(s.contains(IMAGE_PART_PLACEHOLDER));
         assert!(!s.contains(";base64,"));
     }
@@ -2057,10 +2078,7 @@ mod tests {
     fn summary_quality_guard_rejects_too_short() {
         // 「收到 ✅」式过短摘要 → TooShort，不覆盖旧 summary。
         let short = "收到 ✅";
-        assert_eq!(
-            summary_quality_guard(short, None),
-            SummaryQuality::TooShort
-        );
+        assert_eq!(summary_quality_guard(short, None), SummaryQuality::TooShort);
     }
 
     #[test]
@@ -2099,10 +2117,7 @@ mod tests {
     #[test]
     fn summary_quality_guard_accepts_long_fresh_summary() {
         let long = "x".repeat(MIN_SUMMARY_CHARS + 10);
-        assert_eq!(
-            summary_quality_guard(&long, None),
-            SummaryQuality::Ok
-        );
+        assert_eq!(summary_quality_guard(&long, None), SummaryQuality::Ok);
     }
 
     #[test]
@@ -2154,12 +2169,17 @@ mod tests {
             tagged("m1", "user", &"a".repeat(4_000)),
             {
                 let mut m = json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{}" } }] });
-                m.as_object_mut().unwrap().insert(UI_MESSAGE_ID_KEY.into(), json!("m2"));
+                m.as_object_mut()
+                    .unwrap()
+                    .insert(UI_MESSAGE_ID_KEY.into(), json!("m2"));
                 m
             },
             {
-                let mut m = json!({ "role": "tool", "tool_call_id": "c1", "content": "b".repeat(4_000) });
-                m.as_object_mut().unwrap().insert(UI_MESSAGE_ID_KEY.into(), json!("m2"));
+                let mut m =
+                    json!({ "role": "tool", "tool_call_id": "c1", "content": "b".repeat(4_000) });
+                m.as_object_mut()
+                    .unwrap()
+                    .insert(UI_MESSAGE_ID_KEY.into(), json!("m2"));
                 m
             },
             tagged("m2", "assistant", &"c".repeat(4_000)),
@@ -2210,8 +2230,12 @@ mod tests {
     fn manual_fallback_split_keeps_last_user_pair() {
         // 6 条小消息（token 尾窗覆盖全部）：manual 保底切到最后一条 user 之前。
         let msgs: Vec<ChatMessage> = [
-            ("m0", "user"), ("m1", "assistant"), ("m2", "user"),
-            ("m3", "assistant"), ("m4", "user"), ("m5", "assistant"),
+            ("m0", "user"),
+            ("m1", "assistant"),
+            ("m2", "user"),
+            ("m3", "assistant"),
+            ("m4", "user"),
+            ("m5", "assistant"),
         ]
         .iter()
         .map(|(id, role)| chat_msg(id, role, "short"))
@@ -2225,15 +2249,26 @@ mod tests {
 
     #[test]
     fn manual_fallback_split_rejects_short_conversations() {
-        let msgs: Vec<ChatMessage> = [("m0", "user"), ("m1", "assistant"), ("m2", "user"), ("m3", "assistant")]
-            .iter()
-            .map(|(id, role)| chat_msg(id, role, "short"))
-            .collect();
+        let msgs: Vec<ChatMessage> = [
+            ("m0", "user"),
+            ("m1", "assistant"),
+            ("m2", "user"),
+            ("m3", "assistant"),
+        ]
+        .iter()
+        .map(|(id, role)| chat_msg(id, role, "short"))
+        .collect();
         // ≤ 4 条 → None（保持"没有足够的旧消息可以压缩"报错）。
         assert_eq!(manual_fallback_split(&msgs, 0, "manual"), None);
         // summary_start 之后区间太短同样拒绝。
         let six: Vec<ChatMessage> = (0..6)
-            .map(|i| chat_msg(&format!("m{i}"), if i % 2 == 0 { "user" } else { "assistant" }, "s"))
+            .map(|i| {
+                chat_msg(
+                    &format!("m{i}"),
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    "s",
+                )
+            })
             .collect();
         assert_eq!(manual_fallback_split(&six, 2, "manual"), None);
     }
@@ -2340,8 +2375,12 @@ mod tests {
             json!({ "role": "assistant", "content": "recent answer" }),
         ];
         // 总 ~20000 tok，budget 12000 → 超；keep 8000 → recent = 末尾两条小消息，两条大工具结果进 old。
-        let view = microcompact_send_view(&messages, 8_000, 12_000).expect("microcompact should suffice");
-        assert!(estimate_messages_tokens(&view) <= 12_000, "degraded view within budget");
+        let view =
+            microcompact_send_view(&messages, 8_000, 12_000).expect("microcompact should suffice");
+        assert!(
+            estimate_messages_tokens(&view) <= 12_000,
+            "degraded view within budget"
+        );
         let markers = view
             .iter()
             .filter(|m| m.get("content").and_then(Value::as_str) == Some(MICROCOMPACT_TOOL_MARKER))
@@ -2386,8 +2425,12 @@ mod tests {
             json!({ "role": "assistant", "content": "a" }),
         ];
         let view = microcompact_send_view(&messages, 8_000, 12_000).expect("suffices");
-        assert!(view.iter().any(|m| m.get("content").and_then(Value::as_str) == Some(MICROCOMPACT_TOOL_MARKER)));
-        assert!(view.iter().any(|m| m.get("content").and_then(Value::as_str) == Some("recent tool output kept")));
+        assert!(view
+            .iter()
+            .any(|m| m.get("content").and_then(Value::as_str) == Some(MICROCOMPACT_TOOL_MARKER)));
+        assert!(view
+            .iter()
+            .any(|m| m.get("content").and_then(Value::as_str) == Some("recent tool output kept")));
     }
 
     #[test]
@@ -2404,7 +2447,8 @@ mod tests {
             "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{}" } }]
         }));
         // A big tool result that nudges the recent window to start right after it.
-        messages.push(json!({ "role": "tool", "tool_call_id": "c1", "content": "y".repeat(30_000) }));
+        messages
+            .push(json!({ "role": "tool", "tool_call_id": "c1", "content": "y".repeat(30_000) }));
         // A trailing user message keeps the tail non-trivial.
         messages.push(json!({ "role": "user", "content": "done?" }));
 
@@ -2452,10 +2496,13 @@ mod tests {
             }),
         ];
         let old_segment = vec![json!({ "role": "user", "content": "later question" })];
-        let previous =
-            extract_previous_summary(&system_prefix, &old_segment).expect("injected summary detected");
+        let previous = extract_previous_summary(&system_prefix, &old_segment)
+            .expect("injected summary detected");
         assert!(previous.text.contains("Primary Request: earlier goal"));
-        assert!(previous.from_injected, "must be flagged as injected for prefix stripping");
+        assert!(
+            previous.from_injected,
+            "must be flagged as injected for prefix stripping"
+        );
     }
 
     #[test]
@@ -2473,9 +2520,15 @@ mod tests {
             .cloned()
             .collect();
         let serialized = serialize_for_summary(&head);
-        assert!(!serialized.contains("PREVIOUS_SUMMARY_BODY"), "old anchor dropped");
+        assert!(
+            !serialized.contains("PREVIOUS_SUMMARY_BODY"),
+            "old anchor dropped"
+        );
         assert!(!serialized.contains(SUMMARY_ACK_TEXT), "paired ack dropped");
-        assert!(serialized.contains("REAL_EARLIER_MESSAGE"), "real message kept");
+        assert!(
+            serialized.contains("REAL_EARLIER_MESSAGE"),
+            "real message kept"
+        );
     }
 
     #[test]
@@ -2604,7 +2657,10 @@ mod tests {
         // 缺陷 3 / R3.2：被排除臂 id 仍计入 source_message_ids（被 boundary 覆盖、不再 replay）。
         let conversation = conversation_with_excluded_arm();
         let ids = accumulate_source_ids(&conversation, "a2");
-        assert!(ids.contains(&"b_excl".to_string()), "excluded arm id covered");
+        assert!(
+            ids.contains(&"b_excl".to_string()),
+            "excluded arm id covered"
+        );
         assert_eq!(ids, vec!["u1", "a_sel", "b_excl", "u2", "a2"]);
     }
 
@@ -2612,7 +2668,13 @@ mod tests {
     fn context_included_indices_keeps_all_without_groups() {
         // AC3.3：无多答组 → 全量下标，行为不变。
         let messages: Vec<ChatMessage> = (0..4)
-            .map(|i| chat_msg(&format!("m{i}"), if i % 2 == 0 { "user" } else { "assistant" }, "x"))
+            .map(|i| {
+                chat_msg(
+                    &format!("m{i}"),
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    "x",
+                )
+            })
             .collect();
         let conversation = test_conversation(messages);
         assert_eq!(context_included_indices(&conversation, 0), vec![0, 1, 2, 3]);
@@ -2625,7 +2687,13 @@ mod tests {
         // boundary（映射回原始下标）。构造大消息使切分真正发生，index 3 为排除臂。
         let big = "a".repeat(20_000); // ~5004 tok/条
         let messages: Vec<ChatMessage> = (0..6)
-            .map(|i| chat_msg(&format!("m{i}"), if i % 2 == 0 { "user" } else { "assistant" }, &big))
+            .map(|i| {
+                chat_msg(
+                    &format!("m{i}"),
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    &big,
+                )
+            })
             .collect();
         // included 跳过 index 3。
         let included = vec![0usize, 1, 2, 4, 5];
@@ -2635,7 +2703,10 @@ mod tests {
         // 参照：物理滤除 index 3 后连续切分，boundary 位置映射回原始下标。
         let filtered: Vec<ChatMessage> = included.iter().map(|&i| messages[i].clone()).collect();
         let pos = token_split_chat_messages(&filtered, 0, RECENT_KEEP_TOKENS).expect("split");
-        assert_eq!(via_indices, included[pos], "boundary maps back to original index");
+        assert_eq!(
+            via_indices, included[pos],
+            "boundary maps back to original index"
+        );
         // 排除臂 (index 3) 绝不会成为 boundary。
         assert_ne!(via_indices, 3);
     }
@@ -2766,7 +2837,10 @@ mod tests {
             .iter()
             .map(|message| message["role"].as_str().unwrap())
             .collect();
-        assert_eq!(roles, vec!["system", "user", "assistant", "user", "assistant"]);
+        assert_eq!(
+            roles,
+            vec!["system", "user", "assistant", "user", "assistant"]
+        );
         assert!(out[1]["content"].as_str().unwrap().contains("the summary"));
         // The inserted summary carries the anchor marker for future chained summaries.
         assert!(out[1]["content"]

@@ -85,15 +85,15 @@ mod tests {
         let path = std::env::temp_dir().join("kivio-code-does-not-exist-xyz.json");
         let settings = load_settings_from_path(&path);
         // Defaults sanitize cleanly; no providers configured.
-        assert!(settings.providers.is_empty() || settings.providers.iter().all(|p| !p.id.is_empty()));
+        assert!(
+            settings.providers.is_empty() || settings.providers.iter().all(|p| !p.id.is_empty())
+        );
     }
 
     #[test]
     fn reads_settings_under_store_key() {
-        let dir = std::env::temp_dir().join(format!(
-            "kivio-code-settings-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("kivio-code-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("settings.json");
         let doc = serde_json::json!({
@@ -131,20 +131,14 @@ mod tests {
 
     #[test]
     fn malformed_json_falls_back_to_defaults() {
-        let dir = std::env::temp_dir().join(format!(
-            "kivio-code-bad-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("kivio-code-bad-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("settings.json");
         std::fs::write(&path, "{ not valid json ").expect("write garbage");
 
         let settings = load_settings_from_path(&path);
         // Should equal sanitized defaults (no panic, no providers from garbage).
-        assert!(settings
-            .providers
-            .iter()
-            .all(|p| p.id != "test-provider"));
+        assert!(settings.providers.iter().all(|p| p.id != "test-provider"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

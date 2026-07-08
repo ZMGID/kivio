@@ -484,9 +484,10 @@ pub fn build_chat_system_prompt_with_segments(
         {
             action_examples.push("asking the user a blocking clarification");
         }
-        if available_builtin_tools.iter().any(|tool| {
-            matches!(tool.as_str(), "read" | "grep" | "glob")
-        }) {
+        if available_builtin_tools
+            .iter()
+            .any(|tool| matches!(tool.as_str(), "read" | "grep" | "glob"))
+        {
             action_examples.push("reading or searching project files");
         }
         if available_builtin_tools
@@ -575,15 +576,16 @@ pub fn build_chat_system_prompt_with_segments(
         let obsidian_vault_configured = obsidian_vault_path
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false);
-        let catalog = skills::format_catalog(registry, active_skill_id, tools_available, |skill_id| {
-            skill_allowed_for_conversation(
-                chat_tools,
-                assistant_snapshot,
-                skill_id,
-                email_accounts,
-                obsidian_vault_configured,
-            )
-        });
+        let catalog =
+            skills::format_catalog(registry, active_skill_id, tools_available, |skill_id| {
+                skill_allowed_for_conversation(
+                    chat_tools,
+                    assistant_snapshot,
+                    skill_id,
+                    email_accounts,
+                    obsidian_vault_configured,
+                )
+            });
         if !catalog.is_empty() {
             append_context_segment(&mut prompt, &mut segments, "skills", "Skills", &catalog);
         }
@@ -692,11 +694,16 @@ fn append_context_segment(
 fn assistant_prompt_segment(assistant: &ChatAssistantSnapshot) -> String {
     let mut parts = vec![format!("Active assistant: {}", assistant.name)];
     if !assistant.description.trim().is_empty() {
-        parts.push(format!("Assistant purpose: {}", assistant.description.trim()));
+        parts.push(format!(
+            "Assistant purpose: {}",
+            assistant.description.trim()
+        ));
     }
     let assistant_system_prompt = assistant.system_prompt.trim();
     if !assistant_system_prompt.is_empty() {
-        parts.push(format!("Assistant instructions:\n{assistant_system_prompt}"));
+        parts.push(format!(
+            "Assistant instructions:\n{assistant_system_prompt}"
+        ));
     }
     parts.join("\n\n")
 }
@@ -846,12 +853,8 @@ fn native_tools_prompt(
     let has_write = native_tool_names
         .iter()
         .any(|tool| tool.as_str() == "write");
-    let has_edit = native_tool_names
-        .iter()
-        .any(|tool| tool.as_str() == "edit");
-    let has_bash = native_tool_names
-        .iter()
-        .any(|tool| tool.as_str() == "bash");
+    let has_edit = native_tool_names.iter().any(|tool| tool.as_str() == "edit");
+    let has_bash = native_tool_names.iter().any(|tool| tool.as_str() == "bash");
     // 代码工作纪律：仅当具备改文件/跑命令能力时注入（纯聊天/只读工具集不污染）。
     // 对齐 opencode 的 Following conventions / Code style / Doing tasks / Tool usage /
     // Code References，取神不取形（注释用温和的「除非要求不加」）。
@@ -1114,10 +1117,7 @@ mod tests {
             &registry,
             &chat_tools,
             true,
-            &[
-                "run_python".to_string(),
-                "write".to_string(),
-            ],
+            &["run_python".to_string(), "write".to_string()],
             None,
             None,
             None,
@@ -1238,10 +1238,7 @@ mod tests {
     #[test]
     fn assistant_empty_mcp_list_drops_all_mcp_tools() {
         let assistant = test_assistant_snapshot(vec![], vec![]);
-        let mut tools = vec![
-            crate::mcp::types::native_web_fetch_tool(),
-            test_mcp_tool(),
-        ];
+        let mut tools = vec![crate::mcp::types::native_web_fetch_tool(), test_mcp_tool()];
 
         apply_assistant_mcp_restrictions(&mut tools, Some(&assistant));
 
@@ -1277,7 +1274,13 @@ mod tests {
             false,
         ));
         // 无助手 = 不限(只看全局 enable)。
-        assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf", &[], false));
+        assert!(skill_allowed_for_conversation(
+            &chat_tools,
+            None,
+            "pdf",
+            &[],
+            false
+        ));
     }
 
     #[test]
@@ -1377,14 +1380,23 @@ mod tests {
         let p = native_tools_prompt(&with_bash, "zh", None).expect("prompt");
         assert!(p.contains("文件路径:行号"), "有 bash 应含代码纪律: {p}");
         let en = native_tools_prompt(&with_bash, "en", None).expect("prompt");
-        assert!(en.contains("file_path:line_number"), "bash present should add discipline: {en}");
+        assert!(
+            en.contains("file_path:line_number"),
+            "bash present should add discipline: {en}"
+        );
 
         // 只有只读工具（无 write/edit/bash）时不注入。
         let read_only = vec!["read".to_string(), "glob".to_string()];
         let p2 = native_tools_prompt(&read_only, "zh", None).expect("prompt");
-        assert!(!p2.contains("文件路径:行号"), "只读工具集不应含代码纪律: {p2}");
+        assert!(
+            !p2.contains("文件路径:行号"),
+            "只读工具集不应含代码纪律: {p2}"
+        );
         let en2 = native_tools_prompt(&read_only, "en", None).expect("prompt");
-        assert!(!en2.contains("file_path:line_number"), "read-only should omit discipline: {en2}");
+        assert!(
+            !en2.contains("file_path:line_number"),
+            "read-only should omit discipline: {en2}"
+        );
     }
 
     #[test]

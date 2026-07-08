@@ -12,9 +12,7 @@ use super::stop::{
 };
 use super::stream::ToolCallDraftTracker;
 use super::synthesis::SynthesisCompleted;
-use super::types::{
-    AgentPhase, AgentRunConfig, AgentRunResult, AgentStepResult, AgentStopReason,
-};
+use super::types::{AgentPhase, AgentRunConfig, AgentRunResult, AgentStepResult, AgentStopReason};
 
 /// Converges the repeated "emit fallback + push api message + build AgentRunResult"
 /// blocks in the agent loop. Emit order is fixed: stream delta (with optional

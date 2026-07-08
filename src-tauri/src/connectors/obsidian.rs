@@ -36,7 +36,9 @@ fn obsidian_config_path() -> Option<PathBuf> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::env::var_os("APPDATA").map(PathBuf::from).map(|p| p.join("obsidian").join("obsidian.json"))
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|p| p.join("obsidian").join("obsidian.json"))
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
@@ -56,7 +58,8 @@ fn vault_display_name(path: &Path, explicit: Option<&str>) -> String {
 }
 
 pub fn list_obsidian_vaults() -> Result<Vec<ObsidianVault>, String> {
-    let config_path = obsidian_config_path().ok_or_else(|| "Obsidian config path unavailable".to_string())?;
+    let config_path =
+        obsidian_config_path().ok_or_else(|| "Obsidian config path unavailable".to_string())?;
     if !config_path.is_file() {
         return Ok(Vec::new());
     }
@@ -100,7 +103,10 @@ mod tests {
     #[test]
     fn vault_display_name_prefers_explicit() {
         let path = Path::new("/Users/me/Documents/MyVault");
-        assert_eq!(vault_display_name(path, Some("personal home")), "personal home");
+        assert_eq!(
+            vault_display_name(path, Some("personal home")),
+            "personal home"
+        );
         assert_eq!(vault_display_name(path, None), "MyVault");
     }
 }

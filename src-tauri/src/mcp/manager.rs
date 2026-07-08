@@ -142,7 +142,9 @@ impl McpSession {
 /// 传输层：stdio 持久子进程 or HTTP（按 session_id 复用）。
 pub enum McpTransport {
     Stdio(StdioConn),
-    Http { session_id: Option<String> },
+    Http {
+        session_id: Option<String>,
+    },
     /// 占位态：插入连接池但尚未/失败完成握手时使用，避免并发重复握手。
     None,
 }
@@ -244,11 +246,7 @@ impl AppState {
 
     /// 取该 server 的工具超时（ms）。
     fn mcp_tool_timeout(&self) -> Duration {
-        let ms = self
-            .settings_read()
-            .chat_tools
-            .tool_timeout_ms
-            .max(1_000);
+        let ms = self.settings_read().chat_tools.tool_timeout_ms.max(1_000);
         Duration::from_millis(ms)
     }
 
@@ -407,7 +405,8 @@ impl AppState {
     }
 
     /// 在持有会话锁的前提下完成一次握手（不持外层池锁）。失败时写 Error 状态并返回错误。
-    async fn connect_session(        &self,
+    async fn connect_session(
+        &self,
         sink: &impl McpEventSink,
         server: &ChatMcpServer,
         guard: &mut McpSession,
@@ -431,7 +430,12 @@ impl AppState {
                     message: message.clone(),
                 };
                 guard.transport = McpTransport::None;
-                sink.emit_server_state(server, &McpServerState::Error { message: message.clone() });
+                sink.emit_server_state(
+                    server,
+                    &McpServerState::Error {
+                        message: message.clone(),
+                    },
+                );
                 Err(message)
             }
         }
@@ -446,11 +450,9 @@ impl AppState {
         let timeout_dur = self.mcp_tool_timeout();
         match server.transport.as_str() {
             "streamable_http" => {
-                let session_id =
-                    http_initialize(&self.http, server, timeout_dur).await?;
+                let session_id = http_initialize(&self.http, server, timeout_dur).await?;
                 let tools =
-                    http_list_tools(&self.http, server, timeout_dur, session_id.as_deref())
-                        .await?;
+                    http_list_tools(&self.http, server, timeout_dur, session_id.as_deref()).await?;
                 session.tools = tools;
                 session.transport = McpTransport::Http { session_id };
                 Ok(())
@@ -460,7 +462,8 @@ impl AppState {
                 let init = conn
                     .request("initialize", client::initialize_params())
                     .await?;
-                conn.notify("notifications/initialized", Value::Null).await?;
+                conn.notify("notifications/initialized", Value::Null)
+                    .await?;
                 session.server_info = init.get("serverInfo").cloned();
                 session.capabilities = init.get("capabilities").cloned();
                 let list = conn.request("tools/list", Value::Null).await?;
@@ -544,8 +547,15 @@ impl AppState {
             McpTransport::Http { session_id } => {
                 let timeout_dur = self.mcp_tool_timeout();
                 let current = session_id.clone();
-                match http_request(&self.http, server, timeout_dur, "tools/call", params.clone(), current.as_deref())
-                    .await
+                match http_request(
+                    &self.http,
+                    server,
+                    timeout_dur,
+                    "tools/call",
+                    params.clone(),
+                    current.as_deref(),
+                )
+                .await
                 {
                     Ok((value, next_session)) => {
                         *session_id = next_session;
@@ -553,8 +563,7 @@ impl AppState {
                     }
                     Err(err) if is_session_expired(&err) => {
                         // 404 / session not found → 清 session_id 重新 initialize 重试一次。
-                        let new_session =
-                            http_initialize(&self.http, server, timeout_dur).await?;
+                        let new_session = http_initialize(&self.http, server, timeout_dur).await?;
                         let (value, next_session) = http_request(
                             &self.http,
                             server,
@@ -632,7 +641,10 @@ impl AppState {
 
     /// 空闲回收：移除 last_used 超过 idle_timeout 的会话。锁内只收集+移除，无 await。
     /// 返回被回收的 server_id（供发 Disconnected 事件）。
-    pub async fn mcp_reap_idle(&self, idle_timeout: Duration) -> Vec<(String, Arc<Mutex<McpSession>>)> {
+    pub async fn mcp_reap_idle(
+        &self,
+        idle_timeout: Duration,
+    ) -> Vec<(String, Arc<Mutex<McpSession>>)> {
         let now = Instant::now();
         let mut evicted = Vec::new();
         // 先并发拿每个会话的 last_used 需要锁会话；为避免锁内 await，这里改为：
@@ -706,7 +718,9 @@ fn now_unix() -> i64 {
 
 fn is_session_expired(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
-    err.contains("404") || lower.contains("session not found") || lower.contains("session-not-found")
+    err.contains("404")
+        || lower.contains("session not found")
+        || lower.contains("session-not-found")
 }
 
 /// stdio request 错误是否表示连接已关闭（reader task 结束、子进程关 stdout）。
@@ -783,10 +797,7 @@ fn spawn_stdio(
                     };
                     if let Some(sender) = sender {
                         let outcome = if let Some(error) = value.get("error") {
-                            Err(format!(
-                                "MCP error: {}",
-                                client::compact_json(error, 500)
-                            ))
+                            Err(format!("MCP error: {}", client::compact_json(error, 500)))
                         } else {
                             Ok(value.get("result").cloned().unwrap_or(Value::Null))
                         };
@@ -855,8 +866,15 @@ async fn http_list_tools(
     timeout_dur: Duration,
     session_id: Option<&str>,
 ) -> Result<Vec<McpTool>, String> {
-    let (value, _) = http_request(http, server, timeout_dur, "tools/list", Value::Null, session_id)
-        .await?;
+    let (value, _) = http_request(
+        http,
+        server,
+        timeout_dur,
+        "tools/list",
+        Value::Null,
+        session_id,
+    )
+    .await?;
     parse_tools(&value)
 }
 
@@ -929,9 +947,12 @@ async fn http_request(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let value = if content_type.contains("text/event-stream") {
-        timeout(timeout_dur, client::read_sse_json_rpc_response(response, &id))
-            .await
-            .map_err(|_| "MCP HTTP SSE read timed out".to_string())??
+        timeout(
+            timeout_dur,
+            client::read_sse_json_rpc_response(response, &id),
+        )
+        .await
+        .map_err(|_| "MCP HTTP SSE read timed out".to_string())??
     } else {
         let text = timeout(timeout_dur, response.text())
             .await
@@ -1188,7 +1209,8 @@ mod tests {
 
     /// fake HTTP MCP server：始终 200，计数收到的 initialize 次数（用于断言会话复用）。
     /// 返回 (url, initialize_count)。
-    async fn spawn_counting_http_mcp_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+    async fn spawn_counting_http_mcp_server(
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU64>) {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1368,7 +1390,8 @@ while True:
             let mut path = std::env::temp_dir();
             path.push(format!("kivio-fake-mcp-{}.py", uuid::Uuid::new_v4()));
             let mut file = std::fs::File::create(&path).expect("create fake server");
-            file.write_all(script.as_bytes()).expect("write fake server");
+            file.write_all(script.as_bytes())
+                .expect("write fake server");
             path
         }
 
@@ -1413,7 +1436,10 @@ while True:
             state.settings_write().chat_tools.tool_timeout_ms = 1_000;
 
             let mut marker = std::env::temp_dir();
-            marker.push(format!("kivio-fake-mcp-marker-{}.txt", uuid::Uuid::new_v4()));
+            marker.push(format!(
+                "kivio-fake-mcp-marker-{}.txt",
+                uuid::Uuid::new_v4()
+            ));
 
             let mut server = python_server(&script);
             server
@@ -1482,8 +1508,10 @@ while True:
             let srv1 = server.clone();
             let s2 = state.clone();
             let srv2 = server.clone();
-            let h1 = tokio::spawn(async move { s1.mcp_get_or_connect(&(), &srv1).await.map(|_| ()) });
-            let h2 = tokio::spawn(async move { s2.mcp_get_or_connect(&(), &srv2).await.map(|_| ()) });
+            let h1 =
+                tokio::spawn(async move { s1.mcp_get_or_connect(&(), &srv1).await.map(|_| ()) });
+            let h2 =
+                tokio::spawn(async move { s2.mcp_get_or_connect(&(), &srv2).await.map(|_| ()) });
             let (r1, r2) = tokio::join!(h1, h2);
             r1.unwrap().expect("connect one ok");
             r2.unwrap().expect("connect two ok");
@@ -1692,9 +1720,7 @@ while True:
             };
 
             // 改配置（新增 arg）→ fingerprint 变化 → get_or_connect 重建会话。
-            server
-                .env
-                .insert("EXTRA".to_string(), "1".to_string());
+            server.env.insert("EXTRA".to_string(), "1".to_string());
             state
                 .mcp_call_tool(&(), &server, "echo", serde_json::json!({ "text": "y" }))
                 .await
@@ -1769,7 +1795,8 @@ while True:
             let mut path = std::env::temp_dir();
             path.push(format!("kivio-fake-mcp-xplat-{}.py", uuid::Uuid::new_v4()));
             let mut file = std::fs::File::create(&path).expect("create fake server");
-            file.write_all(script.as_bytes()).expect("write fake server");
+            file.write_all(script.as_bytes())
+                .expect("write fake server");
             path
         }
 
@@ -1809,4 +1836,3 @@ while True:
         }
     }
 }
-

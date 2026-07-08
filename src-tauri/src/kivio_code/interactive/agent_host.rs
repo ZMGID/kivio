@@ -293,7 +293,11 @@ mod tests {
         let host = InteractiveAgentHost::new(tx, RunCancel::new(1));
         host.emit_stream_delta("c", "r", "m1", "hello", None, None);
         match rx.recv().unwrap() {
-            AgentUiEvent::StreamDelta { message_id, delta, reasoning } => {
+            AgentUiEvent::StreamDelta {
+                message_id,
+                delta,
+                reasoning,
+            } => {
                 assert_eq!(message_id, "m1");
                 assert_eq!(delta, "hello");
                 assert!(reasoning.is_empty());

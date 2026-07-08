@@ -132,14 +132,28 @@ impl OpenAiChatProvider<'_> {
             .await
             .map_err(|err| {
                 self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-                self.record_debug_failure(&request, &label, false, &err, started_at, started.elapsed());
+                self.record_debug_failure(
+                    &request,
+                    &label,
+                    false,
+                    &err,
+                    started_at,
+                    started.elapsed(),
+                );
                 ModelError::new(err)
             })?;
 
         let raw = response.text().await.map_err(|err| {
             let message = format!("{label} read body: {err}");
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            self.record_debug_failure(&request, &label, false, &message, started_at, started.elapsed());
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &message,
+                started_at,
+                started.elapsed(),
+            );
             ModelError::new(message)
         })?;
         let value: Value = serde_json::from_str(&raw).map_err(|err| {
@@ -149,7 +163,14 @@ impl OpenAiChatProvider<'_> {
                 raw.chars().take(500).collect::<String>()
             );
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            self.record_debug_failure(&request, &label, false, &message, started_at, started.elapsed());
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &message,
+                started_at,
+                started.elapsed(),
+            );
             ModelError::new(message)
         })?;
         let output = output_from_chat_completion(&value, &raw, &label)?;
@@ -160,7 +181,14 @@ impl OpenAiChatProvider<'_> {
             started.elapsed(),
             output.usage.clone(),
         );
-        self.record_debug_success(&request, &label, false, &output, started_at, started.elapsed());
+        self.record_debug_success(
+            &request,
+            &label,
+            false,
+            &output,
+            started_at,
+            started.elapsed(),
+        );
         Ok(output)
     }
 
@@ -177,7 +205,14 @@ impl OpenAiChatProvider<'_> {
             .await
             .map_err(|err| {
                 self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-                self.record_debug_failure(&request, &label, true, &err, started_at, started.elapsed());
+                self.record_debug_failure(
+                    &request,
+                    &label,
+                    true,
+                    &err,
+                    started_at,
+                    started.elapsed(),
+                );
                 ModelError::new(err)
             })?;
 
@@ -303,7 +338,14 @@ impl OpenAiChatProvider<'_> {
             started.elapsed(),
             output.usage.clone(),
         );
-        self.record_debug_success(&request, &label, true, &output, started_at, started.elapsed());
+        self.record_debug_success(
+            &request,
+            &label,
+            true,
+            &output,
+            started_at,
+            started.elapsed(),
+        );
         Ok(output)
     }
 
@@ -919,10 +961,8 @@ mod tests {
     /// Build a real OpenAI-compatible provider request body via the production
     /// `request_body` path and assert how `thinking_level` maps to the wire.
     fn build_openai_body(thinking_level: Option<&str>, base_url: &str) -> Value {
-        let state = AppState::new_headless(
-            crate::settings::Settings::default(),
-            std::env::temp_dir(),
-        );
+        let state =
+            AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
         let provider = ModelProvider {
             id: "test".into(),
             name: "Test".into(),
@@ -972,10 +1012,8 @@ mod tests {
 
     #[test]
     fn request_body_carries_session_cache_key_and_stream_usage() {
-        let state = AppState::new_headless(
-            crate::settings::Settings::default(),
-            std::env::temp_dir(),
-        );
+        let state =
+            AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
         let provider = ModelProvider {
             id: "test".into(),
             name: "Test".into(),
@@ -1038,10 +1076,8 @@ mod tests {
     fn learned_unsupported_endpoint_skips_prompt_cache_key() {
         // 端点被记入 prompt_cache_key_unsupported 后，即便有会话 id 也不再发该字段；
         // 未记入的端点照常发。这是自动重试学习后的"就地跳过"行为。
-        let state = AppState::new_headless(
-            crate::settings::Settings::default(),
-            std::env::temp_dir(),
-        );
+        let state =
+            AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
         let make = |base_url: &str| {
             let provider = ModelProvider {
                 id: "test".into(),
@@ -1203,7 +1239,10 @@ mod tests {
         handle_openai_stream_tool_calls(&cont, &mut partials, &mut sink).expect("cont");
         let calls = finish_tool_call_partials(&mut partials, &mut sink).expect("finish");
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_real", "empty continuation id must not overwrite real id");
+        assert_eq!(
+            calls[0].id, "call_real",
+            "empty continuation id must not overwrite real id"
+        );
         assert_eq!(calls[0].arguments["c"], "x");
     }
 

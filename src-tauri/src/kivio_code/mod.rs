@@ -545,9 +545,9 @@ impl TurnAssembly {
                 .get("content")
                 .and_then(Value::as_array)
                 .is_some_and(|parts| {
-                    parts.iter().any(|part| {
-                        part.get("type").and_then(Value::as_str) == Some("image_url")
-                    })
+                    parts
+                        .iter()
+                        .any(|part| part.get("type").and_then(Value::as_str) == Some("image_url"))
                 })
         });
 
@@ -685,7 +685,14 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 8);
         for expected in [
-            "read", "ls", "grep", "glob", "write", "edit", "bash", "web_fetch",
+            "read",
+            "ls",
+            "grep",
+            "glob",
+            "write",
+            "edit",
+            "bash",
+            "web_fetch",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
@@ -811,8 +818,10 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_cwd_and_date() {
-        let prompt =
-            build_system_prompt(std::path::Path::new("/tmp/project"), &SkillRegistry::default());
+        let prompt = build_system_prompt(
+            std::path::Path::new("/tmp/project"),
+            &SkillRegistry::default(),
+        );
         assert!(prompt.contains("/tmp/project"));
         assert!(prompt.contains("Current working directory"));
         assert!(prompt.contains("kivio-code"));
@@ -821,8 +830,10 @@ mod tests {
 
     #[test]
     fn system_prompt_omits_catalog_for_empty_registry() {
-        let prompt =
-            build_system_prompt(std::path::Path::new("/tmp/project"), &SkillRegistry::default());
+        let prompt = build_system_prompt(
+            std::path::Path::new("/tmp/project"),
+            &SkillRegistry::default(),
+        );
         // No skills → no catalog section and no activation hint at all.
         assert!(!prompt.contains("<skills>"));
         assert!(!prompt.contains("<available_skills>"));
@@ -864,7 +875,10 @@ mod tests {
         // Catalog sits before the date/cwd footer.
         let pos_catalog = prompt.find("<skills>").unwrap();
         let pos_cwd = prompt.find("Current working directory").unwrap();
-        assert!(pos_catalog < pos_cwd, "skill catalog must precede the cwd footer");
+        assert!(
+            pos_catalog < pos_cwd,
+            "skill catalog must precede the cwd footer"
+        );
     }
 
     #[test]
@@ -879,7 +893,10 @@ mod tests {
         // The date/cwd footer still trails the project context block.
         let pos_ctx = prompt.find("<project_context>").unwrap();
         let pos_cwd = prompt.find("Current working directory").unwrap();
-        assert!(pos_ctx < pos_cwd, "project context must precede the cwd footer");
+        assert!(
+            pos_ctx < pos_cwd,
+            "project context must precede the cwd footer"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -916,13 +933,21 @@ mod tests {
     fn model_label_is_id_based_for_resolution() {
         // The selection / resolution VALUE must stay `providerId:model` so the
         // /model selector and split_model_label can resolve the provider back.
-        let a = assembly_with("provider-1780492912291", "DeepSeek Pool", "deepseek-v4-flash");
+        let a = assembly_with(
+            "provider-1780492912291",
+            "DeepSeek Pool",
+            "deepseek-v4-flash",
+        );
         assert_eq!(a.model_label(), "provider-1780492912291:deepseek-v4-flash");
     }
 
     #[test]
     fn model_label_display_uses_provider_name() {
-        let a = assembly_with("provider-1780492912291", "DeepSeek Pool", "deepseek-v4-flash");
+        let a = assembly_with(
+            "provider-1780492912291",
+            "DeepSeek Pool",
+            "deepseek-v4-flash",
+        );
         assert_eq!(a.model_label_display(), "DeepSeek Pool · deepseek-v4-flash");
         // raw id must NOT leak into the display label.
         assert!(!a.model_label_display().contains("provider-1780492912291"));
@@ -936,7 +961,10 @@ mod tests {
 
     #[test]
     fn provider_model_display_helper() {
-        assert_eq!(provider_model_display("OpenAI", "p1", "gpt-4o"), "OpenAI · gpt-4o");
+        assert_eq!(
+            provider_model_display("OpenAI", "p1", "gpt-4o"),
+            "OpenAI · gpt-4o"
+        );
         assert_eq!(provider_model_display("  ", "p1", "gpt-4o"), "p1 · gpt-4o");
     }
 
@@ -946,10 +974,7 @@ mod tests {
 
         // Read-only / tech-lead framing: must say no edits, no mutating commands.
         assert!(note.contains("PLAN mode"), "must announce plan mode");
-        assert!(
-            note.contains("read-only"),
-            "must state read-only framing"
-        );
+        assert!(note.contains("read-only"), "must state read-only framing");
         assert!(
             note.contains("do NOT write code") && note.contains("do NOT modify files"),
             "must prohibit writing/modifying"
@@ -962,8 +987,7 @@ mod tests {
             "must mandate multiple searches"
         );
         assert!(
-            note.contains("TRACE every relevant symbol")
-                && note.contains("all of its usages"),
+            note.contains("TRACE every relevant symbol") && note.contains("all of its usages"),
             "must mandate tracing symbols to definition and usages"
         );
         assert!(
@@ -1000,7 +1024,10 @@ mod tests {
             "6. Risks & open questions",
             "7. Verification",
         ] {
-            assert!(note.contains(header), "missing plan section header: {header}");
+            assert!(
+                note.contains(header),
+                "missing plan section header: {header}"
+            );
         }
 
         // Granularity rule + no-drift rule.
@@ -1036,17 +1063,35 @@ mod tests {
 
         // Build mode keeps the full core set (incl. write/edit/bash).
         let build = tool_names(false);
-        for expected in ["read", "ls", "grep", "glob", "write", "edit", "bash", "web_fetch"] {
-            assert!(build.iter().any(|n| n == expected), "build missing {expected}: {build:?}");
+        for expected in [
+            "read",
+            "ls",
+            "grep",
+            "glob",
+            "write",
+            "edit",
+            "bash",
+            "web_fetch",
+        ] {
+            assert!(
+                build.iter().any(|n| n == expected),
+                "build missing {expected}: {build:?}"
+            );
         }
 
         // Plan mode drops the mutating tools but keeps the read-only ones.
         let plan = tool_names(true);
         for blocked in ["write", "edit", "bash"] {
-            assert!(!plan.iter().any(|n| n == blocked), "plan must drop {blocked}: {plan:?}");
+            assert!(
+                !plan.iter().any(|n| n == blocked),
+                "plan must drop {blocked}: {plan:?}"
+            );
         }
         for kept in ["read", "ls", "grep", "glob", "web_fetch"] {
-            assert!(plan.iter().any(|n| n == kept), "plan must keep {kept}: {plan:?}");
+            assert!(
+                plan.iter().any(|n| n == kept),
+                "plan must keep {kept}: {plan:?}"
+            );
         }
     }
 
@@ -1077,13 +1122,25 @@ mod tests {
 
         let has = |v: &[String]| v.iter().any(|n| n == "enter_plan_mode");
         // Build + offered → present.
-        assert!(has(&names(false, true)), "build+offer should expose enter_plan_mode");
+        assert!(
+            has(&names(false, true)),
+            "build+offer should expose enter_plan_mode"
+        );
         // Build + not offered (auto_plan off) → absent.
-        assert!(!has(&names(false, false)), "build without offer must not expose it");
+        assert!(
+            !has(&names(false, false)),
+            "build without offer must not expose it"
+        );
         // Plan mode never offers it (caller passes false), and even if forced, the
         // read-only filter drops it (not a registered read-only tool).
-        assert!(!has(&names(true, false)), "plan mode must not expose enter_plan_mode");
-        assert!(!has(&names(true, true)), "plan-mode filter must drop a forced enter_plan_mode");
+        assert!(
+            !has(&names(true, false)),
+            "plan mode must not expose enter_plan_mode"
+        );
+        assert!(
+            !has(&names(true, true)),
+            "plan-mode filter must drop a forced enter_plan_mode"
+        );
     }
 
     #[test]
@@ -1128,21 +1185,36 @@ mod tests {
         settings.lens.web_search.provider = crate::settings::WebSearchProvider::Tavily;
 
         settings.lens.web_search.tavily_api_key = String::new();
-        assert!(!web_search_configured(&settings), "empty key must be unconfigured");
+        assert!(
+            !web_search_configured(&settings),
+            "empty key must be unconfigured"
+        );
 
         settings.lens.web_search.tavily_api_key = "tvly-abc".to_string();
-        assert!(web_search_configured(&settings), "non-empty Tavily key is configured");
+        assert!(
+            web_search_configured(&settings),
+            "non-empty Tavily key is configured"
+        );
 
         // Whitespace-only is treated as empty (trimmed).
         settings.lens.web_search.tavily_api_key = "   ".to_string();
-        assert!(!web_search_configured(&settings), "whitespace key must be unconfigured");
+        assert!(
+            !web_search_configured(&settings),
+            "whitespace key must be unconfigured"
+        );
 
         // Switching provider to Exa with no Exa key is unconfigured even though Tavily had one.
         settings.lens.web_search.provider = crate::settings::WebSearchProvider::Exa;
         settings.lens.web_search.tavily_api_key = "tvly-abc".to_string();
-        assert!(!web_search_configured(&settings), "Exa provider needs an Exa key");
+        assert!(
+            !web_search_configured(&settings),
+            "Exa provider needs an Exa key"
+        );
         settings.lens.web_search.exa_api_key = "exa-key".to_string();
-        assert!(web_search_configured(&settings), "non-empty Exa key is configured");
+        assert!(
+            web_search_configured(&settings),
+            "non-empty Exa key is configured"
+        );
     }
 
     #[test]
@@ -1205,7 +1277,10 @@ mod tests {
         );
         // Mutating tools are still dropped in plan mode.
         for blocked in ["write", "edit", "bash"] {
-            assert!(!names.iter().any(|n| n == blocked), "plan must drop {blocked}: {names:?}");
+            assert!(
+                !names.iter().any(|n| n == blocked),
+                "plan must drop {blocked}: {names:?}"
+            );
         }
     }
 }

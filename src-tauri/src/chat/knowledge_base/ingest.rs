@@ -35,7 +35,15 @@ struct KbIndexEvent {
     error: Option<String>,
 }
 
-fn emit_index(app: &AppHandle, kb_id: &str, doc_id: &str, status: &str, indexed: usize, total: usize, error: Option<String>) {
+fn emit_index(
+    app: &AppHandle,
+    kb_id: &str,
+    doc_id: &str,
+    status: &str,
+    indexed: usize,
+    total: usize,
+    error: Option<String>,
+) {
     let _ = app.emit(
         "kb-index",
         KbIndexEvent {
@@ -132,7 +140,8 @@ async fn index_one(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<usize, 
     let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
     for batch in texts.chunks(BATCH) {
         let mut got =
-            embeddings::embed_batch(state, &provider, &lib.embedding_model, batch, attempts).await?;
+            embeddings::embed_batch(state, &provider, &lib.embedding_model, batch, attempts)
+                .await?;
         vectors.append(&mut got);
         emit_index(app, kb_id, doc_id, "indexing", vectors.len(), total, None);
     }
@@ -191,7 +200,8 @@ fn finish_index(app: &AppHandle, kb_id: &str, doc_id: &str, result: Result<usize
             emit_index(app, kb_id, doc_id, "ready", n, n, None);
         }
         Err(e) => {
-            let _ = super::set_doc_status(app, kb_id, doc_id, DocStatus::Error, 0, Some(e.as_str()));
+            let _ =
+                super::set_doc_status(app, kb_id, doc_id, DocStatus::Error, 0, Some(e.as_str()));
             let _ = refresh_library_counts(app, kb_id);
             emit_index(app, kb_id, doc_id, "error", 0, 0, Some(e));
         }
@@ -226,7 +236,9 @@ pub(crate) async fn kb_upload_document(
     if !parse::is_supported_ext(&src) {
         return Err(format!(
             "Unsupported file type: {}",
-            src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            src.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
         ));
     }
     let bytes = fs::read(&src).map_err(|e| format!("read {}: {e}", src.display()))?;
@@ -250,10 +262,8 @@ pub(crate) async fn kb_upload_document(
     }
 
     let doc_id = super::gen_id("doc");
-    let dest = sources_dir(&app, &kb_id)?.join(format!(
-        "{doc_id}__{}",
-        sanitize_filename(&file_name)
-    ));
+    let dest =
+        sources_dir(&app, &kb_id)?.join(format!("{doc_id}__{}", sanitize_filename(&file_name)));
     fs::write(&dest, &bytes).map_err(|e| format!("write source snapshot: {e}"))?;
 
     let doc = KnowledgeDocument {
@@ -349,10 +359,8 @@ pub(crate) async fn kb_import_url(
 
     let doc_id = super::gen_id("doc");
     // Snapshot as `.md` so the normal pipeline re-parses the extracted text.
-    let dest = sources_dir(&app, &kb_id)?.join(format!(
-        "{doc_id}__{}.md",
-        sanitize_filename(&title)
-    ));
+    let dest =
+        sources_dir(&app, &kb_id)?.join(format!("{doc_id}__{}.md", sanitize_filename(&title)));
     fs::write(&dest, &bytes).map_err(|e| format!("write source snapshot: {e}"))?;
 
     let doc = KnowledgeDocument {
@@ -393,7 +401,14 @@ pub(crate) async fn kb_reindex_library(app: AppHandle, kb_id: String) -> Result<
     let _lib = super::get_library(&app, &kb_id)?;
     let docs = super::load_docs(&app, &kb_id)?;
     for doc in &docs {
-        let _ = super::set_doc_status(&app, &kb_id, &doc.id, DocStatus::Indexing, doc.chunk_count, None);
+        let _ = super::set_doc_status(
+            &app,
+            &kb_id,
+            &doc.id,
+            DocStatus::Indexing,
+            doc.chunk_count,
+            None,
+        );
     }
 
     let ids: Vec<String> = docs.into_iter().map(|d| d.id).collect();

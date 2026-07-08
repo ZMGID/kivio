@@ -15,6 +15,36 @@ pub struct SpawnedAgent {
     pub resolved_bin: PathBuf,
 }
 
+pub fn drain_stderr(child: &mut Child) -> tokio::task::JoinHandle<String> {
+    let stderr = child.stderr.take();
+    tokio::spawn(async move {
+        let Some(stderr) = stderr else {
+            return String::new();
+        };
+        let mut reader = BufReader::new(stderr).lines();
+        let mut out = String::new();
+        while let Ok(Some(line)) = reader.next_line().await {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&line);
+            if out.chars().count() > 8192 {
+                out = tail_chars(&out, 8192);
+            }
+        }
+        out
+    })
+}
+
+fn tail_chars(value: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let start = chars.len().saturating_sub(max_chars);
+    chars[start..].iter().collect()
+}
+
 pub async fn resolve_binary(def: &RuntimeAgentDef) -> Option<PathBuf> {
     for candidate in std::iter::once(def.bin).chain(def.fallback_bins.iter().copied()) {
         if let Some(path) = which_binary(candidate).await {
@@ -34,16 +64,23 @@ async fn which_binary(name: &str) -> Option<PathBuf> {
     if !output.status.success() {
         return None;
     }
-    let line = String::from_utf8_lossy(&output.stdout)
+    let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .next()?
-        .trim()
-        .to_string();
-    if line.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(line))
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
     }
+    if cfg!(windows) {
+        for line in &lines {
+            let lower = line.to_lowercase();
+            if lower.ends_with(".exe") || lower.ends_with(".cmd") || lower.ends_with(".bat") {
+                return Some(PathBuf::from(line));
+            }
+        }
+    }
+    Some(PathBuf::from(&lines[0]))
 }
 
 pub async fn spawn_agent(
@@ -205,4 +242,3 @@ mod tests {
         );
     }
 }
-

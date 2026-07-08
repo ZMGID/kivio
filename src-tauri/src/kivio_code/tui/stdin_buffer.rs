@@ -33,7 +33,9 @@ fn is_complete_csi(data: &str) -> Completeness {
             let parts: Vec<&str> = inner.split(';').collect();
             if (last == 'M' || last == 'm')
                 && parts.len() == 3
-                && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
             {
                 return Completeness::Complete;
             }
@@ -66,7 +68,11 @@ fn is_complete_sequence(data: &str) -> Completeness {
         '[' => {
             // 老式鼠标：ESC[M + 3 字节 = 6 总
             if chars.len() >= 2 && chars[1] == '[' && chars.get(2) == Some(&'M') {
-                return if chars.len() >= 6 { Completeness::Complete } else { Completeness::Incomplete };
+                return if chars.len() >= 6 {
+                    Completeness::Complete
+                } else {
+                    Completeness::Incomplete
+                };
             }
             is_complete_csi(data)
         }
@@ -325,7 +331,9 @@ mod tests {
         let flushed = b.flush();
         assert_eq!(flushed, vec!["\x1b"]);
         // And the flushed token must be recognized as the escape key.
-        assert!(crate::kivio_code::tui::keys::matches_key("\x1b", "escape", false));
+        assert!(crate::kivio_code::tui::keys::matches_key(
+            "\x1b", "escape", false
+        ));
     }
 
     #[test]

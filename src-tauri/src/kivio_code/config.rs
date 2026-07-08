@@ -222,8 +222,7 @@ mod tests {
     #[test]
     fn deserialize_legacy_config_keeps_new_fields_none() {
         // A pre-existing config written before the new fields existed must still load.
-        let cfg: KivioCodeConfig =
-            serde_json::from_str(r#"{"readClaudeDir": false}"#).unwrap();
+        let cfg: KivioCodeConfig = serde_json::from_str(r#"{"readClaudeDir": false}"#).unwrap();
         assert!(!cfg.read_claude_dir);
         assert_eq!(cfg.default_model, None);
         assert_eq!(cfg.approval_policy, None);

@@ -611,7 +611,10 @@ fn content_block_text(item: &Value, artifacts: &mut Vec<ChatToolArtifact>) -> Op
     item.get("text")
         .and_then(|text| text.as_str())
         .map(|text| text.to_string())
-        .or_else(|| item.get("resource").map(|resource| compact_json(resource, 4000)))
+        .or_else(|| {
+            item.get("resource")
+                .map(|resource| compact_json(resource, 4000))
+        })
 }
 
 /// Builds a `ChatToolArtifact` from an MCP `image` content block

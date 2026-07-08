@@ -1,9 +1,12 @@
 use super::super::types::{
-    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef,
-    RuntimeBuildOptions, RuntimeContext, StreamFormat,
+    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
+    StreamFormat,
 };
 
-const FALLBACK_MODELS: &[(&str, &str)] = &[("default", "Default")];
+// No fallback models — the picker is populated entirely by `detect_claude_models` (a static
+// alias catalog + user-configured env models). If discovery ever fails, the dropdown is empty
+// rather than seeded with a synthetic "Default" entry that duplicates a real alias.
+const FALLBACK_MODELS: &[(&str, &str)] = &[];
 
 /// Claude Code thinking levels, passed via the CLI's `--effort <level>` flag.
 const REASONING: &[(&str, &str)] = &[
@@ -31,7 +34,11 @@ pub fn build_claude_args(
     if ctx.include_partial_messages {
         args.push("--include-partial-messages".to_string());
     }
-    if let Some(model) = options.model.as_ref().filter(|m| *m != "default" && !m.is_empty()) {
+    if let Some(model) = options
+        .model
+        .as_ref()
+        .filter(|m| *m != "default" && !m.is_empty())
+    {
         args.push("--model".to_string());
         args.push(model.clone());
     }
@@ -166,7 +173,9 @@ mod tests {
                 None,
             )
         };
-        assert!(mk(Some("plan")).windows(2).any(|w| w == ["--permission-mode", "plan"]));
+        assert!(mk(Some("plan"))
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "plan"]));
         // Unset → defaults to bypassPermissions so headless tools still work.
         assert!(mk(None)
             .windows(2)

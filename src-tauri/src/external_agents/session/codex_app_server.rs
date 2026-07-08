@@ -118,7 +118,10 @@ fn map_codex_notification(
                 .and_then(|v| v.get("total"))
                 .and_then(|v| v.as_object())
             {
-                let input = usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let input = usage
+                    .get("inputTokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let output = usage
                     .get("outputTokens")
                     .and_then(|v| v.as_u64())
@@ -177,7 +180,11 @@ fn emit_command_execution(
     if item.get("type").and_then(|v| v.as_str()) != Some("commandExecution") {
         return;
     }
-    let id = match item.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    let id = match item
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         Some(id) => id.to_string(),
         None => return,
     };
@@ -430,8 +437,14 @@ impl CodexAppServerSession {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn codex app-server: {e}"))?;
-        let mut stdin = child.stdin.take().ok_or_else(|| "stdin unavailable".to_string())?;
-        let stdout = child.stdout.take().ok_or_else(|| "stdout unavailable".to_string())?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "stdin unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "stdout unavailable".to_string())?;
         let mut reader = BufReader::new(stdout).lines();
 
         let cwd_str = cwd.to_string_lossy().to_string();
@@ -461,7 +474,8 @@ impl CodexAppServerSession {
             params["model"] = json!(m);
         }
         write_rpc(&mut stdin, 2, method, params).await?;
-        let result = read_until_response(&mut reader, &mut stdin, 2, Duration::from_secs(20)).await?;
+        let result =
+            read_until_response(&mut reader, &mut stdin, 2, Duration::from_secs(20)).await?;
         let thread_id = result
             .get("thread")
             .and_then(|t| t.get("id"))
@@ -558,9 +572,10 @@ impl CodexAppServerSession {
                 Err(_) => continue,
             };
 
-            if let (Some(method), Some(id)) =
-                (value.get("method").and_then(|v| v.as_str()), value.get("id"))
-            {
+            if let (Some(method), Some(id)) = (
+                value.get("method").and_then(|v| v.as_str()),
+                value.get("id"),
+            ) {
                 if let Some(result) = approval_response(method) {
                     write_rpc_result(&mut self.stdin, id, result).await?;
                 }
@@ -633,9 +648,10 @@ async fn read_until_response(
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let (Some(method), Some(id)) =
-            (value.get("method").and_then(|v| v.as_str()), value.get("id"))
-        {
+        if let (Some(method), Some(id)) = (
+            value.get("method").and_then(|v| v.as_str()),
+            value.get("id"),
+        ) {
             if let Some(result) = approval_response(method) {
                 write_rpc_result(stdin, id, result).await?;
             }
@@ -658,7 +674,9 @@ async fn read_until_response(
 }
 
 /// Curated codex built-in slash commands (not exposed via any list RPC). Merged with the
-/// dynamic `skills/list` results for the slash popover.
+/// dynamic `skills/list` results for the slash popover. Codex's app-server protocol has no
+/// enumeration method for TUI-level slash commands — each command maps to a first-class RPC
+/// (e.g. `/goal` → `thread/goal/{set,get,clear}`), so this list must be hand-maintained.
 const CODEX_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("compact", "压缩对话历史"),
     ("diff", "查看改动 diff"),
@@ -670,9 +688,24 @@ const CODEX_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("mcp", "MCP server 状态"),
     ("new", "新会话"),
     ("undo", "撤销上一步"),
+    ("goal", "查看/设置线程目标"),
+    ("plan", "查看/更新执行计划"),
+    ("fork", "从当前会话分叉"),
+    ("rollback", "回滚到之前的对话点"),
+    ("plugins", "查看已安装插件"),
+    ("logout", "退出登录"),
+    ("clear", "清屏"),
+    ("help", "显示帮助"),
+    ("quit", "退出会话"),
 ];
 
 /// Discover codex slash commands: curated built-ins + dynamic skills from `skills/list`.
+///
+/// The app-server needs a real thread before `skills/list` can resolve per-cwd skills, so
+/// we do `initialize` → `thread/start` → `skills/list` and pass the started `threadId`
+/// as the `skills/list` cwd anchor via `thread/start`'s own cwd. Failure at any step falls
+/// back to just the curated built-ins; every failure is logged at debug level so a broken
+/// probe stops being invisible.
 pub async fn detect_codex_commands(
     resolved_bin: &Path,
     cwd: &Path,
@@ -689,7 +722,7 @@ pub async fn detect_codex_commands(
         .collect();
 
     // Best-effort: pull skills via the app-server. Failure leaves just the built-ins.
-    if let Ok(mut child) = tokio::process::Command::new(resolved_bin)
+    let mut child = match tokio::process::Command::new(resolved_bin)
         .arg("app-server")
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
@@ -699,65 +732,142 @@ pub async fn detect_codex_commands(
         .kill_on_drop(true)
         .spawn()
     {
-        if let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) {
-            let mut reader = BufReader::new(stdout).lines();
-            let overall = Duration::from_secs(timeout_secs);
-            let ok = write_rpc(
-                &mut stdin,
-                1,
-                "initialize",
-                json!({ "clientInfo": { "name": "kivio", "title": "kivio", "version": "0" } }),
-            )
-            .await
-            .is_ok()
-                && read_until_response(&mut reader, &mut stdin, 1, overall).await.is_ok()
-                && write_rpc(&mut stdin, 2, "skills/list", json!({})).await.is_ok();
-            if ok {
-                if let Ok(result) = read_until_response(&mut reader, &mut stdin, 2, overall).await {
-                    let mut seen: HashSet<String> =
-                        out.iter().map(|c| c.name.clone()).collect();
-                    if let Some(groups) = result.get("data").and_then(|v| v.as_array()) {
-                        for group in groups {
-                            let Some(skills) = group.get("skills").and_then(|v| v.as_array()) else {
-                                continue;
-                            };
-                            for skill in skills {
-                                let Some(name) = skill
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::trim)
-                                    .filter(|s| !s.is_empty())
-                                else {
-                                    continue;
-                                };
-                                if seen.insert(name.to_string()) {
-                                    out.push(ExternalCliSlashCommand {
-                                        slash: format!("/{name}"),
-                                        name: name.to_string(),
-                                        description: skill
-                                            .get("description")
-                                            .and_then(|v| v.as_str())
-                                            .map(|d| d.trim().to_string())
-                                            .filter(|d| !d.is_empty()),
-                                        argument_hint: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("[external_agents::codex] spawn app-server failed: {err}");
+            out.sort_by(|a, b| a.name.cmp(&b.name));
+            return Some(out);
         }
+    };
+
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        eprintln!("[external_agents::codex]app-server missing stdio");
         let _ = child.start_kill();
         let _ = child.wait().await;
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        return Some(out);
+    };
+    let mut reader = BufReader::new(stdout).lines();
+    let overall = Duration::from_secs(timeout_secs);
+    let cwd_str = cwd.to_string_lossy();
+
+    let skills = probe_codex_skills(&mut stdin, &mut reader, overall, cwd_str.as_ref()).await;
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+
+    if let Some(skills) = skills {
+        let mut seen: HashSet<String> = out.iter().map(|c| c.name.clone()).collect();
+        for (name, description) in skills {
+            if seen.insert(name.clone()) {
+                out.push(ExternalCliSlashCommand {
+                    slash: format!("/{name}"),
+                    name,
+                    description,
+                    argument_hint: None,
+                });
+            }
+        }
     }
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Some(out)
 }
 
+/// One-shot RPC dance: `initialize` → `thread/start` → `skills/list`. Returns `(name, description)`
+/// pairs for every skill the app-server reports. Every failure is `tracing::debug!`'d so a broken
+/// probe leaves a trail instead of a silent empty list.
+async fn probe_codex_skills(
+    stdin: &mut tokio::process::ChildStdin,
+    reader: &mut Lines<BufReader<tokio::process::ChildStdout>>,
+    overall: Duration,
+    cwd_str: &str,
+) -> Option<Vec<(String, Option<String>)>> {
+    if let Err(err) = write_rpc(
+        stdin,
+        1,
+        "initialize",
+        json!({ "clientInfo": { "name": "kivio", "title": "kivio", "version": "0" } }),
+    )
+    .await
+    {
+        eprintln!("[external_agents::codex]initialize write failed: {err}");
+        return None;
+    }
+    if let Err(err) = read_until_response(reader, stdin, 1, overall).await {
+        eprintln!("[external_agents::codex]initialize response failed: {err}");
+        return None;
+    }
+
+    // `skills/list` resolves per-cwd skills, so a real thread has to exist first.
+    if let Err(err) = write_rpc(
+        stdin,
+        2,
+        "thread/start",
+        json!({
+            "cwd": cwd_str,
+            "sandbox": "workspace-write",
+            "approvalPolicy": "never",
+        }),
+    )
+    .await
+    {
+        eprintln!("[external_agents::codex]thread/start write failed: {err}");
+        return None;
+    }
+    if let Err(err) = read_until_response(reader, stdin, 2, overall).await {
+        eprintln!("[external_agents::codex]thread/start response failed: {err}");
+        return None;
+    }
+
+    if let Err(err) = write_rpc(stdin, 3, "skills/list", json!({})).await {
+        eprintln!("[external_agents::codex]skills/list write failed: {err}");
+        return None;
+    }
+    let result = match read_until_response(reader, stdin, 3, overall).await {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[external_agents::codex]skills/list response failed: {err}");
+            return None;
+        }
+    };
+
+    let groups = match result.get("data").and_then(|v| v.as_array()) {
+        Some(groups) => groups,
+        None => {
+            eprintln!("[external_agents::codex]skills/list result missing data array");
+            return Some(Vec::new());
+        }
+    };
+
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    for group in groups {
+        let Some(skills) = group.get("skills").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for skill in skills {
+            let Some(name) = skill
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let description = skill
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty());
+            out.push((name.to_string(), description));
+        }
+    }
+    Some(out)
+}
+
 /// Spawn the actor task that owns a connected session and serves `SessionCommand`s.
-pub fn spawn_codex_session_actor(mut session: CodexAppServerSession) -> mpsc::Sender<SessionCommand> {
+pub fn spawn_codex_session_actor(
+    mut session: CodexAppServerSession,
+) -> mpsc::Sender<SessionCommand> {
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
@@ -770,7 +880,13 @@ pub fn spawn_codex_session_actor(mut session: CodexAppServerSession) -> mpsc::Se
                     done,
                 } => {
                     let result = session
-                        .run_turn(&prompt, model.as_deref(), reasoning.as_deref(), &events, &mut rx)
+                        .run_turn(
+                            &prompt,
+                            model.as_deref(),
+                            reasoning.as_deref(),
+                            &events,
+                            &mut rx,
+                        )
                         .await;
                     let _ = done.send(result);
                 }
@@ -809,9 +925,16 @@ mod tests {
 
         let bin = which_codex().expect("codex on PATH");
         let cwd = std::env::temp_dir();
-        let session = CodexAppServerSession::connect(&bin, &["app-server".to_string()], &cwd, None, None, None)
-            .await
-            .expect("connect codex app-server");
+        let session = CodexAppServerSession::connect(
+            &bin,
+            &["app-server".to_string()],
+            &cwd,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("connect codex app-server");
         let thread_id = session.thread_id().to_string();
         assert!(!thread_id.is_empty());
         let control = spawn_codex_session_actor(session);
@@ -849,12 +972,18 @@ mod tests {
         )
         .await;
         eprintln!("turn2 reply: {t2:?}");
-        assert!(t2.contains("42"), "turn 2 should recall 42 from turn 1, got: {t2:?}");
+        assert!(
+            t2.contains("42"),
+            "turn 2 should recall 42 from turn 1, got: {t2:?}"
+        );
         let _ = control.send(SessionCommand::Close).await;
     }
 
     fn which_codex() -> Option<std::path::PathBuf> {
-        let out = std::process::Command::new("which").arg("codex").output().ok()?;
+        let out = std::process::Command::new("which")
+            .arg("codex")
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
@@ -974,8 +1103,7 @@ mod tests {
 
     #[test]
     fn error_notification_emits_error_and_ends() {
-        let (events, ended) =
-            collect("error", r#"{"error":{"message":"fatal"}}"#);
+        let (events, ended) = collect("error", r#"{"error":{"message":"fatal"}}"#);
         assert!(ended);
         assert!(events.iter().any(|event| matches!(
             event,

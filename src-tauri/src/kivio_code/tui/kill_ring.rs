@@ -24,7 +24,11 @@ impl KillRing {
         }
         if accumulate && !self.ring.is_empty() {
             let last = self.ring.pop().unwrap();
-            let merged = if prepend { format!("{text}{last}") } else { format!("{last}{text}") };
+            let merged = if prepend {
+                format!("{text}{last}")
+            } else {
+                format!("{last}{text}")
+            };
             self.ring.push(merged);
         } else {
             self.ring.push(text.to_string());

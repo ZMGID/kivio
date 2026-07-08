@@ -25,7 +25,12 @@ pub async fn embed_batch(
     if model.trim().is_empty() {
         return Err("Embedding model is not set".to_string());
     }
-    let keys: Vec<String> = provider.api_keys.iter().filter(|k| !k.trim().is_empty()).cloned().collect();
+    let keys: Vec<String> = provider
+        .api_keys
+        .iter()
+        .filter(|k| !k.trim().is_empty())
+        .cloned()
+        .collect();
     if keys.is_empty() {
         return Err(format!("Provider '{}' has no API key", provider.name));
     }
@@ -102,7 +107,8 @@ pub async fn embed_query(
     attempts: usize,
 ) -> Result<Vec<f32>, String> {
     let mut v = embed_batch(state, provider, model, &[query.to_string()], attempts).await?;
-    v.pop().ok_or_else(|| "embeddings: empty result for query".to_string())
+    v.pop()
+        .ok_or_else(|| "embeddings: empty result for query".to_string())
 }
 
 #[cfg(test)]
