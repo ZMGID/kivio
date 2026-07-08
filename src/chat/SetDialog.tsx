@@ -3,12 +3,20 @@ import { createPortal } from 'react-dom'
 import { Select } from '../settings/components'
 import type { ChatAssistant, ChatSet } from './types'
 
+// ponytail: same palette as AssistantCenter so 集/助手 colors match; duplicated 6-element array, not worth sharing
+const setColors = ['#6A8FBD', '#C56646', '#4F9D7A', '#8A6FBD', '#B7791F', '#5E8C6A']
+
 interface SetDialogProps {
   set?: ChatSet | null
   assistants: ChatAssistant[]
   saving?: boolean
   error?: string
-  onSave: (name: string, systemPrompt: string, defaultAssistantId: string | null) => void
+  onSave: (
+    name: string,
+    systemPrompt: string,
+    defaultAssistantId: string | null,
+    color: string | null,
+  ) => void
   onClose: () => void
 }
 
@@ -27,6 +35,7 @@ export function SetDialog({
   const [defaultAssistantId, setDefaultAssistantId] = useState(
     set?.default_assistant_id ?? set?.defaultAssistantId ?? '',
   )
+  const [color, setColor] = useState<string | null>(set?.color ?? null)
   const inputRef = useRef<HTMLInputElement>(null)
   const title = set ? '编辑集' : '新建集'
 
@@ -46,7 +55,7 @@ export function SetDialog({
   const submit = () => {
     const nextName = name.trim()
     if (!nextName || saving) return
-    onSave(nextName, systemPrompt.trim(), defaultAssistantId.trim() || null)
+    onSave(nextName, systemPrompt.trim(), defaultAssistantId.trim() || null, color)
   }
 
   const selectableAssistants = assistants.filter((a) => !a.archived)
@@ -112,6 +121,40 @@ export function SetDialog({
           ]}
           className="mt-1.5"
         />
+
+        <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
+          颜色
+          <span className="ml-1 font-normal text-neutral-400">（侧栏集图标着色）</span>
+        </label>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setColor(null)}
+            className={`grid size-6 place-items-center rounded-full border text-[10px] text-neutral-400 ${
+              color === null
+                ? 'border-neutral-900 ring-2 ring-neutral-300 dark:border-neutral-100 dark:ring-neutral-600'
+                : 'border-neutral-300 dark:border-neutral-600'
+            }`}
+            aria-label="无颜色"
+            title="无颜色"
+          >
+            ✕
+          </button>
+          {setColors.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setColor(c)}
+              className={`size-6 rounded-full border ${
+                color === c
+                  ? 'border-neutral-900 ring-2 ring-neutral-300 dark:border-neutral-100 dark:ring-neutral-600'
+                  : 'border-transparent'
+              }`}
+              style={{ backgroundColor: c }}
+              aria-label={`选择颜色 ${c}`}
+            />
+          ))}
+        </div>
 
         {error && <p className="mt-2 text-[12px] text-red-600 dark:text-red-400">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">

@@ -601,13 +601,14 @@ export const Sidebar = memo(function Sidebar({
     name: string,
     systemPrompt: string,
     defaultAssistantId: string | null,
+    color: string | null,
   ) => {
     setSetDialogSaving(true)
     setSetDialogError('')
     try {
       const set = dialogSet
-        ? await chatApi.updateSet(dialogSet.id, { name, systemPrompt, defaultAssistantId })
-        : await chatApi.createSet(name, systemPrompt, defaultAssistantId)
+        ? await chatApi.updateSet(dialogSet.id, { name, systemPrompt, defaultAssistantId, color })
+        : await chatApi.createSet(name, systemPrompt, defaultAssistantId, color)
       onSelectSet(set)
       await loadSidebarData({ silent: true, setOverride: set })
       setDialogSet(undefined)
@@ -1200,7 +1201,8 @@ export const Sidebar = memo(function Sidebar({
                               <Layers
                                 size={15}
                                 strokeWidth={1.75}
-                                className="shrink-0 text-neutral-500 dark:text-neutral-400"
+                                className={`shrink-0 ${set.color ? '' : 'text-neutral-500 dark:text-neutral-400'}`}
+                                style={set.color ? { color: set.color } : undefined}
                               />
                               <span className="min-w-0 truncate">{set.name}</span>
                             </button>
@@ -1371,8 +1373,8 @@ export const Sidebar = memo(function Sidebar({
           assistants={assistants}
           saving={setDialogSaving}
           error={setDialogError}
-          onSave={(name, systemPrompt, defaultAssistantId) =>
-            void handleSaveSet(name, systemPrompt, defaultAssistantId)
+          onSave={(name, systemPrompt, defaultAssistantId, color) =>
+            void handleSaveSet(name, systemPrompt, defaultAssistantId, color)
           }
           onClose={() => setDialogSet(undefined)}
         />
