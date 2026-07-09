@@ -400,7 +400,7 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const displayName = name && name !== agentType ? name : ''
 
   return (
-    <div className="not-prose mb-2 rounded-none border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
+    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
       <button
         type="button"
         onClick={() => { if (hasBody) setOpen((v) => !v) }}
@@ -555,7 +555,7 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
   const hasBody = Boolean(question || advice || error)
 
   return (
-    <div className="not-prose mb-2 rounded-none border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
+    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
       <button
         type="button"
         onClick={() => { if (hasBody) setOpen((v) => !v) }}
