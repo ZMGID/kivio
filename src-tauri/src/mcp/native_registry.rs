@@ -37,11 +37,11 @@ use super::registry::NativeToolContext;
 use super::types::{
     native_bash_output_tool, native_edit_file_tool, native_glob_files_tool,
     native_kill_background_tool,
-    native_knowledge_search_tool, native_memory_modify_tool, native_memory_read_tool,
-    native_memory_search_tool, native_read_file_tool, native_run_command_tool,
-    native_run_python_tool, native_save_assistant_tool, native_search_files_tool,
-    native_web_fetch_tool, native_web_search_tool, native_write_file_tool, ChatToolDefinition,
-    McpToolCallResult,
+    native_knowledge_search_tool, native_list_dir_tool, native_memory_modify_tool,
+    native_memory_read_tool, native_memory_search_tool, native_read_file_tool,
+    native_run_command_tool, native_run_python_tool, native_save_assistant_tool,
+    native_search_files_tool, native_web_fetch_tool, native_web_search_tool,
+    native_write_file_tool, ChatToolDefinition, McpToolCallResult,
 };
 
 /// Gate signature mirrors `list_native_builtin_tool_defs(native,
@@ -155,6 +155,23 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         read_only: true,
         requires_session_consent: true,
         call: NativeToolCall::Async(call_read_file),
+    },
+    // `ls` (list_dir) is folded into `read` in the GUI, so it is NOT advertised
+    // there (enabled=false, kept out of the GUI's built-in tool set). kivio-code,
+    // however, exposes a standalone `ls` tool via its own `core_tool_definitions`.
+    // This entry exists purely so metadata lookups by the name "ls"
+    // (is_read_only_tool / session-consent / bypass) resolve — without it, plan
+    // mode drops `ls` and the session-consent gate skips it. `call` is unused
+    // (the GUI never dispatches it; kivio-code dispatches `ls` in its own executor).
+    NativeToolEntry {
+        name: "ls",
+        def: native_list_dir_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: true,
+        bypasses_approval: false,
+        read_only: true,
+        requires_session_consent: true,
+        call: NativeToolCall::SyncText(crate::native_tools::list_dir),
     },
     NativeToolEntry {
         name: "grep",
@@ -747,6 +764,7 @@ mod tests {
         "web_fetch",
         "knowledge_search",
         "read",
+        "ls",
         "grep",
         "glob",
         "write",
@@ -775,6 +793,7 @@ mod tests {
             consent,
             [
                 "read",
+                "ls",
                 "grep",
                 "glob",
                 "write",
@@ -784,9 +803,10 @@ mod tests {
                 "kill_background"
             ],
             "session-consent set must be exactly the file/shell tools (read now also \
-             lists directories; find is renamed glob) plus the background-command \
-             observability tools (gated identically to bash); a new file/shell tool \
-             MUST set requires_session_consent or it silently bypasses the consent gate"
+             lists directories; `ls` is the standalone kivio-code list_dir tool; find \
+             is renamed glob) plus the background-command observability tools (gated \
+             identically to bash); a new file/shell tool MUST set \
+             requires_session_consent or it silently bypasses the consent gate"
         );
         // The predicate agrees with the flag, and non-file tools are excluded.
         assert!(native_tool_requires_session_consent("bash"));
@@ -824,6 +844,7 @@ mod tests {
                 "web_fetch",
                 "knowledge_search",
                 "read",
+                "ls",
                 "grep",
                 "glob",
                 "bash_output",
@@ -872,6 +893,7 @@ mod tests {
                 "web_fetch",
                 "knowledge_search",
                 "read",
+                "ls",
                 "grep",
                 "glob",
                 "bash_output",
