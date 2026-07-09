@@ -86,7 +86,7 @@ function ThinkingLevelSelectorBase({
         aria-label={`思考等级：${labelFor(effective)}`}
       >
         <Brain size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
-        <span className="max-w-[64px] truncate font-medium text-neutral-800 dark:text-neutral-200">
+        <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800 dark:text-neutral-200">
           {labelFor(effective)}
         </span>
         <ChevronDown

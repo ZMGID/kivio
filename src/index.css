@@ -666,6 +666,11 @@ body {
     display: none;
   }
 
+  /* 思考等级先收成纯图标；再窄（480）整块隐藏。tooltip 仍在。 */
+  .chat-thinking-level-label {
+    display: none;
+  }
+
   .chat-titlebar-assistant-label {
     max-width: 4.5rem;
   }
@@ -685,8 +690,15 @@ body {
     width: 1.375rem;
   }
 
-  .chat-model-selector-label {
-    max-width: 5.5rem;
+  /* 紧凑模式：模型选择器只留图标（名字截断成"d."很难看 + 下拉箭头一起藏）。仍可点开。 */
+  .chat-model-selector-label,
+  .chat-model-selector-caret {
+    display: none;
+  }
+
+  /* 更窄时整块思考 pill 隐藏（避免只剩图标和模型图标糊在一起）。可从宽窗重新调档。 */
+  .chat-thinking-pill-wrap {
+    display: none;
   }
 
   .chat-model-selector-menu {

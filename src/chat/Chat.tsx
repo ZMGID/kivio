@@ -3481,7 +3481,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   )}
                 </div>
                 {!usesExternalRuntime && (
-                  <div className="shrink-0" data-tauri-drag-region="false">
+                  <div className="shrink-0 chat-thinking-pill-wrap" data-tauri-drag-region="false">
                     <ThinkingLevelSelector
                       currentProviderId={activeProviderId}
                       currentModel={activeModel}

@@ -636,10 +636,16 @@ export const Sidebar = memo(function Sidebar({
   }
 
   const openSectionMenu = () => {
+    // toggle：开着就关，关着就按位置打开。
+    if (sectionMenuAnchor) {
+      setSectionMenuAnchor(null)
+      return
+    }
     const button = sectionMenuButtonRef.current
     if (!button) return
     const rect = button.getBoundingClientRect()
-    setSectionMenuAnchor({ left: rect.right - 200, top: rect.bottom + 4 })
+    // 菜单右对齐到按钮，但窄侧栏里会顶到窗口左缘 → 夹住至少 8px 边距。
+    setSectionMenuAnchor({ left: Math.max(8, rect.right - 200), top: rect.bottom + 4 })
   }
 
   function openCreateProjectDialog() {
@@ -894,8 +900,8 @@ export const Sidebar = memo(function Sidebar({
           </div>
         ) : (
           <>
-            <div className="flex items-center justify-between px-4 pb-1 pt-3">
-              <div className="flex items-center gap-2 text-[13px] font-semibold">
+            <div className="flex items-center justify-between px-3 pb-1 pt-3">
+              <div className="flex items-center gap-1.5 text-[13px] font-semibold">
                 {([
                   ['conversations', '最近'],
                   ['sets', '集'],
@@ -1292,6 +1298,7 @@ export const Sidebar = memo(function Sidebar({
                   onOpenSearch={() => onSearchOpenChange(true)}
                   onClearAll={() => void handleClearAllConversations()}
                   onClose={() => setSectionMenuAnchor(null)}
+                  triggerRef={sectionMenuButtonRef}
                 />
               )}
 

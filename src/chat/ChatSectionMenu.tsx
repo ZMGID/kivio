@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Search, SquarePen, Trash2 } from 'lucide-react'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
@@ -10,6 +11,7 @@ interface ChatSectionMenuProps {
   onOpenSearch: () => void
   onClearAll: () => void
   onClose: () => void
+  triggerRef?: RefObject<HTMLElement | null>
 }
 
 export function ChatSectionMenu({
@@ -19,6 +21,7 @@ export function ChatSectionMenu({
   onOpenSearch,
   onClearAll,
   onClose,
+  triggerRef,
 }: ChatSectionMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -26,6 +29,8 @@ export function ChatSectionMenu({
     const onPointerDown = (e: MouseEvent) => {
       const target = e.target as Node
       if (menuRef.current?.contains(target)) return
+      // 触发按钮自己处理 toggle，别让外部关闭抢先把菜单关掉再被点开。
+      if (triggerRef?.current?.contains(target)) return
       onClose()
     }
     const onKeyDown = (e: KeyboardEvent) => {
@@ -37,7 +42,7 @@ export function ChatSectionMenu({
       window.removeEventListener('mousedown', onPointerDown)
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [onClose])
+  }, [onClose, triggerRef])
 
   const menu = (
     <div
