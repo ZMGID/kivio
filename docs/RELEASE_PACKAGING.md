@@ -56,6 +56,16 @@ GitHub release packaging:
    gh run watch <RUN_ID> --repo ZMGID/kivio --exit-status
    gh release view vX.Y.Z --repo ZMGID/kivio --json url,assets
    ```
+9. **Replace the CI-generated release body with hand-written bilingual notes.** The
+   workflow publishes the release with a boilerplate body ("Automated macOS build…");
+   overwrite it to match the prior `v2.7.x` release format — title, a `## 下载 / Downloads`
+   block (both installers + the macOS "unsigned / first launch" note), a
+   `## 新版本亮点 / What's New` bilingual bullet list (中文 + English inline per bullet,
+   mirroring the README release notes), and a `完整变更 / Full changelog: …compare/vPREV...vX.Y.Z`
+   link:
+   ```bash
+   gh release edit vX.Y.Z --repo ZMGID/kivio --notes-file notes.md
+   ```
 
 ## Resources That Must Be Packaged
 
