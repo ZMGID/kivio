@@ -3199,16 +3199,35 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     label={t.defaultAdvisorModel}
                     description={t.defaultAdvisorModelHint}
                   >
-                    <ModelPairSelect
-                      providerId={settings.defaultModels.advisor.providerId || ''}
-                      model={settings.defaultModels.advisor.model || ''}
-                      providers={settings.providers}
-                      inheritLabel={t.mixerAdvisorOff}
-                      onChange={(providerId, model) => {
-                        updateDefaultModel('advisor', providerId, model)
+                    <Toggle
+                      checked={Boolean(settings.defaultModels.advisor.providerId)}
+                      onChange={(on) => {
+                        if (on) {
+                          // 开启：若尚未选过模型，默认落到第一个可用供应商的首个模型，用户可再改。
+                          if (!settings.defaultModels.advisor.providerId) {
+                            const p = settings.providers.find(
+                              (pp) => pp.enabled && (pp.enabledModels?.length ?? 0) > 0,
+                            )
+                            updateDefaultModel('advisor', p?.id ?? '', p?.enabledModels[0] ?? '')
+                          }
+                        } else {
+                          updateDefaultModel('advisor', '', '')
+                        }
                       }}
                     />
                   </SettingRow>
+                  {Boolean(settings.defaultModels.advisor.providerId) && (
+                    <SettingRow label={lang === 'zh' ? '顾问模型' : 'Advisor model'}>
+                      <ModelPairSelect
+                        providerId={settings.defaultModels.advisor.providerId || ''}
+                        model={settings.defaultModels.advisor.model || ''}
+                        providers={settings.providers}
+                        onChange={(providerId, model) => {
+                          updateDefaultModel('advisor', providerId, model)
+                        }}
+                      />
+                    </SettingRow>
+                  )}
                 </SettingsGroup>
               </>
             )}
