@@ -378,6 +378,7 @@ function subagentStatusLine(view: SubagentView | null, status: ToolCallStatus): 
 
 function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const status = normalizeToolCallStatus(toolCall.status)
+  const [open, setOpen] = useState(false)
   const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
@@ -398,7 +399,13 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
 
   return (
     <div className="not-prose mb-2 rounded-lg border border-violet-400/25 bg-violet-500/[0.035] px-3 py-2 text-[12.5px] leading-5 text-neutral-500 dark:border-violet-400/20 dark:bg-violet-400/[0.05] dark:text-neutral-400">
-      <div className="flex max-w-full min-w-0 flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => { if (hasBody) setOpen((v) => !v) }}
+        aria-expanded={hasBody ? open : undefined}
+        className={`flex w-full max-w-full min-w-0 flex-wrap items-center gap-1.5 text-left ${hasBody ? '' : 'cursor-default'}`}
+        data-tauri-drag-region="false"
+      >
         <span
           className={`shrink-0 text-[13px] leading-none text-violet-500 dark:text-violet-300 ${
             status === 'running' ? 'subagent-sparkle is-running' : 'subagent-sparkle'
@@ -435,9 +442,16 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
             · {statusLine}
           </span>
         )}
-      </div>
+        {hasBody && (
+          <ChevronDown
+            size={12}
+            strokeWidth={2}
+            className={`ml-auto shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          />
+        )}
+      </button>
 
-      {hasBody && (
+      {hasBody && open && (
         <div className="mt-1.5 ml-1.5 space-y-1.5 border-l-2 border-violet-400/50 pl-2.5 dark:border-violet-400/40">
           {prompt && (
             <div>
@@ -513,10 +527,11 @@ function isAdvisorRecord(toolCall: ToolCallRecord): boolean {
   return toolCall.source === 'native' && toolRawName(toolCall) === 'advisor'
 }
 
-/** Dedicated, non-collapsible card for an `advisor` consultation: shows the
- *  advisor model, the question asked, and the returned advice (markdown). */
+/** Dedicated card for an `advisor` consultation: a standalone card whose body
+ *  (question + advice) is collapsible, collapsed by default to stay compact. */
 function AdvisorCard({ toolCall }: ToolCallBlockProps) {
   const status = normalizeToolCallStatus(toolCall.status)
+  const [open, setOpen] = useState(false)
   const view = useMemo(() => structuredAdvisor(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
@@ -532,7 +547,13 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
 
   return (
     <div className="not-prose mb-2 rounded-lg border border-amber-400/30 bg-amber-500/[0.045] px-3 py-2 text-[12.5px] leading-5 text-neutral-500 dark:border-amber-400/25 dark:bg-amber-400/[0.06] dark:text-neutral-400">
-      <div className="flex max-w-full min-w-0 flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => { if (hasBody) setOpen((v) => !v) }}
+        aria-expanded={hasBody ? open : undefined}
+        className={`flex w-full max-w-full min-w-0 flex-wrap items-center gap-1.5 text-left ${hasBody ? '' : 'cursor-default'}`}
+        data-tauri-drag-region="false"
+      >
         <Sparkles size={13} className="shrink-0 text-amber-500 dark:text-amber-300" aria-hidden="true" />
         <span className="shrink-0 font-medium text-neutral-700 dark:text-neutral-200">
           顾问咨询
@@ -559,9 +580,16 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
             · {statusLine}
           </span>
         )}
-      </div>
+        {hasBody && (
+          <ChevronDown
+            size={12}
+            strokeWidth={2}
+            className={`ml-auto shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          />
+        )}
+      </button>
 
-      {hasBody && (
+      {hasBody && open && (
         <div className="mt-1.5 ml-1.5 space-y-1.5 border-l-2 border-amber-400/50 pl-2.5 dark:border-amber-400/40">
           {question && (
             <div>
