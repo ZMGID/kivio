@@ -751,7 +751,22 @@ fn call_advisor(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         if advice.is_empty() {
             return Err("Advisor returned an empty response.".to_string());
         }
-        Ok(text_tool_result(format!("[Advisor · {model}]\n\n{advice}")))
+        // Structured content drives the dedicated AdvisorCard in the chat UI
+        // (model + question + advice); the text form is the model-facing result.
+        let structured = serde_json::json!({
+            "type": "advisor",
+            "model": model,
+            "question": question,
+            "advice": advice,
+        });
+        Ok(McpToolCallResult {
+            content: format!("[Advisor · {model}]\n\n{advice}"),
+            is_error: false,
+            raw: structured.clone(),
+            artifacts: Vec::new(),
+            structured_content: Some(structured),
+            follow_up_user_messages: Vec::new(),
+        })
     })
 }
 

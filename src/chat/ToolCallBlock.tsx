@@ -25,6 +25,7 @@ import {
   Save,
   ScrollText,
   Search,
+  Sparkles,
   SquareTerminal,
   Trash2,
   Wrench,
@@ -375,9 +376,8 @@ function subagentStatusLine(view: SubagentView | null, status: ToolCallStatus): 
   return '准备运行…'
 }
 
-function SubAgentCard({ toolCall, defaultOpen = false }: ToolCallBlockProps) {
+function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const status = normalizeToolCallStatus(toolCall.status)
-  const [open, setOpen] = useState(defaultOpen)
   const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
@@ -394,22 +394,11 @@ function SubAgentCard({ toolCall, defaultOpen = false }: ToolCallBlockProps) {
   const preview = view?.preview || ''
   const usageLine = status !== 'running' ? subagentUsageLine(view?.usage) : ''
 
-  const hasDetails = Boolean(prompt || steps.length || preview || result || error)
+  const hasBody = Boolean(prompt || steps.length || preview || result || error)
 
   return (
-    <div className="not-prose mb-2 text-[12.5px] leading-5 text-neutral-500 dark:text-neutral-400">
-      <button
-        type="button"
-        onClick={() => {
-          if (hasDetails) setOpen((value) => !value)
-        }}
-        aria-expanded={hasDetails ? open : undefined}
-        className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0.5 transition-colors ${
-          hasDetails
-            ? 'hover:text-neutral-700 dark:hover:text-neutral-200'
-            : 'cursor-default'
-        }`}
-      >
+    <div className="not-prose mb-2 rounded-lg border border-violet-400/25 bg-violet-500/[0.035] px-3 py-2 text-[12.5px] leading-5 text-neutral-500 dark:border-violet-400/20 dark:bg-violet-400/[0.05] dark:text-neutral-400">
+      <div className="flex max-w-full min-w-0 flex-wrap items-center gap-1.5">
         <span
           className={`shrink-0 text-[13px] leading-none text-violet-500 dark:text-violet-300 ${
             status === 'running' ? 'subagent-sparkle is-running' : 'subagent-sparkle'
@@ -440,70 +429,57 @@ function SubAgentCard({ toolCall, defaultOpen = false }: ToolCallBlockProps) {
         {statusLine && (
           <span
             className={`min-w-0 truncate ${
-              status === 'error'
-                ? 'text-neutral-400 dark:text-neutral-500'
-                : status === 'running'
-                  ? 'chat-motion-subagent-shimmer'
-                  : 'text-neutral-400 dark:text-neutral-500'
+              status === 'running' ? 'chat-motion-subagent-shimmer' : 'text-neutral-400 dark:text-neutral-500'
             }`}
           >
             · {statusLine}
           </span>
         )}
-        {hasDetails && (
-          <ChevronDown
-            size={12}
-            strokeWidth={2}
-            className={`shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
-          />
-        )}
-      </button>
+      </div>
 
-      {hasDetails && (
-        <div className={`chat-motion-reveal ${open ? 'is-open' : ''}`} aria-hidden={!open}>
-          <div className="mt-1.5 ml-1.5 space-y-1.5 border-l-2 border-violet-400/50 pl-2.5 dark:border-violet-400/40">
-            {prompt && (
-              <div>
-                <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
-                  任务
-                </div>
-                <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-                  {compactText(prompt, 600)}
-                </div>
+      {hasBody && (
+        <div className="mt-1.5 ml-1.5 space-y-1.5 border-l-2 border-violet-400/50 pl-2.5 dark:border-violet-400/40">
+          {prompt && (
+            <div>
+              <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                任务
               </div>
-            )}
-            {status === 'running' && (steps.length > 0 || preview) && (
-              <div className="rounded-md border-l-2 border-violet-400/60 bg-violet-500/[0.04] py-1 pl-2.5 pr-1.5 dark:bg-violet-400/[0.06]">
-                {steps.length > 0 && (
-                  <div className="space-y-0.5 text-[10.5px] text-neutral-500 dark:text-neutral-400">
-                    {steps.map((step, index) => (
-                      <div key={`${index}-${step}`} className="truncate">
-                        · {step}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {preview && (
-                  <div className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-                    {preview}
-                  </div>
-                )}
-              </div>
-            )}
-            {status !== 'running' && result && (
-              <div>
-                <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
-                  结果
-                </div>
-                <ChatMarkdown content={result} />
-              </div>
-            )}
-            {error && (
               <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-                {error}
+                {compactText(prompt, 600)}
               </div>
-            )}
-          </div>
+            </div>
+          )}
+          {status === 'running' && (steps.length > 0 || preview) && (
+            <div className="rounded-md border-l-2 border-violet-400/60 bg-violet-500/[0.04] py-1 pl-2.5 pr-1.5 dark:bg-violet-400/[0.06]">
+              {steps.length > 0 && (
+                <div className="space-y-0.5 text-[10.5px] text-neutral-500 dark:text-neutral-400">
+                  {steps.map((step, index) => (
+                    <div key={`${index}-${step}`} className="truncate">
+                      · {step}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {preview && (
+                <div className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                  {preview}
+                </div>
+              )}
+            </div>
+          )}
+          {status !== 'running' && result && (
+            <div>
+              <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                结果
+              </div>
+              <ChatMarkdown content={result} />
+            </div>
+          )}
+          {error && (
+            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              {error}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -512,6 +488,108 @@ function SubAgentCard({ toolCall, defaultOpen = false }: ToolCallBlockProps) {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+interface AdvisorView {
+  model?: string
+  question?: string
+  advice?: string
+}
+
+/** Parse the advisor tool's structured content ({type:"advisor", model,
+ *  question, advice}). Returns null for non-advisor records. */
+function structuredAdvisor(toolCall: ToolCallRecord): AdvisorView | null {
+  const structured = objectValue(toolCall.structured_content ?? toolCall.structuredContent)
+  if (!structured || structured.type !== 'advisor') return null
+  return {
+    model: stringValue(structured.model) || undefined,
+    question: stringValue(structured.question) || undefined,
+    advice: stringValue(structured.advice) || undefined,
+  }
+}
+
+function isAdvisorRecord(toolCall: ToolCallRecord): boolean {
+  if (structuredAdvisor(toolCall)) return true
+  return toolCall.source === 'native' && toolRawName(toolCall) === 'advisor'
+}
+
+/** Dedicated, non-collapsible card for an `advisor` consultation: shows the
+ *  advisor model, the question asked, and the returned advice (markdown). */
+function AdvisorCard({ toolCall }: ToolCallBlockProps) {
+  const status = normalizeToolCallStatus(toolCall.status)
+  const view = useMemo(() => structuredAdvisor(toolCall), [toolCall])
+  const args = useMemo(() => parsedArguments(toolCall), [toolCall])
+
+  const model = view?.model || ''
+  const question = view?.question || stringValue(args?.question)
+  const advice = view?.advice || ''
+  const error = toolCall.error ? compactToolError(toolCall.error) : ''
+  const duration = formatDuration(getDuration(toolCall))
+  const statusLine =
+    status === 'running' ? '咨询中…' : status === 'error' ? (error || '咨询失败') : ''
+
+  const hasBody = Boolean(question || advice || error)
+
+  return (
+    <div className="not-prose mb-2 rounded-lg border border-amber-400/30 bg-amber-500/[0.045] px-3 py-2 text-[12.5px] leading-5 text-neutral-500 dark:border-amber-400/25 dark:bg-amber-400/[0.06] dark:text-neutral-400">
+      <div className="flex max-w-full min-w-0 flex-wrap items-center gap-1.5">
+        <Sparkles size={13} className="shrink-0 text-amber-500 dark:text-amber-300" aria-hidden="true" />
+        <span className="shrink-0 font-medium text-neutral-700 dark:text-neutral-200">
+          顾问咨询
+        </span>
+        {model && (
+          <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
+            · {model}
+          </span>
+        )}
+        <span className="shrink-0">
+          <StatusIcon status={status} />
+        </span>
+        {duration && (
+          <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+            · {duration}
+          </span>
+        )}
+        {statusLine && (
+          <span
+            className={`min-w-0 truncate ${
+              status === 'running' ? 'chat-motion-subagent-shimmer' : 'text-neutral-400 dark:text-neutral-500'
+            }`}
+          >
+            · {statusLine}
+          </span>
+        )}
+      </div>
+
+      {hasBody && (
+        <div className="mt-1.5 ml-1.5 space-y-1.5 border-l-2 border-amber-400/50 pl-2.5 dark:border-amber-400/40">
+          {question && (
+            <div>
+              <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                问题
+              </div>
+              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                {compactText(question, 600)}
+              </div>
+            </div>
+          )}
+          {advice && (
+            <div>
+              <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                建议
+              </div>
+              <ChatMarkdown content={advice} />
+            </div>
+          )}
+          {!advice && error && (
+            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              {error}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function normalizeFileMutationFile(value: unknown): FileMutationFile | null {
@@ -1237,6 +1315,9 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
   }
   if (isSubAgentRecord(props.toolCall)) {
     return <SubAgentCard {...props} />
+  }
+  if (isAdvisorRecord(props.toolCall)) {
+    return <AdvisorCard {...props} />
   }
   return <DefaultToolCallBlock {...props} />
 }

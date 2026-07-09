@@ -42,7 +42,7 @@ import { ToolCallBlock } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ToolCallRecord } from './types'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
-import { compareTimelineSegments, groupTimelineSegments, segmentToolCallId, summarizeToolGroup, toolRecordId } from './segments'
+import { compareTimelineSegments, groupTimelineSegments, isStandaloneToolCard, segmentToolCallId, summarizeToolGroup, toolRecordId } from './segments'
 import type { TimelineGroupItem, ToolGroupIcon } from './segments'
 
 const DIRECT_IMAGE_GENERATION_PENDING = '[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]'
@@ -586,7 +586,12 @@ function TimelineSegments({
       return leftStarted - rightStarted
     })
 
-  const groupItems = groupTimelineSegments(ordered)
+  const groupItems = groupTimelineSegments(ordered, (segment) => {
+    const id = segmentToolCallId(segment)
+    if (!id) return false
+    const toolCall = toolCalls.find((tc) => toolRecordId(tc) === id)
+    return toolCall ? isStandaloneToolCard(toolCall) : false
+  })
   const lastGroupIndex = groupItems.reduce(
     (last, item, index) => (item.type === 'group' ? index : last),
     -1,
@@ -601,6 +606,19 @@ function TimelineSegments({
           return (
             <div key={item.segment.id} className="chat-motion-fade">
               <TimelineTextSegment segment={item.segment} artifacts={artifacts} citations={citations} />
+            </div>
+          )
+        }
+        if (item.type === 'standaloneTool') {
+          // advisor / subagent：专属卡片常驻渲染，不折叠进「调用 N 次工具」组。
+          const id = segmentToolCallId(item.segment)
+          const toolCall = toolCalls.find((tc) => toolRecordId(tc) === id)
+          if (!toolCall) return null
+          return (
+            <div key={item.segment.id} className="chat-motion-fade">
+              <ToolCallErrorBoundary>
+                <ToolCallBlock toolCall={toolCall} />
+              </ToolCallErrorBoundary>
             </div>
           )
         }

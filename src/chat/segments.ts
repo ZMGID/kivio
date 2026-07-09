@@ -9,6 +9,22 @@ export function toolRecordRawName(toolCall: ToolCallRecord): string {
   return toolCall.tool_name || toolCall.toolName || toolCall.name || ''
 }
 
+/** Tool calls that render as their own dedicated, always-visible card in the
+ *  timeline (never folded into the "调用 N 次工具" group): sub-agents (`agent`)
+ *  and advisor consultations. Matched by structured content type first, then by
+ *  the native tool name for the still-streaming case (before structured content
+ *  arrives). */
+export function isStandaloneToolCard(toolCall: ToolCallRecord): boolean {
+  const structured = toolCall.structured_content ?? toolCall.structuredContent
+  if (structured && typeof structured === 'object') {
+    const type = (structured as { type?: unknown }).type
+    if (type === 'subagent' || type === 'advisor') return true
+  }
+  if (toolCall.source !== 'native') return false
+  const name = toolRecordRawName(toolCall)
+  return name === 'agent' || name === 'advisor'
+}
+
 /** tool record 的唯一 id（兼容多种字段命名）。 */
 export function toolRecordId(toolCall: ToolCallRecord): string {
   return toolCall.id || toolCall.toolCallId || toolCall.call_id || toolCall.callId || ''
@@ -52,6 +68,7 @@ function segmentHasContent(segment: ChatMessageSegment): boolean {
 export type TimelineGroupItem =
   | { type: 'text'; segment: ChatMessageSegment }
   | { type: 'group'; segments: ChatMessageSegment[] }
+  | { type: 'standaloneTool'; segment: ChatMessageSegment }
 
 /**
  * 以正文(text)段为分隔，把两条正文之间连续的非 text 段（reasoning + tool）聚成一个组。
@@ -59,8 +76,13 @@ export type TimelineGroupItem =
  * - text 段单独成项（原样渲染正文），永远打断分组。
  * - `tool → text → tool` ⇒ 两个组。
  * - 空白 reasoning/text 段先过滤，避免产生空组或多余分隔。
+ * - `isStandalone(segment)` 命中的 tool 段（如 advisor / subagent）像 text 一样单独成项、
+ *   打断分组，交给调用方以专属卡片常驻渲染（不被折叠进「调用 N 次工具」组）。
  */
-export function groupTimelineSegments(orderedSegments: ChatMessageSegment[]): TimelineGroupItem[] {
+export function groupTimelineSegments(
+  orderedSegments: ChatMessageSegment[],
+  isStandalone?: (segment: ChatMessageSegment) => boolean,
+): TimelineGroupItem[] {
   const items: TimelineGroupItem[] = []
   let current: ChatMessageSegment[] | null = null
   for (const segment of orderedSegments) {
@@ -68,6 +90,11 @@ export function groupTimelineSegments(orderedSegments: ChatMessageSegment[]): Ti
     if (segment.kind === 'text') {
       current = null
       items.push({ type: 'text', segment })
+      continue
+    }
+    if (segment.kind === 'tool' && isStandalone?.(segment)) {
+      current = null
+      items.push({ type: 'standaloneTool', segment })
       continue
     }
     if (!current) {
