@@ -473,7 +473,7 @@ pub fn run() {
             chat::commands::interaction::chat_take_external_sends,
             chat::commands::interaction::chat_set_agent_plan_mode,
             chat::commands::interaction::chat_execute_agent_plan,
-            chat::commands::chat_send_message,
+            chat::commands::send::chat_send_message,
             chat::commands::interaction::chat_cancel_stream,
             chat::commands::interaction::chat_confirm_tool_call,
             chat::commands::interaction::chat_respond_session_consent,

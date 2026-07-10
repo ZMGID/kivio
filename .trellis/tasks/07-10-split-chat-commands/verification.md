@@ -319,3 +319,25 @@
 - `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed, including the error-arm message regression.
 - `git diff --check`: passed.
 - This round is a behavior-neutral extraction; multi-model persistence, cancellation, and error-column contracts are unchanged, so no `.trellis/spec/` update is required.
+
+## Round 15: post-commit verification
+
+- Commit: `62a3a0d refactor(chat): extract reply fan-out orchestration`.
+- Post-commit `cargo check`: passed with only existing baseline warnings.
+- Post-commit `chat::commands::tests`: 72/72 passed.
+- Working tree was clean before round 16 began.
+
+## Round 16: send command entry extraction (pre-commit)
+
+- `src-tauri/src/chat/commands/send.rs`: 274 lines, including 252 lines moved unchanged from the command block.
+- `src-tauri/src/chat/commands.rs`: 3,313 -> 3,055 lines.
+- Moved the `chat_send_message` Tauri command, send reservation, slash-trigger preprocessing, attachment persistence, reply-arm selection, pre-send context checks/auto-compaction, fan-out dispatch, and single-reply dispatch.
+- The core reply executor remains parent-owned; `send.rs` calls it through descendant visibility and imports all other dependencies directly from their owning modules.
+- Updated only the registration path in `src-tauri/src/lib.rs` to `chat::commands::send::chat_send_message`; the IPC command basename remains `chat_send_message`.
+- Registration comparison against `62a3a0d` remains exactly 50/50 command basenames with no missing, added, or duplicate entries.
+- The moved command block exactly matches `62a3a0d`; expected and actual SHA-256 are both `a26afcf85b92568e94a410ca6baefd27b5c006d160c580989b19294ce7a8f6db`.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/send.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed.
+- `git diff --check`: passed.
+- This round is a behavior-neutral extraction; send, compaction, fan-out, and persistence contracts are unchanged, so no `.trellis/spec/` update is required.

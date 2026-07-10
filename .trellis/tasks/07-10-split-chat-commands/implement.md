@@ -232,4 +232,16 @@
 - [x] Confirm this round moves no Tauri command and requires no registration-path change.
 - [x] Compare the formatted extraction exactly against `3c7e9b5`; no business logic changed.
 - [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
-- [ ] Commit round 15 and rerun post-commit verification before starting round 16.
+- [x] Commit round 15 and rerun post-commit verification before starting round 16.
+
+## Step 25 - Continuous split: send command entry (round 16)
+
+- [x] Add `src-tauri/src/chat/commands/send.rs`.
+- [x] Move the `chat_send_message` Tauri command and its send-entry orchestration without changing the function body.
+- [x] Keep the core assistant reply executor in the parent and call it through descendant visibility.
+- [x] Import attachment, storage, context, fan-out, reply-runtime, and slash-trigger dependencies directly from their owning modules.
+- [x] Update only the Tauri registration path to `chat::commands::send::chat_send_message`; preserve the IPC command basename.
+- [x] Keep parent tests intact through narrow test-only imports for helpers that remain tested there.
+- [x] Compare the moved command block exactly against `62a3a0d`; no business logic changed.
+- [x] Verify formatting, compilation, the full `chat::commands::tests` suite, registration basenames, and diff cleanliness.
+- [ ] Commit round 16 and rerun post-commit verification before starting round 17.
