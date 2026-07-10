@@ -21,7 +21,9 @@ use crate::chat::model_metadata::{
     reasoning_efforts_for_model,
 };
 use crate::mcp::types::ChatToolArtifact;
-use crate::mcp::{self, ChatToolDefinition};
+use crate::mcp;
+#[cfg(test)]
+use crate::mcp::ChatToolDefinition;
 use crate::settings::{ModelProvider, Settings};
 #[cfg(test)]
 use crate::settings::SessionModel;
@@ -45,11 +47,16 @@ use super::storage::{
 };
 use super::{
     AgentPlanState, ChatMessage, ChatMessageSegment, ChatMessageSegmentKind,
-    ChatMessageSegmentPhase, CompactionBoundaryRecord, Conversation, ToolCallRecord,
+    ChatMessageSegmentPhase, Conversation, ToolCallRecord,
     ToolCallStatus,
 };
 #[cfg(test)]
-use super::{AgentTodoState, ConversationContextState};
+use super::{AgentTodoState, CompactionBoundaryRecord, ConversationContextState};
+
+mod agent_host;
+use agent_host::{ChatAgentHost, RegistryToolExecutor};
+#[cfg(debug_assertions)]
+use agent_host::ProbeAgentHost;
 
 pub(crate) mod attachments;
 
@@ -78,9 +85,7 @@ pub(crate) mod mutations;
 pub(crate) use interaction::{
     emit_chat_stream_delta, emit_chat_stream_done, emit_chat_tool_record,
 };
-use interaction::{
-    request_session_consent, request_tool_approval, request_user_response, wait_for_chat_cancel,
-};
+use interaction::wait_for_chat_cancel;
 #[cfg(test)]
 use title::generate_title;
 pub(crate) use messages::push_assistant_message;
@@ -89,7 +94,7 @@ use mutations::{apply_regenerate_truncation, build_fork_messages};
 use messages::{
     auxiliary_tool_segments, build_assistant_message, build_error_arm_message,
     capture_agent_plan_draft_if_needed, merge_latest_agent_plan_state,
-    merge_latest_agent_todo_state, persist_partial_assistant_snapshot, plain_text_segment,
+    merge_latest_agent_todo_state, plain_text_segment,
     tool_segment_for_record, upsert_assistant_message,
 };
 #[cfg(test)]
@@ -112,7 +117,7 @@ use interaction::{approve_agent_plan_for_execution, format_tool_approval_summary
 
 use context::{
     build_chat_api_messages, compress_conversation_context, compute_context_state,
-    context_likely_over_limit, emit_chat_compaction_state, emit_chat_context_state,
+    context_likely_over_limit, emit_chat_context_state,
     resolve_usage_anchor, rollback_user_message_after_failed_send, should_auto_compress_context,
 };
 #[cfg(test)]
@@ -1435,248 +1440,6 @@ pub(crate) async fn attach_image_artifacts_for_model(
     .await;
 }
 
-struct ChatAgentHost<'a> {
-    app: AppHandle,
-    state: &'a AppState,
-    /// 多模型臂置 true：抑制 mid-run 部分快照落盘（协调者统一落盘）。默认 false（现状）。
-    suppress_partial_persist: bool,
-}
-
-impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
-    fn emit_stream_delta(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
-        delta: &str,
-        reasoning_delta: Option<&str>,
-        segment: Option<&ChatMessageSegment>,
-    ) {
-        emit_chat_stream_delta(
-            &self.app,
-            conversation_id,
-            run_id,
-            message_id,
-            delta,
-            reasoning_delta,
-            segment,
-        );
-    }
-
-    fn emit_stream_done(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
-        reason: &str,
-        full: &str,
-    ) {
-        emit_chat_stream_done(&self.app, conversation_id, run_id, message_id, reason, full);
-    }
-
-    fn emit_tool_record(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
-        record: &ToolCallRecord,
-    ) {
-        emit_chat_tool_record(&self.app, conversation_id, run_id, message_id, record);
-    }
-
-    fn emit_compaction_status(
-        &self,
-        conversation_id: &str,
-        phase: &str,
-        trigger: Option<&str>,
-        boundary: Option<&CompactionBoundaryRecord>,
-    ) {
-        emit_chat_compaction_state(&self.app, conversation_id, phase, trigger, boundary);
-    }
-
-    fn persist_partial_assistant(
-        &self,
-        conversation_id: &str,
-        message_id: &str,
-        tool_records: &[ToolCallRecord],
-        segments: &[ChatMessageSegment],
-        api_messages: &[Value],
-    ) {
-        if self.suppress_partial_persist {
-            // 多模型臂不直接写盘（避免 N 条并发 run 同写 conversations/{id}.json）。
-            return;
-        }
-        if let Err(err) = persist_partial_assistant_snapshot(
-            &self.app,
-            conversation_id,
-            message_id,
-            tool_records,
-            segments,
-            api_messages,
-        ) {
-            eprintln!("persist partial assistant snapshot failed: {err}");
-        }
-    }
-
-    fn request_tool_approval<'a>(
-        &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
-    ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
-        Box::pin(async move {
-            request_tool_approval(
-                &self.app,
-                self.state,
-                ctx.conversation_id,
-                ctx.run_id,
-                ctx.message_id,
-                ctx.generation,
-                record,
-            )
-            .await
-        })
-    }
-
-    fn request_session_consent<'a>(
-        &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-    ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
-        Box::pin(async move {
-            request_session_consent(
-                &self.app,
-                self.state,
-                ctx.tool_conversation_id,
-                ctx.run_id,
-                ctx.message_id,
-                ctx.generation,
-            )
-            .await
-        })
-    }
-
-    fn request_user_response<'a>(
-        &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
-        prompt: crate::chat::ask_user::AskUserPromptPayload,
-    ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
-        Box::pin(async move {
-            request_user_response(
-                &self.app,
-                self.state,
-                ctx.conversation_id,
-                ctx.run_id,
-                ctx.message_id,
-                ctx.generation,
-                record,
-                prompt,
-            )
-            .await
-        })
-    }
-
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.state
-            .is_chat_generation_active(conversation_id, generation)
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
-        Box::pin(async move {
-            wait_for_chat_cancel(self.state, conversation_id, generation).await;
-        })
-    }
-}
-
-/// 无头测试通道（probe）的 AgentHost，仅 debug 构建。跑的是与 GUI 完全相同的生成核心
-/// （`complete_assistant_reply_inner`），但所有需要 GUI 应答的交互门一律自动放行：审批 /
-/// 会话 consent → 允许，`ask_user` → 取消态（不阻塞）。事件发射 no-op（结果从落盘的 assistant
-/// 消息内联读取，不靠事件）。generation 相关沿用标准机制，保证超时/取消能生效。
-#[cfg(debug_assertions)]
-struct ProbeAgentHost<'a> {
-    state: &'a AppState,
-}
-
-#[cfg(debug_assertions)]
-impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
-    fn emit_stream_delta(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        _delta: &str,
-        _reasoning_delta: Option<&str>,
-        _segment: Option<&ChatMessageSegment>,
-    ) {
-    }
-
-    fn emit_stream_done(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        _reason: &str,
-        _full: &str,
-    ) {
-    }
-
-    fn emit_tool_record(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        _record: &ToolCallRecord,
-    ) {
-    }
-
-    fn request_tool_approval<'a>(
-        &'a self,
-        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
-    ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
-        Box::pin(async { true })
-    }
-
-    fn request_session_consent<'a>(
-        &'a self,
-        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-    ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
-        Box::pin(async { true })
-    }
-
-    fn request_user_response<'a>(
-        &'a self,
-        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
-        _prompt: crate::chat::ask_user::AskUserPromptPayload,
-    ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
-        // 无头：不能向用户提问，直接返回取消态让 loop 继续（不阻塞）。
-        Box::pin(async { crate::chat::ask_user::cancelled_response() })
-    }
-
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.state
-            .is_chat_generation_active(conversation_id, generation)
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
-        Box::pin(async move {
-            wait_for_chat_cancel(self.state, conversation_id, generation).await;
-        })
-    }
-}
-
-/// 无头测试通道的一次生成编排（仅 debug）：把 scratch 会话绑到一个**固定复用**的
-/// 「Chat Probe」项目（根为请求的 cwd，使文件工具相对路径可解析）→ 推入 user 消息 →
-/// 走与 GUI 完全相同的生成核心（`complete_assistant_reply_inner`，probe=true 自动放行）→
-/// 取回生成的 assistant 消息。**会话与项目都保留**（不删除），以便在会话列表里观察调试。
 /// 返回 assistant 消息（含 content + tool_calls + stream_outcome + usage）。
 #[cfg(debug_assertions)]
 pub(crate) async fn run_chat_probe(
@@ -1802,43 +1565,6 @@ pub(crate) async fn run_chat_probe(
 
     gen_result?;
     assistant.ok_or_else(|| "probe: no assistant message produced".to_string())
-}
-
-struct RegistryToolExecutor<'a> {
-    app: AppHandle,
-    state: &'a AppState,
-}
-impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
-    fn call<'a>(
-        &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        tool: &'a ChatToolDefinition,
-        arguments: Value,
-        skill_cache: Option<&'a mut skills::SkillRunCache>,
-    ) -> crate::chat::agent::ToolExecutorFuture<'a> {
-        Box::pin(async move {
-            let native_ctx = mcp::registry::NativeToolContext {
-                // Conversation-scoped tools (todo / native workspace) target the
-                // tool conversation, which equals the run conversation for a
-                // top-level run and the PARENT conversation for a sub-agent run.
-                conversation_id: ctx.tool_conversation_id.to_string(),
-                message_id: ctx.message_id.to_string(),
-                tool_call_id: Some(ctx.tool_call_id.to_string()),
-                run_id: ctx.run_id.to_string(),
-                generation: ctx.generation,
-                depth: ctx.depth,
-            };
-            mcp::registry::call_tool(
-                &self.app,
-                self.state,
-                tool,
-                arguments,
-                skill_cache,
-                Some(native_ctx),
-            )
-            .await
-        })
-    }
 }
 
 fn sanitize_api_message_for_model(message: &Value) -> Value {

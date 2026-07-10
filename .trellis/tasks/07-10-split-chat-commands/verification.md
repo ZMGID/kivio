@@ -182,3 +182,25 @@
 - `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed, including regeneration, fork, and group-selection coverage.
 - `git diff --check`: passed.
 - This round is a behavior-neutral extraction; the existing conversation-fork contract remains unchanged, so no `.trellis/spec/` update is required.
+
+
+## Round 9: post-commit verification
+
+- Commit: `bb982ca refactor(chat): extract conversation mutations`.
+- Post-commit `cargo check`: passed with only existing baseline warnings.
+- Post-commit `chat::commands::tests`: 72/72 passed.
+- Working tree was clean before round 10 began.
+
+## Round 10: agent runtime adapters extraction (pre-commit)
+
+- `src-tauri/src/chat/commands/agent_host.rs`: 285 lines extracted.
+- `src-tauri/src/chat/commands.rs`: 4,162 -> 3,888 lines.
+- Moved `ChatAgentHost`, debug-only `ProbeAgentHost`, `RegistryToolExecutor`, and all three trait implementations; `run_chat_probe` remains in the parent for a later orchestration boundary.
+- Adapter visibility is limited to the parent module, preserving existing struct construction and runtime behavior.
+- This round contains no Tauri command, so registration paths and IPC names are unchanged.
+- The formatted new module exactly matches the adapter blocks extracted from `bb982ca`; only imports, parent-only visibility, and module formatting changed.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/agent_host.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed.
+- `git diff --check`: passed.
+- This round is a behavior-neutral extraction; no reusable runtime contract changed, so no `.trellis/spec/` update is required.

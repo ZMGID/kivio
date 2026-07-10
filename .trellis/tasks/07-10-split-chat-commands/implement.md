@@ -159,4 +159,17 @@
 - [x] Keep existing parent-module tests intact through narrow test-only imports.
 - [x] Compare the formatted extraction exactly against the functions from `9dcad89`; no business logic changed.
 - [x] Verify formatting, compilation, the full `chat::commands::tests` suite, Tauri command parity, and diff cleanliness.
-- [ ] Commit round 9 and rerun post-commit verification before starting round 10.
+- [x] Commit round 9 and rerun post-commit verification before starting round 10.
+
+
+## Step 19 - Continuous split: agent runtime adapters (round 10)
+
+- [x] Add `src-tauri/src/chat/commands/agent_host.rs`.
+- [x] Move `ChatAgentHost`, debug-only `ProbeAgentHost`, and `RegistryToolExecutor` with their trait implementations.
+- [x] Keep debug probe orchestration in the parent for a later dedicated boundary.
+- [x] Expose the adapter structs and fields only to the parent module so existing construction semantics remain unchanged.
+- [x] Remove adapter-only imports from `commands.rs` and keep test-only types behind `#[cfg(test)]`.
+- [x] Confirm this round moves no Tauri command and requires no registration-path change.
+- [x] Compare the formatted extraction exactly against the adapter blocks from `bb982ca`; no business logic changed.
+- [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
+- [ ] Commit round 10 and rerun post-commit verification before starting round 11.
