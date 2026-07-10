@@ -42,3 +42,17 @@
 - Tauri command 集合迁移前后均为 46 个，无缺失、无新增、无重复；本轮 20 个 command 仅调整 Rust 注册路径，IPC 名称未变化。
 - `commands.rs` 从 8,458 行降至 7,629 行；新增 `commands/catalog.rs` 868 行。
 - 本轮是行为中立的模块移动，不新增可复用业务契约，因此 `.trellis/spec/` 无需新增行为规范。
+
+
+## Round 3: context / compaction extraction (pre-commit)
+
+- `src-tauri/src/chat/commands/context.rs`: 1,037 lines extracted.
+- `src-tauri/src/chat/commands.rs`: 7,629 -> 6,642 lines.
+- Tauri chat command basenames are unchanged compared with `b789f5a`; no missing, added, or duplicate command registrations.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/context.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only the existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed.
+- `./scripts/win-cargo-test.ps1 --lib chat::agent::compaction::tests`: 59/59 passed.
+- `git diff --check`: passed.
+- The recompression test now appends enough content to exceed `RECENT_KEEP_TOKENS`; the previous short fixture did not satisfy the behavior's prerequisite.
+- Compaction implementation references now point to `commands/context.rs` where appropriate, while L2 summary writeback references remain on `commands.rs`.

@@ -66,8 +66,8 @@ const HEAD_BUDGET_FRACTION: f32 = 0.4;
 /// 上一份摘要，把它作为 `previous_summary` 让模型合并更新，而非从头再摘。
 const SUMMARY_MARKER_PREFIX: &str = "[context summary]";
 
-/// `build_chat_api_messages`（commands.rs）从落盘 `context_state.summary` 注入的
-/// **system** 消息前缀。生成方（`commands.rs::summary_message`）与识别方
+/// `build_chat_api_messages`（commands/context.rs）从落盘 `context_state.summary` 注入的
+/// **system** 消息前缀。生成方（`commands/context.rs::summary_message`）与识别方
 /// （`extract_previous_summary`）**共用同一常量**，防止格式漂移——历史上二者不一致
 /// 曾导致 L2 压缩认不出注入的旧摘要，链式摘要退化为「只摘本轮 old_segment」，
 /// run 结束整体覆盖旧 summary，跨轮静默丢掉早期上下文。
@@ -682,7 +682,7 @@ fn summary_output_tokens(config_max: u32) -> u32 {
 /// `window * SUMMARY_INPUT_BUDGET_RATIO`（R1/R2），保证摘要调用绝不超窗（"用超窗请求救超窗"的根因）。
 /// `window == 0`（未知）时用 `SUMMARY_INPUT_BUDGET_FALLBACK_TOKENS` 兜底。
 /// `cancel`：进行中取消的 future——自动路径传 host 的取消等待，手动路径传 `None`（强制压缩不取消）。
-/// runtime 消息上的来源 UI 消息 id 标注（由 `commands.rs::build_chat_api_messages` 注入；
+/// runtime 消息上的来源 UI 消息 id 标注（由 `commands/context.rs::build_chat_api_messages` 注入；
 /// 一条 UI 消息展开出的多条 runtime 消息共享同一 id）。发给 provider 前该字段会被
 /// `model_message_from_openai_message` 剥离，绝不进 wire 请求。
 pub(crate) const UI_MESSAGE_ID_KEY: &str = "_ui_message_id";
@@ -1457,7 +1457,7 @@ fn manual_fallback_split_over_indices(
 fn context_included_indices(conversation: &Conversation, summary_start: usize) -> Vec<usize> {
     (summary_start..conversation.messages.len())
         .filter(|&idx| {
-            !crate::chat::commands::group_answer_excluded_from_context(
+            !crate::chat::commands::context::group_answer_excluded_from_context(
                 conversation,
                 &conversation.messages[idx],
             )
@@ -1693,7 +1693,7 @@ async fn compact_conversation_inner(
     Ok(())
 }
 
-/// 发 `chat-compaction` 事件（与 commands.rs 的 `emit_chat_compaction_state` 同 payload）。
+/// 发 `chat-compaction` 事件（与 commands/context.rs 的 `emit_chat_compaction_state` 同 payload）。
 fn emit_compaction_event(
     app: &AppHandle,
     conversation_id: &str,

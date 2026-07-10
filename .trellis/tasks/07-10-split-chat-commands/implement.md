@@ -81,3 +81,15 @@
 - [ ] 每轮执行：实现 → 定向检查/测试 → Git commit → 提交后复测。
 - [ ] 继续拆分 context、session、attachments、reply/messages、tooling/agent host、conversation mutations 与 tests。
 - [ ] 最终将 `commands.rs` 收敛为模块门面，并执行全范围验证。
+
+
+## Step 12 ? Continuous split: context / compaction module (round 3)
+
+- [x] Add `src-tauri/src/chat/commands/context.rs`.
+- [x] Move context stats/compression commands, summary helpers, token/image estimation, usage-anchor handling, context-state computation, auto-compaction/rollback helpers, event emitters, and API-message replay construction.
+- [x] Keep parent-module access narrow with `pub(super)`; retain `group_answer_excluded_from_context` as `pub(crate)` for compaction reuse.
+- [x] Update Tauri registration paths for `chat_get_context_stats` and `chat_compress_context` without changing IPC command names.
+- [x] Update compaction call sites/comments and `.trellis/spec/chat/compaction-contracts.md` implementation paths.
+- [x] Fix the recompression test fixture so its old segment actually exceeds `RECENT_KEEP_TOKENS`; production behavior is unchanged.
+- [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and `chat::agent::compaction::tests`.
+- [ ] Commit round 3 and rerun post-commit verification before starting round 4.

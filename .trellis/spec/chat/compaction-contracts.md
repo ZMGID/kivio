@@ -1,7 +1,7 @@
 # Chat 压缩（Compaction）契约
 
 > 任务来源：`07-02-fix-compaction-stuck-and-boundary-mapping`（2026-07-02）。
-> 相关代码：`src-tauri/src/chat/agent/compaction.rs`、`src-tauri/src/chat/commands.rs`（`build_chat_api_messages` / `tag_ui_message_id`）、`src/chat/compactionBoundary.ts`、`src/chat/Chat.tsx`。
+> 相关代码：`src-tauri/src/chat/agent/compaction.rs`、`src-tauri/src/chat/commands/context.rs`（`build_chat_api_messages` / `tag_ui_message_id`）、`src/chat/compactionBoundary.ts`、`src/chat/Chat.tsx`。
 
 ## Scenario: chat-compaction 事件与 boundary 落盘
 
@@ -90,11 +90,11 @@ old_segment.iter().rev()
 
 ## Scenario: 链式摘要合并、估算口径、多答排除（07-06-compaction-correctness-fixes）
 
-> 2026-07-06 补。相关代码：`compaction.rs`、`commands.rs`（`summary_message` / `count_tokens_in_value` / `build_chat_api_messages` / L2 写回块）、`prepare.rs`（`estimate_value_tokens`）。
+> 2026-07-06 补。相关代码：`compaction.rs`、`commands/context.rs`（`summary_message` / `count_tokens_in_value` / `build_chat_api_messages`）、`commands.rs`（L2 写回块）、`prepare.rs`（`estimate_value_tokens`）。
 
 ### 1. 注入摘要识别（防跨轮丢上下文，硬约束）
 
-`build_chat_api_messages` 把落盘 `context_state.summary` 注入为一条 **system** 消息，前缀 `PERSISTED_SUMMARY_PREFIX`（`"Previous conversation summary:"`）。该前缀是 `compaction::PERSISTED_SUMMARY_PREFIX` 常量，**生成方 `commands.rs::summary_message` 与识别方 `compaction::extract_previous_summary` 共用**——禁止任一侧硬编码字符串（格式漂移会让 L2 认不出旧摘要，进而整体覆盖、静默丢早期上下文）。
+`build_chat_api_messages` 把落盘 `context_state.summary` 注入为一条 **system** 消息，前缀 `PERSISTED_SUMMARY_PREFIX`（`"Previous conversation summary:"`）。该前缀是 `compaction::PERSISTED_SUMMARY_PREFIX` 常量，**生成方 `commands/context.rs::summary_message` 与识别方 `compaction::extract_previous_summary` 共用**——禁止任一侧硬编码字符串（格式漂移会让 L2 认不出旧摘要，进而整体覆盖、静默丢早期上下文）。
 
 `extract_previous_summary(system_prefix, old_segment)` 识别两种上一份摘要，**锚点优先**：
 - 锚点摘要：old_segment 内 user + `SUMMARY_MARKER_PREFIX`（同 run 内更晚的 L2 产物）；
@@ -108,14 +108,14 @@ old_segment.iter().rev()
 
 ### 3. token 估算口径（防 base64 打爆 / preview 低估）
 
-- `prepare::estimate_value_tokens` 是唯一多模态估算口径：**图片部件记 0**（按 provider tile 计费，非 base64 体积）、文本按文本、对象递归。`commands.rs::count_tokens_in_value` 委托它。
+- `prepare::estimate_value_tokens` 是唯一多模态估算口径：**图片部件记 0**（按 provider tile 计费，非 base64 体积）、文本按文本、对象递归。`commands/context.rs::count_tokens_in_value` 委托它。
 - `compaction::estimate_message_tokens` 对非字符串 content 走 `estimate_value_tokens`（不再 `to_string()` 整体估算），并计入 `reasoning_content`。
 - `compaction::estimate_chat_message_tokens` 优先按展开形态（`model_messages` → `api_messages`）估算，分支顺序与 `build_chat_api_messages` 一致；无展开数据才回退 `result_preview` 口径。
 - `serialize_message` 多模态 user：文本全文 + 图片占位 `[image attachment omitted]`，绝不含 `;base64,`。
 
 ### 4. 多答排除臂过滤（落盘路径）
 
-落盘 old_segment 的 token 切分与序列化都跳过 `commands::group_answer_excluded_from_context`（pub(crate)，与 `build_chat_api_messages` 同谓词）为 true 的消息——经 `context_included_indices` + `token_split_over_indices` / `manual_fallback_split_over_indices`（升序原始下标，boundary 映射回原始下标）。被排除臂**内容不进摘要**，但其 id **仍计入** source_message_ids（被 boundary 覆盖、不再 replay）。L2 路径不受影响（runtime 天然已排除）。
+落盘 old_segment 的 token 切分与序列化都跳过 `commands::context::group_answer_excluded_from_context`（pub(crate)，与 `build_chat_api_messages` 同谓词）为 true 的消息——经 `context_included_indices` + `token_split_over_indices` / `manual_fallback_split_over_indices`（升序原始下标，boundary 映射回原始下标）。被排除臂**内容不进摘要**，但其 id **仍计入** source_message_ids（被 boundary 覆盖、不再 replay）。L2 路径不受影响（runtime 天然已排除）。
 
 ### 5. 取消 ≠ 失败
 
@@ -133,7 +133,7 @@ old_segment.iter().rev()
 ## Scenario: 真实用量锚点回喂上下文计量（07-06-context-token-ground-truth）
 
 > 2026-07-06 补。相关代码：`chat/agent/context_estimate.rs`（新）、`compaction.rs::maybe_compact_send_view`、
-> `loop_.rs`（`RunState.last_step_usage`/`merge_usage`/`attach_usage`）、`commands.rs::resolve_usage_anchor` +
+> `loop_.rs`（`RunState.last_step_usage`/`merge_usage`/`attach_usage`）、`commands/context.rs::resolve_usage_anchor` +
 > `compute_context_state` + `build_assistant_message`、`types.rs::ChatMessage.anchor_usage`、
 > `external_agents/context.rs::TOKEN_COUNT_PROVIDER_REPORTED`、`src/chat/ContextIndicator.tsx`。
 
