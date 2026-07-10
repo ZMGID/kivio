@@ -478,10 +478,14 @@ pub fn native_edit_file_tool() -> ChatToolDefinition {
 }
 
 pub fn native_run_command_tool() -> ChatToolDefinition {
+    // 描述按实际选中的 shell 动态生成(opencode #16479 教训:shell 自动检测对模型
+    // 不可见 → 模型猜错语法)。Windows 检出 Git Bash 时追加 bash 语法 + 正斜杠路径
+    // 提示;PowerShell 回落 / 非 Windows 时该 hint 为空串,描述与旧版逐字一致。
+    let shell_hint = crate::native_tools::run_command_shell_hint();
     ChatToolDefinition {
         id: "native__run_command".to_string(),
         name: "bash".to_string(),
-        description: "Run a host shell command (build, test, etc.). In a project conversation, the command starts from the bound project root by default; any explicit cwd is only a startup directory and is validated as workspace-local. Do not use `cd path && command` when the path contains spaces—pass `cwd` and run only the remaining command. Do not combine `cwd` with a leading `cd ... &&` prefix. Long-running dev servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a pid. This is a sensitive host-shell capability, not the same boundary as the file tools: obey user constraints and explain or seek confirmation before cross-directory, destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Do not use pip to bypass run_python sandbox failures; host Python package installs require an explicit user request and allow_host_python_package_install=true.".to_string(),
+        description: format!("Run a host shell command (build, test, etc.).{shell_hint} In a project conversation, the command starts from the bound project root by default; any explicit cwd is only a startup directory and is validated as workspace-local. Do not use `cd path && command` when the path contains spaces—pass `cwd` and run only the remaining command. Do not combine `cwd` with a leading `cd ... &&` prefix. Long-running dev servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a pid. This is a sensitive host-shell capability, not the same boundary as the file tools: obey user constraints and explain or seek confirmation before cross-directory, destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Do not use pip to bypass run_python sandbox failures; host Python package installs require an explicit user request and allow_host_python_package_install=true."),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
