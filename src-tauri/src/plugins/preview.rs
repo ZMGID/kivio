@@ -6,8 +6,11 @@
 //! 因此 Kivio 在 MCP 成功改文档后：
 //! 1. 要求 MCP 侧 `OFFICECLI_RESIDENT_FLUSH=each`（见 lifecycle）保证磁盘已落盘
 //! 2. 用 `officecli view <file> html -o <preview.html>` 导出当前画面
-//! 3. 注入 `<meta http-equiv="refresh" content="2">`，浏览器每 2s 自动重载本地 HTML
-//! 4. 首次导出时用系统浏览器打开该文件
+//! 3. **推送优先**：本地 SSE 服务器（127.0.0.1:26316，仿上游 watch 的推送模式）
+//!    serve 该 HTML + `/events` 事件流，每次导出完成推 `reload`——没编辑就没刷新，
+//!    任务结束自然安静，滚动位置不受影响
+//! 4. 服务器起不来时回落 file:// + `<meta refresh>` 轮询（配静默收口 + 滚动保持）
+//! 5. 首次导出时用系统浏览器打开
 //!
 //! 不阻塞 MCP 工具调用（debounced 后台任务）。
 
@@ -18,7 +21,10 @@ use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
+use tokio::sync::watch;
 
 use super::state::{is_enabled, is_installed, plugin_dir, resolve_binary};
 use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
@@ -28,6 +34,8 @@ use crate::state::AppState;
 const OFFICECLI_PLUGIN_ID: &str = "officecli";
 const PLUGIN_MCP_SERVER_ID: &str = "plugin-officecli";
 const PREVIEW_HTML_NAME: &str = "live-preview.html";
+/// SSE 预览服务器首选端口（上游 watch 用 26315，错开避免冲突）
+const PREVIEW_SERVER_PORT: u16 = 26316;
 /// 浏览器 meta refresh 间隔（秒）
 const PREVIEW_REFRESH_SECS: u32 = 2;
 /// 合并连续 MCP 写操作，避免每条工具都跑一次 view
@@ -46,6 +54,8 @@ struct PreviewRuntime {
     last_schedule: Option<Instant>,
     /// 生成代数：debounce 任务只处理最新一次
     generation: u64,
+    /// SSE 服务器实际监听端口（None = 未启动/启动失败）
+    server_port: Option<u16>,
 }
 
 static PREVIEW: Mutex<PreviewRuntime> = Mutex::new(PreviewRuntime {
@@ -53,7 +63,11 @@ static PREVIEW: Mutex<PreviewRuntime> = Mutex::new(PreviewRuntime {
     browser_opened: false,
     last_schedule: None,
     generation: 0,
+    server_port: None,
 });
+
+/// reload 事件广播：每次导出完成 send 一个递增序号，SSE 连接收到即推 reload。
+static RELOAD_TX: Mutex<Option<watch::Sender<u64>>> = Mutex::new(None);
 
 /// MCP 工具成功返回后调用：若为 OfficeCLI 文档操作则异步刷新本地 HTML 预览。
 pub fn note_after_officecli_tool(
@@ -104,8 +118,15 @@ pub fn note_after_officecli_tool(
             eprintln!("[plugins/preview] refresh failed: {err}");
         }
 
-        // 静默收口：一段时间没有新编辑就摘掉 meta refresh，浏览器自然停刷。
-        // （meta refresh 是浏览器端无限轮询，任务结束没人通知它；这里补上终止信号）
+        // 静默收口（仅 file:// 轮询回落需要）：SSE 推送模式没编辑就没刷新，
+        // 天然安静；meta refresh 是浏览器端无限轮询，须摘标签补终止信号。
+        let polling_fallback = {
+            let guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+            guard.server_port.is_none()
+        };
+        if !polling_fallback {
+            return;
+        }
         tokio::time::sleep(Duration::from_secs(PREVIEW_QUIESCE_SECS)).await;
         {
             let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
@@ -120,12 +141,18 @@ pub fn note_after_officecli_tool(
         }
     });
 
-    let html_path = preview_html_path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| PREVIEW_HTML_NAME.to_string());
+    let target = {
+        let guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.server_port {
+            Some(port) => format!("http://127.0.0.1:{port}/"),
+            None => preview_html_path()
+                .map(|p| format!("`{}`", p.display()))
+                .unwrap_or_else(|| format!("`{PREVIEW_HTML_NAME}`")),
+        }
+    };
     Some(format!(
-        "[Kivio] Live preview refreshing → open `{html_path}` (auto-reload every {PREVIEW_REFRESH_SECS}s). \
-Do NOT call `officecli watch` yourself (MCP edits do not push to watch; Kivio exports HTML instead)."
+        "[Kivio] Live preview refreshing → open {target} (auto-reloads on each edit). \
+Do NOT call `officecli watch` yourself (MCP edits do not push to watch; Kivio serves its own preview)."
     ))
 }
 
@@ -194,11 +221,17 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
         ));
     }
 
-    // 注入自动刷新 + 滚动位置保持，使浏览器在 Agent 继续改文档时无需 F5
+    // 注入客户端脚本：推送模式注入 SSE 监听（有变化才刷），回落模式注入
+    // meta refresh 轮询 + 滚动保持
     let mut html = tokio::fs::read_to_string(&out)
         .await
         .map_err(|e| format!("read preview html: {e}"))?;
-    html = inject_meta_refresh(&html, PREVIEW_REFRESH_SECS);
+    let port = ensure_preview_server().await;
+    if let Some(port) = port {
+        html = inject_sse_client(&html, port);
+    } else {
+        html = inject_meta_refresh(&html, PREVIEW_REFRESH_SECS);
+    }
     html = inject_scroll_keeper(&html);
     // 标注来源，方便排查
     if !html.contains("kivio-live-preview") {
@@ -215,6 +248,9 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
         .await
         .map_err(|e| format!("write preview html: {e}"))?;
 
+    // 推送 reload：已连接的 SSE 浏览器立刻重载（推送模式的核心）
+    notify_reload();
+
     let open_browser = {
         let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
         let open = !guard.browser_opened;
@@ -225,7 +261,10 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
     };
 
     if open_browser {
-        let url = path_to_file_url(&out);
+        let url = match port {
+            Some(port) => format!("http://127.0.0.1:{port}/"),
+            None => path_to_file_url(&out),
+        };
         #[allow(deprecated)]
         let _ = app.shell().open(url.as_str(), None);
     }
@@ -235,6 +274,152 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
 
 fn preview_html_path() -> Option<PathBuf> {
     plugin_dir(OFFICECLI_PLUGIN_ID).map(|d| d.join(PREVIEW_HTML_NAME))
+}
+
+// ===== SSE 预览服务器（仿上游 watch 的推送模式，但由 Kivio 在 MCP 导出后推） =====
+
+/// 确保 SSE 服务器已启动，返回监听端口；bind 失败返回 None（回落 file:// 轮询）。
+async fn ensure_preview_server() -> Option<u16> {
+    if let Some(port) = {
+        let guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+        guard.server_port
+    } {
+        return Some(port);
+    }
+
+    // 首选固定端口（书签友好），被占则退化到系统分配
+    let listener = match TcpListener::bind(("127.0.0.1", PREVIEW_SERVER_PORT)).await {
+        Ok(l) => l,
+        Err(_) => match TcpListener::bind(("127.0.0.1", 0)).await {
+            Ok(l) => l,
+            Err(err) => {
+                eprintln!("[plugins/preview] SSE server bind failed: {err}");
+                return None;
+            }
+        },
+    };
+    let port = listener.local_addr().ok()?.port();
+
+    let (tx, _rx) = watch::channel(0u64);
+    {
+        let mut guard = RELOAD_TX.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(tx);
+    }
+    {
+        let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+        guard.server_port = Some(port);
+    }
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Ok((stream, _addr)) = listener.accept().await else {
+                continue;
+            };
+            tauri::async_runtime::spawn(async move {
+                let _ = handle_preview_connection(stream).await;
+            });
+        }
+    });
+    Some(port)
+}
+
+/// 通知所有 SSE 连接重载（导出完成后调用）。
+fn notify_reload() {
+    let guard = RELOAD_TX.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tx) = guard.as_ref() {
+        tx.send_modify(|v| *v = v.wrapping_add(1));
+    }
+}
+
+/// 极简 HTTP：`GET /` 回预览 HTML，`GET /events` 挂 SSE 推 reload。
+/// 单用户本地回环，无需完整 HTTP 栈（ponytail: 手写足够，别拉 axum）。
+async fn handle_preview_connection(mut stream: TcpStream) -> std::io::Result<()> {
+    let mut buf = [0u8; 2048];
+    let n = stream.read(&mut buf).await?;
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let path = req
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("/");
+
+    if path.starts_with("/events") {
+        // SSE 长连接：初始 retry + 心跳注释；watch 变化即推 reload
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\nretry: 1500\n\n",
+            )
+            .await?;
+        let mut rx = {
+            let guard = RELOAD_TX.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(tx) => tx.subscribe(),
+                None => return Ok(()),
+            }
+        };
+        loop {
+            tokio::select! {
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        return Ok(()); // sender 没了，结束连接
+                    }
+                    stream.write_all(b"event: reload\ndata: 1\n\n").await?;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(25)) => {
+                    // 心跳，防中间层/浏览器判死连接
+                    stream.write_all(b": ping\n\n").await?;
+                }
+            }
+        }
+    }
+
+    // 其余一律回当前预览 HTML（无文件时 404）
+    let html = match preview_html_path() {
+        Some(p) => tokio::fs::read(&p).await.ok(),
+        None => None,
+    };
+    match html {
+        Some(body) => {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).await?;
+            stream.write_all(&body).await?;
+        }
+        None => {
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 注入 SSE 客户端：收到 reload 事件即整页刷新（配合 scroll keeper 无感）。
+/// EventSource 自带断线重连（retry: 1500），app 重启后浏览器自动接回。幂等。
+fn inject_sse_client(html: &str, port: u16) -> String {
+    const MARK: &str = "data-kivio-sse-client";
+    if html.contains(MARK) {
+        return html.to_string();
+    }
+    let script = format!(
+        r#"<script {MARK}="1">(function(){{
+try{{
+var es=new EventSource('http://127.0.0.1:{port}/events');
+es.addEventListener('reload',function(){{location.reload();}});
+}}catch(_e){{}}
+}})();</script>"#
+    );
+    if let Some(idx) = html.find("</body>") {
+        let mut out = String::with_capacity(html.len() + script.len() + 2);
+        out.push_str(&html[..idx]);
+        out.push_str(&script);
+        out.push('\n');
+        out.push_str(&html[idx..]);
+        return out;
+    }
+    format!("{html}\n{script}")
 }
 
 fn path_to_file_url(path: &Path) -> String {
@@ -594,6 +779,16 @@ mod tests {
         assert!(out.contains("data-kivio-scroll-keeper"));
         assert!(out.find("data-kivio-scroll-keeper").unwrap() < out.find("</body>").unwrap());
         assert_eq!(inject_scroll_keeper(&out), out);
+    }
+
+    #[test]
+    fn sse_client_injected_with_port_and_idempotent() {
+        let html = "<html><head></head><body>hi</body></html>";
+        let out = inject_sse_client(html, 26316);
+        assert!(out.contains("data-kivio-sse-client"));
+        assert!(out.contains("http://127.0.0.1:26316/events"));
+        assert!(out.find("data-kivio-sse-client").unwrap() < out.find("</body>").unwrap());
+        assert_eq!(inject_sse_client(&out, 26316), out);
     }
 
     #[test]
