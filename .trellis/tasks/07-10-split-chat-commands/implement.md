@@ -290,4 +290,14 @@
 - [x] Compare the standalone-rustfmt result exactly against the block extracted from `3b6ea3c`.
 - [x] Confirm the test/helper function-name sequence is unchanged and the full 72-test filtered suite still runs.
 - [x] Verify targeted formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
-- [ ] Commit round 20 and rerun post-commit verification before starting final facade cleanup.
+- [x] Commit round 20 and rerun post-commit verification before starting final facade cleanup.
+
+## Step 30 - Continuous split: final facade cleanup (round 21)
+
+- [x] Move all test-only imports and helper aliases out of `commands.rs` into `commands/tests.rs`.
+- [x] Import test dependencies directly from their owning command/chat modules while retaining `use super::*` for the production facade surface.
+- [x] Leave all production aliases used by descendant command modules unchanged.
+- [x] Keep every test body and helper function unchanged; only the test module import surface moves.
+- [x] Reduce `commands.rs` to a compact module declaration, production alias, and compatibility re-export facade.
+- [x] Verify targeted test-file formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
+- [ ] Commit round 21 and rerun post-commit verification before declaring the large-file split complete.

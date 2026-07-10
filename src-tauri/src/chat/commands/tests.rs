@@ -1,7 +1,37 @@
+use std::{collections::HashMap, path::Path};
+
+use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::attachments::compose_user_content_for_api;
+use crate::chat::model::{
+    openai_messages_from_model_messages, MessagePart, ModelMessage, ModelRole,
+};
+use crate::chat::vision::{user_content_with_auxiliary_vision_result, AuxiliaryVisionResult};
+use crate::chat::{
+    AgentTodoState, Attachment, CompactionBoundaryRecord, ConversationContextState,
+    ConversationContextSummary, ModelRef,
+};
+use crate::mcp::ChatToolDefinition;
+use crate::settings::{ModelProvider, SessionModel, Settings};
+use crate::skills;
+
+use super::catalog::{assistant_from_builder_args, strip_transcripts_for_frontend};
+use super::context::{
+    build_chat_api_messages, count_tokens_in_value, estimate_image_tokens_for_dimensions,
+    group_answer_excluded_from_context, mark_summary_stale_if_needed, resolve_usage_anchor,
+    should_auto_compress_context,
+};
+use super::interaction::{approve_agent_plan_for_execution, format_tool_approval_summary};
+use super::messages::{
+    assistant_model_messages_for_storage, build_assistant_message, build_error_arm_message,
+    content_from_segments, normalize_assistant_segments, reasoning_from_segments,
+    reconcile_orphan_tool_segments, replace_final_text_segments_for_edit,
+};
+use super::mutations::{apply_regenerate_truncation, build_fork_messages};
+use super::reply_runtime::resolve_reply_arms;
+use super::sanitization::sanitize_image_payloads_for_model;
+use super::title::{build_title_summary_prompt, generate_title, sanitize_generated_title};
+use super::tooling::{should_answer_inline_without_file_write, try_apply_skill_slash_trigger};
 use super::*;
-use crate::chat::Attachment;
-use crate::chat::ModelRef;
-use std::collections::HashMap;
 
 #[test]
 fn resolve_thinking_maps_levels_and_defaults_to_high() {

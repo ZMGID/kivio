@@ -425,3 +425,23 @@
 - `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed with the original test paths.
 - `git diff --check`: passed.
 - This round changes only test source layout, so no `.trellis/spec/` update is required.
+
+## Round 20: post-commit verification
+
+- Commit: `7515100 refactor(chat): extract command tests`.
+- Post-commit `cargo check`: passed with only existing baseline warnings.
+- Post-commit `chat::commands::tests`: 72/72 passed with unchanged test paths.
+- Working tree was clean before round 21 began.
+
+## Round 21: final command-facade cleanup (pre-commit)
+
+- `src-tauri/src/chat/commands.rs`: 129 -> 65 lines; it now contains only module declarations, production aliases/re-exports, compatibility paths, and the external test-module declaration.
+- All `#[cfg(test)] use ...` support imports moved to `src-tauri/src/chat/commands/tests.rs` and now reference their owning modules directly.
+- Production aliases used by `context.rs`, `reply.rs`, `fan_out.rs`, `probe_runtime.rs`, and other descendants remain unchanged.
+- The complete test body from `7515100` is byte-for-byte unchanged; old and new SHA-256 are both `8dff9fb99157b0f08dba64cb1b15d06286d90aa43fa810545024f13ddffbd785`.
+- The old and new test files retain the same 84-function name sequence, including all 72 `#[test]` cases and local helpers.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/tests.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed with unchanged test paths.
+- `git diff --check`: passed.
+- This round changes only test dependency placement and facade cleanup, so no `.trellis/spec/` update is required.
