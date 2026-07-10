@@ -208,4 +208,16 @@
 - [x] Confirm this round moves no Tauri command and requires no registration-path change.
 - [x] Compare all three moved function bodies exactly against `df7a3bb`; no business logic changed.
 - [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
-- [ ] Commit round 13 and rerun post-commit verification before starting round 14.
+- [x] Commit round 13 and rerun post-commit verification before starting round 14.
+
+## Step 23 - Continuous split: reply runtime primitives (round 14)
+
+- [x] Add `src-tauri/src/chat/commands/reply_runtime.rs`.
+- [x] Move reply-arm resolution and limits, send reservation, per-run reply guard, reply-arm configuration, and arm outcome types.
+- [x] Preserve parent-level aliases so `commands.rs` and `mutations.rs` keep their existing internal paths.
+- [x] Restrict constants, types, methods, and fields to the owning parent module's visibility.
+- [x] Keep the existing reply-arm resolution test in the parent through the imported aliases.
+- [x] Confirm this round moves no Tauri command and requires no registration-path change.
+- [x] Compare the formatted extraction exactly against `44ec5ce`; no business logic changed.
+- [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
+- [ ] Commit round 14 and rerun post-commit verification before starting round 15.

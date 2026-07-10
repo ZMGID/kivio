@@ -273,3 +273,26 @@
 - `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed, including the shared run-entry label coverage.
 - `git diff --check`: passed.
 - This round is a behavior-neutral extraction; no provider/image-generation contract changed, so no `.trellis/spec/` update is required.
+
+
+## Round 13: post-commit verification
+
+- Commit: `44ec5ce refactor(chat): extract direct image generation`.
+- Post-commit `cargo check`: passed with only existing baseline warnings.
+- Post-commit `chat::commands::tests`: 72/72 passed.
+- Working tree was clean before round 14 began.
+
+## Round 14: reply runtime primitives extraction (pre-commit)
+
+- `src-tauri/src/chat/commands/reply_runtime.rs`: 134 lines extracted.
+- `src-tauri/src/chat/commands.rs`: 3,535 -> 3,417 lines.
+- Moved the reply-model cap and resolver, TOCTOU-safe send reservation, per-run reply/generation RAII guard, reply-arm configuration, and arm outcome type.
+- Parent-level aliases preserve existing callers in `commands.rs` and `mutations.rs`; only the owning module receives `pub(super)` visibility needed by those callers.
+- The existing `resolve_reply_arms_dedups_filters_and_caps` test remains in the parent and continues to cover filtering, stable deduplication, provider validation, and the four-model cap.
+- This round contains no Tauri command, so registration paths and IPC names are unchanged.
+- Formatting the block extracted from `44ec5ce` with the same imports and visibility adjustments exactly matches the new module; expected and actual SHA-256 are both `3172cb0b9c674dc0364b813585a719b7eb94cf21426e86270427718be7d2101b`.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/reply_runtime.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed.
+- `git diff --check`: passed.
+- This round is a behavior-neutral extraction; reply-slot, generation, and fan-out contracts are unchanged, so no `.trellis/spec/` update is required.
