@@ -204,3 +204,26 @@
 - `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed.
 - `git diff --check`: passed.
 - This round is a behavior-neutral extraction; no reusable runtime contract changed, so no `.trellis/spec/` update is required.
+
+
+## Round 10: post-commit verification
+
+- Commit: `7381884 refactor(chat): extract agent runtime adapters`.
+- Post-commit `cargo check`: passed with only existing baseline warnings.
+- Post-commit `chat::commands::tests`: 72/72 passed.
+- Working tree was clean before round 11 began.
+
+## Round 11: model-input sanitization extraction (pre-commit)
+
+- `src-tauri/src/chat/commands/sanitization.rs`: 86 lines extracted across 5 functions.
+- `src-tauri/src/chat/commands.rs`: 3,888 -> 3,805 lines.
+- Moved API-message/content sanitization, image data-URL stripping, raw image-base64 detection, and replacement text generation.
+- Updated `context.rs` to import `sanitize_api_message_for_model` and `sanitize_image_payloads_for_model` directly from the owning module.
+- Existing parent tests retain sanitizer access through a test-only import.
+- This round contains no Tauri command, so registration paths and IPC names are unchanged.
+- The formatted new module exactly matches the sanitization block extracted from `7381884`; only imports, sibling visibility, and module formatting changed.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/sanitization.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed, including both image-payload sanitizer tests.
+- `git diff --check`: passed.
+- This round is a behavior-neutral extraction; no reusable runtime contract changed, so no `.trellis/spec/` update is required.

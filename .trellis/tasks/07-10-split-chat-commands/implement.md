@@ -172,4 +172,16 @@
 - [x] Confirm this round moves no Tauri command and requires no registration-path change.
 - [x] Compare the formatted extraction exactly against the adapter blocks from `bb982ca`; no business logic changed.
 - [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
-- [ ] Commit round 10 and rerun post-commit verification before starting round 11.
+- [x] Commit round 10 and rerun post-commit verification before starting round 11.
+
+
+## Step 20 - Continuous split: model-input sanitization (round 11)
+
+- [x] Add `src-tauri/src/chat/commands/sanitization.rs`.
+- [x] Move API-message/content sanitization, image data-URL stripping, raw image-base64 detection, and payload replacement.
+- [x] Update `context.rs` to import the two shared sanitizers from their owning module.
+- [x] Keep the existing parent-module sanitizer tests intact through a narrow test-only import.
+- [x] Confirm this round moves no Tauri command and requires no registration-path change.
+- [x] Compare the formatted extraction exactly against the sanitization block from `7381884`; no business logic changed.
+- [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
+- [ ] Commit round 11 and rerun post-commit verification before starting round 12.

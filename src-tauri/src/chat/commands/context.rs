@@ -18,6 +18,7 @@ use crate::settings::{ModelProvider, ProviderApiFormat};
 use crate::skills;
 use crate::state::AppState;
 
+use super::sanitization::{sanitize_api_message_for_model, sanitize_image_payloads_for_model};
 use super::catalog::{
     chat_memory_prompt_for_request, is_builder_conversation, project_prompt_context_for,
     strip_transcripts_for_frontend,
@@ -25,7 +26,7 @@ use super::catalog::{
 use super::{
     append_agent_ask_user_tools, append_agent_todo_tools, apply_agent_plan_tool_filter,
     apply_inline_code_request_tool_filter, image_content_part, list_tools_for_chat,
-    resolve_forced_skill_id, sanitize_api_message_for_model, sanitize_image_payloads_for_model,
+    resolve_forced_skill_id,
 };
 use crate::chat::vision::auxiliary_vision_model_for_images;
 
