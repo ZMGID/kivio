@@ -256,4 +256,15 @@
 - [x] Confirm this round moves no Tauri command and requires no registration-path change.
 - [x] Compare the formatted extraction exactly against `dfbc34b`; no business logic changed beyond module-scoped visibility.
 - [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
-- [ ] Commit round 17 and rerun post-commit verification before starting round 18.
+- [x] Commit round 17 and rerun post-commit verification before starting round 18.
+
+## Step 27 - Continuous split: reasoning controls (round 18)
+
+- [x] Add `src-tauri/src/chat/commands/reasoning.rs`.
+- [x] Move per-conversation thinking-level resolution and the reasoning-effort query Tauri command.
+- [x] Preserve parent callers and the existing regression test through a narrow `resolve_thinking` alias.
+- [x] Update only the Tauri registration path to `chat::commands::reasoning::chat_reasoning_efforts_for_model`; preserve the IPC command basename.
+- [x] Remove the reasoning metadata import from `commands.rs`.
+- [x] Compare the moved block exactly against `2a275dc`; no business logic changed.
+- [x] Verify formatting, compilation, the full `chat::commands::tests` suite, registration basenames, and diff cleanliness.
+- [ ] Commit round 18 and rerun post-commit verification before starting round 19.

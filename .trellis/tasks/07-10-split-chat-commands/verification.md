@@ -362,3 +362,24 @@
 - `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed, including reply-entry, model-history, compaction, vision, fan-out, and error-column regressions.
 - `git diff --check`: passed.
 - This round is a behavior-neutral extraction; reply execution, tool, compaction, cancellation, and persistence contracts are unchanged, so no `.trellis/spec/` update is required.
+
+## Round 17: post-commit verification
+
+- Commit: `2a275dc refactor(chat): extract reply execution`.
+- Post-commit `cargo check`: passed with only existing baseline warnings.
+- Post-commit `chat::commands::tests`: 72/72 passed.
+- Working tree was clean before round 18 began.
+
+## Round 18: reasoning controls extraction (pre-commit)
+
+- `src-tauri/src/chat/commands/reasoning.rs`: 30 lines extracted across the thinking-level resolver and one Tauri command.
+- `src-tauri/src/chat/commands.rs`: 2,426 -> 2,399 lines.
+- Moved per-conversation thinking-level defaults/validation and model-specific reasoning-effort lookup.
+- Updated only the registration path to `chat::commands::reasoning::chat_reasoning_efforts_for_model`; the IPC command basename remains unchanged.
+- Registration comparison against `2a275dc` remains exactly 50/50 command basenames with no missing, added, or duplicate entries.
+- The moved block exactly matches `2a275dc`; expected and actual SHA-256 are both `8d584796bfbce99065f753864076ce57f4c778b668ecd435cff92c8fa6a66494`.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/reasoning.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed, including thinking-level resolution coverage.
+- `git diff --check`: passed.
+- This round is a behavior-neutral extraction; reasoning defaults and model capability lookup are unchanged, so no `.trellis/spec/` update is required.

@@ -488,7 +488,7 @@ pub fn run() {
             chat::commands::attachments::chat_read_clipboard_files,
             chat::commands::mutations::chat_delete_conversation,
             chat::commands::mutations::chat_update_conversation,
-            chat::commands::chat_reasoning_efforts_for_model,
+            chat::commands::reasoning::chat_reasoning_efforts_for_model,
             chat::commands::mutations::chat_update_message,
             chat::commands::mutations::chat_delete_message,
             chat::commands::mutations::chat_set_group_selection,
