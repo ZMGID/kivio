@@ -1,0 +1,128 @@
+use std::path::PathBuf;
+
+use tauri::{AppHandle, State};
+
+use crate::state::AppState;
+
+use super::context::{compute_context_state, emit_chat_context_state};
+use super::messages::{build_error_arm_message, upsert_assistant_message};
+use super::reply_runtime::{ArmReplyOutcome, ReplyArm};
+use super::{
+    agent_run_entry_label, complete_assistant_reply_inner, save_conversation, Conversation,
+};
+
+/// 多模型一问多答（任务 06-30 步骤 3）的协调者。
+///
+/// 对每个臂 `(provider_id, model)`：在会话的**独立克隆**上并发跑一次 agent loop
+/// （`complete_assistant_reply_inner` 的 arm 模式），各臂自带 message_id/run_id/generation +
+/// 共享 `group_id`，工具自动批准、**不直接落盘**。全部臂结束后，把各臂产出的 assistant
+/// 消息按 id `upsert` 进真正的 `conversation`、统一计算一次上下文、一次性 `save_conversation`，
+/// 从根本上避开 N 条并发 run 同写 `conversations/{id}.json` 的竞态。
+///
+/// 返回：
+/// - 至少一列产出（成功**或**报错）→ `Ok(())`。报错臂也会合成一条 `stream_outcome="error"`
+///   的列消息落库，避免整列被吞（只剩能正常回答的模型）。
+/// - 全部臂被取消 → `Err("cancelled")`。
+/// - 无任何产出（理论兜底）→ `Err(首个错误信息)`。
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_reply_fan_out(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    conversation: &mut Conversation,
+    arms: &[(String, String)],
+    group_id: &str,
+    last_user_api_content: Option<&str>,
+    last_user_image_paths: &[PathBuf],
+    active_skill_id: Option<&str>,
+) -> Result<(), String> {
+    // 各臂独立克隆，互不写盘。arm 模式不走 push_assistant_message 的标题生成路径，
+    // 故各臂统一传 title=None：多答首条回复的标题留给后续单模型轮或手动重命名
+    // （避免 N 个克隆各自异步生成标题再丢弃）。
+    let run_entry = agent_run_entry_label(crate::chat::agent::AgentRunEntry::Send);
+    let arm_futures = arms.iter().map(|(provider_id, model)| {
+        let mut arm_conversation = conversation.clone();
+        let provider_id = provider_id.clone();
+        let model = model.clone();
+        let arm = ReplyArm {
+            group_id: group_id.to_string(),
+            provider_id: provider_id.clone(),
+            model: model.clone(),
+        };
+        async move {
+            let outcome = complete_assistant_reply_inner(
+                app,
+                state,
+                &mut arm_conversation,
+                None,
+                last_user_api_content,
+                last_user_image_paths,
+                active_skill_id,
+                crate::chat::agent::AgentRunEntry::Send,
+                Some(&arm),
+                false,
+            )
+            .await;
+            (outcome, provider_id, model)
+        }
+    });
+
+    let results = futures::future::join_all(arm_futures).await;
+
+    let mut produced = 0usize;
+    let mut cancelled = 0usize;
+    let mut first_error: Option<String> = None;
+    for (outcome, provider_id, model) in results {
+        match outcome {
+            Ok(ArmReplyOutcome {
+                message: Some(message),
+            }) => {
+                upsert_assistant_message(conversation, message);
+                produced += 1;
+            }
+            Ok(ArmReplyOutcome { message: None }) => {
+                // 不应发生（arm 模式必返回消息），保守计为无产出。
+            }
+            Err(err) if err == "cancelled" => {
+                cancelled += 1;
+            }
+            Err(err) => {
+                // 报错臂也保留为一列：否则整列被吞、只剩能正常回答的模型。合成一条
+                // content=错误信息、stream_outcome="error" 的 assistant 列消息落库。
+                let message = build_error_arm_message(
+                    group_id,
+                    provider_id,
+                    model,
+                    err.clone(),
+                    run_entry,
+                    active_skill_id,
+                );
+                upsert_assistant_message(conversation, message);
+                produced += 1;
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+    }
+
+    if produced > 0 {
+        // 至少一列产出（成功或报错）：合并后统一计算一次上下文并落盘。
+        match compute_context_state(app, state, conversation, None, &[]).await {
+            Ok(context_state) => {
+                conversation.context_state = context_state.clone();
+                emit_chat_context_state(app, &conversation.id, &context_state);
+            }
+            Err(err) => {
+                eprintln!("Context usage estimate failed after multi-model fan-out: {err}");
+            }
+        }
+        conversation.updated_at = chrono::Local::now().timestamp();
+        save_conversation(app, conversation)?;
+        return Ok(());
+    }
+
+    if cancelled > 0 && first_error.is_none() {
+        return Err("cancelled".to_string());
+    }
+    Err(first_error.unwrap_or_else(|| "全部模型回答均失败".to_string()))
+}

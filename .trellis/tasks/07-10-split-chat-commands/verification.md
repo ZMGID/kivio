@@ -296,3 +296,26 @@
 - `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed.
 - `git diff --check`: passed.
 - This round is a behavior-neutral extraction; reply-slot, generation, and fan-out contracts are unchanged, so no `.trellis/spec/` update is required.
+
+
+## Round 14: post-commit verification
+
+- Commit: `3c7e9b5 refactor(chat): extract reply runtime primitives`.
+- Post-commit `cargo check`: passed with only existing baseline warnings.
+- Post-commit `chat::commands::tests`: 72/72 passed.
+- Working tree was clean before round 15 began.
+
+## Round 15: multi-model fan-out orchestration extraction (pre-commit)
+
+- `src-tauri/src/chat/commands/fan_out.rs`: 128 lines extracted.
+- `src-tauri/src/chat/commands.rs`: 3,417 -> 3,313 lines.
+- Moved concurrent arm execution, success/error/cancellation outcome collection, synthetic error-column creation, unified context refresh, and the single final conversation save.
+- The module calls the parent-owned core reply executor through descendant visibility while importing message/context/storage primitives directly from their owning modules.
+- `build_error_arm_message` remains available to the existing parent test through a test-only import; production ownership moved completely to `fan_out.rs`.
+- This round contains no Tauri command, so registration paths and IPC names are unchanged.
+- Formatting the function and documentation extracted from `3c7e9b5` with the new module imports and parent-only entry visibility exactly matches the new module; expected and actual SHA-256 are both `30a665f1a4d1528a290d95dc1ba8dc932d857597eaa9a2208caed0cae5d48397`.
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/fan_out.rs`: passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: passed with only existing baseline warnings.
+- `./scripts/win-cargo-test.ps1 --lib chat::commands::tests`: 72/72 passed, including the error-arm message regression.
+- `git diff --check`: passed.
+- This round is a behavior-neutral extraction; multi-model persistence, cancellation, and error-column contracts are unchanged, so no `.trellis/spec/` update is required.

@@ -220,4 +220,16 @@
 - [x] Confirm this round moves no Tauri command and requires no registration-path change.
 - [x] Compare the formatted extraction exactly against `44ec5ce`; no business logic changed.
 - [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
-- [ ] Commit round 14 and rerun post-commit verification before starting round 15.
+- [x] Commit round 14 and rerun post-commit verification before starting round 15.
+
+## Step 24 - Continuous split: multi-model fan-out orchestration (round 15)
+
+- [x] Add `src-tauri/src/chat/commands/fan_out.rs`.
+- [x] Move multi-model arm concurrency, outcome collection, error-column synthesis, context refresh, and single-save coordination.
+- [x] Keep the main reply executor and shared run-entry label in the parent; expose only the fan-out entry point to it.
+- [x] Import error-message construction and assistant upsert directly from their owning message module.
+- [x] Retain parent test access to `build_error_arm_message` through a test-only import.
+- [x] Confirm this round moves no Tauri command and requires no registration-path change.
+- [x] Compare the formatted extraction exactly against `3c7e9b5`; no business logic changed.
+- [x] Verify formatting, compilation, the full `chat::commands::tests` suite, and diff cleanliness.
+- [ ] Commit round 15 and rerun post-commit verification before starting round 16.
