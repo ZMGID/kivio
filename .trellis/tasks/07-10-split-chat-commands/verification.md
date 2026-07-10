@@ -30,3 +30,15 @@
 本任务未混入修复。
 
 仓库当前整体并非由本机 rustfmt 版本完全格式化；因此仅对三个新模块执行定向 rustfmt，避免全仓无关格式 churn。
+
+## 第二轮：catalog / CRUD 提取（提交前）
+
+- `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/chat/commands/catalog.rs`：通过。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过；仅保留既有基线警告。
+- `./scripts/win-cargo-test.ps1 --lib builder_args`：2/2 通过。
+- `./scripts/win-cargo-test.ps1 --lib reconcile_orphan_tool_segments`：3/3 通过。
+- `./scripts/win-cargo-test.ps1 --lib strip_transcripts_for_frontend`：1/1 通过。
+- `git diff --check`：通过。
+- Tauri command 集合迁移前后均为 46 个，无缺失、无新增、无重复；本轮 20 个 command 仅调整 Rust 注册路径，IPC 名称未变化。
+- `commands.rs` 从 8,458 行降至 7,629 行；新增 `commands/catalog.rs` 868 行。
+- 本轮是行为中立的模块移动，不新增可复用业务契约，因此 `.trellis/spec/` 无需新增行为规范。

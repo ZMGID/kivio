@@ -63,4 +63,21 @@
 - [x] 更新 `verification.md`。
 - [x] 更新 `.trellis/spec/chat/mcp-image-feedback.md` 中的实现位置和模块边界。
 - [x] 审查完整 diff，确认仅包含模块移动、最小 import/代理和任务文档。
-- [ ] 等用户确认后再决定是否 stage / commit。
+- [x] 用户已确认继续拆分，已完成首轮 commit。
+
+## Step 10 — 连续拆分：catalog / CRUD 模块（第二轮）
+
+- [x] 新建 `src-tauri/src/chat/commands/catalog.rs`。
+- [x] 迁移 conversation 查询/创建/导入、assistant CRUD/builder、project CRUD、set CRUD。
+- [x] 迁移相关 prompt/context helper 与 `ExternalConversationMessage`。
+- [x] `commands.rs` 仅保留后续编排所需的私有 import，以及 `create_assistant_via_builder` 兼容 re-export。
+- [x] Tauri 注册改为 Rust 模块实际路径 `chat::commands::catalog::*`，前端 command 名保持不变。
+- [x] 定向 rustfmt、`cargo check`、相关 6 个单元测试和 `git diff --check` 通过。
+- [x] 提交本轮，并在提交后复跑验证。
+
+## Step 11 — 后续模块边界
+
+- [ ] 每轮只提取一个可独立验证的职责边界。
+- [ ] 每轮执行：实现 → 定向检查/测试 → Git commit → 提交后复测。
+- [ ] 继续拆分 context、session、attachments、reply/messages、tooling/agent host、conversation mutations 与 tests。
+- [ ] 最终将 `commands.rs` 收敛为模块门面，并执行全范围验证。
