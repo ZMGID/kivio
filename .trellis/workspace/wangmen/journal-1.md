@@ -582,3 +582,36 @@ Separated artifact generation from chat presentation using Kivio-owned IDs and t
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: 通用文件展示工具
+
+**Date**: 2026-07-11
+**Task**: 通用文件展示工具
+**Branch**: `main`
+
+### Summary
+
+扩展 present_artifacts 支持本地文件路径展示，补齐路径 artifact 衔接与展示 ID，并强化显式展示提示；真实 chat-probe 验证 read 后会调用 present_artifacts。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `18308c4` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
