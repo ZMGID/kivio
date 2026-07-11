@@ -27,8 +27,11 @@
     "src-tauri/src/chat/agent/prepare.rs",
     "src-tauri/src/plugins/catalog.rs",
     ".trellis/spec/chat/mcp-image-feedback.md",
-    ".trellis/spec/tauri/windows-shell-selection.md"
+    ".trellis/spec/tauri/windows-shell-selection.md",
+    "src-tauri/src/mcp/manager.rs",
+    ".trellis/spec/chat/mcp-session-concurrency.md",
+    ".trellis/tasks/07-10-plugin-runtime-robustness/research/mcp-head-of-line-blocking.md"
   ],
-  "notes": "2026-07-11 verification complete: targeted tests green; frontend quality gate green; Rust full suite matches known 8-failure baseline; real OfficeCLI probe verified auxiliary visual defect detection and cleanup.",
+  "notes": "2026-07-11 verification complete: targeted tests green; frontend quality gate green; Rust full suite matches known 8-failure baseline; real OfficeCLI probe verified auxiliary visual defect detection and cleanup. 2026-07-11 MCP HOL follow-up: direct OfficeCLI probe confirmed one lost response after partial batch while server remains healthy; Kivio stdio session lock amplified it to 120s. Refactored stdio request multiplexing, added unknown-outcome/no-retry error and cross-platform lost-response regression. 2026-07-11 live OfficeCLI 1.0.135 verification through AppState: after a 1-success/1-failure batch, the first set lost its response and timed out at 4.001s, while a get issued 200ms later succeeded in 110.6ms; confirmed no head-of-line blocking and no retry. OfficeCLI-specific catalog prompt changes were restored.",
   "meta": {}
 }
