@@ -15,7 +15,7 @@
 
 ```rust
 // shell.rs (#[cfg(target_os = "windows")])
-pub fn find_git_bash() -> Option<&'static PathBuf>   // OnceLock process-level cache
+pub fn find_git_bash() -> Option<PathBuf>            // cloned from OnceLock process-level cache
 fn is_wsl_bash_path(path: &str) -> bool               // rejects \Windows\System32|sysnative\bash.exe
 pub fn run_command_shell_hint() -> &'static str       // "" unless Git Bash selected
 ```
@@ -42,7 +42,7 @@ pub fn run_command_shell_hint() -> &'static str       // "" unless Git Bash sele
 
 ### 5. Tests Required
 
-`shell.rs` test module: `is_wsl_bash_path` matrix (System32/sysnative, both slash forms, case-insensitive; must NOT misfire on `D:\tools\System32\bash.exe` or msys64); real bash-syntax execution test (heredoc + `seq` + pipe) that self-skips when Git Bash absent; the three PowerShell regression tests must target `build_windows_powershell_command` explicitly (otherwise they silently start testing bash on dev machines). Run via `scripts/win-cargo-test.ps1`.
+`shell.rs` test module: `is_wsl_bash_path` matrix (System32/sysnative, both slash forms, case-insensitive; must NOT misfire on `D:\tools\System32\bash.exe` or msys64); real bash-syntax execution test (heredoc + `seq` + pipe) that self-skips when Git Bash absent; the three PowerShell regression tests must target `build_windows_powershell_command` explicitly (otherwise they silently start testing bash on dev machines). Run via `scripts/win-cargo-test.ps1`. When asserting a resolved workspace cwd on Windows, compare against `std::fs::canonicalize(root)`, not the lexical input path: canonicalization may add the `\\?\` prefix.
 
 ### 6. Wrong vs Correct
 

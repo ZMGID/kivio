@@ -986,8 +986,9 @@ mod tests {
         let args = serde_json::json!({ "command": "pwd" });
         let workspace = NativeToolWorkspace::global(&[root.to_string_lossy().into_owned()]);
         let cwd = resolve_command_cwd(&args, &workspace).expect("workspace root should resolve");
+        let canonical_root = std::fs::canonicalize(&root).expect("canonical workspace root");
 
-        assert_eq!(cwd, root);
+        assert_eq!(cwd, canonical_root);
         let _ = std::fs::remove_dir_all(root);
     }
 
