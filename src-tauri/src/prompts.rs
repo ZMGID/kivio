@@ -40,6 +40,15 @@ pub const DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE: &str =
    - Do not add headings, labels, or explanations beyond what the source already has.\n\n\
    {text}";
 
+/// 默认替换翻译规则块（批量按行覆盖译文）。仅为"翻译质量规则"，不含 JSON 输出脚手架——
+/// 后者由 build_replace_translation_batch_prompt 固定拼接，避免用户改坏返回格式导致解析失败。
+pub const DEFAULT_REPLACE_TRANSLATION_TEMPLATE: &str =
+  "Rules:\n\
+   - Translate each line entirely into {lang}; leave nothing in the source language except untranslatable tokens (code, identifiers, URLs, numbers, proper nouns with no standard {lang} form).\n\
+   - Translate faithfully and literally; do not paraphrase, summarize, merge, or split lines. Each input line maps to exactly one output string.\n\
+   - Keep each translation concise so it fits in place of the original line.\n\
+   - If a line is empty or untranslatable, return it unchanged.";
+
 /// 截图翻译合并模式分隔符。模型先输出译文，再单独一行 `<<<ORIGINAL>>>`，再输出原文。
 /// 流式解析时按此切分两段，分别 emit kind="translated" / "original"。
 pub const COMBINED_TRANSLATE_SEPARATOR: &str = "<<<ORIGINAL>>>";
@@ -189,18 +198,32 @@ pub fn build_combined_translate_prompt(lang_name: &str, template: Option<&str>) 
 }
 
 /// 替换翻译批量 prompt：要求模型返回与输入等长的 JSON 字符串数组。
-pub fn build_replace_translation_batch_prompt(lines: &[&str], lang_name: &str) -> String {
+/// JSON 输出契约（数组、等长、同序、无围栏）固定不可改；用户自定义 template 只作为
+/// "翻译规则"块注入（空 → 用 DEFAULT_REPLACE_TRANSLATION_TEMPLATE）。{lang} 占位符替换为目标语言。
+pub fn build_replace_translation_batch_prompt(
+    lines: &[&str],
+    lang_name: &str,
+    template: Option<&str>,
+) -> String {
     let mut numbered = String::new();
     for (i, line) in lines.iter().enumerate() {
         numbered.push_str(&format!("{}. {}\n", i + 1, line));
     }
+    let rules = template
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or(DEFAULT_REPLACE_TRANSLATION_TEMPLATE)
+        .replace("{lang}", lang_name)
+        .replace("{text}", "each line");
     format!(
         "Translate each numbered line below into {lang}. \
          Return ONLY a JSON array of strings with exactly {count} elements, \
          in the same order as the input lines. \
-         No markdown fences, no commentary, no extra keys.\n\n{numbered}",
+         No markdown fences, no commentary, no extra keys.\n\n\
+         {rules}\n\n{numbered}",
         lang = lang_name,
         count = lines.len(),
+        rules = rules,
         numbered = numbered.trim_end(),
     )
 }

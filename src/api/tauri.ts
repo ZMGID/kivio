@@ -710,6 +710,7 @@ export type KnowledgeBaseConfig = {
 
 export type Settings = {
   hotkey: string
+  chatHotkey: string
   theme: 'system' | 'light' | 'dark'
   themeColor: string
   targetLang: string
@@ -764,6 +765,8 @@ export type Settings = {
     prompt?: string
     /** 选中文本翻译自定义提示词。空 → 内置选中文本模板 */
     textPrompt?: string
+    /** 替换翻译自定义提示词（仅翻译规则，JSON 输出契约固定）。空 → 内置替换模板 */
+    replacePrompt?: string
   }
   lens: {
     enabled: boolean
@@ -1235,6 +1238,7 @@ function normalizeSettings(settings: Settings): Settings {
   return {
     ...settings,
     hotkey: current.hotkey ?? 'CommandOrControl+Alt+T',
+    chatHotkey: current.chatHotkey ?? 'CommandOrControl+Shift+K',
     theme: current.theme ?? 'system',
     themeColor: normalizeThemeColorId(current.themeColor),
     targetLang: current.targetLang ?? 'auto',
@@ -1277,6 +1281,7 @@ function normalizeSettings(settings: Settings): Settings {
       rapidOcrTier: current.screenshotTranslation?.rapidOcrTier === 'high' ? 'high' : 'standard',
       prompt: current.screenshotTranslation?.prompt ?? '',
       textPrompt: current.screenshotTranslation?.textPrompt ?? '',
+      replacePrompt: current.screenshotTranslation?.replacePrompt ?? '',
     },
     lens: {
       enabled: current.lens?.enabled ?? true,
@@ -1325,6 +1330,7 @@ export type DefaultPromptTemplates = {
   translationTemplate: string
   screenshotTranslationTemplate?: string
   selectedTextTranslationTemplate?: string
+  replaceTranslationTemplate?: string
   lensPrompts: {
     zh: { system: string; question: string }
     en: { system: string; question: string }
@@ -1546,6 +1552,11 @@ export const api = {
   onMcpServerState: (listener: (payload: McpServerStatePayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<McpServerStatePayload>('mcp-server-state', (payload) => listener(payload))
+  },
+  /** 保存设置时部分热键被占用未能注册的警告（保存本身已成功）。payload 是后端 HotkeyError JSON 字符串。 */
+  onHotkeyWarning: (listener: (raw: string) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<string>('hotkey-warning', (payload) => listener(payload))
   },
   chatTakeExternalSends: () => {
     if (!isTauriRuntime()) {

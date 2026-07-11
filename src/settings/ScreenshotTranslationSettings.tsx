@@ -4,7 +4,6 @@ import { type DefaultPromptTemplates, type RapidOcrStatus, type RapidOcrTier, ty
 import { Button, IconButton } from '../components/Button'
 import { ModelPairSelect } from './ModelPairSelect'
 import {
-  HotkeyInput,
   Input,
   Select,
   SettingRow,
@@ -15,47 +14,34 @@ import {
 import { type I18n } from './i18n'
 
 type ScreenshotTranslation = Settings['screenshotTranslation']
-type RecordingTarget = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'
 type RapidOcrDownloadState = 'idle' | 'downloading' | 'failed'
 
 interface ScreenshotTranslationSettingsProps {
   settings: Settings
   isMac: boolean
   hasSystemOcr: boolean
-  recordingTarget: RecordingTarget | null
   defaultPrompts: DefaultPromptTemplates | null
   rapidOcrStatus: RapidOcrStatus | null
   rapidOcrDownloadState: RapidOcrDownloadState
   rapidOcrDownloadError: string
   t: I18n
   onUpdate: (updates: Partial<ScreenshotTranslation>) => void
-  onToggleRecording: (target: 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace') => void
   onRefreshRapidOcrStatus: () => void
   onDownloadRapidOcr: (tier: RapidOcrTier) => void
-  hotkeyError?: string
-  textHotkeyError?: string
-  replaceHotkeyError?: string
-  hotkeyClearLabel?: string
 }
 
 export function ScreenshotTranslationSettings({
   settings,
   isMac,
   hasSystemOcr,
-  recordingTarget,
   defaultPrompts,
   rapidOcrStatus,
   rapidOcrDownloadState,
   rapidOcrDownloadError,
   t,
   onUpdate,
-  onToggleRecording,
   onRefreshRapidOcrStatus,
   onDownloadRapidOcr,
-  hotkeyError,
-  textHotkeyError,
-  replaceHotkeyError,
-  hotkeyClearLabel,
 }: ScreenshotTranslationSettingsProps) {
   const screenshot = settings.screenshotTranslation
   const ocrMode = screenshot?.ocrMode ?? 'cloud_vision'
@@ -71,7 +57,7 @@ export function ScreenshotTranslationSettings({
 
   return (
     <>
-      <SettingsGroup title={t.screenshotTranslate}>
+      <SettingsGroup title={t.sectionOptions}>
           <SettingRow label={t.enabled}>
             <Toggle
               checked={screenshot?.enabled ?? true}
@@ -81,33 +67,49 @@ export function ScreenshotTranslationSettings({
 
           {screenshot?.enabled !== false && (
             <>
-              <SettingRow label={t.screenshotHotkey} stack>
-                <HotkeyInput
-                  value={screenshot?.hotkey ?? ''}
-                  placeholder="CommandOrControl+Shift+A"
-                  recording={recordingTarget === 'screenshotTranslation'}
-                  onToggleRecording={() => onToggleRecording('screenshotTranslation')}
-                  recordLabel={t.hotkeyRecord}
-                  recordingLabel={t.hotkeyRecording}
-                  recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                  onClear={() => onUpdate({ hotkey: '' })}
-                  clearLabel={hotkeyClearLabel}
-                  error={hotkeyError}
+              <SettingRow
+                label={t.screenshotShowOriginal}
+                description={t.screenshotShowOriginalHint}
+              >
+                <Toggle
+                  checked={!(screenshot?.directTranslate ?? false)}
+                  onChange={(showOriginal) => onUpdate({ directTranslate: !showOriginal })}
                 />
               </SettingRow>
 
-              <SettingRow label={t.screenshotTextHotkey} stack>
-                <HotkeyInput
-                  value={screenshot?.textHotkey ?? ''}
-                  placeholder="CommandOrControl+Shift+T"
-                  recording={recordingTarget === 'screenshotTranslationText'}
-                  onToggleRecording={() => onToggleRecording('screenshotTranslationText')}
-                  recordLabel={t.hotkeyRecord}
-                  recordingLabel={t.hotkeyRecording}
-                  recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                  onClear={() => onUpdate({ textHotkey: '' })}
-                  clearLabel={hotkeyClearLabel}
-                  error={textHotkeyError}
+              <SettingRow
+                label={t.screenshotTranslationThinking}
+                description={t.screenshotTranslationThinkingHint}
+              >
+                <Toggle
+                  checked={screenshot?.thinkingEnabled ?? false}
+                  onChange={(thinkingEnabled) => onUpdate({ thinkingEnabled })}
+                />
+              </SettingRow>
+
+              <SettingRow label={t.screenshotTranslationStream}>
+                <Toggle
+                  checked={screenshot?.streamEnabled !== false}
+                  onChange={(streamEnabled) => onUpdate({ streamEnabled })}
+                />
+              </SettingRow>
+              <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
+                <Toggle
+                  checked={screenshot?.keepFullscreenAfterCapture !== false}
+                  onChange={(keepFullscreenAfterCapture) => onUpdate({ keepFullscreenAfterCapture })}
+                />
+              </SettingRow>
+              <SettingRow label={t.translateCardWidth} description={t.translateCardWidthHint}>
+                <Input
+                  type="number"
+                  min={360}
+                  max={720}
+                  step={10}
+                  className="w-24"
+                  value={widthDraft}
+                  onChange={setWidthDraft}
+                  onBlur={commitCardWidth}
+                  onKeyDown={(e) => { if (e.key === 'Enter') commitCardWidth() }}
                 />
               </SettingRow>
             </>
@@ -116,21 +118,6 @@ export function ScreenshotTranslationSettings({
 
       {screenshot?.enabled !== false && (
         <SettingsGroup title={t.replaceTranslate}>
-          <SettingRow label={t.replaceTranslateHotkey} stack>
-            <HotkeyInput
-              value={screenshot?.replaceHotkey ?? ''}
-              placeholder="CommandOrControl+Shift+R"
-              recording={recordingTarget === 'screenshotTranslationReplace'}
-              onToggleRecording={() => onToggleRecording('screenshotTranslationReplace')}
-              recordLabel={t.hotkeyRecord}
-              recordingLabel={t.hotkeyRecording}
-              recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-              onClear={() => onUpdate({ replaceHotkey: '' })}
-              clearLabel={hotkeyClearLabel}
-              error={replaceHotkeyError}
-            />
-          </SettingRow>
-
           <SettingRow label={t.replaceTranslateEnabled}>
             <Toggle
               checked={screenshot?.replaceEnabled !== false}
@@ -157,56 +144,6 @@ export function ScreenshotTranslationSettings({
 
       {screenshot?.enabled !== false && (
         <>
-          <SettingsGroup title={t.screenshotTranslate}>
-              <SettingRow
-                label={t.screenshotShowOriginal}
-                description={t.screenshotShowOriginalHint}
-              >
-                <Toggle
-                  checked={!(screenshot?.directTranslate ?? false)}
-                  onChange={(showOriginal) => onUpdate({ directTranslate: !showOriginal })}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t.screenshotTranslationThinking}
-                description={t.screenshotTranslationThinkingHint}
-              >
-                <Toggle
-                  checked={screenshot?.thinkingEnabled ?? false}
-                  onChange={(thinkingEnabled) => onUpdate({ thinkingEnabled })}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t.screenshotTranslationStream}
-              >
-                <Toggle
-                  checked={screenshot?.streamEnabled !== false}
-                  onChange={(streamEnabled) => onUpdate({ streamEnabled })}
-                />
-              </SettingRow>
-              <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
-                <Toggle
-                  checked={screenshot?.keepFullscreenAfterCapture !== false}
-                  onChange={(keepFullscreenAfterCapture) => onUpdate({ keepFullscreenAfterCapture })}
-                />
-              </SettingRow>
-              <SettingRow label={t.translateCardWidth} description={t.translateCardWidthHint}>
-                <Input
-                  type="number"
-                  min={360}
-                  max={720}
-                  step={10}
-                  className="w-24"
-                  value={widthDraft}
-                  onChange={setWidthDraft}
-                  onBlur={commitCardWidth}
-                  onKeyDown={(e) => { if (e.key === 'Enter') commitCardWidth() }}
-                />
-              </SettingRow>
-          </SettingsGroup>
-
           {hasSystemOcr && (
             <SettingsGroup title={t.ocrEngine}>
                   <SettingRow label={t.ocrEngine} description={t.ocrEngineHint}>
@@ -252,7 +189,7 @@ export function ScreenshotTranslationSettings({
             </SettingsGroup>
           )}
 
-          <SettingsGroup title={t.engine}>
+          <SettingsGroup title={t.sectionModel}>
               <SettingRow label={t.selectModelPair}>
                 <ModelPairSelect
                   providerId={screenshot.providerId}
@@ -263,7 +200,7 @@ export function ScreenshotTranslationSettings({
               </SettingRow>
           </SettingsGroup>
 
-          <SettingsGroup title={t.customPrompts}>
+          <SettingsGroup title={t.sectionPrompt}>
               <PromptField
                 label={t.screenshotTranslationPrompt}
                 description={t.screenshotTranslationPromptHint}
@@ -279,6 +216,14 @@ export function ScreenshotTranslationSettings({
                 defaultText={defaultPrompts?.selectedTextTranslationTemplate || ''}
                 restoreLabel={t.restoreDefaultPrompt}
                 onChange={(textPrompt) => onUpdate({ textPrompt })}
+              />
+              <PromptField
+                label={t.replaceTranslationPrompt}
+                description={t.replaceTranslationPromptHint}
+                value={screenshot?.replacePrompt || ''}
+                defaultText={defaultPrompts?.replaceTranslationTemplate || ''}
+                restoreLabel={t.restoreDefaultPrompt}
+                onChange={(replacePrompt) => onUpdate({ replacePrompt })}
               />
           </SettingsGroup>
         </>

@@ -1993,7 +1993,11 @@ pub(crate) async fn lens_replace_translate(
     let target_lang = resolve_target_lang(&settings.target_lang, "");
     let lang_name = language_name(&target_lang).to_string();
     let line_refs: Vec<&str> = ocr_lines.iter().map(|l| l.text.as_str()).collect();
-    let prompt = build_replace_translation_batch_prompt(&line_refs, &lang_name);
+    let prompt = build_replace_translation_batch_prompt(
+        &line_refs,
+        &lang_name,
+        settings.screenshot_translation.replace_prompt.as_deref(),
+    );
     let retry_attempts = effective_retry_attempts(&settings);
     let st_thinking = settings.screenshot_translation.thinking_enabled;
 

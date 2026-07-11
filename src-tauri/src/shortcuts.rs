@@ -472,6 +472,7 @@ enum HotkeyErrorKind {
 #[serde(rename_all = "snake_case")]
 enum HotkeyScope {
     Translator,
+    Chat,
     Screenshot,
     ScreenshotText,
     ScreenshotReplace,
@@ -564,6 +565,33 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
         {
             errors.push(classify_hotkey_error(
                 HotkeyScope::Translator,
+                hotkey,
+                err.to_string(),
+            ));
+        }
+    }
+
+    if !settings.chat_hotkey.trim().is_empty() {
+        let hotkey = settings.chat_hotkey.trim().to_string();
+        let hotkey_key = hotkey.to_lowercase();
+        if !registered.insert(hotkey_key) {
+            errors.push(HotkeyError {
+                kind: HotkeyErrorKind::Duplicate,
+                scope: HotkeyScope::Chat,
+                hotkey: hotkey.clone(),
+                raw: None,
+            });
+        } else if let Err(err) =
+            shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    if let Err(err) = open_chat_window(app) {
+                        eprintln!("Chat hotkey trigger error: {err}");
+                    }
+                }
+            })
+        {
+            errors.push(classify_hotkey_error(
+                HotkeyScope::Chat,
                 hotkey,
                 err.to_string(),
             ));

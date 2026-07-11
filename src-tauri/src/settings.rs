@@ -231,6 +231,9 @@ pub struct ScreenshotTranslationConfig {
     /// 选中文本是干净结构化文本，与 OCR 噪声场景的提示词需求不同。
     #[serde(default)]
     pub text_prompt: Option<String>,
+    /// 替换翻译自定义提示词（仅注入翻译规则块，JSON 输出契约固定）。空 → 用内置替换模板。
+    #[serde(default)]
+    pub replace_prompt: Option<String>,
     /// RapidOCR 模型档位:"standard"(默认,PP-OCRv5 mobile,速度优先) | "high"(PP-OCRv6 medium,精度优先)。
     /// 仅在 ocr_mode = RapidOcr 时生效;替换翻译（固定走 RapidOCR）跟随此字段。
     #[serde(default = "default_rapid_ocr_tier")]
@@ -259,6 +262,7 @@ impl Default for ScreenshotTranslationConfig {
             ocr_mode: Some(OcrMode::CloudVision),
             prompt: None,
             text_prompt: None,
+            replace_prompt: None,
             rapid_ocr_tier: default_rapid_ocr_tier(),
             openai: None,
         }
@@ -1112,6 +1116,9 @@ pub fn email_accounts_system_prompt(
 pub struct Settings {
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
+    /// 打开 AI 客户端（chat 窗口）的全局热键。
+    #[serde(default = "default_chat_hotkey")]
+    pub chat_hotkey: String,
     #[serde(default = "default_theme")]
     pub theme: String,
     #[serde(default = "default_theme_color")]
@@ -1284,6 +1291,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             hotkey: "CommandOrControl+Alt+T".to_string(),
+            chat_hotkey: "CommandOrControl+Shift+K".to_string(),
             theme: "system".to_string(),
             theme_color: default_theme_color(),
             target_lang: "auto".to_string(),
@@ -1794,6 +1802,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
     // 4. 规范化快捷键字符串
     settings.hotkey = normalize_hotkey(&settings.hotkey);
+    settings.chat_hotkey = normalize_hotkey(&settings.chat_hotkey);
     settings.screenshot_translation.hotkey =
         normalize_hotkey(&settings.screenshot_translation.hotkey);
     settings.screenshot_translation.text_hotkey =
@@ -1808,6 +1817,8 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         normalize_optional_prompt(settings.screenshot_translation.prompt.take());
     settings.screenshot_translation.text_prompt =
         normalize_optional_prompt(settings.screenshot_translation.text_prompt.take());
+    settings.screenshot_translation.replace_prompt =
+        normalize_optional_prompt(settings.screenshot_translation.replace_prompt.take());
 
     // 5. 其他字段验证
     if !matches!(settings.theme.as_str(), "system" | "light" | "dark") {
@@ -2413,6 +2424,10 @@ fn default_hotkey() -> String {
     "CommandOrControl+Alt+T".to_string()
 }
 
+fn default_chat_hotkey() -> String {
+    "CommandOrControl+Shift+K".to_string()
+}
+
 fn default_screenshot_translation_hotkey() -> String {
     "CommandOrControl+Shift+A".to_string()
 }
@@ -2595,11 +2610,13 @@ mod tests {
     fn sanitize_settings_normalizes_hotkeys() {
         let mut s = Settings::default();
         s.hotkey = "cmd+alt+T".to_string();
+        s.chat_hotkey = "cmd+shift+K".to_string();
         s.screenshot_translation.hotkey = "ctrl+shift+A".to_string();
         s.screenshot_translation.text_hotkey = "cmd+shift+T".to_string();
         s.lens.hotkey = "cmd+shift+G".to_string();
         let s = sanitize_settings(s);
         assert_eq!(s.hotkey, "CommandOrControl+Alt+T");
+        assert_eq!(s.chat_hotkey, "CommandOrControl+Shift+K");
         assert_eq!(s.screenshot_translation.hotkey, "Control+Shift+A");
         assert_eq!(
             s.screenshot_translation.text_hotkey,

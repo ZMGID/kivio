@@ -10,8 +10,9 @@ use crate::api::{
     send_with_retry, with_standard_request_timeout, ProviderConnectionInput,
 };
 use crate::prompts::{
-    build_translation_prompt, DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
-    DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE, DEFAULT_TRANSLATION_TEMPLATE,
+    build_translation_prompt, DEFAULT_REPLACE_TRANSLATION_TEMPLATE,
+    DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE, DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE,
+    DEFAULT_TRANSLATION_TEMPLATE,
 };
 use crate::rapidocr;
 use crate::settings::{
@@ -115,6 +116,7 @@ pub(crate) fn get_default_prompt_templates() -> serde_json::Value {
       "translationTemplate": DEFAULT_TRANSLATION_TEMPLATE,
       "screenshotTranslationTemplate": DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE,
       "selectedTextTranslationTemplate": DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE,
+      "replaceTranslationTemplate": DEFAULT_REPLACE_TRANSLATION_TEMPLATE,
       "lensPrompts": {
         "zh": {
           "system": default_lens_system_prompt("zh", true),
@@ -196,8 +198,9 @@ fn apply_settings(
         .set_concurrency(sanitized.chat_tools.sub_agent_concurrency);
 
     if let Err(err) = register_hotkeys(app) {
-        restore_runtime_settings(app, state, &previous_settings);
-        return Err(err);
+        // 热键被系统/其他应用占用不该阻断保存——能注册的已注册,失败的作为警告推给前端,
+        // 设置照常落盘(否则用户连"删掉这个冲突热键"的改动都存不下)。
+        let _ = tauri::Emitter::emit(app, "hotkey-warning", err);
     }
 
     let old_working_directory = &previous_settings.chat_tools.native_tools.working_directory;

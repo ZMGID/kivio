@@ -157,13 +157,14 @@ export const stableStringify = (value: unknown): string =>
 
 type HotkeyErrorPayload = {
   kind: 'conflict' | 'duplicate' | 'empty' | 'other'
-  scope: 'translator' | 'screenshot' | 'screenshot_text' | 'lens'
+  scope: 'translator' | 'chat' | 'screenshot' | 'screenshot_text' | 'lens'
   hotkey: string
   raw?: string
 }
 
 const SCOPE_KEY: Record<HotkeyErrorPayload['scope'], keyof typeof i18n.zh> = {
   translator: 'hotkeyScopeTranslator',
+  chat: 'hotkeyScopeChat',
   screenshot: 'hotkeyScopeScreenshot',
   screenshot_text: 'hotkeyScopeScreenshotText',
   lens: 'hotkeyScopeLens',

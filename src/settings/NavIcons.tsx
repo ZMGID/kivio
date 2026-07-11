@@ -32,6 +32,16 @@ export function GeneralIcon(props: IconProps) {
   )
 }
 
+// 快捷键：键盘外框 + 按键点 + 空格条
+export function HotkeysIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <rect x="2.5" y="6" width="19" height="12" rx="2" />
+      <path d="M6 9.5 h0.01 M9.5 9.5 h0.01 M13 9.5 h0.01 M16.5 9.5 h0.01 M8 15 h8" />
+    </svg>
+  )
+}
+
 // 知识库：书本 + 书脊
 export function KnowledgeIcon(props: IconProps) {
   return (

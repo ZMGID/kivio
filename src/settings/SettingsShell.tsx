@@ -2,6 +2,7 @@ import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useM
 import {
   X, Check, Plus, Minus, Trash2, RefreshCw,
   ExternalLink, Download, Upload, ChevronRight, Wrench, Sparkles, FolderOpen, Eye, EyeOff, Info,
+  Brain, Image as ImageIcon,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { homeDir, join } from '@tauri-apps/api/path'
@@ -35,7 +36,7 @@ import {
 } from '../api/settingsCache'
 import { i18n } from './i18n'
 import {
-  GeneralIcon, TranslateIcon, ScreenshotIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
+  GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
   CodeIcon, AgentIcon, McpIcon, SkillIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon, KnowledgeIcon,
 } from './NavIcons'
 import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, stableStringify } from './utils'
@@ -64,7 +65,7 @@ import { ConnectorsPanel } from './ConnectorsPanel'
 import { KnowledgeBasePanel } from './KnowledgeBasePanel'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'translate' | 'screenshot' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'mcp' | 'skill' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'mcp' | 'skill' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 type MemoryLayerKey = 'l1' | 'l2'
@@ -604,10 +605,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     if (initialTab) setActiveTab(initialTab)
   }, [initialTab])
   const [saveError, setSaveError] = useState('')
+  // 热键被占用未能注册的警告（保存已成功，只是提醒，不阻断）。
+  const [saveWarning, setSaveWarning] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [confirmDeleteProviderId, setConfirmDeleteProviderId] = useState<string | null>(null)
-  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'>(null)
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [chatSystemPromptInteracted, setChatSystemPromptInteracted] = useState(false)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
@@ -683,11 +686,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   // OS 层面的冲突(Spotlight 占用 Cmd+Space 等)仍需保存后从后端拿到结果。
   // 返回每个 scope 对应的"和谁冲突"——前端各 HotkeyInput 拿到对应 scope 的伙伴名后,
   // 用 hotkeyScope* 模板自己拼本地化字符串。
-  type HotkeyScopeKey = 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'
+  type HotkeyScopeKey = 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'
   const hotkeyConflicts = useMemo<Partial<Record<HotkeyScopeKey, HotkeyScopeKey>>>(() => {
     if (!settings) return {}
     const slots: Array<{ scope: HotkeyScopeKey; hotkey: string; enabled: boolean }> = [
       { scope: 'main', hotkey: settings.hotkey || '', enabled: !!(settings.hotkey || '').trim() },
+      { scope: 'chat', hotkey: settings.chatHotkey || '', enabled: !!(settings.chatHotkey || '').trim() },
       {
         scope: 'screenshotTranslation',
         hotkey: settings.screenshotTranslation?.hotkey || '',
@@ -725,8 +729,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     return out
   }, [settings])
 
-  const SCOPE_I18N_KEY: Record<HotkeyScopeKey, 'hotkeyScopeTranslator' | 'hotkeyScopeScreenshot' | 'hotkeyScopeScreenshotText' | 'hotkeyScopeScreenshotReplace' | 'hotkeyScopeLens'> = {
+  const SCOPE_I18N_KEY: Record<HotkeyScopeKey, 'hotkeyScopeTranslator' | 'hotkeyScopeChat' | 'hotkeyScopeScreenshot' | 'hotkeyScopeScreenshotText' | 'hotkeyScopeScreenshotReplace' | 'hotkeyScopeLens'> = {
     main: 'hotkeyScopeTranslator',
+    chat: 'hotkeyScopeChat',
     screenshotTranslation: 'hotkeyScopeScreenshot',
     screenshotTranslationText: 'hotkeyScopeScreenshotText',
     screenshotTranslationReplace: 'hotkeyScopeScreenshotReplace',
@@ -1015,6 +1020,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     try {
       setSaving(true)
       setSaveError('')
+      setSaveWarning('')
       setSaveSuccess(false)
       if (saveSuccessTimerRef.current) {
         clearTimeout(saveSuccessTimerRef.current)
@@ -1449,6 +1455,24 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       unlisten?.()
     }
   }, [])
+
+  // 保存后若有热键被系统/其他应用占用未注册，后端推 hotkey-warning——提示但不视为保存失败。
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | null = null
+    void api.onHotkeyWarning((raw) => {
+      if (cancelled) return
+      const detail = formatHotkeyError(raw, lang).replace(/\n/g, ' / ')
+      setSaveWarning(lang === 'zh' ? `已保存,但部分热键未注册:${detail}` : `Saved, but some hotkeys were not registered: ${detail}`)
+    }).then((fn) => {
+      if (cancelled) fn()
+      else unlisten = fn
+    })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [lang])
 
   // 进入 MCP 标签页时拉一次各 server 的状态快照（含 stderr 尾巴）。
   useEffect(() => {
@@ -2046,7 +2070,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   /**
    * 切换快捷键录制状态
    */
-  const toggleRecording = (target: 'main' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens') => {
+  const toggleRecording = (target: 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
@@ -2088,6 +2112,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       if (!hotkey) return
       if (recordingTarget === 'main') {
         updateSettings({ hotkey })
+      } else if (recordingTarget === 'chat') {
+        updateSettings({ chatHotkey: hotkey })
       } else if (recordingTarget === 'screenshotTranslation') {
         updateScreenshotTranslation({ hotkey })
       } else if (recordingTarget === 'screenshotTranslationText') {
@@ -2153,8 +2179,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const navItems = [
     { id: 'general' as const, label: t.tabGeneral, icon: GeneralIcon },
-    { id: 'translate' as const, label: t.tabTranslate, icon: TranslateIcon },
-    { id: 'screenshot' as const, label: t.tabScreenshot, icon: ScreenshotIcon },
+    { id: 'hotkeys' as const, label: t.tabHotkeys, icon: HotkeysIcon },
+    { id: 'translate' as const, label: t.tabTranslation, icon: TranslateIcon },
     { id: 'lens' as const, label: t.lensTabLabel, icon: LensIcon },
     { id: 'chat' as const, label: t.tabChatClient, icon: ChatIcon },
     { id: 'memory' as const, label: t.tabMemory, icon: MemoryIcon },
@@ -2175,12 +2201,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       subtitle: lang === 'zh' ? '外观、行为、归档和权限。' : 'Appearance, behavior, archive, and permissions.',
     },
     translate: {
-      title: t.tabTranslate,
-      subtitle: lang === 'zh' ? '输入翻译的快捷键、语言、模型和提示词。' : 'Shortcut, language, model, and prompt for input translation.',
+      title: t.tabTranslation,
+      subtitle: lang === 'zh' ? '输入翻译与快速翻译的语言、模型、OCR 和提示词。' : 'Language, model, OCR, and prompts for input and quick translation.',
     },
-    screenshot: {
-      title: t.tabScreenshot,
-      subtitle: lang === 'zh' ? '截图选择、OCR、输出和翻译模型。' : 'Capture selection, OCR, output, and translation model.',
+    hotkeys: {
+      title: t.tabHotkeys,
+      subtitle: lang === 'zh' ? '集中管理所有全局快捷键。' : 'Manage all global hotkeys in one place.',
     },
     lens: {
       title: t.lensTabLabel,
@@ -2525,23 +2551,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {/* ===== 翻译设置标签页 ===== */}
             {activeTab === 'translate' && (
               <>
-                <SettingsGroup title={t.hotkey}>
-                  <SettingRow label={t.hotkey} stack>
-                    <HotkeyInput
-                      value={settings.hotkey}
-                      placeholder={t.hotkeyPlaceholder}
-                      recording={recordingTarget === 'main'}
-                      onToggleRecording={() => toggleRecording('main')}
-                      recordLabel={t.hotkeyRecord}
-                      recordingLabel={t.hotkeyRecording}
-                      recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                      onClear={() => updateSettings({ hotkey: '' })}
-                      clearLabel={t.hotkeyClear}
-                      error={conflictMessageFor('main')}
-                    />
-                  </SettingRow>
-                </SettingsGroup>
-
+                <div className="kv-section-title">{t.tabTranslate}</div>
                 <SettingsGroup title={lang === 'zh' ? '输出' : 'Output'}>
                   <SettingRow label={t.targetLang}>
                     <Select
@@ -2568,7 +2578,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </SettingRow>
                 </SettingsGroup>
 
-                <SettingsGroup title={t.engine}>
+                <SettingsGroup title={t.sectionModel}>
                   <SettingRow label={t.selectModelPair}>
                     <ModelPairSelect
                       providerId={settings.translatorProviderId}
@@ -2581,7 +2591,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </SettingRow>
                 </SettingsGroup>
 
-                <SettingsGroup title={t.translatorPrompt}>
+                <SettingsGroup title={t.sectionPrompt}>
                   <PromptField
                     label={t.translatorPrompt}
                     description={t.translatorPromptHint}
@@ -2591,30 +2601,112 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     onChange={(v) => updateSettings({ translatorPrompt: v })}
                   />
                 </SettingsGroup>
+
+                <div className="kv-section-title">{t.tabScreenshot}</div>
+                <ScreenshotTranslationSettings
+                  settings={settings}
+                  isMac={isMac}
+                  hasSystemOcr={hasSystemOcr}
+                  defaultPrompts={defaultPrompts}
+                  rapidOcrStatus={rapidOcrStatus}
+                  rapidOcrDownloadState={rapidOcrDownloadState}
+                  rapidOcrDownloadError={rapidOcrDownloadError}
+                  t={t}
+                  onUpdate={updateScreenshotTranslation}
+                  onRefreshRapidOcrStatus={refreshRapidOcrStatus}
+                  onDownloadRapidOcr={handleDownloadRapidOcr}
+                />
               </>
             )}
 
-            {/* ===== 截图设置标签页 ===== */}
-            {activeTab === 'screenshot' && (
-              <ScreenshotTranslationSettings
-                settings={settings}
-                isMac={isMac}
-                hasSystemOcr={hasSystemOcr}
-                recordingTarget={recordingTarget}
-                defaultPrompts={defaultPrompts}
-                rapidOcrStatus={rapidOcrStatus}
-                rapidOcrDownloadState={rapidOcrDownloadState}
-                rapidOcrDownloadError={rapidOcrDownloadError}
-                t={t}
-                onUpdate={updateScreenshotTranslation}
-                onToggleRecording={toggleRecording}
-                onRefreshRapidOcrStatus={refreshRapidOcrStatus}
-                onDownloadRapidOcr={handleDownloadRapidOcr}
-                hotkeyError={conflictMessageFor('screenshotTranslation')}
-                textHotkeyError={conflictMessageFor('screenshotTranslationText')}
-                replaceHotkeyError={conflictMessageFor('screenshotTranslationReplace')}
-                hotkeyClearLabel={t.hotkeyClear}
-              />
+            {/* ===== 快捷键标签页：集中所有全局热键 ===== */}
+            {activeTab === 'hotkeys' && (
+              <SettingsGroup title={t.tabHotkeys}>
+                <SettingRow label={t.tabTranslate} stack>
+                  <HotkeyInput
+                    value={settings.hotkey}
+                    placeholder={t.hotkeyPlaceholder}
+                    recording={recordingTarget === 'main'}
+                    onToggleRecording={() => toggleRecording('main')}
+                    recordLabel={t.hotkeyRecord}
+                    recordingLabel={t.hotkeyRecording}
+                    recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                    onClear={() => updateSettings({ hotkey: '' })}
+                    clearLabel={t.hotkeyClear}
+                    error={conflictMessageFor('main')}
+                  />
+                </SettingRow>
+                <SettingRow label={t.chatHotkeyLabel} stack>
+                  <HotkeyInput
+                    value={settings.chatHotkey}
+                    placeholder={t.hotkeyPlaceholder}
+                    recording={recordingTarget === 'chat'}
+                    onToggleRecording={() => toggleRecording('chat')}
+                    recordLabel={t.hotkeyRecord}
+                    recordingLabel={t.hotkeyRecording}
+                    recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                    onClear={() => updateSettings({ chatHotkey: '' })}
+                    clearLabel={t.hotkeyClear}
+                    error={conflictMessageFor('chat')}
+                  />
+                </SettingRow>
+                <SettingRow label={t.screenshotHotkey} stack>
+                  <HotkeyInput
+                    value={settings.screenshotTranslation?.hotkey ?? ''}
+                    placeholder="CommandOrControl+Shift+A"
+                    recording={recordingTarget === 'screenshotTranslation'}
+                    onToggleRecording={() => toggleRecording('screenshotTranslation')}
+                    recordLabel={t.hotkeyRecord}
+                    recordingLabel={t.hotkeyRecording}
+                    recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                    onClear={() => updateScreenshotTranslation({ hotkey: '' })}
+                    clearLabel={t.hotkeyClear}
+                    error={conflictMessageFor('screenshotTranslation')}
+                  />
+                </SettingRow>
+                <SettingRow label={t.screenshotTextHotkey} stack>
+                  <HotkeyInput
+                    value={settings.screenshotTranslation?.textHotkey ?? ''}
+                    placeholder="CommandOrControl+Shift+T"
+                    recording={recordingTarget === 'screenshotTranslationText'}
+                    onToggleRecording={() => toggleRecording('screenshotTranslationText')}
+                    recordLabel={t.hotkeyRecord}
+                    recordingLabel={t.hotkeyRecording}
+                    recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                    onClear={() => updateScreenshotTranslation({ textHotkey: '' })}
+                    clearLabel={t.hotkeyClear}
+                    error={conflictMessageFor('screenshotTranslationText')}
+                  />
+                </SettingRow>
+                <SettingRow label={t.replaceTranslateHotkey} stack>
+                  <HotkeyInput
+                    value={settings.screenshotTranslation?.replaceHotkey ?? ''}
+                    placeholder="CommandOrControl+Shift+R"
+                    recording={recordingTarget === 'screenshotTranslationReplace'}
+                    onToggleRecording={() => toggleRecording('screenshotTranslationReplace')}
+                    recordLabel={t.hotkeyRecord}
+                    recordingLabel={t.hotkeyRecording}
+                    recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                    onClear={() => updateScreenshotTranslation({ replaceHotkey: '' })}
+                    clearLabel={t.hotkeyClear}
+                    error={conflictMessageFor('screenshotTranslationReplace')}
+                  />
+                </SettingRow>
+                <SettingRow label={t.lensTabLabel} stack>
+                  <HotkeyInput
+                    value={settings.lens?.hotkey ?? ''}
+                    placeholder="CommandOrControl+Shift+G"
+                    recording={recordingTarget === 'lens'}
+                    onToggleRecording={() => toggleRecording('lens')}
+                    recordLabel={t.hotkeyRecord}
+                    recordingLabel={t.hotkeyRecording}
+                    recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                    onClear={() => updateLens({ hotkey: '' })}
+                    clearLabel={t.hotkeyClear}
+                    error={conflictMessageFor('lens')}
+                  />
+                </SettingRow>
+              </SettingsGroup>
             )}
 
             {/* ===== Lens 标签页 ===== */}
@@ -2630,20 +2722,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
                   {settings.lens?.enabled !== false && (
                     <>
-                      <SettingRow label={t.hotkey} stack>
-                        <HotkeyInput
-                          value={settings.lens?.hotkey ?? ''}
-                          placeholder="CommandOrControl+Shift+G"
-                          recording={recordingTarget === 'lens'}
-                          onToggleRecording={() => toggleRecording('lens')}
-                          recordLabel={t.hotkeyRecord}
-                          recordingLabel={t.hotkeyRecording}
-                          recordingPlaceholder={t.hotkeyRecordingPlaceholder}
-                          onClear={() => updateLens({ hotkey: '' })}
-                          clearLabel={t.hotkeyClear}
-                          error={conflictMessageFor('lens')}
-                        />
-                      </SettingRow>
                       <SettingRow label={t.lensResponseLanguage}>
                         <Select
                           className="w-44"
@@ -4407,17 +4485,32 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                                 </li>
                               )}
                               {provider.enabledModels.map(model => {
-                                const modelInfo = resolveModelInfo(model, provider.modelOverrides)
-                                const caps = modelInfo.capabilities
+                                const caps = resolveModelInfo(model, provider.modelOverrides).capabilities
                                 return (
                                   <li key={model} className="kv-enabled-model-row" onClick={() => setDrawerModel({ providerId: provider.id, model })}>
                                     <ModelIcon model={model} size={16} />
-                                    <span className="kv-enabled-model-name" title={model}>{modelInfo.displayName || model}</span>
+                                    <span className="kv-enabled-model-name" title={model}>{model}</span>
                                     <span className="kv-enabled-model-badges">
-                                      {caps?.vision && <span className="kv-badge-mini">V</span>}
-                                      {caps?.functionCalling && <span className="kv-badge-mini">T</span>}
-                                      {caps?.reasoning && <span className="kv-badge-mini">R</span>}
-                                      {caps?.imageGeneration && <span className="kv-badge-mini">G</span>}
+                                      {caps?.vision && (
+                                        <span className="kv-badge-mini kv-badge-mini--vision" title={lang === 'zh' ? '视觉' : 'Vision'}>
+                                          <Eye size={11} strokeWidth={2} />
+                                        </span>
+                                      )}
+                                      {caps?.functionCalling && (
+                                        <span className="kv-badge-mini kv-badge-mini--tools" title={lang === 'zh' ? '工具调用' : 'Tools'}>
+                                          <Wrench size={11} strokeWidth={2} />
+                                        </span>
+                                      )}
+                                      {caps?.reasoning && (
+                                        <span className="kv-badge-mini kv-badge-mini--reasoning" title={lang === 'zh' ? '推理' : 'Reasoning'}>
+                                          <Brain size={11} strokeWidth={2} />
+                                        </span>
+                                      )}
+                                      {caps?.imageGeneration && (
+                                        <span className="kv-badge-mini kv-badge-mini--image" title={lang === 'zh' ? '生图' : 'Image generation'}>
+                                          <ImageIcon size={11} strokeWidth={2} />
+                                        </span>
+                                      )}
                                     </span>
                                     <button
                                       type="button"
@@ -4607,11 +4700,16 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           </div>
 
           <div className={`kv-savebar ${variant === 'embedded' ? 'settings-embedded-savebar' : ''}`}>
-            <div className={`kv-savebar-hint ${saveError ? 'error' : hasUnsavedChanges ? 'dirty' : ''}`}>
+            <div className={`kv-savebar-hint ${saveError ? 'error' : saveWarning ? 'warn' : hasUnsavedChanges ? 'dirty' : ''}`}>
               {saveError ? (
                 <>
                   <span className="dot" />
                   <span title={saveError}>{saveError}</span>
+                </>
+              ) : saveWarning ? (
+                <>
+                  <span className="dot" />
+                  <span title={saveWarning}>{saveWarning}</span>
                 </>
               ) : saveSuccess ? (
                 <>

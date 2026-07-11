@@ -2603,6 +2603,18 @@ body {
   color: var(--text-faint);
   margin-bottom: 4px;
 }
+/* 分区大标题：合并页里区隔「输入翻译 / 快速翻译」等顶层板块 */
+.kv-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  padding-bottom: 6px;
+  margin: 18px 0 2px;
+  border-bottom: 1px solid var(--divider);
+}
+.kv-section-title:first-child { margin-top: 2px; }
+/* 分区标题下的第一个 group 不再画自己的上分隔线，避免双线 */
+.kv-section-title + .kv-group { border-top: none; margin-top: 4px; }
 .kv-row {
   display: flex;
   align-items: center;
@@ -3304,6 +3316,8 @@ body {
 }
 .kv-savebar-hint.error { color: var(--danger); }
 .kv-savebar-hint.error .dot { background: var(--danger); }
+.kv-savebar-hint.warn { color: var(--warning, #b45309); }
+.kv-savebar-hint.warn .dot { background: var(--warning, #b45309); }
 
 .kv-tag {
   display: inline-flex;
@@ -3918,6 +3932,15 @@ body {
   color: var(--text-secondary, #888);
   line-height: 1;
 }
+/* 能力徽章按类型着色，图标 + 色相双重区分，一眼可辨 */
+.kv-badge-mini--vision { background: rgba(59,130,246,0.14); color: #2563eb; }
+.kv-badge-mini--tools { background: rgba(139,92,246,0.14); color: #7c3aed; }
+.kv-badge-mini--reasoning { background: rgba(16,185,129,0.14); color: #059669; }
+.kv-badge-mini--image { background: rgba(236,72,153,0.14); color: #db2777; }
+.dark .kv-badge-mini--vision { background: rgba(59,130,246,0.22); color: #93c5fd; }
+.dark .kv-badge-mini--tools { background: rgba(139,92,246,0.22); color: #c4b5fd; }
+.dark .kv-badge-mini--reasoning { background: rgba(16,185,129,0.22); color: #6ee7b7; }
+.dark .kv-badge-mini--image { background: rgba(236,72,153,0.22); color: #f9a8d4; }
 
 /* Make model rows clickable */
 .kv-enabled-model-row {
