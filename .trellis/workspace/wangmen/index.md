@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-07-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~551 | Active |
+| `journal-1.md` | ~584 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-07-11 | Explicit artifact presentation | `a2d9c24` | `main` |
 | 16 | 2026-07-11 | 普通对话工作台 | `a1cfb15` | `main` |
 | 15 | 2026-07-11 | Chat commands split final cleanup | `09129b5` | `main` |
 | 14 | 2026-07-11 | Complete chat commands split | `3b6ea3c`, `7515100`, `6ea5d6a`, `a99fe88` | `main` |

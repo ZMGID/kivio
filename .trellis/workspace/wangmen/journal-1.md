@@ -549,3 +549,36 @@ Extracted vision compatibility proxies and the complete command regression suite
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Explicit artifact presentation
+
+**Date**: 2026-07-11
+**Task**: Explicit artifact presentation
+**Branch**: `main`
+
+### Summary
+
+Separated artifact generation from chat presentation using Kivio-owned IDs and the native present_artifacts timeline anchor.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a2d9c24` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
