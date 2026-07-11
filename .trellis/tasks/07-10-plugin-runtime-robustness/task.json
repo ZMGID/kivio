@@ -4,9 +4,9 @@
   "title": "插件即插即用:补齐 Kivio 运行时健壮性并去除 OfficeCLI 专项适配",
   "description": "",
   "status": "in_progress",
-  "dev_type": null,
-  "scope": null,
-  "package": null,
+  "dev_type": "feature",
+  "scope": "src-tauri plugin runtime, chat MCP image feedback, Windows shell selection",
+  "package": "single-repo",
   "priority": "P2",
   "creator": "wangmen",
   "assignee": "wangmen",
@@ -20,7 +20,15 @@
   "subtasks": [],
   "children": [],
   "parent": null,
-  "relatedFiles": [],
-  "notes": "",
+  "relatedFiles": [
+    "src-tauri/src/native_tools/shell.rs",
+    "src-tauri/src/chat/mcp_image_feedback.rs",
+    "src-tauri/src/chat/vision.rs",
+    "src-tauri/src/chat/agent/prepare.rs",
+    "src-tauri/src/plugins/catalog.rs",
+    ".trellis/spec/chat/mcp-image-feedback.md",
+    ".trellis/spec/tauri/windows-shell-selection.md"
+  ],
+  "notes": "2026-07-11 verification complete: targeted tests green; frontend quality gate green; Rust full suite matches known 8-failure baseline; real OfficeCLI probe verified auxiliary visual defect detection and cleanup.",
   "meta": {}
 }

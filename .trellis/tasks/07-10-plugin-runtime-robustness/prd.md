@@ -57,12 +57,12 @@ Kivio 采用 **pi 的解析顺序 + PowerShell 回落 + 动态工具描述**:
 
 ## 验收标准
 
-- [ ] **AC1(图直喂)**:vision 主模型对话中,MCP 工具(officecli `view screenshot`)返回的截图作为图片内容块出现在下一条模型请求中(request_debug 或 conv JSON 的 model_messages 可证);非 vision 主模型得到审查向文字分析。
-- [ ] **AC2(审查向)**:构造带字面 `\n`/文字溢出的幻灯片截图,辅助视觉分析文本中显式指出该缺陷。
-- [ ] **AC3(通用规范)**:新对话做 PPT,中间 batch JSON 不出现在交付目录/聊天卡片;结束后中间产物被清理,交付目录只剩 .pptx。
-- [ ] **AC4(bash)**:Windows 上 `run_command` 执行 `cat <<EOF`、`for i in $(seq 1 3)`、管道命令成功;无 Git Bash 的机器回落 PowerShell 不报错。
-- [ ] **AC5(瘦身)**:catalog.rs hint 显著缩短(目标 ≤15 行);重跑 5 页 PPT 测试,officecli 全走 MCP、模型真实看图审查(能发现植入缺陷)、无中间文件刷屏。
-- [ ] 无回归:`npm run lint`、`npm run typecheck`、`npm test`、Rust 测试(经 `scripts/win-cargo-test.ps1`,对照已知基线失败集)。
+- [x] **AC1(图直喂)**:vision 主模型对话中,MCP 工具(officecli `view screenshot`)返回的截图作为图片内容块出现在下一条模型请求中(request_debug 或 conv JSON 的 model_messages 可证);非 vision 主模型得到审查向文字分析。
+- [x] **AC2(审查向)**:构造带字面 `\n`/文字溢出的幻灯片截图,辅助视觉分析文本中显式指出该缺陷。
+- [x] **AC3(通用规范)**:新对话做 PPT,中间 batch JSON 不出现在交付目录/聊天卡片;结束后中间产物被清理,交付目录只剩 .pptx。
+- [x] **AC4(bash)**:Windows 上 `run_command` 执行 `cat <<EOF`、`for i in $(seq 1 3)`、管道命令成功;无 Git Bash 的机器回落 PowerShell 不报错。
+- [x] **AC5(瘦身)**:catalog.rs hint 显著缩短(目标 ≤15 行);重跑 5 页 PPT 测试,officecli 全走 MCP、模型真实看图审查(能发现植入缺陷)、无中间文件刷屏。
+- [x] 无回归:`npm run lint`、`npm run typecheck`、`npm test`、Rust 测试(经 `scripts/win-cargo-test.ps1`,对照已知基线失败集)。
 
 ## 约束
 
