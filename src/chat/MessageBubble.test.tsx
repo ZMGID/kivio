@@ -524,3 +524,140 @@ describe('MessageBubble 建分支', () => {
     expect(screen.queryByRole('button', { name: '建分支' })).not.toBeInTheDocument()
   })
 })
+
+
+
+describe('MessageBubble explicit artifact presentation', () => {
+  const artifact = {
+    id: 'art_report',
+    name: 'report.txt',
+    mime_type: 'text/plain',
+    data_url: 'data:text/plain;base64,cmVwb3J0',
+    size_bytes: 6,
+  }
+
+  it('does not automatically show newly identified artifacts', () => {
+    const message: ChatMessage = {
+      id: 'msg-hidden-artifact',
+      role: 'assistant',
+      content: 'The file is ready.',
+      artifacts: [artifact],
+      timestamp: 1,
+    }
+
+    render(<MessageBubble message={message} />)
+
+    expect(screen.queryByRole('button', { name: /report\.txt/ })).not.toBeInTheDocument()
+  })
+
+  it('shows only selected artifacts at the presentation segment position', () => {
+    const message: ChatMessage = {
+      id: 'msg-present-artifact',
+      role: 'assistant',
+      content: 'before\n\nafter',
+      artifacts: [
+        artifact,
+        { ...artifact, id: 'art_hidden', name: 'hidden.txt' },
+      ],
+      segments: [
+        { id: 'before', kind: 'text', phase: 'plain', order: 1, text: 'before' },
+        { id: 'present', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'call-present' },
+        { id: 'after', kind: 'text', phase: 'synthesis', order: 3, text: 'after' },
+      ],
+      tool_calls: [
+        {
+          id: 'call-present',
+          name: 'present_artifacts',
+          source: 'native',
+          status: 'completed',
+          structured_content: {
+            type: 'artifact_presentation',
+            artifactIds: ['art_report'],
+            caption: 'Download report',
+          },
+        },
+      ],
+      timestamp: 1,
+    }
+
+    render(<MessageBubble message={message} />)
+
+    const before = screen.getByText('before')
+    const file = screen.getByRole('button', { name: /report\.txt/ })
+    const after = screen.getByText('after')
+    expect(screen.getByText('Download report')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /hidden\.txt/ })).not.toBeInTheDocument()
+    expect(before.compareDocumentPosition(file) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(file.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('renders presentations for legacy messages without timeline segments', () => {
+    const message: ChatMessage = {
+      id: 'msg-present-without-segments',
+      role: 'assistant',
+      content: 'See the report.',
+      artifacts: [artifact],
+      tool_calls: [
+        {
+          id: 'call-present',
+          name: 'present_artifacts',
+          source: 'native',
+          status: 'completed',
+          structured_content: {
+            type: 'artifact_presentation',
+            artifact_ids: ['art_report'],
+          },
+        },
+      ],
+      timestamp: 1,
+    }
+
+    render(<MessageBubble message={message} />)
+
+    expect(screen.getByRole('button', { name: /report\.txt/ })).toBeInTheDocument()
+  })
+
+  it('reports unavailable artifact IDs without falling back to paths', () => {
+    const message: ChatMessage = {
+      id: 'msg-missing-artifact',
+      role: 'assistant',
+      content: '',
+      artifacts: [artifact],
+      segments: [
+        { id: 'present', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'call-present' },
+      ],
+      tool_calls: [
+        {
+          id: 'call-present',
+          name: 'present_artifacts',
+          source: 'native',
+          status: 'completed',
+          structured_content: {
+            type: 'artifact_presentation',
+            artifactIds: ['art_missing'],
+          },
+        },
+      ],
+      timestamp: 1,
+    }
+
+    render(<MessageBubble message={message} />)
+
+    expect(screen.getByText(/^1 /)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /report\.txt/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps historical artifacts without IDs visible', () => {
+    const message: ChatMessage = {
+      id: 'msg-legacy-artifact',
+      role: 'assistant',
+      content: 'Legacy message',
+      artifacts: [{ ...artifact, id: undefined }],
+      timestamp: 1,
+    }
+
+    render(<MessageBubble message={message} />)
+
+    expect(screen.getByRole('button', { name: /report\.txt/ })).toBeInTheDocument()
+  })
+})

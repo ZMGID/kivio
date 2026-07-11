@@ -103,6 +103,7 @@ mod tests {
 
     fn image_artifact(name: &str, mime_type: &str, payload: &[u8]) -> ChatToolArtifact {
         ChatToolArtifact {
+            id: None,
             name: name.to_string(),
             mime_type: mime_type.to_string(),
             data_url: format!(
@@ -119,6 +120,7 @@ mod tests {
         let artifacts = vec![
             // 非图片 artifact：直接跳过，不计入护栏统计。
             ChatToolArtifact {
+                id: None,
                 name: "notes.txt".to_string(),
                 mime_type: "text/plain".to_string(),
                 data_url: "data:text/plain;base64,aGVsbG8=".to_string(),
@@ -127,6 +129,7 @@ mod tests {
             },
             // data_url 为空的图片 artifact：同样跳过。
             ChatToolArtifact {
+                id: None,
                 name: "empty.png".to_string(),
                 mime_type: "image/png".to_string(),
                 data_url: String::new(),
@@ -147,6 +150,7 @@ mod tests {
     #[test]
     fn select_image_artifacts_no_images_passes_through_unchanged() {
         let artifacts = vec![ChatToolArtifact {
+            id: None,
             name: "notes.txt".to_string(),
             mime_type: "text/plain".to_string(),
             data_url: "data:text/plain;base64,aGVsbG8=".to_string(),

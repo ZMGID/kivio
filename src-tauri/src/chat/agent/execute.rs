@@ -10,7 +10,7 @@ use tokio::time::timeout;
 use crate::chat::ask_user;
 use crate::chat::model::PendingToolCall;
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
-use crate::mcp::types::McpToolCallResult;
+use crate::mcp::types::{ChatToolArtifact, McpToolCallResult};
 use crate::mcp::ChatToolDefinition;
 use crate::settings::Settings;
 use crate::skills;
@@ -252,7 +252,8 @@ pub async fn execute_tool_call(
     let max_tool_output_chars = settings.chat_tools.max_tool_output_chars;
     let mut follow_ups: Vec<Value> = Vec::new();
     let tool_content = match result {
-        Ok(Ok(output)) if !output.is_error => {
+        Ok(Ok(mut output)) if !output.is_error => {
+            assign_artifact_ids(&mut output.artifacts);
             record.status = ToolCallStatus::Success;
             record.artifacts = output.artifacts.clone();
             record.structured_content = output.structured_content.clone();
@@ -533,24 +534,61 @@ fn validate_numeric_range(schema: &Value, value: &Value, path: &str) -> Result<(
 /// native 工具不受此约束：它们的 content 都是为模型精心格式化的文本（read_file 的
 /// cat -n、文件变更的 summary+diff、todo/memory 的排版文本），再拼整包 JSON 只会
 /// 让 token 翻倍（read_file 行号化后 content 不再等于 JSON，旧逻辑会整包重复追加）。
+fn assign_artifact_ids(artifacts: &mut [ChatToolArtifact]) {
+    for artifact in artifacts {
+        // IDs are a Kivio-owned display capability. Never trust or preserve an
+        // ID supplied by an external tool server.
+        artifact.id = Some(format!("art_{}", uuid::Uuid::new_v4().simple()));
+    }
+}
+
+fn artifact_presentation_hint(artifacts: &[ChatToolArtifact]) -> Option<String> {
+    if artifacts.is_empty() {
+        return None;
+    }
+    let items = artifacts
+        .iter()
+        .filter_map(|artifact| {
+            artifact
+                .id
+                .as_deref()
+                .map(|id| format!("- {id}: {} ({})", artifact.name, artifact.mime_type))
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Available artifacts (not shown automatically):\n{}\nCall present_artifacts with the selected artifact_ids exactly where the user should see them. Do not pass file paths or URLs.",
+        items.join("\n")
+    ))
+}
+
 fn tool_content_with_structured_output(output: &McpToolCallResult, source: &str) -> String {
-    if source == "native" {
-        return output.content.clone();
-    }
-    let Some(structured_content) = output.structured_content.as_ref() else {
-        return output.content.clone();
+    let mut content = if source == "native" {
+        output.content.clone()
+    } else if let Some(structured_content) = output.structured_content.as_ref() {
+        let structured_json = serde_json::to_string(structured_content).unwrap_or_default();
+        if structured_json.is_empty() || output.content.contains(&structured_json) {
+            output.content.clone()
+        } else if output.content.trim().is_empty() {
+            structured_json
+        } else {
+            format!(
+                "{}\n\nstructuredContent: {}",
+                output.content, structured_json
+            )
+        }
+    } else {
+        output.content.clone()
     };
-    let structured_json = serde_json::to_string(structured_content).unwrap_or_default();
-    if structured_json.is_empty() || output.content.contains(&structured_json) {
-        return output.content.clone();
+    if let Some(hint) = artifact_presentation_hint(&output.artifacts) {
+        if !content.trim().is_empty() {
+            content.push_str("\n\n");
+        }
+        content.push_str(&hint);
     }
-    if output.content.trim().is_empty() {
-        return structured_json;
-    }
-    format!(
-        "{}\n\nstructuredContent: {}",
-        output.content, structured_json
-    )
+    content
 }
 
 fn effective_tool_timeout_ms(
@@ -912,6 +950,56 @@ mod tests {
             annotations: None,
             output_schema: None,
         }
+    }
+
+    #[test]
+    fn assigns_fresh_kivio_owned_artifact_ids() {
+        let mut artifacts = vec![
+            ChatToolArtifact {
+                id: None,
+                name: "report.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+                data_url: String::new(),
+                size_bytes: None,
+                path: None,
+            },
+            ChatToolArtifact {
+                id: Some("art_existing".to_string()),
+                name: "chart.png".to_string(),
+                mime_type: "image/png".to_string(),
+                data_url: String::new(),
+                size_bytes: None,
+                path: None,
+            },
+        ];
+
+        assign_artifact_ids(&mut artifacts);
+
+        let first = artifacts[0].id.as_deref().expect("first artifact id");
+        let second = artifacts[1].id.as_deref().expect("second artifact id");
+        assert!(first.starts_with("art_") && first.len() > 4);
+        assert!(second.starts_with("art_") && second.len() > 4);
+        assert_ne!(first, second);
+        assert_ne!(second, "art_existing");
+    }
+
+    #[test]
+    fn artifact_hint_exposes_ids_without_claiming_automatic_display() {
+        let artifacts = vec![ChatToolArtifact {
+            id: Some("art_report".to_string()),
+            name: "report.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            data_url: String::new(),
+            size_bytes: None,
+            path: None,
+        }];
+
+        let hint = artifact_presentation_hint(&artifacts).expect("artifact hint");
+
+        assert!(hint.contains("art_report: report.txt (text/plain)"));
+        assert!(hint.contains("not shown automatically"));
+        assert!(hint.contains("present_artifacts"));
+        assert!(hint.contains("Do not pass file paths or URLs"));
     }
 
     #[test]

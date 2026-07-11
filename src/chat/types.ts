@@ -130,6 +130,7 @@ export interface AskUserStructuredContent {
 }
 
 export interface ChatToolArtifact {
+  id?: string | null
   name: string
   mime_type?: string
   mimeType?: string

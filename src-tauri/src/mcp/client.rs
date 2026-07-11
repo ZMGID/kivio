@@ -831,6 +831,7 @@ fn image_block_to_artifact(item: &Value, index: usize) -> Option<ChatToolArtifac
     let unique = uuid::Uuid::new_v4().to_string();
     let short = unique.get(..8).unwrap_or(unique.as_str());
     Some(ChatToolArtifact {
+        id: None,
         name: format!("mcp-image-{}-{}.{}", index + 1, short, extension),
         mime_type: mime_type.clone(),
         data_url: format!("data:{};base64,{}", mime_type, data.trim()),

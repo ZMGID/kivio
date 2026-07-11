@@ -138,6 +138,8 @@ pub struct McpToolCallResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatToolArtifact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     #[serde(alias = "mimeType")]
     pub mime_type: String,
@@ -564,11 +566,44 @@ pub fn native_save_assistant_tool() -> ChatToolDefinition {
     }
 }
 
+pub fn native_present_artifacts_tool() -> ChatToolDefinition {
+    ChatToolDefinition {
+        id: "native__present_artifacts".to_string(),
+        name: "present_artifacts".to_string(),
+        description: "Display selected artifacts that were produced earlier in this assistant response. Artifact creation does not display files automatically. Call this tool exactly where the user should see the selected images or file cards, using only artifact IDs returned by previous tools in the current response. Never pass file paths or URLs. You may include a short caption. Artifacts not selected here remain hidden from the chat.".to_string(),
+        source: "native".to_string(),
+        server_id: None,
+        server_name: Some("Kivio".to_string()),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "artifact_ids": {
+                    "type": "array",
+                    "description": "Artifact IDs returned by previous tool results in this response",
+                    "items": { "type": "string", "minLength": 1 },
+                    "minItems": 1,
+                    "maxItems": 16
+                },
+                "caption": {
+                    "type": "string",
+                    "description": "Optional short caption shown above the artifacts",
+                    "maxLength": 300
+                }
+            },
+            "required": ["artifact_ids"],
+            "additionalProperties": false
+        }),
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
 pub fn native_run_python_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__run_python".to_string(),
         name: "run_python".to_string(),
-        description: "Execute Python code in a Pyodide sandbox with no direct host filesystem access. Use for computation, statistics, data analysis (numpy/pandas), reading and analyzing documents (PDF/XLSX), charts and plots (matplotlib), sandbox-compatible package installs, and generating files that REQUIRE a Python library to produce (formatted XLSX, PDF, rendered images). Its generated files are delivered to the user as file cards. Do NOT use run_python merely to write a file from content you already have — for that, use write_file (to the current workbench for a downloadable card, or to an explicit path requested by the user). Bundled packages auto-load on import: numpy, matplotlib, pandas, pillow, seaborn, openpyxl, xlrd, et_xmlfile, pypdf, micropip. Prefer plain import statements; do not write await micropip.install in sync code. To analyze local files, pass paths in files using the same syntax as the read tool; in project conversations these resolve from the project root by default. Mounted paths appear in KIVIO_INPUT_FILES. Save outputs to relative filenames in the Pyodide cwd (e.g. report.xlsx, chart.png, summary.csv); do not write host paths such as /Users or ~/Desktop inside Python. Kivio auto-captures images plus csv/json/md/txt/html/xlsx artifacts into the current default workbench and shows them as downloadable file cards. In chart text (titles, labels, legends, annotations) use only Latin and Chinese/Japanese/Korean characters; the sandbox bundles only a CJK+Latin font and has no emoji or symbol fonts, so emoji and decorative glyphs render as empty boxes—omit them. stdout/stderr are returned.".to_string(),
+        description: "Execute Python code in a Pyodide sandbox with no direct host filesystem access. Use for computation, statistics, data analysis (numpy/pandas), reading and analyzing documents (PDF/XLSX), charts and plots (matplotlib), sandbox-compatible package installs, and generating files that REQUIRE a Python library to produce (formatted XLSX, PDF, rendered images). Its generated files are registered as artifacts but are not shown automatically; call present_artifacts with the returned artifact IDs when the user should see them. Do NOT use run_python merely to write a file from content you already have — for that, use write_file (to the current workbench, or to an explicit path requested by the user), then call present_artifacts only for files that should be shown in chat. Bundled packages auto-load on import: numpy, matplotlib, pandas, pillow, seaborn, openpyxl, xlrd, et_xmlfile, pypdf, micropip. Prefer plain import statements; do not write await micropip.install in sync code. To analyze local files, pass paths in files using the same syntax as the read tool; in project conversations these resolve from the project root by default. Mounted paths appear in KIVIO_INPUT_FILES. Save outputs to relative filenames in the Pyodide cwd (e.g. report.xlsx, chart.png, summary.csv); do not write host paths such as /Users or ~/Desktop inside Python. Kivio auto-captures images plus csv/json/md/txt/html/xlsx artifacts into the current default workbench and returns artifact IDs; use present_artifacts to place selected artifacts in the response. In chart text (titles, labels, legends, annotations) use only Latin and Chinese/Japanese/Korean characters; the sandbox bundles only a CJK+Latin font and has no emoji or symbol fonts, so emoji and decorative glyphs render as empty boxes—omit them. stdout/stderr are returned.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),

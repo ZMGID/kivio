@@ -1,5 +1,6 @@
 import type { ChatMessageSegment, ToolCallRecord } from './types'
 import { normalizeToolCallStatus } from './toolStatus'
+import { isArtifactPresentationToolCall } from './artifactPresentation'
 
 export function segmentToolCallId(segment: ChatMessageSegment): string {
   return segment.tool_call_id ?? segment.toolCallId ?? ''
@@ -22,7 +23,7 @@ export function isStandaloneToolCard(toolCall: ToolCallRecord): boolean {
   }
   if (toolCall.source !== 'native') return false
   const name = toolRecordRawName(toolCall)
-  return name === 'agent' || name === 'advisor'
+  return name === 'agent' || name === 'advisor' || isArtifactPresentationToolCall(toolCall)
 }
 
 /** tool record 的唯一 id（兼容多种字段命名）。 */

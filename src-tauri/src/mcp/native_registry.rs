@@ -38,9 +38,10 @@ use super::types::{
     native_advisor_tool, native_bash_output_tool, native_edit_file_tool, native_glob_files_tool,
     native_kill_background_tool, native_knowledge_search_tool, native_list_dir_tool,
     native_memory_modify_tool, native_memory_read_tool, native_memory_search_tool,
-    native_read_file_tool, native_run_command_tool, native_run_python_tool,
-    native_save_assistant_tool, native_search_files_tool, native_web_fetch_tool,
-    native_web_search_tool, native_write_file_tool, ChatToolDefinition, McpToolCallResult,
+    native_present_artifacts_tool, native_read_file_tool, native_run_command_tool,
+    native_run_python_tool, native_save_assistant_tool, native_search_files_tool,
+    native_web_fetch_tool, native_web_search_tool, native_write_file_tool, ChatToolDefinition,
+    McpToolCallResult,
 };
 
 /// Gate signature mirrors `list_native_builtin_tool_defs(native,
@@ -284,9 +285,16 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         requires_session_consent: false,
         call: NativeToolCall::Async(call_run_python),
     },
-    // Unified file delivery is no longer a tool. Ordinary-chat writes and
-    // `run_python` artifacts in the per-conversation workbench automatically
-    // render a file card. There is no `deliver_file` tool or flag.
+    NativeToolEntry {
+        name: "present_artifacts",
+        def: native_present_artifacts_tool,
+        enabled: |_, _, _| true,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::SyncResult(call_present_artifacts),
+    },
     NativeToolEntry {
         name: "memory_read",
         def: native_memory_read_tool,
@@ -857,6 +865,49 @@ fn call_save_assistant(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
+fn call_present_artifacts(
+    _workspace: &NativeToolWorkspace,
+    arguments: &Value,
+) -> Result<McpToolCallResult, String> {
+    let raw_ids = arguments
+        .get("artifact_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "present_artifacts requires artifact_ids".to_string())?;
+    let mut artifact_ids = Vec::new();
+    for value in raw_ids {
+        let Some(id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if !artifact_ids.iter().any(|existing| existing == id) {
+            artifact_ids.push(id.to_string());
+        }
+    }
+    if artifact_ids.is_empty() {
+        return Err("present_artifacts requires at least one artifact ID".to_string());
+    }
+    let caption = arguments
+        .get("caption")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut structured = serde_json::json!({
+        "type": "artifact_presentation",
+        "artifactIds": artifact_ids,
+    });
+    if let Some(caption) = caption {
+        structured["caption"] = Value::String(caption);
+    }
+    Ok(McpToolCallResult {
+        content: "Selected artifacts will be displayed at this point in the response.".to_string(),
+        is_error: false,
+        raw: structured.clone(),
+        artifacts: Vec::new(),
+        structured_content: Some(structured),
+        follow_up_user_messages: Vec::new(),
+    })
+}
+
 fn call_run_python(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         super::registry::run_python_via_pyodide(
@@ -909,6 +960,7 @@ mod tests {
         "kill_background",
         "save_assistant",
         "run_python",
+        "present_artifacts",
         "memory_read",
         "memory_modify",
         "memory_search",
@@ -1006,6 +1058,7 @@ mod tests {
             bypass,
             [
                 "advisor",
+                "present_artifacts",
                 "memory_read",
                 "memory_modify",
                 "memory_search",
@@ -1035,6 +1088,7 @@ mod tests {
                 "grep",
                 "glob",
                 "bash_output",
+                "present_artifacts",
                 "memory_read",
                 "memory_search",
             ],
@@ -1106,29 +1160,43 @@ mod tests {
             working_directory: String::new(),
             workspace_roots: Vec::new(),
         };
-        assert!(names(&off, true, false).is_empty());
+        assert_eq!(names(&off, true, false), ["present_artifacts"]);
 
         // web_search requires both the toggle and a configured provider key.
         let mut search_only = off.clone();
         search_only.web_search = true;
-        assert!(names(&search_only, false, false).is_empty());
-        assert_eq!(names(&search_only, true, false), ["web_search"]);
+        assert_eq!(names(&search_only, false, false), ["present_artifacts"]);
+        assert_eq!(
+            names(&search_only, true, false),
+            ["web_search", "present_artifacts"]
+        );
 
         // read_file gate exposes the whole read-side group, in order.
         let mut read_only = off.clone();
         read_only.read_file = true;
-        assert_eq!(names(&read_only, false, false), ["read", "grep", "glob"]);
+        assert_eq!(
+            names(&read_only, false, false),
+            ["read", "grep", "glob", "present_artifacts"]
+        );
 
         // The write gate exposes the whole-file write tool only. File cards are
         // a path-driven workbench behavior, not a separate delivery tool.
         let mut write_only = off.clone();
         write_only.write_file = true;
-        assert_eq!(names(&write_only, false, false), ["write"]);
+        assert_eq!(
+            names(&write_only, false, false),
+            ["write", "present_artifacts"]
+        );
 
         // memory gate is independent of native toggles.
         assert_eq!(
             names(&off, false, true),
-            ["memory_read", "memory_modify", "memory_search"]
+            [
+                "present_artifacts",
+                "memory_read",
+                "memory_modify",
+                "memory_search",
+            ]
         );
 
         // Everything on: full ordered surface.
@@ -1160,10 +1228,32 @@ mod tests {
                 "bash_output",
                 "kill_background",
                 "run_python",
+                "present_artifacts",
                 "memory_read",
                 "memory_modify",
                 "memory_search",
             ]
         );
+    }
+    #[test]
+    fn present_artifacts_returns_deduplicated_structured_ids() {
+        let workspace = NativeToolWorkspace::standalone();
+        let result = call_present_artifacts(
+            &workspace,
+            &serde_json::json!({
+                "artifact_ids": ["art_a", "art_a", "art_b"],
+                "caption": "Preview"
+            }),
+        )
+        .expect("presentation result");
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({
+                "type": "artifact_presentation",
+                "artifactIds": ["art_a", "art_b"],
+                "caption": "Preview"
+            }))
+        );
+        assert!(result.artifacts.is_empty());
     }
 }

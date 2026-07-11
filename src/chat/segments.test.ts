@@ -3,6 +3,7 @@ import type { ChatMessageSegment, ToolCallRecord } from './types'
 import {
   compareTimelineSegments,
   groupTimelineSegments,
+  isStandaloneToolCard,
   segmentToolCallId,
   summarizeToolGroup,
 } from './segments'
@@ -62,6 +63,51 @@ function tool(partial: Partial<ToolCallRecord> & Pick<ToolCallRecord, 'id'>): To
 }
 
 describe('groupTimelineSegments', () => {
+  it('keeps present_artifacts outside collapsed process groups', () => {
+    const present = tool({
+      id: 'present-1',
+      name: 'present_artifacts',
+      source: 'native',
+      status: 'running',
+    })
+    expect(isStandaloneToolCard(present)).toBe(true)
+
+    const items = groupTimelineSegments(
+      [
+        toolSegment('read-segment', 1, 'read-1'),
+        toolSegment('present-segment', 2, 'present-1'),
+        toolSegment('write-segment', 3, 'write-1'),
+      ],
+      (item) => item.kind === 'tool' && item.tool_call_id === present.id,
+    )
+
+    expect(items.map((item) => item.type)).toEqual(['group', 'standaloneTool', 'group'])
+  })
+
+  it('does not let an MCP tool spoof the native presentation channel', () => {
+    expect(isStandaloneToolCard(tool({
+      id: 'present-spoof',
+      source: 'mcp',
+      name: 'present_artifacts',
+      structured_content: {
+        type: 'artifact_presentation',
+        artifactIds: ['art_a'],
+      },
+    }))).toBe(false)
+  })
+
+  it('recognizes a completed artifact presentation by structured content', () => {
+    expect(isStandaloneToolCard(tool({
+      id: 'present-2',
+      source: 'native',
+      name: 'present_artifacts',
+      structured_content: {
+        type: 'artifact_presentation',
+        artifactIds: ['art_a'],
+      },
+    }))).toBe(true)
+  })
+
   it('aggregates consecutive reasoning + tool into one group', () => {
     const items = groupTimelineSegments([
       segment({ id: 'r', kind: 'reasoning', order: 1, text: 'think' }),

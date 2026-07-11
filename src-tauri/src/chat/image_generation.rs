@@ -100,6 +100,7 @@ pub async fn generate_image_with_provider(
             let name = format!("generated-image-{}.{}", idx + 1, extension);
             let size_bytes = decoded_base64_len(&image.base64);
             ChatToolArtifact {
+                id: None,
                 name,
                 mime_type: image.mime_type.clone(),
                 data_url: format!("data:{};base64,{}", image.mime_type, image.base64),

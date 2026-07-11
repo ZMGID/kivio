@@ -349,7 +349,7 @@ pub fn guess_mime_from_name(name: &str) -> String {
     mime.to_string()
 }
 
-/// Build a card-ready [`ChatToolArtifact`] from a file already written to the
+/// Build a [`ChatToolArtifact`] from a file already written to the
 /// ordinary conversation workbench. The `data_url` (read back) is only populated for files at
 /// or under the export size cap so previews/downloads of small files work; for
 /// larger files only `path`/`size_bytes` are set (the UI can still open it).
@@ -372,6 +372,7 @@ pub fn build_delivery_artifact_for_path(path: &Path) -> Result<ChatToolArtifact,
         None
     };
     Ok(ChatToolArtifact {
+        id: None,
         name,
         mime_type,
         data_url: data_url.unwrap_or_default(),
@@ -385,7 +386,7 @@ pub fn format_exported_paths(exports: &[SandboxExportedArtifact]) -> String {
         return String::new();
     }
     let mut lines = vec![
-        "generated files (saved to the current workbench and shown as downloadable cards):"
+        "generated files (saved to the current workbench and registered as artifacts; use their returned artifact IDs with present_artifacts to show selected files in chat):"
             .to_string(),
     ];
     for export in exports {
@@ -535,6 +536,7 @@ mod tests {
         let exported = export_sandbox_artifacts(
             &ctx,
             &[ChatToolArtifact {
+                id: None,
                 name: "chart.png".to_string(),
                 mime_type: "image/png".to_string(),
                 data_url: format!("data:image/png;base64,{png}"),

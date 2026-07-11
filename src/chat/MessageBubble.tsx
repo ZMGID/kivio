@@ -32,6 +32,7 @@ import { ChatAttachments } from './ChatAttachments'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
 import { ChatMarkdown } from './ChatMarkdown'
 import { GeneratedFileArtifacts } from './GeneratedFileArtifacts'
+import { artifactId, artifactPresentationFromToolCall, isArtifactPresentationToolCall } from './artifactPresentation'
 import { isExecutableAgentPlanText } from './agentPlan'
 import { artifactDataUrl, isImageArtifact } from './artifacts'
 import { loadArtifactDataUrl } from './attachmentPreview'
@@ -250,6 +251,59 @@ function GeneratedImageArtifacts({
   )
 }
 
+function ArtifactPresentationBlock({
+  toolCall,
+  artifacts,
+  conversationId,
+}: {
+  toolCall: ToolCallRecord
+  artifacts: ChatToolArtifact[]
+  conversationId?: string | null
+}) {
+  const presentation = artifactPresentationFromToolCall(toolCall)
+  if (!presentation) {
+    return (
+      <ToolCallErrorBoundary>
+        <ToolCallBlock toolCall={toolCall} />
+      </ToolCallErrorBoundary>
+    )
+  }
+  const artifactById = new Map(
+    artifacts
+      .map((artifact) => [artifactId(artifact), artifact] as const)
+      .filter(([id]) => Boolean(id)),
+  )
+  const selected = presentation.artifactIds
+    .map((id) => artifactById.get(id))
+    .filter((artifact): artifact is ChatToolArtifact => Boolean(artifact))
+  const missingCount = presentation.artifactIds.length - selected.length
+  if (presentation.artifactIds.length === 0) {
+    return (
+      <ToolCallErrorBoundary>
+        <ToolCallBlock toolCall={toolCall} />
+      </ToolCallErrorBoundary>
+    )
+  }
+
+  return (
+    <section aria-label="展示文件" className="not-prose my-2">
+      {presentation.caption ? (
+        <div className="mb-2 text-[13px] leading-5 text-neutral-600 dark:text-neutral-300">
+          {presentation.caption}
+        </div>
+      ) : null}
+      <GeneratedImageArtifacts artifacts={selected} conversationId={conversationId} />
+      <GeneratedFileArtifacts artifacts={selected} />
+      {missingCount > 0 ? (
+        <div className="mt-2 inline-flex items-center gap-1.5 text-[11.5px] text-neutral-400 dark:text-neutral-500">
+          <AlertCircle size={12} strokeWidth={1.9} />
+          <span>{missingCount} 个文件不可用</span>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 function ImageGenerationPending() {
   return (
     <section aria-label="图片生成中" className="image-generation-pending">
@@ -325,14 +379,27 @@ function MissingToolSegment({ toolCallId }: { toolCallId: string }) {
 function TimelineToolSegment({
   segment,
   toolCalls,
+  artifacts,
+  conversationId,
 }: {
   segment: ChatMessageSegment
   toolCalls: ToolCallRecord[]
+  artifacts: ChatToolArtifact[]
+  conversationId?: string | null
 }) {
   const toolCallId = segmentToolCallId(segment)
   const toolCall = toolCalls.find((record) => toolRecordId(record) === toolCallId)
   if (!toolCall) {
     return <MissingToolSegment toolCallId={toolCallId} />
+  }
+  if (isArtifactPresentationToolCall(toolCall)) {
+    return (
+      <ArtifactPresentationBlock
+        toolCall={toolCall}
+        artifacts={artifacts}
+        conversationId={conversationId}
+      />
+    )
   }
   return (
     <ToolCallErrorBoundary>
@@ -394,7 +461,14 @@ function TimelineSegmentNode({
   reasoningSegmentCount: number
 }) {
   if (segment.kind === 'tool') {
-    return <TimelineToolSegment segment={segment} toolCalls={toolCalls} />
+    return (
+      <TimelineToolSegment
+        segment={segment}
+        toolCalls={toolCalls}
+        artifacts={artifacts}
+        conversationId={conversationId}
+      />
+    )
   }
   if (segment.kind === 'reasoning') {
     const reasoning = segmentText(segment)
@@ -702,9 +776,17 @@ function TimelineSegments({
           if (!toolCall) return null
           return (
             <div key={item.segment.id} className="chat-motion-fade">
-              <ToolCallErrorBoundary>
-                <ToolCallBlock toolCall={toolCall} />
-              </ToolCallErrorBoundary>
+              {isArtifactPresentationToolCall(toolCall) ? (
+                <ArtifactPresentationBlock
+                  toolCall={toolCall}
+                  artifacts={artifacts}
+                  conversationId={conversationId}
+                />
+              ) : (
+                <ToolCallErrorBoundary>
+                  <ToolCallBlock toolCall={toolCall} />
+                </ToolCallErrorBoundary>
+              )}
             </div>
           )
         }
@@ -729,9 +811,17 @@ function TimelineSegments({
       })}
       {orphanTools.map((toolCall, index) => (
         <div key={toolRecordId(toolCall) || `orphan-tool-${index}`} className="chat-motion-fade">
-          <ToolCallErrorBoundary>
-            <ToolCallBlock toolCall={toolCall} />
-          </ToolCallErrorBoundary>
+          {isArtifactPresentationToolCall(toolCall) ? (
+            <ArtifactPresentationBlock
+              toolCall={toolCall}
+              artifacts={artifacts}
+              conversationId={conversationId}
+            />
+          ) : (
+            <ToolCallErrorBoundary>
+              <ToolCallBlock toolCall={toolCall} />
+            </ToolCallErrorBoundary>
+          )}
         </div>
       ))}
     </section>
@@ -763,8 +853,13 @@ function MessageBubbleComponent({
   const hasTimelineSegments = !isEditing && timelineSegments.length > 0
   const messageArtifacts = message.artifacts ?? []
   const toolArtifacts = toolCalls.flatMap((toolCall) => toolCall.artifacts ?? [])
-  // Markdown 解析仍用全量 artifacts（含历史轮截图路径/dataUrl）
+  // Markdown 和显式展示引用仍使用全量 artifacts；回答末尾自动区域只兼容旧的无 ID artifact。
   const renderArtifacts = [...messageArtifacts, ...toolArtifacts]
+  const legacyMessageArtifacts = messageArtifacts.filter((artifact) => !artifactId(artifact))
+  const legacyToolCalls = toolCalls.map((toolCall) => ({
+    ...toolCall,
+    artifacts: (toolCall.artifacts ?? []).filter((artifact) => !artifactId(artifact)),
+  }))
   const isDirectImageGenerationPending =
     !isUser && message.content.trim() === DIRECT_IMAGE_GENERATION_PENDING
   const artifactReferenceContent = [
@@ -773,11 +868,12 @@ function MessageBubbleComponent({
   ].join('\n\n')
   // 答案下方画廊：只挂「未引用 + 最后一轮截图」，避免 3 轮验收堆 9 张同名图
   const galleryImageArtifacts = selectGalleryImageArtifacts(
-    messageArtifacts,
-    toolCalls,
+    legacyMessageArtifacts,
+    legacyToolCalls,
     artifactReferenceContent,
   )
-  const generatedFileArtifacts = renderArtifacts.filter((artifact) => !isImageArtifact(artifact))
+  const generatedFileArtifacts = [...legacyMessageArtifacts, ...legacyToolCalls.flatMap((toolCall) => toolCall.artifacts ?? [])]
+    .filter((artifact) => !isImageArtifact(artifact))
   const hasAnswerContent = !isDirectImageGenerationPending && message.content.trim().length > 0
   const hasGeneratedImages = galleryImageArtifacts.length > 0
   const hasGeneratedFiles = generatedFileArtifacts.length > 0
@@ -943,11 +1039,24 @@ function MessageBubbleComponent({
   const RECENT_TOOL_COUNT = 4
   const olderToolCalls = toolsCollapsible ? toolCalls.slice(0, toolCalls.length - RECENT_TOOL_COUNT) : []
   const recentToolCalls = toolsCollapsible ? toolCalls.slice(toolCalls.length - RECENT_TOOL_COUNT) : toolCalls
-  const renderToolCall = (toolCall: ToolCallRecord, index: number) => (
-    <ToolCallErrorBoundary key={toolCall.id || toolCall.call_id || toolCall.callId || index}>
-      <ToolCallBlock toolCall={toolCall} />
-    </ToolCallErrorBoundary>
-  )
+  const renderToolCall = (toolCall: ToolCallRecord, index: number) => {
+    const key = toolCall.id || toolCall.call_id || toolCall.callId || index
+    if (isArtifactPresentationToolCall(toolCall)) {
+      return (
+        <ArtifactPresentationBlock
+          key={key}
+          toolCall={toolCall}
+          artifacts={renderArtifacts}
+          conversationId={conversationId}
+        />
+      )
+    }
+    return (
+      <ToolCallErrorBoundary key={key}>
+        <ToolCallBlock toolCall={toolCall} />
+      </ToolCallErrorBoundary>
+    )
+  }
 
   return (
     <div className="chat-motion-fade-up flex justify-start py-3">
