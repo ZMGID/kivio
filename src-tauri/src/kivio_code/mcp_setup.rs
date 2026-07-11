@@ -31,8 +31,9 @@ const COLLECT_PER_SERVER_TIMEOUT: Duration = Duration::from_secs(20);
 /// definitions.
 ///
 /// Reads `settings.chat_tools` (the same config the GUI uses): MCP is only
-/// consulted when `chat_tools.enabled`, and only servers with `enabled == true`
-/// are connected. Each server is listed concurrently via the persistent session
+/// consulted when `chat_tools.enabled`, and only runtime-eligible servers are connected
+/// (plain servers must be enabled; plugin-backed servers must also have an enabled,
+/// installed plugin). Each server is listed concurrently via the persistent session
 /// manager; connection/listing failures are logged to stderr and that server is
 /// skipped (never panics, never aborts the others).
 pub async fn collect_mcp_tools(state: &AppState, settings: &Settings) -> Vec<ChatToolDefinition> {
@@ -44,7 +45,7 @@ pub async fn collect_mcp_tools(state: &AppState, settings: &Settings) -> Vec<Cha
         .chat_tools
         .servers
         .iter()
-        .filter(|server| server.enabled)
+        .filter(|server| crate::mcp::registry::mcp_server_is_runtime_eligible(server))
         .collect();
     if enabled_servers.is_empty() {
         return Vec::new();
@@ -127,16 +128,19 @@ pub async fn collect_mcp_status(state: &AppState, settings: &Settings) -> Vec<Mc
     }
 
     let probes = settings.chat_tools.servers.iter().map(|server| async move {
-        // Disabled servers are listed but never connected.
-        if !server.enabled {
+        // Runtime-ineligible servers are listed but never connected. This includes disabled
+        // settings entries and plugin-backed entries whose plugin is disabled or uninstalled.
+        if !crate::mcp::registry::mcp_server_is_runtime_eligible(server) {
             return McpServerStatus {
                 id: server.id.clone(),
                 name: server.name.clone(),
                 transport: server.transport.clone(),
-                enabled: false,
+                enabled: server.enabled,
                 connected: false,
                 tools: Vec::new(),
-                error: None,
+                error: server
+                    .enabled
+                    .then(|| "backing plugin is disabled or not installed".to_string()),
             };
         }
         let result = match tokio::time::timeout(
@@ -230,7 +234,9 @@ pub async fn dispatch_mcp_tool(
         .chat_tools
         .servers
         .iter()
-        .find(|server| server.id == server_id && server.enabled)
+        .find(|server| {
+            server.id == server_id && crate::mcp::registry::mcp_server_is_runtime_eligible(server)
+        })
         .cloned()
         .ok_or_else(|| format!("MCP server '{server_id}' is disabled or missing"))?;
 
@@ -285,6 +291,12 @@ mod tests {
             connector_id: None,
             auth: None,
         }
+    }
+
+    fn unavailable_plugin_server(id: &str) -> ChatMcpServer {
+        let mut server = stdio_server(id, true);
+        server.connector_id = Some("plugin:__missing_mcp_test_plugin__".to_string());
+        server
     }
 
     #[tokio::test]
@@ -345,6 +357,24 @@ mod tests {
         assert!(!s.connected);
         assert!(s.tools.is_empty());
         assert!(s.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn collect_status_reports_runtime_ineligible_plugin_without_probing() {
+        let mut settings = Settings::default();
+        settings.chat_tools.enabled = true;
+        settings.chat_tools.servers = vec![unavailable_plugin_server("plugin-srv")];
+        let state = headless_state(settings.clone());
+
+        let status = collect_mcp_status(&state, &settings).await;
+
+        assert_eq!(status.len(), 1);
+        assert!(status[0].enabled);
+        assert!(!status[0].connected);
+        assert_eq!(
+            status[0].error.as_deref(),
+            Some("backing plugin is disabled or not installed")
+        );
     }
 
     #[tokio::test]
@@ -446,6 +476,21 @@ mod tests {
         let err = dispatch_mcp_tool(&state, &tool, &serde_json::json!({}))
             .await
             .expect_err("disabled server must Err");
+        assert!(err.contains("disabled or missing"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_errs_for_runtime_ineligible_plugin_server() {
+        let mut settings = Settings::default();
+        settings.chat_tools.enabled = true;
+        settings.chat_tools.servers = vec![unavailable_plugin_server("plugin-srv")];
+        let state = headless_state(settings);
+        let tool = mcp_tool("plugin-srv", "echo");
+
+        let err = dispatch_mcp_tool(&state, &tool, &serde_json::json!({}))
+            .await
+            .expect_err("runtime-ineligible plugin server must Err");
+
         assert!(err.contains("disabled or missing"), "got: {err}");
     }
 

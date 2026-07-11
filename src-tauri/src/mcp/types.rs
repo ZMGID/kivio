@@ -158,7 +158,7 @@ pub struct PythonRunResult {
     pub artifacts: Vec<ChatToolArtifact>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
     pub name: String,
     #[serde(default)]

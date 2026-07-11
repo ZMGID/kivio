@@ -362,7 +362,7 @@ pub fn run() {
                         .chat_tools
                         .servers
                         .iter()
-                        .filter(|server| server.enabled)
+                        .filter(|server| crate::mcp::registry::mcp_server_is_runtime_eligible(server))
                         .cloned()
                         .collect();
                     let mut warmups = tokio::task::JoinSet::new();
@@ -377,6 +377,12 @@ pub fn run() {
                         });
                     }
                     while warmups.join_next().await.is_some() {}
+                    // The chat UI may request its tool indicator while startup warmup is still
+                    // connecting MCP servers. Drop any aggregate built during that race so the
+                    // first model request observes the warmed sessions instead of a stale native-only list.
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        state.clear_chat_tool_list_cache();
+                    }
                 });
             }
 

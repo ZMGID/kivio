@@ -27,6 +27,7 @@ use reqwest::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -42,6 +43,9 @@ use crate::state::AppState;
 
 use super::client;
 use super::types::{McpTool, McpToolCallResult};
+
+const MCP_DISCOVERY_RETRY_BASE: Duration = Duration::from_secs(2);
+const MCP_DISCOVERY_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// stderr 尾巴最多保留多少行（用于状态面板诊断）。
 pub const STDERR_TAIL_LINES: usize = 20;
@@ -113,6 +117,9 @@ pub struct McpSession {
     pub stderr_tail: Arc<Mutex<VecDeque<String>>>,
     pub last_used: Instant,
     pub handshake_count: u64,
+    /// Discovery reconnect failures are throttled so a dead server cannot delay every chat turn.
+    pub consecutive_connect_failures: u32,
+    pub discovery_retry_after: Option<Instant>,
     pub transport: McpTransport,
 }
 
@@ -127,6 +134,8 @@ impl McpSession {
             stderr_tail: Arc::new(Mutex::new(VecDeque::new())),
             last_used: Instant::now(),
             handshake_count: 0,
+            consecutive_connect_failures: 0,
+            discovery_retry_after: None,
             transport: McpTransport::None,
         }
     }
@@ -294,6 +303,15 @@ impl AppState {
         sink: &impl McpEventSink,
         server: &ChatMcpServer,
     ) -> Result<Arc<Mutex<McpSession>>, String> {
+        self.mcp_get_or_connect_inner(sink, server, false).await
+    }
+
+    async fn mcp_get_or_connect_inner(
+        &self,
+        sink: &impl McpEventSink,
+        server: &ChatMcpServer,
+        respect_discovery_backoff: bool,
+    ) -> Result<Arc<Mutex<McpSession>>, String> {
         // 连接前钩子：远程 MCP 的 OAuth token 若临近/已过期，先用 refresh_token 刷新，
         // 更新 server 的 Authorization header 与 auth，并持久化新 token。失败则用旧
         // token 继续连接（记录错误，不 panic）。StreamableHttpMcpClient 不变（仍只发 header）。
@@ -335,13 +353,29 @@ impl AppState {
                     return Ok(session);
                 }
                 if guard.config_fingerprint != fingerprint {
-                    // 配置变更：丢弃旧 transport，按新指纹在同一共享会话上重连。
+                    // A schema snapshot belongs to the exact server config that produced it.
                     guard.config_fingerprint = fingerprint.clone();
+                    guard.tools.clear();
+                    guard.tools_revision = 0;
+                    guard.consecutive_connect_failures = 0;
+                    guard.discovery_retry_after = None;
                     let old_transport = std::mem::replace(&mut guard.transport, McpTransport::None);
                     guard.state = McpServerState::Connecting;
                     close_transport(&self.http, old_transport, self.mcp_tool_timeout()).await;
+                } else if respect_discovery_backoff {
+                    if let (McpServerState::Error { message }, Some(retry_after)) =
+                        (&guard.state, guard.discovery_retry_after)
+                    {
+                        let now = Instant::now();
+                        if retry_after > now {
+                            return Err(format!(
+                                "{message} (MCP reconnect is cooling down for {} ms)",
+                                retry_after.duration_since(now).as_millis()
+                            ));
+                        }
+                    }
                 }
-                // 共享会话尚未 Connected（Connecting/None/Error）→ 由本调用者握手进它。
+                // Connecting/Error sessions retry here; discovery callers honor the cooldown above.
                 self.connect_session(sink, server, &mut guard).await?;
                 drop(guard);
                 Ok(session)
@@ -451,7 +485,10 @@ impl AppState {
             Ok(()) => {
                 guard.state = McpServerState::Connected;
                 guard.handshake_count = guard.handshake_count.saturating_add(1);
+                guard.consecutive_connect_failures = 0;
+                guard.discovery_retry_after = None;
                 guard.last_used = Instant::now();
+                self.remember_mcp_tools(server, &guard.tools);
                 sink.emit_server_state(server, &McpServerState::Connected);
                 Ok(())
             }
@@ -465,6 +502,11 @@ impl AppState {
                 guard.state = McpServerState::Error {
                     message: message.clone(),
                 };
+                guard.consecutive_connect_failures =
+                    guard.consecutive_connect_failures.saturating_add(1);
+                guard.discovery_retry_after = Some(
+                    Instant::now() + discovery_retry_backoff(guard.consecutive_connect_failures),
+                );
                 guard.transport = McpTransport::None;
                 sink.emit_server_state(
                     server,
@@ -555,17 +597,7 @@ impl AppState {
                 guard.transport = McpTransport::None;
                 guard.state = McpServerState::Connecting;
                 sink.emit_server_state(server, &McpServerState::Connecting);
-                if let Err(err) = self.mcp_connect_into(sink, server, &mut guard).await {
-                    let message = err.clone();
-                    guard.state = McpServerState::Error {
-                        message: message.clone(),
-                    };
-                    sink.emit_server_state(server, &McpServerState::Error { message });
-                    return Err(err);
-                }
-                guard.state = McpServerState::Connected;
-                guard.handshake_count = guard.handshake_count.saturating_add(1);
-                sink.emit_server_state(server, &McpServerState::Connected);
+                self.connect_session(sink, server, &mut guard).await?;
             }
             // Touch at request start as well as success so the idle reaper cannot mistake an active
             // long-running request for an unused session under normal timeout settings.
@@ -601,10 +633,7 @@ impl AppState {
                                 guard.transport = McpTransport::None;
                                 guard.state = McpServerState::Connecting;
                                 sink.emit_server_state(server, &McpServerState::Connecting);
-                                self.mcp_connect_into(sink, server, &mut guard).await?;
-                                guard.state = McpServerState::Connected;
-                                guard.handshake_count = guard.handshake_count.saturating_add(1);
-                                sink.emit_server_state(server, &McpServerState::Connected);
+                                self.connect_session(sink, server, &mut guard).await?;
                             }
                             match &guard.transport {
                                 McpTransport::Stdio(current) => Some(current.clone()),
@@ -690,7 +719,7 @@ impl AppState {
         sink: &impl McpEventSink,
         server: &ChatMcpServer,
     ) -> Result<Vec<McpTool>, String> {
-        let session = self.mcp_get_or_connect(sink, server).await?;
+        let session = self.mcp_get_or_connect_inner(sink, server, true).await?;
         let mut guard = session.lock().await;
         if let McpTransport::Stdio(conn) = &guard.transport {
             let conn = conn.clone();
@@ -699,24 +728,27 @@ impl AppState {
                 let tools = stdio_list_tools(&conn, self.mcp_tool_timeout()).await?;
                 guard.tools = tools;
                 guard.tools_revision = revision;
+                self.remember_mcp_tools(server, &guard.tools);
             }
         }
         guard.last_used = Instant::now();
         Ok(guard.tools.clone())
     }
 
-    /// 上次成功握手缓存的工具列表（即使会话当前是 Error 态）。从未连上/已被回收 ⇒ None。
-    /// 供工具列表在连接失败时降级复用：有没有是一回事，能不能用是另一回事。
-    pub async fn mcp_cached_tools(&self, server_id: &str) -> Option<Vec<McpTool>> {
-        let session = {
-            let pool = self.mcp_sessions.lock().await;
-            pool.get(server_id).cloned()
-        }?;
-        let guard = session.lock().await;
-        (!guard.tools.is_empty()).then(|| guard.tools.clone())
+    /// Last successful tool schema, independent from the transport/session lifetime.
+    /// A snapshot is reusable only for the exact config fingerprint that produced it.
+    pub async fn mcp_cached_tools(&self, server: &ChatMcpServer) -> Option<Vec<McpTool>> {
+        self.get_mcp_tool_snapshot(&server.id, &config_fingerprint(server))
     }
 
-    /// 连接失败且没有任何缓存工具的 server id（从未成功连上）。这些 server 的工具
+    fn remember_mcp_tools(&self, server: &ChatMcpServer, tools: &[McpTool]) {
+        self.set_mcp_tool_snapshot(
+            server.id.clone(),
+            config_fingerprint(server),
+            tools.to_vec(),
+        );
+    }
+
     /// 无法降级进列表，只能在系统提示词里声明「已配置但连接失败」。
     pub async fn mcp_unreachable_server_ids(&self) -> Vec<String> {
         let candidates: Vec<(String, Arc<Mutex<McpSession>>)> = {
@@ -726,7 +758,11 @@ impl AppState {
         let mut out = Vec::new();
         for (id, session) in candidates {
             let guard = session.lock().await;
-            if matches!(guard.state, McpServerState::Error { .. }) && guard.tools.is_empty() {
+            if matches!(guard.state, McpServerState::Error { .. })
+                && self
+                    .get_mcp_tool_snapshot(&id, &guard.config_fingerprint)
+                    .is_none()
+            {
                 out.push(id);
             }
         }
@@ -917,9 +953,19 @@ pub struct McpServerStatusSnapshot {
     pub stderr_tail: String,
 }
 
-/// ChatMcpServer 配置指纹：序列化后做稳定哈希，配置变更即重建会话。
+fn discovery_retry_backoff(consecutive_failures: u32) -> Duration {
+    let shift = consecutive_failures.saturating_sub(1).min(5);
+    let multiplier = 1u32 << shift;
+    MCP_DISCOVERY_RETRY_BASE
+        .saturating_mul(multiplier)
+        .min(MCP_DISCOVERY_RETRY_MAX)
+}
+
+/// ChatMcpServer configuration fingerprint; a changed config rebuilds the session.
 pub fn config_fingerprint(server: &ChatMcpServer) -> String {
-    serde_json::to_string(server).unwrap_or_else(|_| format!("{}:{}", server.id, server.command))
+    let serialized = serde_json::to_vec(server)
+        .unwrap_or_else(|_| format!("{}:{}", server.id, server.command).into_bytes());
+    format!("{:x}", Sha256::digest(serialized))
 }
 
 /// 当前 unix 时间戳（秒），用于 OAuth token 过期判断。
@@ -1410,8 +1456,14 @@ mod tests {
         server.args = vec!["--flag".to_string()];
         let b = config_fingerprint(&server);
         assert_ne!(a, b);
-        // 同配置稳定。
+        // Stable for the same config, and safe to persist without raw credentials.
         assert_eq!(b, config_fingerprint(&server));
+        server
+            .headers
+            .insert("Authorization".to_string(), "Bearer top-secret".to_string());
+        let credential_fingerprint = config_fingerprint(&server);
+        assert_eq!(credential_fingerprint.len(), 64);
+        assert!(!credential_fingerprint.contains("top-secret"));
     }
 
     #[test]
@@ -2429,12 +2481,10 @@ while True:
         }
 
         #[tokio::test]
-        async fn error_session_keeps_cached_tools_and_is_not_unreachable() {
-            // 连接成功一次后配置坏掉（重连失败 → Error 态）：上次的工具列表必须仍可
-            // 从 mcp_cached_tools 取到（降级进聚合列表），且不算 "unreachable"
-            // （unreachable 仅指从未成功连上、无缓存工具的 server）。
+        async fn same_config_snapshot_survives_session_removal_and_restart() {
             let script = write_fake_server();
             let state = test_app_state();
+            let usage_dir = state.usage_dir.clone();
             let server = python_server(&script);
 
             let tools = state
@@ -2443,25 +2493,119 @@ while True:
                 .expect("initial list ok");
             assert!(tools.iter().any(|tool| tool.name == "echo"));
 
-            let mut broken = server.clone();
-            broken.command = "kivio-definitely-missing-cmd".to_string();
-            state
-                .mcp_list_tools(&(), &broken)
+            let evicted = state.mcp_reap_idle(Duration::ZERO).await;
+            assert_eq!(evicted.len(), 1, "idle reap should remove the live session");
+            assert!(state.mcp_sessions.lock().await.is_empty());
+            assert!(state
+                .mcp_cached_tools(&server)
                 .await
-                .expect_err("broken command must fail to reconnect");
+                .expect("snapshot survives session removal")
+                .iter()
+                .any(|tool| tool.name == "echo"));
 
-            let cached = state
-                .mcp_cached_tools(&server.id)
+            let restarted =
+                AppState::new_headless(crate::settings::Settings::default(), usage_dir.clone());
+            assert!(restarted
+                .mcp_cached_tools(&server)
                 .await
-                .expect("cached tools survive the failed reconnect");
-            assert!(cached.iter().any(|tool| tool.name == "echo"));
+                .expect("snapshot reloads across AppState restart")
+                .iter()
+                .any(|tool| tool.name == "echo"));
+
+            let _ = std::fs::remove_file(&script);
+            let _ = std::fs::remove_dir_all(&usage_dir);
+        }
+
+        #[tokio::test]
+        async fn same_config_failure_reuses_snapshot_but_changed_config_does_not() {
+            let script = write_fake_server();
+            let state = test_app_state();
+            let server = python_server(&script);
+
+            state
+                .mcp_list_tools(&(), &server)
+                .await
+                .expect("initial list ok");
+            state.mcp_disconnect_all().await;
+            std::fs::remove_file(&script).expect("remove fake server to force same-config failure");
+
+            state
+                .mcp_list_tools(&(), &server)
+                .await
+                .expect_err("same config should now fail to reconnect");
+            assert!(state
+                .mcp_cached_tools(&server)
+                .await
+                .expect("same config may use last-known schema")
+                .iter()
+                .any(|tool| tool.name == "echo"));
             assert!(
                 state.mcp_unreachable_server_ids().await.is_empty(),
-                "a server with cached tools is degraded, not unreachable"
+                "a failed server with a matching snapshot is degraded, not unreachable"
+            );
+
+            let mut changed = server.clone();
+            changed.command = "kivio-definitely-missing-cmd".to_string();
+            state
+                .mcp_list_tools(&(), &changed)
+                .await
+                .expect_err("changed config must fail independently");
+            assert!(
+                state.mcp_cached_tools(&changed).await.is_none(),
+                "a schema from an old fingerprint must never leak into changed config"
+            );
+            assert_eq!(
+                state.mcp_unreachable_server_ids().await,
+                vec![server.id.clone()]
             );
 
             state.mcp_disconnect_all().await;
-            let _ = std::fs::remove_file(&script);
+            let _ = std::fs::remove_dir_all(&state.usage_dir);
+        }
+
+        #[tokio::test]
+        async fn discovery_failures_are_throttled_but_explicit_connect_can_retry() {
+            let state = test_app_state();
+            let server = stdio_server("kivio-definitely-missing-cmd", &[]);
+
+            state
+                .mcp_list_tools(&(), &server)
+                .await
+                .expect_err("first discovery connect must fail");
+            let session = {
+                let pool = state.mcp_sessions.lock().await;
+                pool.get(&server.id)
+                    .cloned()
+                    .expect("error session retained")
+            };
+            assert_eq!(session.lock().await.consecutive_connect_failures, 1);
+
+            let second = state
+                .mcp_list_tools(&(), &server)
+                .await
+                .expect_err("second discovery should honor cooldown");
+            assert!(
+                second.contains("cooling down"),
+                "unexpected error: {second}"
+            );
+            assert_eq!(
+                session.lock().await.consecutive_connect_failures,
+                1,
+                "cooldown must avoid another spawn/handshake attempt"
+            );
+
+            assert!(
+                state.mcp_get_or_connect(&(), &server).await.is_err(),
+                "explicit path retries immediately and still fails"
+            );
+            assert_eq!(
+                session.lock().await.consecutive_connect_failures,
+                2,
+                "explicit tool path must bypass discovery cooldown"
+            );
+
+            state.mcp_disconnect_all().await;
+            let _ = std::fs::remove_dir_all(&state.usage_dir);
         }
 
         #[tokio::test]
@@ -2472,12 +2616,22 @@ while True:
                 state.mcp_get_or_connect(&(), &server).await.is_err(),
                 "missing command must fail"
             );
-            assert!(state.mcp_cached_tools(&server.id).await.is_none());
+            assert!(state.mcp_cached_tools(&server).await.is_none());
             assert_eq!(
                 state.mcp_unreachable_server_ids().await,
                 vec![server.id.clone()]
             );
             state.mcp_disconnect_all().await;
+            let _ = std::fs::remove_dir_all(&state.usage_dir);
+        }
+
+        #[test]
+        fn discovery_retry_backoff_is_exponential_and_capped() {
+            assert_eq!(discovery_retry_backoff(1), Duration::from_secs(2));
+            assert_eq!(discovery_retry_backoff(2), Duration::from_secs(4));
+            assert_eq!(discovery_retry_backoff(5), Duration::from_secs(32));
+            assert_eq!(discovery_retry_backoff(6), Duration::from_secs(60));
+            assert_eq!(discovery_retry_backoff(99), Duration::from_secs(60));
         }
 
         #[tokio::test]

@@ -63,3 +63,46 @@
 - E2E ??????? OfficeCLI ????? `mcp__plugin-officecli__officecli`???? shell ???? `officecli.exe`??? `bash` ??????????????
 - E2E ??????????? `kivio-plugin-runtime-e2e.pptx`??? JSON / PNG / ?? PPTX ????
 - ?????`conv_c82645ff-9092-4c9e-a603-de22507d418d.json` ? `model_messages` ???????? screenshot ????????????????
+
+
+## Follow-up: first-request MCP discovery cache (2026-07-11)
+
+- [x] Correlate conversation timestamps, request-debug tool counts (19 -> 21), and actual tool-call sources.
+- [x] Confirm that an OfficeCLI MCP child process can exist while the model request lacks its tool definitions.
+- [x] Prevent degraded aggregates from entering the five-minute chat tool-list cache when any eligible enabled MCP server fails `tools/list`.
+- [x] Clear the aggregate cache after asynchronous startup MCP warmup settles.
+- [x] Add regression coverage for partial-not-cached -> recovered-MCP-cached behavior.
+- [x] Run `scripts/win-cargo-test.ps1 --lib mcp::registry::tests` (3 passed) and `cargo check --manifest-path src-tauri/Cargo.toml`.
+- [x] Restart via Tauri dev watcher and verify the first fresh probe calls OfficeCLI MCP `["--version"]` successfully with zero shell calls (OfficeCLI 1.0.135).
+
+## Follow-up: MCP loading second-pass audit (2026-07-11)
+
+- [x] Include runtime-eligible MCP server ids in the aggregate cache key and reuse the same eligibility snapshot for listing.
+- [x] Unify plugin enabled/installed gating across startup warmup, discovery, and tool execution.
+- [x] Invalidate aggregate tool definitions after explicit MCP reload.
+- [x] Add cache-key and runtime-eligibility regression tests.
+- [x] Verify registry tests (5 passed), manager tests (7 passed), and `cargo check`.
+- [x] Run a fresh real probe: OfficeCLI MCP called once, shell called zero times, version `1.0.135`.
+- [ ] Future enhancement (out of current fix scope): consume MCP `notifications/tools/list_changed` and refresh the session-level tool schema automatically.
+
+
+## MCP loading second-review follow-up (2026-07-11)
+
+- [x] Include runtime-eligible MCP server ids in the aggregate cache key and reuse the same snapshot for listing.
+- [x] Clear aggregate tool definitions after explicit MCP reload.
+- [x] Share the runtime eligibility gate across startup warmup, GUI discovery/execution, and kivio-code collection/status/execution.
+- [x] Keep partial discovery results uncached; record dynamic `tools/list_changed` handling as a separate protocol enhancement.
+- [x] Verify with targeted registry/manager tests, Rust check, and the fresh real-model OfficeCLI probe.
+
+## Follow-up: MCP protocol compliance (2026-07-11)
+
+- [x] Route JSON-RPC server requests before pending responses; answer ping and return -32601 for unsupported requests.
+- [x] Normalize numeric/string response ids and drain pending requests on stdio EOF.
+- [x] Implement paginated tools/list with cursor validation and loop guards in persistent and one-shot clients.
+- [x] Treat MCP annotations as untrusted hints; readOnlyHint no longer bypasses default approval.
+- [x] Refresh stdio tool discovery after notifications/tools/list_changed.
+- [x] Send best-effort notifications/cancelled after non-initialize timeouts without retrying unknown-outcome calls.
+- [x] Validate initialize protocolVersion; propagate negotiated Streamable HTTP header; DELETE discarded HTTP sessions.
+- [x] Add regression coverage for colliding-id ping, pagination/list_changed, cancellation, approval boundary, negotiated HTTP headers, and DELETE.
+- [ ] Legacy 2024-11-05 HTTP+SSE transport (separate compatibility task if required).
+- [ ] Persistent Streamable HTTP server-notification listener for HTTP tools/list_changed (separate transport enhancement).

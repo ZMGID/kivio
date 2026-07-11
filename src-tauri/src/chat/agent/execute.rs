@@ -380,18 +380,9 @@ pub fn tool_requires_approval(settings: &Settings, tool: &ChatToolDefinition) ->
     match settings.chat_tools.approval_policy.as_str() {
         "auto" => false,
         "always_confirm" => true,
-        _ if tool.source == "mcp" => {
-            if tool.destructive_hint() == Some(true)
-                || tool.open_world_hint() == Some(true)
-                || tool.read_only_hint() == Some(false)
-            {
-                return true;
-            }
-            if tool.read_only_hint() == Some(true) {
-                return false;
-            }
-            tool.sensitive
-        }
+        // MCP annotations are self-reported by the server and cannot weaken approval.
+        // The explicit user-side `auto` policy above remains the trusted opt-out.
+        _ if tool.source == "mcp" => true,
         _ => tool.sensitive,
     }
 }
@@ -1169,6 +1160,20 @@ mod tests {
         assert!(matches!(record.status, ToolCallStatus::Success));
         assert!(content.contains("structuredContent"));
         assert!(content.contains("\"answer\":42"));
+    }
+
+    #[test]
+    fn untrusted_mcp_read_only_hint_does_not_bypass_approval() {
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "readonly_auto_sensitive_confirm".to_string();
+        let mut tool = sensitive_test_tool();
+        tool.source = "mcp".to_string();
+        tool.sensitive = false;
+        tool.annotations = Some(serde_json::json!({ "readOnlyHint": true }));
+
+        assert!(tool_requires_approval(&settings, &tool));
+        settings.chat_tools.approval_policy = "auto".to_string();
+        assert!(!tool_requires_approval(&settings, &tool));
     }
 
     #[test]

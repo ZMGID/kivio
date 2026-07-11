@@ -9,13 +9,13 @@ use std::{
 };
 
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 #[cfg(target_os = "macos")]
 use crate::macos_ocr::MacOcrClient;
 use crate::mcp::manager::McpSession;
-use crate::mcp::types::PythonRunResult;
+use crate::mcp::types::{McpTool, PythonRunResult};
 use crate::mcp::ChatToolDefinition;
 use crate::native_tools::SandboxExportContext;
 use crate::rapidocr::RapidOcrClient;
@@ -53,6 +53,33 @@ pub struct PendingChatExternalSend {
     /// 不触发回复（截图作为首个 user 轮的附件，见 attachments）。
     #[serde(default)]
     pub messages: Vec<PendingChatExternalMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolSnapshot {
+    pub config_fingerprint: String,
+    pub tools: Vec<McpTool>,
+}
+
+fn mcp_tool_snapshot_path(usage_dir: &std::path::Path) -> PathBuf {
+    usage_dir.join("mcp-tool-snapshots.json")
+}
+
+fn load_mcp_tool_snapshots(usage_dir: &std::path::Path) -> HashMap<String, McpToolSnapshot> {
+    let path = mcp_tool_snapshot_path(usage_dir);
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    match serde_json::from_str(&content) {
+        Ok(snapshots) => snapshots,
+        Err(err) => {
+            eprintln!(
+                "Failed to load MCP tool snapshots from {}: {err}",
+                path.display()
+            );
+            HashMap::new()
+        }
+    }
 }
 
 /// 应用全局状态
@@ -144,6 +171,9 @@ pub struct AppState {
     /// 每会话独立 `Arc<Mutex>`，A 服务器握手不阻塞 B；外层 `tokio::sync::Mutex`
     /// 只在命中判断 / 插入 / 移除时短暂持有，绝不跨握手 await。
     pub mcp_sessions: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<McpSession>>>>,
+    /// Last successful MCP tool schemas, independent from transport/session lifetime.
+    /// Persisted so startup failures can still expose tools discovered by a previous run.
+    pub mcp_tool_snapshots: Mutex<HashMap<String, McpToolSnapshot>>,
     /// Token usage ledger directory under app data. Model providers can append records
     /// without needing an AppHandle threaded through every call path.
     pub usage_dir: PathBuf,
@@ -206,6 +236,7 @@ impl AppState {
         #[cfg(target_os = "macos")] macos_ocr: std::sync::Arc<MacOcrClient>,
         rapidocr: std::sync::Arc<RapidOcrClient>,
     ) -> Self {
+        let mcp_tool_snapshots = load_mcp_tool_snapshots(&usage_dir);
         AppState {
             settings: RwLock::new(settings),
             explain_images: Mutex::new(HashMap::new()),
@@ -237,6 +268,7 @@ impl AppState {
             active_key_idx: Mutex::new(HashMap::new()),
             prompt_cache_key_unsupported: Mutex::new(HashSet::new()),
             mcp_sessions: tokio::sync::Mutex::new(HashMap::new()),
+            mcp_tool_snapshots: Mutex::new(mcp_tool_snapshots),
             usage_dir,
             http,
             #[cfg(target_os = "macos")]
@@ -476,6 +508,56 @@ impl AppState {
             if runs.is_empty() {
                 active.remove(conversation_id);
             }
+        }
+    }
+
+    pub fn get_mcp_tool_snapshot(
+        &self,
+        server_id: &str,
+        config_fingerprint: &str,
+    ) -> Option<Vec<McpTool>> {
+        let snapshots = self
+            .mcp_tool_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        snapshots
+            .get(server_id)
+            .filter(|snapshot| snapshot.config_fingerprint == config_fingerprint)
+            .map(|snapshot| snapshot.tools.clone())
+            .filter(|tools| !tools.is_empty())
+    }
+
+    pub fn set_mcp_tool_snapshot(
+        &self,
+        server_id: String,
+        config_fingerprint: String,
+        tools: Vec<McpTool>,
+    ) {
+        if tools.is_empty() {
+            return;
+        }
+        let mut snapshots = self
+            .mcp_tool_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        snapshots.insert(
+            server_id,
+            McpToolSnapshot {
+                config_fingerprint,
+                tools,
+            },
+        );
+        let content = match serde_json::to_string_pretty(&*snapshots) {
+            Ok(content) => content,
+            Err(err) => {
+                eprintln!("Failed to serialize MCP tool snapshots: {err}");
+                return;
+            }
+        };
+        let path = mcp_tool_snapshot_path(&self.usage_dir);
+        if let Err(err) = crate::chat::storage::atomic_write(&path, &content, "MCP tool snapshots")
+        {
+            eprintln!("Failed to persist MCP tool snapshots: {err}");
         }
     }
 
@@ -764,7 +846,7 @@ impl AppState {
 pub(crate) fn test_app_state() -> AppState {
     AppState::base(
         Settings::default(),
-        std::env::temp_dir().join("kivio-test-usage"),
+        std::env::temp_dir().join(format!("kivio-test-usage-{}", uuid::Uuid::new_v4())),
         Client::new(),
         #[cfg(target_os = "macos")]
         MacOcrClient::disabled(),

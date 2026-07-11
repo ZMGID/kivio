@@ -261,7 +261,7 @@ pub async fn list_enabled_tool_defs(
                     // 降级：连接失败但曾成功握手过 ⇒ 复用上次的工具列表。工具仍对模型
                     // 可见可调用；调用路径 get-or-connect 会自动重连，真不可达时把连接
                     // 错误作为工具错误返回（模型会说"server 挂了"而非"没有这个工具"）。
-                    if let Some(cached) = state.mcp_cached_tools(&server.id).await {
+                    if let Some(cached) = state.mcp_cached_tools(server).await {
                         tools.extend(tools_from_mcp(server, cached));
                     }
                     failed_mcp_servers.push(server.name.as_str());

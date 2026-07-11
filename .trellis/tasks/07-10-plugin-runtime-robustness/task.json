@@ -30,8 +30,14 @@
     ".trellis/spec/tauri/windows-shell-selection.md",
     "src-tauri/src/mcp/manager.rs",
     ".trellis/spec/chat/mcp-session-concurrency.md",
-    ".trellis/tasks/07-10-plugin-runtime-robustness/research/mcp-head-of-line-blocking.md"
+    ".trellis/tasks/07-10-plugin-runtime-robustness/research/mcp-head-of-line-blocking.md",
+    "src-tauri/src/kivio_code/mcp_setup.rs",
+    "src-tauri/src/mcp/client.rs",
+    "src-tauri/src/mcp/types.rs",
+    "src-tauri/src/chat/agent/execute.rs",
+    ".trellis/spec/chat/mcp-protocol-runtime.md",
+    ".trellis/tasks/07-10-plugin-runtime-robustness/research/mcp-protocol-compliance-review.md"
   ],
-  "notes": "2026-07-11 verification complete: targeted tests green; frontend quality gate green; Rust full suite matches known 8-failure baseline; real OfficeCLI probe verified auxiliary visual defect detection and cleanup. 2026-07-11 MCP HOL follow-up: direct OfficeCLI probe confirmed one lost response after partial batch while server remains healthy; Kivio stdio session lock amplified it to 120s. Refactored stdio request multiplexing, added unknown-outcome/no-retry error and cross-platform lost-response regression. 2026-07-11 live OfficeCLI 1.0.135 verification through AppState: after a 1-success/1-failure batch, the first set lost its response and timed out at 4.001s, while a get issued 200ms later succeeded in 110.6ms; confirmed no head-of-line blocking and no retry. OfficeCLI-specific catalog prompt changes were restored.",
+  "notes": "2026-07-11 verification complete: targeted tests green; frontend quality gate green; Rust full suite matches known 8-failure baseline; real OfficeCLI probe verified auxiliary visual defect detection and cleanup. 2026-07-11 MCP HOL follow-up: direct OfficeCLI probe confirmed one lost response after partial batch while server remains healthy; Kivio stdio session lock amplified it to 120s. Refactored stdio request multiplexing, added unknown-outcome/no-retry error and cross-platform lost-response regression. 2026-07-11 live OfficeCLI 1.0.135 verification through AppState: after a 1-success/1-failure batch, the first set lost its response and timed out at 4.001s, while a get issued 200ms later succeeded in 110.6ms; confirmed no head-of-line blocking and no retry. OfficeCLI-specific catalog prompt changes were restored. 2026-07-11 first-request MCP discovery follow-up: request debug proved 19 tools initially and 21 only after recovery. Root cause was five-minute caching of a degraded aggregate when an enabled MCP tools/list failed during startup/prefetch. Fix caches only complete aggregates and clears the cache after startup warmup; live restart verification passed: first post-restart probe called OfficeCLI MCP once with [\"--version\"], returned 1.0.135, and used zero shell calls. 2026-07-11 MCP protocol compliance follow-up: fixed server-request/response routing and ping replies, tools/list pagination, untrusted annotation approval bypass, stdio list_changed refresh, timeout cancellation, protocol-version validation/header propagation, string response ids, and Streamable HTTP DELETE. Added stdio and HTTP lifecycle regressions. Legacy HTTP+SSE and persistent HTTP notification subscription remain explicit follow-up scope.",
   "meta": {}
 }
