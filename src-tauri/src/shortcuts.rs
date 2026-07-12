@@ -953,7 +953,7 @@ pub(crate) fn send_paste_shortcut() {
 /// 恢复并聚焦已有 Chat 窗口。
 fn reveal_chat_window(app: &AppHandle, window: &WebviewWindow) {
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    set_macos_regular_activation_policy(app);
 
     if window.is_minimized().ok().unwrap_or(false) {
         let _ = window.unminimize();
@@ -964,6 +964,42 @@ fn reveal_chat_window(app: &AppHandle, window: &WebviewWindow) {
 
     #[cfg(target_os = "macos")]
     apply_macos_traffic_light_position(window);
+}
+
+/// Show the app in the macOS Dock. In a debug build Tauri runs the bare Cargo
+/// executable instead of an app bundle, so recreating the Dock tile after an
+/// Accessory -> Regular transition loses the configured bundle icon. Restore
+/// it explicitly from the icon embedded in the binary.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_macos_regular_activation_policy(app: &AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+    #[cfg(debug_assertions)]
+    restore_macos_development_app_icon();
+}
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+#[allow(deprecated, unexpected_cfgs)]
+fn restore_macos_development_app_icon() {
+    use cocoa::base::{id, nil};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    static ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
+
+    unsafe {
+        let data: id = msg_send![
+            class!(NSData),
+            dataWithBytes: ICON_BYTES.as_ptr()
+            length: ICON_BYTES.len()
+        ];
+        let image: id = msg_send![class!(NSImage), alloc];
+        let image: id = msg_send![image, initWithData: data];
+        if image != nil {
+            let ns_app: id = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![ns_app, setApplicationIconImage: image];
+            let _: () = msg_send![image, release];
+        }
+    }
 }
 
 /// 打开独立 AI 客户端窗口。
@@ -997,7 +1033,7 @@ pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
         // 首次创建保持 hidden：前端在 useLayoutEffect 里恢复几何后再 show，避免默认尺寸闪一下。
         #[cfg(target_os = "macos")]
         {
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            set_macos_regular_activation_policy(app);
             apply_macos_traffic_light_position(&window);
         }
     }
@@ -1032,7 +1068,7 @@ pub(crate) fn open_chat_settings_window(app: &AppHandle) -> Result<(), String> {
         // 首次创建保持 hidden：前端在 useLayoutEffect 里恢复几何后再 show，避免默认尺寸闪一下。
         #[cfg(target_os = "macos")]
         {
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            set_macos_regular_activation_policy(app);
             apply_macos_traffic_light_position(&window);
         }
     }
