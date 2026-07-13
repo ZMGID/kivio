@@ -37,7 +37,7 @@ chatApi.exportConversationMarkdown(
 - `language`: `en` selects English labels; all other values fall back to Chinese labels.
 - Output is UTF-8 Markdown containing only:
   - title, created time, updated time, and model;
-  - user `content` and assistant final `content` in persisted order;
+  - user `content` and assistant final `content` in persisted order, preceded by a compact bold role/timestamp line rather than a heading;
   - attachment names rendered as localized placeholders.
 - Output must exclude reasoning, segments, tool calls/results, artifacts, replay messages, provider ids, API configuration, and internal attachment paths.
 
@@ -51,7 +51,7 @@ chatApi.exportConversationMarkdown(
 
 ### 5. Good/Base/Bad Cases
 
-- Good: a Chinese conversation with text and attachments exports one `.md` file with Chinese headings and attachment-name placeholders.
+- Good: a Chinese conversation with text and attachments exports one `.md` file with compact Chinese role labels, horizontal message separators, and attachment-name placeholders.
 - Base: a conversation with no exportable messages still exports its metadata header.
 - Bad: copying the persisted conversation JSON or rendering `reasoning`, `tool_calls`, `api_messages`, or attachment `path` values into Markdown.
 

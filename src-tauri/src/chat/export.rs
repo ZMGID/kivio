@@ -85,7 +85,7 @@ fn render_message(message: &ChatMessage, labels: ExportLabels) -> Option<String>
         return None;
     };
 
-    let mut section = format!("## {role} · {}\n", format_timestamp(message.timestamp));
+    let mut section = format!("**{role}** · {}\n", format_timestamp(message.timestamp));
     if !body.is_empty() {
         section.push('\n');
         section.push_str(body);
@@ -118,7 +118,7 @@ pub(crate) fn render_conversation_markdown(conversation: &Conversation, language
             .iter()
             .filter_map(|message| render_message(message, labels)),
     );
-    format!("{}\n", sections.join("\n\n"))
+    format!("{}\n", sections.join("\n\n---\n\n"))
 }
 
 #[tauri::command]
@@ -233,8 +233,8 @@ mod tests {
     fn renders_readable_chinese_markdown_without_internal_fields() {
         let markdown = render_conversation_markdown(&conversation(), "zh");
         assert!(markdown.contains("# Export test"));
-        assert!(markdown.contains("## 用户"));
-        assert!(markdown.contains("## 助手"));
+        assert!(markdown.contains("**用户** ·"));
+        assert!(markdown.contains("**助手** ·"));
         assert!(markdown.contains("[附件: notes.pdf]"));
         assert!(markdown.contains("[图片: chart.png]"));
         assert!(markdown.contains("Final answer"));
@@ -272,11 +272,11 @@ mod tests {
 
         let markdown = render_conversation_markdown(&conversation, "en");
         assert!(markdown.contains("- Created:"));
-        assert!(markdown.contains("## User"));
-        assert!(markdown.contains("## Assistant"));
+        assert!(markdown.contains("**User** ·"));
+        assert!(markdown.contains("**Assistant** ·"));
         assert!(markdown.contains("[Attachment: notes.pdf]"));
         assert!(markdown.contains("[Image: chart.png]"));
-        assert_eq!(markdown.matches("## Assistant").count(), 1);
+        assert_eq!(markdown.matches("**Assistant** ·").count(), 1);
         assert!(!markdown.contains("hidden"));
     }
 }
