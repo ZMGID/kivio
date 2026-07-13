@@ -1,3 +1,0 @@
-{"file": ".trellis/tasks/07-03-native-tools-consolidation-mvp/research/tool-inventory.md", "reason": "核对最终工具集与各分类快照测试期望列表是否一致"}
-{"file": ".trellis/tasks/07-03-native-tools-consolidation-mvp/research/risks-and-open-questions.md", "reason": "验收时逐条核对风险是否已被兼容/测试覆盖（尤其存储白名单、read 目录语义）"}
-{"file": ".trellis/spec/chat/request-shape-contracts.md", "reason": "确认归一化表未破坏现有 wire alias 契约"}

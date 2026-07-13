@@ -1,1 +1,0 @@
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Task extracts a shared timeout-capture helper reused by macOS+Windows branches; follow reuse conventions before adding new helpers in path_env.rs"}

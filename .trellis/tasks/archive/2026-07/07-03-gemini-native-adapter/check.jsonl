@@ -1,2 +1,0 @@
-{"file": ".trellis/tasks/07-03-gemini-native-adapter/research/opencode-real-traffic.md", "reason": "验收时核对请求体/响应解析是否与真实 Gemini 流量一致（无 promptCacheKey、toolConfig、finishReason 推导等）"}
-{"file": ".trellis/tasks/07-03-gemini-native-adapter/research/adapter-contract.md", "reason": "核对 GenerateOutput/StreamPart/provider_messages 是否符合契约"}

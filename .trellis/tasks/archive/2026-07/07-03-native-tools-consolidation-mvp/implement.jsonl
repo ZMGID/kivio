@@ -1,4 +1,0 @@
-{"file": ".trellis/tasks/07-03-native-tools-consolidation-mvp/research/consolidation-touchpoints.md", "reason": "每项改动的精确 file:line 编辑点、别名机制分析、待改测试清单"}
-{"file": ".trellis/tasks/07-03-native-tools-consolidation-mvp/research/tool-inventory.md", "reason": "全部原生工具 def/handler/enabled-gate/read-only/sensitive/toggle 对照表 + 冻结的快照测试清单"}
-{"file": ".trellis/tasks/07-03-native-tools-consolidation-mvp/research/risks-and-open-questions.md", "reason": "7 项风险 + 开放问题（存储白名单破坏、read 目录语义等）"}
-{"file": ".trellis/spec/chat/request-shape-contracts.md", "reason": "现有 web_search→search_web wire alias 契约（C3）——归一化表方向相反，勿混用"}

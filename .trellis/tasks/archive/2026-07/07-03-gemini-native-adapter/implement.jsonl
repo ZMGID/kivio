@@ -1,6 +1,0 @@
-{"file": ".trellis/tasks/07-03-gemini-native-adapter/research/opencode-real-traffic.md", "reason": "opencode 真实 Gemini 流量确认的确切 wire 形状（端点/头/body/工具往返/响应/usage）——照此实现"}
-{"file": ".trellis/tasks/07-03-gemini-native-adapter/research/adapter-contract.md", "reason": "LanguageModelProvider 契约 + GenerateRequest/Output/StreamPart/ModelUsage/消息形状（file:line）"}
-{"file": ".trellis/tasks/07-03-gemini-native-adapter/research/anthropic-template.md", "reason": "anthropic.rs 端到端结构（gemini.rs 照此镜像）+ openai.rs 专有字段清单（勿带）"}
-{"file": ".trellis/tasks/07-03-gemini-native-adapter/research/dispatch-and-provider-wiring.md", "reason": "5 处 apiFormat 分派点 + settings/sanitize + 前端 + 凭证/failover + 测试范式"}
-{"file": ".trellis/tasks/07-03-gemini-native-adapter/research/gemini-api-shape.md", "reason": "Gemini generateContent/stream 请求响应 + 工具往返映射"}
-{"file": "src-tauri/src/chat/model/README.md", "reason": "adapter 契约红线（runtime 不感知 wire 格式）"}
