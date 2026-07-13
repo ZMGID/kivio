@@ -160,7 +160,11 @@ export function ReasoningBlock({ reasoning, streaming = false, durationMs = null
         ref={bodyRef}
         className={bodyClass}
         aria-hidden={hideBody}
-        style={bodyMaxHeight == null ? undefined : { maxHeight: `${bodyMaxHeight}px` }}
+        style={
+          bodyMaxHeight == null
+            ? (hideBody ? { maxHeight: '0px' } : undefined)
+            : { maxHeight: `${bodyMaxHeight}px` }
+        }
       >
         {collapsible && (
           <div data-testid="reasoning-frame" className="reasoning-scroll-frame">

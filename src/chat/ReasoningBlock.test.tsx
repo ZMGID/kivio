@@ -1,9 +1,16 @@
 import { render, screen, within } from '@testing-library/react'
+import { renderToString } from 'react-dom/server'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { ReasoningBlock } from './ReasoningBlock'
 
 describe('ReasoningBlock', () => {
+  it('renders a completed collapsed body at zero height on the first paint', () => {
+    const html = renderToString(<ReasoningBlock reasoning="hidden until expanded" />)
+    expect(html).toContain('aria-hidden="true"')
+    expect(html).toContain('max-height:0px')
+  })
+
   it('renders section shell without a scroll body for empty reasoning', () => {
     render(<ReasoningBlock reasoning="" />)
     const section = screen.getByLabelText('Thinking')
