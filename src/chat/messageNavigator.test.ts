@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { CompactionBoundaryView } from './compactionBoundary'
-import { activeMessageNavigatorNodeId, buildMessageNavigatorNodes } from './messageNavigator'
+import {
+  activeMessageNavigatorNodeId,
+  buildMessageNavigatorNodes,
+  messageNavigatorProximityWidth,
+  visibleMessageNavigatorNodeIds,
+} from './messageNavigator'
 import { foldMessageGroups } from './messageGroups'
 import type { ChatMessage, CompactionBoundaryRecord } from './types'
 
@@ -109,5 +114,28 @@ describe('message navigator model', () => {
     expect(activeMessageNavigatorNodeId(nodes, 0)).toBe('turn-u1')
     expect(activeMessageNavigatorNodeId(nodes, 4)).toBe('turn-u1')
     expect(activeMessageNavigatorNodeId(nodes, 5)).toBe('turn-u2')
+  })
+
+  it('返回与当前虚拟列表可见区间相交的全部语义节点', () => {
+    const nodes = buildMessageNavigatorNodes({
+      folded: foldMessageGroups([
+        msg('u1', 'user', '一'),
+        msg('a1', 'assistant', '答一'),
+        msg('u2', 'user', '二'),
+        msg('a2', 'assistant', '答二'),
+        msg('u3', 'user', '三'),
+      ]),
+      boundaries: [],
+      renderIndexByKey: indexes([['u1', 1], ['a1', 2], ['u2', 4], ['a2', 5], ['u3', 7]]),
+    })
+    expect(visibleMessageNavigatorNodeIds(nodes, 2, 5)).toEqual(['turn-u1', 'turn-u2'])
+    expect(visibleMessageNavigatorNodeIds(nodes, 6, 8)).toEqual(['turn-u2', 'turn-u3'])
+  })
+
+  it('鼠标距离映射为连续且有界的鱼眼刻度宽度', () => {
+    expect(messageNavigatorProximityWidth(0)).toBe(22)
+    expect(messageNavigatorProximityWidth(26)).toBeCloseTo(11.5)
+    expect(messageNavigatorProximityWidth(52)).toBe(8)
+    expect(messageNavigatorProximityWidth(100)).toBe(8)
   })
 })

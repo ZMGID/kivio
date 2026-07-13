@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Boxes } from 'lucide-react'
-import type { MessageNavigatorNode } from './messageNavigator'
+import { messageNavigatorProximityWidth, type MessageNavigatorNode } from './messageNavigator'
 
 interface PreviewAnchor {
   node: MessageNavigatorNode
@@ -12,6 +12,7 @@ interface PreviewAnchor {
 interface MessageNavigatorProps {
   nodes: MessageNavigatorNode[]
   activeNodeId: string | null
+  visibleNodeIds: string[]
   onNavigate: (node: MessageNavigatorNode) => void
   onNavigateStep: (direction: -1 | 1) => void
 }
@@ -33,12 +34,20 @@ function nodesEqual(a: MessageNavigatorNode[], b: MessageNavigatorNode[]): boole
 function MessageNavigatorBase({
   nodes,
   activeNodeId,
+  visibleNodeIds,
   onNavigate,
   onNavigateStep,
 }: MessageNavigatorProps) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const lastWheelAtRef = useRef(0)
+  const proximityFrameRef = useRef<number | null>(null)
+  const proximityPointerYRef = useRef(0)
   const [preview, setPreview] = useState<PreviewAnchor | null>(null)
+  const visibleNodeIdSet = new Set(visibleNodeIds)
+
+  useEffect(() => () => {
+    if (proximityFrameRef.current != null) cancelAnimationFrame(proximityFrameRef.current)
+  }, [])
 
   useEffect(() => {
     if (!activeNodeId) return
@@ -73,6 +82,32 @@ function MessageNavigatorBase({
     onNavigateStep(event.deltaY > 0 ? 1 : -1)
   }
 
+  const applyPointerProximity = () => {
+    proximityFrameRef.current = null
+    const pointerY = proximityPointerYRef.current
+    const buttons = viewportRef.current?.querySelectorAll<HTMLElement>('.chat-message-navigator-node')
+    buttons?.forEach((button) => {
+      const rect = button.getBoundingClientRect()
+      const distance = Math.abs(pointerY - (rect.top + rect.height / 2))
+      const width = messageNavigatorProximityWidth(distance)
+      button.style.setProperty('--message-navigator-node-width', `${width.toFixed(2)}px`)
+    })
+  }
+
+  const handlePointerMove = (event: React.MouseEvent) => {
+    proximityPointerYRef.current = event.clientY
+    if (proximityFrameRef.current != null) return
+    proximityFrameRef.current = requestAnimationFrame(applyPointerProximity)
+  }
+
+  const clearPointerProximity = () => {
+    if (proximityFrameRef.current != null) cancelAnimationFrame(proximityFrameRef.current)
+    proximityFrameRef.current = null
+    viewportRef.current?.querySelectorAll<HTMLElement>('.chat-message-navigator-node')
+      .forEach((button) => button.style.removeProperty('--message-navigator-node-width'))
+    setPreview(null)
+  }
+
   return (
     <>
       <aside className="chat-message-navigator" aria-label="对话轮次导航">
@@ -80,34 +115,37 @@ function MessageNavigatorBase({
           ref={viewportRef}
           className="chat-message-navigator-viewport"
           onWheel={handleWheel}
-          onMouseLeave={() => setPreview(null)}
+          onMouseMove={handlePointerMove}
+          onMouseLeave={clearPointerProximity}
         >
-          {nodes.map((node, index) => {
-            const active = node.id === activeNodeId
-            return (
-              <button
-                key={node.id}
-                type="button"
-                data-message-navigator-id={node.id}
-                className={`chat-message-navigator-node ${active ? 'is-active' : ''} ${node.kind === 'compaction' ? 'is-compaction' : ''}`}
-                aria-current={active ? 'location' : undefined}
-                aria-label={node.kind === 'compaction' ? '上下文压缩摘要' : `第 ${index + 1} 轮：${node.title}`}
-                onClick={() => onNavigate(node)}
-                onMouseEnter={(event) => showPreview(node, event.currentTarget)}
-                onFocus={(event) => showPreview(node, event.currentTarget)}
-                onBlur={() => setPreview(null)}
-              >
-                {node.kind === 'compaction' ? (
-                  <span className="chat-message-navigator-compaction-mark" aria-hidden="true">
-                    <span />
-                    <span />
-                  </span>
-                ) : (
-                  <span className="chat-message-navigator-tick" aria-hidden="true" />
-                )}
-              </button>
-            )
-          })}
+          <div className="chat-message-navigator-track">
+            {nodes.map((node, index) => {
+              const active = node.id === activeNodeId
+              return (
+                <button
+                  key={node.id}
+                  type="button"
+                  data-message-navigator-id={node.id}
+                  className={`chat-message-navigator-node ${active ? 'is-active' : ''} ${visibleNodeIdSet.has(node.id) ? 'is-visible' : ''} ${node.kind === 'compaction' ? 'is-compaction' : ''}`}
+                  aria-current={active ? 'location' : undefined}
+                  aria-label={node.kind === 'compaction' ? '上下文压缩摘要' : `第 ${index + 1} 轮：${node.title}`}
+                  onClick={() => onNavigate(node)}
+                  onMouseEnter={(event) => showPreview(node, event.currentTarget)}
+                  onFocus={(event) => showPreview(node, event.currentTarget)}
+                  onBlur={() => setPreview(null)}
+                >
+                  {node.kind === 'compaction' ? (
+                    <span className="chat-message-navigator-compaction-mark" aria-hidden="true">
+                      <span />
+                      <span />
+                    </span>
+                  ) : (
+                    <span className="chat-message-navigator-tick" aria-hidden="true" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </aside>
       {preview && createPortal(
@@ -137,6 +175,8 @@ export const MessageNavigator = memo(
   MessageNavigatorBase,
   (prev, next) => (
     prev.activeNodeId === next.activeNodeId
+    && prev.visibleNodeIds.length === next.visibleNodeIds.length
+    && prev.visibleNodeIds.every((id, index) => id === next.visibleNodeIds[index])
     && prev.onNavigate === next.onNavigate
     && prev.onNavigateStep === next.onNavigateStep
     && nodesEqual(prev.nodes, next.nodes)

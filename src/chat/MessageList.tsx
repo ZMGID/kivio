@@ -11,7 +11,12 @@ import { CompactionSummaryPanel } from './CompactionSummaryPanel'
 import { resolveCompactionBoundaries, resolvePendingCompactionAfterIndex, type CompactionBoundaryView } from './compactionBoundary'
 import { isExecutableAgentPlanText } from './agentPlan'
 import { foldMessageGroups } from './messageGroups'
-import { activeMessageNavigatorNodeId, buildMessageNavigatorNodes, type MessageNavigatorNode } from './messageNavigator'
+import {
+  activeMessageNavigatorNodeId,
+  buildMessageNavigatorNodes,
+  visibleMessageNavigatorNodeIds,
+  type MessageNavigatorNode,
+} from './messageNavigator'
 import { useStreamCoarse, useStreamSnapshot } from './streamingStore'
 import { getActiveGroup, useGroupsVersion } from './groupStreamingStore'
 import { prefersReducedMotion } from './utils'
@@ -107,9 +112,11 @@ function MessageListBase({
   // 是否贴在底部——驱动「回到底部」按钮的显隐（ref 不触发渲染，故另用 state）
   const [atBottom, setAtBottom] = useState(true)
   const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null)
+  const [visibleNavigatorNodeIds, setVisibleNavigatorNodeIds] = useState<string[]>([])
   const lastScrollOffsetRef = useRef(0)
   const navigatorNodesRef = useRef<MessageNavigatorNode[]>([])
   const activeNavigatorNodeIdRef = useRef<string | null>(null)
+  const visibleNavigatorNodeIdsRef = useRef<string[]>([])
 
   const legacyPlanMessageId = useMemo(() => {
     const legacyPlan = agentPlanState?.plan?.trim()
@@ -329,6 +336,13 @@ function MessageListBase({
     setActiveNavigatorNodeId(nodeId)
   }, [])
 
+  const updateVisibleNavigatorNodes = useCallback((nodeIds: string[]) => {
+    const previous = visibleNavigatorNodeIdsRef.current
+    if (previous.length === nodeIds.length && previous.every((id, index) => id === nodeIds[index])) return
+    visibleNavigatorNodeIdsRef.current = nodeIds
+    setVisibleNavigatorNodeIds(nodeIds)
+  }, [])
+
   const navigateToNavigatorNode = useCallback((node: MessageNavigatorNode) => {
     const handle = virtualizerRef.current
     if (!handle) return
@@ -407,8 +421,19 @@ function MessageListBase({
       )
       const renderIndex = handle.findItemIndex(readingOffset)
       updateActiveNavigatorNode(activeMessageNavigatorNodeId(navigatorNodesRef.current, renderIndex))
+      const firstVisibleIndex = handle.findItemIndex(offset)
+      const lastVisibleOffset = Math.min(
+        Math.max(0, scrollSize - 1),
+        Math.max(offset, offset + viewportSize - 1),
+      )
+      const lastVisibleIndex = handle.findItemIndex(lastVisibleOffset)
+      updateVisibleNavigatorNodes(visibleMessageNavigatorNodeIds(
+        navigatorNodesRef.current,
+        firstVisibleIndex,
+        lastVisibleIndex,
+      ))
     }
-  }, [updateActiveNavigatorNode])
+  }, [updateActiveNavigatorNode, updateVisibleNavigatorNodes])
 
   // 切换会话：重置跟随并瞬间定位到底部
   useLayoutEffect(() => {
@@ -416,11 +441,12 @@ function MessageListBase({
     setAtBottom(true)
     const lastNode = navigatorNodesRef.current[navigatorNodesRef.current.length - 1]
     updateActiveNavigatorNode(lastNode?.id ?? null)
+    updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
     // 等虚拟列表用最新 items 渲染后再对齐底部
     requestAnimationFrame(() => scrollToBottom())
     // 仅在 conversationId 变化时重置；scrollToBottom 依赖 items.length，故不列入依赖避免误触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, updateActiveNavigatorNode])
+  }, [conversationId, updateActiveNavigatorNode, updateVisibleNavigatorNodes])
 
   // 自己发出新消息时强制回到底部（即使刚才正往上翻历史）
   useLayoutEffect(() => {
@@ -579,11 +605,12 @@ function MessageListBase({
   )
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= 4 ? 'has-message-navigator' : ''}`}>
       {navigatorTurnCount >= 4 && (
         <MessageNavigator
           nodes={navigatorNodes}
           activeNodeId={activeNavigatorNodeId}
+          visibleNodeIds={visibleNavigatorNodeIds}
           onNavigate={navigateToNavigatorNode}
           onNavigateStep={handleNavigatorStep}
         />

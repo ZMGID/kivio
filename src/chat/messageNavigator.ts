@@ -122,3 +122,26 @@ export function activeMessageNavigatorNodeId(
   }
   return active?.id ?? nodes[0]?.id ?? null
 }
+
+export function visibleMessageNavigatorNodeIds(
+  nodes: readonly MessageNavigatorNode[],
+  firstRenderIndex: number,
+  lastRenderIndex: number,
+): string[] {
+  if (nodes.length === 0 || firstRenderIndex > lastRenderIndex) return []
+  const visible: string[] = []
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index]
+    const nextStart = nodes[index + 1]?.targetRenderIndex ?? Number.POSITIVE_INFINITY
+    const nodeEnd = nextStart - 1
+    if (node.targetRenderIndex <= lastRenderIndex && nodeEnd >= firstRenderIndex) {
+      visible.push(node.id)
+    }
+  }
+  return visible
+}
+
+export function messageNavigatorProximityWidth(distance: number): number {
+  const influence = Math.max(0, 1 - Math.abs(distance) / 52)
+  return 8 + 14 * influence * influence
+}

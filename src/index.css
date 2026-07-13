@@ -625,21 +625,27 @@ body {
   position: absolute;
   top: 16px;
   bottom: 16px;
-  left: max(8px, calc(50% - 436px));
+  left: max(6px, calc(50% - 424px));
   z-index: 12;
-  width: 34px;
+  width: 26px;
   pointer-events: none;
 }
 
 .chat-message-navigator-viewport {
-  display: flex;
   height: 100%;
-  flex-direction: column;
-  align-items: flex-start;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
   pointer-events: auto;
+}
+
+.chat-message-navigator-track {
+  display: flex;
+  min-height: 100%;
+  width: 26px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
 }
 
 .chat-message-navigator-viewport::-webkit-scrollbar {
@@ -648,9 +654,9 @@ body {
 
 .chat-message-navigator-node {
   display: flex;
-  width: 34px;
-  min-height: 20px;
-  flex: 0 0 20px;
+  width: 26px;
+  min-height: 13px;
+  flex: 0 0 13px;
   align-items: center;
   justify-content: flex-start;
   border: 0;
@@ -662,8 +668,8 @@ body {
 
 .chat-message-navigator-tick {
   display: block;
-  width: 10px;
-  height: 2px;
+  width: var(--message-navigator-node-width, 8px);
+  height: 1.5px;
   border-radius: 999px;
   background: currentColor;
   transition: width var(--kv-dur-fast) var(--kv-ease-standard),
@@ -677,45 +683,41 @@ body {
   outline: none;
 }
 
-.chat-message-navigator-node:hover .chat-message-navigator-tick,
 .chat-message-navigator-node:focus-visible .chat-message-navigator-tick {
-  width: 20px;
+  width: 15px;
 }
 
+.chat-message-navigator-node.is-visible,
 .chat-message-navigator-node.is-active {
   color: rgb(23 23 23);
 }
 
 .chat-message-navigator-node.is-active .chat-message-navigator-tick {
-  width: 32px;
-  height: 3px;
+  width: var(--message-navigator-node-width, 8px);
+  height: 1.5px;
 }
 
 .chat-message-navigator-compaction-mark {
   display: flex;
-  width: 14px;
+  width: var(--message-navigator-node-width, 10px);
   flex-direction: column;
   gap: 3px;
 }
 
 .chat-message-navigator-compaction-mark > span {
   display: block;
-  width: 14px;
-  height: 1.5px;
+  width: var(--message-navigator-node-width, 10px);
+  height: 1px;
   border-radius: 999px;
   background: currentColor;
 }
 
-.chat-message-navigator-node.is-compaction:hover .chat-message-navigator-compaction-mark,
-.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark,
-.chat-message-navigator-node.is-compaction.is-active .chat-message-navigator-compaction-mark {
-  width: 24px;
+.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark {
+  width: 18px;
 }
 
-.chat-message-navigator-node.is-compaction:hover .chat-message-navigator-compaction-mark > span,
-.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark > span,
-.chat-message-navigator-node.is-compaction.is-active .chat-message-navigator-compaction-mark > span {
-  width: 24px;
+.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark > span {
+  width: 18px;
 }
 
 .chat-message-navigator-preview {
@@ -775,6 +777,7 @@ body {
   color: rgb(190 190 190);
 }
 
+.dark .chat-message-navigator-node.is-visible,
 .dark .chat-message-navigator-node.is-active {
   color: rgb(245 245 245);
 }
@@ -793,6 +796,14 @@ body {
 @container chat-main (max-width: 719px) {
   .chat-message-navigator {
     display: none;
+  }
+}
+
+/* 720–871px 时消息列几乎占满容器，没有足够的外侧留白；为轨道预留安全区，
+   避免刻度与 Markdown 正文的列表符号/首字重叠。更宽时轨道自然落在 max-w-3xl 外侧。 */
+@container chat-main (min-width: 720px) and (max-width: 871px) {
+  .has-message-navigator .chat-message-list-inner {
+    padding-left: 3.25rem;
   }
 }
 

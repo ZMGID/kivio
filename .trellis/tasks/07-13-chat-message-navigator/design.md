@@ -43,8 +43,10 @@ Create a focused presentation component under `src/chat/`, owned by `MessageList
 Responsibilities:
 
 - Render one fixed-height row per node without merging nodes.
+- Center the node stack vertically while it fits; when it exceeds the viewport, let the track grow from the start and scroll normally.
 - Maintain its own overflow viewport when nodes exceed available height.
 - Highlight the active node.
+- Keep ordinary node geometry uniform while idle. Project the virtualizer's visible render-index interval onto semantic turn intervals and color every intersecting node dark. While the pointer is inside the rail, compute each node's width from its vertical distance to the pointer (bounded radius with eased falloff), producing a local fisheye effect; clear all inline widths on pointer leave. Keyboard focus retains a fixed visible affordance.
 - Keep the active node visible as the message viewport moves.
 - Render a hover preview card anchored to the hovered row.
 - Send click and wheel navigation intents upward.
@@ -76,6 +78,8 @@ Wheel input should be throttled or accumulated so a trackpad gesture does not sk
 ### 5. Layout and responsiveness
 
 Place the rail inside the existing relative `MessageList` shell, visually to the left of `.chat-message-list-inner`. It should overlay reserved outer whitespace rather than reduce the `max-w-3xl` content width.
+
+At medium container widths (720–871px), the centered message column leaves insufficient outer whitespace. Add a navigator-presence class to the list shell and increase the message column's left padding only in this range. At wider widths, return to the natural outer gutter. This prevents rail ticks from reading as Markdown bullets or covering content.
 
 Visibility conditions:
 
