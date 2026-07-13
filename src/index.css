@@ -621,6 +621,187 @@ body {
   background: var(--theme-surface);
 }
 
+.chat-message-navigator {
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: max(8px, calc(50% - 436px));
+  z-index: 12;
+  width: 34px;
+  pointer-events: none;
+}
+
+.chat-message-navigator-viewport {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  pointer-events: auto;
+}
+
+.chat-message-navigator-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-message-navigator-node {
+  display: flex;
+  width: 34px;
+  min-height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: flex-start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: rgb(163 163 163);
+  cursor: pointer;
+}
+
+.chat-message-navigator-tick {
+  display: block;
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: width var(--kv-dur-fast) var(--kv-ease-standard),
+    height var(--kv-dur-fast) var(--kv-ease-standard),
+    color var(--kv-dur-fast) var(--kv-ease-standard);
+}
+
+.chat-message-navigator-node:hover,
+.chat-message-navigator-node:focus-visible {
+  color: rgb(82 82 82);
+  outline: none;
+}
+
+.chat-message-navigator-node:hover .chat-message-navigator-tick,
+.chat-message-navigator-node:focus-visible .chat-message-navigator-tick {
+  width: 20px;
+}
+
+.chat-message-navigator-node.is-active {
+  color: rgb(23 23 23);
+}
+
+.chat-message-navigator-node.is-active .chat-message-navigator-tick {
+  width: 32px;
+  height: 3px;
+}
+
+.chat-message-navigator-compaction-mark {
+  display: flex;
+  width: 14px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-message-navigator-compaction-mark > span {
+  display: block;
+  width: 14px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.chat-message-navigator-node.is-compaction:hover .chat-message-navigator-compaction-mark,
+.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark,
+.chat-message-navigator-node.is-compaction.is-active .chat-message-navigator-compaction-mark {
+  width: 24px;
+}
+
+.chat-message-navigator-node.is-compaction:hover .chat-message-navigator-compaction-mark > span,
+.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark > span,
+.chat-message-navigator-node.is-compaction.is-active .chat-message-navigator-compaction-mark > span {
+  width: 24px;
+}
+
+.chat-message-navigator-preview {
+  position: fixed;
+  z-index: 1000;
+  width: min(320px, calc(100vw - 32px));
+  transform: translateY(-50%);
+  border: 1px solid rgb(229 229 229 / 0.95);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.96);
+  padding: 14px 16px;
+  color: rgb(38 38 38);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 0.12);
+  backdrop-filter: blur(18px);
+  pointer-events: none;
+}
+
+.chat-message-navigator-preview-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.chat-message-navigator-preview-title span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.chat-message-navigator-preview-answer {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 9px 0 0;
+  color: rgb(115 115 115);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.chat-message-navigator-preview-model {
+  margin-top: 11px;
+  color: rgb(163 163 163);
+  font-size: 12px;
+}
+
+.dark .chat-message-navigator-node {
+  color: rgb(115 115 115);
+}
+
+.dark .chat-message-navigator-node:hover,
+.dark .chat-message-navigator-node:focus-visible {
+  color: rgb(190 190 190);
+}
+
+.dark .chat-message-navigator-node.is-active {
+  color: rgb(245 245 245);
+}
+
+.dark .chat-message-navigator-preview {
+  border-color: rgb(64 64 64 / 0.95);
+  background: rgb(38 38 38 / 0.96);
+  color: rgb(245 245 245);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 0.4);
+}
+
+.dark .chat-message-navigator-preview-answer {
+  color: rgb(180 180 180);
+}
+
+@container chat-main (max-width: 719px) {
+  .chat-message-navigator {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-navigator-tick {
+    transition: none;
+  }
+}
+
 .dark .chat-main-pane {
   background: #212121;
 }

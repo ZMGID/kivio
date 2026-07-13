@@ -4,12 +4,14 @@ import { Virtualizer, type VirtualizerHandle } from 'virtua'
 import type { AgentPlanState, ChatMessage, ConversationContextState } from './types'
 import { MessageBubble } from './MessageBubble'
 import { MessageGroup } from './MessageGroup'
+import { MessageNavigator } from './ChatMessageNavigator'
 import { CompactionDivider } from './CompactionDivider'
 import { CompactionInProgress } from './CompactionInProgress'
 import { CompactionSummaryPanel } from './CompactionSummaryPanel'
 import { resolveCompactionBoundaries, resolvePendingCompactionAfterIndex, type CompactionBoundaryView } from './compactionBoundary'
 import { isExecutableAgentPlanText } from './agentPlan'
 import { foldMessageGroups } from './messageGroups'
+import { activeMessageNavigatorNodeId, buildMessageNavigatorNodes, type MessageNavigatorNode } from './messageNavigator'
 import { useStreamCoarse, useStreamSnapshot } from './streamingStore'
 import { getActiveGroup, useGroupsVersion } from './groupStreamingStore'
 import { prefersReducedMotion } from './utils'
@@ -104,7 +106,10 @@ function MessageListBase({
   const prevMessageCountRef = useRef(0)
   // 是否贴在底部——驱动「回到底部」按钮的显隐（ref 不触发渲染，故另用 state）
   const [atBottom, setAtBottom] = useState(true)
+  const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null)
   const lastScrollOffsetRef = useRef(0)
+  const navigatorNodesRef = useRef<MessageNavigatorNode[]>([])
+  const activeNavigatorNodeIdRef = useRef<string | null>(null)
 
   const legacyPlanMessageId = useMemo(() => {
     const legacyPlan = agentPlanState?.plan?.trim()
@@ -125,15 +130,22 @@ function MessageListBase({
     return map
   }, [messages])
 
+  const boundaries = useMemo(
+    () => resolveCompactionBoundaries(messages, contextState),
+    [contextState, messages],
+  )
+
   const boundariesByAfterIndex = useMemo(() => {
     const map = new Map<number, CompactionBoundaryView[]>()
-    for (const boundary of resolveCompactionBoundaries(messages, contextState)) {
+    for (const boundary of boundaries) {
       const existing = map.get(boundary.afterIndex) ?? []
       existing.push(boundary)
       map.set(boundary.afterIndex, existing)
     }
     return map
-  }, [contextState, messages])
+  }, [boundaries])
+
+  const folded = useMemo(() => foldMessageGroups(messages), [messages])
 
   const pendingCompactionAfterIndex = useMemo(
     () => (
@@ -200,7 +212,6 @@ function MessageListBase({
     // 多模型一问多答（任务 06-30）：把同一 group_id 的连续 assistant 消息折成一个 group item，
     // 横向并排多列；其余消息线性 push（折叠逻辑是纯函数 foldMessageGroups，便于单测）。
     // R8：先收集 group_id → 本次所发模型列表，给该组对应 user 消息加模型标签行。
-    const folded = foldMessageGroups(messages)
     const sentModelsByGroup = new Map<string, GroupModelLabel[]>()
     for (const item of folded) {
       if (item.type === 'group') {
@@ -286,6 +297,7 @@ function MessageListBase({
     return list
   }, [
     messages,
+    folded,
     liveGroup,
     coarse.streaming,
     coarse.streamFrozen,
@@ -300,6 +312,43 @@ function MessageListBase({
     appendCompactionSlot,
     messageIndexById,
   ])
+
+  const navigatorNodes = useMemo(() => {
+    const renderIndexByKey = new Map(items.map((item, index) => [item.key, index]))
+    return buildMessageNavigatorNodes({ folded, boundaries, renderIndexByKey })
+  }, [boundaries, folded, items])
+  navigatorNodesRef.current = navigatorNodes
+  const navigatorTurnCount = navigatorNodes.reduce(
+    (count, node) => count + (node.kind === 'turn' ? 1 : 0),
+    0,
+  )
+
+  const updateActiveNavigatorNode = useCallback((nodeId: string | null) => {
+    if (activeNavigatorNodeIdRef.current === nodeId) return
+    activeNavigatorNodeIdRef.current = nodeId
+    setActiveNavigatorNodeId(nodeId)
+  }, [])
+
+  const navigateToNavigatorNode = useCallback((node: MessageNavigatorNode) => {
+    const handle = virtualizerRef.current
+    if (!handle) return
+    stickToBottomRef.current = false
+    setAtBottom(false)
+    updateActiveNavigatorNode(node.id)
+    handle.scrollToIndex(node.targetRenderIndex, {
+      align: 'start',
+      smooth: !prefersReducedMotion(),
+    })
+  }, [updateActiveNavigatorNode])
+
+  const handleNavigatorStep = useCallback((direction: -1 | 1) => {
+    const nodes = navigatorNodesRef.current
+    if (nodes.length === 0) return
+    const currentId = activeNavigatorNodeIdRef.current
+    const currentIndex = Math.max(0, nodes.findIndex((node) => node.id === currentId))
+    const nextIndex = Math.min(nodes.length - 1, Math.max(0, currentIndex + direction))
+    navigateToNavigatorNode(nodes[nextIndex])
+  }, [navigateToNavigatorNode])
 
   const scrollToBottom = useCallback((smooth = false) => {
     const index = items.length - 1
@@ -350,17 +399,28 @@ function MessageListBase({
     }
     lastScrollOffsetRef.current = offset
     setAtBottom(bottom)
-  }, [])
+
+    if (handle) {
+      const readingOffset = Math.min(
+        Math.max(0, scrollSize - 1),
+        offset + viewportSize * 0.3,
+      )
+      const renderIndex = handle.findItemIndex(readingOffset)
+      updateActiveNavigatorNode(activeMessageNavigatorNodeId(navigatorNodesRef.current, renderIndex))
+    }
+  }, [updateActiveNavigatorNode])
 
   // 切换会话：重置跟随并瞬间定位到底部
   useLayoutEffect(() => {
     stickToBottomRef.current = true
     setAtBottom(true)
+    const lastNode = navigatorNodesRef.current[navigatorNodesRef.current.length - 1]
+    updateActiveNavigatorNode(lastNode?.id ?? null)
     // 等虚拟列表用最新 items 渲染后再对齐底部
     requestAnimationFrame(() => scrollToBottom())
     // 仅在 conversationId 变化时重置；scrollToBottom 依赖 items.length，故不列入依赖避免误触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId])
+  }, [conversationId, updateActiveNavigatorNode])
 
   // 自己发出新消息时强制回到底部（即使刚才正往上翻历史）
   useLayoutEffect(() => {
@@ -520,6 +580,14 @@ function MessageListBase({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
+      {navigatorTurnCount >= 4 && (
+        <MessageNavigator
+          nodes={navigatorNodes}
+          activeNodeId={activeNavigatorNodeId}
+          onNavigate={navigateToNavigatorNode}
+          onNavigateStep={handleNavigatorStep}
+        />
+      )}
       <div
         ref={scrollRef}
         onWheel={handleWheel}

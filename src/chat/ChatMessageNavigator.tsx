@@ -1,0 +1,144 @@
+import { memo, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { Boxes } from 'lucide-react'
+import type { MessageNavigatorNode } from './messageNavigator'
+
+interface PreviewAnchor {
+  node: MessageNavigatorNode
+  top: number
+  left: number
+}
+
+interface MessageNavigatorProps {
+  nodes: MessageNavigatorNode[]
+  activeNodeId: string | null
+  onNavigate: (node: MessageNavigatorNode) => void
+  onNavigateStep: (direction: -1 | 1) => void
+}
+
+function nodesEqual(a: MessageNavigatorNode[], b: MessageNavigatorNode[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  return a.every((node, index) => {
+    const other = b[index]
+    return node.kind === other.kind
+      && node.id === other.id
+      && node.targetRenderIndex === other.targetRenderIndex
+      && node.title === other.title
+      && node.answerPreview === other.answerPreview
+      && node.modelLabel === other.modelLabel
+  })
+}
+
+function MessageNavigatorBase({
+  nodes,
+  activeNodeId,
+  onNavigate,
+  onNavigateStep,
+}: MessageNavigatorProps) {
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const lastWheelAtRef = useRef(0)
+  const [preview, setPreview] = useState<PreviewAnchor | null>(null)
+
+  useEffect(() => {
+    if (!activeNodeId) return
+    const viewport = viewportRef.current
+    const active = [...(viewport?.querySelectorAll<HTMLElement>('[data-message-navigator-id]') ?? [])]
+      .find((element) => element.dataset.messageNavigatorId === activeNodeId)
+    if (!viewport || !active) return
+    const viewportRect = viewport.getBoundingClientRect()
+    const activeRect = active.getBoundingClientRect()
+    if (activeRect.top < viewportRect.top || activeRect.bottom > viewportRect.bottom) {
+      active.scrollIntoView({ block: 'nearest' })
+    }
+  }, [activeNodeId])
+
+  const showPreview = (node: MessageNavigatorNode, button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect()
+    const center = rect.top + rect.height / 2
+    setPreview({
+      node,
+      top: Math.min(window.innerHeight - 96, Math.max(96, center)),
+      left: rect.right + 12,
+    })
+  }
+
+  const handleWheel = (event: React.WheelEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (Math.abs(event.deltaY) < 4) return
+    const now = performance.now()
+    if (now - lastWheelAtRef.current < 150) return
+    lastWheelAtRef.current = now
+    onNavigateStep(event.deltaY > 0 ? 1 : -1)
+  }
+
+  return (
+    <>
+      <aside className="chat-message-navigator" aria-label="对话轮次导航">
+        <div
+          ref={viewportRef}
+          className="chat-message-navigator-viewport"
+          onWheel={handleWheel}
+          onMouseLeave={() => setPreview(null)}
+        >
+          {nodes.map((node, index) => {
+            const active = node.id === activeNodeId
+            return (
+              <button
+                key={node.id}
+                type="button"
+                data-message-navigator-id={node.id}
+                className={`chat-message-navigator-node ${active ? 'is-active' : ''} ${node.kind === 'compaction' ? 'is-compaction' : ''}`}
+                aria-current={active ? 'location' : undefined}
+                aria-label={node.kind === 'compaction' ? '上下文压缩摘要' : `第 ${index + 1} 轮：${node.title}`}
+                onClick={() => onNavigate(node)}
+                onMouseEnter={(event) => showPreview(node, event.currentTarget)}
+                onFocus={(event) => showPreview(node, event.currentTarget)}
+                onBlur={() => setPreview(null)}
+              >
+                {node.kind === 'compaction' ? (
+                  <span className="chat-message-navigator-compaction-mark" aria-hidden="true">
+                    <span />
+                    <span />
+                  </span>
+                ) : (
+                  <span className="chat-message-navigator-tick" aria-hidden="true" />
+                )}
+              </button>
+            )
+          })}
+        </div>
+      </aside>
+      {preview && createPortal(
+        <div
+          className="chat-message-navigator-preview"
+          style={{ top: preview.top, left: preview.left }}
+          role="tooltip"
+        >
+          <div className="chat-message-navigator-preview-title">
+            {preview.node.kind === 'compaction' && <Boxes size={14} aria-hidden="true" />}
+            <span>{preview.node.title || '未命名消息'}</span>
+          </div>
+          {preview.node.answerPreview && (
+            <p className="chat-message-navigator-preview-answer">{preview.node.answerPreview}</p>
+          )}
+          {preview.node.modelLabel && (
+            <div className="chat-message-navigator-preview-model">{preview.node.modelLabel}</div>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+export const MessageNavigator = memo(
+  MessageNavigatorBase,
+  (prev, next) => (
+    prev.activeNodeId === next.activeNodeId
+    && prev.onNavigate === next.onNavigate
+    && prev.onNavigateStep === next.onNavigateStep
+    && nodesEqual(prev.nodes, next.nodes)
+  ),
+)
