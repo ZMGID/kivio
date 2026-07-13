@@ -37,7 +37,7 @@
 - [x] Run `npm run typecheck`.
 - [x] Run targeted lint for all changed TypeScript/TSX files. Full-project lint remains blocked by the pre-existing `src/chat/conversationExport.ts` `no-control-regex` error.
 - [x] Run focused Vitest coverage for the navigator, grouping, and streaming MessageList integration.
-- [ ] Manually verify against a persisted 4+ turn conversation. The local profile currently contains only three 1-turn conversations, so full real-data visual QA remains unavailable without polluting user data.
+- [x] Manually verify against a persisted 4+ turn conversation through user-provided runtime screenshots and iterative acceptance feedback, covering centered layout, compact spacing, content-safe gutter, visible-turn highlighting, and pointer-proximity fisheye behavior.
 
 ## Risk and Rollback Points
 
