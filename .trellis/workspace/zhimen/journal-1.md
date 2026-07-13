@@ -38,3 +38,38 @@ Added localized per-conversation Markdown export from the sidebar context menu, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Chat message navigator
+
+**Date**: 2026-07-13
+**Task**: Chat message navigator
+**Branch**: `main`
+
+### Summary
+
+Implemented and refined a semantic chat message rail with turn-based navigation, visible-turn highlighting, centered compact layout, content-safe spacing, hover previews, linked wheel navigation, compaction nodes, and pointer-proximity fisheye feedback; validated with focused tests and user runtime screenshots.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `80b3dcb` | (see git log) |
+| `ac2ea0b` | (see git log) |
+| `b3d1c2f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
