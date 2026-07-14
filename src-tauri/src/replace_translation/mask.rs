@@ -59,9 +59,64 @@ pub fn analyze_text_regions(
         }
     }
     Ok(TextMaskAnalysis {
-        mask: InpaintMask::new(width, height, data)?,
+        mask: InpaintMask::new(
+            width,
+            height,
+            protect_separators(image, data, width, height),
+        )?,
         complexity,
     })
+}
+
+/// Erase-mask dilation can spill over table borders and row dividers, which the
+/// deterministic fill then repaints with cell background — visibly breaking the
+/// grid. Reuse the layout separator detector and restore masked pixels along
+/// each rule line (±1px for antialiasing) — but only pixels whose original
+/// color matches the line's unmasked pixels, so glyph ink crossing a detected
+/// line (or a long text row misdetected as one) still gets erased.
+fn protect_separators(image: &RgbImage, mut data: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    const LINE_COLOR_TOLERANCE: f64 = 40.0;
+    let separators = super::layout::detect_separators(image);
+    let mut restore_line = |pixels: &[(u32, u32)]| {
+        let unmasked: Vec<[u8; 3]> = pixels
+            .iter()
+            .filter(|(x, y)| data[*y as usize * width as usize + *x as usize] == 0)
+            .map(|(x, y)| image.get_pixel(*x, *y).0)
+            .collect();
+        if unmasked.is_empty() {
+            return;
+        }
+        let line_color = median_pixels(&unmasked);
+        for (x, y) in pixels {
+            let index = *y as usize * width as usize + *x as usize;
+            if data[index] != 0
+                && color_distance(image.get_pixel(*x, *y).0, line_color) <= LINE_COLOR_TOLERANCE
+            {
+                data[index] = 0;
+            }
+        }
+    };
+    for line_y in &separators.horizontal {
+        let center = line_y.round() as i64;
+        for y in center - 1..=center + 1 {
+            if y < 0 || y >= height as i64 {
+                continue;
+            }
+            let pixels: Vec<(u32, u32)> = (0..width).map(|x| (x, y as u32)).collect();
+            restore_line(&pixels);
+        }
+    }
+    for line_x in &separators.vertical {
+        let center = line_x.round() as i64;
+        for x in center - 1..=center + 1 {
+            if x < 0 || x >= width as i64 {
+                continue;
+            }
+            let pixels: Vec<(u32, u32)> = (0..height).map(|y| (x as u32, y)).collect();
+            restore_line(&pixels);
+        }
+    }
+    data
 }
 
 pub fn build_text_mask(

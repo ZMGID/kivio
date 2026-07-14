@@ -24,9 +24,9 @@ function textX(bounds: LensReplaceRenderSlot['bounds'], align: LensReplaceRender
 }
 
 function anchoredTextX(slot: LensReplaceRenderSlot, padding: number) {
-  return slot.align === 'left' && slot.flow === 'exact_line'
-    ? slot.anchor.x
-    : textX(slot.bounds, slot.align, padding)
+  // Left-aligned text (exact lines AND table cells) starts at the measured ink
+  // anchor so translations don't slide toward the region/cell border.
+  return slot.align === 'left' ? slot.anchor.x : textX(slot.bounds, slot.align, padding)
 }
 
 function anchoredTextY(
@@ -83,13 +83,11 @@ function drawSafelyScaledSlotText(
   offscreenCtx.textAlign = slot.align
   const anchorX = (slot.anchor.x - slot.bounds.x) / safeScale
   const anchorY = (slot.anchor.y - slot.bounds.y) / safeScale
-  const x = slot.align === 'left' && slot.flow === 'exact_line'
+  const x = slot.align === 'left'
     ? anchorX
     : slot.align === 'center'
     ? offscreen.width / 2
-    : slot.align === 'right'
-      ? offscreen.width - virtualPadding
-      : virtualPadding
+    : offscreen.width - virtualPadding
   let y = slot.flow === 'exact_line' || slot.verticalAlign === 'top'
     ? anchorY
     : virtualPadding + replaceTextVerticalOffset(slot.kind, innerHeight, layout.contentHeight)

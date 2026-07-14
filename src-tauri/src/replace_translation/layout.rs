@@ -117,9 +117,9 @@ struct RegionDraft {
 }
 
 #[derive(Debug, Clone, Default)]
-struct Separators {
-    horizontal: Vec<f32>,
-    vertical: Vec<f32>,
+pub(crate) struct Separators {
+    pub(crate) horizontal: Vec<f32>,
+    pub(crate) vertical: Vec<f32>,
 }
 
 fn build_translation_layout_drafts(
@@ -262,17 +262,47 @@ fn render_slot(
     vertical_align: RenderVerticalAlign,
 ) -> RenderSlot {
     let leaf_bounds = spans_bounds(&leaves);
-    let source_font_px =
+    // RapidOCR detection boxes are unclip-expanded well past the glyphs, so an
+    // anchor/font taken from the box renders translations shifted left and a
+    // size too large. Measure the tight ink extent inside each box and prefer
+    // it; flat/low-contrast regions fall back to the box.
+    let ink: Vec<ReplaceBounds> = leaves
+        .iter()
+        .filter_map(|leaf| glyph_ink_extent(image, leaf))
+        .collect();
+    let box_font_px =
         (median(leaves.iter().map(|leaf| leaf.height).collect()).unwrap_or(16.0) * 0.78).max(7.0);
+    let source_font_px = median(ink.iter().map(|bounds| bounds.height).collect())
+        .map_or(box_font_px, |ink_height| {
+            ink_height.min(box_font_px).max(7.0)
+        });
+    let ink_x = ink
+        .iter()
+        .map(|bounds| bounds.x)
+        .fold(f32::INFINITY, f32::min);
+    let ink_y = ink
+        .iter()
+        .map(|bounds| bounds.y)
+        .fold(f32::INFINITY, f32::min);
+    let anchor_x = if ink_x.is_finite() {
+        ink_x
+    } else {
+        leaf_bounds.x
+    };
+    let anchor_y = if ink_y.is_finite() {
+        ink_y
+    } else {
+        leaf_bounds.y
+    };
     RenderSlot {
         id: format!("{group_id}-s{slot_index:02}"),
         group_id: group_id.to_string(),
         leaf_ids: leaves.iter().map(|leaf| leaf.id.clone()).collect(),
         bounds,
         anchor: TextAnchor {
-            x: leaf_bounds.x,
-            y: leaf_bounds.y,
-            baseline_y: leaf_bounds.y + leaf_bounds.height * 0.8,
+            x: anchor_x,
+            y: anchor_y,
+            baseline_y: anchor_y + source_font_px,
         },
         flow,
         kind,
@@ -340,7 +370,7 @@ fn looks_like_icon_prefixed_short_label(text: &str) -> bool {
             .all(|character| character.is_ascii_alphabetic())
 }
 
-fn detect_separators(image: &RgbImage) -> Separators {
+pub(crate) fn detect_separators(image: &RgbImage) -> Separators {
     if image.width() < 8 || image.height() < 8 {
         return Separators::default();
     }
@@ -806,6 +836,61 @@ fn estimate_source_color(image: &RgbImage, spans: &[RapidOcrLine]) -> String {
 
 fn luma(pixel: [u8; 3]) -> f32 {
     pixel[0] as f32 * 0.299 + pixel[1] as f32 * 0.587 + pixel[2] as f32 * 0.114
+}
+
+/// Tight bounding box of the actual glyph ink inside one OCR leaf box.
+/// Background is the median luma of a thin ring around the box; ink is any
+/// pixel contrasting with it. Returns `None` when the region is flat (no
+/// contrast), letting callers keep the OCR box as the fallback geometry.
+fn glyph_ink_extent(image: &RgbImage, leaf: &RapidOcrLine) -> Option<ReplaceBounds> {
+    let x0 = leaf.x.floor().max(0.0) as u32;
+    let y0 = leaf.y.floor().max(0.0) as u32;
+    let x1 = ((leaf.x + leaf.width).ceil() as u32).min(image.width());
+    let y1 = ((leaf.y + leaf.height).ceil() as u32).min(image.height());
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let margin = 3u32;
+    let ring_x0 = x0.saturating_sub(margin);
+    let ring_y0 = y0.saturating_sub(margin);
+    let ring_x1 = (x1 + margin).min(image.width());
+    let ring_y1 = (y1 + margin).min(image.height());
+    let mut ring_luma = Vec::new();
+    for y in ring_y0..ring_y1 {
+        for x in ring_x0..ring_x1 {
+            if x < x0 || x >= x1 || y < y0 || y >= y1 {
+                ring_luma.push(luma(image.get_pixel(x, y).0));
+            }
+        }
+    }
+    let background = median(ring_luma)?;
+    let mut min_x = u32::MAX;
+    let mut min_y = u32::MAX;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    let mut count = 0usize;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if (luma(image.get_pixel(x, y).0) - background).abs() >= 24.0 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+                count += 1;
+            }
+        }
+    }
+    // Require enough ink to trust the measurement; stray antialias pixels or a
+    // flat badge fill must not shrink the box to a sliver.
+    if count < 12 {
+        return None;
+    }
+    Some(ReplaceBounds {
+        x: min_x as f32,
+        y: min_y as f32,
+        width: (max_x - min_x + 1) as f32,
+        height: (max_y - min_y + 1) as f32,
+    })
 }
 
 fn spans_bounds(spans: &[RapidOcrLine]) -> ReplaceBounds {
