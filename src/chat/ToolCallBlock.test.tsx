@@ -209,4 +209,45 @@ describe('ToolCallBlock', () => {
     expect(screen.getByText('命中片段内容')).toBeInTheDocument()
     expect(screen.getByText('[1]')).toBeInTheDocument()
   })
+
+  it('renders a run_python record as a PYTHON consult card with code and output', async () => {
+    const user = userEvent.setup()
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'run_python',
+          source: 'native',
+          status: 'success',
+          result_preview: 'hello from stdout',
+          arguments: { code: 'print("hello from stdout")' },
+        })}
+      />,
+    )
+    expect(screen.getByText('PYTHON')).toBeInTheDocument()
+    await user.click(screen.getByRole('button'))
+    expect(screen.getByText('Code')).toBeInTheDocument()
+    expect(screen.getByText('print("hello from stdout")')).toBeInTheDocument()
+    expect(screen.getByText('Output')).toBeInTheDocument()
+    expect(screen.getByText('hello from stdout')).toBeInTheDocument()
+  })
+
+  it('preserves newlines/indentation in the PYTHON card code block', async () => {
+    const user = userEvent.setup()
+    const code = 'def f():\n    return 1'
+    const { container } = render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'run_python',
+          source: 'native',
+          status: 'success',
+          arguments: { code },
+        })}
+      />,
+    )
+    await user.click(screen.getByRole('button'))
+    // Code must NOT be whitespace-collapsed (regression guard against compactText):
+    // assert the raw newline + indentation survive in the <pre> textContent.
+    const pre = container.querySelector('pre')
+    expect(pre?.textContent).toBe(code)
+  })
 })

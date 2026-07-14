@@ -752,6 +752,63 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
   )
 }
 
+function isPythonRecord(toolCall: ToolCallRecord): boolean {
+  return toolCall.source === 'native' && toolRawName(toolCall) === 'run_python'
+}
+
+/** Dedicated card for `run_python`: same consult-card shell as SUBAGENT/ADVISOR.
+ *  Body shows the executed code and stdout/stderr. Generated files/images are
+ *  rendered separately at the message level (GeneratedImageArtifacts /
+ *  GeneratedFileArtifacts), so here they only surface as a count chip. */
+function PythonCard({ toolCall }: ToolCallBlockProps) {
+  const status = normalizeToolCallStatus(toolCall.status)
+  const args = useMemo(() => parsedArguments(toolCall), [toolCall])
+
+  const code = stringValue(args?.code)
+  const output = getResultPreview(toolCall)
+  const error = toolCall.error ? compactToolError(toolCall.error) : ''
+  const duration = formatDuration(getDuration(toolCall))
+  const artifactCount = toolCall.artifacts?.length ?? 0
+  const statusLine =
+    status === 'running' ? '运行中…' : status === 'error' ? (error || '运行失败') : ''
+
+  const hasBody = Boolean(code || output || error)
+
+  return (
+    <ConsultCard
+      label="PYTHON"
+      status={status}
+      identityChips={artifactCount > 0 ? <CardChip>{artifactCount} 个产物</CardChip> : undefined}
+      metricChips={duration ? <CardChip tabular>{duration}</CardChip> : undefined}
+      statusLine={statusLine}
+    >
+      {hasBody && (
+        <>
+          {code && (
+            <CardSection label="Code">
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-black/[0.08] bg-black/[0.02] p-2 font-mono text-[11px] text-neutral-600 dark:border-white/[0.1] dark:bg-white/[0.03] dark:text-neutral-300">
+                {code.length > 4000 ? `${code.slice(0, 4000)}…` : code}
+              </pre>
+            </CardSection>
+          )}
+          {output && (
+            <CardSection label="Output">
+              <div className="whitespace-pre-wrap break-words font-mono text-[11px] text-neutral-500 dark:text-neutral-400">
+                {output}
+              </div>
+            </CardSection>
+          )}
+          {error && !output && (
+            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              {error}
+            </div>
+          )}
+        </>
+      )}
+    </ConsultCard>
+  )
+}
+
 function structuredFileMutation(toolCall: ToolCallRecord): FileMutationStructuredContent | null {
   const rawName = toolRawName(toolCall)
   if (!isFileMutationTool(rawName)) return null
@@ -1431,6 +1488,9 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
   }
   if (isKnowledgeSearchRecord(props.toolCall)) {
     return <KnowledgeCard {...props} />
+  }
+  if (isPythonRecord(props.toolCall)) {
+    return <PythonCard {...props} />
   }
   return <DefaultToolCallBlock {...props} />
 }
