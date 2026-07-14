@@ -1,6 +1,7 @@
 //! RapidOCR 离线 OCR：跨平台 PaddleOCR ONNX pipeline。
 //!
-//! 单一模型：PP-OCRv6 medium（50 语言，文件放模型目录 `high/` 子目录）。
+//! 单一模型：PP-OCRv6 medium（50 语言）。模型文件落在模型目录的 `high/` 子目录
+//! （历史双档布局遗留,保留以免早前装过的用户重下）。
 //! ONNX Runtime、校验清单和可续传下载器由 [`crate::offline_models::OfflineModelManager`]
 //! 管理；本模块只负责 OCR pipeline 生命周期与结果后处理。
 //!

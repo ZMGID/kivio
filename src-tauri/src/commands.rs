@@ -429,12 +429,12 @@ pub(crate) fn open_html_preview(app: AppHandle, html: String) -> Result<(), Stri
 
 // ===== RapidOCR 离线 OCR 命令 =====
 //
-// status: 检查 app data 目录里两档(standard/high)文件各自齐不齐(共享 dylib + 各自 det/rec/keys),
-// 前端据此按当前选中档位决定是否渲染下载按钮。
-// install: 按档位顺序下载文件到 app data 目录,~15-30s(high 档更大,更久),前端转圈圈等返回。
+// status: 检查 app data 目录里 RapidOCR 文件齐不齐(dylib + det/rec/keys),
+// 前端据此决定是否渲染下载按钮。
+// install: 顺序下载文件到 app data 目录,~150MB,前端转圈圈等返回。
 
-/// 查询 RapidOCR 两档模型 + 共享 dylib 是否就绪。
-/// async + spawn_blocking:validation_state 对未缓存文件做同步 SHA-256(high 档 ~200MB),
+/// 查询 RapidOCR 模型 + dylib 是否就绪。
+/// async + spawn_blocking:validation_state 对未缓存文件做同步 SHA-256(~150MB),
 /// 同步 command 会在主线程上执行并冻结 UI(每次启动后首个调用都会全量校验)。
 #[tauri::command]
 pub(crate) async fn rapidocr_status(

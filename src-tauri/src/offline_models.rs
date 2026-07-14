@@ -97,8 +97,10 @@ struct ModelFile {
     source: ModelSource,
 }
 
-const HIGH_DET: ModelFile = ModelFile {
-    component_id: "rapidocr-high",
+// PP-OCRv6 medium 模型。文件仍落在 `high/` 子目录:这是历史双档布局(standard 放根、
+// high 放子目录)的遗留,保留它是为了让早前装过 high 档的用户无需重新下载 ~139MB。
+const OCR_DET: ModelFile = ModelFile {
+    component_id: "rapidocr",
     relative_path: "high/det.onnx",
     installed_size: 62_032_837,
     installed_sha256: "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1",
@@ -108,8 +110,8 @@ const HIGH_DET: ModelFile = ModelFile {
         sha256: "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1",
     },
 };
-const HIGH_REC: ModelFile = ModelFile {
-    component_id: "rapidocr-high",
+const OCR_REC: ModelFile = ModelFile {
+    component_id: "rapidocr",
     relative_path: "high/rec.onnx",
     installed_size: 76_554_979,
     installed_sha256: "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
@@ -119,8 +121,8 @@ const HIGH_REC: ModelFile = ModelFile {
         sha256: "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
     },
 };
-const HIGH_KEYS: ModelFile = ModelFile {
-    component_id: "rapidocr-high",
+const OCR_KEYS: ModelFile = ModelFile {
+    component_id: "rapidocr",
     relative_path: "high/keys.txt",
     installed_size: 74_947,
     installed_sha256: "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d",
@@ -222,7 +224,7 @@ fn runtime_files() -> Vec<ModelFile> {
 
 fn rapidocr_pack() -> Vec<ModelFile> {
     let mut files = runtime_files();
-    files.extend([HIGH_DET, HIGH_REC, HIGH_KEYS]);
+    files.extend([OCR_DET, OCR_REC, OCR_KEYS]);
     files
 }
 
@@ -1272,9 +1274,9 @@ mod tests {
     fn pack_size_deduplicates_shared_archives() {
         let files = replace_translation_pack();
         let expected = RUNTIME_SOURCE.size()
-            + HIGH_DET.source.size()
-            + HIGH_REC.source.size()
-            + HIGH_KEYS.source.size()
+            + OCR_DET.source.size()
+            + OCR_REC.source.size()
+            + OCR_KEYS.source.size()
             + MIGAN.source.size();
         assert_eq!(pack_download_size(&files), expected);
     }
