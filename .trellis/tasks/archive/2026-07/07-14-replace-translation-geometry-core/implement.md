@@ -43,3 +43,11 @@ npm run build:ui
 - [x] 菜单整体上移、启发式跨行重分配、未知 group、旧协议和跨列指标已有回归测试。
 - [x] 替换翻译专项 Rust 测试、前端专项测试、typecheck、专项 ESLint 和 UI build 通过。
 - [ ] macOS/Windows 实机截图视觉验收仍由 visual-benchmark 最终门禁完成。
+
+### 2026-07-14 收尾（审计后补齐）
+
+- [x] 修复对抗核验发现的 AC-G5 缺口：`ReplaceTranslateOverlay.test.tsx` 原来"执行但未断言" Canvas 自然尺寸，新增专项测试（CSS 320×180 / 自然 640×360）断言 backing size==自然像素、CSS style==逻辑尺寸，真正锁死 AC-G5 第三条与 AC-G10。前端替换测试 4/4→22/22 绿。
+- [x] `npm run typecheck` 干净通过（LSP 曾报 stale 的 groups 属性错误，tsc 为准，无误）。
+- [x] 替换翻译前端文件专项 ESLint exit 0。全量 `npm run lint` 唯一失败在 `src/chat/conversationExport.ts`（no-control-regex，提交 69609c6 的既有问题，与本任务无关，未改动）。
+- [x] `build:ui` 未重跑：本次仅改测试文件，prod bundle 未变，上一轮已 build 绿。
+- 结论：geometry-core **代码级交付物全部完成且全绿**；6 条代码级 AC 已有单测覆盖。任务**不能在本会话归档**——AC-G1/G4/G6 的验收侧与 macOS/Windows 实机视觉门禁绑定 visual-benchmark，须双平台人工目检后由其最终门禁关闭。
