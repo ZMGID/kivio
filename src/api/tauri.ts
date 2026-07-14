@@ -574,20 +574,161 @@ export type LensTranslateStreamPayload = {
   error?: string | null
 }
 
-export type LensReplaceLine = {
-  text: string
+export type LensReplaceGroup = {
+  id: string
+  leafIds: string[]
+  sourceText: string
   translated: string
-  x: number
-  y: number
-  width: number
-  height: number
+}
+
+export type LensReplaceRenderSlot = {
+  id: string
+  groupId: string
+  leafIds: string[]
+  bounds: { x: number; y: number; width: number; height: number }
+  anchor: { x: number; y: number; baselineY: number }
+  flow: 'exact_line' | 'paragraph_flow' | 'cell_flow' | 'scene_patch'
+  kind: 'cell' | 'line' | 'paragraph' | 'heading'
+  align: 'left' | 'center' | 'right'
+  verticalAlign: 'top' | 'center'
+  sourceFontPx: number
+  sourceColor: string
 }
 
 export type LensReplaceStreamPayload = {
+  version: 2
   imageId: string
-  phase: 'ocr' | 'translating' | 'done'
-  lines: LensReplaceLine[]
+  phase: 'ocr' | 'processing' | 'done' | 'error'
+  groups: LensReplaceGroup[]
+  slots: LensReplaceRenderSlot[]
+  cleanedImage?: string | null
+  // 硬失败（整张替换翻译不可用）才带 error；局部降级（如修复回退、个别区域回退原文）只带 warning。
   error?: string | null
+  warning?: string | null
+}
+
+function isReplacePayloadRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function replacePayloadNumber(record: Record<string, unknown>, key: string): number {
+  const value = record[key]
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`lens-replace-stream.${key} must be a finite number`)
+  }
+  return value
+}
+
+function parseReplaceBounds(value: unknown): LensReplaceRenderSlot['bounds'] {
+  if (!isReplacePayloadRecord(value)) throw new Error('lens-replace-stream slot bounds are invalid')
+  const bounds = {
+    x: replacePayloadNumber(value, 'x'),
+    y: replacePayloadNumber(value, 'y'),
+    width: replacePayloadNumber(value, 'width'),
+    height: replacePayloadNumber(value, 'height'),
+  }
+  if (bounds.width <= 0 || bounds.height <= 0) throw new Error('lens-replace-stream slot bounds must be positive')
+  return bounds
+}
+
+function parseReplaceStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) {
+    throw new Error(`lens-replace-stream ${label} must be a string array`)
+  }
+  return value
+}
+
+function parseReplaceOptionalString(record: Record<string, unknown>, key: string): string | null | undefined {
+  const value = record[key]
+  if (value === undefined || value === null || typeof value === 'string') return value
+  throw new Error(`lens-replace-stream.${key} must be a string or null`)
+}
+
+export function parseLensReplaceStreamPayload(value: unknown): LensReplaceStreamPayload {
+  if (!isReplacePayloadRecord(value) || value.version !== 2) {
+    throw new Error('lens-replace-stream requires protocol version 2')
+  }
+  if (typeof value.imageId !== 'string' || !value.imageId) throw new Error('lens-replace-stream.imageId is invalid')
+  if (!['ocr', 'processing', 'done', 'error'].includes(String(value.phase))) {
+    throw new Error('lens-replace-stream.phase is invalid')
+  }
+  if (!Array.isArray(value.groups) || !Array.isArray(value.slots)) {
+    throw new Error('lens-replace-stream groups and slots must be arrays')
+  }
+  const groupIds = new Set<string>()
+  const groups = value.groups.map((item, index): LensReplaceGroup => {
+    if (!isReplacePayloadRecord(item)) throw new Error(`lens-replace-stream.groups[${index}] is invalid`)
+    if (typeof item.id !== 'string' || !item.id || groupIds.has(item.id)) {
+      throw new Error(`lens-replace-stream.groups[${index}].id is invalid or duplicate`)
+    }
+    if (typeof item.sourceText !== 'string' || typeof item.translated !== 'string') {
+      throw new Error(`lens-replace-stream.groups[${index}] text is invalid`)
+    }
+    groupIds.add(item.id)
+    return {
+      id: item.id,
+      leafIds: parseReplaceStringArray(item.leafIds, `groups[${index}].leafIds`),
+      sourceText: item.sourceText,
+      translated: item.translated,
+    }
+  })
+  const slotIds = new Set<string>()
+  const slots = value.slots.map((item, index): LensReplaceRenderSlot => {
+    if (!isReplacePayloadRecord(item)) throw new Error(`lens-replace-stream.slots[${index}] is invalid`)
+    if (typeof item.id !== 'string' || !item.id || slotIds.has(item.id)) {
+      throw new Error(`lens-replace-stream.slots[${index}].id is invalid or duplicate`)
+    }
+    if (typeof item.groupId !== 'string' || !groupIds.has(item.groupId)) {
+      throw new Error(`lens-replace-stream.slots[${index}].groupId is unknown`)
+    }
+    if (!isReplacePayloadRecord(item.anchor)) throw new Error(`lens-replace-stream.slots[${index}].anchor is invalid`)
+    if (!['exact_line', 'paragraph_flow', 'cell_flow', 'scene_patch'].includes(String(item.flow))) {
+      throw new Error(`lens-replace-stream.slots[${index}].flow is invalid`)
+    }
+    if (!['cell', 'line', 'paragraph', 'heading'].includes(String(item.kind))) {
+      throw new Error(`lens-replace-stream.slots[${index}].kind is invalid`)
+    }
+    if (!['left', 'center', 'right'].includes(String(item.align))) {
+      throw new Error(`lens-replace-stream.slots[${index}].align is invalid`)
+    }
+    if (!['top', 'center'].includes(String(item.verticalAlign))) {
+      throw new Error(`lens-replace-stream.slots[${index}].verticalAlign is invalid`)
+    }
+    if (typeof item.sourceColor !== 'string' || typeof item.sourceFontPx !== 'number' || item.sourceFontPx <= 0) {
+      throw new Error(`lens-replace-stream.slots[${index}] style is invalid`)
+    }
+    slotIds.add(item.id)
+    return {
+      id: item.id,
+      groupId: item.groupId,
+      leafIds: parseReplaceStringArray(item.leafIds, `slots[${index}].leafIds`),
+      bounds: parseReplaceBounds(item.bounds),
+      anchor: {
+        x: replacePayloadNumber(item.anchor, 'x'),
+        y: replacePayloadNumber(item.anchor, 'y'),
+        baselineY: replacePayloadNumber(item.anchor, 'baselineY'),
+      },
+      flow: item.flow as LensReplaceRenderSlot['flow'],
+      kind: item.kind as LensReplaceRenderSlot['kind'],
+      align: item.align as LensReplaceRenderSlot['align'],
+      verticalAlign: item.verticalAlign as LensReplaceRenderSlot['verticalAlign'],
+      sourceFontPx: item.sourceFontPx,
+      sourceColor: item.sourceColor,
+    }
+  })
+  if (value.phase === 'done' && (groups.length === 0 || slots.length === 0)) {
+    throw new Error('lens-replace-stream done payload requires groups and slots')
+  }
+  return {
+    version: 2,
+    imageId: value.imageId,
+    phase: value.phase as LensReplaceStreamPayload['phase'],
+    groups,
+    slots,
+    cleanedImage: parseReplaceOptionalString(value, 'cleanedImage'),
+    error: parseReplaceOptionalString(value, 'error'),
+    warning: parseReplaceOptionalString(value, 'warning'),
+  }
 }
 
 // Lens 屏幕窗口元信息（macOS 实际数据；Windows 空数组）
@@ -1092,6 +1233,40 @@ export type RapidOcrInstallResult = {
   success: boolean
   /** 成功时是状态信息("RapidOCR 包下载完成"),失败时是错误片段 */
   message: string
+}
+
+export type OfflineModelFileStatus = {
+  componentId: string
+  fileName: string
+  installedBytes: number
+  downloadBytes: number
+  ready: boolean
+  state: 'ready' | 'missing' | 'invalid'
+  error?: string | null
+}
+
+export type ReplaceTranslationPackStatus = {
+  ready: boolean
+  tier: RapidOcrTier
+  totalBytes: number
+  readyBytes: number
+  missingBytes: number
+  modelDir?: string | null
+  files: OfflineModelFileStatus[]
+}
+
+export type OfflineModelProgress = {
+  // 两个安装包共用同一事件名；面板按 pack 过滤，避免普通 RapidOCR 安装驱动替换翻译离线包 UI。
+  pack: 'rapidocr' | 'replace_translation'
+  componentId: string
+  fileName: string
+  downloadedBytes: number
+  fileTotalBytes: number
+  overallDownloadedBytes: number
+  overallTotalBytes: number
+  attempt: number
+  state: 'downloading' | 'retrying' | 'verifying' | 'extracting' | 'completed' | 'failed'
+  error?: string | null
 }
 
 function normalizeProvider(provider: ModelProvider): ModelProvider {
@@ -1650,7 +1825,13 @@ export const api = {
   onLensTranslateStream: (listener: (payload: LensTranslateStreamPayload) => void) =>
     on<LensTranslateStreamPayload>('lens-translate-stream', (payload) => listener(payload)),
   onLensReplaceStream: (listener: (payload: LensReplaceStreamPayload) => void) =>
-    on<LensReplaceStreamPayload>('lens-replace-stream', (payload) => listener(payload)),
+    on<unknown>('lens-replace-stream', (payload) => {
+      try {
+        listener(parseLensReplaceStreamPayload(payload))
+      } catch (error) {
+        console.error('Invalid lens-replace-stream payload', error)
+      }
+    }),
   onLensCloseRequest: (listener: () => void) =>
     on('lens-close-request', () => listener()),
   lensListWindows: () => invoke<LensWindowInfo[]>('lens_list_windows'),
@@ -1679,7 +1860,7 @@ export const api = {
       'lens_translate_text', { text, requestId }
     ),
   lensReplaceTranslate: (imageId: string) =>
-    invoke<{ success: boolean; lineCount?: number; error?: string }>(
+    invoke<{ success: boolean; regionCount?: number; missingBytes?: number; warning?: string; error?: string }>(
       'lens_replace_translate', { imageId }
     ),
   lensAsk: (imageId: string, messages: ExplainMessage[], options?: { webSearch?: boolean }) =>
@@ -1753,4 +1934,11 @@ export const api = {
   /** 下载指定档位的 RapidOCR 包(onnxruntime dylib 共享 + 该档模型)到 app data 目录。
    *  阻塞到全部完成返回(standard ~15-30s/~30-50MB,high 更大),前端转圈圈等。 */
   rapidOcrInstall: (tier: RapidOcrTier) => invoke<RapidOcrInstallResult>('rapidocr_install', { tier }),
+
+  replaceTranslationPackStatus: (tier: RapidOcrTier) =>
+    invoke<ReplaceTranslationPackStatus>('replace_translation_pack_status', { tier }),
+  replaceTranslationPackInstall: (tier: RapidOcrTier) =>
+    invoke<RapidOcrInstallResult>('replace_translation_pack_install', { tier }),
+  onReplaceTranslationPackProgress: (listener: (progress: OfflineModelProgress) => void) =>
+    on<OfflineModelProgress>('replace-translation-pack-progress', payload => listener(payload)),
 }

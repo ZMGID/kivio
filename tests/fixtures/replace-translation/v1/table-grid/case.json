@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "table-grid",
+  "scene": "table",
+  "required": true,
+  "sourceImage": "source.png",
+  "protectionMask": "expected_protection.png",
+  "expectedGeometry": "expected_geometry.json",
+  "translations": "translations.json",
+  "platforms": [
+    { "os": "macos", "scaleFactor": 2, "display": "retina" },
+    { "os": "windows", "scaleFactor": 1, "display": "standard" }
+  ],
+  "tags": ["table", "hard-column-boundary", "protected-grid-lines"]
+}

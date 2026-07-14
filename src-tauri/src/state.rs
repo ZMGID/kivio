@@ -12,11 +12,13 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+use crate::inpainting::InpaintingClient;
 #[cfg(target_os = "macos")]
 use crate::macos_ocr::MacOcrClient;
 use crate::mcp::manager::McpSession;
 use crate::mcp::types::{McpTool, PythonRunResult};
 use crate::native_tools::SandboxExportContext;
+use crate::offline_models::OfflineModelManager;
 use crate::rapidocr::RapidOcrClient;
 use crate::settings::Settings;
 
@@ -130,11 +132,24 @@ pub struct AppState {
     /// 保护 Chat 空白会话复用的短临界区，避免快速多次新建时并发创建多个空白对话。
     pub chat_create_conversation_lock: Mutex<()>,
     /// 外部 CLI 斜杠命令探测缓存（agent_id:cwd → 命令列表）。
-    pub external_slash_commands_cache:
-        Mutex<HashMap<String, (Instant, Vec<crate::external_agents::types::ExternalCliSlashCommand>)>>,
+    pub external_slash_commands_cache: Mutex<
+        HashMap<
+            String,
+            (
+                Instant,
+                Vec<crate::external_agents::types::ExternalCliSlashCommand>,
+            ),
+        >,
+    >,
     /// 外部 CLI 模型列表探测缓存（agent_id → 模型选项）。
     pub external_agent_models_cache: Mutex<
-        HashMap<String, (Instant, Vec<crate::external_agents::types::RuntimeModelOption>)>,
+        HashMap<
+            String,
+            (
+                Instant,
+                Vec<crate::external_agents::types::RuntimeModelOption>,
+            ),
+        >,
     >,
     /// 外部 CLI 全量检测结果缓存（available/version/auth/models）。避免 RuntimePicker / 设置页
     /// 每次打开都串行重探 8 个 CLI（含 auth 探测超时）。force_refresh 时跳过。
@@ -178,17 +193,20 @@ pub struct AppState {
     /// macOS Apple Vision OCR sidecar 客户端。只有系统 OCR 路径会拉起。
     #[cfg(target_os = "macos")]
     pub macos_ocr: std::sync::Arc<MacOcrClient>,
+    /// RapidOCR 与替换翻译共用的离线模型清单、下载器和 ONNX Runtime 生命周期。
+    pub offline_models: std::sync::Arc<OfflineModelManager>,
     /// RapidOCR 离线 OCR 客户端。模型 + onnxruntime dylib 都由用户在设置页面下载到 app data 目录,
     /// 安装包不带任何 ONNX Runtime 二进制。`status()` 检查 4 个文件齐不齐, 不齐让前端引导下载。
     pub rapidocr: std::sync::Arc<RapidOcrClient>,
+    /// MI-GAN 惰性 session；只在替换翻译调用且离线包已显式下载后加载。
+    pub inpainting: std::sync::Arc<InpaintingClient>,
     /// 多 agent / 子 agent 任务表（P3）：spawn 的子 agent 状态、按名寻址、并发上限。
     pub sub_agents: crate::chat::sub_agent::SubAgentManager,
     /// 后台 run_command 进程注册表：job_id → 跟踪中的后台命令。
     /// 与后台 subagent 不同：这些命令**跨 turn 存活**，只由显式 `kill_background`
     /// 或 app 退出 sweep 清理（对齐 Claude Code background bash，dev-server 友好），
     /// 不随发起的 run 取消。仅在 insert/lookup/sweep 时短暂持锁。
-    pub background_commands:
-        Arc<Mutex<HashMap<String, crate::native_tools::BackgroundCommand>>>,
+    pub background_commands: Arc<Mutex<HashMap<String, crate::native_tools::BackgroundCommand>>>,
     /// 开发者「请求调试」内存环形缓冲：最近 [`REQUEST_DEBUG_CAPACITY`] 条 provider 调用的
     /// 请求（脱敏 headers + body）+ 响应摘要。默认关闭（`chat_tools.request_debug_enabled`），
     /// 关闭时 adapter 短路、不构造记录。仅内存、不落盘，进程退出即清。
@@ -231,7 +249,9 @@ impl AppState {
         usage_dir: PathBuf,
         http: Client,
         #[cfg(target_os = "macos")] macos_ocr: std::sync::Arc<MacOcrClient>,
+        offline_models: std::sync::Arc<OfflineModelManager>,
         rapidocr: std::sync::Arc<RapidOcrClient>,
+        inpainting: std::sync::Arc<InpaintingClient>,
     ) -> Self {
         let mcp_tool_snapshots = load_mcp_tool_snapshots(&usage_dir);
         AppState {
@@ -269,7 +289,9 @@ impl AppState {
             http,
             #[cfg(target_os = "macos")]
             macos_ocr,
+            offline_models,
             rapidocr,
+            inpainting,
             sub_agents: crate::chat::sub_agent::SubAgentManager::default(),
             background_commands: Arc::new(Mutex::new(HashMap::new())),
             request_debug: Mutex::new(VecDeque::new()),
@@ -283,13 +305,16 @@ impl AppState {
     /// chat-generation state, session-consent set, `http`, and `usage_dir`; the
     /// rest are inert defaults kept for struct completeness.
     pub fn new_headless(settings: Settings, usage_dir: PathBuf) -> Self {
+        let offline_models = OfflineModelManager::headless(crate::api::build_http_client());
         Self::base(
             settings,
             usage_dir,
             crate::api::build_http_client(),
             #[cfg(target_os = "macos")]
             MacOcrClient::headless(),
-            RapidOcrClient::headless(crate::api::build_http_client()),
+            offline_models.clone(),
+            RapidOcrClient::headless(offline_models.clone()),
+            InpaintingClient::new(offline_models),
         )
     }
     /// 安全读取设置（锁中毒时返回内部数据，不 panic）
@@ -623,7 +648,8 @@ impl AppState {
         conversation_id: &str,
         agent_id: &str,
         cwd: &str,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>> {
+    ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
+    {
         let mut map = self
             .external_live_sessions
             .lock()
@@ -707,10 +733,7 @@ impl AppState {
     /// opportunistically so the map does not grow unbounded across a long
     /// session, but keeps the most recent terminal jobs so `bash_output` can
     /// still return their final output + exit code right after they finish.
-    pub fn register_background_command(
-        &self,
-        job: crate::native_tools::BackgroundCommand,
-    ) {
+    pub fn register_background_command(&self, job: crate::native_tools::BackgroundCommand) {
         const MAX_TRACKED_BACKGROUND_COMMANDS: usize = 64;
         let mut map = self
             .background_commands
@@ -721,7 +744,12 @@ impl AppState {
         while map.len() >= MAX_TRACKED_BACKGROUND_COMMANDS {
             let oldest_terminal = map
                 .values()
-                .filter(|j| !matches!(j.status, crate::native_tools::BackgroundCommandStatus::Running))
+                .filter(|j| {
+                    !matches!(
+                        j.status,
+                        crate::native_tools::BackgroundCommandStatus::Running
+                    )
+                })
                 .min_by_key(|j| j.started_at)
                 .map(|j| j.job_id.clone());
             match oldest_terminal {
@@ -821,13 +849,16 @@ impl AppState {
 /// 构造一个最小可用的 AppState 用于单测（cooldown / MCP 连接池等）。
 /// 不涉及网络，Client::new() 即可（不会发请求）。供 state / mcp::manager 测试复用。
 pub(crate) fn test_app_state() -> AppState {
+    let offline_models = OfflineModelManager::headless(Client::new());
     AppState::base(
         Settings::default(),
         std::env::temp_dir().join(format!("kivio-test-usage-{}", uuid::Uuid::new_v4())),
         Client::new(),
         #[cfg(target_os = "macos")]
         MacOcrClient::disabled(),
-        RapidOcrClient::disabled(),
+        offline_models.clone(),
+        RapidOcrClient::new(offline_models.clone()),
+        InpaintingClient::new(offline_models),
     )
 }
 

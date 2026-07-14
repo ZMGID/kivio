@@ -434,9 +434,16 @@ pub(crate) fn open_html_preview(app: AppHandle, html: String) -> Result<(), Stri
 // install: 按档位顺序下载文件到 app data 目录,~15-30s(high 档更大,更久),前端转圈圈等返回。
 
 /// 查询 RapidOCR 两档模型 + 共享 dylib 是否就绪。
+/// async + spawn_blocking:validation_state 对未缓存文件做同步 SHA-256(high 档 ~200MB),
+/// 同步 command 会在主线程上执行并冻结 UI(每次启动后首个调用都会全量校验)。
 #[tauri::command]
-pub(crate) fn rapidocr_status(state: State<AppState>) -> rapidocr::RapidOcrStatus {
-    state.rapidocr.status()
+pub(crate) async fn rapidocr_status(
+    state: State<'_, AppState>,
+) -> Result<rapidocr::RapidOcrStatus, String> {
+    let client = state.rapidocr.clone();
+    tauri::async_runtime::spawn_blocking(move || client.status())
+        .await
+        .map_err(|e| format!("rapidocr status task failed: {e}"))
 }
 
 /// 下载 RapidOCR 包(onnxruntime dylib + 模型 + 字典)到 app data 目录。
@@ -449,6 +456,33 @@ pub(crate) async fn rapidocr_install(
 ) -> Result<rapidocr::RapidOcrInstallResult, String> {
     let client = state.rapidocr.clone();
     Ok(client.install(rapidocr::ModelTier::parse(&tier)).await)
+}
+
+/// 查询替换翻译完整离线包（ONNX Runtime + RapidOCR + MI-GAN）的校验状态与实际字节数。
+/// async + spawn_blocking:同 rapidocr_status,SHA-256 校验不能占用主线程。
+#[tauri::command]
+pub(crate) async fn replace_translation_pack_status(
+    state: State<'_, AppState>,
+    tier: String,
+) -> Result<crate::offline_models::ReplaceTranslationPackStatus, String> {
+    let manager = state.offline_models.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.replace_translation_status(rapidocr::ModelTier::parse(&tier))
+    })
+    .await
+    .map_err(|e| format!("replace translation pack status task failed: {e}"))
+}
+
+/// 显式安装替换翻译离线包。替换翻译执行路径本身不会触发任何静默下载。
+#[tauri::command]
+pub(crate) async fn replace_translation_pack_install(
+    state: State<'_, AppState>,
+    tier: String,
+) -> Result<crate::offline_models::OfflineModelInstallResult, String> {
+    let manager = state.offline_models.clone();
+    Ok(manager
+        .install_replace_translation(rapidocr::ModelTier::parse(&tier))
+        .await)
 }
 
 #[tauri::command]

@@ -17,6 +17,8 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:replace-visual": "node scripts/generate-replace-visual-fixtures.mjs --check && vitest run src/lens/replaceVisualBenchmark.test.ts",
+    "fixtures:replace-visual": "node scripts/generate-replace-visual-fixtures.mjs",
     "test:watch": "vitest",
     "preview": "vite preview"
   },

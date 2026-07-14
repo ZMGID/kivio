@@ -1,13 +1,14 @@
 #![cfg_attr(target_os = "macos", allow(unexpected_cfgs))]
 
-pub mod api;
 pub mod agents;
+pub mod api;
 pub mod capture_geometry;
 pub mod chat;
 pub mod cli_install;
-pub mod external_agents;
 pub mod commands;
 pub mod connectors;
+pub mod external_agents;
+pub mod inpainting;
 pub mod kivio_code;
 pub mod lens;
 pub mod lens_commands;
@@ -15,11 +16,13 @@ pub mod lens_commands;
 pub mod macos_ocr;
 pub mod mcp;
 pub mod native_tools;
+pub mod offline_models;
 pub mod path_env;
 pub mod plugins;
 pub mod proc;
 pub mod prompts;
 pub mod rapidocr;
+pub mod replace_translation;
 #[cfg(target_os = "macos")]
 pub mod sck;
 pub mod screenshot;
@@ -78,7 +81,7 @@ fn first_visible_user_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWin
 #[cfg(target_os = "windows")]
 fn disable_process_power_throttling() {
     use ::windows::Win32::System::Threading::{
-        GetCurrentProcess, SetProcessInformation, ProcessPowerThrottling,
+        GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
         PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         PROCESS_POWER_THROTTLING_STATE,
     };
@@ -260,13 +263,18 @@ pub fn run() {
                 std::env::temp_dir().join("kivio-usage")
             });
 
+            let offline_models =
+                offline_models::OfflineModelManager::new(&app.handle(), build_http_client());
+            let inpainting = inpainting::InpaintingClient::new(offline_models.clone());
             app.manage(AppState::base(
                 settings,
                 usage_dir,
                 build_http_client(),
                 #[cfg(target_os = "macos")]
                 macos_ocr::MacOcrClient::new(&app.handle()),
-                rapidocr::RapidOcrClient::new(&app.handle(), build_http_client()),
+                offline_models.clone(),
+                rapidocr::RapidOcrClient::new(offline_models),
+                inpainting,
             ));
 
             // Apply the stored sub-agent concurrency cap (default sizes the gate
@@ -444,6 +452,8 @@ pub fn run() {
             updates::install_update_and_quit,
             commands::rapidocr_status,
             commands::rapidocr_install,
+            commands::replace_translation_pack_status,
+            commands::replace_translation_pack_install,
             usage::usage_get_stats,
             usage::usage_clear,
             chat::commands::interaction::get_request_debug_records,

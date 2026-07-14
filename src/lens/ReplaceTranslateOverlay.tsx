@@ -1,260 +1,188 @@
-import { useEffect, useRef, type RefObject } from 'react'
-import type { LensReplaceLine } from '../api/tauri'
+import { useEffect, useRef } from 'react'
+import type { LensReplaceGroup, LensReplaceRenderSlot } from '../api/tauri'
+import { layoutReplaceTextFlow, replaceTextVerticalOffset, type ReplaceTextFlowSlotLayout } from './replaceTextLayout'
 import type { CapturedFrame } from './types'
 
 type ReplaceTranslateOverlayProps = {
   frame: CapturedFrame
-  imagePreview: string
-  lines: LensReplaceLine[]
-  phase: 'ocr' | 'translating' | 'done' | ''
-  error?: string
+  cleanedImage: string
+  groups: LensReplaceGroup[]
+  slots: LensReplaceRenderSlot[]
+  phase: 'ocr' | 'processing' | 'done' | 'error' | ''
   statusLabel: string
+  // 局部降级详情（如修复回退、个别区域回退原文）：非错误，挂在状态胶囊 title 上。
+  statusTitle?: string
   escHint: string
-  freezeCanvasRef: RefObject<HTMLCanvasElement | null>
 }
 
-function sampleAverageColorFromCtx(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  maxW: number,
-  maxH: number,
-): string {
-  try {
-    const sx = Math.max(0, Math.min(maxW - 1, Math.floor(x)))
-    const sy = Math.max(0, Math.min(maxH - 1, Math.floor(y)))
-    const sw = Math.max(1, Math.min(maxW - sx, Math.floor(w)))
-    const sh = Math.max(1, Math.min(maxH - sy, Math.floor(h)))
-    const data = ctx.getImageData(sx, sy, sw, sh).data
-    let r = 0
-    let g = 0
-    let b = 0
-    let count = 0
-    for (let i = 0; i < data.length; i += 16) {
-      r += data[i]
-      g += data[i + 1]
-      b += data[i + 2]
-      count += 1
-    }
-    if (count === 0) return 'rgb(255,255,255)'
-    return `rgb(${Math.round(r / count)},${Math.round(g / count)},${Math.round(b / count)})`
-  } catch {
-    return 'rgb(255,255,255)'
-  }
+function textX(bounds: LensReplaceRenderSlot['bounds'], align: LensReplaceRenderSlot['align'], padding: number) {
+  return align === 'center'
+    ? bounds.x + bounds.width / 2
+    : align === 'right'
+      ? bounds.x + bounds.width - padding
+      : bounds.x + padding
 }
 
-function sampleFromFreezeCanvas(
-  freezeCanvas: HTMLCanvasElement,
-  viewportW: number,
-  viewportH: number,
-  globalX: number,
-  globalY: number,
-  w: number,
-  h: number,
-): string | null {
-  if (viewportW <= 0 || viewportH <= 0 || freezeCanvas.width <= 0 || freezeCanvas.height <= 0) {
-    return null
-  }
-  const ctx = freezeCanvas.getContext('2d')
-  if (!ctx) return null
-  const scaleX = freezeCanvas.width / viewportW
-  const scaleY = freezeCanvas.height / viewportH
-  return sampleAverageColorFromCtx(
-    ctx,
-    globalX * scaleX,
-    globalY * scaleY,
-    w * scaleX,
-    h * scaleY,
-    freezeCanvas.width,
-    freezeCanvas.height,
-  )
+function anchoredTextX(slot: LensReplaceRenderSlot, padding: number) {
+  return slot.align === 'left' && slot.flow === 'exact_line'
+    ? slot.anchor.x
+    : textX(slot.bounds, slot.align, padding)
 }
 
-function luminance(r: number, g: number, b: number): number {
-  return 0.299 * r + 0.587 * g + 0.114 * b
-}
-
-function parseRgb(color: string): [number, number, number] {
-  const m = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/)
-  if (!m) return [255, 255, 255]
-  return [Number(m[1]), Number(m[2]), Number(m[3])]
-}
-
-function wrapTextLines(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  fontSize: number,
-): string[] {
-  ctx.font = `${fontSize}px system-ui, "Segoe UI", sans-serif`
-  const lines: string[] = []
-  let current = ''
-
-  const pushToken = (token: string) => {
-    if (!token) return
-    const candidate = current ? `${current}${token}` : token
-    if (ctx.measureText(candidate).width <= maxWidth || !current) {
-      current = candidate
-      return
-    }
-    if (current) lines.push(current)
-    current = token
-    if (ctx.measureText(current).width > maxWidth) {
-      for (const ch of token) {
-        const next = current + ch
-        if (ctx.measureText(next).width <= maxWidth || !current) {
-          current = next
-        } else {
-          lines.push(current)
-          current = ch
-        }
-      }
-    }
-  }
-
-  for (const word of text.split(/(\s+)/)) {
-    pushToken(word)
-  }
-  if (current) lines.push(current)
-  return lines.length > 0 ? lines : ['']
-}
-
-function drawTextInBox(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  bx: number,
-  by: number,
-  bw: number,
-  bh: number,
-  fillColor: string,
+function anchoredTextY(
+  slot: LensReplaceRenderSlot,
+  innerHeight: number,
+  contentHeight: number,
+  padding: number,
 ) {
-  const pad = 2
-  const innerW = Math.max(1, bw - pad * 2)
-  const innerH = Math.max(1, bh - pad * 2)
-  let fontSize = Math.min(Math.max(10, innerH * 0.72), 18)
+  if (slot.flow === 'exact_line' || slot.verticalAlign === 'top') return slot.anchor.y
+  return slot.bounds.y + padding + replaceTextVerticalOffset(slot.kind, innerHeight, contentHeight)
+}
 
-  let lines: string[] = []
-  let lineHeight = fontSize * 1.15
-  while (fontSize >= 8) {
-    lines = wrapTextLines(ctx, text, innerW, fontSize)
-    lineHeight = fontSize * 1.15
-    if (lines.length * lineHeight <= innerH) break
-    fontSize -= 1
-  }
-
-  ctx.font = `${fontSize}px system-ui, "Segoe UI", sans-serif`
-  ctx.fillStyle = fillColor
+function drawNormalSlotText(
+  ctx: CanvasRenderingContext2D,
+  slot: LensReplaceRenderSlot,
+  layout: ReplaceTextFlowSlotLayout,
+  fontPx: number,
+  lineHeight: number,
+  padding: number,
+) {
+  const { bounds } = slot
+  const innerHeight = Math.max(1, bounds.height - padding * 2)
+  ctx.font = `${fontPx}px system-ui, "Segoe UI", sans-serif`
+  ctx.fillStyle = slot.sourceColor
   ctx.textBaseline = 'top'
-  ctx.textAlign = 'left'
-
-  const totalHeight = lines.length * lineHeight
-  let y = by + pad + Math.max(0, (innerH - totalHeight) / 2)
-  for (const line of lines) {
-    ctx.fillText(line.trim(), bx + pad, y, innerW)
+  ctx.textAlign = slot.align
+  const x = anchoredTextX(slot, padding)
+  let y = anchoredTextY(slot, innerHeight, layout.contentHeight, padding)
+  for (const line of layout.lines) {
+    ctx.fillText(line, x, y)
     y += lineHeight
   }
 }
 
+function drawSafelyScaledSlotText(
+  ctx: CanvasRenderingContext2D,
+  slot: LensReplaceRenderSlot,
+  layout: ReplaceTextFlowSlotLayout,
+  fontPx: number,
+  lineHeight: number,
+  safeScale: number,
+  padding: number,
+) {
+  const offscreen = document.createElement('canvas')
+  offscreen.width = Math.max(1, Math.ceil(slot.bounds.width / safeScale))
+  offscreen.height = Math.max(1, Math.ceil(slot.bounds.height / safeScale))
+  const offscreenCtx = offscreen.getContext('2d')
+  if (!offscreenCtx) return
+  const virtualPadding = padding / safeScale
+  const innerHeight = Math.max(1, offscreen.height - virtualPadding * 2)
+  offscreenCtx.font = `${fontPx}px system-ui, "Segoe UI", sans-serif`
+  offscreenCtx.fillStyle = slot.sourceColor
+  offscreenCtx.textBaseline = 'top'
+  offscreenCtx.textAlign = slot.align
+  const anchorX = (slot.anchor.x - slot.bounds.x) / safeScale
+  const anchorY = (slot.anchor.y - slot.bounds.y) / safeScale
+  const x = slot.align === 'left' && slot.flow === 'exact_line'
+    ? anchorX
+    : slot.align === 'center'
+    ? offscreen.width / 2
+    : slot.align === 'right'
+      ? offscreen.width - virtualPadding
+      : virtualPadding
+  let y = slot.flow === 'exact_line' || slot.verticalAlign === 'top'
+    ? anchorY
+    : virtualPadding + replaceTextVerticalOffset(slot.kind, innerHeight, layout.contentHeight)
+  for (const line of layout.lines) {
+    offscreenCtx.fillText(line, x, y)
+    y += lineHeight
+  }
+  ctx.drawImage(offscreen, slot.bounds.x, slot.bounds.y, slot.bounds.width, slot.bounds.height)
+}
+
 export function ReplaceTranslateOverlay({
   frame,
-  imagePreview,
-  lines,
+  cleanedImage,
+  groups,
+  slots,
   phase,
-  error,
   statusLabel,
+  statusTitle,
   escHint,
-  freezeCanvasRef,
 }: ReplaceTranslateOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const fallbackCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas || !imagePreview || lines.length === 0) return
-
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const img = new Image()
-    img.onload = () => {
-      const w = Math.max(1, Math.round(frame.width))
-      const h = Math.max(1, Math.round(frame.height))
-      canvas.width = w
-      canvas.height = h
-      ctx.clearRect(0, 0, w, h)
-
-      const scaleX = w / img.naturalWidth
-      const scaleY = h / img.naturalHeight
-      const freezeCanvas = freezeCanvasRef.current
-      const viewportW = window.innerWidth
-      const viewportH = window.innerHeight
-
-      let fallbackCtx: CanvasRenderingContext2D | null = null
-      if (!freezeCanvas || freezeCanvas.width <= 0) {
-        if (!fallbackCanvasRef.current) {
-          fallbackCanvasRef.current = document.createElement('canvas')
-        }
-        const fb = fallbackCanvasRef.current
-        fb.width = img.naturalWidth
-        fb.height = img.naturalHeight
-        fallbackCtx = fb.getContext('2d')
-        fallbackCtx?.drawImage(img, 0, 0)
+    if (!canvas || !cleanedImage || groups.length === 0 || slots.length === 0 || phase !== 'done') return
+    const context = canvas.getContext('2d')
+    if (!context) return
+    let cancelled = false
+    const image = new Image()
+    image.onload = () => {
+      if (cancelled) return
+      canvas.width = Math.max(1, image.naturalWidth)
+      canvas.height = Math.max(1, image.naturalHeight)
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0)
+      const slotsByGroup = new Map<string, LensReplaceRenderSlot[]>()
+      for (const slot of slots) {
+        const groupSlots = slotsByGroup.get(slot.groupId) ?? []
+        groupSlots.push(slot)
+        slotsByGroup.set(slot.groupId, groupSlots)
       }
-
-      for (const line of lines) {
-        const displayText = line.translated.trim() || line.text
-        if (!displayText) continue
-
-        const bx = line.x * scaleX
-        const by = line.y * scaleY
-        const bw = Math.max(1, line.width * scaleX)
-        const bh = Math.max(1, line.height * scaleY)
-
-        let bg: string | null = null
-        if (freezeCanvas && freezeCanvas.width > 0) {
-          bg = sampleFromFreezeCanvas(
-            freezeCanvas,
-            viewportW,
-            viewportH,
-            frame.x + bx,
-            frame.y + by,
-            bw,
-            bh,
-          )
-        }
-        if (!bg && fallbackCtx) {
-          bg = sampleAverageColorFromCtx(
-            fallbackCtx,
-            line.x,
-            line.y,
-            line.width,
-            line.height,
-            img.naturalWidth,
-            img.naturalHeight,
-          )
-        }
-        bg ??= 'rgb(255,255,255)'
-
-        ctx.fillStyle = bg
-        ctx.fillRect(bx, by, bw, bh)
-
-        const [r, g, b] = parseRgb(bg)
-        drawTextInBox(ctx, displayText, bx, by, bw, bh, luminance(r, g, b) > 140 ? '#111827' : '#f9fafb')
+      for (const group of groups) {
+        const groupSlots = (slotsByGroup.get(group.id) ?? [])
+          .sort((left, right) => left.anchor.y - right.anchor.y || left.anchor.x - right.anchor.x)
+        if (groupSlots.length === 0) continue
+        const text = group.translated.trim() || group.sourceText
+        if (!text) continue
+        const sourceFontPx = Math.max(...groupSlots.map(slot => slot.sourceFontPx))
+        const padding = Math.max(2, Math.min(6, sourceFontPx * 0.2))
+        const layout = layoutReplaceTextFlow(
+          text,
+          groupSlots.map(slot => ({
+            width: Math.max(1, slot.bounds.width - padding * 2),
+            height: Math.max(1, slot.bounds.height - padding * 2),
+          })),
+          sourceFontPx,
+          (value, fontPx) => {
+            context.font = `${fontPx}px system-ui, "Segoe UI", sans-serif`
+            return context.measureText(value).width
+          },
+        )
+        groupSlots.forEach((slot, index) => {
+          const slotLayout = layout.slots[index]
+          if (!slotLayout || slotLayout.lines.length === 0) return
+          context.save()
+          context.beginPath()
+          context.rect(slot.bounds.x, slot.bounds.y, slot.bounds.width, slot.bounds.height)
+          context.clip()
+          if (layout.safeScale < 1) {
+            drawSafelyScaledSlotText(context, slot, slotLayout, layout.fontPx, layout.lineHeight, layout.safeScale, padding)
+          } else {
+            drawNormalSlotText(context, slot, slotLayout, layout.fontPx, layout.lineHeight, padding)
+          }
+          context.restore()
+        })
       }
     }
-    img.src = imagePreview.startsWith('data:') ? imagePreview : `data:image/png;base64,${imagePreview}`
-  }, [frame.height, frame.width, frame.x, frame.y, freezeCanvasRef, imagePreview, lines])
+    image.src = cleanedImage
+    return () => {
+      cancelled = true
+    }
+  }, [cleanedImage, groups, phase, slots])
 
-  const showOverlay = lines.length > 0 && (phase === 'ocr' || phase === 'translating' || phase === 'done')
-
+  const showOverlay = phase === 'done' && cleanedImage && groups.length > 0 && slots.length > 0
   return (
     <>
-      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
-        <div className="px-3 py-1.5 rounded-full text-[12px] font-medium bg-black/70 text-white shadow-lg backdrop-blur-sm">
-          {error || statusLabel}
-          {!error && phase !== 'done' && (
+      <div className="absolute top-[calc(env(safe-area-inset-top,0px)+36px)] left-0 right-0 z-30 flex flex-col items-center pointer-events-none">
+        <div
+          className="px-3 py-1.5 rounded-full text-[12px] font-medium bg-black/70 text-white shadow-lg backdrop-blur-sm"
+          title={statusTitle}
+        >
+          {statusLabel}
+          {phase !== 'done' && phase !== 'error' && (
             <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-white animate-pulse align-middle" />
           )}
         </div>
@@ -262,13 +190,8 @@ export function ReplaceTranslateOverlay({
       </div>
       {showOverlay && (
         <div
-          className="absolute z-20 pointer-events-none"
-          style={{
-            left: frame.x,
-            top: frame.y,
-            width: frame.width,
-            height: frame.height,
-          }}
+          className="absolute z-20 rounded-md overflow-hidden pointer-events-none"
+          style={{ left: frame.x, top: frame.y, width: frame.width, height: frame.height }}
         >
           <canvas
             ref={canvasRef}

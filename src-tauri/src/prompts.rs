@@ -197,56 +197,72 @@ pub fn build_combined_translate_prompt(lang_name: &str, template: Option<&str>) 
   )
 }
 
-/// 替换翻译批量 prompt：要求模型返回与输入等长的 JSON 字符串数组。
-/// JSON 输出契约（数组、等长、同序、无围栏）固定不可改；用户自定义 template 只作为
-/// "翻译规则"块注入（空 → 用 DEFAULT_REPLACE_TRANSLATION_TEMPLATE）。{lang} 占位符替换为目标语言。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReplaceTranslationRequestRegion<'a> {
+    pub id: &'a str,
+    pub text: &'a str,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReplaceTranslationResponse {
+    translations: Vec<ReplaceTranslationResponseItem>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReplaceTranslationResponseItem {
+    id: String,
+    text: String,
+}
+
+/// 替换翻译批量 prompt：输入和输出都使用稳定 region ID。
+/// 固定 JSON 契约不可被用户模板覆盖；用户模板只作为翻译规则注入。
 pub fn build_replace_translation_batch_prompt(
-    lines: &[&str],
+    regions: &[ReplaceTranslationRequestRegion<'_>],
     lang_name: &str,
     template: Option<&str>,
 ) -> String {
-    let mut numbered = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        numbered.push_str(&format!("{}. {}\n", i + 1, line));
-    }
     let rules = template
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .unwrap_or(DEFAULT_REPLACE_TRANSLATION_TEMPLATE)
         .replace("{lang}", lang_name)
-        .replace("{text}", "each line");
+        .replace("{text}", "each region text");
+    let input = serde_json::json!({ "regions": regions });
     format!(
-        "Translate each numbered line below into {lang}. \
-         Return ONLY a JSON array of strings with exactly {count} elements, \
-         in the same order as the input lines. \
-         No markdown fences, no commentary, no extra keys.\n\n\
-         {rules}\n\n{numbered}",
+        "Translate every region below into {lang}. Preserve the complete meaning: do not summarize, shorten, omit, or hide any content. \
+         Preserve code identifiers, tool names, URLs, and proper nouns when they should remain unchanged. \
+         Return ONLY one JSON object in this exact shape: \
+         {{\"translations\":[{{\"id\":\"r0000\",\"text\":\"complete translation\"}}]}}. \
+         Copy each input id exactly once. Order does not matter. Do not invent ids. \
+         No markdown fences, commentary, or extra keys.\n\n\
+         Translation rules:\n{rules}\n\nInput JSON:\n{input}",
         lang = lang_name,
-        count = lines.len(),
         rules = rules,
-        numbered = numbered.trim_end(),
+        input = input,
     )
 }
 
-/// 从模型输出解析 JSON 字符串数组；容忍前后缀与 markdown 代码块。
-/// 模型偶尔多吐/少吐一段（尾部空元素、把某行拆成两段等），不再硬报错：
-/// 多的截断、少的用空串补齐到 `expected_len`，让调用方按行对齐。宁可个别行漏译，也不整体失败。
-pub fn parse_replace_translation_json(raw: &str, expected_len: usize) -> Result<Vec<String>, String> {
+/// 按稳定 ID 解析翻译。未知 ID 被忽略；缺失和空串不进入结果，调用方按 ID 回退原文。
+/// 模型经常重复输出同一条目：重复 ID 保留第一个非空值，而不是整组作废。
+pub fn parse_replace_translation_json(
+    raw: &str,
+    expected_ids: &[&str],
+) -> Result<std::collections::HashMap<String, String>, String> {
     let trimmed = raw.trim();
-    let json_str = if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
+    let json_str = if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
         &trimmed[start..=end]
     } else {
         trimmed
     };
-    let mut values: Vec<String> = serde_json::from_str(json_str)
-        .map_err(|e| format!("Invalid translation JSON array: {e}"))?;
-    // 归一化到期望长度：多截、少补。
-    if values.len() > expected_len {
-        values.truncate(expected_len);
-    } else {
-        while values.len() < expected_len {
-            values.push(String::new());
+    let response: ReplaceTranslationResponse = serde_json::from_str(json_str)
+        .map_err(|e| format!("Invalid translation JSON object: {e}"))?;
+    let expected: std::collections::HashSet<&str> = expected_ids.iter().copied().collect();
+    let mut values = std::collections::HashMap::new();
+    for item in response.translations {
+        if !expected.contains(item.id.as_str()) || item.text.trim().is_empty() {
+            continue;
         }
+        values.entry(item.id).or_insert(item.text);
     }
     Ok(values)
 }
@@ -331,25 +347,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_replace_translation_json_accepts_fenced_array() {
-        let raw = "```json\n[\"你好\", \"世界\"]\n```";
-        let out = parse_replace_translation_json(raw, 2).unwrap();
-        assert_eq!(out, vec!["你好".to_string(), "世界".to_string()]);
+    fn parse_replace_translation_json_accepts_fenced_object_and_reorders_by_id() {
+        let raw = "```json\n{\"translations\":[{\"id\":\"r2\",\"text\":\"世界\"},{\"id\":\"r1\",\"text\":\"你好\"}]}\n```";
+        let out = parse_replace_translation_json(raw, &["r1", "r2"]).unwrap();
+        assert_eq!(out["r1"], "你好");
+        assert_eq!(out["r2"], "世界");
     }
 
     #[test]
-    fn parse_replace_translation_json_truncates_extra() {
-        // 模型多吐一段：截断到期望长度，不再报错
-        let raw = "[\"a\", \"b\", \"c\"]";
-        let out = parse_replace_translation_json(raw, 2).unwrap();
-        assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+    fn parse_replace_translation_json_ignores_unknown_missing_and_empty() {
+        let raw = r#"{"translations":[{"id":"r1","text":"a"},{"id":"unknown","text":"x"},{"id":"r2","text":"  "}]}"#;
+        let out = parse_replace_translation_json(raw, &["r1", "r2", "r3"]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out["r1"], "a");
     }
 
     #[test]
-    fn parse_replace_translation_json_pads_missing() {
-        // 模型少吐一段：用空串补齐到期望长度
-        let raw = "[\"a\"]";
-        let out = parse_replace_translation_json(raw, 3).unwrap();
-        assert_eq!(out, vec!["a".to_string(), String::new(), String::new()]);
+    fn parse_replace_translation_json_keeps_first_value_for_duplicate_id() {
+        let raw = r#"{"translations":[{"id":"r1","text":"a"},{"id":"r1","text":"b"},{"id":"r2","text":"ok"}]}"#;
+        let out = parse_replace_translation_json(raw, &["r1", "r2"]).unwrap();
+        assert_eq!(out["r1"], "a");
+        assert_eq!(out["r2"], "ok");
+    }
+
+    #[test]
+    fn replace_translation_prompt_contains_stable_ids_and_full_text_rule() {
+        let prompt = build_replace_translation_batch_prompt(
+            &[ReplaceTranslationRequestRegion {
+                id: "r0042",
+                text: "full source",
+            }],
+            "Chinese",
+            None,
+        );
+        assert!(prompt.contains("r0042"));
+        assert!(prompt.contains("do not summarize, shorten, omit"));
+        assert!(prompt.contains("\"translations\""));
     }
 }

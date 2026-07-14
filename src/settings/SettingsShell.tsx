@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react'
 import {
   X, Check, Plus, Minus, Trash2, RefreshCw,
   ExternalLink, Download, Upload, ChevronRight, Wrench, Sparkles, FolderOpen, Eye, EyeOff, Info,
@@ -26,6 +26,8 @@ import {
   normalizeProviderApiFormat,
   type SkillMeta,
   type SkillDetail,
+  type ReplaceTranslationPackStatus,
+  type RapidOcrTier,
 } from '../api/tauri'
 import {
   getSettingsCached,
@@ -46,6 +48,7 @@ import { ProviderModelsPicker } from './ProviderModelsPicker'
 import { ModelIcon } from '../chat/ModelIcon'
 import { ProviderSortableList } from './ProviderSortableList'
 import { PromptField, ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
+import { initialReplacePackProgressState, reduceReplacePackProgress } from './replacePackProgress'
 import { UsageStatsPanel } from './UsageStatsPanel'
 import { RequestDebugPanel } from './RequestDebugPanel'
 import { KivioCodeSettings } from './KivioCodeSettings'
@@ -657,6 +660,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   // 没有专门的 success 终态)
   const [rapidOcrDownloadState, setRapidOcrDownloadState] = useState<'idle' | 'downloading' | 'failed'>('idle')
   const [rapidOcrDownloadError, setRapidOcrDownloadError] = useState('')
+  const [replacePackStatus, setReplacePackStatus] = useState<ReplaceTranslationPackStatus | null>(null)
+  const [replacePackDownload, dispatchReplacePackDownload] = useReducer(
+    reduceReplacePackProgress,
+    initialReplacePackProgressState,
+  )
   const platform = getPlatform()
   const isMac = platform === 'macos'
   const hasSystemOcr = isMac || platform === 'windows'
@@ -986,10 +994,65 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
   }, [refreshRapidOcrStatus])
 
+  const refreshReplacePackStatus = useCallback(async (tier: RapidOcrTier) => {
+    if (!hasSystemOcr) return
+    try {
+      setReplacePackStatus(await api.replaceTranslationPackStatus(tier))
+    } catch (err) {
+      console.error('replaceTranslationPackStatus failed:', err)
+    }
+  }, [hasSystemOcr])
+
+  const handleDownloadReplacePack = useCallback(async (tier: RapidOcrTier) => {
+    dispatchReplacePackDownload({ type: 'start' })
+    try {
+      const result = await api.replaceTranslationPackInstall(tier)
+      if (result.success) {
+        dispatchReplacePackDownload({ type: 'success' })
+        await Promise.all([refreshReplacePackStatus(tier), refreshRapidOcrStatus()])
+      } else {
+        dispatchReplacePackDownload({ type: 'failure', error: result.message })
+      }
+    } catch (err) {
+      const message = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err)
+      dispatchReplacePackDownload({ type: 'failure', error: message })
+    }
+  }, [refreshRapidOcrStatus, refreshReplacePackStatus])
+
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    const tier = settings?.screenshotTranslation?.rapidOcrTier ?? 'standard'
+    api.onReplaceTranslationPackProgress(progress => {
+      if (cancelled) return
+      // 两个安装包共用同一事件名；只消费替换翻译离线包事件，
+      // 避免知识库 RapidOCR 安装把本面板驱动进“下载中”。
+      if (progress.pack !== 'replace_translation') return
+      dispatchReplacePackDownload({ type: 'progress', progress })
+      // 终态（最后一个文件 completed）时刷新就绪状态，
+      // 与 handleDownloadReplacePack 成功路径一致；即使 install promise 丢失也不会卡住。
+      if (progress.state === 'completed' && progress.overallDownloadedBytes >= progress.overallTotalBytes) {
+        void refreshReplacePackStatus(tier)
+      }
+    }).then(dispose => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    }).catch(err => console.error('replace translation pack progress listener failed:', err))
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [refreshReplacePackStatus, settings?.screenshotTranslation?.rapidOcrTier])
+
   // 挂载时拉一次状态
   useEffect(() => {
     refreshRapidOcrStatus()
   }, [refreshRapidOcrStatus])
+
+  useEffect(() => {
+    const tier = settings?.screenshotTranslation?.rapidOcrTier ?? 'standard'
+    void refreshReplacePackStatus(tier)
+  }, [refreshReplacePackStatus, settings?.screenshotTranslation?.rapidOcrTier])
 
   useEffect(() => {
     setProviderTestFeedback({})
@@ -2611,10 +2674,16 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   rapidOcrStatus={rapidOcrStatus}
                   rapidOcrDownloadState={rapidOcrDownloadState}
                   rapidOcrDownloadError={rapidOcrDownloadError}
+                  replacePackStatus={replacePackStatus}
+                  replacePackDownloadState={replacePackDownload.downloadState}
+                  replacePackDownloadError={replacePackDownload.error}
+                  replacePackProgress={replacePackDownload.progress}
                   t={t}
                   onUpdate={updateScreenshotTranslation}
                   onRefreshRapidOcrStatus={refreshRapidOcrStatus}
                   onDownloadRapidOcr={handleDownloadRapidOcr}
+                  onRefreshReplacePack={refreshReplacePackStatus}
+                  onDownloadReplacePack={handleDownloadReplacePack}
                 />
               </>
             )}

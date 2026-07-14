@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { flushSync } from 'react-dom'
 import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, MessageSquarePlus } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensReplaceLine, type LensReplaceStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
+import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensReplaceGroup, type LensReplaceRenderSlot, type LensReplaceStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
 import { getSettingsCached } from './api/settingsCache'
 import { ChatMarkdown } from './chat/ChatMarkdown'
 import { Button } from './components/Button'
@@ -136,9 +136,13 @@ export default function Lens() {
   const [translateOriginal, setTranslateOriginal] = useState('')
   const [translateText, setTranslateText] = useState('')
   const [translateError, setTranslateError] = useState('')
-  const [replaceLines, setReplaceLines] = useState<LensReplaceLine[]>([])
-  const [replacePhase, setReplacePhase] = useState<'ocr' | 'translating' | 'done' | ''>('')
+  const [replaceGroups, setReplaceGroups] = useState<LensReplaceGroup[]>([])
+  const [replaceSlots, setReplaceSlots] = useState<LensReplaceRenderSlot[]>([])
+  const [replaceCleanedImage, setReplaceCleanedImage] = useState('')
+  const [replacePhase, setReplacePhase] = useState<'ocr' | 'processing' | 'done' | 'error' | ''>('')
   const [replaceError, setReplaceError] = useState('')
+  // 局部降级提示（修复回退、个别区域回退原文等）：非错误，随 done 一起展示。
+  const [replaceWarning, setReplaceWarning] = useState('')
   const [translateDurationMs, setTranslateDurationMs] = useState<number | null>(null)
   const [translateNow, setTranslateNow] = useState(() => Date.now())
   const translateStartRef = useRef<number | null>(null)
@@ -394,9 +398,12 @@ export default function Lens() {
       setTranslateOriginal('')
       setTranslateText('')
       setTranslateError('')
-      setReplaceLines([])
+      setReplaceGroups([])
+      setReplaceSlots([])
+      setReplaceCleanedImage('')
       setReplacePhase('')
       setReplaceError('')
+      setReplaceWarning('')
       setFreezeFrameImageId(resetFreezeFrameImageId)
       setFreezeFramePreview('')
       const w = resetFrame?.width ?? window.innerWidth
@@ -475,9 +482,12 @@ export default function Lens() {
           setTranslateOriginal('')
           setTranslateText('')
           setTranslateError('')
-      setReplaceLines([])
-      setReplacePhase('')
-      setReplaceError('')
+          setReplaceGroups([])
+          setReplaceSlots([])
+          setReplaceCleanedImage('')
+          setReplacePhase('')
+          setReplaceError('')
+          setReplaceWarning('')
           setTranslateDurationMs(null)
           translateStartRef.current = Date.now()
           setTranslateNow(Date.now())
@@ -825,9 +835,12 @@ export default function Lens() {
       setTranslateOriginal('')
       setTranslateText('')
       setTranslateError('')
-      setReplaceLines([])
+      setReplaceGroups([])
+      setReplaceSlots([])
+      setReplaceCleanedImage('')
       setReplacePhase('')
       setReplaceError('')
+      setReplaceWarning('')
       setTranslateDurationMs(null)
       setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
       setFlyDelta({ x: 0, y: 0 })
@@ -1256,9 +1269,12 @@ export default function Lens() {
 
   const runReplaceTranslate = useCallback(async (id: string) => {
     const translateSeq = motionSeqRef.current
-    setReplaceLines([])
+    setReplaceGroups([])
+    setReplaceSlots([])
+    setReplaceCleanedImage('')
     setReplacePhase('')
     setReplaceError('')
+    setReplaceWarning('')
     setTranslateDurationMs(null)
     translateStartRef.current = Date.now()
     setTranslateNow(Date.now())
@@ -1266,8 +1282,9 @@ export default function Lens() {
       const r = await api.lensReplaceTranslate(id)
       if (translateSeq !== motionSeqRef.current || imageIdRef.current !== id) return
       if (!r.success) {
+        // 硬失败：后端不会发带 cleanedImage 的 done，保持原截图不动，只展示错误。
         setReplaceError(r.error || 'Failed')
-        setReplacePhase('done')
+        setReplacePhase('error')
         if (translateStartRef.current !== null) {
           setTranslateDurationMs(Date.now() - translateStartRef.current)
           translateStartRef.current = null
@@ -1277,7 +1294,7 @@ export default function Lens() {
     } catch (err) {
       if (translateSeq !== motionSeqRef.current || imageIdRef.current !== id) return
       setReplaceError(err instanceof Error ? err.message : String(err))
-      setReplacePhase('done')
+      setReplacePhase('error')
       if (translateStartRef.current !== null) {
         setTranslateDurationMs(Date.now() - translateStartRef.current)
         translateStartRef.current = null
@@ -1292,10 +1309,14 @@ export default function Lens() {
     let unlisten: (() => void) | undefined
     api.onLensReplaceStream((payload: LensReplaceStreamPayload) => {
       if (payload.imageId !== imageIdRef.current) return
+      // error 只在硬失败时出现；局部降级（修复回退/个别区域回退原文）走 warning，不当错误展示。
       if (payload.error) setReplaceError(payload.error)
-      if (payload.lines?.length) setReplaceLines(payload.lines)
+      if (payload.warning) setReplaceWarning(payload.warning)
+      if (payload.groups?.length) setReplaceGroups(payload.groups)
+      if (payload.slots?.length) setReplaceSlots(payload.slots)
+      if (payload.cleanedImage) setReplaceCleanedImage(payload.cleanedImage)
       if (payload.phase) setReplacePhase(payload.phase)
-      if (payload.phase === 'done') {
+      if (payload.phase === 'done' || payload.phase === 'error') {
         if (translateStartRef.current !== null) {
           setTranslateDurationMs(Date.now() - translateStartRef.current)
           translateStartRef.current = null
@@ -1775,12 +1796,18 @@ export default function Lens() {
   const showTranslateCard = (mode === 'translate' || mode === 'translateText') && (stage === 'translating' || stage === 'translated')
   const showReplaceOverlay = mode === 'replace' && capturedFrame && (stage === 'translating' || stage === 'translated')
   const replaceStatusLabel = replaceError
-    ? (replaceError === 'rapidocr_models_missing' ? t.rapidOcrModelsMissing : replaceError)
+    ? (replaceError === 'rapidocr_models_missing'
+        ? t.rapidOcrModelsMissing
+        : replaceError === 'replace_translation_pack_missing'
+          ? t.replaceTranslatePackRequired
+          : replaceError)
     : replacePhase === 'ocr'
       ? t.replaceTranslateStatusOcr
-      : replacePhase === 'translating'
+      : replacePhase === 'processing'
         ? t.replaceTranslateStatusTranslating
-        : t.replaceTranslateStatusDone
+        : replaceWarning
+          ? `${t.replaceTranslateStatusDone} ⚠`
+          : t.replaceTranslateStatusDone
   // 浮动布局仅用于截图翻译关闭全屏覆盖、或 translateText 文本翻译卡。
   // 普通 Lens 截图后固定保持全屏 overlay，只移动输入栏。
   // capturedFrame 只在最近一次截图后非空,而 restoreHistory 会清掉它(历史项的选区不再相关);
@@ -1971,7 +1998,7 @@ export default function Lens() {
       {capturedFrame && stage !== 'select' && keepFullscreen && (
         <>
           <div
-            className="absolute border-[2px] border-[#D97757] rounded-md pointer-events-none"
+            className="absolute z-[25] box-border border-[2px] border-[#D97757] rounded-md pointer-events-none"
             style={{
               left: capturedFrame.x,
               top: capturedFrame.y,
@@ -1983,16 +2010,18 @@ export default function Lens() {
         </>
       )}
 
-      {showReplaceOverlay && capturedFrame && imagePreview && (
+      {/* 不依赖 imagePreview：它来自独立的 explainReadImage 预览加载，失败/迟到不应阻塞
+          覆盖层挂载——覆盖层渲染只需要后端事件给的 cleanedImage/groups/slots。 */}
+      {showReplaceOverlay && capturedFrame && (
         <ReplaceTranslateOverlay
           frame={capturedFrame}
-          imagePreview={imagePreview}
-          lines={replaceLines}
+          cleanedImage={replaceCleanedImage}
+          groups={replaceGroups}
+          slots={replaceSlots}
           phase={replacePhase}
-          error={replaceError || undefined}
           statusLabel={replaceStatusLabel}
+          statusTitle={replaceWarning || undefined}
           escHint={t.replaceTranslateEscHint}
-          freezeCanvasRef={freezeCanvasRef}
         />
       )}
 

@@ -1,7 +1,8 @@
 import { Download, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
-import { type DefaultPromptTemplates, type RapidOcrStatus, type RapidOcrTier, type Settings } from '../api/tauri'
+import { type DefaultPromptTemplates, type OfflineModelProgress, type RapidOcrStatus, type RapidOcrTier, type ReplaceTranslationPackStatus, type Settings } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
+import { formatBytes } from '../utils/formatBytes'
 import { ModelPairSelect } from './ModelPairSelect'
 import {
   Input,
@@ -15,6 +16,7 @@ import { type I18n } from './i18n'
 
 type ScreenshotTranslation = Settings['screenshotTranslation']
 type RapidOcrDownloadState = 'idle' | 'downloading' | 'failed'
+type ReplacePackDownloadState = 'idle' | 'downloading' | 'failed'
 
 interface ScreenshotTranslationSettingsProps {
   settings: Settings
@@ -24,10 +26,16 @@ interface ScreenshotTranslationSettingsProps {
   rapidOcrStatus: RapidOcrStatus | null
   rapidOcrDownloadState: RapidOcrDownloadState
   rapidOcrDownloadError: string
+  replacePackStatus: ReplaceTranslationPackStatus | null
+  replacePackDownloadState: ReplacePackDownloadState
+  replacePackDownloadError: string
+  replacePackProgress: OfflineModelProgress | null
   t: I18n
   onUpdate: (updates: Partial<ScreenshotTranslation>) => void
   onRefreshRapidOcrStatus: () => void
   onDownloadRapidOcr: (tier: RapidOcrTier) => void
+  onRefreshReplacePack: (tier: RapidOcrTier) => void
+  onDownloadReplacePack: (tier: RapidOcrTier) => void
 }
 
 export function ScreenshotTranslationSettings({
@@ -38,10 +46,16 @@ export function ScreenshotTranslationSettings({
   rapidOcrStatus,
   rapidOcrDownloadState,
   rapidOcrDownloadError,
+  replacePackStatus,
+  replacePackDownloadState,
+  replacePackDownloadError,
+  replacePackProgress,
   t,
   onUpdate,
   onRefreshRapidOcrStatus,
   onDownloadRapidOcr,
+  onRefreshReplacePack,
+  onDownloadReplacePack,
 }: ScreenshotTranslationSettingsProps) {
   const screenshot = settings.screenshotTranslation
   const ocrMode = screenshot?.ocrMode ?? 'cloud_vision'
@@ -126,15 +140,16 @@ export function ScreenshotTranslationSettings({
           </SettingRow>
 
           {hasSystemOcr && screenshot?.replaceEnabled !== false && (
-            <SettingRow label={t.replaceTranslateRapidOcr} stack>
-              <RapidOcrStatusPanel
-                status={rapidOcrStatus}
+            <SettingRow label={t.replaceTranslateOfflinePack} stack>
+              <ReplaceTranslationPackPanel
+                status={replacePackStatus}
                 tier={screenshot?.rapidOcrTier ?? 'standard'}
-                downloadState={rapidOcrDownloadState}
-                downloadError={rapidOcrDownloadError}
+                downloadState={replacePackDownloadState}
+                downloadError={replacePackDownloadError}
+                progress={replacePackProgress}
                 t={t}
-                onRefresh={onRefreshRapidOcrStatus}
-                onDownload={onDownloadRapidOcr}
+                onRefresh={onRefreshReplacePack}
+                onDownload={onDownloadReplacePack}
                 onChangeTier={(rapidOcrTier) => onUpdate({ rapidOcrTier })}
               />
             </SettingRow>
@@ -232,6 +247,139 @@ export function ScreenshotTranslationSettings({
   )
 }
 
+// standard/high 档位选择：替换翻译离线包面板和 RapidOCR 引擎面板绑定同一个
+// rapidOcrTier 设置且可能同时可见，共用一个 Select 避免两份拷贝漂移。
+function TierSelect({
+  tier,
+  t,
+  onChangeTier,
+}: {
+  tier: RapidOcrTier
+  t: I18n
+  onChangeTier: (tier: RapidOcrTier) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="kv-panel-title !mb-0">{t.rapidOcrTier}</span>
+      <Select
+        value={tier}
+        onChange={(value) => onChangeTier(value as RapidOcrTier)}
+        options={[
+          { value: 'standard', label: t.rapidOcrTierStandard },
+          { value: 'high', label: t.rapidOcrTierHigh },
+        ]}
+        className="w-56"
+      />
+    </div>
+  )
+}
+
+function ReplaceTranslationPackPanel({
+  status,
+  tier,
+  downloadState,
+  downloadError,
+  progress,
+  t,
+  onRefresh,
+  onDownload,
+  onChangeTier,
+}: {
+  status: ReplaceTranslationPackStatus | null
+  tier: RapidOcrTier
+  downloadState: ReplacePackDownloadState
+  downloadError: string
+  progress: OfflineModelProgress | null
+  t: I18n
+  onRefresh: (tier: RapidOcrTier) => void
+  onDownload: (tier: RapidOcrTier) => void
+  onChangeTier: (tier: RapidOcrTier) => void
+}) {
+  const total = progress?.overallTotalBytes || status?.totalBytes || 0
+  const downloaded = progress?.overallDownloadedBytes || status?.readyBytes || 0
+  const percent = total > 0 ? Math.min(100, Math.round(downloaded / total * 100)) : 0
+  const stateLabel = progress?.state === 'verifying'
+    ? t.replaceTranslatePackVerifying
+    : progress?.state === 'extracting'
+      ? t.replaceTranslatePackExtracting
+      : progress?.state === 'retrying'
+        ? t.replaceTranslatePackRetrying
+        : t.rapidOcrDownloading
+
+  return (
+    <div className="kv-panel mt-0 w-full space-y-3">
+      {/* 换档后的状态刷新由 SettingsShell 里 keyed 于 rapidOcrTier 的 useEffect 负责，这里不再手动 onRefresh。 */}
+      <TierSelect tier={tier} t={t} onChangeTier={onChangeTier} />
+
+      <div className="flex items-start gap-2">
+        <span className={`mt-1 inline-block w-1.5 h-1.5 rounded-full ${status?.ready ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+        <div className="min-w-0 flex-1">
+          <div className="kv-panel-title !mb-0">
+            {status?.ready ? t.replaceTranslatePackReady : t.replaceTranslatePackMissing}
+          </div>
+          <div className="kv-panel-body">
+            {status
+              ? `${formatBytes(status.readyBytes)} / ${formatBytes(status.totalBytes)} · ${formatBytes(status.missingBytes)} missing`
+              : '—'}
+          </div>
+          {status?.modelDir && <div className="kv-panel-body font-mono break-all">{status.modelDir}</div>}
+        </div>
+        <IconButton
+          size="xs"
+          onClick={() => onRefresh(tier)}
+          disabled={downloadState === 'downloading'}
+          label={t.rapidOcrRefresh}
+        >
+          <RefreshCw size={12} strokeWidth={2.25} />
+        </IconButton>
+      </div>
+
+      {downloadState === 'downloading' && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-3 kv-panel-body">
+            <span className="truncate">{stateLabel}: {progress?.fileName || ''}</span>
+            <span className="tabular-nums shrink-0">{percent}%</span>
+          </div>
+          <div className="h-1.5 rounded-full overflow-hidden bg-black/10 dark:bg-white/10">
+            <div className="h-full bg-blue-500 transition-[width]" style={{ width: `${percent}%` }} />
+          </div>
+          <div className="kv-panel-body flex justify-between gap-3">
+            <span>{t.replaceTranslatePackProgress}</span>
+            <span className="tabular-nums">{formatBytes(downloaded)} / {formatBytes(total)}</span>
+          </div>
+          {(progress?.attempt ?? 1) > 1 && (
+            <div className="kv-panel-body">{t.replaceTranslatePackRetrying} · {progress?.attempt}/3</div>
+          )}
+        </div>
+      )}
+
+      {status?.files?.length ? (
+        <div className="space-y-1 border-t border-black/[0.06] dark:border-white/[0.07] pt-2">
+          {status.files.map(file => (
+            <div key={`${file.componentId}:${file.fileName}`} className="flex items-center gap-2 kv-panel-body">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${file.ready ? 'bg-emerald-500' : file.state === 'invalid' ? 'bg-red-500' : 'bg-amber-500'}`} />
+              <span className="font-mono truncate flex-1">{file.fileName}</span>
+              <span className="tabular-nums shrink-0">{formatBytes(file.installedBytes)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {!status?.ready && downloadState !== 'downloading' && (
+        <Button variant="primary" onClick={() => onDownload(tier)}>
+          <Download size={12} strokeWidth={2.5} />
+          {downloadState === 'failed' ? t.replaceTranslatePackRetry : t.replaceTranslatePackDownload}
+          {status && ` (${formatBytes(status.missingBytes)})`}
+        </Button>
+      )}
+      {downloadState === 'failed' && downloadError && (
+        <div className="kv-inline-error break-words">{t.rapidOcrDownloadFailed}: {downloadError}</div>
+      )}
+      <div className="kv-panel-body">{t.replaceTranslatePackHint}</div>
+    </div>
+  )
+}
+
 /**
  * 自定义提示词字段：空值时把默认模板预填进文本框（可编辑起点），
  * 用户未编辑前保存仍写空串（运行时用内置默认）；"恢复默认" 清空并复位预填。
@@ -309,18 +457,7 @@ function RapidOcrStatusPanel({
   const available = tier === 'high' ? status?.highAvailable : status?.standardAvailable
   return (
     <div className="kv-panel mt-0 w-full space-y-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="kv-panel-title !mb-0">{t.rapidOcrTier}</span>
-        <Select
-          value={tier}
-          onChange={(v) => onChangeTier(v as RapidOcrTier)}
-          options={[
-            { value: 'standard', label: t.rapidOcrTierStandard },
-            { value: 'high', label: t.rapidOcrTierHigh },
-          ]}
-          className="w-56"
-        />
-      </div>
+      <TierSelect tier={tier} t={t} onChangeTier={onChangeTier} />
       <p className="kv-row-desc">{t.rapidOcrTierHint}</p>
 
       {available ? (

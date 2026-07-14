@@ -3,186 +3,22 @@
 //! 双档位（`ModelTier`）：
 //! - `Standard` — PP-OCRv5 mobile,现状不变,文件放模型目录根下(det.onnx/rec.onnx/keys.txt)。
 //! - `High` — PP-OCRv6 medium,精度更高但更重,文件放 `high/` 子目录,按需单独下载。
-//! 两档共享同一份 ONNX Runtime dylib(+ Windows provider shared DLL),只下载一次;
-//! `ort::init_from` 全进程只能调一次,两档 pipeline 构建前都先确保它跑过。
-//!
-//! 设计原则:用户责任挂在「点一下下载」按钮上,代码这边只负责:
-//! 1. 检测必备文件齐不齐(runtime + det + rec + keys；Windows 另需 provider shared DLL)
-//! 2. 不齐就 install(tier):逐个 HTTP GET 到 .tmp 后 atomic rename
-//! 3. 齐了就在首次 OCR 时一次性 ort::init_from + OAROCRBuilder.build,按档位缓存 pipeline
-//!
-//! 不做 SHA 校验、不做断点续传、不做进度事件——用户明确要求保持简单。
-//! 失败就整体重下,留下的 .tmp 文件不污染最终路径。
+//! 两档共享 [`crate::offline_models::OfflineModelManager`] 管理的 ONNX Runtime、
+//! 校验清单和可续传下载器；本模块只负责 OCR pipeline 生命周期与结果后处理。
 //!
 //! ONNX Runtime dylib 通过 `ort` 的 `load-dynamic` feature 在运行时加载,
 //! 安装包不带任何 ONNX Runtime 二进制。
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use std::collections::HashMap;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-#[cfg(target_os = "macos")]
-use flate2::read::GzDecoder;
+use crate::offline_models::{ensure_ort_init, OfflineModelManager};
 use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
-use tokio::sync::{Mutex, OnceCell};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStrExt;
-#[cfg(target_os = "windows")]
-use windows::{
-    core::PCWSTR,
-    Win32::System::LibraryLoader::{
-        LoadLibraryExW, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
-    },
-};
-
-/// 当前平台 dylib 在 app data 目录里的本地文件名。下载完落到 model_dir/DYLIB_NAME。
-#[cfg(target_os = "macos")]
-const DYLIB_NAME: &str = "libonnxruntime.dylib";
-#[cfg(target_os = "windows")]
-const DYLIB_NAME: &str = "onnxruntime.dll";
-
-// ONNX Runtime 官方 release 不提供裸 dylib/dll,这里下载平台包后只抽取 runtime 文件。
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const DYLIB_URL: &str =
-  "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-arm64-1.24.4.tgz";
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-const DYLIB_URL: &str =
-  "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-osx-x86_64-1.24.4.tgz";
-#[cfg(target_os = "windows")]
-const DYLIB_URL: &str =
-  "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip";
-
-#[cfg(target_os = "macos")]
-const DYLIB_ARCHIVE_PATH: &str = "lib/libonnxruntime.dylib";
-#[cfg(target_os = "windows")]
-const DYLIB_ARCHIVE_PATH: &str = "lib/onnxruntime.dll";
-#[cfg(target_os = "windows")]
-const PROVIDERS_SHARED_NAME: &str = "onnxruntime_providers_shared.dll";
-#[cfg(target_os = "windows")]
-const PROVIDERS_SHARED_ARCHIVE_PATH: &str = "lib/onnxruntime_providers_shared.dll";
-
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-// PP-OCRv5 mobile zh+en——覆盖中英主场景,模型最小(det ~5MB + rec ~10MB + dict ~5KB)。
-const DET_URL: &str =
-    "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_det.onnx";
-const REC_URL: &str =
-    "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_rec.onnx";
-const KEYS_URL: &str =
-    "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/ppocrv5_dict.txt";
-
-// PP-OCRv6 medium——高精度档,50 语言统一(中英日 + 46 拉丁语系),det 59.2MB + rec 73MB + dict 73KB。
-// 官方权重非 ONNX,ModelScope 上的 greatv/oar-ocr 仓库是 oar-ocr 作者转换好的 ONNX 版本。
-const HIGH_DET_URL: &str = "https://www.modelscope.cn/api/v1/models/greatv/oar-ocr/repo?Revision=master&FilePath=pp-ocrv6_medium_det.onnx";
-const HIGH_REC_URL: &str = "https://www.modelscope.cn/api/v1/models/greatv/oar-ocr/repo?Revision=master&FilePath=pp-ocrv6_medium_rec.onnx";
-const HIGH_KEYS_URL: &str = "https://www.modelscope.cn/api/v1/models/greatv/oar-ocr/repo?Revision=master&FilePath=ppocrv6_dict.txt";
+use tokio::sync::OnceCell;
 
 /// RapidOCR 模型档位。由各调用场景(截图翻译 / 知识库文档处理)的设置字符串解析而来。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelTier {
-    /// PP-OCRv5 mobile,现状默认,速度优先。
-    Standard,
-    /// PP-OCRv6 medium,精度优先,体积更大。
-    High,
-}
-
-impl ModelTier {
-    /// 解析设置里的 `rapid_ocr_tier` 字符串:非 "high" 一律归 Standard(含旧配置缺字段/非法值)。
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "high" => ModelTier::High,
-            _ => ModelTier::Standard,
-        }
-    }
-}
-
-enum DownloadSource {
-    File {
-        url: &'static str,
-    },
-    Archive {
-        url: &'static str,
-        entry_suffix: &'static str,
-    },
-}
-
-struct DownloadFile {
-    /// model_dir 下的相对路径(可含子目录,如 "high/det.onnx")。
-    name: &'static str,
-    source: DownloadSource,
-}
-
-/// 两档共享的 dylib 文件(ONNX Runtime + Windows provider shared),只下载一次。
-fn shared_dylib_files() -> Vec<DownloadFile> {
-    let mut files = vec![DownloadFile {
-        name: DYLIB_NAME,
-        source: DownloadSource::Archive {
-            url: DYLIB_URL,
-            entry_suffix: DYLIB_ARCHIVE_PATH,
-        },
-    }];
-
-    // Windows 官方 CPU 包会带 shared provider 运行时。ONNX Runtime 会从
-    // onnxruntime.dll 同目录查 provider shared libs,所以跟主 DLL 放在一起。
-    #[cfg(target_os = "windows")]
-    files.push(DownloadFile {
-        name: PROVIDERS_SHARED_NAME,
-        source: DownloadSource::Archive {
-            url: DYLIB_URL,
-            entry_suffix: PROVIDERS_SHARED_ARCHIVE_PATH,
-        },
-    });
-
-    files
-}
-
-/// 档位专属的模型文件(det/rec/keys),standard 在根目录,high 在 `high/` 子目录。
-fn tier_model_files(tier: ModelTier) -> Vec<DownloadFile> {
-    match tier {
-        ModelTier::Standard => vec![
-            DownloadFile {
-                name: "det.onnx",
-                source: DownloadSource::File { url: DET_URL },
-            },
-            DownloadFile {
-                name: "rec.onnx",
-                source: DownloadSource::File { url: REC_URL },
-            },
-            DownloadFile {
-                name: "keys.txt",
-                source: DownloadSource::File { url: KEYS_URL },
-            },
-        ],
-        ModelTier::High => vec![
-            DownloadFile {
-                name: "high/det.onnx",
-                source: DownloadSource::File { url: HIGH_DET_URL },
-            },
-            DownloadFile {
-                name: "high/rec.onnx",
-                source: DownloadSource::File { url: HIGH_REC_URL },
-            },
-            DownloadFile {
-                name: "high/keys.txt",
-                source: DownloadSource::File { url: HIGH_KEYS_URL },
-            },
-        ],
-    }
-}
-
-/// 某档位的必备文件全集:共享 dylib + 该档位专属模型文件。任一缺失则视为「未就绪」。
-fn download_files(tier: ModelTier) -> Vec<DownloadFile> {
-    let mut files = shared_dylib_files();
-    files.extend(tier_model_files(tier));
-    files
-}
+pub use crate::offline_models::OcrModelTier as ModelTier;
 
 /// 前端拉状态用:分档就绪情况 + 模型目录(供 UI 显示)。
 #[derive(Debug, Clone, Serialize)]
@@ -203,86 +39,45 @@ pub struct RapidOcrInstallResult {
 
 /// AppState 持有的 RapidOCR 客户端。线程安全,Tauri command 间共享。
 pub struct RapidOcrClient {
-    app: Option<AppHandle>,
-    http: reqwest::Client,
+    models: Arc<OfflineModelManager>,
     /// 首次调用某档位时初始化:ort::init_from(进程级,两档共用一次) + OAROCRBuilder.build,
     /// 按档位分别缓存 pipeline,后续复用。
     standard_pipeline: OnceCell<Arc<OAROCR>>,
     high_pipeline: OnceCell<Arc<OAROCR>>,
-    /// 防双击 Download 并发竞争 .tmp 文件。两档共用一把锁,足够防并发写入。
-    install_lock: Mutex<()>,
-    /// 测试用:绕开 AppHandle 直接指定模型目录,见 `with_model_dir`。
-    #[cfg(test)]
-    model_dir_override: Option<PathBuf>,
 }
 
 impl RapidOcrClient {
-    pub fn new(app: &AppHandle, http: reqwest::Client) -> Arc<Self> {
+    pub fn new(models: Arc<OfflineModelManager>) -> Arc<Self> {
         Arc::new(Self {
-            app: Some(app.clone()),
-            http,
+            models,
             standard_pipeline: OnceCell::new(),
             high_pipeline: OnceCell::new(),
-            install_lock: Mutex::new(()),
-            #[cfg(test)]
-            model_dir_override: None,
         })
     }
 
     /// 测试用:不持有 AppHandle 的占位实例。所有 OCR 操作立即 Err。
     #[cfg(test)]
     pub fn disabled() -> Arc<Self> {
-        Arc::new(Self {
-            app: None,
-            http: reqwest::Client::new(),
-            standard_pipeline: OnceCell::new(),
-            high_pipeline: OnceCell::new(),
-            install_lock: Mutex::new(()),
-            model_dir_override: None,
-        })
+        Self::new(OfflineModelManager::headless(reqwest::Client::new()))
     }
 
     /// 测试用:绕开 AppHandle,直接指定模型目录(供真实推理 E2E 测试落地固定缓存目录)。
     /// 所有其他行为(install/status/ocr_image)与生产路径完全一致,只是 model_dir() 来源不同。
     #[cfg(test)]
     pub fn with_model_dir(dir: PathBuf, http: reqwest::Client) -> Arc<Self> {
-        Arc::new(Self {
-            app: None,
-            http,
-            standard_pipeline: OnceCell::new(),
-            high_pipeline: OnceCell::new(),
-            install_lock: Mutex::new(()),
-            model_dir_override: Some(dir),
-        })
+        Self::new(OfflineModelManager::with_model_dir(dir, http))
     }
 
     /// Headless (no-AppHandle) client for the `kivio-code` CLI. OCR is never
     /// invoked from the terminal agent; carries `app: None` so any OCR call
     /// errors out, identical to the test `disabled()` placeholder.
-    pub fn headless(http: reqwest::Client) -> Arc<Self> {
-        Arc::new(Self {
-            app: None,
-            http,
-            standard_pipeline: OnceCell::new(),
-            high_pipeline: OnceCell::new(),
-            install_lock: Mutex::new(()),
-            #[cfg(test)]
-            model_dir_override: None,
-        })
+    pub fn headless(models: Arc<OfflineModelManager>) -> Arc<Self> {
+        Self::new(models)
     }
 
     /// 模型 + dylib 落盘位置:`{app_data_dir}/rapidocr-models/`。
     fn model_dir(&self) -> Result<PathBuf, String> {
-        #[cfg(test)]
-        if let Some(dir) = &self.model_dir_override {
-            return Ok(dir.clone());
-        }
-        let app = self
-            .app
-            .as_ref()
-            .ok_or_else(|| "rapidocr disabled".to_string())?;
-        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        Ok(base.join("rapidocr-models"))
+        self.models.model_dir()
     }
 
     /// 分档就绪情况。任一档必备文件不全 → 该档 available=false,前端渲染对应下载按钮。
@@ -294,14 +89,9 @@ impl RapidOcrClient {
                 model_dir: None,
             };
         };
-        let tier_ready = |tier: ModelTier| {
-            download_files(tier)
-                .iter()
-                .all(|file| file_is_ready(&dir.join(file.name)))
-        };
         RapidOcrStatus {
-            standard_available: tier_ready(ModelTier::Standard),
-            high_available: tier_ready(ModelTier::High),
+            standard_available: self.models.rapidocr_ready(ModelTier::Standard),
+            high_available: self.models.rapidocr_ready(ModelTier::High),
             model_dir: Some(dir.to_string_lossy().into_owned()),
         }
     }
@@ -310,77 +100,10 @@ impl RapidOcrClient {
     /// dylib 等共享文件两档都会经过 file_is_ready 跳过检查,天然只下载一次。
     /// install_lock 防止双击并发(两档共用一把锁)。
     pub async fn install(&self, tier: ModelTier) -> RapidOcrInstallResult {
-        let _guard = self.install_lock.lock().await;
-        let dir = match self.model_dir() {
-            Ok(d) => d,
-            Err(e) => return fail(e),
-        };
-        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-            return fail(format!("mkdir failed: {e}"));
-        }
-
-        let mut archive_cache: HashMap<&'static str, Arc<Vec<u8>>> = HashMap::new();
-        for file in download_files(tier) {
-            let name = file.name;
-            let final_path = dir.join(name);
-            if file_is_ready(&final_path) {
-                continue;
-            }
-            // high 档文件落在 `high/` 子目录,下载前先确保子目录存在。
-            if let Some(parent) = final_path.parent() {
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    return fail(format!("mkdir failed: {e}"));
-                }
-            }
-            let tmp_path = dir.join(format!("{name}.tmp"));
-            let write_result = match file.source {
-                DownloadSource::File { url } => match download_bytes(&self.http, name, url).await {
-                    Ok(bytes) => tokio::fs::write(&tmp_path, bytes)
-                        .await
-                        .map_err(|e| format!("write {name}: {e}")),
-                    Err(e) => Err(e),
-                },
-                DownloadSource::Archive { url, entry_suffix } => {
-                    let bytes = match archive_cache.get(url) {
-                        Some(bytes) => Arc::clone(bytes),
-                        None => match download_bytes(&self.http, name, url).await {
-                            Ok(bytes) => {
-                                let bytes = Arc::new(bytes);
-                                archive_cache.insert(url, Arc::clone(&bytes));
-                                bytes
-                            }
-                            Err(e) => return fail(e),
-                        },
-                    };
-                    let tmp_path = tmp_path.clone();
-                    tokio::task::spawn_blocking(move || {
-                        extract_archive_entry(bytes.as_slice(), entry_suffix, &tmp_path)
-                    })
-                    .await
-                    .map_err(|e| format!("extract {name}: {e}"))
-                    .and_then(|r| r.map_err(|e| format!("extract {name}: {e}")))
-                }
-            };
-            if let Err(e) = write_result {
-                let _ = tokio::fs::remove_file(&tmp_path).await;
-                return fail(e);
-            }
-            if final_path.exists() {
-                if final_path.is_file() {
-                    let _ = tokio::fs::remove_file(&final_path).await;
-                } else {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-                    return fail(format!("{name} path exists but is not a file"));
-                }
-            }
-            if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
-                return fail(format!("rename {name}: {e}"));
-            }
-        }
-
+        let result = self.models.install_rapidocr(tier).await;
         RapidOcrInstallResult {
-            success: true,
-            message: "RapidOCR 包下载完成".into(),
+            success: result.success,
+            message: result.message,
         }
     }
 
@@ -389,14 +112,11 @@ impl RapidOcrClient {
     /// 首次走 OnceCell init（ort::init_from 全进程一次 + 构建该档 pipeline，~1-3s），后续复用。
     async fn pipeline_for(&self, tier: ModelTier) -> Result<Arc<OAROCR>, String> {
         let dir = self.model_dir()?;
-        if !download_files(tier)
-            .iter()
-            .all(|file| file_is_ready(&dir.join(file.name)))
-        {
+        if !self.models.rapidocr_ready(tier) {
             return Err("rapidocr_models_missing".into());
         }
 
-        ensure_ort_init(&dir).await?;
+        ensure_ort_init(&self.models).await?;
 
         let (det_path, rec_path, keys_path) = match tier {
             ModelTier::Standard => (
@@ -489,131 +209,30 @@ impl RapidOcrClient {
     }
 }
 
-/// ort::init_from 全进程只能成功调用一次(加载 dylib 到进程),两档 pipeline 共用同一次 init。
-/// 独立于两个 pipeline OnceCell,避免"先摸哪个档位就顺带初始化 ort"的隐式耦合。
-static ORT_INIT: OnceCell<()> = OnceCell::const_new();
-
-async fn ensure_ort_init(dir: &Path) -> Result<(), String> {
-    ORT_INIT
-        .get_or_try_init(|| async {
-            // 必须在所有其他 ort API 之前调用,且全进程一次。
-            prepare_onnxruntime_dll_dir(dir)?;
-            ort::init_from(dir.join(DYLIB_NAME))
-                .map_err(|e| format!("ort init_from failed: {e}"))?
-                .commit();
-            Ok::<_, String>(())
-        })
-        .await?;
-    Ok(())
+/// 单行 OCR 结果（带屏幕坐标），供替换翻译 Canvas 覆盖层使用。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RapidOcrPoint {
+    pub x: f32,
+    pub y: f32,
 }
 
-/// 单行 OCR 结果（带屏幕坐标），供替换翻译 Canvas 覆盖层使用。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RapidOcrLine {
+    pub id: String,
     pub text: String,
+    pub points: Vec<RapidOcrPoint>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
 }
 
-/// ModelScope 的 Tengine CDN 对默认/空 User-Agent(含 reqwest 默认值)按黑名单直接 403
-/// (`denied by UA ACL = blacklist`),GitHub Releases 不受影响。显式带一个浏览器 UA
-/// 规避,与 `native_tools/fetch.rs` 的 UA 保持一致口径。
-const DOWNLOAD_USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 Kivio/1.0";
-
-async fn download_bytes(http: &reqwest::Client, name: &str, url: &str) -> Result<Vec<u8>, String> {
-    match http
-        .get(url)
-        .header(reqwest::header::USER_AGENT, DOWNLOAD_USER_AGENT)
-        .timeout(DOWNLOAD_TIMEOUT)
-        .send()
-        .await
-    {
-        Ok(resp) => match resp.error_for_status() {
-            Ok(r) => r
-                .bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(|e| format!("read {name}: {e}")),
-            Err(e) => Err(format!("HTTP {name}: {e}")),
-        },
-        Err(e) => Err(format!("connect {name}: {e}")),
-    }
-}
-
-fn fail(msg: String) -> RapidOcrInstallResult {
-    RapidOcrInstallResult {
-        success: false,
-        message: msg,
-    }
-}
-
-fn file_is_ready(path: &Path) -> bool {
-    path.is_file() && path.metadata().is_ok_and(|m| m.len() > 0)
-}
-
-#[cfg(target_os = "windows")]
-fn prepare_onnxruntime_dll_dir(dir: &Path) -> Result<(), String> {
-    unsafe {
-        for dll in [DYLIB_NAME, PROVIDERS_SHARED_NAME] {
-            let mut path: Vec<u16> = dir.join(dll).as_os_str().encode_wide().collect();
-            path.push(0);
-            let _ = LoadLibraryExW(
-                PCWSTR::from_raw(path.as_ptr()),
-                None,
-                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
-            )
-            .map_err(|e| format!("preload {dll} failed: {e}"))?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn prepare_onnxruntime_dll_dir(_dir: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn extract_archive_entry(bytes: &[u8], entry_suffix: &str, output: &Path) -> Result<(), String> {
-    let reader = GzDecoder::new(bytes);
-    let mut archive = tar::Archive::new(reader);
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path().map_err(|e| e.to_string())?;
-        let path = path.to_string_lossy();
-        if path.ends_with(entry_suffix) {
-            let mut out = Vec::new();
-            entry.read_to_end(&mut out).map_err(|e| e.to_string())?;
-            std::fs::write(output, out).map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-    }
-    Err(format!("{entry_suffix} not found in archive"))
-}
-
-#[cfg(target_os = "windows")]
-fn extract_archive_entry(bytes: &[u8], entry_suffix: &str, output: &Path) -> Result<(), String> {
-    let reader = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        if file.name().ends_with(entry_suffix) {
-            let mut out = Vec::new();
-            file.read_to_end(&mut out).map_err(|e| e.to_string())?;
-            std::fs::write(output, out).map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-    }
-    Err(format!("{entry_suffix} not found in archive"))
-}
-
 #[derive(Debug, Clone)]
 struct OcrSpan {
     text: String,
+    points: Vec<RapidOcrPoint>,
     x_min: f32,
     y_min: f32,
     x_max: f32,
@@ -707,6 +326,14 @@ fn collect_ocr_spans(results: &[oar_ocr::oarocr::OAROCRResult]) -> (Vec<OcrSpan>
 
             spans.push(OcrSpan {
                 text: s.to_string(),
+                points: bbox
+                    .points
+                    .iter()
+                    .map(|point| RapidOcrPoint {
+                        x: point.x,
+                        y: point.y,
+                    })
+                    .collect(),
                 x_min,
                 y_min,
                 x_max,
@@ -754,10 +381,13 @@ pub fn lines_from_results(results: &[oar_ocr::oarocr::OAROCRResult]) -> Vec<Rapi
     spans.sort_by(|a, b| cmp_f32(a.center_y(), b.center_y()).then(cmp_f32(a.x_min, b.x_min)));
     spans
         .iter()
-        .map(|span| {
+        .enumerate()
+        .map(|(index, span)| {
             let text = collapse_spaces(&span.text);
             RapidOcrLine {
+                id: format!("s{index:04}"),
                 text: text.clone(),
+                points: span.points.clone(),
                 x: span.x_min,
                 y: span.y_min,
                 width: (span.x_max - span.x_min).max(1.0),
@@ -1185,7 +815,7 @@ fn collapse_spaces(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn median(mut values: Vec<f32>) -> Option<f32> {
+pub(crate) fn median(mut values: Vec<f32>) -> Option<f32> {
     values.retain(|v| v.is_finite());
     if values.is_empty() {
         return None;
@@ -1194,7 +824,7 @@ fn median(mut values: Vec<f32>) -> Option<f32> {
     Some(values[values.len() / 2])
 }
 
-fn cmp_f32(a: f32, b: f32) -> std::cmp::Ordering {
+pub(crate) fn cmp_f32(a: f32, b: f32) -> std::cmp::Ordering {
     a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
 }
 

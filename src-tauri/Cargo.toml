@@ -96,7 +96,7 @@ sqlite-vec = "0.1"
 # 直接依赖 ort 并启用 load-dynamic，运行时通过 ort::init_from(dylib_path) 加载用户在
 # 设置页面下载到 app data 目录的 dylib，安装包不带任何 ONNX Runtime 二进制。
 oar-ocr = { version = "0.8", default-features = false, features = ["simd"] }
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-23"] }
 
 # macOS 平台特有依赖（系统 API 调用）
 [target.'cfg(target_os = "macos")'.dependencies]

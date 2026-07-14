@@ -9,7 +9,6 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use uuid::Uuid;
@@ -30,9 +29,14 @@ use crate::prompts::{
     build_combined_translate_prompt, build_ocr_direct_translation_prompt,
     build_replace_translation_batch_prompt, build_screenshot_translation_prompt,
     build_selected_text_translation_prompt, compact_ocr_text, parse_replace_translation_json,
-    COMBINED_TRANSLATE_SEPARATOR,
+    ReplaceTranslationRequestRegion, COMBINED_TRANSLATE_SEPARATOR,
 };
-use crate::rapidocr::RapidOcrLine;
+use crate::replace_translation::layout::{
+    build_replace_geometry, filter_replaceable_spans, RenderSlot, TranslationGroup,
+};
+use crate::replace_translation::mask::{
+    analyze_text_regions, deterministic_fill, BackgroundComplexity,
+};
 use crate::screenshot::cleanup_temp_file;
 use crate::settings::{self, default_question_prompt, ExplainMessage, OcrMode};
 use crate::shortcuts::{capture_active_selection, get_mouse_position, open_chat_window};
@@ -361,7 +365,11 @@ fn lens_set_interactive_region(
 
 fn lens_position_text_floating(app: &AppHandle, window: &WebviewWindow) {
     // 浮动窗 = 卡片宽 + 左右 padding（前端 FLOATING_PADDING=24/边）。卡宽来自设置，与截图翻译统一。
-    let card_w = app.state::<AppState>().settings_read().screenshot_translation.card_width as f64;
+    let card_w = app
+        .state::<AppState>()
+        .settings_read()
+        .screenshot_translation
+        .card_width as f64;
     let width = card_w + 48.0;
     const HEIGHT: f64 = 320.0;
     const GAP: f64 = 12.0;
@@ -442,7 +450,10 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     } else {
         None
     };
-    eprintln!("[lens-timing] after_selection_capture +{}ms", __t0.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing] after_selection_capture +{}ms",
+        __t0.elapsed().as_millis()
+    );
     if mode == "translateText" && pending_selection.is_none() {
         if let Ok(mut guard) = state.pending_selection.lock() {
             *guard = None;
@@ -494,10 +505,16 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         // 先在 hidden 状态下尝试定位：即便部分系统下 hidden 窗口 set_position 被忽略，也比
         // 不调强（成功则消除"先在旧位置闪一帧再跳到全屏"的可见跳变）。
         let frame = lens_position_fullscreen(app, &window);
-        eprintln!("[lens-timing]   ..after_position +{}ms", __t0.elapsed().as_millis());
+        eprintln!(
+            "[lens-timing]   ..after_position +{}ms",
+            __t0.elapsed().as_millis()
+        );
         freeze_frame_image_id = prepare_windows_freeze_frame(app, frame);
     }
-    eprintln!("[lens-timing] after_freeze_capture +{}ms", __t0.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing] after_freeze_capture +{}ms",
+        __t0.elapsed().as_millis()
+    );
     #[cfg(target_os = "macos")]
     {
         windows::ensure_overlay_panel(&window);
@@ -554,7 +571,10 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         );
         let _ = window.eval(&script);
     }
-    eprintln!("[lens-timing] after_show_and_emit +{}ms", __t0.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing] after_show_and_emit +{}ms",
+        __t0.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -1889,119 +1909,137 @@ async fn local_ocr_then_translate(
     }))
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReplaceTranslateLinePayload {
-    text: String,
-    translated: String,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
-impl ReplaceTranslateLinePayload {
-    fn from_ocr(line: &RapidOcrLine, translated: &str) -> Self {
-        Self {
-            text: line.text.clone(),
-            translated: translated.to_string(),
-            x: line.x,
-            y: line.y,
-            width: line.width,
-            height: line.height,
-        }
-    }
-}
-
+/// `warning` 仅表示非致命降级（如 MI-GAN 回退到确定性填充），随 `done` 一起发送；
+/// `error` 只用于硬失败，此时 phase 固定为 `error` 且不携带清理后图片。
 fn emit_replace_stream(
     app: &AppHandle,
     image_id: &str,
     phase: &str,
-    lines: &[ReplaceTranslateLinePayload],
+    groups: &[TranslationGroup],
+    slots: &[RenderSlot],
+    cleaned_image: Option<&str>,
+    warning: Option<&str>,
     error: Option<&str>,
 ) {
     let _ = app.emit(
         "lens-replace-stream",
         serde_json::json!({
+            "version": 2,
             "imageId": image_id,
             "phase": phase,
-            "lines": lines,
+            "groups": groups,
+            "slots": slots,
+            "cleanedImage": cleaned_image,
+            "warning": warning,
             "error": error,
         }),
     );
 }
 
-/// 替换翻译：RapidOCR 行级 bbox + 一次批量翻译，结果通过 `lens-replace-stream` 推送。
+/// 替换翻译：OCR leaves → translation groups + render slots；本地擦除与云端翻译并行，最终一次性推送。
+///
+/// 事件契约：中间阶段只更新 phase（不携带 regions/图片）；成功以 `done` + 清理后图片
+/// + 可选 `warning`（非致命降级）收尾；任何硬失败（含翻译整体失败）以 `error` phase
+/// 收尾且不发送清理后图片，避免“擦掉原文再画回原文”的假成功。
 #[tauri::command]
 pub(crate) async fn lens_replace_translate(
     app: AppHandle,
     state: State<'_, AppState>,
     image_id: String,
 ) -> Result<serde_json::Value, String> {
+    let fail = |msg: &str| {
+        emit_replace_stream(&app, &image_id, "error", &[], &[], None, None, Some(msg));
+        Ok(serde_json::json!({ "success": false, "error": msg }))
+    };
     let temp_path = match resolve_explain_image_path(&app, &state, &image_id) {
         Ok(p) => p,
         Err(e) => return Ok(serde_json::json!({ "success": false, "error": e })),
     };
 
     let settings = state.settings_read().clone();
+    let tier = crate::rapidocr::ModelTier::parse(&settings.screenshot_translation.rapid_ocr_tier);
+    // 就绪校验会对模型文件做同步 SHA-256，放到阻塞线程池，避免卡住 tokio worker。
+    let offline_models = state.offline_models.clone();
+    let pack_status =
+        tokio::task::spawn_blocking(move || offline_models.replace_translation_status(tier))
+            .await
+            .map_err(|error| format!("pack status worker failed: {error}"))?;
+    if !pack_status.ready {
+        let msg = "replace_translation_pack_missing";
+        emit_replace_stream(&app, &image_id, "error", &[], &[], None, None, Some(msg));
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": msg,
+            "missingBytes": pack_status.missing_bytes,
+        }));
+    }
     let provider = match settings.get_provider(&settings.screenshot_translation.provider_id) {
         Some(p) => p.clone(),
-        None => {
-            let msg = "Translation provider not found".to_string();
-            emit_replace_stream(&app, &image_id, "done", &[], Some(&msg));
-            return Ok(serde_json::json!({ "success": false, "error": msg }));
-        }
+        None => return fail("Translation provider not found"),
     };
     if provider.api_keys.is_empty() {
-        let msg = "Missing API Key".to_string();
-        emit_replace_stream(&app, &image_id, "done", &[], Some(&msg));
-        return Ok(serde_json::json!({ "success": false, "error": msg }));
+        return fail("Missing API Key");
     }
     if settings.screenshot_translation.model.trim().is_empty() {
-        let msg = "Please select a model first".to_string();
-        emit_replace_stream(&app, &image_id, "done", &[], Some(&msg));
-        return Ok(serde_json::json!({ "success": false, "error": msg }));
+        return fail("Please select a model first");
     }
 
-    let ocr_lines = match state
-        .rapidocr
-        .ocr_image_lines(
-            &temp_path,
-            crate::rapidocr::ModelTier::parse(&settings.screenshot_translation.rapid_ocr_tier),
-        )
-        .await
-    {
+    let ocr_lines = match state.rapidocr.ocr_image_lines(&temp_path, tier).await {
         Ok(lines) => lines,
-        Err(err) => {
-            emit_replace_stream(&app, &image_id, "done", &[], Some(&err));
-            return Ok(serde_json::json!({ "success": false, "error": err }));
-        }
+        Err(err) => return fail(&err),
     };
     if ocr_lines.is_empty() {
-        let msg = "OCR 未识别到文字".to_string();
-        emit_replace_stream(&app, &image_id, "done", &[], Some(&msg));
-        return Ok(serde_json::json!({ "success": false, "error": msg }));
+        return fail("OCR 未识别到文字");
     }
 
-    let ocr_payload: Vec<ReplaceTranslateLinePayload> = ocr_lines
-        .iter()
-        .map(|line| ReplaceTranslateLinePayload::from_ocr(line, ""))
-        .collect();
-    emit_replace_stream(&app, &image_id, "ocr", &ocr_payload, None);
-    emit_replace_stream(&app, &image_id, "translating", &ocr_payload, None);
+    // 解码、布局聚合与掩膜/复杂度分析都是纯 CPU 工作，整体挪进阻塞线程池。
+    let prepared = tokio::task::spawn_blocking(move || {
+        let source_image = image::open(&temp_path)
+            .map_err(|error| format!("load replace translation image: {error}"))?
+            .to_rgb8();
+        let ocr_lines = filter_replaceable_spans(source_image.width(), &ocr_lines);
+        if ocr_lines.is_empty() {
+            return Err("OCR 未识别到可替换文字".to_string());
+        }
+        let geometry = build_replace_geometry(&source_image, &ocr_lines);
+        if geometry.groups.is_empty() || geometry.slots.is_empty() {
+            return Err("layout_no_regions".to_string());
+        }
+        let analysis =
+            analyze_text_regions(&source_image, &ocr_lines).map_err(|error| error.message)?;
+        Ok((source_image, geometry, analysis))
+    })
+    .await
+    .map_err(|error| format!("replace prepare worker failed: {error}"))?;
+    let (source_image, mut geometry, analysis) = match prepared {
+        Ok(prepared) => prepared,
+        Err(msg) => return fail(&msg),
+    };
+    let mask = analysis.mask;
+    let complexity = analysis.complexity;
+    // 中间阶段只驱动状态提示；groups/slots 只在最终事件发送一次，避免重复序列化大载荷。
+    emit_replace_stream(&app, &image_id, "ocr", &[], &[], None, None, None);
+    emit_replace_stream(&app, &image_id, "processing", &[], &[], None, None, None);
 
     let target_lang = resolve_target_lang(&settings.target_lang, "");
     let lang_name = language_name(&target_lang).to_string();
-    let line_refs: Vec<&str> = ocr_lines.iter().map(|l| l.text.as_str()).collect();
+    let request_regions: Vec<ReplaceTranslationRequestRegion<'_>> = geometry
+        .groups
+        .iter()
+        .map(|group| ReplaceTranslationRequestRegion {
+            id: group.id.as_str(),
+            text: group.source_text.as_str(),
+        })
+        .collect();
     let prompt = build_replace_translation_batch_prompt(
-        &line_refs,
+        &request_regions,
         &lang_name,
         settings.screenshot_translation.replace_prompt.as_deref(),
     );
     let retry_attempts = effective_retry_attempts(&settings);
     let st_thinking = settings.screenshot_translation.thinking_enabled;
 
-    let translated = match call_openai_text(
+    let translation_future = call_openai_text(
         &state,
         &provider,
         &settings.screenshot_translation.model,
@@ -2010,36 +2048,101 @@ pub(crate) async fn lens_replace_translate(
         st_thinking,
         "screenshot_translation",
         "replace_translate",
-    )
-    .await
-    {
-        Ok(t) => t,
-        Err(err) => {
-            emit_replace_stream(&app, &image_id, "done", &ocr_payload, Some(&err));
-            return Ok(serde_json::json!({ "success": false, "error": err }));
+    );
+    let source_image = std::sync::Arc::new(source_image);
+    let source_for_cleaning = source_image.clone();
+    let inpainting = state.inpainting.clone();
+    // deterministic_fill + PNG 编码同样是 CPU 密集路径，必须 spawn_blocking，
+    // 否则 tokio::join! 无法真正让本地擦除与云端翻译并行。
+    let deterministic_fill_png =
+        move |source: std::sync::Arc<image::RgbImage>, mask: crate::inpainting::InpaintMask| async move {
+            tokio::task::spawn_blocking(move || {
+                crate::inpainting::encode_rgb_png(deterministic_fill(&source, &[], &mask))
+            })
+            .await
+            .map_err(|error| format!("deterministic fill worker failed: {error}"))?
+        };
+    let cleaning_future = async move {
+        if complexity == BackgroundComplexity::Low {
+            return deterministic_fill_png(source_for_cleaning, mask)
+                .await
+                .map(|png| (png, None));
+        }
+        // inpaint_png 内部自带 spawn_blocking；失败时回退确定性填充并记为非致命警告。
+        match inpainting
+            .inpaint_png(source_for_cleaning.clone(), mask.clone())
+            .await
+        {
+            Ok(result) => Ok((result.png, None)),
+            Err(error) => deterministic_fill_png(source_for_cleaning, mask)
+                .await
+                .map(|png| (png, Some(error.message))),
         }
     };
+    let (translation_result, cleaned_result) = tokio::join!(translation_future, cleaning_future);
 
-    let translations = match parse_replace_translation_json(&translated, ocr_lines.len()) {
-        Ok(values) => values,
-        Err(err) => {
-            emit_replace_stream(&app, &image_id, "done", &ocr_payload, Some(&err));
-            return Ok(serde_json::json!({ "success": false, "error": err }));
-        }
-    };
-
-    let final_payload: Vec<ReplaceTranslateLinePayload> = ocr_lines
+    // 翻译整体失败（调用失败 / JSON 不可解析 / 没有任何 ID 命中）是硬失败：
+    // 不能带着清理后的背景假装成功，否则前端会擦掉原文再画回未翻译的原文。
+    let expected_ids: Vec<&str> = geometry
+        .groups
         .iter()
-        .zip(translations.iter())
-        .map(|(line, tr)| {
-            // 补齐产生的空串（模型少吐一段）回退为原文，避免覆盖成空白。
-            let text = if tr.trim().is_empty() { line.text.as_str() } else { tr.as_str() };
-            ReplaceTranslateLinePayload::from_ocr(line, text)
-        })
+        .map(|group| group.id.as_str())
         .collect();
-    emit_replace_stream(&app, &image_id, "done", &final_payload, None);
+    let translations = match translation_result
+        .and_then(|raw| parse_replace_translation_json(&raw, &expected_ids))
+    {
+        Ok(values) if values.is_empty() => {
+            return fail("翻译结果为空：没有任何区域被翻译");
+        }
+        Ok(values) => values,
+        Err(error) => return fail(&error),
+    };
+    let mut warnings = Vec::new();
+    let missing = geometry
+        .groups
+        .iter()
+        .filter(|group| !translations.contains_key(&group.id))
+        .count();
+    if missing > 0 {
+        warnings.push(format!(
+            "{missing}/{} 个区域缺少译文，已回退显示原文",
+            geometry.groups.len()
+        ));
+    }
+    for group in &mut geometry.groups {
+        if let Some(translated) = translations.get(&group.id) {
+            group.translated = translated.clone();
+        }
+    }
+    let (cleaned_png, inpainting_warning) = match cleaned_result {
+        Ok(result) => result,
+        Err(error) => return fail(&error),
+    };
+    if let Some(warning) = inpainting_warning {
+        warnings.push(warning);
+    }
+    let cleaned_image = format!(
+        "data:image/png;base64,{}",
+        general_purpose::STANDARD.encode(cleaned_png)
+    );
+    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
+    emit_replace_stream(
+        &app,
+        &image_id,
+        "done",
+        &geometry.groups,
+        &geometry.slots,
+        Some(&cleaned_image),
+        warning.as_deref(),
+        None,
+    );
 
-    Ok(serde_json::json!({ "success": true, "lineCount": final_payload.len() }))
+    Ok(serde_json::json!({
+        "success": true,
+        "groupCount": geometry.groups.len(),
+        "slotCount": geometry.slots.len(),
+        "warning": warning,
+    }))
 }
 
 /// 关闭 lens：清理图片、释放 busy、隐藏窗口。
@@ -2444,7 +2547,10 @@ fn capture_region_image(
     let _ = (x, y, scale_factor);
     let __tc = std::time::Instant::now();
     let monitors = Monitor::all().map_err(|e| e.to_string())?;
-    eprintln!("[lens-timing]     ...Monitor::all +{}ms", __tc.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing]     ...Monitor::all +{}ms",
+        __tc.elapsed().as_millis()
+    );
     let monitor_geometry = monitors
         .iter()
         .map(|m| {
@@ -2478,12 +2584,18 @@ fn capture_region_image(
             capture_region.height,
         )
         .map_err(|e| e.to_string())?;
-    eprintln!("[lens-timing]     ...xcap.capture_region +{}ms", __tcap.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing]     ...xcap.capture_region +{}ms",
+        __tcap.elapsed().as_millis()
+    );
 
     let temp_path = std::env::temp_dir().join(format!("screenshot-{}.png", Uuid::new_v4()));
     let __tsave = std::time::Instant::now();
     write_png_fast(&temp_path, image.as_raw(), image.width(), image.height())?;
-    eprintln!("[lens-timing]     ...png.save +{}ms", __tsave.elapsed().as_millis());
+    eprintln!(
+        "[lens-timing]     ...png.save +{}ms",
+        __tsave.elapsed().as_millis()
+    );
     Ok(temp_path)
 }
 
