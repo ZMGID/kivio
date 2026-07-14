@@ -9,12 +9,68 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const fixturesRoot = path.join(root, 'tests/fixtures/replace-translation/v1')
 const checkOnly = process.argv.includes('--check')
 
+// Each `lines` entry is the deterministic ground-truth OCR leaf for one drawn
+// text line, taken directly from the coordinates the paint functions use. The
+// leaf `quad`, the leaf id, and the expected render-slot anchor are all derived
+// from the SAME box, so `leaves.json` (the pipeline's OCR input) and
+// `expected_geometry.json` (the desired render anchors) are mutually consistent
+// by construction — the anchors are ground truth, never copied from the layout
+// pipeline itself.
 const fixtures = {
-  'menu-list': { width: 360, height: 220, paint: paintMenu },
-  'document-paragraph': { width: 420, height: 260, paint: paintDocument },
-  'table-grid': { width: 420, height: 240, paint: paintTable },
-  'code-badge': { width: 360, height: 180, paint: paintCodeBadge },
-  'photo-gradient': { width: 420, height: 260, paint: paintPhoto },
+  'menu-list': {
+    width: 360,
+    height: 220,
+    paint: paintMenu,
+    lines: [
+      { id: 'r0000', text: 'Open repository', x: 78, y: 51, width: 116, height: 17, column: 'menu' },
+      { id: 'r0001', text: 'Replace translation', x: 78, y: 101, width: 116, height: 17, column: 'menu' },
+      { id: 'r0002', text: 'Download offline pack', x: 78, y: 151, width: 116, height: 17, column: 'menu' },
+    ],
+  },
+  'document-paragraph': {
+    width: 420,
+    height: 260,
+    paint: paintDocument,
+    lines: [
+      { id: 'r0000', text: 'Replace translation architecture', x: 52, y: 48, width: 210, height: 10, column: 'main' },
+      {
+        id: 'r0001',
+        text: 'Translations may merge context but the drawn region keeps each line top anchor',
+        x: 52,
+        y: 92,
+        width: 292,
+        height: 31,
+        column: 'main',
+      },
+    ],
+  },
+  'table-grid': {
+    width: 420,
+    height: 240,
+    paint: paintTable,
+    lines: [
+      { id: 'r0000', text: 'Name', x: 38, y: 38, width: 110, height: 10, column: 'left' },
+      { id: 'r0001', text: 'Status', x: 228, y: 38, width: 126, height: 10, column: 'right' },
+      { id: 'r0002', text: 'Local model', x: 38, y: 88, width: 110, height: 10, column: 'left' },
+      { id: 'r0003', text: 'Ready', x: 228, y: 88, width: 126, height: 10, column: 'right' },
+    ],
+  },
+  'code-badge': {
+    width: 360,
+    height: 180,
+    paint: paintCodeBadge,
+    lines: [
+      { id: 'r0000', text: 'run npm test', x: 68, y: 76, width: 158, height: 10, column: 'code' },
+    ],
+  },
+  'photo-gradient': {
+    width: 420,
+    height: 260,
+    paint: paintPhoto,
+    lines: [
+      { id: 'r0000', text: 'Photo grade replacement', x: 86, y: 88, width: 244, height: 17, column: 'sign', rotationDeg: 0 },
+    ],
+  },
 }
 
 for (const [id, fixture] of Object.entries(fixtures)) {
@@ -25,6 +81,8 @@ for (const [id, fixture] of Object.entries(fixtures)) {
   const files = [
     ['source.png', encodePng(fixture.width, fixture.height, source)],
     ['expected_protection.png', encodePng(fixture.width, fixture.height, protection)],
+    ['leaves.json', jsonFile(leavesFor(fixture.lines))],
+    ['expected_geometry.json', jsonFile(geometryFor(fixture.lines))],
   ]
   for (const [name, contents] of files) {
     const target = path.join(dir, name)
@@ -40,6 +98,38 @@ for (const [id, fixture] of Object.entries(fixtures)) {
 }
 
 if (!checkOnly) console.log(`generated ${Object.keys(fixtures).length} replace-translation visual fixtures`)
+
+function jsonFile(value) {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`)
+}
+
+function leavesFor(lines) {
+  return {
+    leaves: lines.map((line, index) => ({
+      id: line.id,
+      text: line.text,
+      quad: [
+        [line.x, line.y],
+        [line.x + line.width, line.y],
+        [line.x + line.width, line.y + line.height],
+        [line.x, line.y + line.height],
+      ],
+      readingOrder: index,
+    })),
+  }
+}
+
+function geometryFor(lines) {
+  return {
+    slots: lines.map(line => ({
+      id: line.id,
+      bounds: { x: line.x, y: line.y, width: line.width, height: line.height },
+      anchor: { x: line.x, y: line.y },
+      column: line.column,
+      ...(line.rotationDeg === undefined ? {} : { rotationDeg: line.rotationDeg }),
+    })),
+  }
+}
 
 function rgbaImage(width, height, color) {
   const data = new Uint8Array(width * height * 4)
@@ -109,7 +199,10 @@ function paintTable(source, protection, width) {
     fillRect(source, width, 20, y, 380, 2, [71, 85, 105, 255])
     protectRect(protection, width, 20, y, 380, 2)
   }
-  for (const y of [38, 88, 138, 188]) {
+  // Only the first two row bands carry text (a header row and one data row), so
+  // the fixture stays a clean 2x2 table whose four cells match leaves.json /
+  // expected_geometry.json / translations.json one-for-one.
+  for (const y of [38, 88]) {
     textBars(source, width, 38, y, [110, 76])
     textBars(source, width, 228, y, [126, 92])
   }

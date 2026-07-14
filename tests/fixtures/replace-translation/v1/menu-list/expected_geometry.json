@@ -1,7 +1,46 @@
 {
   "slots": [
-    { "id": "r0000", "bounds": { "x": 74, "y": 46, "width": 242, "height": 30 }, "anchor": { "x": 78, "y": 51 }, "column": "menu" },
-    { "id": "r0001", "bounds": { "x": 74, "y": 96, "width": 242, "height": 30 }, "anchor": { "x": 78, "y": 101 }, "column": "menu" },
-    { "id": "r0002", "bounds": { "x": 74, "y": 146, "width": 242, "height": 30 }, "anchor": { "x": 78, "y": 151 }, "column": "menu" }
+    {
+      "id": "r0000",
+      "bounds": {
+        "x": 78,
+        "y": 51,
+        "width": 116,
+        "height": 17
+      },
+      "anchor": {
+        "x": 78,
+        "y": 51
+      },
+      "column": "menu"
+    },
+    {
+      "id": "r0001",
+      "bounds": {
+        "x": 78,
+        "y": 101,
+        "width": 116,
+        "height": 17
+      },
+      "anchor": {
+        "x": 78,
+        "y": 101
+      },
+      "column": "menu"
+    },
+    {
+      "id": "r0002",
+      "bounds": {
+        "x": 78,
+        "y": 151,
+        "width": 116,
+        "height": 17
+      },
+      "anchor": {
+        "x": 78,
+        "y": 151
+      },
+      "column": "menu"
+    }
   ]
 }

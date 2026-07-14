@@ -1,6 +1,9 @@
 pub mod layout;
 pub mod mask;
 
+#[cfg(test)]
+mod visual_fixtures;
+
 #[cfg(all(test, target_os = "macos"))]
 mod e2e_tests {
     #[tokio::test]

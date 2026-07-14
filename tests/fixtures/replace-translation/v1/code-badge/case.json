@@ -6,6 +6,7 @@
   "sourceImage": "source.png",
   "protectionMask": "expected_protection.png",
   "expectedGeometry": "expected_geometry.json",
+  "leaves": "leaves.json",
   "translations": "translations.json",
   "platforms": [
     { "os": "macos", "scaleFactor": 2, "display": "retina" },

@@ -158,6 +158,9 @@ export function ReplaceTranslateOverlay({
           context.beginPath()
           context.rect(slot.bounds.x, slot.bounds.y, slot.bounds.width, slot.bounds.height)
           context.clip()
+          // ponytail: scene_patch currently degrades to the plain system-font path
+          // (content stays complete). Rotation threading + a gated photo-redraw
+          // model are deferred to scene-rendering; do not add them speculatively.
           if (layout.safeScale < 1) {
             drawSafelyScaledSlotText(context, slot, slotLayout, layout.fontPx, layout.lineHeight, layout.safeScale, padding)
           } else {

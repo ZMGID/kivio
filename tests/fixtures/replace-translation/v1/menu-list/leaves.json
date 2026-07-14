@@ -1,0 +1,73 @@
+{
+  "leaves": [
+    {
+      "id": "r0000",
+      "text": "Open repository",
+      "quad": [
+        [
+          78,
+          51
+        ],
+        [
+          194,
+          51
+        ],
+        [
+          194,
+          68
+        ],
+        [
+          78,
+          68
+        ]
+      ],
+      "readingOrder": 0
+    },
+    {
+      "id": "r0001",
+      "text": "Replace translation",
+      "quad": [
+        [
+          78,
+          101
+        ],
+        [
+          194,
+          101
+        ],
+        [
+          194,
+          118
+        ],
+        [
+          78,
+          118
+        ]
+      ],
+      "readingOrder": 1
+    },
+    {
+      "id": "r0002",
+      "text": "Download offline pack",
+      "quad": [
+        [
+          78,
+          151
+        ],
+        [
+          194,
+          151
+        ],
+        [
+          194,
+          168
+        ],
+        [
+          78,
+          168
+        ]
+      ],
+      "readingOrder": 2
+    }
+  ]
+}

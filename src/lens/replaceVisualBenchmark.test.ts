@@ -42,6 +42,9 @@ function passingMetrics(): ReplaceVisualFixtureMetrics {
       protectedPixelChangeRatio: 0,
       outsideEraseMaskPixelCount: 10,
       outsideEraseMaskChangeRatio: 0,
+      originalTextPixelCount: 4,
+      residualTextPixelCount: 0,
+      residualTextRatio: 0,
     },
     translation: {
       expectedCount: 1,
@@ -111,6 +114,34 @@ describe('replace visual geometry metrics', () => {
     expect(metrics.crossColumnOverlapCount).toBe(1)
     expect(metrics.maxForbiddenOverlapRatio).toBeGreaterThan(0)
   })
+
+  it('detects a multi-line paragraph whose whole block shifts off its first-line top anchor', () => {
+    // Three stacked source lines of one paragraph, each with its own top anchor.
+    const paragraph = [
+      { id: 'r0000', bounds: { x: 40, y: 40, width: 300, height: 24 }, anchor: { x: 40, y: 44 }, column: 'main' },
+      { id: 'r0001', bounds: { x: 40, y: 68, width: 300, height: 24 }, anchor: { x: 40, y: 72 }, column: 'main' },
+      { id: 'r0002', bounds: { x: 40, y: 96, width: 300, height: 24 }, anchor: { x: 40, y: 100 }, column: 'main' },
+    ]
+    // Regression: the renderer vertically re-centres the whole block, dragging
+    // every line — including the first — down by a fixed offset.
+    const shifted = paragraph.map(slot => ({
+      ...slot,
+      bounds: { ...slot.bounds, y: slot.bounds.y + 18 },
+      anchor: { x: slot.anchor.x, y: slot.anchor.y + 18 },
+    }))
+    const drifted = computeReplaceGeometryMetrics(paragraph, shifted)
+    expect(drifted.maxFirstAnchorDrift).toBe(18)
+    expect(drifted.maxTopError).toBe(18)
+    expect(evaluateReplaceVisualFixture('paragraph-shift', 'document', true, {
+      ...passingMetrics(),
+      geometry: drifted,
+    }).passed).toBe(false)
+
+    // A faithful renderer keeps every line on its own top anchor: no drift.
+    const anchored = computeReplaceGeometryMetrics(paragraph, paragraph)
+    expect(anchored.maxFirstAnchorDrift).toBe(0)
+    expect(anchored.maxTopError).toBe(0)
+  })
 })
 
 describe('replace visual pixel and translation metrics', () => {
@@ -124,6 +155,26 @@ describe('replace visual pixel and translation metrics', () => {
     const metrics = computeReplacePixelMetrics(source, output, protection, eraseMask)
     expect(metrics.protectedPixelChangeRatio).toBe(1)
     expect(metrics.outsideEraseMaskChangeRatio).toBeGreaterThan(0)
+  })
+
+  it('flags original-text residue when erased glyphs still show through the redraw', () => {
+    // Four pixels; the first two carried original glyph ink (originalTextMask).
+    const source = new Uint8Array(4 * 4)
+    source.fill(255)
+    const output = source.slice()
+    // Only the first text pixel was actually cleaned; the second still ghosts.
+    output[0] = 240
+    const protection = new Uint8Array([0, 0, 0, 0])
+    const eraseMask = new Uint8Array([255, 255, 0, 0])
+    const originalTextMask = new Uint8Array([255, 255, 0, 0])
+    const metrics = computeReplacePixelMetrics(source, output, protection, eraseMask, originalTextMask)
+    expect(metrics.originalTextPixelCount).toBe(2)
+    expect(metrics.residualTextPixelCount).toBe(1)
+    expect(metrics.residualTextRatio).toBe(0.5)
+    expect(evaluateReplaceVisualFixture('ghost', 'ui', true, {
+      ...passingMetrics(),
+      pixels: metrics,
+    }).failures.some(failure => failure.includes('residue'))).toBe(true)
   })
 
   it('requires exact complete translations and flags duplicates independently', () => {

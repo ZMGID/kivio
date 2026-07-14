@@ -1,8 +1,60 @@
 {
   "slots": [
-    { "id": "r0000", "bounds": { "x": 24, "y": 24, "width": 182, "height": 42 }, "anchor": { "x": 38, "y": 38 }, "column": "left" },
-    { "id": "r0001", "bounds": { "x": 214, "y": 24, "width": 182, "height": 42 }, "anchor": { "x": 228, "y": 38 }, "column": "right" },
-    { "id": "r0002", "bounds": { "x": 24, "y": 74, "width": 182, "height": 42 }, "anchor": { "x": 38, "y": 88 }, "column": "left" },
-    { "id": "r0003", "bounds": { "x": 214, "y": 74, "width": 182, "height": 42 }, "anchor": { "x": 228, "y": 88 }, "column": "right" }
+    {
+      "id": "r0000",
+      "bounds": {
+        "x": 38,
+        "y": 38,
+        "width": 110,
+        "height": 10
+      },
+      "anchor": {
+        "x": 38,
+        "y": 38
+      },
+      "column": "left"
+    },
+    {
+      "id": "r0001",
+      "bounds": {
+        "x": 228,
+        "y": 38,
+        "width": 126,
+        "height": 10
+      },
+      "anchor": {
+        "x": 228,
+        "y": 38
+      },
+      "column": "right"
+    },
+    {
+      "id": "r0002",
+      "bounds": {
+        "x": 38,
+        "y": 88,
+        "width": 110,
+        "height": 10
+      },
+      "anchor": {
+        "x": 38,
+        "y": 88
+      },
+      "column": "left"
+    },
+    {
+      "id": "r0003",
+      "bounds": {
+        "x": 228,
+        "y": 88,
+        "width": 126,
+        "height": 10
+      },
+      "anchor": {
+        "x": 228,
+        "y": 88
+      },
+      "column": "right"
+    }
   ]
 }

@@ -1,0 +1,50 @@
+{
+  "leaves": [
+    {
+      "id": "r0000",
+      "text": "Replace translation architecture",
+      "quad": [
+        [
+          52,
+          48
+        ],
+        [
+          262,
+          48
+        ],
+        [
+          262,
+          58
+        ],
+        [
+          52,
+          58
+        ]
+      ],
+      "readingOrder": 0
+    },
+    {
+      "id": "r0001",
+      "text": "Translations may merge context but the drawn region keeps each line top anchor",
+      "quad": [
+        [
+          52,
+          92
+        ],
+        [
+          344,
+          92
+        ],
+        [
+          344,
+          123
+        ],
+        [
+          52,
+          123
+        ]
+      ],
+      "readingOrder": 1
+    }
+  ]
+}

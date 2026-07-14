@@ -1,5 +1,19 @@
 {
   "slots": [
-    { "id": "r0000", "bounds": { "x": 78, "y": 78, "width": 260, "height": 54 }, "anchor": { "x": 86, "y": 88 }, "column": "sign", "rotationDeg": 0 }
+    {
+      "id": "r0000",
+      "bounds": {
+        "x": 86,
+        "y": 88,
+        "width": 244,
+        "height": 17
+      },
+      "anchor": {
+        "x": 86,
+        "y": 88
+      },
+      "column": "sign",
+      "rotationDeg": 0
+    }
   ]
 }

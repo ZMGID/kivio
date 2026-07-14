@@ -29,6 +29,7 @@ export type ReplaceVisualFixtureCase = {
   sourceImage: string
   protectionMask: string
   expectedGeometry: string
+  leaves: string
   translations: string
   platforms: ReplaceVisualPlatform[]
   tags: string[]
@@ -36,6 +37,21 @@ export type ReplaceVisualFixtureCase = {
 
 export type ReplaceVisualGeometry = {
   slots: ReplaceVisualSlot[]
+}
+
+/// Ground-truth OCR leaf: the fixed pipeline input a fixture feeds through the
+/// real Rust layout/mask pipeline. `quad` corners are natural pixels matching
+/// where the generator drew the text, so leaf top-left equals the desired
+/// render anchor in `expected_geometry.json`.
+export type ReplaceVisualLeaf = {
+  id: string
+  text: string
+  quad: [number, number][]
+  readingOrder: number
+}
+
+export type ReplaceVisualLeaves = {
+  leaves: ReplaceVisualLeaf[]
 }
 
 export type ReplaceVisualTranslations = {
@@ -61,6 +77,9 @@ export type ReplacePixelMetrics = {
   protectedPixelChangeRatio: number
   outsideEraseMaskPixelCount: number
   outsideEraseMaskChangeRatio: number
+  originalTextPixelCount: number
+  residualTextPixelCount: number
+  residualTextRatio: number
 }
 
 export type ReplaceTranslationMetrics = {
@@ -89,6 +108,7 @@ export type ReplaceVisualThresholds = {
   maxCrossColumnOverlapCount: number
   maxProtectedPixelChangeRatio: number
   maxOutsideEraseMaskChangeRatio: number
+  maxResidualTextRatio: number
   minTranslationCompleteness: number
   maxHotPathMs: number
 }
@@ -127,6 +147,7 @@ function threshold(overrides: Partial<ReplaceVisualThresholds>): ReplaceVisualTh
     maxCrossColumnOverlapCount: 0,
     maxProtectedPixelChangeRatio: 0,
     maxOutsideEraseMaskChangeRatio: 0,
+    maxResidualTextRatio: 0.1,
     minTranslationCompleteness: 1,
     maxHotPathMs: 1_000,
     ...overrides,
@@ -177,6 +198,7 @@ export function parseReplaceVisualFixtureCase(value: unknown): ReplaceVisualFixt
     sourceImage: requireString(value, 'sourceImage'),
     protectionMask: requireString(value, 'protectionMask'),
     expectedGeometry: requireString(value, 'expectedGeometry'),
+    leaves: requireString(value, 'leaves'),
     translations: requireString(value, 'translations'),
     platforms,
     tags: value.tags as string[],
@@ -267,6 +289,7 @@ export function computeReplacePixelMetrics(
   outputRgba: Uint8Array,
   protectionMask: Uint8Array,
   eraseMask: Uint8Array,
+  originalTextMask?: Uint8Array,
 ): ReplacePixelMetrics {
   if (sourceRgba.length !== outputRgba.length || sourceRgba.length % 4 !== 0) {
     throw new Error('source and output RGBA buffers must have equal lengths')
@@ -275,10 +298,15 @@ export function computeReplacePixelMetrics(
   if (protectionMask.length !== pixelCount || eraseMask.length !== pixelCount) {
     throw new Error('pixel masks must match the RGBA pixel count')
   }
+  if (originalTextMask && originalTextMask.length !== pixelCount) {
+    throw new Error('original text mask must match the RGBA pixel count')
+  }
   let protectedPixelCount = 0
   let changedProtectedPixels = 0
   let outsideEraseMaskPixelCount = 0
   let changedOutsideEraseMaskPixels = 0
+  let originalTextPixelCount = 0
+  let residualTextPixelCount = 0
   for (let index = 0; index < pixelCount; index += 1) {
     const changed = pixelChanged(sourceRgba, outputRgba, index)
     if (protectionMask[index] > 0) {
@@ -289,12 +317,21 @@ export function computeReplacePixelMetrics(
       outsideEraseMaskPixelCount += 1
       if (changed) changedOutsideEraseMaskPixels += 1
     }
+    // Original-text residue / ghost proxy: where the source carried a glyph, an
+    // unchanged output pixel means the old text still shows through the redraw.
+    if (originalTextMask && originalTextMask[index] > 0) {
+      originalTextPixelCount += 1
+      if (!changed) residualTextPixelCount += 1
+    }
   }
   return {
     protectedPixelCount,
     protectedPixelChangeRatio: changedProtectedPixels / Math.max(1, protectedPixelCount),
     outsideEraseMaskPixelCount,
     outsideEraseMaskChangeRatio: changedOutsideEraseMaskPixels / Math.max(1, outsideEraseMaskPixelCount),
+    originalTextPixelCount,
+    residualTextPixelCount,
+    residualTextRatio: originalTextPixelCount === 0 ? 0 : residualTextPixelCount / originalTextPixelCount,
   }
 }
 
@@ -348,6 +385,7 @@ export function evaluateReplaceVisualFixture(
   if (geometry.crossColumnOverlapCount > thresholds.maxCrossColumnOverlapCount) failures.push(`cross-column overlaps ${geometry.crossColumnOverlapCount}`)
   if (pixels.protectedPixelChangeRatio > thresholds.maxProtectedPixelChangeRatio) failures.push(`protected pixels changed ${(pixels.protectedPixelChangeRatio * 100).toFixed(3)}%`)
   if (pixels.outsideEraseMaskChangeRatio > thresholds.maxOutsideEraseMaskChangeRatio) failures.push(`pixels outside mask changed ${(pixels.outsideEraseMaskChangeRatio * 100).toFixed(3)}%`)
+  if (pixels.residualTextRatio > thresholds.maxResidualTextRatio) failures.push(`original text residue ${(pixels.residualTextRatio * 100).toFixed(1)}%`)
   if (translation.completenessRatio < thresholds.minTranslationCompleteness) failures.push(`translation completeness ${(translation.completenessRatio * 100).toFixed(1)}%`)
   if (metrics.hotPathMs !== undefined && metrics.hotPathMs > thresholds.maxHotPathMs) failures.push(`hot path ${metrics.hotPathMs.toFixed(1)}ms`)
   return { fixtureId, scene, required, passed: failures.length === 0, failures, metrics }

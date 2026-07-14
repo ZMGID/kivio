@@ -1,0 +1,27 @@
+{
+  "leaves": [
+    {
+      "id": "r0000",
+      "text": "Photo grade replacement",
+      "quad": [
+        [
+          86,
+          88
+        ],
+        [
+          330,
+          88
+        ],
+        [
+          330,
+          105
+        ],
+        [
+          86,
+          105
+        ]
+      ],
+      "readingOrder": 0
+    }
+  ]
+}
