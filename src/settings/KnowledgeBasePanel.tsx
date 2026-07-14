@@ -176,9 +176,8 @@ export function KnowledgeBasePanel({
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
 
-  // 拖拽导入：hover 高亮 + 文档区命中矩形（只在拖到文档区时才接收）
+  // 拖拽导入：hover 高亮 + 全窗口接收（监听只在本面板挂载时存在）
   const [dragActive, setDragActive] = useState(false)
-  const dropZoneRef = useRef<HTMLDivElement>(null)
 
   const selected = libraries.find((l) => l.id === selectedId) ?? null
 
@@ -318,29 +317,21 @@ export function KnowledgeBasePanel({
   }
 
   // 拖拽导入：Tauri 的 drag-drop 事件才带真实文件系统路径（HTML5 File 拿不到），
-  // 但事件是窗口级的——用文档区矩形命中测试,只在拖到该区且选中了库时才高亮/接收,
-  // 避免在其它设置页误触发。position 是物理像素,除以 DPR 换成 CSS 像素再比。
+  // 事件是窗口级的。此监听只在 KB 详情面板挂载时存在，所以拖文件进来即视为导入——
+  // 不做坐标命中测试：event.position 在 macOS 是逻辑坐标、Windows 是物理坐标，
+  // 二者与 getBoundingClientRect 的换算基准不一致（旧的除以 DPR 命中测试在 macOS
+  // Retina 上必然落空，导致拖拽在 macOS 完全失效）。与 InputBar 附件拖拽一致，全窗口接收。
   useEffect(() => {
     if (!isTauriRuntime()) return
     let cancelled = false
     let unlisten: (() => void) | undefined
-
-    const inDropZone = (pos?: { x: number; y: number }) => {
-      const el = dropZoneRef.current
-      if (!el || !pos) return false
-      const r = el.getBoundingClientRect()
-      const dpr = window.devicePixelRatio || 1
-      const x = pos.x / dpr
-      const y = pos.y / dpr
-      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
-    }
 
     getCurrentWebview()
       .onDragDropEvent((event) => {
         if (cancelled) return
         const p = event.payload
         if (p.type === 'enter' || p.type === 'over') {
-          setDragActive(inDropZone(p.position))
+          setDragActive(Boolean(selectedRef.current))
           return
         }
         if (p.type === 'leave') {
@@ -348,10 +339,9 @@ export function KnowledgeBasePanel({
           return
         }
         if (p.type === 'drop') {
-          const accept = inDropZone(p.position)
           setDragActive(false)
           const kbId = selectedRef.current
-          if (!accept || !kbId) return
+          if (!kbId) return
           const paths = p.paths.filter((path) => {
             const ext = path.split('.').pop()?.toLowerCase() ?? ''
             return UPLOAD_EXTS.includes(ext)
@@ -742,7 +732,7 @@ export function KnowledgeBasePanel({
             </SettingsGroup>
 
             <SettingsGroup title={t('文档', 'Documents')}>
-              <div ref={dropZoneRef} className="space-y-3 py-2">
+              <div className="space-y-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
