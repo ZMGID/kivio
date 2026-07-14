@@ -446,16 +446,14 @@ pub(crate) async fn rapidocr_status(
         .map_err(|e| format!("rapidocr status task failed: {e}"))
 }
 
-/// 下载 RapidOCR 包(onnxruntime dylib + 模型 + 字典)到 app data 目录。
-/// `tier`:"standard"(PP-OCRv5 mobile) | "high"(PP-OCRv6 medium),非法值归一 standard。
+/// 下载 RapidOCR 包(onnxruntime dylib + PP-OCRv6 medium 模型 + 字典)到 app data 目录。
 /// 阻塞到全部完成(成功或失败),前端转圈圈等返回。
 #[tauri::command]
 pub(crate) async fn rapidocr_install(
     state: State<'_, AppState>,
-    tier: String,
 ) -> Result<rapidocr::RapidOcrInstallResult, String> {
     let client = state.rapidocr.clone();
-    Ok(client.install(rapidocr::ModelTier::parse(&tier)).await)
+    Ok(client.install().await)
 }
 
 /// 查询替换翻译完整离线包（ONNX Runtime + RapidOCR + MI-GAN）的校验状态与实际字节数。
@@ -463,26 +461,20 @@ pub(crate) async fn rapidocr_install(
 #[tauri::command]
 pub(crate) async fn replace_translation_pack_status(
     state: State<'_, AppState>,
-    tier: String,
 ) -> Result<crate::offline_models::ReplaceTranslationPackStatus, String> {
     let manager = state.offline_models.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.replace_translation_status(rapidocr::ModelTier::parse(&tier))
-    })
-    .await
-    .map_err(|e| format!("replace translation pack status task failed: {e}"))
+    tauri::async_runtime::spawn_blocking(move || manager.replace_translation_status())
+        .await
+        .map_err(|e| format!("replace translation pack status task failed: {e}"))
 }
 
 /// 显式安装替换翻译离线包。替换翻译执行路径本身不会触发任何静默下载。
 #[tauri::command]
 pub(crate) async fn replace_translation_pack_install(
     state: State<'_, AppState>,
-    tier: String,
 ) -> Result<crate::offline_models::OfflineModelInstallResult, String> {
     let manager = state.offline_models.clone();
-    Ok(manager
-        .install_replace_translation(rapidocr::ModelTier::parse(&tier))
-        .await)
+    Ok(manager.install_replace_translation().await)
 }
 
 #[tauri::command]

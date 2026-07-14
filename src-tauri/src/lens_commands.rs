@@ -1441,7 +1441,6 @@ pub(crate) async fn lens_translate(
             retry_attempts,
             settings.screenshot_translation.prompt.as_deref(),
             effective_mode,
-            crate::rapidocr::ModelTier::parse(&settings.screenshot_translation.rapid_ocr_tier),
         )
         .await;
     }
@@ -1758,15 +1757,14 @@ async fn run_system_ocr(
     }
 }
 
-/// RapidOCR 离线 OCR：dispatch 到 RapidOcrClient.ocr_image。跟随截图翻译设置的档位。
+/// RapidOCR 离线 OCR：dispatch 到 RapidOcrClient.ocr_image。
 /// 模型 / dylib 文件未下载时返回 "rapidocr_models_missing",
 /// 路由层会在调用前先 precheck,这里是双层保险。
 async fn run_rapidocr_ocr(
     state: &State<'_, AppState>,
     image_path: &std::path::Path,
-    tier: crate::rapidocr::ModelTier,
 ) -> Result<String, String> {
-    state.rapidocr.ocr_image(image_path, tier).await
+    state.rapidocr.ocr_image(image_path).await
 }
 
 /// 本地 OCR + 任意 provider 翻译的两步链路。
@@ -1792,7 +1790,6 @@ async fn local_ocr_then_translate(
     retry_attempts: usize,
     screenshot_template: Option<&str>,
     engine: OcrMode,
-    rapid_ocr_tier: crate::rapidocr::ModelTier,
 ) -> Result<serde_json::Value, String> {
     let emit_done = |success: bool, error: Option<&str>| {
         let _ = app.emit(
@@ -1808,7 +1805,7 @@ async fn local_ocr_then_translate(
     // 走下面统一 error 分支 emit 给前端,Lens 据此渲染下载提示——不再做单独 precheck。
     let ocr_result = match engine {
         OcrMode::System => run_system_ocr(state, image_path).await,
-        OcrMode::RapidOcr => run_rapidocr_ocr(state, image_path, rapid_ocr_tier).await,
+        OcrMode::RapidOcr => run_rapidocr_ocr(state, image_path).await,
         // 路由层只把 System / RapidOcr 派发到这里,CloudVision 走另一条单步路径。
         // Legacy 兜底变体在 sanitize_settings 中会被正常化为 CloudVision,理论不会到这里。
         // 仍留 runtime 兜底,防止后续重构时漏掉某个分支。
@@ -1957,11 +1954,10 @@ pub(crate) async fn lens_replace_translate(
     };
 
     let settings = state.settings_read().clone();
-    let tier = crate::rapidocr::ModelTier::parse(&settings.screenshot_translation.rapid_ocr_tier);
     // 就绪校验会对模型文件做同步 SHA-256，放到阻塞线程池，避免卡住 tokio worker。
     let offline_models = state.offline_models.clone();
     let pack_status =
-        tokio::task::spawn_blocking(move || offline_models.replace_translation_status(tier))
+        tokio::task::spawn_blocking(move || offline_models.replace_translation_status())
             .await
             .map_err(|error| format!("pack status worker failed: {error}"))?;
     if !pack_status.ready {
@@ -1984,7 +1980,7 @@ pub(crate) async fn lens_replace_translate(
         return fail("Please select a model first");
     }
 
-    let ocr_lines = match state.rapidocr.ocr_image_lines(&temp_path, tier).await {
+    let ocr_lines = match state.rapidocr.ocr_image_lines(&temp_path).await {
         Ok(lines) => lines,
         Err(err) => return fail(&err),
     };

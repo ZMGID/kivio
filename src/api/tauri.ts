@@ -830,8 +830,6 @@ export type DocumentProcessingConfig = {
   /** 内置解析失败（如扫描版 PDF）时回退到第一个启用的第三方服务。 */
   fallbackToThirdParty: boolean
   providers: DocProcessorProvider[]
-  /** RapidOCR 模型档位(ocrEngine==='rapid_ocr' 时生效)。缺省 'standard'。 */
-  rapidOcrTier?: RapidOcrTier
 }
 
 /** 知识库检索配置：hybrid(向量+关键词 RRF) 权重 + 可选全局 rerank。 */
@@ -899,9 +897,6 @@ export type Settings = {
      *    模型文件 + onnxruntime dylib 由用户在设置页面下载,安装包不带。
      *  缺省时由后端 sanitize_settings 按 useSystemOcr 自动迁移。 */
     ocrMode?: 'cloud_vision' | 'system' | 'rapid_ocr'
-    /** RapidOCR 模型档位(ocrMode==='rapid_ocr' 时生效;替换翻译也跟随此档位)。
-     *  缺省 'standard'(PP-OCRv5 mobile),'high' = PP-OCRv6 medium 高精度。 */
-    rapidOcrTier?: RapidOcrTier
     /** 截图(OCR/视觉)翻译自定义提示词。空 → 内置截图模板 */
     prompt?: string
     /** 选中文本翻译自定义提示词。空 → 内置选中文本模板 */
@@ -1215,15 +1210,10 @@ export type UpdateInfo = {
   publishedAt?: string
 }
 
-/** RapidOCR 模型档位:'standard' = PP-OCRv5 mobile(现状,默认),'high' = PP-OCRv6 medium(高精度)。 */
-export type RapidOcrTier = 'standard' | 'high'
-
-/** RapidOCR 离线 OCR 状态:standard/high 两档各自独立报告就绪情况(dylib + 模型 + 字典是否齐全) */
+/** RapidOCR 离线 OCR 状态(dylib + PP-OCRv6 模型 + 字典是否齐全) */
 export type RapidOcrStatus = {
-  /** standard 档(PP-OCRv5 mobile)是否就绪 */
-  standardAvailable: boolean
-  /** high 档(PP-OCRv6 medium)是否就绪 */
-  highAvailable: boolean
+  /** 模型是否就绪 */
+  available: boolean
   /** app data 目录下的模型文件夹路径(用于 UI 展示) */
   modelDir?: string | null
 }
@@ -1247,7 +1237,6 @@ export type OfflineModelFileStatus = {
 
 export type ReplaceTranslationPackStatus = {
   ready: boolean
-  tier: RapidOcrTier
   totalBytes: number
   readyBytes: number
   missingBytes: number
@@ -1453,7 +1442,6 @@ function normalizeSettings(settings: Settings): Settings {
       cardWidth: current.screenshotTranslation?.cardWidth ?? 480,
       useSystemOcr: current.screenshotTranslation?.useSystemOcr ?? false,
       ocrMode: current.screenshotTranslation?.ocrMode ?? 'cloud_vision',
-      rapidOcrTier: current.screenshotTranslation?.rapidOcrTier === 'high' ? 'high' : 'standard',
       prompt: current.screenshotTranslation?.prompt ?? '',
       textPrompt: current.screenshotTranslation?.textPrompt ?? '',
       replacePrompt: current.screenshotTranslation?.replacePrompt ?? '',
@@ -1928,17 +1916,17 @@ export const api = {
 
   // ========== RapidOCR 离线 OCR ==========
 
-  /** 查询 RapidOCR 两档模型 + onnxruntime dylib 是否就绪(standard/high 各自独立) */
+  /** 查询 RapidOCR 模型 + onnxruntime dylib 是否就绪 */
   rapidOcrStatus: () => invoke<RapidOcrStatus>('rapidocr_status'),
 
-  /** 下载指定档位的 RapidOCR 包(onnxruntime dylib 共享 + 该档模型)到 app data 目录。
-   *  阻塞到全部完成返回(standard ~15-30s/~30-50MB,high 更大),前端转圈圈等。 */
-  rapidOcrInstall: (tier: RapidOcrTier) => invoke<RapidOcrInstallResult>('rapidocr_install', { tier }),
+  /** 下载 RapidOCR 包(onnxruntime dylib + PP-OCRv6 模型)到 app data 目录。
+   *  阻塞到全部完成返回(~150MB),前端转圈圈等。 */
+  rapidOcrInstall: () => invoke<RapidOcrInstallResult>('rapidocr_install'),
 
-  replaceTranslationPackStatus: (tier: RapidOcrTier) =>
-    invoke<ReplaceTranslationPackStatus>('replace_translation_pack_status', { tier }),
-  replaceTranslationPackInstall: (tier: RapidOcrTier) =>
-    invoke<RapidOcrInstallResult>('replace_translation_pack_install', { tier }),
+  replaceTranslationPackStatus: () =>
+    invoke<ReplaceTranslationPackStatus>('replace_translation_pack_status'),
+  replaceTranslationPackInstall: () =>
+    invoke<RapidOcrInstallResult>('replace_translation_pack_install'),
   onReplaceTranslationPackProgress: (listener: (progress: OfflineModelProgress) => void) =>
     on<OfflineModelProgress>('replace-translation-pack-progress', payload => listener(payload)),
 }

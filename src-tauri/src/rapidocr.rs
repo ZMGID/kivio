@@ -1,10 +1,8 @@
 //! RapidOCR 离线 OCR：跨平台 PaddleOCR ONNX pipeline。
 //!
-//! 双档位（`ModelTier`）：
-//! - `Standard` — PP-OCRv5 mobile,现状不变,文件放模型目录根下(det.onnx/rec.onnx/keys.txt)。
-//! - `High` — PP-OCRv6 medium,精度更高但更重,文件放 `high/` 子目录,按需单独下载。
-//! 两档共享 [`crate::offline_models::OfflineModelManager`] 管理的 ONNX Runtime、
-//! 校验清单和可续传下载器；本模块只负责 OCR pipeline 生命周期与结果后处理。
+//! 单一模型：PP-OCRv6 medium（50 语言，文件放模型目录 `high/` 子目录）。
+//! ONNX Runtime、校验清单和可续传下载器由 [`crate::offline_models::OfflineModelManager`]
+//! 管理；本模块只负责 OCR pipeline 生命周期与结果后处理。
 //!
 //! ONNX Runtime dylib 通过 `ort` 的 `load-dynamic` feature 在运行时加载,
 //! 安装包不带任何 ONNX Runtime 二进制。
@@ -17,15 +15,11 @@ use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
 use serde::Serialize;
 use tokio::sync::OnceCell;
 
-/// RapidOCR 模型档位。由各调用场景(截图翻译 / 知识库文档处理)的设置字符串解析而来。
-pub use crate::offline_models::OcrModelTier as ModelTier;
-
-/// 前端拉状态用:分档就绪情况 + 模型目录(供 UI 显示)。
+/// 前端拉状态用:就绪情况 + 模型目录(供 UI 显示)。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RapidOcrStatus {
-    pub standard_available: bool,
-    pub high_available: bool,
+    pub available: bool,
     pub model_dir: Option<String>,
 }
 
@@ -40,18 +34,15 @@ pub struct RapidOcrInstallResult {
 /// AppState 持有的 RapidOCR 客户端。线程安全,Tauri command 间共享。
 pub struct RapidOcrClient {
     models: Arc<OfflineModelManager>,
-    /// 首次调用某档位时初始化:ort::init_from(进程级,两档共用一次) + OAROCRBuilder.build,
-    /// 按档位分别缓存 pipeline,后续复用。
-    standard_pipeline: OnceCell<Arc<OAROCR>>,
-    high_pipeline: OnceCell<Arc<OAROCR>>,
+    /// 首次调用时初始化:ort::init_from(进程级一次) + OAROCRBuilder.build,之后复用。
+    pipeline: OnceCell<Arc<OAROCR>>,
 }
 
 impl RapidOcrClient {
     pub fn new(models: Arc<OfflineModelManager>) -> Arc<Self> {
         Arc::new(Self {
             models,
-            standard_pipeline: OnceCell::new(),
-            high_pipeline: OnceCell::new(),
+            pipeline: OnceCell::new(),
         })
     }
 
@@ -80,78 +71,58 @@ impl RapidOcrClient {
         self.models.model_dir()
     }
 
-    /// 分档就绪情况。任一档必备文件不全 → 该档 available=false,前端渲染对应下载按钮。
+    /// 就绪情况。必备文件不全 → available=false,前端渲染下载按钮。
     pub fn status(&self) -> RapidOcrStatus {
         let Ok(dir) = self.model_dir() else {
             return RapidOcrStatus {
-                standard_available: false,
-                high_available: false,
+                available: false,
                 model_dir: None,
             };
         };
         RapidOcrStatus {
-            standard_available: self.models.rapidocr_ready(ModelTier::Standard),
-            high_available: self.models.rapidocr_ready(ModelTier::High),
+            available: self.models.rapidocr_ready(),
             model_dir: Some(dir.to_string_lossy().into_owned()),
         }
     }
 
-    /// 按档位顺序下载必备文件:GET → 写 .tmp → rename。任一失败立刻返回 fail,不留半成品。
-    /// dylib 等共享文件两档都会经过 file_is_ready 跳过检查,天然只下载一次。
-    /// install_lock 防止双击并发(两档共用一把锁)。
-    pub async fn install(&self, tier: ModelTier) -> RapidOcrInstallResult {
-        let result = self.models.install_rapidocr(tier).await;
+    /// 顺序下载必备文件:GET → 写 .tmp → rename。任一失败立刻返回 fail,不留半成品。
+    /// install_lock 防止双击并发。
+    pub async fn install(&self) -> RapidOcrInstallResult {
+        let result = self.models.install_rapidocr().await;
         RapidOcrInstallResult {
             success: result.success,
             message: result.message,
         }
     }
 
-    /// 解析模型目录 + 校验该档位文件齐全 + 惰性初始化并复用该档位的 OAROCR pipeline。
+    /// 解析模型目录 + 校验文件齐全 + 惰性初始化并复用 OAROCR pipeline。
     /// `ocr_image` / `ocr_image_lines` 共用：文件不齐 → `rapidocr_models_missing`；
-    /// 首次走 OnceCell init（ort::init_from 全进程一次 + 构建该档 pipeline，~1-3s），后续复用。
-    async fn pipeline_for(&self, tier: ModelTier) -> Result<Arc<OAROCR>, String> {
+    /// 首次走 OnceCell init（ort::init_from 全进程一次 + 构建 pipeline，~1-3s），后续复用。
+    async fn pipeline(&self) -> Result<Arc<OAROCR>, String> {
         let dir = self.model_dir()?;
-        if !self.models.rapidocr_ready(tier) {
+        if !self.models.rapidocr_ready() {
             return Err("rapidocr_models_missing".into());
         }
 
         ensure_ort_init(&self.models).await?;
 
-        let (det_path, rec_path, keys_path) = match tier {
-            ModelTier::Standard => (
-                dir.join("det.onnx"),
-                dir.join("rec.onnx"),
-                dir.join("keys.txt"),
-            ),
-            ModelTier::High => (
-                dir.join("high").join("det.onnx"),
-                dir.join("high").join("rec.onnx"),
-                dir.join("high").join("keys.txt"),
-            ),
-        };
-
-        let cell = match tier {
-            ModelTier::Standard => &self.standard_pipeline,
-            ModelTier::High => &self.high_pipeline,
-        };
-        let pipeline = cell
+        let pipeline = self
+            .pipeline
             .get_or_try_init(|| async {
-                let mut builder = OAROCRBuilder::new(
-                    det_path.to_string_lossy().into_owned(),
-                    rec_path.to_string_lossy().into_owned(),
-                    keys_path.to_string_lossy().into_owned(),
-                );
+                let high = dir.join("high");
+                let builder = OAROCRBuilder::new(
+                    high.join("det.onnx").to_string_lossy().into_owned(),
+                    high.join("rec.onnx").to_string_lossy().into_owned(),
+                    high.join("keys.txt").to_string_lossy().into_owned(),
+                )
                 // v6 medium 检测阈值与 v3~v5 不同,builder 默认值(0.3/0.6/1.5)只适配旧模型,
-                // 高精度档必须显式覆盖,否则漏检严重。standard 档保持 builder 默认阈值。
-                if tier == ModelTier::High {
-                    builder = builder.text_detection_config(oar_ocr::domain::TextDetectionConfig {
-                        score_threshold: 0.2,
-                        box_threshold: 0.45,
-                        unclip_ratio: 1.4,
-                        ..Default::default()
-                    });
-                }
+                // 必须显式覆盖,否则漏检严重。
+                .text_detection_config(oar_ocr::domain::TextDetectionConfig {
+                    score_threshold: 0.2,
+                    box_threshold: 0.45,
+                    unclip_ratio: 1.4,
+                    ..Default::default()
+                });
                 let p = builder
                     .build()
                     .map_err(|e| format!("OAROCRBuilder failed: {e}"))?;
@@ -162,14 +133,12 @@ impl RapidOcrClient {
     }
 
     /// OCR 主入口。文件不齐 → `rapidocr_models_missing` 错误码,前端渲染下载提示。
-    /// 首次调用某档位走 OnceCell init:ort::init_from(进程级一次) + 构建该档 pipeline(~1-3s)。
-    /// 后续调用直接复用对应档位 pipeline,standard ~200-500ms/张,high 更慢但更准。
+    /// 首次调用走 OnceCell init:ort::init_from(进程级一次) + 构建 pipeline(~1-3s),后续复用。
     pub async fn ocr_image(
         self: &Arc<Self>,
         image_path: &std::path::Path,
-        tier: ModelTier,
     ) -> Result<String, String> {
-        let pipeline = self.pipeline_for(tier).await?;
+        let pipeline = self.pipeline().await?;
 
         // oar-ocr 同步 API,spawn_blocking 避免阻塞 tokio 调度器。
         let path = image_path.to_owned();
@@ -186,13 +155,12 @@ impl RapidOcrClient {
         Ok(text)
     }
 
-    /// 带 bbox 的行级 OCR，供替换翻译在原位绘制译文。与 `ocr_image` 共用同档位 pipeline。
+    /// 带 bbox 的行级 OCR，供替换翻译在原位绘制译文。与 `ocr_image` 共用 pipeline。
     pub async fn ocr_image_lines(
         self: &Arc<Self>,
         image_path: &std::path::Path,
-        tier: ModelTier,
     ) -> Result<Vec<RapidOcrLine>, String> {
-        let pipeline = self.pipeline_for(tier).await?;
+        let pipeline = self.pipeline().await?;
 
         let path = image_path.to_owned();
         let lines = tokio::task::spawn_blocking(move || -> Result<Vec<RapidOcrLine>, String> {
@@ -849,12 +817,10 @@ mod tests {
     }
 }
 
-/// 真实端到端验证:真实下载 + 真实推理(standard PP-OCRv5 mobile / high PP-OCRv6 medium)。
+/// 真实端到端验证:真实下载 + 真实推理(PP-OCRv6 medium)。
 ///
 /// 门控:`RAPIDOCR_E2E=1` 才跑,否则打印 skip 直接返回(不算失败,CI/常规跑测试不受影响)。
-/// 单个测试函数内顺序执行两档,因为 `ort::init_from` 是进程级只能成功调用一次,不能拆成
-/// 并行的多个测试函数(会互相踩)。模型缓存目录固定在系统临时目录下的一个子目录,重复运行
-/// 不用每次重下 ~150MB。
+/// 模型缓存目录固定在系统临时目录下的一个子目录,重复运行不用每次重下 ~150MB。
 #[cfg(all(test, target_os = "windows"))]
 mod rapidocr_e2e {
     use super::*;
@@ -882,88 +848,48 @@ mod rapidocr_e2e {
             image_path.display()
         );
 
-        // 1) 下载两档(共享 dylib 只会真正下载一次)。
+        // 1) 下载(共享 dylib + PP-OCRv6 模型)。
         let t0 = std::time::Instant::now();
-        let standard_install = client.install(ModelTier::Standard).await;
+        let install = client.install().await;
         eprintln!(
-            "[rapidocr-e2e] standard install: success={} message={:?} elapsed={:?}",
-            standard_install.success,
-            standard_install.message,
+            "[rapidocr-e2e] install: success={} message={:?} elapsed={:?}",
+            install.success,
+            install.message,
             t0.elapsed()
         );
-        assert!(
-            standard_install.success,
-            "standard install failed: {}",
-            standard_install.message
-        );
+        assert!(install.success, "install failed: {}", install.message);
 
-        let t1 = std::time::Instant::now();
-        let high_install = client.install(ModelTier::High).await;
-        eprintln!(
-            "[rapidocr-e2e] high install: success={} message={:?} elapsed={:?}",
-            high_install.success,
-            high_install.message,
-            t1.elapsed()
-        );
-        assert!(
-            high_install.success,
-            "high install failed: {}",
-            high_install.message
-        );
-
-        // 2) status:两档都应就绪。
+        // 2) status:应就绪。
         let status = client.status();
         eprintln!("[rapidocr-e2e] status = {status:?}");
-        assert!(
-            status.standard_available,
-            "standard should be available after install"
-        );
-        assert!(
-            status.high_available,
-            "high should be available after install"
-        );
+        assert!(status.available, "models should be available after install");
 
-        // 3) standard 档真实推理。
+        // 3) 真实推理。
         let t2 = std::time::Instant::now();
-        let standard_text = client
-            .ocr_image(&image_path, ModelTier::Standard)
+        let text = client
+            .ocr_image(&image_path)
             .await
-            .expect("standard ocr_image should succeed");
+            .expect("ocr_image should succeed");
         eprintln!(
-            "[rapidocr-e2e] standard OCR result (elapsed={:?}):\n{standard_text}",
+            "[rapidocr-e2e] OCR result (elapsed={:?}):\n{text}",
             t2.elapsed()
         );
+        assert!(!text.is_empty(), "OCR text should not be empty");
         assert!(
-            !standard_text.is_empty(),
-            "standard OCR text should not be empty"
+            text.contains("Kivio"),
+            "OCR text should contain 'Kivio', got: {text}"
         );
         assert!(
-            standard_text.contains("Kivio"),
-            "standard OCR text should contain 'Kivio', got: {standard_text}"
+            text.contains("测试") || text.contains("识别"),
+            "OCR text should contain a Chinese keyword ('测试'/'识别'), got: {text}"
         );
 
-        // 4) high 档真实推理。
-        let t3 = std::time::Instant::now();
-        let high_text = client
-            .ocr_image(&image_path, ModelTier::High)
-            .await
-            .expect("high ocr_image should succeed");
-        eprintln!(
-            "[rapidocr-e2e] high OCR result (elapsed={:?}):\n{high_text}",
-            t3.elapsed()
-        );
-        assert!(!high_text.is_empty(), "high OCR text should not be empty");
-        assert!(
-            high_text.contains("测试") || high_text.contains("识别"),
-            "high OCR text should contain a Chinese keyword ('测试'/'识别'), got: {high_text}"
-        );
-
-        // 5) 带坐标的行级 OCR(替换翻译用),同档位 pipeline 复用,断言坐标合理。
+        // 4) 带坐标的行级 OCR(替换翻译用),pipeline 复用,断言坐标合理。
         let lines = client
-            .ocr_image_lines(&image_path, ModelTier::High)
+            .ocr_image_lines(&image_path)
             .await
-            .expect("high ocr_image_lines should succeed");
-        eprintln!("[rapidocr-e2e] high ocr_image_lines: {lines:?}");
+            .expect("ocr_image_lines should succeed");
+        eprintln!("[rapidocr-e2e] ocr_image_lines: {lines:?}");
         assert!(
             !lines.is_empty(),
             "ocr_image_lines should return at least one line"

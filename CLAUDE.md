@@ -135,7 +135,7 @@ A single busy flag (`AppState.lens_busy`, `AtomicBool`) prevents concurrent over
 
 - **macOS system OCR** (`macos_ocr.rs`) — spawns `kivio-ocr-helper` Swift sidecar that calls Apple Vision. The helper is a persistent subprocess; requests/responses are JSON over stdin/stdout. Built via `npm run build:swift`.
 - **Windows system OCR** (`windows_ocr.rs`) — calls `Windows.Media.Ocr` APIs directly via Windows Runtime bindings.
-- **RapidOCR offline** (`rapidocr.rs`) — cross-platform PaddleOCR ONNX pipeline for users who want fully offline OCR without system dependencies. Two model tiers sharing one ONNX Runtime dylib: `standard` (PP-OCRv5 mobile zh+en, root of `rapidocr-models/`) and `high` (PP-OCRv6 medium, ~139MB, 50 languages, `high/` subdir, ModelScope download; requires explicit v6 detection thresholds 0.2/0.45/1.4). Tier is chosen **per scenario** via `rapid_ocr_tier` on `ScreenshotTranslationConfig` (replace-translate follows it) and `DocumentProcessingConfig`, default `standard`. Downloads ONNX Runtime + models on first use. User-initiated install only (`rapidocr_install(tier)`); no automatic fallback.
+- **RapidOCR offline** (`rapidocr.rs`) — cross-platform PaddleOCR ONNX pipeline for users who want fully offline OCR without system dependencies. Single model: PP-OCRv6 medium (~139MB, 50 languages, `high/` subdir of `rapidocr-models/`, ModelScope download; requires explicit v6 detection thresholds 0.2/0.45/1.4), sharing one ONNX Runtime dylib. Downloads ONNX Runtime + models on first use. User-initiated install only (`rapidocr_install`); no automatic fallback.
 
 ### Kivio Code — terminal coding agent (`kivio_code/`)
 

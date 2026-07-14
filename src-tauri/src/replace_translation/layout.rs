@@ -1256,10 +1256,7 @@ mod tests {
             .expect("set KIVIO_REPLACE_LAYOUT_IMAGE");
         let client =
             crate::rapidocr::RapidOcrClient::with_model_dir(model_dir, reqwest::Client::new());
-        let spans = client
-            .ocr_image_lines(&image_path, crate::rapidocr::ModelTier::Standard)
-            .await
-            .expect("run OCR");
+        let spans = client.ocr_image_lines(&image_path).await.expect("run OCR");
         if std::env::var_os("KIVIO_REPLACE_DEBUG_SPANS").is_some() {
             eprintln!(
                 "{}",

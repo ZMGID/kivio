@@ -23,10 +23,7 @@ mod e2e_tests {
             reqwest::Client::new(),
         );
         let ocr = crate::rapidocr::RapidOcrClient::new(manager.clone());
-        let spans = ocr
-            .ocr_image_lines(&image_path, crate::rapidocr::ModelTier::Standard)
-            .await
-            .expect("run OCR");
+        let spans = ocr.ocr_image_lines(&image_path).await.expect("run OCR");
         let image = image::open(&image_path).expect("open image").to_rgb8();
         let spans = super::layout::filter_replaceable_spans(image.width(), &spans);
         let geometry = super::layout::build_replace_geometry(&image, &spans);

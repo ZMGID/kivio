@@ -8,8 +8,8 @@ Use this contract when changing screenshot replace translation across Rust comma
 
 ### 2. Signatures
 
-- `replace_translation_pack_status(tier: string) -> ReplaceTranslationPackStatus`
-- `replace_translation_pack_install(tier: string) -> OfflineModelInstallResult`
+- `replace_translation_pack_status() -> ReplaceTranslationPackStatus`
+- `replace_translation_pack_install() -> OfflineModelInstallResult`
 - Event: `replace-translation-pack-progress -> OfflineModelProgress`
 - Event: `lens-replace-stream -> LensReplaceStreamPayload`
 - Event payload V2: `{ version: 2, imageId, phase, groups, slots, cleanedImage?, warning?, error? }`

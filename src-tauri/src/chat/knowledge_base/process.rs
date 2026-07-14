@@ -43,7 +43,7 @@ pub async fn process_document(
     // Images always go through the local OCR path — the third-party services
     // are document parsers, and OCR engine selection stays authoritative.
     if is_image_ext(path) {
-        let text = ocr_image(state, path, &cfg.ocr_engine, &cfg.rapid_ocr_tier).await?;
+        let text = ocr_image(state, path, &cfg.ocr_engine).await?;
         if text.trim().is_empty() {
             return Err("OCR 未识别到文字".into());
         }
@@ -93,12 +93,7 @@ pub async fn process_document(
 }
 
 /// OCR one image via the selected engine, mirroring lens_commands' dispatch.
-async fn ocr_image(
-    state: &AppState,
-    path: &Path,
-    engine: &str,
-    rapid_ocr_tier: &str,
-) -> Result<String, String> {
+async fn ocr_image(state: &AppState, path: &Path, engine: &str) -> Result<String, String> {
     match engine {
         "system" => {
             #[cfg(target_os = "macos")]
@@ -115,12 +110,7 @@ async fn ocr_image(
                 return Err("系统 OCR 在此平台不可用".into());
             }
         }
-        "rapid_ocr" => {
-            state
-                .rapidocr
-                .ocr_image(path, crate::rapidocr::ModelTier::parse(rapid_ocr_tier))
-                .await
-        }
+        "rapid_ocr" => state.rapidocr.ocr_image(path).await,
         _ => Err("图片入库需先在「文档处理」选择 OCR 引擎".into()),
     }
 }
@@ -252,9 +242,7 @@ async fn mineru_process(
                         .ok_or("MinerU: done but no full_zip_url")?;
                     return mineru_download_md(state, zip_url).await;
                 }
-                "failed" => {
-                    return Err(format!("MinerU parse {}", envelope_err(first, "failed")))
-                }
+                "failed" => return Err(format!("MinerU parse {}", envelope_err(first, "failed"))),
                 _ => {}
             }
         }
@@ -395,10 +383,13 @@ mod tests {
     use crate::state::AppState;
     use std::path::PathBuf;
 
-    fn cfg(active: &str, fallback: bool, providers: Vec<DocProcessorProvider>) -> DocumentProcessingConfig {
+    fn cfg(
+        active: &str,
+        fallback: bool,
+        providers: Vec<DocProcessorProvider>,
+    ) -> DocumentProcessingConfig {
         DocumentProcessingConfig {
             ocr_engine: "off".into(),
-            rapid_ocr_tier: "standard".into(),
             pdf_strategy: "text".into(),
             active_processor: active.to_string(),
             fallback_to_third_party: fallback,
@@ -471,7 +462,10 @@ mod tests {
     fn base_url_defaulting() {
         assert_eq!(base_or("", "https://x.test"), "https://x.test");
         assert_eq!(base_or("  ", "https://x.test"), "https://x.test");
-        assert_eq!(base_or("https://y.test/", "https://x.test"), "https://y.test");
+        assert_eq!(
+            base_or("https://y.test/", "https://x.test"),
+            "https://y.test"
+        );
     }
 
     // engine "off" returns before touching state/disk, so a headless state is
