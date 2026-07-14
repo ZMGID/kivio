@@ -1,4 +1,4 @@
-import { type ComponentType, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentType, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   Bot,
@@ -388,9 +388,104 @@ function CardStatusMark({ status }: { status: ToolCallStatus }) {
   return <StatusIcon status={status} />
 }
 
+/** Mono-gray metadata chip in a consult-card header (agent type, model, count…). */
+function CardChip({ children, tabular = false }: { children: ReactNode; tabular?: boolean }) {
+  return (
+    <span
+      className={`shrink-0 font-mono text-[11px] text-neutral-400 dark:text-neutral-500${
+        tabular ? ' tabular-nums' : ''
+      }`}
+    >
+      {children}
+    </span>
+  )
+}
+
+/** Labeled section in a consult-card body (Task / Result / Question / Query…). */
+function CardSection({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <div className="mb-0.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500">
+        {label}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/** Shared boxed "consult card" shell for standalone delegations/consultations
+ *  (SUBAGENT / ADVISOR / KNOWLEDGE). Owns the eyebrow + uppercase mono label +
+ *  status mark + status line + collapse; callers supply identity chips, metric
+ *  chips, and the expandable body. Header order matches the original hand-rolled
+ *  cards: eyebrow · LABEL · identity chips · status mark · metric chips ·
+ *  status line · chevron. */
+function ConsultCard({
+  label,
+  status,
+  identityChips,
+  metricChips,
+  statusLine,
+  children,
+}: {
+  label: string
+  status: ToolCallStatus
+  identityChips?: ReactNode
+  metricChips?: ReactNode
+  statusLine?: string
+  children?: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const hasBody = Boolean(children)
+  const running = status === 'running'
+  return (
+    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
+      <button
+        type="button"
+        onClick={() => { if (hasBody) setOpen((v) => !v) }}
+        aria-expanded={hasBody ? open : undefined}
+        className={`flex w-full max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left ${hasBody ? '' : 'cursor-default'}`}
+        data-tauri-drag-region="false"
+      >
+        <CardEyebrow running={running} />
+        <span className="shrink-0 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-800 dark:text-neutral-100">
+          {label}
+        </span>
+        {identityChips}
+        {!running && (
+          <span className="shrink-0">
+            <CardStatusMark status={status} />
+          </span>
+        )}
+        {metricChips}
+        {statusLine && (
+          <span
+            className={`min-w-0 truncate font-mono text-[11px] ${
+              running ? 'reasoning-shimmer-text' : 'text-neutral-400 dark:text-neutral-500'
+            }`}
+          >
+            {statusLine}
+          </span>
+        )}
+        {hasBody && (
+          <ChevronDown
+            size={12}
+            strokeWidth={2}
+            className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-300 dark:text-neutral-500 ${open ? 'rotate-180' : ''}`}
+          />
+        )}
+      </button>
+
+      {hasBody && open && (
+        <div className="chat-motion-search-reveal mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12.5px] dark:border-white/10">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const status = normalizeToolCallStatus(toolCall.status)
-  const [open, setOpen] = useState(false)
   const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
@@ -410,77 +505,32 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const displayName = name && name !== agentType ? name : ''
 
   return (
-    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
-      <button
-        type="button"
-        onClick={() => { if (hasBody) setOpen((v) => !v) }}
-        aria-expanded={hasBody ? open : undefined}
-        className={`flex w-full max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left ${hasBody ? '' : 'cursor-default'}`}
-        data-tauri-drag-region="false"
-      >
-        <CardEyebrow running={status === 'running'} />
-        <span className="shrink-0 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-800 dark:text-neutral-100">
-          SUBAGENT
-        </span>
-        {agentType && (
-          <span className="shrink-0 font-mono text-[11px] text-neutral-400 dark:text-neutral-500">
-            {agentType}
-          </span>
-        )}
-        {displayName && (
-          <span className="shrink-0 font-mono text-[11px] text-neutral-400 dark:text-neutral-500">
-            {displayName}
-          </span>
-        )}
-        {model && (
-          <span className="shrink-0 font-mono text-[11px] text-neutral-400 dark:text-neutral-500">
-            {model}
-          </span>
-        )}
-        {status !== 'running' && (
-          <span className="shrink-0">
-            <CardStatusMark status={status} />
-          </span>
-        )}
-        {duration && (
-          <span className="shrink-0 font-mono text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
-            {duration}
-          </span>
-        )}
-        {usageLine && (
-          <span className="shrink-0 font-mono text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
-            {usageLine}
-          </span>
-        )}
-        {statusLine && (
-          <span
-            className={`min-w-0 truncate font-mono text-[11px] ${
-              status === 'running' ? 'reasoning-shimmer-text' : 'text-neutral-400 dark:text-neutral-500'
-            }`}
-          >
-            {statusLine}
-          </span>
-        )}
-        {hasBody && (
-          <ChevronDown
-            size={12}
-            strokeWidth={2}
-            className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-300 dark:text-neutral-500 ${open ? 'rotate-180' : ''}`}
-          />
-        )}
-      </button>
-
-      {hasBody && open && (
-        <div className="chat-motion-search-reveal mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12.5px] dark:border-white/10">
+    <ConsultCard
+      label="SUBAGENT"
+      status={status}
+      identityChips={
+        <>
+          {agentType && <CardChip>{agentType}</CardChip>}
+          {displayName && <CardChip>{displayName}</CardChip>}
+          {model && <CardChip>{model}</CardChip>}
+        </>
+      }
+      metricChips={
+        <>
+          {duration && <CardChip tabular>{duration}</CardChip>}
+          {usageLine && <CardChip tabular>{usageLine}</CardChip>}
+        </>
+      }
+      statusLine={statusLine}
+    >
+      {hasBody && (
+        <>
           {prompt && (
-            <div>
-              <div className="mb-0.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500">
-                Task
-              </div>
+            <CardSection label="Task">
               <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
                 {compactText(prompt, 600)}
               </div>
-            </div>
+            </CardSection>
           )}
           {status === 'running' && (steps.length > 0 || preview) && (
             <div className="border-l border-neutral-300 pl-2.5 dark:border-white/15">
@@ -501,21 +551,18 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
             </div>
           )}
           {status !== 'running' && result && (
-            <div>
-              <div className="mb-0.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500">
-                Result
-              </div>
+            <CardSection label="Result">
               <ChatMarkdown content={result} />
-            </div>
+            </CardSection>
           )}
           {error && (
             <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
               {error}
             </div>
           )}
-        </div>
+        </>
       )}
-    </div>
+    </ConsultCard>
   )
 }
 
@@ -550,7 +597,6 @@ function isAdvisorRecord(toolCall: ToolCallRecord): boolean {
  *  (question + advice) is collapsible, collapsed by default to stay compact. */
 function AdvisorCard({ toolCall }: ToolCallBlockProps) {
   const status = normalizeToolCallStatus(toolCall.status)
-  const [open, setOpen] = useState(false)
   const view = useMemo(() => structuredAdvisor(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
@@ -565,79 +611,35 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
   const hasBody = Boolean(question || advice || error)
 
   return (
-    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
-      <button
-        type="button"
-        onClick={() => { if (hasBody) setOpen((v) => !v) }}
-        aria-expanded={hasBody ? open : undefined}
-        className={`flex w-full max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left ${hasBody ? '' : 'cursor-default'}`}
-        data-tauri-drag-region="false"
-      >
-        <CardEyebrow running={status === 'running'} />
-        <span className="shrink-0 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-800 dark:text-neutral-100">
-          ADVISOR
-        </span>
-        {model && (
-          <span className="shrink-0 font-mono text-[11px] text-neutral-400 dark:text-neutral-500">
-            {model}
-          </span>
-        )}
-        {status !== 'running' && (
-          <span className="shrink-0">
-            <CardStatusMark status={status} />
-          </span>
-        )}
-        {duration && (
-          <span className="shrink-0 font-mono text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
-            {duration}
-          </span>
-        )}
-        {statusLine && (
-          <span
-            className={`min-w-0 truncate font-mono text-[11px] ${
-              status === 'running' ? 'reasoning-shimmer-text' : 'text-neutral-400 dark:text-neutral-500'
-            }`}
-          >
-            {statusLine}
-          </span>
-        )}
-        {hasBody && (
-          <ChevronDown
-            size={12}
-            strokeWidth={2}
-            className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-300 dark:text-neutral-500 ${open ? 'rotate-180' : ''}`}
-          />
-        )}
-      </button>
-
-      {hasBody && open && (
-        <div className="chat-motion-search-reveal mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12.5px] dark:border-white/10">
+    <ConsultCard
+      label="ADVISOR"
+      status={status}
+      identityChips={model ? <CardChip>{model}</CardChip> : undefined}
+      metricChips={duration ? <CardChip tabular>{duration}</CardChip> : undefined}
+      statusLine={statusLine}
+    >
+      {hasBody && (
+        <>
           {question && (
-            <div>
-              <div className="mb-0.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500">
-                Question
-              </div>
+            <CardSection label="Question">
               <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
                 {compactText(question, 600)}
               </div>
-            </div>
+            </CardSection>
           )}
           {advice && (
-            <div>
-              <div className="mb-0.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500">
-                Advice
-              </div>
+            <CardSection label="Advice">
               <ChatMarkdown content={advice} />
-            </div>
+            </CardSection>
           )}
           {!advice && error && (
             <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
               {error}
             </div>
           )}
-        </div>
+        </>
       )}
-    </div>
+    </ConsultCard>
   )
 }
 
@@ -688,6 +690,65 @@ function KnowledgeHits({ hits }: { hits: KbHitView[] }) {
         </div>
       ))}
     </div>
+  )
+}
+
+function isKnowledgeSearchRecord(toolCall: ToolCallRecord): boolean {
+  return toolCall.source === 'native' && toolRawName(toolCall) === 'knowledge_search'
+}
+
+/** Dedicated card for a `knowledge_search` (RAG) consultation: same consult-card
+ *  shell as SUBAGENT/ADVISOR. Body shows the query plus the retrieved [n]
+ *  passages (KnowledgeHits) or, when nothing matched, the plain result text. */
+function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
+  const status = normalizeToolCallStatus(toolCall.status)
+  const args = useMemo(() => parsedArguments(toolCall), [toolCall])
+  const hits = useMemo(() => knowledgeSearchHits(toolCall), [toolCall])
+
+  const query = stringValue(args?.query)
+  const duration = formatDuration(getDuration(toolCall))
+  const resultText = getResultPreview(toolCall)
+  const error = toolCall.error ? compactToolError(toolCall.error) : ''
+  const count = hits?.length ?? 0
+  const statusLine =
+    status === 'running' ? '检索中…' : status === 'error' ? (error || '检索失败') : ''
+
+  const hasBody = Boolean(query || hits || (status !== 'running' && resultText) || error)
+
+  return (
+    <ConsultCard
+      label="KNOWLEDGE"
+      status={status}
+      identityChips={count > 0 ? <CardChip>{count} 段</CardChip> : undefined}
+      metricChips={duration ? <CardChip tabular>{duration}</CardChip> : undefined}
+      statusLine={statusLine}
+    >
+      {hasBody && (
+        <>
+          {query && (
+            <CardSection label="Query">
+              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                {compactText(query, 300)}
+              </div>
+            </CardSection>
+          )}
+          {hits ? (
+            <KnowledgeHits hits={hits} />
+          ) : (
+            status !== 'running' && resultText && (
+              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                {resultText}
+              </div>
+            )
+          )}
+          {!hits && error && (
+            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              {error}
+            </div>
+          )}
+        </>
+      )}
+    </ConsultCard>
   )
 }
 
@@ -1367,6 +1428,9 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
   }
   if (isAdvisorRecord(props.toolCall)) {
     return <AdvisorCard {...props} />
+  }
+  if (isKnowledgeSearchRecord(props.toolCall)) {
+    return <KnowledgeCard {...props} />
   }
   return <DefaultToolCallBlock {...props} />
 }

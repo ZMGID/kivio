@@ -142,4 +142,71 @@ describe('ToolCallBlock', () => {
     expect(within(button).getByText('npm test')).toBeInTheDocument()
     expect(within(button).queryByText(/exit_code/)).not.toBeInTheDocument()
   })
+
+  it('renders a subagent record as a SUBAGENT consult card, expandable to the task', async () => {
+    const user = userEvent.setup()
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'agent',
+          source: 'native',
+          status: 'success',
+          structured_content: { type: 'subagent', agentType: 'researcher', result: '调查结论' },
+          arguments: { subagent_type: 'researcher', prompt: '去调查一下这个问题' },
+        })}
+      />,
+    )
+    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
+    expect(screen.getByText('researcher')).toBeInTheDocument()
+    await user.click(screen.getByRole('button'))
+    expect(screen.getByText('Task')).toBeInTheDocument()
+    expect(screen.getByText('去调查一下这个问题')).toBeInTheDocument()
+    expect(screen.getByText('调查结论')).toBeInTheDocument()
+  })
+
+  it('renders an advisor record as an ADVISOR consult card, expandable to the advice', async () => {
+    const user = userEvent.setup()
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'advisor',
+          source: 'native',
+          status: 'success',
+          structured_content: { type: 'advisor', model: 'opus', question: '该怎么办', advice: '这样做' },
+        })}
+      />,
+    )
+    expect(screen.getByText('ADVISOR')).toBeInTheDocument()
+    expect(screen.getByText('opus')).toBeInTheDocument()
+    await user.click(screen.getByRole('button'))
+    expect(screen.getByText('Question')).toBeInTheDocument()
+    expect(screen.getByText('Advice')).toBeInTheDocument()
+    expect(screen.getByText('这样做')).toBeInTheDocument()
+  })
+
+  it('renders a knowledge_search record as a KNOWLEDGE consult card with query and hits', async () => {
+    const user = userEvent.setup()
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'knowledge_search',
+          source: 'native',
+          status: 'success',
+          arguments: { query: '替换翻译怎么工作' },
+          structured_content: {
+            hits: [
+              { n: 1, docName: 'design.md', headingPath: '几何', score: 0.91, text: '命中片段内容' },
+            ],
+          },
+        })}
+      />,
+    )
+    expect(screen.getByText('KNOWLEDGE')).toBeInTheDocument()
+    expect(screen.getByText('1 段')).toBeInTheDocument()
+    await user.click(screen.getByRole('button'))
+    expect(screen.getByText('Query')).toBeInTheDocument()
+    expect(screen.getByText('替换翻译怎么工作')).toBeInTheDocument()
+    expect(screen.getByText('命中片段内容')).toBeInTheDocument()
+    expect(screen.getByText('[1]')).toBeInTheDocument()
+  })
 })
