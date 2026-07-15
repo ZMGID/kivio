@@ -1801,13 +1801,15 @@ export default function Lens() {
         : replaceError === 'replace_translation_pack_missing'
           ? t.replaceTranslatePackRequired
           : replaceError)
-    : replacePhase === 'ocr'
-      ? t.replaceTranslateStatusOcr
-      : replacePhase === 'processing'
-        ? t.replaceTranslateStatusTranslating
-        : replaceWarning
-          ? `${t.replaceTranslateStatusDone} ⚠`
-          : t.replaceTranslateStatusDone
+    : replacePhase === 'processing'
+      ? t.replaceTranslateStatusTranslating
+      : replacePhase === 'done'
+        ? (replaceWarning
+            ? `${t.replaceTranslateStatusDone} ⚠`
+            : t.replaceTranslateStatusDone)
+        // 初始态('')与 'ocr' 都仍在识别阶段:只有明确 'done' 才显示"替换完成",
+        // 避免刚开始识别时就误显示完成(phase 事件晚于 overlay 出现)。
+        : t.replaceTranslateStatusOcr
   // 浮动布局仅用于截图翻译关闭全屏覆盖、或 translateText 文本翻译卡。
   // 普通 Lens 截图后固定保持全屏 overlay，只移动输入栏。
   // capturedFrame 只在最近一次截图后非空,而 restoreHistory 会清掉它(历史项的选区不再相关);
