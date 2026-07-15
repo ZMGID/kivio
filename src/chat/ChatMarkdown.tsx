@@ -618,12 +618,14 @@ function LinkAnchor({ href, children }: { href: string; children?: ReactNode }) 
   const isWeb = /^https?:\/\//i.test(href)
   return (
     <a
+      // 不能加 target="_blank"：WRY 的 new-window 处理在 WKWebView 委托层，
+      // JS preventDefault 拦不住，会和下面的 openExternal 各开一个网页（双开）。
       href={href || undefined}
-      target="_blank"
       rel="noopener noreferrer"
       onClick={(event) => {
         // A plain <a> click would navigate the Tauri webview itself and
         // blow away the chat UI. Open web links in the system browser.
+        // 非 http(s)（mailto:/tel: 等）保留默认导航交给系统处理，openExternal 只认 http(s)。
         if (!isWeb) return
         event.preventDefault()
         void api.openExternal(href).catch((err) => console.error('openExternal failed', err))
