@@ -19,7 +19,7 @@
 
   "gpt-5.6": {
     "displayName": "GPT-5.6",
-    "contextWindow": 1000000,
+    "contextWindow": 256000,
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh"],
@@ -27,7 +27,7 @@
   },
   "gpt-5.6-sol": {
     "displayName": "GPT-5.6 Sol",
-    "contextWindow": 1000000,
+    "contextWindow": 256000,
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh"],
@@ -35,7 +35,7 @@
   },
   "gpt-5.6-terra": {
     "displayName": "GPT-5.6 Terra",
-    "contextWindow": 1000000,
+    "contextWindow": 256000,
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh"],
@@ -43,7 +43,7 @@
   },
   "gpt-5.6-luna": {
     "displayName": "GPT-5.6 Luna",
-    "contextWindow": 1000000,
+    "contextWindow": 256000,
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh"],
