@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::offline_models::{ensure_ort_init, OfflineModelManager};
+pub use crate::offline_models::OcrModelTier as ModelTier;
 use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
 use serde::Serialize;
 use tokio::sync::OnceCell;
@@ -20,7 +21,8 @@ use tokio::sync::OnceCell;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RapidOcrStatus {
-    pub available: bool,
+    pub standard_available: bool,
+    pub high_available: bool,
     pub model_dir: Option<String>,
 }
 
@@ -35,15 +37,18 @@ pub struct RapidOcrInstallResult {
 /// AppState 持有的 RapidOCR 客户端。线程安全,Tauri command 间共享。
 pub struct RapidOcrClient {
     models: Arc<OfflineModelManager>,
-    /// 首次调用时初始化:ort::init_from(进程级一次) + OAROCRBuilder.build,之后复用。
-    pipeline: OnceCell<Arc<OAROCR>>,
+    /// 按档位分别缓存 pipeline,首次调用某档时初始化(ort::init 进程级一次 + 构建该档
+    /// OAROCRBuilder),之后复用。
+    standard_pipeline: OnceCell<Arc<OAROCR>>,
+    high_pipeline: OnceCell<Arc<OAROCR>>,
 }
 
 impl RapidOcrClient {
     pub fn new(models: Arc<OfflineModelManager>) -> Arc<Self> {
         Arc::new(Self {
             models,
-            pipeline: OnceCell::new(),
+            standard_pipeline: OnceCell::new(),
+            high_pipeline: OnceCell::new(),
         })
     }
 
@@ -72,58 +77,77 @@ impl RapidOcrClient {
         self.models.model_dir()
     }
 
-    /// 就绪情况。必备文件不全 → available=false,前端渲染下载按钮。
+    /// 分档就绪情况。任一档必备文件不全 → 该档 available=false,前端渲染对应下载按钮。
     pub fn status(&self) -> RapidOcrStatus {
         let Ok(dir) = self.model_dir() else {
             return RapidOcrStatus {
-                available: false,
+                standard_available: false,
+                high_available: false,
                 model_dir: None,
             };
         };
         RapidOcrStatus {
-            available: self.models.rapidocr_ready(),
+            standard_available: self.models.rapidocr_ready(ModelTier::Standard),
+            high_available: self.models.rapidocr_ready(ModelTier::High),
             model_dir: Some(dir.to_string_lossy().into_owned()),
         }
     }
 
-    /// 顺序下载必备文件:GET → 写 .tmp → rename。任一失败立刻返回 fail,不留半成品。
-    /// install_lock 防止双击并发。
-    pub async fn install(&self) -> RapidOcrInstallResult {
-        let result = self.models.install_rapidocr().await;
+    /// 按档位顺序下载必备文件:GET → 写 .tmp → rename。任一失败立刻返回 fail,不留半成品。
+    /// dylib 等共享文件两档都会跳过已就绪检查,天然只下载一次。install_lock 防止双击并发。
+    pub async fn install(&self, tier: ModelTier) -> RapidOcrInstallResult {
+        let result = self.models.install_rapidocr(tier).await;
         RapidOcrInstallResult {
             success: result.success,
             message: result.message,
         }
     }
 
-    /// 解析模型目录 + 校验文件齐全 + 惰性初始化并复用 OAROCR pipeline。
-    /// `ocr_image` / `ocr_image_lines` 共用：文件不齐 → `rapidocr_models_missing`；
-    /// 首次走 OnceCell init（ort::init_from 全进程一次 + 构建 pipeline，~1-3s），后续复用。
-    async fn pipeline(&self) -> Result<Arc<OAROCR>, String> {
+    /// 解析模型目录 + 校验该档位文件齐全 + 惰性初始化并复用该档位的 OAROCR pipeline。
+    /// `ocr_image` / `ocr_image_lines` 共用:文件不齐 → `rapidocr_models_missing`;
+    /// 首次走 OnceCell init(ort::init_from 全进程一次 + 构建该档 pipeline,~1-3s),后续复用。
+    async fn pipeline_for(&self, tier: ModelTier) -> Result<Arc<OAROCR>, String> {
         let dir = self.model_dir()?;
-        if !self.models.rapidocr_ready() {
+        if !self.models.rapidocr_ready(tier) {
             return Err("rapidocr_models_missing".into());
         }
 
         ensure_ort_init(&self.models).await?;
 
-        let pipeline = self
-            .pipeline
+        let (det_path, rec_path, keys_path) = match tier {
+            ModelTier::Standard => (
+                dir.join("det.onnx"),
+                dir.join("rec.onnx"),
+                dir.join("keys.txt"),
+            ),
+            ModelTier::High => (
+                dir.join("high").join("det.onnx"),
+                dir.join("high").join("rec.onnx"),
+                dir.join("high").join("keys.txt"),
+            ),
+        };
+
+        let cell = match tier {
+            ModelTier::Standard => &self.standard_pipeline,
+            ModelTier::High => &self.high_pipeline,
+        };
+        let pipeline = cell
             .get_or_try_init(|| async {
-                let high = dir.join("high");
-                let builder = OAROCRBuilder::new(
-                    high.join("det.onnx").to_string_lossy().into_owned(),
-                    high.join("rec.onnx").to_string_lossy().into_owned(),
-                    high.join("keys.txt").to_string_lossy().into_owned(),
-                )
-                // v6 medium 检测阈值与 v3~v5 不同,builder 默认值(0.3/0.6/1.5)只适配旧模型,
-                // 必须显式覆盖,否则漏检严重。
-                .text_detection_config(oar_ocr::domain::TextDetectionConfig {
-                    score_threshold: 0.2,
-                    box_threshold: 0.45,
-                    unclip_ratio: 1.4,
-                    ..Default::default()
-                });
+                let mut builder = OAROCRBuilder::new(
+                    det_path.to_string_lossy().into_owned(),
+                    rec_path.to_string_lossy().into_owned(),
+                    keys_path.to_string_lossy().into_owned(),
+                );
+                // v6 medium(High)检测阈值与 v3~v5 不同,builder 默认值(0.3/0.6/1.5)只适配
+                // 旧模型,High 档必须显式覆盖否则漏检严重;Standard(v5 mobile)保持默认阈值。
+                if tier == ModelTier::High {
+                    builder = builder.text_detection_config(oar_ocr::domain::TextDetectionConfig {
+                        score_threshold: 0.2,
+                        box_threshold: 0.45,
+                        unclip_ratio: 1.4,
+                        ..Default::default()
+                    });
+                }
                 let p = builder
                     .build()
                     .map_err(|e| format!("OAROCRBuilder failed: {e}"))?;
@@ -133,13 +157,21 @@ impl RapidOcrClient {
         Ok(pipeline.clone())
     }
 
+    /// 预热指定档位:提前触发 OnceCell 初始化(ort::init 进程级一次 + 构建该档 pipeline,
+    /// ~1-5s),让替换翻译首次真正调用时该档 OCR 已就绪。模型不齐/初始化失败时静默返回——
+    /// 预热不是关键路径,真正的错误留给后续 `ocr_image_lines` 走正常错误分支上报。
+    pub async fn warmup(&self, tier: ModelTier) {
+        let _ = self.pipeline_for(tier).await;
+    }
+
     /// OCR 主入口。文件不齐 → `rapidocr_models_missing` 错误码,前端渲染下载提示。
     /// 首次调用走 OnceCell init:ort::init_from(进程级一次) + 构建 pipeline(~1-3s),后续复用。
     pub async fn ocr_image(
         self: &Arc<Self>,
         image_path: &std::path::Path,
+        tier: ModelTier,
     ) -> Result<String, String> {
-        let pipeline = self.pipeline().await?;
+        let pipeline = self.pipeline_for(tier).await?;
 
         // oar-ocr 同步 API,spawn_blocking 避免阻塞 tokio 调度器。
         let path = image_path.to_owned();
@@ -156,12 +188,13 @@ impl RapidOcrClient {
         Ok(text)
     }
 
-    /// 带 bbox 的行级 OCR，供替换翻译在原位绘制译文。与 `ocr_image` 共用 pipeline。
+    /// 带 bbox 的行级 OCR，供替换翻译在原位绘制译文。与 `ocr_image` 共用同档位 pipeline。
     pub async fn ocr_image_lines(
         self: &Arc<Self>,
         image_path: &std::path::Path,
+        tier: ModelTier,
     ) -> Result<Vec<RapidOcrLine>, String> {
-        let pipeline = self.pipeline().await?;
+        let pipeline = self.pipeline_for(tier).await?;
 
         let path = image_path.to_owned();
         let lines = tokio::task::spawn_blocking(move || -> Result<Vec<RapidOcrLine>, String> {
@@ -851,7 +884,7 @@ mod rapidocr_e2e {
 
         // 1) 下载(共享 dylib + PP-OCRv6 模型)。
         let t0 = std::time::Instant::now();
-        let install = client.install().await;
+        let install = client.install(ModelTier::High).await;
         eprintln!(
             "[rapidocr-e2e] install: success={} message={:?} elapsed={:?}",
             install.success,
@@ -863,12 +896,12 @@ mod rapidocr_e2e {
         // 2) status:应就绪。
         let status = client.status();
         eprintln!("[rapidocr-e2e] status = {status:?}");
-        assert!(status.available, "models should be available after install");
+        assert!(status.high_available, "models should be available after install");
 
         // 3) 真实推理。
         let t2 = std::time::Instant::now();
         let text = client
-            .ocr_image(&image_path)
+            .ocr_image(&image_path, ModelTier::High)
             .await
             .expect("ocr_image should succeed");
         eprintln!(
@@ -887,7 +920,7 @@ mod rapidocr_e2e {
 
         // 4) 带坐标的行级 OCR(替换翻译用),pipeline 复用,断言坐标合理。
         let lines = client
-            .ocr_image_lines(&image_path)
+            .ocr_image_lines(&image_path, ModelTier::High)
             .await
             .expect("ocr_image_lines should succeed");
         eprintln!("[rapidocr-e2e] ocr_image_lines: {lines:?}");

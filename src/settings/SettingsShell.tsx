@@ -27,6 +27,7 @@ import {
   type SkillMeta,
   type SkillDetail,
   type ReplaceTranslationPackStatus,
+  type RapidOcrTier,
 } from '../api/tauri'
 import {
   getSettingsCached,
@@ -973,12 +974,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
   }, [hasSystemOcr])
 
-  /** 下载 RapidOCR 包(dylib + PP-OCRv6 模型):阻塞若干秒,完成后 refresh status。 */
-  const handleDownloadRapidOcr = useCallback(async () => {
+  /** 下载指定档位的 RapidOCR 包(dylib 共享 + 该档模型):阻塞若干秒,完成后 refresh status。 */
+  const handleDownloadRapidOcr = useCallback(async (tier: import('../api/tauri').RapidOcrTier) => {
     setRapidOcrDownloadState('downloading')
     setRapidOcrDownloadError('')
     try {
-      const result = await api.rapidOcrInstall()
+      const result = await api.rapidOcrInstall(tier)
       if (result.success) {
         setRapidOcrDownloadState('idle')
         await refreshRapidOcrStatus()
@@ -993,22 +994,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
   }, [refreshRapidOcrStatus])
 
-  const refreshReplacePackStatus = useCallback(async () => {
+  const refreshReplacePackStatus = useCallback(async (tier: RapidOcrTier) => {
     if (!hasSystemOcr) return
     try {
-      setReplacePackStatus(await api.replaceTranslationPackStatus())
+      setReplacePackStatus(await api.replaceTranslationPackStatus(tier))
     } catch (err) {
       console.error('replaceTranslationPackStatus failed:', err)
     }
   }, [hasSystemOcr])
 
-  const handleDownloadReplacePack = useCallback(async () => {
+  const handleDownloadReplacePack = useCallback(async (tier: RapidOcrTier) => {
     dispatchReplacePackDownload({ type: 'start' })
     try {
-      const result = await api.replaceTranslationPackInstall()
+      const result = await api.replaceTranslationPackInstall(tier)
       if (result.success) {
         dispatchReplacePackDownload({ type: 'success' })
-        await Promise.all([refreshReplacePackStatus(), refreshRapidOcrStatus()])
+        await Promise.all([refreshReplacePackStatus(tier), refreshRapidOcrStatus()])
       } else {
         dispatchReplacePackDownload({ type: 'failure', error: result.message })
       }
@@ -1021,6 +1022,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
+    const tier = settings?.screenshotTranslation?.rapidOcrTier ?? 'standard'
     api.onReplaceTranslationPackProgress(progress => {
       if (cancelled) return
       // 两个安装包共用同一事件名；只消费替换翻译离线包事件，
@@ -1030,7 +1032,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       // 终态（最后一个文件 completed）时刷新就绪状态，
       // 与 handleDownloadReplacePack 成功路径一致；即使 install promise 丢失也不会卡住。
       if (progress.state === 'completed' && progress.overallDownloadedBytes >= progress.overallTotalBytes) {
-        void refreshReplacePackStatus()
+        void refreshReplacePackStatus(tier)
       }
     }).then(dispose => {
       if (cancelled) dispose()
@@ -1040,7 +1042,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       cancelled = true
       unlisten?.()
     }
-  }, [refreshReplacePackStatus])
+  }, [refreshReplacePackStatus, settings?.screenshotTranslation?.rapidOcrTier])
 
   // 挂载时拉一次状态
   useEffect(() => {
@@ -1048,8 +1050,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [refreshRapidOcrStatus])
 
   useEffect(() => {
-    void refreshReplacePackStatus()
-  }, [refreshReplacePackStatus])
+    const tier = settings?.screenshotTranslation?.rapidOcrTier ?? 'standard'
+    void refreshReplacePackStatus(tier)
+  }, [refreshReplacePackStatus, settings?.screenshotTranslation?.rapidOcrTier])
 
   useEffect(() => {
     setProviderTestFeedback({})

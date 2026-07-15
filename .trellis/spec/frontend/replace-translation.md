@@ -8,8 +8,8 @@ Use this contract when changing screenshot replace translation across Rust comma
 
 ### 2. Signatures
 
-- `replace_translation_pack_status() -> ReplaceTranslationPackStatus`
-- `replace_translation_pack_install() -> OfflineModelInstallResult`
+- `replace_translation_pack_status(tier: string) -> ReplaceTranslationPackStatus`
+- `replace_translation_pack_install(tier: string) -> OfflineModelInstallResult`
 - Event: `replace-translation-pack-progress -> OfflineModelProgress`
 - Event: `lens-replace-stream -> LensReplaceStreamPayload`
 - Event payload V2: `{ version: 2, imageId, phase, groups, slots, cleanedImage?, warning?, error? }`
@@ -18,6 +18,7 @@ Use this contract when changing screenshot replace translation across Rust comma
 
 ### 3. Contracts
 
+- OCR 有两档(`OcrModelTier`):`standard`(PP-OCRv5 mobile,~20MB,快,默认)/ `high`(PP-OCRv6 medium,~139MB,精度)。替换翻译固定走 RapidOCR,档位取 `settings.screenshot_translation.rapid_ocr_tier`;`high` 档需显式检测阈值 `0.2/0.45/1.4`,`standard` 用 oar-ocr 默认。两档模型各自独立按需下载(pack 命令带 `tier`),`RapidOcrStatus` 分档报告 `standardAvailable`/`highAvailable`。`high` 档文件落 `high/` 子目录以兼容旧安装。
 - `lens-replace-stream.version` is exactly `2`; the event boundary rejects the removed regions-only payload.
 - `lens-replace-stream.phase` is `ocr | processing | done | error`.
 - Only `done` may carry `cleanedImage`; the large data URL is emitted once.

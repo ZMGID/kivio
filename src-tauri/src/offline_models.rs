@@ -97,10 +97,70 @@ struct ModelFile {
     source: ModelSource,
 }
 
-// PP-OCRv6 medium 模型。文件仍落在 `high/` 子目录:这是历史双档布局(standard 放根、
-// high 放子目录)的遗留,保留它是为了让早前装过 high 档的用户无需重新下载 ~139MB。
-const OCR_DET: ModelFile = ModelFile {
-    component_id: "rapidocr",
+// 离线 OCR 双档位:
+// - Standard = PP-OCRv5 mobile(~20MB,快),文件落模型目录根(det/rec/keys.onnx)。
+// - High     = PP-OCRv6 medium(~139MB,精度高),文件落 `high/` 子目录。
+//   保留 `high/` 布局是为了让早前装过 high 档的用户无需重新下载 ~139MB。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OcrModelTier {
+    Standard,
+    High,
+}
+
+impl OcrModelTier {
+    pub fn parse(value: &str) -> Self {
+        if value == "high" {
+            Self::High
+        } else {
+            Self::Standard
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::High => "high",
+        }
+    }
+}
+
+// ---- Standard 档:PP-OCRv5 mobile(GreatV/oar-ocr v0.3.0 release),模型目录根 ----
+const STANDARD_DET: ModelFile = ModelFile {
+    component_id: "rapidocr-standard",
+    relative_path: "det.onnx",
+    installed_size: 4_826_518,
+    installed_sha256: "1eb7b4f7ab657ebd1c66d5f79bca7497f29768a2e3c15e52daecbba1a8e4a039",
+    source: ModelSource::Direct {
+        url: "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_det.onnx",
+        size: 4_826_518,
+        sha256: "1eb7b4f7ab657ebd1c66d5f79bca7497f29768a2e3c15e52daecbba1a8e4a039",
+    },
+};
+const STANDARD_REC: ModelFile = ModelFile {
+    component_id: "rapidocr-standard",
+    relative_path: "rec.onnx",
+    installed_size: 16_562_373,
+    installed_sha256: "243a0f06d826761323e9045e9b113ab2c191c3aa50565585e628300b8eda0224",
+    source: ModelSource::Direct {
+        url: "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_rec.onnx",
+        size: 16_562_373,
+        sha256: "243a0f06d826761323e9045e9b113ab2c191c3aa50565585e628300b8eda0224",
+    },
+};
+const STANDARD_KEYS: ModelFile = ModelFile {
+    component_id: "rapidocr-standard",
+    relative_path: "keys.txt",
+    installed_size: 74_012,
+    installed_sha256: "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+    source: ModelSource::Direct {
+        url: "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/ppocrv5_dict.txt",
+        size: 74_012,
+        sha256: "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+    },
+};
+// ---- High 档:PP-OCRv6 medium(ModelScope),`high/` 子目录 ----
+const HIGH_DET: ModelFile = ModelFile {
+    component_id: "rapidocr-high",
     relative_path: "high/det.onnx",
     installed_size: 62_032_837,
     installed_sha256: "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1",
@@ -110,8 +170,8 @@ const OCR_DET: ModelFile = ModelFile {
         sha256: "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1",
     },
 };
-const OCR_REC: ModelFile = ModelFile {
-    component_id: "rapidocr",
+const HIGH_REC: ModelFile = ModelFile {
+    component_id: "rapidocr-high",
     relative_path: "high/rec.onnx",
     installed_size: 76_554_979,
     installed_sha256: "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
@@ -121,8 +181,8 @@ const OCR_REC: ModelFile = ModelFile {
         sha256: "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
     },
 };
-const OCR_KEYS: ModelFile = ModelFile {
-    component_id: "rapidocr",
+const HIGH_KEYS: ModelFile = ModelFile {
+    component_id: "rapidocr-high",
     relative_path: "high/keys.txt",
     installed_size: 74_947,
     installed_sha256: "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d",
@@ -222,14 +282,21 @@ fn runtime_files() -> Vec<ModelFile> {
     }
 }
 
-fn rapidocr_pack() -> Vec<ModelFile> {
+fn ocr_files(tier: OcrModelTier) -> Vec<ModelFile> {
+    match tier {
+        OcrModelTier::Standard => vec![STANDARD_DET, STANDARD_REC, STANDARD_KEYS],
+        OcrModelTier::High => vec![HIGH_DET, HIGH_REC, HIGH_KEYS],
+    }
+}
+
+fn rapidocr_pack(tier: OcrModelTier) -> Vec<ModelFile> {
     let mut files = runtime_files();
-    files.extend([OCR_DET, OCR_REC, OCR_KEYS]);
+    files.extend(ocr_files(tier));
     files
 }
 
-fn replace_translation_pack() -> Vec<ModelFile> {
-    let mut files = rapidocr_pack();
+fn replace_translation_pack(tier: OcrModelTier) -> Vec<ModelFile> {
+    let mut files = rapidocr_pack(tier);
     files.push(MIGAN);
     files
 }
@@ -257,6 +324,7 @@ pub enum OfflineModelFileState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplaceTranslationPackStatus {
+    pub tier: String,
     pub ready: bool,
     pub total_bytes: u64,
     pub ready_bytes: u64,
@@ -382,48 +450,56 @@ impl OfflineModelManager {
         self.validation_state(&path, &MIGAN) == ValidationState::Ready
     }
 
-    pub fn rapidocr_ready(&self) -> bool {
+    pub fn rapidocr_ready(&self, tier: OcrModelTier) -> bool {
         let Ok(dir) = self.model_dir() else {
             return false;
         };
-        rapidocr_pack().iter().all(|file| {
+        rapidocr_pack(tier).iter().all(|file| {
             self.validation_state(&dir.join(file.relative_path), file) == ValidationState::Ready
         })
     }
 
-    pub fn replace_translation_status(&self) -> ReplaceTranslationPackStatus {
+    pub fn replace_translation_status(&self, tier: OcrModelTier) -> ReplaceTranslationPackStatus {
         let Ok(dir) = self.model_dir() else {
             return ReplaceTranslationPackStatus {
+                tier: tier.as_str().into(),
                 ready: false,
-                total_bytes: pack_download_size(&replace_translation_pack()),
+                total_bytes: pack_download_size(&replace_translation_pack(tier)),
                 ready_bytes: 0,
-                missing_bytes: pack_download_size(&replace_translation_pack()),
+                missing_bytes: pack_download_size(&replace_translation_pack(tier)),
                 model_dir: None,
                 files: Vec::new(),
             };
         };
-        self.status_for_files(&dir, &replace_translation_pack())
+        self.status_for_files(tier, &dir, &replace_translation_pack(tier))
     }
 
-    pub async fn install_rapidocr(&self) -> OfflineModelInstallResult {
+    pub async fn install_rapidocr(&self, tier: OcrModelTier) -> OfflineModelInstallResult {
         self.install(
             OfflineModelPack::Rapidocr,
-            rapidocr_pack(),
+            tier,
+            rapidocr_pack(tier),
             "RapidOCR 包下载完成",
         )
         .await
     }
 
-    pub async fn install_replace_translation(&self) -> OfflineModelInstallResult {
+    pub async fn install_replace_translation(&self, tier: OcrModelTier) -> OfflineModelInstallResult {
         self.install(
             OfflineModelPack::ReplaceTranslation,
-            replace_translation_pack(),
+            tier,
+            replace_translation_pack(tier),
             "替换翻译离线包下载完成",
         )
         .await
     }
 
-    fn status_for_files(&self, dir: &Path, files: &[ModelFile]) -> ReplaceTranslationPackStatus {
+    fn status_for_files(
+        &self,
+        tier: OcrModelTier,
+        dir: &Path,
+        files: &[ModelFile],
+    ) -> ReplaceTranslationPackStatus {
         let total_bytes = pack_download_size(files);
         let mut source_ready = HashMap::<&str, bool>::new();
         let mut source_size = HashMap::<&str, u64>::new();
@@ -462,6 +538,7 @@ impl OfflineModelManager {
             .filter_map(|(key, ready)| ready.then_some(source_size[key]))
             .sum();
         ReplaceTranslationPackStatus {
+            tier: tier.as_str().into(),
             ready: statuses.iter().all(|file| file.ready),
             total_bytes,
             ready_bytes,
@@ -474,6 +551,7 @@ impl OfflineModelManager {
     async fn install(
         &self,
         pack: OfflineModelPack,
+        tier: OcrModelTier,
         files: Vec<ModelFile>,
         success_message: &str,
     ) -> OfflineModelInstallResult {
@@ -573,7 +651,7 @@ impl OfflineModelManager {
         }
 
         self.cleanup_archive_cache(&dir, &files).await;
-        let status = self.status_for_files(&dir, &files);
+        let status = self.status_for_files(tier, &dir, &files);
         if !status.ready {
             return install_failure("offline model verification failed".into());
         }
@@ -1272,11 +1350,11 @@ mod tests {
 
     #[test]
     fn pack_size_deduplicates_shared_archives() {
-        let files = replace_translation_pack();
+        let files = replace_translation_pack(OcrModelTier::High);
         let expected = RUNTIME_SOURCE.size()
-            + OCR_DET.source.size()
-            + OCR_REC.source.size()
-            + OCR_KEYS.source.size()
+            + HIGH_DET.source.size()
+            + HIGH_REC.source.size()
+            + HIGH_KEYS.source.size()
             + MIGAN.source.size();
         assert_eq!(pack_download_size(&files), expected);
     }

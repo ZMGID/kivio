@@ -234,6 +234,10 @@ pub struct ScreenshotTranslationConfig {
     /// 替换翻译自定义提示词（仅注入翻译规则块，JSON 输出契约固定）。空 → 用内置替换模板。
     #[serde(default)]
     pub replace_prompt: Option<String>,
+    /// RapidOCR 模型档位:"standard"(默认,PP-OCRv5 mobile,速度优先) | "high"(PP-OCRv6 medium,精度优先)。
+    /// 仅在 ocr_mode = RapidOcr 时生效;替换翻译（固定走 RapidOCR）跟随此字段。
+    #[serde(default = "default_rapid_ocr_tier")]
+    pub rapid_ocr_tier: String,
     // 旧版字段，用于迁移
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai: Option<OpenAIConfig>,
@@ -259,9 +263,20 @@ impl Default for ScreenshotTranslationConfig {
             prompt: None,
             text_prompt: None,
             replace_prompt: None,
+            rapid_ocr_tier: default_rapid_ocr_tier(),
             openai: None,
         }
     }
+}
+
+/// RapidOCR 档位默认值,截图翻译用(要速度)。
+fn default_rapid_ocr_tier() -> String {
+    "standard".to_string()
+}
+
+/// 知识库文档处理默认走高精度(v6 medium):入库不在乎慢,要识别质量。
+fn default_rapid_ocr_tier_high() -> String {
+    "high".to_string()
 }
 
 /**
@@ -928,6 +943,10 @@ pub struct DocProcessorProvider {
 pub struct DocumentProcessingConfig {
     /// 图片/可 OCR 内容用的引擎: "off"(默认) | "system" | "rapid_ocr"
     pub ocr_engine: String,
+    /// RapidOCR 模型档位:"standard"(PP-OCRv5 mobile) | "high"(默认,PP-OCRv6 medium)。
+    /// 知识库入库不在乎慢、要识别质量,故默认高精度。仅在 ocr_engine = "rapid_ocr" 时生效。
+    #[serde(default = "default_rapid_ocr_tier_high")]
+    pub rapid_ocr_tier: String,
     /// PDF 处理: "text"(默认,文字层) | "force_ocr"(扫描版重扫——内置未启用,会报错)
     pub pdf_strategy: String,
     /// "" = Kivio 内置（本地 Rust）；否则为某第三方 provider id
@@ -941,6 +960,7 @@ impl Default for DocumentProcessingConfig {
     fn default() -> Self {
         Self {
             ocr_engine: "off".into(),
+            rapid_ocr_tier: default_rapid_ocr_tier_high(),
             pdf_strategy: "text".into(),
             active_processor: String::new(),
             fallback_to_third_party: false,
@@ -1526,6 +1546,17 @@ fn sanitize_email_accounts(accounts: &mut Vec<EmailAccountConfig>) {
 }
 
 pub fn sanitize_settings(mut settings: Settings) -> Settings {
+    // RapidOCR 档位归一:非法值回落到各自默认(截图=standard,文档处理=high)。
+    if settings.screenshot_translation.rapid_ocr_tier != "standard"
+        && settings.screenshot_translation.rapid_ocr_tier != "high"
+    {
+        settings.screenshot_translation.rapid_ocr_tier = default_rapid_ocr_tier();
+    }
+    if settings.document_processing.rapid_ocr_tier != "standard"
+        && settings.document_processing.rapid_ocr_tier != "high"
+    {
+        settings.document_processing.rapid_ocr_tier = default_rapid_ocr_tier_high();
+    }
     // 1. 从旧版配置迁移
     if settings.providers.is_empty() {
         // 迁移翻译提供商
@@ -2656,6 +2687,29 @@ mod tests {
         s.screenshot_translation.ocr_mode = Some(OcrMode::RapidOcr);
         let s = sanitize_settings(s);
         assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::RapidOcr));
+    }
+
+    #[test]
+    fn rapid_ocr_tier_defaults_for_legacy_configs() {
+        // 旧版 settings.json 没有 rapid_ocr_tier 字段:截图翻译默认 "standard"(现有 v5
+        // mobile 用户零感知),知识库文档处理默认 "high"(入库要识别质量)。
+        let screenshot: ScreenshotTranslationConfig =
+            serde_json::from_str("{}").expect("empty screenshot config should load");
+        assert_eq!(screenshot.rapid_ocr_tier, "standard");
+
+        let doc_processing: DocumentProcessingConfig =
+            serde_json::from_str("{}").expect("empty document processing config should load");
+        assert_eq!(doc_processing.rapid_ocr_tier, "high");
+    }
+
+    #[test]
+    fn sanitize_settings_normalizes_invalid_rapid_ocr_tier() {
+        let mut s = Settings::default();
+        s.screenshot_translation.rapid_ocr_tier = "garbage".to_string();
+        s.document_processing.rapid_ocr_tier = "garbage".to_string();
+        let s = sanitize_settings(s);
+        assert_eq!(s.screenshot_translation.rapid_ocr_tier, "standard");
+        assert_eq!(s.document_processing.rapid_ocr_tier, "high");
     }
 
     #[test]

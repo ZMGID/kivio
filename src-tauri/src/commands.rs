@@ -451,9 +451,11 @@ pub(crate) async fn rapidocr_status(
 #[tauri::command]
 pub(crate) async fn rapidocr_install(
     state: State<'_, AppState>,
+    tier: String,
 ) -> Result<rapidocr::RapidOcrInstallResult, String> {
     let client = state.rapidocr.clone();
-    Ok(client.install().await)
+    let tier = crate::offline_models::OcrModelTier::parse(&tier);
+    Ok(client.install(tier).await)
 }
 
 /// 查询替换翻译完整离线包（ONNX Runtime + RapidOCR + MI-GAN）的校验状态与实际字节数。
@@ -461,9 +463,11 @@ pub(crate) async fn rapidocr_install(
 #[tauri::command]
 pub(crate) async fn replace_translation_pack_status(
     state: State<'_, AppState>,
+    tier: String,
 ) -> Result<crate::offline_models::ReplaceTranslationPackStatus, String> {
     let manager = state.offline_models.clone();
-    tauri::async_runtime::spawn_blocking(move || manager.replace_translation_status())
+    let tier = crate::offline_models::OcrModelTier::parse(&tier);
+    tauri::async_runtime::spawn_blocking(move || manager.replace_translation_status(tier))
         .await
         .map_err(|e| format!("replace translation pack status task failed: {e}"))
 }
@@ -472,9 +476,11 @@ pub(crate) async fn replace_translation_pack_status(
 #[tauri::command]
 pub(crate) async fn replace_translation_pack_install(
     state: State<'_, AppState>,
+    tier: String,
 ) -> Result<crate::offline_models::OfflineModelInstallResult, String> {
     let manager = state.offline_models.clone();
-    Ok(manager.install_replace_translation().await)
+    let tier = crate::offline_models::OcrModelTier::parse(&tier);
+    Ok(manager.install_replace_translation(tier).await)
 }
 
 #[tauri::command]

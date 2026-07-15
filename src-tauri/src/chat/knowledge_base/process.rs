@@ -110,7 +110,12 @@ async fn ocr_image(state: &AppState, path: &Path, engine: &str) -> Result<String
                 return Err("系统 OCR 在此平台不可用".into());
             }
         }
-        "rapid_ocr" => state.rapidocr.ocr_image(path).await,
+        "rapid_ocr" => {
+            let tier = crate::offline_models::OcrModelTier::parse(
+                &state.settings_read().document_processing.rapid_ocr_tier,
+            );
+            state.rapidocr.ocr_image(path, tier).await
+        }
         _ => Err("图片入库需先在「文档处理」选择 OCR 引擎".into()),
     }
 }
@@ -390,6 +395,7 @@ mod tests {
     ) -> DocumentProcessingConfig {
         DocumentProcessingConfig {
             ocr_engine: "off".into(),
+            rapid_ocr_tier: "high".into(),
             pdf_strategy: "text".into(),
             active_processor: active.to_string(),
             fallback_to_third_party: fallback,

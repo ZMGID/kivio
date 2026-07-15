@@ -428,6 +428,16 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     }
 
     let state = app.state::<AppState>();
+    // 预热 RapidOCR:替换翻译首次调用要 ~5s 加载识别模型(OnceCell 懒初始化)。按热键即后台
+    // 起初始化,盖进用户"框选区域"的几秒里,和上面 sck::prewarm 同一思路。只在 replace 模式做,
+    // 避免为聊天/普通截图翻译白占内存;模型不齐时 warmup 内部静默返回。
+    if mode == "replace" {
+        let rapidocr = state.rapidocr.clone();
+        let tier = crate::offline_models::OcrModelTier::parse(
+            &state.settings_read().screenshot_translation.rapid_ocr_tier,
+        );
+        tauri::async_runtime::spawn(async move { rapidocr.warmup(tier).await });
+    }
     // 自愈：busy=true 但已无浮窗可见（外部强关 / dev 重载等异常），重置 busy
     if state.lens_busy.load(Ordering::SeqCst) {
         let visible = active_overlay_window(app).is_some();
@@ -1764,7 +1774,10 @@ async fn run_rapidocr_ocr(
     state: &State<'_, AppState>,
     image_path: &std::path::Path,
 ) -> Result<String, String> {
-    state.rapidocr.ocr_image(image_path).await
+    let tier = crate::offline_models::OcrModelTier::parse(
+        &state.settings_read().screenshot_translation.rapid_ocr_tier,
+    );
+    state.rapidocr.ocr_image(image_path, tier).await
 }
 
 /// 本地 OCR + 任意 provider 翻译的两步链路。
@@ -1954,10 +1967,14 @@ pub(crate) async fn lens_replace_translate(
     };
 
     let settings = state.settings_read().clone();
+    // 替换翻译固定走 RapidOCR,档位跟随截图翻译设置(默认 standard=v5 mobile,快)。
+    let ocr_tier = crate::offline_models::OcrModelTier::parse(
+        &settings.screenshot_translation.rapid_ocr_tier,
+    );
     // 就绪校验会对模型文件做同步 SHA-256，放到阻塞线程池，避免卡住 tokio worker。
     let offline_models = state.offline_models.clone();
     let pack_status =
-        tokio::task::spawn_blocking(move || offline_models.replace_translation_status())
+        tokio::task::spawn_blocking(move || offline_models.replace_translation_status(ocr_tier))
             .await
             .map_err(|error| format!("pack status worker failed: {error}"))?;
     if !pack_status.ready {
@@ -1980,7 +1997,7 @@ pub(crate) async fn lens_replace_translate(
         return fail("Please select a model first");
     }
 
-    let ocr_lines = match state.rapidocr.ocr_image_lines(&temp_path).await {
+    let ocr_lines = match state.rapidocr.ocr_image_lines(&temp_path, ocr_tier).await {
         Ok(lines) => lines,
         Err(err) => return fail(&err),
     };
@@ -2035,6 +2052,9 @@ pub(crate) async fn lens_replace_translate(
     let retry_attempts = effective_retry_attempts(&settings);
     let st_thinking = settings.screenshot_translation.thinking_enabled;
 
+    let source_image = std::sync::Arc::new(source_image);
+    let source_for_cleaning = source_image.clone();
+    let inpainting = state.inpainting.clone();
     let translation_future = call_openai_text(
         &state,
         &provider,
@@ -2045,9 +2065,6 @@ pub(crate) async fn lens_replace_translate(
         "screenshot_translation",
         "replace_translate",
     );
-    let source_image = std::sync::Arc::new(source_image);
-    let source_for_cleaning = source_image.clone();
-    let inpainting = state.inpainting.clone();
     // deterministic_fill + PNG 编码同样是 CPU 密集路径，必须 spawn_blocking，
     // 否则 tokio::join! 无法真正让本地擦除与云端翻译并行。
     let deterministic_fill_png =
