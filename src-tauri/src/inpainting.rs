@@ -215,25 +215,52 @@ fn run_inpainting(
         ));
     }
 
+    let image = blend_inpaint_output(source, &binary_mask, output)?;
+    let png = encode_rgb_png(image)
+        .map_err(|error| InpaintingError::new(InpaintingErrorCode::Encode, error))?;
+    Ok(InpaintedPng { width, height, png })
+}
+
+/// Composites the MI-GAN result back onto the source, enforcing the mask-outside
+/// invariant: every pixel where `binary_mask == 0` is copied byte-for-byte from
+/// `source`, and only mask-inside pixels take the model output. `binary_mask` is
+/// one byte per pixel (0 = keep source, non-zero = hole); `model_output_nchw` is
+/// the MI-GAN NCHW u8 buffer (planar R, G, B, length == pixel_count * 3).
+fn blend_inpaint_output(
+    source: &RgbImage,
+    binary_mask: &[u8],
+    model_output_nchw: &[u8],
+) -> Result<RgbImage, InpaintingError> {
+    let (width, height) = source.dimensions();
+    let pixel_count = width as usize * height as usize;
+    if binary_mask.len() != pixel_count || model_output_nchw.len() != pixel_count * 3 {
+        return Err(InpaintingError::new(
+            InpaintingErrorCode::OutputInvalid,
+            format!(
+                "blend expects mask len {pixel_count} and output len {}, got mask {} output {}",
+                pixel_count * 3,
+                binary_mask.len(),
+                model_output_nchw.len()
+            ),
+        ));
+    }
+    let source_raw = source.as_raw();
     let mut rgb = vec![0u8; pixel_count * 3];
     for index in 0..pixel_count {
         if binary_mask[index] == 0 {
             rgb[index * 3..index * 3 + 3].copy_from_slice(&source_raw[index * 3..index * 3 + 3]);
         } else {
-            rgb[index * 3] = output[index];
-            rgb[index * 3 + 1] = output[pixel_count + index];
-            rgb[index * 3 + 2] = output[pixel_count * 2 + index];
+            rgb[index * 3] = model_output_nchw[index];
+            rgb[index * 3 + 1] = model_output_nchw[pixel_count + index];
+            rgb[index * 3 + 2] = model_output_nchw[pixel_count * 2 + index];
         }
     }
-    let image = RgbImage::from_raw(width, height, rgb).ok_or_else(|| {
+    RgbImage::from_raw(width, height, rgb).ok_or_else(|| {
         InpaintingError::new(
             InpaintingErrorCode::OutputInvalid,
             "failed to construct output image",
         )
-    })?;
-    let png = encode_rgb_png(image)
-        .map_err(|error| InpaintingError::new(InpaintingErrorCode::Encode, error))?;
-    Ok(InpaintedPng { width, height, png })
+    })
 }
 
 /// RGB → PNG 的唯一编码入口；替换翻译的确定性填充路径也复用它。
@@ -260,6 +287,55 @@ mod tests {
     fn mask_is_normalized_to_binary_255() {
         let mask = InpaintMask::new(3, 1, vec![0, 1, 128]).expect("valid mask");
         assert_eq!(mask.binary_data(), vec![0, 255, 255]);
+    }
+
+    /// Deterministic proof of the mask-outside invariant (AC-E3) without ORT, a
+    /// real model, or the network: mask-outside pixels must equal the source
+    /// byte-for-byte and mask-inside pixels must equal the decoded model output.
+    #[test]
+    fn blend_keeps_source_outside_mask_and_model_inside() {
+        // 2x2 source, distinct byte per channel so mismatches are obvious.
+        let source = RgbImage::from_raw(
+            2,
+            2,
+            vec![
+                10, 11, 12, // index 0 (0,0)
+                20, 21, 22, // index 1 (1,0)
+                30, 31, 32, // index 2 (0,1)
+                40, 41, 42, // index 3 (1,1)
+            ],
+        )
+        .expect("source image");
+        let pixel_count = 4usize;
+        // Keep indices 0 and 3; punch holes at indices 1 and 2.
+        let binary_mask = vec![0u8, 255, 255, 0];
+        // Fake NCHW planar output: R plane, then G plane, then B plane.
+        let mut model_output = vec![0u8; pixel_count * 3];
+        for i in 0..pixel_count {
+            model_output[i] = 100 + i as u8;
+            model_output[pixel_count + i] = 150 + i as u8;
+            model_output[pixel_count * 2 + i] = 200 + i as u8;
+        }
+        let blended =
+            blend_inpaint_output(&source, &binary_mask, &model_output).expect("blend output");
+        let raw = blended.as_raw();
+        // (a) mask==0 pixels are the source, byte-for-byte.
+        assert_eq!(&raw[0..3], &[10, 11, 12]);
+        assert_eq!(&raw[9..12], &[40, 41, 42]);
+        // (b) mask!=0 pixels are the decoded fake model output.
+        assert_eq!(&raw[3..6], &[101, 151, 201]);
+        assert_eq!(&raw[6..9], &[102, 152, 202]);
+    }
+
+    #[test]
+    fn blend_rejects_wrong_length_model_output() {
+        let source = RgbImage::from_raw(2, 2, vec![0u8; 12]).expect("source image");
+        let binary_mask = vec![0u8, 255, 255, 0];
+        // (c) one byte short of pixel_count * 3.
+        let short_output = vec![0u8; 11];
+        let error = blend_inpaint_output(&source, &binary_mask, &short_output)
+            .expect_err("wrong-length output");
+        assert_eq!(error.code, InpaintingErrorCode::OutputInvalid);
     }
 
     /// Manual model integration check. Set KIVIO_MIGAN_TEST_DIR to a directory
