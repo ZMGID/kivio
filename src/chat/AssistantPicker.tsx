@@ -154,7 +154,7 @@ export function AssistantPicker({
           open
             ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100'
             : currentAssistant
-              ? 'text-indigo-500 hover:bg-neutral-100 dark:text-indigo-300 dark:hover:bg-neutral-800'
+              ? 'text-indigo-500! hover:bg-neutral-100 dark:text-indigo-300! dark:hover:bg-neutral-800'
               : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800'
         }`}
         aria-expanded={open}

@@ -1657,7 +1657,7 @@ export function InputBar({
                   projectMenuOpen
                     ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100'
                     : effectiveProject
-                      ? 'text-indigo-500 dark:text-indigo-300'
+                      ? 'text-indigo-500! dark:text-indigo-300!'
                       : ''
                 }`}
               >
