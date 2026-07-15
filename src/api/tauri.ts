@@ -1567,6 +1567,9 @@ export const api = {
   /** 轻量持久化收藏模型（不触发热键/托盘重注册，区别于 saveSettings 的全量事务保存）。 */
   setFavoriteModels: (models: string[]) =>
     invoke<void>('set_favorite_models', { models }),
+  /** 轻量持久化快速翻译卡宽度（拖拽缩放记忆；高度始终自动）。 */
+  setTranslateCardSize: (width: number) =>
+    invoke<void>('set_translate_card_size', { width }),
   exportSettings: (path: string) => invoke<void>('export_settings', { path }),
   importSettings: async (path: string) =>
     normalizeSettings(await invoke<Settings>('import_settings', { path })),

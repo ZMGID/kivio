@@ -1,5 +1,5 @@
 import { Download, RefreshCw } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { type DefaultPromptTemplates, type OfflineModelProgress, type RapidOcrStatus, type RapidOcrTier, type ReplaceTranslationPackStatus, type Settings } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { formatBytes } from '../utils/formatBytes'
@@ -61,6 +61,10 @@ export function ScreenshotTranslationSettings({
   const ocrMode = screenshot?.ocrMode ?? 'cloud_vision'
   const cardWidth = screenshot?.cardWidth ?? 480
   const [widthDraft, setWidthDraft] = useState(String(cardWidth))
+  // 外部改宽（翻译卡右下角拖拽缩放写回设置）时同步草稿，保持设置页与卡片联动。
+  useEffect(() => {
+    setWidthDraft(String(cardWidth))
+  }, [cardWidth])
   // 边打字不 clamp（避免输 "5" 立刻跳 360）；失焦/回车时 clamp 到 360–720 再提交。
   const commitCardWidth = () => {
     const n = parseInt(widthDraft, 10)

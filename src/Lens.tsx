@@ -173,6 +173,9 @@ export default function Lens() {
   // transform 走合成层，不阻塞主线程，多窗口会话间稳定。
   const [flyDelta, setFlyDelta] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [translateCardDragging, setTranslateCardDragging] = useState(false)
+  const [translateCardResizing, setTranslateCardResizing] = useState(false)
+  // 本次会话内拖出的卡片高度（px）。0=自动。刻意不持久化：下次打开回到自动高度。
+  const [cardSessionHeight, setCardSessionHeight] = useState(0)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
   const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
   const [showCaptureHint, setShowCaptureHint] = useState(false)
@@ -260,6 +263,10 @@ export default function Lens() {
   // 老请求看到 myReq !== current 直接丢弃，避免 take 完成时已经进入新会话被错误注入。
   const selectionReqIdRef = useRef(0)
   const translateCardDragRef = useRef<TranslateCardDrag | null>(null)
+  // 翻译卡右下角缩放拖拽。宽 360–720（与设置页一致）持久记忆；高只在本会话内生效。
+  const translateCardResizeRef = useRef<{ pointerId: number; startX: number; startY: number; startW: number; startH: number } | null>(null)
+  // 翻译卡内容区 DOM：缩放起点量实际渲染高度（内容短时远小于 maxHeight 上限，不能拿上限当起点）
+  const translateContentRef = useRef<HTMLDivElement>(null)
   // 答案区滚动容器，stream 时自动滚到底部
   const chatScrollRef = useRef<HTMLDivElement>(null)
   // 浮动模式下保存截图时的全屏 metrics，避免窗口缩小后 answerLayout 被压缩得太小
@@ -423,6 +430,8 @@ export default function Lens() {
     selectRevealedRef.current = false
     imageIdRef.current = ''
     translateCardDragRef.current = null
+    translateCardResizeRef.current = null
+    setCardSessionHeight(0)
     focusLensSurface([0, 40, 120])
     if (resetFreezeFrameImageId) {
       void (async () => {
@@ -443,7 +452,7 @@ export default function Lens() {
         const settings = await getSettingsCached()
         if (motionSeq !== motionSeqRef.current) return
         screenshotKeepFullscreenRef.current = settings.screenshotTranslation?.keepFullscreenAfterCapture !== false
-      cardWidthRef.current = settings.screenshotTranslation?.cardWidth ?? 480
+        cardWidthRef.current = settings.screenshotTranslation?.cardWidth ?? 480
         setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
         captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
         if (stageRef.current === 'select' && selectRevealedRef.current) {
@@ -857,6 +866,8 @@ export default function Lens() {
     selectRevealedRef.current = false
     imageIdRef.current = ''
     translateCardDragRef.current = null
+    translateCardResizeRef.current = null
+    setCardSessionHeight(0)
     // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
     selectionReqIdRef.current++
     focusReqIdRef.current++
@@ -1815,14 +1826,18 @@ export default function Lens() {
   // capturedFrame 只在最近一次截图后非空,而 restoreHistory 会清掉它(历史项的选区不再相关);
   // 但此时 lens 窗口仍是浮动小尺寸 → 必须叠加 floatingRebased 才能正确反映"窗口当前在浮动态"。
   const isFloatingLayout = mode === 'translateText' || (!keepFullscreen && (capturedFrame !== null || floatingRebased) && stage !== 'select')
-  const stableAnswerHeight = isFloatingLayout
+  const autoAnswerHeight = isFloatingLayout
     ? fullscreenMetricsRef.current?.ANSWER_H || metrics.ANSWER_H
     : metrics.ANSWER_H
+  // 会话内拖出的高度优先；0=自动。浮动模式窗口会随卡扩大，不按小窗 viewport clamp。
+  const stableAnswerHeight = showTranslateCard && cardSessionHeight > 0
+    ? (isFloatingLayout ? cardSessionHeight : Math.min(cardSessionHeight, viewport.h - READY_BAR_H - 40))
+    : autoAnswerHeight
   const translateCardMaxHeight = mode === 'translateText' || !keepFullscreen
     ? READY_BAR_H + 8 + stableAnswerHeight
     : Math.min(viewport.h - 32, READY_BAR_H + 8 + stableAnswerHeight)
   const translateCardUsesFullscreenMotion = mode === 'translate' && keepFullscreen && !isFloatingLayout
-  const translateCardTransitionProperty = barNoTransition || translateCardDragging
+  const translateCardTransitionProperty = barNoTransition || translateCardDragging || translateCardResizing
     ? 'none'
     : translateCardUsesFullscreenMotion
       ? 'transform, opacity'
@@ -1892,6 +1907,56 @@ export default function Lens() {
     translateCardDragRef.current = null
     setTranslateCardDragging(false)
     setBarNoTransition(false)
+  }, [])
+
+  // 右下角缩放：宽高都可拖。宽 360–720（与设置页"翻译卡宽度"同域）松手持久记忆；
+  // 高只在本会话内生效（下次打开回自动）。
+  const handleTranslateCardResizeStart = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    translateCardResizeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: barRect.width,
+      // 起点 = 内容区当前实际高度（含 padding，border-box）。自动模式内容短时它远小于
+      // stableAnswerHeight 上限——拿上限当起点会导致一动就跳大。
+      startH: translateContentRef.current?.getBoundingClientRect().height ?? stableAnswerHeight,
+    }
+    setTranslateCardResizing(true)
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }, [barRect.width, stableAnswerHeight])
+
+  const handleTranslateCardResizeMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = translateCardResizeRef.current
+    if (!resize || resize.pointerId !== e.pointerId) return
+    e.preventDefault()
+    e.stopPropagation()
+    // 浮动模式下 viewport 是小窗自身尺寸，OS 窗口会随卡扩大 → 只按 360–720 设置域 clamp；
+    // 全屏 overlay 里额外不许超出屏幕。
+    const maxW = isFloatingLayout ? 720 : Math.min(720, viewport.w - 16)
+    const maxH = isFloatingLayout ? 1200 : viewport.h - READY_BAR_H - 40
+    const nextW = Math.round(clamp(resize.startW + e.clientX - resize.startX, 360, maxW))
+    const nextH = Math.round(clamp(resize.startH + e.clientY - resize.startY, 80, maxH))
+    cardWidthRef.current = nextW
+    setCardSessionHeight(nextH)
+    setBarRect(prev => ({ ...prev, width: nextW }))
+  }, [isFloatingLayout, viewport.h, viewport.w])
+
+  const endTranslateCardResize = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = translateCardResizeRef.current
+    if (!resize || resize.pointerId !== e.pointerId) return
+    translateCardResizeRef.current = null
+    setTranslateCardResizing(false)
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      // Pointer capture may already be released by the platform.
+    }
+    // 写回设置记忆（轻量命令，不触发热键/托盘重应用）。
+    void api.setTranslateCardSize(cardWidthRef.current)
+      .catch((err) => console.error('[lens-card-resize] persist failed:', err))
   }, [])
 
   // 答案区展开方向 + 高度自适应：
@@ -2544,12 +2609,14 @@ export default function Lens() {
           </div>
 
           {/* 内容区 */}
-          <div className="px-3.5 py-3 overflow-y-auto custom-scrollbar"
-            style={{
-              maxHeight: mode === 'translateText' || !keepFullscreen
+          <div ref={translateContentRef} className="px-3.5 py-3 overflow-y-auto custom-scrollbar"
+            style={(() => {
+              const cap = mode === 'translateText' || !keepFullscreen
                 ? stableAnswerHeight
                 : Math.min(viewport.h - 110, stableAnswerHeight)
-            }}>
+              // 会话内拖过高度后用固定 height：内容短也保持拖出的尺寸，缩放所见即所得。
+              return cardSessionHeight > 0 ? { height: cap } : { maxHeight: cap }
+            })()}>
             {translateError ? (
               translateError === 'rapidocr_models_missing' ? (
                 <div className="text-[12.5px] text-amber-700 dark:text-amber-300 leading-6 whitespace-pre-wrap break-words">
@@ -2602,6 +2669,19 @@ export default function Lens() {
               </Button>
             </div>
           )}
+
+          {/* 右下角缩放把手：宽高都可拖；宽度松手记忆到设置（与设置页"翻译卡宽度"联动），高度仅本次会话 */}
+          <div
+            className="absolute right-0 bottom-0 w-4 h-4 cursor-nwse-resize touch-none"
+            onPointerDown={handleTranslateCardResizeStart}
+            onPointerMove={handleTranslateCardResizeMove}
+            onPointerUp={endTranslateCardResize}
+            onPointerCancel={endTranslateCardResize}
+          >
+            <svg viewBox="0 0 16 16" className="w-full h-full text-neutral-300 dark:text-neutral-600" aria-hidden>
+              <path d="M14 8 8 14M14 12l-2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+            </svg>
+          </div>
         </div>
       )}
     </div>

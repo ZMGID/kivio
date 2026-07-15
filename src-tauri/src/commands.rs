@@ -180,6 +180,23 @@ pub(crate) fn set_favorite_models(
     persist_settings(&app, &snapshot)
 }
 
+/// 轻量持久化快速翻译卡宽度（拖拽缩放的记忆；高度始终自动不持久化）。
+/// 与 set_favorite_models 同理：不走 apply_settings 的热键/托盘重应用。
+/// clamp 到 360–720 与设置页一致。
+#[tauri::command]
+pub(crate) fn set_translate_card_size(
+    app: AppHandle,
+    state: State<AppState>,
+    width: u32,
+) -> Result<(), String> {
+    let snapshot = {
+        let mut guard = state.settings_write();
+        guard.screenshot_translation.card_width = width.clamp(360, 720);
+        guard.clone()
+    };
+    persist_settings(&app, &snapshot)
+}
+
 /// sanitize → 应用运行时（自启/热键/托盘）→ 持久化，失败回滚。save_settings 与 import_settings 共用。
 fn apply_settings(
     app: &AppHandle,

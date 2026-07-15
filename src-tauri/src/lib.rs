@@ -414,6 +414,7 @@ pub fn run() {
             commands::get_default_prompt_templates,
             commands::save_settings,
             commands::set_favorite_models,
+            commands::set_translate_card_size,
             commands::export_settings,
             commands::import_settings,
             commands::open_settings_window,
