@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { LensReplaceGroup, LensReplaceRenderSlot } from '../api/tauri'
-import { layoutReplaceTextFlow, replaceTextVerticalOffset, type ReplaceTextFlowSlotLayout } from './replaceTextLayout'
+import { copyToClipboard } from '../utils/clipboard'
+import { layoutReplaceTextFlow, replaceTextVerticalOffset, selectedGroupsText, type ReplaceTextFlowSlotLayout } from './replaceTextLayout'
 import type { CapturedFrame } from './types'
 
 type ReplaceTranslateOverlayProps = {
@@ -13,7 +14,26 @@ type ReplaceTranslateOverlayProps = {
   // 局部降级详情（如修复回退、个别区域回退原文）：非错误，挂在状态胶囊 title 上。
   statusTitle?: string
   escHint: string
+  interactHint: string
+  showOriginalLabel: string
+  showTranslatedLabel: string
+  copiedLabel: string
 }
+
+type SelectionRect = { x1: number; y1: number; x2: number; y2: number }
+
+// 单击 vs 拖拽的位移阈值（CSS px）：小于它算单击切换原文，超过进入框选。
+const DRAG_THRESHOLD_PX = 4
+
+function normalizedRect(selection: SelectionRect) {
+  return {
+    x: Math.min(selection.x1, selection.x2),
+    y: Math.min(selection.y1, selection.y2),
+    width: Math.abs(selection.x2 - selection.x1),
+    height: Math.abs(selection.y2 - selection.y1),
+  }
+}
+
 
 function textX(bounds: LensReplaceRenderSlot['bounds'], align: LensReplaceRenderSlot['align'], padding: number) {
   return align === 'center'
@@ -107,8 +127,28 @@ export function ReplaceTranslateOverlay({
   statusLabel,
   statusTitle,
   escHint,
+  interactHint,
+  showOriginalLabel,
+  showTranslatedLabel,
+  copiedLabel,
 }: ReplaceTranslateOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [showOriginal, setShowOriginal] = useState(false)
+  const [selection, setSelection] = useState<SelectionRect | null>(null)
+  const [copied, setCopied] = useState(false)
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; dragging: boolean } | null>(null)
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 新一轮结果到达时复位交互态，避免上一张图的原文模式/选框残留。
+  useEffect(() => {
+    setShowOriginal(false)
+    setSelection(null)
+    setCopied(false)
+  }, [cleanedImage])
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -175,30 +215,125 @@ export function ReplaceTranslateOverlay({
   }, [cleanedImage, groups, phase, slots])
 
   const showOverlay = phase === 'done' && cleanedImage && groups.length > 0 && slots.length > 0
+
+  // frame 内 CSS 坐标 → canvas 自然像素坐标（slots bounds 是自然像素）。
+  const toCanvasRect = (rect: { x: number; y: number; width: number; height: number }) => {
+    const canvas = canvasRef.current
+    if (!canvas) return rect
+    const scaleX = canvas.width / Math.max(1, frame.width)
+    const scaleY = canvas.height / Math.max(1, frame.height)
+    return { x: rect.x * scaleX, y: rect.y * scaleY, width: rect.width * scaleX, height: rect.height * scaleY }
+  }
+
+  const flashCopied = () => {
+    setCopied(true)
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 1200)
+  }
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const box = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - box.left
+    const y = event.clientY - box.top
+    dragRef.current = { pointerId: event.pointerId, startX: x, startY: y, dragging: false }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const box = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - box.left
+    const y = event.clientY - box.top
+    if (!drag.dragging && Math.hypot(x - drag.startX, y - drag.startY) < DRAG_THRESHOLD_PX) return
+    drag.dragging = true
+    setSelection({ x1: drag.startX, y1: drag.startY, x2: x, y2: y })
+  }
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    dragRef.current = null
+    if (!drag.dragging) {
+      // 单击（无位移）：切换原文/译文对比。
+      setShowOriginal(v => !v)
+      setSelection(null)
+      return
+    }
+    const box = event.currentTarget.getBoundingClientRect()
+    const rect = normalizedRect({
+      x1: drag.startX,
+      y1: drag.startY,
+      x2: event.clientX - box.left,
+      y2: event.clientY - box.top,
+    })
+    setSelection(null)
+    const text = selectedGroupsText(groups, slots, toCanvasRect(rect), showOriginal)
+    if (!text) return
+    void copyToClipboard(text).then(ok => {
+      if (ok) flashCopied()
+    })
+  }
+
+  const handlePointerCancel = () => {
+    dragRef.current = null
+    setSelection(null)
+  }
+
+  const selectionBox = selection ? normalizedRect(selection) : null
   return (
     <>
       <div className="absolute top-[calc(env(safe-area-inset-top,0px)+36px)] left-0 right-0 z-30 flex flex-col items-center pointer-events-none">
-        <div
-          className="px-3 py-1.5 rounded-full text-[12px] font-medium bg-black/70 text-white shadow-lg backdrop-blur-sm"
-          title={statusTitle}
-        >
-          {statusLabel}
-          {phase !== 'done' && phase !== 'error' && (
-            <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-white animate-pulse align-middle" />
+        <div className="flex items-center gap-2 pointer-events-none">
+          <div
+            className="px-3 py-1.5 rounded-full text-[12px] font-medium bg-black/70 text-white shadow-lg backdrop-blur-sm"
+            title={statusTitle}
+          >
+            {copied ? copiedLabel : statusLabel}
+            {phase !== 'done' && phase !== 'error' && (
+              <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-white animate-pulse align-middle" />
+            )}
+          </div>
+          {showOverlay && (
+            <button
+              type="button"
+              className="pointer-events-auto px-3 py-1.5 rounded-full text-[12px] font-medium bg-black/70 text-white shadow-lg backdrop-blur-sm hover:bg-black/80"
+              onClick={() => setShowOriginal(v => !v)}
+            >
+              {showOriginal ? showTranslatedLabel : showOriginalLabel}
+            </button>
           )}
         </div>
-        <p className="text-center text-[11px] text-white/80 mt-1 drop-shadow">{escHint}</p>
+        <p className="text-center text-[11px] text-white/80 mt-1 drop-shadow">
+          {showOverlay ? interactHint : escHint}
+        </p>
       </div>
       {showOverlay && (
         <div
-          className="absolute z-20 rounded-md overflow-hidden pointer-events-none"
+          className="absolute z-20 rounded-md overflow-hidden pointer-events-auto cursor-crosshair select-none"
           style={{ left: frame.x, top: frame.y, width: frame.width, height: frame.height }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
         >
           <canvas
             ref={canvasRef}
             className="block"
-            style={{ width: frame.width, height: frame.height }}
+            style={{ width: frame.width, height: frame.height, visibility: showOriginal ? 'hidden' : 'visible' }}
           />
+          {selectionBox && selectionBox.width + selectionBox.height > 0 && (
+            <div
+              className="absolute border border-[#D97757] bg-[#D97757]/15 pointer-events-none"
+              style={{
+                left: selectionBox.x,
+                top: selectionBox.y,
+                width: selectionBox.width,
+                height: selectionBox.height,
+              }}
+            />
+          )}
         </div>
       )}
     </>

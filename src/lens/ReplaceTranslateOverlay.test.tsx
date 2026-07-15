@@ -1,6 +1,14 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ReplaceTranslateOverlay } from './ReplaceTranslateOverlay'
+import { selectedGroupsText } from './replaceTextLayout'
+
+const labelProps = {
+  interactHint: '单击切换原文 · 拖拽框选复制 · Esc 关闭',
+  showOriginalLabel: '看原文',
+  showTranslatedLabel: '看译文',
+  copiedLabel: '已复制',
+}
 
 describe('ReplaceTranslateOverlay status', () => {
   it('renders the localized status label instead of an internal error code', () => {
@@ -13,12 +21,13 @@ describe('ReplaceTranslateOverlay status', () => {
         phase="done"
         statusLabel="替换翻译离线包未下载。请在设置中下载。"
         escHint="按 Esc 关闭"
+        {...labelProps}
       />,
     )
 
     const status = screen.getByText('替换翻译离线包未下载。请在设置中下载。')
     expect(status).toBeInTheDocument()
-    expect(status.parentElement).toHaveClass('top-[calc(env(safe-area-inset-top,0px)+36px)]')
+    expect(status.closest('.top-\\[calc\\(env\\(safe-area-inset-top\\,0px\\)\\+36px\\)\\]')).not.toBeNull()
     expect(screen.queryByText('replace_translation_pack_missing')).not.toBeInTheDocument()
   })
 
@@ -50,6 +59,7 @@ describe('ReplaceTranslateOverlay status', () => {
         phase="done"
         statusLabel="完成"
         escHint="按 Esc 关闭"
+        {...labelProps}
       />,
     )
 
@@ -107,6 +117,7 @@ describe('ReplaceTranslateOverlay status', () => {
         phase="done"
         statusLabel="完成"
         escHint="按 Esc 关闭"
+        {...labelProps}
       />,
     )
 
@@ -165,6 +176,7 @@ describe('ReplaceTranslateOverlay status', () => {
         phase="done"
         statusLabel="完成"
         escHint="按 Esc 关闭"
+        {...labelProps}
       />,
     )
 
@@ -232,6 +244,7 @@ describe('ReplaceTranslateOverlay status', () => {
         phase="done"
         statusLabel="完成"
         escHint="按 Esc 关闭"
+        {...labelProps}
       />,
     )
 
@@ -239,5 +252,48 @@ describe('ReplaceTranslateOverlay status', () => {
     expect(fillText).toHaveBeenCalledWith('促销', expect.any(Number), expect.any(Number))
     globalThis.Image = originalImage
     getContext.mockRestore()
+  })
+})
+
+describe('selectedGroupsText', () => {
+  const groups = [
+    { id: 'r0', leafIds: ['a'], sourceText: 'Hello', translated: '你好' },
+    { id: 'r1', leafIds: ['b'], sourceText: 'World', translated: '世界' },
+    { id: 'r2', leafIds: ['c'], sourceText: 'Skip', translated: '' },
+  ]
+  const slot = (id: string, groupId: string, x: number, y: number) => ({
+    id,
+    groupId,
+    leafIds: [id],
+    bounds: { x, y, width: 100, height: 20 },
+    anchor: { x, y, baselineY: y + 15 },
+    flow: 'exact_line' as const,
+    kind: 'line' as const,
+    align: 'left' as const,
+    verticalAlign: 'top' as const,
+    sourceFontPx: 16,
+    sourceColor: '#111827',
+  })
+  const slots = [slot('s0', 'r0', 10, 10), slot('s1', 'r1', 10, 40), slot('s2', 'r2', 10, 70)]
+
+  it('joins intersected groups in reading order, falling back to source when untranslated', () => {
+    // 选框盖住全部三行。
+    expect(selectedGroupsText(groups, slots, { x: 0, y: 0, width: 200, height: 100 }, false))
+      .toBe('你好\n世界\nSkip')
+  })
+
+  it('returns only groups whose slots intersect the rect', () => {
+    // 只碰到第二行。
+    expect(selectedGroupsText(groups, slots, { x: 20, y: 45, width: 10, height: 5 }, false))
+      .toBe('世界')
+  })
+
+  it('returns source text when useSource is set', () => {
+    expect(selectedGroupsText(groups, slots, { x: 0, y: 0, width: 200, height: 100 }, true))
+      .toBe('Hello\nWorld\nSkip')
+  })
+
+  it('returns empty string when nothing intersects', () => {
+    expect(selectedGroupsText(groups, slots, { x: 500, y: 500, width: 10, height: 10 }, false)).toBe('')
   })
 })

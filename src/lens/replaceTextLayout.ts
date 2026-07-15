@@ -1,3 +1,5 @@
+import type { LensReplaceGroup, LensReplaceRenderSlot } from '../api/tauri'
+
 export type TextBounds = { width: number; height: number }
 
 export type TextMeasure = (text: string, fontPx: number) => number
@@ -184,4 +186,28 @@ export function layoutReplaceTextFlow(
     }
   }
   return scaledBest
+}
+
+/** 框选命中的译文：任一 slot 与选框相交的 group 全文入选，保持 groups 的阅读顺序。 */
+export function selectedGroupsText(
+  groups: LensReplaceGroup[],
+  slots: LensReplaceRenderSlot[],
+  rect: { x: number; y: number; width: number; height: number },
+  useSource: boolean,
+): string {
+  const hitGroupIds = new Set<string>()
+  for (const slot of slots) {
+    const { bounds } = slot
+    const intersects =
+      bounds.x < rect.x + rect.width &&
+      bounds.x + bounds.width > rect.x &&
+      bounds.y < rect.y + rect.height &&
+      bounds.y + bounds.height > rect.y
+    if (intersects) hitGroupIds.add(slot.groupId)
+  }
+  return groups
+    .filter(group => hitGroupIds.has(group.id))
+    .map(group => (useSource ? group.sourceText : group.translated.trim() || group.sourceText))
+    .filter(Boolean)
+    .join('\n')
 }

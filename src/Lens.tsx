@@ -2024,6 +2024,10 @@ export default function Lens() {
           statusLabel={replaceStatusLabel}
           statusTitle={replaceWarning || undefined}
           escHint={t.replaceTranslateEscHint}
+          interactHint={t.replaceTranslateInteractHint}
+          showOriginalLabel={t.replaceTranslateShowOriginal}
+          showTranslatedLabel={t.replaceTranslateShowTranslated}
+          copiedLabel={t.replaceTranslateCopied}
         />
       )}
 
