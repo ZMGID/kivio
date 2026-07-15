@@ -2477,7 +2477,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     </div>
                   </SettingRow>
                   <SettingRow label={t.themeColor}>
-                    <div className="kv-theme-colors" role="radiogroup" aria-label={t.themeColor}>
+                    <div className="kv-seg" role="radiogroup" aria-label={t.themeColor}>
                       {THEME_COLOR_PRESETS.map((preset) => {
                         const active = themeColor === preset.id
                         return (
@@ -2488,11 +2488,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                             onClick={() => updateSettings({ themeColor: preset.id })}
                             role="radio"
                             aria-checked={active}
-                            aria-label={preset.labels[lang]}
-                            title={`${preset.labels[lang]} ${preset.hex}`}
                             data-tauri-drag-region="false"
                           >
-                            <span style={{ background: preset.hex }} />
+                            {preset.labels[lang]}
                           </button>
                         )
                       })}
