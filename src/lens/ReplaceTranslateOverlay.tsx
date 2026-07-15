@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { LensReplaceGroup, LensReplaceRenderSlot } from '../api/tauri'
 import { copyToClipboard } from '../utils/clipboard'
+import { DRAG_THRESHOLD } from './layout'
 import { layoutReplaceTextFlow, replaceTextVerticalOffset, selectedGroupsText, type ReplaceTextFlowSlotLayout } from './replaceTextLayout'
 import type { CapturedFrame } from './types'
 
@@ -22,9 +23,6 @@ type ReplaceTranslateOverlayProps = {
 
 type SelectionRect = { x1: number; y1: number; x2: number; y2: number }
 
-// 单击 vs 拖拽的位移阈值（CSS px）：小于它算单击切换原文，超过进入框选。
-const DRAG_THRESHOLD_PX = 4
-
 function normalizedRect(selection: SelectionRect) {
   return {
     x: Math.min(selection.x1, selection.x2),
@@ -33,7 +31,6 @@ function normalizedRect(selection: SelectionRect) {
     height: Math.abs(selection.y2 - selection.y1),
   }
 }
-
 
 function textX(bounds: LensReplaceRenderSlot['bounds'], align: LensReplaceRenderSlot['align'], padding: number) {
   return align === 'center'
@@ -133,10 +130,13 @@ export function ReplaceTranslateOverlay({
   copiedLabel,
 }: ReplaceTranslateOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // 已解码图的自然像素尺寸，onload 时写入。slots bounds 是自然像素，框选换算依赖它；
+  // 解码完成前 canvas.width 还是 HTML 默认 300×150，直接用会把选框映射到错误区域。
+  const naturalSizeRef = useRef<{ w: number; h: number } | null>(null)
   const [showOriginal, setShowOriginal] = useState(false)
   const [selection, setSelection] = useState<SelectionRect | null>(null)
   const [copied, setCopied] = useState(false)
-  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; dragging: boolean } | null>(null)
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; boxLeft: number; boxTop: number; dragging: boolean } | null>(null)
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // 新一轮结果到达时复位交互态，避免上一张图的原文模式/选框残留。
@@ -156,11 +156,16 @@ export function ReplaceTranslateOverlay({
     const context = canvas.getContext('2d')
     if (!context) return
     let cancelled = false
+    naturalSizeRef.current = null
     const image = new Image()
+    image.onerror = () => {
+      if (!cancelled) naturalSizeRef.current = null
+    }
     image.onload = () => {
       if (cancelled) return
       canvas.width = Math.max(1, image.naturalWidth)
       canvas.height = Math.max(1, image.naturalHeight)
+      naturalSizeRef.current = { w: canvas.width, h: canvas.height }
       context.clearRect(0, 0, canvas.width, canvas.height)
       context.drawImage(image, 0, 0)
       const slotsByGroup = new Map<string, LensReplaceRenderSlot[]>()
@@ -217,11 +222,12 @@ export function ReplaceTranslateOverlay({
   const showOverlay = phase === 'done' && cleanedImage && groups.length > 0 && slots.length > 0
 
   // frame 内 CSS 坐标 → canvas 自然像素坐标（slots bounds 是自然像素）。
+  // 解码尺寸就绪才换算；未就绪返回 null → 调用方跳过复制，绝不用错误比例算选区。
   const toCanvasRect = (rect: { x: number; y: number; width: number; height: number }) => {
-    const canvas = canvasRef.current
-    if (!canvas) return rect
-    const scaleX = canvas.width / Math.max(1, frame.width)
-    const scaleY = canvas.height / Math.max(1, frame.height)
+    const nat = naturalSizeRef.current
+    if (!nat) return null
+    const scaleX = nat.w / Math.max(1, frame.width)
+    const scaleY = nat.h / Math.max(1, frame.height)
     return { x: rect.x * scaleX, y: rect.y * scaleY, width: rect.width * scaleX, height: rect.height * scaleY }
   }
 
@@ -233,20 +239,25 @@ export function ReplaceTranslateOverlay({
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
+    // 覆盖层绝对定位且拖拽期间不动，box 只需在按下时量一次，move/up 复用避免每帧强制重排。
     const box = event.currentTarget.getBoundingClientRect()
-    const x = event.clientX - box.left
-    const y = event.clientY - box.top
-    dragRef.current = { pointerId: event.pointerId, startX: x, startY: y, dragging: false }
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX - box.left,
+      startY: event.clientY - box.top,
+      boxLeft: box.left,
+      boxTop: box.top,
+      dragging: false,
+    }
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
-    const box = event.currentTarget.getBoundingClientRect()
-    const x = event.clientX - box.left
-    const y = event.clientY - box.top
-    if (!drag.dragging && Math.hypot(x - drag.startX, y - drag.startY) < DRAG_THRESHOLD_PX) return
+    const x = event.clientX - drag.boxLeft
+    const y = event.clientY - drag.boxTop
+    if (!drag.dragging && Math.hypot(x - drag.startX, y - drag.startY) < DRAG_THRESHOLD) return
     drag.dragging = true
     setSelection({ x1: drag.startX, y1: drag.startY, x2: x, y2: y })
   }
@@ -258,18 +269,18 @@ export function ReplaceTranslateOverlay({
     if (!drag.dragging) {
       // 单击（无位移）：切换原文/译文对比。
       setShowOriginal(v => !v)
-      setSelection(null)
       return
     }
-    const box = event.currentTarget.getBoundingClientRect()
     const rect = normalizedRect({
       x1: drag.startX,
       y1: drag.startY,
-      x2: event.clientX - box.left,
-      y2: event.clientY - box.top,
+      x2: event.clientX - drag.boxLeft,
+      y2: event.clientY - drag.boxTop,
     })
     setSelection(null)
-    const text = selectedGroupsText(groups, slots, toCanvasRect(rect), showOriginal)
+    const canvasRect = toCanvasRect(rect)
+    if (!canvasRect) return
+    const text = selectedGroupsText(groups, slots, canvasRect, showOriginal)
     if (!text) return
     void copyToClipboard(text).then(ok => {
       if (ok) flashCopied()
@@ -290,7 +301,7 @@ export function ReplaceTranslateOverlay({
             className="px-3 py-1.5 rounded-full text-[12px] font-medium bg-black/70 text-white shadow-lg backdrop-blur-sm"
             title={statusTitle}
           >
-            {copied ? copiedLabel : statusLabel}
+            {statusLabel}
             {phase !== 'done' && phase !== 'error' && (
               <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-white animate-pulse align-middle" />
             )}
@@ -303,6 +314,12 @@ export function ReplaceTranslateOverlay({
             >
               {showOriginal ? showTranslatedLabel : showOriginalLabel}
             </button>
+          )}
+          {/* 复制反馈用独立瞬态胶囊，不遮盖真实状态（避免与 statusTitle 警告提示错配）。 */}
+          {copied && (
+            <div className="px-3 py-1.5 rounded-full text-[12px] font-medium bg-[#D97757] text-white shadow-lg backdrop-blur-sm">
+              {copiedLabel}
+            </div>
           )}
         </div>
         <p className="text-center text-[11px] text-white/80 mt-1 drop-shadow">
@@ -323,7 +340,7 @@ export function ReplaceTranslateOverlay({
             className="block"
             style={{ width: frame.width, height: frame.height, visibility: showOriginal ? 'hidden' : 'visible' }}
           />
-          {selectionBox && selectionBox.width + selectionBox.height > 0 && (
+          {selectionBox && (
             <div
               className="absolute border border-[#D97757] bg-[#D97757]/15 pointer-events-none"
               style={{
