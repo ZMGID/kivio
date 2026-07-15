@@ -1830,6 +1830,10 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         normalize_optional_prompt(settings.screenshot_translation.text_prompt.take());
     settings.screenshot_translation.replace_prompt =
         normalize_optional_prompt(settings.screenshot_translation.replace_prompt.take());
+    // 翻译卡宽度单一真源：import / 手改 settings.json 也在此兜底到 360–720，
+    // 与 set_translate_card_size 命令、设置页输入框、Lens 缩放 clamp 同域。
+    settings.screenshot_translation.card_width =
+        settings.screenshot_translation.card_width.clamp(360, 720);
 
     // 5. 其他字段验证
     if !matches!(settings.theme.as_str(), "system" | "light" | "dark") {

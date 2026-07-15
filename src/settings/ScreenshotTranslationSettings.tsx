@@ -1,5 +1,6 @@
 import { Download, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import { type DefaultPromptTemplates, type OfflineModelProgress, type RapidOcrStatus, type RapidOcrTier, type ReplaceTranslationPackStatus, type Settings } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { formatBytes } from '../utils/formatBytes'
@@ -65,6 +66,14 @@ export function ScreenshotTranslationSettings({
   useEffect(() => {
     setWidthDraft(String(cardWidth))
   }, [cardWidth])
+  // Lens 拖拽缩放会经 set_translate_card_size 落盘并广播；设置页在开着时同步草稿里的宽度，
+  // 否则随后一次全量 save_settings 会用陈旧草稿把这次拖拽覆盖掉。
+  useEffect(() => {
+    const un = listen<number>('translate-card-width', (e) => {
+      if (typeof e.payload === 'number' && e.payload !== cardWidth) onUpdate({ cardWidth: e.payload })
+    })
+    return () => { void un.then((f) => f()) }
+  }, [cardWidth, onUpdate])
   // 边打字不 clamp（避免输 "5" 立刻跳 360）；失焦/回车时 clamp 到 360–720 再提交。
   const commitCardWidth = () => {
     const n = parseInt(widthDraft, 10)

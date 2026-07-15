@@ -189,12 +189,16 @@ pub(crate) fn set_translate_card_size(
     state: State<AppState>,
     width: u32,
 ) -> Result<(), String> {
+    let clamped = width.clamp(360, 720);
     let snapshot = {
         let mut guard = state.settings_write();
-        guard.screenshot_translation.card_width = width.clamp(360, 720);
+        guard.screenshot_translation.card_width = clamped;
         guard.clone()
     };
-    persist_settings(&app, &snapshot)
+    persist_settings(&app, &snapshot)?;
+    // 通知可能开着的设置窗口同步草稿里的宽度，避免其随后 save_settings 用陈旧草稿覆盖掉这次拖拽。
+    let _ = tauri::Emitter::emit_to(&app, "settings", "translate-card-width", clamped);
+    Ok(())
 }
 
 /// sanitize → 应用运行时（自启/热键/托盘）→ 持久化，失败回滚。save_settings 与 import_settings 共用。

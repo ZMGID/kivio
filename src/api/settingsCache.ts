@@ -81,6 +81,19 @@ export async function setFavoriteModelsCached(models: string[]): Promise<void> {
   if (cached) cached = { ...cached, favoriteModels: [...new Set(models)] }
 }
 
+/**
+ * setTranslateCardSize（轻量翻译卡宽度持久化）+ 成功后把 clamp 后的宽度补进缓存，
+ * 避免 Lens 拖拽缩放后同窗复用时 getSettingsCached 读到旧宽度、把卡片弹回默认值。
+ * 失败原样抛出且不动缓存。
+ */
+export async function setTranslateCardSizeCached(width: number): Promise<void> {
+  await api.setTranslateCardSize(width)
+  const clamped = Math.max(360, Math.min(720, Math.round(width)))
+  if (cached) {
+    cached = { ...cached, screenshotTranslation: { ...cached.screenshotTranslation, cardWidth: clamped } }
+  }
+}
+
 /** 仅测试用：重置模块状态。 */
 export function __resetSettingsCacheForTest(): void {
   cached = null

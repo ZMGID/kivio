@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, MessageSquarePlus } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensReplaceGroup, type LensReplaceRenderSlot, type LensReplaceStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
-import { getSettingsCached } from './api/settingsCache'
+import { getSettingsCached, setTranslateCardSizeCached } from './api/settingsCache'
 import { ChatMarkdown } from './chat/ChatMarkdown'
 import { Button } from './components/Button'
 import { i18n, type Lang } from './settings/i18n'
@@ -15,6 +15,13 @@ import { ReplaceTranslateOverlay } from './lens/ReplaceTranslateOverlay'
 import { ARROW_MIN_DRAG_PX, composeAnnotatedImage } from './lens/annotation'
 import { HISTORY_MAX, HISTORY_THUMB_SIZE, loadHistoryFromStorage, makeThumbnail, saveHistoryToStorage } from './lens/history'
 import { ANCHOR_GAP, DRAG_THRESHOLD, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
+
+// 翻译卡缩放后内容区高度固定，此值预留 header+footer+padding，
+// 保证「卡整体高 = chrome + 内容」不被 overflow-hidden 裁掉底部复制栏。
+const CARD_CHROME_RESERVE = 96
+// lens-floating-surface 的下投影最大约 50px（暗色 0 20px 52px -22px）。浮动窗口高度须在卡片
+// 外框之外再留这么多，否则整圈阴影（尤其底部）被 OS 窗口边缘硬裁。
+const CARD_SHADOW_MARGIN = 52
 import { estimateTokens, formatTokens } from './utils/tokens'
 import { ThinkingBlock } from './lens/ThinkingBlock'
 import { WebSearchBlock } from './lens/WebSearchBlock'
@@ -432,6 +439,7 @@ export default function Lens() {
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
     setCardSessionHeight(0)
+    setTranslateCardResizing(false)
     focusLensSurface([0, 40, 120])
     if (resetFreezeFrameImageId) {
       void (async () => {
@@ -868,6 +876,7 @@ export default function Lens() {
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
     setCardSessionHeight(0)
+    setTranslateCardResizing(false)
     // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
     selectionReqIdRef.current++
     focusReqIdRef.current++
@@ -1829,13 +1838,23 @@ export default function Lens() {
   const autoAnswerHeight = isFloatingLayout
     ? fullscreenMetricsRef.current?.ANSWER_H || metrics.ANSWER_H
     : metrics.ANSWER_H
-  // 会话内拖出的高度优先；0=自动。浮动模式窗口会随卡扩大，不按小窗 viewport clamp。
+  // 会话内拖出的高度优先；0=自动。浮动模式窗口会随卡扩大，不按小窗 viewport clamp；
+  // 全屏 overlay 里内容高受限于 viewport - 32(卡外边距) - chrome，留出 header+footer 空间。
   const stableAnswerHeight = showTranslateCard && cardSessionHeight > 0
-    ? (isFloatingLayout ? cardSessionHeight : Math.min(cardSessionHeight, viewport.h - READY_BAR_H - 40))
+    ? (isFloatingLayout ? cardSessionHeight : Math.min(cardSessionHeight, viewport.h - 32 - CARD_CHROME_RESERVE))
     : autoAnswerHeight
+  // 缩放后内容区是固定高，chrome(header+footer) 需按实际预留；未缩放时内容自适应收缩，沿用旧的紧预算。
+  const translateCardChrome = cardSessionHeight > 0 ? CARD_CHROME_RESERVE : READY_BAR_H + 8
   const translateCardMaxHeight = mode === 'translateText' || !keepFullscreen
-    ? READY_BAR_H + 8 + stableAnswerHeight
-    : Math.min(viewport.h - 32, READY_BAR_H + 8 + stableAnswerHeight)
+    ? translateCardChrome + stableAnswerHeight
+    : Math.min(viewport.h - 32, translateCardChrome + stableAnswerHeight)
+  // 内容区高度上限：全屏 overlay 额外留出 ~110 顶底边距；缩放后（cardSessionHeight>0）用固定 height 所见即所得，否则 maxHeight 自适应。
+  const translateContentCap = mode === 'translateText' || !keepFullscreen
+    ? stableAnswerHeight
+    : Math.min(viewport.h - 110, stableAnswerHeight)
+  const translateContentStyle = cardSessionHeight > 0
+    ? { height: translateContentCap }
+    : { maxHeight: translateContentCap }
   const translateCardUsesFullscreenMotion = mode === 'translate' && keepFullscreen && !isFloatingLayout
   const translateCardTransitionProperty = barNoTransition || translateCardDragging || translateCardResizing
     ? 'none'
@@ -1934,19 +1953,26 @@ export default function Lens() {
     e.preventDefault()
     e.stopPropagation()
     // 浮动模式下 viewport 是小窗自身尺寸，OS 窗口会随卡扩大 → 只按 360–720 设置域 clamp；
-    // 全屏 overlay 里额外不许超出屏幕。
-    const maxW = isFloatingLayout ? 720 : Math.min(720, viewport.w - 16)
-    const maxH = isFloatingLayout ? 1200 : viewport.h - READY_BAR_H - 40
+    // 全屏 overlay 里按卡当前锚点（barRect.x/y）限制，宽向右/高向下增长都不许超出屏幕，
+    // 否则把手会被推到屏幕外拽不回来。
+    const maxW = isFloatingLayout ? 720 : Math.min(720, viewport.w - barRect.x - 8)
+    const maxH = isFloatingLayout ? 1200 : Math.max(80, viewport.h - barRect.y - CARD_CHROME_RESERVE - 8)
     const nextW = Math.round(clamp(resize.startW + e.clientX - resize.startX, 360, maxW))
     const nextH = Math.round(clamp(resize.startH + e.clientY - resize.startY, 80, maxH))
     cardWidthRef.current = nextW
     setCardSessionHeight(nextH)
-    setBarRect(prev => ({ ...prev, width: nextW }))
-  }, [isFloatingLayout, viewport.h, viewport.w])
+    // 纯竖向拖 / 触到 clamp 边界时宽度不变，跳过 setBarRect 避免多余重渲染与浮动模式的空 IPC 调窗。
+    setBarRect(prev => (prev.width === nextW ? prev : { ...prev, width: nextW }))
+  }, [isFloatingLayout, viewport.h, viewport.w, barRect.x, barRect.y])
 
   const endTranslateCardResize = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     const resize = translateCardResizeRef.current
-    if (!resize || resize.pointerId !== e.pointerId) return
+    if (!resize || resize.pointerId !== e.pointerId) {
+      // capture 已被系统抢走等边缘情形：ref 可能先被 reset 清空，这里兜底复位标志，
+      // 否则 translateCardResizing 卡 true 会让下次会话的卡片失去所有过渡动画。
+      setTranslateCardResizing(false)
+      return
+    }
     translateCardResizeRef.current = null
     setTranslateCardResizing(false)
     try {
@@ -1954,9 +1980,9 @@ export default function Lens() {
     } catch {
       // Pointer capture may already be released by the platform.
     }
-    // 写回设置记忆（轻量命令，不触发热键/托盘重应用）。
-    void api.setTranslateCardSize(cardWidthRef.current)
-      .catch((err) => console.error('[lens-card-resize] persist failed:', err))
+    // 写回设置记忆：走 settingsCache 写通，避免同窗复用时 getSettingsCached 读到旧宽度把卡弹回默认。
+    void setTranslateCardSizeCached(cardWidthRef.current)
+      .catch((err: unknown) => console.error('[lens-card-resize] persist failed:', err))
   }, [])
 
   // 答案区展开方向 + 高度自适应：
@@ -1993,9 +2019,10 @@ export default function Lens() {
       h += FLOATING_GAP + answerLayout.height
     }
 
-    // translate 卡片预留空间
+    // translate 卡片预留空间：按卡片真实外框(translateCardMaxHeight，含缩放后的 chrome)算，
+    // 顶部 FLOATING_PADDING 已覆盖上投影，底部再加 CARD_SHADOW_MARGIN 装下投影，否则阴影被裁。
     if ((stage === 'translating' || stage === 'translated') && (mode === 'translate' || mode === 'translateText')) {
-      h = Math.max(h, READY_BAR_H + FLOATING_GAP + stableAnswerHeight + FLOATING_PADDING * 2)
+      h = Math.max(h, FLOATING_PADDING + translateCardMaxHeight + CARD_SHADOW_MARGIN)
     }
 
     // history 面板:浮动模式下面板渲染在 bar 下方(top: 100%+18 = bar bottom + 8),
@@ -2015,7 +2042,7 @@ export default function Lens() {
     } else {
       api.lensSetFloating({ x, y, width: w, height: h }).catch(err => console.error('[lens-floating] resize failed:', err))
     }
-  }, [stage, answerLayout, barRect, floatingRebased, keepFullscreen, mode, stableAnswerHeight, historyOpen, historyPanelH, isFloatingLayout])
+  }, [stage, answerLayout, barRect, floatingRebased, keepFullscreen, mode, stableAnswerHeight, translateCardMaxHeight, historyOpen, historyPanelH, isFloatingLayout])
 
   if (surfaceDormant) {
     return (
@@ -2610,13 +2637,7 @@ export default function Lens() {
 
           {/* 内容区 */}
           <div ref={translateContentRef} className="px-3.5 py-3 overflow-y-auto custom-scrollbar"
-            style={(() => {
-              const cap = mode === 'translateText' || !keepFullscreen
-                ? stableAnswerHeight
-                : Math.min(viewport.h - 110, stableAnswerHeight)
-              // 会话内拖过高度后用固定 height：内容短也保持拖出的尺寸，缩放所见即所得。
-              return cardSessionHeight > 0 ? { height: cap } : { maxHeight: cap }
-            })()}>
+            style={translateContentStyle}>
             {translateError ? (
               translateError === 'rapidocr_models_missing' ? (
                 <div className="text-[12.5px] text-amber-700 dark:text-amber-300 leading-6 whitespace-pre-wrap break-words">
@@ -2677,6 +2698,7 @@ export default function Lens() {
             onPointerMove={handleTranslateCardResizeMove}
             onPointerUp={endTranslateCardResize}
             onPointerCancel={endTranslateCardResize}
+            onLostPointerCapture={endTranslateCardResize}
           >
             <svg viewBox="0 0 16 16" className="w-full h-full text-neutral-300 dark:text-neutral-600" aria-hidden>
               <path d="M14 8 8 14M14 12l-2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
