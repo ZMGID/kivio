@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish to (e.g. v2.7.5)'
+        description: 'Release tag to publish to (e.g. v2.7.8)'
         required: true
-        default: 'v2.7.5'
+        default: 'v2.7.8'
       ref:
         description: 'Git ref to build from (branch/tag/commit)'
         required: true
@@ -23,9 +23,10 @@ env:
   BUILD_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
 
 jobs:
-  tauri-release-macos:
-    # Apple Silicon runner → aarch64-apple-darwin DMG.
-    runs-on: macos-latest
+  tauri-release-windows:
+    # windows-latest runner → x86_64-pc-windows-msvc NSIS (.exe) installer.
+    # The macOS DMG is built locally on Apple Silicon and uploaded to the same tag.
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -41,17 +42,15 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
 
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Swift sidecar (macOS)
-        # Real kivio-ocr-helper (Apple Vision OCR); satisfies externalBin validation.
+      - name: Build Swift sidecar stub (non-macOS)
+        # On Windows this writes stub binaries so Tauri externalBin validation passes.
         run: npm run build:swift
 
-      - name: Build and publish macOS DMG
+      - name: Build and publish Windows NSIS installer
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,13 +58,14 @@ jobs:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: Kivio ${{ env.RELEASE_TAG }}
           releaseBody: |
-            Automated macOS (Apple Silicon) build for ${{ env.RELEASE_TAG }}.
+            Automated Windows (x64) build for ${{ env.RELEASE_TAG }}.
             Built from: ${{ env.BUILD_REF }}
-            - macOS: DMG (Apple Silicon / aarch64, unsigned — first launch: right-click → Open, or run `xattr -cr /Applications/Kivio.app`)
+            - Windows: NSIS installer (.exe)
 
-            Windows NSIS installer (.exe) is built locally and uploaded separately.
+            macOS DMG (Apple Silicon / aarch64, unsigned — first launch: right-click → Open,
+            or run `xattr -cr /Applications/Kivio.app`) is built locally and uploaded separately.
           releaseDraft: false
           prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'rc') }}
           includeUpdaterJson: false
           tauriScript: npx tauri
-          args: --target aarch64-apple-darwin --bundles dmg
+          args: --bundles nsis

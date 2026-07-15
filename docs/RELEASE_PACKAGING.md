@@ -43,14 +43,16 @@ GitHub release packaging:
    git push origin main
    git push origin -f vX.Y.Z
    ```
-6. Build the Windows NSIS installer (`.exe`) locally on Windows, then upload it to the tag's release:
+6. Build the macOS DMG (`.dmg`) locally on Apple Silicon, then upload it to the tag's release:
    ```bash
-   npx tauri build --bundles nsis
-   gh release upload vX.Y.Z "src-tauri/target/release/bundle/nsis/Kivio_X.Y.Z_x64-setup.exe" --repo ZMGID/kivio
+   npm run build:swift
+   npx tauri build --bundles dmg
+   gh release upload vX.Y.Z "src-tauri/target/release/bundle/dmg/Kivio_X.Y.Z_aarch64.dmg" --repo ZMGID/kivio
    ```
-7. `.github/workflows/release.yml` builds the macOS release asset only:
-   - `macos-latest` (Apple Silicon) with `--target aarch64-apple-darwin --bundles dmg`
-   - The DMG is **unsigned** (no signing secrets configured); first launch needs right-click → Open, or `xattr -cr /Applications/Kivio.app`.
+7. `.github/workflows/release.yml` builds the Windows release asset only:
+   - `windows-latest` (x64) with `--bundles nsis`
+   - It creates the GitHub release for the tag and attaches `Kivio_X.Y.Z_x64-setup.exe`.
+   - The macOS DMG is **unsigned** (no signing secrets configured); first launch needs right-click → Open, or `xattr -cr /Applications/Kivio.app`.
 8. Watch the workflow and inspect the release assets:
    ```bash
    gh run watch <RUN_ID> --repo ZMGID/kivio --exit-status
