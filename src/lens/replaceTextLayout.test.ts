@@ -1,38 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
-  layoutReplaceText,
   layoutReplaceTextFlow,
   replaceTextVerticalOffset,
   tokenizeReplaceText,
-  wrapReplaceText,
 } from './replaceTextLayout'
 
 const measure = (text: string, fontPx: number) => text.length * fontPx * 0.55
 
-describe('replace text layout', () => {
-  it('keeps CJK characters independently wrappable and Latin identifiers intact', () => {
+describe('replace text tokenization', () => {
+  it('keeps CJK characters independently breakable and Latin identifiers intact', () => {
     expect(tokenizeReplaceText('网络 web_search 工具')).toEqual(['网', '络', ' ', 'web_search', ' ', '工', '具'])
-    const lines = wrapReplaceText('网络 web_search 工具', 60, 12, measure)
-    expect(lines.join('')).toContain('web_search')
   })
 
-  it('preserves explicit paragraph breaks', () => {
-    expect(wrapReplaceText('first\nsecond', 200, 12, measure)).toEqual(['first', 'second'])
-  })
-
-  it('selects the largest fitting font down to the preferred minimum', () => {
-    const layout = layoutReplaceText('complete translation', { width: 120, height: 40 }, 18, measure)
-    expect(layout.fontPx).toBeGreaterThanOrEqual(7)
-    expect(layout.contentHeight).toBeLessThanOrEqual(40)
-    expect(layout.safeScale).toBe(1)
-  })
-
-  it('uses final safe scaling instead of truncating long text', () => {
-    const text = '完整译文必须全部保留'.repeat(30)
-    const layout = layoutReplaceText(text, { width: 45, height: 18 }, 16, measure)
-    expect(layout.fontPx).toBe(7)
-    expect(layout.safeScale).toBeLessThan(1)
-    expect(layout.lines.join('').replaceAll(' ', '')).toBe(text)
+  it('emits explicit paragraph breaks as standalone newline tokens', () => {
+    expect(tokenizeReplaceText('first\nsecond')).toEqual(['first', '\n', 'second'])
   })
 })
 
@@ -72,5 +53,14 @@ describe('replace text multi-slot flow', () => {
     expect(layout.complete).toBe(true)
     expect(layout.safeScale).toBeLessThan(1)
     expect(layout.slots.flatMap(slot => slot.lines).join('')).toBe(text)
+  })
+
+  it('flows a single over-wide unbreakable token character by character', () => {
+    // A lone long token (no spaces to break on) must still be laid out fully
+    // by splitting characters across lines — not dropped or truncated.
+    const url = 'httpsexamplecomverylongpathwithnobreaks'
+    const layout = layoutReplaceTextFlow(url, [{ width: 40, height: 90 }], 16, measure)
+    expect(layout.complete).toBe(true)
+    expect(layout.slots[0].lines.join('')).toBe(url)
   })
 })

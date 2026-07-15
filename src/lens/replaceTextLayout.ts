@@ -2,15 +2,6 @@ export type TextBounds = { width: number; height: number }
 
 export type TextMeasure = (text: string, fontPx: number) => number
 
-export type ReplaceTextLayout = {
-  fontPx: number
-  lineHeight: number
-  lines: string[]
-  contentWidth: number
-  contentHeight: number
-  safeScale: number
-}
-
 export type ReplaceTextFlowSlot = TextBounds
 
 export type ReplaceTextFlowSlotLayout = {
@@ -63,87 +54,6 @@ export function tokenizeReplaceText(text: string): string[] {
   }
   flushLatin()
   return tokens
-}
-
-export function wrapReplaceText(
-  text: string,
-  maxWidth: number,
-  fontPx: number,
-  measure: TextMeasure,
-): string[] {
-  const lines: string[] = []
-  let current = ''
-  const pushCurrent = () => {
-    lines.push(current.trimEnd())
-    current = ''
-  }
-  const appendToken = (token: string) => {
-    if (!token) return
-    const candidate = current + token
-    if (!current || measure(candidate, fontPx) <= maxWidth) {
-      current = candidate
-      return
-    }
-    pushCurrent()
-    if (measure(token, fontPx) <= maxWidth) {
-      current = token.trimStart()
-      return
-    }
-    for (const char of token) {
-      const next = current + char
-      if (!current || measure(next, fontPx) <= maxWidth) current = next
-      else {
-        pushCurrent()
-        current = char
-      }
-    }
-  }
-  for (const token of tokenizeReplaceText(text)) {
-    if (token === '\n') pushCurrent()
-    else appendToken(token)
-  }
-  if (current || lines.length === 0) pushCurrent()
-  return lines
-}
-
-export function layoutReplaceText(
-  text: string,
-  bounds: TextBounds,
-  sourceFontPx: number,
-  measure: TextMeasure,
-  preferredMinPx = 7,
-): ReplaceTextLayout {
-  const maxFont = Math.max(preferredMinPx, Math.min(sourceFontPx || 16, bounds.height * 0.82, 48))
-  const evaluate = (fontPx: number) => {
-    const lineHeight = fontPx * 1.18
-    const lines = wrapReplaceText(text, bounds.width, fontPx, measure)
-    const contentWidth = Math.max(0, ...lines.map(line => measure(line, fontPx)))
-    const contentHeight = Math.max(lineHeight, lines.length * lineHeight)
-    return { fontPx, lineHeight, lines, contentWidth, contentHeight }
-  }
-
-  let low = preferredMinPx
-  let high = maxFont
-  let best: ReturnType<typeof evaluate> | null = null
-  for (let i = 0; i < 10; i += 1) {
-    const fontPx = (low + high) / 2
-    const candidate = evaluate(fontPx)
-    if (candidate.contentWidth <= bounds.width && candidate.contentHeight <= bounds.height) {
-      best = candidate
-      low = fontPx
-    } else {
-      high = fontPx
-    }
-  }
-  if (best) return { ...best, safeScale: 1 }
-
-  const minimum = evaluate(preferredMinPx)
-  const safeScale = Math.min(
-    1,
-    bounds.width / Math.max(1, minimum.contentWidth),
-    bounds.height / Math.max(1, minimum.contentHeight),
-  )
-  return { ...minimum, safeScale }
 }
 
 function takeReplaceFlowLine(
