@@ -960,11 +960,19 @@ fn normalize_anthropic_schema(schema: Value) -> Value {
         }
     }
 
-    if schema.get("type").and_then(|value| value.as_str()) == Some("object")
-        && schema.get("properties").is_none()
-    {
+    if schema.get("type").and_then(|value| value.as_str()) == Some("object") {
         let mut result = schema.clone();
-        result["properties"] = serde_json::json!({});
+        if let Some(obj) = result.as_object_mut() {
+            // Anthropic/Bedrock reject oneOf/allOf/anyOf at the top level of a tool
+            // input_schema (even alongside `type: object`). The constraints they encode
+            // (e.g. present_artifacts' "require one of artifact_ids/paths") can't be
+            // expressed here anyway — drop them; tool execution still validates.
+            obj.remove("oneOf");
+            obj.remove("allOf");
+            obj.remove("anyOf");
+            // Anthropic requires a properties map even when empty.
+            obj.entry("properties").or_insert_with(|| serde_json::json!({}));
+        }
         return result;
     }
 
@@ -1069,6 +1077,30 @@ fn non_empty(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::chat::model::GenerateOptions;
+
+    #[test]
+    fn strips_top_level_combinators_from_object_schema() {
+        // present_artifacts-style schema: object + top-level anyOf. Anthropic rejects
+        // the combinator; normalize must drop it and keep the object usable.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "paths": { "type": "array" } },
+            "anyOf": [{ "required": ["artifact_ids"] }, { "required": ["paths"] }],
+            "additionalProperties": false
+        });
+        let out = normalize_anthropic_schema(schema);
+        assert!(out.get("anyOf").is_none(), "top-level anyOf must be dropped");
+        assert!(out.get("oneOf").is_none());
+        assert!(out.get("allOf").is_none());
+        assert!(out.get("properties").is_some());
+        assert_eq!(out["additionalProperties"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn object_without_properties_gets_empty_map() {
+        let out = normalize_anthropic_schema(serde_json::json!({ "type": "object" }));
+        assert_eq!(out["properties"], serde_json::json!({}));
+    }
 
     #[test]
     fn tool_result_and_following_image_user_merge_into_one_turn() {
