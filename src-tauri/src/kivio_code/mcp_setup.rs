@@ -15,9 +15,9 @@
 
 use crate::mcp::types::McpToolCallResult;
 use crate::mcp::ChatToolDefinition;
-use crate::settings::Settings;
 #[cfg(test)]
 use crate::settings::ChatMcpServer;
+use crate::settings::Settings;
 use crate::state::AppState;
 use serde_json::Value;
 

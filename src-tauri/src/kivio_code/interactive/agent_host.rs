@@ -350,7 +350,11 @@ mod tests {
         let host = InteractiveAgentHost::new(tx, RunCancel::new(1));
         host.emit_stream_delta("c", "r", "m1", "hello", None, None);
         match rx.recv().unwrap() {
-            AgentUiEvent::StreamDelta { message_id, delta, reasoning } => {
+            AgentUiEvent::StreamDelta {
+                message_id,
+                delta,
+                reasoning,
+            } => {
                 assert_eq!(message_id, "m1");
                 assert_eq!(delta, "hello");
                 assert!(reasoning.is_empty());
@@ -422,7 +426,9 @@ mod tests {
         // Consent request → answered "yes".
         let fut = host.request_session_consent(&c);
         match rx.recv().unwrap() {
-            AgentUiEvent::ApprovalRequest { session, responder, .. } => {
+            AgentUiEvent::ApprovalRequest {
+                session, responder, ..
+            } => {
                 assert!(session, "session consent should set session=true");
                 responder.send(true).unwrap();
             }
@@ -434,7 +440,11 @@ mod tests {
         let rec = record("write");
         let fut = host.request_tool_approval(&c, &rec);
         match rx.recv().unwrap() {
-            AgentUiEvent::ApprovalRequest { session, prompt, responder } => {
+            AgentUiEvent::ApprovalRequest {
+                session,
+                prompt,
+                responder,
+            } => {
                 assert!(!session, "per-call approval should set session=false");
                 assert!(prompt.contains("write"), "prompt names the tool: {prompt}");
                 responder.send(false).unwrap();

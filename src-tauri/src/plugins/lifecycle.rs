@@ -50,10 +50,7 @@ pub fn materialize_mcp_server(plugin: &CatalogPlugin) -> Option<ChatMcpServer> {
     // 设 each 保证每次工具返回前已落盘，Kivio 才能用 `view html` 刷实时预览。
     let mut env = std::collections::HashMap::new();
     if plugin.id == "officecli" {
-        env.insert(
-            "OFFICECLI_RESIDENT_FLUSH".to_string(),
-            "each".to_string(),
-        );
+        env.insert("OFFICECLI_RESIDENT_FLUSH".to_string(), "each".to_string());
     }
     Some(ChatMcpServer {
         id: plugin_mcp_server_id(plugin.id),
@@ -135,12 +132,7 @@ pub async fn apply_disable_side_effects(
 
 fn upsert_plugin_mcp_server(settings: &mut Settings, server: ChatMcpServer) {
     let id = server.id.clone();
-    if let Some(slot) = settings
-        .chat_tools
-        .servers
-        .iter_mut()
-        .find(|s| s.id == id)
-    {
+    if let Some(slot) = settings.chat_tools.servers.iter_mut().find(|s| s.id == id) {
         // 保留用户曾改过的 enabled_tools；其余用最新 binary 路径 / env 覆盖
         let kept_tools = slot.enabled_tools.clone();
         *slot = server;
@@ -168,7 +160,11 @@ pub fn ensure_officecli_mcp_flush_env(app: &AppHandle, state: &AppState) {
         let guard = state.settings_read();
         match guard.chat_tools.servers.iter().find(|s| s.id == server_id) {
             Some(existing) => {
-                existing.env.get("OFFICECLI_RESIDENT_FLUSH").map(String::as_str) != Some("each")
+                existing
+                    .env
+                    .get("OFFICECLI_RESIDENT_FLUSH")
+                    .map(String::as_str)
+                    != Some("each")
                     || existing.command != server.command
             }
             None => true,
@@ -191,4 +187,3 @@ pub fn ensure_officecli_mcp_flush_env(app: &AppHandle, state: &AppState) {
         state.mcp_disconnect_server(&sid).await;
     });
 }
-

@@ -25,7 +25,11 @@ pub struct BufferTerminal {
 
 impl BufferTerminal {
     pub fn new(columns: u16, rows: u16) -> Self {
-        Self { columns, rows, buffer: String::new() }
+        Self {
+            columns,
+            rows,
+            buffer: String::new(),
+        }
     }
 
     /// 取出并清空累计的写入（便于一帧一断言）。
@@ -72,7 +76,10 @@ impl CrosstermTerminal {
     /// 查询当前终端尺寸构造（失败回退 80x24）。
     pub fn new() -> Self {
         let (columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        Self { columns: columns.max(1), rows: rows.max(1) }
+        Self {
+            columns: columns.max(1),
+            rows: rows.max(1),
+        }
     }
 
     /// 从终端重新查询尺寸（resize 后调用）。返回是否变化。

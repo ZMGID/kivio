@@ -24,7 +24,11 @@ pub fn build_pi_args(
     _prompt: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), "rpc".to_string()];
-    if let Some(model) = options.model.as_ref().filter(|m| *m != "default" && !m.is_empty()) {
+    if let Some(model) = options
+        .model
+        .as_ref()
+        .filter(|m| *m != "default" && !m.is_empty())
+    {
         args.push("--model".to_string());
         args.push(model.clone());
     }

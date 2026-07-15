@@ -98,9 +98,7 @@ impl CliToolExecutor {
         arguments: Value,
     ) -> Result<McpToolCallResult, String> {
         match tool_name {
-            "read_file" | "read" => {
-                read_file_tool_result(read_file(&self.workspace, &arguments)?)
-            }
+            "read_file" | "read" => read_file_tool_result(read_file(&self.workspace, &arguments)?),
             "write_file" | "write" => {
                 let result = write_file(&self.workspace, &arguments)?;
                 file_mutation_tool_result(result)
@@ -149,15 +147,9 @@ impl CliToolExecutor {
                     &outcome.changed,
                 ))
             }
-            "memory_read" => {
-                crate::chat::memory::tool_read_at(&self.memory_dir()?, &arguments)
-            }
-            "memory_search" => {
-                crate::chat::memory::tool_search_at(&self.memory_dir()?, &arguments)
-            }
-            "memory_modify" => {
-                crate::chat::memory::tool_modify_at(&self.memory_dir()?, &arguments)
-            }
+            "memory_read" => crate::chat::memory::tool_read_at(&self.memory_dir()?, &arguments),
+            "memory_search" => crate::chat::memory::tool_search_at(&self.memory_dir()?, &arguments),
+            "memory_modify" => crate::chat::memory::tool_modify_at(&self.memory_dir()?, &arguments),
             "enter_plan_mode" => {
                 // Signal-only tool (build + auto_plan): does NOT mutate anything. The
                 // interactive layer detects this tool record at turn end and runs a
@@ -189,10 +181,7 @@ impl CliToolExecutor {
     /// count from settings, runs the configured Lens web-search provider, and returns
     /// the formatted web context. The tool is only ever advertised when a provider
     /// key is configured (see `mod.rs::web_search_configured`), so this assumes a key.
-    async fn dispatch_web_search(
-        &self,
-        arguments: &Value,
-    ) -> Result<McpToolCallResult, String> {
+    async fn dispatch_web_search(&self, arguments: &Value) -> Result<McpToolCallResult, String> {
         let query = arguments
             .get("query")
             .and_then(|query| query.as_str())
@@ -251,9 +240,7 @@ impl ToolExecutor for CliToolExecutor {
             // need the mutable `skill_cache` to record run-scoped activation
             // tools — mirroring `mcp::registry::call_skill_tool`.
             if tool.source == "skill" {
-                return self
-                    .dispatch_skill(tool, arguments, skill_cache)
-                    .await;
+                return self.dispatch_skill(tool, arguments, skill_cache).await;
             }
 
             // Prefer the openai_tool_name (what the model called), fall back to

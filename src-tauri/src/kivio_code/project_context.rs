@@ -247,7 +247,10 @@ mod tests {
             !out.contains("config dir foo"),
             ".kivio/foo.md must NOT be loaded as context"
         );
-        assert!(out.is_empty(), "no context markdown outside .kivio/ → empty");
+        assert!(
+            out.is_empty(),
+            "no context markdown outside .kivio/ → empty"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -261,7 +264,10 @@ mod tests {
 
         let out = load_project_context(&dir, false);
         assert!(out.contains("native kivio wins"));
-        assert!(!out.contains("agents loses"), "KIVIO.md must win over AGENTS.md");
+        assert!(
+            !out.contains("agents loses"),
+            "KIVIO.md must win over AGENTS.md"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -280,7 +286,10 @@ mod tests {
         // Root-first: ancestor root file comes before the closer cwd file.
         let pos_root = out.find("root agents").unwrap();
         let pos_sub = out.find("sub claude").unwrap();
-        assert!(pos_root < pos_sub, "root file must appear before the closer cwd file");
+        assert!(
+            pos_root < pos_sub,
+            "root file must appear before the closer cwd file"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -293,7 +302,10 @@ mod tests {
         write(&dir.join("CLAUDE.md"), "claude only content");
 
         let out = load_project_context(&dir, false);
-        assert!(out.is_empty(), "CLAUDE.md must be dropped when read_claude=false");
+        assert!(
+            out.is_empty(),
+            "CLAUDE.md must be dropped when read_claude=false"
+        );
 
         // With read_claude ON it is picked up.
         let out_on = load_project_context(&dir, true);
@@ -311,7 +323,10 @@ mod tests {
         write(&dir.join(".claude").join("CLAUDE.md"), "dot claude content");
 
         let out_off = load_project_context(&dir, false);
-        assert!(out_off.contains("agents stays"), "AGENTS.md is unconditional");
+        assert!(
+            out_off.contains("agents stays"),
+            "AGENTS.md is unconditional"
+        );
         assert!(
             !out_off.contains("dot claude content"),
             ".claude/CLAUDE.md must be excluded when read_claude=false"
@@ -319,7 +334,10 @@ mod tests {
 
         let out_on = load_project_context(&dir, true);
         assert!(out_on.contains("agents stays"));
-        assert!(out_on.contains("dot claude content"), ".claude/CLAUDE.md loaded when on");
+        assert!(
+            out_on.contains("dot claude content"),
+            ".claude/CLAUDE.md loaded when on"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -333,7 +351,10 @@ mod tests {
 
         let out = load_project_context(&dir, true);
         assert!(out.contains("preferred agents"));
-        assert!(!out.contains("ignored claude"), "second candidate in same dir must be skipped");
+        assert!(
+            !out.contains("ignored claude"),
+            "second candidate in same dir must be skipped"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -364,7 +385,10 @@ mod tests {
 
         let out = load_project_context(&cwd, false);
         assert!(out.contains("truncated"), "truncation marker expected");
-        assert!(out.len() <= MAX_CONTEXT_BYTES + 256, "output stays near the cap");
+        assert!(
+            out.len() <= MAX_CONTEXT_BYTES + 256,
+            "output stays near the cap"
+        );
         assert!(out.contains("</project_context>"), "block must still close");
 
         let _ = std::fs::remove_dir_all(&root);

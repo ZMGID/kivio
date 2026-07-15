@@ -148,10 +148,42 @@ fn starts_with_markdown_step(line: &str) -> bool {
 
 fn starts_with_chinese_step(line: &str) -> bool {
     const PREFIXES: &[&str] = &[
-        "第1步", "第2步", "第3步", "第4步", "第5步", "第6步", "第7步", "第8步", "第9步",
-        "第一步", "第二步", "第三步", "第四步", "第五步", "第六步", "第七步", "第八步", "第九步",
-        "步骤1", "步骤2", "步骤3", "步骤4", "步骤5", "步骤6", "步骤7", "步骤8", "步骤9",
-        "一、", "二、", "三、", "四、", "五、", "六、", "七、", "八、", "九、",
+        "第1步",
+        "第2步",
+        "第3步",
+        "第4步",
+        "第5步",
+        "第6步",
+        "第7步",
+        "第8步",
+        "第9步",
+        "第一步",
+        "第二步",
+        "第三步",
+        "第四步",
+        "第五步",
+        "第六步",
+        "第七步",
+        "第八步",
+        "第九步",
+        "步骤1",
+        "步骤2",
+        "步骤3",
+        "步骤4",
+        "步骤5",
+        "步骤6",
+        "步骤7",
+        "步骤8",
+        "步骤9",
+        "一、",
+        "二、",
+        "三、",
+        "四、",
+        "五、",
+        "六、",
+        "七、",
+        "八、",
+        "九、",
     ];
     PREFIXES.iter().any(|prefix| line.starts_with(prefix))
 }
@@ -218,7 +250,9 @@ mod tests {
 
     #[test]
     fn executable_plan_requires_real_steps() {
-        assert!(is_executable_plan_text("计划：\n1. Read code\n2. Implement fix"));
+        assert!(is_executable_plan_text(
+            "计划：\n1. Read code\n2. Implement fix"
+        ));
         assert!(is_executable_plan_text("- [ ] 调研\n- [ ] 修改"));
         assert!(!is_executable_plan_text("没问题！积萌,"));
         assert!(!is_executable_plan_text("计划：我会处理这个问题。"));
@@ -245,8 +279,14 @@ mod tests {
 
     #[test]
     fn mode_from_str_accepts_orchestrate() {
-        assert_eq!(mode_from_str("orchestrate").unwrap(), AgentPlanMode::Orchestrate);
-        assert_eq!(mode_from_str("Orchestrate").unwrap(), AgentPlanMode::Orchestrate);
+        assert_eq!(
+            mode_from_str("orchestrate").unwrap(),
+            AgentPlanMode::Orchestrate
+        );
+        assert_eq!(
+            mode_from_str("Orchestrate").unwrap(),
+            AgentPlanMode::Orchestrate
+        );
         assert_eq!(mode_from_str("act").unwrap(), AgentPlanMode::Act);
         assert_eq!(mode_from_str("plan").unwrap(), AgentPlanMode::Plan);
         assert!(mode_from_str("bogus").is_err());

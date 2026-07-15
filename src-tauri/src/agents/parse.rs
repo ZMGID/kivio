@@ -97,6 +97,9 @@ mod tests {
     fn parses_bracket_tool_list() {
         let raw = "---\nname: x\ntools: [read_file, edit_file]\n---\nbody";
         let def = parse_agent_markdown("x", raw, "user", None).unwrap();
-        assert_eq!(def.tools, vec!["read_file".to_string(), "edit_file".to_string()]);
+        assert_eq!(
+            def.tools,
+            vec!["read_file".to_string(), "edit_file".to_string()]
+        );
     }
 }

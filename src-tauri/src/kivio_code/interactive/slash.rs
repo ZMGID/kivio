@@ -18,21 +18,81 @@ pub struct SlashCommandSpec {
 
 /// 5c 支持的内建 slash 命令表。
 pub const SLASH_COMMANDS: &[SlashCommandSpec] = &[
-    SlashCommandSpec { name: "help", aliases: &["h", "?"], description: "Show available commands" },
-    SlashCommandSpec { name: "model", aliases: &["m"], description: "Switch the active model" },
-    SlashCommandSpec { name: "sessions", aliases: &["session", "resume"], description: "Resume a recent session" },
-    SlashCommandSpec { name: "new", aliases: &[], description: "Clear the transcript and start fresh" },
-    SlashCommandSpec { name: "clear", aliases: &[], description: "Clear the transcript" },
-    SlashCommandSpec { name: "copy", aliases: &["cp"], description: "Copy the last assistant message to the clipboard" },
-    SlashCommandSpec { name: "init", aliases: &[], description: "Analyze the project and write KIVIO.md" },
-    SlashCommandSpec { name: "mcp", aliases: &[], description: "List configured MCP servers and their status" },
-    SlashCommandSpec { name: "skill", aliases: &["skills"], description: "List discovered skills" },
-    SlashCommandSpec { name: "plan", aliases: &[], description: "Switch to plan mode (read-only research & planning)" },
-    SlashCommandSpec { name: "build", aliases: &[], description: "Switch to build mode (full tools)" },
-    SlashCommandSpec { name: "autoplan", aliases: &[], description: "Toggle auto build→plan switching for complex tasks (on|off)" },
-    SlashCommandSpec { name: "compact", aliases: &["compress"], description: "Summarize the conversation to free up context (optional focus)" },
-    SlashCommandSpec { name: "settings", aliases: &["setting", "config"], description: "Toggle kivio-code settings" },
-    SlashCommandSpec { name: "quit", aliases: &["exit", "q"], description: "Exit kivio-code" },
+    SlashCommandSpec {
+        name: "help",
+        aliases: &["h", "?"],
+        description: "Show available commands",
+    },
+    SlashCommandSpec {
+        name: "model",
+        aliases: &["m"],
+        description: "Switch the active model",
+    },
+    SlashCommandSpec {
+        name: "sessions",
+        aliases: &["session", "resume"],
+        description: "Resume a recent session",
+    },
+    SlashCommandSpec {
+        name: "new",
+        aliases: &[],
+        description: "Clear the transcript and start fresh",
+    },
+    SlashCommandSpec {
+        name: "clear",
+        aliases: &[],
+        description: "Clear the transcript",
+    },
+    SlashCommandSpec {
+        name: "copy",
+        aliases: &["cp"],
+        description: "Copy the last assistant message to the clipboard",
+    },
+    SlashCommandSpec {
+        name: "init",
+        aliases: &[],
+        description: "Analyze the project and write KIVIO.md",
+    },
+    SlashCommandSpec {
+        name: "mcp",
+        aliases: &[],
+        description: "List configured MCP servers and their status",
+    },
+    SlashCommandSpec {
+        name: "skill",
+        aliases: &["skills"],
+        description: "List discovered skills",
+    },
+    SlashCommandSpec {
+        name: "plan",
+        aliases: &[],
+        description: "Switch to plan mode (read-only research & planning)",
+    },
+    SlashCommandSpec {
+        name: "build",
+        aliases: &[],
+        description: "Switch to build mode (full tools)",
+    },
+    SlashCommandSpec {
+        name: "autoplan",
+        aliases: &[],
+        description: "Toggle auto build→plan switching for complex tasks (on|off)",
+    },
+    SlashCommandSpec {
+        name: "compact",
+        aliases: &["compress"],
+        description: "Summarize the conversation to free up context (optional focus)",
+    },
+    SlashCommandSpec {
+        name: "settings",
+        aliases: &["setting", "config"],
+        description: "Toggle kivio-code settings",
+    },
+    SlashCommandSpec {
+        name: "quit",
+        aliases: &["exit", "q"],
+        description: "Exit kivio-code",
+    },
 ];
 
 /// `/init` 触发的固定提示词：让模型用现有 read/ls/grep/glob 工具扫描项目，再用 `write_file` 落盘到
@@ -85,7 +145,11 @@ pub enum SlashOutcome {
 pub fn dispatch_slash(input: &str) -> SlashOutcome {
     let trimmed = input.trim();
     let without_slash = trimmed.strip_prefix('/').unwrap_or(trimmed);
-    let name = without_slash.split_whitespace().next().unwrap_or("").to_lowercase();
+    let name = without_slash
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
 
     if name.is_empty() {
         return SlashOutcome::Unknown(String::new());
@@ -107,7 +171,9 @@ pub fn dispatch_slash(input: &str) -> SlashOutcome {
         Some("plan") => SlashOutcome::EnterPlan,
         Some("build") => SlashOutcome::EnterBuild,
         Some("autoplan") => SlashOutcome::SetAutoPlan(autoplan_arg(without_slash)),
-        Some("compact") => SlashOutcome::Compact { focus: compact_focus(without_slash) },
+        Some("compact") => SlashOutcome::Compact {
+            focus: compact_focus(without_slash),
+        },
         Some("settings") => SlashOutcome::OpenSettings,
         Some("quit") => SlashOutcome::Quit,
         _ => SlashOutcome::Unknown(name),
@@ -150,7 +216,9 @@ pub fn help_text() -> String {
     for spec in SLASH_COMMANDS {
         out.push_str(&format!("  /{:<8} {}\n", spec.name, spec.description));
     }
-    out.push_str("\nKeys: Enter submit · Ctrl+C clear input · Ctrl+D exit · Esc cancel · Ctrl+L model");
+    out.push_str(
+        "\nKeys: Enter submit · Ctrl+C clear input · Ctrl+D exit · Esc cancel · Ctrl+L model",
+    );
     out
 }
 
@@ -224,13 +292,28 @@ mod tests {
 
     #[test]
     fn autoplan_parses_on_off_and_bare() {
-        assert_eq!(dispatch_slash("/autoplan on"), SlashOutcome::SetAutoPlan(Some(true)));
-        assert_eq!(dispatch_slash("/autoplan OFF"), SlashOutcome::SetAutoPlan(Some(false)));
-        assert_eq!(dispatch_slash("/autoplan true"), SlashOutcome::SetAutoPlan(Some(true)));
-        assert_eq!(dispatch_slash("/autoplan disable"), SlashOutcome::SetAutoPlan(Some(false)));
+        assert_eq!(
+            dispatch_slash("/autoplan on"),
+            SlashOutcome::SetAutoPlan(Some(true))
+        );
+        assert_eq!(
+            dispatch_slash("/autoplan OFF"),
+            SlashOutcome::SetAutoPlan(Some(false))
+        );
+        assert_eq!(
+            dispatch_slash("/autoplan true"),
+            SlashOutcome::SetAutoPlan(Some(true))
+        );
+        assert_eq!(
+            dispatch_slash("/autoplan disable"),
+            SlashOutcome::SetAutoPlan(Some(false))
+        );
         // No / unrecognized arg → None (show current state).
         assert_eq!(dispatch_slash("/autoplan"), SlashOutcome::SetAutoPlan(None));
-        assert_eq!(dispatch_slash("/autoplan maybe"), SlashOutcome::SetAutoPlan(None));
+        assert_eq!(
+            dispatch_slash("/autoplan maybe"),
+            SlashOutcome::SetAutoPlan(None)
+        );
     }
 
     #[test]
@@ -251,7 +334,10 @@ mod tests {
 
     #[test]
     fn unknown_command() {
-        assert_eq!(dispatch_slash("/frobnicate"), SlashOutcome::Unknown("frobnicate".to_string()));
+        assert_eq!(
+            dispatch_slash("/frobnicate"),
+            SlashOutcome::Unknown("frobnicate".to_string())
+        );
     }
 
     #[test]
@@ -262,15 +348,24 @@ mod tests {
 
     #[test]
     fn sessions_opens_selector() {
-        assert_eq!(dispatch_slash("/sessions"), SlashOutcome::OpenSessionSelector);
-        assert_eq!(dispatch_slash("/session"), SlashOutcome::OpenSessionSelector);
+        assert_eq!(
+            dispatch_slash("/sessions"),
+            SlashOutcome::OpenSessionSelector
+        );
+        assert_eq!(
+            dispatch_slash("/session"),
+            SlashOutcome::OpenSessionSelector
+        );
         assert_eq!(dispatch_slash("/resume"), SlashOutcome::OpenSessionSelector);
     }
 
     #[test]
     fn case_insensitive_and_args_ignored() {
         assert_eq!(dispatch_slash("/QUIT"), SlashOutcome::Quit);
-        assert_eq!(dispatch_slash("/new   anything here"), SlashOutcome::NewConversation);
+        assert_eq!(
+            dispatch_slash("/new   anything here"),
+            SlashOutcome::NewConversation
+        );
     }
 
     #[test]
@@ -280,23 +375,36 @@ mod tests {
 
     #[test]
     fn compact_without_focus() {
-        assert_eq!(dispatch_slash("/compact"), SlashOutcome::Compact { focus: None });
+        assert_eq!(
+            dispatch_slash("/compact"),
+            SlashOutcome::Compact { focus: None }
+        );
         // alias
-        assert_eq!(dispatch_slash("/compress"), SlashOutcome::Compact { focus: None });
+        assert_eq!(
+            dispatch_slash("/compress"),
+            SlashOutcome::Compact { focus: None }
+        );
         // trailing whitespace only → still no focus.
-        assert_eq!(dispatch_slash("/compact   "), SlashOutcome::Compact { focus: None });
+        assert_eq!(
+            dispatch_slash("/compact   "),
+            SlashOutcome::Compact { focus: None }
+        );
     }
 
     #[test]
     fn compact_with_focus() {
         assert_eq!(
             dispatch_slash("/compact focus on tests"),
-            SlashOutcome::Compact { focus: Some("focus on tests".to_string()) }
+            SlashOutcome::Compact {
+                focus: Some("focus on tests".to_string())
+            }
         );
         // extra spacing around the focus is trimmed.
         assert_eq!(
             dispatch_slash("/compact    keep the diff   "),
-            SlashOutcome::Compact { focus: Some("keep the diff".to_string()) }
+            SlashOutcome::Compact {
+                focus: Some("keep the diff".to_string())
+            }
         );
     }
 

@@ -38,11 +38,7 @@ pub(crate) async fn check_github_latest_release(
 /// 主通道：`api.github.com/repos/{REPO}/releases/latest`。
 /// 返回 `Some(json)` 当且仅当请求成功且 JSON 解析成功（此时 available 可真可假）；
 /// 任何网络 / 非 2xx / 解析失败都返回 `None`，交给 atom 回退。
-async fn try_api_latest(
-    state: &AppState,
-    repo: &str,
-    current: &str,
-) -> Option<serde_json::Value> {
+async fn try_api_latest(state: &AppState, repo: &str, current: &str) -> Option<serde_json::Value> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let response = with_standard_request_timeout(
         state
@@ -85,11 +81,7 @@ async fn try_api_latest(
 
 /// 回退通道：`github.com/{REPO}/releases.atom`（走 github.com 主体，非 api 子域）。
 /// 只解析最新 tag —— 没有 assets / body，`htmlUrl` 由 tag 拼出，够前端展示 + "去 GitHub 下载"。
-async fn try_atom_latest(
-    state: &AppState,
-    repo: &str,
-    current: &str,
-) -> Option<serde_json::Value> {
+async fn try_atom_latest(state: &AppState, repo: &str, current: &str) -> Option<serde_json::Value> {
     let url = format!("https://github.com/{repo}/releases.atom");
     let response = with_standard_request_timeout(
         state

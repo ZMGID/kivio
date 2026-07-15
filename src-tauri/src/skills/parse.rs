@@ -173,7 +173,9 @@ pub fn parse_skill_record(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_list_value, parse_recommended_tools, parse_skill_markdown, split_frontmatter};
+    use super::{
+        parse_list_value, parse_recommended_tools, parse_skill_markdown, split_frontmatter,
+    };
     use std::collections::HashMap;
 
     /// The vendored Obsidian skills must parse cleanly and their ids must match
@@ -188,7 +190,12 @@ mod tests {
                 .unwrap_or_else(|e| panic!("read {}: {e}", skill_md.display()));
             let parsed = parse_skill_markdown(&raw, "builtin", None, Vec::new())
                 .unwrap_or_else(|e| panic!("parse {}: {e}", skill_md.display()));
-            assert_eq!(&parsed.meta.id, id, "id mismatch for {}", skill_md.display());
+            assert_eq!(
+                &parsed.meta.id,
+                id,
+                "id mismatch for {}",
+                skill_md.display()
+            );
             assert!(!parsed.meta.description.trim().is_empty());
             assert!(!parsed.body.trim().is_empty());
         }

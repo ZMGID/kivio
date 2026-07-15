@@ -35,9 +35,7 @@ use crate::external_agents::stream::create_stream_handler;
 use crate::external_agents::types::{
     RuntimeBuildOptions, RuntimeContext, StreamFormat, UnifiedAgentEvent,
 };
-use crate::external_agents::workspace::{
-    extra_allowed_dirs_for_agent, resolve_effective_cwd,
-};
+use crate::external_agents::workspace::{extra_allowed_dirs_for_agent, resolve_effective_cwd};
 use crate::skills::read_skill_detail;
 use crate::state::AppState;
 
@@ -89,15 +87,11 @@ pub async fn run_external_cli_reply(
         ));
     }
 
-    let resolved_bin = resolve_binary(def).await.ok_or_else(|| {
-        format!("无法定位 {} 可执行文件", def.bin)
-    })?;
+    let resolved_bin = resolve_binary(def)
+        .await
+        .ok_or_else(|| format!("无法定位 {} 可执行文件", def.bin))?;
 
-    let cwd = resolve_effective_cwd(
-        app,
-        &conversation.id,
-        conversation.project_id.as_deref(),
-    )?;
+    let cwd = resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
     let is_slash = is_cli_slash_input(latest_user_message);
 
     let skill_detail = if is_slash {
@@ -138,9 +132,7 @@ pub async fn run_external_cli_reply(
         is_slash,
     );
 
-    let skill_dir = skill_detail
-        .as_ref()
-        .and_then(|d| d.meta.path.clone());
+    let skill_dir = skill_detail.as_ref().and_then(|d| d.meta.path.clone());
     let skill_body = skill_detail.as_ref().map(|d| d.body.clone());
     let skill_folder = skill_dir.as_deref().map(skill_cwd_alias_segment);
 
@@ -281,62 +273,64 @@ pub async fn run_external_cli_reply(
         )
         .await
     } else {
-        let spawned = spawned_opt.as_mut().expect("non-persistent path spawns a child");
+        let spawned = spawned_opt
+            .as_mut()
+            .expect("non-persistent path spawns a child");
         match def.stream_format {
-        StreamFormat::PiRpc => {
-            let model = conversation.agent_runtime.external_model.as_deref();
-            run_pi_rpc_session(
-                &mut spawned.child,
-                &composed.full_prompt,
-                model,
-                |event| emit_event(event),
-                cancel_check,
-            )
-            .await
-        }
-        StreamFormat::CodexAppServer => {
-            let model = conversation.agent_runtime.external_model.as_deref();
-            let reasoning = conversation.agent_runtime.external_reasoning.as_deref();
-            run_codex_app_server_session(
-                &mut spawned.child,
-                &composed.full_prompt,
-                model,
-                reasoning,
-                &cwd,
-                |event| emit_event(event),
-                cancel_check,
-            )
-            .await
-        }
-        StreamFormat::AcpJsonRpc => {
-            let model = conversation.agent_runtime.external_model.as_deref();
-            let mcp_servers: Vec<AcpMcpServer> = vec![];
-            run_acp_session(
-                &mut spawned.child,
-                &composed.full_prompt,
-                &cwd,
-                model,
-                &mcp_servers,
-                |event| emit_event(event),
-                cancel_check,
-            )
-            .await
-        }
-        _ => {
-            if def.prompt_via_stdin {
-                write_prompt_stdin(&mut spawned.child, def, &composed.full_prompt).await?;
+            StreamFormat::PiRpc => {
+                let model = conversation.agent_runtime.external_model.as_deref();
+                run_pi_rpc_session(
+                    &mut spawned.child,
+                    &composed.full_prompt,
+                    model,
+                    |event| emit_event(event),
+                    cancel_check,
+                )
+                .await
             }
-            let mut handler = create_stream_handler(def.stream_format, def.json_event_parser);
-            read_stdout_lines(
-                &mut spawned.child,
-                |line| {
-                    handler.handle_line(line, &mut |event| emit_event(event));
-                    Ok(())
-                },
-                cancel_check,
-            )
-            .await
-        }
+            StreamFormat::CodexAppServer => {
+                let model = conversation.agent_runtime.external_model.as_deref();
+                let reasoning = conversation.agent_runtime.external_reasoning.as_deref();
+                run_codex_app_server_session(
+                    &mut spawned.child,
+                    &composed.full_prompt,
+                    model,
+                    reasoning,
+                    &cwd,
+                    |event| emit_event(event),
+                    cancel_check,
+                )
+                .await
+            }
+            StreamFormat::AcpJsonRpc => {
+                let model = conversation.agent_runtime.external_model.as_deref();
+                let mcp_servers: Vec<AcpMcpServer> = vec![];
+                run_acp_session(
+                    &mut spawned.child,
+                    &composed.full_prompt,
+                    &cwd,
+                    model,
+                    &mcp_servers,
+                    |event| emit_event(event),
+                    cancel_check,
+                )
+                .await
+            }
+            _ => {
+                if def.prompt_via_stdin {
+                    write_prompt_stdin(&mut spawned.child, def, &composed.full_prompt).await?;
+                }
+                let mut handler = create_stream_handler(def.stream_format, def.json_event_parser);
+                read_stdout_lines(
+                    &mut spawned.child,
+                    |line| {
+                        handler.handle_line(line, &mut |event| emit_event(event));
+                        Ok(())
+                    },
+                    cancel_check,
+                )
+                .await
+            }
         }
     };
 
@@ -354,7 +348,12 @@ pub async fn run_external_cli_reply(
         None => String::new(),
     };
     if let Err(err) = &read_result {
-        stream_outcome = if err == "cancelled" { "cancelled" } else { "error" }.to_string();
+        stream_outcome = if err == "cancelled" {
+            "cancelled"
+        } else {
+            "error"
+        }
+        .to_string();
         if err != "cancelled" && content.trim().is_empty() && raw_output.trim().is_empty() {
             raw_output = format!("{} 读取输出失败：{}", def.name, err);
         }
@@ -507,11 +506,7 @@ impl StreamSegmentTracker {
             phase,
             order: *segment_order,
             step_number: None,
-            round: if tool_calls_len == 0 {
-                None
-            } else {
-                Some(1)
-            },
+            round: if tool_calls_len == 0 { None } else { Some(1) },
             text: Some(delta.to_string()),
             tool_call_id: None,
         };
@@ -696,22 +691,31 @@ async fn connect_persistent_session(
     match protocol {
         StreamFormat::CodexAppServer => {
             if let Some(tid) = resume_native.as_deref() {
-                if let Ok(session) =
-                    CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, Some(tid)).await
+                if let Ok(session) = CodexAppServerSession::connect(
+                    resolved_bin,
+                    args,
+                    cwd,
+                    model,
+                    sandbox,
+                    Some(tid),
+                )
+                .await
                 {
                     let id = session.thread_id().to_string();
                     return Ok((spawn_codex_session_actor(session), id, true));
                 }
             }
             let session =
-                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None).await?;
+                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None)
+                    .await?;
             let id = session.thread_id().to_string();
             Ok((spawn_codex_session_actor(session), id, false))
         }
         StreamFormat::AcpJsonRpc => {
             if let Some(sid) = resume_native.as_deref() {
                 if let Ok(session) =
-                    AcpSession::connect(resolved_bin, args, cwd, model, mcp_servers, Some(sid)).await
+                    AcpSession::connect(resolved_bin, args, cwd, model, mcp_servers, Some(sid))
+                        .await
                 {
                     let id = session.session_id().to_string();
                     return Ok((spawn_acp_session_actor(session), id, true));
@@ -903,8 +907,20 @@ mod tests {
         let mut order = 0u32;
         let mut tracker = StreamSegmentTracker::default();
 
-        let first = tracker.append(ChatMessageSegmentKind::Text, &mut segments, &mut order, 0, "你");
-        let second = tracker.append(ChatMessageSegmentKind::Text, &mut segments, &mut order, 0, "好");
+        let first = tracker.append(
+            ChatMessageSegmentKind::Text,
+            &mut segments,
+            &mut order,
+            0,
+            "你",
+        );
+        let second = tracker.append(
+            ChatMessageSegmentKind::Text,
+            &mut segments,
+            &mut order,
+            0,
+            "好",
+        );
 
         assert_eq!(segments.len(), 1);
         assert_eq!(first.id, second.id);
@@ -933,9 +949,21 @@ mod tests {
         let mut order = 0u32;
         let mut tracker = StreamSegmentTracker::default();
 
-        tracker.append(ChatMessageSegmentKind::Text, &mut segments, &mut order, 0, "before");
+        tracker.append(
+            ChatMessageSegmentKind::Text,
+            &mut segments,
+            &mut order,
+            0,
+            "before",
+        );
         tracker.reset_text();
-        let after = tracker.append(ChatMessageSegmentKind::Text, &mut segments, &mut order, 1, "after");
+        let after = tracker.append(
+            ChatMessageSegmentKind::Text,
+            &mut segments,
+            &mut order,
+            1,
+            "after",
+        );
 
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].text.as_deref(), Some("before"));

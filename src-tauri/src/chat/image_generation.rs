@@ -42,17 +42,15 @@ pub async fn tool_generate_image(
             .ok()
             .map(|conversation| (conversation.provider_id, conversation.model))
     });
-    let session_ref = session.as_ref().map(|(provider_id, model)| {
-        crate::settings::SessionModel {
+    let session_ref = session
+        .as_ref()
+        .map(|(provider_id, model)| crate::settings::SessionModel {
             provider_id: provider_id.as_str(),
             model: model.as_str(),
-        }
-    });
-    let (provider_id, model) = crate::chat::model_metadata::image_generation_model_for_session(
-        &settings,
-        session_ref,
-    )
-    .ok_or_else(|| "Mixer image generation model is not configured".to_string())?;
+        });
+    let (provider_id, model) =
+        crate::chat::model_metadata::image_generation_model_for_session(&settings, session_ref)
+            .ok_or_else(|| "Mixer image generation model is not configured".to_string())?;
     let provider = settings
         .get_provider(&provider_id)
         .cloned()

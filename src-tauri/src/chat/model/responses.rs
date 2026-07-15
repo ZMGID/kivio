@@ -71,17 +71,15 @@ impl OpenAiResponsesProvider<'_> {
             &self.provider.id,
             &self.provider.api_keys,
             |key| {
-                with_standard_request_timeout(
-                    crate::api::attach_json_body(
-                        self.state
-                            .http
-                            .post(self.responses_url())
-                            .bearer_auth(key)
-                            .header(ACCEPT_ENCODING, "identity"),
-                        &body,
-                        self.provider.compress_request_body,
-                    ),
-                )
+                with_standard_request_timeout(crate::api::attach_json_body(
+                    self.state
+                        .http
+                        .post(self.responses_url())
+                        .bearer_auth(key)
+                        .header(ACCEPT_ENCODING, "identity"),
+                    &body,
+                    self.provider.compress_request_body,
+                ))
                 .send()
             },
         )
@@ -95,7 +93,14 @@ impl OpenAiResponsesProvider<'_> {
         let raw = response.text().await.map_err(|err| {
             let message = format!("{label} read body: {err}");
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
-            self.record_debug_failure(&request, &label, false, &message, started_at, started.elapsed());
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &message,
+                started_at,
+                started.elapsed(),
+            );
             ModelError::new(message)
         })?;
         match serde_json::from_str::<Value>(&raw) {
@@ -108,7 +113,14 @@ impl OpenAiResponsesProvider<'_> {
                     started.elapsed(),
                     output.usage.clone(),
                 );
-                self.record_debug_success(&request, &label, false, &output, started_at, started.elapsed());
+                self.record_debug_success(
+                    &request,
+                    &label,
+                    false,
+                    &output,
+                    started_at,
+                    started.elapsed(),
+                );
                 Ok(output)
             }
             Err(json_err) => {
@@ -275,7 +287,14 @@ impl OpenAiResponsesProvider<'_> {
             started.elapsed(),
             output.usage.clone(),
         );
-        self.record_debug_success(&request, &label, true, &output, started_at, started.elapsed());
+        self.record_debug_success(
+            &request,
+            &label,
+            true,
+            &output,
+            started_at,
+            started.elapsed(),
+        );
         Ok(output)
     }
 
@@ -826,18 +845,15 @@ pub fn output_from_responses(
     }
 
     let usage = model_usage_from_openai_value(value);
-    let finish_reason = value
-        .get("status")
-        .and_then(Value::as_str)
-        .map(|status| {
-            if status == "completed" && !tool_calls.is_empty() {
-                "tool_calls".to_string()
-            } else if status == "completed" {
-                "stop".to_string()
-            } else {
-                status.to_string()
-            }
-        });
+    let finish_reason = value.get("status").and_then(Value::as_str).map(|status| {
+        if status == "completed" && !tool_calls.is_empty() {
+            "tool_calls".to_string()
+        } else if status == "completed" {
+            "stop".to_string()
+        } else {
+            status.to_string()
+        }
+    });
 
     Ok(GenerateOutput {
         text,
@@ -963,8 +979,12 @@ mod tests {
         assert!(call.arguments_parse_error.is_none());
         assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
         assert_eq!(output.usage.and_then(|u| u.total_tokens), Some(15));
-        assert!(parts.iter().any(|p| matches!(p, StreamPart::ToolCallStart { .. })));
-        assert!(parts.iter().any(|p| matches!(p, StreamPart::ToolCallDone { .. })));
+        assert!(parts
+            .iter()
+            .any(|p| matches!(p, StreamPart::ToolCallStart { .. })));
+        assert!(parts
+            .iter()
+            .any(|p| matches!(p, StreamPart::ToolCallDone { .. })));
     }
 
     #[test]
@@ -978,7 +998,10 @@ mod tests {
         assert_eq!(output.text, "你好，世界");
         assert_eq!(output.finish_reason.as_deref(), Some("stop"));
         assert_eq!(
-            parts.iter().filter(|p| matches!(p, StreamPart::TextDelta { .. })).count(),
+            parts
+                .iter()
+                .filter(|p| matches!(p, StreamPart::TextDelta { .. }))
+                .count(),
             2
         );
     }

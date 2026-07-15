@@ -85,8 +85,7 @@ pub(crate) struct RunState {
     /// L2 压缩产出的落盘 summary（与 boundary 同期生成）。run 结束时由 `attach_usage`
     /// 挂到 `AgentRunResult.compaction_summary`，commands.rs 据此写回 `context_state.summary`
     /// + `compression_count`（L2 不再只 push boundary，对齐落盘路径）。
-    pub(crate) pending_compaction_summary:
-        Option<crate::chat::types::ConversationContextSummary>,
+    pub(crate) pending_compaction_summary: Option<crate::chat::types::ConversationContextSummary>,
 }
 
 /// 连续「需要压缩但压不下去」多少轮后停止工具循环、优雅收尾（Gap 2，Layer 3 anti-thrashing）。
@@ -201,9 +200,7 @@ pub async fn run_agent_loop(
             match run_tool_round(&env, &mut state, round, planned).await {
                 ToolRoundOutcome::Continue => {}
                 ToolRoundOutcome::RoundLimit => break,
-                ToolRoundOutcome::Cancelled(result) => {
-                    return Ok(attach_usage(result, &mut state))
-                }
+                ToolRoundOutcome::Cancelled(result) => return Ok(attach_usage(result, &mut state)),
             }
             // Crash-safety checkpoint: persist a best-effort snapshot of the
             // partial assistant message after each completed tool round. The
@@ -266,9 +263,9 @@ fn attach_usage(mut result: AgentRunResult, state: &mut RunState) -> AgentRunRes
 pub(crate) use super::execute::ToolExecutionContext;
 #[cfg(test)]
 pub(crate) use super::finalize::{
-    cancelled_tool_round_run_result, empty_synthesis_fallback_response,
-    stopped_generation_content, synthesis_failed_fallback_response,
-    tool_planning_failed_fallback_response, tool_planning_failed_run_result,
+    cancelled_tool_round_run_result, empty_synthesis_fallback_response, stopped_generation_content,
+    synthesis_failed_fallback_response, tool_planning_failed_fallback_response,
+    tool_planning_failed_run_result,
 };
 #[cfg(test)]
 pub(crate) use super::rounds::{

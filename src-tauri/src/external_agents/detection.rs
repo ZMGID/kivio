@@ -5,8 +5,8 @@ use crate::external_agents::session::acp::detect_acp_models;
 use crate::external_agents::session::claude_init::detect_claude_models;
 use crate::external_agents::session::pi_rpc::parse_pi_models;
 use crate::external_agents::types::{
-    DetectedAgent, ModelProbeStrategy, RuntimeAgentDef, RuntimeModelOption, default_model_option,
-    fallback_models_from_pairs, reasoning_options_from_pairs,
+    default_model_option, fallback_models_from_pairs, reasoning_options_from_pairs, DetectedAgent,
+    ModelProbeStrategy, RuntimeAgentDef, RuntimeModelOption,
 };
 use crate::proc::NoConsoleWindow;
 
@@ -173,7 +173,11 @@ async fn probe_models(
     if def.models_from_stderr {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let text = if !stdout.trim().is_empty() { stdout } else { stderr };
+        let text = if !stdout.trim().is_empty() {
+            stdout
+        } else {
+            stderr
+        };
         return parse_pi_models(text.as_ref());
     }
 
@@ -233,7 +237,9 @@ mod tests {
         }
         // Real discovered models, not the bogus generic fallback.
         assert!(
-            detected.models.iter().any(|m| m.id.contains('/') && !m.id.starts_with("anthropic/") && !m.id.starts_with("openai/")),
+            detected.models.iter().any(|m| m.id.contains('/')
+                && !m.id.starts_with("anthropic/")
+                && !m.id.starts_with("openai/")),
             "expected user-configured pi models, got: {:?}",
             detected.models.iter().map(|m| &m.id).collect::<Vec<_>>()
         );

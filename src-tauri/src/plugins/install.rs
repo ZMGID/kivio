@@ -5,9 +5,7 @@
 use serde::Serialize;
 use tauri::AppHandle;
 
-use super::catalog::{
-    catalog_plugin, CatalogPlugin, OFFICECLI_DOMAIN_SKILLS, PLUGIN_CATALOG,
-};
+use super::catalog::{catalog_plugin, CatalogPlugin, OFFICECLI_DOMAIN_SKILLS, PLUGIN_CATALOG};
 use super::lifecycle::{
     apply_disable_side_effects, apply_enable_side_effects, plugin_mcp_server_id,
 };
@@ -143,9 +141,11 @@ pub fn list_plugin_statuses_with_state(state: &AppState) -> Result<Vec<PluginSta
     let mut list: Vec<PluginStatus> = PLUGIN_CATALOG.iter().map(status_for).collect();
     for status in &mut list {
         if let Some(sid) = status.mcp_server_id.as_deref() {
-            status.mcp_active = settings.chat_tools.servers.iter().any(|s| {
-                s.id == sid && s.enabled && !s.command.trim().is_empty()
-            });
+            status.mcp_active = settings
+                .chat_tools
+                .servers
+                .iter()
+                .any(|s| s.id == sid && s.enabled && !s.command.trim().is_empty());
         }
     }
     Ok(list)
@@ -164,7 +164,10 @@ pub fn get_install_brief(id: &str) -> Result<PluginInstallBrief, String> {
         .map(|s| (*s).to_string())
         .collect();
     let readme_block = if readme_urls.is_empty() {
-        format!("- （未配置 raw URL）请打开仓库页面阅读 README：{}", catalog.repo)
+        format!(
+            "- （未配置 raw URL）请打开仓库页面阅读 README：{}",
+            catalog.repo
+        )
     } else {
         readme_urls
             .iter()
@@ -335,7 +338,11 @@ pub async fn set_plugin_enabled(
         // Skill 同步失败不阻断 MCP 启用；提示用户走「让 AI 安装」补 Skills
         if let Err(err) = write_skill_files(catalog) {
             skill_sync_err = Some(err);
-            eprintln!("[plugins] skill sync on enable {}: {}", id, skill_sync_err.as_deref().unwrap_or(""));
+            eprintln!(
+                "[plugins] skill sync on enable {}: {}",
+                id,
+                skill_sync_err.as_deref().unwrap_or("")
+            );
         }
         apply_enable_side_effects(app, state, id)?;
     } else {
@@ -389,10 +396,7 @@ pub async fn set_plugin_enabled(
         parts.push("系统提示已挂载；请新开对话使用".to_string());
         parts.join("。")
     } else {
-        format!(
-            "已关闭 {}（Skill / MCP / 系统提示均已卸下）",
-            catalog.name
-        )
+        format!("已关闭 {}（Skill / MCP / 系统提示均已卸下）", catalog.name)
     };
 
     Ok(PluginActionResult {
@@ -467,10 +471,7 @@ fn remove_cli_install(catalog: &CatalogPlugin, binary: &std::path::Path) -> Vec<
         return out;
     }
     if is_protected_system_path(binary) {
-        out.push(format!(
-            "跳过系统保护路径 {}",
-            binary.display()
-        ));
+        out.push(format!("跳过系统保护路径 {}", binary.display()));
         return out;
     }
 
@@ -490,7 +491,10 @@ fn remove_cli_install(catalog: &CatalogPlugin, binary: &std::path::Path) -> Vec<
                 Err(e) => {
                     // 回退只删 exe
                     let _ = std::fs::remove_file(binary);
-                    out.push(format!("安装目录删除失败({e})，已尝试删除 {}", binary.display()));
+                    out.push(format!(
+                        "安装目录删除失败({e})，已尝试删除 {}",
+                        binary.display()
+                    ));
                 }
             }
             return out;
@@ -541,10 +545,7 @@ fn expand_env_template(template: &str) -> String {
                 .unwrap_or_default(),
         ),
         ("%HOME%", std::env::var("HOME").unwrap_or_default()),
-        (
-            "%APPDATA%",
-            std::env::var("APPDATA").unwrap_or_default(),
-        ),
+        ("%APPDATA%", std::env::var("APPDATA").unwrap_or_default()),
     ] {
         s = s.replace(key, &val);
     }
@@ -728,9 +729,7 @@ fn sync_officecli_official_skills() -> Result<(), String> {
                     errors.push(format!("{cli_name}: {e}"));
                 }
             }
-            None => errors.push(format!(
-                "{cli_name}: output missing SKILL.md frontmatter"
-            )),
+            None => errors.push(format!("{cli_name}: output missing SKILL.md frontmatter")),
         }
     }
     if !errors.is_empty() {
@@ -746,7 +745,8 @@ fn write_plugin_skill_md(plugin_id: &str, skill_id: &str, body: &str) -> Result<
     let dir = skill_dir(plugin_id, skill_id)
         .ok_or_else(|| "app data directory unavailable".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("create skill dir: {e}"))?;
-    std::fs::write(dir.join("SKILL.md"), body).map_err(|e| format!("write skill {skill_id}: {e}"))?;
+    std::fs::write(dir.join("SKILL.md"), body)
+        .map_err(|e| format!("write skill {skill_id}: {e}"))?;
     Ok(())
 }
 
@@ -756,13 +756,34 @@ fn find_official_officecli_base_skill() -> Option<String> {
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)?;
     let candidates = [
-        home.join(".agents").join("skills").join("officecli").join("SKILL.md"),
-        home.join(".claude").join("skills").join("officecli").join("SKILL.md"),
-        home.join(".cursor").join("skills").join("officecli").join("SKILL.md"),
-        home.join(".copilot").join("skills").join("officecli").join("SKILL.md"),
-        home.join(".codex").join("skills").join("officecli").join("SKILL.md"),
-        home.join(".hermes").join("skills").join("officecli").join("SKILL.md"),
-        home.join(".openclaw").join("skills").join("officecli").join("SKILL.md"),
+        home.join(".agents")
+            .join("skills")
+            .join("officecli")
+            .join("SKILL.md"),
+        home.join(".claude")
+            .join("skills")
+            .join("officecli")
+            .join("SKILL.md"),
+        home.join(".cursor")
+            .join("skills")
+            .join("officecli")
+            .join("SKILL.md"),
+        home.join(".copilot")
+            .join("skills")
+            .join("officecli")
+            .join("SKILL.md"),
+        home.join(".codex")
+            .join("skills")
+            .join("officecli")
+            .join("SKILL.md"),
+        home.join(".hermes")
+            .join("skills")
+            .join("officecli")
+            .join("SKILL.md"),
+        home.join(".openclaw")
+            .join("skills")
+            .join("officecli")
+            .join("SKILL.md"),
     ];
     for path in candidates {
         if let Ok(raw) = std::fs::read_to_string(&path) {

@@ -221,7 +221,9 @@ pub fn mask_secret(value: &str) -> String {
         return String::new();
     }
     let (prefix, secret) = match trimmed.split_once(' ') {
-        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => (format!("{scheme} "), rest),
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
+            (format!("{scheme} "), rest)
+        }
         _ => (String::new(), trimmed),
     };
     let preview: String = secret.chars().take(4).collect();
@@ -294,10 +296,8 @@ mod tests {
 
     #[test]
     fn ring_buffer_evicts_oldest_past_capacity() {
-        let state = AppState::new_headless(
-            crate::settings::Settings::default(),
-            std::env::temp_dir(),
-        );
+        let state =
+            AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
         // Push one past capacity; the first record must have been evicted.
         for i in 0..(REQUEST_DEBUG_CAPACITY + 1) {
             record(&state, sample_record(&i.to_string()));
@@ -305,7 +305,10 @@ mod tests {
         let snap = snapshot(&state);
         assert_eq!(snap.len(), REQUEST_DEBUG_CAPACITY);
         // Newest first: the last pushed (id = capacity) is at the front.
-        assert_eq!(snap.first().unwrap().id, format!("dbg_{REQUEST_DEBUG_CAPACITY}"));
+        assert_eq!(
+            snap.first().unwrap().id,
+            format!("dbg_{REQUEST_DEBUG_CAPACITY}")
+        );
         // The very first record (id = 0) was evicted; oldest kept is id = 1.
         assert_eq!(snap.last().unwrap().id, "dbg_1");
         assert!(snap.iter().all(|r| r.id != "dbg_0"));
@@ -313,10 +316,8 @@ mod tests {
 
     #[test]
     fn clear_empties_the_buffer() {
-        let state = AppState::new_headless(
-            crate::settings::Settings::default(),
-            std::env::temp_dir(),
-        );
+        let state =
+            AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
         record(&state, sample_record("a"));
         assert_eq!(snapshot(&state).len(), 1);
         clear(&state);
@@ -392,7 +393,10 @@ mod tests {
         };
 
         let mut headers = BTreeMap::new();
-        headers.insert("Authorization".into(), format!("Bearer {}", provider.api_keys[0]));
+        headers.insert(
+            "Authorization".into(),
+            format!("Bearer {}", provider.api_keys[0]),
+        );
         let headers = sanitize_headers(headers);
 
         let record = build_debug_record(DebugRecordArgs {
@@ -425,12 +429,13 @@ mod tests {
         // Response summary carries tool calls + usage + finish reason.
         assert_eq!(record.response.finish_reason.as_deref(), Some("tool_calls"));
         assert_eq!(record.response.text.as_deref(), Some("hello"));
-        let calls = record.response.tool_calls.as_array().expect("tool calls array");
+        let calls = record
+            .response
+            .tool_calls
+            .as_array()
+            .expect("tool calls array");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["name"], "web_search");
-        assert_eq!(
-            record.response.usage.and_then(|u| u.total_tokens),
-            Some(42)
-        );
+        assert_eq!(record.response.usage.and_then(|u| u.total_tokens), Some(42));
     }
 }

@@ -201,7 +201,8 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
             doc_path,
             "html",
             "-o",
-            out.to_str().ok_or_else(|| "preview path not utf-8".to_string())?,
+            out.to_str()
+                .ok_or_else(|| "preview path not utf-8".to_string())?,
         ])
         .no_console_window()
         .stdout(Stdio::piped())
@@ -389,7 +390,9 @@ async fn handle_preview_connection(mut stream: TcpStream) -> std::io::Result<()>
         }
         None => {
             stream
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
                 .await?;
         }
     }
@@ -441,9 +444,8 @@ fn path_to_file_url(path: &Path) -> String {
 }
 
 fn inject_meta_refresh(html: &str, secs: u32) -> String {
-    let tag = format!(
-        r#"<meta http-equiv="refresh" content="{secs}" data-kivio-preview-refresh="1">"#
-    );
+    let tag =
+        format!(r#"<meta http-equiv="refresh" content="{secs}" data-kivio-preview-refresh="1">"#);
     if html.contains("data-kivio-preview-refresh") {
         // 已注入过则替换秒数
         if let Some(start) = html.find("data-kivio-preview-refresh") {
@@ -737,9 +739,7 @@ mod tests {
     fn skips_help() {
         assert!(!should_auto_preview("help pptx shape"));
         assert!(!should_auto_preview("watch deck.pptx"));
-        assert!(should_auto_preview(
-            r#"create "C:\Users\a\Desktop\a.pptx""#
-        ));
+        assert!(should_auto_preview(r#"create "C:\Users\a\Desktop\a.pptx""#));
         assert!(should_auto_preview("view deck.pptx outline"));
         assert!(should_auto_preview("batch deck.pptx --commands []"));
     }

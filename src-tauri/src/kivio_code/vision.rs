@@ -189,25 +189,21 @@ pub(crate) async fn run_vision_mixer(
     // 无需 'static / spawn）。`join_all` **保序**返回，故 observation 顺序仍与
     // `image_paths` 一致，`[Image #N]` 编号不会错位。串行 await 会让多图变成
     // 依次阻塞的多次模型调用，并行后墙钟时间降到最慢的单张。
-    let analyses = futures::future::join_all(image_paths.iter().enumerate().map(
-        |(idx, path)| {
-            let provider = &provider;
-            let model = &model;
-            async move {
-                let label = labels
-                    .get(idx)
-                    .cloned()
-                    .unwrap_or_else(|| format!("[Image #{}]", idx + 1));
-                let analysis = match analyze_one_image(state, provider, model, path, user_text)
-                    .await
-                {
-                    Ok(text) => text,
-                    Err(err) => format!("(vision analysis failed: {err})"),
-                };
-                ImageObservation { label, analysis }
-            }
-        },
-    ))
+    let analyses = futures::future::join_all(image_paths.iter().enumerate().map(|(idx, path)| {
+        let provider = &provider;
+        let model = &model;
+        async move {
+            let label = labels
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| format!("[Image #{}]", idx + 1));
+            let analysis = match analyze_one_image(state, provider, model, path, user_text).await {
+                Ok(text) => text,
+                Err(err) => format!("(vision analysis failed: {err})"),
+            };
+            ImageObservation { label, analysis }
+        }
+    }))
     .await;
 
     VisionMixerOutcome::Analyzed {
@@ -341,7 +337,8 @@ mod tests {
 
     #[test]
     fn inline_rewrites_last_user_message_with_image_before_text() {
-        let img = json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } });
+        let img =
+            json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } });
         let base = vec![
             json!({ "role": "system", "content": "sys" }),
             json!({ "role": "user", "content": "first" }),
@@ -352,18 +349,26 @@ mod tests {
 
         // 只改最后一条 user 消息；前面的消息原样保留。
         assert_eq!(out[1]["content"], json!("first"));
-        let content = out[3]["content"].as_array().expect("content should be array");
+        let content = out[3]["content"]
+            .as_array()
+            .expect("content should be array");
         assert_eq!(content.len(), 2);
         assert_eq!(content[0]["type"], json!("image_url")); // 图片在前
-        assert_eq!(content[1], json!({ "type": "text", "text": "what is [Image #1]?" }));
+        assert_eq!(
+            content[1],
+            json!({ "type": "text", "text": "what is [Image #1]?" })
+        );
     }
 
     #[test]
     fn inline_handles_empty_text_user_message() {
-        let img = json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } });
+        let img =
+            json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } });
         let base = vec![json!({ "role": "user", "content": "" })];
         let out = inject_inline_images(base, vec![img]);
-        let content = out[0]["content"].as_array().expect("content should be array");
+        let content = out[0]["content"]
+            .as_array()
+            .expect("content should be array");
         // 空文字不追加 text part，只剩图片。
         assert_eq!(content.len(), 1);
         assert_eq!(content[0]["type"], json!("image_url"));

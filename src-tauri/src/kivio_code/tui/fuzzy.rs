@@ -17,10 +17,16 @@ fn is_word_boundary_char(c: char) -> bool {
 
 fn match_query(normalized_query: &[char], text_lower: &[char]) -> FuzzyMatch {
     if normalized_query.is_empty() {
-        return FuzzyMatch { matches: true, score: 0.0 };
+        return FuzzyMatch {
+            matches: true,
+            score: 0.0,
+        };
     }
     if normalized_query.len() > text_lower.len() {
-        return FuzzyMatch { matches: false, score: 0.0 };
+        return FuzzyMatch {
+            matches: false,
+            score: 0.0,
+        };
     }
 
     let mut query_index = 0usize;
@@ -56,14 +62,20 @@ fn match_query(normalized_query: &[char], text_lower: &[char]) -> FuzzyMatch {
     }
 
     if query_index < normalized_query.len() {
-        return FuzzyMatch { matches: false, score: 0.0 };
+        return FuzzyMatch {
+            matches: false,
+            score: 0.0,
+        };
     }
 
     if normalized_query == text_lower {
         score -= 100.0;
     }
 
-    FuzzyMatch { matches: true, score }
+    FuzzyMatch {
+        matches: true,
+        score,
+    }
 }
 
 /// 把 ASCII 字母段 + 数字段（或反之）互换，用于「输入顺序颠倒」的兜底匹配。
@@ -74,14 +86,20 @@ fn swapped_query(q: &str) -> Option<String> {
     }
     // letters+digits
     let letters_end = chars.iter().take_while(|c| c.is_ascii_lowercase()).count();
-    if letters_end > 0 && letters_end < chars.len() && chars[letters_end..].iter().all(|c| c.is_ascii_digit()) {
+    if letters_end > 0
+        && letters_end < chars.len()
+        && chars[letters_end..].iter().all(|c| c.is_ascii_digit())
+    {
         let letters: String = chars[..letters_end].iter().collect();
         let digits: String = chars[letters_end..].iter().collect();
         return Some(format!("{digits}{letters}"));
     }
     // digits+letters
     let digits_end = chars.iter().take_while(|c| c.is_ascii_digit()).count();
-    if digits_end > 0 && digits_end < chars.len() && chars[digits_end..].iter().all(|c| c.is_ascii_lowercase()) {
+    if digits_end > 0
+        && digits_end < chars.len()
+        && chars[digits_end..].iter().all(|c| c.is_ascii_lowercase())
+    {
         let digits: String = chars[..digits_end].iter().collect();
         let letters: String = chars[digits_end..].iter().collect();
         return Some(format!("{letters}{digits}"));
@@ -109,7 +127,10 @@ pub fn fuzzy_match(query: &str, text: &str) -> FuzzyMatch {
     if !swapped.matches {
         return primary;
     }
-    FuzzyMatch { matches: true, score: swapped.score + 5.0 }
+    FuzzyMatch {
+        matches: true,
+        score: swapped.score + 5.0,
+    }
 }
 
 /// 按模糊匹配质量过滤并排序 `items`（最佳在前）。空白/斜杠切 token，全部命中才保留。
@@ -120,7 +141,11 @@ where
     if query.trim().is_empty() {
         return items;
     }
-    let tokens: Vec<&str> = query.trim().split(|c: char| c.is_whitespace() || c == '/').filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<&str> = query
+        .trim()
+        .split(|c: char| c.is_whitespace() || c == '/')
+        .filter(|t| !t.is_empty())
+        .collect();
     if tokens.is_empty() {
         return items;
     }
@@ -171,7 +196,10 @@ mod tests {
     fn consecutive_better_than_gapped() {
         let consec = fuzzy_match("abc", "abcxyz").score;
         let gapped = fuzzy_match("abc", "axbxcx").score;
-        assert!(consec < gapped, "consecutive {consec} should beat gapped {gapped}");
+        assert!(
+            consec < gapped,
+            "consecutive {consec} should beat gapped {gapped}"
+        );
     }
 
     #[test]
@@ -191,7 +219,11 @@ mod tests {
 
     #[test]
     fn filter_orders_best_first() {
-        let items = vec!["model".to_string(), "compact".to_string(), "commit".to_string()];
+        let items = vec![
+            "model".to_string(),
+            "compact".to_string(),
+            "commit".to_string(),
+        ];
         let out = fuzzy_filter(items, "co", |s| s.clone());
         // "compact"/"commit" both start with co; "model" doesn't contain c then o in order? m-o-d-e-l: no 'c'
         assert!(!out.contains(&"model".to_string()));

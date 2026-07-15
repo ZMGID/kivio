@@ -8,9 +8,9 @@ pub mod export;
 pub mod image_generation;
 pub mod knowledge_base;
 mod mcp_image_feedback;
-mod model_call;
 pub mod memory;
 pub mod model;
+mod model_call;
 pub mod model_metadata;
 pub mod plan;
 #[cfg(debug_assertions)]

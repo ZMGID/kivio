@@ -118,7 +118,10 @@ fn map_codex_notification(
                 .and_then(|v| v.get("total"))
                 .and_then(|v| v.as_object())
             {
-                let input = usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let input = usage
+                    .get("inputTokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let output = usage
                     .get("outputTokens")
                     .and_then(|v| v.as_u64())
@@ -175,7 +178,11 @@ fn emit_command_execution(
     if item.get("type").and_then(|v| v.as_str()) != Some("commandExecution") {
         return;
     }
-    let id = match item.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    let id = match item
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         Some(id) => id.to_string(),
         None => return,
     };
@@ -416,8 +423,14 @@ impl CodexAppServerSession {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn codex app-server: {e}"))?;
-        let mut stdin = child.stdin.take().ok_or_else(|| "stdin unavailable".to_string())?;
-        let stdout = child.stdout.take().ok_or_else(|| "stdout unavailable".to_string())?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "stdin unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "stdout unavailable".to_string())?;
         let mut reader = BufReader::new(stdout).lines();
 
         let cwd_str = cwd.to_string_lossy().to_string();
@@ -447,7 +460,8 @@ impl CodexAppServerSession {
             params["model"] = json!(m);
         }
         write_rpc(&mut stdin, 2, method, params).await?;
-        let result = read_until_response(&mut reader, &mut stdin, 2, Duration::from_secs(20)).await?;
+        let result =
+            read_until_response(&mut reader, &mut stdin, 2, Duration::from_secs(20)).await?;
         let thread_id = result
             .get("thread")
             .and_then(|t| t.get("id"))
@@ -538,9 +552,10 @@ impl CodexAppServerSession {
                 Err(_) => continue,
             };
 
-            if let (Some(method), Some(id)) =
-                (value.get("method").and_then(|v| v.as_str()), value.get("id"))
-            {
+            if let (Some(method), Some(id)) = (
+                value.get("method").and_then(|v| v.as_str()),
+                value.get("id"),
+            ) {
                 if let Some(result) = approval_response(method) {
                     write_rpc_result(&mut self.stdin, id, result).await?;
                 }
@@ -612,9 +627,10 @@ async fn read_until_response(
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let (Some(method), Some(id)) =
-            (value.get("method").and_then(|v| v.as_str()), value.get("id"))
-        {
+        if let (Some(method), Some(id)) = (
+            value.get("method").and_then(|v| v.as_str()),
+            value.get("id"),
+        ) {
             if let Some(result) = approval_response(method) {
                 write_rpc_result(stdin, id, result).await?;
             }
@@ -689,15 +705,19 @@ pub async fn detect_codex_commands(
             )
             .await
             .is_ok()
-                && read_until_response(&mut reader, &mut stdin, 1, overall).await.is_ok()
-                && write_rpc(&mut stdin, 2, "skills/list", json!({})).await.is_ok();
+                && read_until_response(&mut reader, &mut stdin, 1, overall)
+                    .await
+                    .is_ok()
+                && write_rpc(&mut stdin, 2, "skills/list", json!({}))
+                    .await
+                    .is_ok();
             if ok {
                 if let Ok(result) = read_until_response(&mut reader, &mut stdin, 2, overall).await {
-                    let mut seen: HashSet<String> =
-                        out.iter().map(|c| c.name.clone()).collect();
+                    let mut seen: HashSet<String> = out.iter().map(|c| c.name.clone()).collect();
                     if let Some(groups) = result.get("data").and_then(|v| v.as_array()) {
                         for group in groups {
-                            let Some(skills) = group.get("skills").and_then(|v| v.as_array()) else {
+                            let Some(skills) = group.get("skills").and_then(|v| v.as_array())
+                            else {
                                 continue;
                             };
                             for skill in skills {
@@ -736,7 +756,9 @@ pub async fn detect_codex_commands(
 }
 
 /// Spawn the actor task that owns a connected session and serves `SessionCommand`s.
-pub fn spawn_codex_session_actor(mut session: CodexAppServerSession) -> mpsc::Sender<SessionCommand> {
+pub fn spawn_codex_session_actor(
+    mut session: CodexAppServerSession,
+) -> mpsc::Sender<SessionCommand> {
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
@@ -749,7 +771,13 @@ pub fn spawn_codex_session_actor(mut session: CodexAppServerSession) -> mpsc::Se
                     done,
                 } => {
                     let result = session
-                        .run_turn(&prompt, model.as_deref(), reasoning.as_deref(), &events, &mut rx)
+                        .run_turn(
+                            &prompt,
+                            model.as_deref(),
+                            reasoning.as_deref(),
+                            &events,
+                            &mut rx,
+                        )
                         .await;
                     let _ = done.send(result);
                 }
@@ -788,9 +816,16 @@ mod tests {
 
         let bin = which_codex().expect("codex on PATH");
         let cwd = std::env::temp_dir();
-        let session = CodexAppServerSession::connect(&bin, &["app-server".to_string()], &cwd, None, None, None)
-            .await
-            .expect("connect codex app-server");
+        let session = CodexAppServerSession::connect(
+            &bin,
+            &["app-server".to_string()],
+            &cwd,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("connect codex app-server");
         let thread_id = session.thread_id().to_string();
         assert!(!thread_id.is_empty());
         let control = spawn_codex_session_actor(session);
@@ -828,12 +863,18 @@ mod tests {
         )
         .await;
         eprintln!("turn2 reply: {t2:?}");
-        assert!(t2.contains("42"), "turn 2 should recall 42 from turn 1, got: {t2:?}");
+        assert!(
+            t2.contains("42"),
+            "turn 2 should recall 42 from turn 1, got: {t2:?}"
+        );
         let _ = control.send(SessionCommand::Close).await;
     }
 
     fn which_codex() -> Option<std::path::PathBuf> {
-        let out = std::process::Command::new("which").arg("codex").output().ok()?;
+        let out = std::process::Command::new("which")
+            .arg("codex")
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
@@ -953,8 +994,7 @@ mod tests {
 
     #[test]
     fn error_notification_emits_error_and_ends() {
-        let (events, ended) =
-            collect("error", r#"{"error":{"message":"fatal"}}"#);
+        let (events, ended) = collect("error", r#"{"error":{"message":"fatal"}}"#);
         assert!(ended);
         assert!(events.iter().any(|event| matches!(
             event,

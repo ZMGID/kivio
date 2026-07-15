@@ -123,8 +123,7 @@ pub fn attach_json_body(
     use std::io::Write as _;
     if gzip {
         if let Ok(raw) = serde_json::to_vec(body) {
-            let mut enc =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
             if enc.write_all(&raw).is_ok() {
                 if let Ok(gz) = enc.finish() {
                     return request
@@ -596,9 +595,7 @@ fn record_api_usage(
     outcome: ApiUsageOutcome<'_>,
 ) {
     let (status, status_code, usage, usage_source, error_kind) = match outcome {
-        ApiUsageOutcome::Success(usage) => {
-            ("success", Some(200), usage, "provider_reported", None)
-        }
+        ApiUsageOutcome::Success(usage) => ("success", Some(200), usage, "provider_reported", None),
         ApiUsageOutcome::Failure(error) => (
             "error",
             extract_status_code(error),
@@ -1262,7 +1259,11 @@ pub async fn stream_chat_call(
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
         let snippet: String = body_text.chars().take(500).collect();
-        return Err(fail(format!("Stream HTTP {}: {}", status.as_u16(), snippet)));
+        return Err(fail(format!(
+            "Stream HTTP {}: {}",
+            status.as_u16(),
+            snippet
+        )));
     }
 
     let stream_result = stream_vision_response(
@@ -1364,7 +1365,11 @@ pub async fn stream_translate_combined(
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
         let snippet: String = body_text.chars().take(500).collect();
-        return Err(fail(format!("Stream HTTP {}: {}", status.as_u16(), snippet)));
+        return Err(fail(format!(
+            "Stream HTTP {}: {}",
+            status.as_u16(),
+            snippet
+        )));
     }
 
     let sep = COMBINED_TRANSLATE_SEPARATOR;
@@ -1733,12 +1738,19 @@ mod tests {
     #[test]
     fn attach_json_body_plain_when_gzip_off() {
         let client = Client::new();
-        let body = serde_json::json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        let body =
+            serde_json::json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
         let req = attach_json_body(client.post("http://x.invalid/v1"), &body, false)
             .build()
             .expect("build");
-        assert!(req.headers().get(reqwest::header::CONTENT_ENCODING).is_none());
-        let sent = req.body().and_then(|b| b.as_bytes()).expect("in-memory body");
+        assert!(req
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .is_none());
+        let sent = req
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("in-memory body");
         let parsed: serde_json::Value = serde_json::from_slice(sent).expect("plain json");
         assert_eq!(parsed, body);
     }
@@ -1752,10 +1764,15 @@ mod tests {
             .build()
             .expect("build");
         assert_eq!(
-            req.headers().get(reqwest::header::CONTENT_ENCODING).unwrap(),
+            req.headers()
+                .get(reqwest::header::CONTENT_ENCODING)
+                .unwrap(),
             "gzip"
         );
-        let gz = req.body().and_then(|b| b.as_bytes()).expect("in-memory body");
+        let gz = req
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("in-memory body");
         // 压缩体必须能解回原始 JSON。
         let mut dec = flate2::read::GzDecoder::new(gz);
         let mut raw = Vec::new();

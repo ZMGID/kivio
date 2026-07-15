@@ -14,8 +14,19 @@ pub struct Text {
 }
 
 impl Text {
-    pub fn new(text: impl Into<String>, padding_x: usize, padding_y: usize, bg_fn: Option<ColorFn>) -> Self {
-        Self { text: text.into(), padding_x, padding_y, bg_fn, cached: None }
+    pub fn new(
+        text: impl Into<String>,
+        padding_x: usize,
+        padding_y: usize,
+        bg_fn: Option<ColorFn>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            padding_x,
+            padding_y,
+            bg_fn,
+            cached: None,
+        }
     }
 
     pub fn set_text(&mut self, text: impl Into<String>) {

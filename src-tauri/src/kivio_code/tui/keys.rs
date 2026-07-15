@@ -35,8 +35,8 @@ const FN_HOME: i64 = -14;
 const FN_END: i64 = -15;
 
 const SYMBOL_KEYS: &[char] = &[
-    '`', '-', '=', '[', ']', '\\', ';', '\'', ',', '.', '/', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+',
-    '|', '~', '{', '}', ':', '<', '>', '?',
+    '`', '-', '=', '[', ']', '\\', ';', '\'', ',', '.', '/', '!', '@', '#', '$', '%', '^', '&',
+    '*', '(', ')', '_', '+', '|', '~', '{', '}', ':', '<', '>', '?',
 ];
 
 fn is_symbol_key(c: char) -> bool {
@@ -165,7 +165,12 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKitty> {
     }
 
     // 方向键带修饰：\x1b[1;<mod>(:<event>)?[ABCD]
-    if chars.len() >= 5 && chars[0] == '\x1b' && chars[1] == '[' && chars[2] == '1' && chars[3] == ';' {
+    if chars.len() >= 5
+        && chars[0] == '\x1b'
+        && chars[1] == '['
+        && chars[2] == '1'
+        && chars[3] == ';'
+    {
         let last = *chars.last()?;
         if matches!(last, 'A' | 'B' | 'C' | 'D') {
             let (m, _n) = take_number(&chars, 4);
@@ -177,14 +182,22 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKitty> {
                     'D' => ARROW_LEFT,
                     _ => unreachable!(),
                 };
-                return Some(ParsedKitty { codepoint: cp, base_layout_key: None, modifier: (modv - 1) as u32 });
+                return Some(ParsedKitty {
+                    codepoint: cp,
+                    base_layout_key: None,
+                    modifier: (modv - 1) as u32,
+                });
             }
         }
         if matches!(last, 'H' | 'F') {
             let (m, _n) = take_number(&chars, 4);
             if let Some(modv) = m {
                 let cp = if last == 'H' { FN_HOME } else { FN_END };
-                return Some(ParsedKitty { codepoint: cp, base_layout_key: None, modifier: (modv - 1) as u32 });
+                return Some(ParsedKitty {
+                    codepoint: cp,
+                    base_layout_key: None,
+                    modifier: (modv - 1) as u32,
+                });
             }
         }
     }
@@ -213,7 +226,11 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKitty> {
             _ => None,
         };
         if let Some(cp) = cp {
-            return Some(ParsedKitty { codepoint: cp, base_layout_key: None, modifier: (modv - 1) as u32 });
+            return Some(ParsedKitty {
+                codepoint: cp,
+                base_layout_key: None,
+                modifier: (modv - 1) as u32,
+            });
         }
     }
     None
@@ -244,18 +261,27 @@ fn parse_mok(data: &str) -> Option<ParsedMok> {
     i += 1;
     let (code, _n2) = take_number(&chars, i);
     let code = code?;
-    Some(ParsedMok { codepoint: code, modifier: (modv - 1) as u32 })
+    Some(ParsedMok {
+        codepoint: code,
+        modifier: (modv - 1) as u32,
+    })
 }
 
 fn matches_kitty_sequence(data: &str, expected_cp: i64, expected_mod: u32) -> bool {
-    let Some(parsed) = parse_kitty_sequence(data) else { return false };
+    let Some(parsed) = parse_kitty_sequence(data) else {
+        return false;
+    };
     let actual_mod = parsed.modifier & !LOCK_MASK;
     let exp_mod = expected_mod & !LOCK_MASK;
     if actual_mod != exp_mod {
         return false;
     }
-    let norm = normalize_shifted_letter_identity(normalize_kitty_functional(parsed.codepoint), parsed.modifier);
-    let norm_exp = normalize_shifted_letter_identity(normalize_kitty_functional(expected_cp), expected_mod);
+    let norm = normalize_shifted_letter_identity(
+        normalize_kitty_functional(parsed.codepoint),
+        parsed.modifier,
+    );
+    let norm_exp =
+        normalize_shifted_letter_identity(normalize_kitty_functional(expected_cp), expected_mod);
     if norm == norm_exp {
         return true;
     }
@@ -263,7 +289,9 @@ fn matches_kitty_sequence(data: &str, expected_cp: i64, expected_mod: u32) -> bo
     if let Some(base) = parsed.base_layout_key {
         if base == expected_cp {
             let is_latin = (97..=122).contains(&norm);
-            let is_symbol = char::from_u32(norm as u32).map(is_symbol_key).unwrap_or(false);
+            let is_symbol = char::from_u32(norm as u32)
+                .map(is_symbol_key)
+                .unwrap_or(false);
             if !is_latin && !is_symbol {
                 return true;
             }
@@ -283,7 +311,9 @@ fn matches_printable_mok(data: &str, expected_code: i64, expected_mod: u32) -> b
     if expected_mod == 0 {
         return false;
     }
-    let Some(p) = parse_mok(data) else { return false };
+    let Some(p) = parse_mok(data) else {
+        return false;
+    };
     if p.modifier != expected_mod {
         return false;
     }
@@ -409,7 +439,9 @@ fn parse_key_id(key_id: &str) -> Option<ParsedKeyId> {
 /// 输入字节序列 `data` 是否匹配按键标识 `key_id`（如 `"ctrl+c"`、`"shift+tab"`、`"up"`）。
 /// `kitty_active` 指示 Kitty 键盘协议是否激活，影响 legacy 序列的歧义解读。
 pub fn matches_key(data: &str, key_id: &str, kitty_active: bool) -> bool {
-    let Some(p) = parse_key_id(key_id) else { return false };
+    let Some(p) = parse_key_id(key_id) else {
+        return false;
+    };
     let key = p.key.as_str();
     let mut modifier = 0u32;
     if p.shift {
@@ -444,9 +476,12 @@ pub fn matches_key(data: &str, key_id: &str, kitty_active: bool) -> bool {
                 }
             }
             if modifier == 0 {
-                return data == " " || matches_kitty_sequence(data, CP_SPACE, 0) || matches_mok(data, CP_SPACE, 0);
+                return data == " "
+                    || matches_kitty_sequence(data, CP_SPACE, 0)
+                    || matches_mok(data, CP_SPACE, 0);
             }
-            return matches_kitty_sequence(data, CP_SPACE, modifier) || matches_mok(data, CP_SPACE, modifier);
+            return matches_kitty_sequence(data, CP_SPACE, modifier)
+                || matches_mok(data, CP_SPACE, modifier);
         }
         "tab" => {
             if modifier == MOD_SHIFT {
@@ -457,7 +492,8 @@ pub fn matches_key(data: &str, key_id: &str, kitty_active: bool) -> bool {
             if modifier == 0 {
                 return data == "\t" || matches_kitty_sequence(data, CP_TAB, 0);
             }
-            return matches_kitty_sequence(data, CP_TAB, modifier) || matches_mok(data, CP_TAB, modifier);
+            return matches_kitty_sequence(data, CP_TAB, modifier)
+                || matches_mok(data, CP_TAB, modifier);
         }
         "enter" | "return" => {
             if modifier == MOD_SHIFT {
@@ -519,7 +555,8 @@ pub fn matches_key(data: &str, key_id: &str, kitty_active: bool) -> bool {
                     || matches_kitty_sequence(data, CP_BACKSPACE, 0)
                     || matches_mok(data, CP_BACKSPACE, 0);
             }
-            return matches_kitty_sequence(data, CP_BACKSPACE, modifier) || matches_mok(data, CP_BACKSPACE, modifier);
+            return matches_kitty_sequence(data, CP_BACKSPACE, modifier)
+                || matches_mok(data, CP_BACKSPACE, modifier);
         }
         "insert" | "delete" | "clear" | "home" | "end" | "pageup" | "pagedown" => {
             let fn_cp = match key {
@@ -560,20 +597,29 @@ pub fn matches_key(data: &str, key_id: &str, kitty_active: bool) -> bool {
                 let legacy_alt = match key {
                     "up" => data == "\x1bp",
                     "down" => data == "\x1bn",
-                    "left" => data == "\x1b[1;3D" || (!kitty_active && data == "\x1bB") || data == "\x1bb",
-                    "right" => data == "\x1b[1;3C" || (!kitty_active && data == "\x1bF") || data == "\x1bf",
+                    "left" => {
+                        data == "\x1b[1;3D" || (!kitty_active && data == "\x1bB") || data == "\x1bb"
+                    }
+                    "right" => {
+                        data == "\x1b[1;3C" || (!kitty_active && data == "\x1bF") || data == "\x1bf"
+                    }
                     _ => false,
                 };
                 return legacy_alt || matches_kitty_sequence(data, arrow_cp, MOD_ALT);
             }
             if modifier == MOD_CTRL && (key == "left" || key == "right") {
-                let legacy_ctrl = if key == "left" { data == "\x1b[1;5D" } else { data == "\x1b[1;5C" };
+                let legacy_ctrl = if key == "left" {
+                    data == "\x1b[1;5D"
+                } else {
+                    data == "\x1b[1;5C"
+                };
                 return legacy_ctrl
                     || matches_legacy_modifier(data, key, MOD_CTRL)
                     || matches_kitty_sequence(data, arrow_cp, MOD_CTRL);
             }
             if modifier == 0 {
-                return matches_legacy(data, legacy_sequences(key)) || matches_kitty_sequence(data, arrow_cp, 0);
+                return matches_legacy(data, legacy_sequences(key))
+                    || matches_kitty_sequence(data, arrow_cp, 0);
             }
             if matches_legacy_modifier(data, key, modifier) {
                 return true;

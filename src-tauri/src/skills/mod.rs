@@ -100,11 +100,7 @@ pub fn chat_skills_read(
             error: Some(err),
         };
     }
-    match read_skill_detail(
-        &app,
-        &settings.chat_tools.skill_scan_paths,
-        &skill_id,
-    ) {
+    match read_skill_detail(&app, &settings.chat_tools.skill_scan_paths, &skill_id) {
         Ok(skill) => SkillReadResult {
             success: true,
             skill: Some(skill),

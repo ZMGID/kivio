@@ -165,7 +165,14 @@ impl Markdown {
         theme: MarkdownTheme,
         bg_fn: Option<ColorFn>,
     ) -> Self {
-        Self { text: text.into(), padding_x, padding_y, theme, bg_fn, cached: None }
+        Self {
+            text: text.into(),
+            padding_x,
+            padding_y,
+            theme,
+            bg_fn,
+            cached: None,
+        }
     }
 
     pub fn set_text(&mut self, text: impl Into<String>) {
@@ -297,7 +304,9 @@ impl InlineNode {
         match self {
             InlineNode::Text(t) => t.clone(),
             InlineNode::Code(t) => t.clone(),
-            InlineNode::Styled(_, kids) | InlineNode::Link(kids, _) => kids.iter().map(|k| k.raw_text()).collect(),
+            InlineNode::Styled(_, kids) | InlineNode::Link(kids, _) => {
+                kids.iter().map(|k| k.raw_text()).collect()
+            }
         }
     }
 }
@@ -366,7 +375,10 @@ impl<'a> BlockRenderer<'a> {
     }
 
     fn push_inline(&mut self, node: InlineNode) {
-        self.inline_stack.last_mut().expect("inline stack non-empty").push(node);
+        self.inline_stack
+            .last_mut()
+            .expect("inline stack non-empty")
+            .push(node);
     }
 
     /// 输出一条已成型的块级行（处理列表前缀 + 引用前缀）。
@@ -400,7 +412,12 @@ impl<'a> BlockRenderer<'a> {
     }
 
     fn flush_paragraph(&mut self) {
-        let nodes = self.inline_stack.last_mut().expect("inline stack").drain(..).collect::<Vec<_>>();
+        let nodes = self
+            .inline_stack
+            .last_mut()
+            .expect("inline stack")
+            .drain(..)
+            .collect::<Vec<_>>();
         if nodes.is_empty() {
             return;
         }
@@ -455,7 +472,9 @@ impl<'a> BlockRenderer<'a> {
             Tag::CodeBlock(kind) => {
                 self.block = BlockKind::CodeBlock;
                 self.code_lang = match kind {
-                    CodeBlockKind::Fenced(info) => info.split_whitespace().next().unwrap_or("").to_string(),
+                    CodeBlockKind::Fenced(info) => {
+                        info.split_whitespace().next().unwrap_or("").to_string()
+                    }
                     CodeBlockKind::Indented => String::new(),
                 };
                 self.code_buf.clear();
@@ -511,11 +530,18 @@ impl<'a> BlockRenderer<'a> {
                 }
             }
             TagEnd::Heading(_) => {
-                let nodes = self.inline_stack.last_mut().expect("inline").drain(..).collect::<Vec<_>>();
+                let nodes = self
+                    .inline_stack
+                    .last_mut()
+                    .expect("inline")
+                    .drain(..)
+                    .collect::<Vec<_>>();
                 let inner: String = nodes.iter().map(|n| n.flatten(self.theme)).collect();
                 let prefix = format!("{} ", "#".repeat(self.heading_level));
                 let styled = if self.heading_level == 1 {
-                    (self.theme.heading)(&(self.theme.bold)(&(self.theme.underline)(&format!("{prefix}{inner}"))))
+                    (self.theme.heading)(&(self.theme.bold)(&(self.theme.underline)(&format!(
+                        "{prefix}{inner}"
+                    ))))
                 } else {
                     (self.theme.heading)(&(self.theme.bold)(&format!("{prefix}{inner}")))
                 };
@@ -692,8 +718,11 @@ impl<'a> BlockRenderer<'a> {
         // 竖线分隔符与横线统一走 code_block_border（dim），保证整框线宽一致；单元格内容样式不变。
         let bar = (self.theme.code_block_border)("│");
         // header
-        let hcells: Vec<String> =
-            header.iter().enumerate().map(|(i, c)| (self.theme.bold)(&pad_cell(c, widths[i]))).collect();
+        let hcells: Vec<String> = header
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (self.theme.bold)(&pad_cell(c, widths[i])))
+            .collect();
         self.emit_block_line(format!("{bar} {} {bar}", hcells.join(&format!(" {bar} "))));
         self.emit_block_line((self.theme.code_block_border)(&line("├", "┼", "┤")));
         for row in &rows {
@@ -806,11 +835,21 @@ mod tests {
     fn unordered_list_bullets() {
         let theme = sentinel_theme();
         let lines = blocks("- one\n- two", 80, &theme);
-        let item_lines: Vec<&String> = lines.iter().filter(|l| l.contains("one") || l.contains("two")).collect();
+        let item_lines: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("one") || l.contains("two"))
+            .collect();
         assert_eq!(item_lines.len(), 2);
-        assert!(item_lines[0].contains("<BULLET>- </BULLET>"), "bullet styled: {:?}", item_lines[0]);
+        assert!(
+            item_lines[0].contains("<BULLET>- </BULLET>"),
+            "bullet styled: {:?}",
+            item_lines[0]
+        );
         // 条目之间无空行
-        assert!(!lines.iter().any(|l| l.trim().is_empty()), "no blank lines between items: {lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.trim().is_empty()),
+            "no blank lines between items: {lines:?}"
+        );
     }
 
     #[test]
@@ -826,13 +865,22 @@ mod tests {
     fn nested_list_indented() {
         let theme = sentinel_theme();
         let lines = blocks("- top\n  - nested", 80, &theme);
-        let nested = lines.iter().find(|l| l.contains("nested")).expect("nested line");
+        let nested = lines
+            .iter()
+            .find(|l| l.contains("nested"))
+            .expect("nested line");
         let top = lines.iter().find(|l| l.contains("top")).expect("top line");
         // 嵌套行应有 4 空格缩进（深度 1）领先于顶层行的 bullet 前缀。
         let nested_lead = nested.len() - nested.trim_start().len();
         let top_lead = top.len() - top.trim_start().len();
-        assert!(nested_lead > top_lead, "nested deeper indent: top={top:?} nested={nested:?}");
-        assert!(nested.contains("    "), "4-space indent present: {nested:?}");
+        assert!(
+            nested_lead > top_lead,
+            "nested deeper indent: top={top:?} nested={nested:?}"
+        );
+        assert!(
+            nested.contains("    "),
+            "4-space indent present: {nested:?}"
+        );
     }
 
     #[test]
@@ -867,7 +915,10 @@ mod tests {
         // text == href → 不重复展示 URL
         let out = joined("<https://example.com>", 80, &theme);
         assert!(out.contains("https://example.com"));
-        assert!(!out.contains("<URL>"), "no redundant url when text==href: {out:?}");
+        assert!(
+            !out.contains("<URL>"),
+            "no redundant url when text==href: {out:?}"
+        );
     }
 
     #[test]
@@ -877,7 +928,10 @@ mod tests {
         assert!(out.contains("```rust"), "fence open: {out:?}");
         assert!(out.contains("```"), "fence close");
         // syntect 24-bit 前景色 ANSI 应出现
-        assert!(out.contains("\x1b[38;2;"), "syntax highlight ANSI present: {out:?}");
+        assert!(
+            out.contains("\x1b[38;2;"),
+            "syntax highlight ANSI present: {out:?}"
+        );
         assert!(out.contains("main"), "code content present");
     }
 
@@ -887,25 +941,44 @@ mod tests {
         let out = joined("```nonexistlang\nsome code here\n```", 80, &theme);
         assert!(out.contains("```nonexistlang"));
         // 回退路径走 code_block ColorFn，不产生 24-bit 高亮。
-        assert!(!out.contains("\x1b[38;2;"), "no syntect highlight for unknown lang: {out:?}");
-        assert!(out.contains("<CB>some code here</CB>"), "plain code styled via code_block: {out:?}");
+        assert!(
+            !out.contains("\x1b[38;2;"),
+            "no syntect highlight for unknown lang: {out:?}"
+        );
+        assert!(
+            out.contains("<CB>some code here</CB>"),
+            "plain code styled via code_block: {out:?}"
+        );
     }
 
     #[test]
     fn no_language_fence_plain() {
         let theme = sentinel_theme();
         let out = joined("```\nplain text\n```", 80, &theme);
-        assert!(!out.contains("\x1b[38;2;"), "no highlight without lang: {out:?}");
+        assert!(
+            !out.contains("\x1b[38;2;"),
+            "no highlight without lang: {out:?}"
+        );
         assert!(out.contains("<CB>plain text</CB>"));
     }
 
     #[test]
     fn wraps_at_width() {
         let theme = MarkdownTheme::plain();
-        let mut md = Markdown::new("the quick brown fox jumps over the lazy dog", 0, 0, theme, None);
+        let mut md = Markdown::new(
+            "the quick brown fox jumps over the lazy dog",
+            0,
+            0,
+            theme,
+            None,
+        );
         let lines = md.render(12);
         for l in &lines {
-            assert!(visible_width(l) <= 12, "line within width: {l:?} ({}) ", visible_width(l));
+            assert!(
+                visible_width(l) <= 12,
+                "line within width: {l:?} ({}) ",
+                visible_width(l)
+            );
         }
         assert!(lines.len() > 1, "long paragraph wraps to multiple lines");
     }
@@ -943,14 +1016,23 @@ mod tests {
         let theme = sentinel_theme();
         let md = "| A | B |\n|---|---|\n| 1 | 2 |";
         let out = joined(md, 80, &theme);
-        assert!(out.contains("┌") && out.contains("┐"), "top border: {out:?}");
+        assert!(
+            out.contains("┌") && out.contains("┐"),
+            "top border: {out:?}"
+        );
         assert!(out.contains("│"), "cell border");
         assert!(out.contains("└") && out.contains("┘"), "bottom border");
-        assert!(out.contains('1') && out.contains('2'), "row content: {out:?}");
+        assert!(
+            out.contains('1') && out.contains('2'),
+            "row content: {out:?}"
+        );
         assert!(out.contains("<B>"), "header bold: {out:?}");
         // Uniform frame weight: the vertical separators carry the SAME dim border
         // color as the horizontal rules (both wrapped by code_block_border).
-        assert!(out.contains("<CBB>│</CBB>"), "vertical separators dimmed like horizontals: {out:?}");
+        assert!(
+            out.contains("<CBB>│</CBB>"),
+            "vertical separators dimmed like horizontals: {out:?}"
+        );
         assert!(
             !out.contains("│ <B>"),
             "no bare (undimmed) vertical separator before a cell: {out:?}"

@@ -202,8 +202,18 @@ pub(crate) fn image_generation_model_for_session(
     settings: &crate::settings::Settings,
     session: Option<crate::settings::SessionModel<'_>>,
 ) -> Option<(String, String)> {
-    if !settings.default_models.image_generation.provider_id.trim().is_empty()
-        && !settings.default_models.image_generation.model.trim().is_empty()
+    if !settings
+        .default_models
+        .image_generation
+        .provider_id
+        .trim()
+        .is_empty()
+        && !settings
+            .default_models
+            .image_generation
+            .model
+            .trim()
+            .is_empty()
     {
         return Some((
             settings.default_models.image_generation.provider_id.clone(),
@@ -213,10 +223,7 @@ pub(crate) fn image_generation_model_for_session(
     let session = session.filter(|session| session.is_set())?;
     let provider = settings.get_provider(session.provider_id)?;
     if model_can_generate_images_directly(provider, session.model) {
-        Some((
-            session.provider_id.to_string(),
-            session.model.to_string(),
-        ))
+        Some((session.provider_id.to_string(), session.model.to_string()))
     } else {
         None
     }
@@ -301,7 +308,10 @@ pub(crate) fn context_window_for_model(
 /// 解析模型窗口后打 `SAFE_WINDOW_RATIO` 安全折扣得到的 `safe_window`（Gap 3）。压缩触发预算
 /// 与 footer 量表都应基于这个值（而非裸窗口），让所有预算与同一个保守窗口一致。
 /// `window == 0`（未知）时返回 0，调用方据此跳过压缩/降级显示。
-pub(crate) fn safe_context_window_for_model(provider: Option<&ModelProvider>, model: &str) -> usize {
+pub(crate) fn safe_context_window_for_model(
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> usize {
     let (window, _is_fallback) = context_window_for_model(provider, model);
     ((window as f32) * SAFE_WINDOW_RATIO) as usize
 }
@@ -340,19 +350,31 @@ mod tests {
     fn reasoning_efforts_resolve_from_db_family_and_default() {
         // 模型库显式列表：DeepSeek V4 含 xhigh+max（含用户的代理别名变体，靠前缀匹配）。
         let ds = reasoning_efforts_for_model("DeepSeek-V4-Flash", "openai_chat");
-        assert!(ds.contains(&"max".to_string()) && ds.contains(&"xhigh".to_string()), "{ds:?}");
+        assert!(
+            ds.contains(&"max".to_string()) && ds.contains(&"xhigh".to_string()),
+            "{ds:?}"
+        );
         // GPT-5：有 xhigh、无 max。
         let gpt = reasoning_efforts_for_model("gpt-5.5", "openai_chat");
-        assert!(gpt.contains(&"xhigh".to_string()) && !gpt.contains(&"max".to_string()), "{gpt:?}");
+        assert!(
+            gpt.contains(&"xhigh".to_string()) && !gpt.contains(&"max".to_string()),
+            "{gpt:?}"
+        );
         // Gemma：有 max、无 xhigh（非单调子集）。
         let gemma = reasoning_efforts_for_model("gemma4:31b", "openai_chat");
-        assert!(gemma.contains(&"max".to_string()) && !gemma.contains(&"xhigh".to_string()), "{gemma:?}");
+        assert!(
+            gemma.contains(&"max".to_string()) && !gemma.contains(&"xhigh".to_string()),
+            "{gemma:?}"
+        );
         // 库里没有 + 非 Anthropic → 安全子集 low/medium/high。
         let unknown = reasoning_efforts_for_model("some-random-model", "openai_chat");
         assert_eq!(unknown, vec!["low", "medium", "high"]);
         // Anthropic 家族兜底 → 全档。
         let anth = reasoning_efforts_for_model("whatever", "anthropic_messages");
-        assert!(anth.contains(&"xhigh".to_string()) && anth.contains(&"max".to_string()), "{anth:?}");
+        assert!(
+            anth.contains(&"xhigh".to_string()) && anth.contains(&"max".to_string()),
+            "{anth:?}"
+        );
     }
 
     fn test_provider_with_overrides(model_overrides: HashMap<String, ModelInfo>) -> ModelProvider {

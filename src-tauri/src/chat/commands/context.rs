@@ -644,9 +644,9 @@ pub(super) async fn compute_context_state(
             conversation,
             &settings.chat_tools.native_tools.working_directory,
         )
-            .ok()
-            .map(|path| path.display().to_string())
-            .as_deref(),
+        .ok()
+        .map(|path| path.display().to_string())
+        .as_deref(),
         knowledge_base_prompt.as_deref(),
         obsidian_vault_path,
         &settings.email_accounts,

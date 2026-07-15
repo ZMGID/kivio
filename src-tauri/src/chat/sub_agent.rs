@@ -919,10 +919,10 @@ pub fn handle_agent_spawn<'a>(
         // Resolve agent definition (built-in + user + project layers).
         let project_root =
             crate::chat::storage::resolve_conversation_project(ctx.app, &parent_conversation)
-        .ok()
-        .flatten()
-        .and_then(|p| p.root_path)
-        .map(std::path::PathBuf::from);
+                .ok()
+                .flatten()
+                .and_then(|p| p.root_path)
+                .map(std::path::PathBuf::from);
         let defs = crate::agents::load_agent_definitions(ctx.app, project_root.as_deref());
         let Some(def) = crate::agents::find_definition(&defs, &agent_type) else {
             return Ok(err_result(format!(
@@ -1007,9 +1007,9 @@ pub fn handle_agent_spawn<'a>(
                 &parent_conversation,
                 &settings.chat_tools.native_tools.working_directory,
             )
-                .ok()
-                .map(|path| path.display().to_string())
-                .as_deref(),
+            .ok()
+            .map(|path| path.display().to_string())
+            .as_deref(),
             (!settings.obsidian_vault_path.trim().is_empty())
                 .then_some(settings.obsidian_vault_path.as_str()),
             &settings.email_accounts,

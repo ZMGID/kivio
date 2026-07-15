@@ -200,9 +200,10 @@ pub(crate) async fn planning_step(
                     {
                         let mut reasoning_segment = planning_reasoning_segment.clone();
                         reasoning_segment.phase = ChatMessageSegmentPhase::Plain;
-                        state
-                            .segment_builder
-                            .append_text_from_template(&reasoning_segment, reasoning_text.to_string());
+                        state.segment_builder.append_text_from_template(
+                            &reasoning_segment,
+                            reasoning_text.to_string(),
+                        );
                     }
                     let mut segment = planning_text_segment.clone();
                     segment.phase = ChatMessageSegmentPhase::Plain;

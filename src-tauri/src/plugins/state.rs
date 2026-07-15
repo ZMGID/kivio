@@ -253,8 +253,8 @@ pub fn enabled_path_env() -> Option<(String, std::ffi::OsString)> {
         }
         next.push(dir.as_os_str());
     }
-    let existing = std::env::var_os(if cfg!(windows) { "Path" } else { "PATH" })
-        .unwrap_or_default();
+    let existing =
+        std::env::var_os(if cfg!(windows) { "Path" } else { "PATH" }).unwrap_or_default();
     if !existing.is_empty() {
         next.push(path_sep());
         next.push(existing);

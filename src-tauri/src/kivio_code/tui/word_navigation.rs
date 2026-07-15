@@ -123,7 +123,10 @@ pub fn find_word_forward(text: &str, cursor: usize, is_atomic: Option<IsAtomic>)
         new_cursor += seg.len();
     } else if is_word_like(seg) {
         // 词样分段内：停在第一个 ASCII 标点处（否则整段）
-        let first_punct = seg.char_indices().find(|&(_, c)| is_punctuation(c)).map(|(i, _)| i);
+        let first_punct = seg
+            .char_indices()
+            .find(|&(_, c)| is_punctuation(c))
+            .map(|(i, _)| i);
         new_cursor += first_punct.unwrap_or(seg.len());
     } else {
         // 跳过非词非空白 run

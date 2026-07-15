@@ -52,12 +52,8 @@ impl SkillRunCache {
         if self.registry.is_none() {
             self.registry = Some(build()?);
         }
-        Ok(self
-            .registry
-            .as_ref()
-            .expect("registry was just populated"))
+        Ok(self.registry.as_ref().expect("registry was just populated"))
     }
-
 
     pub fn activate_with_cache(&mut self, record: &SkillRecord) -> String {
         let key = record.meta.name.clone();
@@ -262,9 +258,12 @@ mod tests {
         cache.registry_or_build(build).unwrap();
         cache.registry_or_build(build).unwrap();
 
-        assert_eq!(builds.get(), 1, "registry must be built at most once per run");
+        assert_eq!(
+            builds.get(),
+            1,
+            "registry must be built at most once per run"
+        );
     }
-
 
     #[test]
     fn substitute_arguments_replaces_full_and_positional() {

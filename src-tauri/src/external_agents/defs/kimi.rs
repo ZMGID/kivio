@@ -21,7 +21,11 @@ pub fn build_kimi_args(
         "--output-format".to_string(),
         "stream-json".to_string(),
     ];
-    if let Some(model) = options.model.as_ref().filter(|m| *m != "default" && !m.is_empty()) {
+    if let Some(model) = options
+        .model
+        .as_ref()
+        .filter(|m| *m != "default" && !m.is_empty())
+    {
         args.push("--model".to_string());
         args.push(model.clone());
     }

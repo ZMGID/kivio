@@ -585,7 +585,7 @@ async fn call_mixer_tool(
                 conversation_id,
                 &arguments,
             )
-                .await
+            .await
         }
         other => Err(format!("Unknown mixer tool: {other}")),
     }

@@ -27,25 +27,61 @@ impl KeybindingDefinition {
 /// 默认 keybindings 表（编辑 / 输入 / 选择三类），对应 PI 的 `TUI_KEYBINDINGS`。
 pub fn tui_keybindings() -> Vec<(&'static str, KeybindingDefinition)> {
     vec![
-        ("tui.editor.cursorUp", KeybindingDefinition::new(&["up"], "Move cursor up")),
-        ("tui.editor.cursorDown", KeybindingDefinition::new(&["down"], "Move cursor down")),
-        ("tui.editor.cursorLeft", KeybindingDefinition::new(&["left", "ctrl+b"], "Move cursor left")),
-        ("tui.editor.cursorRight", KeybindingDefinition::new(&["right", "ctrl+f"], "Move cursor right")),
+        (
+            "tui.editor.cursorUp",
+            KeybindingDefinition::new(&["up"], "Move cursor up"),
+        ),
+        (
+            "tui.editor.cursorDown",
+            KeybindingDefinition::new(&["down"], "Move cursor down"),
+        ),
+        (
+            "tui.editor.cursorLeft",
+            KeybindingDefinition::new(&["left", "ctrl+b"], "Move cursor left"),
+        ),
+        (
+            "tui.editor.cursorRight",
+            KeybindingDefinition::new(&["right", "ctrl+f"], "Move cursor right"),
+        ),
         (
             "tui.editor.cursorWordLeft",
             KeybindingDefinition::new(&["alt+left", "ctrl+left", "alt+b"], "Move cursor word left"),
         ),
         (
             "tui.editor.cursorWordRight",
-            KeybindingDefinition::new(&["alt+right", "ctrl+right", "alt+f"], "Move cursor word right"),
+            KeybindingDefinition::new(
+                &["alt+right", "ctrl+right", "alt+f"],
+                "Move cursor word right",
+            ),
         ),
-        ("tui.editor.cursorLineStart", KeybindingDefinition::new(&["home", "ctrl+a"], "Move to line start")),
-        ("tui.editor.cursorLineEnd", KeybindingDefinition::new(&["end", "ctrl+e"], "Move to line end")),
-        ("tui.editor.jumpForward", KeybindingDefinition::new(&["ctrl+]"], "Jump forward to character")),
-        ("tui.editor.jumpBackward", KeybindingDefinition::new(&["ctrl+alt+]"], "Jump backward to character")),
-        ("tui.editor.pageUp", KeybindingDefinition::new(&["pageUp"], "Page up")),
-        ("tui.editor.pageDown", KeybindingDefinition::new(&["pageDown"], "Page down")),
-        ("tui.editor.deleteCharBackward", KeybindingDefinition::new(&["backspace"], "Delete character backward")),
+        (
+            "tui.editor.cursorLineStart",
+            KeybindingDefinition::new(&["home", "ctrl+a"], "Move to line start"),
+        ),
+        (
+            "tui.editor.cursorLineEnd",
+            KeybindingDefinition::new(&["end", "ctrl+e"], "Move to line end"),
+        ),
+        (
+            "tui.editor.jumpForward",
+            KeybindingDefinition::new(&["ctrl+]"], "Jump forward to character"),
+        ),
+        (
+            "tui.editor.jumpBackward",
+            KeybindingDefinition::new(&["ctrl+alt+]"], "Jump backward to character"),
+        ),
+        (
+            "tui.editor.pageUp",
+            KeybindingDefinition::new(&["pageUp"], "Page up"),
+        ),
+        (
+            "tui.editor.pageDown",
+            KeybindingDefinition::new(&["pageDown"], "Page down"),
+        ),
+        (
+            "tui.editor.deleteCharBackward",
+            KeybindingDefinition::new(&["backspace"], "Delete character backward"),
+        ),
         (
             "tui.editor.deleteCharForward",
             KeybindingDefinition::new(&["delete", "ctrl+d"], "Delete character forward"),
@@ -58,21 +94,66 @@ pub fn tui_keybindings() -> Vec<(&'static str, KeybindingDefinition)> {
             "tui.editor.deleteWordForward",
             KeybindingDefinition::new(&["alt+d", "alt+delete"], "Delete word forward"),
         ),
-        ("tui.editor.deleteToLineStart", KeybindingDefinition::new(&["ctrl+u"], "Delete to line start")),
-        ("tui.editor.deleteToLineEnd", KeybindingDefinition::new(&["ctrl+k"], "Delete to line end")),
-        ("tui.editor.yank", KeybindingDefinition::new(&["ctrl+y"], "Yank")),
-        ("tui.editor.yankPop", KeybindingDefinition::new(&["alt+y"], "Yank pop")),
-        ("tui.editor.undo", KeybindingDefinition::new(&["ctrl+-"], "Undo")),
-        ("tui.input.newLine", KeybindingDefinition::new(&["shift+enter"], "Insert newline")),
-        ("tui.input.submit", KeybindingDefinition::new(&["enter"], "Submit input")),
-        ("tui.input.tab", KeybindingDefinition::new(&["tab"], "Tab / autocomplete")),
-        ("tui.input.copy", KeybindingDefinition::new(&["ctrl+c"], "Copy selection")),
-        ("tui.select.up", KeybindingDefinition::new(&["up"], "Move selection up")),
-        ("tui.select.down", KeybindingDefinition::new(&["down"], "Move selection down")),
-        ("tui.select.pageUp", KeybindingDefinition::new(&["pageUp"], "Selection page up")),
-        ("tui.select.pageDown", KeybindingDefinition::new(&["pageDown"], "Selection page down")),
-        ("tui.select.confirm", KeybindingDefinition::new(&["enter"], "Confirm selection")),
-        ("tui.select.cancel", KeybindingDefinition::new(&["escape", "ctrl+c"], "Cancel selection")),
+        (
+            "tui.editor.deleteToLineStart",
+            KeybindingDefinition::new(&["ctrl+u"], "Delete to line start"),
+        ),
+        (
+            "tui.editor.deleteToLineEnd",
+            KeybindingDefinition::new(&["ctrl+k"], "Delete to line end"),
+        ),
+        (
+            "tui.editor.yank",
+            KeybindingDefinition::new(&["ctrl+y"], "Yank"),
+        ),
+        (
+            "tui.editor.yankPop",
+            KeybindingDefinition::new(&["alt+y"], "Yank pop"),
+        ),
+        (
+            "tui.editor.undo",
+            KeybindingDefinition::new(&["ctrl+-"], "Undo"),
+        ),
+        (
+            "tui.input.newLine",
+            KeybindingDefinition::new(&["shift+enter"], "Insert newline"),
+        ),
+        (
+            "tui.input.submit",
+            KeybindingDefinition::new(&["enter"], "Submit input"),
+        ),
+        (
+            "tui.input.tab",
+            KeybindingDefinition::new(&["tab"], "Tab / autocomplete"),
+        ),
+        (
+            "tui.input.copy",
+            KeybindingDefinition::new(&["ctrl+c"], "Copy selection"),
+        ),
+        (
+            "tui.select.up",
+            KeybindingDefinition::new(&["up"], "Move selection up"),
+        ),
+        (
+            "tui.select.down",
+            KeybindingDefinition::new(&["down"], "Move selection down"),
+        ),
+        (
+            "tui.select.pageUp",
+            KeybindingDefinition::new(&["pageUp"], "Selection page up"),
+        ),
+        (
+            "tui.select.pageDown",
+            KeybindingDefinition::new(&["pageDown"], "Selection page down"),
+        ),
+        (
+            "tui.select.confirm",
+            KeybindingDefinition::new(&["enter"], "Confirm selection"),
+        ),
+        (
+            "tui.select.cancel",
+            KeybindingDefinition::new(&["escape", "ctrl+c"], "Cancel selection"),
+        ),
     ]
 }
 

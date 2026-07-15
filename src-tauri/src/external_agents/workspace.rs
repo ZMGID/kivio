@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 
-use crate::chat::storage::{find_project_by_id, conversations_dir};
+use crate::chat::storage::{conversations_dir, find_project_by_id};
 use crate::external_agents::types::RuntimeAgentDef;
 
 pub fn resolve_effective_cwd(

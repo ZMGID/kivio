@@ -224,7 +224,13 @@ pub(crate) fn assemble_results_from_tool_records(
             .find(|l| !l.is_empty())
             .unwrap_or(preview);
         let clipped: String = if first_line.chars().count() > MAX_PREVIEW_CHARS {
-            format!("{}…", first_line.chars().take(MAX_PREVIEW_CHARS).collect::<String>())
+            format!(
+                "{}…",
+                first_line
+                    .chars()
+                    .take(MAX_PREVIEW_CHARS)
+                    .collect::<String>()
+            )
         } else {
             first_line.to_string()
         };
@@ -235,7 +241,10 @@ pub(crate) fn assemble_results_from_tool_records(
     }
     let reason = failure_reason_line(kind, zh);
     let note = if zh {
-        format!("本轮已完成 {} 个工具调用,完整结果见上方卡片:", blocks.len() + overflow)
+        format!(
+            "本轮已完成 {} 个工具调用,完整结果见上方卡片:",
+            blocks.len() + overflow
+        )
     } else {
         format!(
             "Completed {} tool call(s) this round — full results are shown above:",
@@ -451,7 +460,9 @@ mod tests {
         // 真实原因行出现(限流),不再是误导的"可能上下文过长"。
         assert!(out.contains("限流") || out.contains("429"));
 
-        assert!(assemble_results_from_tool_records(&[], "zh-CN", FailureKind::Exhausted).is_empty());
+        assert!(
+            assemble_results_from_tool_records(&[], "zh-CN", FailureKind::Exhausted).is_empty()
+        );
     }
 
     #[test]
@@ -459,13 +470,29 @@ mod tests {
         // 单条超长 + 多行只保留首行裁剪;>8 条折叠为计数 —— 不再刷几百行。
         let long = "x".repeat(5000);
         let mut records: Vec<ToolCallRecord> = (0..12)
-            .map(|i| rec("read", ToolCallStatus::Success, Some(Box::leak(format!("行{i}首行\n{long}").into_boxed_str()))))
+            .map(|i| {
+                rec(
+                    "read",
+                    ToolCallStatus::Success,
+                    Some(Box::leak(format!("行{i}首行\n{long}").into_boxed_str())),
+                )
+            })
             .collect();
-        records.push(rec("read", ToolCallStatus::Success, Some(Box::leak(long.clone().into_boxed_str()))));
+        records.push(rec(
+            "read",
+            ToolCallStatus::Success,
+            Some(Box::leak(long.clone().into_boxed_str())),
+        ));
         let out = assemble_results_from_tool_records(&records, "en", FailureKind::Other);
         let lines = out.lines().count();
-        assert!(lines < 20, "degrade message must stay compact, got {lines} lines");
+        assert!(
+            lines < 20,
+            "degrade message must stay compact, got {lines} lines"
+        );
         assert!(!out.contains(&long), "must not dump the full long preview");
-        assert!(out.contains("more above"), "overflow tools should be folded into a count");
+        assert!(
+            out.contains("more above"),
+            "overflow tools should be folded into a count"
+        );
     }
 }

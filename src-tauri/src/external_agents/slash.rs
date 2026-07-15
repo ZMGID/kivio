@@ -11,7 +11,9 @@ use crate::chat::storage::load_conversation;
 use crate::external_agents::detection::detect_single_agent;
 use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::session::acp::detect_acp_commands;
-use crate::external_agents::spawn::{parse_json_line, resolve_binary, spawn_agent, write_probe_stdin};
+use crate::external_agents::spawn::{
+    parse_json_line, resolve_binary, spawn_agent, write_probe_stdin,
+};
 use crate::external_agents::types::{
     ExternalCliSlashCommand, RuntimeBuildOptions, RuntimeContext, SlashStrategy, UnifiedAgentEvent,
 };
@@ -52,7 +54,10 @@ fn parse_slash_command_item(item: &Value) -> Option<ExternalCliSlashCommand> {
         });
     }
     let obj = item.as_object()?;
-    let name = obj.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+    let name = obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
     Some(ExternalCliSlashCommand {
         slash: format!("/{name}"),
         name: name.to_string(),
@@ -248,7 +253,9 @@ fn resolve_slash_cwd(app: &AppHandle, conversation_id: Option<&str>) -> Result<S
     }
 }
 
-pub fn slash_commands_from_event(event: &UnifiedAgentEvent) -> Option<Vec<ExternalCliSlashCommand>> {
+pub fn slash_commands_from_event(
+    event: &UnifiedAgentEvent,
+) -> Option<Vec<ExternalCliSlashCommand>> {
     match event {
         UnifiedAgentEvent::SlashCommands { commands } => Some(commands.clone()),
         _ => None,
@@ -270,7 +277,9 @@ mod tests {
         let commands = parse_slash_commands_from_init(&init);
         assert_eq!(commands.len(), 3);
         assert!(commands.iter().any(|c| c.slash == "/compact"));
-        assert!(commands.iter().any(|c| c.slash == "/frontend-design:frontend-design"));
+        assert!(commands
+            .iter()
+            .any(|c| c.slash == "/frontend-design:frontend-design"));
     }
 
     #[test]

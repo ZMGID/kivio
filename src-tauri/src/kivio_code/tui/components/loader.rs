@@ -51,7 +51,11 @@ impl Loader {
         let ind = indicator.unwrap_or_default();
         Self {
             frames: ind.frames,
-            interval_ms: if ind.interval_ms > 0 { ind.interval_ms } else { DEFAULT_INTERVAL_MS },
+            interval_ms: if ind.interval_ms > 0 {
+                ind.interval_ms
+            } else {
+                DEFAULT_INTERVAL_MS
+            },
             current_frame: 0,
             spinner_color_fn,
             message_color_fn,
@@ -78,7 +82,11 @@ impl Loader {
     }
 
     fn line(&self) -> String {
-        let frame = self.frames.get(self.current_frame).cloned().unwrap_or_default();
+        let frame = self
+            .frames
+            .get(self.current_frame)
+            .cloned()
+            .unwrap_or_default();
         let indicator = if frame.is_empty() {
             String::new()
         } else {
@@ -96,7 +104,11 @@ impl Component for Loader {
         let line = self.line();
         let w = width as usize;
         let vis = visible_width(&line);
-        let padded = if vis < w { format!("{line}{}", " ".repeat(w - vis)) } else { line };
+        let padded = if vis < w {
+            format!("{line}{}", " ".repeat(w - vis))
+        } else {
+            line
+        };
         // PI 在内容上方留一行空行
         vec![String::new(), padded]
     }
@@ -134,7 +146,15 @@ mod tests {
 
     #[test]
     fn tick_noop_with_single_frame() {
-        let mut l = Loader::new(id(), id(), "x", Some(LoaderIndicator { frames: vec!["*".into()], interval_ms: 100 }));
+        let mut l = Loader::new(
+            id(),
+            id(),
+            "x",
+            Some(LoaderIndicator {
+                frames: vec!["*".into()],
+                interval_ms: 100,
+            }),
+        );
         assert!(!l.tick());
     }
 
@@ -151,7 +171,15 @@ mod tests {
 
     #[test]
     fn empty_frames_hides_indicator() {
-        let mut l = Loader::new(id(), id(), "msg", Some(LoaderIndicator { frames: vec![], interval_ms: 80 }));
+        let mut l = Loader::new(
+            id(),
+            id(),
+            "msg",
+            Some(LoaderIndicator {
+                frames: vec![],
+                interval_ms: 80,
+            }),
+        );
         let lines = l.render(40);
         assert!(lines[1].contains("msg"));
         assert!(!lines[1].contains("⠋"));

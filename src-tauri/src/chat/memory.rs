@@ -306,10 +306,7 @@ pub fn tool_search_at(dir: &Path, arguments: &Value) -> Result<McpToolCallResult
 
     if matches.is_empty() {
         return Ok(McpToolCallResult {
-            content: format!(
-                "No {} memory entries matched: {query}",
-                layer.label()
-            ),
+            content: format!("No {} memory entries matched: {query}", layer.label()),
             is_error: false,
             raw: Value::Null,
             artifacts: Vec::new(),
@@ -327,7 +324,12 @@ pub fn tool_search_at(dir: &Path, arguments: &Value) -> Result<McpToolCallResult
         if idx > 0 {
             body.push_str("\n\n");
         }
-        body.push_str(&format!("{}. {}\n{}", idx + 1, entry.heading, entry.snippet));
+        body.push_str(&format!(
+            "{}. {}\n{}",
+            idx + 1,
+            entry.heading,
+            entry.snippet
+        ));
     }
 
     let structured = serde_json::json!({
@@ -364,11 +366,7 @@ fn tokenize(text: &str) -> Vec<String> {
 /// Split markdown into `#`-led sections (heading line + body) and score each
 /// by query-token overlap. Heading hits are weighted; 0-score sections are
 /// dropped; result is sorted by score (desc) then original order, top-N.
-fn search_sections(
-    content: &str,
-    tokens: &[String],
-    max_results: usize,
-) -> Vec<MemorySearchMatch> {
+fn search_sections(content: &str, tokens: &[String], max_results: usize) -> Vec<MemorySearchMatch> {
     if tokens.is_empty() {
         return Vec::new();
     }
@@ -702,8 +700,6 @@ fn truncate_bytes(content: &str, max_bytes: usize) -> String {
         end
     )
 }
-
-
 
 #[cfg(test)]
 mod tests {

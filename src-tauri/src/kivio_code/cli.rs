@@ -254,9 +254,7 @@ fn dirs_home() -> Option<PathBuf> {
 /// pre-attach handles and printing silently fails.
 #[cfg(windows)]
 fn attach_parent_console() {
-    use windows::Win32::System::Console::{
-        AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS,
-    };
+    use windows::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
 
     unsafe {
         // If stdout is already a valid handle, the shell gave us one — either the

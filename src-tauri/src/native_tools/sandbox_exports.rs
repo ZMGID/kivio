@@ -4,9 +4,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use base64::{engine::general_purpose, Engine as _};
 use super::user_home_dir;
 use crate::mcp::types::ChatToolArtifact;
+use base64::{engine::general_purpose, Engine as _};
 
 /// Legacy per-conversation output root from versions before ordinary chats used
 /// a unified workbench. Nothing writes here anymore; existing data is migrated

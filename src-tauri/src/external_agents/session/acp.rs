@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use crate::external_agents::session::live::SessionCommand;
 use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::{
-    ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent, default_model_option,
+    default_model_option, ExternalCliSlashCommand, RuntimeModelOption, UnifiedAgentEvent,
 };
 use crate::proc::NoConsoleWindow;
 
@@ -59,7 +59,10 @@ async fn write_rpc(
     });
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
-    stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn write_rpc_result(
@@ -74,7 +77,10 @@ async fn write_rpc_result(
     });
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
-    stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn rpc_error_message(value: &Value) -> Option<String> {
@@ -82,9 +88,7 @@ fn rpc_error_message(value: &Value) -> Option<String> {
     if let Some(message) = error.get("message").and_then(|v| v.as_str()) {
         return Some(message.to_string());
     }
-    error
-        .get("code")
-        .map(|c| c.to_string())
+    error.get("code").map(|c| c.to_string())
 }
 
 fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
@@ -98,7 +102,9 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                 None => continue,
             };
             let config_id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if config_id != "model" && option.get("category").and_then(|v| v.as_str()) != Some("model") {
+            if config_id != "model"
+                && option.get("category").and_then(|v| v.as_str()) != Some("model")
+            {
                 continue;
             }
             if let Some(values) = option.get("options").and_then(|v| v.as_array()) {
@@ -136,10 +142,7 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
     if let Some(models) = result.get("models").and_then(|v| v.as_object()) {
         if let Some(available) = models.get("availableModels").and_then(|v| v.as_array()) {
             for model in available {
-                let id = model
-                    .get("modelId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let id = model.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
                 if id.is_empty() || !seen.insert(id.to_string()) {
                     continue;
                 }
@@ -186,11 +189,16 @@ pub async fn detect_acp_models(
     let mut models: Option<Vec<RuntimeModelOption>> = None;
     let deadline = Duration::from_secs(timeout_secs);
 
-    write_rpc(&mut stdin, 1, "initialize", json!({
-        "protocolVersion": ACP_PROTOCOL_VERSION,
-        "clientCapabilities": { "terminal": false },
-        "clientInfo": { "name": "kivio", "version": "external-agents" },
-    }))
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": ACP_PROTOCOL_VERSION,
+            "clientCapabilities": { "terminal": false },
+            "clientInfo": { "name": "kivio", "version": "external-agents" },
+        }),
+    )
     .await
     .ok()?;
 
@@ -241,7 +249,9 @@ pub async fn detect_acp_models(
     models.filter(|m| m.len() > 1)
 }
 
-fn parse_available_commands(update: &serde_json::Map<String, Value>) -> Vec<ExternalCliSlashCommand> {
+fn parse_available_commands(
+    update: &serde_json::Map<String, Value>,
+) -> Vec<ExternalCliSlashCommand> {
     let list = update
         .get("availableCommands")
         .or_else(|| update.get("available_commands"))
@@ -308,11 +318,16 @@ pub async fn detect_acp_commands(
     let mut commands: Option<Vec<ExternalCliSlashCommand>> = None;
     let deadline = Duration::from_secs(timeout_secs);
 
-    write_rpc(&mut stdin, 1, "initialize", json!({
-        "protocolVersion": ACP_PROTOCOL_VERSION,
-        "clientCapabilities": { "terminal": false },
-        "clientInfo": { "name": "kivio", "version": "external-agents" },
-    }))
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": ACP_PROTOCOL_VERSION,
+            "clientCapabilities": { "terminal": false },
+            "clientInfo": { "name": "kivio", "version": "external-agents" },
+        }),
+    )
     .await
     .ok()?;
 
@@ -436,8 +451,14 @@ fn choose_permission_outcome(options: Option<&Value>) -> Option<String> {
 }
 
 fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
-    let input = usage.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
-    let output = usage.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let input = usage
+        .get("inputTokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("outputTokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if input == 0 && output == 0 {
         None
     } else {
@@ -446,12 +467,10 @@ fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
 }
 
 fn acp_update_status(update: &serde_json::Map<String, Value>) -> Option<String> {
-    update.get("status").and_then(|v| v.as_str()).map(|status| {
-        status
-            .trim()
-            .to_lowercase()
-            .replace([' ', '-'], "_")
-    })
+    update
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|status| status.trim().to_lowercase().replace([' ', '-'], "_"))
 }
 
 fn acp_tool_call_id(update: &serde_json::Map<String, Value>) -> Option<String> {
@@ -477,10 +496,7 @@ fn acp_tool_name(update: &serde_json::Map<String, Value>) -> String {
 }
 
 fn acp_is_terminal_success(status: &str) -> bool {
-    matches!(
-        status,
-        "completed" | "complete" | "succeeded" | "success"
-    )
+    matches!(status, "completed" | "complete" | "succeeded" | "success")
 }
 
 fn acp_is_terminal_failure(status: &str) -> bool {
@@ -600,7 +616,13 @@ pub async fn run_acp_session(
     while !finished {
         if cancel_check() {
             if let Some(ref sid) = session_id {
-                let _ = write_rpc(&mut stdin, next_id, "session/cancel", json!({ "sessionId": sid })).await;
+                let _ = write_rpc(
+                    &mut stdin,
+                    next_id,
+                    "session/cancel",
+                    json!({ "sessionId": sid }),
+                )
+                .await;
             }
             let _ = stdin.shutdown().await;
             let _ = child.start_kill();
@@ -622,12 +644,13 @@ pub async fn run_acp_session(
             continue;
         }
 
-        let value: Value = serde_json::from_str(line.trim())
-            .map_err(|e| format!("invalid ACP json: {e}"))?;
+        let value: Value =
+            serde_json::from_str(line.trim()).map_err(|e| format!("invalid ACP json: {e}"))?;
 
         if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
             if method == "session/request_permission" {
-                let option_id = choose_permission_outcome(value.get("params").and_then(|p| p.get("options")));
+                let option_id =
+                    choose_permission_outcome(value.get("params").and_then(|p| p.get("options")));
                 if let (Some(id), Some(option_id)) = (value.get("id"), option_id) {
                     write_rpc_result(
                         &mut stdin,
@@ -728,7 +751,9 @@ pub async fn run_acp_session(
                 for raw_option in config_options {
                     if let Some(option) = raw_option.as_object() {
                         let id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        if id == "model" || option.get("category").and_then(|v| v.as_str()) == Some("model") {
+                        if id == "model"
+                            || option.get("category").and_then(|v| v.as_str()) == Some("model")
+                        {
                             model_config_id = Some(id.to_string());
                             break;
                         }
@@ -783,7 +808,9 @@ pub async fn run_acp_session(
             continue;
         }
 
-        if set_model_request_id.is_some() && value.get("id").and_then(|v| v.as_u64()) == set_model_request_id {
+        if set_model_request_id.is_some()
+            && value.get("id").and_then(|v| v.as_u64()) == set_model_request_id
+        {
             set_model_request_id = None;
             prompt_request_id = Some(next_id);
             expected_id = next_id;
@@ -801,7 +828,9 @@ pub async fn run_acp_session(
             continue;
         }
 
-        if prompt_request_id.is_some() && value.get("id").and_then(|v| v.as_u64()) == prompt_request_id {
+        if prompt_request_id.is_some()
+            && value.get("id").and_then(|v| v.as_u64()) == prompt_request_id
+        {
             if let Some(usage) = result.get("usage").and_then(format_acp_usage) {
                 sink(UnifiedAgentEvent::Usage { usage });
             }
@@ -847,8 +876,14 @@ impl AcpSession {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn acp agent: {e}"))?;
-        let mut stdin = child.stdin.take().ok_or_else(|| "stdin unavailable".to_string())?;
-        let stdout = child.stdout.take().ok_or_else(|| "stdout unavailable".to_string())?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "stdin unavailable".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "stdout unavailable".to_string())?;
         let mut reader = BufReader::new(stdout).lines();
 
         write_rpc(
@@ -916,7 +951,8 @@ impl AcpSession {
             };
             write_rpc(&mut stdin, next_id, set_method, set_params).await?;
             // Best-effort: wait for the ack but don't fail the session if the agent ignores it.
-            let _ = acp_read_until_id(&mut reader, &mut stdin, next_id, Duration::from_secs(10)).await;
+            let _ =
+                acp_read_until_id(&mut reader, &mut stdin, next_id, Duration::from_secs(10)).await;
             next_id += 1;
         }
 
@@ -1017,9 +1053,12 @@ impl AcpSession {
                         .and_then(|v| v.as_object())
                     {
                         let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
-                        acp_apply_turn_update(update, &mut emitted_text, &mut emitted_tools, &mut |e| {
-                            buf.push(e)
-                        });
+                        acp_apply_turn_update(
+                            update,
+                            &mut emitted_text,
+                            &mut emitted_tools,
+                            &mut |e| buf.push(e),
+                        );
                         for e in buf {
                             let _ = events.send(e).await;
                         }
@@ -1064,18 +1103,29 @@ fn acp_apply_turn_update(
     emitted_tools: &mut HashSet<String>,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) {
-    let session_update = update.get("sessionUpdate").and_then(|v| v.as_str()).unwrap_or("");
+    let session_update = update
+        .get("sessionUpdate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if session_update == "agent_thought_chunk" {
-        if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|v| v.as_str())
+        if let Some(text) = update
+            .get("content")
+            .and_then(|c| c.get("text"))
+            .and_then(|v| v.as_str())
         {
             if !text.is_empty() {
-                sink(UnifiedAgentEvent::ThinkingDelta { delta: text.to_string() });
+                sink(UnifiedAgentEvent::ThinkingDelta {
+                    delta: text.to_string(),
+                });
             }
         }
         return;
     }
     if session_update == "agent_message_chunk" {
-        if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|v| v.as_str())
+        if let Some(text) = update
+            .get("content")
+            .and_then(|c| c.get("text"))
+            .and_then(|v| v.as_str())
         {
             if !text.is_empty() {
                 let delta = if text.starts_with(emitted_text.as_str()) {
@@ -1238,12 +1288,18 @@ mod tests {
         )
         .await;
         eprintln!("acp turn2 reply: {t2:?}");
-        assert!(t2.contains("42"), "turn 2 should recall 42 from turn 1, got: {t2:?}");
+        assert!(
+            t2.contains("42"),
+            "turn 2 should recall 42 from turn 1, got: {t2:?}"
+        );
         let _ = control.send(SessionCommand::Close).await;
     }
 
     fn which_bin(name: &str) -> Option<std::path::PathBuf> {
-        let out = std::process::Command::new("which").arg(name).output().ok()?;
+        let out = std::process::Command::new("which")
+            .arg(name)
+            .output()
+            .ok()?;
         if !out.status.success() {
             return None;
         }
@@ -1271,12 +1327,20 @@ mod tests {
         ]);
         let mut emitted = HashSet::new();
         let mut events = Vec::new();
-        assert!(apply_acp_session_update(&started, &mut emitted, &mut |event| {
-            events.push(event);
-        }));
-        assert!(apply_acp_session_update(&finished, &mut emitted, &mut |event| {
-            events.push(event);
-        }));
+        assert!(apply_acp_session_update(
+            &started,
+            &mut emitted,
+            &mut |event| {
+                events.push(event);
+            }
+        ));
+        assert!(apply_acp_session_update(
+            &finished,
+            &mut emitted,
+            &mut |event| {
+                events.push(event);
+            }
+        ));
         assert!(events.iter().any(|event| matches!(
             event,
             UnifiedAgentEvent::ToolUse { id, name, .. } if id == "acp-1" && name == "Write"

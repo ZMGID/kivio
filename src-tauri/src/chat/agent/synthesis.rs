@@ -7,7 +7,9 @@ use super::finalize::{
     synthesis_failed_fallback_response, RunResultBuilder,
 };
 use super::loop_::{LoopEnv, RunState};
-use super::planning::{call_chat_completion_message_with_usage, stream_scoped_chat_completion_inner};
+use super::planning::{
+    call_chat_completion_message_with_usage, stream_scoped_chat_completion_inner,
+};
 use super::recovery::{self, RecoveryAction};
 use super::stop::{
     empty_assistant_response_error, extract_reasoning_content, final_assistant_api_message,
@@ -180,10 +182,12 @@ pub(crate) async fn synthesis_step(
             }
         } else {
             if !state.generated_api_messages.is_empty() {
-                state.generated_api_messages.push(final_assistant_api_message(
-                    &response,
-                    final_reasoning_for_api.as_deref(),
-                ));
+                state
+                    .generated_api_messages
+                    .push(final_assistant_api_message(
+                        &response,
+                        final_reasoning_for_api.as_deref(),
+                    ));
             }
             (response, reasoning, final_reasoning_for_api)
         }
@@ -383,9 +387,11 @@ pub(crate) async fn recover_synthesis(
     // 都从 false 起算;真正的「只重试一次」守门在各分支内部用本地标志实现。
     match recovery::decide(kind, has_results, false, false) {
         RecoveryAction::Surface => String::new(),
-        RecoveryAction::DegradeToGathered => {
-            recovery::assemble_results_from_tool_records(&state.tool_records, &config.language, kind)
-        }
+        RecoveryAction::DegradeToGathered => recovery::assemble_results_from_tool_records(
+            &state.tool_records,
+            &config.language,
+            kind,
+        ),
         RecoveryAction::CompactAndRetry => recover_overflow_compact_and_retry(env, state).await,
         RecoveryAction::Remediate => recover_remediate(env, state, kind).await,
     }

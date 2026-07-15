@@ -54,7 +54,8 @@ pub fn cleanup_orphan_temp_files() {
         // in temp; GC either when stale. Background command logs
         // (kivio-bgcmd-*.log) are normally removed by the app-exit sweep, but a
         // crash can leave them behind — GC stale ones here too.
-        let is_orphan = (PNG_PREFIXES.iter().any(|p| name.starts_with(p)) && name.ends_with(".png"))
+        let is_orphan = (PNG_PREFIXES.iter().any(|p| name.starts_with(p))
+            && name.ends_with(".png"))
             || name.starts_with("kivio-mcpimg-")
             || (name.starts_with("kivio-bash-") && name.ends_with(".log"))
             || (name.starts_with(crate::native_tools::BG_CMD_LOG_PREFIX) && name.ends_with(".log"));

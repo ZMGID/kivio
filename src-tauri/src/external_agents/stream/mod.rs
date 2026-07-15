@@ -14,9 +14,9 @@ pub fn create_stream_handler(
         StreamFormat::ClaudeStreamJson => {
             StreamHandler::Claude(claude::ClaudeStreamState::default())
         }
-        StreamFormat::JsonEventStream => StreamHandler::Json(json_events::JsonEventStreamState::new(
-            parser.unwrap_or(JsonEventParser::Kimi),
-        )),
+        StreamFormat::JsonEventStream => StreamHandler::Json(
+            json_events::JsonEventStreamState::new(parser.unwrap_or(JsonEventParser::Kimi)),
+        ),
         // PiRpc / AcpJsonRpc / CodexAppServer are driven by dedicated session runners in run.rs and
         // never reach this factory.
         StreamFormat::PiRpc | StreamFormat::AcpJsonRpc | StreamFormat::CodexAppServer => {

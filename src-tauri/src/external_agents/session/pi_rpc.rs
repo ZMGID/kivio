@@ -133,7 +133,9 @@ pub fn parse_pi_models(stderr: &str) -> Option<Vec<RuntimeModelOption>> {
         }
         let full_id = format!("{}/{}", parts[0], parts[1]);
         if seen.insert(full_id.clone()) {
-            let context_window_tokens = parts.get(2).and_then(|label| parse_context_window_label(label));
+            let context_window_tokens = parts
+                .get(2)
+                .and_then(|label| parse_context_window_label(label));
             out.push(RuntimeModelOption {
                 id: full_id.clone(),
                 label: full_id,
@@ -243,7 +245,10 @@ pub fn map_pi_rpc_event(value: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) 
                     _ => c.to_string(),
                 })
                 .unwrap_or_default();
-            let is_error = obj.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_error = obj
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if !tool_use_id.is_empty() {
                 sink(UnifiedAgentEvent::ToolResult {
                     tool_use_id,
@@ -327,7 +332,10 @@ async fn reply_extension_ui(
     }
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
-    stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())
+    stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub async fn run_pi_rpc_session(
@@ -477,8 +485,12 @@ mod tests {
                    zmfooogreencloud  mimo-v2.5-pro  128K     8.2K     no        no\n\
                    zmfooogreencloud  minimax-m2.7   128K     8.2K     no        no";
         let models = parse_pi_models(out).unwrap();
-        assert!(models.iter().any(|m| m.id == "zmfooogreencloud/mimo-v2.5-pro"));
-        assert!(models.iter().any(|m| m.id == "zmfooogreencloud/minimax-m2.7"));
+        assert!(models
+            .iter()
+            .any(|m| m.id == "zmfooogreencloud/mimo-v2.5-pro"));
+        assert!(models
+            .iter()
+            .any(|m| m.id == "zmfooogreencloud/minimax-m2.7"));
         // Generic provider models must NOT appear (those were the bogus fallback).
         assert!(!models.iter().any(|m| m.id.starts_with("anthropic/")));
     }

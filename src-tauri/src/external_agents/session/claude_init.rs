@@ -165,7 +165,10 @@ pub async fn probe_claude_init(
     parse_claude_init_info(&init)
 }
 
-pub async fn detect_claude_models(resolved_bin: &Path, cwd: &Path) -> Option<Vec<RuntimeModelOption>> {
+pub async fn detect_claude_models(
+    resolved_bin: &Path,
+    cwd: &Path,
+) -> Option<Vec<RuntimeModelOption>> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 
@@ -185,7 +188,9 @@ pub async fn detect_claude_models(resolved_bin: &Path, cwd: &Path) -> Option<Vec
             Some(info) => label_for_claude_model("default", &info.resolved_model),
             None => "Default".to_string(),
         },
-        context_window_tokens: default_info.as_ref().and_then(|info| info.context_window_tokens),
+        context_window_tokens: default_info
+            .as_ref()
+            .and_then(|info| info.context_window_tokens),
     });
     seen.insert("default".to_string());
 
@@ -251,8 +256,8 @@ fn claude_config_models() -> Vec<String> {
         }
     };
 
-    if let Some(text) = claude_config_dir()
-        .and_then(|dir| std::fs::read_to_string(dir.join("settings.json")).ok())
+    if let Some(text) =
+        claude_config_dir().and_then(|dir| std::fs::read_to_string(dir.join("settings.json")).ok())
     {
         if let Ok(value) = serde_json::from_str::<Value>(&text) {
             if let Some(env) = value.get("env").and_then(|v| v.as_object()) {
@@ -334,8 +339,14 @@ mod tests {
 
     #[test]
     fn context_window_from_alias() {
-        assert_eq!(context_window_from_claude_model_alias("sonnet[1m]"), Some(1_000_000));
-        assert_eq!(context_window_from_claude_model_alias("sonnet"), Some(200_000));
+        assert_eq!(
+            context_window_from_claude_model_alias("sonnet[1m]"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            context_window_from_claude_model_alias("sonnet"),
+            Some(200_000)
+        );
         assert_eq!(context_window_from_claude_model_alias("default"), None);
     }
 

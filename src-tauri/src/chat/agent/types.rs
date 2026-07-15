@@ -1,6 +1,8 @@
 use serde_json::Value;
 
-use crate::chat::types::{ChatAssistantSnapshot, ChatMessageSegment, CompactionBoundaryRecord, ToolCallRecord};
+use crate::chat::types::{
+    ChatAssistantSnapshot, ChatMessageSegment, CompactionBoundaryRecord, ToolCallRecord,
+};
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
 use crate::state::AppState;

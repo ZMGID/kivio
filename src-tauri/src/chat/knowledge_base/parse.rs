@@ -23,7 +23,8 @@ pub fn is_supported_ext(path: &Path) -> bool {
 
 const SUPPORTED: &[&str] = &[
     "txt", "text", "log", "csv", "tsv", "md", "markdown", "mdown", "mkd", "pdf", "docx", "xlsx",
-    "html", "htm", // image exts: accepted at upload time, OCR'd by process_document before parse.
+    "html",
+    "htm", // image exts: accepted at upload time, OCR'd by process_document before parse.
     "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif",
 ];
 
@@ -187,7 +188,10 @@ mod tests {
         assert!(text.contains("Hello world"), "got: {text:?}");
         assert!(text.contains("第二段 & 实体"), "got: {text:?}");
         // paragraph boundary preserved
-        assert!(text.contains("world\n第二段") || text.contains("world \n第二段"), "got: {text:?}");
+        assert!(
+            text.contains("world\n第二段") || text.contains("world \n第二段"),
+            "got: {text:?}"
+        );
     }
 }
 
@@ -239,7 +243,11 @@ mod parse_e2e {
             std::fs::write(&path, format!("{CN} Kivio 2026\n{EN} line two.\n")).unwrap();
             let doc = parse_file(&path).expect("txt parse");
             show("txt", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(!doc.markdown);
             let _ = std::fs::remove_file(&path);
         }
@@ -250,7 +258,11 @@ mod parse_e2e {
             std::fs::write(&path, format!("# {CN} Kivio 2026\n\n{EN} paragraph.\n")).unwrap();
             let doc = parse_file(&path).expect("md parse");
             show("md", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(doc.markdown);
             let _ = std::fs::remove_file(&path);
         }
@@ -261,7 +273,11 @@ mod parse_e2e {
             std::fs::write(&path, format!("标题,Title\n{CN},{EN}\n")).unwrap();
             let doc = parse_file(&path).expect("csv parse");
             show("csv", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(!doc.markdown);
             let _ = std::fs::remove_file(&path);
         }
@@ -272,7 +288,11 @@ mod parse_e2e {
             std::fs::write(&path, format!("标题\tTitle\n{CN}\t{EN}\n")).unwrap();
             let doc = parse_file(&path).expect("tsv parse");
             show("tsv", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(!doc.markdown);
             let _ = std::fs::remove_file(&path);
         }
@@ -286,7 +306,11 @@ mod parse_e2e {
             std::fs::write(&path, &html).unwrap();
             let doc = parse_file(&path).expect("html parse");
             show("html", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(doc.markdown);
             assert!(
                 !doc.text.contains("<h1>") && !doc.text.contains("<p>"),
@@ -305,7 +329,11 @@ mod parse_e2e {
             std::fs::write(&path, &html).unwrap();
             let doc = parse_file(&path).expect("htm parse");
             show("htm", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(doc.markdown);
             let _ = std::fs::remove_file(&path);
         }
@@ -316,7 +344,11 @@ mod parse_e2e {
             build_docx(&path, CN, EN);
             let doc = parse_file(&path).expect("docx parse");
             show("docx", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(doc.text.contains("Tab-separated"), "got: {:?}", doc.text);
             assert!(!doc.markdown);
             let _ = std::fs::remove_file(&path);
@@ -328,7 +360,11 @@ mod parse_e2e {
             build_xlsx(&path, CN, EN);
             let doc = parse_file(&path).expect("xlsx parse");
             show("xlsx", &doc);
-            assert!(doc.text.contains(CN) && doc.text.contains(EN), "got: {:?}", doc.text);
+            assert!(
+                doc.text.contains(CN) && doc.text.contains(EN),
+                "got: {:?}",
+                doc.text
+            );
             assert!(doc.markdown);
             let _ = std::fs::remove_file(&path);
         }
@@ -532,8 +568,10 @@ mod parse_e2e {
             buf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
         }
         buf.extend_from_slice(
-            format!("trailer\n<< /Size {obj_count} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF")
-                .as_bytes(),
+            format!(
+                "trailer\n<< /Size {obj_count} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF"
+            )
+            .as_bytes(),
         );
         buf
     }

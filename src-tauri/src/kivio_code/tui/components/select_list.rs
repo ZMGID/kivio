@@ -46,8 +46,16 @@ pub struct SelectItem {
 }
 
 impl SelectItem {
-    pub fn new(value: impl Into<String>, label: impl Into<String>, description: Option<String>) -> Self {
-        Self { value: value.into(), label: label.into(), description }
+    pub fn new(
+        value: impl Into<String>,
+        label: impl Into<String>,
+        description: Option<String>,
+    ) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+            description,
+        }
     }
 }
 
@@ -112,7 +120,12 @@ impl SelectList {
     /// 用 value 前缀过滤（PI 语义：`value.startsWith(filter)`）。
     pub fn set_filter(&mut self, filter: &str) {
         let f = filter.to_lowercase();
-        self.filtered_items = self.items.iter().filter(|i| i.value.to_lowercase().starts_with(&f)).cloned().collect();
+        self.filtered_items = self
+            .items
+            .iter()
+            .filter(|i| i.value.to_lowercase().starts_with(&f))
+            .cloned()
+            .collect();
         self.selected_index = 0;
     }
 
@@ -184,7 +197,14 @@ impl SelectList {
         clamp(widest, min, max)
     }
 
-    fn render_item(&self, item: &SelectItem, is_selected: bool, width: usize, desc: Option<&str>, primary_w: usize) -> String {
+    fn render_item(
+        &self,
+        item: &SelectItem,
+        is_selected: bool,
+        width: usize,
+        desc: Option<&str>,
+        primary_w: usize,
+    ) -> String {
         let prefix = if is_selected { "→ " } else { "  " };
         let prefix_w = visible_width(prefix);
 
@@ -192,7 +212,8 @@ impl SelectList {
             if width > 40 {
                 let eff_primary = 1.max(primary_w.min(width.saturating_sub(prefix_w + 4)));
                 let max_primary = 1.max(eff_primary.saturating_sub(PRIMARY_COLUMN_GAP));
-                let truncated_value = truncate_to_width(Self::display_value(item), max_primary, "", false);
+                let truncated_value =
+                    truncate_to_width(Self::display_value(item), max_primary, "", false);
                 let tv_w = visible_width(&truncated_value);
                 let spacing = " ".repeat(1.max(eff_primary.saturating_sub(tv_w)));
                 let desc_start = prefix_w + tv_w + spacing.len();
@@ -200,7 +221,9 @@ impl SelectList {
                 if remaining > MIN_DESCRIPTION_WIDTH {
                     let truncated_desc = truncate_to_width(desc, remaining, "", false);
                     if is_selected {
-                        return (self.theme.selected_text)(&format!("{prefix}{truncated_value}{spacing}{truncated_desc}"));
+                        return (self.theme.selected_text)(&format!(
+                            "{prefix}{truncated_value}{spacing}{truncated_desc}"
+                        ));
                     }
                     let desc_text = (self.theme.description)(&format!("{spacing}{truncated_desc}"));
                     return format!("{prefix}{truncated_value}{desc_text}");
@@ -231,10 +254,18 @@ impl Component for SelectList {
         }
         let n = self.filtered_items.len();
         if self.kb.matches(data, "tui.select.up", kitty) {
-            self.selected_index = if self.selected_index == 0 { n - 1 } else { self.selected_index - 1 };
+            self.selected_index = if self.selected_index == 0 {
+                n - 1
+            } else {
+                self.selected_index - 1
+            };
             self.notify_selection_change();
         } else if self.kb.matches(data, "tui.select.down", kitty) {
-            self.selected_index = if self.selected_index == n - 1 { 0 } else { self.selected_index + 1 };
+            self.selected_index = if self.selected_index == n - 1 {
+                0
+            } else {
+                self.selected_index + 1
+            };
             self.notify_selection_change();
         } else if self.kb.matches(data, "tui.select.confirm", kitty) {
             if let Some(item) = self.filtered_items.get(self.selected_index).cloned() {
@@ -269,13 +300,21 @@ impl Component for SelectList {
         for i in start..end {
             let item = self.filtered_items[i].clone();
             let is_selected = i == self.selected_index;
-            let desc = item.description.as_ref().map(|d| normalize_to_single_line(d));
+            let desc = item
+                .description
+                .as_ref()
+                .map(|d| normalize_to_single_line(d));
             lines.push(self.render_item(&item, is_selected, width, desc.as_deref(), primary_w));
         }
 
         if start > 0 || end < n {
             let scroll_text = format!("  ({}/{})", self.selected_index + 1, n);
-            lines.push((self.theme.scroll_info)(&truncate_to_width(&scroll_text, width.saturating_sub(2), "", false)));
+            lines.push((self.theme.scroll_info)(&truncate_to_width(
+                &scroll_text,
+                width.saturating_sub(2),
+                "",
+                false,
+            )));
         }
 
         lines
@@ -301,11 +340,18 @@ mod tests {
     }
 
     fn items(n: usize) -> Vec<SelectItem> {
-        (0..n).map(|i| SelectItem::new(format!("v{i}"), format!("label{i}"), None)).collect()
+        (0..n)
+            .map(|i| SelectItem::new(format!("v{i}"), format!("label{i}"), None))
+            .collect()
     }
 
     fn list(n: usize, max_visible: usize) -> SelectList {
-        SelectList::new(items(n), max_visible, identity_theme(), SelectListLayoutOptions::default())
+        SelectList::new(
+            items(n),
+            max_visible,
+            identity_theme(),
+            SelectListLayoutOptions::default(),
+        )
     }
 
     #[test]

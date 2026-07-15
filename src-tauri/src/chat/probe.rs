@@ -162,9 +162,11 @@ async fn handle_probe_request(app: &AppHandle, req: ProbeRequest) -> ProbeResult
     let id = req.id.clone();
     let state = app.state::<AppState>();
     // 缺省 cwd 用进程当前目录（dev 通常是仓库根），让文件工具相对路径开箱即用。
-    let cwd = req
-        .cwd
-        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
+    let cwd = req.cwd.or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    });
     let run = crate::chat::commands::run_chat_probe(
         app,
         &state,
@@ -210,7 +212,9 @@ async fn handle_probe_request(app: &AppHandle, req: ProbeRequest) -> ProbeResult
             answer: String::new(),
             tool_calls: Vec::new(),
             stream_outcome: Some("timeout".to_string()),
-            error: Some(format!("probe generation timed out after {PROBE_TIMEOUT:?}")),
+            error: Some(format!(
+                "probe generation timed out after {PROBE_TIMEOUT:?}"
+            )),
             finished_at,
         },
     }

@@ -53,11 +53,19 @@ fn build_acp_args(_c: &RuntimeContext, _o: &RuntimeBuildOptions, _p: Option<&str
     vec!["acp".to_string()]
 }
 
-fn build_gemini_args(_c: &RuntimeContext, _o: &RuntimeBuildOptions, _p: Option<&str>) -> Vec<String> {
+fn build_gemini_args(
+    _c: &RuntimeContext,
+    _o: &RuntimeBuildOptions,
+    _p: Option<&str>,
+) -> Vec<String> {
     vec!["--experimental-acp".to_string()]
 }
 
-fn build_hermes_args(_c: &RuntimeContext, _o: &RuntimeBuildOptions, _p: Option<&str>) -> Vec<String> {
+fn build_hermes_args(
+    _c: &RuntimeContext,
+    _o: &RuntimeBuildOptions,
+    _p: Option<&str>,
+) -> Vec<String> {
     vec!["acp".to_string(), "--accept-hooks".to_string()]
 }
 
@@ -88,11 +96,20 @@ const HERMES_MODELS: &[(&str, &str)] = &[
     ("default", "Default"),
     ("grok-4.3", "grok-4.3 (xAI · default)"),
     ("grok-4.20-reasoning", "grok-4.20-reasoning (xAI · deep)"),
-    ("grok-4.20-0309-non-reasoning", "grok-4.20-non-reasoning (xAI · fast)"),
-    ("grok-4.20-multi-agent-0309", "grok-4.20-multi-agent (xAI · orchestration)"),
+    (
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-non-reasoning (xAI · fast)",
+    ),
+    (
+        "grok-4.20-multi-agent-0309",
+        "grok-4.20-multi-agent (xAI · orchestration)",
+    ),
     ("openai-codex:gpt-5.5", "gpt-5.5 (openai-codex:gpt-5.5)"),
     ("openai-codex:gpt-5.4", "gpt-5.4 (openai-codex:gpt-5.4)"),
-    ("openai-codex:gpt-5.4-mini", "gpt-5.4-mini (openai-codex:gpt-5.4-mini)"),
+    (
+        "openai-codex:gpt-5.4-mini",
+        "gpt-5.4-mini (openai-codex:gpt-5.4-mini)",
+    ),
 ];
 
 const GEMINI_ENV: &[(&str, &str)] = &[("GEMINI_CLI_TRUST_WORKSPACE", "true")];
@@ -157,7 +174,11 @@ mod tests {
             new_session_id: None,
             include_partial_messages: false,
         };
-        let opts = RuntimeBuildOptions { model: None, reasoning: None, sandbox: None };
+        let opts = RuntimeBuildOptions {
+            model: None,
+            reasoning: None,
+            sandbox: None,
+        };
         let cases: &[(&RuntimeAgentDef, &[&str])] = &[
             (&CURSOR_AGENT_DEF, &["acp"]),
             (&GEMINI_AGENT_DEF, &["--experimental-acp"]),

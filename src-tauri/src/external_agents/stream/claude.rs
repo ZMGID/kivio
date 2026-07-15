@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::slash::parse_slash_commands_from_init;
+use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::UnifiedAgentEvent;
 
 struct PendingContentBlock {
@@ -80,10 +80,7 @@ impl ClaudeStreamState {
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("tool")
                                             .to_string(),
-                                        input: block
-                                            .get("input")
-                                            .cloned()
-                                            .unwrap_or(Value::Null),
+                                        input: block.get("input").cloned().unwrap_or(Value::Null),
                                     });
                                 }
                                 _ => {}
@@ -192,7 +189,10 @@ impl ClaudeStreamState {
                     PendingContentBlock {
                         block_type,
                         id: block.get("id").and_then(|v| v.as_str()).map(str::to_string),
-                        name: block.get("name").and_then(|v| v.as_str()).map(str::to_string),
+                        name: block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
                         input_json: String::new(),
                         input_value: block.get("input").cloned(),
                     },
@@ -244,9 +244,8 @@ impl ClaudeStreamState {
                 }
                 let name = state.name.unwrap_or_else(|| "tool".to_string());
                 let input = if !state.input_json.trim().is_empty() {
-                    serde_json::from_str(&state.input_json).unwrap_or_else(|_| {
-                        Value::String(state.input_json.clone())
-                    })
+                    serde_json::from_str(&state.input_json)
+                        .unwrap_or_else(|_| Value::String(state.input_json.clone()))
                 } else {
                     state.input_value.unwrap_or(Value::Null)
                 };

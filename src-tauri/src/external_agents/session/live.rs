@@ -46,7 +46,8 @@ impl LiveSession {
 
     /// Reclaimable: the actor already exited, or the session has been idle past `ttl`.
     pub fn is_idle(&self, ttl: Duration) -> bool {
-        self.control.is_closed() || Instant::now().saturating_duration_since(self.last_activity) >= ttl
+        self.control.is_closed()
+            || Instant::now().saturating_duration_since(self.last_activity) >= ttl
     }
 }
 
