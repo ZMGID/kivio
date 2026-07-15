@@ -1,2628 +1,2657 @@
-    use std::io::{Read as _, Write as _};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
-    };
+use std::io::{Read as _, Write as _};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
-    use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration};
 
-    use super::*;
-    use crate::chat::model::{StreamPart, StreamSink as _};
-    use crate::chat::types::ToolCallStatus;
-    use crate::mcp::types::{
-        native_read_file_tool, native_run_python_tool, native_web_fetch_tool,
-        native_write_file_tool, McpToolCallResult,
-    };
-    use crate::settings::{ChatToolsConfig, ModelProvider};
-    use crate::state::AppState;
+use super::*;
+use crate::chat::model::{StreamPart, StreamSink as _};
+use crate::chat::types::ToolCallStatus;
+use crate::mcp::types::{
+    native_read_file_tool, native_run_python_tool, native_web_fetch_tool, native_write_file_tool,
+    McpToolCallResult,
+};
+use crate::settings::{ChatToolsConfig, ModelProvider};
+use crate::state::AppState;
 
-    #[derive(Clone, Debug)]
-    struct RecordedDelta {
-        delta: String,
-        reasoning_delta: Option<String>,
-        segment: Option<ChatMessageSegment>,
-    }
+#[derive(Clone, Debug)]
+struct RecordedDelta {
+    delta: String,
+    reasoning_delta: Option<String>,
+    segment: Option<ChatMessageSegment>,
+}
 
-    #[derive(Default)]
-    struct TestHost {
-        records: Mutex<Vec<ToolCallRecord>>,
-        deltas: Mutex<Vec<RecordedDelta>>,
-        dones: Mutex<Vec<(String, String)>>,
-        /// Per-call snapshot sizes from `persist_partial_assistant`:
-        /// `(message_id, tool_records_len, segments_len, api_messages_len)`.
-        persists: Mutex<Vec<(String, usize, usize, usize)>>,
-        cancel_after: Option<Duration>,
-        cancel_flag: Arc<AtomicBool>,
-        cancel_on_first_text_delta: bool,
-        /// Flip `cancel_flag` from inside `persist_partial_assistant`, so a tool
-        /// round completes uncancelled (its records preserved) and the NEXT
-        /// round's loop-top generation check observes the cancellation. Used to
-        /// exercise the planning/loop-top cancellation path deterministically.
-        cancel_on_persist: bool,
-    }
+#[derive(Default)]
+struct TestHost {
+    records: Mutex<Vec<ToolCallRecord>>,
+    deltas: Mutex<Vec<RecordedDelta>>,
+    dones: Mutex<Vec<(String, String)>>,
+    /// Per-call snapshot sizes from `persist_partial_assistant`:
+    /// `(message_id, tool_records_len, segments_len, api_messages_len)`.
+    persists: Mutex<Vec<(String, usize, usize, usize)>>,
+    cancel_after: Option<Duration>,
+    cancel_flag: Arc<AtomicBool>,
+    cancel_on_first_text_delta: bool,
+    /// Flip `cancel_flag` from inside `persist_partial_assistant`, so a tool
+    /// round completes uncancelled (its records preserved) and the NEXT
+    /// round's loop-top generation check observes the cancellation. Used to
+    /// exercise the planning/loop-top cancellation path deterministically.
+    cancel_on_persist: bool,
+}
 
-    impl TestHost {
-        fn cancelling_after(delay: Duration) -> Self {
-            Self {
-                cancel_after: Some(delay),
-                ..Self::default()
-            }
-        }
-
-        fn with_cancel_flag(cancel_flag: Arc<AtomicBool>) -> Self {
-            Self {
-                cancel_flag,
-                ..Self::default()
-            }
-        }
-
-        fn cancelling_on_first_text_delta() -> Self {
-            Self {
-                cancel_on_first_text_delta: true,
-                ..Self::default()
-            }
-        }
-
-        fn cancelling_on_persist() -> Self {
-            Self {
-                cancel_on_persist: true,
-                ..Self::default()
-            }
-        }
-
-        fn recorded_deltas(&self) -> Vec<RecordedDelta> {
-            self.deltas
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone()
-        }
-
-        fn recorded_dones(&self) -> Vec<(String, String)> {
-            self.dones
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone()
-        }
-
-        fn recorded_tool_records(&self) -> Vec<ToolCallRecord> {
-            self.records
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone()
-        }
-
-        fn recorded_persists(&self) -> Vec<(String, usize, usize, usize)> {
-            self.persists
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone()
+impl TestHost {
+    fn cancelling_after(delay: Duration) -> Self {
+        Self {
+            cancel_after: Some(delay),
+            ..Self::default()
         }
     }
 
-    impl AgentHost for TestHost {
-        fn emit_stream_delta(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            delta: &str,
-            reasoning_delta: Option<&str>,
-            segment: Option<&ChatMessageSegment>,
-        ) {
-            if self.cancel_on_first_text_delta && !delta.is_empty() {
-                self.cancel_flag.store(true, Ordering::SeqCst);
-            }
-            self.deltas
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(RecordedDelta {
-                    delta: delta.to_string(),
-                    reasoning_delta: reasoning_delta.map(str::to_string),
-                    segment: segment.cloned(),
-                });
-        }
-
-        fn emit_stream_done(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            reason: &str,
-            full: &str,
-        ) {
-            self.dones
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push((reason.to_string(), full.to_string()));
-        }
-
-        fn emit_tool_record(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            record: &ToolCallRecord,
-        ) {
-            self.records
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(record.clone());
-        }
-
-        fn persist_partial_assistant(
-            &self,
-            _conversation_id: &str,
-            message_id: &str,
-            tool_records: &[ToolCallRecord],
-            segments: &[ChatMessageSegment],
-            api_messages: &[serde_json::Value],
-        ) {
-            if self.cancel_on_persist {
-                self.cancel_flag.store(true, Ordering::SeqCst);
-            }
-            self.persists
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push((
-                    message_id.to_string(),
-                    tool_records.len(),
-                    segments.len(),
-                    api_messages.len(),
-                ));
-        }
-
-        fn request_tool_approval<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
-        ) -> super::super::host::AgentHostFuture<'a, bool> {
-            Box::pin(async { true })
-        }
-
-        fn request_session_consent<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-        ) -> super::super::host::AgentHostFuture<'a, bool> {
-            Box::pin(async { true })
-        }
-
-        fn request_user_response<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
-            _prompt: crate::chat::ask_user::AskUserPromptPayload,
-        ) -> super::super::host::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult>
-        {
-            Box::pin(async { crate::chat::ask_user::skipped_response() })
-        }
-
-        fn is_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
-            !self.cancel_flag.load(Ordering::SeqCst)
-        }
-
-        fn wait_for_generation_inactive<'a>(
-            &'a self,
-            _conversation_id: &'a str,
-            _generation: u64,
-        ) -> super::super::host::AgentHostFuture<'a, ()> {
-            let cancel_after = self.cancel_after;
-            let cancel_flag = self.cancel_flag.clone();
-            Box::pin(async move {
-                let started = tokio::time::Instant::now();
-                loop {
-                    if cancel_flag.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    if let Some(delay) = cancel_after {
-                        if started.elapsed() >= delay {
-                            return;
-                        }
-                    }
-                    sleep(Duration::from_millis(2)).await;
-                }
-            })
+    fn with_cancel_flag(cancel_flag: Arc<AtomicBool>) -> Self {
+        Self {
+            cancel_flag,
+            ..Self::default()
         }
     }
 
-    #[derive(Default)]
-    struct RecordingExecutor {
-        active: AtomicUsize,
-        max_active: AtomicUsize,
-        events: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl RecordingExecutor {
-        fn max_active(&self) -> usize {
-            self.max_active.load(Ordering::SeqCst)
-        }
-
-        fn events(&self) -> Vec<String> {
-            self.events
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .clone()
+    fn cancelling_on_first_text_delta() -> Self {
+        Self {
+            cancel_on_first_text_delta: true,
+            ..Self::default()
         }
     }
 
-    impl ToolExecutor for RecordingExecutor {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            tool: &'a ChatToolDefinition,
-            _arguments: Value,
-            _skill_cache: Option<&'a mut skills::SkillRunCache>,
-        ) -> super::super::execute::ToolExecutorFuture<'a> {
-            let name = tool.name.clone();
-            let events = self.events.clone();
-            Box::pin(async move {
-                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-                self.max_active.fetch_max(active, Ordering::SeqCst);
-                events
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .push(format!("start:{name}"));
-                sleep(Duration::from_millis(25)).await;
-                events
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .push(format!("finish:{name}"));
-                self.active.fetch_sub(1, Ordering::SeqCst);
-                Ok(McpToolCallResult {
-                    content: format!("result:{name}"),
-                    is_error: false,
-                    raw: Value::Null,
-                    artifacts: Vec::new(),
-                    structured_content: None,
-                    follow_up_user_messages: Vec::new(),
-                })
-            })
+    fn cancelling_on_persist() -> Self {
+        Self {
+            cancel_on_persist: true,
+            ..Self::default()
         }
     }
 
-    /// Tool executor that succeeds immediately and flips the shared cancel flag while
-    /// executing, so cancellation deterministically lands between the tool round and
-    /// the synthesis request (the executor branch wins the `tokio::select!` because it
-    /// completes synchronously on its first poll).
-    struct CancelAfterToolExecutor {
-        cancel_flag: Arc<AtomicBool>,
+    fn recorded_deltas(&self) -> Vec<RecordedDelta> {
+        self.deltas
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 
-    impl ToolExecutor for CancelAfterToolExecutor {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            tool: &'a ChatToolDefinition,
-            _arguments: Value,
-            _skill_cache: Option<&'a mut skills::SkillRunCache>,
-        ) -> super::super::execute::ToolExecutorFuture<'a> {
-            let name = tool.name.clone();
-            let cancel_flag = self.cancel_flag.clone();
-            Box::pin(async move {
-                cancel_flag.store(true, Ordering::SeqCst);
-                Ok(McpToolCallResult {
-                    content: format!("result:{name}"),
-                    is_error: false,
-                    raw: Value::Null,
-                    artifacts: Vec::new(),
-                    structured_content: None,
-                    follow_up_user_messages: Vec::new(),
-                })
-            })
+    fn recorded_dones(&self) -> Vec<(String, String)> {
+        self.dones
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+
+    fn recorded_tool_records(&self) -> Vec<ToolCallRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+
+    fn recorded_persists(&self) -> Vec<(String, usize, usize, usize)> {
+        self.persists
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+}
+
+impl AgentHost for TestHost {
+    fn emit_stream_delta(
+        &self,
+        _conversation_id: &str,
+        _run_id: &str,
+        _message_id: &str,
+        delta: &str,
+        reasoning_delta: Option<&str>,
+        segment: Option<&ChatMessageSegment>,
+    ) {
+        if self.cancel_on_first_text_delta && !delta.is_empty() {
+            self.cancel_flag.store(true, Ordering::SeqCst);
         }
-    }
-
-    /// Scripted HTTP mock for the OpenAI-compatible chat completions endpoint.
-    /// Responses are served in connection-accept order; each response closes (or
-    /// deliberately breaks) its connection so reqwest opens a fresh one per request.
-    enum MockResponse {
-        /// Complete JSON chat completion body.
-        Json(String),
-        /// SSE stream; each entry becomes one `data: <entry>` event.
-        Sse(Vec<String>),
-        /// Plain HTTP error status with a JSON body.
-        Status(u16, String),
-        /// Chunked SSE that drops the connection without the chunked terminator,
-        /// producing a reqwest decode error (StreamReadInterrupted).
-        SseInterrupt(Vec<String>),
-        /// Chunked SSE that writes the given events then keeps the connection open,
-        /// simulating a hung provider so cancellation paths can win the select.
-        SseThenHang(Vec<String>),
-    }
-
-    struct MockModelServer {
-        base_url: String,
-        captured_bodies: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl MockModelServer {
-        fn start(responses: Vec<MockResponse>) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock model server");
-            let addr = listener.local_addr().expect("mock model server addr");
-            let captured_bodies = Arc::new(Mutex::new(Vec::new()));
-            let captured_for_thread = Arc::clone(&captured_bodies);
-            std::thread::spawn(move || {
-                for response in responses {
-                    let Ok((mut stream, _)) = listener.accept() else {
-                        return;
-                    };
-                    stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                        .ok();
-                    match read_http_request(&mut stream) {
-                        Ok(body) => {
-                            captured_for_thread
-                                .lock()
-                                .unwrap_or_else(|err| err.into_inner())
-                                .push(body);
-                        }
-                        Err(_) => continue,
-                    }
-                    serve_mock_response(stream, response);
-                }
+        self.deltas
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push(RecordedDelta {
+                delta: delta.to_string(),
+                reasoning_delta: reasoning_delta.map(str::to_string),
+                segment: segment.cloned(),
             });
-            Self {
-                base_url: format!("http://{addr}/v1"),
-                captured_bodies,
-            }
-        }
+    }
 
-        fn captured_bodies(&self) -> Vec<String> {
-            self.captured_bodies
+    fn emit_stream_done(
+        &self,
+        _conversation_id: &str,
+        _run_id: &str,
+        _message_id: &str,
+        reason: &str,
+        full: &str,
+    ) {
+        self.dones
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push((reason.to_string(), full.to_string()));
+    }
+
+    fn emit_tool_record(
+        &self,
+        _conversation_id: &str,
+        _run_id: &str,
+        _message_id: &str,
+        record: &ToolCallRecord,
+    ) {
+        self.records
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push(record.clone());
+    }
+
+    fn persist_partial_assistant(
+        &self,
+        _conversation_id: &str,
+        message_id: &str,
+        tool_records: &[ToolCallRecord],
+        segments: &[ChatMessageSegment],
+        api_messages: &[serde_json::Value],
+    ) {
+        if self.cancel_on_persist {
+            self.cancel_flag.store(true, Ordering::SeqCst);
+        }
+        self.persists
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push((
+                message_id.to_string(),
+                tool_records.len(),
+                segments.len(),
+                api_messages.len(),
+            ));
+    }
+
+    fn request_tool_approval<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+        _record: &'a ToolCallRecord,
+    ) -> super::super::host::AgentHostFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    fn request_session_consent<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+    ) -> super::super::host::AgentHostFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    fn request_user_response<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+        _record: &'a ToolCallRecord,
+        _prompt: crate::chat::ask_user::AskUserPromptPayload,
+    ) -> super::super::host::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
+        Box::pin(async { crate::chat::ask_user::skipped_response() })
+    }
+
+    fn is_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
+        !self.cancel_flag.load(Ordering::SeqCst)
+    }
+
+    fn wait_for_generation_inactive<'a>(
+        &'a self,
+        _conversation_id: &'a str,
+        _generation: u64,
+    ) -> super::super::host::AgentHostFuture<'a, ()> {
+        let cancel_after = self.cancel_after;
+        let cancel_flag = self.cancel_flag.clone();
+        Box::pin(async move {
+            let started = tokio::time::Instant::now();
+            loop {
+                if cancel_flag.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Some(delay) = cancel_after {
+                    if started.elapsed() >= delay {
+                        return;
+                    }
+                }
+                sleep(Duration::from_millis(2)).await;
+            }
+        })
+    }
+}
+
+#[derive(Default)]
+struct RecordingExecutor {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+impl RecordingExecutor {
+    fn max_active(&self) -> usize {
+        self.max_active.load(Ordering::SeqCst)
+    }
+
+    fn events(&self) -> Vec<String> {
+        self.events
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+}
+
+impl ToolExecutor for RecordingExecutor {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+        tool: &'a ChatToolDefinition,
+        _arguments: Value,
+        _skill_cache: Option<&'a mut skills::SkillRunCache>,
+    ) -> super::super::execute::ToolExecutorFuture<'a> {
+        let name = tool.name.clone();
+        let events = self.events.clone();
+        Box::pin(async move {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            events
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
-                .clone()
+                .push(format!("start:{name}"));
+            sleep(Duration::from_millis(25)).await;
+            events
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(format!("finish:{name}"));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(McpToolCallResult {
+                content: format!("result:{name}"),
+                is_error: false,
+                raw: Value::Null,
+                artifacts: Vec::new(),
+                structured_content: None,
+                follow_up_user_messages: Vec::new(),
+            })
+        })
+    }
+}
+
+/// Tool executor that succeeds immediately and flips the shared cancel flag while
+/// executing, so cancellation deterministically lands between the tool round and
+/// the synthesis request (the executor branch wins the `tokio::select!` because it
+/// completes synchronously on its first poll).
+struct CancelAfterToolExecutor {
+    cancel_flag: Arc<AtomicBool>,
+}
+
+impl ToolExecutor for CancelAfterToolExecutor {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+        tool: &'a ChatToolDefinition,
+        _arguments: Value,
+        _skill_cache: Option<&'a mut skills::SkillRunCache>,
+    ) -> super::super::execute::ToolExecutorFuture<'a> {
+        let name = tool.name.clone();
+        let cancel_flag = self.cancel_flag.clone();
+        Box::pin(async move {
+            cancel_flag.store(true, Ordering::SeqCst);
+            Ok(McpToolCallResult {
+                content: format!("result:{name}"),
+                is_error: false,
+                raw: Value::Null,
+                artifacts: Vec::new(),
+                structured_content: None,
+                follow_up_user_messages: Vec::new(),
+            })
+        })
+    }
+}
+
+/// Scripted HTTP mock for the OpenAI-compatible chat completions endpoint.
+/// Responses are served in connection-accept order; each response closes (or
+/// deliberately breaks) its connection so reqwest opens a fresh one per request.
+enum MockResponse {
+    /// Complete JSON chat completion body.
+    Json(String),
+    /// SSE stream; each entry becomes one `data: <entry>` event.
+    Sse(Vec<String>),
+    /// Plain HTTP error status with a JSON body.
+    Status(u16, String),
+    /// Chunked SSE that drops the connection without the chunked terminator,
+    /// producing a reqwest decode error (StreamReadInterrupted).
+    SseInterrupt(Vec<String>),
+    /// Chunked SSE that writes the given events then keeps the connection open,
+    /// simulating a hung provider so cancellation paths can win the select.
+    SseThenHang(Vec<String>),
+}
+
+struct MockModelServer {
+    base_url: String,
+    captured_bodies: Arc<Mutex<Vec<String>>>,
+}
+
+impl MockModelServer {
+    fn start(responses: Vec<MockResponse>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock model server");
+        let addr = listener.local_addr().expect("mock model server addr");
+        let captured_bodies = Arc::new(Mutex::new(Vec::new()));
+        let captured_for_thread = Arc::clone(&captured_bodies);
+        std::thread::spawn(move || {
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .ok();
+                match read_http_request(&mut stream) {
+                    Ok(body) => {
+                        captured_for_thread
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .push(body);
+                    }
+                    Err(_) => continue,
+                }
+                serve_mock_response(stream, response);
+            }
+        });
+        Self {
+            base_url: format!("http://{addr}/v1"),
+            captured_bodies,
         }
     }
 
-    /// 读完整 HTTP 请求并返回 body 文本（供测试断言请求内容）。
-    fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 1024];
-        let header_end = loop {
-            let n = stream.read(&mut chunk)?;
-            if n == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "client closed before request end",
-                ));
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
-                break pos + 4;
-            }
-        };
-        let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
-        let content_length = headers
-            .lines()
-            .find_map(|line| line.strip_prefix("content-length:"))
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .unwrap_or(0);
-        while buf.len() < header_end + content_length {
-            let n = stream.read(&mut chunk)?;
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
+    fn captured_bodies(&self) -> Vec<String> {
+        self.captured_bodies
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+}
+
+/// 读完整 HTTP 请求并返回 body 文本（供测试断言请求内容）。
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    let header_end = loop {
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "client closed before request end",
+            ));
         }
-        Ok(String::from_utf8_lossy(&buf[header_end..]).into_owned())
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+    let content_length = headers
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    while buf.len() < header_end + content_length {
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
     }
+    Ok(String::from_utf8_lossy(&buf[header_end..]).into_owned())
+}
 
-    fn sse_body(events: &[String]) -> String {
-        events
-            .iter()
-            .map(|event| format!("data: {event}\n\n"))
-            .collect()
-    }
+fn sse_body(events: &[String]) -> String {
+    events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
 
-    fn serve_mock_response(mut stream: TcpStream, response: MockResponse) {
-        match response {
-            MockResponse::Json(body) => {
-                let _ = write!(
+fn serve_mock_response(mut stream: TcpStream, response: MockResponse) {
+    match response {
+        MockResponse::Json(body) => {
+            let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
-            }
-            MockResponse::Status(code, body) => {
-                let _ = write!(
+        }
+        MockResponse::Status(code, body) => {
+            let _ = write!(
                     stream,
                     "HTTP/1.1 {code} Mock Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
-            }
-            MockResponse::Sse(events) => {
-                let body = sse_body(&events);
-                let _ = write!(
+        }
+        MockResponse::Sse(events) => {
+            let body = sse_body(&events);
+            let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
-            }
-            MockResponse::SseInterrupt(events) => {
-                let _ = write!(
+        }
+        MockResponse::SseInterrupt(events) => {
+            let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
                 );
-                for event in events {
-                    let payload = format!("data: {event}\n\n");
-                    let _ = write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload);
-                }
-                let _ = stream.flush();
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                return;
+            for event in events {
+                let payload = format!("data: {event}\n\n");
+                let _ = write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload);
             }
-            MockResponse::SseThenHang(events) => {
-                let _ = write!(
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        MockResponse::SseThenHang(events) => {
+            let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
                 );
-                for event in events {
-                    let payload = format!("data: {event}\n\n");
-                    let _ = write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload);
-                }
-                let _ = stream.flush();
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                return;
+            for event in events {
+                let payload = format!("data: {event}\n\n");
+                let _ = write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload);
             }
-        }
-        let _ = stream.flush();
-    }
-
-    /// Minimal in-memory AppState for run_agent_loop tests. Settings live only in
-    /// memory and usage records go to a unique temp dir, so user settings/providers
-    /// are never touched.
-    fn test_app_state() -> AppState {
-        AppState::base(
-            Settings::default(),
-            std::env::temp_dir().join(format!(
-                "kivio-agent-loop-test-usage-{}",
-                uuid::Uuid::new_v4()
-            )),
-            reqwest::Client::new(),
-            #[cfg(target_os = "macos")]
-            crate::macos_ocr::MacOcrClient::disabled(),
-            crate::rapidocr::RapidOcrClient::disabled(),
-        )
-    }
-
-    fn test_provider(base_url: &str) -> ModelProvider {
-        ModelProvider {
-            id: "test-provider".to_string(),
-            name: "Test Provider".to_string(),
-            api_keys: vec!["test-key".to_string()],
-            api_key_legacy: None,
-            base_url: base_url.to_string(),
-            available_models: Vec::new(),
-            enabled_models: Vec::new(),
-            enabled: true,
-            api_format: "openai_chat".to_string(),
-            model_overrides: std::collections::HashMap::new(),
-            compress_request_body: false,
+            let _ = stream.flush();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            return;
         }
     }
+    let _ = stream.flush();
+}
 
-    fn test_run_config<'a>(
-        state: &'a AppState,
-        base_url: &str,
-        stream_enabled: bool,
-    ) -> AgentRunConfig<'a> {
-        AgentRunConfig {
-            state,
-            conversation_id: "conversation".to_string(),
-            tool_conversation_id: "conversation".to_string(),
-            depth: 0,
-            run_id: "run".to_string(),
-            message_id: "message".to_string(),
-            generation: 1,
-            provider: test_provider(base_url),
-            model: "test-model".to_string(),
-            runtime_messages: vec![
-                serde_json::json!({ "role": "system", "content": "system prompt" }),
-                serde_json::json!({ "role": "user", "content": "请读取文件" }),
-            ],
-            tools: vec![native_read_file_tool()],
-            blocked_tool_calls: Vec::new(),
-            settings: Settings::default(),
-            effective_chat_tools: ChatToolsConfig {
-                max_tool_rounds: Some(1),
-                ..ChatToolsConfig::default()
-            },
-            language: "zh-CN".to_string(),
-            thinking_enabled: false,
-            thinking_level: None,
-            stream_enabled,
-            max_output_tokens: 1024,
-            retry_attempts: 1,
-            assistant_snapshot: None,
-            provider_tools_fallback_system_prompt: String::new(),
-            initial_anchor_total_tokens: None,
-            initial_anchor_trailing_estimate: 0,
-        }
+/// Minimal in-memory AppState for run_agent_loop tests. Settings live only in
+/// memory and usage records go to a unique temp dir, so user settings/providers
+/// are never touched.
+fn test_app_state() -> AppState {
+    let offline_models =
+        crate::offline_models::OfflineModelManager::headless(reqwest::Client::new());
+    AppState::base(
+        Settings::default(),
+        std::env::temp_dir().join(format!(
+            "kivio-agent-loop-test-usage-{}",
+            uuid::Uuid::new_v4()
+        )),
+        reqwest::Client::new(),
+        #[cfg(target_os = "macos")]
+        crate::macos_ocr::MacOcrClient::disabled(),
+        offline_models.clone(),
+        crate::rapidocr::RapidOcrClient::new(offline_models.clone()),
+        crate::inpainting::InpaintingClient::new(offline_models),
+    )
+}
+
+fn test_provider(base_url: &str) -> ModelProvider {
+    ModelProvider {
+        id: "test-provider".to_string(),
+        name: "Test Provider".to_string(),
+        api_keys: vec!["test-key".to_string()],
+        api_key_legacy: None,
+        base_url: base_url.to_string(),
+        available_models: Vec::new(),
+        enabled_models: Vec::new(),
+        enabled: true,
+        api_format: "openai_chat".to_string(),
+        model_overrides: std::collections::HashMap::new(),
+        compress_request_body: false,
     }
+}
 
-    /// 构造一条 SSE delta，其 content 为 `prefix + 240 个填充字符`（总 ≥200 chars），
-    /// 满足 compaction 质量兜底 `MIN_SUMMARY_CHARS`。L2 摘要 mock 用它返回达标摘要。
-    fn long_summary_sse(prefix: &str) -> String {
-        let pad = "细节填充".repeat(60);
-        format!(r#"{{"choices":[{{"delta":{{"content":"{prefix}{pad}"}}}}]}}"#)
+fn test_run_config<'a>(
+    state: &'a AppState,
+    base_url: &str,
+    stream_enabled: bool,
+) -> AgentRunConfig<'a> {
+    AgentRunConfig {
+        state,
+        conversation_id: "conversation".to_string(),
+        tool_conversation_id: "conversation".to_string(),
+        depth: 0,
+        run_id: "run".to_string(),
+        message_id: "message".to_string(),
+        generation: 1,
+        provider: test_provider(base_url),
+        model: "test-model".to_string(),
+        runtime_messages: vec![
+            serde_json::json!({ "role": "system", "content": "system prompt" }),
+            serde_json::json!({ "role": "user", "content": "请读取文件" }),
+        ],
+        tools: vec![native_read_file_tool()],
+        blocked_tool_calls: Vec::new(),
+        settings: Settings::default(),
+        effective_chat_tools: ChatToolsConfig {
+            max_tool_rounds: Some(1),
+            ..ChatToolsConfig::default()
+        },
+        language: "zh-CN".to_string(),
+        thinking_enabled: false,
+        thinking_level: None,
+        stream_enabled,
+        max_output_tokens: 1024,
+        retry_attempts: 1,
+        assistant_snapshot: None,
+        provider_tools_fallback_system_prompt: String::new(),
+        initial_anchor_total_tokens: None,
+        initial_anchor_trailing_estimate: 0,
     }
+}
 
-    /// 同上，但 content 包在 `<summary>...</summary>` 内（验证 extract_summary_text 抽签）。
-    fn long_summary_sse_tagged(prefix: &str) -> String {
-        let pad = "细节填充".repeat(60);
-        format!(r#"{{"choices":[{{"delta":{{"content":"<summary>\n{prefix}{pad}\n</summary>"}}}}]}}"#)
-    }
+/// 构造一条 SSE delta，其 content 为 `prefix + 240 个填充字符`（总 ≥200 chars），
+/// 满足 compaction 质量兜底 `MIN_SUMMARY_CHARS`。L2 摘要 mock 用它返回达标摘要。
+fn long_summary_sse(prefix: &str) -> String {
+    let pad = "细节填充".repeat(60);
+    format!(r#"{{"choices":[{{"delta":{{"content":"{prefix}{pad}"}}}}]}}"#)
+}
 
-    /// Streaming planning step: one `read` tool call, then `[DONE]`.
-    fn planning_tool_call_sse_events() -> Vec<String> {
-        vec![
+/// 同上，但 content 包在 `<summary>...</summary>` 内（验证 extract_summary_text 抽签）。
+fn long_summary_sse_tagged(prefix: &str) -> String {
+    let pad = "细节填充".repeat(60);
+    format!(r#"{{"choices":[{{"delta":{{"content":"<summary>\n{prefix}{pad}\n</summary>"}}}}]}}"#)
+}
+
+/// Streaming planning step: one `read` tool call, then `[DONE]`.
+fn planning_tool_call_sse_events() -> Vec<String> {
+    vec![
             r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read","arguments":"{\"path\":\"/tmp/kivio-test.txt\"}"}}]}}]}"#
                 .to_string(),
             r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.to_string(),
             "[DONE]".to_string(),
         ]
-    }
+}
 
-    /// Non-stream planning step: one `read` tool call.
-    fn planning_tool_call_json() -> String {
-        serde_json::json!({
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": Value::Null,
-                    "tool_calls": [{
-                        "id": "call_read",
-                        "type": "function",
-                        "function": {
-                            "name": "read",
-                            "arguments": "{\"path\":\"/tmp/kivio-test.txt\"}"
-                        }
-                    }]
-                }
-            }]
-        })
-        .to_string()
-    }
-
-    fn test_round_context() -> ToolRoundContext<'static> {
-        ToolRoundContext {
-            conversation_id: "conversation",
-            run_id: "run",
-            message_id: "message",
-            generation: 1,
-            round: 1,
-            depth: 0,
-            tool_conversation_id: "conversation",
-            finish_reason: None,
-        }
-    }
-
-    fn pending_tool_call(id: &str, function_name: &str) -> PendingToolCall {
-        let arguments = test_tool_arguments(function_name);
-        PendingToolCall {
-            id: id.to_string(),
-            function_name: function_name.to_string(),
-            arguments_raw: serde_json::to_string(&arguments).expect("serialize test arguments"),
-            arguments,
-            arguments_parse_error: None,
-            signature: None,
-        }
-    }
-
-    fn test_tool_arguments(function_name: &str) -> Value {
-        match function_name {
-            "read" => serde_json::json!({ "path": "/tmp/kivio-test.txt" }),
-            "web_fetch" => serde_json::json!({ "url": "https://example.com" }),
-            "run_python" => serde_json::json!({ "code": "print(1)" }),
-            "ask_user" => serde_json::json!({
-                "questions": [
-                    {
-                        "id": "scope",
-                        "prompt": "Which scope should I use?",
-                        "options": [
-                            { "id": "mvp", "label": "MVP" },
-                            { "id": "full", "label": "Full" }
-                        ]
+/// Non-stream planning step: one `read` tool call.
+fn planning_tool_call_json() -> String {
+    serde_json::json!({
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": Value::Null,
+                "tool_calls": [{
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": "{\"path\":\"/tmp/kivio-test.txt\"}"
                     }
-                ]
-            }),
-            _ => serde_json::json!({}),
-        }
+                }]
+            }
+        }]
+    })
+    .to_string()
+}
+
+fn test_round_context() -> ToolRoundContext<'static> {
+    ToolRoundContext {
+        conversation_id: "conversation",
+        run_id: "run",
+        message_id: "message",
+        generation: 1,
+        round: 1,
+        depth: 0,
+        tool_conversation_id: "conversation",
+        finish_reason: None,
     }
+}
 
-    #[test]
-    fn visible_tool_segment_calls_skip_hidden_disabled_builtin_feedback() {
-        let tools = vec![native_read_file_tool()];
-        let blocked = vec![native_run_python_tool()];
-        let calls = vec![
-            pending_tool_call("call_read", "read"),
-            pending_tool_call("call_blocked", "run_python"),
-            pending_tool_call("call_hidden_disabled", "web_search"),
-            pending_tool_call("call_unknown", "mcp__server__tool"),
-        ];
-
-        let visible = visible_tool_segment_calls(&tools, &blocked, &calls);
-
-        assert_eq!(
-            visible
-                .iter()
-                .map(|call| call.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["call_read", "call_blocked", "call_unknown"]
-        );
+fn pending_tool_call(id: &str, function_name: &str) -> PendingToolCall {
+    let arguments = test_tool_arguments(function_name);
+    PendingToolCall {
+        id: id.to_string(),
+        function_name: function_name.to_string(),
+        arguments_raw: serde_json::to_string(&arguments).expect("serialize test arguments"),
+        arguments,
+        arguments_parse_error: None,
+        signature: None,
     }
+}
 
-    #[test]
-    fn reasoning_segment_order_precedes_text_in_same_step() {
-        let mut builder = SegmentBuilder::new();
-        let reasoning = builder.reserve(
-            ChatMessageSegmentKind::Reasoning,
-            ChatMessageSegmentPhase::ToolLoop,
-            Some(1),
-            Some(1),
-            "step_1_reasoning",
-        );
-        let text = builder.reserve(
-            ChatMessageSegmentKind::Text,
-            ChatMessageSegmentPhase::ToolLoop,
-            Some(1),
-            Some(1),
-            "step_1_text",
-        );
-
-        assert!(reasoning.order < text.order);
-    }
-
-    fn test_mcp_tool(name: &str, annotations: Value) -> ChatToolDefinition {
-        ChatToolDefinition {
-            id: format!("mcp__demo__{name}"),
-            name: name.to_string(),
-            description: "MCP test tool".to_string(),
-            source: "mcp".to_string(),
-            server_id: Some("demo".to_string()),
-            server_name: Some("Demo".to_string()),
-            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-            sensitive: false,
-            annotations: Some(annotations),
-            output_schema: None,
-        }
-    }
-
-    fn tool_call_ids(messages: &[Value]) -> Vec<&str> {
-        messages
-            .iter()
-            .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str))
-            .collect()
-    }
-
-    #[test]
-    fn tool_round_limit_reached_only_for_finite_limits_at_boundary() {
-        assert!(!tool_round_limit_reached(None, 10));
-        assert!(!tool_round_limit_reached(Some(3), 2));
-        assert!(tool_round_limit_reached(Some(3), 3));
-        assert!(tool_round_limit_reached(Some(3), 4));
-    }
-
-    #[tokio::test]
-    async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_order() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_read", "read"),
-                pending_tool_call("call_fetch", "web_fetch"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert_eq!(executor.max_active(), 2);
-        let events = executor.events();
-        let first_finish = events
-            .iter()
-            .position(|event| event.starts_with("finish:"))
-            .expect("finish event");
-        assert_eq!(
-            first_finish, 2,
-            "both calls should start before either finishes"
-        );
-        assert_eq!(result.response_messages.len(), 2);
-        assert_eq!(
-            result.response_messages[0]
-                .get("tool_call_id")
-                .and_then(Value::as_str),
-            Some("call_read")
-        );
-        assert_eq!(
-            result.response_messages[1]
-                .get("tool_call_id")
-                .and_then(Value::as_str),
-            Some("call_fetch")
-        );
-        assert_eq!(result.tool_records.len(), 2);
-        assert!(result
-            .tool_records
-            .iter()
-            .all(|record| matches!(record.status, ToolCallStatus::Success)));
-    }
-
-    #[test]
-    fn write_tools_stay_outside_parallel_whitelist() {
-        let mut settings = Settings::default();
-        settings.chat_tools.approval_policy = "auto".to_string();
-        for tool in [
-            crate::mcp::types::native_write_file_tool(),
-            crate::mcp::types::native_edit_file_tool(),
-        ] {
-            assert!(
-                !tool_call_parallel_eligible(&settings, &tool),
-                "{} must stay serial even when approval is auto",
-                tool.name
-            );
-        }
-        assert!(
-            tool_call_parallel_eligible(&settings, &native_read_file_tool()),
-            "read-only tools remain parallel-eligible"
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_round_runs_read_only_mcp_tools_concurrently() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let tools = vec![
-            test_mcp_tool("search_a", serde_json::json!({ "readOnlyHint": true })),
-            test_mcp_tool("search_b", serde_json::json!({ "readOnlyHint": true })),
-        ];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_mcp_a", "search_a"),
-                pending_tool_call("call_mcp_b", "search_b"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert_eq!(executor.max_active(), 2);
-        assert_eq!(
-            tool_call_ids(&result.response_messages),
-            vec!["call_mcp_a", "call_mcp_b"]
-        );
-        assert!(result
-            .tool_records
-            .iter()
-            .all(|record| matches!(record.status, ToolCallStatus::Success)));
-    }
-
-    #[tokio::test]
-    async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let mut tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-        crate::chat::ask_user::append_tool_definitions(&mut tools);
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_read", "read"),
-                pending_tool_call("call_ask", "ask_user"),
-                pending_tool_call("call_fetch", "web_fetch"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert_eq!(executor.max_active(), 1);
-        assert_eq!(
-            executor.events(),
-            vec![
-                "start:read",
-                "finish:read",
-                "start:web_fetch",
-                "finish:web_fetch"
-            ]
-        );
-        assert_eq!(
-            tool_call_ids(&result.response_messages),
-            vec!["call_read", "call_ask", "call_fetch"]
-        );
-        let ask_user_record = result
-            .tool_records
-            .iter()
-            .find(|record| record.id == "call_ask")
-            .expect("ask_user record");
-        assert!(matches!(ask_user_record.status, ToolCallStatus::Skipped));
-        assert_eq!(
-            ask_user_record.name,
-            crate::chat::ask_user::ASK_USER_TOOL_NAME
-        );
-        assert_eq!(ask_user_record.trace_id.as_deref(), Some("run"));
-        assert_eq!(
-            ask_user_record.span_id.as_deref(),
-            Some("tool_round_1_call_ask")
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_round_keeps_destructive_mcp_tools_serial() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let mut settings = Settings::default();
-        settings.chat_tools.approval_policy = "auto".to_string();
-        let tools = vec![test_mcp_tool(
-            "write_remote",
-            serde_json::json!({ "destructiveHint": true }),
-        )];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_mcp_write_1", "write_remote"),
-                pending_tool_call("call_mcp_write_2", "write_remote"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert_eq!(executor.max_active(), 1);
-        assert_eq!(
-            tool_call_ids(&result.response_messages),
-            vec!["call_mcp_write_1", "call_mcp_write_2"]
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let mut settings = Settings::default();
-        settings.chat_tools.approval_policy = "auto".to_string();
-        let tools = vec![test_mcp_tool(
-            "remote_search",
-            serde_json::json!({ "readOnlyHint": true, "openWorldHint": true }),
-        )];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_mcp_remote_1", "remote_search"),
-                pending_tool_call("call_mcp_remote_2", "remote_search"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert_eq!(executor.max_active(), 1);
-        assert_eq!(
-            tool_call_ids(&result.response_messages),
-            vec!["call_mcp_remote_1", "call_mcp_remote_2"]
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_round_preserves_unknown_and_invalid_call_order() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-        let mut skill_cache = skills::SkillRunCache::default();
-        let mut invalid_fetch = pending_tool_call("call_bad_args", "web_fetch");
-        invalid_fetch.arguments_parse_error = Some("expected compact object".to_string());
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_read", "read"),
-                pending_tool_call("call_fetch", "web_fetch"),
-                pending_tool_call("call_missing", "missing_tool"),
-                pending_tool_call("call_read_after_unknown", "read"),
-                invalid_fetch,
-                pending_tool_call("call_final", "read"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        let error_records = result
-            .tool_records
-            .iter()
-            .filter(|record| matches!(record.status, ToolCallStatus::Error))
-            .collect::<Vec<_>>();
-
-        assert_eq!(executor.max_active(), 2);
-        assert_eq!(
-            tool_call_ids(&result.response_messages),
-            vec![
-                "call_read",
-                "call_fetch",
-                "call_missing",
-                "call_read_after_unknown",
-                "call_bad_args",
-                "call_final"
-            ]
-        );
-        assert_eq!(
-            result
-                .tool_records
-                .iter()
-                .map(|record| record.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "call_read",
-                "call_fetch",
-                "call_missing",
-                "call_read_after_unknown",
-                "call_bad_args",
-                "call_final"
-            ]
-        );
-        assert_eq!(
-            error_records
-                .iter()
-                .map(|record| record.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["call_missing", "call_bad_args"]
-        );
-        assert!(error_records
-            .iter()
-            .all(|record| record.trace_id.as_deref() == Some("run")));
-        assert_eq!(
-            error_records
-                .iter()
-                .map(|record| record.span_id.as_deref())
-                .collect::<Vec<_>>(),
-            vec![
-                Some("tool_round_1_call_missing"),
-                Some("tool_round_1_call_bad_args")
-            ]
-        );
-        let start_events = executor
-            .events()
-            .into_iter()
-            .filter(|event| event.starts_with("start:"))
-            .collect::<Vec<_>>();
-        assert_eq!(start_events.len(), 4, "only executable tools should run");
-
-        // 喂回自愈（对齐 opencode）：未知工具的 tool result 必须列出已声明工具，
-        // 让模型下一轮自我纠正，而不是只丢一句 Unknown。
-        let unknown_message = result
-            .response_messages
-            .iter()
-            .find(|message| message["tool_call_id"] == "call_missing")
-            .expect("unknown tool response present");
-        let content = unknown_message["content"].as_str().unwrap_or_default();
-        assert!(content.contains("Unknown tool: missing_tool"), "{content}");
-        assert!(content.contains("Available tools:"), "{content}");
-        assert!(content.contains("read"), "{content}");
-        assert!(content.contains("web_fetch"), "{content}");
-    }
-
-    #[tokio::test]
-    async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
-        // Cursor 系模型（grok-composer 等）会按训练时的大写工具名出牌（Read/Grep）。
-        // 唯一命中时按声明工具执行，不走未知工具路径。
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![pending_tool_call("call_cap_read", "Read")],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert!(
-            result
-                .tool_records
-                .iter()
-                .all(|record| !matches!(record.status, ToolCallStatus::Error)),
-            "capitalized Read must execute, not error: {:?}",
-            result.tool_records
-        );
-        let start_events = executor
-            .events()
-            .into_iter()
-            .filter(|event| event.starts_with("start:"))
-            .collect::<Vec<_>>();
-        assert_eq!(start_events.len(), 1, "the case-variant call executes");
-    }
-
-    #[tokio::test]
-    async fn tool_round_records_plan_blocked_tool_as_skipped() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let tools = vec![native_read_file_tool()];
-        let blocked = vec![native_run_python_tool()];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &blocked,
-            vec![pending_tool_call("call_py", "run_python")],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert_eq!(executor.max_active(), 0);
-        assert_eq!(result.response_messages.len(), 1);
-        assert!(result.response_messages[0]
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .contains("blocked in Plan mode"));
-        assert_eq!(result.tool_records.len(), 1);
-        let record = &result.tool_records[0];
-        assert_eq!(record.id, "call_py");
-        assert_eq!(record.name, "run_python");
-        assert!(matches!(record.status, ToolCallStatus::Skipped));
-        assert!(record
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("blocked in Plan mode"));
-        assert_eq!(record.trace_id.as_deref(), Some("run"));
-        assert_eq!(record.span_id.as_deref(), Some("tool_round_1_call_py"));
-    }
-
-    #[tokio::test]
-    async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
-        let host = TestHost::cancelling_after(Duration::from_millis(5));
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let tools = vec![native_read_file_tool(), native_run_python_tool()];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_read", "read"),
-                pending_tool_call("call_py", "run_python"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert!(result.cancelled);
-        assert_eq!(
-            tool_call_ids(&result.response_messages),
-            vec!["call_read", "call_py"]
-        );
-        assert_eq!(
-            result
-                .tool_records
-                .iter()
-                .map(|record| record.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["call_read", "call_py"]
-        );
-        assert!(result
-            .tool_records
-            .iter()
-            .all(|record| matches!(record.status, ToolCallStatus::Cancelled)));
-        let start_events = executor
-            .events()
-            .into_iter()
-            .filter(|event| event.starts_with("start:"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            start_events,
-            vec!["start:read"],
-            "remaining serial tools must not start after cancellation"
-        );
-    }
-
-    #[test]
-    fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
-        let tool_record = ToolCallRecord {
-            id: "call_read".to_string(),
-            name: "read".to_string(),
-            source: "native".to_string(),
-            server_id: None,
-            arguments: "{}".to_string(),
-            status: ToolCallStatus::Cancelled,
-            result_preview: None,
-            error: Some("Tool call cancelled".to_string()),
-            duration_ms: Some(5),
-            started_at: Some(10),
-            completed_at: Some(11),
-            round: 1,
-            sensitive: false,
-            artifacts: Vec::new(),
-            trace_id: Some("run".to_string()),
-            span_id: Some("tool_round_1_call_read".to_string()),
-            structured_content: None,
-        };
-        let assistant_message = serde_json::json!({
-            "role": "assistant",
-            "content": Value::Null,
-            "tool_calls": [{
-                "id": "call_read",
-                "type": "function",
-                "function": {
-                    "name": "read",
-                    "arguments": "{}",
+fn test_tool_arguments(function_name: &str) -> Value {
+    match function_name {
+        "read" => serde_json::json!({ "path": "/tmp/kivio-test.txt" }),
+        "web_fetch" => serde_json::json!({ "url": "https://example.com" }),
+        "run_python" => serde_json::json!({ "code": "print(1)" }),
+        "ask_user" => serde_json::json!({
+            "questions": [
+                {
+                    "id": "scope",
+                    "prompt": "Which scope should I use?",
+                    "options": [
+                        { "id": "mvp", "label": "MVP" },
+                        { "id": "full", "label": "Full" }
+                    ]
                 }
-            }],
-        });
-        let tool_response = tool_message("call_read".to_string(), "Tool call cancelled");
-        let result = cancelled_tool_round_run_result(
-            "zh-CN",
-            &["planning".to_string()],
-            vec![tool_record.clone()],
-            vec![ChatMessageSegment {
-                id: "seg_1000_tool_call_read".to_string(),
-                kind: ChatMessageSegmentKind::Tool,
-                phase: ChatMessageSegmentPhase::ToolLoop,
-                order: 1000,
-                step_number: Some(1),
-                round: Some(1),
-                text: None,
-                tool_call_id: Some("call_read".to_string()),
-            }],
-            vec![assistant_message.clone(), tool_response.clone()],
-        );
-
-        assert_eq!(result.content, "已停止生成。");
-        assert_eq!(result.reasoning.as_deref(), Some("planning"));
-        assert_eq!(result.tool_records.len(), 1);
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Tool
-                && segment.tool_call_id.as_deref() == Some("call_read")
-        }));
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Text
-                && segment.phase == ChatMessageSegmentPhase::Synthesis
-                && segment.text.as_deref() == Some("已停止生成。")
-        }));
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Cancelled
-        ));
-        assert_eq!(result.api_messages.len(), 3);
-        assert_eq!(
-            result.api_messages[0]
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(1)
-        );
-        assert_eq!(
-            result.api_messages[1]
-                .get("tool_call_id")
-                .and_then(Value::as_str),
-            Some("call_read")
-        );
-        assert_eq!(
-            result.api_messages[2]
-                .get("content")
-                .and_then(Value::as_str),
-            Some("已停止生成。")
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_round_keeps_serial_only_tools_non_overlapping() {
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-        let settings = Settings::default();
-        let tools = vec![native_run_python_tool()];
-        let mut skill_cache = skills::SkillRunCache::default();
-
-        let result = execute_tool_round(
-            &host,
-            &executor,
-            &settings,
-            test_round_context(),
-            &tools,
-            &[],
-            vec![
-                pending_tool_call("call_py_1", "run_python"),
-                pending_tool_call("call_py_2", "run_python"),
-            ],
-            &mut skill_cache,
-        )
-        .await;
-
-        assert_eq!(executor.max_active(), 1);
-        assert_eq!(
-            executor.events(),
-            vec![
-                "start:run_python",
-                "finish:run_python",
-                "start:run_python",
-                "finish:run_python"
             ]
-        );
-        assert_eq!(result.response_messages.len(), 2);
-        assert_eq!(
-            result.response_messages[0]
-                .get("tool_call_id")
-                .and_then(Value::as_str),
-            Some("call_py_1")
-        );
-        assert_eq!(
-            result.response_messages[1]
-                .get("tool_call_id")
-                .and_then(Value::as_str),
-            Some("call_py_2")
+        }),
+        _ => serde_json::json!({}),
+    }
+}
+
+#[test]
+fn visible_tool_segment_calls_skip_hidden_disabled_builtin_feedback() {
+    let tools = vec![native_read_file_tool()];
+    let blocked = vec![native_run_python_tool()];
+    let calls = vec![
+        pending_tool_call("call_read", "read"),
+        pending_tool_call("call_blocked", "run_python"),
+        pending_tool_call("call_hidden_disabled", "web_search"),
+        pending_tool_call("call_unknown", "mcp__server__tool"),
+    ];
+
+    let visible = visible_tool_segment_calls(&tools, &blocked, &calls);
+
+    assert_eq!(
+        visible
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call_read", "call_blocked", "call_unknown"]
+    );
+}
+
+#[test]
+fn reasoning_segment_order_precedes_text_in_same_step() {
+    let mut builder = SegmentBuilder::new();
+    let reasoning = builder.reserve(
+        ChatMessageSegmentKind::Reasoning,
+        ChatMessageSegmentPhase::ToolLoop,
+        Some(1),
+        Some(1),
+        "step_1_reasoning",
+    );
+    let text = builder.reserve(
+        ChatMessageSegmentKind::Text,
+        ChatMessageSegmentPhase::ToolLoop,
+        Some(1),
+        Some(1),
+        "step_1_text",
+    );
+
+    assert!(reasoning.order < text.order);
+}
+
+fn test_mcp_tool(name: &str, annotations: Value) -> ChatToolDefinition {
+    ChatToolDefinition {
+        id: format!("mcp__demo__{name}"),
+        name: name.to_string(),
+        description: "MCP test tool".to_string(),
+        source: "mcp".to_string(),
+        server_id: Some("demo".to_string()),
+        server_name: Some("Demo".to_string()),
+        input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        sensitive: false,
+        annotations: Some(annotations),
+        output_schema: None,
+    }
+}
+
+fn tool_call_ids(messages: &[Value]) -> Vec<&str> {
+    messages
+        .iter()
+        .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str))
+        .collect()
+}
+
+#[test]
+fn tool_round_limit_reached_only_for_finite_limits_at_boundary() {
+    assert!(!tool_round_limit_reached(None, 10));
+    assert!(!tool_round_limit_reached(Some(3), 2));
+    assert!(tool_round_limit_reached(Some(3), 3));
+    assert!(tool_round_limit_reached(Some(3), 4));
+}
+
+#[tokio::test]
+async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_order() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_read", "read"),
+            pending_tool_call("call_fetch", "web_fetch"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert_eq!(executor.max_active(), 2);
+    let events = executor.events();
+    let first_finish = events
+        .iter()
+        .position(|event| event.starts_with("finish:"))
+        .expect("finish event");
+    assert_eq!(
+        first_finish, 2,
+        "both calls should start before either finishes"
+    );
+    assert_eq!(result.response_messages.len(), 2);
+    assert_eq!(
+        result.response_messages[0]
+            .get("tool_call_id")
+            .and_then(Value::as_str),
+        Some("call_read")
+    );
+    assert_eq!(
+        result.response_messages[1]
+            .get("tool_call_id")
+            .and_then(Value::as_str),
+        Some("call_fetch")
+    );
+    assert_eq!(result.tool_records.len(), 2);
+    assert!(result
+        .tool_records
+        .iter()
+        .all(|record| matches!(record.status, ToolCallStatus::Success)));
+}
+
+#[test]
+fn write_tools_stay_outside_parallel_whitelist() {
+    let mut settings = Settings::default();
+    settings.chat_tools.approval_policy = "auto".to_string();
+    for tool in [
+        crate::mcp::types::native_write_file_tool(),
+        crate::mcp::types::native_edit_file_tool(),
+    ] {
+        assert!(
+            !tool_call_parallel_eligible(&settings, &tool),
+            "{} must stay serial even when approval is auto",
+            tool.name
         );
     }
+    assert!(
+        tool_call_parallel_eligible(&settings, &native_read_file_tool()),
+        "read-only tools remain parallel-eligible"
+    );
+}
 
-    // ===== Fallback scenarios (6 synthesis/planning fallbacks in run_agent_loop) =====
+#[tokio::test]
+async fn tool_round_runs_read_only_mcp_tools_concurrently() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let tools = vec![
+        test_mcp_tool("search_a", serde_json::json!({ "readOnlyHint": true })),
+        test_mcp_tool("search_b", serde_json::json!({ "readOnlyHint": true })),
+    ];
+    let mut skill_cache = skills::SkillRunCache::default();
 
-    #[test]
-    fn fallback_responses_are_bilingual() {
-        assert_eq!(
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_mcp_a", "search_a"),
+            pending_tool_call("call_mcp_b", "search_b"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert_eq!(executor.max_active(), 2);
+    assert_eq!(
+        tool_call_ids(&result.response_messages),
+        vec!["call_mcp_a", "call_mcp_b"]
+    );
+    assert!(result
+        .tool_records
+        .iter()
+        .all(|record| matches!(record.status, ToolCallStatus::Success)));
+}
+
+#[tokio::test]
+async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let mut tools = vec![native_read_file_tool(), native_web_fetch_tool()];
+    crate::chat::ask_user::append_tool_definitions(&mut tools);
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_read", "read"),
+            pending_tool_call("call_ask", "ask_user"),
+            pending_tool_call("call_fetch", "web_fetch"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert_eq!(executor.max_active(), 1);
+    assert_eq!(
+        executor.events(),
+        vec![
+            "start:read",
+            "finish:read",
+            "start:web_fetch",
+            "finish:web_fetch"
+        ]
+    );
+    assert_eq!(
+        tool_call_ids(&result.response_messages),
+        vec!["call_read", "call_ask", "call_fetch"]
+    );
+    let ask_user_record = result
+        .tool_records
+        .iter()
+        .find(|record| record.id == "call_ask")
+        .expect("ask_user record");
+    assert!(matches!(ask_user_record.status, ToolCallStatus::Skipped));
+    assert_eq!(
+        ask_user_record.name,
+        crate::chat::ask_user::ASK_USER_TOOL_NAME
+    );
+    assert_eq!(ask_user_record.trace_id.as_deref(), Some("run"));
+    assert_eq!(
+        ask_user_record.span_id.as_deref(),
+        Some("tool_round_1_call_ask")
+    );
+}
+
+#[tokio::test]
+async fn tool_round_keeps_destructive_mcp_tools_serial() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let mut settings = Settings::default();
+    settings.chat_tools.approval_policy = "auto".to_string();
+    let tools = vec![test_mcp_tool(
+        "write_remote",
+        serde_json::json!({ "destructiveHint": true }),
+    )];
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_mcp_write_1", "write_remote"),
+            pending_tool_call("call_mcp_write_2", "write_remote"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert_eq!(executor.max_active(), 1);
+    assert_eq!(
+        tool_call_ids(&result.response_messages),
+        vec!["call_mcp_write_1", "call_mcp_write_2"]
+    );
+}
+
+#[tokio::test]
+async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let mut settings = Settings::default();
+    settings.chat_tools.approval_policy = "auto".to_string();
+    let tools = vec![test_mcp_tool(
+        "remote_search",
+        serde_json::json!({ "readOnlyHint": true, "openWorldHint": true }),
+    )];
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_mcp_remote_1", "remote_search"),
+            pending_tool_call("call_mcp_remote_2", "remote_search"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert_eq!(executor.max_active(), 1);
+    assert_eq!(
+        tool_call_ids(&result.response_messages),
+        vec!["call_mcp_remote_1", "call_mcp_remote_2"]
+    );
+}
+
+#[tokio::test]
+async fn tool_round_preserves_unknown_and_invalid_call_order() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
+    let mut skill_cache = skills::SkillRunCache::default();
+    let mut invalid_fetch = pending_tool_call("call_bad_args", "web_fetch");
+    invalid_fetch.arguments_parse_error = Some("expected compact object".to_string());
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_read", "read"),
+            pending_tool_call("call_fetch", "web_fetch"),
+            pending_tool_call("call_missing", "missing_tool"),
+            pending_tool_call("call_read_after_unknown", "read"),
+            invalid_fetch,
+            pending_tool_call("call_final", "read"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    let error_records = result
+        .tool_records
+        .iter()
+        .filter(|record| matches!(record.status, ToolCallStatus::Error))
+        .collect::<Vec<_>>();
+
+    assert_eq!(executor.max_active(), 2);
+    assert_eq!(
+        tool_call_ids(&result.response_messages),
+        vec![
+            "call_read",
+            "call_fetch",
+            "call_missing",
+            "call_read_after_unknown",
+            "call_bad_args",
+            "call_final"
+        ]
+    );
+    assert_eq!(
+        result
+            .tool_records
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "call_read",
+            "call_fetch",
+            "call_missing",
+            "call_read_after_unknown",
+            "call_bad_args",
+            "call_final"
+        ]
+    );
+    assert_eq!(
+        error_records
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call_missing", "call_bad_args"]
+    );
+    assert!(error_records
+        .iter()
+        .all(|record| record.trace_id.as_deref() == Some("run")));
+    assert_eq!(
+        error_records
+            .iter()
+            .map(|record| record.span_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("tool_round_1_call_missing"),
+            Some("tool_round_1_call_bad_args")
+        ]
+    );
+    let start_events = executor
+        .events()
+        .into_iter()
+        .filter(|event| event.starts_with("start:"))
+        .collect::<Vec<_>>();
+    assert_eq!(start_events.len(), 4, "only executable tools should run");
+
+    // 喂回自愈（对齐 opencode）：未知工具的 tool result 必须列出已声明工具，
+    // 让模型下一轮自我纠正，而不是只丢一句 Unknown。
+    let unknown_message = result
+        .response_messages
+        .iter()
+        .find(|message| message["tool_call_id"] == "call_missing")
+        .expect("unknown tool response present");
+    let content = unknown_message["content"].as_str().unwrap_or_default();
+    assert!(content.contains("Unknown tool: missing_tool"), "{content}");
+    assert!(content.contains("Available tools:"), "{content}");
+    assert!(content.contains("read"), "{content}");
+    assert!(content.contains("web_fetch"), "{content}");
+}
+
+#[tokio::test]
+async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
+    // Cursor 系模型（grok-composer 等）会按训练时的大写工具名出牌（Read/Grep）。
+    // 唯一命中时按声明工具执行，不走未知工具路径。
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![pending_tool_call("call_cap_read", "Read")],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert!(
+        result
+            .tool_records
+            .iter()
+            .all(|record| !matches!(record.status, ToolCallStatus::Error)),
+        "capitalized Read must execute, not error: {:?}",
+        result.tool_records
+    );
+    let start_events = executor
+        .events()
+        .into_iter()
+        .filter(|event| event.starts_with("start:"))
+        .collect::<Vec<_>>();
+    assert_eq!(start_events.len(), 1, "the case-variant call executes");
+}
+
+#[tokio::test]
+async fn tool_round_records_plan_blocked_tool_as_skipped() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let tools = vec![native_read_file_tool()];
+    let blocked = vec![native_run_python_tool()];
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &blocked,
+        vec![pending_tool_call("call_py", "run_python")],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert_eq!(executor.max_active(), 0);
+    assert_eq!(result.response_messages.len(), 1);
+    assert!(result.response_messages[0]
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("blocked in Plan mode"));
+    assert_eq!(result.tool_records.len(), 1);
+    let record = &result.tool_records[0];
+    assert_eq!(record.id, "call_py");
+    assert_eq!(record.name, "run_python");
+    assert!(matches!(record.status, ToolCallStatus::Skipped));
+    assert!(record
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("blocked in Plan mode"));
+    assert_eq!(record.trace_id.as_deref(), Some("run"));
+    assert_eq!(record.span_id.as_deref(), Some("tool_round_1_call_py"));
+}
+
+#[tokio::test]
+async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
+    let host = TestHost::cancelling_after(Duration::from_millis(5));
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let tools = vec![native_read_file_tool(), native_run_python_tool()];
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_read", "read"),
+            pending_tool_call("call_py", "run_python"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert!(result.cancelled);
+    assert_eq!(
+        tool_call_ids(&result.response_messages),
+        vec!["call_read", "call_py"]
+    );
+    assert_eq!(
+        result
+            .tool_records
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call_read", "call_py"]
+    );
+    assert!(result
+        .tool_records
+        .iter()
+        .all(|record| matches!(record.status, ToolCallStatus::Cancelled)));
+    let start_events = executor
+        .events()
+        .into_iter()
+        .filter(|event| event.starts_with("start:"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        start_events,
+        vec!["start:read"],
+        "remaining serial tools must not start after cancellation"
+    );
+}
+
+#[test]
+fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
+    let tool_record = ToolCallRecord {
+        id: "call_read".to_string(),
+        name: "read".to_string(),
+        source: "native".to_string(),
+        server_id: None,
+        arguments: "{}".to_string(),
+        status: ToolCallStatus::Cancelled,
+        result_preview: None,
+        error: Some("Tool call cancelled".to_string()),
+        duration_ms: Some(5),
+        started_at: Some(10),
+        completed_at: Some(11),
+        round: 1,
+        sensitive: false,
+        artifacts: Vec::new(),
+        trace_id: Some("run".to_string()),
+        span_id: Some("tool_round_1_call_read".to_string()),
+        structured_content: None,
+    };
+    let assistant_message = serde_json::json!({
+        "role": "assistant",
+        "content": Value::Null,
+        "tool_calls": [{
+            "id": "call_read",
+            "type": "function",
+            "function": {
+                "name": "read",
+                "arguments": "{}",
+            }
+        }],
+    });
+    let tool_response = tool_message("call_read".to_string(), "Tool call cancelled");
+    let result = cancelled_tool_round_run_result(
+        "zh-CN",
+        &["planning".to_string()],
+        vec![tool_record.clone()],
+        vec![ChatMessageSegment {
+            id: "seg_1000_tool_call_read".to_string(),
+            kind: ChatMessageSegmentKind::Tool,
+            phase: ChatMessageSegmentPhase::ToolLoop,
+            order: 1000,
+            step_number: Some(1),
+            round: Some(1),
+            text: None,
+            tool_call_id: Some("call_read".to_string()),
+        }],
+        vec![assistant_message.clone(), tool_response.clone()],
+    );
+
+    assert_eq!(result.content, "已停止生成。");
+    assert_eq!(result.reasoning.as_deref(), Some("planning"));
+    assert_eq!(result.tool_records.len(), 1);
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Tool
+            && segment.tool_call_id.as_deref() == Some("call_read")
+    }));
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Text
+            && segment.phase == ChatMessageSegmentPhase::Synthesis
+            && segment.text.as_deref() == Some("已停止生成。")
+    }));
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Cancelled
+    ));
+    assert_eq!(result.api_messages.len(), 3);
+    assert_eq!(
+        result.api_messages[0]
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        result.api_messages[1]
+            .get("tool_call_id")
+            .and_then(Value::as_str),
+        Some("call_read")
+    );
+    assert_eq!(
+        result.api_messages[2]
+            .get("content")
+            .and_then(Value::as_str),
+        Some("已停止生成。")
+    );
+}
+
+#[tokio::test]
+async fn tool_round_keeps_serial_only_tools_non_overlapping() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let settings = Settings::default();
+    let tools = vec![native_run_python_tool()];
+    let mut skill_cache = skills::SkillRunCache::default();
+
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &tools,
+        &[],
+        vec![
+            pending_tool_call("call_py_1", "run_python"),
+            pending_tool_call("call_py_2", "run_python"),
+        ],
+        &mut skill_cache,
+    )
+    .await;
+
+    assert_eq!(executor.max_active(), 1);
+    assert_eq!(
+        executor.events(),
+        vec![
+            "start:run_python",
+            "finish:run_python",
+            "start:run_python",
+            "finish:run_python"
+        ]
+    );
+    assert_eq!(result.response_messages.len(), 2);
+    assert_eq!(
+        result.response_messages[0]
+            .get("tool_call_id")
+            .and_then(Value::as_str),
+        Some("call_py_1")
+    );
+    assert_eq!(
+        result.response_messages[1]
+            .get("tool_call_id")
+            .and_then(Value::as_str),
+        Some("call_py_2")
+    );
+}
+
+// ===== Fallback scenarios (6 synthesis/planning fallbacks in run_agent_loop) =====
+
+#[test]
+fn fallback_responses_are_bilingual() {
+    assert_eq!(
             empty_synthesis_fallback_response("zh-CN"),
             "工具调用已经完成，但模型没有返回最终总结。上方工具结果已保存在本轮回复中，你可以继续追问，或让我重新生成总结。"
         );
-        assert_eq!(
+    assert_eq!(
             empty_synthesis_fallback_response("en-US"),
             "The tool calls completed, but the model did not return a final summary. The tool results above were saved with this reply; you can continue from them or regenerate the summary."
         );
-        assert_eq!(
+    assert_eq!(
             synthesis_failed_fallback_response("zh-CN"),
             "最终总结生成失败(可能是模型供应商内容审核拦截)。上方工具结果已保存在本轮回复中,你可以继续追问、让我重新生成,或更换聊天模型再试。"
         );
-        assert_eq!(
+    assert_eq!(
             synthesis_failed_fallback_response("en-US"),
             "Final summary generation failed (possibly provider content moderation). The tool results above were saved with this reply; you can continue from them, regenerate, or switch the chat model and retry."
         );
-        assert_eq!(
+    assert_eq!(
             tool_planning_failed_fallback_response("zh-CN"),
             "工具调用参数生成失败，这一步还没有真正执行写入。主对话已保留，你可以让我缩小范围、改用补丁，或重新生成。"
         );
-        assert_eq!(
+    assert_eq!(
             tool_planning_failed_fallback_response("en-US"),
             "Tool-call argument generation failed before the write actually ran. This conversation was preserved; you can ask me to narrow the scope, use a patch, or regenerate."
         );
-        assert_eq!(stopped_generation_content("zh-CN"), "已停止生成。");
-        assert_eq!(stopped_generation_content("en-US"), "Generation stopped.");
-    }
+    assert_eq!(stopped_generation_content("zh-CN"), "已停止生成。");
+    assert_eq!(stopped_generation_content("en-US"), "Generation stopped.");
+}
 
-    /// Fallback A (helper level, deterministic): a planning stream dies while tool
-    /// argument drafts are in flight; the run result must mark every draft record
-    /// as error, emit the bilingual fallback, and finish with stream_outcome "error".
-    #[test]
-    fn tool_planning_failed_run_result_marks_drafts_error_and_emits_fallback() {
-        let state = test_app_state();
-        let config = test_run_config(&state, "http://127.0.0.1:9/v1", true);
-        let host = TestHost::default();
+/// Fallback A (helper level, deterministic): a planning stream dies while tool
+/// argument drafts are in flight; the run result must mark every draft record
+/// as error, emit the bilingual fallback, and finish with stream_outcome "error".
+#[test]
+fn tool_planning_failed_run_result_marks_drafts_error_and_emits_fallback() {
+    let state = test_app_state();
+    let config = test_run_config(&state, "http://127.0.0.1:9/v1", true);
+    let host = TestHost::default();
 
-        let mut segment_builder = SegmentBuilder::new();
-        let _reasoning_segment = segment_builder.reserve(
-            ChatMessageSegmentKind::Reasoning,
-            ChatMessageSegmentPhase::ToolLoop,
-            Some(1),
-            Some(1),
-            "step_1_reasoning",
-        );
-        let planning_text_segment = segment_builder.reserve(
-            ChatMessageSegmentKind::Text,
-            ChatMessageSegmentPhase::ToolLoop,
-            Some(1),
-            Some(1),
-            "step_1_text",
-        );
-        let tracker = ToolCallDraftTracker::new(
-            vec![native_write_file_tool()],
-            1,
-            Some(1),
-            segment_builder.next_order(),
-        );
-        let mut sink = AgentStreamSink::new(
-            &host,
-            "conversation",
-            "run",
-            "message",
-            true,
-            None,
-            None,
-            Some(tracker.clone()),
-        );
-        sink.emit(StreamPart::ToolCallStart {
-            id: "call_write".to_string(),
-            name: "write".to_string(),
-        })
-        .expect("tool call start should emit");
-        sink.emit(StreamPart::ToolCallDelta {
-            id: "call_write".to_string(),
-            delta: "{\"path\":\"large.html\",\"content\":\"".to_string(),
-        })
-        .expect("tool call delta should emit");
-        assert!(tracker.has_started());
+    let mut segment_builder = SegmentBuilder::new();
+    let _reasoning_segment = segment_builder.reserve(
+        ChatMessageSegmentKind::Reasoning,
+        ChatMessageSegmentPhase::ToolLoop,
+        Some(1),
+        Some(1),
+        "step_1_reasoning",
+    );
+    let planning_text_segment = segment_builder.reserve(
+        ChatMessageSegmentKind::Text,
+        ChatMessageSegmentPhase::ToolLoop,
+        Some(1),
+        Some(1),
+        "step_1_text",
+    );
+    let tracker = ToolCallDraftTracker::new(
+        vec![native_write_file_tool()],
+        1,
+        Some(1),
+        segment_builder.next_order(),
+    );
+    let mut sink = AgentStreamSink::new(
+        &host,
+        "conversation",
+        "run",
+        "message",
+        true,
+        None,
+        None,
+        Some(tracker.clone()),
+    );
+    sink.emit(StreamPart::ToolCallStart {
+        id: "call_write".to_string(),
+        name: "write".to_string(),
+    })
+    .expect("tool call start should emit");
+    sink.emit(StreamPart::ToolCallDelta {
+        id: "call_write".to_string(),
+        delta: "{\"path\":\"large.html\",\"content\":\"".to_string(),
+    })
+    .expect("tool call delta should emit");
+    assert!(tracker.has_started());
 
-        let result = tool_planning_failed_run_result(
-            &host,
-            &config,
-            segment_builder,
-            planning_text_segment,
-            tracker,
-            &["planning thought".to_string()],
-            Vec::new(),
-            "Chat tools planning read body failed".to_string(),
-        );
+    let result = tool_planning_failed_run_result(
+        &host,
+        &config,
+        segment_builder,
+        planning_text_segment,
+        tracker,
+        &["planning thought".to_string()],
+        Vec::new(),
+        "Chat tools planning read body failed".to_string(),
+    );
 
-        let fallback = tool_planning_failed_fallback_response("zh-CN");
-        assert_eq!(result.stream_outcome, "error");
-        assert_eq!(result.content, fallback);
-        assert_eq!(result.reasoning.as_deref(), Some("planning thought"));
-        assert_eq!(result.tool_records.len(), 1);
-        assert_eq!(result.tool_records[0].id, "call_write");
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Error
-        ));
-        assert_eq!(
-            result.tool_records[0].error.as_deref(),
-            Some("Chat tools planning read body failed")
-        );
-        assert!(result.tool_records[0].completed_at.is_some());
+    let fallback = tool_planning_failed_fallback_response("zh-CN");
+    assert_eq!(result.stream_outcome, "error");
+    assert_eq!(result.content, fallback);
+    assert_eq!(result.reasoning.as_deref(), Some("planning thought"));
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(result.tool_records[0].id, "call_write");
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Error
+    ));
+    assert_eq!(
+        result.tool_records[0].error.as_deref(),
+        Some("Chat tools planning read body failed")
+    );
+    assert!(result.tool_records[0].completed_at.is_some());
 
-        // The error record was re-emitted through the host (after the pending draft).
-        let emitted = host.recorded_tool_records();
-        let last_emitted = emitted.last().expect("error record emitted");
-        assert_eq!(last_emitted.id, "call_write");
-        assert!(matches!(last_emitted.status, ToolCallStatus::Error));
+    // The error record was re-emitted through the host (after the pending draft).
+    let emitted = host.recorded_tool_records();
+    let last_emitted = emitted.last().expect("error record emitted");
+    assert_eq!(last_emitted.id, "call_write");
+    assert!(matches!(last_emitted.status, ToolCallStatus::Error));
 
-        // Draft tool segment is preserved and the fallback text segment is
-        // synthesis-phase with no round.
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Tool
-                && segment.tool_call_id.as_deref() == Some("call_write")
-        }));
-        let fallback_segment = result
-            .segments
-            .iter()
-            .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
-            .expect("fallback text segment");
-        assert_eq!(fallback_segment.phase, ChatMessageSegmentPhase::Synthesis);
-        assert_eq!(fallback_segment.round, None);
-        assert_eq!(fallback_segment.text.as_deref(), Some(fallback.as_str()));
+    // Draft tool segment is preserved and the fallback text segment is
+    // synthesis-phase with no round.
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Tool
+            && segment.tool_call_id.as_deref() == Some("call_write")
+    }));
+    let fallback_segment = result
+        .segments
+        .iter()
+        .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
+        .expect("fallback text segment");
+    assert_eq!(fallback_segment.phase, ChatMessageSegmentPhase::Synthesis);
+    assert_eq!(fallback_segment.round, None);
+    assert_eq!(fallback_segment.text.as_deref(), Some(fallback.as_str()));
 
-        // Fallback delta + a single "done" done event.
-        assert!(host
-            .recorded_deltas()
-            .iter()
-            .any(|delta| delta.delta == fallback));
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), fallback.clone())]
-        );
+    // Fallback delta + a single "done" done event.
+    assert!(host
+        .recorded_deltas()
+        .iter()
+        .any(|delta| delta.delta == fallback));
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), fallback.clone())]
+    );
 
-        // The final assistant message is pushed unconditionally here.
-        assert_eq!(result.api_messages.len(), 1);
-        assert_eq!(
-            result.api_messages[0]
-                .get("content")
-                .and_then(Value::as_str),
-            Some(fallback.as_str())
-        );
+    // The final assistant message is pushed unconditionally here.
+    assert_eq!(result.api_messages.len(), 1);
+    assert_eq!(
+        result.api_messages[0]
+            .get("content")
+            .and_then(Value::as_str),
+        Some(fallback.as_str())
+    );
 
-        // The whole turn is preserved: exactly the one failed tool record.
-        assert_eq!(result.tool_records.len(), 1);
-    }
+    // The whole turn is preserved: exactly the one failed tool record.
+    assert_eq!(result.tool_records.len(), 1);
+}
 
-    /// Fallback A (integration): the provider stream breaks mid-connection after a
-    /// tool-call draft has started; run_agent_loop must return Ok with
-    /// stream_outcome "error" instead of bubbling an invoke error.
-    #[tokio::test]
-    async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_result() {
-        let server = MockModelServer::start(vec![MockResponse::SseInterrupt(vec![
+/// Fallback A (integration): the provider stream breaks mid-connection after a
+/// tool-call draft has started; run_agent_loop must return Ok with
+/// stream_outcome "error" instead of bubbling an invoke error.
+#[tokio::test]
+async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_result() {
+    let server = MockModelServer::start(vec![MockResponse::SseInterrupt(vec![
             r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read","arguments":"{\"path\":\"/tmp/"}}]}}]}"#
                 .to_string(),
         ])]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("planning interruption with tool draft must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("planning interruption with tool draft must not bubble Err");
 
-        let fallback = tool_planning_failed_fallback_response("zh-CN");
-        assert_eq!(result.stream_outcome, "error");
-        assert_eq!(result.content, fallback);
-        assert_eq!(result.tool_records.len(), 1);
-        assert_eq!(result.tool_records[0].id, "call_read");
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Error
-        ));
-        assert!(
-            executor.events().is_empty(),
-            "interrupted tool drafts must never execute"
-        );
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), fallback.clone())]
-        );
-        assert_eq!(result.api_messages.len(), 1);
-        assert_eq!(
-            result.api_messages[0]
-                .get("content")
-                .and_then(Value::as_str),
-            Some(fallback.as_str())
-        );
-    }
+    let fallback = tool_planning_failed_fallback_response("zh-CN");
+    assert_eq!(result.stream_outcome, "error");
+    assert_eq!(result.content, fallback);
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(result.tool_records[0].id, "call_read");
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Error
+    ));
+    assert!(
+        executor.events().is_empty(),
+        "interrupted tool drafts must never execute"
+    );
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), fallback.clone())]
+    );
+    assert_eq!(result.api_messages.len(), 1);
+    assert_eq!(
+        result.api_messages[0]
+            .get("content")
+            .and_then(Value::as_str),
+        Some(fallback.as_str())
+    );
+}
 
-    /// Fallback B: streamed synthesis request fails (HTTP 400) after a successful
-    /// tool round; the tool records must survive with the bilingual fallback text.
-    #[tokio::test]
-    async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback() {
-        let server = MockModelServer::start(vec![
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            MockResponse::Status(400, r#"{"error":"mock synthesis failure"}"#.to_string()),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+/// Fallback B: streamed synthesis request fails (HTTP 400) after a successful
+/// tool round; the tool records must survive with the bilingual fallback text.
+#[tokio::test]
+async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Status(400, r#"{"error":"mock synthesis failure"}"#.to_string()),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("synthesis failure after tool records must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("synthesis failure after tool records must not bubble Err");
 
-        // 框架恢复:合成被拒(400)后不再吐静态"失败"文案,而是用已收集的工具结果兜底。
-        let recovered =
-            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN", crate::chat::agent::recovery::FailureKind::Other);
-        assert!(recovered.contains("result:read"));
-        assert_eq!(result.stream_outcome, "recovered");
-        assert_eq!(result.content, recovered);
-        assert_eq!(result.tool_records.len(), 1);
-        assert_eq!(result.tool_records[0].id, "call_read");
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Success
-        ));
+    // 框架恢复:合成被拒(400)后不再吐静态"失败"文案,而是用已收集的工具结果兜底。
+    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
+        &result.tool_records,
+        "zh-CN",
+        crate::chat::agent::recovery::FailureKind::Other,
+    );
+    assert!(recovered.contains("result:read"));
+    assert_eq!(result.stream_outcome, "recovered");
+    assert_eq!(result.content, recovered);
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(result.tool_records[0].id, "call_read");
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Success
+    ));
 
-        // assistant tool_calls message + tool result + final recovered message.
-        assert_eq!(result.api_messages.len(), 3);
-        assert_eq!(
-            result.api_messages[2]
-                .get("content")
-                .and_then(Value::as_str),
-            Some(recovered.as_str())
-        );
+    // assistant tool_calls message + tool result + final recovered message.
+    assert_eq!(result.api_messages.len(), 3);
+    assert_eq!(
+        result.api_messages[2]
+            .get("content")
+            .and_then(Value::as_str),
+        Some(recovered.as_str())
+    );
 
-        // Planning never emits done while tool calls are pending; the only done is
-        // the recovered "done".
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), recovered.clone())]
-        );
-        let fallback_delta = host
-            .recorded_deltas()
-            .into_iter()
-            .find(|delta| delta.delta == recovered)
-            .expect("recovered delta emitted");
-        assert_eq!(fallback_delta.reasoning_delta, None);
-        let segment = fallback_delta.segment.expect("fallback delta has segment");
-        assert_eq!(segment.kind, ChatMessageSegmentKind::Text);
-        assert_eq!(segment.phase, ChatMessageSegmentPhase::Synthesis);
-    }
+    // Planning never emits done while tool calls are pending; the only done is
+    // the recovered "done".
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), recovered.clone())]
+    );
+    let fallback_delta = host
+        .recorded_deltas()
+        .into_iter()
+        .find(|delta| delta.delta == recovered)
+        .expect("recovered delta emitted");
+    assert_eq!(fallback_delta.reasoning_delta, None);
+    let segment = fallback_delta.segment.expect("fallback delta has segment");
+    assert_eq!(segment.kind, ChatMessageSegmentKind::Text);
+    assert_eq!(segment.phase, ChatMessageSegmentPhase::Synthesis);
+}
 
-    /// Fallback C: streamed synthesis is cancelled after tool results exist; the run
-    /// returns Ok("cancelled") with the stopped-generation placeholder content.
-    #[tokio::test]
-    async fn run_loop_stream_synthesis_cancelled_returns_cancelled_with_stopped_content() {
-        let server = MockModelServer::start(vec![
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            MockResponse::SseThenHang(Vec::new()),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let host = TestHost::with_cancel_flag(cancel_flag.clone());
-        let executor = CancelAfterToolExecutor { cancel_flag };
+/// Fallback C: streamed synthesis is cancelled after tool results exist; the run
+/// returns Ok("cancelled") with the stopped-generation placeholder content.
+#[tokio::test]
+async fn run_loop_stream_synthesis_cancelled_returns_cancelled_with_stopped_content() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::SseThenHang(Vec::new()),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let host = TestHost::with_cancel_flag(cancel_flag.clone());
+    let executor = CancelAfterToolExecutor { cancel_flag };
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("cancelled synthesis with tool records must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("cancelled synthesis with tool records must not bubble Err");
 
-        assert_eq!(result.stream_outcome, "cancelled");
-        assert_eq!(result.content, stopped_generation_content("zh-CN"));
-        assert_eq!(result.tool_records.len(), 1);
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Success
-        ));
+    assert_eq!(result.stream_outcome, "cancelled");
+    assert_eq!(result.content, stopped_generation_content("zh-CN"));
+    assert_eq!(result.tool_records.len(), 1);
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Success
+    ));
 
-        let dones = host.recorded_dones();
-        assert_eq!(dones.len(), 1, "exactly one done event");
-        assert_eq!(dones[0].0, "cancelled");
+    let dones = host.recorded_dones();
+    assert_eq!(dones.len(), 1, "exactly one done event");
+    assert_eq!(dones[0].0, "cancelled");
 
-        assert_eq!(
-            result
-                .api_messages
-                .last()
-                .and_then(|message| message.get("content"))
-                .and_then(Value::as_str),
-            Some("已停止生成。")
-        );
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Text
-                && segment.text.as_deref() == Some("已停止生成。")
-        }));
-    }
+    assert_eq!(
+        result
+            .api_messages
+            .last()
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str),
+        Some("已停止生成。")
+    );
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Text
+            && segment.text.as_deref() == Some("已停止生成。")
+    }));
+}
 
-    /// Fallback C variant: synthesis streamed some text before cancellation; the
-    /// partial text must be kept instead of the stopped-generation placeholder.
-    #[tokio::test]
-    async fn run_loop_stream_synthesis_cancelled_keeps_partial_content() {
-        let server = MockModelServer::start(vec![
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            MockResponse::SseThenHang(vec![
-                r#"{"choices":[{"delta":{"content":"部分回答"}}]}"#.to_string()
-            ]),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::cancelling_on_first_text_delta();
-        let executor = RecordingExecutor::default();
+/// Fallback C variant: synthesis streamed some text before cancellation; the
+/// partial text must be kept instead of the stopped-generation placeholder.
+#[tokio::test]
+async fn run_loop_stream_synthesis_cancelled_keeps_partial_content() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::SseThenHang(vec![
+            r#"{"choices":[{"delta":{"content":"部分回答"}}]}"#.to_string()
+        ]),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::cancelling_on_first_text_delta();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("cancelled synthesis with partial content must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("cancelled synthesis with partial content must not bubble Err");
 
-        assert_eq!(result.stream_outcome, "cancelled");
-        assert_eq!(result.content, "部分回答");
-        assert_eq!(result.tool_records.len(), 1);
-        let dones = host.recorded_dones();
-        assert_eq!(dones.len(), 1);
-        assert_eq!(dones[0], ("cancelled".to_string(), "部分回答".to_string()));
-        assert_eq!(
-            result
-                .api_messages
-                .last()
-                .and_then(|message| message.get("content"))
-                .and_then(Value::as_str),
-            Some("部分回答")
-        );
-    }
+    assert_eq!(result.stream_outcome, "cancelled");
+    assert_eq!(result.content, "部分回答");
+    assert_eq!(result.tool_records.len(), 1);
+    let dones = host.recorded_dones();
+    assert_eq!(dones.len(), 1);
+    assert_eq!(dones[0], ("cancelled".to_string(), "部分回答".to_string()));
+    assert_eq!(
+        result
+            .api_messages
+            .last()
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str),
+        Some("部分回答")
+    );
+}
 
-    /// Bug fix regression (Fix 2): cancellation observed at the loop top of a
-    /// later round (after an earlier tool round already completed) must end with
-    /// Ok(cancelled_result) carrying the tool records gathered so far — not a bare
-    /// Err("cancelled") that drops the whole turn. The host flips the cancel flag
-    /// from `persist_partial_assistant` (end of round 1), so round 2's loop-top
-    /// generation check fires while round 1's record is fully preserved.
-    #[tokio::test]
-    async fn run_loop_planning_top_cancelled_preserves_gathered_tool_records() {
-        let server = MockModelServer::start(vec![
-            // Round 1 planning: one read tool call. The tool executes, the round
-            // completes, then persist flips cancel → round 2 loop-top cancels.
-            MockResponse::Json(planning_tool_call_json()),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, false);
-        // Allow a second round so cancellation lands at the loop top rather than
-        // the round limit.
-        config.effective_chat_tools.max_tool_rounds = Some(2);
-        let host = TestHost::cancelling_on_persist();
-        let executor = RecordingExecutor::default();
+/// Bug fix regression (Fix 2): cancellation observed at the loop top of a
+/// later round (after an earlier tool round already completed) must end with
+/// Ok(cancelled_result) carrying the tool records gathered so far — not a bare
+/// Err("cancelled") that drops the whole turn. The host flips the cancel flag
+/// from `persist_partial_assistant` (end of round 1), so round 2's loop-top
+/// generation check fires while round 1's record is fully preserved.
+#[tokio::test]
+async fn run_loop_planning_top_cancelled_preserves_gathered_tool_records() {
+    let server = MockModelServer::start(vec![
+        // Round 1 planning: one read tool call. The tool executes, the round
+        // completes, then persist flips cancel → round 2 loop-top cancels.
+        MockResponse::Json(planning_tool_call_json()),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, false);
+    // Allow a second round so cancellation lands at the loop top rather than
+    // the round limit.
+    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let host = TestHost::cancelling_on_persist();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("loop-top cancellation must return Ok, not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("loop-top cancellation must return Ok, not bubble Err");
 
-        assert_eq!(result.stream_outcome, "cancelled");
-        assert_eq!(result.content, stopped_generation_content("zh-CN"));
-        // Round 1's tool record is preserved (the bug dropped it entirely).
-        assert_eq!(result.tool_records.len(), 1);
-        assert_eq!(result.tool_records[0].name, "read");
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Success
-        ));
-        // The tool actually executed in round 1 before cancellation.
-        assert_eq!(
-            executor.events(),
-            vec!["start:read".to_string(), "finish:read".to_string()]
-        );
+    assert_eq!(result.stream_outcome, "cancelled");
+    assert_eq!(result.content, stopped_generation_content("zh-CN"));
+    // Round 1's tool record is preserved (the bug dropped it entirely).
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(result.tool_records[0].name, "read");
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Success
+    ));
+    // The tool actually executed in round 1 before cancellation.
+    assert_eq!(
+        executor.events(),
+        vec!["start:read".to_string(), "finish:read".to_string()]
+    );
 
-        // Exactly one done("cancelled") event for the frontend freeze logic.
-        let dones = host.recorded_dones();
-        assert_eq!(dones.len(), 1, "exactly one done event");
-        assert_eq!(dones[0].0, "cancelled");
+    // Exactly one done("cancelled") event for the frontend freeze logic.
+    let dones = host.recorded_dones();
+    assert_eq!(dones.len(), 1, "exactly one done event");
+    assert_eq!(dones[0].0, "cancelled");
 
-        // The turn is persistable: the stopped-generation placeholder is appended
-        // as a synthesis api message + segment alongside the preserved records.
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Text
-                && segment.text.as_deref() == Some("已停止生成。")
-        }));
-    }
+    // The turn is persistable: the stopped-generation placeholder is appended
+    // as a synthesis api message + segment alongside the preserved records.
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Text
+            && segment.text.as_deref() == Some("已停止生成。")
+    }));
+}
 
-    /// Bug fix regression: a plain-text planning stream (no tool calls started)
-    /// cancelled after partial text must keep the generated text as an
-    /// Ok("cancelled") run result instead of bubbling Err and dropping the turn.
-    #[tokio::test]
-    async fn run_loop_stream_planning_cancelled_keeps_partial_text() {
-        let server = MockModelServer::start(vec![MockResponse::SseThenHang(vec![
-            r#"{"choices":[{"delta":{"content":"这是已经生成的部分回答内容"}}]}"#.to_string(),
-        ])]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::cancelling_on_first_text_delta();
-        let executor = RecordingExecutor::default();
+/// Bug fix regression: a plain-text planning stream (no tool calls started)
+/// cancelled after partial text must keep the generated text as an
+/// Ok("cancelled") run result instead of bubbling Err and dropping the turn.
+#[tokio::test]
+async fn run_loop_stream_planning_cancelled_keeps_partial_text() {
+    let server = MockModelServer::start(vec![MockResponse::SseThenHang(vec![
+        r#"{"choices":[{"delta":{"content":"这是已经生成的部分回答内容"}}]}"#.to_string(),
+    ])]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::cancelling_on_first_text_delta();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("cancelled plain-text planning with partial content must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("cancelled plain-text planning with partial content must not bubble Err");
 
-        assert_eq!(result.stream_outcome, "cancelled");
-        assert_eq!(result.content, "这是已经生成的部分回答内容");
-        assert!(result.tool_records.is_empty());
-        assert!(
-            executor.events().is_empty(),
-            "no tools may execute in a cancelled plain-text turn"
-        );
+    assert_eq!(result.stream_outcome, "cancelled");
+    assert_eq!(result.content, "这是已经生成的部分回答内容");
+    assert!(result.tool_records.is_empty());
+    assert!(
+        executor.events().is_empty(),
+        "no tools may execute in a cancelled plain-text turn"
+    );
 
-        let dones = host.recorded_dones();
-        assert_eq!(dones.len(), 1, "exactly one done event");
-        assert_eq!(
-            dones[0],
-            (
-                "cancelled".to_string(),
-                "这是已经生成的部分回答内容".to_string()
-            )
-        );
+    let dones = host.recorded_dones();
+    assert_eq!(dones.len(), 1, "exactly one done event");
+    assert_eq!(
+        dones[0],
+        (
+            "cancelled".to_string(),
+            "这是已经生成的部分回答内容".to_string()
+        )
+    );
 
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Text
-                && segment.phase == ChatMessageSegmentPhase::Plain
-                && segment.text.as_deref() == Some("这是已经生成的部分回答内容")
-        }));
-    }
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Text
+            && segment.phase == ChatMessageSegmentPhase::Plain
+            && segment.text.as_deref() == Some("这是已经生成的部分回答内容")
+    }));
+}
 
-    /// Regression: a cancelled plain-text reply that streamed reasoning before the
-    /// answer must persist the reasoning segment ahead of the text segment, so the
-    /// reloaded timeline keeps "Thinking" above the answer instead of below it.
-    #[tokio::test]
-    async fn run_loop_stream_planning_cancelled_orders_reasoning_before_text() {
-        let server = MockModelServer::start(vec![MockResponse::SseThenHang(vec![
+/// Regression: a cancelled plain-text reply that streamed reasoning before the
+/// answer must persist the reasoning segment ahead of the text segment, so the
+/// reloaded timeline keeps "Thinking" above the answer instead of below it.
+#[tokio::test]
+async fn run_loop_stream_planning_cancelled_orders_reasoning_before_text() {
+    let server = MockModelServer::start(vec![MockResponse::SseThenHang(vec![
             r#"{"choices":[{"delta":{"reasoning_content":"先构思一下整体结构","content":"这是已经生成的部分回答内容"}}]}"#.to_string(),
         ])]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::cancelling_on_first_text_delta();
-        let executor = RecordingExecutor::default();
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::cancelling_on_first_text_delta();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("cancelled plain-text planning with reasoning must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("cancelled plain-text planning with reasoning must not bubble Err");
 
-        assert_eq!(result.stream_outcome, "cancelled");
+    assert_eq!(result.stream_outcome, "cancelled");
 
-        let reasoning = result
-            .segments
-            .iter()
-            .find(|segment| segment.kind == ChatMessageSegmentKind::Reasoning)
-            .expect("a reasoning segment must be persisted");
-        let text = result
-            .segments
-            .iter()
-            .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
-            .expect("a text segment must be persisted");
-        assert!(
+    let reasoning = result
+        .segments
+        .iter()
+        .find(|segment| segment.kind == ChatMessageSegmentKind::Reasoning)
+        .expect("a reasoning segment must be persisted");
+    let text = result
+        .segments
+        .iter()
+        .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
+        .expect("a text segment must be persisted");
+    assert!(
             reasoning.order < text.order,
             "reasoning segment (order {}) must precede the text segment (order {}) so Thinking renders above the answer",
             reasoning.order,
             text.order,
         );
-    }
+}
 
-    /// Bug fix regression (Fix 2): a plain-text stream cancelled before any text
-    /// or tool draft was generated must now end with Ok(cancelled_result) carrying
-    /// the stopped-generation placeholder — not a bare Err("cancelled") that
-    /// skipped persistence. With no prior rounds there are no tool records to
-    /// preserve, but the turn is still persistable (one done("cancelled") event,
-    /// already emitted by the stream layer, and no duplicate).
-    #[tokio::test]
-    async fn run_loop_stream_planning_cancelled_with_no_text_returns_cancelled() {
-        let server = MockModelServer::start(vec![MockResponse::SseThenHang(Vec::new())]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::cancelling_after(Duration::from_millis(20));
-        let executor = RecordingExecutor::default();
+/// Bug fix regression (Fix 2): a plain-text stream cancelled before any text
+/// or tool draft was generated must now end with Ok(cancelled_result) carrying
+/// the stopped-generation placeholder — not a bare Err("cancelled") that
+/// skipped persistence. With no prior rounds there are no tool records to
+/// preserve, but the turn is still persistable (one done("cancelled") event,
+/// already emitted by the stream layer, and no duplicate).
+#[tokio::test]
+async fn run_loop_stream_planning_cancelled_with_no_text_returns_cancelled() {
+    let server = MockModelServer::start(vec![MockResponse::SseThenHang(Vec::new())]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::cancelling_after(Duration::from_millis(20));
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("cancelled stream with zero generated text must return Ok, not Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("cancelled stream with zero generated text must return Ok, not Err");
 
-        assert_eq!(result.stream_outcome, "cancelled");
-        assert_eq!(result.content, stopped_generation_content("zh-CN"));
-        assert!(result.tool_records.is_empty());
-        let dones = host.recorded_dones();
-        assert_eq!(dones.len(), 1, "exactly one done event (no duplicate)");
-        assert_eq!(dones[0], ("cancelled".to_string(), String::new()));
-    }
+    assert_eq!(result.stream_outcome, "cancelled");
+    assert_eq!(result.content, stopped_generation_content("zh-CN"));
+    assert!(result.tool_records.is_empty());
+    let dones = host.recorded_dones();
+    assert_eq!(dones.len(), 1, "exactly one done event (no duplicate)");
+    assert_eq!(dones[0], ("cancelled".to_string(), String::new()));
+}
 
-    /// Bug fix regression: when no tools are configured, the plain synthesis path
-    /// cancelled after partial text must also preserve the generated text.
-    #[tokio::test]
-    async fn run_loop_stream_plain_synthesis_cancelled_keeps_partial_text() {
-        let server = MockModelServer::start(vec![MockResponse::SseThenHang(vec![
-            r#"{"choices":[{"delta":{"content":"部分回答"}}]}"#.to_string(),
-        ])]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        config.tools = Vec::new();
-        let host = TestHost::cancelling_on_first_text_delta();
-        let executor = RecordingExecutor::default();
+/// Bug fix regression: when no tools are configured, the plain synthesis path
+/// cancelled after partial text must also preserve the generated text.
+#[tokio::test]
+async fn run_loop_stream_plain_synthesis_cancelled_keeps_partial_text() {
+    let server = MockModelServer::start(vec![MockResponse::SseThenHang(vec![
+        r#"{"choices":[{"delta":{"content":"部分回答"}}]}"#.to_string(),
+    ])]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    config.tools = Vec::new();
+    let host = TestHost::cancelling_on_first_text_delta();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("cancelled plain synthesis with partial content must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("cancelled plain synthesis with partial content must not bubble Err");
 
-        assert_eq!(result.stream_outcome, "cancelled");
-        assert_eq!(result.content, "部分回答");
-        assert!(result.tool_records.is_empty());
+    assert_eq!(result.stream_outcome, "cancelled");
+    assert_eq!(result.content, "部分回答");
+    assert!(result.tool_records.is_empty());
 
-        let dones = host.recorded_dones();
-        assert_eq!(dones.len(), 1, "exactly one done event");
-        assert_eq!(dones[0], ("cancelled".to_string(), "部分回答".to_string()));
+    let dones = host.recorded_dones();
+    assert_eq!(dones.len(), 1, "exactly one done event");
+    assert_eq!(dones[0], ("cancelled".to_string(), "部分回答".to_string()));
 
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Text
-                && segment.phase == ChatMessageSegmentPhase::Plain
-                && segment.text.as_deref() == Some("部分回答")
-        }));
-    }
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Text
+            && segment.phase == ChatMessageSegmentPhase::Plain
+            && segment.text.as_deref() == Some("部分回答")
+    }));
+}
 
-    /// Tool executor returning a huge text result, to push the loop over a tiny
-    /// context window and exercise in-loop compaction.
-    struct HugeResultExecutor {
-        chars: usize,
-    }
+/// Tool executor returning a huge text result, to push the loop over a tiny
+/// context window and exercise in-loop compaction.
+struct HugeResultExecutor {
+    chars: usize,
+}
 
-    impl ToolExecutor for HugeResultExecutor {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _tool: &'a ChatToolDefinition,
-            _arguments: Value,
-            _skill_cache: Option<&'a mut skills::SkillRunCache>,
-        ) -> super::super::execute::ToolExecutorFuture<'a> {
-            Box::pin(async move {
-                Ok(McpToolCallResult {
-                    content: "A".repeat(self.chars),
-                    is_error: false,
-                    raw: Value::Null,
-                    artifacts: Vec::new(),
-                    structured_content: None,
-                    follow_up_user_messages: Vec::new(),
-                })
+impl ToolExecutor for HugeResultExecutor {
+    fn call<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+        _tool: &'a ChatToolDefinition,
+        _arguments: Value,
+        _skill_cache: Option<&'a mut skills::SkillRunCache>,
+    ) -> super::super::execute::ToolExecutorFuture<'a> {
+        Box::pin(async move {
+            Ok(McpToolCallResult {
+                content: "A".repeat(self.chars),
+                is_error: false,
+                raw: Value::Null,
+                artifacts: Vec::new(),
+                structured_content: None,
+                follow_up_user_messages: Vec::new(),
             })
-        }
-    }
-
-    /// In-loop compaction is L2-only (snip removed): an oversized EARLIER-round
-    /// tool output (outside the keep-recent tail) triggers a summary that replaces
-    /// the old segment in the send view, while THIS round's own tool result is
-    /// persisted raw in api_messages. The compacted full history is returned via
-    /// `compacted_history` so the cross-turn caller can adopt it (R3).
-    #[tokio::test]
-    async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
-        let server = MockModelServer::start(vec![
-            // 1) L2 摘要请求（**流式 SSE**）——压缩摘要调用现在走流式路径。
-            MockResponse::Sse(vec![
-                long_summary_sse("SUMMARY_MARKER: 早前轮次摘要。"),
-                "[DONE]".to_string(),
-            ]),
-            // 2) 压缩后的规划请求 → 发起一次 read 工具调用。
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            // 3) 合成请求 → 最终回答。
-            MockResponse::Sse(vec![
-                r#"{"choices":[{"delta":{"content":"总结完成，工具输出已分析。"}}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        // 600 token 窗口（预算 510）：9000 字符旧工具输出远超 → 直接走 Layer2 摘要（无 L1）。
-        config.provider.model_overrides.insert(
-            "test-model".to_string(),
-            crate::settings::ModelInfo {
-                context_window: Some(600),
-                ..Default::default()
-            },
-        );
-        // 预填早前轮次历史：一条超大 tool 输出 + 8 条近期小消息把它推出保护尾巴。
-        let huge = "A".repeat(9_000);
-        config.runtime_messages.push(serde_json::json!({
-            "role": "assistant", "content": "", "tool_calls": [
-                {"id": "old_call", "type": "function", "function": {"name": "read", "arguments": "{}"}}
-            ]
-        }));
-        config.runtime_messages.push(serde_json::json!({
-            "role": "tool", "tool_call_id": "old_call", "content": huge
-        }));
-        for i in 0..8 {
-            config.runtime_messages.push(serde_json::json!({
-                "role": if i % 2 == 0 { "user" } else { "assistant" },
-                "content": format!("history {i}")
-            }));
-        }
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("compacted run completes");
-
-        assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, "总结完成，工具输出已分析。");
-
-        // 三次请求：L2 摘要 + 规划 + 合成。摘要后的请求不再携带旧原文。
-        let bodies = server.captured_bodies();
-        assert_eq!(bodies.len(), 3, "summary + planning + synthesis requests");
-        assert!(bodies[0].contains("tasked with summarizing conversations"));
-        for body in &bodies[1..] {
-            assert!(
-                !body.contains(&"A".repeat(1_000)),
-                "post-compaction request must not carry the full old tool output"
-            );
-        }
-
-        // 持久化：本轮 api_messages 不含摘要标记（摘要只作用于发送视图/工作副本）。
-        assert!(result
-            .api_messages
-            .iter()
-            .all(|message| !message.to_string().contains("SUMMARY_MARKER")));
-        // 本轮工具结果原文留存（压缩只动旧段，不动当前轮）。
-        let persisted_tool = result
-            .api_messages
-            .iter()
-            .find(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
-            .expect("persisted tool message from this round");
-        assert_eq!(persisted_tool["content"], "result:read");
-
-        // R3：压缩发生 → 回传压缩后的完整历史，且末条为本轮最终 assistant 回答。
-        let compacted = result
-            .compacted_history
-            .as_ref()
-            .expect("compacted_history present when L2 ran");
-        assert!(compacted.iter().any(|m| m.to_string().contains("SUMMARY_MARKER")));
-        assert!(!compacted.iter().any(|m| m.to_string().contains(&"A".repeat(1_000))));
-        let last = compacted.last().expect("non-empty compacted history");
-        assert_eq!(last["role"], "assistant");
-        assert_eq!(last["content"], "总结完成，工具输出已分析。");
-    }
-
-    /// 真实用量锚点：即便**字符估算**远低于压缩阈值，只要上一轮 provider 实报 usage（config
-    /// 锚点）超过预算，run 首次规划前就应触发压缩。构造 window=40k（预算 ~34976）、history
-    /// 字符估算 ~25k（< 预算，纯估算不会压），但 initial_anchor_total_tokens=40k（> 预算）→
-    /// 首个请求必须是摘要（"tasked with summarizing conversations"）。
-    #[tokio::test]
-    async fn run_loop_usage_anchor_triggers_compaction_when_estimate_below_budget() {
-        let server = MockModelServer::start(vec![
-            // 1) 因锚点触发的 L2 摘要请求（流式）。
-            MockResponse::Sse(vec![
-                long_summary_sse("SUMMARY_MARKER: 早前轮次摘要。"),
-                "[DONE]".to_string(),
-            ]),
-            // 2) 压缩后的规划请求直接给最终答案（无工具）结束循环。
-            MockResponse::Sse(vec![
-                r#"{"choices":[{"delta":{"content":"已按锚点压缩后作答。"}}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        config.provider.model_overrides.insert(
-            "test-model".to_string(),
-            crate::settings::ModelInfo {
-                context_window: Some(40_000),
-                ..Default::default()
-            },
-        );
-        // 5 条各 5000 token（20000 ASCII 字符）→ 估算 ~25000 < 预算 34976（纯估算不触发压缩），
-        // 但 keep 20000 只护住尾部 4 条，留 1 条旧段可摘要。
-        config.runtime_messages = vec![
-            serde_json::json!({ "role": "system", "content": "system prompt" }),
-        ];
-        for i in 0..5 {
-            config.runtime_messages.push(serde_json::json!({
-                "role": if i % 2 == 0 { "user" } else { "assistant" },
-                "content": "a".repeat(20_000),
-            }));
-        }
-        // config 锚点：上一轮 provider 实报 prompt=40000（> 预算 34976）→ 触发压缩。
-        config.initial_anchor_total_tokens = Some(40_000);
-        config.initial_anchor_trailing_estimate = 0;
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("anchor-triggered compaction run completes");
-
-        assert_eq!(result.content, "已按锚点压缩后作答。");
-        let bodies = server.captured_bodies();
-        assert!(
-            bodies[0].contains("tasked with summarizing conversations"),
-            "usage anchor over budget must trigger compaction as the first request"
-        );
-    }
-
-    /// 对照组：同样的 ~25k 估算 history，但**没有** config 锚点 → 纯字符估算 < 预算 →
-    /// 首个请求应是普通规划（携带原始 history），而非摘要。证明锚点是触发压缩的必要条件。
-    #[tokio::test]
-    async fn run_loop_no_anchor_skips_compaction_when_estimate_below_budget() {
-        let server = MockModelServer::start(vec![
-            // 无压缩：首个请求即规划，直接给最终答案。
-            MockResponse::Sse(vec![
-                r#"{"choices":[{"delta":{"content":"无需压缩直接作答。"}}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        config.provider.model_overrides.insert(
-            "test-model".to_string(),
-            crate::settings::ModelInfo {
-                context_window: Some(40_000),
-                ..Default::default()
-            },
-        );
-        config.runtime_messages = vec![
-            serde_json::json!({ "role": "system", "content": "system prompt" }),
-        ];
-        for i in 0..5 {
-            config.runtime_messages.push(serde_json::json!({
-                "role": if i % 2 == 0 { "user" } else { "assistant" },
-                "content": "a".repeat(20_000),
-            }));
-        }
-        // 无锚点（默认 None）。
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("no-anchor run completes without compaction");
-
-        assert_eq!(result.content, "无需压缩直接作答。");
-        let bodies = server.captured_bodies();
-        assert!(
-            !bodies[0].contains("tasked with summarizing conversations"),
-            "without an anchor, an under-budget estimate must NOT trigger compaction"
-        );
-    }
-
-    /// Crash-safety: after a tool round that returns `Continue` (more rounds
-    /// allowed), the loop must checkpoint a partial-assistant snapshot carrying
-    /// the round's tool work, so a mid-run crash before the final write keeps the
-    /// turn recoverable instead of discarding it.
-    #[tokio::test]
-    async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
-        let server = MockModelServer::start(vec![
-            // Round 1 planning: one read tool call. With max_tool_rounds=2
-            // this round returns Continue, so the checkpoint fires.
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            // Round 2 planning: a natural final answer (no tools) ends the loop.
-            MockResponse::Sse(vec![
-                r#"{"choices":[{"delta":{"content":"完成。"}}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        config.effective_chat_tools.max_tool_rounds = Some(2);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("multi-round run completes");
-
-        // The checkpoint fired after round 1's completed tool round, snapshotting
-        // the work done so far under the run's message id.
-        let persists = host.recorded_persists();
-        let snapshot = persists
-            .iter()
-            .find(|(_, tool_records_len, _, _)| *tool_records_len >= 1)
-            .expect("a checkpoint snapshot includes the completed round's tool record");
-        assert_eq!(snapshot.0, "message", "snapshot keyed by run message id");
-        assert!(
-            snapshot.1 >= 1,
-            "snapshot carries the round's tool record(s)"
-        );
-        // The draft also carries the loop's accumulated provider messages
-        // (assistant tool_call + tool result) so an `interrupted` draft stays
-        // replayable on a later "continue" instead of losing all tool context.
-        assert!(
-            snapshot.3 >= 1,
-            "snapshot carries accumulated api_messages for replay, not an empty Vec"
-        );
-
-        // The run still completed normally end-to-end.
-        assert_eq!(result.stream_outcome, "completed");
-        assert!(result.tool_records.iter().any(|r| r.id == "call_read"));
-    }
-
-    /// Layer2 compaction: when the history is over budget, a summary request fires
-    /// first and the next provider request carries the summary instead of the old
-    /// history; the summary itself stays out of persisted api_messages, and the
-    /// compacted full history is returned via `compacted_history` (R3).
-    #[tokio::test]
-    async fn run_loop_layer2_replaces_old_history_with_summary() {
-        let server = MockModelServer::start(vec![
-            // 1) Layer2 摘要请求（**流式 SSE**）——压缩摘要调用现在走流式路径。
-            MockResponse::Sse(vec![
-                long_summary_sse("SUMMARY_MARKER: 早前轮次已读取大文件。"),
-                "[DONE]".to_string(),
-            ]),
-            // 2) 压缩后的规划请求 → 直接给出最终回答（无工具调用）。
-            MockResponse::Sse(vec![
-                r#"{"choices":[{"delta":{"content":"基于摘要继续完成任务。"}}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        // 600 token 窗口（预算 510）：snip 后仍超 → 必然升级 Layer2。
-        config.provider.model_overrides.insert(
-            "test-model".to_string(),
-            crate::settings::ModelInfo {
-                context_window: Some(600),
-                ..Default::default()
-            },
-        );
-        let huge = "B".repeat(9_000);
-        config.runtime_messages.push(serde_json::json!({
-            "role": "tool", "tool_call_id": "old_call", "content": huge
-        }));
-        for i in 0..8 {
-            config.runtime_messages.push(serde_json::json!({
-                "role": if i % 2 == 0 { "user" } else { "assistant" },
-                "content": format!("recent history {i}")
-            }));
-        }
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("layer2-compacted run completes");
-        assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, "基于摘要继续完成任务。");
-
-        let bodies = server.captured_bodies();
-        assert_eq!(bodies.len(), 2, "summary request + planning request");
-        // 摘要请求带着 Claude Code 结构化 prompt 与旧段样本。
-        assert!(bodies[0].contains("tasked with summarizing conversations"));
-        // L2 摘要调用现在走**流式**路径——摘要请求体携带 `"stream":true`（这是它能在仅支持
-        // 流式的 provider 上成功摘要的关键：mock 摘要响应以 SSE 提供而非非流式 JSON）。
-        assert!(
-            bodies[0].contains("\"stream\":true"),
-            "compaction summary call must use the streaming path"
-        );
-        // 压缩后的规划请求：携带摘要，不再携带旧原文，保留最近历史。
-        assert!(bodies[1].contains("SUMMARY_MARKER"));
-        assert!(!bodies[1].contains(&"B".repeat(1_000)));
-        assert!(bodies[1].contains("recent history 7"));
-        // 摘要只存在于发送视图/工作副本，不进持久化 api_messages。
-        assert!(result
-            .api_messages
-            .iter()
-            .all(|message| !message.to_string().contains("SUMMARY_MARKER")));
-        // R3：压缩发生 → compacted_history 携带摘要、剔除旧原文。
-        let compacted = result
-            .compacted_history
-            .as_ref()
-            .expect("compacted_history present when L2 ran");
-        assert!(compacted.iter().any(|m| m.to_string().contains("SUMMARY_MARKER")));
-        assert!(!compacted.iter().any(|m| m.to_string().contains(&"B".repeat(1_000))));
-    }
-
-    /// Streaming-only provider: the compaction summary call MUST stream. This is the
-    /// "real path" L2 test the prior mock tests lacked — the user's provider (xb1520.com
-    /// `gpt-5.3-codex-spark`, openai_responses) only reliably serves STREAMING, so the
-    /// lone non-stream summary call failed and compaction could never compress on it.
-    ///
-    /// We model a streaming-only provider by serving the summary as an SSE stream while
-    /// FAILING any non-stream call shape: the summary mock is the FIRST request; if the
-    /// agent issued a non-stream `generate` for it, the captured body would lack
-    /// `"stream":true`. We assert the summary request streamed AND that compaction
-    /// SUCCEEDED (old history replaced by the summary, `compacted_history` produced).
-    #[tokio::test]
-    async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
-        let server = MockModelServer::start(vec![
-            // 1) 摘要请求：仅以 SSE 提供（模拟仅支持流式的 provider）。
-            MockResponse::Sse(vec![
-                long_summary_sse_tagged("SUMMARY_MARKER: streamed summary. "),
-                "[DONE]".to_string(),
-            ]),
-            // 2) 压缩后的规划请求 → 直接给出最终回答（无工具调用）。
-            MockResponse::Sse(vec![
-                r#"{"choices":[{"delta":{"content":"流式摘要后继续完成任务。"}}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        config.provider.model_overrides.insert(
-            "test-model".to_string(),
-            crate::settings::ModelInfo {
-                context_window: Some(600),
-                ..Default::default()
-            },
-        );
-        let huge = "C".repeat(9_000);
-        config.runtime_messages.push(serde_json::json!({
-            "role": "tool", "tool_call_id": "old_call", "content": huge
-        }));
-        for i in 0..8 {
-            config.runtime_messages.push(serde_json::json!({
-                "role": if i % 2 == 0 { "user" } else { "assistant" },
-                "content": format!("recent history {i}")
-            }));
-        }
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("streaming-only compacted run completes");
-        assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, "流式摘要后继续完成任务。");
-
-        let bodies = server.captured_bodies();
-        assert_eq!(bodies.len(), 2, "streamed summary request + planning request");
-        // 关键：摘要请求走流式（仅流式 provider 上能成功的根本原因）。
-        assert!(
-            bodies[0].contains("tasked with summarizing conversations"),
-            "first request is the summary call"
-        );
-        assert!(
-            bodies[0].contains("\"stream\":true"),
-            "summary call must stream on a streaming-only provider"
-        );
-        // 压缩成功：旧原文被摘要取代，compacted_history 产出。
-        assert!(bodies[1].contains("SUMMARY_MARKER"));
-        assert!(!bodies[1].contains(&"C".repeat(1_000)));
-        let compacted = result
-            .compacted_history
-            .as_ref()
-            .expect("compacted_history present when streamed L2 compaction succeeds");
-        assert!(compacted.iter().any(|m| m.to_string().contains("SUMMARY_MARKER")));
-        assert!(!compacted.iter().any(|m| m.to_string().contains(&"C".repeat(1_000))));
-    }
-
-    /// Gap 2 (Layer 3 anti-thrashing): when the history is persistently over the
-    /// compaction budget and every summary call FAILS, the loop must NOT keep
-    /// re-summarizing-and-failing forever (the real-world "6× failed compaction"
-    /// regression). After `COMPACTION_THRASH_LIMIT` (2) unresolved rounds it ends
-    /// the turn gracefully with the gathered tool results — a degraded answer, not
-    /// an `Err`, and a BOUNDED number of model calls.
-    #[tokio::test]
-    async fn run_loop_compaction_thrash_degrades_with_gathered_results() {
-        let overflow_400 = || {
-            MockResponse::Status(
-                400,
-                r#"{"error":{"message":"This model's maximum context length is 600 tokens"}}"#
-                    .to_string(),
-            )
-        };
-        let server = MockModelServer::start(vec![
-            // Round 1 entry: compaction summary call #1 → fails (unresolved 0→1).
-            overflow_400(),
-            // Round 1 planning → one read tool call (gathers a result).
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            // Round 2 entry: compaction summary call #2 → fails (unresolved 1→2);
-            // the thrash limit is now reached, so the loop degrades BEFORE any
-            // further planning call. No more responses are consumed after this.
-            overflow_400(),
-        ]);
-        let state = test_app_state();
-        let mut config = test_run_config(&state, &server.base_url, true);
-        // Small window so the pre-filled huge tool output is always over budget,
-        // forcing a compaction attempt at the top of every planning round.
-        config.provider.model_overrides.insert(
-            "test-model".to_string(),
-            crate::settings::ModelInfo {
-                context_window: Some(600),
-                ..Default::default()
-            },
-        );
-        // Allow a second round so the loop re-enters planning after the tool round
-        // and trips the thrash guard there.
-        config.effective_chat_tools.max_tool_rounds = Some(2);
-        // Pre-fill an oversized earlier tool output + small recent tail: the history
-        // stays over budget every round, but the summary call always errors so the
-        // send view never shrinks → unresolved_rounds climbs to the limit.
-        let huge = "A".repeat(9_000);
-        config.runtime_messages.push(serde_json::json!({
-            "role": "assistant", "content": "", "tool_calls": [
-                {"id": "old_call", "type": "function", "function": {"name": "read", "arguments": "{}"}}
-            ]
-        }));
-        config.runtime_messages.push(serde_json::json!({
-            "role": "tool", "tool_call_id": "old_call", "content": huge
-        }));
-        for i in 0..8 {
-            config.runtime_messages.push(serde_json::json!({
-                "role": if i % 2 == 0 { "user" } else { "assistant" },
-                "content": format!("history {i}")
-            }));
-        }
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("anti-thrashing must end the turn, not bubble Err");
-
-        // Degraded but completed via the recovery path — not an error, not a loop.
-        assert_eq!(result.stream_outcome, "compaction_thrash");
-        // The gathered round-1 tool result is surfaced in the degraded answer.
-        assert_eq!(result.tool_records.len(), 1);
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Success
-        ));
-        assert!(
-            result.content.contains("result:read"),
-            "degraded answer must carry the gathered tool result, got: {}",
-            result.content
-        );
-        // BOUNDED model calls: summary#1 + planning#1 + summary#2 = exactly 3.
-        // The thrash guard fires before a 2nd planning call, so we never see the
-        // 6× failed-compaction loop from the regression.
-        assert_eq!(
-            server.captured_bodies().len(),
-            3,
-            "anti-thrashing must bound model calls (summary + planning + summary), no repeat-fail loop"
-        );
-        // A single done event with the degraded content (turn ended cleanly).
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), result.content.clone())]
-        );
-    }
-
-    /// Under-budget runs must not be touched by compaction: the request body
-    /// carries the tool output verbatim.
-    #[tokio::test]
-    async fn run_loop_under_budget_sends_messages_untouched() {
-        let server = MockModelServer::start(vec![
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            MockResponse::Sse(vec![
-                r#"{"choices":[{"delta":{"content":"done"}}]}"#.to_string(),
-                "[DONE]".to_string(),
-            ]),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::default();
-        // 默认窗口（test-model 无覆盖 → 200k fallback），小输出远不达 0.85。
-        let executor = HugeResultExecutor { chars: 600 };
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("run completes");
-        assert_eq!(result.stream_outcome, "completed");
-
-        let bodies = server.captured_bodies();
-        assert_eq!(bodies.len(), 2);
-        assert!(
-            !bodies[1].contains("chars snipped"),
-            "under-budget send view must be untouched"
-        );
-        assert!(bodies[1].contains(&"A".repeat(600)));
-    }
-
-    /// Fallback D: streamed synthesis returns an empty answer after tool results;
-    /// the loop substitutes the bilingual fallback and completes normally
-    /// (stream_outcome "completed", not "error").
-    #[tokio::test]
-    async fn run_loop_stream_synthesis_empty_output_uses_fallback_and_completes() {
-        let server = MockModelServer::start(vec![
-            MockResponse::Sse(planning_tool_call_sse_events()),
-            MockResponse::Sse(vec!["[DONE]".to_string()]),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, true);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("empty synthesis with tool records must not bubble Err");
-
-        let recovered =
-            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN", crate::chat::agent::recovery::FailureKind::Empty);
-        assert!(recovered.contains("result:read"));
-        assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, recovered);
-        assert_eq!(result.tool_records.len(), 1);
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Success
-        ));
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), recovered.clone())]
-        );
-
-        assert!(result.segments.iter().any(|segment| {
-            segment.kind == ChatMessageSegmentKind::Text
-                && segment.phase == ChatMessageSegmentPhase::Synthesis
-                && segment.text.as_deref() == Some(recovered.as_str())
-        }));
-        assert_eq!(
-            result
-                .api_messages
-                .last()
-                .and_then(|message| message.get("content"))
-                .and_then(Value::as_str),
-            Some(recovered.as_str())
-        );
-    }
-
-    /// Fallback E: non-streamed synthesis request fails (HTTP 400) after a
-    /// successful tool round; tool records survive with the failure fallback.
-    #[tokio::test]
-    async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallback() {
-        let server = MockModelServer::start(vec![
-            MockResponse::Json(planning_tool_call_json()),
-            MockResponse::Status(400, r#"{"error":"mock synthesis failure"}"#.to_string()),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, false);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
-
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("non-stream synthesis failure after tool records must not bubble Err");
-
-        let recovered =
-            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN", crate::chat::agent::recovery::FailureKind::Other);
-        assert!(recovered.contains("result:read"));
-        assert_eq!(result.stream_outcome, "recovered");
-        assert_eq!(result.content, recovered);
-        assert_eq!(result.tool_records.len(), 1);
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Success
-        ));
-        assert!(host
-            .recorded_deltas()
-            .iter()
-            .any(|delta| delta.delta == recovered));
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), recovered.clone())]
-        );
-        assert_eq!(
-            result
-                .api_messages
-                .last()
-                .and_then(|message| message.get("content"))
-                .and_then(Value::as_str),
-            Some(recovered.as_str())
-        );
-    }
-
-    /// Overflow recovery (success): non-stream synthesis fails with a 400 that
-    /// classifies as ContextOverflow; recovery compacts once and re-sends the
-    /// synthesis call, which succeeds. The retried answer (not the gathered
-    /// fallback) is used, and the loop completes via the "recovered" outcome.
-    #[tokio::test]
-    async fn run_loop_overflow_recovery_compacts_and_retries_success() {
-        let retry_answer = serde_json::json!({
-            "choices": [{
-                "finish_reason": "stop",
-                "message": {
-                    "role": "assistant",
-                    "content": "summary after compaction"
-                }
-            }]
         })
-        .to_string();
-        let server = MockModelServer::start(vec![
-            MockResponse::Json(planning_tool_call_json()),
-            // Synthesis call #1 fails with an overflow-shaped 400.
-            MockResponse::Status(
-                400,
-                r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#
-                    .to_string(),
-            ),
-            // CompactAndRetry re-sends synthesis; this one succeeds.
-            MockResponse::Json(retry_answer),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, false);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+    }
+}
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("overflow recovery must not bubble Err");
+/// In-loop compaction is L2-only (snip removed): an oversized EARLIER-round
+/// tool output (outside the keep-recent tail) triggers a summary that replaces
+/// the old segment in the send view, while THIS round's own tool result is
+/// persisted raw in api_messages. The compacted full history is returned via
+/// `compacted_history` so the cross-turn caller can adopt it (R3).
+#[tokio::test]
+async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
+    let server = MockModelServer::start(vec![
+        // 1) L2 摘要请求（**流式 SSE**）——压缩摘要调用现在走流式路径。
+        MockResponse::Sse(vec![
+            long_summary_sse("SUMMARY_MARKER: 早前轮次摘要。"),
+            "[DONE]".to_string(),
+        ]),
+        // 2) 压缩后的规划请求 → 发起一次 read 工具调用。
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        // 3) 合成请求 → 最终回答。
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"总结完成，工具输出已分析。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    // 600 token 窗口（预算 510）：9000 字符旧工具输出远超 → 直接走 Layer2 摘要（无 L1）。
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(600),
+            ..Default::default()
+        },
+    );
+    // 预填早前轮次历史：一条超大 tool 输出 + 8 条近期小消息把它推出保护尾巴。
+    let huge = "A".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "assistant", "content": "", "tool_calls": [
+            {"id": "old_call", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+        ]
+    }));
+    config.runtime_messages.push(serde_json::json!({
+        "role": "tool", "tool_call_id": "old_call", "content": huge
+    }));
+    for i in 0..8 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if i % 2 == 0 { "user" } else { "assistant" },
+            "content": format!("history {i}")
+        }));
+    }
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
 
-        // The retried summary is used — NOT the gathered fallback.
-        assert_eq!(result.content, "summary after compaction");
-        assert_eq!(result.stream_outcome, "recovered");
-        assert_eq!(result.tool_records.len(), 1);
-        assert!(matches!(
-            result.tool_records[0].status,
-            ToolCallStatus::Success
-        ));
-        // The model was called exactly 3 times: planning, failed synthesis, retry.
-        assert_eq!(server.captured_bodies().len(), 3);
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), "summary after compaction".to_string())]
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("compacted run completes");
+
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(result.content, "总结完成，工具输出已分析。");
+
+    // 三次请求：L2 摘要 + 规划 + 合成。摘要后的请求不再携带旧原文。
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 3, "summary + planning + synthesis requests");
+    assert!(bodies[0].contains("tasked with summarizing conversations"));
+    for body in &bodies[1..] {
+        assert!(
+            !body.contains(&"A".repeat(1_000)),
+            "post-compaction request must not carry the full old tool output"
         );
     }
 
-    /// Overflow recovery (single-attempt guard): both the synthesis call and the
-    /// compact-and-retry call fail with overflow 400. Recovery must NOT loop —
-    /// it degrades to the gathered-results fallback after exactly one retry.
-    #[tokio::test]
-    async fn run_loop_overflow_recovery_retries_once_then_degrades() {
-        let overflow_400 = MockResponse::Status(
+    // 持久化：本轮 api_messages 不含摘要标记（摘要只作用于发送视图/工作副本）。
+    assert!(result
+        .api_messages
+        .iter()
+        .all(|message| !message.to_string().contains("SUMMARY_MARKER")));
+    // 本轮工具结果原文留存（压缩只动旧段，不动当前轮）。
+    let persisted_tool = result
+        .api_messages
+        .iter()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        .expect("persisted tool message from this round");
+    assert_eq!(persisted_tool["content"], "result:read");
+
+    // R3：压缩发生 → 回传压缩后的完整历史，且末条为本轮最终 assistant 回答。
+    let compacted = result
+        .compacted_history
+        .as_ref()
+        .expect("compacted_history present when L2 ran");
+    assert!(compacted
+        .iter()
+        .any(|m| m.to_string().contains("SUMMARY_MARKER")));
+    assert!(!compacted
+        .iter()
+        .any(|m| m.to_string().contains(&"A".repeat(1_000))));
+    let last = compacted.last().expect("non-empty compacted history");
+    assert_eq!(last["role"], "assistant");
+    assert_eq!(last["content"], "总结完成，工具输出已分析。");
+}
+
+/// 真实用量锚点：即便**字符估算**远低于压缩阈值，只要上一轮 provider 实报 usage（config
+/// 锚点）超过预算，run 首次规划前就应触发压缩。构造 window=40k（预算 ~34976）、history
+/// 字符估算 ~25k（< 预算，纯估算不会压），但 initial_anchor_total_tokens=40k（> 预算）→
+/// 首个请求必须是摘要（"tasked with summarizing conversations"）。
+#[tokio::test]
+async fn run_loop_usage_anchor_triggers_compaction_when_estimate_below_budget() {
+    let server = MockModelServer::start(vec![
+        // 1) 因锚点触发的 L2 摘要请求（流式）。
+        MockResponse::Sse(vec![
+            long_summary_sse("SUMMARY_MARKER: 早前轮次摘要。"),
+            "[DONE]".to_string(),
+        ]),
+        // 2) 压缩后的规划请求直接给最终答案（无工具）结束循环。
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"已按锚点压缩后作答。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(40_000),
+            ..Default::default()
+        },
+    );
+    // 5 条各 5000 token（20000 ASCII 字符）→ 估算 ~25000 < 预算 34976（纯估算不触发压缩），
+    // 但 keep 20000 只护住尾部 4 条，留 1 条旧段可摘要。
+    config.runtime_messages =
+        vec![serde_json::json!({ "role": "system", "content": "system prompt" })];
+    for i in 0..5 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if i % 2 == 0 { "user" } else { "assistant" },
+            "content": "a".repeat(20_000),
+        }));
+    }
+    // config 锚点：上一轮 provider 实报 prompt=40000（> 预算 34976）→ 触发压缩。
+    config.initial_anchor_total_tokens = Some(40_000);
+    config.initial_anchor_trailing_estimate = 0;
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("anchor-triggered compaction run completes");
+
+    assert_eq!(result.content, "已按锚点压缩后作答。");
+    let bodies = server.captured_bodies();
+    assert!(
+        bodies[0].contains("tasked with summarizing conversations"),
+        "usage anchor over budget must trigger compaction as the first request"
+    );
+}
+
+/// 对照组：同样的 ~25k 估算 history，但**没有** config 锚点 → 纯字符估算 < 预算 →
+/// 首个请求应是普通规划（携带原始 history），而非摘要。证明锚点是触发压缩的必要条件。
+#[tokio::test]
+async fn run_loop_no_anchor_skips_compaction_when_estimate_below_budget() {
+    let server = MockModelServer::start(vec![
+        // 无压缩：首个请求即规划，直接给最终答案。
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"无需压缩直接作答。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(40_000),
+            ..Default::default()
+        },
+    );
+    config.runtime_messages =
+        vec![serde_json::json!({ "role": "system", "content": "system prompt" })];
+    for i in 0..5 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if i % 2 == 0 { "user" } else { "assistant" },
+            "content": "a".repeat(20_000),
+        }));
+    }
+    // 无锚点（默认 None）。
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("no-anchor run completes without compaction");
+
+    assert_eq!(result.content, "无需压缩直接作答。");
+    let bodies = server.captured_bodies();
+    assert!(
+        !bodies[0].contains("tasked with summarizing conversations"),
+        "without an anchor, an under-budget estimate must NOT trigger compaction"
+    );
+}
+
+/// Crash-safety: after a tool round that returns `Continue` (more rounds
+/// allowed), the loop must checkpoint a partial-assistant snapshot carrying
+/// the round's tool work, so a mid-run crash before the final write keeps the
+/// turn recoverable instead of discarding it.
+#[tokio::test]
+async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
+    let server = MockModelServer::start(vec![
+        // Round 1 planning: one read tool call. With max_tool_rounds=2
+        // this round returns Continue, so the checkpoint fires.
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        // Round 2 planning: a natural final answer (no tools) ends the loop.
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"完成。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("multi-round run completes");
+
+    // The checkpoint fired after round 1's completed tool round, snapshotting
+    // the work done so far under the run's message id.
+    let persists = host.recorded_persists();
+    let snapshot = persists
+        .iter()
+        .find(|(_, tool_records_len, _, _)| *tool_records_len >= 1)
+        .expect("a checkpoint snapshot includes the completed round's tool record");
+    assert_eq!(snapshot.0, "message", "snapshot keyed by run message id");
+    assert!(
+        snapshot.1 >= 1,
+        "snapshot carries the round's tool record(s)"
+    );
+    // The draft also carries the loop's accumulated provider messages
+    // (assistant tool_call + tool result) so an `interrupted` draft stays
+    // replayable on a later "continue" instead of losing all tool context.
+    assert!(
+        snapshot.3 >= 1,
+        "snapshot carries accumulated api_messages for replay, not an empty Vec"
+    );
+
+    // The run still completed normally end-to-end.
+    assert_eq!(result.stream_outcome, "completed");
+    assert!(result.tool_records.iter().any(|r| r.id == "call_read"));
+}
+
+/// Layer2 compaction: when the history is over budget, a summary request fires
+/// first and the next provider request carries the summary instead of the old
+/// history; the summary itself stays out of persisted api_messages, and the
+/// compacted full history is returned via `compacted_history` (R3).
+#[tokio::test]
+async fn run_loop_layer2_replaces_old_history_with_summary() {
+    let server = MockModelServer::start(vec![
+        // 1) Layer2 摘要请求（**流式 SSE**）——压缩摘要调用现在走流式路径。
+        MockResponse::Sse(vec![
+            long_summary_sse("SUMMARY_MARKER: 早前轮次已读取大文件。"),
+            "[DONE]".to_string(),
+        ]),
+        // 2) 压缩后的规划请求 → 直接给出最终回答（无工具调用）。
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"基于摘要继续完成任务。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    // 600 token 窗口（预算 510）：snip 后仍超 → 必然升级 Layer2。
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(600),
+            ..Default::default()
+        },
+    );
+    let huge = "B".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "tool", "tool_call_id": "old_call", "content": huge
+    }));
+    for i in 0..8 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if i % 2 == 0 { "user" } else { "assistant" },
+            "content": format!("recent history {i}")
+        }));
+    }
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("layer2-compacted run completes");
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(result.content, "基于摘要继续完成任务。");
+
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2, "summary request + planning request");
+    // 摘要请求带着 Claude Code 结构化 prompt 与旧段样本。
+    assert!(bodies[0].contains("tasked with summarizing conversations"));
+    // L2 摘要调用现在走**流式**路径——摘要请求体携带 `"stream":true`（这是它能在仅支持
+    // 流式的 provider 上成功摘要的关键：mock 摘要响应以 SSE 提供而非非流式 JSON）。
+    assert!(
+        bodies[0].contains("\"stream\":true"),
+        "compaction summary call must use the streaming path"
+    );
+    // 压缩后的规划请求：携带摘要，不再携带旧原文，保留最近历史。
+    assert!(bodies[1].contains("SUMMARY_MARKER"));
+    assert!(!bodies[1].contains(&"B".repeat(1_000)));
+    assert!(bodies[1].contains("recent history 7"));
+    // 摘要只存在于发送视图/工作副本，不进持久化 api_messages。
+    assert!(result
+        .api_messages
+        .iter()
+        .all(|message| !message.to_string().contains("SUMMARY_MARKER")));
+    // R3：压缩发生 → compacted_history 携带摘要、剔除旧原文。
+    let compacted = result
+        .compacted_history
+        .as_ref()
+        .expect("compacted_history present when L2 ran");
+    assert!(compacted
+        .iter()
+        .any(|m| m.to_string().contains("SUMMARY_MARKER")));
+    assert!(!compacted
+        .iter()
+        .any(|m| m.to_string().contains(&"B".repeat(1_000))));
+}
+
+/// Streaming-only provider: the compaction summary call MUST stream. This is the
+/// "real path" L2 test the prior mock tests lacked — the user's provider (xb1520.com
+/// `gpt-5.3-codex-spark`, openai_responses) only reliably serves STREAMING, so the
+/// lone non-stream summary call failed and compaction could never compress on it.
+///
+/// We model a streaming-only provider by serving the summary as an SSE stream while
+/// FAILING any non-stream call shape: the summary mock is the FIRST request; if the
+/// agent issued a non-stream `generate` for it, the captured body would lack
+/// `"stream":true`. We assert the summary request streamed AND that compaction
+/// SUCCEEDED (old history replaced by the summary, `compacted_history` produced).
+#[tokio::test]
+async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
+    let server = MockModelServer::start(vec![
+        // 1) 摘要请求：仅以 SSE 提供（模拟仅支持流式的 provider）。
+        MockResponse::Sse(vec![
+            long_summary_sse_tagged("SUMMARY_MARKER: streamed summary. "),
+            "[DONE]".to_string(),
+        ]),
+        // 2) 压缩后的规划请求 → 直接给出最终回答（无工具调用）。
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"流式摘要后继续完成任务。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(600),
+            ..Default::default()
+        },
+    );
+    let huge = "C".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "tool", "tool_call_id": "old_call", "content": huge
+    }));
+    for i in 0..8 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if i % 2 == 0 { "user" } else { "assistant" },
+            "content": format!("recent history {i}")
+        }));
+    }
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("streaming-only compacted run completes");
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(result.content, "流式摘要后继续完成任务。");
+
+    let bodies = server.captured_bodies();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "streamed summary request + planning request"
+    );
+    // 关键：摘要请求走流式（仅流式 provider 上能成功的根本原因）。
+    assert!(
+        bodies[0].contains("tasked with summarizing conversations"),
+        "first request is the summary call"
+    );
+    assert!(
+        bodies[0].contains("\"stream\":true"),
+        "summary call must stream on a streaming-only provider"
+    );
+    // 压缩成功：旧原文被摘要取代，compacted_history 产出。
+    assert!(bodies[1].contains("SUMMARY_MARKER"));
+    assert!(!bodies[1].contains(&"C".repeat(1_000)));
+    let compacted = result
+        .compacted_history
+        .as_ref()
+        .expect("compacted_history present when streamed L2 compaction succeeds");
+    assert!(compacted
+        .iter()
+        .any(|m| m.to_string().contains("SUMMARY_MARKER")));
+    assert!(!compacted
+        .iter()
+        .any(|m| m.to_string().contains(&"C".repeat(1_000))));
+}
+
+/// Gap 2 (Layer 3 anti-thrashing): when the history is persistently over the
+/// compaction budget and every summary call FAILS, the loop must NOT keep
+/// re-summarizing-and-failing forever (the real-world "6× failed compaction"
+/// regression). After `COMPACTION_THRASH_LIMIT` (2) unresolved rounds it ends
+/// the turn gracefully with the gathered tool results — a degraded answer, not
+/// an `Err`, and a BOUNDED number of model calls.
+#[tokio::test]
+async fn run_loop_compaction_thrash_degrades_with_gathered_results() {
+    let overflow_400 = || {
+        MockResponse::Status(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 600 tokens"}}"#
+                .to_string(),
+        )
+    };
+    let server = MockModelServer::start(vec![
+        // Round 1 entry: compaction summary call #1 → fails (unresolved 0→1).
+        overflow_400(),
+        // Round 1 planning → one read tool call (gathers a result).
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        // Round 2 entry: compaction summary call #2 → fails (unresolved 1→2);
+        // the thrash limit is now reached, so the loop degrades BEFORE any
+        // further planning call. No more responses are consumed after this.
+        overflow_400(),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url, true);
+    // Small window so the pre-filled huge tool output is always over budget,
+    // forcing a compaction attempt at the top of every planning round.
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(600),
+            ..Default::default()
+        },
+    );
+    // Allow a second round so the loop re-enters planning after the tool round
+    // and trips the thrash guard there.
+    config.effective_chat_tools.max_tool_rounds = Some(2);
+    // Pre-fill an oversized earlier tool output + small recent tail: the history
+    // stays over budget every round, but the summary call always errors so the
+    // send view never shrinks → unresolved_rounds climbs to the limit.
+    let huge = "A".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "assistant", "content": "", "tool_calls": [
+            {"id": "old_call", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+        ]
+    }));
+    config.runtime_messages.push(serde_json::json!({
+        "role": "tool", "tool_call_id": "old_call", "content": huge
+    }));
+    for i in 0..8 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if i % 2 == 0 { "user" } else { "assistant" },
+            "content": format!("history {i}")
+        }));
+    }
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("anti-thrashing must end the turn, not bubble Err");
+
+    // Degraded but completed via the recovery path — not an error, not a loop.
+    assert_eq!(result.stream_outcome, "compaction_thrash");
+    // The gathered round-1 tool result is surfaced in the degraded answer.
+    assert_eq!(result.tool_records.len(), 1);
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Success
+    ));
+    assert!(
+        result.content.contains("result:read"),
+        "degraded answer must carry the gathered tool result, got: {}",
+        result.content
+    );
+    // BOUNDED model calls: summary#1 + planning#1 + summary#2 = exactly 3.
+    // The thrash guard fires before a 2nd planning call, so we never see the
+    // 6× failed-compaction loop from the regression.
+    assert_eq!(
+        server.captured_bodies().len(),
+        3,
+        "anti-thrashing must bound model calls (summary + planning + summary), no repeat-fail loop"
+    );
+    // A single done event with the degraded content (turn ended cleanly).
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), result.content.clone())]
+    );
+}
+
+/// Under-budget runs must not be touched by compaction: the request body
+/// carries the tool output verbatim.
+#[tokio::test]
+async fn run_loop_under_budget_sends_messages_untouched() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"done"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::default();
+    // 默认窗口（test-model 无覆盖 → 200k fallback），小输出远不达 0.85。
+    let executor = HugeResultExecutor { chars: 600 };
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("run completes");
+    assert_eq!(result.stream_outcome, "completed");
+
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2);
+    assert!(
+        !bodies[1].contains("chars snipped"),
+        "under-budget send view must be untouched"
+    );
+    assert!(bodies[1].contains(&"A".repeat(600)));
+}
+
+/// Fallback D: streamed synthesis returns an empty answer after tool results;
+/// the loop substitutes the bilingual fallback and completes normally
+/// (stream_outcome "completed", not "error").
+#[tokio::test]
+async fn run_loop_stream_synthesis_empty_output_uses_fallback_and_completes() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec!["[DONE]".to_string()]),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, true);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("empty synthesis with tool records must not bubble Err");
+
+    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
+        &result.tool_records,
+        "zh-CN",
+        crate::chat::agent::recovery::FailureKind::Empty,
+    );
+    assert!(recovered.contains("result:read"));
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(result.content, recovered);
+    assert_eq!(result.tool_records.len(), 1);
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Success
+    ));
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), recovered.clone())]
+    );
+
+    assert!(result.segments.iter().any(|segment| {
+        segment.kind == ChatMessageSegmentKind::Text
+            && segment.phase == ChatMessageSegmentPhase::Synthesis
+            && segment.text.as_deref() == Some(recovered.as_str())
+    }));
+    assert_eq!(
+        result
+            .api_messages
+            .last()
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str),
+        Some(recovered.as_str())
+    );
+}
+
+/// Fallback E: non-streamed synthesis request fails (HTTP 400) after a
+/// successful tool round; tool records survive with the failure fallback.
+#[tokio::test]
+async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallback() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Json(planning_tool_call_json()),
+        MockResponse::Status(400, r#"{"error":"mock synthesis failure"}"#.to_string()),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, false);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("non-stream synthesis failure after tool records must not bubble Err");
+
+    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
+        &result.tool_records,
+        "zh-CN",
+        crate::chat::agent::recovery::FailureKind::Other,
+    );
+    assert!(recovered.contains("result:read"));
+    assert_eq!(result.stream_outcome, "recovered");
+    assert_eq!(result.content, recovered);
+    assert_eq!(result.tool_records.len(), 1);
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Success
+    ));
+    assert!(host
+        .recorded_deltas()
+        .iter()
+        .any(|delta| delta.delta == recovered));
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), recovered.clone())]
+    );
+    assert_eq!(
+        result
+            .api_messages
+            .last()
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str),
+        Some(recovered.as_str())
+    );
+}
+
+/// Overflow recovery (success): non-stream synthesis fails with a 400 that
+/// classifies as ContextOverflow; recovery compacts once and re-sends the
+/// synthesis call, which succeeds. The retried answer (not the gathered
+/// fallback) is used, and the loop completes via the "recovered" outcome.
+#[tokio::test]
+async fn run_loop_overflow_recovery_compacts_and_retries_success() {
+    let retry_answer = serde_json::json!({
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "content": "summary after compaction"
+            }
+        }]
+    })
+    .to_string();
+    let server = MockModelServer::start(vec![
+        MockResponse::Json(planning_tool_call_json()),
+        // Synthesis call #1 fails with an overflow-shaped 400.
+        MockResponse::Status(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#
+                .to_string(),
+        ),
+        // CompactAndRetry re-sends synthesis; this one succeeds.
+        MockResponse::Json(retry_answer),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, false);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("overflow recovery must not bubble Err");
+
+    // The retried summary is used — NOT the gathered fallback.
+    assert_eq!(result.content, "summary after compaction");
+    assert_eq!(result.stream_outcome, "recovered");
+    assert_eq!(result.tool_records.len(), 1);
+    assert!(matches!(
+        result.tool_records[0].status,
+        ToolCallStatus::Success
+    ));
+    // The model was called exactly 3 times: planning, failed synthesis, retry.
+    assert_eq!(server.captured_bodies().len(), 3);
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), "summary after compaction".to_string())]
+    );
+}
+
+/// Overflow recovery (single-attempt guard): both the synthesis call and the
+/// compact-and-retry call fail with overflow 400. Recovery must NOT loop —
+/// it degrades to the gathered-results fallback after exactly one retry.
+#[tokio::test]
+async fn run_loop_overflow_recovery_retries_once_then_degrades() {
+    let overflow_400 = MockResponse::Status(
+        400,
+        r#"{"error":{"message":"prompt is too long: exceeds the maximum context length"}}"#
+            .to_string(),
+    );
+    let server = MockModelServer::start(vec![
+        MockResponse::Json(planning_tool_call_json()),
+        // Synthesis call #1: overflow.
+        MockResponse::Status(
             400,
             r#"{"error":{"message":"prompt is too long: exceeds the maximum context length"}}"#
                 .to_string(),
-        );
-        let server = MockModelServer::start(vec![
-            MockResponse::Json(planning_tool_call_json()),
-            // Synthesis call #1: overflow.
-            MockResponse::Status(
-                400,
-                r#"{"error":{"message":"prompt is too long: exceeds the maximum context length"}}"#
-                    .to_string(),
-            ),
-            // CompactAndRetry re-send: still overflow → degrade, no further retry.
-            overflow_400,
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, false);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+        ),
+        // CompactAndRetry re-send: still overflow → degrade, no further retry.
+        overflow_400,
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, false);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("overflow recovery exhaustion must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("overflow recovery exhaustion must not bubble Err");
 
-        let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
-            &result.tool_records,
-            "zh-CN",
-            crate::chat::agent::recovery::FailureKind::ContextOverflow,
-        );
-        assert!(recovered.contains("result:read"));
-        assert_eq!(result.content, recovered);
-        assert_eq!(result.stream_outcome, "recovered");
-        // Single-attempt guard: planning + failed synthesis + ONE retry = 3 calls,
-        // not an unbounded compact→retry loop.
-        assert_eq!(server.captured_bodies().len(), 3);
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), recovered.clone())]
-        );
-    }
+    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
+        &result.tool_records,
+        "zh-CN",
+        crate::chat::agent::recovery::FailureKind::ContextOverflow,
+    );
+    assert!(recovered.contains("result:read"));
+    assert_eq!(result.content, recovered);
+    assert_eq!(result.stream_outcome, "recovered");
+    // Single-attempt guard: planning + failed synthesis + ONE retry = 3 calls,
+    // not an unbounded compact→retry loop.
+    assert_eq!(server.captured_bodies().len(), 3);
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), recovered.clone())]
+    );
+}
 
-    /// Fallback F: non-streamed synthesis returns empty content after tool results;
-    /// the bilingual fallback replaces it and reasoning is still passed through.
-    #[tokio::test]
-    async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
-        let empty_synthesis = serde_json::json!({
-            "choices": [{
-                "finish_reason": "stop",
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": "synthesis reasoning"
-                }
-            }]
-        })
-        .to_string();
-        let server = MockModelServer::start(vec![
-            MockResponse::Json(planning_tool_call_json()),
-            MockResponse::Json(empty_synthesis),
-        ]);
-        let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url, false);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+/// Fallback F: non-streamed synthesis returns empty content after tool results;
+/// the bilingual fallback replaces it and reasoning is still passed through.
+#[tokio::test]
+async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
+    let empty_synthesis = serde_json::json!({
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "synthesis reasoning"
+            }
+        }]
+    })
+    .to_string();
+    let server = MockModelServer::start(vec![
+        MockResponse::Json(planning_tool_call_json()),
+        MockResponse::Json(empty_synthesis),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url, false);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
 
-        let result = run_agent_loop(config, &host, &executor)
-            .await
-            .expect("non-stream empty synthesis with tool records must not bubble Err");
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("non-stream empty synthesis with tool records must not bubble Err");
 
-        let recovered =
-            crate::chat::agent::recovery::assemble_results_from_tool_records(&result.tool_records, "zh-CN", crate::chat::agent::recovery::FailureKind::Empty);
-        assert!(recovered.contains("result:read"));
-        assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, recovered);
-        assert_eq!(result.reasoning.as_deref(), Some("synthesis reasoning"));
-        assert_eq!(result.tool_records.len(), 1);
-        assert_eq!(
-            host.recorded_dones(),
-            vec![("done".to_string(), recovered.clone())]
-        );
+    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
+        &result.tool_records,
+        "zh-CN",
+        crate::chat::agent::recovery::FailureKind::Empty,
+    );
+    assert!(recovered.contains("result:read"));
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(result.content, recovered);
+    assert_eq!(result.reasoning.as_deref(), Some("synthesis reasoning"));
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(
+        host.recorded_dones(),
+        vec![("done".to_string(), recovered.clone())]
+    );
 
-        let final_message = result.api_messages.last().expect("final api message");
-        assert_eq!(
-            final_message.get("content").and_then(Value::as_str),
-            Some(recovered.as_str())
-        );
-        assert_eq!(
-            final_message
-                .get("reasoning_content")
-                .and_then(Value::as_str),
-            Some("synthesis reasoning")
-        );
-    }
+    let final_message = result.api_messages.last().expect("final api message");
+    assert_eq!(
+        final_message.get("content").and_then(Value::as_str),
+        Some(recovered.as_str())
+    );
+    assert_eq!(
+        final_message
+            .get("reasoning_content")
+            .and_then(Value::as_str),
+        Some("synthesis reasoning")
+    );
+}
