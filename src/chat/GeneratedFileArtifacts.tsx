@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { Check, Clipboard, FileJson, FileSpreadsheet, FileText, FolderOpen, MoreHorizontal } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
+import { formatBytes } from '../utils/formatBytes'
 import { IconButton } from '../components/Button'
 import { artifactDataUrl, artifactMimeType, isFileArtifact } from './artifacts'
 import type { ChatToolArtifact } from './types'
@@ -42,13 +43,6 @@ function ArtifactIcon({ artifact }: { artifact: ChatToolArtifact }) {
     return <FileSpreadsheet className={className} strokeWidth={1.9} />
   }
   return <FileText className={className} strokeWidth={1.9} />
-}
-
-function formatBytes(bytes: number | null): string {
-  if (bytes == null || bytes < 0) return ''
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function decodeBase64Utf8(payload: string): string {
