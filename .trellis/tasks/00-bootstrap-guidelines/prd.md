@@ -109,8 +109,8 @@ When the developer confirms the checklist items above are done with real
 examples (not placeholders), guide them to run:
 
 ```bash
-python ./.trellis/scripts/task.py finish
-python ./.trellis/scripts/task.py archive 00-bootstrap-guidelines
+python3 ./.trellis/scripts/task.py finish
+python3 ./.trellis/scripts/task.py archive 00-bootstrap-guidelines
 ```
 
 After archive, every new developer who joins this project will get a

@@ -325,21 +325,3 @@ state correctly, but several commands still re-parsed event payload fields with
 local casts. The fix was to make the core event layer own `ThreadChannelEvent`
 and `isThreadEvent`, make `reduceChannelMetadata` the only channel metadata
 projection, and make `reduceThreads` the only thread replay reducer.
-
----
-
-## Multiplexed RPC: Do Not Turn One Lost Response into a Global Stall
-
-When a transport has request IDs and a pending-response map, distinguish the **connection lifecycle lock** from the **per-request wait**.
-
-### Checklist
-
-- [ ] Does any session/global mutex remain held while awaiting a normal RPC response?
-- [ ] Can request B be written and routed while request A is still pending?
-- [ ] Does a timeout remove only A's pending entry?
-- [ ] Is timeout reported as unknown outcome rather than safe-to-retry?
-- [ ] Are non-idempotent requests never replayed after an ambiguous timeout?
-- [ ] Does the concurrency test force B to finish before A times out, rather than merely joining two eventual successes?
-- [ ] Are lifecycle operations (reconnect, reload, idle reap) explicitly checked against in-flight requests?
-
-**Real-world example**: an MCP server lost one `tools/call` response after a partially failing batch but remained able to answer later requests. Kivio held `Mutex<McpSession>` across the entire response wait, converting one upstream lost response into 120 seconds of head-of-line blocking for every later call to that server. The fix separated lifecycle synchronization from stdio request multiplexing and added a time-barrier regression.

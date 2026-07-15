@@ -134,7 +134,7 @@ _SUBAGENT_CONFIG_DIRS: tuple[str, ...] = (
 _SEED_EXAMPLE = (
     "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. "
     "Put spec/research files only — no code paths. "
-    "Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. "
+    "Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. "
     "Delete this line once real entries are added."
 )
 
@@ -662,7 +662,7 @@ def cmd_set_branch(args: argparse.Namespace) -> int:
 
     if not branch:
         print(colored("Error: Missing arguments", Colors.RED))
-        print("Usage: python task.py set-branch <task-dir> <branch-name>")
+        print("Usage: python3 task.py set-branch <task-dir> <branch-name>")
         return 1
 
     task_json = target_dir / FILE_TASK_JSON
@@ -693,8 +693,8 @@ def cmd_set_base_branch(args: argparse.Namespace) -> int:
 
     if not base_branch:
         print(colored("Error: Missing arguments", Colors.RED))
-        print("Usage: python task.py set-base-branch <task-dir> <base-branch>")
-        print("Example: python task.py set-base-branch <dir> develop")
+        print("Usage: python3 task.py set-base-branch <task-dir> <base-branch>")
+        print("Example: python3 task.py set-base-branch <dir> develop")
         print()
         print("This sets the target branch for PR (the branch your feature will merge into).")
         return 1
@@ -728,7 +728,7 @@ def cmd_set_scope(args: argparse.Namespace) -> int:
 
     if not scope:
         print(colored("Error: Missing arguments", Colors.RED))
-        print("Usage: python task.py set-scope <task-dir> <scope>")
+        print("Usage: python3 task.py set-scope <task-dir> <scope>")
         return 1
 
     task_json = target_dir / FILE_TASK_JSON
