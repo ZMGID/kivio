@@ -510,16 +510,16 @@ pub fn refocus_overlay_after_frontmost_reassert(window: &WebviewWindow) {
 /// ② 捕获到异常时打印 `NSException` 的 `name` + `reason`——这是诊断职责，下次复现即可凭日志
 ///   定位到底是哪个 ObjC 调用抛的异常，再去修真正的根因。
 #[cfg(target_os = "macos")]
-fn run_overlay_on_main<F>(window: &WebviewWindow, f: F)
+fn run_overlay_on_main<F>(window: &WebviewWindow, f: F) -> bool
 where
     F: FnOnce(*mut objc::runtime::Object) + Send + 'static,
 {
-    let run = move |window: &WebviewWindow| {
+    let run = move |window: &WebviewWindow| -> bool {
         let Ok(ptr) = window.ns_window() else {
-            return;
+            return false;
         };
         if ptr.is_null() {
-            return;
+            return false;
         }
         let ptr = ptr as *mut objc::runtime::Object;
         // 在 FFI 边界用 @try/@catch 包住闭包执行。两个执行分支（直接执行 / run_on_main_thread）
@@ -527,25 +527,25 @@ where
         let result = unsafe { objc_exception::r#try(move || f(ptr)) };
         if let Err(exc) = result {
             log_overlay_objc_exception(exc);
+            return false;
         }
+        true
     };
 
     if macos_is_main_thread() {
-        run(window);
-        return;
+        return run(window);
     }
 
     let window_for_task = window.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    if window
-        .run_on_main_thread(move || {
-            run(&window_for_task);
-            let _ = tx.send(());
-        })
-        .is_ok()
-    {
-        let _ = rx.recv_timeout(std::time::Duration::from_millis(250));
+    if let Err(err) = window.run_on_main_thread(move || {
+        let _ = tx.send(run(&window_for_task));
+    }) {
+        eprintln!("[overlay] failed to schedule main-thread operation: {err}");
+        return false;
     }
+    rx.recv_timeout(std::time::Duration::from_millis(250))
+        .unwrap_or(false)
 }
 
 /// 在主线程调用 `[NSApp hide:]` 把前台让回原 App，@try/@catch 兜底任何 ObjC 异常。
@@ -630,9 +630,9 @@ extern "C" {
 #[cfg(target_os = "macos")]
 static ORIGINAL_OVERLAY_CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
-/// macOS：销毁重分类过的浮窗。先在主线程同步把类换回原类（`TaoWindow`），再 `destroy()`。
-/// 顺序保证：`run_overlay_on_main` 会等主线程执行完才返回，之后 destroy 的 dealloc 看到的已是
-/// 原类 → tao 析构不再因类不匹配抛 ObjC 异常 abort。未记到原类（理论不会）则回退 hide。
+/// macOS：销毁重分类过的浮窗。在同一个主线程保护闭包内先换回原类（`TaoWindow`），再
+/// `destroy()`，保证 tao/WebKit 析构时不会看到自定义 Panel 类。主线程调度失败或未记到原类时
+/// 回退 hide，不从当前线程冒险销毁。
 #[cfg(target_os = "macos")]
 pub fn destroy_overlay_window(window: &WebviewWindow) {
     let Some(orig) = ORIGINAL_OVERLAY_CLASS.get().copied() else {
@@ -642,10 +642,19 @@ pub fn destroy_overlay_window(window: &WebviewWindow) {
         let _ = window.hide();
         return;
     };
-    run_overlay_on_main(window, move |ptr| unsafe {
+    // 恢复原类和 destroy 必须在同一个主线程闭包里连续完成。若先等待恢复、再从后台线程
+    // destroy，主线程排队超过等待时限时就可能在窗口仍是 KivioOverlayPanel 的情况下销毁，
+    // 重新触发 tao/WebKit 的 ObjC abort；两步合并后即使调用方等待超时，排队闭包最终执行时
+    // 仍会严格按“换类 → 销毁”的顺序运行。
+    let window_for_destroy = window.clone();
+    if !run_overlay_on_main(window, move |ptr| unsafe {
         object_setClass(ptr, orig as *const objc::runtime::Class);
-    });
-    let _ = window.destroy();
+        let _ = window_for_destroy.destroy();
+    }) {
+        // 调度失败或窗口句柄已失效时不冒险从当前线程 destroy；隐藏是安全的降级路径。
+        eprintln!("[overlay] destroy_overlay_window: 主线程安全销毁未确认，退回 hide");
+        let _ = window.hide();
+    }
 }
 
 /// 运行时注册一个 NSPanel 子类：borderless 窗口默认 `canBecomeKeyWindow=NO`，强制 YES 才能

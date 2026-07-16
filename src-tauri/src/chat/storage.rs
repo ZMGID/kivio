@@ -1426,10 +1426,17 @@ pub fn assistant_snapshot(
     assistant_id: &str,
 ) -> Result<ChatAssistantSnapshot, String> {
     let assistant = get_assistant(app, assistant_id)?;
-    if assistant.archived || !assistant.enabled {
+    if !assistant_is_available(&assistant) {
         return Err("助手不可用".to_string());
     }
     Ok(ChatAssistantSnapshot::from(&assistant))
+}
+
+/// `enabled` 是旧版助手中心留下的兼容字段。新版以「常用 / installed」控制选择器展示，
+/// 不再提供启停入口；若继续把旧的 `enabled=false` 当作运行时禁用，用户会看到助手却无法使用，
+/// 也没有任何地方能重新启用。因此运行时可用性只由归档状态决定。
+fn assistant_is_available(assistant: &ChatAssistant) -> bool {
+    !assistant.archived
 }
 
 fn normalize_assistant(assistant: &mut ChatAssistant) -> Result<(), String> {
@@ -1730,6 +1737,19 @@ mod builtin_assistant_tests {
         // 7 内置 + 1 用户，无重复。
         assert_eq!(merged.len(), 8);
         assert_eq!(merged.iter().filter(|a| a.built_in).count(), 7);
+    }
+
+    #[test]
+    fn legacy_disabled_assistant_remains_available_until_archived() {
+        let mut assistant = builtin_assistant_definitions(1_700_000_000)
+            .into_iter()
+            .next()
+            .unwrap();
+        assistant.enabled = false;
+        assert!(assistant_is_available(&assistant));
+
+        assistant.archived = true;
+        assert!(!assistant_is_available(&assistant));
     }
 }
 
