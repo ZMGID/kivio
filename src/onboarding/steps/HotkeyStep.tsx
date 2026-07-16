@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { Settings } from '../../api/tauri'
-import { HotkeyInput, Toggle } from '../../settings/components'
+import { HotkeyInput, Select, Toggle } from '../../settings/components'
 import type { I18n } from '../../settings/i18n'
 import { buildHotkey } from '../../settings/utils'
 import { OnboardingFormRow } from '../OnboardingFormRow'
@@ -25,6 +26,7 @@ type HotkeyField = {
 
 type HotkeySection = {
   title: string
+  lead?: ReactNode
   fields: HotkeyField[]
 }
 
@@ -102,6 +104,26 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
     },
     {
       title: t.onboardingHotkeySectionQuickTranslate,
+      lead: (
+        <OnboardingFormRow label={t.ocrEngine} hint={t.ocrEngineHint} stack>
+          <Select
+            className="w-full max-w-[260px]"
+            value={settings.screenshotTranslation?.ocrMode ?? 'cloud_vision'}
+            onChange={(value) => onChange({
+              ...settings,
+              screenshotTranslation: {
+                ...settings.screenshotTranslation,
+                ocrMode: value as 'cloud_vision' | 'system' | 'rapid_ocr',
+              },
+            })}
+            options={[
+              { value: 'cloud_vision', label: t.ocrEngineCloudVision },
+              { value: 'system', label: t.ocrEngineSystem },
+              { value: 'rapid_ocr', label: t.ocrEngineRapidOcr },
+            ]}
+          />
+        </OnboardingFormRow>
+      ),
       fields: [
         {
           id: 'screenshot',
@@ -148,6 +170,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
         <div key={section.title} className="onboarding-section">
           <div className="onboarding-section-label">{section.title}</div>
           <div className="onboarding-card onboarding-card--rows">
+            {section.lead}
             {section.fields.map((field) => (
               <OnboardingFormRow
                 key={field.id}
