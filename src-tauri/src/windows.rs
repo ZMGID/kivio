@@ -486,6 +486,18 @@ pub fn focus_overlay_webview(window: &WebviewWindow) {
     });
 }
 
+/// 冷创建 Panel 后重新激活原 App 是异步完成的；若立刻 makeKeyWindow，随后到达的 App 激活
+/// 会再次夺走 key focus。稍等一个很短的窗口排序周期，再只对非激活 Panel/WKWebView 取焦点，
+/// 从而同时满足“原 App/Chat 排序不变”和“翻译输入框能收键盘”。
+#[cfg(target_os = "macos")]
+pub fn refocus_overlay_after_frontmost_reassert(window: &WebviewWindow) {
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        focus_overlay_webview(&window);
+    });
+}
+
 /// 在主线程上拿到 ns_window 指针并执行 `f`（AppKit 调用必须落在主线程）。
 ///
 /// **FFI 边界拦 ObjC 异常（真 bug 修复，非兜底）**：overlay 的所有 objc 闭包
@@ -534,22 +546,6 @@ where
     {
         let _ = rx.recv_timeout(std::time::Duration::from_millis(250));
     }
-}
-
-/// 结束主窗口的输入法(IME)/字段编辑会话并让出 first responder。
-///
-/// 注意：这只能安全地为隐藏窗口做准备，不能把随后销毁 WKWebView 变成可靠操作。真正的
-/// close/destroy 由 tao 在后续事件循环处理，不在这里的 ObjC exception guard 范围内；macOS
-/// 输入翻译提交路径因此会保留并复用窗口。
-#[cfg(target_os = "macos")]
-pub fn resign_window_input_focus(window: &WebviewWindow) {
-    run_overlay_on_main(window, |ns_window| unsafe {
-        use cocoa::base::nil;
-        use objc::{msg_send, sel, sel_impl};
-        // endEditingFor:nil 结束字段编辑器/IME 标记文本；makeFirstResponder:nil 让出 first responder。
-        let _: () = msg_send![ns_window, endEditingFor: nil];
-        let _: bool = msg_send![ns_window, makeFirstResponder: nil];
-    });
 }
 
 /// 在主线程调用 `[NSApp hide:]` 把前台让回原 App，@try/@catch 兜底任何 ObjC 异常。
@@ -828,6 +824,43 @@ pub fn remember_frontmost_app(slot: &std::sync::atomic::AtomicI32) {
     let self_pid = std::process::id() as i32;
     let to_store = if pid > 0 && pid != self_pid { pid } else { 0 };
     slot.store(to_store, Ordering::SeqCst);
+}
+
+/// 冷创建隐藏 WebView 可能在它被重分类成非激活 NSPanel 之前短暂激活 Kivio，连带把普通 Chat
+/// 窗口排到其他 App 前面。Panel 配置完成、真正显示之前调用本函数：若原前台 App 已被抢走，
+/// 立刻把它重新激活，但不清空快照（关闭浮窗时仍可再次交还）。前台原本就是 Kivio 时槽为 0，
+/// 因而不会隐藏、显示、聚焦或改变 Chat 窗口本身。
+#[cfg(target_os = "macos")]
+pub fn reassert_previous_frontmost_app(app: &AppHandle, slot: &std::sync::atomic::AtomicI32) {
+    use std::sync::atomic::Ordering;
+    let pid = slot.load(Ordering::SeqCst);
+    if pid <= 0 {
+        return;
+    }
+
+    // 大多数情况下非激活 Panel 从未抢走前台。此时再次 activate 原 App 会触发 macOS
+    // 重排它的全部窗口，表现为按下 Lens 快捷键时桌面窗口整体闪一下。只有前台 PID
+    // 确实发生变化时才执行恢复；显示后的第二次校正也因此保持无副作用。
+    if macos_frontmost_app_pid() == pid {
+        return;
+    }
+
+    let activate = move || unsafe { macos_activate_app(pid) };
+    if macos_is_main_thread() {
+        activate();
+        return;
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    if app
+        .run_on_main_thread(move || {
+            activate();
+            let _ = tx.send(());
+        })
+        .is_ok()
+    {
+        let _ = rx.recv_timeout(std::time::Duration::from_millis(250));
+    }
 }
 
 /// 故意打开 Chat 的路径（open_chat_window / open_chat_settings_window）调用：清掉快照槽，避免

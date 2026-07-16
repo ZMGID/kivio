@@ -83,7 +83,7 @@ function Translator({
     const handler = async (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         try {
-          await api.closeWindow()
+          await api.closeTranslatorWindow()
         } catch (err) {
           console.error('[Translator] Failed to close window:', err)
         }

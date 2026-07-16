@@ -317,8 +317,14 @@ pub(crate) fn open_settings_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) fn close_translator_window(app: AppHandle) {
+pub(crate) fn close_translator_window(app: AppHandle, state: State<'_, AppState>) {
     if let Some(window) = get_main_window(&app) {
+        #[cfg(target_os = "macos")]
+        {
+            crate::windows::destroy_overlay_window(&window);
+            crate::windows::restore_previous_frontmost_app(&app, &state.prev_frontmost_pid_main);
+        }
+        #[cfg(not(target_os = "macos"))]
         let _ = window.close();
     }
 }
@@ -388,13 +394,11 @@ pub(crate) async fn commit_translation(
     #[cfg(target_os = "macos")]
     crate::windows::forget_frontmost_app(&state.prev_frontmost_pid_main);
 
-    // macOS 不能在中文输入法的输入上下文仍绑定 WKWebView 时销毁窗口。即使先
-    // makeFirstResponder:nil，真正的 close/destroy 仍由 tao 在后续事件循环里执行，TSM/IMK
-    // 可能在那里抛出 ObjC 异常并越过 Rust FFI 直接 abort。提交后保留并复用这个很小的主
-    // WebView，只结束编辑并隐藏 App，彻底避开危险的 native teardown。
+    // macOS 输入翻译窗口被重分类为 KivioOverlayPanel；必须先换回 TaoWindow 再 destroy，
+    // 否则 WebKit 清理 contentLayoutRect KVO observer 时会抛 ObjC 异常并让 Rust abort。
     #[cfg(target_os = "macos")]
     if let Some(window) = get_main_window(&app) {
-        crate::windows::resign_window_input_focus(&window);
+        crate::windows::destroy_overlay_window(&window);
     }
 
     // 其他平台没有 macOS TSM/IMK 的销毁问题，保持原有的关闭释放行为。

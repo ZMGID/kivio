@@ -472,6 +472,11 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         return Ok(());
     }
 
+    // 必须在 ensure_* 创建隐藏 WebView 之前记录。macOS 冷创建普通 NSWindow 可能短暂激活
+    // Kivio；若等创建后才记录，就会把被抢来的 Kivio 误认成原前台 App，Chat 随之被排到最前。
+    #[cfg(target_os = "macos")]
+    windows::remember_frontmost_app(&state.prev_frontmost_pid_lens);
+
     // 按 mode 选目标窗口：chat → lens 问答窗口；translate / translateText → 独立快速翻译窗口。
     // 两者互斥（同一时刻只一个浮窗可见，由 lens_is_active 泛化 + 热键 toggle 保证）。
     // 先记下浮窗是否"已存在"（复用）：冷创建时前端会全新挂载、自行 take 复位载荷与选区，
@@ -489,14 +494,19 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
             Ok(w) => w,
             Err(e) => {
                 state.lens_busy.store(false, Ordering::SeqCst);
+                #[cfg(target_os = "macos")]
+                windows::restore_previous_frontmost_app(app, &state.prev_frontmost_pid_lens);
                 return Err(e);
             }
         }
     };
-    // 窗口已确保会显示（早返回守卫都已通过）：此刻记下前台 App，关闭时交还给它，避免 Kivio
-    // 变成"前台却无窗口"而触发 RunEvent::Reopen 误开 Chat。lens 与翻译各用独立槽。
     #[cfg(target_os = "macos")]
-    windows::remember_frontmost_app(&state.prev_frontmost_pid_lens);
+    {
+        // 先完成 NSPanel 重分类，再纠正冷创建造成的 App 激活；之后截冻结帧、显示 Panel 时
+        // 原 App 已重新处于前台，Chat 不会进入截图，也不会被一起抬高。
+        windows::ensure_overlay_panel(&window);
+        windows::reassert_previous_frontmost_app(app, &state.prev_frontmost_pid_lens);
+    }
     // 结果暂存在 state.pending_selection，等前端 take 走。translate 模式写 None，避免遗留旧值。
     if let Ok(mut guard) = state.pending_selection.lock() {
         *guard = pending_selection;
@@ -527,8 +537,11 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     );
     #[cfg(target_os = "macos")]
     {
-        windows::ensure_overlay_panel(&window);
         windows::show_overlay_panel(&window, true);
+        // 首次 makeKeyWindow 在部分系统上仍会把宿主 Kivio 激活；立即把原 App 重新置前，
+        // Panel 依靠 NonactivatingPanel + preventsActivation tag 继续收键盘，Chat 不参与排序。
+        windows::reassert_previous_frontmost_app(app, &state.prev_frontmost_pid_lens);
+        windows::refocus_overlay_after_frontmost_reassert(&window);
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -2200,6 +2213,8 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
             windows::destroy_overlay_window(&window);
         }
     }
+    #[cfg(target_os = "macos")]
+    windows::restore_previous_frontmost_app(&app, &state.prev_frontmost_pid_lens);
     Ok(())
 }
 

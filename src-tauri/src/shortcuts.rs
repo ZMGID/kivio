@@ -18,7 +18,8 @@ use crate::windows::{
 #[cfg(target_os = "macos")]
 use crate::windows::{
     apply_macos_traffic_light_position, ensure_overlay_panel, forget_frontmost_app,
-    remember_frontmost_app, show_overlay_panel,
+    reassert_previous_frontmost_app, refocus_overlay_after_frontmost_reassert,
+    remember_frontmost_app, restore_previous_frontmost_app, show_overlay_panel,
 };
 
 /// 模拟一次 Cmd+C(macOS)/Ctrl+C(Windows)。
@@ -770,28 +771,48 @@ pub(crate) fn get_mouse_position(app: &AppHandle) -> Option<tauri::PhysicalPosit
 /// 切换输入翻译窗口。
 /// 可见时关闭销毁 main WebView；显示时跟随鼠标位置偏移 (10,10) 弹出，翻译器保持置顶。
 pub(crate) fn toggle_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            #[cfg(target_os = "macos")]
+            {
+                crate::windows::destroy_overlay_window(&window);
+                let st = app.state::<AppState>();
+                restore_previous_frontmost_app(app, &st.prev_frontmost_pid_main);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = window.close();
+            return;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let st = app.state::<AppState>();
+        remember_frontmost_app(&st.prev_frontmost_pid_main);
+    }
+
     let window = match ensure_main_window(app) {
         Ok(window) => window,
         Err(err) => {
+            #[cfg(target_os = "macos")]
+            {
+                let st = app.state::<AppState>();
+                restore_previous_frontmost_app(app, &st.prev_frontmost_pid_main);
+            }
             eprintln!("Failed to ensure main window: {}", err);
             return;
         }
     };
 
-    let visible = window.is_visible().unwrap_or(false);
-    if visible {
-        let _ = window.close();
-        return;
-    }
-
     #[cfg(not(target_os = "macos"))]
     let _ = window.set_always_on_top(true);
     #[cfg(target_os = "macos")]
     {
-        // 记下打开翻译窗前的前台 App，关闭时交还（见 main.rs CloseRequested "main"）。
-        let st = app.state::<AppState>();
-        remember_frontmost_app(&st.prev_frontmost_pid_main);
         ensure_overlay_panel(&window);
+        // ensure_main_window 的冷创建若短暂激活了 Kivio，在显示非激活 Panel 前立刻纠正；
+        // 不触碰 Chat 窗口本身。
+        let st = app.state::<AppState>();
+        reassert_previous_frontmost_app(app, &st.prev_frontmost_pid_main);
     }
 
     // 重置 hash 为翻译模式；main 现在只承载输入翻译。
@@ -806,6 +827,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let window_for_task = window.clone();
+        let app_for_task = app.clone();
         let _ = window.run_on_main_thread(move || {
             if let Some(pos) = pos {
                 if let Err(e) = window_for_task.set_position(pos) {
@@ -816,6 +838,11 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
             }
             // 非激活 panel：need_key=true 让翻译输入框接收键盘，但不激活 app、不切 Space。
             show_overlay_panel(&window_for_task, true);
+            // 某些 macOS/tao 组合即便已带 NonactivatingPanel tag，冷创建后的首次
+            // makeKeyWindow 仍会激活宿主 App；显示后再校正一次，确保普通 Chat 不被带到前面。
+            let st = app_for_task.state::<AppState>();
+            reassert_previous_frontmost_app(&app_for_task, &st.prev_frontmost_pid_main);
+            refocus_overlay_after_frontmost_reassert(&window_for_task);
         });
         return;
     }

@@ -160,13 +160,18 @@ pub fn run() {
                     }
                     return;
                 }
-                // 翻译窗（main）关闭（Esc / toggle / commit 都走 window.close()）→ 把前台交还给
-                // 打开它之前的 App，避免 Kivio 变成"前台却无窗口"触发 RunEvent::Reopen 误开 Chat。
+                // 翻译窗（main）若仍收到默认 CloseRequested，必须拦截并走安全销毁：先恢复
+                // TaoWindow 原类，再 destroy WebView/NSPanel，同时把前台交还给打开它之前的 App。
                 #[cfg(target_os = "macos")]
                 if window.label() == "main" {
+                    api.prevent_close();
                     let handle = window.app_handle();
                     let st = handle.state::<AppState>();
                     restore_previous_frontmost_app(handle, &st.prev_frontmost_pid_main);
+                    if let Some(webview_window) = handle.get_webview_window("main") {
+                        windows::destroy_overlay_window(&webview_window);
+                    }
+                    return;
                 }
             }
             tauri::WindowEvent::Focused(true) =>
