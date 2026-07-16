@@ -49,6 +49,7 @@ GitHub release packaging:
    npx tauri build --bundles dmg
    gh release upload vX.Y.Z "src-tauri/target/release/bundle/dmg/Kivio Desktop_X.Y.Z_aarch64.dmg" --repo ZMGID/kivio
    ```
+   GitHub normalizes spaces in uploaded release asset names to dots, so the remote download is named `Kivio.Desktop_X.Y.Z_aarch64.dmg`.
 7. `.github/workflows/release.yml` builds the Windows release asset only:
    - `windows-latest` (x64) with `--bundles nsis`
    - It creates the GitHub release for the tag and attaches `Kivio.Desktop_X.Y.Z_x64-setup.exe` (NSIS normalizes spaces in `productName` to dots for the asset file name).
