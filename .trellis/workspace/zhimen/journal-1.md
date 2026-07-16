@@ -179,3 +179,36 @@ Implemented and refined a semantic chat message rail with turn-based navigation,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: macOS overlay teardown and focus fixes
+
+**Date**: 2026-07-16
+**Task**: macOS overlay teardown and focus fixes
+**Branch**: `main`
+
+### Summary
+
+Fixed input translator Esc/toggle teardown by restoring the TaoWindow class before destroying the WebView/NSPanel; prevented shortcut overlays from raising the Chat window; avoided redundant frontmost-app activation that caused Lens window flashing.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f297773` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
