@@ -52,6 +52,32 @@ const BUILTIN_ASSISTANT_GLYPHS: Record<string, (size: number) => ReactElement> =
       <rect x="16.4" y="14" width="2.6" height="3" rx="0.6" />
     </svg>
   ),
+  // 前端设计师：画板/界面框 + 侧栏分区
+  asst_builtin_frontend: (size) => (
+    <svg width={size} height={size} {...baseProps}>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <path d="M3.5 9h17" />
+      <path d="M9 9v10" />
+    </svg>
+  ),
+  // 翻译助手：地球（经纬线）
+  asst_builtin_translator: (size) => (
+    <svg width={size} height={size} {...baseProps}>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M4 12h16" />
+      <path d="M12 4c2.6 2.3 2.6 13.7 0 16" />
+      <path d="M12 4c-2.6 2.3-2.6 13.7 0 16" />
+    </svg>
+  ),
+  // 文档专家：带折角的文稿 + 正文行
+  asst_builtin_docsmith: (size) => (
+    <svg width={size} height={size} {...baseProps}>
+      <path d="M6 3h8l4 4v14H6z" />
+      <path d="M14 3v4h4" />
+      <path d="M9 12.5h6" />
+      <path d="M9 16h6" />
+    </svg>
+  ),
 }
 
 /** 返回内置专家的 SVG 图标；非内置（无映射）返回 null，调用处回退到首字头像。 */

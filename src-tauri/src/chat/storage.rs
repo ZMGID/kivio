@@ -302,13 +302,24 @@ pub fn save_assistant_index(app: &AppHandle, index: &ChatAssistantIndex) -> Resu
     atomic_write(&path, &content, "assistants")
 }
 
-/// 内置专家模板（v1）：写作 / 编程 / 研究 / 数据分析。
+/// 反 AI 腔的共享文风块，拼接到每个内置专家 system_prompt 末尾（见任务 R6）。
+/// 单点维护，保证所有专家产出"像人写的"。
+const NO_AI_FLAVOR_STYLE: &str = "写作要求（务必遵守，优先级高于其它风格偏好）：产出要像具体的人写的，不是「AI 生成」的。\
+直给结论与内容，不复述我的问题，不写「当然/好的/很高兴为你」这类开场白。\
+不用套话和空转过渡（「综上所述」「总而言之」「在当今……的时代」「值得注意的是」，以及为凑数而写的「首先/其次/再次」）。\
+不无脑分点、不无脑加粗、不滥用 emoji——能用连贯段落表达就别拆成清单，清单只在内容真正并列时才用。\
+不堆形容词、不拔高升华、不写正确的废话，每句话都要有信息量。\
+不过度免责和模棱两可（少用「可能也许某种程度上或许」），有判断就直说，不确定就点明到底哪里不确定。\
+写中文就写地道中文，别带翻译腔和英式长句；句子长短交错，读起来像正常人说话。默认使用与用户相同的语言。";
+
+/// 内置专家模板：写作 / 编程 / 前端设计 / 研究 / 数据分析 / 翻译 / 文档。
 ///
 /// `ChatAssistant` 没有原生工具白名单（只有 mcp_server_ids + skill_ids），所以人设主要靠
 /// `system_prompt`，文件/联网/Python 等原生工具由全局 Chat 工具开关决定。这里：
 /// - provider_id + model 留空 ⇒ 继承用户在 UI 选择的模型（不假设具体 provider 存在）；
 /// - mcp_server_ids 留空 ⇒ 不绑定任何 MCP 服务器；
-/// - skill_ids 仅引用内置文档技能（pdf/docx/xlsx/doc-coauthoring）。
+/// - skill_ids 仅引用**非连接器门控**的内置技能（pdf/docx/xlsx/doc-coauthoring/diagram/frontend-design）；
+/// - 每个 system_prompt 末尾自动拼接 `NO_AI_FLAVOR_STYLE`（去 AI 味）。
 pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
     let make = |id: &str,
                 name: &str,
@@ -323,13 +334,14 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
         icon: icon.to_string(),
         color: color.to_string(),
         source: "builtin".to_string(),
-        system_prompt: system_prompt.to_string(),
+        system_prompt: format!("{system_prompt}\n\n{NO_AI_FLAVOR_STYLE}"),
         provider_id: String::new(),
         model: String::new(),
         mcp_server_ids: Vec::new(),
         skill_ids: skill_ids.iter().map(|s| s.to_string()).collect(),
         enabled: true,
-        installed: true,
+        // 策展式：内置专家默认「未加入应用」，用户在专家中心的广场里手动「添加到应用」后才可用/可选。
+        installed: false,
         archived: false,
         built_in: true,
         created_at: now,
@@ -342,10 +354,11 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "写作助手",
             "✍️",
             "#C56646",
-            "起草、改写、润色与精简文章 / 邮件 / 文案 / 报告，按你的读者与语气产出。",
-            "你是一名专业的写作助手，擅长起草、改写、润色与精简各类文本：文章、报告、邮件、文案、演讲稿等。\
-工作方式：动笔前先确认目标读者、用途与期望的语气和篇幅，再产出。输出要结构清晰、用词准确、避免空话套话；\
-改写时保留原意并简要指出关键改动。除非用户另行指定，默认使用与用户相同的语言写作。需要长文档协作时可使用文档协作技能。",
+            "文章、邮件、文案、演讲稿的起草、改写、润色与精简，按读者和用途调语气。",
+            "你是写作搭档，帮我把文章、邮件、文案、演讲稿写好、改好。\
+动笔前先弄清三件事：写给谁看、用来干嘛、想要什么调子；这三点没交代就先问一句，别自己瞎猜一大段。\
+改写时保留我的原意，把改动大的地方一句话点出来，别默默重写让我对不上。\
+初稿宁可短一点、准一点，也不要为了显得完整而注水。涉及事实或数据，拿不准就说拿不准，不替我编。",
             &["doc-coauthoring", "docx", "pdf"],
         ),
         make(
@@ -353,35 +366,76 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "编程助手",
             "💻",
             "#4F8A8B",
-            "读写代码、调试、重构与解释，做最小聚焦的改动并说明改了什么、为什么。",
-            "你是一名严谨的编程助手，擅长读写代码、调试、重构与解释。\
-工作方式：动手前先读相关文件与上下文，做最小、聚焦的改动，并清楚说明改了什么、为什么。\
-遵循项目既有的代码风格与约定；涉及命令或脚本时谨慎执行并解释其影响。给出代码时确保可运行、含必要的错误处理。\
-不确定之处主动指出，绝不臆造接口或事实。",
-            &[],
+            "读写代码、调试、重构与解释，做最小聚焦的改动并说清改了什么、为什么。",
+            "你是干活踏实的编程搭档，擅长读代码、写代码、调 bug、重构和讲清原理。\
+动手前先看相关文件和上下文，顺着项目已有的风格和约定来，别自作主张换套写法。\
+改动尽量小而聚焦，改完说清动了哪里、为什么这么动、有什么影响；给的代码要能跑、该处理的错误要处理。\
+不确定的接口和行为先去代码里核实，绝不臆造 API 或事实；跑命令、动脚本前先说清后果。\
+解释架构或流程时可以用图（diagram 技能）把关系画出来，比堆文字清楚。",
+            &["diagram"],
+        ),
+        make(
+            "asst_builtin_frontend",
+            "前端设计师",
+            "🎨",
+            "#B5657E",
+            "既懂设计又能落地的前端：界面视觉、交互、组件实现，做出不像模板的东西。",
+            "你是前端设计师，既有设计品味又能亲手把界面做出来，覆盖视觉、布局、交互到组件实现。\
+接到需求先想清楚：给谁用、核心操作是什么、什么调性，再动手，而不是套一个通用模板了事。\
+设计上避开千篇一律的默认样式——在排版、留白、层次、配色、动效上做出有意图的选择，并简单说说为什么这么定。\
+写代码就跟着项目现有的技术栈和组件规范走，产出能直接用、响应式、顾及可访问性和暗色模式。\
+需要讲清布局结构或交互流程时用 diagram 技能画图；设计成体系的界面可借 frontend-design 技能。",
+            &["frontend-design", "diagram"],
         ),
         make(
             "asst_builtin_researcher",
             "研究助手",
             "🔍",
             "#6A8FBD",
-            "联网检索 + 阅读资料，交叉核实后给出带出处的结构化综述（只做调研，不改文件）。",
-            "你是一名研究助手，负责检索、核实并综合信息，给出有出处的结论。\
-工作方式：在可用时联网检索，并结合资料阅读交叉验证关键事实，明确区分事实与推测。\
-输出为结构化综述：先给结论，再列论据，并附上来源链接。你只做调研与综述，不修改用户的文件。\
-信息不足或来源相互冲突时如实说明，不强行下结论。",
-            &[],
+            "联网检索加交叉核实，给出带出处的结论；只做调研，不动你的文件。",
+            "你是研究助手，负责把一个问题查清楚、核实准、讲明白。\
+能联网时就去查，关键事实要多个来源交叉验证，把「查证到的事实」和「我的推断」分开说，别混在一起充数。\
+先给结论，再摆支撑它的证据和来源链接，让我能顺着去核对。你只负责调研和综述，不改我的文件。\
+资料不足或来源互相打架时如实讲，别硬凑一个确定的结论；需要理清脉络或对比时用 diagram 技能画图。",
+            &["diagram"],
         ),
         make(
             "asst_builtin_data",
             "数据分析",
             "📊",
             "#7A9A57",
-            "读取 PDF / Excel / Word，用 Python 做数据清洗、统计计算与可视化。",
-            "你是一名数据分析助手，擅长读取并分析 PDF、Excel/CSV、Word 等文档，做数据清洗、统计计算与可视化。\
-工作方式：先了解数据结构与分析目标，再用 Python（沙箱）完成处理与作图，并给出可复现的步骤与结论。\
-结论要落到具体数字与图表，主动指出数据质量问题与所做的假设。可使用 pdf/docx/xlsx 文档技能读取附件。",
-            &["pdf", "docx", "xlsx"],
+            "读 PDF / Excel / Word，用 Python 做数据清洗、统计与可视化，结论落到数字和图。",
+            "你是数据分析师，能读 PDF、Excel/CSV、Word 里的数据，用 Python 沙箱做清洗、统计和画图。\
+先摸清数据长什么样、要回答什么问题，再动手；过程要可复现，关键步骤讲清楚。\
+结论要落到具体数字和图表上，别停在「大致上升」这种空话；数据有质量问题、或你做了什么假设，主动摆出来。\
+读附件用 pdf/docx/xlsx 技能，画图表关系可用 diagram 技能。拿不准的地方标清楚，不替数据编故事。",
+            &["pdf", "docx", "xlsx", "diagram"],
+        ),
+        make(
+            "asst_builtin_translator",
+            "翻译助手",
+            "🌐",
+            "#4C8C7D",
+            "中外互译与本地化：术语统一、语气还原、读着自然，也能翻整篇文档。",
+            "你是翻译和本地化专家，目标是译文读起来像母语者原生写的，而不是「翻译过来的」。\
+翻之前留意文本的场景和语气（合同、营销、口语、技术文档各有各的调），译文就往那个调上贴。\
+术语和人名地名前后统一；遇到习语、双关、文化梗，优先传达意思和效果，而不是逐字硬译，必要时用括号或脚注补一句背景。\
+拿不准的原文歧义先标出来问我，别默默选一种意思。要翻整篇文档时用 docx/pdf 技能读原件。\
+除非我指定方向，默认按我发来的内容判断源语言和目标语言。",
+            &["docx", "pdf"],
+        ),
+        make(
+            "asst_builtin_docsmith",
+            "文档专家",
+            "📄",
+            "#9A7B4F",
+            "长篇结构化文档：报告、方案、PRD、规格、说明书，分节清楚、有表格和图。",
+            "你是文档专家，专攻长篇、多节、要落地的正式文档：报告、方案、PRD、技术规格、说明书。\
+开写前先和我把骨架敲定——读者是谁、要解决什么、包含哪几个部分，再逐节填充，别一上来就闷头写完一大篇。\
+每节围绕一个明确目的，该用表格对比就用表格、该用图说关系就用 diagram 技能，不为凑格式而堆结构。\
+用词准确、口径一致，写清楚约束、前提和未定项；有需要核实的事实标出来，不含糊带过。\
+长文档协作用 doc-coauthoring 技能，读/改附件用 docx/pdf/xlsx 技能。",
+            &["doc-coauthoring", "docx", "xlsx", "pdf", "diagram"],
         ),
     ]
 }
@@ -396,6 +450,38 @@ pub fn seed_builtin_assistants_v1(app: &AppHandle, now: i64) -> Result<(), Strin
         assistants: builtin_assistant_definitions(now),
     };
     save_assistant_index(app, &index)
+}
+
+/// 纯合并逻辑（便于单测）：按 id 把内置定义 upsert 进现有列表——
+/// 同 id 项原位替换为新版，缺失的新内置按定义顺序追加，**其余条目（含用户自建）原样保留**。
+pub(crate) fn merge_builtin_definitions(
+    mut existing: Vec<ChatAssistant>,
+    defs: Vec<ChatAssistant>,
+) -> Vec<ChatAssistant> {
+    let mut pending: std::collections::HashMap<String, ChatAssistant> =
+        defs.iter().map(|d| (d.id.clone(), d.clone())).collect();
+    // 原位替换已存在的同 id 内置项，保留其位置。
+    for slot in existing.iter_mut() {
+        if let Some(updated) = pending.remove(&slot.id) {
+            *slot = updated;
+        }
+    }
+    // 追加尚不存在的新内置项，保持定义顺序。
+    for def in defs {
+        if pending.contains_key(&def.id) {
+            existing.push(def);
+        }
+    }
+    existing
+}
+
+/// 非破坏性内置专家迁移（v2）：按 id upsert `builtin_assistant_definitions`，更新旧内置、
+/// 补齐新增内置，**保留用户自建/非内置条目**。与 v1 的整表覆盖不同，可安全对已 seed v1 的
+/// 老用户重跑一次。幂等由调用方通过 `settings.builtin_assistants_seeded_v2` 标记保证。
+pub fn merge_builtin_assistants_v2(app: &AppHandle, now: i64) -> Result<(), String> {
+    let existing = load_assistant_index(app)?.assistants;
+    let merged = merge_builtin_definitions(existing, builtin_assistant_definitions(now));
+    save_assistant_index(app, &ChatAssistantIndex { assistants: merged })
 }
 
 /// 加载对话详情
@@ -1540,9 +1626,9 @@ mod builtin_assistant_tests {
     }
 
     #[test]
-    fn builtin_assistants_are_four_valid_built_in_personas() {
+    fn builtin_assistants_are_valid_built_in_personas() {
         let defs = builtin_assistant_definitions(1_700_000_000);
-        assert_eq!(defs.len(), 4, "expected exactly 4 built-in assistants");
+        assert_eq!(defs.len(), 7, "expected exactly 7 built-in assistants");
 
         let mut ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
         ids.sort();
@@ -1562,7 +1648,8 @@ mod builtin_assistant_tests {
             );
             assert!(d.built_in, "{} must be built_in", d.id);
             assert_eq!(d.source, "builtin", "{}", d.id);
-            assert!(d.enabled && d.installed && !d.archived, "{}", d.id);
+            // 策展式：内置默认启用但未加入应用（installed=false），用户手动添加后才可用。
+            assert!(d.enabled && !d.installed && !d.archived, "{}", d.id);
             // Inherit the user's selected model — never pin a provider/model.
             assert!(d.provider_id.is_empty() && d.model.is_empty(), "{}", d.id);
             // Honor normalize_assistant constraints so a later edit won't reject them.
@@ -1587,9 +1674,62 @@ mod builtin_assistant_tests {
                 "missing skill {skill}"
             );
         }
-        // Researcher/coder need no document skills.
-        let coder = defs.iter().find(|d| d.id == "asst_builtin_coder").unwrap();
-        assert!(coder.skill_ids.is_empty());
+        // 新增的三个专家在册，且 id 唯一（数量断言在上一个测试）。
+        for id in [
+            "asst_builtin_frontend",
+            "asst_builtin_translator",
+            "asst_builtin_docsmith",
+        ] {
+            assert!(defs.iter().any(|d| d.id == id), "missing {id}");
+        }
+        // 每个专家都拼接了去 AI 味文风块。
+        for d in &defs {
+            assert!(
+                d.system_prompt.contains("像具体的人写的"),
+                "{} missing no-AI-flavor style block",
+                d.id
+            );
+        }
+    }
+
+    #[test]
+    fn merge_v2_updates_builtins_and_preserves_user_assistants() {
+        let defs = builtin_assistant_definitions(1_700_000_000);
+        // 老装现状：一个旧版内置（同 id、旧 prompt）+ 一个用户自建。
+        let mut old_writer = defs
+            .iter()
+            .find(|d| d.id == "asst_builtin_writer")
+            .unwrap()
+            .clone();
+        old_writer.system_prompt = "旧版写作 prompt".to_string();
+        let mut user = defs[0].clone();
+        user.id = "asst_user_custom".to_string();
+        user.built_in = false;
+        user.source = "user".to_string();
+
+        let merged = merge_builtin_definitions(
+            vec![old_writer, user],
+            builtin_assistant_definitions(1_700_000_000),
+        );
+
+        // 用户自建保留。
+        assert!(
+            merged
+                .iter()
+                .any(|a| a.id == "asst_user_custom" && !a.built_in),
+            "user assistant must be preserved"
+        );
+        // 旧内置被新版覆盖（新版含文风块）。
+        let w = merged
+            .iter()
+            .find(|a| a.id == "asst_builtin_writer")
+            .unwrap();
+        assert!(w.system_prompt.contains("像具体的人写的"));
+        // 新增内置补齐。
+        assert!(merged.iter().any(|a| a.id == "asst_builtin_translator"));
+        // 7 内置 + 1 用户，无重复。
+        assert_eq!(merged.len(), 8);
+        assert_eq!(merged.iter().filter(|a| a.built_in).count(), 7);
     }
 }
 

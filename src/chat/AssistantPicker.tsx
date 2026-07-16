@@ -31,7 +31,9 @@ export function AssistantPicker({
 
   const load = useCallback(async () => {
     try {
-      setAssistants(await chatApi.getAssistants())
+      // 对话栏只列「常用」专家（内置默认不在常用，需在专家中心的套件广场添加）。
+      const all = await chatApi.getAssistants()
+      setAssistants(all.filter((a) => (a.installed ?? true) !== false))
     } catch {
       /* ignore */
     }

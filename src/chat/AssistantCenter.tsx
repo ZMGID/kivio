@@ -4,6 +4,7 @@ import {
   BookOpen,
   Check,
   Copy,
+  Minus,
   Pencil,
   Play,
   Plus,
@@ -350,12 +351,23 @@ export function AssistantCenter({
     if (target) onApplyAssistant?.(target.id)
   }
 
+  // 常用（收藏夹）：切换专家是否「加入常用」。加入后才在对话栏的专家选择器里可选、可调用。
+  const handleToggleInstalled = async (assistant: ChatAssistant) => {
+    const next = (assistant.installed ?? true) === false
+    try {
+      await chatApi.updateAssistant({ ...assistant, installed: next })
+      await loadAssistants(assistant.id)
+    } catch (err) {
+      setError(typeof err === 'string' ? err : (err as Error).message || '操作失败')
+    }
+  }
+
   const renderList = () => (
     <div className="space-y-4">
       <div className="assistant-center-tabs flex min-w-0 items-center gap-1 border-b border-neutral-200 pb-2 dark:border-neutral-800">
           {[
+            ['installed', '常用', installedCount],
             ['plaza', '套件广场', builtInCount],
-            ['installed', '已安装', installedCount],
             ['mine', '我的', assistants.length - builtInCount],
           ].map(([value, label, count]) => (
             <button
@@ -380,7 +392,9 @@ export function AssistantCenter({
         <div className="grid min-h-[220px] place-items-center text-[13px] text-neutral-400">加载中...</div>
       ) : filteredAssistants.length === 0 ? (
         <div className="grid min-h-[220px] place-items-center rounded-md border border-dashed border-neutral-200 text-[13px] text-neutral-400 dark:border-neutral-800">
-          没有匹配的套件
+          {tab === 'installed' && !query.trim()
+            ? '还没有常用助手，去「套件广场」把常用的添加进来'
+            : '没有匹配的套件'}
         </div>
       ) : (
         <div className="overflow-hidden rounded-md border border-neutral-200 divide-y divide-neutral-200 dark:border-neutral-800 dark:divide-neutral-800">
@@ -415,9 +429,11 @@ export function AssistantCenter({
                         内置
                       </span>
                     )}
-                    <span className="truncate text-[12px] font-medium text-neutral-400 dark:text-neutral-500">
-                      {builtIn ? '内置' : '自定义'}
-                    </span>
+                    {!builtIn && (
+                      <span className="truncate text-[12px] font-medium text-neutral-400 dark:text-neutral-500">
+                        自定义
+                      </span>
+                    )}
                   </div>
                   <p className="mt-0.5 truncate text-[12px] leading-relaxed text-neutral-500 dark:text-neutral-400">
                     {assistant.description || '未设置描述'}
@@ -426,18 +442,37 @@ export function AssistantCenter({
                     <span className="shrink-0">{stats.mcp} MCP</span>
                     <span className="shrink-0 opacity-50">·</span>
                     <span className="shrink-0">{stats.skills} 技能</span>
-                    <span className="ml-auto shrink-0">{assistant.enabled === false ? '已停用' : '可用'}</span>
                   </div>
                 </button>
-                <IconButton
-                  size="md"
-                  onClick={() => void handleStartChat(assistant)}
-                  disabled={assistant.enabled === false}
-                  label={`使用 ${assistant.name} 开始聊天`}
-                  title="开始聊天"
-                >
-                  <Plus size={18} />
-                </IconButton>
+                {(assistant.installed ?? true) === false ? (
+                  <IconButton
+                    size="md"
+                    onClick={() => void handleToggleInstalled(assistant)}
+                    label={`添加 ${assistant.name} 到常用`}
+                    title="添加到常用"
+                  >
+                    <Plus size={18} />
+                  </IconButton>
+                ) : (
+                  <>
+                    <IconButton
+                      size="md"
+                      onClick={() => void handleStartChat(assistant)}
+                      label={`使用 ${assistant.name} 开始聊天`}
+                      title="开始聊天"
+                    >
+                      <Play size={18} />
+                    </IconButton>
+                    <IconButton
+                      size="md"
+                      onClick={() => void handleToggleInstalled(assistant)}
+                      label={`将 ${assistant.name} 移出常用`}
+                      title="移出常用"
+                    >
+                      <Minus size={18} />
+                    </IconButton>
+                  </>
+                )}
               </article>
             )
           })}
@@ -477,7 +512,7 @@ export function AssistantCenter({
                 {assistant.name}
               </h2>
               <div className="mt-1 text-[13px] font-medium text-neutral-500">
-                {assistant.enabled === false ? '已停用' : '可用'}
+                {(assistant.installed ?? true) === false ? '未加入常用' : '已在常用'}
               </div>
               <p className="mt-6 max-w-5xl text-[16px] leading-8 text-neutral-700 dark:text-neutral-300">
                 {assistant.description || '这个助手还没有描述。'}
@@ -485,6 +520,17 @@ export function AssistantCenter({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
+            {(assistant.installed ?? true) === false ? (
+              <Button variant="primary" onClick={() => void handleToggleInstalled(assistant)}>
+                <Plus size={15} />
+                添加到常用
+              </Button>
+            ) : (
+              <Button variant="ghost" onClick={() => void handleToggleInstalled(assistant)}>
+                <Minus size={15} />
+                移出常用
+              </Button>
+            )}
             <Button
               onClick={() => {
                 setDraft(normalizeAssistantForDraft(assistant))
@@ -505,7 +551,6 @@ export function AssistantCenter({
               <Button
                 variant="ghost"
                 onClick={() => void handleApplyAssistant(assistant)}
-                disabled={assistant.enabled === false}
               >
                 <Check size={15} />
                 应用到当前对话
@@ -514,7 +559,6 @@ export function AssistantCenter({
             <Button
               variant="primary"
               onClick={() => void handleStartChat(assistant)}
-              disabled={assistant.enabled === false}
             >
               <Play size={15} />
               开始聊天
@@ -582,7 +626,7 @@ export function AssistantCenter({
             <div className="min-w-0">
               <h2 className="truncate text-[24px] font-semibold text-neutral-950 dark:text-neutral-50">编辑套件</h2>
               <p className="mt-1 truncate text-[13px] text-neutral-500">
-                {draft.built_in ? '内置套件模板' : '自定义套件'} · {draft.enabled === false ? '已停用' : '可用'}
+                {draft.built_in ? '内置套件模板' : '自定义套件'}
               </p>
             </div>
           </div>
@@ -610,7 +654,7 @@ export function AssistantCenter({
             <Button
               variant="primary"
               onClick={() => void handleStartChat()}
-              disabled={saving || draft.enabled === false}
+              disabled={saving}
             >
               <Play size={15} />
               开始聊天
@@ -735,15 +779,6 @@ export function AssistantCenter({
                       ? models.map((model) => ({ value: model, label: model }))
                       : [{ value: '', label: '跟随聊天默认' }]
                   }
-                />
-              </label>
-              <label className="flex items-center justify-between gap-3 rounded-md bg-neutral-50 px-2.5 py-2 text-[12px] text-neutral-700 dark:bg-neutral-800/70 dark:text-neutral-200">
-                <span>启用助手</span>
-                <input
-                  type="checkbox"
-                  checked={draft.enabled !== false}
-                  onChange={(event) => updateDraft('enabled', event.target.checked)}
-                  className="size-4 accent-neutral-900 dark:accent-neutral-100"
                 />
               </label>
             </section>
