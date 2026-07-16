@@ -145,3 +145,37 @@ Implemented and refined a semantic chat message rail with turn-based navigation,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: 重做内置专家套件（去 AI 味 + 常用模型）+ 若干 UI 修复
+
+**Date**: 2026-07-16
+**Task**: 重做内置专家套件（去 AI 味 + 常用模型）+ 若干 UI 修复
+**Branch**: `main`
+
+### Summary
+
+把 4 个占位内置专家重做为 7 个专业人设(写作/编程/前端/研究/数据/翻译/文档),每个 prompt 口语化并统一拼接去 AI 味文风块;非破坏 v2 迁移(按 id upsert 保留用户自建);内置默认不加入常用,专家中心 tab 改为 常用(首位)/广场/我的,对话栏只列常用;去掉启用/停用概念;修复重复内置徽章。另修请求调试左列吸顶去空缺。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `13473a5` | (see git log) |
+| `8c4913d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
