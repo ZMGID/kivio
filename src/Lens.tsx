@@ -240,6 +240,9 @@ export default function Lens() {
   const historyOpenRef = useRef(false)
   const drawModeRef = useRef(false)
   const imageIdRef = useRef('')
+  // 历史记录 key：截图会话 = imageId；纯文本会话（无截图）后端 image_id 必须为空，
+  // 否则会被当成有图去读图报错，所以另给一个合成 key 专供历史去重/持久化。
+  const historyKeyRef = useRef('')
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const floatingRebaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const focusReqIdRef = useRef(0)
@@ -436,6 +439,7 @@ export default function Lens() {
     })
     selectRevealedRef.current = false
     imageIdRef.current = ''
+    historyKeyRef.current = ''
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
     setCardSessionHeight(0)
@@ -657,23 +661,24 @@ export default function Lens() {
     if (!justFinishedStreamRef.current) return
     if (mode !== 'chat') return
     if (streaming) return
-    if (!imageIdRef.current || messages.length === 0) return
+    const id = imageIdRef.current || historyKeyRef.current
+    if (!id || messages.length === 0) return
     const hasAssistant = messages.some(m => m.role === 'assistant' && m.content)
     if (!hasAssistant) return
     justFinishedStreamRef.current = false
 
-    const id = imageIdRef.current
     let cancelled = false
     void (async () => {
       try {
         // Persist the image before writing the history row. Otherwise a fast close
         // can delete the temp file and leave an unusable history item behind.
-        await api.lensCommitImageToHistory(id)
+        // 纯文本会话没有图，跳过持久化（否则 commit 会报 "Image not available" 直接 bail）。
+        if (imageIdRef.current) await api.lensCommitImageToHistory(imageIdRef.current)
       } catch (err) {
         console.error('[lens-history] commit failed:', err)
         return
       }
-      const thumb = await makeThumbnail(imagePreview, HISTORY_THUMB_SIZE)
+      const thumb = imagePreview ? await makeThumbnail(imagePreview, HISTORY_THUMB_SIZE) : ''
       if (cancelled) return
       setHistory(prev => {
         const filtered = prev.filter(h => h.id !== id)
@@ -873,6 +878,7 @@ export default function Lens() {
     })
     selectRevealedRef.current = false
     imageIdRef.current = ''
+    historyKeyRef.current = ''
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
     setCardSessionHeight(0)
@@ -1588,6 +1594,8 @@ export default function Lens() {
     const userMsg: ExplainMessage = { role: 'user', content: userContent }
     const placeholder: ExplainMessage = { role: 'assistant', content: '' }
     const sendMessages: ExplainMessage[] = [...messages, userMsg]
+    // 历史 key：有截图用 imageId；纯文本会话首轮生成一个合成 key（后续追问沿用）。
+    historyKeyRef.current = imageIdRef.current || historyKeyRef.current || makeTextRequestId()
     flushSync(() => {
       setMessages([...sendMessages, placeholder])
       setStage('answering')
@@ -1748,7 +1756,11 @@ export default function Lens() {
     if (streaming) {
       void api.lensCancelStream().catch(err => console.error(err))
     }
-    imageIdRef.current = item.id
+    // 截图会话：item.id 是可解析的图片句柄。纯文本会话（无缩略图）后端 image_id 必须留空，
+    // 否则 lens-stream 事件 imageId 对不上、追问又会被当成有图去读图报错。
+    const isTextOnly = !item.imagePreview
+    imageIdRef.current = isTextOnly ? '' : item.id
+    historyKeyRef.current = item.id
     // 防御：恢复历史 setMessages 会触发持久化 effect，但本路径不是"流刚结束"，不该 push 重复条目
     justFinishedStreamRef.current = false
     flushSync(() => {
