@@ -719,8 +719,8 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
       {error && <div className="text-[11px] text-red-500">{error}</div>}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(240px,340px)_1fr]">
-        {/* 左列：搜索 + 请求列表 */}
-        <div className="flex max-h-[560px] flex-col overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
+        {/* 左列：搜索 + 请求列表。lg 下吸顶 + 撑到接近视口高，避免右列详情很长时左侧留大片空白。 */}
+        <div className="flex max-h-[560px] flex-col overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800 lg:sticky lg:top-2 lg:max-h-[calc(100vh-140px)] lg:self-start">
           <div className="flex items-center gap-1.5 border-b border-neutral-200 px-2.5 py-1.5 dark:border-neutral-800">
             <Search size={12} className="shrink-0 text-neutral-400" />
             <input
