@@ -1,10 +1,10 @@
 # Release Packaging
 
-This document is the required release checklist for Kivio installers. Do not publish a new release only from memory; follow this file.
+This document is the required release checklist for Kivio Desktop installers. Do not publish a new release only from memory; follow this file.
 
 ## Current Packaging Flow
 
-Kivio is packaged by Tauri.
+Kivio Desktop is packaged by Tauri.
 
 Local packaging:
 
@@ -29,7 +29,7 @@ npm run build
 GitHub release packaging:
 
 1. Bump versions in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`.
-2. Update README release notes.
+2. Update README release notes and add the bilingual GitHub body under `docs/releases/vX.Y.Z.md`.
 3. Run the local quality gate:
    ```bash
    npm run lint
@@ -47,12 +47,12 @@ GitHub release packaging:
    ```bash
    npm run build:swift
    npx tauri build --bundles dmg
-   gh release upload vX.Y.Z "src-tauri/target/release/bundle/dmg/Kivio_X.Y.Z_aarch64.dmg" --repo ZMGID/kivio
+   gh release upload vX.Y.Z "src-tauri/target/release/bundle/dmg/Kivio Desktop_X.Y.Z_aarch64.dmg" --repo ZMGID/kivio
    ```
 7. `.github/workflows/release.yml` builds the Windows release asset only:
    - `windows-latest` (x64) with `--bundles nsis`
-   - It creates the GitHub release for the tag and attaches `Kivio_X.Y.Z_x64-setup.exe`.
-   - The macOS DMG is **unsigned** (no signing secrets configured); first launch needs right-click → Open, or `xattr -cr /Applications/Kivio.app`.
+   - It creates the GitHub release for the tag and attaches `Kivio Desktop_X.Y.Z_x64-setup.exe`.
+   - The macOS DMG is **unsigned** (no signing secrets configured); first launch needs right-click → Open, or `xattr -cr "/Applications/Kivio Desktop.app"`.
 8. Watch the workflow and inspect the release assets:
    ```bash
    gh run watch <RUN_ID> --repo ZMGID/kivio --exit-status
@@ -130,7 +130,7 @@ Required local Python font assets:
 Implementation requirement:
 
 - Run `npm run prepare:pyodide` before the frontend build. It creates the reproducible Python sandbox runtime resources in `resources/python-sandbox/pyodide/`.
-- Update the Vite Pyodide asset plugin in `vite.config.ts` so it emits the sandbox runtime core files, required local wheels, and required local font assets into `dist/pyodide/`; Tauri packages that single frontend asset copy through `frontendDist`.
+- Update the Vite Pyodide asset plugin in `vite.config.ts` so it emits the sandbox runtime core files, required local wheels, and required local font assets into `dist/pyodide/`; Tauri embeds that `frontendDist` asset tree into the application executable (it is not copied as loose files under `Contents/Resources`).
 - Update `src/chat/pyodideRunner.ts` so `run_python` package loading prefers the bundled local `dist/pyodide/` package index and wheels.
 - CDN package loading may remain as a fallback, but the app must be able to run normal `pdf` / `docx` / `xlsx` analysis without downloading those common packages at runtime.
 - Do not package a host machine virtual environment or host `site-packages` as a substitute for Pyodide wheels. The runtime used by `run_python` is Pyodide in the WebView sandbox.
@@ -142,15 +142,20 @@ Before publishing or announcing installers, inspect the final artifact contents.
 For macOS DMG:
 
 ```bash
-hdiutil attach "src-tauri/target/release/bundle/dmg/Kivio_X.Y.Z_aarch64.dmg"
-find "/Volumes/Kivio/Kivio.app/Contents/Resources" -maxdepth 5 -type f | sort
-hdiutil detach "/Volumes/Kivio"
+mkdir -p /tmp/kivio-release-check
+hdiutil attach -nobrowse -readonly -mountpoint /tmp/kivio-release-check \
+  "src-tauri/target/release/bundle/dmg/Kivio Desktop_X.Y.Z_aarch64.dmg"
+find "/tmp/kivio-release-check/Kivio Desktop.app/Contents/Resources" -maxdepth 5 -type f | sort
+strings -a "/tmp/kivio-release-check/Kivio Desktop.app/Contents/MacOS/kivio" | \
+  rg 'pyodide/(pyodide\.asm\.(js|wasm)|python_stdlib\.zip|numpy-.*\.whl|pandas-.*\.whl|NotoSansCJKsc-Regular\.otf)'
+hdiutil detach /tmp/kivio-release-check
+rmdir /tmp/kivio-release-check
 ```
 
 For the local `.app` bundle before DMG:
 
 ```bash
-find "src-tauri/target/release/bundle/macos/Kivio.app/Contents/Resources" -maxdepth 5 -type f | sort
+find "src-tauri/target/release/bundle/macos/Kivio Desktop.app/Contents/Resources" -maxdepth 5 -type f | sort
 ```
 
 For GitHub Releases:
@@ -159,10 +164,10 @@ For GitHub Releases:
 gh release view vX.Y.Z --repo ZMGID/kivio --json url,assets
 ```
 
-The release is not complete until the final installer resources show both:
+The release is not complete until the final installer shows both:
 
-- `skills/pdf|docx|xlsx`
-- Pyodide runtime plus the required local package wheels
+- loose `Contents/Resources/skills/pdf|docx|xlsx` Skill files
+- embedded `/pyodide/...` runtime, wheel, and font asset keys in the application executable
 
 ## Common Failure To Avoid
 

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish to (e.g. v2.7.8)'
+        description: 'Release tag to publish to (e.g. v2.7.9)'
         required: true
-        default: 'v2.7.8'
+        default: 'v2.7.9'
       ref:
         description: 'Git ref to build from (branch/tag/commit)'
         required: true
@@ -56,14 +56,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: Kivio ${{ env.RELEASE_TAG }}
+          releaseName: Kivio Desktop ${{ env.RELEASE_TAG }}
           releaseBody: |
             Automated Windows (x64) build for ${{ env.RELEASE_TAG }}.
             Built from: ${{ env.BUILD_REF }}
             - Windows: NSIS installer (.exe)
 
             macOS DMG (Apple Silicon / aarch64, unsigned — first launch: right-click → Open,
-            or run `xattr -cr /Applications/Kivio.app`) is built locally and uploaded separately.
+            or run `xattr -cr "/Applications/Kivio Desktop.app"`) is built locally and uploaded separately.
           releaseDraft: false
           prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'rc') }}
           includeUpdaterJson: false

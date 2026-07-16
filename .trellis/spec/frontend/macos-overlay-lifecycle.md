@@ -20,6 +20,7 @@ This contract applies whenever the Lens, screenshot translation, replace transla
 - `restore_previous_frontmost_app` must be a no-op when the recorded PID is already frontmost; activating with `NSApplicationActivateAllWindows` in that state visibly reorders all windows.
 - A reclassified overlay must never be destroyed directly. Restore its original tao class and call `destroy()` inside the same guarded main-thread closure.
 - Input translator teardown and Lens-family launch behavior are separate concerns: fixing IME teardown must not add foreground activation to screenshot launch paths.
+- A tray left-click is an intentional transition to Chat. If a Lens-family overlay is active, call `lens_close(app.clone())` synchronously before `open_chat_window(app)` so an always-on-top overlay cannot cover Chat.
 
 ## 4. Validation & Error Matrix
 
@@ -31,6 +32,7 @@ This contract applies whenever the Lens, screenshot translation, replace transla
 | Recorded app is no longer frontmost | Restore it on the AppKit main thread |
 | Original overlay class is available | Restore class, then destroy in the same guarded main-thread closure |
 | Original class or main-thread scheduling is unavailable | Hide as a safe fallback; do not destroy from an unsafe thread |
+| Tray left-click while Lens/translate is visible | Destroy the active overlay through `lens_close`, then reveal Chat |
 
 ## 5. Good / Base / Bad Cases
 
@@ -38,12 +40,14 @@ This contract applies whenever the Lens, screenshot translation, replace transla
 - Base: Chat is hidden and all screenshot modes repeatedly open, close, and cold-create without changing the frontmost app.
 - Bad: Launch code activates the previous app before or after showing the panel; macOS reorders all of that app's windows and the desktop flashes.
 - Bad: A custom `KivioOverlayPanel` is passed directly to tao/WebKit teardown; an Objective-C KVO exception crosses Rust and aborts the process.
+- Bad: Tray click emits an asynchronous frontend close request and immediately opens Chat; the old overlay can remain above the Chat window.
 
 ## 6. Tests Required
 
 - Manually cold-launch Lens, screenshot translation, and replace translation with Chat both visible and hidden; assert no desktop flash and no Chat reorder.
 - Close each overlay with Escape, reopen it at least five times, and assert the Kivio PID remains alive.
 - Run input translation with an active Chinese IME composition, then test Escape, shortcut-toggle cancellation, and Enter submission; assert the WebView is destroyed and the process remains alive.
+- Open Lens and quick translation, then left-click the tray icon; assert the overlay is destroyed before Chat becomes visible and cannot cover it.
 - Run `cargo check --manifest-path src-tauri/Cargo.toml`, `npm run lint`, and `npm run typecheck`.
 
 ## 7. Wrong vs Correct
@@ -68,4 +72,13 @@ let window = WebviewWindowBuilder::new(app, label, url)
     .build()?;
 ensure_overlay_panel(&window);
 show_overlay_panel(&window, true);
+```
+
+Tray transition:
+
+```rust
+if lens_is_active(app) {
+    lens_close(app.clone())?;
+}
+open_chat_window(app)?;
 ```

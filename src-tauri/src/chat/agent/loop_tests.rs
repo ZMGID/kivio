@@ -618,7 +618,7 @@ fn pending_tool_call(id: &str, function_name: &str) -> PendingToolCall {
 }
 
 fn test_tool_arguments(function_name: &str) -> Value {
-    match function_name {
+    match function_name.to_ascii_lowercase().as_str() {
         "read" => serde_json::json!({ "path": "/tmp/kivio-test.txt" }),
         "web_fetch" => serde_json::json!({ "url": "https://example.com" }),
         "run_python" => serde_json::json!({ "code": "print(1)" }),
@@ -1894,7 +1894,8 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url, true);
-    // 600 token 窗口（预算 510）：9000 字符旧工具输出远超 → 直接走 Layer2 摘要（无 L1）。
+    // 600 token 窗口（预算 510）：旧工具输出先经 microcompact，再由大段非工具历史确保
+    // 发送视图仍超预算，稳定进入 Layer2 摘要。
     config.provider.model_overrides.insert(
         "test-model".to_string(),
         crate::settings::ModelInfo {
@@ -1902,7 +1903,12 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
             ..Default::default()
         },
     );
-    // 预填早前轮次历史：一条超大 tool 输出 + 8 条近期小消息把它推出保护尾巴。
+    // 预填早前轮次历史：大段普通对话不受 tool-result microcompact 影响；超大 tool 输出
+    // 仍保留，用来验证 L2 会替换旧段且不动本轮新工具结果。
+    let large_non_tool = "D".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "user", "content": large_non_tool
+    }));
     let huge = "A".repeat(9_000);
     config.runtime_messages.push(serde_json::json!({
         "role": "assistant", "content": "", "tool_calls": [
@@ -1937,6 +1943,10 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
             !body.contains(&"A".repeat(1_000)),
             "post-compaction request must not carry the full old tool output"
         );
+        assert!(
+            !body.contains(&"D".repeat(1_000)),
+            "post-compaction request must not carry the full old conversation"
+        );
     }
 
     // 持久化：本轮 api_messages 不含摘要标记（摘要只作用于发送视图/工作副本）。
@@ -1963,6 +1973,9 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
     assert!(!compacted
         .iter()
         .any(|m| m.to_string().contains(&"A".repeat(1_000))));
+    assert!(!compacted
+        .iter()
+        .any(|m| m.to_string().contains(&"D".repeat(1_000))));
     let last = compacted.last().expect("non-empty compacted history");
     assert_eq!(last["role"], "assistant");
     assert_eq!(last["content"], "总结完成，工具输出已分析。");
@@ -2138,7 +2151,8 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url, true);
-    // 600 token 窗口（预算 510）：snip 后仍超 → 必然升级 Layer2。
+    // 600 token 窗口（预算 510）：即使旧工具结果先被 microcompact，大段非工具历史仍
+    // 保持超预算，必然升级 Layer2。
     config.provider.model_overrides.insert(
         "test-model".to_string(),
         crate::settings::ModelInfo {
@@ -2146,6 +2160,10 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
             ..Default::default()
         },
     );
+    let large_non_tool = "E".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "user", "content": large_non_tool
+    }));
     let huge = "B".repeat(9_000);
     config.runtime_messages.push(serde_json::json!({
         "role": "tool", "tool_call_id": "old_call", "content": huge
@@ -2178,6 +2196,7 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
     // 压缩后的规划请求：携带摘要，不再携带旧原文，保留最近历史。
     assert!(bodies[1].contains("SUMMARY_MARKER"));
     assert!(!bodies[1].contains(&"B".repeat(1_000)));
+    assert!(!bodies[1].contains(&"E".repeat(1_000)));
     assert!(bodies[1].contains("recent history 7"));
     // 摘要只存在于发送视图/工作副本，不进持久化 api_messages。
     assert!(result
@@ -2195,6 +2214,9 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
     assert!(!compacted
         .iter()
         .any(|m| m.to_string().contains(&"B".repeat(1_000))));
+    assert!(!compacted
+        .iter()
+        .any(|m| m.to_string().contains(&"E".repeat(1_000))));
 }
 
 /// Streaming-only provider: the compaction summary call MUST stream. This is the
@@ -2230,6 +2252,10 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
             ..Default::default()
         },
     );
+    let large_non_tool = "F".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "user", "content": large_non_tool
+    }));
     let huge = "C".repeat(9_000);
     config.runtime_messages.push(serde_json::json!({
         "role": "tool", "tool_call_id": "old_call", "content": huge
@@ -2267,6 +2293,7 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
     // 压缩成功：旧原文被摘要取代，compacted_history 产出。
     assert!(bodies[1].contains("SUMMARY_MARKER"));
     assert!(!bodies[1].contains(&"C".repeat(1_000)));
+    assert!(!bodies[1].contains(&"F".repeat(1_000)));
     let compacted = result
         .compacted_history
         .as_ref()
@@ -2277,6 +2304,9 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
     assert!(!compacted
         .iter()
         .any(|m| m.to_string().contains(&"C".repeat(1_000))));
+    assert!(!compacted
+        .iter()
+        .any(|m| m.to_string().contains(&"F".repeat(1_000))));
 }
 
 /// Gap 2 (Layer 3 anti-thrashing): when the history is persistently over the
@@ -2306,8 +2336,9 @@ async fn run_loop_compaction_thrash_degrades_with_gathered_results() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url, true);
-    // Small window so the pre-filled huge tool output is always over budget,
-    // forcing a compaction attempt at the top of every planning round.
+    // Small window so the pre-filled ordinary history remains over budget even
+    // after the huge tool output is microcompacted, forcing a summary attempt at
+    // the top of every planning round.
     config.provider.model_overrides.insert(
         "test-model".to_string(),
         crate::settings::ModelInfo {
@@ -2318,9 +2349,13 @@ async fn run_loop_compaction_thrash_degrades_with_gathered_results() {
     // Allow a second round so the loop re-enters planning after the tool round
     // and trips the thrash guard there.
     config.effective_chat_tools.max_tool_rounds = Some(2);
-    // Pre-fill an oversized earlier tool output + small recent tail: the history
-    // stays over budget every round, but the summary call always errors so the
-    // send view never shrinks → unresolved_rounds climbs to the limit.
+    // Pre-fill oversized ordinary history plus an earlier tool output and a small
+    // recent tail. The summary call always errors, so the send view never shrinks
+    // enough and unresolved_rounds climbs to the limit.
+    let large_non_tool = "G".repeat(9_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "user", "content": large_non_tool
+    }));
     let huge = "A".repeat(9_000);
     config.runtime_messages.push(serde_json::json!({
         "role": "assistant", "content": "", "tool_calls": [

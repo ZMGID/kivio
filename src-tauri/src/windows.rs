@@ -278,7 +278,7 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
     let (default_width, default_height) =
         chat_window_size_for_visible_content(CHAT_DEFAULT_INNER_WIDTH, CHAT_DEFAULT_INNER_HEIGHT);
     let mut builder = WebviewWindowBuilder::new(app, "chat", WebviewUrl::App(url.into()))
-        .title("Kivio")
+        .title("Kivio Desktop")
         .inner_size(default_width, default_height)
         .min_inner_size(min_width, min_height)
         .resizable(true)

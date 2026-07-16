@@ -23,6 +23,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [Conversation Export](./conversation-export.md) | Markdown export command, privacy boundary, and validation contract | Active |
 | [Replace Translation](./replace-translation.md) | Offline pack, MI-GAN mask, stable-ID event, and natural-size Canvas contract | Active |
 | [macOS Overlay Lifecycle](./macos-overlay-lifecycle.md) | Nonactivating Lens/translator focus, foreground, and teardown contract | Active |
+| [Product Identity and Packaging](./product-identity-and-packaging.md) | Display-name rename boundary, stable identifiers, and release artifact contract | Active |
 
 ---
 

@@ -2396,7 +2396,17 @@ while True:
             assert!(first_err.contains("outcome is unknown"), "{first_err}");
             assert!(first_err.contains("was not retried"), "{first_err}");
 
-            let calls = std::fs::read_to_string(&marker).unwrap_or_default();
+            // Writing the notification only guarantees that it reached the child stdin;
+            // allow the fake server a short scheduling window to consume it and persist
+            // the marker before asserting the observable side effect.
+            let mut calls = String::new();
+            for _ in 0..50 {
+                calls = std::fs::read_to_string(&marker).unwrap_or_default();
+                if calls.lines().any(|line| line.starts_with("cancel:")) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             assert_eq!(calls.lines().filter(|line| *line == "hang").count(), 1);
             assert_eq!(calls.lines().filter(|line| *line == "two").count(), 1);
             assert!(

@@ -3485,7 +3485,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
             {/* ===== MCP 标签页 ===== */}
             {activeTab === 'mcp' && (
-              <>                <SettingsGroup title={lang === 'zh' ? 'Kivio 内置工具' : 'Kivio built-in tools'}>
+              <>                <SettingsGroup title={lang === 'zh' ? 'Kivio Desktop 内置工具' : 'Kivio Desktop built-in tools'}>
                   <p className="kv-row-desc mb-2">
                     {lang === 'zh'
                       ? '首次使用文件/命令工具时会请求一次授权；授权后本会话内可读写任意路径并执行命令。'
@@ -4676,10 +4676,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   <div className="kv-panel mb-2">
                     <div className="flex items-center gap-3">
                       <div className="w-12 h-12 rounded-[10px] overflow-hidden shrink-0">
-                        <img src="/icon.png" alt="Kivio" className="w-full h-full object-contain" />
+                        <img src="/icon.png" alt="Kivio Desktop" className="w-full h-full object-contain" />
                       </div>
                       <div className="min-w-0">
-                        <div className="kv-page-title">Kivio</div>
+                        <div className="kv-page-title">Kivio Desktop</div>
                         <div className="kv-panel-body">{lang === 'zh' ? '屏幕级 AI 助手' : 'Screen-level AI Assistant'}</div>
                       </div>
                     </div>
@@ -5066,7 +5066,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <div className="kv-sidebar-brand-mark">
               <img src="/icon.png" alt="" aria-hidden="true" />
             </div>
-            <div className="kv-sidebar-brand-name">Kivio</div>
+            <div className="kv-sidebar-brand-name">Kivio Desktop</div>
             <div className="kv-sidebar-brand-ver">v{appVersion}</div>
           </div>
           {categoryNav}

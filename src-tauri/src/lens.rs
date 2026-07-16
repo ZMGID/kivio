@@ -100,12 +100,15 @@ const KIVIO_SELECTABLE_MIN_HEIGHT: f64 = 360.0;
 
 #[cfg(target_os = "macos")]
 fn is_kivio_owner(owner: &str) -> bool {
-    matches!(owner, "Kivio" | "kivio" | "KeyLingo" | "keylingo")
+    matches!(
+        owner,
+        "Kivio Desktop" | "Kivio" | "kivio" | "KeyLingo" | "keylingo"
+    )
 }
 
 #[cfg(target_os = "macos")]
 fn is_kivio_primary_window(title: &str, width: f64, height: f64) -> bool {
-    matches!(title.trim(), "Kivio" | "KeyLingo")
+    matches!(title.trim(), "Kivio Desktop" | "Kivio" | "KeyLingo")
         && width >= KIVIO_SELECTABLE_MIN_WIDTH
         && height >= KIVIO_SELECTABLE_MIN_HEIGHT
 }
@@ -197,12 +200,24 @@ mod tests {
 
     #[test]
     fn kivio_chat_window_is_selectable() {
+        assert!(!is_kivio_auxiliary_window(
+            "Kivio Desktop",
+            "Kivio Desktop",
+            1060.0,
+            746.0
+        ));
         assert!(!is_kivio_auxiliary_window("kivio", "Kivio", 1060.0, 746.0));
         assert!(!is_kivio_auxiliary_window("Kivio", "Kivio", 400.0, 400.0));
     }
 
     #[test]
     fn kivio_helper_windows_are_filtered() {
+        assert!(is_kivio_auxiliary_window(
+            "Kivio Desktop",
+            "Lens",
+            1728.0,
+            1117.0
+        ));
         assert!(is_kivio_auxiliary_window("kivio", "Lens", 1728.0, 1117.0));
         assert!(is_kivio_auxiliary_window("kivio", "Kivio", 392.0, 152.0));
         assert!(is_kivio_auxiliary_window("KeyLingo", "", 600.0, 72.0));

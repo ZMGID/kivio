@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Kivio Docs</title>
-<meta name="description" content="Kivio documentation — install, configure, and master the open-source desktop agentic AI app." />
+<title>Kivio Desktop Docs</title>
+<meta name="description" content="Kivio Desktop documentation — install, configure, and master the open-source desktop agentic AI app." />
 <link rel="icon" type="image/png" href="../assets/favicon.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -195,7 +195,7 @@
 
 <div class="topbar">
   <button class="menu-btn" id="menuBtn" aria-label="Menu">≡</button>
-  <a class="brand" href="../index.html"><img src="../assets/logo.png" alt="" />KIVIO<span class="docs-tag">DOCS</span></a>
+  <a class="brand" href="../index.html"><img src="../assets/logo.png" alt="" />KIVIO DESKTOP<span class="docs-tag">DOCS</span></a>
   <div class="spacer"></div>
   <a class="top-link" href="../index.html">← 官网</a>
   <a class="icon-link" href="https://github.com/ZMGID/kivio" target="_blank" rel="noopener" aria-label="GitHub">
@@ -209,7 +209,7 @@
   <nav class="side" id="sidebar">
     <div class="group">
       <div class="group-label">开始</div>
-      <a class="item" href="#/overview" data-page="overview">Kivio 是什么</a>
+      <a class="item" href="#/overview" data-page="overview">Kivio Desktop 是什么</a>
       <a class="item" href="#/install" data-page="install">安装</a>
       <a class="item" href="#/quickstart" data-page="quickstart">快速上手</a>
     </div>
@@ -248,16 +248,16 @@
 
     <article data-page="overview">
       <div class="crumb">开始</div>
-      <h1 class="pixel">Kivio</h1>
+      <h1 class="pixel">Kivio Desktop</h1>
       <p class="lead">开源桌面 Agentic AI 应用 —— 智能体对话、划词翻译、屏幕取景问答，使用你自己的密钥，数据留在你自己的机器。</p>
-      <h2 id="overview-what">Kivio 是什么</h2>
-      <p>Kivio 是一款运行在 macOS 与 Windows 上的桌面应用，以一个完整的智能体内核为中心：规划 → 执行 → 综合的工具循环、并行子智能体、MCP、Skills、知识库检索，包在一个安静克制的图形界面里。</p>
-      <p>它始于一个更小的问题 —— 屏幕级的轻交互：全局热键划词翻译、截图 OCR 翻译、圈选屏幕直接提问。这些功能依然是 Kivio 的一部分，且不会消失；智能体内核是后来长出来的核心，但屏幕工具不会因此边缘化。</p>
+      <h2 id="overview-what">Kivio Desktop 是什么</h2>
+      <p>Kivio Desktop 是一款运行在 macOS 与 Windows 上的桌面应用，以一个完整的智能体内核为中心：规划 → 执行 → 综合的工具循环、并行子智能体、MCP、Skills、知识库检索，包在一个安静克制的图形界面里。</p>
+      <p>它始于一个更小的问题 —— 屏幕级的轻交互：全局热键划词翻译、截图 OCR 翻译、圈选屏幕直接提问。这些功能依然是 Kivio Desktop 的一部分，且不会消失；智能体内核是后来长出来的核心，但屏幕工具不会因此边缘化。</p>
       <p>同一套智能体循环（<code>run_agent_loop</code>）目前只在应用内的 GUI 对话中运行；本文档只覆盖这一个界面，不涉及尚未对外发布的终端/CLI 形态。</p>
       <h2 id="overview-philosophy">设计理念</h2>
       <blockquote>你的密钥、你的数据、你的机器。</blockquote>
       <ul>
-        <li><b>BYOK（自带密钥）</b> —— 没有账号体系、没有订阅墙。填入你自己的服务商 API Key，请求从你的机器直连服务商，中间没有 Kivio 的任何服务器。</li>
+        <li><b>BYOK（自带密钥）</b> —— 没有账号体系、没有订阅墙。填入你自己的服务商 API Key，请求从你的机器直连服务商，中间没有 Kivio Desktop 的任何服务器。</li>
         <li><b>本地优先</b> —— 设置、对话、知识库索引、用量统计全部落在本机应用数据目录；<code>settings.json</code> 明文保存 API Key（详见 <a href="#/settings">设置项参考</a>），没有云同步。</li>
         <li><b>开源可审计</b> —— GPL-3.0 全量开源，Rust + React 代码逐行可读。</li>
       </ul>
@@ -294,7 +294,7 @@
           <tr><td>辅助功能</td><td>划词翻译的自动粘贴回填（模拟 ⌘V）；Lens 读取当前选中文本作为上下文</td></tr>
         </tbody>
       </table>
-      <p>在「系统设置 → 隐私与安全性」中为 Kivio 打开对应开关即可，无需重启应用。</p>
+      <p>在「系统设置 → 隐私与安全性」中为 Kivio Desktop 打开对应开关即可，无需重启应用。</p>
       <h2 id="install-win">Windows</h2>
       <p>下载 MSI 或 NSIS 安装包并运行，支持 Windows 10/11 x64。手动启动默认打开设置页；勾选开机自启后，启动时会附带 <code>--from-autostart</code> 参数直接进入后台，不弹出设置窗口。</p>
       <h2 id="install-update">更新</h2>
@@ -308,7 +308,7 @@
       <h2 id="qs-key">第一步 · 配置服务商</h2>
       <p>打开设置 → 模型服务商，新增一个 Provider：可以从内置预设（DeepSeek、OpenRouter、SiliconFlow、智谱 GLM、Ollama Cloud）里选一个快速填好接口地址，也可以手动填写任意 OpenAI 兼容 / Anthropic / Gemini / Responses 协议的服务商。粘贴 API Key 后点「获取模型列表」，再从中勾选启用你要用的模型。详见 <a href="#/providers">模型服务商</a>。</p>
       <h2 id="qs-chat">第二步 · 发起第一次对话</h2>
-      <p>打开 Kivio 的聊天窗口，在模型选择器里选中刚启用的模型，直接输入问题发送。默认是 <b>Act</b>（普通）模式，模型会按需自主调用文件、Shell、网页等内置工具完成任务。</p>
+      <p>打开 Kivio Desktop 的聊天窗口，在模型选择器里选中刚启用的模型，直接输入问题发送。默认是 <b>Act</b>（普通）模式，模型会按需自主调用文件、Shell、网页等内置工具完成任务。</p>
       <h2 id="qs-screen">第三步 · 试试屏幕工具</h2>
       <p>按下默认热键 <kbd>⌘/Ctrl+Alt+T</kbd> 唤出划词翻译窗口，或 <kbd>⌘/Ctrl+Shift+G</kbd> 唤出 Lens，圈选屏幕任意区域直接提问。完整热键表见 <a href="#/hotkeys">快捷键</a>。</p>
     </article>
@@ -321,8 +321,8 @@
       <p>每一轮对话都会经过一个固定的循环（<code>run_agent_loop</code>）：</p>
       <ol>
         <li><b>准备</b> —— 组装系统提示（人格设定、已激活的 Skill、记忆、项目绑定），并根据当前模式（见下）决定这一轮可以使用哪些工具。</li>
-        <li><b>规划与执行</b> —— 模型请求调用工具，Kivio 执行后把结果喂回去，模型再判断是否需要继续调用。这个过程反复进行，直到模型不再请求工具，或触及轮次上限。</li>
-        <li><b>综合</b> —— 不再有工具调用后，模型做最后一次不带工具的调用，生成自然语言总结。若这一步失败，Kivio 会分级降级：重试 → 换一次干净的追问 → 直接从工具调用记录里拼装一份确定性总结 —— 保证这一轮不会白跑。</li>
+        <li><b>规划与执行</b> —— 模型请求调用工具，Kivio Desktop 执行后把结果喂回去，模型再判断是否需要继续调用。这个过程反复进行，直到模型不再请求工具，或触及轮次上限。</li>
+        <li><b>综合</b> —— 不再有工具调用后，模型做最后一次不带工具的调用，生成自然语言总结。若这一步失败，Kivio Desktop 会分级降级：重试 → 换一次干净的追问 → 直接从工具调用记录里拼装一份确定性总结 —— 保证这一轮不会白跑。</li>
         <li><b>完成</b> —— 最终答案、推理过程、工具调用记录打包展示并保存。</li>
       </ol>
       <p>默认每轮对话最多 20 次工具调用（<code>maxToolRounds</code>，可在设置中调整为 1–100）；<b>编排者模式</b>会把这个下限提高到 40，因为编排需要额外的轮次来做规划、派发和汇总。</p>
@@ -336,7 +336,7 @@
         </tbody>
       </table>
       <h2 id="chat-context">上下文管理</h2>
-      <p>Kivio 会在每次调用模型前估算即将发送的上下文大小；一旦超过该模型上下文窗口的 <b>90%</b>，就会自动压缩：</p>
+      <p>Kivio Desktop 会在每次调用模型前估算即将发送的上下文大小；一旦超过该模型上下文窗口的 <b>90%</b>，就会自动压缩：</p>
       <ul>
         <li>对话尾部约 20,000 token 的「最近窗口」始终原样保留。</li>
         <li>更早的内容优先做「微压缩」（把旧的工具调用结果替换成一句占位说明），如果这样就能压回预算内，不需要调用模型。</li>
@@ -370,7 +370,7 @@
       <p><code>web_fetch</code> 抓取一个 URL 并转成可读文本，仅限 HTTPS；<code>web_search</code>（需配置搜索服务商 Key 才会出现）用于联网检索。</p>
       <h2 id="tools-security">安全边界</h2>
       <p>单次读取上限 2MB（<code>MAX_READ_FILE_BYTES</code>），超出且未指定行窗口会提示改用 <code>offset</code>/<code>limit</code>。</p>
-      <p>Kivio 对文件/Shell 工具采用「<b>无路径边界</b>」模型：<b>没有</b>针对 <code>.ssh</code>、<code>.gnupg</code>、系统钥匙串等目录的硬编码写入拦截，显式的绝对路径或 <code>~/</code> 路径可以读写磁盘上的任意位置，<code>..</code> 路径穿越也被允许。安全性由另一层机制保证：<code>read</code>/<code>grep</code>/<code>glob</code>/<code>write</code>/<code>edit</code>/<code>bash</code> 这一组工具需要在每个对话里获得一次性的「允许本对话读写文件与执行命令」授权，授权之后才能不受限地使用；此外部分高敏感的单次工具调用仍可能单独弹出一次性确认。项目对话里的相对路径默认解析到项目根目录，仅作为默认基准，不构成访问边界。</p>
+      <p>Kivio Desktop 对文件/Shell 工具采用「<b>无路径边界</b>」模型：<b>没有</b>针对 <code>.ssh</code>、<code>.gnupg</code>、系统钥匙串等目录的硬编码写入拦截，显式的绝对路径或 <code>~/</code> 路径可以读写磁盘上的任意位置，<code>..</code> 路径穿越也被允许。安全性由另一层机制保证：<code>read</code>/<code>grep</code>/<code>glob</code>/<code>write</code>/<code>edit</code>/<code>bash</code> 这一组工具需要在每个对话里获得一次性的「允许本对话读写文件与执行命令」授权，授权之后才能不受限地使用；此外部分高敏感的单次工具调用仍可能单独弹出一次性确认。项目对话里的相对路径默认解析到项目根目录，仅作为默认基准，不构成访问边界。</p>
     </article>
 
     <article data-page="mcp" class="hidden">
@@ -385,7 +385,7 @@
       </ul>
       <p>部分服务器会被打上「连接器」标记（如 Notion、GitHub），归到设置里的连接器页面单独管理，但本质上仍是同一套 MCP 服务器配置。</p>
       <h2 id="mcp-manage">管理与调试</h2>
-      <p>MCP 服务器暴露的工具会动态并入模型可用的工具列表，与 Kivio 内置工具区别对待（内置工具走静态注册表，MCP 工具按服务器实时发现）。可以单独禁用某个服务器，或勾选只启用它提供的部分工具。</p>
+      <p>MCP 服务器暴露的工具会动态并入模型可用的工具列表，与 Kivio Desktop 内置工具区别对待（内置工具走静态注册表，MCP 工具按服务器实时发现）。可以单独禁用某个服务器，或勾选只启用它提供的部分工具。</p>
     </article>
 
     <article data-page="skills" class="hidden">
@@ -417,7 +417,7 @@
         <li><b>用户</b> —— 应用数据目录下的 <code>skills/</code></li>
         <li><b>外部</b> —— 设置里额外配置的扫描路径</li>
       </ul>
-      <p>激活方式：模型觉得相关时自己调用 <code>skill</code> 工具按名激活，或用户输入 <code>/</code> 加技能名手动触发（若技能声明了 <code>triggers</code>）。技能的完整正文默认不会预先塞进系统提示里，只有被激活的那一刻才注入 —— 这样可以装很多技能而不占用上下文。一旦技能声明了工具白名单，本轮对话可用的工具集会收窄到「技能运行时工具 ∪ Kivio 内置工具 ∪ 该技能允许的工具」。</p>
+      <p>激活方式：模型觉得相关时自己调用 <code>skill</code> 工具按名激活，或用户输入 <code>/</code> 加技能名手动触发（若技能声明了 <code>triggers</code>）。技能的完整正文默认不会预先塞进系统提示里，只有被激活的那一刻才注入 —— 这样可以装很多技能而不占用上下文。一旦技能声明了工具白名单，本轮对话可用的工具集会收窄到「技能运行时工具 ∪ Kivio Desktop 内置工具 ∪ 该技能允许的工具」。</p>
     </article>
 
     <article data-page="subagents" class="hidden">
@@ -435,7 +435,7 @@
         </tbody>
       </table>
       <h2 id="sub-parallel">并行执行</h2>
-      <p>子智能体通过 <code>agent</code> 工具调用 —— <b>阻塞式、单结果返回</b>：每次调用都会等子智能体完整跑完，把最终结果整段返回给发起方，没有轮询或后台等待这类中间态。并行的方式是模型在<b>同一条消息里发出多个 <code>agent</code> 调用</b>，Kivio 会并发执行这些调用。</p>
+      <p>子智能体通过 <code>agent</code> 工具调用 —— <b>阻塞式、单结果返回</b>：每次调用都会等子智能体完整跑完，把最终结果整段返回给发起方，没有轮询或后台等待这类中间态。并行的方式是模型在<b>同一条消息里发出多个 <code>agent</code> 调用</b>，Kivio Desktop 会并发执行这些调用。</p>
       <ul>
         <li>全局最多同时跑 <b>12</b> 个子智能体（可在设置里调整为 1–64）。</li>
         <li>单轮最多并发执行 <b>12</b> 个工具调用（含 <code>agent</code>）。</li>
@@ -635,11 +635,11 @@
       <h1>常见问题</h1>
       <p class="lead">安装、密钥、网络等高频问题。</p>
       <h2 id="faq-key">我的 API Key 存在哪里，安全吗？</h2>
-      <p>保存在本机的 <code>settings.json</code> 里，明文存储，不上传任何 Kivio 服务器 —— 因为压根没有 Kivio 服务器参与请求转发。安全边界是你的操作系统账户权限，不是加密存储。</p>
+      <p>保存在本机的 <code>settings.json</code> 里，明文存储，不上传任何 Kivio Desktop 服务器 —— 因为压根没有 Kivio Desktop 服务器参与请求转发。安全边界是你的操作系统账户权限，不是加密存储。</p>
       <h2 id="faq-nomodel">为什么某个功能提示「请先选择模型」？</h2>
       <p>该功能引用的模型不在对应服务商的「已启用模型」列表里（可能是服务商被禁用、模型被移除，或从未配置过）。去设置里为该功能重新选一个已启用的模型即可。</p>
       <h2 id="faq-hotkey-conflict">热键不生效/提示冲突怎么办？</h2>
-      <p>大概率是被系统或其他应用占用了同一个组合键。设置面板会明确提示是「与 Kivio 自己的其他热键冲突」还是「被外部程序占用」，换一个组合键即可。</p>
+      <p>大概率是被系统或其他应用占用了同一个组合键。设置面板会明确提示是「与 Kivio Desktop 自己的其他热键冲突」还是「被外部程序占用」，换一个组合键即可。</p>
       <h2 id="faq-offline">断网还能用哪些功能？</h2>
       <p>代码沙箱（<code>run_python</code>）里预装的包（numpy/pandas/matplotlib 等）完全离线可用；但任何需要调用模型的功能（对话、翻译、知识库检索的 Embedding/生成步骤）都需要网络连接到你配置的服务商。</p>
     </article>
@@ -741,8 +741,8 @@ function render() {
   }
   document.getElementById('sidebar').classList.remove('open')
   const active = document.querySelector('.side a.item.active')
-  const title = active ? active.textContent : 'Kivio'
-  document.title = page === 'overview' ? 'Kivio Docs' : title + ' — Kivio Docs'
+  const title = active ? active.textContent : 'Kivio Desktop'
+  document.title = page === 'overview' ? 'Kivio Desktop Docs' : title + ' — Kivio Desktop Docs'
 }
 
 window.addEventListener('hashchange', render)

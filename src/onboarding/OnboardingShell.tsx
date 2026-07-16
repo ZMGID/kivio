@@ -218,7 +218,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
       >
         <div className="onboarding-side-brand" data-tauri-drag-region>
           <img src="/logo-mark.png" alt="" className="onboarding-side-logo" draggable={false} />
-          <span className="onboarding-side-brand-name">Kivio</span>
+          <span className="onboarding-side-brand-name">Kivio Desktop</span>
         </div>
         <nav className="onboarding-side-steps">
           {ONBOARDING_STEPS.map((step, index) => {

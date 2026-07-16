@@ -6,7 +6,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::commands::apply_launch_at_startup;
 use crate::lens_commands::{
-    lens_request, lens_request_internal, lens_request_replace, lens_request_translate,
+    lens_close, lens_request, lens_request_replace, lens_request_translate,
     lens_request_translate_text, request_lens_close,
 };
 use crate::settings::Settings;
@@ -1253,23 +1253,22 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                 ..
             } = event
             {
-                let app = tray.app_handle().clone();
-                // 切换行为：Lens 可见时关闭，不可见时打开
-                if lens_is_active(&app) {
-                    let _ = request_lens_close(&app);
-                } else {
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(err) = lens_request_internal(&app, "chat") {
-                            eprintln!("Tray click lens trigger error: {}", err);
-                        }
-                    });
+                let app = tray.app_handle();
+                if lens_is_active(app) {
+                    if let Err(err) = lens_close(app.clone()) {
+                        eprintln!("Tray click overlay close error: {}", err);
+                        return;
+                    }
+                }
+                if let Err(err) = open_chat_window(app) {
+                    eprintln!("Tray click chat trigger error: {}", err);
                 }
             }
         })
         .build(app)
         .map_err(|e| e.to_string())?;
 
-    tray.set_tooltip(Some("Kivio".to_string()))
+    tray.set_tooltip(Some("Kivio Desktop".to_string()))
         .map_err(|e| e.to_string())?;
     Ok(())
 }

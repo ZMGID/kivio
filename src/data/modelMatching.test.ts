@@ -43,12 +43,12 @@ describe('matchModel', () => {
   })
 
   it('does not collapse an unknown minor version onto its base entry', () => {
-    // gpt-5.6-* is not in the db; it must NOT fall back to the base "gpt-5" entry
-    // (that showed every gpt-5.6-luna/sol/terra as "GPT-5" in the enabled list).
-    expect(matchModel('gpt-5.6-luna')?.displayName).not.toBe('GPT-5')
-    expect(matchModel('gpt-5.6-luna')).toBeNull()
-    expect(matchModel('gpt-5.6-sol')).toBeNull()
-    // known minor versions still resolve exactly
+    // Unknown 5.7 variants must not fall back to the base "gpt-5" entry.
+    expect(matchModel('gpt-5.7-nebula')).toBeNull()
+    // Known 5.6 variants resolve to their exact entries rather than the base family.
+    expect(matchModel('gpt-5.6-luna')?.displayName).toBe('GPT-5.6 Luna')
+    expect(matchModel('gpt-5.6-sol')?.displayName).toBe('GPT-5.6 Sol')
+    expect(matchModel('gpt-5.6-terra')?.displayName).toBe('GPT-5.6 Terra')
     expect(matchModel('gpt-5.5')?.displayName).toBe('GPT-5.5')
     expect(matchModel('gpt-5')?.displayName).toBe('GPT-5')
   })

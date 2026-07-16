@@ -291,7 +291,7 @@ pub(crate) async fn download_update_asset(
 }
 
 /// 启动安装包并退出当前应用。
-/// - macOS（.dmg）：hdiutil 挂载 → cp Kivio.app 到 /Applications → 卸载 → open 新版 → app.exit(0)
+/// - macOS（.dmg）：hdiutil 挂载 → cp Kivio Desktop.app 到 /Applications → 卸载 → open 新版 → app.exit(0)
 /// - Windows（.exe）：spawn NSIS installer，立即 exit 让 installer 能写 exe
 #[tauri::command]
 pub(crate) fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
