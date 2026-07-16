@@ -124,25 +124,25 @@ function SkillRow({
 }) {
   return (
     <div
-      className={`flex min-w-0 items-center gap-4 px-5 py-4 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-900/50 ${
+      className={`flex min-w-0 items-center gap-3 px-4 py-3 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-900/50 ${
         enabled ? '' : 'opacity-60'
       }`}
     >
       <button
         type="button"
         onClick={() => onPreview(skill.id)}
-        className="flex min-w-0 flex-1 items-center gap-4 text-left"
+        className="flex min-w-0 flex-1 items-center gap-3 text-left"
         data-tauri-drag-region="false"
         title="查看完整内容"
       >
-        <span className="grid size-11 shrink-0 place-items-center rounded-full border border-neutral-200 bg-white text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-500">
-          <Box size={18} />
+        <span className="grid size-9 shrink-0 place-items-center rounded-md border border-neutral-200 bg-white text-neutral-400 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-500">
+          <Box size={16} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-100">
+          <span className="block truncate text-[14px] font-semibold text-neutral-950 dark:text-neutral-50">
             {skill.name}
           </span>
-          <span className="mt-0.5 block truncate text-[13px] text-neutral-500 dark:text-neutral-400">
+          <span className="mt-0.5 block truncate text-[12px] text-neutral-500 dark:text-neutral-400">
             {skill.description || '未设置描述'}
           </span>
         </span>
@@ -207,11 +207,11 @@ function SkillSection({
         {note && <span className="ml-auto truncate text-[12.5px] text-neutral-400">{note}</span>}
       </div>
       {collapsed ? null : skills.length === 0 ? (
-        <div className="grid min-h-[88px] place-items-center rounded-2xl border border-dashed border-neutral-200 text-[13px] text-neutral-400 dark:border-neutral-800">
+        <div className="grid min-h-[72px] place-items-center rounded-md border border-dashed border-neutral-200 text-[13px] text-neutral-400 dark:border-neutral-800">
           {emptyText}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-950/40 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
+        <div className="overflow-hidden rounded-md border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-950/40 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
           {skills.map((skill) => (
             <SkillRow
               key={skill.id}
@@ -450,8 +450,8 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
             {/* 头部：标题 + 副标题 + 图标动作 */}
-            <div className="border-b border-neutral-200/80 pb-6 dark:border-neutral-800/80">
-              <h1 className="text-[32px] font-bold leading-none tracking-tight text-neutral-950 dark:text-neutral-50">
+            <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
+              <h1 className="text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
                 技能
               </h1>
               <div className="mt-3.5 flex min-w-0 items-center gap-4">
@@ -498,25 +498,25 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
 
           {/* 搜索 */}
           <div className="relative mt-6">
-            <Search size={17} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+            <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
             <input
               type="text"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索技能..."
-              className="h-11 w-full rounded-xl border border-neutral-200 bg-white pl-11 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
               data-tauri-drag-region="false"
             />
           </div>
 
           {skillError && (
-            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
               {skillError}
             </div>
           )}
 
           {/* 高级设置（默认折叠） */}
-          <section className="mt-4 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-800">
+          <section className="mt-4 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
             <button
               type="button"
               onClick={() => setAdvancedOpen((open) => !open)}
@@ -618,28 +618,22 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
           </section>
 
           {/* 技能列表 */}
-          <div className="mt-7 space-y-7">
+          <div className="mt-6 space-y-5">
             {skillsLoading && skills.length === 0 ? (
               <div className="grid min-h-[220px] place-items-center text-[13px] text-neutral-400">正在加载 Skill...</div>
             ) : skills.length === 0 ? (
-              <div className="grid min-h-[220px] place-items-center rounded-2xl border border-dashed border-neutral-200 px-6 text-center text-[13px] text-neutral-400 dark:border-neutral-800">
+              <div className="grid min-h-[220px] place-items-center rounded-md border border-dashed border-neutral-200 px-6 text-center text-[13px] text-neutral-400 dark:border-neutral-800">
                 暂无 Skill。可导入文件夹/zip，或打开 Skill 文件夹手动添加后刷新。
               </div>
             ) : (
               <>
                 <SkillSection
-                  title="插件技能"
-                  note="由扩展 → 插件 统一启用/关闭"
-                  emptyText={
-                    normalizedQuery
-                      ? '没有匹配的插件技能。'
-                      : '启用插件后，其附属 Skill 会出现在这里（当前无已启用插件技能）。'
-                  }
-                  skills={pluginSkills}
+                  title="工作区与个人技能"
+                  emptyText={normalizedQuery ? '没有匹配的技能。' : '当前没有导入的技能。'}
+                  skills={userSkills}
                   disabledSkillIds={disabledSkillIds}
                   onToggleEnabled={handleToggleSkillEnabled}
                   onPreview={handlePreviewSkill}
-                  manageLocked
                 />
                 <SkillSection
                   title="内置技能"
@@ -652,14 +646,19 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
                   collapsible
                   defaultCollapsed
                 />
-                <SkillSection
-                  title="工作区与个人技能"
-                  emptyText={normalizedQuery ? '没有匹配的技能。' : '当前没有导入的技能。'}
-                  skills={userSkills}
-                  disabledSkillIds={disabledSkillIds}
-                  onToggleEnabled={handleToggleSkillEnabled}
-                  onPreview={handlePreviewSkill}
-                />
+                {/* 插件技能：无插件且未搜索时整段隐藏，避免空框霸占版面 */}
+                {(pluginSkills.length > 0 || normalizedQuery) && (
+                  <SkillSection
+                    title="插件技能"
+                    note="由扩展 → 插件 统一启用/关闭"
+                    emptyText="没有匹配的插件技能。"
+                    skills={pluginSkills}
+                    disabledSkillIds={disabledSkillIds}
+                    onToggleEnabled={handleToggleSkillEnabled}
+                    onPreview={handlePreviewSkill}
+                    manageLocked
+                  />
+                )}
               </>
             )}
           </div>

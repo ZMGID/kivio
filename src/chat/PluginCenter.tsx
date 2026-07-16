@@ -78,13 +78,13 @@ function PluginCard({
   onUninstall: (id: string) => void
 }) {
   return (
-    <article className="flex min-w-0 flex-col gap-3 rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-950/40">
+    <article className="flex min-w-0 flex-col gap-3 rounded-md border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-950/40">
       <div className="flex min-w-0 items-start gap-3">
-        <span className="grid size-11 shrink-0 place-items-center rounded-xl border border-neutral-200 bg-neutral-50 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
+        <span className="grid size-9 shrink-0 place-items-center rounded-md border border-neutral-200 bg-neutral-50 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
           {plugin.id === 'officecli' ? (
-            <FileSpreadsheet size={20} strokeWidth={1.75} />
+            <FileSpreadsheet size={18} strokeWidth={1.75} />
           ) : (
-            <Terminal size={20} strokeWidth={1.75} />
+            <Terminal size={18} strokeWidth={1.75} />
           )}
         </span>
         <div className="min-w-0 flex-1">
@@ -391,9 +391,9 @@ export function PluginCenter({ onClose, onRequestAiInstall }: PluginCenterProps)
 
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
-          <div className="border-b border-neutral-200/80 pb-6 dark:border-neutral-800/80">
+          <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
             <div className="flex min-w-0 items-center gap-2">
-              <h1 className="text-[32px] font-bold leading-none tracking-tight text-neutral-950 dark:text-neutral-50">
+              <h1 className="text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
                 插件
               </h1>
               <IconButton size="lg" label="刷新检测" onClick={() => void refresh()} disabled={loading}>
@@ -435,19 +435,19 @@ export function PluginCenter({ onClose, onRequestAiInstall }: PluginCenterProps)
             </div>
           </div>
 
-          <div className="mt-4 rounded-xl border border-dashed border-neutral-200 bg-neutral-50/80 px-4 py-3 text-[12.5px] leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/40 dark:text-neutral-400">
+          <div className="mt-4 rounded-md border border-dashed border-neutral-200 bg-neutral-50/80 px-4 py-3 text-[12.5px] leading-relaxed text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/40 dark:text-neutral-400">
             <span className="font-medium text-neutral-700 dark:text-neutral-300">流程：</span>
             让 AI 安装（先读官方 README → 按文档安装）→ 刷新检测 PATH → 打开「启用」→ Agent 才有命令 / Skill / MCP。
             关闭启用则全部卸下。
           </div>
 
           {error && (
-            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
               {error}
             </div>
           )}
           {statusMsg && !error && (
-            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-200">
+            <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13px] text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-200">
               {statusMsg}
             </div>
           )}
@@ -458,7 +458,7 @@ export function PluginCenter({ onClose, onRequestAiInstall }: PluginCenterProps)
             </div>
           ) : filtered.length === 0 ? (
             <div className="mt-16 flex flex-col items-center justify-center text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500">
+              <div className="flex h-14 w-14 items-center justify-center rounded-md bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500">
                 <Puzzle size={28} strokeWidth={1.5} />
               </div>
               <p className="mt-4 text-[15px] font-medium text-neutral-700 dark:text-neutral-200">
