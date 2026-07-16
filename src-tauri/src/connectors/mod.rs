@@ -47,9 +47,23 @@ pub async fn connector_oauth_connect(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let (default_name, resource_url) = builtin_oauth_url(catalog_id)
+        // 命中内置目录用其 resource URL；未命中但前端传了 url（catalog 项自带 url）时用 url，
+        // connector_id 仍取 catalog_id 以保留图标/展示映射。
+        if let Some((default_name, resource_url)) = builtin_oauth_url(catalog_id) {
+            return oauth::run_oauth_connect(&app, &http, catalog_id, default_name, resource_url)
+                .await;
+        }
+        let resource_url = url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| format!("Unknown OAuth connector: {catalog_id}"))?;
-        return oauth::run_oauth_connect(&app, &http, catalog_id, default_name, resource_url).await;
+        let display_name = name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(catalog_id);
+        return oauth::run_oauth_connect(&app, &http, catalog_id, display_name, resource_url).await;
     }
 
     let resource_url = url

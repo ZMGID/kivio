@@ -78,6 +78,29 @@ pub(crate) fn parse_tools_page(
     Ok((tools, next_cursor))
 }
 
+/// 为非成功的 MCP HTTP 响应构造错误串。当服务器以 401 + Bearer 的 `WWW-Authenticate`
+/// 质询（或 401 且无质询头）应答时，加 `OAUTH_REQUIRED:` 前缀，让设置页据此引导 OAuth
+/// 授权，而不是把裸 401 抛给用户。非 Bearer 质询（如 Basic）不触发。
+pub(crate) fn classify_http_error(
+    context: &str,
+    status: u16,
+    www_authenticate: Option<&str>,
+    body: &str,
+) -> String {
+    let base = format!(
+        "MCP HTTP {context} failed {}: {}",
+        status,
+        body.chars().take(500).collect::<String>()
+    );
+    let is_oauth = status == 401
+        && www_authenticate.map_or(true, |v| v.to_ascii_lowercase().contains("bearer"));
+    if is_oauth {
+        format!("OAUTH_REQUIRED: {base}")
+    } else {
+        base
+    }
+}
+
 pub struct StdioMcpClient {
     server: ChatMcpServer,
     timeout: Duration,
@@ -317,13 +340,14 @@ impl StreamableHttpMcpClient {
             .post_json(message, session_id, protocol_version)
             .await?;
         if !response.status().is_success() {
-            let status = response.status();
+            let status = response.status().as_u16();
+            let www_auth = response
+                .headers()
+                .get("www-authenticate")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             let text = response.text().await.unwrap_or_default();
-            return Err(format!(
-                "MCP HTTP notify failed {}: {}",
-                status.as_u16(),
-                text.chars().take(500).collect::<String>()
-            ));
+            return Err(classify_http_error("notify", status, www_auth.as_deref(), &text));
         }
         Ok(())
     }
@@ -355,12 +379,18 @@ impl StreamableHttpMcpClient {
                 .map(|value| value.to_string())
                 .or_else(|| session_id.map(|value| value.to_string()));
             if !response.status().is_success() {
-                let status = response.status();
+                let status = response.status().as_u16();
+                let www_auth = response
+                    .headers()
+                    .get("www-authenticate")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string);
                 let text = response.text().await.unwrap_or_default();
-                return Err(format!(
-                    "MCP HTTP request failed {}: {}",
-                    status.as_u16(),
-                    text.chars().take(500).collect::<String>()
+                return Err(classify_http_error(
+                    "request",
+                    status,
+                    www_auth.as_deref(),
+                    &text,
                 ));
             }
             let content_type = response
@@ -848,6 +878,28 @@ pub(crate) fn compact_json(value: &Value, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_http_error_flags_oauth_on_401_bearer() {
+        // 401 + Bearer 质询 → OAUTH_REQUIRED
+        assert!(classify_http_error(
+            "request",
+            401,
+            Some("Bearer resource_metadata=\"https://x/.well-known/oauth-protected-resource/mcp\""),
+            "body",
+        )
+        .starts_with("OAUTH_REQUIRED:"));
+        // 401 且无质询头 → 仍视为需要授权（部分服务器省略该头）
+        assert!(classify_http_error("request", 401, None, "body").starts_with("OAUTH_REQUIRED:"));
+        // 401 但非 Bearer 质询（Basic）→ 不触发
+        assert!(!classify_http_error("notify", 401, Some("Basic realm=x"), "body")
+            .starts_with("OAUTH_REQUIRED:"));
+        // 非 401 即使带 Bearer 也不触发
+        assert!(!classify_http_error("request", 500, Some("Bearer"), "oops")
+            .starts_with("OAUTH_REQUIRED:"));
+        // 错误串仍保留状态码与截断的 body
+        assert!(classify_http_error("request", 403, None, "denied").contains("403"));
+    }
 
     #[test]
     fn initialize_protocol_version_is_validated_per_transport() {

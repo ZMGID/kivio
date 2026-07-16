@@ -2,7 +2,7 @@ import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useM
 import {
   X, Check, Plus, Minus, Trash2, RefreshCw,
   ExternalLink, Download, Upload, ChevronRight, Wrench, Sparkles, FolderOpen, Eye, EyeOff, Info,
-  Brain, Image as ImageIcon,
+  Brain, Image as ImageIcon, KeyRound,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { homeDir, join } from '@tauri-apps/api/path'
@@ -630,6 +630,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   // 持久连接状态：serverId → 最近一次 mcp-server-state 事件的状态。
   const [mcpServerStates, setMcpServerStates] = useState<Record<string, McpServerState>>({})
   const [reloadingMcpServerId, setReloadingMcpServerId] = useState<string | null>(null)
+  // OAuth 授权中的服务器 id；以及 serverId → 是否检测到需要 OAuth 授权（401 + WWW-Authenticate）。
+  const [oauthMcpServerId, setOauthMcpServerId] = useState<string | null>(null)
+  const [mcpNeedsAuth, setMcpNeedsAuth] = useState<Record<string, boolean>>({})
   const [expandedMcpStderrIds, setExpandedMcpStderrIds] = useState<string[]>([])
   const [mcpStderrTails, setMcpStderrTails] = useState<Record<string, string>>({})
   const [skillsLoading, setSkillsLoading] = useState(false)
@@ -1463,22 +1466,27 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             tools: result.tools,
           },
         }))
+        setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: false }))
       } else {
+        const message = result.error || (lang === 'zh' ? '连接失败' : 'Connection failed')
+        if (message.includes('OAUTH_REQUIRED')) setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: true }))
         setMcpTestFeedback((prev) => ({
           ...prev,
           [server.id]: {
             ok: false,
-            message: result.error || (lang === 'zh' ? '连接失败' : 'Connection failed'),
+            message,
             tools: [],
           },
         }))
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (message.includes('OAUTH_REQUIRED')) setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: true }))
       setMcpTestFeedback((prev) => ({
         ...prev,
         [server.id]: {
           ok: false,
-          message: err instanceof Error ? err.message : String(err),
+          message,
           tools: [],
         },
       }))
@@ -1496,11 +1504,49 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       setMcpServerStates((prev) => ({ ...prev, [server.id]: status.state }))
       setMcpStderrTails((prev) => ({ ...prev, [server.id]: status.stderrTail }))
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err))
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('OAUTH_REQUIRED')) setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: true }))
+      setSaveError(msg)
     } finally {
       setReloadingMcpServerId(null)
     }
   }, [])
+
+  // OAuth 授权 remote (streamable_http) MCP：复用连接器的 connector_oauth_connect（浏览器 PKCE+DCR），
+  // 只把返回 server 的 auth + Authorization header 拼回现有条目（保留其 id/name/其它 header），
+  // 不引入 connector-* 新条目。授权后顺手测一次填工具数。
+  const handleOauthAuthorizeMcpServer = useCallback(async (server: ChatMcpServer) => {
+    const url = (server.url || '').trim()
+    if (!url) return
+    setOauthMcpServerId(server.id)
+    setMcpTestFeedback((prev) => {
+      const next = { ...prev }
+      delete next[server.id]
+      return next
+    })
+    try {
+      const authed = await api.connectorOauthConnect({ url, name: server.name })
+      const authorization = authed.headers?.Authorization
+      const nextHeaders = authorization
+        ? { ...(server.headers || {}), Authorization: authorization }
+        : (server.headers || {})
+      updateMcpServer(server.id, { auth: authed.auth, headers: nextHeaders })
+      setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: false }))
+      // 用带 token 的最新条目测试连接（直接传对象，不依赖尚未保存的 settings）。
+      await handleTestMcpServer({ ...server, auth: authed.auth, headers: nextHeaders })
+    } catch (err) {
+      setMcpTestFeedback((prev) => ({
+        ...prev,
+        [server.id]: {
+          ok: false,
+          message: err instanceof Error ? err.message : String(err),
+          tools: [],
+        },
+      }))
+    } finally {
+      setOauthMcpServerId(null)
+    }
+  }, [handleTestMcpServer, updateMcpServer])
 
   // 订阅持久连接状态事件（连接/断开/错误），实时更新状态点。
   useEffect(() => {
@@ -3866,6 +3912,28 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               <RefreshCw size={10} className={testingMcpServerId === server.id ? 'animate-spin' : ''} />
                               {testingMcpServerId === server.id ? (lang === 'zh' ? '测试中' : 'Testing') : (lang === 'zh' ? '测试连接' : 'Test')}
                             </Button>
+                            {isHttpTransport && (
+                              <Button
+                                size="sm"
+                                variant={mcpNeedsAuth[server.id] ? 'primary' : 'ghost'}
+                                disabled={oauthMcpServerId === server.id || !server.url.trim()}
+                                onClick={() => void handleOauthAuthorizeMcpServer(server)}
+                                data-tauri-drag-region="false"
+                                title={lang === 'zh' ? '通过浏览器完成 OAuth 授权（PKCE + 动态注册）' : 'Authorize via browser OAuth (PKCE + dynamic registration)'}
+                              >
+                                <KeyRound size={10} className={oauthMcpServerId === server.id ? 'animate-pulse' : ''} />
+                                {oauthMcpServerId === server.id
+                                  ? (lang === 'zh' ? '授权中' : 'Authorizing')
+                                  : server.auth?.kind === 'oauth'
+                                    ? (lang === 'zh' ? '重新授权' : 'Re-authorize')
+                                    : (lang === 'zh' ? 'OAuth 授权' : 'OAuth')}
+                              </Button>
+                            )}
+                            {isHttpTransport && mcpNeedsAuth[server.id] && (
+                              <span className="kv-tag warn">
+                                {lang === 'zh' ? '需要 OAuth 授权' : 'OAuth authorization required'}
+                              </span>
+                            )}
                             {feedback && (
                               <span className={`kv-tag ${feedback.ok ? 'ok' : 'warn'}`}>
                                 {feedback.message}

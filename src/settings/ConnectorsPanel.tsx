@@ -228,7 +228,7 @@ export function ConnectorsPanel({
       setOauthError(null)
       setOauthBusyFor(entry.id)
       try {
-        const server = await api.connectorOauthConnect({ catalogId: entry.id })
+        const server = await api.connectorOauthConnect({ catalogId: entry.id, url: entry.url })
         writeServer(server)
         // 授权后顺手测一下连接，填充工具数。
         setBusyId(server.id)
