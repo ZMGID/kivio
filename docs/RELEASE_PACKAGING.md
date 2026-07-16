@@ -51,7 +51,7 @@ GitHub release packaging:
    ```
 7. `.github/workflows/release.yml` builds the Windows release asset only:
    - `windows-latest` (x64) with `--bundles nsis`
-   - It creates the GitHub release for the tag and attaches `Kivio Desktop_X.Y.Z_x64-setup.exe`.
+   - It creates the GitHub release for the tag and attaches `Kivio.Desktop_X.Y.Z_x64-setup.exe` (NSIS normalizes spaces in `productName` to dots for the asset file name).
    - The macOS DMG is **unsigned** (no signing secrets configured); first launch needs right-click → Open, or `xattr -cr "/Applications/Kivio Desktop.app"`.
 8. Watch the workflow and inspect the release assets:
    ```bash
