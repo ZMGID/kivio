@@ -22,6 +22,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
 | [Conversation Export](./conversation-export.md) | Markdown export command, privacy boundary, and validation contract | Active |
 | [Replace Translation](./replace-translation.md) | Offline pack, MI-GAN mask, stable-ID event, and natural-size Canvas contract | Active |
+| [macOS Overlay Lifecycle](./macos-overlay-lifecycle.md) | Nonactivating Lens/translator focus, foreground, and teardown contract | Active |
 
 ---
 

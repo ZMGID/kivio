@@ -377,6 +377,10 @@ fn ensure_overlay_window(
         // 文档：Windows 8+ 上 webview 层的 alpha=0 被尊重；macOS 上此调用是 no-op。
         .background_color(Color(0, 0, 0, 0))
         .skip_taskbar(true)
+        // Tauri 默认让新窗口初始聚焦；即使 visible=false，macOS 冷创建普通 NSWindow 时也会
+        // 短暂激活 Kivio。截图浮窗随后再恢复原 App 就会触发整组窗口重排，表现为桌面闪一下。
+        // 先以非聚焦隐藏窗口创建，后续 NSPanel 显示时再由 show_overlay_panel 精确取键盘焦点。
+        .focused(false)
         .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
@@ -886,6 +890,11 @@ pub fn restore_previous_frontmost_app(app: &AppHandle, slot: &std::sync::atomic:
     use std::sync::atomic::Ordering;
     let pid = slot.swap(0, Ordering::SeqCst);
     if pid <= 0 {
+        return;
+    }
+    // 非激活 Panel 正常工作时，原 App 从未失去前台。重复 activateWithOptions(AllWindows)
+    // 会重排它的全部窗口并产生闪烁；只有前台确实变化时才需要交还。
+    if macos_frontmost_app_pid() == pid {
         return;
     }
     let _ = app.run_on_main_thread(move || unsafe {

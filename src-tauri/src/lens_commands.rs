@@ -500,13 +500,6 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
             }
         }
     };
-    #[cfg(target_os = "macos")]
-    {
-        // 先完成 NSPanel 重分类，再纠正冷创建造成的 App 激活；之后截冻结帧、显示 Panel 时
-        // 原 App 已重新处于前台，Chat 不会进入截图，也不会被一起抬高。
-        windows::ensure_overlay_panel(&window);
-        windows::reassert_previous_frontmost_app(app, &state.prev_frontmost_pid_lens);
-    }
     // 结果暂存在 state.pending_selection，等前端 take 走。translate 模式写 None，避免遗留旧值。
     if let Ok(mut guard) = state.pending_selection.lock() {
         *guard = pending_selection;
@@ -537,11 +530,8 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     );
     #[cfg(target_os = "macos")]
     {
+        windows::ensure_overlay_panel(&window);
         windows::show_overlay_panel(&window, true);
-        // 首次 makeKeyWindow 在部分系统上仍会把宿主 Kivio 激活；立即把原 App 重新置前，
-        // Panel 依靠 NonactivatingPanel + preventsActivation tag 继续收键盘，Chat 不参与排序。
-        windows::reassert_previous_frontmost_app(app, &state.prev_frontmost_pid_lens);
-        windows::refocus_overlay_after_frontmost_reassert(&window);
     }
     #[cfg(not(target_os = "macos"))]
     {
