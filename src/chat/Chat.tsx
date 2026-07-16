@@ -3618,7 +3618,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   {showEmptyHero ? (
                     <div className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-16">
                   <ChatDotGridBackground />
-                  <div className="chat-empty-hero-stack chat-motion-fade-up relative z-10 w-full max-w-3xl space-y-8">
+                  <div className="chat-empty-hero-stack chat-motion-fade-up relative z-10 w-full max-w-4xl space-y-8">
                     <h2
                       className="chat-empty-hero-title text-center text-[1.75rem] font-medium leading-snug tracking-[-0.02em] text-neutral-900 dark:text-neutral-50 sm:text-[2rem]"
                       aria-label={

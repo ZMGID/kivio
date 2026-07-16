@@ -620,7 +620,7 @@ function MessageListBase({
         onWheel={handleWheel}
         className="chat-motion-fade custom-scrollbar flex-1 overflow-y-auto"
       >
-        <div className="chat-message-list-inner mx-auto w-full max-w-3xl px-6">
+        <div className="chat-message-list-inner mx-auto w-full max-w-4xl px-6">
           <Virtualizer ref={virtualizerRef} scrollRef={scrollRef} onScroll={handleScroll}>
             {items.map((item) => (
               <div

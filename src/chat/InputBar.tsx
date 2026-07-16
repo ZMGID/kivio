@@ -1301,7 +1301,7 @@ export function InputBar({
       ? 'w-full'
       : 'chat-composer-footer shrink-0 px-6 pb-8 pt-2'
 
-  const innerClass = layout === 'inline' ? 'w-full' : 'mx-auto w-full max-w-3xl'
+  const innerClass = layout === 'inline' ? 'w-full' : 'mx-auto w-full max-w-4xl'
   const slashPanelPlacementClass = layout === 'inline'
     ? 'top-full mt-1'
     : 'bottom-full mb-1'

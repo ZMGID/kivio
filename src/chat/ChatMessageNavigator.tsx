@@ -65,10 +65,12 @@ function MessageNavigatorBase({
   const showPreview = (node: MessageNavigatorNode, button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect()
     const center = rect.top + rect.height / 2
+    // 导航条贴右侧滚动条，预览气泡向左弹出，避免超出右边界。
+    const previewWidth = Math.min(320, window.innerWidth - 32)
     setPreview({
       node,
       top: Math.min(window.innerHeight - 96, Math.max(96, center)),
-      left: rect.right + 12,
+      left: Math.max(16, rect.left - 12 - previewWidth),
     })
   }
 
