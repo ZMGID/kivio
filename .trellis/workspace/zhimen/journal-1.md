@@ -212,3 +212,36 @@ Fixed input translator Esc/toggle teardown by restoring the TaoWindow class befo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Harden overlay teardown and legacy assistants
+
+**Date**: 2026-07-16
+**Task**: Harden overlay teardown and legacy assistants
+**Branch**: `main`
+
+### Summary
+
+Made macOS overlay class restoration and destruction execute atomically on the main thread with a safe hide fallback, and treated the legacy assistant enabled flag as compatibility-only so previously disabled assistants remain usable until archived. Added regression coverage and verified build, lint, typecheck, and targeted storage tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5adeae9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

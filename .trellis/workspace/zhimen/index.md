@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-07-16
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~214 | Active |
+| `journal-1.md` | ~247 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-07-16 | Harden overlay teardown and legacy assistants | `5adeae9` | `main` |
 | 6 | 2026-07-16 | macOS overlay teardown and focus fixes | `f297773` | `main` |
 | 5 | 2026-07-16 | 重做内置专家套件（去 AI 味 + 常用模型）+ 若干 UI 修复 | `13473a5`, `8c4913d` | `main` |
 | 4 | 2026-07-16 | MCP 远程服务器 OAuth 授权入口 + lens 文本历史修复 | `0bcdb0e`, `49c0962`, `bc78956` | `main` |
