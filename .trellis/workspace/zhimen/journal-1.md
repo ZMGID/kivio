@@ -110,3 +110,38 @@ Implemented and refined a semantic chat message rail with turn-based navigation,
 - 补 1/2/8 线程与 ORT arena、同进程峰值内存基准。
 - 完成 Windows 实机验证。
 - 使用未经过 QQ 擦除处理的原始截图做最终视觉验收。
+
+
+## Session 4: MCP 远程服务器 OAuth 授权入口 + lens 文本历史修复
+
+**Date**: 2026-07-16
+**Task**: MCP 远程服务器 OAuth 授权入口 + lens 文本历史修复
+**Branch**: `main`
+
+### Summary
+
+修复 lens 纯文本会话(无截图)不进历史(拆分 history key 与后端 image 句柄)。为 MCP 服务器页的 streamable_http 服务器加 OAuth 授权按钮,复用 connector_oauth_connect(PKCE+DCR),把 auth+Authorization 拼回现有条目;client.rs 401+Bearer WWW-Authenticate 加 OAUTH_REQUIRED 前缀驱动设置页提示;connectors catalog id 未命中时回退 url(修 Linear/Sentry/Atlassian)。测试中发现并修复协议版本白名单过旧,接受 2025-11-25。TinyFish MCP 已实测可连。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0bcdb0e` | (see git log) |
+| `49c0962` | (see git log) |
+| `bc78956` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
-- **Last Active**: 2026-07-13
+- **Total Sessions**: 4
+- **Last Active**: 2026-07-16
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~106 | Active |
+| `journal-1.md` | ~147 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-07-16 | MCP 远程服务器 OAuth 授权入口 + lens 文本历史修复 | `0bcdb0e`, `49c0962`, `bc78956` | `main` |
 | 3 | 2026-07-13 | 替换翻译照片级擦除实施与质量复核 | - | `main` |
 | 2 | 2026-07-13 | Chat message navigator | `80b3dcb`, `ac2ea0b`, `b3d1c2f` | `main` |
 | 1 | 2026-07-13 | Export conversations as Markdown | `69609c6` | `feat/external-agent-model-refresh` |
