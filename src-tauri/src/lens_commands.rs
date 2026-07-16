@@ -1777,28 +1777,7 @@ async fn run_rapidocr_ocr(
     let tier = crate::offline_models::OcrModelTier::parse(
         &state.settings_read().screenshot_translation.rapid_ocr_tier,
     );
-    // ponytail: temp diagnostic — remove once OCR-empty root cause is confirmed.
-    let img_bytes = std::fs::metadata(image_path).map(|m| m.len()).unwrap_or(0);
-    let out = state.rapidocr.ocr_image(image_path, tier).await;
-    eprintln!(
-        "[ocr-diag] tier={tier:?} img={} bytes={img_bytes} -> {}",
-        image_path.display(),
-        match &out {
-            Ok(t) => format!("ok, {} chars: {:?}", t.chars().count(), t.chars().take(40).collect::<String>()),
-            Err(e) => format!("ERR {e}"),
-        }
-    );
-    // 空结果时把这张图另存到桌面(temp 图用后会被清理)，便于人工核对是空白截图还是模型漏检。
-    if matches!(&out, Ok(t) if t.trim().is_empty()) {
-        if let Some(home) = std::env::var_os("HOME") {
-            let dest = std::path::Path::new(&home)
-                .join("Desktop")
-                .join(format!("kivio-ocr-empty-{}.png", uuid::Uuid::new_v4()));
-            let _ = std::fs::copy(image_path, &dest);
-            eprintln!("[ocr-diag] saved empty-result image to {}", dest.display());
-        }
-    }
-    out
+    state.rapidocr.ocr_image(image_path, tier).await
 }
 
 /// 本地 OCR + 任意 provider 翻译的两步链路。
@@ -2022,15 +2001,6 @@ pub(crate) async fn lens_replace_translate(
         Ok(lines) => lines,
         Err(err) => return fail(&err),
     };
-    // ponytail: temp diagnostic — remove once OCR-empty root cause is confirmed.
-    {
-        let img_bytes = std::fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0);
-        eprintln!(
-            "[ocr-diag] replace tier={ocr_tier:?} img={} bytes={img_bytes} -> {} lines",
-            temp_path.display(),
-            ocr_lines.len()
-        );
-    }
     if ocr_lines.is_empty() {
         return fail("OCR 未识别到文字");
     }
