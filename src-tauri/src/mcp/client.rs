@@ -22,7 +22,8 @@ use crate::settings::ChatMcpServer;
 use super::types::{ChatToolArtifact, McpTool, McpToolCallResult};
 
 pub(crate) const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
-const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 pub(crate) const MAX_TOOL_LIST_PAGES: usize = 100;
 
 /// JSON-RPC `initialize` params shared by every transport and the persistent
@@ -907,6 +908,13 @@ mod tests {
         assert_eq!(
             negotiated_protocol_version(&current, true).unwrap(),
             "2025-06-18"
+        );
+
+        // 服务器可选更新的修订版（TinyFish 等只讲 2025-11-25）。
+        let newest = serde_json::json!({ "protocolVersion": "2025-11-25" });
+        assert_eq!(
+            negotiated_protocol_version(&newest, true).unwrap(),
+            "2025-11-25"
         );
 
         let legacy = serde_json::json!({ "protocolVersion": "2024-11-05" });
