@@ -384,23 +384,28 @@ pub(crate) async fn commit_translation(
     clipboard.set_text(text).map_err(|e| e.to_string())?;
 
     // commit 用下面的 [NSApp hide:] 把前台让回原 App（成熟路径）。先清掉翻译窗的前台快照，
-    // 让 main 关闭触发的 CloseRequested 焦点交还变成 no-op，避免与 hide 重复驱动激活。
+    // 避免后续窗口事件再次驱动焦点交还。
     #[cfg(target_os = "macos")]
     crate::windows::forget_frontmost_app(&state.prev_frontmost_pid_main);
 
-    // 关闭 main WebView，避免输入翻译页在后台长期占用内存。
+    // macOS 不能在中文输入法的输入上下文仍绑定 WKWebView 时销毁窗口。即使先
+    // makeFirstResponder:nil，真正的 close/destroy 仍由 tao 在后续事件循环里执行，TSM/IMK
+    // 可能在那里抛出 ObjC 异常并越过 Rust FFI 直接 abort。提交后保留并复用这个很小的主
+    // WebView，只结束编辑并隐藏 App，彻底避开危险的 native teardown。
+    #[cfg(target_os = "macos")]
+    if let Some(window) = get_main_window(&app) {
+        crate::windows::resign_window_input_focus(&window);
+    }
+
+    // 其他平台没有 macOS TSM/IMK 的销毁问题，保持原有的关闭释放行为。
+    #[cfg(not(target_os = "macos"))]
     if let Some(window) = get_main_window(&app) {
         let _ = window.close();
     }
 
+    // 让前台还给原 App。[NSApp hide:] 是 AppKit，只能主线程调用。
     #[cfg(target_os = "macos")]
-    #[allow(deprecated, unexpected_cfgs)]
-    unsafe {
-        use cocoa::base::{id, nil};
-        use objc::{class, msg_send, sel, sel_impl};
-        let ns_app: id = msg_send![class!(NSApplication), sharedApplication];
-        let _: () = msg_send![ns_app, hide: nil];
-    }
+    crate::windows::hide_app_guarded(&app);
 
     if auto_paste {
         // 增加延迟以确保焦点切换完成

@@ -536,6 +536,43 @@ where
     }
 }
 
+/// 结束主窗口的输入法(IME)/字段编辑会话并让出 first responder。
+///
+/// 注意：这只能安全地为隐藏窗口做准备，不能把随后销毁 WKWebView 变成可靠操作。真正的
+/// close/destroy 由 tao 在后续事件循环处理，不在这里的 ObjC exception guard 范围内；macOS
+/// 输入翻译提交路径因此会保留并复用窗口。
+#[cfg(target_os = "macos")]
+pub fn resign_window_input_focus(window: &WebviewWindow) {
+    run_overlay_on_main(window, |ns_window| unsafe {
+        use cocoa::base::nil;
+        use objc::{msg_send, sel, sel_impl};
+        // endEditingFor:nil 结束字段编辑器/IME 标记文本；makeFirstResponder:nil 让出 first responder。
+        let _: () = msg_send![ns_window, endEditingFor: nil];
+        let _: bool = msg_send![ns_window, makeFirstResponder: nil];
+    });
+}
+
+/// 在主线程调用 `[NSApp hide:]` 把前台让回原 App，@try/@catch 兜底任何 ObjC 异常。
+#[cfg(target_os = "macos")]
+pub fn hide_app_guarded(app: &AppHandle) {
+    let run = || unsafe {
+        let result = objc_exception::r#try(|| {
+            use cocoa::base::{id, nil};
+            use objc::{class, msg_send, sel, sel_impl};
+            let ns_app: id = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![ns_app, hide: nil];
+        });
+        if let Err(exc) = result {
+            log_overlay_objc_exception(exc);
+        }
+    };
+    if macos_is_main_thread() {
+        run();
+    } else {
+        let _ = app.run_on_main_thread(run);
+    }
+}
+
 /// 把捕获到的 `NSException` 指针里的 `name` + `reason` 提取成 Rust 字符串并打印，用于定位到底是
 /// 哪个 ObjC 调用抛的异常。已在 `objc_exception::try` 的 `Err` 安全区内，这里只读裸指针、判空后再
 /// 取 UTF8String，绝不再触发新异常。
