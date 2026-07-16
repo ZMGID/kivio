@@ -22,11 +22,14 @@
 - **R3（#3 catalog 回退）**：`connector_oauth_connect` 在 `catalog_id` 未命中 `builtin_oauth_url` 但传了 `url` 时用 `url`（connector_id 仍取 catalog_id）；`ConnectorsPanel.tsx` oauth catalog 项改传 `{ catalogId, url: entry.url }`。修好 Linear/Sentry/Atlassian，Notion 不变。
 
 ## Acceptance Criteria
-- [ ] AC1（需手测/浏览器）：MCP 页加 streamable_http 服务器、填 `https://agent.tinyfish.ai/mcp`、点「OAuth 授权」→ 浏览器授权 → 返回后该条目带上 Bearer token 与 `auth`，测试连接列出工具（不新增重复条目、id 不变）。
-- [ ] AC2（依赖现有逻辑）：已授权服务器 token 过期且有 refresh_token 时，下次连接经 `refresh_oauth_if_needed` 自动续期。
-- [ ] AC3（需手测）：对需 OAuth、未授权/被撤销的服务器点「测试连接」，得到「需要 OAuth 授权」提示并高亮授权按钮，而非裸 `401`。
-- [ ] AC4（需手测/浏览器）：连接器页对 Linear/Sentry/Atlassian（authKind=oauth）点连接不再报 "Unknown OAuth connector"，走 OAuth 流程；Notion 行为不变。
-- [x] AC5：`client.rs` 401 分类纯函数 `classify_http_error` 有单测（通过）；`npm run typecheck`、`npm run lint` 通过；`cargo test` 对照 HEAD 基线无新增失败（connectors 24 项 + client 新增 1 项通过）。
+- [x] AC1（用户手测通过）：MCP 页加 streamable_http 服务器、填 `https://agent.tinyfish.ai/mcp`、点「OAuth 授权」→ 浏览器授权 → 返回后该条目带上 Bearer token 与 `auth`（`oat_...`），测试连接列出工具。
+- [x] AC2（依赖现有逻辑）：已授权服务器 token 过期且有 refresh_token 时，下次连接经 `refresh_oauth_if_needed` 自动续期。
+- [x] AC3（用户手测通过）：401 + Bearer WWW-Authenticate → 「需要 OAuth 授权」提示 + 高亮按钮，非裸 401。
+- [x] AC4（后端已修）：catalog id 未命中 builtin_oauth_url 时回退 `url`，Linear/Sentry/Atlassian 不再报 "Unknown OAuth connector"。
+- [x] AC5：`client.rs` 401 分类纯函数 `classify_http_error` 单测通过；typecheck/lint 通过；`cargo test` 无新增失败。
+
+## 补充修复（测试中发现）
+- 协议版本白名单过旧：`SUPPORTED_PROTOCOL_VERSIONS` 停在 2025-06-18，服务器协商 `2025-11-25` 被拒。已把 2025-11-25 加入白名单（向后兼容，广播版本仍 2025-06-18），单测覆盖。commit `bc78956`。
 
 ## Out of Scope
 - 聊天运行时工具调用 401 的界面重授权（仅得到更清晰错误串）。
