@@ -4,6 +4,28 @@ import { describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
+describe('MessageBubble mount motion', () => {
+  const assistantMessage: ChatMessage = {
+    id: 'assistant-motion',
+    role: 'assistant',
+    content: 'answer',
+    timestamp: 1,
+  }
+
+  it('does not replay entrance motion for historical messages', () => {
+    const { container, rerender } = render(<MessageBubble message={assistantMessage} />)
+    expect(container.firstElementChild).not.toHaveClass('chat-motion-fade-up')
+
+    rerender(<MessageBubble message={{ ...assistantMessage, id: 'user-motion', role: 'user' }} />)
+    expect(container.firstElementChild).not.toHaveClass('chat-motion-fade-up')
+  })
+
+  it('keeps entrance motion for the live streaming preview', () => {
+    const { container } = render(<MessageBubble message={assistantMessage} messageStreaming />)
+    expect(container.firstElementChild).toHaveClass('chat-motion-fade-up')
+  })
+})
+
 describe('MessageBubble agent plan action', () => {
   it('renders execute action for a message-scoped draft plan', async () => {
     const user = userEvent.setup()

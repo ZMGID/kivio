@@ -845,6 +845,9 @@ function MessageBubbleComponent({
   onExecuteAgentPlan,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
+  // 历史消息会被虚拟列表反复卸载/挂载；只让真正的流式预览播放进入动画，
+  // 否则滚动时每个重新进入 DOM 的旧气泡都会淡入并上移，看起来像刷新且阻滞滚动。
+  const playEntranceAnimation = messageStreaming
   const canMutate = Boolean(onUpdateMessage && onDeleteMessage && onRegenerateMessage)
   const attachments = message.attachments ?? []
   const toolCalls = message.tool_calls ?? message.toolCalls ?? []
@@ -916,7 +919,7 @@ function MessageBubbleComponent({
     const replyModelTags = (sentModels ?? []).filter((m) => (m.model ?? '').trim().length > 0)
     const showModelTags = replyModelTags.length >= 2
     return (
-      <div className="group chat-motion-fade-up flex justify-end py-2">
+      <div className={`group flex justify-end py-2 ${playEntranceAnimation ? 'chat-motion-fade-up' : ''}`}>
         <div className={`flex min-w-0 flex-col items-end gap-1 ${isEditing ? 'w-full max-w-full' : 'max-w-[85%]'}`}>
           {showModelTags && (
             <div className="flex flex-wrap items-center justify-end gap-1.5 pr-0.5">
@@ -1059,7 +1062,7 @@ function MessageBubbleComponent({
   }
 
   return (
-    <div className="chat-motion-fade-up flex justify-start py-3">
+    <div className={`flex justify-start py-3 ${playEntranceAnimation ? 'chat-motion-fade-up' : ''}`}>
       <div className="w-full min-w-0">
         {toolCalls.length > 0 && !isEditing && !hasTimelineSegments && (
           <section
