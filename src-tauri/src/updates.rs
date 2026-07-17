@@ -9,10 +9,9 @@ use uuid::Uuid;
 use crate::api::with_standard_request_timeout;
 use crate::state::AppState;
 
-/// 调 GitHub Releases API 检查最新版本
-/// 发现新版只返回提示信息，让前端弹"去 GitHub 下载"按钮（不做自动下载安装，避免引入签名密钥那套）
+/// 检查 GitHub Releases 的最新版本。
 ///
-/// 双通道：先查 `api.github.com`（能拿到 body/assets，供自动下载）；失败（网络 / 非 2xx /
+/// 双通道：先查 `api.github.com`（能拿到 release notes）；失败（网络 / 非 2xx /
 /// 限流 / 解析）时回退查 `github.com` 的 releases atom feed —— 因为 `api.github.com` 在部分
 /// 网络下被单独墙掉或限流（60 次/小时/IP），而 `github.com` 本体仍可访问。两条都失败时返回
 /// `checkFailed:true`，让前端明确显示"检查失败"而不是伪装成"已是最新"（会误导用户）。
@@ -153,39 +152,46 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     parse(latest) > parse(current)
 }
 
-/// 从 release JSON 的 assets 数组里挑出当前平台 + 架构的安装包。
-/// 匹配规则：
-///   - macOS aarch64 → `.dmg` 文件名包含 aarch64 / arm64
-///   - macOS x86_64  → `.dmg` 包含 x64 / x86_64
-///   - Windows       → `-setup.exe` 结尾（NSIS，覆盖升级体验比 MSI 顺）
-fn pick_release_asset(assets: &[serde_json::Value]) -> Option<(String, String)> {
-    let arch = std::env::consts::ARCH;
-    for asset in assets {
-        let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let url = asset
-            .get("browser_download_url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if name.is_empty() || url.is_empty() {
-            continue;
-        }
-        let lower = name.to_ascii_lowercase();
-        let matched = if cfg!(target_os = "macos") {
-            lower.ends_with(".dmg")
-                && match arch {
-                    "aarch64" => lower.contains("aarch64") || lower.contains("arm64"),
-                    _ => lower.contains("x64") || lower.contains("x86_64"),
-                }
-        } else if cfg!(target_os = "windows") {
-            lower.ends_with("-setup.exe")
-        } else {
-            false
-        };
-        if matched {
-            return Some((name.to_string(), url.to_string()));
+/// 只接受可安全放进 Git tag、URL path 与安装包文件名的 semver-ish 版本号。
+/// 当前发布使用三段数字，可选 `-prerelease`；拒绝 `/`、`?`、空格等路径字符。
+fn normalize_release_version(version: &str) -> Option<String> {
+    let trimmed = version.trim();
+    let version = trimmed.strip_prefix('v').unwrap_or(trimmed);
+    let (core, prerelease) = version
+        .split_once('-')
+        .map_or((version, None), |(core, prerelease)| {
+            (core, Some(prerelease))
+        });
+    let core_parts: Vec<&str> = core.split('.').collect();
+    if core_parts.len() != 3
+        || core_parts
+            .iter()
+            .any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()))
+    {
+        return None;
+    }
+    if let Some(prerelease) = prerelease {
+        if prerelease.split('.').any(|part| {
+            part.is_empty() || !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        }) {
+            return None;
         }
     }
-    None
+    Some(version.to_string())
+}
+
+/// 根据发布打包契约生成当前平台的远端资产名，不再依赖 GitHub API 列举 assets。
+fn release_asset_name_for(version: &str, os: &str, arch: &str) -> Option<String> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some(format!("Kivio.Desktop_{version}_aarch64.dmg")),
+        ("macos", "x86_64") => Some(format!("Kivio.Desktop_{version}_x64.dmg")),
+        ("windows", "x86_64") => Some(format!("Kivio.Desktop_{version}_x64-setup.exe")),
+        _ => None,
+    }
+}
+
+fn release_download_url(repo: &str, version: &str, asset_name: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/v{version}/{asset_name}")
 }
 
 /// 下载新版本安装包到 OS temp dir，边下边 emit "update-download-progress" 事件。
@@ -197,46 +203,24 @@ pub(crate) async fn download_update_asset(
     version: String,
 ) -> Result<String, String> {
     const REPO: &str = "ZMGID/kivio";
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let resp = with_standard_request_timeout(
-        state
-            .http
-            .get(&url)
-            .header("User-Agent", format!("Kivio/{}", env!("CARGO_PKG_VERSION")))
-            .header("Accept", "application/vnd.github+json"),
-    )
-    .send()
-    .await
-    .map_err(|e| format!("查询 release 失败: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API 返回 {}", resp.status()));
-    }
-    let value: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析 release JSON 失败: {e}"))?;
-    let assets = value
-        .get("assets")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "release 没有 assets".to_string())?;
-    let (name, asset_url) = pick_release_asset(assets).ok_or_else(|| {
-        format!(
-            "没有匹配当前平台({}/{})的安装包",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        )
-    })?;
+    let version = normalize_release_version(&version)
+        .ok_or_else(|| format!("无效的 release 版本号: {version}"))?;
+    let name = release_asset_name_for(&version, std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or_else(|| {
+            format!(
+                "没有匹配当前平台({}/{})的安装包",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+        })?;
+    let asset_url = release_download_url(REPO, &version, &name);
 
     // 决定本地文件名：保留原扩展名（.dmg / .exe）便于 install 流程根据扩展名判断行为
     let ext = std::path::Path::new(&name)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("bin");
-    let safe_version = version
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-')
-        .collect::<String>();
-    let dest = std::env::temp_dir().join(format!("kivio-update-{safe_version}.{ext}"));
+    let dest = std::env::temp_dir().join(format!("kivio-update-{version}.{ext}"));
 
     let mut resp = state
         .http
@@ -453,5 +437,63 @@ mod tests {
     fn parse_latest_tag_from_atom_returns_none_when_absent() {
         assert_eq!(parse_latest_tag_from_atom("<feed></feed>"), None);
         assert_eq!(parse_latest_tag_from_atom(""), None);
+    }
+
+    #[test]
+    fn normalize_release_version_accepts_supported_versions() {
+        assert_eq!(normalize_release_version("2.8.1").as_deref(), Some("2.8.1"));
+        assert_eq!(
+            normalize_release_version(" v2.8.1 ").as_deref(),
+            Some("2.8.1")
+        );
+        assert_eq!(
+            normalize_release_version("2.8.1-rc.1").as_deref(),
+            Some("2.8.1-rc.1")
+        );
+    }
+
+    #[test]
+    fn normalize_release_version_rejects_unsafe_or_invalid_values() {
+        for value in [
+            "",
+            "2.8",
+            "2.8.1.0",
+            "2.8.x",
+            "2.8.1/asset",
+            "2.8.1?download=1",
+            "2.8.1-",
+            "2.8.1-rc..1",
+        ] {
+            assert_eq!(normalize_release_version(value), None, "value={value}");
+        }
+    }
+
+    #[test]
+    fn release_asset_names_follow_packaging_contract() {
+        assert_eq!(
+            release_asset_name_for("2.8.1", "macos", "aarch64").as_deref(),
+            Some("Kivio.Desktop_2.8.1_aarch64.dmg")
+        );
+        assert_eq!(
+            release_asset_name_for("2.8.1", "macos", "x86_64").as_deref(),
+            Some("Kivio.Desktop_2.8.1_x64.dmg")
+        );
+        assert_eq!(
+            release_asset_name_for("2.8.1", "windows", "x86_64").as_deref(),
+            Some("Kivio.Desktop_2.8.1_x64-setup.exe")
+        );
+        assert_eq!(release_asset_name_for("2.8.1", "linux", "x86_64"), None);
+    }
+
+    #[test]
+    fn release_download_url_uses_tag_specific_public_asset_path() {
+        assert_eq!(
+            release_download_url(
+                "ZMGID/kivio",
+                "2.8.1",
+                "Kivio.Desktop_2.8.1_aarch64.dmg"
+            ),
+            "https://github.com/ZMGID/kivio/releases/download/v2.8.1/Kivio.Desktop_2.8.1_aarch64.dmg"
+        );
     }
 }
