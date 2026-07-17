@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish to (e.g. v2.7.9)'
+        description: 'Release tag to publish to (e.g. v2.8.0)'
         required: true
-        default: 'v2.7.9'
+        default: 'v2.8.0'
       ref:
         description: 'Git ref to build from (branch/tag/commit)'
         required: true
