@@ -195,7 +195,7 @@
 
 <div class="topbar">
   <button class="menu-btn" id="menuBtn" aria-label="Menu">≡</button>
-  <a class="brand" href="../index.html"><img src="../assets/logo.png" alt="" />KIVIO DESKTOP<span class="docs-tag">DOCS</span></a>
+  <a class="brand" href="../index.html"><img src="../assets/logo.png" alt="" />KIVIO DESKTOP<span class="docs-tag">DOCS · v2.8.0</span></a>
   <div class="spacer"></div>
   <a class="top-link" href="../index.html">← 官网</a>
   <a class="icon-link" href="https://github.com/ZMGID/kivio" target="_blank" rel="noopener" aria-label="GitHub">
@@ -220,6 +220,7 @@
       <a class="item" href="#/mcp" data-page="mcp">MCP 服务器</a>
       <a class="item" href="#/skills" data-page="skills">Skills</a>
       <a class="item" href="#/subagents" data-page="subagents">子智能体</a>
+      <a class="item" href="#/local-agents" data-page="local-agents">Kivio Code 与外部 Agent</a>
       <a class="item" href="#/knowledge" data-page="knowledge">知识库</a>
       <a class="item" href="#/sandbox" data-page="sandbox">代码沙箱</a>
     </div>
@@ -253,7 +254,7 @@
       <h2 id="overview-what">Kivio Desktop 是什么</h2>
       <p>Kivio Desktop 是一款运行在 macOS 与 Windows 上的桌面应用，以一个完整的智能体内核为中心：规划 → 执行 → 综合的工具循环、并行子智能体、MCP、Skills、知识库检索，包在一个安静克制的图形界面里。</p>
       <p>它始于一个更小的问题 —— 屏幕级的轻交互：全局热键划词翻译、截图 OCR 翻译、圈选屏幕直接提问。这些功能依然是 Kivio Desktop 的一部分，且不会消失；智能体内核是后来长出来的核心，但屏幕工具不会因此边缘化。</p>
-      <p>同一套智能体循环（<code>run_agent_loop</code>）目前只在应用内的 GUI 对话中运行；本文档只覆盖这一个界面，不涉及尚未对外发布的终端/CLI 形态。</p>
+      <p>桌面 GUI 使用 Kivio 自己的智能体循环（<code>run_agent_loop</code>）；应用同时提供基于同一套 Rust 运行时的终端 Agent <code>kivio-code</code>（也可通过 <code>kivio code</code> 启动），并能把 GUI 对话交给本机已安装的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi 或 Hermes。本文档以桌面 GUI 为主，也会说明这些本地 Agent 入口。</p>
       <h2 id="overview-philosophy">设计理念</h2>
       <blockquote>你的密钥、你的数据、你的机器。</blockquote>
       <ul>
@@ -270,6 +271,7 @@
           <tr><td><a href="#/mcp">MCP 服务器</a></td><td>接入任意 Model Context Protocol 工具服务器</td></tr>
           <tr><td><a href="#/skills">Skills</a></td><td>Markdown 定义的可复用技能，运行中按需激活</td></tr>
           <tr><td><a href="#/subagents">子智能体</a></td><td>一条消息并行派发多个专职人格</td></tr>
+          <tr><td><a href="#/local-agents">Kivio Code 与外部 Agent</a></td><td>终端编码 Agent，以及 Claude Code、Codex、OpenCode、Pi 等本地 CLI 接管</td></tr>
           <tr><td><a href="#/knowledge">知识库</a></td><td>向量 + 全文混合检索 RAG，全部本地索引</td></tr>
           <tr><td><a href="#/sandbox">代码沙箱</a></td><td>Pyodide 本地运行 Python，图表/文档产物自动交付</td></tr>
           <tr><td><a href="#/translate">划词翻译</a></td><td>全局热键，流式翻译，提交即回填原应用</td></tr>
@@ -282,10 +284,10 @@
     <article data-page="install" class="hidden">
       <div class="crumb">开始</div>
       <h1>安装</h1>
-      <p class="lead">从 GitHub Releases 获取最新版本。</p>
+      <p class="lead">当前稳定版为 v2.8.0，从 GitHub Releases 获取对应平台安装包。</p>
       <h2 id="install-mac">macOS</h2>
-      <p>下载 <code>.dmg</code>，拖入 Applications。系统要求 macOS 13 及以上（屏幕捕获基于 ScreenCaptureKit）。</p>
-      <pre><code># https://github.com/ZMGID/kivio/releases/latest</code></pre>
+      <p>Apple Silicon 下载 <code>Kivio.Desktop_2.8.0_aarch64.dmg</code>，打开后拖入 Applications。系统要求 macOS 13 及以上（屏幕捕获基于 ScreenCaptureKit）。当前 DMG 未签名，首次启动请在 Finder 中右键 Kivio Desktop →「打开」，或执行：</p>
+      <pre><code>xattr -cr "/Applications/Kivio Desktop.app"</code></pre>
       <p>首次使用以下功能时，系统会请求相应的隐私权限：</p>
       <table>
         <thead><tr><th>权限</th><th>用途</th></tr></thead>
@@ -296,21 +298,30 @@
       </table>
       <p>在「系统设置 → 隐私与安全性」中为 Kivio Desktop 打开对应开关即可，无需重启应用。</p>
       <h2 id="install-win">Windows</h2>
-      <p>下载 MSI 或 NSIS 安装包并运行，支持 Windows 10/11 x64。手动启动默认打开设置页；勾选开机自启后，启动时会附带 <code>--from-autostart</code> 参数直接进入后台，不弹出设置窗口。</p>
+      <p>下载并运行 <code>Kivio.Desktop_2.8.0_x64-setup.exe</code>（NSIS），支持 Windows 10/11 x64。手动启动默认打开 AI 客户端；勾选开机自启后，启动时会附带 <code>--from-autostart</code> 参数直接进入后台，不弹出窗口。</p>
       <h2 id="install-update">更新</h2>
-      <p>应用启动时会静默检查一次 GitHub Releases 是否有新版本（<code>autoCheckUpdate</code>，默认开启）。检测到新版本仅弹出提示，<b>不会自动下载安装</b> —— 需要手动前往 Releases 页面下载新安装包完成更新。</p>
+      <p>应用启动时会静默检查一次 GitHub Releases 是否有新版本（<code>autoCheckUpdate</code>，默认开启）。也可以在「设置 → 关于」手动检查；发现新版本后可直接在应用内下载安装包并启动安装。若 GitHub API 检查失败，界面会提供 Releases 页面作为手动下载兜底。</p>
     </article>
 
     <article data-page="quickstart" class="hidden">
       <div class="crumb">开始</div>
       <h1>快速上手</h1>
-      <p class="lead">配好一把 API Key，几分钟跑通核心功能。</p>
-      <h2 id="qs-key">第一步 · 配置服务商</h2>
-      <p>打开设置 → 模型服务商，新增一个 Provider：可以从内置预设（DeepSeek、OpenRouter、SiliconFlow、智谱 GLM、Ollama Cloud）里选一个快速填好接口地址，也可以手动填写任意 OpenAI 兼容 / Anthropic / Gemini / Responses 协议的服务商。粘贴 API Key 后点「获取模型列表」，再从中勾选启用你要用的模型。详见 <a href="#/providers">模型服务商</a>。</p>
-      <h2 id="qs-chat">第二步 · 发起第一次对话</h2>
-      <p>打开 Kivio Desktop 的聊天窗口，在模型选择器里选中刚启用的模型，直接输入问题发送。默认是 <b>Act</b>（普通）模式，模型会按需自主调用文件、Shell、网页等内置工具完成任务。</p>
-      <h2 id="qs-screen">第三步 · 试试屏幕工具</h2>
-      <p>按下默认热键 <kbd>⌘/Ctrl+Alt+T</kbd> 唤出划词翻译窗口，或 <kbd>⌘/Ctrl+Shift+G</kbd> 唤出 Lens，圈选屏幕任意区域直接提问。完整热键表见 <a href="#/hotkeys">快捷键</a>。</p>
+      <p class="lead">从安装 v2.8.0 到第一轮智能体对话，再试一次屏幕工具与本地 Agent。</p>
+      <h2 id="qs-install">第一步 · 安装并启动</h2>
+      <p>从 <a href="https://github.com/ZMGID/kivio/releases/latest" target="_blank" rel="noopener">GitHub Releases ↗</a> 下载最新版：macOS Apple Silicon 使用 <code>.dmg</code>，Windows x64 使用 NSIS <code>-setup.exe</code>。macOS DMG 未签名，首次启动需要右键 →「打开」。详细权限与更新说明见 <a href="#/install">安装</a>。</p>
+      <h2 id="qs-key">第二步 · 完成首次引导</h2>
+      <p>首次启动会依次引导你添加模型服务商、可选配置联网搜索、确认全局热键。Provider 可以从 DeepSeek、OpenRouter、SiliconFlow、GLM、Ollama 预设开始，也可以手动填写任意 OpenAI Chat Completions、Anthropic Messages、Gemini generateContent 或 OpenAI Responses 兼容服务商。粘贴 API Key 后获取模型列表，并明确勾选要启用的模型。详见 <a href="#/providers">模型服务商</a>。</p>
+      <h2 id="qs-chat">第三步 · 发起第一次对话</h2>
+      <p>从托盘菜单选择「打开 AI 客户端」，在模型选择器里选中刚启用的模型，输入一个真实任务。默认 <b>Act</b> 模式会按需使用文件、Shell、网页、Python 等工具；<b>Plan</b> 只研究和制定方案；<b>Orchestrate</b> 会把可拆分工作并行派发给子智能体。</p>
+      <ul>
+        <li>点击输入框旁的来源按钮，可以挂载知识库、启用 MCP 连接器或联网搜索。</li>
+        <li>第一次使用文件或 Shell 工具时，应用会请求一次「允许本对话读写文件与执行命令」授权。</li>
+        <li>Stop 会中断当前生成，但已经产生的文本与工具结果会保留。</li>
+      </ul>
+      <h2 id="qs-screen">第四步 · 试试屏幕工具</h2>
+      <p>按 <kbd>⌘/Ctrl+Alt+T</kbd> 唤出划词翻译，或按 <kbd>⌘/Ctrl+Shift+G</kbd> 唤出 Lens，圈选屏幕区域后直接提问。macOS 首次使用会请求辅助功能与屏幕录制权限。所有热键都是开关式且可重设，完整列表见 <a href="#/hotkeys">快捷键</a>。</p>
+      <h2 id="qs-agents">第五步 · 可选：切换本地 Agent</h2>
+      <p>需要编码工作流时，可以使用内置的 <code>kivio-code</code> / <code>kivio code</code> 终端 Agent；也可以在 GUI 的运行时选择器中，把对话交给本机已安装的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi 或 Hermes。外部 Agent 使用各自已有的登录与配置，Kivio Desktop 负责检测、流式展示和会话管理。详见 <a href="#/local-agents">Kivio Code 与外部 Agent</a>。</p>
     </article>
 
     <article data-page="chat" class="hidden">
@@ -445,6 +456,40 @@
       <p>停止父对话会级联停止其下所有正在运行的子智能体；被取消的子智能体会明确标记为「已取消」而非「失败」，且不会重试。</p>
     </article>
 
+    <article data-page="local-agents" class="hidden">
+      <div class="crumb">智能体</div>
+      <h1>Kivio Code 与外部 Agent</h1>
+      <p class="lead">既可以使用 Kivio 自己的终端编码 Agent，也可以让已安装的第三方 CLI 接管 GUI 对话。</p>
+      <h2 id="local-kivio-code">Kivio Code</h2>
+      <p><code>kivio-code</code> 是基于 Kivio Rust 智能体运行时构建的 CLI/TUI，也可通过主程序的 <code>kivio code</code> 子命令启动。它复用桌面端模型服务商设置，并提供独立会话、MCP 配置、Skills 装载、项目工作目录和只读模式。</p>
+      <pre><code># 进入交互模式
+kivio code
+
+# 在指定项目执行一次任务
+kivio code -C /path/to/project -p "检查这个项目并修复测试失败"
+
+# 只允许读取和分析，不允许 write/edit/bash
+kivio code --no-approve -p "审查当前项目"</code></pre>
+      <p>如果终端找不到 <code>kivio</code>，需要先把安装包内的可执行文件或自行构建的 <code>kivio</code>/<code>kivio-code</code> 加入 <code>PATH</code>。</p>
+      <h2 id="local-external">外部 CLI Agent</h2>
+      <p>聊天窗口的运行时选择器可以检测并调用本机的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi 和 Hermes。选择某个外部运行时后，Kivio Desktop 会把当前提示与项目工作目录交给对应 CLI，并在 GUI 中持续显示输出、维护会话和停止状态。</p>
+      <ul>
+        <li>外部 Agent 必须先独立安装并完成自己的登录或 API 配置。</li>
+        <li>检测结果按项目目录隔离；切换项目后会重新发现可用运行时与模型。</li>
+        <li>OpenCode 会同时读取全局配置和项目目录中的 <code>opencode.jsonc</code>，因此项目级自定义服务商模型也会出现在选择器中。</li>
+        <li>设置中的「外部 Agent」页面可以查看检测状态、命令路径和可用模型。</li>
+      </ul>
+      <h2 id="local-choose">怎么选择</h2>
+      <table>
+        <thead><tr><th>场景</th><th>建议</th></tr></thead>
+        <tbody>
+          <tr><td>桌面聊天、文档、翻译、Lens</td><td>使用默认 Kivio 运行时，功能最完整</td></tr>
+          <tr><td>在终端持续处理代码项目</td><td>使用 Kivio Code，复用 Kivio 模型、MCP 与 Skills</td></tr>
+          <tr><td>已有成熟的 Claude Code / Codex / OpenCode 工作流</td><td>从 GUI 选择对应外部 Agent，让它接管当前项目任务</td></tr>
+        </tbody>
+      </table>
+    </article>
+
     <article data-page="knowledge" class="hidden">
       <div class="crumb">智能体</div>
       <h1>知识库</h1>
@@ -548,7 +593,7 @@
           <tr><td>OpenAI Responses</td><td>Responses / Codex 系模型</td><td>这类模型只在 Responses 协议的流式事件里输出工具调用参数，走 Chat Completions 会拿到空参数，工具调用直接失效</td></tr>
         </tbody>
       </table>
-      <p>内置了几个预设，仅预填名称和接口地址，模型列表仍需自己拉取并勾选启用：DeepSeek、OpenRouter、SiliconFlow、智谱 GLM、Ollama Cloud。也可以完全自定义任意服务商。</p>
+      <p>内置了几个预设，仅预填名称和接口地址，模型列表仍需自己拉取并勾选启用：DeepSeek、OpenRouter、SiliconFlow、智谱 GLM、Ollama。也可以完全自定义任意服务商。</p>
       <h2 id="pv-keys">密钥池与容灾</h2>
       <p>每个服务商可以配置一组 API Key（数组），第一个是主 Key，其余是备用。触发规则：</p>
       <ul>
@@ -648,7 +693,22 @@
       <div class="crumb">更多</div>
       <h1>更新日志</h1>
       <p class="lead">每个版本的变化。完整发布记录见 <a href="https://github.com/ZMGID/kivio/releases" target="_blank" rel="noopener" style="border-bottom:1px solid var(--fg)">GitHub Releases ↗</a>。</p>
-      <div class="todo">TODO · 版本要点待补充</div>
+      <h2 id="changelog-280">v2.8.0 · 2026-07-17</h2>
+      <ul>
+        <li><b>模型参数</b> —— temperature 改为可选且按模型生效，服务商请求遵循模型元数据，模型详情页展示更新后的能力与参数。</li>
+        <li><b>长对话体验</b> —— 底部跟随更稳定，虚拟列表重新挂载历史消息时不再重复播放入场动画。</li>
+        <li><b>OCR 内存</b> —— RapidOCR 与图片修复模型在每次操作后释放内存，减少连续使用时的驻留占用。</li>
+        <li><b>本地 Agent</b> —— Pi 正常结束不再触发收尾阶段 <code>EPIPE</code>；OpenCode 支持从全局及项目 <code>opencode.jsonc</code> 发现自定义模型。</li>
+      </ul>
+      <p><a href="https://github.com/ZMGID/kivio/releases/tag/v2.8.0" target="_blank" rel="noopener">查看 v2.8.0 Release notes ↗</a></p>
+      <h2 id="changelog-279">v2.7.9 · 2026-07-16</h2>
+      <ul>
+        <li>产品统一更名为 Kivio Desktop，同时保持 <code>kivio</code> CLI、Bundle ID 与现有数据路径兼容。</li>
+        <li>修复 macOS 输入翻译 IME 崩溃，稳定 Lens/翻译浮窗生命周期。</li>
+        <li>远程 MCP 增加 OAuth 2.1、PKCE 与动态客户端注册支持。</li>
+        <li>改进首次引导、Lens 历史保存与 AI 客户端界面细节。</li>
+      </ul>
+      <p><a href="https://github.com/ZMGID/kivio/releases/tag/v2.7.9" target="_blank" rel="noopener">查看 v2.7.9 Release notes ↗</a></p>
     </article>
 
     <div class="pager" id="pager"></div>
