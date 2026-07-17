@@ -245,3 +245,36 @@ Made macOS overlay class restoration and destruction execute atomically on the m
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Fix chat scroll stutter
+
+**Date**: 2026-07-17
+**Task**: Fix chat scroll stutter
+**Branch**: `main`
+
+### Summary
+
+Profiled long-conversation scrolling, identified virtualized historical message entrance animations as the dominant refresh/sticky effect, limited motion to the live streaming preview, added regression tests and frontend guidance, removed all temporary probes, and verified browser behavior plus the full Node 24 quality gate.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b3929ab` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

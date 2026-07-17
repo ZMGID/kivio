@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-07-16
+- **Total Sessions**: 8
+- **Last Active**: 2026-07-17
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~247 | Active |
+| `journal-1.md` | ~280 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-07-17 | Fix chat scroll stutter | `b3929ab` | `main` |
 | 7 | 2026-07-16 | Harden overlay teardown and legacy assistants | `5adeae9` | `main` |
 | 6 | 2026-07-16 | macOS overlay teardown and focus fixes | `f297773` | `main` |
 | 5 | 2026-07-16 | 重做内置专家套件（去 AI 味 + 常用模型）+ 若干 UI 修复 | `13473a5`, `8c4913d` | `main` |
