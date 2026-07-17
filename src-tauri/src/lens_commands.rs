@@ -428,16 +428,6 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     }
 
     let state = app.state::<AppState>();
-    // 预热 RapidOCR:替换翻译首次调用要 ~5s 加载识别模型(OnceCell 懒初始化)。按热键即后台
-    // 起初始化,盖进用户"框选区域"的几秒里,和上面 sck::prewarm 同一思路。只在 replace 模式做,
-    // 避免为聊天/普通截图翻译白占内存;模型不齐时 warmup 内部静默返回。
-    if mode == "replace" {
-        let rapidocr = state.rapidocr.clone();
-        let tier = crate::offline_models::OcrModelTier::parse(
-            &state.settings_read().screenshot_translation.rapid_ocr_tier,
-        );
-        tauri::async_runtime::spawn(async move { rapidocr.warmup(tier).await });
-    }
     // 自愈：busy=true 但已无浮窗可见（外部强关 / dev 重载等异常），重置 busy
     if state.lens_busy.load(Ordering::SeqCst) {
         let visible = active_overlay_window(app).is_some();
@@ -1971,9 +1961,8 @@ pub(crate) async fn lens_replace_translate(
 
     let settings = state.settings_read().clone();
     // 替换翻译固定走 RapidOCR,档位跟随截图翻译设置(默认 standard=v5 mobile,快)。
-    let ocr_tier = crate::offline_models::OcrModelTier::parse(
-        &settings.screenshot_translation.rapid_ocr_tier,
-    );
+    let ocr_tier =
+        crate::offline_models::OcrModelTier::parse(&settings.screenshot_translation.rapid_ocr_tier);
     // 就绪校验会对模型文件做同步 SHA-256，放到阻塞线程池，避免卡住 tokio worker。
     let offline_models = state.offline_models.clone();
     let pack_status =

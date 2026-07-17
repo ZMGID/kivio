@@ -1,13 +1,12 @@
 //! Local MI-GAN image inpainting for replace translation.
 
 use std::io::Cursor;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 use image::{DynamicImage, ImageFormat, RgbImage};
 use ort::session::Session;
 use ort::value::Tensor;
 use serde::Serialize;
-use tokio::sync::OnceCell;
 
 use crate::offline_models::{ensure_ort_init, OfflineModelManager};
 
@@ -85,18 +84,20 @@ impl InpaintingError {
 
 pub struct InpaintingClient {
     models: Arc<OfflineModelManager>,
-    session: OnceCell<Arc<StdMutex<Session>>>,
 }
 
 impl InpaintingClient {
     pub fn new(models: Arc<OfflineModelManager>) -> Arc<Self> {
-        Arc::new(Self {
-            models,
-            session: OnceCell::new(),
-        })
+        Arc::new(Self { models })
     }
 
-    async fn session(&self) -> Result<Arc<StdMutex<Session>>, InpaintingError> {
+    /// `image`：调用方已解码的原图（替换翻译主流程本来就持有解码结果，
+    /// 这里不再重新读盘/解码 PNG）。
+    pub async fn inpaint_png(
+        self: &Arc<Self>,
+        image: Arc<RgbImage>,
+        mask: InpaintMask,
+    ) -> Result<InpaintedPng, InpaintingError> {
         if !self.models.migan_ready() {
             return Err(InpaintingError::new(
                 InpaintingErrorCode::ModelMissing,
@@ -111,60 +112,45 @@ impl InpaintingClient {
             };
             InpaintingError::new(code, error)
         })?;
-
         let model_path = self
             .models
             .migan_path()
             .map_err(|error| InpaintingError::new(InpaintingErrorCode::ModelMissing, error))?;
-        let session = self
-            .session
-            .get_or_try_init(|| async move {
-                tokio::task::spawn_blocking(move || {
-                    Session::builder()
-                        .map_err(|e| e.to_string())?
-                        .with_intra_threads(4)
-                        .map_err(|e| e.to_string())?
-                        // ORT calls this option "parallel execution"; false selects sequential mode.
-                        .with_parallel_execution(false)
-                        .map_err(|e| e.to_string())?
-                        .commit_from_file(model_path)
-                        .map(|session| Arc::new(StdMutex::new(session)))
-                        .map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| {
-                    InpaintingError::new(
-                        InpaintingErrorCode::Worker,
-                        format!("session worker failed: {e}"),
-                    )
-                })?
-                .map_err(|error| InpaintingError::new(InpaintingErrorCode::SessionInit, error))
-            })
-            .await?;
-        Ok(session.clone())
-    }
 
-    /// `image`：调用方已解码的原图（替换翻译主流程本来就持有解码结果，
-    /// 这里不再重新读盘/解码 PNG）。
-    pub async fn inpaint_png(
-        self: &Arc<Self>,
-        image: Arc<RgbImage>,
-        mask: InpaintMask,
-    ) -> Result<InpaintedPng, InpaintingError> {
-        let session = self.session().await?;
-        tokio::task::spawn_blocking(move || run_inpainting(&session, &image, mask))
-            .await
-            .map_err(|error| {
-                InpaintingError::new(
-                    InpaintingErrorCode::Worker,
-                    format!("inpainting worker failed: {error}"),
-                )
-            })?
+        // MI-GAN 的 ORT arena 会保留本次大图推理的峰值分配。Session 必须与单次调用同寿命：
+        // 在 blocking worker 内创建、推理，闭包结束后立即 drop，不能挂在 AppState 常驻。
+        tokio::task::spawn_blocking(move || {
+            let mut session = Session::builder()
+                .map_err(|error| {
+                    InpaintingError::new(InpaintingErrorCode::SessionInit, error.to_string())
+                })?
+                .with_intra_threads(4)
+                .map_err(|error| {
+                    InpaintingError::new(InpaintingErrorCode::SessionInit, error.to_string())
+                })?
+                // ORT calls this option "parallel execution"; false selects sequential mode.
+                .with_parallel_execution(false)
+                .map_err(|error| {
+                    InpaintingError::new(InpaintingErrorCode::SessionInit, error.to_string())
+                })?
+                .commit_from_file(model_path)
+                .map_err(|error| {
+                    InpaintingError::new(InpaintingErrorCode::SessionInit, error.to_string())
+                })?;
+            run_inpainting(&mut session, &image, mask)
+        })
+        .await
+        .map_err(|error| {
+            InpaintingError::new(
+                InpaintingErrorCode::Worker,
+                format!("inpainting worker failed: {error}"),
+            )
+        })?
     }
 }
 
 fn run_inpainting(
-    session: &Arc<StdMutex<Session>>,
+    session: &mut Session,
     source: &RgbImage,
     mask: InpaintMask,
 ) -> Result<InpaintedPng, InpaintingError> {
@@ -201,7 +187,6 @@ fn run_inpainting(
         Tensor::from_array((vec![1usize, 1, height as usize, width as usize], model_mask))
             .map_err(|e| InpaintingError::new(InpaintingErrorCode::Inference, e.to_string()))?;
 
-    let mut session = session.lock().unwrap_or_else(|error| error.into_inner());
     let outputs = session
         .run(ort::inputs!["image" => image_tensor, "mask" => mask_tensor])
         .map_err(|e| InpaintingError::new(InpaintingErrorCode::Inference, e.to_string()))?;

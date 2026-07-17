@@ -8,14 +8,55 @@
 //! ONNX Runtime dylib 通过 `ort` 的 `load-dynamic` feature 在运行时加载,
 //! 安装包不带任何 ONNX Runtime 二进制。
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+#[cfg(not(test))]
+use std::process::Stdio;
 use std::sync::Arc;
 
-use crate::offline_models::{ensure_ort_init, OfflineModelManager};
 pub use crate::offline_models::OcrModelTier as ModelTier;
+use crate::offline_models::{init_ort_from_model_dir, OfflineModelManager};
+#[cfg(not(test))]
+use crate::proc::NoConsoleWindow;
 use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
-use serde::Serialize;
-use tokio::sync::OnceCell;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+
+pub const RAPIDOCR_WORKER_ARG: &str = "--kivio-rapidocr-worker";
+
+#[derive(Debug, Clone, Copy)]
+enum WorkerMode {
+    Text,
+    Lines,
+}
+
+impl WorkerMode {
+    #[cfg(not(test))]
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Lines => "lines",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "text" => Ok(Self::Text),
+            "lines" => Ok(Self::Lines),
+            _ => Err(format!("unsupported RapidOCR worker mode: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum WorkerResponse {
+    Text(String),
+    Lines(Vec<RapidOcrLine>),
+    Error(String),
+}
 
 /// 前端拉状态用:就绪情况 + 模型目录(供 UI 显示)。
 #[derive(Debug, Clone, Serialize)]
@@ -37,18 +78,16 @@ pub struct RapidOcrInstallResult {
 /// AppState 持有的 RapidOCR 客户端。线程安全,Tauri command 间共享。
 pub struct RapidOcrClient {
     models: Arc<OfflineModelManager>,
-    /// 按档位分别缓存 pipeline,首次调用某档时初始化(ort::init 进程级一次 + 构建该档
-    /// OAROCRBuilder),之后复用。
-    standard_pipeline: OnceCell<Arc<OAROCR>>,
-    high_pipeline: OnceCell<Arc<OAROCR>>,
+    /// A second concurrent worker would double the transient ~hundreds-of-MB model footprint.
+    /// Serialize OCR operations while still keeping every worker one-shot.
+    worker_lock: Mutex<()>,
 }
 
 impl RapidOcrClient {
     pub fn new(models: Arc<OfflineModelManager>) -> Arc<Self> {
         Arc::new(Self {
             models,
-            standard_pipeline: OnceCell::new(),
-            high_pipeline: OnceCell::new(),
+            worker_lock: Mutex::new(()),
         })
     }
 
@@ -103,89 +142,33 @@ impl RapidOcrClient {
         }
     }
 
-    /// 解析模型目录 + 校验该档位文件齐全 + 惰性初始化并复用该档位的 OAROCR pipeline。
+    /// 解析模型目录 + 校验该档位文件齐全。模型 pipeline 在一次性子进程中创建；子进程退出
+    /// 后由操作系统回收整个 ONNX Runtime 地址空间，主进程不加载 OCR 模型。
     /// `ocr_image` / `ocr_image_lines` 共用:文件不齐 → `rapidocr_models_missing`;
-    /// 首次走 OnceCell init(ort::init_from 全进程一次 + 构建该档 pipeline,~1-3s),后续复用。
-    async fn pipeline_for(&self, tier: ModelTier) -> Result<Arc<OAROCR>, String> {
+    fn checked_model_dir(&self, tier: ModelTier) -> Result<PathBuf, String> {
         let dir = self.model_dir()?;
         if !self.models.rapidocr_ready(tier) {
             return Err("rapidocr_models_missing".into());
         }
-
-        ensure_ort_init(&self.models).await?;
-
-        let (det_path, rec_path, keys_path) = match tier {
-            ModelTier::Standard => (
-                dir.join("det.onnx"),
-                dir.join("rec.onnx"),
-                dir.join("keys.txt"),
-            ),
-            ModelTier::High => (
-                dir.join("high").join("det.onnx"),
-                dir.join("high").join("rec.onnx"),
-                dir.join("high").join("keys.txt"),
-            ),
-        };
-
-        let cell = match tier {
-            ModelTier::Standard => &self.standard_pipeline,
-            ModelTier::High => &self.high_pipeline,
-        };
-        let pipeline = cell
-            .get_or_try_init(|| async {
-                let mut builder = OAROCRBuilder::new(
-                    det_path.to_string_lossy().into_owned(),
-                    rec_path.to_string_lossy().into_owned(),
-                    keys_path.to_string_lossy().into_owned(),
-                );
-                // v6 medium(High)检测阈值与 v3~v5 不同,builder 默认值(0.3/0.6/1.5)只适配
-                // 旧模型,High 档必须显式覆盖否则漏检严重;Standard(v5 mobile)保持默认阈值。
-                if tier == ModelTier::High {
-                    builder = builder.text_detection_config(oar_ocr::domain::TextDetectionConfig {
-                        score_threshold: 0.2,
-                        box_threshold: 0.45,
-                        unclip_ratio: 1.4,
-                        ..Default::default()
-                    });
-                }
-                let p = builder
-                    .build()
-                    .map_err(|e| format!("OAROCRBuilder failed: {e}"))?;
-                Ok::<_, String>(Arc::new(p))
-            })
-            .await?;
-        Ok(pipeline.clone())
-    }
-
-    /// 预热指定档位:提前触发 OnceCell 初始化(ort::init 进程级一次 + 构建该档 pipeline,
-    /// ~1-5s),让替换翻译首次真正调用时该档 OCR 已就绪。模型不齐/初始化失败时静默返回——
-    /// 预热不是关键路径,真正的错误留给后续 `ocr_image_lines` 走正常错误分支上报。
-    pub async fn warmup(&self, tier: ModelTier) {
-        let _ = self.pipeline_for(tier).await;
+        Ok(dir)
     }
 
     /// OCR 主入口。文件不齐 → `rapidocr_models_missing` 错误码,前端渲染下载提示。
-    /// 首次调用走 OnceCell init:ort::init_from(进程级一次) + 构建 pipeline(~1-3s),后续复用。
+    /// 每次调用启动一次性 worker；识别结束后 worker 退出并释放全部模型内存。
     pub async fn ocr_image(
         self: &Arc<Self>,
         image_path: &std::path::Path,
         tier: ModelTier,
     ) -> Result<String, String> {
-        let pipeline = self.pipeline_for(tier).await?;
-
-        // oar-ocr 同步 API,spawn_blocking 避免阻塞 tokio 调度器。
-        let path = image_path.to_owned();
-        let text = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            let img = oar_ocr::utils::load_image(&path).map_err(|e| format!("load_image: {e}"))?;
-            let results = pipeline
-                .predict(vec![img])
-                .map_err(|e| format!("predict: {e}"))?;
-            Ok(join_text_regions(&results))
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking: {e}"))??;
-
-        Ok(text)
+        let _worker_slot = self.worker_lock.lock().await;
+        let model_dir = self.checked_model_dir(tier)?;
+        match run_worker(model_dir, image_path, tier, WorkerMode::Text).await? {
+            WorkerResponse::Text(text) => Ok(text),
+            WorkerResponse::Error(error) => Err(error),
+            WorkerResponse::Lines(_) => {
+                Err("RapidOCR worker returned lines for text request".into())
+            }
+        }
     }
 
     /// 带 bbox 的行级 OCR，供替换翻译在原位绘制译文。与 `ocr_image` 共用同档位 pipeline。
@@ -194,32 +177,177 @@ impl RapidOcrClient {
         image_path: &std::path::Path,
         tier: ModelTier,
     ) -> Result<Vec<RapidOcrLine>, String> {
-        let pipeline = self.pipeline_for(tier).await?;
-
-        let path = image_path.to_owned();
-        let lines = tokio::task::spawn_blocking(move || -> Result<Vec<RapidOcrLine>, String> {
-            let img = oar_ocr::utils::load_image(&path).map_err(|e| format!("load_image: {e}"))?;
-            let results = pipeline
-                .predict(vec![img])
-                .map_err(|e| format!("predict: {e}"))?;
-            Ok(lines_from_results(&results))
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking: {e}"))??;
-
-        Ok(lines)
+        let _worker_slot = self.worker_lock.lock().await;
+        let model_dir = self.checked_model_dir(tier)?;
+        match run_worker(model_dir, image_path, tier, WorkerMode::Lines).await? {
+            WorkerResponse::Lines(lines) => Ok(lines),
+            WorkerResponse::Error(error) => Err(error),
+            WorkerResponse::Text(_) => {
+                Err("RapidOCR worker returned text for lines request".into())
+            }
+        }
     }
 }
 
+#[cfg(not(test))]
+async fn run_worker(
+    model_dir: PathBuf,
+    image_path: &Path,
+    tier: ModelTier,
+    mode: WorkerMode,
+) -> Result<WorkerResponse, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("resolve RapidOCR worker executable: {error}"))?;
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .arg(RAPIDOCR_WORKER_ARG)
+        .arg(model_dir)
+        .arg(tier.as_str())
+        .arg(mode.as_str())
+        .arg(image_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command.no_console_window();
+    let output = command
+        .output()
+        .await
+        .map_err(|error| format!("spawn RapidOCR worker: {error}"))?;
+    let decoded = serde_json::from_slice::<WorkerResponse>(&output.stdout);
+    if !output.status.success() {
+        if let Ok(WorkerResponse::Error(error)) = &decoded {
+            return Ok(WorkerResponse::Error(error.clone()));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("RapidOCR worker exited with {}", output.status)
+        } else {
+            format!("RapidOCR worker failed: {stderr}")
+        });
+    }
+    decoded.map_err(|error| format!("decode RapidOCR worker response: {error}"))
+}
+
+// The existing real-model E2E lives inside the library test binary, so `current_exe()` points to
+// the Rust test harness rather than the `kivio` GUI binary and cannot dispatch the hidden worker
+// argument. Keep that E2E useful by running the same worker body in-process under cfg(test).
+#[cfg(test)]
+async fn run_worker(
+    model_dir: PathBuf,
+    image_path: &Path,
+    tier: ModelTier,
+    mode: WorkerMode,
+) -> Result<WorkerResponse, String> {
+    run_worker_body(&model_dir, image_path, tier, mode)
+}
+
+/// Hidden one-shot subprocess entry. The GUI process invokes the current executable with
+/// [`RAPIDOCR_WORKER_ARG`], receives one JSON response on stdout, then waits for process exit.
+pub fn run_worker_entry(mut args: impl Iterator<Item = OsString>) -> ExitCode {
+    let result = (|| -> Result<WorkerResponse, String> {
+        let model_dir = PathBuf::from(args.next().ok_or("missing RapidOCR model directory")?);
+        let tier = ModelTier::parse(
+            &args
+                .next()
+                .ok_or("missing RapidOCR model tier")?
+                .to_string_lossy(),
+        );
+        let mode = WorkerMode::parse(
+            &args
+                .next()
+                .ok_or("missing RapidOCR worker mode")?
+                .to_string_lossy(),
+        )?;
+        let image_path = PathBuf::from(args.next().ok_or("missing RapidOCR image path")?);
+        if args.next().is_some() {
+            return Err("unexpected extra RapidOCR worker arguments".into());
+        }
+
+        run_worker_body(&model_dir, &image_path, tier, mode)
+    })();
+
+    let (response, exit_code) = match result {
+        Ok(response) => (response, ExitCode::SUCCESS),
+        Err(error) => (WorkerResponse::Error(error), ExitCode::from(1)),
+    };
+    let mut stdout = std::io::stdout().lock();
+    if serde_json::to_writer(&mut stdout, &response).is_err() || stdout.flush().is_err() {
+        return ExitCode::from(1);
+    }
+    exit_code
+}
+
+fn run_worker_body(
+    model_dir: &Path,
+    image_path: &Path,
+    tier: ModelTier,
+    mode: WorkerMode,
+) -> Result<WorkerResponse, String> {
+    init_ort_from_model_dir(model_dir)?;
+    let (det_path, rec_path, keys_path) = model_paths(model_dir, tier);
+    let pipeline = build_pipeline(tier, det_path, rec_path, keys_path)?;
+    let image =
+        oar_ocr::utils::load_image(image_path).map_err(|error| format!("load_image: {error}"))?;
+    let results = pipeline
+        .predict(vec![image])
+        .map_err(|error| format!("predict: {error}"))?;
+    Ok(match mode {
+        WorkerMode::Text => WorkerResponse::Text(join_text_regions(&results)),
+        WorkerMode::Lines => WorkerResponse::Lines(lines_from_results(&results)),
+    })
+}
+
+fn model_paths(model_dir: &Path, tier: ModelTier) -> (PathBuf, PathBuf, PathBuf) {
+    match tier {
+        ModelTier::Standard => (
+            model_dir.join("det.onnx"),
+            model_dir.join("rec.onnx"),
+            model_dir.join("keys.txt"),
+        ),
+        ModelTier::High => (
+            model_dir.join("high").join("det.onnx"),
+            model_dir.join("high").join("rec.onnx"),
+            model_dir.join("high").join("keys.txt"),
+        ),
+    }
+}
+
+fn build_pipeline(
+    tier: ModelTier,
+    det_path: PathBuf,
+    rec_path: PathBuf,
+    keys_path: PathBuf,
+) -> Result<OAROCR, String> {
+    let mut builder = OAROCRBuilder::new(
+        det_path.to_string_lossy().into_owned(),
+        rec_path.to_string_lossy().into_owned(),
+        keys_path.to_string_lossy().into_owned(),
+    );
+    // v6 medium(High)检测阈值与 v3~v5 不同,builder 默认值(0.3/0.6/1.5)只适配
+    // 旧模型,High 档必须显式覆盖否则漏检严重;Standard(v5 mobile)保持默认阈值。
+    if tier == ModelTier::High {
+        builder = builder.text_detection_config(oar_ocr::domain::TextDetectionConfig {
+            score_threshold: 0.2,
+            box_threshold: 0.45,
+            unclip_ratio: 1.4,
+            ..Default::default()
+        });
+    }
+    builder
+        .build()
+        .map_err(|e| format!("OAROCRBuilder failed: {e}"))
+}
+
 /// 单行 OCR 结果（带屏幕坐标），供替换翻译 Canvas 覆盖层使用。
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RapidOcrPoint {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RapidOcrLine {
     pub id: String,
@@ -849,6 +977,27 @@ mod tests {
     fn lines_from_results_empty_input() {
         assert!(lines_from_results(&[]).is_empty());
     }
+
+    #[test]
+    fn worker_modes_and_response_round_trip() {
+        assert!(matches!(WorkerMode::parse("text"), Ok(WorkerMode::Text)));
+        assert!(matches!(WorkerMode::parse("lines"), Ok(WorkerMode::Lines)));
+        assert!(WorkerMode::parse("unknown").is_err());
+
+        let response = WorkerResponse::Lines(vec![RapidOcrLine {
+            id: "line-1".into(),
+            text: "hello".into(),
+            points: vec![RapidOcrPoint { x: 1.0, y: 2.0 }],
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+        }]);
+        let encoded = serde_json::to_vec(&response).expect("encode worker response");
+        let decoded: WorkerResponse =
+            serde_json::from_slice(&encoded).expect("decode worker response");
+        assert!(matches!(decoded, WorkerResponse::Lines(lines) if lines[0].text == "hello"));
+    }
 }
 
 /// 真实端到端验证:真实下载 + 真实推理(PP-OCRv6 medium)。
@@ -896,7 +1045,10 @@ mod rapidocr_e2e {
         // 2) status:应就绪。
         let status = client.status();
         eprintln!("[rapidocr-e2e] status = {status:?}");
-        assert!(status.high_available, "models should be available after install");
+        assert!(
+            status.high_available,
+            "models should be available after install"
+        );
 
         // 3) 真实推理。
         let t2 = std::time::Instant::now();

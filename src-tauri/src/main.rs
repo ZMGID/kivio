@@ -12,6 +12,9 @@ fn main() -> ExitCode {
     let mut args = std::env::args_os();
     let _program = args.next();
     if let Some(first) = args.next() {
+        if first == kivio::rapidocr::RAPIDOCR_WORKER_ARG {
+            return kivio::rapidocr::run_worker_entry(args);
+        }
         if first == "code" {
             // Rebuild argv for clap as ["kivio code", <rest…>] so usage/version
             // strings read naturally and the `code` token itself is consumed.

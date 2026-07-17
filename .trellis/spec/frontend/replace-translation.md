@@ -43,6 +43,7 @@ Use this contract when changing screenshot replace translation across Rust comma
 - Dominant background cluster selection must have a deterministic tie-break; never rely on randomized `HashMap` iteration order when two coarse color clusters have equal counts.
 - Runtime/model files live under `{app_data_dir}/rapidocr-models`. MI-GAN is `inpainting/migan_pipeline_v2.onnx`, 28,079,181 bytes, SHA-256 `6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b`.
 - ONNX Runtime 1.24.x has no macOS Intel release. Intel uses 1.23.2 with ORT API 23; arm64/Windows may use 1.24.4 because API 23 remains compatible.
+- RapidOCR must run in a one-shot child process launched from the current Kivio executable via the hidden `--kivio-rapidocr-worker` entry. The GUI process validates model files, sends model-dir/tier/mode/image-path arguments, reads one JSON response, and waits for child exit; it never initializes ORT or builds `OAROCR` itself. Process exit is the required memory boundary because dropping `OAROCR` and allocator pressure hints do not reliably release ORT/OAROCR mappings. A client-level async mutex permits only one OCR worker at a time so concurrent Lens/knowledge-base work cannot multiply the transient model peak. MI-GAN remains operation-local in the GUI process: each call builds one `ort::Session` and drops it after inpainting. Cold-start latency is an accepted tradeoff for deterministic OCR memory reclamation.
 - Model download is explicit in Settings. Replace execution must return `replace_translation_pack_missing`; it must never start a silent download.
 - Backend error codes remain stable machine-readable values, but the Lens container must map them through i18n before rendering. `ReplaceTranslateOverlay` receives only the final localized `statusLabel`; it must not accept or prioritize a raw backend `error` prop.
 - The replace status overlay and the pre-capture hint share the macOS safe-area top offset: `calc(env(safe-area-inset-top, 0px) + 36px)`. Phase changes must not move the hint into the notch area.
@@ -57,6 +58,7 @@ Use this contract when changing screenshot replace translation across Rust comma
 - Missing/duplicate group ID, duplicate slot ID, unknown `slot.groupId`, non-positive slot bounds, or invalid enum -> reject the V2 event before updating Lens state.
 - `done` with no groups or no slots -> reject the event; `ocr`, `processing`, and `error` may carry empty arrays.
 - MI-GAN failure -> deterministic leaf-mask fill and warning; other regions remain usable.
+- RapidOCR success/error -> worker emits one tagged JSON response and exits; no OCR model memory remains in the GUI process. MI-GAN success/error -> the operation-local session leaves scope; no model session remains reachable from `AppState` after the command completes.
 - Invalid mask dimensions -> structured `invalid_mask` error before inference.
 - `replace_translation_pack_missing` -> localized Settings download guidance in the overlay; never show the raw code to the user.
 - No dominant background cluster inside an OCR polygon -> classify the image as complex and use MI-GAN.
@@ -77,6 +79,7 @@ Use this contract when changing screenshot replace translation across Rust comma
 - Good: list items 1–4 become separate left-aligned regions, while wrapped lines stay with their own item and a shell command remains in its code block.
 - Good: inline-code badge backgrounds and copy icons remain intact after text removal.
 - Good: repository rows keep independent translation groups at their original vertical anchors, and avatars remain untouched.
+- Good: a 4K OCR operation may give the worker a high transient working set, but worker exit returns the complete OCR address space while the GUI process stays near its pre-OCR baseline.
 - Good: the translation prompt still receives all exact-line groups in one batch, providing page context without cross-line render redistribution.
 - Base: a uniform UI background uses boundary-to-interior deterministic propagation and never changes pixels outside the glyph mask.
 - Bad: using the aggregated cell rectangle as the inpainting mask destroys separators and background content.
@@ -87,6 +90,7 @@ Use this contract when changing screenshot replace translation across Rust comma
 - Bad: retaining multiple slots but flowing one heuristic paragraph translation across them; translated words then move into different source-line positions.
 - Bad: attaching translated text and bounds to one `ReplaceLayoutRegion`, because semantic grouping then silently becomes render geometry.
 - Bad: accepting avatar OCR such as `®` or `Q` pulls region bounds left into the icon column and erases the avatar.
+- Bad: running RapidOCR inside the GUI process even with an operation-local `OAROCR`, caching `OAROCR`/`ort::Session` in `OnceCell`/`Lazy`/global `Arc`, or prewarming a model that remains reachable after the Lens closes. ORT/OAROCR may keep the inference peak resident until the owning process exits.
 - Bad: `max_by_key(count)` over a randomized map makes identical images intermittently choose different background clusters.
 - Bad: passing Kivio's `255=hole` mask directly to MI-GAN preserves the text instead of erasing it.
 - Bad: rendering `error || statusLabel` leaks internal codes and bypasses the localized guidance.
@@ -109,7 +113,8 @@ Use this contract when changing screenshot replace translation across Rust comma
 - Frontend: paragraphs return zero vertical offset while line/cell labels retain centered offsets.
 - Frontend status: a missing-pack event renders the localized guidance and does not render `replace_translation_pack_missing`.
 - Frontend position: the replacement status container keeps the shared safe-area top class in every phase.
-- Ignored real E2E: shared ORT + RapidOCR + MI-GAN, hot path below 500ms, at least one masked pixel changes, every unmasked pixel is byte-identical.
+- Ignored real E2E: one-shot RapidOCR worker + operation-local MI-GAN session, at least one masked pixel changes, every unmasked pixel is byte-identical. Do not impose a warm-session latency target; every operation intentionally pays model cold-start cost.
+- Lifecycle regression: UI OCR spawns exactly one worker, decodes its response, observes worker exit, and leaves the GUI RSS free of the worker's model peak. Windows Task Manager E2E should verify the child disappears after every success/error without restarting Kivio.
 
 ### 7. Wrong vs Correct
 
@@ -138,6 +143,14 @@ type ReplaceLayoutRegion = { id: string; translated: string; bounds: Bounds }
 ```rust
 // Wrong for the exported MI-GAN pipeline: 255 is interpreted as known.
 let model_mask = kivio_hole_mask;
+
+// Wrong: the GUI process owns ORT/OAROCR, even if the pipeline is operation-local.
+struct RapidOcrClient {
+    models: Arc<OfflineModelManager>,
+}
+
+let pipeline = build_pipeline(...)?;
+pipeline.predict(images)?; // ORT/OAROCR mappings may remain in the GUI process.
 
 // Wrong for UI text: destroys the full OCR line background.
 rasterize_dilated_polygon(mask, points);
@@ -168,6 +181,14 @@ let model_mask = kivio_hole_mask
     .iter()
     .map(|value| if *value == 0 { 255 } else { 0 })
     .collect::<Vec<_>>();
+
+// Correct: the current executable handles a hidden one-shot worker entry and exits after JSON.
+let output = tokio::process::Command::new(std::env::current_exe()?)
+    .arg("--kivio-rapidocr-worker")
+    .args([model_dir, tier, mode, image_path])
+    .output()
+    .await?;
+let response: WorkerResponse = serde_json::from_slice(&output.stdout)?;
 
 let glyphs = foreground_pixels(image, points);
 rasterize_dilated_pixels(mask, &glyphs);

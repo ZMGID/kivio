@@ -29,6 +29,7 @@ use windows::{
 };
 
 pub const MIGAN_RELATIVE_PATH: &str = "inpainting/migan_pipeline_v2.onnx";
+
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_ATTEMPTS: u8 = 3;
 /// Per-chunk progress emits are throttled to at most one per interval…
@@ -484,7 +485,10 @@ impl OfflineModelManager {
         .await
     }
 
-    pub async fn install_replace_translation(&self, tier: OcrModelTier) -> OfflineModelInstallResult {
+    pub async fn install_replace_translation(
+        &self,
+        tier: OcrModelTier,
+    ) -> OfflineModelInstallResult {
         self.install(
             OfflineModelPack::ReplaceTranslation,
             tier,
@@ -1240,13 +1244,22 @@ pub async fn ensure_ort_init(manager: &OfflineModelManager) -> Result<(), String
     }
     ORT_INIT
         .get_or_try_init(|| async {
-            prepare_onnxruntime_dll_dir(&dir)?;
-            ort::init_from(dir.join(ONNX_RUNTIME_FILE_NAME))
-                .map_err(|e| format!("ort init_from failed: {e}"))?
-                .commit();
+            init_ort_from_model_dir(&dir)?;
             Ok::<_, String>(())
         })
         .await?;
+    Ok(())
+}
+
+/// Initialize ONNX Runtime from an already verified model directory.
+///
+/// The GUI uses [`ensure_ort_init`] for its process-wide singleton. The one-shot RapidOCR worker
+/// calls this directly because it owns a fresh process and exits immediately after one inference.
+pub fn init_ort_from_model_dir(dir: &Path) -> Result<(), String> {
+    prepare_onnxruntime_dll_dir(dir)?;
+    ort::init_from(dir.join(ONNX_RUNTIME_FILE_NAME))
+        .map_err(|e| format!("ort init_from failed: {e}"))?
+        .commit();
     Ok(())
 }
 
