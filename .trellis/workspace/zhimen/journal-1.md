@@ -346,3 +346,36 @@ Fixed Pi RPC shutdown EPIPE, added project-scoped OpenCode native model discover
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: 发布 Kivio Desktop v2.8.0
+
+**Date**: 2026-07-17
+**Task**: 发布 Kivio Desktop v2.8.0
+**Branch**: `main`
+
+### Summary
+
+完成 v2.8.0 版本同步、双语发布说明、全量质量门、本地 arm64 DMG 构建与挂载验证；推送 main 和 Tag，Windows workflow 成功，GitHub Release 已包含 Windows NSIS 与 macOS DMG 并更新正式正文。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c02be5e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
