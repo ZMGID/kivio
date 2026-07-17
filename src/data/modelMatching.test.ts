@@ -57,6 +57,27 @@ describe('matchModel', () => {
     const info = matchModel('dall-e-3')
     expect(info?.capabilities?.imageGeneration).toBe(true)
   })
+
+  it('matches the latest official Kimi model ids', () => {
+    const k3 = matchModel('kimi-k3')
+    expect(k3?.displayName).toBe('Kimi K3')
+    expect(k3?.contextWindow).toBe(1_048_576)
+    expect(k3?.maxOutput).toBe(1_048_576)
+    expect(k3?.temperature).toBeUndefined()
+
+    expect(matchModel('kimi-k2.7-code')?.displayName).toBe('Kimi K2.7 Code')
+    expect(matchModel('kimi-k2.7-code-highspeed')?.displayName)
+      .toBe('Kimi K2.7 Code HighSpeed')
+    expect(matchModel('kimi-k2.7-code-highspeed')?.pricing?.output).toBe(8)
+  })
+
+  it('matches Claude Mythos 5 official metadata', () => {
+    const info = matchModel('claude-mythos-5')
+    expect(info?.displayName).toBe('Claude Mythos 5')
+    expect(info?.contextWindow).toBe(1_000_000)
+    expect(info?.maxOutput).toBe(128_000)
+    expect(info?.pricing?.input).toBe(10)
+  })
 })
 
 describe('resolveModelInfo', () => {
@@ -79,6 +100,26 @@ describe('resolveModelInfo', () => {
     })
     expect(resolved.displayName).toBe('Local')
     expect(resolved.contextWindow).toBe(8192)
+  })
+
+  it('leaves temperature absent when neither the database nor overrides define it', () => {
+    expect(resolveModelInfo('gpt-4o').temperature).toBeUndefined()
+  })
+
+  it('uses a numeric temperature override', () => {
+    const resolved = resolveModelInfo('gpt-4o', {
+      'gpt-4o': { temperature: 0.4 },
+    })
+    expect(resolved.temperature).toBe(0.4)
+    expect(resolved.omitTemperature).toBeUndefined()
+  })
+
+  it('uses omitTemperature as an explicit blank tombstone', () => {
+    const resolved = resolveModelInfo('gpt-4o', {
+      'gpt-4o': { temperature: 0.4, omitTemperature: true },
+    })
+    expect(resolved.temperature).toBeUndefined()
+    expect(resolved.omitTemperature).toBe(true)
   })
 })
 

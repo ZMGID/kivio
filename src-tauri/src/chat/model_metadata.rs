@@ -5,6 +5,8 @@ use serde_json::Value;
 use crate::settings::{ModelInfo, ModelPricing, ModelProvider};
 
 const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 200_000;
+const MIN_TEMPERATURE: f64 = 0.0;
+const MAX_TEMPERATURE: f64 = 2.0;
 
 /// 安全窗口比例（Gap 3）：模型窗口元数据常偏乐观（`gpt-5*` 猜 128k，真实代理可能仅 ~100k；
 /// 用户 override 也可能虚报 400k）。所有压缩/footer 预算都基于对解析窗口打过这个安全折扣的
@@ -21,6 +23,15 @@ fn max_output_from_model_info(info: Option<&ModelInfo>) -> Option<u32> {
     info.and_then(|info| info.max_output)
         .and_then(|tokens| u32::try_from(tokens).ok())
         .filter(|tokens| *tokens > 0)
+}
+
+fn valid_temperature(value: f64) -> Option<f64> {
+    (value.is_finite() && (MIN_TEMPERATURE..=MAX_TEMPERATURE).contains(&value)).then_some(value)
+}
+
+fn temperature_from_model_info(info: Option<&ModelInfo>) -> Option<f64> {
+    info.and_then(|info| info.temperature)
+        .and_then(valid_temperature)
 }
 
 fn model_vision_from_model_info(info: Option<&ModelInfo>) -> Option<bool> {
@@ -104,6 +115,13 @@ fn model_database_context_window(model: &str) -> Option<usize> {
 
 fn model_database_max_output(model: &str) -> Option<u32> {
     max_output_from_database_entry(model_database_entry(model))
+}
+
+fn model_database_temperature(model: &str) -> Option<f64> {
+    model_database_entry(model)?
+        .get("temperature")
+        .and_then(Value::as_f64)
+        .and_then(valid_temperature)
 }
 
 fn context_window_from_database_entry(entry: Option<&Value>) -> Option<usize> {
@@ -326,6 +344,30 @@ pub(crate) fn chat_max_output_tokens_for_model(
         .unwrap_or(fallback)
 }
 
+/// 解析模型级 temperature。用户显式清空优先于数据库值；所有来源都缺省时不发送。
+pub(crate) fn temperature_for_model(provider: Option<&ModelProvider>, model: &str) -> Option<f64> {
+    if let Some(info) = provider.and_then(|provider| provider.model_overrides.get(model)) {
+        if info.omit_temperature == Some(true) {
+            return None;
+        }
+        if let Some(temperature) = temperature_from_model_info(Some(info)) {
+            return Some(temperature);
+        }
+    }
+    model_database_temperature(model)
+}
+
+/// 单次请求显式值优先；非法显式值不会进入请求体，并回退到模型级配置。
+pub(crate) fn temperature_for_request(
+    explicit: Option<f64>,
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> Option<f64> {
+    explicit
+        .and_then(valid_temperature)
+        .or_else(|| temperature_for_model(provider, model))
+}
+
 pub(crate) fn pricing_for_model(
     provider: Option<&ModelProvider>,
     model: &str,
@@ -374,6 +416,10 @@ mod tests {
         assert!(
             anth.contains(&"xhigh".to_string()) && anth.contains(&"max".to_string()),
             "{anth:?}"
+        );
+        assert_eq!(
+            reasoning_efforts_for_model("kimi-k3", "openai_chat"),
+            vec!["max"]
         );
     }
 
@@ -451,6 +497,10 @@ mod tests {
             chat_max_output_tokens_for_model(None, "deepseek-v4-flash", 32_768),
             131_072
         );
+        assert_eq!(
+            chat_max_output_tokens_for_model(None, "kimi-k3", 32_768),
+            1_048_576
+        );
     }
 
     #[test]
@@ -476,6 +526,87 @@ mod tests {
         assert_eq!(
             chat_max_output_tokens_for_model(None, "custom-model", 32_768),
             32_768
+        );
+    }
+
+    #[test]
+    fn temperature_is_absent_when_metadata_is_missing() {
+        assert_eq!(temperature_for_model(None, "custom-model"), None);
+    }
+
+    #[test]
+    fn temperature_uses_model_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "custom-model".to_string(),
+            ModelInfo {
+                temperature: Some(0.4),
+                ..ModelInfo::default()
+            },
+        );
+        let provider = test_provider_with_overrides(overrides);
+
+        assert_eq!(
+            temperature_for_model(Some(&provider), "custom-model"),
+            Some(0.4)
+        );
+    }
+
+    #[test]
+    fn temperature_explicit_omit_wins_over_override_value() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "custom-model".to_string(),
+            ModelInfo {
+                temperature: Some(0.4),
+                omit_temperature: Some(true),
+                ..ModelInfo::default()
+            },
+        );
+        let provider = test_provider_with_overrides(overrides);
+
+        assert_eq!(temperature_for_model(Some(&provider), "custom-model"), None);
+    }
+
+    #[test]
+    fn temperature_ignores_invalid_or_out_of_range_values() {
+        for invalid in [f64::NAN, f64::INFINITY, -0.1, 2.1] {
+            let mut overrides = HashMap::new();
+            overrides.insert(
+                "custom-model".to_string(),
+                ModelInfo {
+                    temperature: Some(invalid),
+                    ..ModelInfo::default()
+                },
+            );
+            let provider = test_provider_with_overrides(overrides);
+            assert_eq!(
+                temperature_for_model(Some(&provider), "custom-model"),
+                None,
+                "invalid temperature {invalid:?} should be ignored"
+            );
+        }
+    }
+
+    #[test]
+    fn request_temperature_is_validated_and_wins_when_valid() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "custom-model".to_string(),
+            ModelInfo {
+                temperature: Some(0.4),
+                ..ModelInfo::default()
+            },
+        );
+        let provider = test_provider_with_overrides(overrides);
+
+        assert_eq!(
+            temperature_for_request(Some(1.2), Some(&provider), "custom-model"),
+            Some(1.2)
+        );
+        assert_eq!(
+            temperature_for_request(Some(3.0), Some(&provider), "custom-model"),
+            Some(0.4)
         );
     }
 

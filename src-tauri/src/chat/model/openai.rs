@@ -454,9 +454,15 @@ impl OpenAiChatProvider<'_> {
         let mut body = serde_json::json!({
             "model": request.model,
             "messages": openai_messages_from_generate_request(request),
-            "temperature": request.options.temperature,
             "max_tokens": request.options.max_tokens,
         });
+        if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
+            request.options.temperature,
+            Some(self.provider),
+            &request.model,
+        ) {
+            body["temperature"] = serde_json::json!(temperature);
+        }
         if stream {
             body["stream"] = Value::Bool(true);
             // usage 随流返回（OpenAI 标准参数；AI SDK/opencode 同款）。缺省时部分
@@ -949,6 +955,7 @@ fn non_empty(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::chat::model::{GenerateOptions, MessagePart, ModelMessage, ModelRole};
+    use crate::settings::ModelInfo;
 
     /// Build a real OpenAI-compatible provider request body via the production
     /// `request_body` path and assert how `thinking_level` maps to the wire.
@@ -986,6 +993,53 @@ mod tests {
         adapter.request_body(&request, false)
     }
 
+    fn build_openai_temperature_body(
+        provider_temperature: Option<f64>,
+        request_temperature: Option<f64>,
+    ) -> Value {
+        let state =
+            AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
+        let mut model_overrides = std::collections::HashMap::new();
+        if let Some(temperature) = provider_temperature {
+            model_overrides.insert(
+                "custom-temperature-model".into(),
+                ModelInfo {
+                    temperature: Some(temperature),
+                    ..ModelInfo::default()
+                },
+            );
+        }
+        let provider = ModelProvider {
+            id: "test".into(),
+            name: "Test".into(),
+            api_keys: vec!["sk-test".into()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".into(),
+            available_models: vec!["custom-temperature-model".into()],
+            enabled_models: vec!["custom-temperature-model".into()],
+            enabled: true,
+            api_format: "openai_chat".into(),
+            model_overrides,
+            compress_request_body: false,
+        };
+        let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+        let request = GenerateRequest {
+            model: "custom-temperature-model".into(),
+            system: String::new(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: vec![MessagePart::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            options: GenerateOptions {
+                temperature: request_temperature,
+                ..Default::default()
+            },
+            metadata: Default::default(),
+        };
+        adapter.request_body(&request, false)
+    }
+
     #[test]
     fn thinking_level_maps_to_reasoning_effort() {
         // 未设等级 → 不发 reasoning_effort（与改动前一致）。
@@ -999,6 +1053,24 @@ mod tests {
 
         let high = build_openai_body(Some("high"), "https://api.openai.com/v1");
         assert_eq!(high["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn request_body_omits_temperature_by_default() {
+        let body = build_openai_temperature_body(None, None);
+        assert!(body.get("temperature").is_none(), "body: {body}");
+    }
+
+    #[test]
+    fn request_body_uses_provider_temperature_override() {
+        let body = build_openai_temperature_body(Some(0.4), None);
+        assert_eq!(body["temperature"], serde_json::json!(0.4), "body: {body}");
+    }
+
+    #[test]
+    fn explicit_request_temperature_wins_over_provider_override() {
+        let body = build_openai_temperature_body(Some(0.4), Some(1.2));
+        assert_eq!(body["temperature"], serde_json::json!(1.2), "body: {body}");
     }
 
     #[test]

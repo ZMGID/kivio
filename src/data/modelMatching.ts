@@ -5,6 +5,7 @@ type DbEntry = {
   displayName: string
   contextWindow: number
   maxOutput: number
+  temperature?: number
   capabilities: {
     vision?: boolean
     functionCalling?: boolean
@@ -148,6 +149,10 @@ export function resolveModelInfo(
     displayName: override.displayName ?? defaults.displayName,
     contextWindow: override.contextWindow ?? defaults.contextWindow,
     maxOutput: override.maxOutput ?? defaults.maxOutput,
+    temperature: override.omitTemperature
+      ? undefined
+      : (override.temperature ?? defaults.temperature),
+    omitTemperature: override.omitTemperature,
     capabilities: {
       vision: override.capabilities?.vision ?? defaults.capabilities?.vision,
       functionCalling: override.capabilities?.functionCalling ?? defaults.capabilities?.functionCalling,
@@ -172,6 +177,7 @@ function toModelInfo(entry: DbEntry): ModelInfo {
     displayName: entry.displayName,
     contextWindow: entry.contextWindow,
     maxOutput: entry.maxOutput,
+    temperature: entry.temperature,
     capabilities: {
       vision: entry.capabilities.vision ?? false,
       functionCalling: entry.capabilities.functionCalling ?? false,

@@ -307,6 +307,13 @@ impl OpenAiResponsesProvider<'_> {
             "model": request.model,
             "input": responses_input_from_model_messages(&request.messages),
         });
+        if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
+            request.options.temperature,
+            Some(self.provider),
+            &request.model,
+        ) {
+            body["temperature"] = serde_json::json!(temperature);
+        }
         if !request.system.trim().is_empty() {
             body["instructions"] = Value::String(request.system.clone());
         }
@@ -927,6 +934,69 @@ fn non_empty(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::model::{GenerateOptions, MessagePart, ModelMessage, ModelRole};
+    use crate::settings::ModelInfo;
+
+    fn responses_temperature_body(
+        provider_temperature: Option<f64>,
+        request_temperature: Option<f64>,
+    ) -> Value {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let model = "custom-temperature-model";
+        let mut model_overrides = std::collections::HashMap::new();
+        if let Some(temperature) = provider_temperature {
+            model_overrides.insert(
+                model.into(),
+                ModelInfo {
+                    temperature: Some(temperature),
+                    ..ModelInfo::default()
+                },
+            );
+        }
+        let provider = ModelProvider {
+            id: "test".into(),
+            name: "Test".into(),
+            api_keys: vec!["sk-test".into()],
+            api_key_legacy: None,
+            base_url: "https://api.openai.com/v1".into(),
+            available_models: vec![model.into()],
+            enabled_models: vec![model.into()],
+            enabled: true,
+            api_format: "openai_responses".into(),
+            model_overrides,
+            compress_request_body: false,
+        };
+        let request = GenerateRequest {
+            model: model.into(),
+            system: String::new(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: vec![MessagePart::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            options: GenerateOptions {
+                temperature: request_temperature,
+                ..Default::default()
+            },
+            metadata: Default::default(),
+        };
+        OpenAiResponsesProvider::new(&state, &provider, 1).request_body(&request, false)
+    }
+
+    #[test]
+    fn request_body_temperature_is_optional_and_model_scoped() {
+        let default_body = responses_temperature_body(None, None);
+        assert!(default_body.get("temperature").is_none());
+
+        let configured_body = responses_temperature_body(Some(0.4), None);
+        assert_eq!(configured_body["temperature"], serde_json::json!(0.4));
+
+        let explicit_body = responses_temperature_body(Some(0.4), Some(1.2));
+        assert_eq!(explicit_body["temperature"], serde_json::json!(1.2));
+    }
 
     /// Drive the streaming event handler with the exact `data:` JSON I captured from the
     /// live `gpt-5.3-codex-spark` Responses stream, asserting the tool call's arguments

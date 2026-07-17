@@ -633,8 +633,20 @@ fn record_api_usage(
 
 // ===== Chat completion 调用 =====
 
-/// 调用 OpenAI 兼容的文本聊天接口
-/// 发送单轮 user 消息，temperature 设为 0.2,返回模型生成的文本内容
+pub(crate) fn apply_model_temperature(
+    body: &mut serde_json::Value,
+    provider: &settings::ModelProvider,
+    model: &str,
+) {
+    if let Some(temperature) =
+        crate::chat::model_metadata::temperature_for_model(Some(provider), model)
+    {
+        body["temperature"] = serde_json::json!(temperature);
+    }
+}
+
+/// 调用 OpenAI 兼容的文本聊天接口。
+/// temperature 仅在模型库或 provider/model override 显式配置时发送。
 pub async fn call_openai_text(
     state: &State<'_, AppState>,
     config: &settings::ModelProvider,
@@ -666,9 +678,9 @@ pub async fn call_openai_text(
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let mut body = serde_json::json!({
       "model": model,
-      "messages": [{ "role": "user", "content": prompt }],
-      "temperature": 0.2
+      "messages": [{ "role": "user", "content": prompt }]
     });
+    apply_model_temperature(&mut body, config, model);
     if !thinking_enabled && provider_supports_thinking_field(&config.base_url) {
         body["thinking"] = serde_json::json!({ "type": "disabled" });
     }
@@ -710,8 +722,8 @@ pub async fn call_openai_text(
     Ok(content.trim().to_string())
 }
 
-/// 调用 OpenAI 兼容的 OCR/视觉接口
-/// 将图片转为 Base64 后作为 image_url 类型内容发送，temperature 设为 0 以提高识别稳定性
+/// 调用 OpenAI 兼容的 OCR/视觉接口。
+/// 将图片转为 Base64 后作为 image_url 类型内容发送；temperature 默认省略。
 pub async fn call_openai_ocr(
     state: &State<'_, AppState>,
     config: &settings::ModelProvider,
@@ -764,9 +776,9 @@ pub async fn call_openai_ocr(
           ]
         }
       ],
-      "temperature": 0.2,
       "max_tokens": 2000
     });
+    apply_model_temperature(&mut body, config, model);
     if !thinking_enabled && provider_supports_thinking_field(&config.base_url) {
         body["thinking"] = serde_json::json!({ "type": "disabled" });
     }
@@ -940,9 +952,9 @@ pub async fn call_vision_api(
     let mut body = serde_json::json!({
       "model": model,
       "messages": api_messages,
-      "temperature": 0.7,
       "max_tokens": 2000
     });
+    apply_model_temperature(&mut body, provider, model);
     if stream {
         body["stream"] = serde_json::json!(true);
     }
@@ -1170,7 +1182,8 @@ pub fn build_ocr_request_body(
     image_path: &Path,
     prompt: &str,
     thinking_enabled: bool,
-    provider_base_url: &str,
+    provider: &settings::ModelProvider,
+    model: &str,
 ) -> Result<serde_json::Value, String> {
     let bytes = fs::read(image_path).map_err(|e| e.to_string())?;
     let base64 = general_purpose::STANDARD.encode(bytes);
@@ -1182,11 +1195,11 @@ pub fn build_ocr_request_body(
           { "type": "text", "text": prompt }
         ]
       }],
-      "temperature": 0.2,
       "max_tokens": 2000,
       "stream": true
     });
-    if !thinking_enabled && provider_supports_thinking_field(provider_base_url) {
+    apply_model_temperature(&mut body, provider, model);
+    if !thinking_enabled && provider_supports_thinking_field(&provider.base_url) {
         body["thinking"] = serde_json::json!({ "type": "disabled" });
     }
     Ok(body)
@@ -1711,6 +1724,51 @@ async fn stream_vision_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temperature_test_provider(temperature: Option<f64>) -> settings::ModelProvider {
+        let mut model_overrides = std::collections::HashMap::new();
+        if let Some(temperature) = temperature {
+            model_overrides.insert(
+                "custom-model".to_string(),
+                settings::ModelInfo {
+                    temperature: Some(temperature),
+                    ..settings::ModelInfo::default()
+                },
+            );
+        }
+        settings::ModelProvider {
+            id: "test".into(),
+            name: "Test".into(),
+            api_keys: vec!["sk-test".into()],
+            api_key_legacy: None,
+            base_url: "https://api.example.com/v1".into(),
+            available_models: vec!["custom-model".into()],
+            enabled_models: vec!["custom-model".into()],
+            enabled: true,
+            api_format: "openai_chat".into(),
+            model_overrides,
+            compress_request_body: false,
+        }
+    }
+
+    #[test]
+    fn raw_openai_body_temperature_is_optional_and_model_scoped() {
+        let mut default_body = serde_json::json!({"model": "custom-model"});
+        apply_model_temperature(
+            &mut default_body,
+            &temperature_test_provider(None),
+            "custom-model",
+        );
+        assert!(default_body.get("temperature").is_none());
+
+        let mut configured_body = serde_json::json!({"model": "custom-model"});
+        apply_model_temperature(
+            &mut configured_body,
+            &temperature_test_provider(Some(0.4)),
+            "custom-model",
+        );
+        assert_eq!(configured_body["temperature"], serde_json::json!(0.4));
+    }
 
     #[test]
     fn utf8_decoder_reassembles_split_multibyte() {

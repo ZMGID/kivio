@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "version": "2026-07-15",
+    "version": "2026-07-17",
     "description": "AI model database for Kivio. Keyed by model ID patterns. Used for auto-filling model info when adding models.",
     "sources": [
       "https://openrouter.ai/api/v1/models",
@@ -8,7 +8,10 @@
       "https://docs.anthropic.com/en/docs/about-claude/models",
       "https://ai.google.dev/gemini-api/docs/models",
       "https://api-docs.deepseek.com/quick_start/pricing",
-      "https://platform.kimi.com/docs/models",
+      "https://platform.moonshot.ai/docs/models",
+      "https://platform.moonshot.ai/docs/guide/kimi-k3-quickstart",
+      "https://platform.moonshot.ai/docs/pricing/chat-k3",
+      "https://platform.moonshot.ai/docs/pricing/chat-k27-code",
       "https://open.bigmodel.cn/pricing",
       "https://platform.minimax.io/docs/guides/pricing-paygo",
       "https://platform.openai.com/docs/api-reference/images/create",
@@ -275,6 +278,13 @@
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 10.00, "output": 50.00, "cachedInput": 1.00 }
   },
+  "claude-mythos-5": {
+    "displayName": "Claude Mythos 5",
+    "contextWindow": 1000000,
+    "maxOutput": 128000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "pricing": { "input": 10.00, "output": 50.00, "cachedInput": 1.00 }
+  },
   "claude-opus-4.8": {
     "displayName": "Claude Opus 4.8",
     "contextWindow": 1000000,
@@ -484,12 +494,34 @@
     "pricing": { "input": 0.50, "output": 2.15, "cachedInput": 0.14 }
   },
 
+  "kimi-k3": {
+    "displayName": "Kimi K3",
+    "contextWindow": 1048576,
+    "maxOutput": 1048576,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": ["max"],
+    "pricing": { "input": 3.00, "output": 15.00, "cachedInput": 0.30 }
+  },
+  "kimi-k2.7-code": {
+    "displayName": "Kimi K2.7 Code",
+    "contextWindow": 262144,
+    "maxOutput": 65536,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "pricing": { "input": 0.95, "output": 4.00, "cachedInput": 0.19 }
+  },
+  "kimi-k2.7-code-highspeed": {
+    "displayName": "Kimi K2.7 Code HighSpeed",
+    "contextWindow": 262144,
+    "maxOutput": 65536,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "pricing": { "input": 1.90, "output": 8.00, "cachedInput": 0.38 }
+  },
   "kimi-k2.7": {
     "displayName": "Kimi K2.7",
     "contextWindow": 262144,
     "maxOutput": 65536,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
-    "pricing": { "input": 0.95, "output": 4.00, "cachedInput": 0.16 }
+    "pricing": { "input": 0.95, "output": 4.00, "cachedInput": 0.19 }
   },
   "kimi-k2.6": {
     "displayName": "Kimi K2.6",

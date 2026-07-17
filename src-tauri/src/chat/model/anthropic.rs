@@ -331,6 +331,13 @@ impl AnthropicMessagesProvider<'_> {
             "messages": anthropic_messages_from_generate_request(request),
             "max_tokens": request.options.max_tokens,
         });
+        if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
+            request.options.temperature,
+            Some(self.provider),
+            &request.model,
+        ) {
+            body["temperature"] = serde_json::json!(temperature);
+        }
         if !request.system.trim().is_empty() {
             body["system"] = Value::String(request.system.clone());
         }
@@ -1077,6 +1084,7 @@ fn non_empty(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::chat::model::GenerateOptions;
+    use crate::settings::ModelInfo;
 
     #[test]
     fn strips_top_level_combinators_from_object_schema() {
@@ -1131,11 +1139,25 @@ mod tests {
 
     /// Build a real Anthropic request body via the production `request_body`
     /// path and assert how `thinking_level` maps to the wire.
-    fn build_anthropic_body(thinking_level: Option<&str>) -> Value {
+    fn build_anthropic_body(
+        thinking_level: Option<&str>,
+        provider_temperature: Option<f64>,
+        request_temperature: Option<f64>,
+    ) -> Value {
         let state = crate::state::AppState::new_headless(
             crate::settings::Settings::default(),
             std::env::temp_dir(),
         );
+        let mut model_overrides = std::collections::HashMap::new();
+        if let Some(temperature) = provider_temperature {
+            model_overrides.insert(
+                "claude-opus-4-8".into(),
+                ModelInfo {
+                    temperature: Some(temperature),
+                    ..ModelInfo::default()
+                },
+            );
+        }
         let provider = crate::settings::ModelProvider {
             id: "test".into(),
             name: "Test".into(),
@@ -1146,7 +1168,7 @@ mod tests {
             enabled_models: vec!["claude-opus-4-8".into()],
             enabled: true,
             api_format: "anthropic_messages".into(),
-            model_overrides: Default::default(),
+            model_overrides,
             compress_request_body: false,
         };
         let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
@@ -1159,6 +1181,7 @@ mod tests {
             }],
             tools: Vec::new(),
             options: GenerateOptions {
+                temperature: request_temperature,
                 thinking_level: thinking_level.map(|s| s.to_string()),
                 ..Default::default()
             },
@@ -1170,12 +1193,12 @@ mod tests {
     #[test]
     fn thinking_level_maps_to_adaptive_effort() {
         // 未设等级 → 不发 thinking / output_config（与改动前一致：Anthropic 默认不思考）。
-        let none = build_anthropic_body(None);
+        let none = build_anthropic_body(None, None, None);
         assert!(none.get("thinking").is_none(), "body: {none}");
         assert!(none.get("output_config").is_none(), "body: {none}");
 
         // 选了等级 → adaptive thinking + output_config.effort（4.6+ 正确写法，非 budget_tokens）。
-        let high = build_anthropic_body(Some("high"));
+        let high = build_anthropic_body(Some("high"), None, None);
         eprintln!("[anthropic effort=high] {high}");
         assert_eq!(high["thinking"]["type"], "adaptive");
         assert_eq!(high["output_config"]["effort"], "high");
@@ -1183,6 +1206,18 @@ mod tests {
             high.get("budget_tokens").is_none(),
             "must not send budget_tokens"
         );
+    }
+
+    #[test]
+    fn request_body_temperature_is_optional_and_model_scoped() {
+        let default_body = build_anthropic_body(None, None, None);
+        assert!(default_body.get("temperature").is_none());
+
+        let configured_body = build_anthropic_body(None, Some(0.4), None);
+        assert_eq!(configured_body["temperature"], serde_json::json!(0.4));
+
+        let explicit_body = build_anthropic_body(None, Some(0.4), Some(1.2));
+        assert_eq!(explicit_body["temperature"], serde_json::json!(1.2));
     }
 
     #[test]

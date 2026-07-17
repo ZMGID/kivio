@@ -17,8 +17,8 @@ use uuid::Uuid;
 use xcap::Monitor;
 
 use crate::api::{
-    build_ocr_request_body, call_openai_ocr, call_openai_text, call_vision_api,
-    effective_retry_attempts, stream_chat_call, stream_translate_combined,
+    apply_model_temperature, build_ocr_request_body, call_openai_ocr, call_openai_text,
+    call_vision_api, effective_retry_attempts, stream_chat_call, stream_translate_combined,
 };
 #[cfg(target_os = "windows")]
 use crate::capture_geometry::{
@@ -1480,7 +1480,13 @@ pub(crate) async fn lens_translate(
                 &state,
                 &ocr_provider,
                 &settings.screenshot_translation.model,
-                build_ocr_request_body(&temp_path, &prompt, st_thinking, &ocr_provider.base_url)?,
+                build_ocr_request_body(
+                    &temp_path,
+                    &prompt,
+                    st_thinking,
+                    &ocr_provider,
+                    &settings.screenshot_translation.model,
+                )?,
                 retry_attempts,
                 &image_id,
                 "translated",
@@ -1539,7 +1545,13 @@ pub(crate) async fn lens_translate(
             &state,
             &ocr_provider,
             &settings.screenshot_translation.model,
-            build_ocr_request_body(&temp_path, &prompt, st_thinking, &ocr_provider.base_url)?,
+            build_ocr_request_body(
+                &temp_path,
+                &prompt,
+                st_thinking,
+                &ocr_provider,
+                &settings.screenshot_translation.model,
+            )?,
             retry_attempts,
             &image_id,
             "lens-translate-stream",
@@ -1667,8 +1679,8 @@ pub(crate) async fn lens_translate_text(
         let mut body = serde_json::json!({
           "messages": [{ "role": "user", "content": prompt }],
           "stream": true,
-          "temperature": 0.2,
         });
+        apply_model_temperature(&mut body, &provider, &settings.screenshot_translation.model);
         if !st_thinking && provider_supports_thinking_field(&provider.base_url) {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
@@ -1851,8 +1863,8 @@ async fn local_ocr_then_translate(
         let mut body = serde_json::json!({
           "messages": [{ "role": "user", "content": translate_prompt }],
           "stream": true,
-          "temperature": 0.2,
         });
+        apply_model_temperature(&mut body, translate_provider, translate_model);
         if !st_thinking && provider_supports_thinking_field(&translate_provider.base_url) {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         }

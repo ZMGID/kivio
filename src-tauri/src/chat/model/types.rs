@@ -136,7 +136,8 @@ impl From<&ChatToolDefinition> for ModelTool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateOptions {
-    pub temperature: f32,
+    /// 显式的单次请求覆盖；None 时由 provider/model 元数据解析，仍缺省则不发送。
+    pub temperature: Option<f64>,
     pub max_tokens: u32,
     pub thinking_enabled: bool,
     /// 每对话「思考等级」(`"low"|"medium"|"high"`)。`None` = 未显式设置，维持现状
@@ -151,7 +152,7 @@ pub struct GenerateOptions {
 impl Default for GenerateOptions {
     fn default() -> Self {
         Self {
-            temperature: 0.7,
+            temperature: None,
             max_tokens: 8192,
             thinking_enabled: true,
             thinking_level: None,

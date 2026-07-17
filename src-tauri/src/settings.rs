@@ -122,6 +122,10 @@ pub struct ModelInfo {
     pub display_name: Option<String>,
     pub context_window: Option<u64>,
     pub max_output: Option<u64>,
+    /// 模型级采样温度；None 表示请求默认不发送 temperature。
+    pub temperature: Option<f64>,
+    /// 用户显式清空温度时阻止回落到模型库默认值。仅用于 model_overrides。
+    pub omit_temperature: Option<bool>,
     pub capabilities: Option<ModelCapabilities>,
     pub pricing: Option<ModelPricing>,
 }
@@ -2535,6 +2539,16 @@ fn normalize_hotkey(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_model_info_without_temperature_deserializes_as_absent() {
+        let info: ModelInfo = serde_json::from_str(
+            r#"{"displayName":"Legacy","contextWindow":8192,"maxOutput":2048}"#,
+        )
+        .expect("legacy model info should deserialize");
+        assert_eq!(info.temperature, None);
+        assert_eq!(info.omit_temperature, None);
+    }
 
     // ===== normalize_hotkey =====
 

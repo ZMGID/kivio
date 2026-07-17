@@ -747,6 +747,10 @@ export type ModelInfo = {
   displayName?: string
   contextWindow?: number
   maxOutput?: number
+  /** 模型级采样温度；未设置时请求不发送 temperature。 */
+  temperature?: number
+  /** 用户显式清空温度时阻止回落到模型库默认值。仅用于 modelOverrides。 */
+  omitTemperature?: boolean
   capabilities?: {
     vision?: boolean
     functionCalling?: boolean

@@ -296,10 +296,16 @@ impl GeminiProvider<'_> {
         let mut body = serde_json::json!({
             "contents": gemini_contents_from_generate_request(request),
             "generationConfig": {
-                "temperature": request.options.temperature,
                 "maxOutputTokens": request.options.max_tokens,
             },
         });
+        if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
+            request.options.temperature,
+            Some(self.provider),
+            &request.model,
+        ) {
+            body["generationConfig"]["temperature"] = serde_json::json!(temperature);
+        }
         if !request.system.trim().is_empty() {
             body["systemInstruction"] = serde_json::json!({
                 "parts": [{ "text": request.system }]
@@ -966,6 +972,7 @@ fn non_empty(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::chat::model::GenerateOptions;
+    use crate::settings::ModelInfo;
 
     fn provider() -> crate::settings::ModelProvider {
         crate::settings::ModelProvider {
@@ -990,6 +997,42 @@ mod tests {
         );
         let p = provider();
         GeminiProvider::new(&state, &p, 1).request_body(request, stream)
+    }
+
+    fn temperature_body(
+        provider_temperature: Option<f64>,
+        request_temperature: Option<f64>,
+    ) -> Value {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let mut p = provider();
+        let model = "custom-temperature-model";
+        if let Some(temperature) = provider_temperature {
+            p.model_overrides.insert(
+                model.into(),
+                ModelInfo {
+                    temperature: Some(temperature),
+                    ..ModelInfo::default()
+                },
+            );
+        }
+        let request = GenerateRequest {
+            model: model.into(),
+            system: String::new(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: vec![MessagePart::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            options: GenerateOptions {
+                temperature: request_temperature,
+                ..Default::default()
+            },
+            metadata: Default::default(),
+        };
+        GeminiProvider::new(&state, &p, 1).request_body(&request, false)
     }
 
     #[test]
@@ -1054,6 +1097,35 @@ mod tests {
         assert!(body.get("tool_choice").is_none());
         assert!(body.get("stream_options").is_none());
         assert!(body.get("model").is_none()); // model 在 URL，不在 body
+    }
+
+    #[test]
+    fn request_body_omits_temperature_by_default() {
+        let body = temperature_body(None, None);
+        assert!(
+            body["generationConfig"].get("temperature").is_none(),
+            "body: {body}"
+        );
+    }
+
+    #[test]
+    fn request_body_uses_provider_temperature_override() {
+        let body = temperature_body(Some(0.4), None);
+        assert_eq!(
+            body["generationConfig"]["temperature"],
+            serde_json::json!(0.4),
+            "body: {body}"
+        );
+    }
+
+    #[test]
+    fn explicit_request_temperature_wins_over_provider_override() {
+        let body = temperature_body(Some(0.4), Some(1.2));
+        assert_eq!(
+            body["generationConfig"]["temperature"],
+            serde_json::json!(1.2),
+            "body: {body}"
+        );
     }
 
     #[test]

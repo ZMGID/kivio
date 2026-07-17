@@ -33,9 +33,14 @@ export function ModelDetailDrawer({
   const hasOverride = !!overrides?.[modelName]
 
   const [form, setForm] = useState<ModelInfo>(resolved)
+  const [temperatureInput, setTemperatureInput] = useState(
+    resolved.temperature?.toString() ?? '',
+  )
 
   useEffect(() => {
-    setForm(resolveModelInfo(modelName, overrides))
+    const next = resolveModelInfo(modelName, overrides)
+    setForm(next)
+    setTemperatureInput(next.temperature?.toString() ?? '')
   }, [modelName, overrides])
 
   const updateField = useCallback(<K extends keyof ModelInfo>(key: K, value: ModelInfo[K]) => {
@@ -57,14 +62,43 @@ export function ModelDetailDrawer({
     }))
   }, [])
 
+  const updateTemperature = useCallback((value: string) => {
+    setTemperatureInput(value)
+    const trimmed = value.trim()
+    if (!trimmed) {
+      setForm(prev => ({
+        ...prev,
+        temperature: undefined,
+        omitTemperature: true,
+      }))
+      return
+    }
+    const temperature = Number(trimmed)
+    if (!Number.isFinite(temperature)) return
+    setForm(prev => ({
+      ...prev,
+      temperature,
+      omitTemperature: undefined,
+    }))
+  }, [])
+
+  const parsedTemperature = temperatureInput.trim() === ''
+    ? undefined
+    : Number(temperatureInput)
+  const temperatureInvalid = parsedTemperature !== undefined && (
+    !Number.isFinite(parsedTemperature) || parsedTemperature < 0 || parsedTemperature > 2
+  )
+
   const handleSave = useCallback(() => {
+    if (temperatureInvalid) return
     onSave(modelName, form)
-  }, [modelName, form, onSave])
+  }, [modelName, form, onSave, temperatureInvalid])
 
   const handleReset = useCallback(() => {
     onReset(modelName)
     if (dbDefaults) {
       setForm(dbDefaults)
+      setTemperatureInput(dbDefaults.temperature?.toString() ?? '')
     }
   }, [modelName, onReset, dbDefaults])
 
@@ -76,6 +110,9 @@ export function ModelDetailDrawer({
     displayName: lang === 'zh' ? '显示名称' : 'Display Name',
     contextWindow: lang === 'zh' ? '上下文长度' : 'Context Window',
     maxOutput: lang === 'zh' ? '最大输出' : 'Max Output',
+    temperature: lang === 'zh' ? 'Temperature（温度）' : 'Temperature',
+    temperatureHint: lang === 'zh' ? '留空则请求不发送 temperature。' : 'Leave blank to omit temperature from requests.',
+    temperatureInvalid: lang === 'zh' ? '请输入 0 到 2 之间的数值。' : 'Enter a value between 0 and 2.',
     capabilities: lang === 'zh' ? '功能' : 'Capabilities',
     vision: lang === 'zh' ? '图像输入' : 'Image Input',
     functionCalling: lang === 'zh' ? '工具调用' : 'Tool Calling',
@@ -149,6 +186,23 @@ export function ModelDetailDrawer({
           </div>
 
           <div className="kv-drawer-section">
+            <label className="kv-drawer-label">{t.temperature}</label>
+            <Input
+              type="number"
+              value={temperatureInput}
+              onChange={updateTemperature}
+              placeholder="-"
+              min={0}
+              max={2}
+              step={0.1}
+              aria-invalid={temperatureInvalid}
+            />
+            <p className={`mt-1 text-[11px] ${temperatureInvalid ? 'text-red-500' : 'text-neutral-400 dark:text-neutral-500'}`}>
+              {temperatureInvalid ? t.temperatureInvalid : t.temperatureHint}
+            </p>
+          </div>
+
+          <div className="kv-drawer-section">
             <label className="kv-drawer-label">{t.capabilities}</label>
             <div className="kv-drawer-toggles">
               <CapabilityToggle label={t.vision} checked={form.capabilities?.vision ?? false} onChange={(v) => updateCapability('vision', v)} />
@@ -209,7 +263,7 @@ export function ModelDetailDrawer({
           <Button
             variant="primary"
             onClick={handleSave}
-            disabled={!isDirty}
+            disabled={!isDirty || temperatureInvalid}
             data-tauri-drag-region="false"
           >
             {t.save}
