@@ -25,6 +25,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [macOS Overlay Lifecycle](./macos-overlay-lifecycle.md) | Nonactivating Lens/translator focus, foreground, and teardown contract | Active |
 | [Product Identity and Packaging](./product-identity-and-packaging.md) | Display-name rename boundary, stable identifiers, and release artifact contract | Active |
 | [Model Request Parameters](./model-request-parameters.md) | Optional model metadata, override tombstones, validation, and request serialization | Active |
+| [External Agent Integration](./external-agent-integration.md) | Project-scoped CLI discovery, cache keys, and process shutdown contracts | Active |
 
 ---
 

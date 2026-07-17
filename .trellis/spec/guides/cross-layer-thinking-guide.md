@@ -121,6 +121,36 @@ After implementation:
 - [ ] Checked that derived state points back to the source event identifier
       (`seq`, `id`, `version`) instead of inventing a second cursor
 
+## External CLI Lifecycle and Project Context
+
+External CLI integrations cross three boundaries at once: process I/O, protocol events, and
+project-scoped configuration. Treat each boundary explicitly.
+
+Implementation contract: [`../frontend/external-agent-integration.md`](../frontend/external-agent-integration.md).
+
+### Process lifecycle checklist
+
+- [ ] Distinguish a protocol's logical completion event from OS-level stdout EOF.
+- [ ] Verify the upstream shutdown contract before closing pipes. If stdin EOF triggers a final
+      flush, close stdin and keep draining stdout until EOF instead of dropping the reader at the
+      logical completion event.
+- [ ] Keep cancellation active during shutdown/drain so a misbehaving child cannot hang forever.
+- [ ] Add a regression where the child writes once more after the logical completion event; the
+      trailing write must succeed rather than hit `EPIPE`.
+- [ ] Do not suppress errors by matching stderr text when the lifecycle can be modeled correctly.
+
+### Project-scoped discovery checklist
+
+- [ ] Prefer the CLI's native discovery command when it owns config merging, JSONC parsing,
+      provider plugins, or environment overrides.
+- [ ] Pass the effective project cwd through UI/API/service boundaries; a temp directory silently
+      drops project-local configuration.
+- [ ] Key discovery and metadata caches by every input that changes the result, especially cwd.
+- [ ] When UI context changes, clear old results and ignore stale async responses so project A
+      cannot overwrite project B after a slower request finishes.
+- [ ] Keep protocol/static fallbacks for compatibility, but only after native discovery produces no
+      valid result.
+
 ---
 
 ## Cross-Platform Template Consistency
