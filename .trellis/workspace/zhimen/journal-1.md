@@ -278,3 +278,36 @@ Profiled long-conversation scrolling, identified virtualized historical message 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Optional model temperature and metadata refresh
+
+**Date**: 2026-07-17
+**Task**: Optional model temperature and metadata refresh
+**Branch**: `main`
+
+### Summary
+
+Made temperature model-scoped and omitted by default across all request paths, added editable model overrides and tests, and refreshed the model database with Kimi K3, Kimi K2.7 Code variants, and Claude Mythos 5.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `54d17e1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

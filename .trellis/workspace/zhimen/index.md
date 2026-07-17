@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
+- **Total Sessions**: 9
 - **Last Active**: 2026-07-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~280 | Active |
+| `journal-1.md` | ~313 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-07-17 | Optional model temperature and metadata refresh | `54d17e1` | `main` |
 | 8 | 2026-07-17 | Fix chat scroll stutter | `b3929ab` | `main` |
 | 7 | 2026-07-16 | Harden overlay teardown and legacy assistants | `5adeae9` | `main` |
 | 6 | 2026-07-16 | macOS overlay teardown and focus fixes | `f297773` | `main` |
