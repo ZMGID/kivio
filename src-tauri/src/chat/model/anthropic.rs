@@ -566,7 +566,94 @@ pub fn anthropic_messages_from_generate_request(request: &GenerateRequest) -> Ve
         }
     }
     merge_consecutive_anthropic_roles(&mut messages);
+    ensure_tool_result_pairing(&mut messages);
     messages
+}
+
+/// Anthropic 强约束:每个 assistant `tool_use` 的**下一条**消息必须含配对 `tool_result`,
+/// 且 `tool_result` 必须引用紧邻前一条 assistant 的 `tool_use`。历史 replay 存档可能因某回合
+/// 被中断(停止/报错/崩溃/工具 pending)而留下未闭合的 `tool_use`(OpenAI 兼容端宽容,Anthropic 会 400)。
+/// 这里在发送前兜底:给缺失结果的 `tool_use` 注入合成中断态结果,并丢弃无前置 `tool_use` 的反向孤儿 `tool_result`。
+/// ponytail: 只处理"assistant→其后 user"这一相邻对;无前置 assistant 的游离 tool_result 属更深层损坏,不在此覆盖。
+fn ensure_tool_result_pairing(messages: &mut Vec<Value>) {
+    let is_role = |m: &Value, role: &str| m.get("role").and_then(Value::as_str) == Some(role);
+    let synthetic = |id: &str| {
+        serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": id,
+            "content": "Tool call was interrupted; no result was recorded.",
+            "is_error": true,
+        })
+    };
+
+    let mut i = 0;
+    while i < messages.len() {
+        if !is_role(&messages[i], "assistant") {
+            i += 1;
+            continue;
+        }
+        let tool_use_ids: Vec<String> = messages[i]
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+                    .filter_map(|b| b.get("id").and_then(Value::as_str).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tool_use_ids.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if messages.get(i + 1).map(|m| is_role(m, "user")) != Some(true) {
+            // 下一条不存在或不是 user:插入一条含全部合成结果的 user 消息。
+            let blocks: Vec<Value> = tool_use_ids.iter().map(|id| synthetic(id)).collect();
+            messages.insert(i + 1, serde_json::json!({ "role": "user", "content": blocks }));
+            i += 2;
+            continue;
+        }
+
+        // 重排下一条 user:先放已配对的 tool_result(原序),补齐缺失的合成结果,再接非 tool_result 块。
+        let existing = messages[i + 1]
+            .get("content")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let is_tool_result = |b: &Value| b.get("type").and_then(Value::as_str) == Some("tool_result");
+        let matched_ids: std::collections::HashSet<&str> = existing
+            .iter()
+            .filter(|b| is_tool_result(b))
+            .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
+            .filter(|id| tool_use_ids.iter().any(|expected| expected == id))
+            .collect();
+
+        let mut rebuilt: Vec<Value> = Vec::with_capacity(existing.len() + tool_use_ids.len());
+        // 已配对的结果(丢弃反向孤儿:tool_use_id 不在本 assistant tool_use 集合内)。
+        for block in existing.iter().filter(|b| is_tool_result(b)) {
+            if block
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .map(|id| tool_use_ids.iter().any(|expected| expected == id))
+                .unwrap_or(false)
+            {
+                rebuilt.push(block.clone());
+            }
+        }
+        // 缺失结果补合成占位(保持 tool_use 顺序)。
+        for id in &tool_use_ids {
+            if !matched_ids.contains(id.as_str()) {
+                rebuilt.push(synthetic(id));
+            }
+        }
+        // 非 tool_result 块(text/image 等)原序接在后面。
+        rebuilt.extend(existing.into_iter().filter(|b| !is_tool_result(b)));
+
+        messages[i + 1]["content"] = Value::Array(rebuilt);
+        i += 2;
+    }
 }
 
 pub fn anthropic_tools_from_model_tools(tools: &[ModelTool]) -> Vec<Value> {
@@ -1135,6 +1222,122 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["type"], "tool_result");
         assert_eq!(blocks[1]["type"], "image");
+    }
+
+    #[test]
+    fn dangling_tool_use_gets_synthetic_result_injected() {
+        // A prior interrupted turn left an assistant tool_use with no paired
+        // tool_result in the next message — Anthropic 400s on this.
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": [{ "type": "tool_use", "id": "toolu_x", "name": "read", "input": {} }]
+            }),
+            serde_json::json!({ "role": "user", "content": [{ "type": "text", "text": "and then?" }] }),
+        ];
+        ensure_tool_result_pairing(&mut messages);
+
+        // The synthetic result is injected into the following user turn, before its text.
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["role"], "user");
+        let injected = messages[1]["content"].as_array().unwrap();
+        assert_eq!(injected[0]["type"], "tool_result");
+        assert_eq!(injected[0]["tool_use_id"], "toolu_x");
+        assert_eq!(injected[0]["is_error"], true);
+        assert!(injected.iter().any(|b| b["type"] == "text"), "user text preserved");
+    }
+
+    #[test]
+    fn missing_result_appended_reverse_orphan_dropped() {
+        // Two tool_use ids; next user has a result for one plus a stray result
+        // referencing an unrelated id (reverse orphan) and a text block.
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    { "type": "tool_use", "id": "a", "name": "read", "input": {} },
+                    { "type": "tool_use", "id": "b", "name": "read", "input": {} }
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    { "type": "tool_result", "tool_use_id": "a", "content": "ok" },
+                    { "type": "tool_result", "tool_use_id": "ghost", "content": "stray" },
+                    { "type": "text", "text": "follow" }
+                ]
+            }),
+        ];
+        ensure_tool_result_pairing(&mut messages);
+
+        assert_eq!(messages.len(), 2);
+        let blocks = messages[1]["content"].as_array().unwrap();
+        let result_ids: Vec<&str> = blocks
+            .iter()
+            .filter(|b| b["type"] == "tool_result")
+            .map(|b| b["tool_use_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(result_ids, vec!["a", "b"], "ghost dropped, b synthesized");
+        // Non-tool_result content preserved.
+        assert!(blocks.iter().any(|b| b["type"] == "text"));
+    }
+
+    #[test]
+    fn trailing_tool_use_gets_new_user_turn() {
+        // Dangling tool_use as the very last message (no following turn at all).
+        let mut messages = vec![serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "tool_use", "id": "z", "name": "read", "input": {} }]
+        })];
+        ensure_tool_result_pairing(&mut messages);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"][0]["tool_use_id"], "z");
+    }
+
+    #[test]
+    fn end_to_end_openai_dangling_history_becomes_paired_wire() {
+        // Real entry point: an OpenAI-format history where an assistant tool_call
+        // was never answered (interrupted turn), followed by the next user prompt.
+        use crate::chat::model::types::generate_request_from_openai_messages;
+        let openai = vec![
+            serde_json::json!({ "role": "user", "content": "hi" }),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "toolu_bdrk_dangling",
+                    "type": "function",
+                    "function": { "name": "read", "arguments": "{}" }
+                }]
+            }),
+            serde_json::json!({ "role": "user", "content": "never mind, do this instead" }),
+        ];
+        let request = generate_request_from_openai_messages(
+            "claude-opus-4-8",
+            openai,
+            None,
+            Default::default(),
+            "test",
+            Default::default(),
+        );
+        let wire = anthropic_messages_from_generate_request(&request);
+
+        // Every tool_use id must have a tool_result in the immediately following turn.
+        for (i, msg) in wire.iter().enumerate() {
+            let Some(blocks) = msg["content"].as_array() else { continue };
+            for block in blocks {
+                if block["type"] == "tool_use" {
+                    let id = block["id"].as_str().unwrap();
+                    let next = &wire[i + 1]["content"];
+                    let paired = next.as_array().unwrap().iter().any(|b| {
+                        b["type"] == "tool_result" && b["tool_use_id"] == id
+                    });
+                    assert!(paired, "tool_use {id} must be paired in the next turn");
+                }
+            }
+        }
     }
 
     /// Build a real Anthropic request body via the production `request_body`
