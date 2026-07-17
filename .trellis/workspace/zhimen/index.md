@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
+- **Total Sessions**: 10
 - **Last Active**: 2026-07-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~313 | Active |
+| `journal-1.md` | ~348 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-07-17 | Fix external agent integration issues | `13055fa`, `6edb78c`, `dfdfd96` | `codex/fix-external-agent-issues` |
 | 9 | 2026-07-17 | Optional model temperature and metadata refresh | `54d17e1` | `main` |
 | 8 | 2026-07-17 | Fix chat scroll stutter | `b3929ab` | `main` |
 | 7 | 2026-07-16 | Harden overlay teardown and legacy assistants | `5adeae9` | `main` |

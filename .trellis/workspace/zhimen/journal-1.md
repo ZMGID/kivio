@@ -311,3 +311,38 @@ Made temperature model-scoped and omitted by default across all request paths, a
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Fix external agent integration issues
+
+**Date**: 2026-07-17
+**Task**: Fix external agent integration issues
+**Branch**: `codex/fix-external-agent-issues`
+
+### Summary
+
+Fixed Pi RPC shutdown EPIPE, added project-scoped OpenCode native model discovery and caches, and documented the cross-layer contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `13055fa` | (see git log) |
+| `6edb78c` | (see git log) |
+| `dfdfd96` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
