@@ -51,6 +51,8 @@ interface MessageListProps {
 }
 
 const LIST_EDGE_PADDING_PX = 16
+const BOTTOM_LEAVE_THRESHOLD_PX = 32
+const BOTTOM_REENTER_THRESHOLD_PX = 16
 
 // 列表里每一项的统一形态。整条会话全量喂给虚拟列表（消息都在内存，virtua 只渲可见项），
 // 屏外的气泡连同其 KaTeX host / Markdown / 图片 DOM 真正从 DOM 卸载。
@@ -110,6 +112,7 @@ function MessageListBase({
   const stickToBottomRef = useRef(true)
   const prevMessageCountRef = useRef(0)
   // 是否贴在底部——驱动「回到底部」按钮的显隐（ref 不触发渲染，故另用 state）
+  const atBottomRef = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
   const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null)
   const [visibleNavigatorNodeIds, setVisibleNavigatorNodeIds] = useState<string[]>([])
@@ -117,6 +120,12 @@ function MessageListBase({
   const navigatorNodesRef = useRef<MessageNavigatorNode[]>([])
   const activeNavigatorNodeIdRef = useRef<string | null>(null)
   const visibleNavigatorNodeIdsRef = useRef<string[]>([])
+
+  const updateAtBottom = useCallback((next: boolean) => {
+    if (atBottomRef.current === next) return
+    atBottomRef.current = next
+    setAtBottom(next)
+  }, [])
 
   const legacyPlanMessageId = useMemo(() => {
     const legacyPlan = agentPlanState?.plan?.trim()
@@ -347,13 +356,13 @@ function MessageListBase({
     const handle = virtualizerRef.current
     if (!handle) return
     stickToBottomRef.current = false
-    setAtBottom(false)
+    updateAtBottom(false)
     updateActiveNavigatorNode(node.id)
     handle.scrollToIndex(node.targetRenderIndex, {
       align: 'start',
       smooth: !prefersReducedMotion(),
     })
-  }, [updateActiveNavigatorNode])
+  }, [updateActiveNavigatorNode, updateAtBottom])
 
   const handleNavigatorStep = useCallback((direction: -1 | 1) => {
     const nodes = navigatorNodesRef.current
@@ -386,15 +395,15 @@ function MessageListBase({
 
   const handleJumpToBottom = useCallback(() => {
     stickToBottomRef.current = true
-    setAtBottom(true)
+    updateAtBottom(true)
     scrollToBottom(true)
-  }, [scrollToBottom])
+  }, [scrollToBottom, updateAtBottom])
 
-  // 滚轮向上 = 明确的离开底部意图，立即解除跟随（不设缓冲，消除“挣扎感”）
+  // 滚轮向上 = 明确的离开底部意图，立即解除跟随。按钮显隐仍只由实际滚动几何决定，
+  // 避免在底部阈值内 wheel 先显示、scroll 又隐藏，造成一帧闪烁和重复重渲。
   const handleWheel = (e: React.WheelEvent) => {
     if (e.deltaY < 0) {
       stickToBottomRef.current = false
-      setAtBottom(false)
     }
   }
 
@@ -405,14 +414,19 @@ function MessageListBase({
     const offset = handle?.scrollOffset ?? nextOffset
     const scrollSize = handle?.scrollSize ?? el?.scrollHeight ?? 0
     const viewportSize = handle?.viewportSize ?? el?.clientHeight ?? 0
-    const bottom = scrollSize - offset - viewportSize <= 32
+    const bottomDistance = scrollSize - offset - viewportSize
+    // 离开底部仍沿用 32px；重新进入用更小的 16px，防止 virtua 测量抖动时
+    // 在同一个临界值附近反复挂载/卸载按钮。
+    const bottom = atBottomRef.current
+      ? bottomDistance <= BOTTOM_LEAVE_THRESHOLD_PX
+      : bottomDistance <= BOTTOM_REENTER_THRESHOLD_PX
     if (offset < lastScrollOffsetRef.current - 1) {
       stickToBottomRef.current = false
     } else if (bottom) {
       stickToBottomRef.current = true
     }
     lastScrollOffsetRef.current = offset
-    setAtBottom(bottom)
+    updateAtBottom(bottom)
 
     if (handle) {
       const readingOffset = Math.min(
@@ -433,12 +447,12 @@ function MessageListBase({
         lastVisibleIndex,
       ))
     }
-  }, [updateActiveNavigatorNode, updateVisibleNavigatorNodes])
+  }, [updateActiveNavigatorNode, updateAtBottom, updateVisibleNavigatorNodes])
 
   // 切换会话：重置跟随并瞬间定位到底部
   useLayoutEffect(() => {
     stickToBottomRef.current = true
-    setAtBottom(true)
+    updateAtBottom(true)
     const lastNode = navigatorNodesRef.current[navigatorNodesRef.current.length - 1]
     updateActiveNavigatorNode(lastNode?.id ?? null)
     updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
@@ -446,17 +460,17 @@ function MessageListBase({
     requestAnimationFrame(() => scrollToBottom())
     // 仅在 conversationId 变化时重置；scrollToBottom 依赖 items.length，故不列入依赖避免误触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, updateActiveNavigatorNode, updateVisibleNavigatorNodes])
+  }, [conversationId, updateActiveNavigatorNode, updateAtBottom, updateVisibleNavigatorNodes])
 
   // 自己发出新消息时强制回到底部（即使刚才正往上翻历史）
   useLayoutEffect(() => {
     const count = messages.length
     if (count > prevMessageCountRef.current && messages[count - 1]?.role === 'user') {
       stickToBottomRef.current = true
-      setAtBottom(true)
+      updateAtBottom(true)
     }
     prevMessageCountRef.current = count
-  }, [messages])
+  }, [messages, updateAtBottom])
 
   // 仅在“贴底”时随内容增长钉住底部。virtua 内置 ResizeObserver 会在变高（KaTeX/图片
   // mount 后撑高）时重测，这里在每次内容/项数变化后重新对齐末尾，保证持续钉底。

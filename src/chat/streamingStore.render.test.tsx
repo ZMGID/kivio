@@ -1,5 +1,5 @@
 import { memo, useRef } from 'react'
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
 import {
@@ -182,5 +182,20 @@ describe('MessageList ← streamingStore 集成', () => {
     const mountedMessages = document.querySelectorAll('[data-chat-message-list-item="message"]')
     expect(mountedMessages.length).toBeGreaterThan(0)
     expect(mountedMessages.length).toBeLessThan(messages.length)
+  })
+
+  it('底部阈值内的小幅向上滚动不会闪现回到底部按钮', async () => {
+    const { container } = render(
+      <MessageList messages={[message(1)]} conversationId="wheel-threshold-c1" />,
+    )
+    await flush()
+
+    const scroller = container.querySelector('.chat-motion-fade.custom-scrollbar')
+    expect(scroller).not.toBeNull()
+    expect(screen.queryByRole('button', { name: '回到底部' })).not.toBeInTheDocument()
+
+    fireEvent.wheel(scroller!, { deltaY: -2 })
+
+    expect(screen.queryByRole('button', { name: '回到底部' })).not.toBeInTheDocument()
   })
 })
