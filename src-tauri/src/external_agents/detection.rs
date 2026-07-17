@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use crate::external_agents::registry::AGENT_DEFS;
@@ -12,13 +13,16 @@ use crate::proc::NoConsoleWindow;
 
 pub const EXTERNAL_AGENT_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
 
-pub async fn detect_all_agents() -> Vec<DetectedAgent> {
+pub async fn detect_all_agents(cwd: &Path) -> Vec<DetectedAgent> {
     // Probe every CLI concurrently — each detection does a binary lookup + version + auth
     // (5s timeout) + model probe, so serial detection stacked those latencies. Order is
     // preserved by collecting the join handles in registry order.
     let handles: Vec<_> = AGENT_DEFS
         .iter()
-        .map(|def| tokio::spawn(detect_single_agent(def)))
+        .map(|def| {
+            let cwd = cwd.to_path_buf();
+            tokio::spawn(async move { detect_single_agent(def, &cwd).await })
+        })
         .collect();
     let mut out = Vec::with_capacity(handles.len());
     for handle in handles {
@@ -29,7 +33,7 @@ pub async fn detect_all_agents() -> Vec<DetectedAgent> {
     out
 }
 
-pub async fn detect_single_agent(def: &RuntimeAgentDef) -> DetectedAgent {
+pub async fn detect_single_agent(def: &RuntimeAgentDef, cwd: &Path) -> DetectedAgent {
     let path = super::spawn::resolve_binary(def).await;
     let available = path.is_some();
     let version = if available {
@@ -43,7 +47,7 @@ pub async fn detect_single_agent(def: &RuntimeAgentDef) -> DetectedAgent {
         Some("unavailable".to_string())
     };
     let models = if available {
-        probe_models(def, path.as_deref())
+        probe_models(def, path.as_deref(), cwd)
             .await
             .unwrap_or_else(|| fallback_models_from_pairs(def.fallback_models))
     } else {
@@ -133,22 +137,30 @@ async fn probe_auth(def: &RuntimeAgentDef, path: Option<&std::path::Path>) -> Op
 async fn probe_models(
     def: &RuntimeAgentDef,
     path: Option<&std::path::Path>,
+    cwd: &Path,
 ) -> Option<Vec<RuntimeModelOption>> {
     let bin = path?;
+
+    // OpenCode's native command is the source of truth for merged global/project JSONC config.
+    // Older versions without `models` fall through to ACP, then the static definition fallback.
+    if def.id == "opencode" {
+        let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
+        if let Some(models) = probe_opencode_models(bin, cwd, timeout_secs).await {
+            return Some(models);
+        }
+    }
 
     if def.model_probe == Some(ModelProbeStrategy::Acp) {
         let args: Vec<&str> = def.model_probe_args?.iter().copied().collect();
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
-        let cwd = std::env::temp_dir();
-        return detect_acp_models(bin, &args, &cwd, timeout_secs).await;
+        return detect_acp_models(bin, &args, cwd, timeout_secs).await;
     }
 
     if def.model_probe == Some(ModelProbeStrategy::ClaudeInit) {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(25);
-        let cwd = std::env::temp_dir();
         return tokio::time::timeout(
             Duration::from_secs(timeout_secs),
-            detect_claude_models(bin, &cwd),
+            detect_claude_models(bin, cwd),
         )
         .await
         .ok()
@@ -161,6 +173,7 @@ async fn probe_models(
         Duration::from_secs(timeout_secs),
         tokio::process::Command::new(bin)
             .args(args)
+            .current_dir(cwd)
             .no_console_window()
             .output(),
     )
@@ -186,6 +199,51 @@ async fn probe_models(
     }
     let text = String::from_utf8_lossy(&output.stdout);
     parse_models_list(def.id, text.as_ref())
+}
+
+async fn probe_opencode_models(
+    bin: &Path,
+    cwd: &Path,
+    timeout_secs: u64,
+) -> Option<Vec<RuntimeModelOption>> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        tokio::process::Command::new(bin)
+            .arg("models")
+            .current_dir(cwd)
+            .no_console_window()
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_opencode_models(String::from_utf8_lossy(&output.stdout).as_ref())
+}
+
+fn parse_opencode_models(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
+    let mut out = vec![default_model_option()];
+    let mut seen = std::collections::HashSet::from(["default".to_string()]);
+    for line in stdout.lines() {
+        let id = line.trim();
+        if id.is_empty() || id.chars().any(char::is_whitespace) {
+            continue;
+        }
+        let Some((provider, model)) = id.split_once('/') else {
+            continue;
+        };
+        if provider.is_empty() || model.is_empty() || !seen.insert(id.to_string()) {
+            continue;
+        }
+        out.push(RuntimeModelOption {
+            id: id.to_string(),
+            label: id.to_string(),
+            context_window_tokens: None,
+        });
+    }
+    (out.len() > 1).then_some(out)
 }
 
 fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOption>> {
@@ -230,7 +288,7 @@ mod tests {
     async fn live_pi_models_from_config_not_fallback() {
         use crate::external_agents::registry::get_agent_def;
         let def = get_agent_def("pi").expect("pi def");
-        let detected = detect_single_agent(def).await;
+        let detected = detect_single_agent(def, &std::env::temp_dir()).await;
         assert!(detected.available, "pi should be on PATH");
         for m in &detected.models {
             eprintln!("  {} -> {}", m.id, m.label);
@@ -254,5 +312,41 @@ mod tests {
         .unwrap();
         assert!(models.iter().any(|m| m.id == "gpt-5.3-codex"));
         assert!(models.iter().any(|m| m.id == "o3"));
+    }
+
+    #[test]
+    fn parse_opencode_models_accepts_custom_providers_and_variants() {
+        let models =
+            parse_opencode_models("custom/minimax-m2.7\ncustom/deep/model-v1\nopenai/gpt-5\n")
+                .unwrap();
+        assert!(models.iter().any(|model| model.id == "custom/minimax-m2.7"));
+        assert!(models
+            .iter()
+            .any(|model| model.id == "custom/deep/model-v1"));
+        assert!(models.iter().any(|model| model.id == "openai/gpt-5"));
+    }
+
+    #[test]
+    fn parse_opencode_models_ignores_invalid_and_duplicate_lines() {
+        let models = parse_opencode_models(
+            "custom/model-a\ncustom/model-a\ninvalid\n/providerless\nprovider/\nlog line here\n",
+        )
+        .unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model.id == "custom/model-a")
+                .count(),
+            1
+        );
+        assert_eq!(models.len(), 2, "default plus one valid custom model");
+    }
+
+    #[test]
+    fn parse_opencode_models_returns_none_without_valid_models() {
+        assert!(parse_opencode_models("").is_none());
+        assert!(
+            parse_opencode_models("invalid\n/providerless\nprovider/\nlog line here\n").is_none()
+        );
     }
 }

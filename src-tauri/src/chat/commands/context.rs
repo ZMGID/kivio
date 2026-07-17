@@ -38,11 +38,17 @@ pub(crate) async fn chat_get_context_stats(
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
     let context_state = if conversation.agent_runtime.is_external() {
+        let cwd = crate::external_agents::workspace::resolve_effective_cwd(
+            &app,
+            &conversation.id,
+            conversation.project_id.as_deref(),
+        )?;
         crate::external_agents::context::compute_external_context_state_with_probe(
             &conversation,
             true,
             None,
             None,
+            Some(&cwd),
         )
         .await
     } else {
@@ -496,19 +502,34 @@ pub(super) async fn compute_context_state(
     last_user_image_paths: &[PathBuf],
 ) -> Result<ConversationContextState, String> {
     if conversation.agent_runtime.is_external() {
-        let cached_models = conversation
-            .agent_runtime
-            .external_agent_id
-            .as_deref()
-            .and_then(|agent_id| {
-                state.get_cached_external_agent_models(agent_id, EXTERNAL_AGENT_MODELS_CACHE_TTL)
-            });
+        let model_cache_key = crate::external_agents::workspace::resolve_effective_cwd(
+            app,
+            &conversation.id,
+            conversation.project_id.as_deref(),
+        )
+        .ok()
+        .and_then(|cwd| {
+            conversation
+                .agent_runtime
+                .external_agent_id
+                .as_deref()
+                .map(|agent_id| {
+                    crate::external_agents::slash::cache_key(
+                        agent_id,
+                        cwd.to_string_lossy().as_ref(),
+                    )
+                })
+        });
+        let cached_models = model_cache_key.as_deref().and_then(|cache_key| {
+            state.get_cached_external_agent_models(cache_key, EXTERNAL_AGENT_MODELS_CACHE_TTL)
+        });
         return Ok(
             crate::external_agents::context::compute_external_context_state_with_probe(
                 conversation,
                 false,
                 None,
                 cached_models.as_deref(),
+                None,
             )
             .await,
         );

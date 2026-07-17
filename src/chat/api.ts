@@ -1413,7 +1413,10 @@ export const chatApi = {
     await invoke<void>('chat_cancel_stream', { conversationId })
   },
 
-  async detectExternalAgents(forceRefresh = false): Promise<DetectedExternalAgent[]> {
+  async detectExternalAgents(
+    forceRefresh = false,
+    conversationId?: string | null,
+  ): Promise<DetectedExternalAgent[]> {
     if (!isTauriRuntime()) {
       return [
         {
@@ -1426,7 +1429,7 @@ export const chatApi = {
     }
     const result = await invoke<{ success: boolean; agents: DetectedExternalAgent[] }>(
       'chat_detect_external_agents',
-      { forceRefresh },
+      { forceRefresh, conversationId },
     )
     return result.agents ?? []
   },

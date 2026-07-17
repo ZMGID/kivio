@@ -141,7 +141,7 @@ pub struct AppState {
             ),
         >,
     >,
-    /// 外部 CLI 模型列表探测缓存（agent_id → 模型选项）。
+    /// 外部 CLI 模型列表探测缓存（agent_id:cwd → 模型选项）。
     pub external_agent_models_cache: Mutex<
         HashMap<
             String,
@@ -151,10 +151,10 @@ pub struct AppState {
             ),
         >,
     >,
-    /// 外部 CLI 全量检测结果缓存（available/version/auth/models）。避免 RuntimePicker / 设置页
-    /// 每次打开都串行重探 8 个 CLI（含 auth 探测超时）。force_refresh 时跳过。
+    /// 外部 CLI 全量检测结果缓存（cwd → available/version/auth/models）。避免 RuntimePicker /
+    /// 设置页每次打开都重探全部 CLI，同时隔离项目级模型配置。force_refresh 时跳过当前 cwd。
     pub external_detected_agents_cache:
-        Mutex<Option<(Instant, Vec<crate::external_agents::types::DetectedAgent>)>>,
+        Mutex<HashMap<String, (Instant, Vec<crate::external_agents::types::DetectedAgent>)>>,
     /// Phase 2 持久会话注册表：conversation_id → 活会话（仅持有控制通道，不持有 Child）。
     /// 仅在 get/insert/remove 时短暂持锁，绝不跨 turn await 持锁。
     pub external_live_sessions:
@@ -274,7 +274,7 @@ impl AppState {
             chat_create_conversation_lock: Mutex::new(()),
             external_slash_commands_cache: Mutex::new(HashMap::new()),
             external_agent_models_cache: Mutex::new(HashMap::new()),
-            external_detected_agents_cache: Mutex::new(None),
+            external_detected_agents_cache: Mutex::new(HashMap::new()),
             external_live_sessions: Mutex::new(HashMap::new()),
             pending_chat_external_sends: Mutex::new(Vec::new()),
             pending_selection: Mutex::new(None),
@@ -600,45 +600,34 @@ impl AppState {
 
     pub fn get_cached_external_agent_models(
         &self,
-        agent_id: &str,
+        cache_key: &str,
         ttl: Duration,
     ) -> Option<Vec<crate::external_agents::types::RuntimeModelOption>> {
-        get_cached(&self.external_agent_models_cache, agent_id, ttl)
+        get_cached(&self.external_agent_models_cache, cache_key, ttl)
     }
 
     pub fn set_cached_external_agent_models(
         &self,
-        agent_id: String,
+        cache_key: String,
         models: Vec<crate::external_agents::types::RuntimeModelOption>,
     ) {
-        set_cached(&self.external_agent_models_cache, agent_id, models);
+        set_cached(&self.external_agent_models_cache, cache_key, models);
     }
 
     pub fn get_cached_detected_agents(
         &self,
+        cache_key: &str,
         ttl: Duration,
     ) -> Option<Vec<crate::external_agents::types::DetectedAgent>> {
-        let mut cache = self
-            .external_detected_agents_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some((created_at, agents)) = cache.as_ref() {
-            if created_at.elapsed() <= ttl {
-                return Some(agents.clone());
-            }
-        }
-        *cache = None;
-        None
+        get_cached(&self.external_detected_agents_cache, cache_key, ttl)
     }
 
     pub fn set_cached_detected_agents(
         &self,
+        cache_key: String,
         agents: Vec<crate::external_agents::types::DetectedAgent>,
     ) {
-        *self
-            .external_detected_agents_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), agents));
+        set_cached(&self.external_detected_agents_cache, cache_key, agents);
     }
 
     /// Phase 2: return the control channel of a reusable live session for this conversation
@@ -874,6 +863,19 @@ mod tests {
     fn pick_active_key_returns_none_when_total_zero() {
         let st = test_state();
         assert_eq!(st.pick_active_key("p", 0, &HashSet::new()), None);
+    }
+
+    #[test]
+    fn external_agent_detection_cache_is_scoped_by_cwd() {
+        let st = test_state();
+        st.set_cached_detected_agents("/project-a".to_string(), Vec::new());
+
+        assert!(st
+            .get_cached_detected_agents("/project-a", Duration::from_secs(60))
+            .is_some());
+        assert!(st
+            .get_cached_detected_agents("/project-b", Duration::from_secs(60))
+            .is_none());
     }
 
     #[test]

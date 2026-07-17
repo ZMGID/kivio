@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 
-use crate::chat::storage::{conversations_dir, find_project_by_id};
+use crate::chat::storage::{conversations_dir, find_project_by_id, load_conversation};
 use crate::external_agents::types::RuntimeAgentDef;
 
 pub fn resolve_effective_cwd(
@@ -28,6 +28,17 @@ pub fn resolve_effective_cwd(
         .join(conversation_id);
     std::fs::create_dir_all(&base).map_err(|e| format!("create workspace: {e}"))?;
     Ok(base)
+}
+
+pub fn resolve_detection_cwd(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    if let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) {
+        let conversation = load_conversation(app, conversation_id)?;
+        return resolve_effective_cwd(app, conversation_id, conversation.project_id.as_deref());
+    }
+    std::env::current_dir().map_err(|e| format!("resolve current directory: {e}"))
 }
 
 pub fn extra_allowed_dirs_for_agent(

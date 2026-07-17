@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { ChevronDown, Check } from 'lucide-react'
 import { AgentIcon } from './AgentIcon'
 import { chatApi, type DetectedExternalAgent } from './api'
@@ -11,6 +11,7 @@ const KIVIO_LOGO_SRC = '/logo-mark.png'
 interface RuntimePickerProps {
   agentRuntime: AgentRuntimeConfig
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void
+  conversationId?: string | null
 }
 
 const BUILTIN: AgentRuntimeConfig = {
@@ -29,23 +30,26 @@ function externalRuntime(agentId: string, model?: string | null): AgentRuntimeCo
   }
 }
 
-function RuntimePickerBase({ agentRuntime, onRuntimeChange }: RuntimePickerProps) {
+function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: RuntimePickerProps) {
   const [open, setOpen] = useState(false)
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
 
-  const loadAgents = useCallback(async () => {
-    try {
-      const list = await chatApi.detectExternalAgents()
-      setAgents(list)
-    } catch (err) {
-      console.error('Failed to detect external agents:', err)
-      setAgents([])
-    }
-  }, [])
-
   useEffect(() => {
-    void loadAgents()
-  }, [loadAgents])
+    let active = true
+    setAgents([])
+    void chatApi.detectExternalAgents(false, conversationId)
+      .then((list) => {
+        if (active) setAgents(list)
+      })
+      .catch((err) => {
+        if (!active) return
+        console.error('Failed to detect external agents:', err)
+        setAgents([])
+      })
+    return () => {
+      active = false
+    }
+  }, [conversationId])
 
   const usesExternal = agentRuntime.kind === 'external' && !!agentRuntime.externalAgentId
   const availableAgents = useMemo(
@@ -175,6 +179,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange }: RuntimePickerProps
 interface ExternalModelSelectorProps {
   agentRuntime: AgentRuntimeConfig
   onModelChange: (model: string, reasoning?: string | null) => void
+  conversationId?: string | null
 }
 
 function formatModelLabel(model: {
@@ -196,13 +201,25 @@ function formatModelLabel(model: {
 function ExternalModelSelectorBase({
   agentRuntime,
   onModelChange,
+  conversationId,
 }: ExternalModelSelectorProps) {
   const [open, setOpen] = useState(false)
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
 
   useEffect(() => {
-    void chatApi.detectExternalAgents().then(setAgents).catch(() => setAgents([]))
-  }, [])
+    let active = true
+    setAgents([])
+    void chatApi.detectExternalAgents(false, conversationId)
+      .then((list) => {
+        if (active) setAgents(list)
+      })
+      .catch(() => {
+        if (active) setAgents([])
+      })
+    return () => {
+      active = false
+    }
+  }, [conversationId])
 
   const agent = agents.find((item) => item.id === agentRuntime.externalAgentId)
   // Empty list means the CLI didn't report any models — render an explicit empty state instead

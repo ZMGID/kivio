@@ -79,7 +79,8 @@ pub async fn run_external_cli_reply(
 
     let def = get_agent_def(&agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
 
-    let detected = detect_single_agent(def).await;
+    let cwd = resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
+    let detected = detect_single_agent(def, &cwd).await;
     if !detected.available {
         return Err(format!(
             "{} 未安装或不可用，请确认 CLI 在 PATH 中。",
@@ -91,7 +92,6 @@ pub async fn run_external_cli_reply(
         .await
         .ok_or_else(|| format!("无法定位 {} 可执行文件", def.bin))?;
 
-    let cwd = resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
     let is_slash = is_cli_slash_input(latest_user_message);
 
     let skill_detail = if is_slash {

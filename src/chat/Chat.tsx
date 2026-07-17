@@ -3564,6 +3564,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   <RuntimePicker
                     agentRuntime={activeAgentRuntime}
                     onRuntimeChange={handleRuntimeChange}
+                    conversationId={currentConversation?.id}
                   />
                 </div>
                 <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
@@ -3571,6 +3572,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                     <ExternalModelSelector
                       agentRuntime={activeAgentRuntime}
                       onModelChange={handleExternalModelChange}
+                      conversationId={currentConversation?.id}
                     />
                   ) : (
                     <ModelSelector
@@ -3599,6 +3601,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 <div className="shrink-0" data-tauri-drag-region="false">
                   <PermissionPicker
                     agentRuntime={activeAgentRuntime}
+                    conversationId={currentConversation?.id}
                     onSandboxChange={handleExternalSandboxChange}
                     approvalPolicy={approvalPolicy}
                     onApprovalPolicyChange={handleApprovalPolicyChange}

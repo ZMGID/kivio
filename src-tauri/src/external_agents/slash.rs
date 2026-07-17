@@ -163,7 +163,7 @@ pub async fn list_external_cli_slash_commands(
 
     let commands = match def.slash_strategy {
         SlashStrategy::ClaudeInit => {
-            let detected = detect_single_agent(def).await;
+            let detected = detect_single_agent(def, Path::new(&cwd)).await;
             if !detected.available {
                 return Err(format!(
                     "{} 未安装或不可用，请确认 CLI 在 PATH 中。",
@@ -177,7 +177,7 @@ pub async fn list_external_cli_slash_commands(
             probe_claude_slash_commands(&resolved_bin, Path::new(&cwd), &args).await?
         }
         SlashStrategy::Acp => {
-            let detected = detect_single_agent(def).await;
+            let detected = detect_single_agent(def, Path::new(&cwd)).await;
             if !detected.available {
                 return Err(format!(
                     "{} 未安装或不可用，请确认 CLI 在 PATH 中。",

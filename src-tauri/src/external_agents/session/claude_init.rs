@@ -412,7 +412,7 @@ mod tests {
         use crate::external_agents::registry::get_agent_def;
 
         let def = get_agent_def("claude").expect("claude agent def");
-        let detected = detect_single_agent(def).await;
+        let detected = detect_single_agent(def, &std::env::temp_dir()).await;
         assert!(detected.available, "claude CLI should be available on PATH");
         for model in &detected.models {
             println!(

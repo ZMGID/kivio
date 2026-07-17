@@ -24,6 +24,7 @@ function modeIcon(value: string, label: string) {
 
 interface PermissionPickerProps {
   agentRuntime: AgentRuntimeConfig
+  conversationId?: string | null
   /** Set the external-CLI sandbox level (claude --permission-mode / codex --sandbox). */
   onSandboxChange: (level: string) => void
   /** Built-in agent tool-approval policy. */
@@ -38,6 +39,7 @@ interface PermissionPickerProps {
  */
 function PermissionPickerBase({
   agentRuntime,
+  conversationId,
   onSandboxChange,
   approvalPolicy,
   onApprovalPolicyChange,
@@ -46,8 +48,19 @@ function PermissionPickerBase({
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
 
   useEffect(() => {
-    void chatApi.detectExternalAgents().then(setAgents).catch(() => setAgents([]))
-  }, [])
+    let active = true
+    setAgents([])
+    void chatApi.detectExternalAgents(false, conversationId)
+      .then((list) => {
+        if (active) setAgents(list)
+      })
+      .catch(() => {
+        if (active) setAgents([])
+      })
+    return () => {
+      active = false
+    }
+  }, [conversationId])
 
   const usesExternal = agentRuntime.kind === 'external' && !!agentRuntime.externalAgentId
   const agent = agents.find((item) => item.id === agentRuntime.externalAgentId)

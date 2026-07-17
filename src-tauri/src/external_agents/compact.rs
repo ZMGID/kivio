@@ -4,6 +4,7 @@ use crate::chat::types::Conversation;
 use crate::external_agents::context::compute_external_context_state_with_probe;
 use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::run::run_external_cli_slash_command;
+use crate::external_agents::workspace::resolve_effective_cwd;
 use crate::state::AppState;
 
 pub fn compact_prompt_for_agent(agent_id: &str) -> Option<&'static str> {
@@ -43,8 +44,9 @@ pub async fn request_external_compaction(
     conversation.context_state.last_compressed_at = Some(chrono::Local::now().timestamp());
     conversation.context_state.warning = None;
 
+    let cwd = resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
     conversation.context_state =
-        compute_external_context_state_with_probe(conversation, true, None, None).await;
+        compute_external_context_state_with_probe(conversation, true, None, None, Some(&cwd)).await;
 
     Ok(())
 }

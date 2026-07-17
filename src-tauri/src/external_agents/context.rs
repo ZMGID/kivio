@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::chat::agent::prepare as agent_prepare;
 use crate::chat::model::ModelUsage;
 use crate::chat::model_metadata::context_window_for_model;
@@ -203,6 +205,7 @@ pub async fn compute_external_context_state_with_probe(
     probe_models: bool,
     compact_usage: Option<&ModelUsage>,
     cached_models: Option<&[RuntimeModelOption]>,
+    probe_cwd: Option<&Path>,
 ) -> ConversationContextState {
     let agent_id = conversation
         .agent_runtime
@@ -218,7 +221,12 @@ pub async fn compute_external_context_state_with_probe(
         .unwrap_or("default");
     let detected_models = if probe_models {
         if let Some(def) = get_agent_def(agent_id) {
-            Some(detect_single_agent(def).await.models)
+            let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+            Some(
+                detect_single_agent(def, probe_cwd.unwrap_or(fallback_cwd.as_path()))
+                    .await
+                    .models,
+            )
         } else {
             None
         }
