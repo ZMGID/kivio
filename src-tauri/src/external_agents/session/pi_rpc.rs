@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
@@ -280,10 +280,10 @@ pub fn map_pi_rpc_event(value: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) 
     PiRpcOutcome::Continue
 }
 
-async fn reply_extension_ui(
-    stdin: &mut tokio::process::ChildStdin,
-    raw: &Value,
-) -> Result<(), String> {
+async fn reply_extension_ui<W>(stdin: &mut W, raw: &Value) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
     let id = raw.get("id").cloned();
     if id.is_none() {
         return Ok(());
@@ -365,16 +365,29 @@ pub async fn run_pi_rpc_session(
         .await
         .map_err(|e| e.to_string())?;
 
+    let result = drain_pi_rpc_output(stdout, &mut stdin, &mut sink, cancel_check).await;
+    if matches!(&result, Err(err) if err == "cancelled") {
+        let _ = child.start_kill();
+    }
+    result
+}
+
+async fn drain_pi_rpc_output<R, W>(
+    stdout: R,
+    stdin: &mut W,
+    sink: &mut impl FnMut(UnifiedAgentEvent),
+    cancel_check: impl Fn() -> bool,
+) -> Result<(), String>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut reader = BufReader::new(stdout).lines();
-    let mut finished = false;
+    let mut agent_ended = false;
 
     loop {
         if cancel_check() {
-            let _ = child.start_kill();
             return Err("cancelled".to_string());
-        }
-        if finished {
-            break;
         }
 
         let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
@@ -386,6 +399,12 @@ pub async fn run_pi_rpc_session(
         if line.trim().is_empty() {
             continue;
         }
+        // `agent_end` is the logical end of the turn, but Pi still flushes queued RPC output while
+        // shutting down after stdin EOF. Keep the stdout reader alive until EOF and ignore any
+        // trailing protocol lines so Pi never writes into a pipe Kivio has already dropped.
+        if agent_ended {
+            continue;
+        }
 
         let value: Value = match serde_json::from_str(line.trim()) {
             Ok(v) => v,
@@ -393,7 +412,7 @@ pub async fn run_pi_rpc_session(
         };
 
         if value.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
-            reply_extension_ui(&mut stdin, &value).await?;
+            reply_extension_ui(stdin, &value).await?;
             continue;
         }
 
@@ -408,8 +427,10 @@ pub async fn run_pi_rpc_session(
             continue;
         }
 
-        if map_pi_rpc_event(&value, &mut sink) == PiRpcOutcome::AgentEnd {
-            finished = true;
+        if map_pi_rpc_event(&value, sink) == PiRpcOutcome::AgentEnd {
+            agent_ended = true;
+            // The process may already be closing its stdin side after emitting agent_end. Shutdown
+            // is only the signal to begin Pi's flush-and-exit path, so a concurrent close is safe.
             let _ = stdin.shutdown().await;
         }
     }
@@ -419,7 +440,11 @@ pub async fn run_pi_rpc_session(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     use super::*;
+    use tokio::io::{duplex, sink};
 
     #[tokio::test]
     #[ignore = "requires live pi CLI on PATH"]
@@ -476,6 +501,62 @@ mod tests {
             map_pi_rpc_event(&value, &mut |_| {}),
             PiRpcOutcome::AgentEnd
         );
+    }
+
+    #[tokio::test]
+    async fn drains_stdout_after_agent_end_until_writer_closes() {
+        let (stdout_reader, mut stdout_writer) = duplex(1024);
+        let writer = tokio::spawn(async move {
+            stdout_writer
+                .write_all(b"{\"type\":\"agent_end\"}\n")
+                .await?;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stdout_writer
+                .write_all(b"{\"type\":\"response\",\"command\":\"prompt\",\"success\":true}\n")
+                .await?;
+            stdout_writer.shutdown().await
+        });
+        let mut stdin = sink();
+        let mut events = Vec::new();
+
+        let result = drain_pi_rpc_output(
+            stdout_reader,
+            &mut stdin,
+            &mut |event| events.push(event),
+            || false,
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert!(
+            writer.await.unwrap().is_ok(),
+            "trailing write must not hit EPIPE"
+        );
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_still_interrupts_post_agent_end_drain() {
+        let (stdout_reader, mut stdout_writer) = duplex(1024);
+        stdout_writer
+            .write_all(b"{\"type\":\"agent_end\"}\n")
+            .await
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_signal = Arc::clone(&cancelled);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_signal.store(true, Ordering::SeqCst);
+        });
+        let mut stdin = sink();
+
+        let result = drain_pi_rpc_output(stdout_reader, &mut stdin, &mut |_| {}, || {
+            cancelled.load(Ordering::SeqCst)
+        })
+        .await;
+
+        assert_eq!(result, Err("cancelled".to_string()));
+        drop(stdout_writer);
     }
 
     #[test]
