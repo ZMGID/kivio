@@ -1,4 +1,4 @@
-use crate::external_agents::defs::{acp, claude, codex, kimi, pi};
+use crate::external_agents::defs::{acp, claude, codex, grok, kimi, pi};
 use crate::external_agents::types::RuntimeAgentDef;
 
 pub const AGENT_DEFS: &[RuntimeAgentDef] = &[
@@ -10,6 +10,7 @@ pub const AGENT_DEFS: &[RuntimeAgentDef] = &[
     kimi::KIMI_AGENT_DEF,
     pi::PI_AGENT_DEF,
     acp::HERMES_AGENT_DEF,
+    grok::GROK_AGENT_DEF,
 ];
 
 pub fn get_agent_def(id: &str) -> Option<&'static RuntimeAgentDef> {
@@ -21,12 +22,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_eight_agents() {
-        assert_eq!(AGENT_DEFS.len(), 8);
+    fn registry_has_nine_agents() {
+        assert_eq!(AGENT_DEFS.len(), 9);
         assert!(get_agent_def("claude").is_some());
         assert!(get_agent_def("opencode").is_some());
         assert!(get_agent_def("pi").is_some());
         assert!(get_agent_def("hermes").is_some());
+        assert!(get_agent_def("grok").is_some());
         assert!(get_agent_def("unknown").is_none());
     }
 }

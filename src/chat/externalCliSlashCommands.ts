@@ -31,6 +31,8 @@ function agentDisplayName(agentId: string): string {
       return 'Kimi CLI'
     case 'hermes':
       return 'Hermes'
+    case 'grok':
+      return 'Grok CLI'
     default:
       return agentId
   }

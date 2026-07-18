@@ -9,9 +9,10 @@ const ICON_EXT: Record<string, 'svg'> = {
   kimi: 'svg',
   pi: 'svg',
   hermes: 'svg',
+  grok: 'svg',
 }
 
-const MONO_ICONS = new Set(['cursor-agent', 'opencode', 'hermes'])
+const MONO_ICONS = new Set(['cursor-agent', 'opencode', 'hermes', 'grok'])
 
 interface AgentIconProps {
   id: string
