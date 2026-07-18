@@ -1057,6 +1057,7 @@ fn test_conversation_with_summary(stale: bool) -> Conversation {
                 provider_id: "provider".to_string(),
                 model: "model".to_string(),
                 stale,
+                file_ledger: None,
             }),
             ..ConversationContextState::default()
         },
@@ -2302,3 +2303,70 @@ fn fork_group_selection_cleanup_drops_dangling_and_collapsed() {
     assert_eq!(selections.len(), 1);
     assert_eq!(selections.get("g1").map(String::as_str), Some("s1"));
 }
+
+/// End-to-end channel: a file-op tool call in the summarized region →
+/// build_for_boundary → summary.file_ledger → build_chat_api_messages injects a
+/// system summary message carrying the `### Files touched` block.
+#[test]
+fn file_ledger_flows_into_replayed_summary_message() {
+    fn file_call(id: &str, name: &str, path: &str) -> ToolCallRecord {
+        ToolCallRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            source: "agent".to_string(),
+            server_id: None,
+            arguments: serde_json::json!({ "path": path }).to_string(),
+            status: crate::chat::types::ToolCallStatus::Success,
+            result_preview: None,
+            error: None,
+            duration_ms: None,
+            started_at: None,
+            completed_at: None,
+            round: 1,
+            sensitive: false,
+            artifacts: Vec::new(),
+            trace_id: None,
+            span_id: None,
+            structured_content: None,
+        }
+    }
+
+    let mut conversation = test_conversation_with_summary(false);
+    // Attach file ops to the boundary assistant message (covered by the summary).
+    let boundary = conversation
+        .messages
+        .iter_mut()
+        .find(|m| m.id == "msg_assistant_1")
+        .unwrap();
+    boundary.tool_calls = vec![
+        file_call("t1", "read", "src/lib.rs"),
+        file_call("t2", "write", "src/main.rs"),
+    ];
+
+    // Recompute the ledger over the covered history and store it (mirrors both
+    // compaction persist sites).
+    let ledger = crate::chat::agent::file_ledger::build_for_boundary(&conversation, "msg_assistant_1");
+    assert!(!ledger.is_empty(), "ledger should capture the two ops");
+    conversation.context_state.summary.as_mut().unwrap().file_ledger = Some(ledger);
+
+    let messages =
+        build_chat_api_messages("system prompt", &conversation, Some(2), None, &[]).unwrap();
+
+    // The injected summary system message (index 1) must carry the ledger block.
+    let summary_sys = messages
+        .iter()
+        .find(|m| {
+            m.get("role").and_then(|r| r.as_str()) == Some("system")
+                && m.get("content")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.contains("### Files touched"))
+                    .unwrap_or(false)
+        })
+        .expect("a system message carries the Files touched block");
+    let content = summary_sys["content"].as_str().unwrap();
+    assert!(content.contains(r#"Modified: "src/main.rs""#), "modified path: {content}");
+    assert!(content.contains(r#"Read: "src/lib.rs""#), "read path: {content}");
+    // The summary text itself is still present above the ledger.
+    assert!(content.contains("summary of older messages"));
+}
+

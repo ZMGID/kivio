@@ -1,5 +1,6 @@
 pub(crate) mod compaction;
 pub(crate) mod context_estimate;
+pub(crate) mod file_ledger;
 pub mod execute;
 pub mod filter;
 pub(crate) mod finalize;

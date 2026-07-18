@@ -612,6 +612,14 @@ pub(super) async fn complete_assistant_reply_inner(
             conversation,
             &summary.source_until_message_id,
         );
+        // Files-touched ledger: recompute cumulatively here (this L2 summary was
+        // built on the runtime Value stream, which lacks the Conversation). Same
+        // recompute as the disk path, so neither clobbers the other's ledger.
+        let ledger = crate::chat::agent::file_ledger::build_for_boundary(
+            conversation,
+            &summary.source_until_message_id,
+        );
+        summary.file_ledger = (!ledger.is_empty()).then_some(ledger);
         conversation.context_state.last_compressed_at = Some(summary.created_at);
         conversation.context_state.compressed_message_count = summary.source_message_ids.len();
         conversation.context_state.compression_count = conversation

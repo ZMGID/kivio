@@ -131,13 +131,23 @@ fn summary_boundary_index(conversation: &Conversation) -> Option<usize> {
 }
 
 fn summary_message(summary: &ConversationContextSummary) -> Value {
+    let mut content = format!(
+        "{}\n{}",
+        crate::chat::agent::compaction::PERSISTED_SUMMARY_PREFIX,
+        summary.content.trim()
+    );
+    // Deterministic files-touched ledger, rendered under the LLM summary as a
+    // factual floor (budget-isolated; never fed to the summarizer).
+    if let Some(ledger) = &summary.file_ledger {
+        let block = crate::chat::agent::file_ledger::render_block(ledger);
+        if !block.is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&block);
+        }
+    }
     serde_json::json!({
         "role": "system",
-        "content": format!(
-            "{}\n{}",
-            crate::chat::agent::compaction::PERSISTED_SUMMARY_PREFIX,
-            summary.content.trim()
-        ),
+        "content": content,
     })
 }
 

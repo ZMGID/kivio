@@ -39,6 +39,28 @@ pub struct CompactionBoundaryRecord {
     pub created_at: i64,
 }
 
+/// Deterministic, machine-tracked record of files read/modified by tool calls
+/// in the summarized history. Rendered under the LLM summary as a factual floor
+/// so compaction can't silently forget which files an agent touched.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileLedger {
+    /// Read-only file paths, oldest→newest, deduped.
+    #[serde(default)]
+    pub read_files: Vec<String>,
+    /// Modified file paths (sticky: once modified, stays modified).
+    #[serde(default)]
+    pub modified_files: Vec<String>,
+    /// Diagnostic count of entries evicted by the render budget.
+    #[serde(default)]
+    pub omitted_count: usize,
+}
+
+impl FileLedger {
+    pub fn is_empty(&self) -> bool {
+        self.read_files.is_empty() && self.modified_files.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationContextSummary {
     pub id: String,
@@ -55,6 +77,9 @@ pub struct ConversationContextSummary {
     pub model: String,
     #[serde(default)]
     pub stale: bool,
+    /// Files touched by tool calls in the summarized region (see [`FileLedger`]).
+    #[serde(default)]
+    pub file_ledger: Option<FileLedger>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

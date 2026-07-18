@@ -1310,6 +1310,9 @@ pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunSt
                     provider_id: config.provider.id.clone(),
                     model: config.model.clone(),
                     stale: false,
+                    // Populated at the reply.rs persist site, which has the
+                    // Conversation (this L2 path only holds runtime Values).
+                    file_ledger: None,
                 };
                 let boundary = CompactionBoundaryRecord {
                     id: format!("ctxbd_{}", uuid::Uuid::new_v4()),
@@ -1645,6 +1648,9 @@ async fn compact_conversation_inner(
     let source_message_ids = accumulate_source_ids(conversation, &source_until_message_id);
     let compressed_message_count = source_message_ids.len();
 
+    // Deterministic files-touched ledger over the covered history (see file_ledger).
+    let file_ledger = super::file_ledger::build_for_boundary(conversation, &source_until_message_id);
+
     conversation.context_state.summary = Some(ConversationContextSummary {
         id: format!("ctxsum_{}", uuid::Uuid::new_v4()),
         content: summary_text.clone(),
@@ -1656,6 +1662,7 @@ async fn compact_conversation_inner(
         provider_id,
         model,
         stale: false,
+        file_ledger: (!file_ledger.is_empty()).then_some(file_ledger),
     });
     conversation.context_state.last_compressed_at = Some(created_at);
     conversation.context_state.compressed_message_count = compressed_message_count;
@@ -2591,6 +2598,7 @@ mod tests {
                 provider_id: "p".to_string(),
                 model: "m".to_string(),
                 stale: false,
+                file_ledger: None,
             }),
             ..Default::default()
         };
