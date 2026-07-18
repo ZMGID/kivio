@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Pencil, Trash2 } from 'lucide-react'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
+import { useCloseAnimation } from './useCloseAnimation'
 
 interface SetContextMenuProps {
   anchor: ConversationMenuAnchor
@@ -10,8 +11,10 @@ interface SetContextMenuProps {
   onClose: () => void
 }
 
-export function SetContextMenu({ anchor, onRename, onDelete, onClose }: SetContextMenuProps) {
+export function SetContextMenu({ anchor, onRename, onDelete, onClose: onCloseProp }: SetContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const { closing, startClose, onAnimationEnd } = useCloseAnimation(onCloseProp)
+  const onClose = startClose
 
   useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {
@@ -33,9 +36,10 @@ export function SetContextMenu({ anchor, onRename, onDelete, onClose }: SetConte
   return createPortal(
     <div
       ref={menuRef}
-      className="chat-motion-popover fixed z-[200] min-w-[180px] rounded-xl border border-neutral-200/90 bg-white py-1.5 shadow-lg dark:border-neutral-700 dark:bg-[#2a2a2c]"
+      className={`${closing ? 'chat-motion-popover-out' : 'chat-motion-popover'} fixed z-[200] min-w-[180px] rounded-xl border border-neutral-200/90 bg-white py-1.5 shadow-lg dark:border-neutral-700 dark:bg-[#2a2a2c]`}
       style={{ left: anchor.left, top: anchor.top }}
       role="menu"
+      onAnimationEnd={onAnimationEnd}
     >
       <button
         type="button"

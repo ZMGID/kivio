@@ -32,9 +32,9 @@
 - **验证**：切会话/切 scope/进出 chat 设置，新视图 fade-up 进入；reduced-motion 瞬现；确认 keyed remount 不误重置需保留的状态。
 
 ## Phase 6 — 退出动画（R3，最大工程，最后做）
-- [ ] 6.1 新增 `src/chat/useExitAnimation.ts`（open→closing→unmount + onAnimationEnd + 超时兜底），仿 `ChatAttachments.tsx:115,189`。
-- [ ] 6.2 应用到模态：`ProjectDialog`/`SetDialog`/`SkillCenter`（内容 `chat-motion-exit`、backdrop 淡出）。
-- [ ] 6.3 应用到右键菜单：`ConversationContextMenu`/`ProjectContextMenu`/`SetContextMenu`/`ChatSectionMenu`（closing 挂 `chat-motion-exit`）。
+- [x] 6.1 新增 `src/chat/useCloseAnimation.ts`（open→closing→unmount + onAnimationEnd + 超时兜底），仿 `ChatAttachments.tsx:115,189`。
+- [x] 6.2 应用到模态：`ProjectDialog`/`SetDialog`/`SkillCenter`（内容 `chat-motion-exit`、backdrop 淡出）。
+- [x] 6.3 应用到右键菜单：`ConversationContextMenu`/`ProjectContextMenu`/`SetContextMenu`/`ChatSectionMenu`（closing 挂 `chat-motion-exit`）。
 - **验证**：反复开关模态/右键菜单确认有退出动画且关闭后 DOM 卸载；reduced-motion 下仍能立即关闭不卡。
 - 下拉选择器退场 = 后续增量，不在本次。
 

@@ -3,6 +3,7 @@ import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Search, SquarePen, Trash2 } from 'lucide-react'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
+import { useCloseAnimation } from './useCloseAnimation'
 
 interface ChatSectionMenuProps {
   anchor: ConversationMenuAnchor
@@ -20,10 +21,12 @@ export function ChatSectionMenu({
   onNewConversation,
   onOpenSearch,
   onClearAll,
-  onClose,
+  onClose: onCloseProp,
   triggerRef,
 }: ChatSectionMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const { closing, startClose, onAnimationEnd } = useCloseAnimation(onCloseProp)
+  const onClose = startClose
 
   useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {
@@ -47,9 +50,10 @@ export function ChatSectionMenu({
   const menu = (
     <div
       ref={menuRef}
-      className="chat-motion-popover fixed z-[200] min-w-[200px] rounded-xl border border-neutral-200/90 bg-white py-1.5 shadow-lg dark:border-neutral-700 dark:bg-[#2a2a2c]"
+      className={`${closing ? 'chat-motion-popover-out' : 'chat-motion-popover'} fixed z-[200] min-w-[200px] rounded-xl border border-neutral-200/90 bg-white py-1.5 shadow-lg dark:border-neutral-700 dark:bg-[#2a2a2c]`}
       style={{ left: anchor.left, top: anchor.top }}
       role="menu"
+      onAnimationEnd={onAnimationEnd}
     >
       <button
         type="button"

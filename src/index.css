@@ -1258,6 +1258,49 @@ body {
   animation: chat-motion-modal-in var(--kv-dur-normal) var(--kv-ease-standard) both;
 }
 
+/* 浮层退场（见 useCloseAnimation）：模态面板 / backdrop / popover 关闭时反向淡出。
+   刻意不进 reduced-motion 的 animation:none 列表——保留 0.01ms 让 animationend 触发、卸载不卡。 */
+@keyframes chat-motion-modal-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+.chat-motion-modal-out {
+  animation: chat-motion-modal-out var(--kv-dur-normal) var(--kv-ease-out) both;
+}
+
+@keyframes chat-motion-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.chat-motion-fade-out {
+  animation: chat-motion-fade-out var(--kv-dur-fast) var(--kv-ease-out) both;
+}
+
+@keyframes chat-motion-popover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+}
+.chat-motion-popover-out {
+  transform-origin: var(--chat-popover-origin, top left);
+  animation: chat-motion-popover-out var(--kv-dur-fast) var(--kv-ease-out) both;
+}
+
 /* 微动效：成功反馈（复制 ✓ 等）弹入。靠全局兜底在 reduced-motion 下变瞬时。 */
 @keyframes chat-motion-pop {
   from {

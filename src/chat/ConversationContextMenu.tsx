@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ChevronRight, Download, Folder, Layers, Pencil, Trash2 } from 'lucide-react'
 import type { Lang } from '../settings/i18n'
 import type { ChatProject, ChatSet } from './types'
+import { useCloseAnimation } from './useCloseAnimation'
 
 export interface ConversationMenuAnchor {
   left: number
@@ -38,9 +39,12 @@ export function ConversationContextMenu({
   onMoveToProject,
   onMoveToSet,
   onDelete,
-  onClose,
+  onClose: onCloseProp,
 }: ConversationContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const { closing, startClose, onAnimationEnd } = useCloseAnimation(onCloseProp)
+  // 所有内部关闭触发（菜单项动作后 / 外部点击 / Esc）走 startClose，先播退场再卸载
+  const onClose = startClose
 
   useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {
@@ -62,9 +66,10 @@ export function ConversationContextMenu({
   const menu = (
     <div
       ref={menuRef}
-      className="chat-motion-popover fixed z-[200] min-w-[200px] rounded-xl border border-neutral-200/90 bg-white py-1.5 shadow-lg dark:border-neutral-700 dark:bg-[#2a2a2c]"
+      className={`${closing ? 'chat-motion-popover-out' : 'chat-motion-popover'} fixed z-[200] min-w-[200px] rounded-xl border border-neutral-200/90 bg-white py-1.5 shadow-lg dark:border-neutral-700 dark:bg-[#2a2a2c]`}
       style={{ left: anchor.left, top: anchor.top }}
       role="menu"
+      onAnimationEnd={onAnimationEnd}
     >
       <button
         type="button"

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationContextMenu } from './ConversationContextMenu'
@@ -27,7 +27,8 @@ describe('ConversationContextMenu export', () => {
     const { onExport, onClose } = renderMenu('zh')
     await user.click(screen.getByRole('menuitem', { name: '导出' }))
     expect(onExport).toHaveBeenCalledOnce()
-    expect(onClose).toHaveBeenCalledOnce()
+    // 关闭在退场动画结束后触发（useCloseAnimation：animationend / 超时兜底）
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
   it('renders the English action', () => {
