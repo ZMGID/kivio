@@ -1566,7 +1566,7 @@ export function InputBar({
         )}
         <div
           data-chat-composer="true"
-          className={`chat-composer-shell relative select-none ${modeMenuOpen ? 'z-30' : 'z-10'} rounded-[28px] border px-3 py-2.5 transition-[box-shadow,border-color] duration-200 ${
+          className={`chat-composer-shell relative select-none ${modeMenuOpen ? 'z-30' : 'z-10'} rounded-[28px] border px-3 py-2.5 transition-[box-shadow,border-color] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
             dragActive
               ? 'border-[#e8a090] shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[#e8a090]/25 dark:border-[#e8a090] dark:shadow-none'
               : agentPlanActive

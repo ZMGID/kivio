@@ -22,7 +22,6 @@ import { isProviderEnabled } from '../settings/utils'
 import { Select } from '../settings/components'
 import { builtinAssistantGlyph } from './assistantIcons'
 import { chatApi } from './api'
-import { usesNativeTitlebar } from './platform'
 import type { ChatAssistant, SkillMeta } from './types'
 
 interface AssistantCenterProps {
@@ -31,7 +30,6 @@ interface AssistantCenterProps {
   onStartAssistantChat: (assistant: ChatAssistant) => void
   onStartBuilder?: () => void
   onApplyAssistant?: (assistantId: string | null) => void
-  onClose: () => void
 }
 
 type AssistantDraft = ChatAssistant
@@ -164,7 +162,6 @@ export function AssistantCenter({
   onStartAssistantChat,
   onStartBuilder,
   onApplyAssistant,
-  onClose,
 }: AssistantCenterProps) {
   const [assistants, setAssistants] = useState<ChatAssistant[]>([])
   const [providers, setProviders] = useState<ModelProvider[]>([])
@@ -825,23 +822,6 @@ export function AssistantCenter({
   return (
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
       {/* 顶栏：与聊天主区同底色、无分隔，可拖拽，右侧避开窗口按钮 */}
-      <div
-        className={`flex h-[52px] shrink-0 items-center gap-2 px-3 ${
-          !usesNativeTitlebar ? 'chat-win-titlebar-safe' : ''
-        }`}
-        data-tauri-drag-region
-      >
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          data-tauri-drag-region="false"
-        >
-          <ArrowLeft size={15} />
-          返回聊天
-        </Button>
-        <div className="h-full min-w-5 flex-1" data-tauri-drag-region />
-      </div>
 
       {/* 内容区：直接坐在白底上，与聊天主区无缝 */}
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-6 py-6">

@@ -870,7 +870,7 @@ function DocRow({
         <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
           {determinate ? (
             <div
-              className="h-full rounded-full bg-indigo-500 transition-all duration-300"
+              className="h-full rounded-full bg-indigo-500 transition-[width] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)]"
               style={{ width: `${pct}%` }}
             />
           ) : (

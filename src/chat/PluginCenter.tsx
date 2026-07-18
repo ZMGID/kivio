@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  ArrowLeft,
   ExternalLink,
   FileSpreadsheet,
   Loader2,
@@ -17,10 +16,8 @@ import {
 } from '../api/tauri'
 import { refreshSettings } from '../api/settingsCache'
 import { Button, IconButton } from '../components/Button'
-import { usesNativeTitlebar } from './platform'
 
 interface PluginCenterProps {
-  onClose: () => void
   /** 让 Kivio AI 按规范文档安装：父级开新对话并发送 install brief */
   onRequestAiInstall?: (pluginId: string) => void | Promise<void>
 }
@@ -78,7 +75,7 @@ function PluginCard({
   onUninstall: (id: string) => void
 }) {
   return (
-    <article className="flex min-w-0 flex-col gap-3 rounded-md border border-neutral-200 bg-white p-5 shadow-sm dark:border-neutral-800 dark:bg-neutral-950/40">
+    <article className="chat-motion-fade-up flex min-w-0 flex-col gap-3 rounded-xl border border-neutral-200 bg-white p-5 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700">
       <div className="flex min-w-0 items-start gap-3">
         <span className="grid size-9 shrink-0 place-items-center rounded-md border border-neutral-200 bg-neutral-50 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
           {plugin.id === 'officecli' ? (
@@ -245,7 +242,7 @@ function PluginCard({
 }
 
 /** 插件中心：检测状态 + 启用开关；安装交给 Kivio AI。 */
-export function PluginCenter({ onClose, onRequestAiInstall }: PluginCenterProps) {
+export function PluginCenter({ onRequestAiInstall }: PluginCenterProps) {
   const [tab, setTab] = useState<TabId>('plaza')
   const [plugins, setPlugins] = useState<PluginStatus[]>([])
   const [loading, setLoading] = useState(true)
@@ -370,24 +367,6 @@ export function PluginCenter({ onClose, onRequestAiInstall }: PluginCenterProps)
 
   return (
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
-      <div
-        className={`flex h-[52px] shrink-0 items-center gap-2 px-3 ${
-          !usesNativeTitlebar ? 'chat-win-titlebar-safe' : ''
-        }`}
-        data-tauri-drag-region
-      >
-        <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0"
-          onClick={onClose}
-          data-tauri-drag-region="false"
-        >
-          <ArrowLeft size={15} />
-          返回聊天
-        </Button>
-        <div className="h-full min-w-5 flex-1" data-tauri-drag-region />
-      </div>
 
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
@@ -453,8 +432,14 @@ export function PluginCenter({ onClose, onRequestAiInstall }: PluginCenterProps)
           )}
 
           {loading && plugins.length === 0 ? (
-            <div className="mt-16 flex justify-center">
-              <Loader2 size={22} className="animate-spin text-neutral-400" />
+            <div className="mt-6 grid gap-4">
+              {Array.from({ length: 2 }, (_, i) => (
+                <div key={i} className="rounded-xl border border-neutral-200/80 p-5 dark:border-neutral-800/70">
+                  <div className="kv-skeleton h-4 w-1/4 rounded" />
+                  <div className="kv-skeleton mt-2.5 h-3 w-3/4 rounded" />
+                  <div className="kv-skeleton mt-3 h-7 w-40 rounded" />
+                </div>
+              ))}
             </div>
           ) : filtered.length === 0 ? (
             <div className="mt-16 flex flex-col items-center justify-center text-center">

@@ -107,7 +107,7 @@ export function ReasoningBlock({ reasoning, streaming = false, durationMs = null
   return (
     <section
       aria-label="Thinking"
-      className={`mb-3 border-l pl-3 transition-colors duration-300 ${
+      className={`mb-3 border-l pl-3 transition-colors duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
         streaming
           ? 'border-neutral-300 dark:border-neutral-600'
           : 'border-neutral-200 dark:border-neutral-700'
@@ -136,7 +136,7 @@ export function ReasoningBlock({ reasoning, streaming = false, durationMs = null
           <ChevronDown
             size={12}
             strokeWidth={2}
-            className={`shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+            className={`shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${open ? 'rotate-180' : ''}`}
           />
         </button>
       ) : (

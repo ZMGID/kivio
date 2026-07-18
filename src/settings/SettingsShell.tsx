@@ -1688,7 +1688,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <button
               type="button"
               onClick={() => setReloadKey((k) => k + 1)}
-              className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-100 transition-all"
+              className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-100 transition-colors duration-[var(--kv-dur-fast)]"
               data-tauri-drag-region="false"
             >
               <RefreshCw size={12} />
@@ -1697,7 +1697,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <button
               type="button"
               onClick={onClose}
-              className="text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 transition-all"
+              className="text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-[var(--kv-dur-fast)]"
               data-tauri-drag-region="false"
             >
               {t.cancel}

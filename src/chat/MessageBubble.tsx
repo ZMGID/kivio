@@ -660,7 +660,7 @@ function TimelineGroupBlock({
         <ChevronDown
           size={16}
           strokeWidth={2}
-          className={`shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          className={`shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${open ? 'rotate-180' : ''}`}
         />
       </button>
       {open && (
@@ -983,7 +983,7 @@ function MessageBubbleComponent({
             )
           )}
           {hasText && !isEditing && (
-            <div className="flex items-center gap-0.5 pr-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
+            <div className="flex items-center gap-0.5 pr-0.5 opacity-0 transition-opacity duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] focus-within:opacity-100 group-hover:opacity-100">
               <IconButton
                 size="sm"
                 onClick={() => void handleCopy()}
@@ -1084,7 +1084,7 @@ function MessageBubbleComponent({
                 <ChevronDown
                   size={12}
                   strokeWidth={2}
-                  className={`ml-auto shrink-0 transition-transform duration-300 ${toolsExpanded ? 'rotate-180' : ''}`}
+                  className={`ml-auto shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${toolsExpanded ? 'rotate-180' : ''}`}
                 />
               </button>
             ) : (

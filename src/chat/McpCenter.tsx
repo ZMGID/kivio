@@ -2,8 +2,9 @@
 // transport/url/命令/env/headers + 测试连接 + OAuth 授权）、市场（内联注册表浏览）、导入 mcp.json、
 // 高级设置（Kivio 内置工具 + 工具运行参数）。取代原「设置 → MCP」页。
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Cable, ChevronDown, FolderOpen, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { ChevronDown, FolderOpen, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { McpIcon } from '../settings/NavIcons'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   api,
@@ -15,7 +16,6 @@ import {
   type Settings,
 } from '../api/tauri'
 import { getSettingsCached, refreshSettings, saveSettingsCached } from '../api/settingsCache'
-import { usesNativeTitlebar } from './platform'
 import { Toggle, Select, Input } from '../settings/components'
 import { Button, IconButton } from '../components/Button'
 import { McpRegistryBrowser } from './McpRegistryBrowser'
@@ -36,8 +36,6 @@ import {
   textToArgs,
   textToEnv,
 } from '../settings/chatToolsShared'
-
-type McpCenterProps = { onClose: () => void }
 
 type TestFeedback = { ok: boolean; message: string }
 
@@ -71,7 +69,7 @@ const NATIVE_TOOLS: Array<{ key: keyof ChatNativeToolsConfig; label: string; def
 const TEXTAREA_CLASS =
   'w-full rounded-md border border-neutral-200 bg-white px-2.5 py-2 font-mono text-[12px] text-neutral-800 outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100'
 
-export function McpCenter({ onClose }: McpCenterProps) {
+export function McpCenter() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [states, setStates] = useState<Record<string, McpServerState>>({})
   const [view, setView] = useState<'installed' | 'store' | 'import' | 'advanced'>('installed')
@@ -254,22 +252,12 @@ export function McpCenter({ onClose }: McpCenterProps) {
 
   return (
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
-      <div
-        className={`flex h-[52px] shrink-0 items-center gap-2 px-3 ${!usesNativeTitlebar ? 'chat-win-titlebar-safe' : ''}`}
-        data-tauri-drag-region
-      >
-        <Button variant="ghost" size="sm" className="shrink-0" onClick={onClose} data-tauri-drag-region="false">
-          <ArrowLeft size={15} />
-          返回聊天
-        </Button>
-        <div className="h-full min-w-5 flex-1" data-tauri-drag-region />
-      </div>
 
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex h-full min-h-0 w-full max-w-[1040px] flex-col px-9 pb-10 pt-7">
           <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
             <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
-              <Cable size={24} className="text-neutral-500" />
+              <McpIcon size={24} className="text-neutral-500" />
               MCP
             </h1>
             <div className="mt-3.5 flex min-w-0 items-center gap-4">
@@ -390,19 +378,30 @@ export function McpCenter({ onClose }: McpCenterProps) {
           ) : (
             <div className="mt-5">
               {loading ? (
-                <div className="grid min-h-[220px] place-items-center text-neutral-400"><Loader2 size={18} className="animate-spin" /></div>
+                <div className="space-y-2">
+                  {Array.from({ length: 3 }, (_, i) => (
+                    <div key={i} className="rounded-xl border border-neutral-200/80 px-4 py-3 dark:border-neutral-800/70">
+                      <div className="kv-skeleton h-4 w-1/4 rounded" />
+                      <div className="kv-skeleton mt-2 h-3 w-1/2 rounded" />
+                    </div>
+                  ))}
+                </div>
               ) : userServers.length === 0 ? (
                 <div className="grid min-h-[220px] place-items-center rounded-md border border-dashed border-neutral-200 px-6 text-center text-[13px] text-neutral-400 dark:border-neutral-800">
                   暂无 MCP 服务器。去「市场」安装，或「导入」mcp.json。
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {userServers.map((server) => {
+                  {userServers.map((server, idx) => {
                     const expanded = expandedId === server.id
                     const isHttp = server.transport === 'streamable_http'
                     const feedback = testFeedback[server.id]
                     return (
-                      <div key={server.id} className="overflow-hidden rounded-md border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950/40">
+                      <div
+                        key={server.id}
+                        style={{ '--chat-motion-delay': `${Math.min(idx, 8) * 24}ms` } as CSSProperties}
+                        className="chat-motion-fade-up overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700"
+                      >
                         <div className="flex items-center gap-3 px-4 py-3">
                           <button
                             type="button"
@@ -410,7 +409,7 @@ export function McpCenter({ onClose }: McpCenterProps) {
                             onClick={() => setExpandedId(expanded ? null : server.id)}
                             data-tauri-drag-region="false"
                           >
-                            <ChevronDown size={15} className={`shrink-0 text-neutral-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                            <ChevronDown size={15} className={`shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${expanded ? 'rotate-180' : ''}`} />
                             <div className="min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="truncate text-[13.5px] font-medium">{server.name}</span>
@@ -429,7 +428,7 @@ export function McpCenter({ onClose }: McpCenterProps) {
                         </div>
 
                         {expanded && (
-                          <div className="space-y-3 border-t border-neutral-100 px-4 py-3 dark:border-neutral-800/70">
+                          <div className="chat-motion-search-reveal space-y-3 border-t border-neutral-100 px-4 py-3 dark:border-neutral-800/70">
                             <div>
                               <label className="mb-1 block text-[11.5px] font-medium text-neutral-600 dark:text-neutral-300">名称</label>
                               <Input value={server.name} onChange={(name) => updateServer(server.id, { name })} />

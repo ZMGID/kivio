@@ -1,11 +1,10 @@
 // ClawHub 技能商店内联浏览（无 modal 外壳，供 SkillCenter「技能商店」tab 用）。
 // 排序/搜索/翻页 + 一键安装（下载走后端 chat_skills_install_from_url）。数据层见 ../settings/skillMarket.ts。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Download, ExternalLink, Loader2, Search } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Check, ChevronDown, Download, ExternalLink, Loader2, Search, Star } from 'lucide-react'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
-import { Input } from '../settings/components'
 import {
   buildClawHubDownloadUrl,
   CLAWHUB_SORT_OPTIONS,
@@ -112,53 +111,92 @@ export function SkillStoreBrowser({ lang = 'zh', onInstalled }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 pb-3">
-        <select value={sort} onChange={(e) => setSort(e.target.value as ClawHubSort)} disabled={Boolean(query)} className="kv-input h-[30px] w-auto">
-          {sortOptions.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
-        <div className="relative min-w-[180px] flex-1">
-          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
-          <Input value={queryInput} onChange={setQueryInput} placeholder={zh ? '搜索技能…' : 'Search skills…'} className="pl-8" />
+      {/* 工具行：搜索为主（与已安装 tab 同规格），排序退居右侧紧凑控件 */}
+      <div className="flex items-center gap-2 pb-4">
+        <div className="relative min-w-0 flex-1">
+          <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+          <input
+            type="text"
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
+            placeholder={zh ? '搜索技能...' : 'Search skills...'}
+            className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            data-tauri-drag-region="false"
+          />
+        </div>
+        <div className="relative shrink-0">
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as ClawHubSort)}
+            disabled={Boolean(query)}
+            data-tauri-drag-region="false"
+            className="h-10 cursor-pointer appearance-none rounded-md border border-neutral-200 bg-white pl-3 pr-8 text-[13px] text-neutral-700 outline-none transition-colors duration-[var(--kv-dur-fast)] hover:border-neutral-300 focus:border-neutral-300 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+            title={query ? (zh ? '搜索时按相关度排序' : 'Search results are sorted by relevance') : undefined}
+          >
+            {sortOptions.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
         </div>
       </div>
 
       {error && (
-        <div className="mb-2 rounded-md border border-red-300/60 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-300">
+        <div className="mb-3 rounded-md border border-red-300/60 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-300">
           {error}
         </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
-          <div className="flex h-40 items-center justify-center text-[var(--text-muted)]"><Loader2 size={18} className="animate-spin" /></div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="flex flex-col rounded-xl border border-neutral-200/80 p-3.5 dark:border-neutral-800/70">
+                <div className="kv-skeleton h-4 w-2/5 rounded" />
+                <div className="kv-skeleton mt-2.5 h-3 w-full rounded" />
+                <div className="kv-skeleton mt-1.5 h-3 w-3/4 rounded" />
+                <div className="kv-skeleton mt-3 h-7 w-full rounded" />
+              </div>
+            ))}
+          </div>
         ) : items.length === 0 ? (
-          <div className="flex h-40 items-center justify-center text-[13px] text-[var(--text-muted)]">{zh ? '没有匹配的技能' : 'No matching skills'}</div>
+          <div className="flex h-40 items-center justify-center text-[13px] text-neutral-400">{zh ? '没有匹配的技能' : 'No matching skills'}</div>
         ) : (
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {items.map((card, idx) => {
               const done = installed.has(card.slug)
               return (
-                <div key={`${card.slug}-${idx}`} className="flex flex-col rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] p-3">
+                <div
+                  key={`${card.slug}-${idx}`}
+                  style={{ '--chat-motion-delay': `${Math.min(idx % PAGE_LIMIT, 8) * 24}ms` } as CSSProperties}
+                  className="chat-motion-fade-up group flex flex-col rounded-xl border border-neutral-200 bg-white p-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700"
+                >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="truncate text-[13px] font-semibold">{card.displayName}</span>
-                    {card.latestVersion && <span className="shrink-0 rounded bg-[var(--bg-active)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">v{card.latestVersion}</span>}
+                    <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950 dark:text-neutral-50">{card.displayName}</span>
+                    {card.latestVersion && (
+                      <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] tabular-nums text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                        v{card.latestVersion}
+                      </span>
+                    )}
                   </div>
-                  {card.summary && <p className="mt-1 line-clamp-2 text-[12px] text-[var(--text-muted)]">{card.summary}</p>}
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-3 text-[10.5px] tabular-nums text-[var(--text-muted)]">
+                  <p className="mt-1 line-clamp-2 min-h-[2.4em] text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
+                    {card.summary || (zh ? '未提供简介' : 'No summary')}
+                  </p>
+                  <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-neutral-100 pt-2.5 dark:border-neutral-800/70">
+                    <div className="flex items-center gap-3 text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
                       <span className="inline-flex items-center gap-1"><Download size={11} />{card.downloads.toLocaleString()}</span>
-                      <span>★ {card.stars.toLocaleString()}</span>
+                      <span className="inline-flex items-center gap-1"><Star size={11} />{card.stars.toLocaleString()}</span>
                     </div>
                     <div className="flex items-center gap-1">
                       {card.webUrl && (
-                        <IconButton size="sm" variant="ghost" onClick={() => void api.openExternal(card.webUrl!)} label={zh ? '主页' : 'Homepage'}>
-                          <ExternalLink size={13} />
-                        </IconButton>
+                        <span className="opacity-0 transition-opacity duration-[var(--kv-dur-fast)] focus-within:opacity-100 group-hover:opacity-100">
+                          <IconButton size="sm" variant="ghost" onClick={() => void api.openExternal(card.webUrl!)} label={zh ? '主页' : 'Homepage'}>
+                            <ExternalLink size={13} />
+                          </IconButton>
+                        </span>
                       )}
                       {done ? (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[12px] font-medium text-emerald-600 dark:text-emerald-400"><Check size={13} />{zh ? '已安装' : 'Installed'}</span>
+                        <span className="chat-motion-pop inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[12px] font-medium text-emerald-600 dark:text-emerald-400"><Check size={13} />{zh ? '已安装' : 'Installed'}</span>
                       ) : (
                         <Button size="sm" onClick={() => void handleInstall(card)} disabled={busySlug === card.slug}>
                           {busySlug === card.slug ? <Loader2 size={12} className="animate-spin" /> : zh ? '安装' : 'Install'}
@@ -173,7 +211,7 @@ export function SkillStoreBrowser({ lang = 'zh', onInstalled }: Props) {
         )}
 
         {cursor && !query && !loading && (
-          <div className="pt-2">
+          <div className="pt-3">
             <Button size="sm" variant="ghost" onClick={loadMore} disabled={loadingMore} className="w-full">
               {loadingMore ? <Loader2 size={12} className="animate-spin" /> : zh ? '加载更多' : 'Load more'}
             </Button>

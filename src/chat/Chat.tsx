@@ -1389,27 +1389,19 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     pending?.()
   }, [loadSkills, refreshToolIndicator, syncConversationRoute])
 
-  const handleAssistantCenterClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-  }, [syncConversationRoute])
-
-  const handleSkillCenterClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-    void loadSkills()
-  }, [loadSkills, syncConversationRoute])
-
-  const handlePluginCenterClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-  }, [syncConversationRoute])
-
-  const handleMcpCenterClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-    void refreshToolIndicator()
-  }, [refreshToolIndicator, syncConversationRoute])
+  // 中心页（技能/MCP/插件/专家）没有自己的返回按钮，离开靠侧栏选会话/新建等任意路径。
+  // 统一在「回到会话视图」这个转变点刷新技能列表与工具指示器，
+  // 保证中心页里的启停/增删在回到聊天后立即生效（替代原各页 onClose 的刷新职责）。
+  const prevChatViewRef = useRef(chatView)
+  useEffect(() => {
+    const prev = prevChatViewRef.current
+    prevChatViewRef.current = chatView
+    if (chatView !== 'conversation' || prev === chatView) return
+    if (prev === 'skill' || prev === 'mcp' || prev === 'assistants' || prev === 'plugins') {
+      void loadSkills()
+      void refreshToolIndicator()
+    }
+  }, [chatView, loadSkills, refreshToolIndicator])
 
   const runAfterLeavingSettings = useCallback((action: () => void) => {
     if (chatView !== 'settings') {
@@ -3483,6 +3475,34 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setSearchOpen(false)
   }, [runAfterLeavingSettings])
 
+  // 中心页（专家/技能/MCP/插件）去掉了整行「返回聊天」顶栏后，窗口顶部不再可拖拽；
+  // 且侧栏收起时页面上没有任何展开侧栏/离开中心页的入口（会被困住）。
+  // 用一条浮在内容 padding 区上的细拖拽带兜底：始终可拖动窗口，
+  // 侧栏收起时在带内浮出「展开侧栏 + 新建聊天」，与会话页收起态的顶栏行为一致。
+  // 带高 24px（低于各中心页 pt-7/py-6 的内容起点），不遮挡任何可交互内容；
+  // 收起态按钮行复用会话页收起态顶栏的同一套行高/缩进类（52px 行 + mac 交通灯缩进），
+  // 保证收起/展开、中心页/会话页之间按钮位置完全不跳。
+  const centerPageTopStrip = (
+    <div className="absolute inset-x-0 top-0 z-20 h-6" data-tauri-drag-region>
+      {sidebarCollapsed && (
+        <div
+          className={`chat-titlebar-row ${chatTitlebarRowClass} ${
+            usesNativeTitlebar
+              ? `${chatTitlebarMacInsetClass} chat-titlebar-row--collapsed-mac`
+              : 'px-3'
+          }`}
+          data-tauri-drag-region
+        >
+          <ChatTitlebarActions
+            sidebarExpanded={false}
+            onToggleSidebar={() => setSidebarCollapsedPersisted(false)}
+            onNewConversation={() => void handleNewConversation()}
+          />
+        </div>
+      )}
+    </div>
+  )
+
   return (
     <div
       className={`chat-window-shell${usesNativeTitlebar ? ' chat-window-shell--native-titlebar' : ''}`}
@@ -3540,7 +3560,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             </Suspense>
           </div>
         ) : chatView === 'assistants' ? (
-          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
             <Suspense fallback={null}>
               <AssistantCenter
                 skills={enabledSkills}
@@ -3548,32 +3569,28 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 onStartAssistantChat={(assistant) => void handleStartAssistantChat(assistant)}
                 onStartBuilder={() => void handleStartBuilderChat()}
                 onApplyAssistant={currentConversation ? (assistantId) => void handleApplyAssistant(assistantId) : undefined}
-                onClose={handleAssistantCenterClose}
               />
             </Suspense>
           </div>
         ) : chatView === 'skill' ? (
-          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
             <Suspense fallback={null}>
-              <SkillCenter
-                onClose={handleSkillCenterClose}
-                onSkillsChanged={() => void loadSkills()}
-              />
+              <SkillCenter onSkillsChanged={() => void loadSkills()} />
             </Suspense>
           </div>
         ) : chatView === 'mcp' ? (
-          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
             <Suspense fallback={null}>
-              <McpCenter onClose={handleMcpCenterClose} />
+              <McpCenter />
             </Suspense>
           </div>
         ) : chatView === 'plugins' ? (
-          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
             <Suspense fallback={null}>
-              <PluginCenter
-                onClose={handlePluginCenterClose}
-                onRequestAiInstall={handleRequestPluginAiInstall}
-              />
+              <PluginCenter onRequestAiInstall={handleRequestPluginAiInstall} />
             </Suspense>
           </div>
         ) : (

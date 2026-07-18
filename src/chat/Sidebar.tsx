@@ -46,7 +46,7 @@ export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | '
 
 const extensionSubItems: Array<{ id: ExtensionsNavItem; label: string }> = [
   { id: 'assistants', label: '助手' },
-  { id: 'skill', label: '技能' },
+  { id: 'skill', label: 'Skill' },
   { id: 'mcp', label: 'MCP' },
   { id: 'knowledge', label: '知识库' },
   { id: 'plugins', label: '插件' },
@@ -234,7 +234,7 @@ function ExtensionsNav({
         <ChevronRight
           size={14}
           strokeWidth={2}
-          className={`shrink-0 text-neutral-400 transition-transform duration-200 dark:text-neutral-500 ${
+          className={`shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] dark:text-neutral-500 ${
             expanded ? 'rotate-90' : ''
           }`}
         />

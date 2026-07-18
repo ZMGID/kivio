@@ -470,7 +470,7 @@ function ConsultCard({
           <ChevronDown
             size={12}
             strokeWidth={2}
-            className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-300 dark:text-neutral-500 ${open ? 'rotate-180' : ''}`}
+            className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] dark:text-neutral-500 ${open ? 'rotate-180' : ''}`}
           />
         )}
       </button>
@@ -1444,7 +1444,7 @@ function DefaultToolCallBlock({
           <ChevronDown
             size={12}
             strokeWidth={2}
-            className={`shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+            className={`shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${open ? 'rotate-180' : ''}`}
           />
         )}
       </button>
