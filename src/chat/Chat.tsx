@@ -123,6 +123,10 @@ const McpCenter = lazy(() => import('./McpCenter').then((module) => ({
   default: module.McpCenter,
 })))
 
+const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => ({
+  default: module.KnowledgeCenter,
+})))
+
 const PluginCenter = lazy(() => import('./PluginCenter').then((module) => ({
   default: module.PluginCenter,
 })))
@@ -139,7 +143,7 @@ function MessageListLoading() {
   )
 }
 
-type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'mcp' | 'plugins' | 'onboarding'
+type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'plugins' | 'onboarding'
 
 interface ChatProps {
   onSettingsChange: () => void
@@ -177,6 +181,10 @@ function isChatPluginCenterPath(path: string): boolean {
 
 function isChatMcpCenterPath(path: string): boolean {
   return path === 'chat/mcp' || path.startsWith('chat/mcp/')
+}
+
+function isChatKnowledgeCenterPath(path: string): boolean {
+  return path === 'chat/knowledge' || path.startsWith('chat/knowledge/')
 }
 
 function scheduleIdleTask(callback: () => void, timeout = 1200): () => void {
@@ -617,6 +625,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatAssistantCenterPath(path)) return 'assistants'
     if (isChatSkillCenterPath(path)) return 'skill'
     if (isChatMcpCenterPath(path)) return 'mcp'
+    if (isChatKnowledgeCenterPath(path)) return 'knowledge'
     if (isChatPluginCenterPath(path)) return 'plugins'
     return 'conversation'
   })
@@ -1198,6 +1207,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (rest === 'settings' || rest.startsWith('settings/')) return null
     if (rest === 'assistants' || rest.startsWith('assistants/')) return null
     if (rest === 'skill' || rest.startsWith('skill/')) return null
+    if (rest === 'knowledge' || rest.startsWith('knowledge/')) return null
     if (rest === 'onboarding' || rest.startsWith('onboarding/')) return null
     return decodeURIComponent(rest)
   }, [])
@@ -1247,6 +1257,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const syncMcpCenterRoute = useCallback(() => {
     if (window.location.hash !== '#chat/mcp') {
       window.location.hash = '#chat/mcp'
+    }
+  }, [])
+
+  const syncKnowledgeCenterRoute = useCallback(() => {
+    if (window.location.hash !== '#chat/knowledge') {
+      window.location.hash = '#chat/knowledge'
     }
   }, [])
 
@@ -1318,6 +1334,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       void import('./AssistantCenter')
       void import('./SkillCenter')
       void import('./McpCenter')
+      void import('./KnowledgeCenter')
       void import('./PluginCenter')
       void import('./MessageList')
     }, 400)
@@ -1349,6 +1366,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     syncMcpCenterRoute()
   }, [syncMcpCenterRoute])
 
+  const openKnowledgeCenter = useCallback(() => {
+    setChatView('knowledge')
+    syncKnowledgeCenterRoute()
+  }, [syncKnowledgeCenterRoute])
+
   const openExtensionsItem = useCallback((item: ExtensionsNavItem) => {
     setExtensionsNavItem(item)
     if (item === 'assistants') {
@@ -1363,21 +1385,24 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       openMcpCenter()
       return
     }
+    if (item === 'knowledge') {
+      openKnowledgeCenter()
+      return
+    }
     if (item === 'plugins') {
       openPluginCenter()
       return
     }
-    openEmbeddedSettings(item)
-  }, [openAssistantCenter, openSkillCenter, openMcpCenter, openPluginCenter, openEmbeddedSettings])
+  }, [openAssistantCenter, openSkillCenter, openMcpCenter, openKnowledgeCenter, openPluginCenter])
 
   const extensionsActive = useMemo<ExtensionsNavItem | null>(() => {
     if (chatView === 'assistants') return 'assistants'
     if (chatView === 'skill') return 'skill'
     if (chatView === 'mcp') return 'mcp'
+    if (chatView === 'knowledge') return 'knowledge'
     if (chatView === 'plugins') return 'plugins'
-    if (chatView === 'settings' && extensionsNavItem === 'knowledge') return 'knowledge'
     return null
-  }, [chatView, extensionsNavItem])
+  }, [chatView])
 
   const handleSettingsClose = useCallback(() => {
     setChatView('conversation')
@@ -1397,7 +1422,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const prev = prevChatViewRef.current
     prevChatViewRef.current = chatView
     if (chatView !== 'conversation' || prev === chatView) return
-    if (prev === 'skill' || prev === 'mcp' || prev === 'assistants' || prev === 'plugins') {
+    if (prev === 'skill' || prev === 'mcp' || prev === 'assistants' || prev === 'plugins' || prev === 'knowledge') {
       void loadSkills()
       void refreshToolIndicator()
     }
@@ -2166,6 +2191,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       if (isChatMcpCenterPath(path)) {
         setChatView('mcp')
+        return
+      }
+      if (isChatKnowledgeCenterPath(path)) {
+        setChatView('knowledge')
         return
       }
       if (isChatPluginCenterPath(path)) {
@@ -3551,7 +3580,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 ref={settingsRef}
                 variant="embedded"
                 initialTab={settingsInitialTab}
-                hideNav={extensionsNavItem === 'knowledge'}
                 reserveTrafficLightSpace={(sidebarCollapsed || extensionsNavItem === null) && usesNativeTitlebar}
                 onClose={handleSettingsClose}
                 onSettingsChange={handleSettingsChange}
@@ -3584,6 +3612,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <McpCenter />
+            </Suspense>
+          </div>
+        ) : chatView === 'knowledge' ? (
+          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <KnowledgeCenter />
             </Suspense>
           </div>
         ) : chatView === 'plugins' ? (

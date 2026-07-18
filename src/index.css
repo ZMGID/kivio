@@ -2068,7 +2068,6 @@ body {
   padding: 8px 28px 20px;
 }
 
-.kv-scroll > .kb-panel-root,
 .kv-scroll > .websearch-panel-root,
 .kv-scroll > .kv-providers-root {
   flex: 1 1 auto;
@@ -2076,7 +2075,6 @@ body {
   align-self: stretch;
 }
 
-.kv-scroll:has(> .kb-panel-root),
 .kv-scroll:has(> .websearch-panel-root),
 .kv-scroll:has(> .kv-providers-root) {
   display: flex;

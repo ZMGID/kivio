@@ -33,7 +33,7 @@ import {
 import { i18n } from './i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  CodeIcon, AgentIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon, KnowledgeIcon,
+  CodeIcon, AgentIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon,
 } from './NavIcons'
 import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, stableStringify } from './utils'
 import { PROVIDER_PRESETS, type ProviderPreset } from './providerPresets'
@@ -59,11 +59,10 @@ import {
   SettingsGroup,
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
-import { KnowledgeBasePanel } from './KnowledgeBasePanel'
 import { WebSearchPanel } from './WebSearchPanel'
 import { defaultChatTools } from './chatToolsShared'
 
-export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'webSearch' | 'connectors' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 type MemoryLayerKey = 'l1' | 'l2'
@@ -1719,7 +1718,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'kivioCode' as const, label: 'Kivio Code', icon: CodeIcon },
     { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: AgentIcon },
     { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
-    { id: 'knowledge' as const, label: lang === 'zh' ? '知识库' : 'Knowledge', icon: KnowledgeIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '用量统计' : 'Usage', icon: UsageIcon },
     { id: 'providers' as const, label: t.tabModels, icon: ProvidersIcon },
@@ -1776,12 +1774,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       subtitle: lang === 'zh'
         ? '连接外部数据源；凭据存本机。'
         : 'Connect external data sources; credentials stay local.',
-    },
-    knowledge: {
-      title: lang === 'zh' ? '知识库' : 'Knowledge',
-      subtitle: lang === 'zh'
-        ? '导入文档供 agent 检索引用。'
-        : 'Import documents for agent retrieval and citations.',
     },
     webSearch: {
       title: t.tabWebSearch,
@@ -2899,20 +2891,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     return null
                   }
                 }}
-              />
-            )}
-
-            {/* ===== 知识库标签页 ===== */}
-            {activeTab === 'knowledge' && (
-              <KnowledgeBasePanel
-                providers={settings?.providers ?? []}
-                lang={lang}
-                docProcessing={settings?.documentProcessing}
-                onChangeDocProcessing={(dp) => updateSettings({ documentProcessing: dp })}
-                kbConfig={settings?.knowledgeBase}
-                onChangeKbConfig={(kb) => updateSettings({ knowledgeBase: kb })}
-                ragEnabled={chatTools.nativeTools?.knowledgeSearch !== false}
-                onToggleRag={(v) => updateNativeTools({ knowledgeSearch: v })}
               />
             )}
 
