@@ -12,6 +12,9 @@ const DEFAULT: KnowledgeBaseConfig = {
   rerankModel: '',
   chunkTokens: 480,
   topK: 5,
+  candidateK: 60,
+  rerankTopK: 20,
+  minScore: 0,
 }
 
 export function RetrievalPanel({
@@ -68,6 +71,50 @@ export function RetrievalPanel({
             </SettingRow>
           </div>
         )}
+      </SettingsGroup>
+
+      <SettingsGroup title={t('候选池', 'Candidate pools')}>
+        <div className="grid gap-1 sm:grid-cols-2">
+          <SettingRow
+            label={t('候选池大小', 'Candidate pool')}
+            description={t('每库融合候选数 (20–200)', 'Fused candidates per library (20–200)')}
+            stack
+          >
+            <Input
+              type="number"
+              className="w-full max-w-[8rem]"
+              value={String(cfg.candidateK ?? 60)}
+              onChange={(v) => patch({ candidateK: Math.min(200, Math.max(20, Number(v) || 60)) })}
+            />
+          </SettingRow>
+          <SettingRow
+            label={t('送重排数', 'Rerank pool')}
+            description={t('送 rerank 的候选数 (5–50)', 'Candidates sent to reranker (5–50)')}
+            stack
+          >
+            <Input
+              type="number"
+              className="w-full max-w-[8rem]"
+              value={String(cfg.rerankTopK ?? 20)}
+              onChange={(v) => patch({ rerankTopK: Math.min(50, Math.max(5, Number(v) || 20)) })}
+            />
+          </SettingRow>
+        </div>
+        <SettingRow
+          label={t('相关性阈值', 'Relevance threshold')}
+          description={t(
+            '0=关闭；重排开=按 relevance 分过滤，关=向量命中的余弦相似度下限（词法命中恒过）',
+            '0 = off; with rerank = filter by relevance score, else = cosine floor for vector-only hits',
+          )}
+          stack
+        >
+          <Input
+            type="number"
+            className="w-full max-w-[8rem]"
+            value={String(cfg.minScore ?? 0)}
+            onChange={(v) => patch({ minScore: Math.min(1, Math.max(0, Number(v) || 0)) })}
+          />
+        </SettingRow>
       </SettingsGroup>
 
       <SettingsGroup title={t('重排（Rerank）', 'Rerank')}>

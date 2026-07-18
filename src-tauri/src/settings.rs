@@ -1010,7 +1010,17 @@ pub struct KnowledgeBaseConfig {
     /// 入库分块目标 tokens（使用处 clamp 到 256..=8192；只影响新导入/重建）。
     pub chunk_tokens: u32,
     /// knowledge_search 默认返回片段数（使用处 clamp 到 1..=20；工具入参可覆盖）。
+    /// 这是最终进入上下文的片段数（contextTopK）。
     pub top_k: u32,
+    /// 每库融合候选池大小（clamp 20..=200）。召回→融合的候选数，越大召回越全、
+    /// 本地检索成本略增；不影响送 rerank 的数量。
+    pub candidate_k: u32,
+    /// 送 rerank 的候选数（clamp 5..=50）。只在 rerank 开启时生效，直接决定
+    /// rerank 网络调用的文档数。
+    pub rerank_top_k: u32,
+    /// 相关性阈值（D5，0..=1；0 = 关闭，保守默认不误杀）。rerank 开启时对齐
+    /// rerank relevance 分数；关闭时为向量-only 命中的余弦相似度下限（词法命中恒过）。
+    pub min_score: f32,
 }
 
 impl Default for KnowledgeBaseConfig {
@@ -1023,7 +1033,21 @@ impl Default for KnowledgeBaseConfig {
             rerank_model: String::new(),
             chunk_tokens: 480,
             top_k: 5,
+            candidate_k: 60,
+            rerank_top_k: 20,
+            min_score: 0.0,
         }
+    }
+}
+
+impl KnowledgeBaseConfig {
+    /// Per-library fused candidate pool size, clamped to safe bounds.
+    pub fn candidate_k_clamped(&self) -> usize {
+        (self.candidate_k as usize).clamp(20, 200)
+    }
+    /// How many top candidates to send to the reranker, clamped to safe bounds.
+    pub fn rerank_top_k_clamped(&self) -> usize {
+        (self.rerank_top_k as usize).clamp(5, 50)
     }
 }
 

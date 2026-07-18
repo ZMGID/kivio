@@ -20,6 +20,9 @@ const DEFAULT: KnowledgeBaseConfig = {
   rerankModel: '',
   chunkTokens: 480,
   topK: 5,
+  candidateK: 60,
+  rerankTopK: 20,
+  minScore: 0,
 }
 
 function SectionTitle({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {

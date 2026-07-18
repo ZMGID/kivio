@@ -75,9 +75,16 @@ async fn live_retrieval_stack_e2e() {
         }
     }
 
-    let vectors = super::embeddings::embed_batch(&state, &provider, &embed_model, &texts, 1)
-        .await
-        .unwrap();
+    let vectors = super::embeddings::embed_batch(
+        &state,
+        &provider,
+        &embed_model,
+        &texts,
+        super::embeddings::EmbeddingRole::Document,
+        1,
+    )
+    .await
+    .unwrap();
     assert_eq!(vectors.len(), texts.len(), "one vector per chunk text");
 
     let dim = vectors[0].len();
@@ -108,8 +115,15 @@ async fn live_retrieval_stack_e2e() {
     super::store::replace_doc_chunks(&conn, "doc1", dim, &chunks).unwrap();
 
     // 3) Embed the query and run hybrid search.
-    let qvec = super::embeddings::embed_batch(&state, &provider, &embed_model, &[query.clone()], 1)
-        .await
+    let qvec = super::embeddings::embed_batch(
+        &state,
+        &provider,
+        &embed_model,
+        &[query.clone()],
+        super::embeddings::EmbeddingRole::Query,
+        1,
+    )
+    .await
         .unwrap()
         .remove(0);
 
@@ -139,8 +153,8 @@ async fn live_retrieval_stack_e2e() {
     .await
     .unwrap();
     assert!(!order.is_empty(), "rerank returned an empty order");
-    eprintln!("[kb-e2e] rerank reorder (indices into hits): {order:?}");
-    let first_reranked = &hit_texts[order[0]];
+    eprintln!("[kb-e2e] rerank reorder (index, score): {order:?}");
+    let first_reranked = &hit_texts[order[0].0];
     eprintln!("[kb-e2e] top reranked passage: {first_reranked}");
     assert!(
         first_reranked.contains(TARGET_KEYWORD),

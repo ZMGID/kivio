@@ -505,8 +505,6 @@ fn call_web_fetch(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
 fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         use crate::chat::knowledge_base as kb;
-        use std::cmp::Ordering;
-        use std::collections::BTreeMap;
 
         let query = ctx
             .arguments
@@ -557,89 +555,39 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                     .to_string(),
             ));
         }
-        let libs = kb::load_libraries(ctx.app)?;
 
-        // Group by (provider, model) so each group is embedded with its own
-        // model; scores (all cosine) are merged across groups.
-        let mut groups: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-        for id in &kb_ids {
-            if let Some(l) = libs.iter().find(|l| &l.id == id) {
-                groups
-                    .entry((l.embedding_provider_id.clone(), l.embedding_model.clone()))
-                    .or_default()
-                    .push(id.clone());
-            }
-        }
-        let attempts = if ctx.settings.retry_enabled {
-            ctx.settings.retry_attempts as usize
-        } else {
-            1
-        };
-
-        // Retrieval config: hybrid weights (hybrid off ⇒ pure vector) + optional
-        // global rerank (empty ⇒ off; failure ⇒ degrade to fused order).
+        // Build the retrieval request from settings; the orchestrator owns
+        // embed → recall → fuse → rerank → threshold → context select so the
+        // Retrieval Test command runs the exact same core.
         let kbcfg = &ctx.settings.knowledge_base;
         let (w_vec, w_kw) = if kbcfg.hybrid_enabled {
             (kbcfg.weight_vector, kbcfg.weight_keyword)
         } else {
             (1.0, 0.0)
         };
-        let rerank_on =
-            !kbcfg.rerank_provider_id.trim().is_empty() && !kbcfg.rerank_model.trim().is_empty();
-        // Over-fetch when reranking so the cross-encoder has candidates to reorder.
-        let fetch_k = if rerank_on {
-            (top_k * 4).max(20)
-        } else {
-            top_k
+        let rerank = (!kbcfg.rerank_provider_id.trim().is_empty()
+            && !kbcfg.rerank_model.trim().is_empty())
+        .then(|| kb::retrieval::RerankConfig {
+            provider_id: kbcfg.rerank_provider_id.clone(),
+            model: kbcfg.rerank_model.clone(),
+        });
+        // Over-fetch the candidate pool (independently configurable, D4) so
+        // fusion/rerank see beyond the final context size.
+        let candidate_k = kbcfg.candidate_k_clamped();
+        let req = kb::retrieval::RetrievalRequest {
+            query: query.clone(),
+            kb_ids,
+            candidate_k,
+            rerank_top_k: kbcfg.rerank_top_k_clamped(),
+            context_top_k: top_k,
+            weight_vector: w_vec,
+            weight_keyword: w_kw,
+            rerank,
+            min_score: kbcfg.min_score.clamp(0.0, 1.0),
         };
 
-        let mut all_hits: Vec<kb::ScoredChunk> = Vec::new();
-        for ((provider_id, model), ids) in groups {
-            let Some(provider) = ctx.settings.get_provider(&provider_id).cloned() else {
-                continue;
-            };
-            let qvec =
-                kb::embeddings::embed_query(ctx.state, &provider, &model, &query, attempts).await?;
-            all_hits.extend(kb::search(
-                ctx.app, &ids, &qvec, &query, fetch_k, w_vec, w_kw,
-            )?);
-        }
-        all_hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
-        all_hits.retain(|h| h.score > 0.0);
-        all_hits.truncate(fetch_k);
-
-        // Optional rerank: reorder candidates by a cross-encoder; on any failure
-        // keep the fused order (never block retrieval on rerank).
-        if rerank_on && !all_hits.is_empty() {
-            if let Some(rp) = ctx
-                .settings
-                .get_provider(&kbcfg.rerank_provider_id)
-                .cloned()
-            {
-                let docs: Vec<String> = all_hits.iter().map(|h| h.chunk.text.clone()).collect();
-                match kb::rerank::rerank(
-                    ctx.state,
-                    &rp,
-                    &kbcfg.rerank_model,
-                    &query,
-                    &docs,
-                    top_k,
-                    attempts,
-                )
-                .await
-                {
-                    Ok(order) if !order.is_empty() => {
-                        all_hits = order
-                            .into_iter()
-                            .filter_map(|i| all_hits.get(i).cloned())
-                            .collect();
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("kb rerank failed, using fused order: {e}"),
-                }
-            }
-        }
-        all_hits.truncate(top_k);
+        let resp = kb::retrieval::retrieve(ctx.app, ctx.state, ctx.settings, &req).await?;
+        let all_hits = resp.hits;
 
         if all_hits.is_empty() {
             return Ok(text_tool_result(

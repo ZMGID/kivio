@@ -14,13 +14,74 @@ use crate::usage::{self, UsageRecordInput};
 /// 用量统计里嵌入调用的来源标签（索引与检索共用同一条通道）。
 const EMBED_USAGE_SOURCE: &str = "knowledge_base";
 
-/// Embed a batch of inputs in one request. Returns one vector per input, in
-/// input order.
+/// Retrieval role of an embedding request (D3). Query and document sides need
+/// asymmetric encoding on many modern models (Voyage `input_type`, Jina `task`,
+/// E5 `query:`/`passage:` prefixes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingRole {
+    Query,
+    Document,
+}
+
+/// Apply the provider/model retrieval role: prefix inputs and/or contribute
+/// extra top-level request-body fields. Unknown models return the inputs
+/// unchanged with no extra body — the symmetric legacy behavior, which is also
+/// what Gemini/OpenAI need (they 400 on unknown body fields). Pure + tested.
+///
+/// The profile is derived purely from (base_url, model); since changing a
+/// library's embedding model already forces a full reindex, the document side
+/// can never drift out of sync with what was indexed — no extra bookkeeping.
+pub fn apply_retrieval_role(
+    base_url: &str,
+    model: &str,
+    role: EmbeddingRole,
+    inputs: &[String],
+) -> (Vec<String>, serde_json::Map<String, Value>) {
+    let m = model.to_lowercase();
+    let u = base_url.to_lowercase();
+    let is_query = role == EmbeddingRole::Query;
+    let mut extra = serde_json::Map::new();
+    let mut prefix = "";
+    if m.contains("voyage") || u.contains("voyage") {
+        // Voyage: input_type=query|document.
+        extra.insert(
+            "input_type".into(),
+            Value::String(if is_query { "query" } else { "document" }.into()),
+        );
+    } else if m.contains("jina") {
+        // Jina v3+: task=retrieval.query|retrieval.passage.
+        extra.insert(
+            "task".into(),
+            Value::String(
+                if is_query {
+                    "retrieval.query"
+                } else {
+                    "retrieval.passage"
+                }
+                .into(),
+            ),
+        );
+    } else if m.contains("e5") {
+        // E5 family: instruct via query:/passage: prefixes.
+        prefix = if is_query { "query: " } else { "passage: " };
+    }
+    // Unknown (OpenAI, BGE-M3, Gemini, local, …) → symmetric, no change.
+    let mapped = if prefix.is_empty() {
+        inputs.to_vec()
+    } else {
+        inputs.iter().map(|s| format!("{prefix}{s}")).collect()
+    };
+    (mapped, extra)
+}
+
+/// Embed a batch of inputs in one request, applying the retrieval `role`.
+/// Returns one vector per input, in input order.
 pub async fn embed_batch(
     state: &AppState,
     provider: &ModelProvider,
     model: &str,
     inputs: &[String],
+    role: EmbeddingRole,
     attempts: usize,
 ) -> Result<Vec<Vec<f32>>, String> {
     if inputs.is_empty() {
@@ -39,7 +100,11 @@ pub async fn embed_batch(
         return Err(format!("Provider '{}' has no API key", provider.name));
     }
     let url = format!("{}/embeddings", provider.base_url.trim_end_matches('/'));
-    let body = serde_json::json!({ "model": model, "input": inputs });
+    let (inputs, extra) = apply_retrieval_role(&provider.base_url, model, role, inputs);
+    let mut body = serde_json::json!({ "model": model, "input": inputs });
+    if let Some(obj) = body.as_object_mut() {
+        obj.extend(extra);
+    }
 
     // 记一次用量：/embeddings 是真实计费调用，成功/失败都进「用量统计」，来源=知识库。
     let started_at = chrono::Local::now().timestamp();
@@ -149,7 +214,7 @@ pub fn parse_embeddings_response(value: &Value) -> Result<Vec<Vec<f32>>, String>
     Ok(indexed.into_iter().map(|(_, e)| e).collect())
 }
 
-/// Embed a single query string.
+/// Embed a single query string (Query role).
 pub async fn embed_query(
     state: &AppState,
     provider: &ModelProvider,
@@ -157,7 +222,15 @@ pub async fn embed_query(
     query: &str,
     attempts: usize,
 ) -> Result<Vec<f32>, String> {
-    let mut v = embed_batch(state, provider, model, &[query.to_string()], attempts).await?;
+    let mut v = embed_batch(
+        state,
+        provider,
+        model,
+        &[query.to_string()],
+        EmbeddingRole::Query,
+        attempts,
+    )
+    .await?;
     v.pop()
         .ok_or_else(|| "embeddings: empty result for query".to_string())
 }
@@ -191,5 +264,48 @@ mod tests {
     fn rejects_item_without_embedding() {
         let body = serde_json::json!({ "data": [{ "index": 0 }] });
         assert!(parse_embeddings_response(&body).is_err());
+    }
+
+    #[test]
+    fn voyage_gets_asymmetric_input_type() {
+        let inp = vec!["hello".to_string()];
+        let (q_in, q_extra) =
+            apply_retrieval_role("https://api.voyageai.com/v1", "voyage-3", EmbeddingRole::Query, &inp);
+        assert_eq!(q_in, inp); // no prefix
+        assert_eq!(q_extra.get("input_type").unwrap(), "query");
+        let (_, d_extra) = apply_retrieval_role(
+            "https://api.voyageai.com/v1",
+            "voyage-3",
+            EmbeddingRole::Document,
+            &inp,
+        );
+        assert_eq!(d_extra.get("input_type").unwrap(), "document");
+    }
+
+    #[test]
+    fn jina_uses_task_and_e5_uses_prefix() {
+        let inp = vec!["x".to_string()];
+        let (_, jina) = apply_retrieval_role("https://api.jina.ai/v1", "jina-embeddings-v3", EmbeddingRole::Query, &inp);
+        assert_eq!(jina.get("task").unwrap(), "retrieval.query");
+        let (e5_in, e5_extra) =
+            apply_retrieval_role("http://localhost:1234/v1", "multilingual-e5-large", EmbeddingRole::Document, &inp);
+        assert_eq!(e5_in, vec!["passage: x".to_string()]);
+        assert!(e5_extra.is_empty()); // prefix only, no body field
+    }
+
+    #[test]
+    fn unknown_model_stays_symmetric_and_bodyless() {
+        // OpenAI / BGE-M3 / Gemini / local: no prefix, no extra body — a request
+        // byte-identical to the pre-D3 behavior (Gemini 400s on unknown fields).
+        let inp = vec!["hello".to_string()];
+        for model in ["text-embedding-3-small", "bge-m3", "gemini-embedding-001", "nomic-embed"] {
+            let (q_in, q_extra) =
+                apply_retrieval_role("https://api.openai.com/v1", model, EmbeddingRole::Query, &inp);
+            let (d_in, d_extra) =
+                apply_retrieval_role("https://api.openai.com/v1", model, EmbeddingRole::Document, &inp);
+            assert_eq!(q_in, inp, "{model} query prefixed");
+            assert_eq!(d_in, inp, "{model} doc prefixed");
+            assert!(q_extra.is_empty() && d_extra.is_empty(), "{model} added body fields");
+        }
     }
 }

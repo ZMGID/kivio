@@ -71,6 +71,65 @@ export async function kbDeleteDocument(kbId: string, docId: string): Promise<voi
   await invoke('kb_delete_document', { kbId, docId })
 }
 
+// ===== Retrieval Test (D1) — mirrors retrieval.rs diagnostics contract =====
+
+export type RetrievalDecision = 'kept' | 'duplicate' | 'below_threshold' | 'truncated'
+
+export interface RetrievalCandidate {
+  kbId: string
+  docId: string
+  chunkId: string
+  docName: string
+  headingPath?: string
+  text: string
+  orderIndex: number
+  vectorRank?: number
+  vectorDistance?: number
+  keywordRank?: number
+  fusedScore: number
+  rerankScore?: number
+  finalRank?: number
+  decision: RetrievalDecision
+}
+
+export interface RetrievalTimings {
+  embedMs: number
+  searchMs: number
+  rerankMs: number
+  totalMs: number
+}
+
+export type RerankStatus =
+  | { state: 'off' }
+  | { state: 'ok' }
+  | { state: 'failed'; error: string }
+
+export interface RetrievalEffectiveConfig {
+  candidateK: number
+  rerankTopK: number
+  contextTopK: number
+  weightVector: number
+  weightKeyword: number
+  rerankOn: boolean
+  minScore: number
+}
+
+export interface RetrievalResponse {
+  candidates: RetrievalCandidate[]
+  timings: RetrievalTimings
+  rerankStatus: RerankStatus
+  effectiveConfig: RetrievalEffectiveConfig
+}
+
+/** Run a diagnostic retrieval through the same core as `knowledge_search`. */
+export async function kbRetrievalTest(
+  kbIds: string[],
+  query: string,
+  topK?: number
+): Promise<RetrievalResponse> {
+  return invoke<RetrievalResponse>('kb_retrieval_test', { kbIds, query, topK })
+}
+
 export async function kbUploadDocument(
   kbId: string,
   filePath: string

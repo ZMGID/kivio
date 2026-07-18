@@ -31,6 +31,7 @@ import { Input, Select } from '../settings/components'
 import { KnowledgeIcon } from '../settings/NavIcons'
 import { resolveModelInfo } from '../data/modelMatching'
 import { KnowledgeRagPanel } from '../settings/KnowledgeRagPanel'
+import { RetrievalTestPanel } from './RetrievalTestPanel'
 import {
   kbCreateLibrary,
   kbDeleteDocument,
@@ -228,7 +229,7 @@ function LibraryCard({
 
 export function KnowledgeCenter() {
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [view, setView] = useState<'libraries' | 'rag'>('libraries')
+  const [view, setView] = useState<'libraries' | 'rag' | 'test'>('libraries')
   const [libraries, setLibraries] = useState<KnowledgeLibrary[]>([])
   // null = 库列表网格；有值 = 库详情
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -581,7 +582,7 @@ export function KnowledgeCenter() {
 
           {/* Tab 行 */}
           <div className="mt-5 flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
-            {([['libraries', '知识库'], ['rag', 'RAG 设置']] as const).map(([id, label]) => (
+            {([['libraries', '知识库'], ['rag', 'RAG 设置'], ['test', '检索测试']] as const).map(([id, label]) => (
               <button
                 key={id}
                 type="button"
@@ -627,6 +628,8 @@ export function KnowledgeCenter() {
                 onToggleRag={toggleRag}
               />
             </div>
+          ) : view === 'test' ? (
+            <RetrievalTestPanel libraries={libraries} />
           ) : selected ? (
             /* ===== 库详情 ===== */
             <div key={selected.id} className="chat-motion-tab-in mt-5 space-y-5">
