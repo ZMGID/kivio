@@ -3574,7 +3574,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             />
           </div>
         ) : chatView === 'settings' ? (
-          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+          <div key="settings" className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
             <Suspense fallback={null}>
               <SettingsShell
                 ref={settingsRef}
@@ -3588,7 +3588,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             </Suspense>
           </div>
         ) : chatView === 'assistants' ? (
-          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+          <div key="assistants" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <AssistantCenter
@@ -3601,28 +3601,28 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             </Suspense>
           </div>
         ) : chatView === 'skill' ? (
-          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+          <div key="skill" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <SkillCenter onSkillsChanged={() => void loadSkills()} />
             </Suspense>
           </div>
         ) : chatView === 'mcp' ? (
-          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+          <div key="mcp" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <McpCenter />
             </Suspense>
           </div>
         ) : chatView === 'knowledge' ? (
-          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+          <div key="knowledge" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <KnowledgeCenter />
             </Suspense>
           </div>
         ) : chatView === 'plugins' ? (
-          <div className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+          <div key="plugins" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <PluginCenter onRequestAiInstall={handleRequestPluginAiInstall} />

@@ -1060,10 +1060,37 @@ body {
   animation: chat-motion-bubble-in var(--kv-dur-normal) var(--kv-ease-standard) both;
 }
 
-/* 视图/页面切换入场：比 fade-up 更明显（更大位移 + 轻缩放 + 更长时长），
-   用于整页级视图切换（会话区、设置/专家/技能/插件次级视图），对齐 LiveAgent settingsSectionIn。 */
+/* 视图/页面切换入场：三段式递进（对齐 LiveAgent hubPageIn/hubPanelIn）——
+   整页轻位移打底，中心页内部大块（头部→tab 行→内容）再依序入场，见下方级联规则。
+   注意：Chat.tsx 各视图分支的包裹 div 带 key={view}，否则 React 原地复用 DOM 节点、
+   动画只在首挂载播一次，视图间切换不重播（正是「切换没效果」的根因）。 */
 .chat-motion-view-in {
-  animation: chat-motion-view-in var(--kv-dur-slow) var(--kv-ease-standard) both;
+  animation: chat-motion-view-in 280ms var(--kv-ease-standard) both;
+}
+
+/* 中心页内部层级递进：只作用于中心页结构（assistant-center-root > main > 容器 > 大块）。
+   设置页（无 assistant-center-root）不受影响，卡片自身的 fade-up stagger 在更深层、互不干扰。 */
+.chat-motion-view-in .assistant-center-root > main > div > * {
+  animation: chat-motion-panel-in 380ms var(--kv-ease-standard) both;
+}
+
+.chat-motion-view-in .assistant-center-root > main > div > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.chat-motion-view-in .assistant-center-root > main > div > *:nth-child(n + 3) {
+  animation-delay: 110ms;
+}
+
+@keyframes chat-motion-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .chat-motion-popover {
@@ -1378,11 +1405,11 @@ body {
 @keyframes chat-motion-view-in {
   from {
     opacity: 0;
-    transform: translateY(20px) scale(0.98);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
