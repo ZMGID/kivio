@@ -9,11 +9,13 @@ import {
   LayoutGrid,
   MoreHorizontal,
   Plus,
+  Puzzle,
   Search,
   Settings as SettingsIcon,
   SquarePen,
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem } from './types'
+import { AgentIcon, KnowledgeIcon, McpIcon, SkillIcon } from '../settings/NavIcons'
 import { ConversationList } from './ConversationList'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { ProjectContextMenu } from './ProjectContextMenu'
@@ -44,12 +46,16 @@ const modLabel = isMac ? '⌘' : 'Ctrl'
 
 export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'plugins'
 
-const extensionSubItems: Array<{ id: ExtensionsNavItem; label: string }> = [
-  { id: 'assistants', label: '助手' },
-  { id: 'skill', label: 'Skill' },
-  { id: 'mcp', label: 'MCP' },
-  { id: 'knowledge', label: '知识库' },
-  { id: 'plugins', label: '插件' },
+const extensionSubItems: Array<{
+  id: ExtensionsNavItem
+  label: string
+  icon: (props: { size?: number; className?: string }) => React.JSX.Element
+}> = [
+  { id: 'assistants', label: '助手', icon: AgentIcon },
+  { id: 'skill', label: 'Skill', icon: SkillIcon },
+  { id: 'mcp', label: 'MCP', icon: McpIcon },
+  { id: 'knowledge', label: '知识库', icon: KnowledgeIcon },
+  { id: 'plugins', label: '插件', icon: (props) => <Puzzle size={props.size} className={props.className} strokeWidth={1.75} /> },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5
@@ -240,21 +246,27 @@ function ExtensionsNav({
         />
       </button>
       {expanded && (
-        <div className="relative ml-[34px] mt-0.5 border-l border-neutral-300 pl-2 dark:border-neutral-600">
+        <div className="ml-[26px] mt-0.5">
           {extensionSubItems.map((item) => {
             const active = activeItem === item.id
+            const Icon = item.icon
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`flex w-full rounded-md py-1.5 pl-3 pr-2 text-left text-[13px] transition-colors ${
+                className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-2 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900 dark:text-neutral-100'
                     : 'text-neutral-700 hover:bg-black/[0.04] hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100'
                 }`}
               >
-                {item.label}
+                <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${
+                  active ? 'text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500'
+                }`}>
+                  <Icon size={15} />
+                </span>
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
               </button>
             )
           })}
