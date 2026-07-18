@@ -13,6 +13,8 @@
 //! headers to a short preview (`Bearer sk-x…`); the request body never carries the key.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -169,6 +171,10 @@ pub fn build_debug_record(args: DebugRecordArgs<'_>) -> RequestDebugRecord {
 }
 
 /// Push a record into the ring buffer, evicting the oldest entries past capacity.
+/// Also mirrors the whole buffer to disk (newest-first JSONL) so the last
+/// [`REQUEST_DEBUG_CAPACITY`] requests survive a restart and can be inspected
+/// out-of-band. ponytail: full-buffer rewrite per call (≤50 capped records) —
+/// switch to append+rotate only if this ever shows up in a profile.
 pub fn record(state: &AppState, record: RequestDebugRecord) {
     let mut buffer = state
         .request_debug
@@ -178,6 +184,39 @@ pub fn record(state: &AppState, record: RequestDebugRecord) {
         buffer.pop_front();
     }
     buffer.push_back(record);
+    let disk_view: Vec<RequestDebugRecord> = buffer.iter().rev().cloned().collect();
+    drop(buffer);
+    persist_to_disk(state, &disk_view);
+}
+
+/// Path of the on-disk mirror: `<app_data>/request_debug/records.jsonl`.
+fn debug_log_path(state: &AppState) -> PathBuf {
+    let root = state
+        .usage_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| state.usage_dir.clone());
+    root.join("request_debug").join("records.jsonl")
+}
+
+/// Rewrite the on-disk mirror with `records` (newest-first, one JSON per line).
+/// Best-effort: a debug convenience must never break the request path, so all
+/// IO errors are swallowed.
+fn persist_to_disk(state: &AppState, records: &[RequestDebugRecord]) {
+    let path = debug_log_path(state);
+    if let Some(dir) = path.parent() {
+        if fs::create_dir_all(dir).is_err() {
+            return;
+        }
+    }
+    let mut out = String::with_capacity(records.len() * 512);
+    for record in records {
+        if let Ok(line) = serde_json::to_string(record) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    let _ = fs::write(&path, out);
 }
 
 /// Snapshot the buffer, newest first.
@@ -189,13 +228,14 @@ pub fn snapshot(state: &AppState) -> Vec<RequestDebugRecord> {
     buffer.iter().rev().cloned().collect()
 }
 
-/// Empty the buffer.
+/// Empty the buffer and remove the on-disk mirror.
 pub fn clear(state: &AppState) {
     state
         .request_debug
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    let _ = fs::remove_file(debug_log_path(state));
 }
 
 /// Return a copy of `headers` with credential values masked. Non-sensitive headers pass
@@ -322,6 +362,34 @@ mod tests {
         assert_eq!(snapshot(&state).len(), 1);
         clear(&state);
         assert!(snapshot(&state).is_empty());
+    }
+
+    #[test]
+    fn record_mirrors_to_disk_and_clear_removes_it() {
+        // Isolated usage_dir so the on-disk mirror lands in a unique place.
+        let base = std::env::temp_dir().join(format!("kivio-dbg-test-{}", Uuid::new_v4()));
+        let usage_dir = base.join("usage");
+        std::fs::create_dir_all(&usage_dir).unwrap();
+        let state = AppState::new_headless(crate::settings::Settings::default(), usage_dir);
+        let path = debug_log_path(&state);
+
+        record(&state, sample_record("a"));
+        record(&state, sample_record("b"));
+
+        let contents = std::fs::read_to_string(&path).expect("mirror file written");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "one JSON line per record");
+        // Newest-first: "b" precedes "a".
+        assert!(lines[0].contains("dbg_b"));
+        assert!(lines[1].contains("dbg_a"));
+        // Each line is a standalone parseable record.
+        let first: RequestDebugRecord = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first.id, "dbg_b");
+
+        clear(&state);
+        assert!(!path.exists(), "clear removes the mirror file");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
