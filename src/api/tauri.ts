@@ -937,9 +937,12 @@ export type Settings = {
       enabled: boolean
       provider: 'tavily' | 'exa' | 'exa_mcp' | 'ollama' | 'grok'
       tavilyApiKey: string
+      tavilyBaseUrl?: string
       exaApiKey: string
+      exaBaseUrl?: string
       exaMcpUrl?: string
       ollamaApiKey?: string
+      ollamaBaseUrl?: string
       grokApiKey?: string
       grokModel?: string
       grokBaseUrl?: string
@@ -1481,9 +1484,12 @@ function normalizeSettings(settings: Settings): Settings {
         enabled: current.lens?.webSearch?.enabled ?? false,
         provider: current.lens?.webSearch?.provider ?? 'tavily',
         tavilyApiKey: current.lens?.webSearch?.tavilyApiKey ?? '',
+        tavilyBaseUrl: current.lens?.webSearch?.tavilyBaseUrl ?? 'https://api.tavily.com',
         exaApiKey: current.lens?.webSearch?.exaApiKey ?? '',
+        exaBaseUrl: current.lens?.webSearch?.exaBaseUrl ?? 'https://api.exa.ai',
         exaMcpUrl: current.lens?.webSearch?.exaMcpUrl ?? 'https://mcp.exa.ai/mcp',
         ollamaApiKey: current.lens?.webSearch?.ollamaApiKey ?? '',
+        ollamaBaseUrl: current.lens?.webSearch?.ollamaBaseUrl ?? 'https://ollama.com',
         grokApiKey: current.lens?.webSearch?.grokApiKey ?? '',
         grokModel: current.lens?.webSearch?.grokModel ?? 'grok-4-1-fast-non-reasoning',
         grokBaseUrl: current.lens?.webSearch?.grokBaseUrl ?? 'https://api.x.ai/v1',
@@ -1779,6 +1785,8 @@ export const api = {
       'chat_skills_import',
       { path },
     ),
+  /** 卸载个人/导入技能（内置与插件技能不可删）。 */
+  chatSkillsUninstall: (id: string) => invoke<void>('chat_skills_uninstall', { id }),
   /** 技能市场：从 ClawHub 下载链 / GitHub 仓库 / 直链 zip 下载安装。 */
   chatSkillsInstallFromUrl: (url: string) =>
     invoke<{ success: boolean; skill?: SkillMeta | null; error?: string | null }>(

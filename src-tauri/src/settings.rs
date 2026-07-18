@@ -329,12 +329,18 @@ pub struct LensWebSearchConfig {
     pub provider: WebSearchProvider,
     #[serde(default)]
     pub tavily_api_key: String,
+    #[serde(default = "default_tavily_base_url")]
+    pub tavily_base_url: String,
     #[serde(default)]
     pub exa_api_key: String,
+    #[serde(default = "default_exa_base_url")]
+    pub exa_base_url: String,
     #[serde(default = "default_exa_mcp_url")]
     pub exa_mcp_url: String,
     #[serde(default)]
     pub ollama_api_key: String,
+    #[serde(default = "default_ollama_base_url")]
+    pub ollama_base_url: String,
     #[serde(default)]
     pub grok_api_key: String,
     #[serde(default = "default_grok_model")]
@@ -355,9 +361,12 @@ impl Default for LensWebSearchConfig {
             enabled: false,
             provider: WebSearchProvider::Tavily,
             tavily_api_key: String::new(),
+            tavily_base_url: default_tavily_base_url(),
             exa_api_key: String::new(),
+            exa_base_url: default_exa_base_url(),
             exa_mcp_url: default_exa_mcp_url(),
             ollama_api_key: String::new(),
+            ollama_base_url: default_ollama_base_url(),
             grok_api_key: String::new(),
             grok_model: default_grok_model(),
             grok_base_url: default_grok_base_url(),
@@ -370,6 +379,18 @@ impl Default for LensWebSearchConfig {
 
 fn default_exa_mcp_url() -> String {
     "https://mcp.exa.ai/mcp".to_string()
+}
+
+fn default_tavily_base_url() -> String {
+    "https://api.tavily.com".to_string()
+}
+
+fn default_exa_base_url() -> String {
+    "https://api.exa.ai".to_string()
+}
+
+fn default_ollama_base_url() -> String {
+    "https://ollama.com".to_string()
 }
 
 fn default_grok_model() -> String {

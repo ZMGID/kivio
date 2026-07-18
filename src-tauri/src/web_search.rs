@@ -92,6 +92,13 @@ pub fn provider_label(provider: WebSearchProvider) -> &'static str {
     }
 }
 
+/// 用户可配置的搜索 API base：去尾斜杠；留空回退到官方默认（settings 的 serde default
+/// 已给默认值，这里兜「用户手动清空输入框」的情况）。
+fn normalized_base_url<'a>(configured: &'a str, fallback: &'a str) -> &'a str {
+    let trimmed = configured.trim().trim_end_matches('/');
+    if trimmed.is_empty() { fallback } else { trimmed }
+}
+
 pub async fn search_web(
     state: &AppState,
     config: &LensWebSearchConfig,
@@ -134,11 +141,14 @@ async fn search_ollama(
         "max_results": max_results,
     });
 
+    // 自定义 base（默认 https://ollama.com）：代理/自建网关场景可改。
+    let base = normalized_base_url(&config.ollama_base_url, "https://ollama.com");
+    let url = format!("{base}/api/web_search");
     let response = send_with_retry("Ollama search", retry_attempts, || {
         with_standard_request_timeout(
             state
                 .http
-                .post("https://ollama.com/api/web_search")
+                .post(&url)
                 .bearer_auth(api_key)
                 .json(&body),
         )
@@ -343,11 +353,14 @@ async fn search_tavily(
         "include_favicon": false,
     });
 
+    // 自定义 base（默认 https://api.tavily.com）：代理/自建网关场景可改。
+    let base = normalized_base_url(&config.tavily_base_url, "https://api.tavily.com");
+    let url = format!("{base}/search");
     let response = send_with_retry("Tavily search", retry_attempts, || {
         with_standard_request_timeout(
             state
                 .http
-                .post("https://api.tavily.com/search")
+                .post(&url)
                 .bearer_auth(api_key)
                 .json(&body),
         )
@@ -420,11 +433,14 @@ async fn search_exa(
         }
     });
 
+    // 自定义 base（默认 https://api.exa.ai）：代理/自建网关场景可改。
+    let base = normalized_base_url(&config.exa_base_url, "https://api.exa.ai");
+    let url = format!("{base}/search");
     let response = send_with_retry("Exa search", retry_attempts, || {
         with_standard_request_timeout(
             state
                 .http
-                .post("https://api.exa.ai/search")
+                .post(&url)
                 .header("x-api-key", api_key)
                 .json(&body),
         )
