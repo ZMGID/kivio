@@ -12,7 +12,7 @@
   "assignee": "zhimen",
   "createdAt": "2026-07-17",
   "completedAt": null,
-  "branch": null,
+  "branch": "feat/optimize-kb-retrieval",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,

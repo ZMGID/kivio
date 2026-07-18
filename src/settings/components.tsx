@@ -277,6 +277,44 @@ export function SettingsGroup({ title, children, className = '' }: {
   )
 }
 
+/** A labelled range slider row with a value badge and min/max ticks. */
+export function SliderField({ label, value, min, max, step = 1, onChange, hint, suffix = '' }: {
+  label: ReactNode
+  value: number
+  min: number
+  max: number
+  step?: number
+  onChange: (v: number) => void
+  hint?: string
+  suffix?: string
+}) {
+  return (
+    <div className="kv-row-stack">
+      <div className="flex items-center justify-between gap-3">
+        <span className="kv-row-label">{label}</span>
+        <span className="rounded-md border border-zinc-200 bg-white px-2 py-0.5 font-mono text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+          {value}{suffix}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-2 w-full"
+        style={{ accentColor: 'var(--accent)' }}
+      />
+      <div className="flex justify-between text-[11px] text-zinc-400">
+        <span>{min}</span>
+        <span>{max}</span>
+      </div>
+      {hint && <p className="kv-row-desc mt-1.5">{hint}</p>}
+    </div>
+  )
+}
+
 /**
  * 权限状态项（macOS）
  */
