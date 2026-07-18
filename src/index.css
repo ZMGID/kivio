@@ -2663,36 +2663,7 @@ body {
   padding-right: 132px;
 }
 
-.assistant-center-toolbar {
-  max-width: 100%;
-}
-
-@container chat-window (max-width: 860px) {
-  .assistant-center-header {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-
-  .assistant-center-toolbar {
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-start;
-  }
-
-  .assistant-center-search {
-    max-width: none;
-  }
-}
-
 @container chat-window (max-width: 520px) {
-  .assistant-center-toolbar {
-    flex-wrap: wrap;
-  }
-
-  .assistant-center-search {
-    min-width: 100%;
-  }
-
   .assistant-center-tabs {
     overflow-x: auto;
   }
