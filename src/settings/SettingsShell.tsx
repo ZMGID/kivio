@@ -1,8 +1,8 @@
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react'
 import {
   X, Check, Plus, Minus, Trash2, RefreshCw,
-  ExternalLink, Download, Upload, ChevronRight, Wrench, Sparkles, FolderOpen, Eye, EyeOff, Info,
-  Brain, Image as ImageIcon, KeyRound,
+  ExternalLink, Download, Upload, Wrench, FolderOpen, Eye, EyeOff, Info,
+  Brain, Image as ImageIcon, ArrowLeft,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { homeDir, join } from '@tauri-apps/api/path'
@@ -15,17 +15,11 @@ import {
   type DefaultPromptTemplates,
   type PermissionStatus,
   type UpdateInfo,
-  type ChatMcpServer,
   type ChatToolsConfig,
   type ChatNativeToolsConfig,
   type ChatMemoryConfig,
-  type ChatToolDefinition,
-  type McpServerState,
-  type McpServerStatePayload,
   defaultNativeTools,
   normalizeProviderApiFormat,
-  type SkillMeta,
-  type SkillDetail,
   type ReplaceTranslationPackStatus,
   type RapidOcrTier,
 } from '../api/tauri'
@@ -39,7 +33,7 @@ import {
 import { i18n } from './i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  CodeIcon, AgentIcon, McpIcon, SkillIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon, KnowledgeIcon,
+  CodeIcon, AgentIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon, KnowledgeIcon,
 } from './NavIcons'
 import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, stableStringify } from './utils'
 import { PROVIDER_PRESETS, type ProviderPreset } from './providerPresets'
@@ -66,74 +60,20 @@ import {
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { KnowledgeBasePanel } from './KnowledgeBasePanel'
-import { McpMarketModal } from './McpMarketModal'
-import { SkillMarketModal } from './SkillMarketModal'
 import { WebSearchPanel } from './WebSearchPanel'
+import { defaultChatTools } from './chatToolsShared'
 
-export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'mcp' | 'skill' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 type MemoryLayerKey = 'l1' | 'l2'
 
 const MEMORY_L1_MAX_BYTES = 5_000
 const CHAT_MAX_OUTPUT_TOKEN_OPTIONS = [2048, 8192, 16384, 32768]
-const CHAT_TOOL_DEFAULT_ROUNDS = 20
-const CHAT_TOOL_MIN_ROUNDS = 1
-const CHAT_TOOL_MAX_ROUNDS = 100
-const CHAT_TOOL_ROUND_PRESETS = [5, 10, 20, 50, 100]
-const CHAT_TOOL_TIMEOUT_PRESETS_MS = [30_000, 60_000, 120_000, 300_000]
-// MCP 持久连接空闲超时预设（ms）。后端钳制范围 60s..24h，默认 10 分钟。
-const MCP_IDLE_TIMEOUT_PRESETS_MS = [60_000, 300_000, 600_000, 1_800_000, 3_600_000]
-const MCP_IDLE_TIMEOUT_MIN_MS = 60_000
-const MCP_IDLE_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1_000
-// 子 agent 并发预设。后端钳制范围 1..64，默认 12。
-const SUB_AGENT_CONCURRENCY_PRESETS = [3, 6, 12, 24, 48]
-const SUB_AGENT_CONCURRENCY_MIN = 1
-const SUB_AGENT_CONCURRENCY_MAX = 64
 const textEncoder = new TextEncoder()
 
 function utf8ByteLength(value: string): number {
   return textEncoder.encode(value).length
-}
-
-function clampToolRounds(value: string | number | null | undefined): number {
-  const parsed = Number(value ?? CHAT_TOOL_DEFAULT_ROUNDS)
-  if (!Number.isFinite(parsed)) return CHAT_TOOL_DEFAULT_ROUNDS
-  return Math.min(CHAT_TOOL_MAX_ROUNDS, Math.max(CHAT_TOOL_MIN_ROUNDS, Math.round(parsed)))
-}
-
-function clampToolTimeoutMs(value: string | number | null | undefined): number {
-  const parsed = Number(value ?? 60_000)
-  if (!Number.isFinite(parsed)) return 60_000
-  return Math.min(300_000, Math.max(1_000, Math.round(parsed)))
-}
-
-function clampMcpIdleTimeoutMs(value: string | number | null | undefined): number {
-  const parsed = Number(value ?? 600_000)
-  if (!Number.isFinite(parsed)) return 600_000
-  return Math.min(MCP_IDLE_TIMEOUT_MAX_MS, Math.max(MCP_IDLE_TIMEOUT_MIN_MS, Math.round(parsed)))
-}
-
-function clampSubAgentConcurrency(value: string | number | null | undefined): number {
-  const parsed = Number(value ?? 12)
-  if (!Number.isFinite(parsed)) return 12
-  return Math.min(SUB_AGENT_CONCURRENCY_MAX, Math.max(SUB_AGENT_CONCURRENCY_MIN, Math.round(parsed)))
-}
-
-function formatToolRoundsLabel(rounds: number, lang: string): string {
-  return lang === 'zh' ? `${rounds} 轮` : `${rounds} rounds`
-}
-
-function formatToolTimeoutLabel(ms: number, lang: string): string {
-  if (ms % 60_000 === 0) {
-    const minutes = ms / 60_000
-    return lang === 'zh' ? `${minutes} 分钟` : `${minutes} min`
-  }
-  if (ms % 1000 === 0) {
-    const seconds = ms / 1000
-    return lang === 'zh' ? `${seconds} 秒` : `${seconds} sec`
-  }
-  return `${ms} ms`
 }
 
 export interface SettingsShellProps {
@@ -318,171 +258,6 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
   return { maxOutput, source, model, provider }
 }
 
-function defaultChatTools(): ChatToolsConfig {
-  return {
-    enabled: false,
-    servers: [],
-    skillScanPaths: [],
-    skillAutoMatch: true,
-    skillFallbackMode: 'progressive',
-    disabledSkillIds: [],
-    maxToolRounds: CHAT_TOOL_DEFAULT_ROUNDS,
-    toolTimeoutMs: 60_000,
-    mcpIdleTimeoutMs: 600_000,
-    approvalPolicy: 'readonly_auto_sensitive_confirm',
-    subAgentConcurrency: 12,
-    requestDebugEnabled: false,
-    nativeTools: defaultNativeTools(),
-  }
-}
-
-function isBuiltinSkill(skill: SkillMeta): boolean {
-  return skill.source === 'builtin'
-}
-
-function skillSourceLabel(skill: SkillMeta, lang: string): string {
-  if (skill.source === 'builtin') {
-    return lang === 'zh' ? '内置' : 'Built-in'
-  }
-  if (skill.source === 'external') {
-    return lang === 'zh' ? '外部' : 'External'
-  }
-  return lang === 'zh' ? '用户' : 'User'
-}
-
-function SkillRow({
-  skill,
-  lang,
-  expanded,
-  enabled,
-  onToggleExpanded,
-  onToggleEnabled,
-  onPreview,
-}: {
-  skill: SkillMeta
-  lang: string
-  expanded: boolean
-  enabled: boolean
-  onToggleExpanded: (skillId: string) => void
-  onToggleEnabled: (skillId: string, enabled: boolean) => void
-  onPreview: (skillId: string) => void
-}) {
-  const fileCount = skill.files?.length ?? 0
-  return (
-    <div className={`chat-motion-row bg-white dark:bg-neutral-950/40 ${enabled ? '' : 'opacity-70'}`}>
-      <div className="flex h-9 items-center gap-2 px-2.5">
-        <button
-          type="button"
-          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md text-left transition-colors hover:bg-black/[0.035] dark:hover:bg-white/[0.045]"
-          onClick={() => onToggleExpanded(skill.id)}
-          aria-expanded={expanded}
-          data-tauri-drag-region="false"
-        >
-          <ChevronRight
-            size={13}
-            className={`shrink-0 text-neutral-400 transition-transform ${expanded ? 'rotate-90' : ''}`}
-            strokeWidth={2.25}
-          />
-          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-neutral-900 dark:text-neutral-100">
-            {skill.name}
-          </span>
-        </button>
-        <span
-          className={`inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium ${
-            enabled
-              ? 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-300'
-              : 'bg-neutral-200/70 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
-          }`}
-        >
-          <span className={`size-1.5 rounded-full ${enabled ? 'bg-emerald-500' : 'bg-neutral-400'}`} />
-          {enabled ? (lang === 'zh' ? '启用' : 'On') : (lang === 'zh' ? '关闭' : 'Off')}
-        </span>
-        <Toggle checked={enabled} onChange={(nextEnabled) => onToggleEnabled(skill.id, nextEnabled)} />
-      </div>
-      <div className={`chat-motion-reveal ${expanded ? 'is-open' : ''}`}>
-        <div className="px-3 pb-3 pl-8">
-          <p className="kv-panel-body">{skill.description}</p>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span className="kv-chip">{skillSourceLabel(skill, lang)}</span>
-            {fileCount > 0 && (
-              <span className="kv-chip">
-                {fileCount} {lang === 'zh' ? '个附属文件' : 'files'}
-              </span>
-            )}
-            {skill.disableModelInvocation && (
-              <span className="kv-chip">{lang === 'zh' ? '仅手动触发' : 'Manual only'}</span>
-            )}
-            {skill.recommendedTools.map((tool) => (
-              <span key={tool} className="kv-chip">{tool}</span>
-            ))}
-          </div>
-          <Button
-            size="sm"
-            className="mt-2"
-            onClick={() => onPreview(skill.id)}
-            data-tauri-drag-region="false"
-          >
-            <ExternalLink size={10} />
-            {lang === 'zh' ? '查看完整内容' : 'View details'}
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SkillListSection({
-  title,
-  emptyText,
-  skills,
-  lang,
-  expandedSkillIds,
-  disabledSkillIds,
-  onToggleExpanded,
-  onToggleEnabled,
-  onPreview,
-}: {
-  title: string
-  emptyText: string
-  skills: SkillMeta[]
-  lang: string
-  expandedSkillIds: string[]
-  disabledSkillIds: string[]
-  onToggleExpanded: (skillId: string) => void
-  onToggleEnabled: (skillId: string, enabled: boolean) => void
-  onPreview: (skillId: string) => void
-}) {
-  const enabledCount = skills.filter((skill) => !disabledSkillIds.includes(skill.id)).length
-  return (
-    <div className="w-full space-y-2 py-2">
-      <div className="flex items-center justify-between px-0.5">
-        <div className="text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">{title}</div>
-        <span className="kv-tag ok">{enabledCount} / {skills.length}</span>
-      </div>
-      {skills.length > 0 ? (
-        <div className="overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-sm [&>*+*]:border-t [&>*+*]:border-neutral-200 dark:border-neutral-800 dark:bg-neutral-950/40 dark:[&>*+*]:border-neutral-800">
-          {skills.map((skill) => (
-            <SkillRow
-              key={skill.id}
-              skill={skill}
-              lang={lang}
-              expanded={expandedSkillIds.includes(skill.id)}
-              enabled={!disabledSkillIds.includes(skill.id)}
-              onToggleExpanded={onToggleExpanded}
-              onToggleEnabled={onToggleEnabled}
-              onPreview={onPreview}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="kv-panel">
-          <div className="kv-panel-body">{emptyText}</div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 function defaultDefaultModels(chatProviderId = '', chatModel = ''): SettingsData['defaultModels'] {
   return {
     chat: { providerId: chatProviderId, model: chatModel },
@@ -545,52 +320,6 @@ function resolveDefaultModelsAfterModelRemoval(
   }
 }
 
-function newMcpServer(): ChatMcpServer {
-  return {
-    id: `mcp-${Date.now()}`,
-    name: 'New MCP Server',
-    enabled: false,
-    transport: 'stdio',
-    url: '',
-    command: '',
-    args: [],
-    env: {},
-    headers: {},
-    cwd: null,
-    enabledTools: [],
-  }
-}
-
-function envToText(env: Record<string, string>): string {
-  return Object.entries(env)
-    .map(([key, value]) => `${key}=${value}`)
-    .join('\n')
-}
-
-function textToEnv(text: string): Record<string, string> {
-  const env: Record<string, string> = {}
-  for (const line of text.split('\n')) {
-    const normalized = line.replace(/\r$/, '')
-    if (!normalized.trim()) continue
-    const separator = normalized.indexOf('=')
-    const key = (separator >= 0 ? normalized.slice(0, separator) : normalized).trim()
-    if (!key) continue
-    env[key] = separator >= 0 ? normalized.slice(separator + 1) : ''
-  }
-  return env
-}
-
-function argsToText(args: string[]): string {
-  return args.join('\n')
-}
-
-function textToArgs(text: string): string[] {
-  return text
-    .split('\n')
-    .map((arg) => arg.replace(/\r$/, ''))
-    .filter((arg) => arg !== '')
-}
-
 /**
  * 设置面板主组件（standalone / embedded 双宿主）
  */
@@ -627,23 +356,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [drawerModel, setDrawerModel] = useState<{ providerId: string; model: string } | null>(null)
   const [providerTestFeedback, setProviderTestFeedback] = useState<Record<string, { ok: boolean; message: string }>>({})
   const [selectedProviderId, setSelectedProviderId] = useState('')
-  const [testingMcpServerId, setTestingMcpServerId] = useState<string | null>(null)
-  const [mcpTestFeedback, setMcpTestFeedback] = useState<Record<string, { ok: boolean; message: string; tools: ChatToolDefinition[] }>>({})
-  // 持久连接状态：serverId → 最近一次 mcp-server-state 事件的状态。
-  const [mcpServerStates, setMcpServerStates] = useState<Record<string, McpServerState>>({})
-  const [reloadingMcpServerId, setReloadingMcpServerId] = useState<string | null>(null)
-  // OAuth 授权中的服务器 id；以及 serverId → 是否检测到需要 OAuth 授权（401 + WWW-Authenticate）。
-  const [oauthMcpServerId, setOauthMcpServerId] = useState<string | null>(null)
-  const [mcpNeedsAuth, setMcpNeedsAuth] = useState<Record<string, boolean>>({})
-  const [mcpMarketOpen, setMcpMarketOpen] = useState(false)
-  const [skillMarketOpen, setSkillMarketOpen] = useState(false)
-  const [expandedMcpStderrIds, setExpandedMcpStderrIds] = useState<string[]>([])
-  const [mcpStderrTails, setMcpStderrTails] = useState<Record<string, string>>({})
-  const [skillsLoading, setSkillsLoading] = useState(false)
-  const [skills, setSkills] = useState<SkillMeta[]>([])
-  const [expandedSkillIds, setExpandedSkillIds] = useState<string[]>([])
-  const [selectedSkillPreview, setSelectedSkillPreview] = useState<SkillDetail | null>(null)
-  const [skillError, setSkillError] = useState('')
   const [memoryDrafts, setMemoryDrafts] = useState<Record<MemoryLayerKey, string>>({ l1: '', l2: '' })
   const [memorySnapshots, setMemorySnapshots] = useState<Record<MemoryLayerKey, string>>({ l1: '', l2: '' })
   const [memoryDir, setMemoryDir] = useState('')
@@ -1416,159 +1128,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [])
 
-  const updateMcpServer = useCallback((serverId: string, updates: Partial<ChatMcpServer>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      const chatTools = prev.chatTools || defaultChatTools()
-      return {
-        ...prev,
-        chatTools: {
-          ...chatTools,
-          servers: chatTools.servers.map((server) =>
-            server.id === serverId ? { ...server, ...updates } : server,
-          ),
-        },
-      }
-    })
-  }, [])
-
-  const refreshChatSkills = useCallback(async () => {
-    setSkillsLoading(true)
-    setSkillError('')
-    try {
-      const result = await api.chatSkillsList(settings?.chatTools?.skillScanPaths)
-      if (result.success) {
-        setSkills(result.skills)
-        if (result.error) {
-          setSkillError(result.error)
-        }
-      } else {
-        setSkillError(result.error || (lang === 'zh' ? 'Skill 列表加载失败' : 'Failed to load skills'))
-      }
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSkillsLoading(false)
-    }
-  }, [lang, settings?.chatTools?.skillScanPaths])
-
-  const handleTestMcpServer = useCallback(async (server: ChatMcpServer) => {
-    setTestingMcpServerId(server.id)
-    setMcpTestFeedback((prev) => {
-      const next = { ...prev }
-      delete next[server.id]
-      return next
-    })
-    try {
-      const result = await api.chatMcpTestServer(server, settings?.chatTools?.toolTimeoutMs)
-      if (result.success) {
-        setMcpTestFeedback((prev) => ({
-          ...prev,
-          [server.id]: {
-            ok: true,
-            message: lang === 'zh' ? `连接成功，发现 ${result.tools.length} 个工具。` : `Connected. ${result.tools.length} tools found.`,
-            tools: result.tools,
-          },
-        }))
-        setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: false }))
-      } else {
-        const message = result.error || (lang === 'zh' ? '连接失败' : 'Connection failed')
-        if (message.includes('OAUTH_REQUIRED')) setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: true }))
-        setMcpTestFeedback((prev) => ({
-          ...prev,
-          [server.id]: {
-            ok: false,
-            message,
-            tools: [],
-          },
-        }))
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (message.includes('OAUTH_REQUIRED')) setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: true }))
-      setMcpTestFeedback((prev) => ({
-        ...prev,
-        [server.id]: {
-          ok: false,
-          message,
-          tools: [],
-        },
-      }))
-    } finally {
-      setTestingMcpServerId(null)
-    }
-  }, [lang, settings?.chatTools?.toolTimeoutMs])
-
-  const handleReloadMcpServer = useCallback(async (server: ChatMcpServer) => {
-    setReloadingMcpServerId(server.id)
-    try {
-      await api.chatMcpReloadServer(server.id)
-      // 重连后立即拉一次状态快照（Disconnected → 下次调用透明重连）。
-      const status = await api.chatMcpServerStatus(server.id)
-      setMcpServerStates((prev) => ({ ...prev, [server.id]: status.state }))
-      setMcpStderrTails((prev) => ({ ...prev, [server.id]: status.stderrTail }))
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('OAUTH_REQUIRED')) setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: true }))
-      setSaveError(msg)
-    } finally {
-      setReloadingMcpServerId(null)
-    }
-  }, [])
-
-  // OAuth 授权 remote (streamable_http) MCP：复用连接器的 connector_oauth_connect（浏览器 PKCE+DCR），
-  // 只把返回 server 的 auth + Authorization header 拼回现有条目（保留其 id/name/其它 header），
-  // 不引入 connector-* 新条目。授权后顺手测一次填工具数。
-  const handleOauthAuthorizeMcpServer = useCallback(async (server: ChatMcpServer) => {
-    const url = (server.url || '').trim()
-    if (!url) return
-    setOauthMcpServerId(server.id)
-    setMcpTestFeedback((prev) => {
-      const next = { ...prev }
-      delete next[server.id]
-      return next
-    })
-    try {
-      const authed = await api.connectorOauthConnect({ url, name: server.name })
-      const authorization = authed.headers?.Authorization
-      const nextHeaders = authorization
-        ? { ...(server.headers || {}), Authorization: authorization }
-        : (server.headers || {})
-      updateMcpServer(server.id, { auth: authed.auth, headers: nextHeaders })
-      setMcpNeedsAuth((prev) => ({ ...prev, [server.id]: false }))
-      // 用带 token 的最新条目测试连接（直接传对象，不依赖尚未保存的 settings）。
-      await handleTestMcpServer({ ...server, auth: authed.auth, headers: nextHeaders })
-    } catch (err) {
-      setMcpTestFeedback((prev) => ({
-        ...prev,
-        [server.id]: {
-          ok: false,
-          message: err instanceof Error ? err.message : String(err),
-          tools: [],
-        },
-      }))
-    } finally {
-      setOauthMcpServerId(null)
-    }
-  }, [handleTestMcpServer, updateMcpServer])
-
-  // 订阅持久连接状态事件（连接/断开/错误），实时更新状态点。
-  useEffect(() => {
-    let cancelled = false
-    let unlisten: (() => void) | null = null
-    void api.onMcpServerState((payload: McpServerStatePayload) => {
-      if (cancelled) return
-      setMcpServerStates((prev) => ({ ...prev, [payload.serverId]: payload.state }))
-    }).then((fn) => {
-      if (cancelled) fn()
-      else unlisten = fn
-    })
-    return () => {
-      cancelled = true
-      unlisten?.()
-    }
-  }, [])
-
   // 保存后若有热键被系统/其他应用占用未注册，后端推 hotkey-warning——提示但不视为保存失败。
   useEffect(() => {
     let cancelled = false
@@ -1586,147 +1145,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       unlisten?.()
     }
   }, [lang])
-
-  // 进入 MCP 标签页时拉一次各 server 的状态快照（含 stderr 尾巴）。
-  useEffect(() => {
-    if (activeTab !== 'mcp' || !settings) return
-    let cancelled = false
-    const servers = settings.chatTools?.servers || []
-    void Promise.all(
-      servers.map(async (server) => {
-        try {
-          const status = await api.chatMcpServerStatus(server.id)
-          return { id: server.id, status }
-        } catch {
-          return null
-        }
-      }),
-    ).then((results) => {
-      if (cancelled) return
-      const states: Record<string, McpServerState> = {}
-      const tails: Record<string, string> = {}
-      for (const entry of results) {
-        if (!entry) continue
-        states[entry.id] = entry.status.state
-        tails[entry.id] = entry.status.stderrTail
-      }
-      setMcpServerStates((prev) => ({ ...prev, ...states }))
-      setMcpStderrTails((prev) => ({ ...prev, ...tails }))
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [activeTab, settings])
-
-  const handleImportMcpJson = useCallback(async () => {
-    if (!settings) return
-    try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        filters: [{ name: 'MCP JSON', extensions: ['json'] }],
-      })
-      if (typeof selected !== 'string') return
-      const result = await api.chatMcpImportJson(selected)
-      if (!result.success) {
-        setSaveError(result.error || (lang === 'zh' ? '导入 mcp.json 失败' : 'Failed to import mcp.json'))
-        return
-      }
-      const chatTools = settings.chatTools || defaultChatTools()
-      updateChatTools({ servers: [...chatTools.servers, ...result.servers] })
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err))
-    }
-  }, [lang, settings, updateChatTools])
-
-  const handleImportSkill = useCallback(async () => {
-    try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-      })
-      if (typeof selected !== 'string') return
-      const result = await api.chatSkillsImport(selected)
-      if (!result.success) {
-        setSkillError(result.error || (lang === 'zh' ? '导入 Skill 失败' : 'Failed to import skill'))
-        return
-      }
-      await refreshChatSkills()
-      onSettingsChange()
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    }
-  }, [lang, onSettingsChange, refreshChatSkills])
-
-  const handleImportSkillZip = useCallback(async () => {
-    try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        filters: [{ name: 'Skill Zip', extensions: ['zip'] }],
-      })
-      if (typeof selected !== 'string') return
-      const result = await api.chatSkillsImport(selected)
-      if (!result.success) {
-        setSkillError(result.error || (lang === 'zh' ? '导入 Skill 失败' : 'Failed to import skill'))
-        return
-      }
-      await refreshChatSkills()
-      onSettingsChange()
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    }
-  }, [lang, onSettingsChange, refreshChatSkills])
-
-  const handleOpenSkillFolder = useCallback(async () => {
-    setSkillError('')
-    try {
-      const result = await api.chatSkillsOpenFolder()
-      if (!result.success) {
-        setSkillError(result.error || (lang === 'zh' ? '打开 Skill 文件夹失败' : 'Failed to open skill folder'))
-      }
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    }
-  }, [lang])
-
-  const handlePreviewSkill = useCallback(async (skillId: string) => {
-    setSkillError('')
-    try {
-      const result = await api.chatSkillsRead(skillId)
-      if (result.success && result.skill) {
-        setSelectedSkillPreview(result.skill)
-      } else {
-        setSkillError(result.error || (lang === 'zh' ? '读取 Skill 失败' : 'Failed to read skill'))
-      }
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    }
-  }, [lang])
-
-  const handleToggleSkillExpanded = useCallback((skillId: string) => {
-    setExpandedSkillIds((current) => (
-      current.includes(skillId)
-        ? current.filter((id) => id !== skillId)
-        : [...current, skillId]
-    ))
-  }, [])
-
-  const handleToggleSkillEnabled = useCallback((skillId: string, enabled: boolean) => {
-    const disabled = chatTools.disabledSkillIds ?? []
-    const next = enabled
-      ? disabled.filter((id) => id !== skillId)
-      : disabled.includes(skillId)
-        ? disabled
-        : [...disabled, skillId]
-    updateChatTools({ disabledSkillIds: next })
-  }, [chatTools.disabledSkillIds, updateChatTools])
-
-  useEffect(() => {
-    if (activeTab === 'skill') {
-      void refreshChatSkills()
-    }
-  }, [activeTab, refreshChatSkills])
 
   /**
    * 更新指定提供商配置
@@ -2300,10 +1718,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'mixer' as const, label: t.tabMixer, icon: MixerIcon },
     { id: 'kivioCode' as const, label: 'Kivio Code', icon: CodeIcon },
     { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: AgentIcon },
-    { id: 'mcp' as const, label: 'MCP', icon: McpIcon },
     { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
     { id: 'knowledge' as const, label: lang === 'zh' ? '知识库' : 'Knowledge', icon: KnowledgeIcon },
-    { id: 'skill' as const, label: 'Skill', icon: SkillIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '用量统计' : 'Usage', icon: UsageIcon },
     { id: 'providers' as const, label: t.tabModels, icon: ProvidersIcon },
@@ -2355,19 +1771,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         ? '检测并启用外部 CLI 编码代理。'
         : 'Detect and enable external CLI coding agents.',
     },
-    mcp: {
-      title: 'MCP',
-      subtitle: lang === 'zh' ? '管理 MCP 服务器与工具审批策略。' : 'Manage MCP servers and tool approval policy.',
-    },
     connectors: {
       title: t.tabConnectors,
       subtitle: lang === 'zh'
         ? '连接外部数据源；凭据存本机。'
         : 'Connect external data sources; credentials stay local.',
-    },
-    skill: {
-      title: 'Skill',
-      subtitle: lang === 'zh' ? '管理内置与用户 Skill。' : 'Manage built-in and user Skills.',
     },
     knowledge: {
       title: lang === 'zh' ? '知识库' : 'Knowledge',
@@ -2400,10 +1808,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const chatProvider = settings.providers.find((provider) => provider.id === settings.chatProviderId)
     ?? settings.providers.find((provider) => provider.id === settings.lens?.providerId)
     ?? settings.providers.find((provider) => provider.id === settings.translatorProviderId)
-  const disabledSkillIds = chatTools.disabledSkillIds ?? []
-  const builtinSkills = skills.filter(isBuiltinSkill)
-  const userSkills = skills.filter((skill) => !isBuiltinSkill(skill))
-  const enabledSkillCount = skills.filter((skill) => !disabledSkillIds.includes(skill.id)).length
 
   const categoryNav =
     variant === 'embedded' ? (
@@ -2484,14 +1888,17 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             className={`kv-page-header ${variant === 'embedded' ? 'settings-embedded-header' : ''}`}
             onMouseDown={handleSettingsDragMouseDown}
           >
-            <div>
+            <div key={activeTab} className="settings-section-title-enter">
               <div className="kv-page-title">{pageMeta[activeTab].title}</div>
               <div className="kv-page-sub">{pageMeta[activeTab].subtitle}</div>
             </div>
             <div className="kv-page-header-right">{pageMeta[activeTab].right}</div>
           </header>
 
-          <div className={`kv-scroll ${variant === 'embedded' ? 'settings-embedded-scroll' : ''}`}>
+          <div
+            key={activeTab}
+            className={`kv-scroll settings-section-enter ${variant === 'embedded' ? 'settings-embedded-scroll' : ''}`}
+          >
             {/* ===== 基础设置标签页 ===== */}
             {activeTab === 'general' && (
               <>
@@ -3156,22 +2563,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   <div className="flex flex-wrap gap-2 pb-2">
                     <Button
                       size="sm"
-                      onClick={() => setActiveTab('mcp')}
-                      data-tauri-drag-region="false"
-                    >
-                      <McpIcon size={11} />
-                      {t.chatOpenMcp}
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => setActiveTab('skill')}
-                      data-tauri-drag-region="false"
-                    >
-                      <SkillIcon size={11} />
-                      {t.chatOpenSkill}
-                    </Button>
-                    <Button
-                      size="sm"
                       onClick={() => setActiveTab('memory')}
                       data-tauri-drag-region="false"
                     >
@@ -3483,657 +2874,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 lang={lang}
                 chatConfig={chatConfig}
                 onChatChange={updateChat}
-                onNavigateTab={setActiveTab}
               />
-            )}
-
-            {/* ===== MCP 标签页 ===== */}
-            {activeTab === 'mcp' && (
-              <>                <SettingsGroup title={lang === 'zh' ? 'Kivio Desktop 内置工具' : 'Kivio Desktop built-in tools'}>
-                  <p className="kv-row-desc mb-2">
-                    {lang === 'zh'
-                      ? '首次使用文件/命令工具时会请求一次授权；授权后本会话内可读写任意路径并执行命令。'
-                      : 'First file/command use asks for consent; then read/write anywhere and run shell commands for that conversation.'}
-                  </p>
-                  <SettingRow label={lang === 'zh' ? '读取文件' : 'Read file'}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.readFile === true}
-                      onChange={(readFile) => updateNativeTools({ readFile })}
-                    />
-                  </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '写入文件' : 'Write file'}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.writeFile === true}
-                      onChange={(writeFile) => updateNativeTools({ writeFile })}
-                    />
-                  </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '编辑文件' : 'Edit file'}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.editFile === true}
-                      onChange={(editFile) => updateNativeTools({ editFile })}
-                    />
-                  </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '终端命令' : 'Terminal command'}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.runCommand === true}
-                      onChange={(runCommand) => updateNativeTools({ runCommand })}
-                    />
-                  </SettingRow>
-                  <SettingRow label={lang === 'zh' ? 'Python (Pyodide)' : 'Python (Pyodide)'}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.runPython === true}
-                      onChange={(runPython) => updateNativeTools({ runPython })}
-                    />
-                  </SettingRow>
-                  <SettingRow label={lang === 'zh' ? 'Skill 运行时' : 'Skill runtime'}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.skillRuntime !== false}
-                      onChange={(skillRuntime) => updateNativeTools({ skillRuntime })}
-                    />
-                  </SettingRow>
-                  <SettingRow label={t.webSearchChatToggle} description={t.webSearchChatHint}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.webSearch === true}
-                      onChange={(webSearch) => updateNativeTools({ webSearch })}
-                    />
-                  </SettingRow>
-                  {/* 搜索 API（服务商 / Key / 结果数 / 深度）统一在「网络搜索」标签页配置，
-                      此处只保留启用开关，避免两处重复编辑同一份 settings.lens.webSearch。 */}
-                  <p className="kv-row-desc px-1 pb-1">
-                    {lang === 'zh'
-                      ? '搜索 API（服务商 / Key / 结果数 / 深度）在「网络搜索」设置里配置。'
-                      : 'Configure the search API (provider / key / results / depth) in Web Search settings.'}
-                  </p>
-                  <SettingRow label={lang === 'zh' ? '网页抓取' : 'Web fetch'}>
-                    <Toggle
-                      checked={chatTools.nativeTools?.webFetch === true}
-                      onChange={(webFetch) => updateNativeTools({ webFetch })}
-                    />
-                  </SettingRow>
-                </SettingsGroup>
-
-                <SettingsGroup title={lang === 'zh' ? '工具运行' : 'Tool Runtime'}>
-                  {/* 主开关：MCP 启用与否，单独成行并垂直居中 */}
-                  <div className="flex items-center justify-between gap-4 py-3">
-                    <div className="min-w-0">
-                      <div className="kv-row-label">{lang === 'zh' ? '启用 MCP' : 'Enable MCP'}</div>
-                    </div>
-                    <Toggle
-                      checked={chatTools.enabled}
-                      onChange={(enabled) => updateChatTools({ enabled })}
-                    />
-                  </div>
-
-                  {/* 审批与运行参数：统一栅格，每格 label→描述→控件，控件用 mt-auto 底部对齐 */}
-                  <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] items-stretch gap-x-4 gap-y-5 border-t border-[var(--divider)] py-3">
-                    {/* 审批策略 */}
-                    <div className="flex h-full flex-col">
-                      <div className="mb-2">
-                        <div className="kv-row-label">{lang === 'zh' ? '审批策略' : 'Approval policy'}</div>
-                      </div>
-                      <div className="mt-auto">
-                        <Select
-                          className="w-full"
-                          value={chatTools.approvalPolicy || 'auto'}
-                          onChange={(approvalPolicy) => updateChatTools({ approvalPolicy })}
-                          options={[
-                            {
-                              value: 'readonly_auto_sensitive_confirm',
-                              label: lang === 'zh' ? '会话授权一次（推荐）' : 'Session consent (once)',
-                            },
-                            { value: 'always_confirm', label: lang === 'zh' ? '授权后仍逐次确认' : 'Confirm every call' },
-                            { value: 'auto', label: lang === 'zh' ? '全部自动（不弹授权）' : 'Auto (no prompt)' },
-                          ]}
-                        />
-                      </div>
-                    </div>
-
-                    {/* 最大工具轮次 */}
-                    <div className="flex h-full flex-col">
-                      <div className="mb-2">
-                        <div className="kv-row-label">{lang === 'zh' ? '最大工具轮次' : 'Max tool rounds'}</div>
-                      </div>
-                      <div className="mt-auto">
-                        <Select
-                          className="w-full"
-                          value={chatTools.maxToolRounds === null ? 'unlimited' : String(clampToolRounds(chatTools.maxToolRounds))}
-                          onChange={(value) => updateChatTools({
-                            maxToolRounds: value === 'unlimited' ? null : clampToolRounds(value),
-                          })}
-                          options={[
-                            ...(chatTools.maxToolRounds !== null && !CHAT_TOOL_ROUND_PRESETS.includes(clampToolRounds(chatTools.maxToolRounds))
-                              ? [{
-                                  value: String(clampToolRounds(chatTools.maxToolRounds)),
-                                  label: lang === 'zh'
-                                    ? `当前 ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`
-                                    : `Current ${formatToolRoundsLabel(clampToolRounds(chatTools.maxToolRounds), lang)}`,
-                                }]
-                              : []),
-                            ...CHAT_TOOL_ROUND_PRESETS.map((rounds) => ({
-                              value: String(rounds),
-                              label: formatToolRoundsLabel(rounds, lang),
-                            })),
-                            { value: 'unlimited', label: lang === 'zh' ? '无限制' : 'Unlimited' },
-                          ]}
-                        />
-                      </div>
-                    </div>
-
-                    {/* 子 agent 并发 */}
-                    <div className="flex h-full flex-col">
-                      <div className="mb-2">
-                        <div className="kv-row-label">{lang === 'zh' ? 'Subagent 并发' : 'Subagent concurrency'}</div>
-                      </div>
-                      <div className="mt-auto">
-                        <Select
-                          className="w-full"
-                          value={String(clampSubAgentConcurrency(chatTools.subAgentConcurrency))}
-                          onChange={(value) => updateChatTools({ subAgentConcurrency: clampSubAgentConcurrency(value) })}
-                          options={[
-                            ...(!SUB_AGENT_CONCURRENCY_PRESETS.includes(clampSubAgentConcurrency(chatTools.subAgentConcurrency))
-                              ? [{
-                                  value: String(clampSubAgentConcurrency(chatTools.subAgentConcurrency)),
-                                  label: lang === 'zh'
-                                    ? `当前 ${clampSubAgentConcurrency(chatTools.subAgentConcurrency)}`
-                                    : `Current ${clampSubAgentConcurrency(chatTools.subAgentConcurrency)}`,
-                                }]
-                              : []),
-                            ...SUB_AGENT_CONCURRENCY_PRESETS.map((n) => ({ value: String(n), label: String(n) })),
-                          ]}
-                        />
-                      </div>
-                    </div>
-
-                    {/* 工具超时 */}
-                    <div className="flex h-full flex-col">
-                      <div className="mb-2">
-                        <div className="kv-row-label">{lang === 'zh' ? '工具超时' : 'Tool timeout'}</div>
-                        <p className="kv-row-desc">
-                          {lang === 'zh'
-                            ? '单次工具最长等待时间'
-                            : 'Max wait per tool call'}
-                        </p>
-                      </div>
-                      <div className="mt-auto">
-                        <Select
-                          className="w-full"
-                          value={String(clampToolTimeoutMs(chatTools.toolTimeoutMs))}
-                          onChange={(value) => updateChatTools({ toolTimeoutMs: clampToolTimeoutMs(value) })}
-                          options={[
-                            ...(!CHAT_TOOL_TIMEOUT_PRESETS_MS.includes(clampToolTimeoutMs(chatTools.toolTimeoutMs))
-                              ? [{
-                                  value: String(clampToolTimeoutMs(chatTools.toolTimeoutMs)),
-                                  label: lang === 'zh'
-                                    ? `当前 ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`
-                                    : `Current ${formatToolTimeoutLabel(clampToolTimeoutMs(chatTools.toolTimeoutMs), lang)}`,
-                                }]
-                              : []),
-                            ...CHAT_TOOL_TIMEOUT_PRESETS_MS.map((ms) => ({
-                              value: String(ms),
-                              label: formatToolTimeoutLabel(ms, lang),
-                            })),
-                          ]}
-                        />
-                      </div>
-                    </div>
-
-                    {/* MCP 空闲超时 */}
-                    <div className="flex h-full flex-col">
-                      <div className="mb-2">
-                        <div className="kv-row-label">{lang === 'zh' ? 'MCP 空闲超时' : 'MCP idle timeout'}</div>
-                        <p className="kv-row-desc">
-                          {lang === 'zh'
-                            ? '空闲 MCP 连接回收时间'
-                            : 'Idle MCP connection recycle time'}
-                        </p>
-                      </div>
-                      <div className="mt-auto">
-                        <Select
-                          className="w-full"
-                          value={String(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs))}
-                          onChange={(value) => updateChatTools({ mcpIdleTimeoutMs: clampMcpIdleTimeoutMs(value) })}
-                          options={[
-                            ...(!MCP_IDLE_TIMEOUT_PRESETS_MS.includes(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs))
-                              ? [{
-                                  value: String(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs)),
-                                  label: lang === 'zh'
-                                    ? `当前 ${formatToolTimeoutLabel(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs), lang)}`
-                                    : `Current ${formatToolTimeoutLabel(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs), lang)}`,
-                                }]
-                              : []),
-                            ...MCP_IDLE_TIMEOUT_PRESETS_MS.map((ms) => ({
-                              value: String(ms),
-                              label: formatToolTimeoutLabel(ms, lang),
-                            })),
-                          ]}
-                        />
-                      </div>
-                    </div>
-
-                    {/* 结果截断字符 */}
-                    <div className="flex h-full flex-col">
-                      <div className="mb-2">
-                        <div className="kv-row-label">{lang === 'zh' ? '结果截断字符' : 'Output chars'}</div>
-                      </div>
-                      <div className="mt-auto">
-                        <div className="flex h-[30px] items-center rounded-md border border-[var(--border)] bg-[var(--bg-input-subtle)] px-2.5 text-[12.5px] text-[var(--text-muted)]">
-                          {lang === 'zh' ? '无限制输出' : 'Unlimited output'}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </SettingsGroup>
-
-                <SettingsGroup title={lang === 'zh' ? 'MCP 服务器' : 'MCP Servers'}>
-                  <div className="flex flex-wrap gap-2 py-2">
-                    <Button
-                      size="sm"
-                      onClick={() => updateChatTools({ servers: [...chatTools.servers, newMcpServer()] })}
-                      data-tauri-drag-region="false"
-                    >
-                      <Plus size={11} />
-                      {lang === 'zh' ? '添加服务器' : 'Add server'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => setMcpMarketOpen(true)}
-                      data-tauri-drag-region="false"
-                    >
-                      <Plus size={11} />
-                      {lang === 'zh' ? '从市场安装' : 'From market'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => void handleImportMcpJson()}
-                      data-tauri-drag-region="false"
-                    >
-                      <FolderOpen size={11} />
-                      {lang === 'zh' ? '导入 mcp.json' : 'Import mcp.json'}
-                    </Button>
-                  </div>
-
-                  {mcpMarketOpen && (
-                    <McpMarketModal
-                      lang={lang}
-                      existingServers={chatTools.servers}
-                      onInstall={(server) =>
-                        updateChatTools({ servers: [...chatTools.servers, server] })
-                      }
-                      onClose={() => setMcpMarketOpen(false)}
-                    />
-                  )}
-
-                  {(() => {
-                    const userMcpServers = chatTools.servers.filter((s) => !s.connectorId)
-                    const pluginMcpServers = chatTools.servers.filter((s) =>
-                      (s.connectorId ?? '').startsWith('plugin:'),
-                    )
-                    return (
-                      <>
-                  {userMcpServers.length === 0 && (
-                    <div className="kv-panel">
-                      <div className="kv-panel-title">{lang === 'zh' ? '暂无手动添加的 MCP 服务器' : 'No manual MCP servers'}</div>
-                      <div className="kv-panel-body">
-                        {lang === 'zh'
-                          ? '可在此添加/导入服务器。插件注册的 MCP 见下方「插件 MCP」。'
-                          : 'Add or import servers here. Plugin-managed MCP servers are listed below.'}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-3 py-2">
-                    {userMcpServers.map((server) => {
-                      const feedback = mcpTestFeedback[server.id]
-                      const knownTools = [
-                        ...(feedback?.tools ?? []),
-                        ...server.enabledTools
-                          .filter((toolName) => !(feedback?.tools ?? []).some((tool) => tool.name === toolName))
-                          .map((toolName) => ({
-                            id: `${server.id}-${toolName}`,
-                            name: toolName,
-                            description: lang === 'zh' ? '已保存的工具限制；重新测试连接可刷新描述。' : 'Saved tool limit; test the server to refresh description.',
-                            source: 'mcp',
-                            serverId: server.id,
-                            serverName: server.name,
-                            inputSchema: {},
-                            sensitive: false,
-                          } satisfies ChatToolDefinition)),
-                      ]
-                      const isHttpTransport = server.transport === 'streamable_http'
-                      const liveState = mcpServerStates[server.id]
-                      const stateKind = liveState?.kind
-                      const stateDotClass =
-                        stateKind === 'connected'
-                          ? 'on'
-                          : stateKind === 'connecting'
-                            ? 'warn'
-                            : stateKind === 'error'
-                              ? 'err'
-                              : 'off'
-                      const stateLabel =
-                        stateKind === 'connected'
-                          ? (lang === 'zh' ? '已连接' : 'Connected')
-                          : stateKind === 'connecting'
-                            ? (lang === 'zh' ? '连接中' : 'Connecting')
-                            : stateKind === 'error'
-                              ? (lang === 'zh' ? '错误' : 'Error')
-                              : (lang === 'zh' ? '未连接' : 'Disconnected')
-                      const stateError = liveState?.kind === 'error' ? liveState.message : ''
-                      const stderrTail = mcpStderrTails[server.id] || ''
-                      const stderrExpanded = expandedMcpStderrIds.includes(server.id)
-                      return (
-                        <div key={server.id} className="kv-panel">
-                          <div className="mb-2 flex items-center gap-2">
-                            <span className={`kv-provider-dot ${server.enabled ? 'on' : 'warn'}`} />
-                            <Input
-                              value={server.name}
-                              onChange={(name) => updateMcpServer(server.id, { name })}
-                              placeholder="Server name"
-                            />
-                            <Toggle
-                              checked={server.enabled}
-                              onChange={(enabled) => updateMcpServer(server.id, { enabled })}
-                            />
-                            <IconButton
-                              variant="danger"
-                              size="xs"
-                              onClick={() => updateChatTools({
-                                servers: chatTools.servers.filter((item) => item.id !== server.id),
-                              })}
-                              title={lang === 'zh' ? '删除服务器' : 'Delete server'}
-                              label={lang === 'zh' ? '删除服务器' : 'Delete server'}
-                              data-tauri-drag-region="false"
-                            >
-                              <Trash2 size={12} />
-                            </IconButton>
-                          </div>
-                          <FieldBlock label={lang === 'zh' ? '传输' : 'Transport'}>
-                            <Select
-                              value={isHttpTransport ? 'streamable_http' : 'stdio'}
-                              onChange={(transport) => updateMcpServer(server.id, { transport })}
-                              options={[
-                                { value: 'stdio', label: 'stdio' },
-                                { value: 'streamable_http', label: 'Streamable HTTP' },
-                              ]}
-                            />
-                          </FieldBlock>
-                          {isHttpTransport ? (
-                            <>
-                              <FieldBlock label={lang === 'zh' ? 'Endpoint URL' : 'Endpoint URL'}>
-                                <Input
-                                  mono
-                                  value={server.url || ''}
-                                  onChange={(url) => updateMcpServer(server.id, { url })}
-                                  placeholder="https://example.com/mcp"
-                                />
-                              </FieldBlock>
-                              <FieldBlock
-                                label="Headers"
-                                description={lang === 'zh' ? '明文保存在 settings.json' : 'Stored in plain text in settings.json'}
-                              >
-                                <TextArea
-                                  mono
-                                  rows={2}
-                                  value={envToText(server.headers || {})}
-                                  onChange={(value) => updateMcpServer(server.id, { headers: textToEnv(value) })}
-                                  placeholder="Authorization=Bearer ..."
-                                />
-                              </FieldBlock>
-                            </>
-                          ) : (
-                            <>
-                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                <FieldBlock label={lang === 'zh' ? '命令' : 'Command'}>
-                                  <Input
-                                    mono
-                                    value={server.command}
-                                    onChange={(command) => updateMcpServer(server.id, { command })}
-                                    placeholder="npx"
-                                  />
-                                </FieldBlock>
-                                <FieldBlock label={lang === 'zh' ? '参数' : 'Arguments'}>
-                                  <TextArea
-                                    mono
-                                    rows={2}
-                                    value={argsToText(server.args)}
-                                    onChange={(value) => updateMcpServer(server.id, {
-                                      args: textToArgs(value),
-                                    })}
-                                    placeholder={'-y\n@modelcontextprotocol/server-fetch'}
-                                  />
-                                </FieldBlock>
-                              </div>
-                              <FieldBlock label={lang === 'zh' ? '工作目录' : 'Working directory'}>
-                                <Input
-                                  mono
-                                  value={server.cwd || ''}
-                                  onChange={(cwd) => updateMcpServer(server.id, { cwd: cwd.trim() ? cwd : null })}
-                                  placeholder={lang === 'zh' ? '可选' : 'Optional'}
-                                />
-                              </FieldBlock>
-                              <FieldBlock
-                                label="Env"
-                                description={lang === 'zh' ? '明文保存在 settings.json' : 'Stored in plain text in settings.json'}
-                              >
-                                <TextArea
-                                  mono
-                                  rows={2}
-                                  value={envToText(server.env || {})}
-                                  onChange={(value) => updateMcpServer(server.id, { env: textToEnv(value) })}
-                                  placeholder="API_KEY=..."
-                                />
-                              </FieldBlock>
-                            </>
-                          )}
-                          <div className="flex flex-wrap items-center gap-2 pt-1">
-                            <Button
-                              size="sm"
-                              disabled={testingMcpServerId === server.id || (isHttpTransport ? !server.url.trim() : !server.command.trim())}
-                              onClick={() => void handleTestMcpServer(server)}
-                              data-tauri-drag-region="false"
-                            >
-                              <RefreshCw size={10} className={testingMcpServerId === server.id ? 'animate-spin' : ''} />
-                              {testingMcpServerId === server.id ? (lang === 'zh' ? '测试中' : 'Testing') : (lang === 'zh' ? '测试连接' : 'Test')}
-                            </Button>
-                            {isHttpTransport && (
-                              <Button
-                                size="sm"
-                                variant={mcpNeedsAuth[server.id] ? 'primary' : 'ghost'}
-                                disabled={oauthMcpServerId === server.id || !server.url.trim()}
-                                onClick={() => void handleOauthAuthorizeMcpServer(server)}
-                                data-tauri-drag-region="false"
-                                title={lang === 'zh' ? '通过浏览器完成 OAuth 授权（PKCE + 动态注册）' : 'Authorize via browser OAuth (PKCE + dynamic registration)'}
-                              >
-                                <KeyRound size={10} className={oauthMcpServerId === server.id ? 'animate-pulse' : ''} />
-                                {oauthMcpServerId === server.id
-                                  ? (lang === 'zh' ? '授权中' : 'Authorizing')
-                                  : server.auth?.kind === 'oauth'
-                                    ? (lang === 'zh' ? '重新授权' : 'Re-authorize')
-                                    : (lang === 'zh' ? 'OAuth 授权' : 'OAuth')}
-                              </Button>
-                            )}
-                            {isHttpTransport && mcpNeedsAuth[server.id] && (
-                              <span className="kv-tag warn">
-                                {lang === 'zh' ? '需要 OAuth 授权' : 'OAuth authorization required'}
-                              </span>
-                            )}
-                            {feedback && (
-                              <span className={`kv-tag ${feedback.ok ? 'ok' : 'warn'}`}>
-                                {feedback.message}
-                              </span>
-                            )}
-                            {server.enabledTools.length === 0 && knownTools.length > 0 && (
-                              <span className="kv-row-desc">{lang === 'zh' ? '全部工具' : 'All tools'}</span>
-                            )}
-                          </div>
-                          {/* 持久连接状态面板：状态点 / lastError / 折叠 stderr / 重连按钮 */}
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className="inline-flex items-center gap-1.5 kv-row-desc">
-                              <span className={`kv-provider-dot ${stateDotClass}`} />
-                              {stateLabel}
-                            </span>
-                            <Button
-                              size="sm"
-                              disabled={reloadingMcpServerId === server.id}
-                              onClick={() => void handleReloadMcpServer(server)}
-                              data-tauri-drag-region="false"
-                            >
-                              <RefreshCw size={10} className={reloadingMcpServerId === server.id ? 'animate-spin' : ''} />
-                              {lang === 'zh' ? '重连' : 'Reconnect'}
-                            </Button>
-                            {stderrTail.trim() && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setExpandedMcpStderrIds((prev) => (
-                                  prev.includes(server.id)
-                                    ? prev.filter((id) => id !== server.id)
-                                    : [...prev, server.id]
-                                ))}
-                                data-tauri-drag-region="false"
-                              >
-                                {stderrExpanded
-                                  ? (lang === 'zh' ? '隐藏日志' : 'Hide log')
-                                  : (lang === 'zh' ? '查看 stderr' : 'View stderr')}
-                              </Button>
-                            )}
-                          </div>
-                          {stateError && (
-                            <p className="mt-1 kv-row-desc break-words whitespace-pre-wrap" style={{ color: 'var(--danger)' }}>
-                              {stateError}
-                            </p>
-                          )}
-                          {stderrExpanded && stderrTail.trim() && (
-                            <pre className="custom-scrollbar mt-1 max-h-40 overflow-auto rounded bg-black/5 dark:bg-white/5 p-2 text-[11px] leading-snug whitespace-pre-wrap break-words">
-                              {stderrTail}
-                            </pre>
-                          )}
-                          {knownTools.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {knownTools.map((tool) => {
-                                const checked = server.enabledTools.length === 0 || server.enabledTools.includes(tool.name)
-                                return (
-                                  <button
-                                    key={tool.id}
-                                    type="button"
-                                    className={`kv-chip ${checked ? '' : 'opacity-45'}`}
-                                    title={tool.description}
-                                    onClick={() => {
-                                      if (checked) {
-                                        const next = server.enabledTools.length === 0
-                                          ? knownTools.map((item) => item.name).filter((name) => name !== tool.name)
-                                          : server.enabledTools.filter((name) => name !== tool.name)
-                                        updateMcpServer(server.id, { enabledTools: next })
-                                      } else {
-                                        updateMcpServer(server.id, {
-                                          enabledTools: Array.from(new Set([...server.enabledTools, tool.name])),
-                                        })
-                                      }
-                                    }}
-                                    data-tauri-drag-region="false"
-                                  >
-                                    {tool.sensitive && <Wrench size={10} />}
-                                    {tool.name}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-
-                  {pluginMcpServers.length > 0 && (
-                    <div className="mt-4 space-y-3 border-t border-[var(--border)] pt-4">
-                      <div className="px-0.5">
-                        <div className="text-[13px] font-semibold text-[var(--text)]">
-                          {lang === 'zh' ? '插件 MCP' : 'Plugin MCP'}
-                        </div>
-                        <p className="mt-0.5 text-[12px] text-[var(--text-muted)]">
-                          {lang === 'zh'
-                            ? '由「扩展 → 插件」启用时自动注册。请在插件页开关整包，勿在此删除。'
-                            : 'Registered when you enable a plugin under Extensions → Plugins. Manage there.'}
-                        </p>
-                      </div>
-                      {pluginMcpServers.map((server) => {
-                        const liveState = mcpServerStates[server.id]
-                        const stateKind = liveState?.kind
-                        const stateDotClass =
-                          stateKind === 'connected'
-                            ? 'on'
-                            : stateKind === 'connecting'
-                              ? 'warn'
-                              : stateKind === 'error'
-                                ? 'err'
-                                : server.enabled
-                                  ? 'warn'
-                                  : 'off'
-                        const stateLabel =
-                          stateKind === 'connected'
-                            ? (lang === 'zh' ? '已连接' : 'Connected')
-                            : stateKind === 'connecting'
-                              ? (lang === 'zh' ? '连接中' : 'Connecting')
-                              : stateKind === 'error'
-                                ? (lang === 'zh' ? '错误' : 'Error')
-                                : server.enabled
-                                  ? (lang === 'zh' ? '已启用' : 'Enabled')
-                                  : (lang === 'zh' ? '未启用' : 'Disabled')
-                        return (
-                          <div key={server.id} className="kv-panel">
-                            <div className="mb-2 flex flex-wrap items-center gap-2">
-                              <span className={`kv-provider-dot ${stateDotClass}`} />
-                              <div className="min-w-0 flex-1 text-[13px] font-medium text-[var(--text)]">
-                                {server.name}
-                              </div>
-                              <span className="rounded-md bg-[var(--bg-input-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)]">
-                                {lang === 'zh' ? '插件' : 'Plugin'}
-                              </span>
-                              <span className="text-[12px] text-[var(--text-muted)]">{stateLabel}</span>
-                            </div>
-                            <div className="space-y-1 font-mono text-[11.5px] text-[var(--text-muted)]">
-                              <div className="truncate" title={server.command}>
-                                {lang === 'zh' ? '命令：' : 'Command: '}
-                                {server.command}
-                                {server.args?.length ? ` ${server.args.join(' ')}` : ''}
-                              </div>
-                              <div>id: {server.id}</div>
-                              {server.connectorId && <div>connector: {server.connectorId}</div>}
-                            </div>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              <Button
-                                size="sm"
-                                onClick={() => void handleTestMcpServer(server)}
-                                data-tauri-drag-region="false"
-                              >
-                                {lang === 'zh' ? '测试连接' : 'Test'}
-                              </Button>
-                            </div>
-                            {mcpTestFeedback[server.id] && (
-                              <div
-                                className={`mt-2 text-[12px] ${
-                                  mcpTestFeedback[server.id]?.ok
-                                    ? 'text-emerald-600 dark:text-emerald-400'
-                                    : 'text-red-600 dark:text-red-400'
-                                }`}
-                              >
-                                {mcpTestFeedback[server.id]?.ok
-                                  ? (lang === 'zh'
-                                      ? `连接成功，工具 ${mcpTestFeedback[server.id]?.tools?.length ?? 0} 个`
-                                      : `OK, ${mcpTestFeedback[server.id]?.tools?.length ?? 0} tools`)
-                                  : mcpTestFeedback[server.id]?.message || (lang === 'zh' ? '失败' : 'Failed')}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                      </>
-                    )
-                  })()}
-                </SettingsGroup>
-              </>
             )}
 
             {/* ===== 连接器标签页 ===== */}
@@ -4173,176 +2914,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 ragEnabled={chatTools.nativeTools?.knowledgeSearch !== false}
                 onToggleRag={(v) => updateNativeTools({ knowledgeSearch: v })}
               />
-            )}
-
-            {/* ===== Skill 标签页 ===== */}
-            {activeTab === 'skill' && (
-              <>
-                <SettingsGroup title="Skill">
-                  <div className="flex flex-wrap gap-2 py-2">
-                    <Button
-                      size="sm"
-                      onClick={() => void refreshChatSkills()}
-                      disabled={skillsLoading}
-                      data-tauri-drag-region="false"
-                    >
-                      <RefreshCw size={10} className={skillsLoading ? 'animate-spin' : ''} />
-                      {lang === 'zh' ? '刷新列表' : 'Refresh'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => setSkillMarketOpen(true)}
-                      data-tauri-drag-region="false"
-                    >
-                      <Plus size={11} />
-                      {lang === 'zh' ? '技能市场' : 'Skill market'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => void handleImportSkill()}
-                      data-tauri-drag-region="false"
-                    >
-                      <FolderOpen size={11} />
-                      {lang === 'zh' ? '导入文件夹' : 'Import folder'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => void handleImportSkillZip()}
-                      data-tauri-drag-region="false"
-                    >
-                      <Download size={11} />
-                      {lang === 'zh' ? '导入 zip' : 'Import zip'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => void handleOpenSkillFolder()}
-                      data-tauri-drag-region="false"
-                    >
-                      <ExternalLink size={11} />
-                      {lang === 'zh' ? '打开 Skill 文件夹' : 'Open skill folder'}
-                    </Button>
-                  </div>
-
-                  {skillMarketOpen && (
-                    <SkillMarketModal
-                      lang={lang}
-                      onInstalled={() => {
-                        void refreshChatSkills()
-                        onSettingsChange()
-                      }}
-                      onClose={() => setSkillMarketOpen(false)}
-                    />
-                  )}
-                  <SettingRow label={lang === 'zh' ? '额外扫描路径' : 'Extra scan paths'} stack>
-                    <div className="space-y-1.5">
-                      {chatTools.skillScanPaths.map((path, index) => (
-                        <div key={`${path}-${index}`} className="flex items-center gap-1.5">
-                          <Input
-                            mono
-                            value={path}
-                            onChange={(value) => {
-                              const next = [...chatTools.skillScanPaths]
-                              next[index] = value
-                              updateChatTools({ skillScanPaths: next })
-                            }}
-                            placeholder="/path/to/skills"
-                          />
-                          <IconButton
-                            variant="danger"
-                            size="xs"
-                            onClick={() => updateChatTools({
-                              skillScanPaths: chatTools.skillScanPaths.filter((_, i) => i !== index),
-                            })}
-                            data-tauri-drag-region="false"
-                            label={lang === 'zh' ? '移除路径' : 'Remove path'}
-                          >
-                            <Trash2 size={12} />
-                          </IconButton>
-                        </div>
-                      ))}
-                      <Button
-                        size="sm"
-                        onClick={async () => {
-                          const selected = await open({ directory: true, multiple: false })
-                          if (typeof selected === 'string') {
-                            updateChatTools({ skillScanPaths: [...chatTools.skillScanPaths, selected] })
-                          }
-                        }}
-                        data-tauri-drag-region="false"
-                      >
-                        <Plus size={11} />
-                        {lang === 'zh' ? '添加扫描路径' : 'Add scan path'}
-                      </Button>
-                    </div>
-                  </SettingRow>
-                  <SettingRow
-                    label={lang === 'zh' ? '自动匹配 Skill' : 'Auto-match skills'}
-                  >
-                    <Toggle
-                      checked={chatTools.skillAutoMatch !== false}
-                      onChange={(skillAutoMatch) => updateChatTools({ skillAutoMatch })}
-                    />
-                  </SettingRow>
-                  <SettingRow label={lang === 'zh' ? '无 Tools 降级模式' : 'Fallback without tools'} stack>
-                    <Select
-                      value={chatTools.skillFallbackMode || 'progressive'}
-                      onChange={(skillFallbackMode) => updateChatTools({ skillFallbackMode })}
-                      options={[
-                        { value: 'progressive', label: lang === 'zh' ? '渐进式（仅 catalog）' : 'Progressive (catalog only)' },
-                        { value: 'skill_md_only', label: lang === 'zh' ? '仅 SKILL.md' : 'SKILL.md only' },
-                        { value: 'legacy_full_body', label: lang === 'zh' ? '旧版全量注入' : 'Legacy full body' },
-                      ]}
-                    />
-                  </SettingRow>
-                  {skillError && <div className="kv-inline-error">{skillError}</div>}
-                  <SettingRow label={t.enabled}>
-                    <span className="kv-tag ok">
-                      {enabledSkillCount}
-                      {' / '}
-                      {skills.length}
-                    </span>
-                  </SettingRow>
-                  {skillsLoading && (
-                    <div className="kv-panel chat-motion-fade-up">
-                      <div className="kv-panel-body">{lang === 'zh' ? '正在加载 Skill...' : 'Loading skills...'}</div>
-                    </div>
-                  )}
-                  {!skillsLoading && skills.length === 0 && (
-                    <div className="kv-panel">
-                      <div className="kv-panel-title">{lang === 'zh' ? '暂无 Skill' : 'No skills'}</div>
-                      <div className="kv-panel-body">
-                        {lang === 'zh' ? '暂无 Skill。可导入文件夹/zip，或打开 Skill 文件夹手动添加后刷新。' : 'No skills yet. Import a folder or zip, or add skills manually and refresh.'}
-                      </div>
-                    </div>
-                  )}
-                  {!skillsLoading && skills.length > 0 && (
-                    <div className="space-y-3 py-2">
-                      <SkillListSection
-                        title={lang === 'zh' ? '内置 Skill' : 'Built-in skills'}
-                        emptyText={lang === 'zh' ? '当前没有内置 Skill。' : 'No built-in skills.'}
-                        skills={builtinSkills}
-                        lang={lang}
-                        expandedSkillIds={expandedSkillIds}
-                        disabledSkillIds={disabledSkillIds}
-                        onToggleExpanded={handleToggleSkillExpanded}
-                        onToggleEnabled={handleToggleSkillEnabled}
-                        onPreview={handlePreviewSkill}
-                      />
-                      <SkillListSection
-                        title={lang === 'zh' ? '用户 Skill' : 'User skills'}
-                        emptyText={lang === 'zh' ? '当前没有用户导入的 Skill。' : 'No imported user skills.'}
-                        skills={userSkills}
-                        lang={lang}
-                        expandedSkillIds={expandedSkillIds}
-                        disabledSkillIds={disabledSkillIds}
-                        onToggleExpanded={handleToggleSkillExpanded}
-                        onToggleEnabled={handleToggleSkillEnabled}
-                        onPreview={handlePreviewSkill}
-                      />
-                    </div>
-                  )}
-                </SettingsGroup>
-              </>
             )}
 
             {/* ===== 网络搜索标签页 ===== */}
@@ -5026,37 +3597,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           </div>
         </div>
       )}
-      {selectedSkillPreview && (
-        <div className="kv-modal-backdrop" data-tauri-drag-region="false">
-          <div className="kv-modal max-h-[80vh] space-y-3 overflow-hidden">
-            <div className="flex items-start gap-2">
-              <Sparkles size={16} className="mt-0.5 shrink-0 text-[#C56646] dark:text-[#E39A78]" />
-              <div className="min-w-0 flex-1">
-                <h3 className="truncate text-[14px] font-semibold">{selectedSkillPreview.name}</h3>
-                <p className="kv-panel-body">{selectedSkillPreview.description}</p>
-              </div>
-              <IconButton
-                size="xs"
-                onClick={() => setSelectedSkillPreview(null)}
-                data-tauri-drag-region="false"
-                label={lang === 'zh' ? '关闭' : 'Close'}
-              >
-                <X size={12} />
-              </IconButton>
-            </div>
-            {selectedSkillPreview.recommendedTools.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {selectedSkillPreview.recommendedTools.map((tool) => (
-                  <span key={tool} className="kv-chip">{tool}</span>
-                ))}
-              </div>
-            )}
-            <div className="custom-scrollbar max-h-[52vh] overflow-y-auto rounded-md border border-black/[0.08] bg-black/[0.025] p-3 dark:border-white/[0.08] dark:bg-white/[0.035]">
-              <ChatMarkdown content={selectedSkillPreview.body} />
-            </div>
-          </div>
-        </div>
-      )}
     </>
   )
 
@@ -5076,6 +3616,16 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       >
         {!hideNav && (
           <aside className="settings-embedded-nav">
+            <button
+              type="button"
+              onClick={handleCloseRequest}
+              className="settings-embedded-back"
+              title={lang === 'zh' ? '返回对话' : 'Back to chat'}
+              data-tauri-drag-region="false"
+            >
+              <ArrowLeft size={16} strokeWidth={1.9} />
+              <span>{lang === 'zh' ? '返回对话' : 'Back to chat'}</span>
+            </button>
             <h2 className="settings-embedded-nav-title">{t.settings}</h2>
             {categoryNav}
           </aside>

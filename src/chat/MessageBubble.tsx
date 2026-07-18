@@ -919,7 +919,7 @@ function MessageBubbleComponent({
     const replyModelTags = (sentModels ?? []).filter((m) => (m.model ?? '').trim().length > 0)
     const showModelTags = replyModelTags.length >= 2
     return (
-      <div className={`group flex justify-end py-2 ${playEntranceAnimation ? 'chat-motion-fade-up' : ''}`}>
+      <div className={`group flex justify-end py-2 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}>
         <div className={`flex min-w-0 flex-col items-end gap-1 ${isEditing ? 'w-full max-w-full' : 'max-w-[85%]'}`}>
           {showModelTags && (
             <div className="flex flex-wrap items-center justify-end gap-1.5 pr-0.5">
@@ -1062,7 +1062,7 @@ function MessageBubbleComponent({
   }
 
   return (
-    <div className={`flex justify-start py-3 ${playEntranceAnimation ? 'chat-motion-fade-up' : ''}`}>
+    <div className={`flex justify-start py-3 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}>
       <div className="w-full min-w-0">
         {toolCalls.length > 0 && !isEditing && !hasTimelineSegments && (
           <section

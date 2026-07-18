@@ -1304,6 +1304,12 @@ function StatusIcon({ status }: { status: ToolCallStatus }) {
   const isDone = status === 'completed' || status === 'success'
   const wasDone = prevStatusRef.current === 'completed' || prevStatusRef.current === 'success'
   const justCompleted = isDone && !wasDone
+  const isBad = status === 'error' || status === 'cancelled' || status === 'skipped'
+  const wasBad =
+    prevStatusRef.current === 'error' ||
+    prevStatusRef.current === 'cancelled' ||
+    prevStatusRef.current === 'skipped'
+  const justFailed = isBad && !wasBad
   useEffect(() => {
     prevStatusRef.current = status
   }, [status])
@@ -1320,13 +1326,13 @@ function StatusIcon({ status }: { status: ToolCallStatus }) {
     )
   }
   if (status === 'error') {
-    return <AlertCircle className="shrink-0 text-neutral-400 dark:text-neutral-500" size={14} strokeWidth={1.9} />
+    return <AlertCircle className={`shrink-0 text-neutral-400 dark:text-neutral-500${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
   }
   if (status === 'skipped') {
-    return <CircleSlash className="shrink-0" size={14} strokeWidth={1.9} />
+    return <CircleSlash className={`shrink-0${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
   }
   if (status === 'cancelled') {
-    return <XCircle className="shrink-0" size={14} strokeWidth={1.9} />
+    return <XCircle className={`shrink-0${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
   }
   return <Wrench className="shrink-0" size={14} strokeWidth={1.85} />
 }
@@ -1337,17 +1343,23 @@ function ToolTypeIcon({ toolCall, status }: { toolCall: ToolCallRecord; status: 
   const isDone = status === 'completed' || status === 'success'
   const wasDone = prevStatusRef.current === 'completed' || prevStatusRef.current === 'success'
   const justCompleted = isDone && !wasDone
+  const isBad = status === 'error' || status === 'cancelled' || status === 'skipped'
+  const wasBad =
+    prevStatusRef.current === 'error' ||
+    prevStatusRef.current === 'cancelled' ||
+    prevStatusRef.current === 'skipped'
+  const justFailed = isBad && !wasBad
   useEffect(() => {
     prevStatusRef.current = status
   }, [status])
   if (status === 'error') {
-    return <AlertCircle className="shrink-0 text-neutral-400 dark:text-neutral-500" size={14} strokeWidth={1.9} />
+    return <AlertCircle className={`shrink-0 text-neutral-400 dark:text-neutral-500${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
   }
   if (status === 'skipped') {
-    return <CircleSlash className="shrink-0" size={14} strokeWidth={1.9} />
+    return <CircleSlash className={`shrink-0${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
   }
   if (status === 'cancelled') {
-    return <XCircle className="shrink-0" size={14} strokeWidth={1.9} />
+    return <XCircle className={`shrink-0${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
   }
   const Glyph = toolGlyph(toolCall)
   if (status === 'running') {

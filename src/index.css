@@ -1054,6 +1054,18 @@ body {
   animation-delay: var(--chat-motion-delay, 0ms);
 }
 
+/* 气泡入场：在 fade-up 基础上加轻微缩放，对齐 LiveAgent chatBubbleIn。
+   单列出来（不改 chat-motion-fade-up）避免影响附件 chip/提示行等复用点。 */
+.chat-motion-bubble-in {
+  animation: chat-motion-bubble-in var(--kv-dur-normal) var(--kv-ease-standard) both;
+}
+
+/* 视图/页面切换入场：比 fade-up 更明显（更大位移 + 轻缩放 + 更长时长），
+   用于整页级视图切换（会话区、设置/专家/技能/插件次级视图），对齐 LiveAgent settingsSectionIn。 */
+.chat-motion-view-in {
+  animation: chat-motion-view-in var(--kv-dur-slow) var(--kv-ease-standard) both;
+}
+
 .chat-motion-popover {
   transform-origin: var(--chat-popover-origin, top left);
   animation: chat-motion-popover var(--kv-dur-fast) var(--kv-ease-standard) both;
@@ -1299,6 +1311,59 @@ body {
 }
 
 @keyframes chat-motion-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes chat-motion-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chat-motion-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 设置 section 切换入场（对齐 LiveAgent settingsSectionIn / settingsSectionTitleIn）：
+   标题与内容各自 key={activeTab} 重播，内容 14px + 轻缩放，标题 8px。 */
+.settings-section-enter {
+  animation: settings-section-in 0.3s var(--kv-ease-standard) both;
+  will-change: transform, opacity;
+}
+.settings-section-title-enter {
+  animation: settings-section-title-in 0.24s var(--kv-ease-standard) both;
+  will-change: transform, opacity;
+}
+@keyframes settings-section-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes settings-section-title-in {
   from {
     opacity: 0;
     transform: translateY(8px);
@@ -1666,7 +1731,17 @@ body {
     background-image: none;
   }
 
+  /* 按钮按压缩放：reduced-motion 下取消（全局只压时长、不移除 transform，须显式重置）。 */
+  .kv-btn:active:not(:disabled),
+  .kv-icon-btn:active:not(:disabled) {
+    transform: none;
+  }
+
   .chat-motion-fade-up,
+  .chat-motion-bubble-in,
+  .chat-motion-view-in,
+  .settings-section-enter,
+  .settings-section-title-enter,
   .chat-motion-popover,
   .chat-motion-row,
   .chat-motion-soft-pulse,
@@ -1820,6 +1895,38 @@ body {
   letter-spacing: -0.02em;
   color: var(--text);
   user-select: none;
+}
+
+/* 嵌入式设置左栏顶部「返回对话」：紧凑、靠左，位于「设置」标题上方 */
+.settings-embedded-back {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-faint, #737373);
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease, transform var(--kv-dur-instant) var(--kv-ease-out);
+}
+.settings-embedded-back:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text);
+}
+.settings-embedded-back:active {
+  transform: scale(0.97);
+}
+.dark .chat-window-shell .settings-embedded-back {
+  color: #a3a3a3;
+}
+.dark .chat-window-shell .settings-embedded-back:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f5f5f5;
 }
 
 .settings-embedded-nav-list {
@@ -3055,6 +3162,13 @@ body {
   background: var(--danger-soft);
   color: var(--danger);
 }
+.kv-icon-btn {
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    color var(--kv-dur-fast) var(--kv-ease-out),
+    transform var(--kv-dur-instant) var(--kv-ease-out);
+}
+.kv-icon-btn:active:not(:disabled) { transform: scale(0.95); }
 .kv-icon-btn svg { width: 13px; height: 13px; }
 /* 尺寸/形状修饰（供 <IconButton> 使用）；无修饰时保持 22×22 基类给设置域既有用法 */
 .kv-icon-btn.sm { width: 28px; height: 28px; border-radius: 6px; }
@@ -3088,8 +3202,13 @@ body {
   font-family: inherit;
   line-height: 1.4;
   white-space: nowrap;
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    border-color var(--kv-dur-fast) var(--kv-ease-out),
+    transform var(--kv-dur-instant) var(--kv-ease-out);
 }
 .kv-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.kv-btn:active:not(:disabled) { transform: scale(0.97); }
 .kv-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .kv-btn.primary {
   background: var(--accent);

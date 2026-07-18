@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Box,
@@ -28,6 +28,7 @@ import { getSettingsCached, refreshSettings, saveSettingsCached } from '../api/s
 import { usesNativeTitlebar } from './platform'
 import { Select } from '../settings/components'
 import { Button, IconButton } from '../components/Button'
+import { SkillStoreBrowser } from './SkillStoreBrowser'
 
 interface SkillCenterProps {
   /** 返回对话视图 */
@@ -228,22 +229,62 @@ function SkillSection({
   )
 }
 
+function SkillUrlImport({ onInstalled }: { onInstalled: () => void }) {
+  const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState('')
+  const install = useCallback(async () => {
+    const value = url.trim()
+    if (!value) return
+    setBusy(true)
+    setError('')
+    setDone('')
+    try {
+      const result = await api.chatSkillsInstallFromUrl(value)
+      if (!result.success) throw new Error(result.error || '安装失败')
+      setDone('已安装')
+      setUrl('')
+      onInstalled()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [url, onInstalled])
+  return (
+    <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+      <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">从 URL 安装</div>
+      <p className="mb-2 text-[12px] text-neutral-500 dark:text-neutral-400">
+        粘贴 GitHub 仓库地址或直链 .zip（须含 SKILL.md）。仓库内多个技能只安装第一个。
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://github.com/owner/repo"
+          className="h-9 w-full rounded-md border border-neutral-200 bg-white px-2.5 font-mono text-[12.5px] text-neutral-800 outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          data-tauri-drag-region="false"
+        />
+        <Button onClick={() => void install()} disabled={busy || !url.trim()} data-tauri-drag-region="false">
+          {busy ? '安装中…' : '安装'}
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-[12px] text-red-600 dark:text-red-400">{error}</div>}
+      {done && <div className="mt-2 text-[12px] text-emerald-600 dark:text-emerald-400">{done}</div>}
+    </div>
+  )
+}
+
 export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillError, setSkillError] = useState('')
   const [query, setQuery] = useState('')
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [view, setView] = useState<'installed' | 'store' | 'import' | 'advanced'>('installed')
   const [selectedSkillPreview, setSelectedSkillPreview] = useState<SkillDetail | null>(null)
-
-  // 高级设置折叠时内容仍在 DOM（用于 chat-motion-reveal 高度动画），用 inert 让其退出 tab 序 / a11y 树，
-  // 避免键盘 Tab 进入视觉折叠的表单控件（WCAG 2.1.1）。
-  const advancedRef = useRef<HTMLDivElement>(null)
-  useLayoutEffect(() => {
-    const el = advancedRef.current
-    if (el) el.inert = !advancedOpen
-  }, [advancedOpen])
 
   const settingsRef = useRef<Settings | null>(null)
   const saveTimer = useRef<number | null>(null)
@@ -496,43 +537,63 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
             </div>
           </div>
 
-          {/* 搜索 */}
-          <div className="relative mt-6">
-            <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-            <input
-              type="text"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索技能..."
-              className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              data-tauri-drag-region="false"
-            />
+          {/* Tab 行 */}
+          <div className="mt-5 flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
+            {([['installed', '已安装'], ['store', '技能商店'], ['import', '本地导入'], ['advanced', '高级设置']] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setView(id)}
+                data-tauri-drag-region="false"
+                className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
+                  view === id
+                    ? 'text-neutral-900 dark:text-neutral-100'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                }`}
+              >
+                {label}
+                {view === id && (
+                  <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />
+                )}
+              </button>
+            ))}
           </div>
 
-          {skillError && (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-              {skillError}
+          {view === 'store' ? (
+            <div className="mt-5 flex min-h-[420px] flex-col">
+              <SkillStoreBrowser onInstalled={() => void refreshChatSkills()} />
             </div>
-          )}
-
-          {/* 高级设置（默认折叠） */}
-          <section className="mt-4 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((open) => !open)}
-              className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-900/60"
-              aria-expanded={advancedOpen}
-              data-tauri-drag-region="false"
-            >
+          ) : view === 'import' ? (
+            <div className="mt-5 space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={() => void handleImportSkill()} data-tauri-drag-region="false">
+                  <FolderOpen size={14} />
+                  导入文件夹
+                </Button>
+                <Button onClick={() => void handleImportSkillZip()} data-tauri-drag-region="false">
+                  <Download size={14} />
+                  导入 zip
+                </Button>
+                <Button onClick={() => void handleOpenSkillFolder()} data-tauri-drag-region="false">
+                  <ExternalLink size={14} />
+                  打开 Skill 文件夹
+                </Button>
+              </div>
+              <SkillUrlImport onInstalled={() => void refreshChatSkills()} />
+              {skillError && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                  {skillError}
+                </div>
+              )}
+            </div>
+          ) : view === 'advanced' ? (
+          <section className="mt-5 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
+            <div className="flex w-full items-center gap-2 px-4 py-3">
               <Sliders size={15} className="shrink-0 text-neutral-400" />
               <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">高级设置</span>
-              <span className="text-[12px] text-neutral-400">自动匹配 · 降级模式 · 解释器白名单 · 扫描路径</span>
-              <ChevronDown
-                size={16}
-                className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${advancedOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
-            <div ref={advancedRef} className={`chat-motion-reveal ${advancedOpen ? 'is-open' : ''}`}>
+              <span className="text-[12px] text-neutral-400">自动匹配 · 降级模式 · 扫描路径</span>
+            </div>
+            <div>
               <div className="space-y-5 border-t border-neutral-200 px-4 py-4 dark:border-neutral-800">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
@@ -616,6 +677,26 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
               </div>
             </div>
           </section>
+          ) : (
+          <>
+          {/* 搜索 */}
+          <div className="relative mt-6">
+            <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+            <input
+              type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索技能..."
+              className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              data-tauri-drag-region="false"
+            />
+          </div>
+
+          {skillError && (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+              {skillError}
+            </div>
+          )}
 
           {/* 技能列表 */}
           <div className="mt-6 space-y-5">
@@ -662,6 +743,8 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
               </>
             )}
           </div>
+          </>
+          )}
         </div>
       </main>
 

@@ -42,11 +42,12 @@ function resolveChatUserProfile(
 
 const modLabel = isMac ? '⌘' : 'Ctrl'
 
-export type ExtensionsNavItem = 'assistants' | 'skill' | 'knowledge' | 'plugins'
+export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'plugins'
 
 const extensionSubItems: Array<{ id: ExtensionsNavItem; label: string }> = [
   { id: 'assistants', label: '助手' },
   { id: 'skill', label: '技能' },
+  { id: 'mcp', label: 'MCP' },
   { id: 'knowledge', label: '知识库' },
   { id: 'plugins', label: '插件' },
 ]
@@ -339,7 +340,7 @@ function SearchDialog({
 
         <div className="custom-scrollbar min-h-0 overflow-y-auto px-1.5 pb-1.5">
           {results.length > 0 ? (
-            results.map((conversation) => {
+            results.map((conversation, index) => {
               const active = conversation.id === currentConversationId
               const projectLabel = conversationProjectLabel(conversation, projects)
               const setId = conversation.set_id ?? conversation.setId ?? null
@@ -349,7 +350,10 @@ function SearchDialog({
                   key={conversation.id}
                   type="button"
                   onClick={() => onSelectConversation(conversation)}
-                  className={`group/search-result flex w-full min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
+                  style={{
+                    ['--chat-motion-delay' as string]: `${Math.min(index, 12) * 18}ms`,
+                  }}
+                  className={`chat-motion-row group/search-result flex w-full min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
                     active
                       ? 'bg-black/[0.07] dark:bg-white/[0.1]'
                       : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.07]'

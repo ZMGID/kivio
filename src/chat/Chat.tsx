@@ -119,6 +119,10 @@ const SkillCenter = lazy(() => import('./SkillCenter').then((module) => ({
   default: module.SkillCenter,
 })))
 
+const McpCenter = lazy(() => import('./McpCenter').then((module) => ({
+  default: module.McpCenter,
+})))
+
 const PluginCenter = lazy(() => import('./PluginCenter').then((module) => ({
   default: module.PluginCenter,
 })))
@@ -126,14 +130,6 @@ const PluginCenter = lazy(() => import('./PluginCenter').then((module) => ({
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,
 })))
-
-function ChatPaneLoading() {
-  return (
-    <div className="chat-themed-surface flex h-full w-full items-center justify-center">
-      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
-    </div>
-  )
-}
 
 function MessageListLoading() {
   return (
@@ -143,7 +139,7 @@ function MessageListLoading() {
   )
 }
 
-type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'plugins' | 'onboarding'
+type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'mcp' | 'plugins' | 'onboarding'
 
 interface ChatProps {
   onSettingsChange: () => void
@@ -177,6 +173,10 @@ function isChatSkillCenterPath(path: string): boolean {
 
 function isChatPluginCenterPath(path: string): boolean {
   return path === 'chat/plugins' || path.startsWith('chat/plugins/')
+}
+
+function isChatMcpCenterPath(path: string): boolean {
+  return path === 'chat/mcp' || path.startsWith('chat/mcp/')
 }
 
 function scheduleIdleTask(callback: () => void, timeout = 1200): () => void {
@@ -616,6 +616,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatSettingsPath(path)) return 'settings'
     if (isChatAssistantCenterPath(path)) return 'assistants'
     if (isChatSkillCenterPath(path)) return 'skill'
+    if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatPluginCenterPath(path)) return 'plugins'
     return 'conversation'
   })
@@ -1243,6 +1244,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [])
 
+  const syncMcpCenterRoute = useCallback(() => {
+    if (window.location.hash !== '#chat/mcp') {
+      window.location.hash = '#chat/mcp'
+    }
+  }, [])
+
   const refreshSidebar = useCallback(() => {
     setSidebarRefreshKey((key) => key + 1)
   }, [])
@@ -1303,11 +1310,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }, 1500)
   }, [refreshToolIndicator])
 
-  // 空闲预取设置页 chunk，避免首次点开设置时才触发 lazy import 而长时间转圈。
+  // 空闲预取各中心页 chunk，避免首次切到设置/专家/技能/插件时才触发 lazy import 而转圈；
+  // 预取后切换时 Suspense 不再挂起，chat-motion-view-in 动画得以播在真实内容上（而非 spinner）。
   useEffect(() => {
     return scheduleIdleTask(() => {
       void importSettingsShell()
-    }, 2500)
+      void import('./AssistantCenter')
+      void import('./SkillCenter')
+      void import('./McpCenter')
+      void import('./PluginCenter')
+      void import('./MessageList')
+    }, 400)
   }, [])
 
   const openEmbeddedSettings = useCallback((tab: SettingsTab = 'chat') => {
@@ -1331,6 +1344,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     syncPluginCenterRoute()
   }, [syncPluginCenterRoute])
 
+  const openMcpCenter = useCallback(() => {
+    setChatView('mcp')
+    syncMcpCenterRoute()
+  }, [syncMcpCenterRoute])
+
   const openExtensionsItem = useCallback((item: ExtensionsNavItem) => {
     setExtensionsNavItem(item)
     if (item === 'assistants') {
@@ -1341,16 +1359,21 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       openSkillCenter()
       return
     }
+    if (item === 'mcp') {
+      openMcpCenter()
+      return
+    }
     if (item === 'plugins') {
       openPluginCenter()
       return
     }
     openEmbeddedSettings(item)
-  }, [openAssistantCenter, openSkillCenter, openPluginCenter, openEmbeddedSettings])
+  }, [openAssistantCenter, openSkillCenter, openMcpCenter, openPluginCenter, openEmbeddedSettings])
 
   const extensionsActive = useMemo<ExtensionsNavItem | null>(() => {
     if (chatView === 'assistants') return 'assistants'
     if (chatView === 'skill') return 'skill'
+    if (chatView === 'mcp') return 'mcp'
     if (chatView === 'plugins') return 'plugins'
     if (chatView === 'settings' && extensionsNavItem === 'knowledge') return 'knowledge'
     return null
@@ -1381,6 +1404,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setChatView('conversation')
     syncConversationRoute(currentConversationIdRef.current)
   }, [syncConversationRoute])
+
+  const handleMcpCenterClose = useCallback(() => {
+    setChatView('conversation')
+    syncConversationRoute(currentConversationIdRef.current)
+    void refreshToolIndicator()
+  }, [refreshToolIndicator, syncConversationRoute])
 
   const runAfterLeavingSettings = useCallback((action: () => void) => {
     if (chatView !== 'settings') {
@@ -2141,6 +2170,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       if (isChatSkillCenterPath(path)) {
         setChatView('skill')
+        return
+      }
+      if (isChatMcpCenterPath(path)) {
+        setChatView('mcp')
         return
       }
       if (isChatPluginCenterPath(path)) {
@@ -3456,7 +3489,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     >
       {!usesNativeTitlebar && <WindowControls />}
       <div className="flex h-full min-h-0 w-full">
-        {chatView !== 'onboarding' ? (
+        {chatView !== 'onboarding' && !(chatView === 'settings' && extensionsNavItem === null) ? (
         <Sidebar
           lang={uiLang}
           currentConversationId={currentConversation?.id}
@@ -3492,14 +3525,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             />
           </div>
         ) : chatView === 'settings' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
+          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+            <Suspense fallback={null}>
               <SettingsShell
                 ref={settingsRef}
                 variant="embedded"
                 initialTab={settingsInitialTab}
                 hideNav={extensionsNavItem === 'knowledge'}
-                reserveTrafficLightSpace={sidebarCollapsed && usesNativeTitlebar}
+                reserveTrafficLightSpace={(sidebarCollapsed || extensionsNavItem === null) && usesNativeTitlebar}
                 onClose={handleSettingsClose}
                 onSettingsChange={handleSettingsChange}
                 onReady={emitContentReady}
@@ -3507,8 +3540,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             </Suspense>
           </div>
         ) : chatView === 'assistants' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
+          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+            <Suspense fallback={null}>
               <AssistantCenter
                 skills={enabledSkills}
                 currentAssistantId={currentAssistantId}
@@ -3520,17 +3553,23 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             </Suspense>
           </div>
         ) : chatView === 'skill' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
+          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+            <Suspense fallback={null}>
               <SkillCenter
                 onClose={handleSkillCenterClose}
                 onSkillsChanged={() => void loadSkills()}
               />
             </Suspense>
           </div>
+        ) : chatView === 'mcp' ? (
+          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+            <Suspense fallback={null}>
+              <McpCenter onClose={handleMcpCenterClose} />
+            </Suspense>
+          </div>
         ) : chatView === 'plugins' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
+          <div className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+            <Suspense fallback={null}>
               <PluginCenter
                 onClose={handlePluginCenterClose}
                 onRequestAiInstall={handleRequestPluginAiInstall}
@@ -3621,9 +3660,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   {showEmptyHero ? (
                     <div className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-16">
                   <ChatDotGridBackground />
-                  <div className="chat-empty-hero-stack chat-motion-fade-up relative z-10 w-full max-w-4xl space-y-8">
+                  <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl space-y-8">
                     <h2
-                      className="chat-empty-hero-title text-center text-[1.75rem] font-medium leading-snug tracking-[-0.02em] text-neutral-900 dark:text-neutral-50 sm:text-[2rem]"
+                      className="chat-motion-fade-up chat-empty-hero-title text-center text-[1.75rem] font-medium leading-snug tracking-[-0.02em] text-neutral-900 dark:text-neutral-50 sm:text-[2rem]"
                       aria-label={
                         currentAssistantSnapshot
                           ? currentAssistantSnapshot.name
@@ -3644,6 +3683,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                         />
                       )}
                     </h2>
+                    <div
+                      className="chat-motion-fade-up"
+                      style={{ ['--chat-motion-delay' as string]: '120ms' }}
+                    >
                     <InputBar
                       layout="inline"
                       onSend={(content, attachments) => void handleSendMessage(content, attachments)}
@@ -3652,7 +3695,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                       cancelVisible={streamCoarse.streaming}
                       cancelling={streamCoarse.cancelling}
                       onOpenSettings={() => openEmbeddedSettings('chat')}
-                      onOpenTools={() => openEmbeddedSettings('skill')}
+                      onOpenTools={() => openSkillCenter()}
                       onNewChat={() => void handleNewConversation()}
                       onCompactContext={() => void handleCompressContext()}
                       onClearChat={() => void handleClearChat()}
@@ -3699,6 +3742,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                         />
                       }
                     />
+                    </div>
                   </div>
                 </div>
                   ) : (
@@ -3750,7 +3794,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                     cancelVisible={streamCoarse.streaming}
                     cancelling={streamCoarse.cancelling}
                     onOpenSettings={() => openEmbeddedSettings('chat')}
-                    onOpenTools={() => openEmbeddedSettings('skill')}
+                    onOpenTools={() => openSkillCenter()}
                     onNewChat={() => void handleNewConversation()}
                     onCompactContext={() => void handleCompressContext()}
                     onClearChat={() => void handleClearChat()}
