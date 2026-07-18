@@ -182,6 +182,22 @@ pub fn chat_skills_import(app: AppHandle, path: String) -> SkillImportResult {
     }
 }
 
+/// 卸载用户技能：删除 user_skills_dir 下对应 id 的目录。
+/// 内置（bundled）与插件技能不在此目录，无法经此删除。id 做路径安全校验，防目录穿越。
+#[tauri::command]
+pub fn chat_skills_uninstall(app: AppHandle, id: String) -> Result<(), String> {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Err("invalid skill id".to_string());
+    }
+    let skills_dir = user_skills_dir(&app)?;
+    let dir = skills_dir.join(&id);
+    if !dir.is_dir() {
+        return Err("技能不存在或不可删除（仅个人/导入技能可删除）".to_string());
+    }
+    fs::remove_dir_all(&dir).map_err(|err| format!("删除技能失败: {err}"))?;
+    Ok(())
+}
+
 /// 技能包下载大小上限（与本地 zip 导入的隐含约束一致，防止误装超大包）。
 const MAX_SKILL_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 
