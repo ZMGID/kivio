@@ -66,6 +66,7 @@ import {
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { KnowledgeBasePanel } from './KnowledgeBasePanel'
+import { McpMarketModal } from './McpMarketModal'
 import { WebSearchPanel } from './WebSearchPanel'
 
 export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'mcp' | 'skill' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
@@ -633,6 +634,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   // OAuth 授权中的服务器 id；以及 serverId → 是否检测到需要 OAuth 授权（401 + WWW-Authenticate）。
   const [oauthMcpServerId, setOauthMcpServerId] = useState<string | null>(null)
   const [mcpNeedsAuth, setMcpNeedsAuth] = useState<Record<string, boolean>>({})
+  const [mcpMarketOpen, setMcpMarketOpen] = useState(false)
   const [expandedMcpStderrIds, setExpandedMcpStderrIds] = useState<string[]>([])
   const [mcpStderrTails, setMcpStderrTails] = useState<Record<string, string>>({})
   const [skillsLoading, setSkillsLoading] = useState(false)
@@ -3732,6 +3734,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     </Button>
                     <Button
                       size="sm"
+                      onClick={() => setMcpMarketOpen(true)}
+                      data-tauri-drag-region="false"
+                    >
+                      <Plus size={11} />
+                      {lang === 'zh' ? '从市场安装' : 'From market'}
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => void handleImportMcpJson()}
                       data-tauri-drag-region="false"
                     >
@@ -3739,6 +3749,17 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       {lang === 'zh' ? '导入 mcp.json' : 'Import mcp.json'}
                     </Button>
                   </div>
+
+                  {mcpMarketOpen && (
+                    <McpMarketModal
+                      lang={lang}
+                      existingServers={chatTools.servers}
+                      onInstall={(server) =>
+                        updateChatTools({ servers: [...chatTools.servers, server] })
+                      }
+                      onClose={() => setMcpMarketOpen(false)}
+                    />
+                  )}
 
                   {(() => {
                     const userMcpServers = chatTools.servers.filter((s) => !s.connectorId)
