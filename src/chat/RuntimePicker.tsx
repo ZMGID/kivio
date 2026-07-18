@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from 'react'
-import { ChevronDown, Check } from 'lucide-react'
+import { ChevronDown, Check, Brain } from 'lucide-react'
 import { AgentIcon } from './AgentIcon'
 import { chatApi, type DetectedExternalAgent } from './api'
 import { chatTitlebarPillButtonClass } from './platform'
@@ -94,8 +94,11 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        {usesExternal && currentAgent ? (
-          <AgentIcon id={currentAgent.id} size={18} />
+        {/* Icon keys off externalAgentId directly (not the detection result) so the agent
+            icon shows immediately — detection is async and the list resets per conversation,
+            which used to flash the Kivio logo until the first probe finished. */}
+        {usesExternal && agentRuntime.externalAgentId ? (
+          <AgentIcon id={agentRuntime.externalAgentId} size={18} />
         ) : (
           <img
             src={KIVIO_LOGO_SRC}
@@ -182,28 +185,13 @@ interface ExternalModelSelectorProps {
   conversationId?: string | null
 }
 
-function formatModelLabel(model: {
-  id: string
-  label: string
-  contextWindowTokens?: number | null
-  context_window_tokens?: number | null
-}): string {
-  const tokens = model.contextWindowTokens ?? model.context_window_tokens
-  if (!tokens) return model.label
-  const window = tokens >= 1_000_000
-    ? '1M'
-    : tokens >= 1_000
-      ? `${Math.round(tokens / 1000)}K`
-      : `${tokens}`
-  return `${model.label} · ${window}`
-}
-
 function ExternalModelSelectorBase({
   agentRuntime,
   onModelChange,
   conversationId,
 }: ExternalModelSelectorProps) {
   const [open, setOpen] = useState(false)
+  const [reasoningOpen, setReasoningOpen] = useState(false)
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
 
   useEffect(() => {
@@ -227,6 +215,8 @@ function ExternalModelSelectorBase({
   const models = useMemo(() => agent?.models ?? [], [agent])
   const reasoningOptions = useMemo(() => agent?.reasoningOptions ?? [], [agent])
   const currentReasoning = agentRuntime.externalReasoning ?? 'default'
+  const currentReasoningLabel =
+    reasoningOptions.find((o) => o.id === currentReasoning)?.label ?? currentReasoning
   const displayName = useMemo(() => {
     const currentId = agentRuntime.externalModel
     const selected = currentId ? models.find((item) => item.id === currentId) : undefined
@@ -235,85 +225,111 @@ function ExternalModelSelectorBase({
     // The dropdown keeps the full id.
     const rawLabel = selected?.label ?? currentId ?? '选择模型'
     const slash = rawLabel.lastIndexOf('/')
-    const base = slash >= 0 ? rawLabel.slice(slash + 1) : rawLabel
-    // Append the active thinking level (when set to a non-default level) so it's visible on the pill.
-    const reasoning = reasoningOptions.find((o) => o.id === currentReasoning)
-    if (reasoning && currentReasoning !== 'default') {
-      return `${base} · ${reasoning.label}`
-    }
-    return base
-  }, [agentRuntime.externalModel, models, reasoningOptions, currentReasoning])
+    return slash >= 0 ? rawLabel.slice(slash + 1) : rawLabel
+  }, [agentRuntime.externalModel, models])
 
   if (agentRuntime.kind !== 'external' || !agentRuntime.externalAgentId) {
     return null
   }
 
   return (
-    <div className="relative max-w-full min-w-0" data-tauri-drag-region="false">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
-      >
-        <span className="max-w-[140px] truncate font-medium text-neutral-800 dark:text-neutral-200">
-          {displayName}
-        </span>
-        <ChevronDown
-          size={15}
-          className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`}
-        />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 max-h-[min(320px,50vh)] min-w-[200px] overflow-y-auto rounded-2xl border border-neutral-200/90 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
-            {models.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">
-                该 CLI 未上报可用模型
-              </div>
-            ) : (
-              models.map((model) => (
-                <button
-                  key={model.id}
-                  type="button"
-                  onClick={() => {
-                    onModelChange(model.id)
-                    setOpen(false)
-                  }}
-                  className={`block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
-                    agentRuntime.externalModel === model.id ? 'font-semibold' : ''
-                  }`}
-                >
-                  {formatModelLabel(model)}
-                </button>
-              ))
-            )}
-            {reasoningOptions.length > 0 && (
-              <>
-                <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />
-                <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
-                  Reasoning
+    <div className="flex min-w-0 max-w-full items-center gap-1">
+      <div className="relative min-w-0" data-tauri-drag-region="false">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
+        >
+          <span className="max-w-[140px] truncate font-medium text-neutral-800 dark:text-neutral-200">
+            {displayName}
+          </span>
+          <ChevronDown
+            size={15}
+            className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {open && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
+            <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 max-h-[min(320px,50vh)] min-w-[200px] overflow-y-auto rounded-2xl border border-neutral-200/90 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+              {models.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">
+                  该 CLI 未上报可用模型
                 </div>
-                {reasoningOptions.map((option) => (
+              ) : (
+                models.map((model) => (
                   <button
-                    key={option.id}
+                    key={model.id}
                     type="button"
                     onClick={() => {
-                      onModelChange(agentRuntime.externalModel ?? 'default', option.id)
+                      onModelChange(model.id)
                       setOpen(false)
                     }}
-                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                    className={`block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
+                      agentRuntime.externalModel === model.id ? 'font-semibold' : ''
+                    }`}
                   >
-                    <span>{option.label}</span>
-                    {option.id === currentReasoning && (
-                      <Check size={15} className="shrink-0 text-neutral-500" />
-                    )}
+                    {model.label}
                   </button>
-                ))}
-              </>
-            )}
-          </div>
-        </>
+                ))
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Standalone thinking-level pill, mirroring the builtin ThinkingLevelSelector. */}
+      {reasoningOptions.length > 0 && (
+        <div className="relative shrink-0" data-tauri-drag-region="false">
+          <button
+            type="button"
+            onClick={() => setReasoningOpen(!reasoningOpen)}
+            className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
+            title={`思考等级：${currentReasoningLabel}`}
+            aria-label={`思考等级：${currentReasoningLabel}`}
+          >
+            <Brain size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+            <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800 dark:text-neutral-200">
+              {currentReasoningLabel}
+            </span>
+            <ChevronDown
+              size={15}
+              className={`shrink-0 text-neutral-400 transition-transform ${reasoningOpen ? 'rotate-180' : ''}`}
+            />
+          </button>
+          {reasoningOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => setReasoningOpen(false)}
+                aria-hidden
+              />
+              <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[160px] overflow-y-auto rounded-2xl border border-neutral-200/90 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+                {reasoningOptions.map((option) => {
+                  const active = option.id === currentReasoning
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => {
+                        onModelChange(agentRuntime.externalModel ?? 'default', option.id)
+                        setReasoningOpen(false)
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[13px] transition-colors ${
+                        active
+                          ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
+                          : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800/80'
+                      }`}
+                    >
+                      <span className="min-w-0 truncate">{option.label}</span>
+                      {active && <Check size={15} className="shrink-0 text-neutral-500" />}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
       )}
     </div>
   )
