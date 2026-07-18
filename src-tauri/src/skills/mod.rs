@@ -182,6 +182,82 @@ pub fn chat_skills_import(app: AppHandle, path: String) -> SkillImportResult {
     }
 }
 
+/// 技能包下载大小上限（与本地 zip 导入的隐含约束一致，防止误装超大包）。
+const MAX_SKILL_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
+
+/// 把 GitHub 仓库页面 URL 归一为 codeload zip 直链；直链 zip / clawhub 下载链 / 其它原样返回。
+/// 支持 `github.com/{owner}/{repo}`、`.../tree/{ref}`（子目录忽略，安装首个 SKILL.md）。
+fn normalize_skill_download_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if let Ok(parsed) = reqwest::Url::parse(trimmed) {
+        if parsed.host_str() == Some("github.com") {
+            let segs: Vec<&str> = parsed
+                .path()
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .collect();
+            if segs.len() >= 2 {
+                let owner = segs[0];
+                let repo = segs[1].trim_end_matches(".git");
+                let git_ref = if segs.len() >= 4 && segs[2] == "tree" {
+                    segs[3]
+                } else {
+                    "HEAD"
+                };
+                return format!("https://codeload.github.com/{owner}/{repo}/zip/{git_ref}");
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+/// 技能市场安装：从 ClawHub 下载链 / GitHub 仓库 / 直链 zip 下载 zip 并落盘。
+/// 浏览/搜索/owner 消歧在前端完成，这里只负责下载 + 复用 `install_skill_zip_bytes`。
+#[tauri::command]
+pub async fn chat_skills_install_from_url(app: AppHandle, url: String) -> SkillImportResult {
+    match install_skill_from_url(&app, &url).await {
+        Ok(meta) => SkillImportResult {
+            success: true,
+            skill: Some(meta),
+            error: None,
+        },
+        Err(err) => SkillImportResult {
+            success: false,
+            skill: None,
+            error: Some(err),
+        },
+    }
+}
+
+async fn install_skill_from_url(app: &AppHandle, url: &str) -> Result<SkillMeta, String> {
+    let skills_dir = user_skills_dir(app)?;
+    let download_url = normalize_skill_download_url(url);
+    let client = crate::api::build_http_client();
+    let response = client
+        .get(&download_url)
+        .header(reqwest::header::USER_AGENT, "kivio-skill-market")
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(|err| format!("Download failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", response.status()));
+    }
+    if let Some(len) = response.content_length() {
+        if len > MAX_SKILL_DOWNLOAD_BYTES {
+            return Err("Skill package too large (over 50MB)".to_string());
+        }
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("Read download failed: {err}"))?;
+    if bytes.len() as u64 > MAX_SKILL_DOWNLOAD_BYTES {
+        return Err("Skill package too large (over 50MB)".to_string());
+    }
+    install_skill_zip_bytes(bytes.to_vec(), &skills_dir)
+}
+
 pub fn read_skill_detail(
     app: &AppHandle,
     extra_paths: &[String],
@@ -311,6 +387,29 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_normalize_github_repo_and_passthrough() {
+        assert_eq!(
+            normalize_skill_download_url("https://github.com/owner/repo"),
+            "https://codeload.github.com/owner/repo/zip/HEAD"
+        );
+        assert_eq!(
+            normalize_skill_download_url("https://github.com/owner/repo.git"),
+            "https://codeload.github.com/owner/repo/zip/HEAD"
+        );
+        assert_eq!(
+            normalize_skill_download_url("https://github.com/owner/repo/tree/dev"),
+            "https://codeload.github.com/owner/repo/zip/dev"
+        );
+        // 直链 zip / clawhub 下载链原样返回
+        let claw = "https://clawhub.ai/api/v1/download?slug=x&tag=latest&ownerHandle=y";
+        assert_eq!(normalize_skill_download_url(claw), claw);
+        assert_eq!(
+            normalize_skill_download_url("https://example.com/a.zip"),
+            "https://example.com/a.zip"
+        );
+    }
 
     fn zip_with_skill(id: &str) -> Vec<u8> {
         let mut buf = Cursor::new(Vec::new());

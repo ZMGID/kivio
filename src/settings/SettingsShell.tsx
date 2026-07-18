@@ -67,6 +67,7 @@ import {
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { KnowledgeBasePanel } from './KnowledgeBasePanel'
 import { McpMarketModal } from './McpMarketModal'
+import { SkillMarketModal } from './SkillMarketModal'
 import { WebSearchPanel } from './WebSearchPanel'
 
 export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'mcp' | 'skill' | 'webSearch' | 'connectors' | 'knowledge' | 'usage' | 'providers' | 'about'
@@ -635,6 +636,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [oauthMcpServerId, setOauthMcpServerId] = useState<string | null>(null)
   const [mcpNeedsAuth, setMcpNeedsAuth] = useState<Record<string, boolean>>({})
   const [mcpMarketOpen, setMcpMarketOpen] = useState(false)
+  const [skillMarketOpen, setSkillMarketOpen] = useState(false)
   const [expandedMcpStderrIds, setExpandedMcpStderrIds] = useState<string[]>([])
   const [mcpStderrTails, setMcpStderrTails] = useState<Record<string, string>>({})
   const [skillsLoading, setSkillsLoading] = useState(false)
@@ -4189,6 +4191,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     </Button>
                     <Button
                       size="sm"
+                      onClick={() => setSkillMarketOpen(true)}
+                      data-tauri-drag-region="false"
+                    >
+                      <Plus size={11} />
+                      {lang === 'zh' ? '技能市场' : 'Skill market'}
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => void handleImportSkill()}
                       data-tauri-drag-region="false"
                     >
@@ -4212,6 +4222,17 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       {lang === 'zh' ? '打开 Skill 文件夹' : 'Open skill folder'}
                     </Button>
                   </div>
+
+                  {skillMarketOpen && (
+                    <SkillMarketModal
+                      lang={lang}
+                      onInstalled={() => {
+                        void refreshChatSkills()
+                        onSettingsChange()
+                      }}
+                      onClose={() => setSkillMarketOpen(false)}
+                    />
+                  )}
                   <SettingRow label={lang === 'zh' ? '额外扫描路径' : 'Extra scan paths'} stack>
                     <div className="space-y-1.5">
                       {chatTools.skillScanPaths.map((path, index) => (

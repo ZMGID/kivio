@@ -1779,6 +1779,12 @@ export const api = {
       'chat_skills_import',
       { path },
     ),
+  /** 技能市场：从 ClawHub 下载链 / GitHub 仓库 / 直链 zip 下载安装。 */
+  chatSkillsInstallFromUrl: (url: string) =>
+    invoke<{ success: boolean; skill?: SkillMeta | null; error?: string | null }>(
+      'chat_skills_install_from_url',
+      { url },
+    ),
   chatSkillsOpenFolder: () =>
     invoke<{ success: boolean; path?: string | null; error?: string | null }>(
       'chat_skills_open_folder',

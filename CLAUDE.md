@@ -63,6 +63,10 @@ The settings panel (`src/Settings.tsx`) delegates to helpers in **`src/settings/
 - `utils.ts` — hotkey parsing/formatting and platform detection.
 - plus `ProviderModelsPicker`, `ProviderSortableList`, `ModelPairSelect`, `ScreenshotTranslationSettings`, `UsageStatsPanel`, `providerPresets`, `SettingsShell`.
 
+**Marketplaces** (in the MCP / Skill settings tabs of `SettingsShell.tsx`):
+- **MCP market** (`mcpRegistry.ts` + `McpMarketModal.tsx`) — browses the Official / Smithery / Glama public registries by **direct frontend `fetch`** (all three return CORS `Access-Control-Allow-Origin` for `tauri://localhost`, no Rust proxy). Normalizes each source into a unified card + install draft, fills required config (env/header/url template/`--config`), then appends a `ChatMcpServer` to `chatTools.servers`. No backend.
+- **Skill market** (`skillMarket.ts` + `SkillMarketModal.tsx`) — ClawHub catalog (browse/search/owner-disambiguation, all frontend fetch, CORS `*`) + GitHub-repo/zip URL install. Downloading the zip goes through **one Rust command `chat_skills_install_from_url`** (`skills/mod.rs`, async; rewrites `github.com/o/r[/tree/ref]` → codeload zip, 50MB cap) which reuses the existing `install_skill_zip_bytes`. ClawHub download 409s on ambiguous slugs → `resolveClawHubSkillOwner` disambiguates via search before building the download URL.
+
 The chat UI lives in **`src/chat/`** (mounted via lazy `Chat.tsx` inside `ChatWindowHost`). It mirrors the Rust agent concepts: message rendering (`MessageList`/`MessageBubble`/`ChatMarkdown`), tool-call and reasoning blocks (`ToolCallBlock`/`ReasoningBlock`/`AskUserBlock`), conversation/project sidebar, model/skill selectors, the Pyodide runner, and error boundaries (`ChatErrorBoundary`/`ToolCallErrorBoundary`/`MarkdownErrorBoundary`). Many of these modules have colocated Vitest `.test.ts(x)` files — keep them green. Lens-specific frontend helpers are in `src/lens/`.
 
 ### Multi-Provider System
