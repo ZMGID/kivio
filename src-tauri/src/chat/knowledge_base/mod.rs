@@ -34,10 +34,13 @@ pub mod ingest;
 pub mod parse;
 pub mod process;
 pub mod rerank;
+pub mod retrieval;
 pub mod store;
 
 #[cfg(test)]
 mod live_e2e_tests;
+#[cfg(test)]
+mod eval_tests;
 
 /// A knowledge library. `embedding_dim` is 0 until the first chunk is indexed
 /// (the dimension is learned from the first embedding response).

@@ -72,25 +72,113 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
             doc_id TEXT NOT NULL,
             doc_name TEXT NOT NULL DEFAULT '',
             text TEXT NOT NULL,
+            search_text TEXT NOT NULL DEFAULT '',
             heading_path TEXT,
             page INTEGER,
             char_start INTEGER NOT NULL DEFAULT 0,
             char_end INTEGER NOT NULL DEFAULT 0,
             order_index INTEGER NOT NULL DEFAULT 0
          );
-         CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
-         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-            text, content='chunks', content_rowid='id', tokenize='trigram'
-         );
-         CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-            INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
-         END;
-         CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-            INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.id, old.text);
-         END;",
+         CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);",
     )
     .map_err(|e| format!("init store.db schema: {e}"))?;
+    // FTS schema (D2): CJK-bigram + latin-word text indexed with unicode61, so
+    // natural-language CJK queries recall on shared bigrams instead of failing
+    // the old whole-query trigram phrase match. Detects + migrates legacy DBs.
+    ensure_fts_schema(&conn)?;
     Ok(conn)
+}
+
+/// Whether a column exists on a table (for idempotent migration).
+fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| e.to_string())?;
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(names.iter().any(|n| n == col))
+}
+
+/// Create (fresh) or migrate (legacy) the `chunks_fts` index to the D2 shape:
+/// external-content FTS5 over `chunks.search_text` with the `unicode61`
+/// tokenizer. Legacy DBs indexed raw `text` with `trigram`, which cannot match
+/// CJK overlaps shorter than 3 chars. Idempotent: a no-op once already migrated.
+fn ensure_fts_schema(conn: &Connection) -> Result<(), String> {
+    // Old DBs lack the search_text column entirely.
+    if !column_exists(conn, "chunks", "search_text")? {
+        conn.execute(
+            "ALTER TABLE chunks ADD COLUMN search_text TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|e| format!("add search_text column: {e}"))?;
+    }
+    // Is the FTS table already the new (search_text) one?
+    let fts_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunks_fts'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    if fts_sql
+        .as_deref()
+        .map(|s| s.contains("search_text"))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    // (Re)build FTS on search_text with unicode61, then backfill + rebuild the
+    // index from existing chunk text (no re-embed / re-parse needed).
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS chunks_ai;
+         DROP TRIGGER IF EXISTS chunks_ad;
+         DROP TABLE IF EXISTS chunks_fts;
+         CREATE VIRTUAL TABLE chunks_fts USING fts5(
+            search_text, content='chunks', content_rowid='id', tokenize='unicode61'
+         );
+         CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+            INSERT INTO chunks_fts(rowid, search_text) VALUES (new.id, new.search_text);
+         END;
+         CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
+            INSERT INTO chunks_fts(chunks_fts, rowid, search_text) VALUES('delete', old.id, old.search_text);
+         END;",
+    )
+    .map_err(|e| format!("create chunks_fts: {e}"))?;
+    backfill_search_text(conn)?;
+    // Rebuild the external-content index from the populated search_text column.
+    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')", [])
+        .map_err(|e| format!("rebuild chunks_fts: {e}"))?;
+    Ok(())
+}
+
+/// Recompute `search_text` for every chunk from its stored text/doc_name/
+/// heading (legacy rows had an empty column). Cheap: text is already on disk.
+fn backfill_search_text(conn: &Connection) -> Result<(), String> {
+    let rows: Vec<(i64, String, String, Option<String>)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, text, doc_name, heading_path FROM chunks")
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(|e| e.to_string())?;
+        let mut v = Vec::new();
+        for row in mapped {
+            v.push(row.map_err(|e| e.to_string())?);
+        }
+        v
+    };
+    for (id, text, doc_name, heading) in rows {
+        let st = build_search_text(&text, &doc_name, heading.as_deref());
+        conn.execute(
+            "UPDATE chunks SET search_text=?1 WHERE id=?2",
+            rusqlite::params![st, id],
+        )
+        .map_err(|e| format!("backfill search_text: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Create the per-library `vec0` table for the given dimension if absent.
@@ -252,14 +340,16 @@ pub fn replace_doc_chunks(
     tx.execute("DELETE FROM chunks WHERE doc_id=?1", [doc_id])
         .map_err(|e| format!("delete old chunks: {e}"))?;
     for c in chunks {
+        let search_text = build_search_text(&c.text, &c.doc_name, c.heading_path.as_deref());
         tx.execute(
-            "INSERT INTO chunks (chunk_id, doc_id, doc_name, text, heading_path, page, char_start, char_end, order_index)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO chunks (chunk_id, doc_id, doc_name, text, search_text, heading_path, page, char_start, char_end, order_index)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             rusqlite::params![
                 c.id,
                 c.doc_id,
                 c.doc_name,
                 c.text,
+                search_text,
                 c.heading_path,
                 c.page.map(|p| p as i64),
                 c.char_start as i64,
@@ -304,7 +394,103 @@ pub fn counts(conn: &Connection) -> Result<(usize, usize), String> {
     Ok((docs as usize, chunks as usize))
 }
 
-// ===== search =====
+// ===== search text preprocessing + FTS query building (D2) =====
+
+/// Whether a char is a CJK/ideographic **word** character (not punctuation):
+/// callers gate on `is_alphanumeric()` first, so CJK punctuation like `。，！`
+/// (which lies inside these ranges but is not alphanumeric) is treated as a
+/// separator, not a token.
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x2E80..=0x9FFF      // CJK radicals … unified ideographs (incl. kana, bopomofo)
+        | 0xAC00..=0xD7AF    // hangul syllables
+        | 0xF900..=0xFAFF    // CJK compat ideographs
+        | 0x20000..=0x2FA1F  // CJK ext B+ / compat supplement
+    )
+}
+
+/// Turn text into a whitespace-tokenizable search string: CJK runs become
+/// space-joined char **bigrams** (so a natural-language CJK query recalls on any
+/// shared 2-char span), while latin/digit runs are kept **whole** and lowercased
+/// (so error codes / versions / IDs stay exact-matchable). Everything else is a
+/// separator. Pure + unit-tested; both indexing and querying go through it so
+/// the two sides always agree.
+pub fn bigrammize(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut cjk: Vec<char> = Vec::new();
+    let mut latin = String::new();
+    let flush_cjk = |cjk: &mut Vec<char>, out: &mut Vec<String>| {
+        match cjk.len() {
+            0 => {}
+            1 => out.push(cjk[0].to_string()),
+            _ => {
+                for w in cjk.windows(2) {
+                    out.push(format!("{}{}", w[0], w[1]));
+                }
+            }
+        }
+        cjk.clear();
+    };
+    let flush_latin = |latin: &mut String, out: &mut Vec<String>| {
+        if !latin.is_empty() {
+            out.push(std::mem::take(latin));
+        }
+    };
+    for c in text.chars() {
+        if !c.is_alphanumeric() {
+            // separator (whitespace, ASCII/CJK punctuation, symbols)
+            flush_cjk(&mut cjk, &mut out);
+            flush_latin(&mut latin, &mut out);
+        } else if is_cjk(c) {
+            flush_latin(&mut latin, &mut out);
+            cjk.push(c);
+        } else {
+            flush_cjk(&mut cjk, &mut out);
+            latin.extend(c.to_lowercase());
+        }
+    }
+    flush_cjk(&mut cjk, &mut out);
+    flush_latin(&mut latin, &mut out);
+    out.join(" ")
+}
+
+/// The indexed search string for a chunk: its text plus doc name and heading
+/// path (so a query can hit on the document title / section), bigrammized.
+pub fn build_search_text(text: &str, doc_name: &str, heading_path: Option<&str>) -> String {
+    let mut combined = String::from(text);
+    combined.push(' ');
+    combined.push_str(doc_name);
+    if let Some(h) = heading_path {
+        combined.push(' ');
+        combined.push_str(h);
+    }
+    bigrammize(&combined)
+}
+
+/// Max query tokens sent to FTS5 (bounds a pathologically long query).
+const MAX_FTS_TERMS: usize = 128;
+
+/// Build a safe FTS5 MATCH string from a raw user query: bigrammize it the same
+/// way documents are indexed, then OR the tokens (recall-first; BM25 ranks
+/// docs matching more tokens higher). Each token is quoted so FTS5 operators /
+/// punctuation in user text are treated as literals, never query syntax.
+/// Returns None when the query has no indexable content (empty/punctuation).
+pub fn build_fts_query(raw: &str) -> Option<String> {
+    let processed = bigrammize(raw);
+    let terms: Vec<String> = processed
+        .split(' ')
+        .filter(|t| !t.is_empty())
+        .take(MAX_FTS_TERMS)
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" OR "))
+    }
+}
+
+
 
 fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeChunk> {
     Ok(KnowledgeChunk {
@@ -362,6 +548,10 @@ fn fts_rows(
     if limit == 0 || q.is_empty() {
         return Ok(Vec::new());
     }
+    // Build a safe bigrammized OR query; None ⇒ nothing indexable to match.
+    let Some(match_query) = build_fts_query(q) else {
+        return Ok(Vec::new());
+    };
     let sql = "SELECT c.id AS rowid, c.chunk_id, c.doc_id, c.doc_name, c.text, c.heading_path,
                       c.page, c.char_start, c.char_end, c.order_index
                FROM chunks_fts f
@@ -370,10 +560,6 @@ fn fts_rows(
                ORDER BY f.rank
                LIMIT ?2";
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    // Pass the raw text as a single MATCH string; trigram tokenizer handles
-    // CJK + substrings. Quote it so punctuation/operators in user text don't
-    // get parsed as FTS5 query syntax.
-    let match_query = format!("\"{}\"", q.replace('"', "\"\""));
     let rows = stmt
         .query_map(rusqlite::params![match_query, limit as i64], |row| {
             let rowid: i64 = row.get("rowid")?;
@@ -399,34 +585,85 @@ pub fn hybrid_search(
     weight_vector: f32,
     weight_keyword: f32,
 ) -> Result<Vec<(KnowledgeChunk, f32)>, String> {
+    Ok(
+        hybrid_search_detailed(conn, query_vec, query_text, top_k, weight_vector, weight_keyword)?
+            .into_iter()
+            .map(|c| (c.chunk, c.fused_score))
+            .collect(),
+    )
+}
+
+/// A fused candidate carrying per-lane diagnostics. `hybrid_search` is a thin
+/// projection of this; the retrieval orchestrator uses the full detail to show
+/// which lane surfaced each hit (Retrieval Test) and to feed later stages
+/// (dedup / rerank / threshold) without re-querying.
+#[derive(Debug, Clone)]
+pub struct FusedCandidate {
+    pub rowid: i64,
+    pub chunk: KnowledgeChunk,
+    pub vector_rank: Option<usize>,
+    pub vector_distance: Option<f32>,
+    pub keyword_rank: Option<usize>,
+    pub fused_score: f32,
+}
+
+/// Fusion core (see `hybrid_search`) that retains per-lane ranks/distance.
+/// `top_k` bounds the returned list; each lane over-fetches internally so
+/// fusion sees beyond it. Behavior of the fused score is identical to the
+/// legacy `hybrid_search` — this is a superset, not a change.
+pub fn hybrid_search_detailed(
+    conn: &Connection,
+    query_vec: &[f32],
+    query_text: &str,
+    top_k: usize,
+    weight_vector: f32,
+    weight_keyword: f32,
+) -> Result<Vec<FusedCandidate>, String> {
     use std::collections::HashMap;
     const RRF_K: f32 = 60.0;
     // Over-fetch each lane so fusion sees beyond the final top_k.
     let fetch = (top_k * 5).max(20);
 
-    let mut score: HashMap<i64, f32> = HashMap::new();
-    let mut chunk_by_id: HashMap<i64, KnowledgeChunk> = HashMap::new();
+    let mut cand: HashMap<i64, FusedCandidate> = HashMap::new();
 
     if weight_vector > 0.0 {
-        for (rank, (rowid, chunk, _dist)) in
+        for (rank, (rowid, chunk, dist)) in
             vector_rows(conn, query_vec, fetch)?.into_iter().enumerate()
         {
-            *score.entry(rowid).or_insert(0.0) += weight_vector / (RRF_K + (rank as f32 + 1.0));
-            chunk_by_id.entry(rowid).or_insert(chunk);
+            let entry = cand.entry(rowid).or_insert_with(|| FusedCandidate {
+                rowid,
+                chunk,
+                vector_rank: None,
+                vector_distance: None,
+                keyword_rank: None,
+                fused_score: 0.0,
+            });
+            entry.vector_rank = Some(rank);
+            entry.vector_distance = Some(dist);
+            entry.fused_score += weight_vector / (RRF_K + (rank as f32 + 1.0));
         }
     }
     if weight_keyword > 0.0 {
         for (rank, (rowid, chunk)) in fts_rows(conn, query_text, fetch)?.into_iter().enumerate() {
-            *score.entry(rowid).or_insert(0.0) += weight_keyword / (RRF_K + (rank as f32 + 1.0));
-            chunk_by_id.entry(rowid).or_insert(chunk);
+            let entry = cand.entry(rowid).or_insert_with(|| FusedCandidate {
+                rowid,
+                chunk,
+                vector_rank: None,
+                vector_distance: None,
+                keyword_rank: None,
+                fused_score: 0.0,
+            });
+            entry.keyword_rank = Some(rank);
+            entry.fused_score += weight_keyword / (RRF_K + (rank as f32 + 1.0));
         }
     }
 
-    let mut out: Vec<(KnowledgeChunk, f32)> = score
-        .into_iter()
-        .filter_map(|(id, s)| chunk_by_id.remove(&id).map(|c| (c, s)))
-        .collect();
-    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out: Vec<FusedCandidate> = cand.into_values().collect();
+    out.sort_by(|a, b| {
+        b.fused_score
+            .partial_cmp(&a.fused_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out.truncate(top_k);
     Ok(out)
 }
@@ -517,6 +754,126 @@ mod tests {
         }
     }
 
+    // ---- D2: bigram search-text + FTS query builder ----
+
+    #[test]
+    fn bigrammize_cjk_and_latin() {
+        // CJK run → space-joined char bigrams.
+        assert_eq!(bigrammize("退款条件"), "退款 款条 条件");
+        // Single CJK char kept as-is.
+        assert_eq!(bigrammize("退"), "退");
+        // Latin/digit run kept whole and lowercased; codes survive intact.
+        assert_eq!(bigrammize("Error E1021"), "error e1021");
+        // Mixed CJK + latin + punctuation as separators.
+        assert_eq!(bigrammize("错误码 E1021！"), "错误 误码 e1021");
+        // Punctuation-only / empty → nothing.
+        assert_eq!(bigrammize("，。！"), "");
+        assert_eq!(bigrammize(""), "");
+    }
+
+    #[test]
+    fn build_fts_query_is_safe_and_or_joined() {
+        // Empty / punctuation-only → None (no indexable content).
+        assert!(build_fts_query("").is_none());
+        assert!(build_fts_query("   ").is_none());
+        assert!(build_fts_query("，。！").is_none());
+        // CJK question → OR of bigrams, each quoted.
+        assert_eq!(build_fts_query("退款条件").unwrap(), "\"退款\" OR \"款条\" OR \"条件\"");
+        // Exact code preserved as a single quoted token.
+        assert_eq!(build_fts_query("E1021").unwrap(), "\"e1021\"");
+        // FTS5 operators / quotes in user text are neutralized (quoted literals),
+        // never parsed as query syntax.
+        let q = build_fts_query("a OR b* AND (c) \"x\"").unwrap();
+        assert!(q.contains("\"a\""));
+        assert!(q.contains("\"or\"") || q.contains("\"b\"")); // 'or' is a literal token here
+        assert!(!q.contains("b*"), "wildcard must not leak: {q}");
+    }
+
+    #[test]
+    fn fts_special_chars_do_not_error() {
+        let path = tmp_db();
+        let conn = open_db(&path).unwrap();
+        replace_doc_chunks(
+            &conn,
+            "d",
+            0,
+            &[mk_chunk("c1", "退款需要在七天内申请并提供订单编号", vec![])],
+        )
+        .unwrap();
+        // These would be FTS5 syntax errors if not quoted/handled.
+        for q in ["\"", "OR", "a AND b", "*", "(x", "NEAR/2", "，、。"] {
+            let r = fts_rows(&conn, q, 10);
+            assert!(r.is_ok(), "query {q:?} errored: {r:?}");
+        }
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn cjk_paraphrase_recalls_via_keyword_lane() {
+        // The D2 headline: a natural-language question worded differently from
+        // the source sentence must hit the keyword lane (old phrase query → 0).
+        let path = tmp_db();
+        let conn = open_db(&path).unwrap();
+        replace_doc_chunks(
+            &conn,
+            "refund",
+            0,
+            &[mk_chunk(
+                "c1",
+                "退款需要在购买后七天内提出申请，并提供订单编号",
+                vec![],
+            )],
+        )
+        .unwrap();
+        // Keyword-only lane (weight_vector 0). Shares the bigram "退款".
+        let hits = hybrid_search(&conn, &[], "退款要满足什么条件", 5, 0.0, 1.0).unwrap();
+        assert!(
+            !hits.is_empty(),
+            "paraphrase should recall via keyword lane, got nothing"
+        );
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn migrates_legacy_trigram_fts_to_search_text() {
+        // Simulate a legacy DB: chunks table without search_text + a trigram FTS
+        // on `text`. open_db's ensure_fts_schema must migrate it in place.
+        let path = tmp_db();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id TEXT, doc_id TEXT,
+                    doc_name TEXT DEFAULT '', text TEXT NOT NULL, heading_path TEXT,
+                    page INTEGER, char_start INTEGER DEFAULT 0, char_end INTEGER DEFAULT 0,
+                    order_index INTEGER DEFAULT 0
+                 );
+                 CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='id', tokenize='trigram');
+                 CREATE TRIGGER chunks_ai AFTER INSERT ON chunks BEGIN
+                    INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+                 END;",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO chunks(chunk_id,doc_id,doc_name,text) VALUES ('c','refund','r.md','退款需要在七天内申请')",
+                [],
+            )
+            .unwrap();
+        }
+        // Re-open through the real path → triggers migration + backfill + rebuild.
+        let conn = open_db(&path).unwrap();
+        assert!(column_exists(&conn, "chunks", "search_text").unwrap());
+        let hits = fts_rows(&conn, "退款要什么条件", 5).unwrap();
+        assert!(
+            !hits.is_empty(),
+            "migrated legacy DB must recall CJK paraphrase"
+        );
+        drop(conn);
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn hybrid_fuses_vector_and_keyword_lanes() {
         let path = tmp_db();
@@ -554,3 +911,4 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 }
+

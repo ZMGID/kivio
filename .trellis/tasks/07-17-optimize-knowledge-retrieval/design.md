@@ -93,6 +93,14 @@ RetrievalResponse
 
 FTS 查询构造必须由纯函数完成并有 adversarial tests，禁止直接拼接未经转义的 FTS 运算符。
 
+### trigram 边界与分层升级路径
+
+- trigram 分词要求匹配 token ≥3 字符：单字、`AI`/`os` 等 1–2 字符 term 无法命中 FTS，query builder 必须显式跳过或降级到向量通道，禁止把过短 term 拼进 MATCH 导致语法错误或空结果。
+- 分层策略（成本递增，只在评测证明前一层不足时进下一层）：
+  1. **本任务**：phrase → 安全 term OR/AND（零依赖，见上）。
+  2. **同 Phase 备选**：中文 bigram 预处理入库/查询（索引约 2× 膨胀）；mangled 分词文本仅用于索引，LLM/用户侧取原文（join rowid）。是否启用由 D7 评测结果决定。
+  3. **后续独立任务**：libsimple(jieba/pinyin) 原生扩展或自建 jieba+BM25。本任务不引入任何 per-platform 原生分词依赖（避免 DMG/MSI 打包与跨平台构建成本）。
+
 ## 5. Fusion design
 
 保留 Weighted RRF 作为兼容模式，同时为后续评测预留 Relative Score Fusion：
@@ -138,20 +146,21 @@ EmbeddingRetrievalProfile
 - 同一 doc 中相邻且高度重叠的 Chunk 合并或只保留较高分者。
 - 文本归一化后计算包含关系/字符 n-gram 重叠。
 - 保留 decision diagnostics，Retrieval Test 可显示为什么被过滤。
+- **去重在送 rerank 之前执行**（业界模式：先按来源/段落多样化再重排，既省重排调用成本又提升结果多样性）。
 
 不在第一阶段引入额外 Embedding MMR 调用。
 
 ## 9. Threshold semantics
 
-- rerank 开启：使用 rerank provider 返回的 relevance score，阈值需按模型/profile 保存。
-- rerank 关闭：不得把未归一化 RRF 分数包装成通用 0..1 相似度。可采用 vector distance 上限与关键词命中规则，或使用明确命名的 fusion cutoff。
+- rerank 开启：使用 rerank provider 返回的 relevance score，阈值需按模型/profile 保存。calibrated 分数（如 zerank-2）可直接设固定阈值；未校准分数应在评测集上看分布后再定，不写死。
+- rerank 关闭：不得把未归一化 RRF 分数包装成通用 0..1 相似度。采用**归一化融合分数**（vector/BM25 各自归一后线性组合，即 Relative Score Fusion）或 vector distance 上限作明确命名的 cutoff。
 - 阈值配置必须带 score kind，避免切换算法/模型后沿用错误量纲。
 
 ## 10. Evaluation and observability
 
 - 测试 fixture 使用仓库内人工构造的中英文文档与标注 query。
 - 评测 runner 直接调用纯存储/检索核心，网络 Embedding 使用固定向量 fixture 或 mock provider；另保留可选 live model smoke test。
-- 指标：Recall@5/10/20、MRR、无答案误召回率；后续可加 nDCG 和 answer-level faithfulness。
+- 指标：Recall@5/10/20、MRR、nDCG@10、无答案误召回率；后续可加 answer-level faithfulness。
 - 生产日志记录阶段耗时、候选数量、模型/profile 名称和错误类型，不记录 API Key、完整 Query/Chunk（除非显式 debug 且经过隐私设计）。
 
 ## 11. Compatibility and migration

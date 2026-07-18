@@ -8,9 +8,11 @@ use crate::api::{send_with_failover, with_standard_request_timeout};
 use crate::settings::ModelProvider;
 use crate::state::AppState;
 
-/// Rerank `documents` against `query`. Returns input indices reordered
-/// best-first (length ≤ documents.len()). Cohere/Jina return `results` already
-/// sorted by relevance with each item's original `index`.
+/// Rerank `documents` against `query`. Returns `(original_index, relevance_score)`
+/// pairs sorted best-first (length ≤ documents.len()). Cohere/Jina return
+/// `results` already sorted by relevance, each with its original `index` and a
+/// `relevance_score` — the score lets callers apply a real relevance threshold
+/// (D5), not just reorder.
 pub async fn rerank(
     state: &AppState,
     provider: &ModelProvider,
@@ -19,7 +21,7 @@ pub async fn rerank(
     documents: &[String],
     top_n: usize,
     attempts: usize,
-) -> Result<Vec<usize>, String> {
+) -> Result<Vec<(usize, f32)>, String> {
     if documents.is_empty() {
         return Ok(Vec::new());
     }
@@ -69,11 +71,21 @@ pub async fn rerank(
             format!("rerank API error: {msg}")
         })?;
 
-    let order: Vec<usize> = results
+    let order: Vec<(usize, f32)> = results
         .iter()
-        .filter_map(|r| r.get("index").and_then(|i| i.as_u64()))
-        .map(|i| i as usize)
-        .filter(|&i| i < documents.len())
+        .filter_map(|r| {
+            let idx = r.get("index").and_then(|i| i.as_u64())? as usize;
+            if idx >= documents.len() {
+                return None;
+            }
+            // relevance_score is the calibrated 0..1 relevance (Cohere/Jina);
+            // default to 0 if a provider omits it so ordering still works.
+            let score = r
+                .get("relevance_score")
+                .and_then(|s| s.as_f64())
+                .unwrap_or(0.0) as f32;
+            Some((idx, score))
+        })
         .collect();
     Ok(order)
 }

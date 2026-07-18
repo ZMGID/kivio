@@ -566,6 +566,7 @@ pub fn run() {
             chat::knowledge_base::commands::kb_delete_library,
             chat::knowledge_base::commands::kb_list_documents,
             chat::knowledge_base::commands::kb_delete_document,
+            chat::knowledge_base::commands::kb_retrieval_test,
             chat::knowledge_base::ingest::kb_upload_document,
             chat::knowledge_base::ingest::kb_import_url,
             chat::knowledge_base::ingest::kb_reindex_library,

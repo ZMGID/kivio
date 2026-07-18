@@ -849,8 +849,14 @@ export type KnowledgeBaseConfig = {
   rerankModel: string
   /** 入库分块目标 tokens（256–8192；只影响新导入/重建）。 */
   chunkTokens: number
-  /** knowledge_search 默认返回片段数（1–20）。 */
+  /** knowledge_search 默认返回片段数（1–20）；即最终上下文片段数 contextTopK。 */
   topK: number
+  /** 每库融合候选池大小（20–200）。 */
+  candidateK: number
+  /** 送 rerank 的候选数（5–50；仅 rerank 开启时生效）。 */
+  rerankTopK: number
+  /** 相关性阈值（0–1；0=关闭）。rerank 开=对齐 relevance 分；关=向量命中的余弦相似度下限。 */
+  minScore: number
 }
 
 export type Settings = {

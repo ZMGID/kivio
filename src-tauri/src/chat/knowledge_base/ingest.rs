@@ -155,9 +155,15 @@ async fn index_one(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<usize, 
     };
     let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
     for batch in texts.chunks(batch) {
-        let mut got =
-            embeddings::embed_batch(state, &provider, &lib.embedding_model, batch, attempts)
-                .await?;
+        let mut got = embeddings::embed_batch(
+            state,
+            &provider,
+            &lib.embedding_model,
+            batch,
+            embeddings::EmbeddingRole::Document,
+            attempts,
+        )
+        .await?;
         vectors.append(&mut got);
         emit_index(app, kb_id, doc_id, "indexing", vectors.len(), total, None);
     }
