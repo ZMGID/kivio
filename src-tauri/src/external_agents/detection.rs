@@ -264,10 +264,20 @@ fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOpt
                         out.push(RuntimeModelOption {
                             id: id.to_string(),
                             label: id.to_string(),
-                            context_window_tokens: None,
+                            // codex reports the real window per model (e.g. 272000); without
+                            // it the context gauge falls back to the generic 200K estimate.
+                            context_window_tokens: entry
+                                .get("context_window")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as u32),
                         });
                     }
                 }
+            }
+            // "Default" = codex picks its own default (the first listed model), so give the
+            // synthetic entry that model's window instead of leaving it unknown.
+            if out.len() > 1 {
+                out[0].context_window_tokens = out[1].context_window_tokens;
             }
         }
         _ => {}
@@ -307,11 +317,18 @@ mod tests {
     fn parse_codex_json_models() {
         let models = parse_models_list(
             "codex",
-            r#"{"models":[{"slug":"gpt-5.3-codex"},{"slug":"o3"}]}"#,
+            r#"{"models":[{"slug":"gpt-5.3-codex","context_window":272000},{"slug":"o3"}]}"#,
         )
         .unwrap();
         assert!(models.iter().any(|m| m.id == "gpt-5.3-codex"));
         assert!(models.iter().any(|m| m.id == "o3"));
+        // Real window is carried through, and "Default" inherits the first model's window.
+        let sol = models.iter().find(|m| m.id == "gpt-5.3-codex").unwrap();
+        assert_eq!(sol.context_window_tokens, Some(272000));
+        assert_eq!(models[0].id, "default");
+        assert_eq!(models[0].context_window_tokens, Some(272000));
+        let o3 = models.iter().find(|m| m.id == "o3").unwrap();
+        assert_eq!(o3.context_window_tokens, None);
     }
 
     #[test]

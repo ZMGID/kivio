@@ -390,6 +390,13 @@ pub async fn run_codex_app_server_session(
 // Persistent session (Phase 2): keep the app-server process alive across turns.
 // ===========================================================================================
 
+/// `/compact` must NOT be sent as prompt text — codex treats it as a plain user message (the
+/// model just role-plays a compaction while the real context keeps growing). The app-server
+/// protocol compacts via the dedicated `thread/compact/start` RPC instead.
+fn is_compact_slash(prompt: &str) -> bool {
+    prompt.trim() == "/compact"
+}
+
 /// A live Codex app-server connection: one `thread/start` (or `thread/resume`), then many
 /// `turn/start` calls over the same process. Owned exclusively by its actor task.
 pub struct CodexAppServerSession {
@@ -500,19 +507,31 @@ impl CodexAppServerSession {
         let turn_id = self.next_id;
         self.next_id += 1;
 
-        let mut turn_params = json!({
-            "threadId": self.thread_id,
-            "input": [{ "type": "text", "text": prompt }],
-            "cwd": self.cwd,
-            "approvalPolicy": "never",
-        });
-        if let Some(effort) = chosen_effort {
-            turn_params["effort"] = json!(effort);
+        if is_compact_slash(prompt) {
+            // Real compaction RPC; the server runs it as a turn (contextCompaction item +
+            // turn/completed), so the read loop below works unchanged.
+            write_rpc(
+                &mut self.stdin,
+                turn_id,
+                "thread/compact/start",
+                json!({ "threadId": self.thread_id }),
+            )
+            .await?;
+        } else {
+            let mut turn_params = json!({
+                "threadId": self.thread_id,
+                "input": [{ "type": "text", "text": prompt }],
+                "cwd": self.cwd,
+                "approvalPolicy": "never",
+            });
+            if let Some(effort) = chosen_effort {
+                turn_params["effort"] = json!(effort);
+            }
+            if let Some(m) = chosen_model {
+                turn_params["model"] = json!(m);
+            }
+            write_rpc(&mut self.stdin, turn_id, "turn/start", turn_params).await?;
         }
-        if let Some(m) = chosen_model {
-            turn_params["model"] = json!(m);
-        }
-        write_rpc(&mut self.stdin, turn_id, "turn/start", turn_params).await?;
 
         loop {
             match control.try_recv() {

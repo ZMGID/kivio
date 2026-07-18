@@ -9,7 +9,9 @@ use crate::state::AppState;
 
 pub fn compact_prompt_for_agent(agent_id: &str) -> Option<&'static str> {
     match agent_id {
-        "pi" | "claude" | "opencode" => Some("/compact"),
+        // codex: "/compact" is intercepted in CodexAppServerSession::run_turn and sent as the
+        // real `thread/compact/start` RPC (as prompt text the model would just role-play it).
+        "pi" | "claude" | "opencode" | "grok" | "codex" => Some("/compact"),
         _ => None,
     }
 }
@@ -59,6 +61,8 @@ mod tests {
     fn compact_prompt_supported_for_pi_and_claude() {
         assert_eq!(compact_prompt_for_agent("pi"), Some("/compact"));
         assert_eq!(compact_prompt_for_agent("claude"), Some("/compact"));
-        assert!(compact_prompt_for_agent("codex").is_none());
+        assert_eq!(compact_prompt_for_agent("grok"), Some("/compact"));
+        assert_eq!(compact_prompt_for_agent("codex"), Some("/compact"));
+        assert!(compact_prompt_for_agent("kimi").is_none());
     }
 }
