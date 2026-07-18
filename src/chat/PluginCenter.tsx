@@ -372,7 +372,8 @@ export function PluginCenter({ onRequestAiInstall }: PluginCenterProps) {
         <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
           <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
             <div className="flex min-w-0 items-center gap-2">
-              <h1 className="text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+              <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+                <Puzzle size={24} className="text-neutral-500" />
                 插件
               </h1>
               <IconButton size="lg" label="刷新检测" onClick={() => void refresh()} disabled={loading}>

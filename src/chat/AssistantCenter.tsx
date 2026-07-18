@@ -21,6 +21,7 @@ import { Button, IconButton } from '../components/Button'
 import { isProviderEnabled } from '../settings/utils'
 import { Select } from '../settings/components'
 import { builtinAssistantGlyph } from './assistantIcons'
+import { AgentIcon } from '../settings/NavIcons'
 import { chatApi } from './api'
 import type { ChatAssistant, SkillMeta } from './types'
 
@@ -828,7 +829,8 @@ export function AssistantCenter({
           <div className="mx-auto max-w-7xl space-y-4">
             <header className="flex min-w-0 items-center gap-3">
               <div className="flex min-w-0 shrink-0 items-center gap-2">
-                <h1 className="truncate text-[24px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+                <h1 className="flex items-center gap-2.5 truncate text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+                  <AgentIcon size={24} className="shrink-0 text-neutral-500" />
                   专家套件
                 </h1>
                 <IconButton
