@@ -285,7 +285,7 @@ export function McpCenter() {
                 {id === 'installed' && userServers.length > 0 && (
                   <span className="ml-1.5 text-[11px] tabular-nums text-neutral-400">{userServers.length}</span>
                 )}
-                {view === id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />}
+                {view === id && <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />}
               </button>
             ))}
           </div>
@@ -297,11 +297,11 @@ export function McpCenter() {
           )}
 
           {view === 'store' ? (
-            <div className="mt-5 flex min-h-[420px] flex-col">
+            <div key="store" className="chat-motion-tab-in mt-5 flex min-h-[420px] flex-col">
               <McpRegistryBrowser existingServers={servers} onInstall={handleInstall} />
             </div>
           ) : view === 'import' ? (
-            <div className="mt-5">
+            <div key="import" className="chat-motion-tab-in mt-5">
               <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
                 <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">导入 mcp.json</div>
                 <p className="mb-2 text-[12px] text-neutral-500 dark:text-neutral-400">从标准 mcp.json 文件批量导入服务器配置。</p>
@@ -312,7 +312,7 @@ export function McpCenter() {
               </div>
             </div>
           ) : view === 'advanced' ? (
-            <div className="mt-5 space-y-6">
+            <div key="advanced" className="chat-motion-tab-in mt-5 space-y-6">
               <section>
                 <div className="mb-2 text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">Kivio 内置工具</div>
                 <p className="mb-3 text-[12px] text-neutral-500 dark:text-neutral-400">
@@ -376,7 +376,7 @@ export function McpCenter() {
               </section>
             </div>
           ) : (
-            <div className="mt-5">
+            <div key="installed" className="chat-motion-tab-in mt-5">
               {loading ? (
                 <div className="space-y-2">
                   {Array.from({ length: 3 }, (_, i) => (

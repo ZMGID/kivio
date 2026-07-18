@@ -394,7 +394,7 @@ export function AssistantCenter({
             : '没有匹配的套件'}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-md border border-neutral-200 divide-y divide-neutral-200 dark:border-neutral-800 dark:divide-neutral-800">
+        <div key={tab} className="chat-motion-tab-in overflow-hidden rounded-md border border-neutral-200 divide-y divide-neutral-200 dark:border-neutral-800 dark:divide-neutral-800">
           {filteredAssistants.map((assistant) => {
             const stats = suiteStats(assistant)
             const builtIn = assistant.built_in ?? assistant.builtIn ?? false

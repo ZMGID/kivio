@@ -597,7 +597,7 @@ export function KnowledgeCenter() {
                 {id === 'libraries' && libraries.length > 0 && (
                   <span className="ml-1.5 text-[11px] tabular-nums text-neutral-400">{libraries.length}</span>
                 )}
-                {view === id && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />}
+                {view === id && <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />}
               </button>
             ))}
           </div>
@@ -615,7 +615,7 @@ export function KnowledgeCenter() {
           {view === 'rag' ? (
             /* RAG 设置：复用 settings 的合并面板。其子组件（kv-seg 等）依赖 .kv 作用域变量，
                包一层 .kv 提供变量；背景压透明与中心页底色无缝。 */
-            <div className="kv mt-5 !bg-transparent">
+            <div key="rag" className="kv chat-motion-tab-in mt-5 !bg-transparent">
               <KnowledgeRagPanel
                 providers={providers}
                 lang="zh"
@@ -629,7 +629,7 @@ export function KnowledgeCenter() {
             </div>
           ) : selected ? (
             /* ===== 库详情 ===== */
-            <div className="chat-motion-view-in mt-5 space-y-5">
+            <div key={selected.id} className="chat-motion-tab-in mt-5 space-y-5">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <Button variant="ghost" size="sm" onClick={() => setSelectedId(null)} data-tauri-drag-region="false">
@@ -786,7 +786,7 @@ export function KnowledgeCenter() {
             </div>
           ) : (
             /* ===== 库列表 ===== */
-            <div className="mt-5 space-y-4">
+            <div key="libraries" className="chat-motion-tab-in mt-5 space-y-4">
               {creating && (
                 <div className="chat-motion-search-reveal rounded-xl border border-neutral-200 p-4 dark:border-neutral-800">
                   <div className="mb-3 text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">新建知识库</div>

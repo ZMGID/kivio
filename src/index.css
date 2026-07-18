@@ -1501,6 +1501,39 @@ body {
   }
 }
 
+/* 页内 tab 内容切换（中心页 已安装/市场/…、侧栏 最近/集/项目）：
+   比整页 view-in 轻一档的 6px 上浮，快进快停；包裹节点需 key={tab} 以便每次切换重播。 */
+.chat-motion-tab-in {
+  animation: chat-motion-tab-in 200ms var(--kv-ease-standard) both;
+}
+
+@keyframes chat-motion-tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* tab 激活下划线：从中心横向展开（配合内容 tab-in，切换指向感更强）。 */
+.chat-motion-tab-underline {
+  animation: chat-motion-tab-underline var(--kv-dur-fast) var(--kv-ease-standard) both;
+}
+
+@keyframes chat-motion-tab-underline {
+  from {
+    transform: scaleX(0.4);
+    opacity: 0.4;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
 /* 文字流光扫过：背景位置左右扫动（autonomous agent / 运行中工具名共用的中性机制） */
 @keyframes chat-motion-shimmer-sweep {
   0% {

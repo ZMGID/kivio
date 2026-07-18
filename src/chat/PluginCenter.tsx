@@ -451,7 +451,7 @@ export function PluginCenter({ onRequestAiInstall }: PluginCenterProps) {
               </p>
             </div>
           ) : (
-            <div className="mt-6 grid gap-4">
+            <div key={tab} className="chat-motion-tab-in mt-6 grid gap-4">
               {filtered.map((plugin) => (
                 <PluginCard
                   key={plugin.id}

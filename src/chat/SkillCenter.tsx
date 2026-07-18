@@ -596,18 +596,18 @@ export function SkillCenter({ onSkillsChanged }: SkillCenterProps) {
               >
                 {label}
                 {view === id && (
-                  <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />
+                  <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />
                 )}
               </button>
             ))}
           </div>
 
           {view === 'store' ? (
-            <div className="mt-5 flex min-h-[420px] flex-col">
+            <div key="store" className="chat-motion-tab-in mt-5 flex min-h-[420px] flex-col">
               <SkillStoreBrowser onInstalled={() => void refreshChatSkills()} />
             </div>
           ) : view === 'import' ? (
-            <div className="mt-5 space-y-4">
+            <div key="import" className="chat-motion-tab-in mt-5 space-y-4">
               <div className="flex flex-wrap gap-2">
                 <Button onClick={() => void handleImportSkill()} data-tauri-drag-region="false">
                   <FolderOpen size={14} />
@@ -630,7 +630,7 @@ export function SkillCenter({ onSkillsChanged }: SkillCenterProps) {
               )}
             </div>
           ) : view === 'advanced' ? (
-          <section className="mt-5 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
+          <section key="advanced" className="chat-motion-tab-in mt-5 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
             <div className="flex w-full items-center gap-2 px-4 py-3">
               <Sliders size={15} className="shrink-0 text-neutral-400" />
               <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">高级设置</span>
@@ -721,7 +721,7 @@ export function SkillCenter({ onSkillsChanged }: SkillCenterProps) {
             </div>
           </section>
           ) : (
-          <>
+          <div key="installed" className="chat-motion-tab-in">
           {/* 搜索 */}
           <div className="relative mt-6">
             <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
@@ -787,7 +787,7 @@ export function SkillCenter({ onSkillsChanged }: SkillCenterProps) {
               </>
             )}
           </div>
-          </>
+          </div>
           )}
         </div>
       </main>

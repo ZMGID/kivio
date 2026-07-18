@@ -1042,7 +1042,7 @@ export const Sidebar = memo(function Sidebar({
 
             <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto" data-tauri-drag-region="false">
             {activeTab === 'projects' && (
-            <section className="group/projects px-3 pb-2 pt-1">
+            <section key="projects" className="chat-motion-tab-in group/projects px-3 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
                   {visibleProjects.map((project, index) => {
                     const active = selectedProject?.id === project.id
@@ -1176,7 +1176,7 @@ export const Sidebar = memo(function Sidebar({
             )}
 
             {activeTab === 'sets' && (
-            <section className="group/sets px-3 pb-2 pt-1">
+            <section key="sets" className="chat-motion-tab-in group/sets px-3 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
                   {sets.length === 0 ? (
                     <button
@@ -1318,7 +1318,7 @@ export const Sidebar = memo(function Sidebar({
             )}
 
             {activeTab === 'conversations' && (
-            <section className="group/conversations px-3 pb-5 pt-1">
+            <section key="conversations" className="chat-motion-tab-in group/conversations px-3 pb-5 pt-1">
               {sectionMenuAnchor && (
                 <ChatSectionMenu
                   anchor={sectionMenuAnchor}
