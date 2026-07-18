@@ -33,9 +33,15 @@ pub fn apply_chat_window_min_size(window: &WebviewWindow, sidebar_expanded: bool
 #[cfg(target_os = "macos")]
 const CHAT_TRAFFIC_LIGHT_X: f64 = 14.0;
 
-/// 与侧栏顶栏图标（52px 行高居中）垂直对齐。
+/// 窗口创建时的初始交通灯纵向位置（close 按钮左上角距窗口顶，逻辑像素）。仅为避免创建瞬间的
+/// 位置闪跳——运行时 `apply_macos_traffic_light_position` 会测量并把灯校正到图标中心。
 #[cfg(target_os = "macos")]
-const CHAT_TRAFFIC_LIGHT_Y: f64 = 29.0;
+const CHAT_TRAFFIC_LIGHT_INITIAL_Y: f64 = 18.0;
+
+/// 顶栏图标竖向中心：前端 `chatTitlebarRowClass` = `h-[52px] items-center`，图标中心在 26px。
+/// 交通灯竖向对齐到此值——反向对齐：灯跟随图标固定位置，而非移动图标。
+#[cfg(target_os = "macos")]
+const CHAT_TITLEBAR_ROW_CENTER: f64 = 26.0;
 
 #[cfg(target_os = "macos")]
 pub(crate) fn apply_macos_traffic_light_position(window: &WebviewWindow) {
@@ -51,9 +57,87 @@ pub(crate) fn apply_macos_traffic_light_position(window: &WebviewWindow) {
         }
         unsafe {
             hide_macos_window_title(ptr as id);
-            inset_traffic_lights(ptr as id, CHAT_TRAFFIC_LIGHT_X, CHAT_TRAFFIC_LIGHT_Y);
+            // 反向对齐：先按名义容器高度放置交通灯，测出真实灯中心，再按误差校正一次到图标中心
+            // （灯中心随容器高度 1:1 变化）。测量法自适应不同 macOS 版本的按钮尺寸，比硬编码稳。
+            let nominal = 52.0_f64;
+            inset_traffic_lights(ptr as id, CHAT_TRAFFIC_LIGHT_X, nominal);
+            if let Some(m) = read_traffic_light_metrics_on_main_thread(ptr as id) {
+                let center = m.top + m.height / 2.0;
+                let corrected = nominal - (center - CHAT_TITLEBAR_ROW_CENTER);
+                inset_traffic_lights(ptr as id, CHAT_TRAFFIC_LIGHT_X, corrected);
+            }
         }
     });
+}
+
+/// 交通灯组相对窗口左上角的真实包围盒（逻辑像素）。用于 `apply_macos_traffic_light_position`
+/// 测量灯的真实位置，据此把灯校正到顶栏图标中心（反向对齐）。
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct MacTrafficLightMetrics {
+    pub top: f64,
+    pub left: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// 读取三个标准窗口按钮(close/miniaturize/zoom)的真实屏幕 frame，算出相对窗口左上角的包围盒。
+/// 必须在主线程调用（读 NSView frame）。灯不存在/窗口无效时返回 None。
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn read_traffic_light_metrics_on_main_thread(
+    window: cocoa::base::id,
+) -> Option<MacTrafficLightMetrics> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSRect;
+    use objc::{msg_send, sel, sel_impl};
+
+    let window_frame: NSRect = msg_send![window, frame];
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut found = false;
+
+    for kind in [0u64, 1u64, 2u64] {
+        let button: id = msg_send![window, standardWindowButton: kind];
+        if button == nil {
+            continue;
+        }
+        let superview: id = msg_send![button, superview];
+        if superview == nil {
+            continue;
+        }
+        let frame: NSRect = msg_send![button, frame];
+        let in_window: NSRect = msg_send![superview, convertRect: frame toView: nil];
+        let on_screen: NSRect = msg_send![window, convertRectToScreen: in_window];
+        min_x = min_x.min(on_screen.origin.x);
+        min_y = min_y.min(on_screen.origin.y);
+        max_x = max_x.max(on_screen.origin.x + on_screen.size.width);
+        max_y = max_y.max(on_screen.origin.y + on_screen.size.height);
+        found = true;
+    }
+
+    if !found {
+        return None;
+    }
+
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    // Cocoa 屏幕坐标 y 向上：窗口顶边 = origin.y + height，灯组顶边 = max_y。
+    let top = (window_frame.origin.y + window_frame.size.height) - max_y;
+    let left = min_x - window_frame.origin.x;
+
+    if !(width > 0.0 && height > 0.0 && top.is_finite() && left.is_finite()) {
+        return None;
+    }
+
+    Some(MacTrafficLightMetrics {
+        top,
+        left,
+        width,
+        height,
+    })
 }
 
 /// NSWindowTitleHidden — 隐藏 Overlay 标题栏中的窗口标题文字。
@@ -66,8 +150,10 @@ unsafe fn hide_macos_window_title(window: cocoa::base::id) {
 }
 
 /// 与 wry `inset_traffic_lights` 相同逻辑，用于运行时微调原生交通灯位置。
+/// `container_height`：交通灯所在标题栏容器的高度。经实测，灯中心随容器高度 1:1 变化
+/// （容器每 -1px，灯上移 1px），故 `apply_macos_traffic_light_position` 用一次测量即可校正到位。
 #[cfg(target_os = "macos")]
-unsafe fn inset_traffic_lights(window: cocoa::base::id, x: f64, y: f64) {
+unsafe fn inset_traffic_lights(window: cocoa::base::id, x: f64, container_height: f64) {
     use cocoa::base::{id, nil};
     use cocoa::foundation::NSRect;
     use objc::{msg_send, sel, sel_impl};
@@ -86,7 +172,7 @@ unsafe fn inset_traffic_lights(window: cocoa::base::id, x: f64, y: f64) {
     let title_bar_container_view: id = msg_send![title_bar_container_view, superview];
 
     let close_rect: NSRect = msg_send![close, frame];
-    let title_bar_frame_height = close_rect.size.height + y;
+    let title_bar_frame_height = container_height;
     let mut title_bar_rect: NSRect = msg_send![title_bar_container_view, frame];
     title_bar_rect.size.height = title_bar_frame_height;
     let window_frame: NSRect = msg_send![window, frame];
@@ -294,7 +380,7 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
             .hidden_title(true)
             .traffic_light_position(LogicalPosition::new(
                 CHAT_TRAFFIC_LIGHT_X,
-                CHAT_TRAFFIC_LIGHT_Y,
+                CHAT_TRAFFIC_LIGHT_INITIAL_Y,
             ))
             .transparent(false)
             .shadow(true);

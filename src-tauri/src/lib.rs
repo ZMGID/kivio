@@ -185,6 +185,17 @@ pub fn run() {
                     }
                 }
             }
+            // macOS：缩放/最大化后 AppKit 会把交通灯容器重排回默认布局，覆盖我们设的 Y，
+            // 与固定 52px 行居中的顶栏图标错位（大屏最大化尤其明显）。resize 时重新应用位置。
+            // ponytail: 每个 Resized 事件都重设一次（拖拽时高频但廉价）；若发现抖动再改 windowDidEndLiveResize。
+            #[cfg(target_os = "macos")]
+            tauri::WindowEvent::Resized(_) => {
+                if window.label() == "chat" {
+                    if let Some(webview_window) = window.app_handle().get_webview_window("chat") {
+                        windows::apply_macos_traffic_light_position(&webview_window);
+                    }
+                }
+            }
             tauri::WindowEvent::Destroyed => {
                 // macOS：Dock 图标身份由 Chat 窗口撑起（open/reveal 时切 Regular）。Chat
                 // 销毁后切回 Accessory 隐藏 Dock 图标，回到后台常驻形态；其余窗口
