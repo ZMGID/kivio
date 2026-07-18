@@ -41,9 +41,11 @@ type ProviderDef = {
   keyField?: 'tavilyApiKey' | 'exaApiKey' | 'ollamaApiKey' | 'grokApiKey'
   /** API Key 输入框占位符。 */
   keyPlaceholder?: string
-  /** 只读展示的固定 endpoint。 */
-  endpoint?: string
-  /** 可编辑 endpoint（写入 exaMcpUrl）。 */
+  /** 可编辑的 API base 字段（代理/自建网关可改）；写入对应 *BaseUrl 设置。 */
+  baseUrlField?: 'tavilyBaseUrl' | 'exaBaseUrl' | 'ollamaBaseUrl'
+  /** base 输入框占位符（也是官方默认值）。 */
+  baseUrlPlaceholder?: string
+  /** 可编辑 endpoint（写入 exaMcpUrl，ExaMCP 专用）。 */
   editableEndpoint?: boolean
   supportsDepth?: boolean
   /** 模型驱动搜索（Grok）：额外显示 型号 / 自定义网址 / 系统提示。 */
@@ -60,7 +62,8 @@ const PROVIDERS: ProviderDef[] = [
     apiKeyUrl: 'https://app.tavily.com/home',
     keyField: 'tavilyApiKey',
     keyPlaceholder: 'tvly-...',
-    endpoint: 'https://api.tavily.com',
+    baseUrlField: 'tavilyBaseUrl',
+    baseUrlPlaceholder: 'https://api.tavily.com',
     supportsDepth: true,
     icon: '/search-icons/tavily.png',
   },
@@ -71,7 +74,8 @@ const PROVIDERS: ProviderDef[] = [
     apiKeyUrl: 'https://dashboard.exa.ai/api-keys',
     keyField: 'exaApiKey',
     keyPlaceholder: 'exa-...',
-    endpoint: 'https://api.exa.ai',
+    baseUrlField: 'exaBaseUrl',
+    baseUrlPlaceholder: 'https://api.exa.ai',
     icon: '/search-icons/exa.png',
   },
   {
@@ -89,7 +93,8 @@ const PROVIDERS: ProviderDef[] = [
     apiKeyUrl: 'https://ollama.com/settings/keys',
     keyField: 'ollamaApiKey',
     keyPlaceholder: 'ollama key',
-    endpoint: 'https://ollama.com/api/web_search',
+    baseUrlField: 'ollamaBaseUrl',
+    baseUrlPlaceholder: 'https://ollama.com',
     icon: '/search-icons/ollama.png',
   },
   {
@@ -381,11 +386,15 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
                     mono
                     className="w-full"
                   />
-                ) : (
-                  <div className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 font-mono text-[13px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/40 dark:text-zinc-400">
-                    {selected.endpoint}
-                  </div>
-                )}
+                ) : selected.baseUrlField ? (
+                  <Input
+                    value={config[selected.baseUrlField] ?? ''}
+                    onChange={(value) => onChange({ [selected.baseUrlField!]: value })}
+                    placeholder={selected.baseUrlPlaceholder}
+                    mono
+                    className="w-full"
+                  />
+                ) : null}
               </SettingRow>
             )}
 

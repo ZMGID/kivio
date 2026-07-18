@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { open } from '@tauri-apps/plugin-dialog'
 import { FolderOpen, X } from 'lucide-react'
 import type { ChatProject } from './types'
+import { useCloseAnimation } from './useCloseAnimation'
 
 interface ProjectDialogProps {
   project?: ChatProject | null
@@ -23,6 +24,7 @@ export function ProjectDialog({
   const [rootPath, setRootPath] = useState(project?.root_path ?? project?.rootPath ?? '')
   const inputRef = useRef<HTMLInputElement>(null)
   const title = project ? '编辑项目' : '新建项目'
+  const { closing, startClose, onAnimationEnd } = useCloseAnimation(onClose)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -31,11 +33,11 @@ export function ProjectDialog({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') startClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
+  }, [startClose])
 
   const submit = () => {
     const nextName = name.trim()
@@ -65,17 +67,18 @@ export function ProjectDialog({
 
   return createPortal(
     <div
-      className="chat-motion-fade fixed inset-0 z-[300] flex items-center justify-center bg-black/30 px-4 backdrop-blur-[1px]"
+      className={`${closing ? 'chat-motion-fade-out' : 'chat-motion-fade'} fixed inset-0 z-[300] flex items-center justify-center bg-black/30 px-4 backdrop-blur-[1px]`}
       data-tauri-drag-region="false"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target === e.currentTarget) startClose()
       }}
     >
       <form
-        className="chat-motion-modal-in w-full max-w-[340px] rounded-[10px] border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-[#252527]"
+        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} w-full max-w-[340px] rounded-[10px] border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-[#252527]`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        onAnimationEnd={onAnimationEnd}
         onSubmit={(e) => {
           e.preventDefault()
           submit()
@@ -126,7 +129,7 @@ export function ProjectDialog({
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={startClose}
             className="rounded-lg px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:bg-black/[0.04] dark:text-neutral-300 dark:hover:bg-white/[0.06]"
           >
             取消

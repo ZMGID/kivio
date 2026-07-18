@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
-  ArrowLeft,
   Box,
   ChevronDown,
   Download,
@@ -25,13 +24,12 @@ import {
   type SkillMeta,
 } from '../api/tauri'
 import { getSettingsCached, refreshSettings, saveSettingsCached } from '../api/settingsCache'
-import { usesNativeTitlebar } from './platform'
 import { Select } from '../settings/components'
 import { Button, IconButton } from '../components/Button'
+import { SkillStoreBrowser } from './SkillStoreBrowser'
+import { SkillIcon } from '../settings/NavIcons'
 
 interface SkillCenterProps {
-  /** 返回对话视图 */
-  onClose: () => void
   /** Skill 启用状态 / 列表变化后通知 Chat 刷新其技能列表 */
   onSkillsChanged?: () => void
 }
@@ -108,56 +106,103 @@ function Switch({
   )
 }
 
-function SkillRow({
+function SkillCard({
   skill,
   enabled,
+  index,
   onToggleEnabled,
   onPreview,
+  onDelete,
   manageLocked = false,
 }: {
   skill: SkillMeta
   enabled: boolean
+  /** 卡片入场 stagger 序号 */
+  index: number
   onToggleEnabled: (skillId: string, enabled: boolean) => void
   onPreview: (skillId: string) => void
+  /** 删除个人/导入技能（仅 source==='user' 显示）；不传则不显示删除 */
+  onDelete?: (skill: SkillMeta) => void
   /** 插件附属：开关在插件页，此处只展示 */
   manageLocked?: boolean
 }) {
   return (
     <div
-      className={`flex min-w-0 items-center gap-3 px-4 py-3 transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-900/50 ${
-        enabled ? '' : 'opacity-60'
+      role="button"
+      tabIndex={0}
+      onClick={() => onPreview(skill.id)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onPreview(skill.id)
+        }
+      }}
+      data-tauri-drag-region="false"
+      title="查看完整内容"
+      style={{ '--chat-motion-delay': `${Math.min(index, 8) * 24}ms` } as CSSProperties}
+      className={`chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border p-3.5 text-left transition-[border-color,box-shadow,transform,background-color] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15 dark:focus-visible:ring-white/20 ${
+        enabled
+          ? 'border-neutral-200 bg-white shadow-sm hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700'
+          : 'border-neutral-200/80 bg-neutral-50/60 hover:-translate-y-0.5 hover:border-neutral-300 hover:bg-white hover:shadow-md dark:border-neutral-800/70 dark:bg-neutral-900/30 dark:hover:border-neutral-700 dark:hover:bg-neutral-950/40'
       }`}
     >
-      <button
-        type="button"
-        onClick={() => onPreview(skill.id)}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left"
-        data-tauri-drag-region="false"
-        title="查看完整内容"
-      >
-        <span className="grid size-9 shrink-0 place-items-center rounded-md border border-neutral-200 bg-white text-neutral-400 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-500">
-          <Box size={16} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[14px] font-semibold text-neutral-950 dark:text-neutral-50">
-            {skill.name}
-          </span>
-          <span className="mt-0.5 block truncate text-[12px] text-neutral-500 dark:text-neutral-400">
-            {skill.description || '未设置描述'}
-          </span>
-        </span>
-      </button>
-      <span className="shrink-0 text-[13px] text-neutral-400 dark:text-neutral-500">{skillSourceLabel(skill)}</span>
-      {manageLocked ? (
+      <div className="flex items-start justify-between gap-2">
         <span
-          className="shrink-0 text-[12px] text-neutral-400 dark:text-neutral-500"
-          title="请在 扩展 → 插件 中启用/关闭整包插件"
+          className={`grid size-10 shrink-0 place-items-center rounded-lg border transition-colors duration-[var(--kv-dur-fast)] ${
+            enabled
+              ? 'border-neutral-200 bg-white text-neutral-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-300'
+              : 'border-neutral-200/80 bg-neutral-100/80 text-neutral-400 group-hover:text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-600'
+          }`}
         >
-          {enabled ? '插件已启用' : '随插件关闭'}
+          <Box size={18} />
         </span>
-      ) : (
-        <Switch checked={enabled} onChange={(next) => onToggleEnabled(skill.id, next)} ariaLabel={`启用 ${skill.name}`} />
-      )}
+        {manageLocked ? (
+          <span
+            className="shrink-0 pt-0.5 text-[11px] text-neutral-400 dark:text-neutral-500"
+            title="请在 扩展 → 插件 中启用/关闭整包插件"
+          >
+            {enabled ? '插件已启用' : '随插件关闭'}
+          </span>
+        ) : (
+          <span
+            className="shrink-0"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <Switch checked={enabled} onChange={(next) => onToggleEnabled(skill.id, next)} ariaLabel={`启用 ${skill.name}`} />
+          </span>
+        )}
+      </div>
+      <div className="mt-2.5 min-w-0 flex-1">
+        <div className={`truncate text-[13.5px] font-semibold leading-tight ${
+          enabled ? 'text-neutral-950 dark:text-neutral-50' : 'text-neutral-600 dark:text-neutral-400'
+        }`}>
+          {skill.name}
+        </div>
+        <p className="mt-1 line-clamp-2 text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
+          {skill.description || '未设置描述'}
+        </p>
+      </div>
+      <div className="mt-2.5 flex min-h-6 items-center gap-1 border-t border-neutral-100 pt-2 text-[11px] text-neutral-400 dark:border-neutral-800/70 dark:text-neutral-500">
+        <span className="truncate">{skillSourceLabel(skill)}</span>
+        {onDelete && skill.source === 'user' && !manageLocked ? (
+          <span
+            className="ml-auto shrink-0 opacity-0 transition-opacity duration-[var(--kv-dur-fast)] focus-within:opacity-100 group-hover:opacity-100"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <IconButton
+              size="sm"
+              className="danger"
+              onClick={() => onDelete(skill)}
+              label={`删除 ${skill.name}`}
+              title="删除技能"
+            >
+              <Trash2 size={14} strokeWidth={1.75} />
+            </IconButton>
+          </span>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -170,6 +215,7 @@ function SkillSection({
   disabledSkillIds,
   onToggleEnabled,
   onPreview,
+  onDelete,
   collapsible = false,
   defaultCollapsed = false,
   manageLocked = false,
@@ -181,6 +227,7 @@ function SkillSection({
   disabledSkillIds: string[]
   onToggleEnabled: (skillId: string, enabled: boolean) => void
   onPreview: (skillId: string) => void
+  onDelete?: (skill: SkillMeta) => void
   collapsible?: boolean
   defaultCollapsed?: boolean
   manageLocked?: boolean
@@ -211,14 +258,16 @@ function SkillSection({
           {emptyText}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-md border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-950/40 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
-          {skills.map((skill) => (
-            <SkillRow
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {skills.map((skill, index) => (
+            <SkillCard
               key={skill.id}
               skill={skill}
+              index={index}
               enabled={manageLocked ? true : !disabledSkillIds.includes(skill.id)}
               onToggleEnabled={onToggleEnabled}
               onPreview={onPreview}
+              onDelete={onDelete}
               manageLocked={manageLocked}
             />
           ))}
@@ -228,22 +277,62 @@ function SkillSection({
   )
 }
 
-export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
+function SkillUrlImport({ onInstalled }: { onInstalled: () => void }) {
+  const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState('')
+  const install = useCallback(async () => {
+    const value = url.trim()
+    if (!value) return
+    setBusy(true)
+    setError('')
+    setDone('')
+    try {
+      const result = await api.chatSkillsInstallFromUrl(value)
+      if (!result.success) throw new Error(result.error || '安装失败')
+      setDone('已安装')
+      setUrl('')
+      onInstalled()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [url, onInstalled])
+  return (
+    <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+      <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">从 URL 安装</div>
+      <p className="mb-2 text-[12px] text-neutral-500 dark:text-neutral-400">
+        粘贴 GitHub 仓库地址或直链 .zip（须含 SKILL.md）。仓库内多个技能只安装第一个。
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://github.com/owner/repo"
+          className="h-9 w-full rounded-md border border-neutral-200 bg-white px-2.5 font-mono text-[12.5px] text-neutral-800 outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          data-tauri-drag-region="false"
+        />
+        <Button onClick={() => void install()} disabled={busy || !url.trim()} data-tauri-drag-region="false">
+          {busy ? '安装中…' : '安装'}
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-[12px] text-red-600 dark:text-red-400">{error}</div>}
+      {done && <div className="mt-2 text-[12px] text-emerald-600 dark:text-emerald-400">{done}</div>}
+    </div>
+  )
+}
+
+export function SkillCenter({ onSkillsChanged }: SkillCenterProps) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillError, setSkillError] = useState('')
   const [query, setQuery] = useState('')
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [view, setView] = useState<'installed' | 'store' | 'import' | 'advanced'>('installed')
   const [selectedSkillPreview, setSelectedSkillPreview] = useState<SkillDetail | null>(null)
-
-  // 高级设置折叠时内容仍在 DOM（用于 chat-motion-reveal 高度动画），用 inert 让其退出 tab 序 / a11y 树，
-  // 避免键盘 Tab 进入视觉折叠的表单控件（WCAG 2.1.1）。
-  const advancedRef = useRef<HTMLDivElement>(null)
-  useLayoutEffect(() => {
-    const el = advancedRef.current
-    if (el) el.inert = !advancedOpen
-  }, [advancedOpen])
 
   const settingsRef = useRef<Settings | null>(null)
   const saveTimer = useRef<number | null>(null)
@@ -374,6 +463,18 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
     }
   }, [onSkillsChanged, refreshChatSkills])
 
+  const handleDeleteSkill = useCallback(async (skill: SkillMeta) => {
+    if (!window.confirm(`确定删除技能「${skill.name}」？此操作不可撤销。`)) return
+    setSkillError('')
+    try {
+      await api.chatSkillsUninstall(skill.id)
+      await refreshChatSkills()
+      onSkillsChanged?.()
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : String(err))
+    }
+  }, [onSkillsChanged, refreshChatSkills])
+
   const handleImportSkillZip = useCallback(async () => {
     try {
       const selected = await open({
@@ -427,32 +528,15 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
   return (
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
       {/* 顶栏：与聊天主区同底色、无分隔；可拖拽，右侧避开窗口按钮 */}
-      <div
-        className={`flex h-[52px] shrink-0 items-center gap-2 px-3 ${
-          !usesNativeTitlebar ? 'chat-win-titlebar-safe' : ''
-        }`}
-        data-tauri-drag-region
-      >
-        <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0"
-          onClick={onClose}
-          data-tauri-drag-region="false"
-        >
-          <ArrowLeft size={15} />
-          返回聊天
-        </Button>
-        <div className="h-full min-w-5 flex-1" data-tauri-drag-region />
-      </div>
 
       {/* 内容区：直接坐在白底上，与聊天主区无缝 */}
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
             {/* 头部：标题 + 副标题 + 图标动作 */}
             <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
-              <h1 className="text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
-                技能
+              <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+                <SkillIcon size={24} className="text-neutral-500" />
+                Skill
               </h1>
               <div className="mt-3.5 flex min-w-0 items-center gap-4">
               <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
@@ -496,43 +580,63 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
             </div>
           </div>
 
-          {/* 搜索 */}
-          <div className="relative mt-6">
-            <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-            <input
-              type="text"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索技能..."
-              className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              data-tauri-drag-region="false"
-            />
+          {/* Tab 行 */}
+          <div className="mt-5 flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
+            {([['installed', '已安装'], ['store', '技能商店'], ['import', '本地导入'], ['advanced', '高级设置']] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setView(id)}
+                data-tauri-drag-region="false"
+                className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
+                  view === id
+                    ? 'text-neutral-900 dark:text-neutral-100'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                }`}
+              >
+                {label}
+                {view === id && (
+                  <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#C56646] dark:bg-[#E39A78]" />
+                )}
+              </button>
+            ))}
           </div>
 
-          {skillError && (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-              {skillError}
+          {view === 'store' ? (
+            <div key="store" className="chat-motion-tab-in mt-5 flex min-h-[420px] flex-col">
+              <SkillStoreBrowser onInstalled={() => void refreshChatSkills()} />
             </div>
-          )}
-
-          {/* 高级设置（默认折叠） */}
-          <section className="mt-4 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((open) => !open)}
-              className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-900/60"
-              aria-expanded={advancedOpen}
-              data-tauri-drag-region="false"
-            >
+          ) : view === 'import' ? (
+            <div key="import" className="chat-motion-tab-in mt-5 space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={() => void handleImportSkill()} data-tauri-drag-region="false">
+                  <FolderOpen size={14} />
+                  导入文件夹
+                </Button>
+                <Button onClick={() => void handleImportSkillZip()} data-tauri-drag-region="false">
+                  <Download size={14} />
+                  导入 zip
+                </Button>
+                <Button onClick={() => void handleOpenSkillFolder()} data-tauri-drag-region="false">
+                  <ExternalLink size={14} />
+                  打开 Skill 文件夹
+                </Button>
+              </div>
+              <SkillUrlImport onInstalled={() => void refreshChatSkills()} />
+              {skillError && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                  {skillError}
+                </div>
+              )}
+            </div>
+          ) : view === 'advanced' ? (
+          <section key="advanced" className="chat-motion-tab-in mt-5 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
+            <div className="flex w-full items-center gap-2 px-4 py-3">
               <Sliders size={15} className="shrink-0 text-neutral-400" />
               <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">高级设置</span>
-              <span className="text-[12px] text-neutral-400">自动匹配 · 降级模式 · 解释器白名单 · 扫描路径</span>
-              <ChevronDown
-                size={16}
-                className={`ml-auto shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${advancedOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
-            <div ref={advancedRef} className={`chat-motion-reveal ${advancedOpen ? 'is-open' : ''}`}>
+              <span className="text-[12px] text-neutral-400">自动匹配 · 降级模式 · 扫描路径</span>
+            </div>
+            <div>
               <div className="space-y-5 border-t border-neutral-200 px-4 py-4 dark:border-neutral-800">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
@@ -616,6 +720,26 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
               </div>
             </div>
           </section>
+          ) : (
+          <div key="installed" className="chat-motion-tab-in">
+          {/* 搜索 */}
+          <div className="relative mt-6">
+            <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+            <input
+              type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索技能..."
+              className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              data-tauri-drag-region="false"
+            />
+          </div>
+
+          {skillError && (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+              {skillError}
+            </div>
+          )}
 
           {/* 技能列表 */}
           <div className="mt-6 space-y-5">
@@ -634,6 +758,7 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
                   disabledSkillIds={disabledSkillIds}
                   onToggleEnabled={handleToggleSkillEnabled}
                   onPreview={handlePreviewSkill}
+                  onDelete={handleDeleteSkill}
                 />
                 <SkillSection
                   title="内置技能"
@@ -662,6 +787,8 @@ export function SkillCenter({ onClose, onSkillsChanged }: SkillCenterProps) {
               </>
             )}
           </div>
+          </div>
+          )}
         </div>
       </main>
 

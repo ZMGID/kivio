@@ -21,8 +21,8 @@ import { Button, IconButton } from '../components/Button'
 import { isProviderEnabled } from '../settings/utils'
 import { Select } from '../settings/components'
 import { builtinAssistantGlyph } from './assistantIcons'
+import { AgentIcon } from '../settings/NavIcons'
 import { chatApi } from './api'
-import { usesNativeTitlebar } from './platform'
 import type { ChatAssistant, SkillMeta } from './types'
 
 interface AssistantCenterProps {
@@ -31,7 +31,6 @@ interface AssistantCenterProps {
   onStartAssistantChat: (assistant: ChatAssistant) => void
   onStartBuilder?: () => void
   onApplyAssistant?: (assistantId: string | null) => void
-  onClose: () => void
 }
 
 type AssistantDraft = ChatAssistant
@@ -164,7 +163,6 @@ export function AssistantCenter({
   onStartAssistantChat,
   onStartBuilder,
   onApplyAssistant,
-  onClose,
 }: AssistantCenterProps) {
   const [assistants, setAssistants] = useState<ChatAssistant[]>([])
   const [providers, setProviders] = useState<ModelProvider[]>([])
@@ -388,6 +386,38 @@ export function AssistantCenter({
           ))}
       </div>
 
+      {/* 工具行：搜索为主 + 创建动作（与技能商店/MCP 市场的工具行同规格） */}
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            size={16}
+            className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400"
+          />
+          <input
+            type="text"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索套件..."
+            className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            data-tauri-drag-region="false"
+          />
+        </div>
+        {onStartBuilder && (
+          <Button
+            onClick={() => onStartBuilder()}
+            title="通过对话搭建一个新专家"
+            data-tauri-drag-region="false"
+          >
+            <Sparkles size={16} />
+            AI 创建
+          </Button>
+        )}
+        <Button variant="primary" onClick={handleCreate} data-tauri-drag-region="false">
+          <Plus size={16} />
+          创建
+        </Button>
+      </div>
+
       {loading ? (
         <div className="grid min-h-[220px] place-items-center text-[13px] text-neutral-400">加载中...</div>
       ) : filteredAssistants.length === 0 ? (
@@ -397,7 +427,7 @@ export function AssistantCenter({
             : '没有匹配的套件'}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-md border border-neutral-200 divide-y divide-neutral-200 dark:border-neutral-800 dark:divide-neutral-800">
+        <div key={tab} className="chat-motion-tab-in overflow-hidden rounded-md border border-neutral-200 divide-y divide-neutral-200 dark:border-neutral-800 dark:divide-neutral-800">
           {filteredAssistants.map((assistant) => {
             const stats = suiteStats(assistant)
             const builtIn = assistant.built_in ?? assistant.builtIn ?? false
@@ -825,71 +855,28 @@ export function AssistantCenter({
   return (
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
       {/* 顶栏：与聊天主区同底色、无分隔，可拖拽，右侧避开窗口按钮 */}
-      <div
-        className={`flex h-[52px] shrink-0 items-center gap-2 px-3 ${
-          !usesNativeTitlebar ? 'chat-win-titlebar-safe' : ''
-        }`}
-        data-tauri-drag-region
-      >
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          data-tauri-drag-region="false"
-        >
-          <ArrowLeft size={15} />
-          返回聊天
-        </Button>
-        <div className="h-full min-w-5 flex-1" data-tauri-drag-region />
-      </div>
 
       {/* 内容区：直接坐在白底上，与聊天主区无缝 */}
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-6 py-6">
           <div className="mx-auto max-w-7xl space-y-4">
-            <header className="flex min-w-0 items-center gap-3">
-              <div className="flex min-w-0 shrink-0 items-center gap-2">
-                <h1 className="truncate text-[24px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
-                  专家套件
-                </h1>
+            <header className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
+              <h1 className="flex items-center gap-2.5 truncate text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+                <AgentIcon size={24} className="shrink-0 text-neutral-500" />
+                专家套件
+              </h1>
+              <div className="mt-3.5 flex min-w-0 items-center gap-4">
+                <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                  预设人格、模型与工具组合的专家助手，一键开聊或应用到当前对话。
+                </p>
                 <IconButton
                   size="lg"
                   onClick={() => void loadAssistants(selectedId)}
                   label="刷新套件"
                   title="刷新"
+                  data-tauri-drag-region="false"
                 >
-                  <RefreshCw size={16} />
+                  <RefreshCw size={17} />
                 </IconButton>
-              </div>
-              <div className="assistant-center-toolbar ml-auto flex min-w-0 flex-1 items-center justify-end gap-2">
-                <div className="assistant-center-search relative min-w-[180px] flex-1 sm:max-w-[360px]">
-                  <Search
-                    size={16}
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400"
-                  />
-                  <input
-                    type="text"
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="搜索套件..."
-                    className="h-9 w-full rounded-md border border-neutral-200 bg-white pl-9 pr-3 text-[13px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                  />
-                </div>
-                {onStartBuilder && (
-                  <Button
-                    onClick={() => onStartBuilder()}
-                    title="通过对话搭建一个新专家"
-                  >
-                    <Sparkles size={16} />
-                    AI 创建
-                  </Button>
-                )}
-                <Button
-                  variant="primary"
-                  onClick={handleCreate}
-                >
-                  <Plus size={16} />
-                  创建
-                </Button>
               </div>
             </header>
 

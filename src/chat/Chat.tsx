@@ -119,6 +119,14 @@ const SkillCenter = lazy(() => import('./SkillCenter').then((module) => ({
   default: module.SkillCenter,
 })))
 
+const McpCenter = lazy(() => import('./McpCenter').then((module) => ({
+  default: module.McpCenter,
+})))
+
+const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => ({
+  default: module.KnowledgeCenter,
+})))
+
 const PluginCenter = lazy(() => import('./PluginCenter').then((module) => ({
   default: module.PluginCenter,
 })))
@@ -126,14 +134,6 @@ const PluginCenter = lazy(() => import('./PluginCenter').then((module) => ({
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,
 })))
-
-function ChatPaneLoading() {
-  return (
-    <div className="chat-themed-surface flex h-full w-full items-center justify-center">
-      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
-    </div>
-  )
-}
 
 function MessageListLoading() {
   return (
@@ -143,7 +143,7 @@ function MessageListLoading() {
   )
 }
 
-type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'plugins' | 'onboarding'
+type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'plugins' | 'onboarding'
 
 interface ChatProps {
   onSettingsChange: () => void
@@ -177,6 +177,14 @@ function isChatSkillCenterPath(path: string): boolean {
 
 function isChatPluginCenterPath(path: string): boolean {
   return path === 'chat/plugins' || path.startsWith('chat/plugins/')
+}
+
+function isChatMcpCenterPath(path: string): boolean {
+  return path === 'chat/mcp' || path.startsWith('chat/mcp/')
+}
+
+function isChatKnowledgeCenterPath(path: string): boolean {
+  return path === 'chat/knowledge' || path.startsWith('chat/knowledge/')
 }
 
 function scheduleIdleTask(callback: () => void, timeout = 1200): () => void {
@@ -616,6 +624,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatSettingsPath(path)) return 'settings'
     if (isChatAssistantCenterPath(path)) return 'assistants'
     if (isChatSkillCenterPath(path)) return 'skill'
+    if (isChatMcpCenterPath(path)) return 'mcp'
+    if (isChatKnowledgeCenterPath(path)) return 'knowledge'
     if (isChatPluginCenterPath(path)) return 'plugins'
     return 'conversation'
   })
@@ -1197,6 +1207,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (rest === 'settings' || rest.startsWith('settings/')) return null
     if (rest === 'assistants' || rest.startsWith('assistants/')) return null
     if (rest === 'skill' || rest.startsWith('skill/')) return null
+    if (rest === 'knowledge' || rest.startsWith('knowledge/')) return null
     if (rest === 'onboarding' || rest.startsWith('onboarding/')) return null
     return decodeURIComponent(rest)
   }, [])
@@ -1240,6 +1251,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const syncPluginCenterRoute = useCallback(() => {
     if (window.location.hash !== '#chat/plugins') {
       window.location.hash = '#chat/plugins'
+    }
+  }, [])
+
+  const syncMcpCenterRoute = useCallback(() => {
+    if (window.location.hash !== '#chat/mcp') {
+      window.location.hash = '#chat/mcp'
+    }
+  }, [])
+
+  const syncKnowledgeCenterRoute = useCallback(() => {
+    if (window.location.hash !== '#chat/knowledge') {
+      window.location.hash = '#chat/knowledge'
     }
   }, [])
 
@@ -1303,11 +1326,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }, 1500)
   }, [refreshToolIndicator])
 
-  // 空闲预取设置页 chunk，避免首次点开设置时才触发 lazy import 而长时间转圈。
+  // 空闲预取各中心页 chunk，避免首次切到设置/专家/技能/插件时才触发 lazy import 而转圈；
+  // 预取后切换时 Suspense 不再挂起，chat-motion-view-in 动画得以播在真实内容上（而非 spinner）。
   useEffect(() => {
     return scheduleIdleTask(() => {
       void importSettingsShell()
-    }, 2500)
+      void import('./AssistantCenter')
+      void import('./SkillCenter')
+      void import('./McpCenter')
+      void import('./KnowledgeCenter')
+      void import('./PluginCenter')
+      void import('./MessageList')
+    }, 400)
   }, [])
 
   const openEmbeddedSettings = useCallback((tab: SettingsTab = 'chat') => {
@@ -1331,6 +1361,16 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     syncPluginCenterRoute()
   }, [syncPluginCenterRoute])
 
+  const openMcpCenter = useCallback(() => {
+    setChatView('mcp')
+    syncMcpCenterRoute()
+  }, [syncMcpCenterRoute])
+
+  const openKnowledgeCenter = useCallback(() => {
+    setChatView('knowledge')
+    syncKnowledgeCenterRoute()
+  }, [syncKnowledgeCenterRoute])
+
   const openExtensionsItem = useCallback((item: ExtensionsNavItem) => {
     setExtensionsNavItem(item)
     if (item === 'assistants') {
@@ -1341,20 +1381,28 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       openSkillCenter()
       return
     }
+    if (item === 'mcp') {
+      openMcpCenter()
+      return
+    }
+    if (item === 'knowledge') {
+      openKnowledgeCenter()
+      return
+    }
     if (item === 'plugins') {
       openPluginCenter()
       return
     }
-    openEmbeddedSettings(item)
-  }, [openAssistantCenter, openSkillCenter, openPluginCenter, openEmbeddedSettings])
+  }, [openAssistantCenter, openSkillCenter, openMcpCenter, openKnowledgeCenter, openPluginCenter])
 
   const extensionsActive = useMemo<ExtensionsNavItem | null>(() => {
     if (chatView === 'assistants') return 'assistants'
     if (chatView === 'skill') return 'skill'
+    if (chatView === 'mcp') return 'mcp'
+    if (chatView === 'knowledge') return 'knowledge'
     if (chatView === 'plugins') return 'plugins'
-    if (chatView === 'settings' && extensionsNavItem === 'knowledge') return 'knowledge'
     return null
-  }, [chatView, extensionsNavItem])
+  }, [chatView])
 
   const handleSettingsClose = useCallback(() => {
     setChatView('conversation')
@@ -1366,21 +1414,19 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     pending?.()
   }, [loadSkills, refreshToolIndicator, syncConversationRoute])
 
-  const handleAssistantCenterClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-  }, [syncConversationRoute])
-
-  const handleSkillCenterClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-    void loadSkills()
-  }, [loadSkills, syncConversationRoute])
-
-  const handlePluginCenterClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-  }, [syncConversationRoute])
+  // 中心页（技能/MCP/插件/专家）没有自己的返回按钮，离开靠侧栏选会话/新建等任意路径。
+  // 统一在「回到会话视图」这个转变点刷新技能列表与工具指示器，
+  // 保证中心页里的启停/增删在回到聊天后立即生效（替代原各页 onClose 的刷新职责）。
+  const prevChatViewRef = useRef(chatView)
+  useEffect(() => {
+    const prev = prevChatViewRef.current
+    prevChatViewRef.current = chatView
+    if (chatView !== 'conversation' || prev === chatView) return
+    if (prev === 'skill' || prev === 'mcp' || prev === 'assistants' || prev === 'plugins' || prev === 'knowledge') {
+      void loadSkills()
+      void refreshToolIndicator()
+    }
+  }, [chatView, loadSkills, refreshToolIndicator])
 
   const runAfterLeavingSettings = useCallback((action: () => void) => {
     if (chatView !== 'settings') {
@@ -2141,6 +2187,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       if (isChatSkillCenterPath(path)) {
         setChatView('skill')
+        return
+      }
+      if (isChatMcpCenterPath(path)) {
+        setChatView('mcp')
+        return
+      }
+      if (isChatKnowledgeCenterPath(path)) {
+        setChatView('knowledge')
         return
       }
       if (isChatPluginCenterPath(path)) {
@@ -3450,13 +3504,41 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setSearchOpen(false)
   }, [runAfterLeavingSettings])
 
+  // 中心页（专家/技能/MCP/插件）去掉了整行「返回聊天」顶栏后，窗口顶部不再可拖拽；
+  // 且侧栏收起时页面上没有任何展开侧栏/离开中心页的入口（会被困住）。
+  // 用一条浮在内容 padding 区上的细拖拽带兜底：始终可拖动窗口，
+  // 侧栏收起时在带内浮出「展开侧栏 + 新建聊天」，与会话页收起态的顶栏行为一致。
+  // 带高 24px（低于各中心页 pt-7/py-6 的内容起点），不遮挡任何可交互内容；
+  // 收起态按钮行复用会话页收起态顶栏的同一套行高/缩进类（52px 行 + mac 交通灯缩进），
+  // 保证收起/展开、中心页/会话页之间按钮位置完全不跳。
+  const centerPageTopStrip = (
+    <div className="absolute inset-x-0 top-0 z-20 h-6" data-tauri-drag-region>
+      {sidebarCollapsed && (
+        <div
+          className={`chat-titlebar-row ${chatTitlebarRowClass} ${
+            usesNativeTitlebar
+              ? `${chatTitlebarMacInsetClass} chat-titlebar-row--collapsed-mac`
+              : 'px-3'
+          }`}
+          data-tauri-drag-region
+        >
+          <ChatTitlebarActions
+            sidebarExpanded={false}
+            onToggleSidebar={() => setSidebarCollapsedPersisted(false)}
+            onNewConversation={() => void handleNewConversation()}
+          />
+        </div>
+      )}
+    </div>
+  )
+
   return (
     <div
       className={`chat-window-shell${usesNativeTitlebar ? ' chat-window-shell--native-titlebar' : ''}`}
     >
       {!usesNativeTitlebar && <WindowControls />}
       <div className="flex h-full min-h-0 w-full">
-        {chatView !== 'onboarding' ? (
+        {chatView !== 'onboarding' && !(chatView === 'settings' && extensionsNavItem === null) ? (
         <Sidebar
           lang={uiLang}
           currentConversationId={currentConversation?.id}
@@ -3492,14 +3574,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             />
           </div>
         ) : chatView === 'settings' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
+          <div key="settings" className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+            <Suspense fallback={null}>
               <SettingsShell
                 ref={settingsRef}
                 variant="embedded"
                 initialTab={settingsInitialTab}
-                hideNav={extensionsNavItem === 'knowledge'}
-                reserveTrafficLightSpace={sidebarCollapsed && usesNativeTitlebar}
+                reserveTrafficLightSpace={(sidebarCollapsed || extensionsNavItem === null) && usesNativeTitlebar}
                 onClose={handleSettingsClose}
                 onSettingsChange={handleSettingsChange}
                 onReady={emitContentReady}
@@ -3507,34 +3588,44 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             </Suspense>
           </div>
         ) : chatView === 'assistants' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
+          <div key="assistants" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
               <AssistantCenter
                 skills={enabledSkills}
                 currentAssistantId={currentAssistantId}
                 onStartAssistantChat={(assistant) => void handleStartAssistantChat(assistant)}
                 onStartBuilder={() => void handleStartBuilderChat()}
                 onApplyAssistant={currentConversation ? (assistantId) => void handleApplyAssistant(assistantId) : undefined}
-                onClose={handleAssistantCenterClose}
               />
             </Suspense>
           </div>
         ) : chatView === 'skill' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
-              <SkillCenter
-                onClose={handleSkillCenterClose}
-                onSkillsChanged={() => void loadSkills()}
-              />
+          <div key="skill" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <SkillCenter onSkillsChanged={() => void loadSkills()} />
+            </Suspense>
+          </div>
+        ) : chatView === 'mcp' ? (
+          <div key="mcp" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <McpCenter />
+            </Suspense>
+          </div>
+        ) : chatView === 'knowledge' ? (
+          <div key="knowledge" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <KnowledgeCenter />
             </Suspense>
           </div>
         ) : chatView === 'plugins' ? (
-          <div className="chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={<ChatPaneLoading />}>
-              <PluginCenter
-                onClose={handlePluginCenterClose}
-                onRequestAiInstall={handleRequestPluginAiInstall}
-              />
+          <div key="plugins" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <PluginCenter onRequestAiInstall={handleRequestPluginAiInstall} />
             </Suspense>
           </div>
         ) : (
@@ -3621,9 +3712,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   {showEmptyHero ? (
                     <div className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-16">
                   <ChatDotGridBackground />
-                  <div className="chat-empty-hero-stack chat-motion-fade-up relative z-10 w-full max-w-4xl space-y-8">
+                  <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl space-y-8">
                     <h2
-                      className="chat-empty-hero-title text-center text-[1.75rem] font-medium leading-snug tracking-[-0.02em] text-neutral-900 dark:text-neutral-50 sm:text-[2rem]"
+                      className="chat-motion-fade-up chat-empty-hero-title text-center text-[1.75rem] font-medium leading-snug tracking-[-0.02em] text-neutral-900 dark:text-neutral-50 sm:text-[2rem]"
                       aria-label={
                         currentAssistantSnapshot
                           ? currentAssistantSnapshot.name
@@ -3644,6 +3735,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                         />
                       )}
                     </h2>
+                    <div
+                      className="chat-motion-fade-up"
+                      style={{ ['--chat-motion-delay' as string]: '120ms' }}
+                    >
                     <InputBar
                       layout="inline"
                       onSend={(content, attachments) => void handleSendMessage(content, attachments)}
@@ -3652,7 +3747,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                       cancelVisible={streamCoarse.streaming}
                       cancelling={streamCoarse.cancelling}
                       onOpenSettings={() => openEmbeddedSettings('chat')}
-                      onOpenTools={() => openEmbeddedSettings('skill')}
+                      onOpenTools={() => openSkillCenter()}
                       onNewChat={() => void handleNewConversation()}
                       onCompactContext={() => void handleCompressContext()}
                       onClearChat={() => void handleClearChat()}
@@ -3699,6 +3794,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                         />
                       }
                     />
+                    </div>
                   </div>
                 </div>
                   ) : (
@@ -3750,7 +3846,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                     cancelVisible={streamCoarse.streaming}
                     cancelling={streamCoarse.cancelling}
                     onOpenSettings={() => openEmbeddedSettings('chat')}
-                    onOpenTools={() => openEmbeddedSettings('skill')}
+                    onOpenTools={() => openSkillCenter()}
                     onNewChat={() => void handleNewConversation()}
                     onCompactContext={() => void handleCompressContext()}
                     onClearChat={() => void handleClearChat()}

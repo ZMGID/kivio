@@ -1054,6 +1054,45 @@ body {
   animation-delay: var(--chat-motion-delay, 0ms);
 }
 
+/* 气泡入场：在 fade-up 基础上加轻微缩放，对齐 LiveAgent chatBubbleIn。
+   单列出来（不改 chat-motion-fade-up）避免影响附件 chip/提示行等复用点。 */
+.chat-motion-bubble-in {
+  animation: chat-motion-bubble-in var(--kv-dur-normal) var(--kv-ease-standard) both;
+}
+
+/* 视图/页面切换入场：三段式递进（对齐 LiveAgent hubPageIn/hubPanelIn）——
+   整页轻位移打底，中心页内部大块（头部→tab 行→内容）再依序入场，见下方级联规则。
+   注意：Chat.tsx 各视图分支的包裹 div 带 key={view}，否则 React 原地复用 DOM 节点、
+   动画只在首挂载播一次，视图间切换不重播（正是「切换没效果」的根因）。 */
+.chat-motion-view-in {
+  animation: chat-motion-view-in 280ms var(--kv-ease-standard) both;
+}
+
+/* 中心页内部层级递进：只作用于中心页结构（assistant-center-root > main > 容器 > 大块）。
+   设置页（无 assistant-center-root）不受影响，卡片自身的 fade-up stagger 在更深层、互不干扰。 */
+.chat-motion-view-in .assistant-center-root > main > div > * {
+  animation: chat-motion-panel-in 380ms var(--kv-ease-standard) both;
+}
+
+.chat-motion-view-in .assistant-center-root > main > div > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.chat-motion-view-in .assistant-center-root > main > div > *:nth-child(n + 3) {
+  animation-delay: 110ms;
+}
+
+@keyframes chat-motion-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .chat-motion-popover {
   transform-origin: var(--chat-popover-origin, top left);
   animation: chat-motion-popover var(--kv-dur-fast) var(--kv-ease-standard) both;
@@ -1246,6 +1285,49 @@ body {
   animation: chat-motion-modal-in var(--kv-dur-normal) var(--kv-ease-standard) both;
 }
 
+/* 浮层退场（见 useCloseAnimation）：模态面板 / backdrop / popover 关闭时反向淡出。
+   刻意不进 reduced-motion 的 animation:none 列表——保留 0.01ms 让 animationend 触发、卸载不卡。 */
+@keyframes chat-motion-modal-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+.chat-motion-modal-out {
+  animation: chat-motion-modal-out var(--kv-dur-normal) var(--kv-ease-out) both;
+}
+
+@keyframes chat-motion-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.chat-motion-fade-out {
+  animation: chat-motion-fade-out var(--kv-dur-fast) var(--kv-ease-out) both;
+}
+
+@keyframes chat-motion-popover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+}
+.chat-motion-popover-out {
+  transform-origin: var(--chat-popover-origin, top left);
+  animation: chat-motion-popover-out var(--kv-dur-fast) var(--kv-ease-out) both;
+}
+
 /* 微动效：成功反馈（复制 ✓ 等）弹入。靠全局兜底在 reduced-motion 下变瞬时。 */
 @keyframes chat-motion-pop {
   from {
@@ -1299,6 +1381,59 @@ body {
 }
 
 @keyframes chat-motion-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes chat-motion-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chat-motion-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 设置 section 切换入场（对齐 LiveAgent settingsSectionIn / settingsSectionTitleIn）：
+   标题与内容各自 key={activeTab} 重播，内容 14px + 轻缩放，标题 8px。 */
+.settings-section-enter {
+  animation: settings-section-in 0.3s var(--kv-ease-standard) both;
+  will-change: transform, opacity;
+}
+.settings-section-title-enter {
+  animation: settings-section-title-in 0.24s var(--kv-ease-standard) both;
+  will-change: transform, opacity;
+}
+@keyframes settings-section-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes settings-section-title-in {
   from {
     opacity: 0;
     transform: translateY(8px);
@@ -1363,6 +1498,39 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* 页内 tab 内容切换（中心页 已安装/市场/…、侧栏 最近/集/项目）：
+   比整页 view-in 轻一档的 6px 上浮，快进快停；包裹节点需 key={tab} 以便每次切换重播。 */
+.chat-motion-tab-in {
+  animation: chat-motion-tab-in 200ms var(--kv-ease-standard) both;
+}
+
+@keyframes chat-motion-tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* tab 激活下划线：从中心横向展开（配合内容 tab-in，切换指向感更强）。 */
+.chat-motion-tab-underline {
+  animation: chat-motion-tab-underline var(--kv-dur-fast) var(--kv-ease-standard) both;
+}
+
+@keyframes chat-motion-tab-underline {
+  from {
+    transform: scaleX(0.4);
+    opacity: 0.4;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
   }
 }
 
@@ -1666,7 +1834,17 @@ body {
     background-image: none;
   }
 
+  /* 按钮按压缩放：reduced-motion 下取消（全局只压时长、不移除 transform，须显式重置）。 */
+  .kv-btn:active:not(:disabled),
+  .kv-icon-btn:active:not(:disabled) {
+    transform: none;
+  }
+
   .chat-motion-fade-up,
+  .chat-motion-bubble-in,
+  .chat-motion-view-in,
+  .settings-section-enter,
+  .settings-section-title-enter,
   .chat-motion-popover,
   .chat-motion-row,
   .chat-motion-soft-pulse,
@@ -1822,6 +2000,38 @@ body {
   user-select: none;
 }
 
+/* 嵌入式设置左栏顶部「返回对话」：紧凑、靠左，位于「设置」标题上方 */
+.settings-embedded-back {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-faint, #737373);
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease, transform var(--kv-dur-instant) var(--kv-ease-out);
+}
+.settings-embedded-back:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text);
+}
+.settings-embedded-back:active {
+  transform: scale(0.97);
+}
+.dark .chat-window-shell .settings-embedded-back {
+  color: #a3a3a3;
+}
+.dark .chat-window-shell .settings-embedded-back:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f5f5f5;
+}
+
 .settings-embedded-nav-list {
   display: flex;
   flex-direction: column;
@@ -1918,7 +2128,6 @@ body {
   padding: 8px 28px 20px;
 }
 
-.kv-scroll > .kb-panel-root,
 .kv-scroll > .websearch-panel-root,
 .kv-scroll > .kv-providers-root {
   flex: 1 1 auto;
@@ -1926,7 +2135,6 @@ body {
   align-self: stretch;
 }
 
-.kv-scroll:has(> .kb-panel-root),
 .kv-scroll:has(> .websearch-panel-root),
 .kv-scroll:has(> .kv-providers-root) {
   display: flex;
@@ -2455,36 +2663,7 @@ body {
   padding-right: 132px;
 }
 
-.assistant-center-toolbar {
-  max-width: 100%;
-}
-
-@container chat-window (max-width: 860px) {
-  .assistant-center-header {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-
-  .assistant-center-toolbar {
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-start;
-  }
-
-  .assistant-center-search {
-    max-width: none;
-  }
-}
-
 @container chat-window (max-width: 520px) {
-  .assistant-center-toolbar {
-    flex-wrap: wrap;
-  }
-
-  .assistant-center-search {
-    min-width: 100%;
-  }
-
   .assistant-center-tabs {
     overflow-x: auto;
   }
@@ -3055,6 +3234,13 @@ body {
   background: var(--danger-soft);
   color: var(--danger);
 }
+.kv-icon-btn {
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    color var(--kv-dur-fast) var(--kv-ease-out),
+    transform var(--kv-dur-instant) var(--kv-ease-out);
+}
+.kv-icon-btn:active:not(:disabled) { transform: scale(0.95); }
 .kv-icon-btn svg { width: 13px; height: 13px; }
 /* 尺寸/形状修饰（供 <IconButton> 使用）；无修饰时保持 22×22 基类给设置域既有用法 */
 .kv-icon-btn.sm { width: 28px; height: 28px; border-radius: 6px; }
@@ -3088,8 +3274,13 @@ body {
   font-family: inherit;
   line-height: 1.4;
   white-space: nowrap;
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    border-color var(--kv-dur-fast) var(--kv-ease-out),
+    transform var(--kv-dur-instant) var(--kv-ease-out);
 }
 .kv-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.kv-btn:active:not(:disabled) { transform: scale(0.97); }
 .kv-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .kv-btn.primary {
   background: var(--accent);

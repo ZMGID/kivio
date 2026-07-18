@@ -660,7 +660,7 @@ function TimelineGroupBlock({
         <ChevronDown
           size={16}
           strokeWidth={2}
-          className={`shrink-0 transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          className={`shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${open ? 'rotate-180' : ''}`}
         />
       </button>
       {open && (
@@ -919,7 +919,7 @@ function MessageBubbleComponent({
     const replyModelTags = (sentModels ?? []).filter((m) => (m.model ?? '').trim().length > 0)
     const showModelTags = replyModelTags.length >= 2
     return (
-      <div className={`group flex justify-end py-2 ${playEntranceAnimation ? 'chat-motion-fade-up' : ''}`}>
+      <div className={`group flex justify-end py-2 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}>
         <div className={`flex min-w-0 flex-col items-end gap-1 ${isEditing ? 'w-full max-w-full' : 'max-w-[85%]'}`}>
           {showModelTags && (
             <div className="flex flex-wrap items-center justify-end gap-1.5 pr-0.5">
@@ -983,7 +983,7 @@ function MessageBubbleComponent({
             )
           )}
           {hasText && !isEditing && (
-            <div className="flex items-center gap-0.5 pr-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
+            <div className="flex items-center gap-0.5 pr-0.5 opacity-0 transition-opacity duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] focus-within:opacity-100 group-hover:opacity-100">
               <IconButton
                 size="sm"
                 onClick={() => void handleCopy()}
@@ -1062,7 +1062,7 @@ function MessageBubbleComponent({
   }
 
   return (
-    <div className={`flex justify-start py-3 ${playEntranceAnimation ? 'chat-motion-fade-up' : ''}`}>
+    <div className={`flex justify-start py-3 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}>
       <div className="w-full min-w-0">
         {toolCalls.length > 0 && !isEditing && !hasTimelineSegments && (
           <section
@@ -1084,7 +1084,7 @@ function MessageBubbleComponent({
                 <ChevronDown
                   size={12}
                   strokeWidth={2}
-                  className={`ml-auto shrink-0 transition-transform duration-300 ${toolsExpanded ? 'rotate-180' : ''}`}
+                  className={`ml-auto shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${toolsExpanded ? 'rotate-180' : ''}`}
                 />
               </button>
             ) : (

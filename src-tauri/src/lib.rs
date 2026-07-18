@@ -557,6 +557,7 @@ pub fn run() {
             skills::chat_skills_list,
             skills::chat_skills_read,
             skills::chat_skills_import,
+            skills::chat_skills_uninstall,
             skills::chat_skills_install_from_url,
             skills::chat_skills_open_folder,
             chat::knowledge_base::commands::kb_list_libraries,

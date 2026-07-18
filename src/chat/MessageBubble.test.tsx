@@ -14,15 +14,15 @@ describe('MessageBubble mount motion', () => {
 
   it('does not replay entrance motion for historical messages', () => {
     const { container, rerender } = render(<MessageBubble message={assistantMessage} />)
-    expect(container.firstElementChild).not.toHaveClass('chat-motion-fade-up')
+    expect(container.firstElementChild).not.toHaveClass('chat-motion-bubble-in')
 
     rerender(<MessageBubble message={{ ...assistantMessage, id: 'user-motion', role: 'user' }} />)
-    expect(container.firstElementChild).not.toHaveClass('chat-motion-fade-up')
+    expect(container.firstElementChild).not.toHaveClass('chat-motion-bubble-in')
   })
 
   it('keeps entrance motion for the live streaming preview', () => {
     const { container } = render(<MessageBubble message={assistantMessage} messageStreaming />)
-    expect(container.firstElementChild).toHaveClass('chat-motion-fade-up')
+    expect(container.firstElementChild).toHaveClass('chat-motion-bubble-in')
   })
 })
 

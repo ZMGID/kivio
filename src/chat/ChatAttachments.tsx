@@ -215,7 +215,7 @@ export function ChatAttachments({
                     onClick={() => beginRemove(attachment.id)}
                     className={
                       variant === 'composer'
-                        ? 'absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-neutral-950/90 text-white opacity-0 shadow-sm transition-opacity duration-150 hover:bg-neutral-800 focus-visible:opacity-100 group-hover:opacity-100'
+                        ? 'absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-neutral-950/90 text-white opacity-0 shadow-sm transition-opacity duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] hover:bg-neutral-800 focus-visible:opacity-100 group-hover:opacity-100'
                         : 'absolute right-2 top-2 rounded-full bg-black/50 px-2 py-0.5 text-[11px] text-white backdrop-blur-sm hover:bg-black/65'
                     }
                     title="移除图片"

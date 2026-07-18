@@ -399,7 +399,7 @@ export function AskUserBlock({ toolCall }: AskUserBlockProps) {
                     type="button"
                     onMouseDown={preventMouseFocus}
                     onClick={() => setCurrentIndex(index)}
-                    className={`h-1 rounded-full transition-all ${
+                    className={`h-1 rounded-full transition-[width,background-color] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${
                       active
                         ? 'w-6 bg-neutral-900 dark:bg-neutral-100'
                         : answered

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Select } from '../settings/components'
 import type { ChatAssistant, ChatSet } from './types'
+import { useCloseAnimation } from './useCloseAnimation'
 
 // ponytail: same palette as AssistantCenter so 集/助手 colors match; duplicated 6-element array, not worth sharing
 const setColors = ['#6A8FBD', '#C56646', '#4F9D7A', '#8A6FBD', '#B7791F', '#5E8C6A']
@@ -38,6 +39,7 @@ export function SetDialog({
   const [color, setColor] = useState<string | null>(set?.color ?? null)
   const inputRef = useRef<HTMLInputElement>(null)
   const title = set ? '编辑集' : '新建集'
+  const { closing, startClose, onAnimationEnd } = useCloseAnimation(onClose)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -46,11 +48,11 @@ export function SetDialog({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') startClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
+  }, [startClose])
 
   const submit = () => {
     const nextName = name.trim()
@@ -62,17 +64,18 @@ export function SetDialog({
 
   return createPortal(
     <div
-      className="chat-motion-fade fixed inset-0 z-[300] flex items-center justify-center bg-black/30 px-4 backdrop-blur-[1px]"
+      className={`${closing ? 'chat-motion-fade-out' : 'chat-motion-fade'} fixed inset-0 z-[300] flex items-center justify-center bg-black/30 px-4 backdrop-blur-[1px]`}
       data-tauri-drag-region="false"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target === e.currentTarget) startClose()
       }}
     >
       <form
-        className="chat-motion-modal-in w-full max-w-[380px] rounded-[10px] border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-[#252527]"
+        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} w-full max-w-[380px] rounded-[10px] border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-[#252527]`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        onAnimationEnd={onAnimationEnd}
         onSubmit={(e) => {
           e.preventDefault()
           submit()
@@ -160,7 +163,7 @@ export function SetDialog({
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={startClose}
             className="rounded-lg px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:bg-black/[0.04] dark:text-neutral-300 dark:hover:bg-white/[0.06]"
           >
             取消

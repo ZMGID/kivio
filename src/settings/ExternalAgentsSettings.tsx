@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { RefreshCw, Wrench } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import type { AgentRuntimeConfig, ChatConfig } from '../api/tauri'
 import { AgentIcon } from '../chat/AgentIcon'
 import { chatApi, type DetectedExternalAgent } from '../chat/api'
-import type { SettingsTab } from './SettingsShell'
 import { Select, SettingRow, SettingsGroup } from './components'
 import { i18n, type Lang } from './i18n'
 import { Button } from '../components/Button'
@@ -38,14 +37,12 @@ interface ExternalAgentsSettingsProps {
   lang: Lang
   chatConfig: ChatConfig
   onChatChange: (patch: Partial<ChatConfig>) => void
-  onNavigateTab: (tab: SettingsTab) => void
 }
 
 export function ExternalAgentsSettings({
   lang,
   chatConfig,
   onChatChange,
-  onNavigateTab,
 }: ExternalAgentsSettingsProps) {
   const t = i18n[lang]
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
@@ -182,19 +179,6 @@ export function ExternalAgentsSettings({
             )}
           </>
         )}
-      </SettingsGroup>
-
-      <SettingsGroup title={t.externalAgentsMcpSection}>
-        <div className="px-1 pb-2">
-          <Button
-            size="sm"
-            onClick={() => onNavigateTab('mcp')}
-            data-tauri-drag-region="false"
-          >
-            <Wrench size={11} />
-            {t.externalAgentsOpenMcp}
-          </Button>
-        </div>
       </SettingsGroup>
 
       <SettingsGroup title={t.externalAgentsDetectSection}>

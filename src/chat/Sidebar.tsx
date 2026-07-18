@@ -9,11 +9,13 @@ import {
   LayoutGrid,
   MoreHorizontal,
   Plus,
+  Puzzle,
   Search,
   Settings as SettingsIcon,
   SquarePen,
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem } from './types'
+import { AgentIcon, KnowledgeIcon, McpIcon, SkillIcon } from '../settings/NavIcons'
 import { ConversationList } from './ConversationList'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { ProjectContextMenu } from './ProjectContextMenu'
@@ -42,13 +44,18 @@ function resolveChatUserProfile(
 
 const modLabel = isMac ? '⌘' : 'Ctrl'
 
-export type ExtensionsNavItem = 'assistants' | 'skill' | 'knowledge' | 'plugins'
+export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'plugins'
 
-const extensionSubItems: Array<{ id: ExtensionsNavItem; label: string }> = [
-  { id: 'assistants', label: '助手' },
-  { id: 'skill', label: '技能' },
-  { id: 'knowledge', label: '知识库' },
-  { id: 'plugins', label: '插件' },
+const extensionSubItems: Array<{
+  id: ExtensionsNavItem
+  label: string
+  icon: (props: { size?: number; className?: string }) => React.JSX.Element
+}> = [
+  { id: 'assistants', label: '助手', icon: AgentIcon },
+  { id: 'skill', label: 'Skill', icon: SkillIcon },
+  { id: 'mcp', label: 'MCP', icon: McpIcon },
+  { id: 'knowledge', label: '知识库', icon: KnowledgeIcon },
+  { id: 'plugins', label: '插件', icon: (props) => <Puzzle size={props.size} className={props.className} strokeWidth={1.75} /> },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5
@@ -233,27 +240,33 @@ function ExtensionsNav({
         <ChevronRight
           size={14}
           strokeWidth={2}
-          className={`shrink-0 text-neutral-400 transition-transform duration-200 dark:text-neutral-500 ${
+          className={`shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] dark:text-neutral-500 ${
             expanded ? 'rotate-90' : ''
           }`}
         />
       </button>
       {expanded && (
-        <div className="relative ml-[34px] mt-0.5 border-l border-neutral-300 pl-2 dark:border-neutral-600">
+        <div className="ml-[26px] mt-0.5">
           {extensionSubItems.map((item) => {
             const active = activeItem === item.id
+            const Icon = item.icon
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`flex w-full rounded-md py-1.5 pl-3 pr-2 text-left text-[13px] transition-colors ${
+                className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-2 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900 dark:text-neutral-100'
                     : 'text-neutral-700 hover:bg-black/[0.04] hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100'
                 }`}
               >
-                {item.label}
+                <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${
+                  active ? 'text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500'
+                }`}>
+                  <Icon size={15} />
+                </span>
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
               </button>
             )
           })}
@@ -339,7 +352,7 @@ function SearchDialog({
 
         <div className="custom-scrollbar min-h-0 overflow-y-auto px-1.5 pb-1.5">
           {results.length > 0 ? (
-            results.map((conversation) => {
+            results.map((conversation, index) => {
               const active = conversation.id === currentConversationId
               const projectLabel = conversationProjectLabel(conversation, projects)
               const setId = conversation.set_id ?? conversation.setId ?? null
@@ -349,7 +362,10 @@ function SearchDialog({
                   key={conversation.id}
                   type="button"
                   onClick={() => onSelectConversation(conversation)}
-                  className={`group/search-result flex w-full min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
+                  style={{
+                    ['--chat-motion-delay' as string]: `${Math.min(index, 12) * 18}ms`,
+                  }}
+                  className={`chat-motion-row group/search-result flex w-full min-w-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
                     active
                       ? 'bg-black/[0.07] dark:bg-white/[0.1]'
                       : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.07]'
@@ -1038,7 +1054,7 @@ export const Sidebar = memo(function Sidebar({
 
             <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto" data-tauri-drag-region="false">
             {activeTab === 'projects' && (
-            <section className="group/projects px-3 pb-2 pt-1">
+            <section key="projects" className="chat-motion-tab-in group/projects px-3 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
                   {visibleProjects.map((project, index) => {
                     const active = selectedProject?.id === project.id
@@ -1172,7 +1188,7 @@ export const Sidebar = memo(function Sidebar({
             )}
 
             {activeTab === 'sets' && (
-            <section className="group/sets px-3 pb-2 pt-1">
+            <section key="sets" className="chat-motion-tab-in group/sets px-3 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
                   {sets.length === 0 ? (
                     <button
@@ -1314,7 +1330,7 @@ export const Sidebar = memo(function Sidebar({
             )}
 
             {activeTab === 'conversations' && (
-            <section className="group/conversations px-3 pb-5 pt-1">
+            <section key="conversations" className="chat-motion-tab-in group/conversations px-3 pb-5 pt-1">
               {sectionMenuAnchor && (
                 <ChatSectionMenu
                   anchor={sectionMenuAnchor}

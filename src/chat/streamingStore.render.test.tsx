@@ -190,7 +190,7 @@ describe('MessageList ← streamingStore 集成', () => {
     )
     await flush()
 
-    const scroller = container.querySelector('.chat-motion-fade.custom-scrollbar')
+    const scroller = container.querySelector('.chat-motion-view-in.custom-scrollbar')
     expect(scroller).not.toBeNull()
     expect(screen.queryByRole('button', { name: '回到底部' })).not.toBeInTheDocument()
 

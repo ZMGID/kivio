@@ -48,7 +48,6 @@ describe('ExternalAgentsSettings', () => {
         lang="zh"
         chatConfig={baseChatConfig}
         onChatChange={vi.fn()}
-        onNavigateTab={vi.fn()}
       />,
     )
 
