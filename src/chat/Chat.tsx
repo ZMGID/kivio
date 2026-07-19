@@ -163,6 +163,64 @@ function hashPath(): string {
   return window.location.hash.replace('#', '').split('?')[0]
 }
 
+/**
+ * 记住用户在顶栏最后一次选的聊天模型与思考等级，作为新会话/空会话的默认（以用户的选择为准，
+ * 取代旧的「默认模型」设置，也不再把思考等级硬回落到 high）。仅前端偏好，存 localStorage。
+ */
+const LAST_MODEL_KEY = 'kivio.chat.lastModel'
+const LAST_THINKING_KEY = 'kivio.chat.lastThinkingLevel'
+
+function loadLastModel(): { providerId: string; model: string } | null {
+  try {
+    const raw = window.localStorage.getItem(LAST_MODEL_KEY)
+    if (!raw) return null
+    const v = JSON.parse(raw)
+    if (v && typeof v.providerId === 'string' && typeof v.model === 'string' && v.providerId) {
+      return v
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
+function saveLastModel(providerId: string, model: string): void {
+  try {
+    if (providerId) {
+      window.localStorage.setItem(LAST_MODEL_KEY, JSON.stringify({ providerId, model }))
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+const VALID_THINKING_LEVELS: ReadonlySet<string> = new Set([
+  'off',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+])
+
+function loadLastThinkingLevel(): ThinkingLevel | null {
+  try {
+    const raw = window.localStorage.getItem(LAST_THINKING_KEY)
+    return raw && VALID_THINKING_LEVELS.has(raw) ? (raw as ThinkingLevel) : null
+  } catch {
+    return null
+  }
+}
+
+function saveLastThinkingLevel(level: ThinkingLevel | null): void {
+  try {
+    if (level) window.localStorage.setItem(LAST_THINKING_KEY, level)
+    else window.localStorage.removeItem(LAST_THINKING_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
 function isChatSettingsPath(path: string): boolean {
   return path === 'chat/settings' || path.startsWith('chat/settings/')
 }
@@ -680,7 +738,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [draftKnowledgeBaseIds, setDraftKnowledgeBaseIds] = useState<string[]>([])
   const [draftForceKnowledgeSearch, setDraftForceKnowledgeSearch] = useState(false)
   // 欢迎页思考等级草稿；首次发送建会话时落到会话上。null=跟随全局。
-  const [draftThinkingLevel, setDraftThinkingLevel] = useState<ThinkingLevel | null>(null)
+  const [draftThinkingLevel, setDraftThinkingLevel] = useState<ThinkingLevel | null>(loadLastThinkingLevel)
   // 多模型一问多答（任务 06-30）：欢迎页（尚无会话）时的多答模型草稿；首次发送建会话时落到会话上。
   const [draftReplyModels, setDraftReplyModels] = useState<ModelRef[]>([])
   const [draftAgentRuntime, setDraftAgentRuntime] = useState<AgentRuntimeConfig>(
@@ -1289,10 +1347,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     try {
       const settings = await getSettingsCached()
       setUiLang((settings.settingsLanguage as Lang) || 'zh')
-      const chatDefault = settings.defaultModels.chat
-      if (chatDefault.providerId) {
+      // 以用户最后一次在顶栏选的模型为默认；provider 仍存在时才用。localStorage 为空时
+      // （首次运行）回落到 onboarding 写入的 defaultModels.chat，再回落 lens / 翻译模型。
+      const last = loadLastModel()
+      const lastProviderOk =
+        last && (settings.providers || []).some((p) => p.id === last.providerId)
+      const chatDefault = settings.defaultModels?.chat
+      if (last && lastProviderOk) {
+        setDraftProviderId(last.providerId)
+        setDraftModel(last.model)
+      } else if (chatDefault?.providerId) {
         setDraftProviderId(chatDefault.providerId)
-        setDraftModel(chatDefault.model)
+        setDraftModel(chatDefault.model || '')
       } else if (settings.lens?.providerId) {
         setDraftProviderId(settings.lens.providerId)
         setDraftModel(settings.lens.model || '')
@@ -2657,10 +2723,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
     }
 
-    // 同理：把欢迎页选好的思考等级草稿落到新会话上。
+    // 把全局默认思考等级套到「从未显式设过等级」的会话上（新会话 / 旧的 null 会话）。
+    // 只在 convLevel 为 null 时应用——绝不覆盖用户为某个会话显式选的等级。
     if (draftThinkingLevel) {
       const convLevel = conversation.thinking_level ?? conversation.thinkingLevel ?? null
-      if (convLevel !== draftThinkingLevel) {
+      if (convLevel === null) {
         try {
           conversation = await chatApi.updateConversation(conversation.id, {
             thinkingLevel: draftThinkingLevel,
@@ -3348,6 +3415,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const handleModelChange = useCallback(async (providerId: string, model: string) => {
     setDraftProviderId(providerId)
     setDraftModel(model)
+    saveLastModel(providerId, model) // 记住为全局默认
 
     if (!currentConversation) return
 
@@ -3365,6 +3433,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const handleThinkingLevelChange = useCallback(async (level: ThinkingLevel | null) => {
     setDraftThinkingLevel(level)
+    saveLastThinkingLevel(level) // 记住为全局默认，不再回落到 high
     if (!currentConversation) return
     try {
       const updatedConv = await chatApi.updateConversation(currentConversation.id, {
@@ -3757,7 +3826,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                         currentConversation
                           ? (currentConversation.thinking_level
                               ?? currentConversation.thinkingLevel
-                              ?? null)
+                              ?? draftThinkingLevel)
                           : draftThinkingLevel
                       }
                       onChange={handleThinkingLevelChange}

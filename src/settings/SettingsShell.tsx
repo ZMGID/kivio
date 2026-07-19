@@ -2449,27 +2449,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </SettingRow>
                 </SettingsGroup>
 
-                <SettingsGroup title={t.defaultModelsSection}>
-                  <SettingRow
-                    label={t.defaultChatModel}
-                  >
-                    <ModelPairSelect
-                      providerId={settings.defaultModels.chat.providerId || ''}
-                      model={settings.defaultModels.chat.model || ''}
-                      providers={settings.providers}
-                      inheritLabel={t.defaultModelsUnset}
-                      onChange={(providerId, model) => {
-                        updateDefaultModel('chat', providerId, model)
-                      }}
-                    />
-                  </SettingRow>
-                  {!chatProvider && (
-                    <p className="kv-row-desc px-0 pb-2">
-                      {lang === 'zh' ? '请先在「模型」中添加并配置供应商。' : 'Add and configure a provider under Models first.'}
-                    </p>
-                  )}
-                </SettingsGroup>
-
                 <SettingsGroup title={lang === 'zh' ? '响应' : 'Response'}>
                   <SettingRow label={t.chatStreamEnabled}>
                     <Toggle
