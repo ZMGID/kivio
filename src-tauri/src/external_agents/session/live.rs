@@ -19,6 +19,8 @@ pub enum SessionCommand {
         prompt: String,
         model: Option<String>,
         reasoning: Option<String>,
+        /// 本轮用户消息的原生图片块（ACP → image content block；Codex → localImage 临时文件）。空=无图。
+        images: Vec<crate::external_agents::attachments::ImageBlock>,
         events: mpsc::Sender<UnifiedAgentEvent>,
         done: oneshot::Sender<Result<(), String>>,
     },

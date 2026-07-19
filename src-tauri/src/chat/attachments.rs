@@ -589,6 +589,35 @@ pub(crate) fn stored_image_paths_for_attachments(
         .collect()
 }
 
+/// 解析非图片文件附件的绝对路径（外部 CLI 用：拼进 prompt + allowed-dir）。
+/// 缺失文件跳过（best-effort），不致命——避免一个失效附件阻断整条消息。
+pub(crate) fn stored_file_paths_for_attachments(
+    app: &AppHandle,
+    conversation_id: &str,
+    attachments: &[Attachment],
+) -> Result<Vec<PathBuf>, String> {
+    let file_attachments = attachments
+        .iter()
+        .filter(|attachment| attachment.attachment_type != "image")
+        .collect::<Vec<_>>();
+    if file_attachments.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = conversation_attachments_dir(app, conversation_id)?;
+    let mut paths = Vec::new();
+    for attachment in file_attachments {
+        let stored = Path::new(&attachment.path);
+        if stored.components().count() != 1 {
+            return Err(format!("Invalid attachment path: {}", attachment.path));
+        }
+        let path = dir.join(stored);
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

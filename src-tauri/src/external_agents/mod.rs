@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod commands;
 pub mod compact;
 pub mod context;

@@ -117,6 +117,7 @@ pub async fn write_prompt_stdin(
     child: &mut Child,
     def: &RuntimeAgentDef,
     prompt: &str,
+    images: &[crate::external_agents::attachments::ImageBlock],
 ) -> Result<(), String> {
     let stdin = child
         .stdin
@@ -132,7 +133,7 @@ pub async fn write_prompt_stdin(
             stdin.shutdown().await.map_err(|e| e.to_string())?;
         }
         PromptInputFormat::StreamJson => {
-            let content = stream_json_user_content(prompt);
+            let content = stream_json_user_content(prompt, images);
             let line = serde_json::json!({
                 "type": "user",
                 "message": {
@@ -176,11 +177,26 @@ pub async fn write_probe_stdin(child: &mut Child) -> Result<(), String> {
     Ok(())
 }
 
-fn stream_json_user_content(prompt: &str) -> serde_json::Value {
+fn stream_json_user_content(
+    prompt: &str,
+    images: &[crate::external_agents::attachments::ImageBlock],
+) -> serde_json::Value {
     if prompt.trim_start().starts_with('/') {
         serde_json::Value::String(prompt.to_string())
     } else {
-        serde_json::json!([{ "type": "text", "text": prompt }])
+        // Anthropic content array: text block first, then a base64 image block per attached image.
+        let mut content = vec![serde_json::json!({ "type": "text", "text": prompt })];
+        for img in images {
+            content.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.mime,
+                    "data": img.data_base64,
+                },
+            }));
+        }
+        serde_json::Value::Array(content)
     }
 }
 
@@ -226,12 +242,39 @@ mod tests {
 
     #[test]
     fn stream_json_user_content_uses_string_for_slash_commands() {
-        let slash = stream_json_user_content("/compact");
+        let slash = stream_json_user_content("/compact", &[]);
         assert_eq!(slash, serde_json::json!("/compact"));
-        let text = stream_json_user_content("hello");
+        let text = stream_json_user_content("hello", &[]);
         assert_eq!(
             text,
             serde_json::json!([{ "type": "text", "text": "hello" }])
         );
+    }
+
+    #[test]
+    fn stream_json_user_content_appends_image_blocks() {
+        let img = crate::external_agents::attachments::ImageBlock {
+            data_base64: "AAAA".to_string(),
+            mime: "image/png".to_string(),
+            path: std::path::PathBuf::from("/tmp/a.png"),
+        };
+        let content = stream_json_user_content("look", std::slice::from_ref(&img));
+        let arr = content.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], serde_json::json!("text"));
+        assert_eq!(arr[1]["type"], serde_json::json!("image"));
+        assert_eq!(arr[1]["source"]["media_type"], serde_json::json!("image/png"));
+        assert_eq!(arr[1]["source"]["data"], serde_json::json!("AAAA"));
+    }
+
+    #[test]
+    fn stream_json_slash_ignores_images() {
+        let img = crate::external_agents::attachments::ImageBlock {
+            data_base64: "AAAA".to_string(),
+            mime: "image/png".to_string(),
+            path: std::path::PathBuf::from("/tmp/a.png"),
+        };
+        let content = stream_json_user_content("/compact", std::slice::from_ref(&img));
+        assert_eq!(content, serde_json::json!("/compact"));
     }
 }

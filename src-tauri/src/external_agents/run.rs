@@ -54,18 +54,23 @@ pub async fn run_external_cli_slash_command(
         conversation,
         None,
         slash_command,
+        &[],
+        &[],
         None,
         AgentRunEntry::Send,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_external_cli_reply(
     app: &AppHandle,
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
     title_from_first_user: Option<&str>,
     latest_user_message: &str,
+    image_paths: &[std::path::PathBuf],
+    file_paths: &[std::path::PathBuf],
     active_skill_id: Option<&str>,
     entry: AgentRunEntry,
 ) -> Result<(), String> {
@@ -156,8 +161,36 @@ pub async fn run_external_cli_reply(
             latest_user_message,
         )
     };
+    let mut composed = composed;
 
-    let extra_dirs = extra_allowed_dirs_for_agent(def, &settings.chat_tools.skill_scan_paths);
+    // 附件（slash 命令不带附件，保持 passthrough 语义）。图片：支持原生图片块的协议按白名单
+    // 加载为 base64 块，其余（不支持 / 超白名单 / 读失败）降级为路径文本；文件：一律路径说明块。
+    let (image_blocks, degraded_image_paths): (
+        Vec<crate::external_agents::attachments::ImageBlock>,
+        Vec<std::path::PathBuf>,
+    ) = if is_slash {
+        (Vec::new(), Vec::new())
+    } else if def.supports_native_image {
+        crate::external_agents::attachments::load_image_blocks(image_paths, def.image_mime_whitelist)
+    } else {
+        (Vec::new(), image_paths.to_vec())
+    };
+    if !is_slash {
+        composed.full_prompt.push_str(
+            &crate::external_agents::attachments::image_paths_note(&degraded_image_paths),
+        );
+        composed
+            .full_prompt
+            .push_str(&crate::external_agents::attachments::file_attachments_note(file_paths));
+    }
+
+    let mut extra_dirs = extra_allowed_dirs_for_agent(def, &settings.chat_tools.skill_scan_paths);
+    // 降级图片 / 文件需要 CLI 自己从磁盘读 → 把本会话附件目录加进 allowed-dir。
+    if !is_slash && (!degraded_image_paths.is_empty() || !file_paths.is_empty()) {
+        if let Ok(dir) = crate::chat::storage::conversation_attachments_dir(app, &conversation.id) {
+            extra_dirs.push(dir.to_string_lossy().to_string());
+        }
+    }
     let runtime_ctx = RuntimeContext {
         extra_allowed_dirs: extra_dirs,
         resume_session_id: resume_ctx.resume_session_id.clone(),
@@ -268,6 +301,7 @@ pub async fn run_external_cli_reply(
             persistent_mcp,
             &composed.full_prompt,
             latest_user_message,
+            &image_blocks,
             &mut emit_event,
             &cancel_check,
         )
@@ -318,7 +352,13 @@ pub async fn run_external_cli_reply(
             }
             _ => {
                 if def.prompt_via_stdin {
-                    write_prompt_stdin(&mut spawned.child, def, &composed.full_prompt).await?;
+                    write_prompt_stdin(
+                        &mut spawned.child,
+                        def,
+                        &composed.full_prompt,
+                        &image_blocks,
+                    )
+                    .await?;
                 }
                 let mut handler = create_stream_handler(def.stream_format, def.json_event_parser);
                 read_stdout_lines(
@@ -536,6 +576,7 @@ async fn run_persistent_turn<E, C>(
     mcp_servers: Vec<AcpMcpServer>,
     first_prompt: &str,
     reuse_prompt: &str,
+    images: &[crate::external_agents::attachments::ImageBlock],
     emit: &mut E,
     cancel: &C,
 ) -> Result<(), String>
@@ -609,6 +650,7 @@ where
             prompt,
             model,
             reasoning,
+            images: images.to_vec(),
             events: events_tx,
             done: done_tx,
         })

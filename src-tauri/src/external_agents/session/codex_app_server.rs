@@ -499,6 +499,7 @@ impl CodexAppServerSession {
         prompt: &str,
         model: Option<&str>,
         reasoning: Option<&str>,
+        images: &[crate::external_agents::attachments::ImageBlock],
         events: &mpsc::Sender<UnifiedAgentEvent>,
         control: &mut mpsc::Receiver<SessionCommand>,
     ) -> Result<(), String> {
@@ -518,9 +519,15 @@ impl CodexAppServerSession {
             )
             .await?;
         } else {
+            // Codex reads images as `localImage` items pointing at on-disk files; copy each into a
+            // private temp dir (its sandbox can't reach the conversation attachments dir).
+            let mut input = vec![json!({ "type": "text", "text": prompt })];
+            for path in crate::external_agents::attachments::materialize_images_to_tempdir(images) {
+                input.push(json!({ "type": "localImage", "path": path.to_string_lossy() }));
+            }
             let mut turn_params = json!({
                 "threadId": self.thread_id,
-                "input": [{ "type": "text", "text": prompt }],
+                "input": input,
                 "cwd": self.cwd,
                 "approvalPolicy": "never",
             });
@@ -786,6 +793,7 @@ pub fn spawn_codex_session_actor(
                     prompt,
                     model,
                     reasoning,
+                    images,
                     events,
                     done,
                 } => {
@@ -794,6 +802,7 @@ pub fn spawn_codex_session_actor(
                             &prompt,
                             model.as_deref(),
                             reasoning.as_deref(),
+                            &images,
                             &events,
                             &mut rx,
                         )
@@ -857,6 +866,7 @@ mod tests {
                     prompt: prompt.to_string(),
                     model: None,
                     reasoning: None,
+                    images: vec![],
                     events: etx,
                     done: dtx,
                 })

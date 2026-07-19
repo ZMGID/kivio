@@ -71,6 +71,8 @@ pub const PI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     stream_format: StreamFormat::PiRpc,
     json_event_parser: None,
     resumes_session_via_cli: false,
+    supports_native_image: false,
+    image_mime_whitelist: &[],
     build_args: build_pi_args,
 };
 

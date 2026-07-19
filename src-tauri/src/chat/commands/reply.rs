@@ -96,15 +96,30 @@ pub(super) async fn complete_assistant_reply_inner(
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == "user")
+            .find(|m| m.role == "user");
+        let latest_user_text = latest_user
             .map(|m| m.content.clone())
+            .unwrap_or_default();
+        // 外部 CLI 也要带附件：图片走各协议原生块 / 降级，文件走路径说明。图片路径已由调用方
+        // 算好（last_user_image_paths）；文件路径从最后一条 user 消息现解析（best-effort）。
+        let latest_user_file_paths = latest_user
+            .map(|m| {
+                crate::chat::attachments::stored_file_paths_for_attachments(
+                    app,
+                    &conversation.id,
+                    &m.attachments,
+                )
+                .unwrap_or_default()
+            })
             .unwrap_or_default();
         return crate::external_agents::run_external_cli_reply(
             app,
             state,
             conversation,
             title_from_first_user,
-            &latest_user,
+            &latest_user_text,
+            last_user_image_paths,
+            &latest_user_file_paths,
             active_skill_id,
             entry,
         )

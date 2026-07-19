@@ -115,6 +115,12 @@ pub struct RuntimeAgentDef {
     pub stream_format: StreamFormat,
     pub json_event_parser: Option<JsonEventParser>,
     pub resumes_session_via_cli: bool,
+    /// 该 CLI 是否能通过其协议原生接收图片（Claude base64 / ACP image / Codex localImage）。
+    /// false（pi/kimi）时图片降级为在 prompt 文本里写出路径。
+    pub supports_native_image: bool,
+    /// 允许原生注入的图片 MIME 白名单；空 = 不限。Claude stream-json 仅认 jpeg/png/gif/webp，
+    /// 超出的图片降级为路径文本（不静默丢弃）。
+    pub image_mime_whitelist: &'static [&'static str],
     pub build_args: fn(&RuntimeContext, &RuntimeBuildOptions, Option<&str>) -> Vec<String>,
 }
 

@@ -974,6 +974,7 @@ impl AcpSession {
     pub async fn run_turn(
         &mut self,
         prompt: &str,
+        images: &[crate::external_agents::attachments::ImageBlock],
         events: &mpsc::Sender<UnifiedAgentEvent>,
         control: &mut mpsc::Receiver<SessionCommand>,
     ) -> Result<(), String> {
@@ -985,7 +986,7 @@ impl AcpSession {
             "session/prompt",
             json!({
                 "sessionId": self.session_id,
-                "prompt": [{ "type": "text", "text": prompt }],
+                "prompt": acp_prompt_blocks(prompt, images),
             }),
         )
         .await?;
@@ -1199,6 +1200,23 @@ async fn acp_read_until_id(
     }
 }
 
+/// Build the ACP `session/prompt` content array: text block first, then a native image block
+/// (`{type:"image", data, mimeType}`) per attached image. Empty `images` → just the text block.
+fn acp_prompt_blocks(
+    prompt: &str,
+    images: &[crate::external_agents::attachments::ImageBlock],
+) -> Vec<serde_json::Value> {
+    let mut blocks = vec![json!({ "type": "text", "text": prompt })];
+    for img in images {
+        blocks.push(json!({
+            "type": "image",
+            "data": img.data_base64,
+            "mimeType": img.mime,
+        }));
+    }
+    blocks
+}
+
 /// Spawn the actor task owning a connected ACP session.
 pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionCommand> {
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
@@ -1207,11 +1225,12 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionC
             match cmd {
                 SessionCommand::RunTurn {
                     prompt,
+                    images,
                     events,
                     done,
                     ..
                 } => {
-                    let result = session.run_turn(&prompt, &events, &mut rx).await;
+                    let result = session.run_turn(&prompt, &images, &events, &mut rx).await;
                     let _ = done.send(result);
                 }
                 SessionCommand::Cancel => {}
@@ -1229,6 +1248,29 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionC
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acp_prompt_blocks_text_only_when_no_images() {
+        let blocks = acp_prompt_blocks("hello", &[]);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0], json!({ "type": "text", "text": "hello" }));
+    }
+
+    #[test]
+    fn acp_prompt_blocks_appends_image_block() {
+        let img = crate::external_agents::attachments::ImageBlock {
+            data_base64: "AAAA".to_string(),
+            mime: "image/png".to_string(),
+            path: std::path::PathBuf::from("/tmp/a.png"),
+        };
+        let blocks = acp_prompt_blocks("look", std::slice::from_ref(&img));
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], json!("text"));
+        assert_eq!(
+            blocks[1],
+            json!({ "type": "image", "data": "AAAA", "mimeType": "image/png" })
+        );
+    }
 
     /// Live cross-turn continuity over ACP: connect once to `cursor-agent acp`, run two prompt
     /// turns on the SAME process, and confirm turn 2 recalls a fact from turn 1 — proving the ACP
@@ -1256,6 +1298,7 @@ mod tests {
                     prompt: prompt.to_string(),
                     model: None,
                     reasoning: None,
+                    images: vec![],
                     events: etx,
                     done: dtx,
                 })

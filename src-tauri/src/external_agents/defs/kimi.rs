@@ -54,6 +54,8 @@ pub const KIMI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     stream_format: StreamFormat::JsonEventStream,
     json_event_parser: Some(JsonEventParser::Kimi),
     resumes_session_via_cli: false,
+    supports_native_image: false,
+    image_mime_whitelist: &[],
     build_args: build_kimi_args,
 };
 
