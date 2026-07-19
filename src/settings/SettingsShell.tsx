@@ -69,6 +69,67 @@ type MemoryLayerKey = 'l1' | 'l2'
 
 const MEMORY_L1_MAX_BYTES = 5_000
 const CHAT_MAX_OUTPUT_TOKEN_OPTIONS = [2048, 8192, 16384, 32768]
+// UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
+// 故 14px 锚定为 100%，输入 px → scale = px/14。ponytail: zoom 代理，若将来全量 rem 化可换真基准。
+const UI_FONT_BASE_PX = 14
+const UI_FONT_PX_MIN = 12
+const UI_FONT_PX_MAX = 19
+
+// 可搜索字体选择器：聚焦展开、输入过滤，每项以自身字体预览。界面字体/代码字体共用。
+function FontPicker({ value, systemFonts, placeholder, defaultLabel, emptyText, onChange }: {
+  value: string
+  systemFonts: string[]
+  placeholder: string
+  defaultLabel: string
+  emptyText: string
+  onChange: (v: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
+  const filtered = (q ? systemFonts.filter((f) => f.toLowerCase().includes(q)) : systemFonts).slice(0, 100)
+  const select = (name: string) => {
+    onChange(name)
+    setOpen(false)
+    setQuery('')
+  }
+  return (
+    <div className="relative w-56">
+      <Input
+        value={open ? query : (value || defaultLabel)}
+        onChange={(v) => { setQuery(v); if (!open) setOpen(true) }}
+        onFocus={() => { setQuery(''); setOpen(true) }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        placeholder={placeholder}
+      />
+      {open && (
+        <div className="absolute right-0 z-50 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+          <button
+            type="button"
+            className={`block w-full truncate px-3 py-1.5 text-left text-[13px] hover:bg-black/[0.05] dark:hover:bg-white/[0.08] ${value === '' ? 'font-semibold text-neutral-900 dark:text-neutral-100' : 'text-neutral-700 dark:text-neutral-300'}`}
+            onMouseDown={(e) => { e.preventDefault(); select('') }}
+          >
+            {defaultLabel}
+          </button>
+          {filtered.map((f) => (
+            <button
+              key={f}
+              type="button"
+              className={`block w-full truncate px-3 py-1.5 text-left text-[13px] hover:bg-black/[0.05] dark:hover:bg-white/[0.08] ${value === f ? 'bg-black/[0.04] font-semibold dark:bg-white/[0.06]' : 'text-neutral-700 dark:text-neutral-300'}`}
+              style={{ fontFamily: `"${f}"` }}
+              onMouseDown={(e) => { e.preventDefault(); select(f) }}
+            >
+              {f}
+            </button>
+          ))}
+          {filtered.length === 0 && (
+            <div className="px-3 py-2 text-[12px] text-neutral-400">{emptyText}</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 const textEncoder = new TextEncoder()
 
 function utf8ByteLength(value: string): number {
@@ -425,6 +486,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [chatSystemPromptInteracted, setChatSystemPromptInteracted] = useState(false)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
+  const [uiFontPxInput, setUiFontPxInput] = useState('')
+  const [systemFonts, setSystemFonts] = useState<string[]>([])
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
   const [permissionsLoading, setPermissionsLoading] = useState(false)
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
@@ -860,6 +923,40 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     if (retryAttempts === undefined) return
     setRetryAttemptsInput(String(retryAttempts ?? 3))
   }, [retryAttempts])
+
+  const uiFontScale = settings?.uiFontScale
+  useEffect(() => {
+    if (uiFontScale === undefined) return
+    setUiFontPxInput(String(Math.round((uiFontScale ?? 1) * UI_FONT_BASE_PX)))
+  }, [uiFontScale])
+
+  const commitUiFontPx = (raw: string, commit: boolean) => {
+    if (!settings) return
+    const fallback = String(Math.round((settings.uiFontScale ?? 1) * UI_FONT_BASE_PX))
+    if (raw.trim() === '') {
+      if (commit) setUiFontPxInput(fallback)
+      return
+    }
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isNaN(parsed)) {
+      if (commit) setUiFontPxInput(fallback)
+      return
+    }
+    const clamped = Math.min(UI_FONT_PX_MAX, Math.max(UI_FONT_PX_MIN, parsed))
+    if (commit) setUiFontPxInput(String(clamped))
+    updateSettings({ uiFontScale: clamped / UI_FONT_BASE_PX })
+  }
+
+  // 系统已装字体列表，仅拉取一次（前端无法枚举，走后端 CoreText/GDI）。
+  useEffect(() => {
+    let alive = true
+    api.listSystemFonts().then((fonts) => {
+      if (alive) setSystemFonts(fonts)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   useEffect(() => {
     if (!settings?.providers.length) {
@@ -2022,6 +2119,49 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                         )
                       })}
                     </div>
+                  </SettingRow>
+                  <SettingRow
+                    label={lang === 'zh' ? '界面字号' : 'UI size'}
+                    description={lang === 'zh' ? '调整界面使用的基准字号' : 'Adjust the base UI font size'}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        value={uiFontPxInput}
+                        onChange={(v) => { setUiFontPxInput(v); commitUiFontPx(v, false) }}
+                        onBlur={() => commitUiFontPx(uiFontPxInput, true)}
+                        min={UI_FONT_PX_MIN}
+                        max={UI_FONT_PX_MAX}
+                        className="!w-16 text-center"
+                      />
+                      <span className="text-[13px] text-neutral-400 dark:text-neutral-500">px</span>
+                    </div>
+                  </SettingRow>
+                  <SettingRow
+                    label={lang === 'zh' ? '界面字体' : 'UI font'}
+                    description={lang === 'zh' ? '搜索并选择系统已安装的字体，不影响性能' : 'Search and pick an installed system font; no performance cost'}
+                  >
+                    <FontPicker
+                      value={settings.uiFontFamily ?? ''}
+                      systemFonts={systemFonts}
+                      placeholder={lang === 'zh' ? '搜索字体…' : 'Search fonts…'}
+                      defaultLabel={lang === 'zh' ? '系统默认' : 'System default'}
+                      emptyText={lang === 'zh' ? '无匹配字体' : 'No matching fonts'}
+                      onChange={(v) => updateSettings({ uiFontFamily: v })}
+                    />
+                  </SettingRow>
+                  <SettingRow
+                    label={lang === 'zh' ? '代码字体' : 'Code font'}
+                    description={lang === 'zh' ? '代码块与等宽文本使用的字体' : 'Font for code blocks and monospace text'}
+                  >
+                    <FontPicker
+                      value={settings.uiFontMono ?? ''}
+                      systemFonts={systemFonts}
+                      placeholder={lang === 'zh' ? '搜索字体…' : 'Search fonts…'}
+                      defaultLabel={lang === 'zh' ? '系统默认' : 'System default'}
+                      emptyText={lang === 'zh' ? '无匹配字体' : 'No matching fonts'}
+                      onChange={(v) => updateSettings({ uiFontMono: v })}
+                    />
                   </SettingRow>
                 </SettingsGroup>
 

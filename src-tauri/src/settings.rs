@@ -1172,6 +1172,15 @@ pub struct Settings {
     pub theme: String,
     #[serde(default = "default_theme_color")]
     pub theme_color: String,
+    /// UI 整体缩放（作用于聊天窗口根元素 zoom），范围 0.8–1.4，1.0 为默认。
+    #[serde(default = "default_ui_font_scale")]
+    pub ui_font_scale: f32,
+    /// 自定义 UI 字体名（系统已装字体，拼到字体栈最前）。空串 = 系统默认。
+    #[serde(default)]
+    pub ui_font_family: String,
+    /// 自定义代码/等宽字体名（作用于 --font-mono）。空串 = 系统默认。
+    #[serde(default)]
+    pub ui_font_mono: String,
     #[serde(default = "default_target_lang")]
     pub target_lang: String,
     #[serde(default = "default_true")]
@@ -1347,6 +1356,9 @@ impl Default for Settings {
             chat_hotkey: "CommandOrControl+Shift+K".to_string(),
             theme: "system".to_string(),
             theme_color: default_theme_color(),
+            ui_font_scale: default_ui_font_scale(),
+            ui_font_family: String::new(),
+            ui_font_mono: String::new(),
             target_lang: "auto".to_string(),
             auto_paste: true,
             launch_at_startup: false,
@@ -1896,6 +1908,11 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     if !matches!(settings.theme_color.as_str(), "neutral" | "warm" | "cool") {
         settings.theme_color = default_theme_color();
     }
+    settings.ui_font_scale = if settings.ui_font_scale.is_finite() {
+        settings.ui_font_scale.clamp(0.8, 1.4)
+    } else {
+        default_ui_font_scale()
+    };
     if settings.lens.message_order != "asc" && settings.lens.message_order != "desc" {
         settings.lens.message_order = "asc".to_string();
     }
@@ -2516,6 +2533,10 @@ fn default_theme_color() -> String {
     "neutral".to_string()
 }
 
+fn default_ui_font_scale() -> f32 {
+    1.0
+}
+
 fn default_target_lang() -> String {
     "auto".to_string()
 }
@@ -2673,6 +2694,19 @@ mod tests {
         let s = sanitize_settings(s);
         assert_eq!(s.theme, "system");
         assert_eq!(s.theme_color, "neutral");
+    }
+
+    #[test]
+    fn sanitize_settings_clamps_ui_font_scale() {
+        let mut s = Settings::default();
+        s.ui_font_scale = 5.0;
+        assert_eq!(sanitize_settings(s).ui_font_scale, 1.4);
+        let mut s = Settings::default();
+        s.ui_font_scale = 0.1;
+        assert_eq!(sanitize_settings(s).ui_font_scale, 0.8);
+        let mut s = Settings::default();
+        s.ui_font_scale = f32::NAN;
+        assert_eq!(sanitize_settings(s).ui_font_scale, 1.0);
     }
 
     #[test]

@@ -864,6 +864,9 @@ export type Settings = {
   chatHotkey: string
   theme: 'system' | 'light' | 'dark'
   themeColor: string
+  uiFontScale?: number
+  uiFontFamily?: string
+  uiFontMono?: string
   targetLang: string
   autoPaste: boolean
   launchAtStartup: boolean
@@ -1456,6 +1459,9 @@ function normalizeSettings(settings: Settings): Settings {
     chatHotkey: current.chatHotkey ?? 'CommandOrControl+Shift+K',
     theme: current.theme ?? 'system',
     themeColor: normalizeThemeColorId(current.themeColor),
+    uiFontScale: current.uiFontScale ?? 1,
+    uiFontFamily: current.uiFontFamily ?? '',
+    uiFontMono: current.uiFontMono ?? '',
     targetLang: current.targetLang ?? 'auto',
     autoPaste: current.autoPaste ?? true,
     launchAtStartup: current.launchAtStartup ?? false,
@@ -1605,6 +1611,7 @@ export const api = {
   setChatWindowBackground: (isDark: boolean) =>
     invoke('set_chat_window_background', { isDark }).catch(() => {}),
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
+  listSystemFonts: () => invoke<string[]>('list_system_fonts').catch(() => [] as string[]),
   saveSettings: async (settings: Settings) =>
     normalizeSettings(await invoke<Settings>('save_settings', { settings: prepareSettingsForSave(settings) })),
   /** 轻量持久化收藏模型（不触发热键/托盘重注册，区别于 saveSettings 的全量事务保存）。 */

@@ -204,6 +204,12 @@ function Translator({
  * 应用根组件
  * 根据 URL hash 切换不同视图模式（翻译器、设置、lens）
  */
+// 与 index.css 的 --font-sans 默认栈保持一致（跨 mac/Win 含 CJK 覆盖）。
+const UI_FONT_FALLBACK_STACK =
+  'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif'
+const UI_MONO_FALLBACK_STACK =
+  'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace'
+
 function App() {
   // 从 URL hash 和查询参数解析当前模式
   const getMode = () => {
@@ -253,6 +259,28 @@ function App() {
     // 同步 chat 窗口原生背景（Windows 不透明窗口），避免伸缩时露白底闪烁。其他窗口/平台 no-op。
     void api.setChatWindowBackground(isDark)
     document.documentElement.dataset.themeColor = normalizeThemeColorId(settings.themeColor)
+    // UI 字号（整体缩放）+ 自定义字体：仅作用于聊天窗口，翻译窗/Lens 保持原始几何与布局。
+    // 直接读 hash（稳定的 import）而非 mode state，避免让 applyTheme 变成不稳定依赖。
+    const root = document.documentElement
+    if (isChatPath(hashPath())) {
+      const scale = Math.min(1.4, Math.max(0.8, settings.uiFontScale ?? 1))
+      root.style.setProperty('zoom', String(scale))
+      const family = (settings.uiFontFamily ?? '').trim()
+      // 默认字体栈与 index.css 的 --font-sans 保持一致；自定义字体拼到最前，缺失时回退系统字体。
+      root.style.setProperty(
+        '--font-sans',
+        family
+          ? `"${family}", ${UI_FONT_FALLBACK_STACK}`
+          : UI_FONT_FALLBACK_STACK,
+      )
+      const mono = (settings.uiFontMono ?? '').trim()
+      root.style.setProperty(
+        '--font-mono',
+        mono
+          ? `"${mono}", ${UI_MONO_FALLBACK_STACK}`
+          : UI_MONO_FALLBACK_STACK,
+      )
+    }
     setTranslateSource(settings.translatorModel || 'AI')
     setLang((settings.settingsLanguage as Lang) || 'zh')
     // 首次应用主题后（下一帧）再开启主题色过渡，避免初始 light↔dark 闪烁；

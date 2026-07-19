@@ -8,6 +8,7 @@ pub mod cli_install;
 pub mod commands;
 pub mod connectors;
 pub mod external_agents;
+pub mod fonts;
 pub mod inpainting;
 pub mod kivio_code;
 pub mod lens;
@@ -440,6 +441,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
+            fonts::list_system_fonts,
             commands::get_kivio_code_config,
             commands::set_kivio_code_config,
             commands::get_kivio_code_global_instructions,
