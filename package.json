@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@lobehub/icons": "^5.10.0",
+    "@milkdown/crepe": "^7.21.3",
     "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.0",

@@ -131,6 +131,10 @@ const PluginCenter = lazy(() => import('./PluginCenter').then((module) => ({
   default: module.PluginCenter,
 })))
 
+const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
+  default: module.NotesCenter,
+})))
+
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,
 })))
@@ -143,7 +147,7 @@ function MessageListLoading() {
   )
 }
 
-type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'plugins' | 'onboarding'
+type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'plugins' | 'onboarding'
 
 interface ChatProps {
   onSettingsChange: () => void
@@ -185,6 +189,10 @@ function isChatMcpCenterPath(path: string): boolean {
 
 function isChatKnowledgeCenterPath(path: string): boolean {
   return path === 'chat/knowledge' || path.startsWith('chat/knowledge/')
+}
+
+function isChatNotesPath(path: string): boolean {
+  return path === 'chat/notes' || path.startsWith('chat/notes/')
 }
 
 function scheduleIdleTask(callback: () => void, timeout = 1200): () => void {
@@ -626,6 +634,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatSkillCenterPath(path)) return 'skill'
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
+    if (isChatNotesPath(path)) return 'notes'
     if (isChatPluginCenterPath(path)) return 'plugins'
     return 'conversation'
   })
@@ -1266,6 +1275,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [])
 
+  const syncNotesRoute = useCallback(() => {
+    if (window.location.hash !== '#chat/notes') {
+      window.location.hash = '#chat/notes'
+    }
+  }, [])
+
   const refreshSidebar = useCallback(() => {
     setSidebarRefreshKey((key) => key + 1)
   }, [])
@@ -1335,6 +1350,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       void import('./SkillCenter')
       void import('./McpCenter')
       void import('./KnowledgeCenter')
+      void import('./NotesCenter')
       void import('./PluginCenter')
       void import('./MessageList')
     }, 400)
@@ -1371,6 +1387,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     syncKnowledgeCenterRoute()
   }, [syncKnowledgeCenterRoute])
 
+  const openNotesCenter = useCallback(() => {
+    setChatView('notes')
+    syncNotesRoute()
+  }, [syncNotesRoute])
+
   const openExtensionsItem = useCallback((item: ExtensionsNavItem) => {
     setExtensionsNavItem(item)
     if (item === 'assistants') {
@@ -1389,17 +1410,22 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       openKnowledgeCenter()
       return
     }
+    if (item === 'notes') {
+      openNotesCenter()
+      return
+    }
     if (item === 'plugins') {
       openPluginCenter()
       return
     }
-  }, [openAssistantCenter, openSkillCenter, openMcpCenter, openKnowledgeCenter, openPluginCenter])
+  }, [openAssistantCenter, openSkillCenter, openMcpCenter, openKnowledgeCenter, openNotesCenter, openPluginCenter])
 
   const extensionsActive = useMemo<ExtensionsNavItem | null>(() => {
     if (chatView === 'assistants') return 'assistants'
     if (chatView === 'skill') return 'skill'
     if (chatView === 'mcp') return 'mcp'
     if (chatView === 'knowledge') return 'knowledge'
+    if (chatView === 'notes') return 'notes'
     if (chatView === 'plugins') return 'plugins'
     return null
   }, [chatView])
@@ -2200,6 +2226,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       if (isChatKnowledgeCenterPath(path)) {
         setChatView('knowledge')
+        return
+      }
+      if (isChatNotesPath(path)) {
+        setChatView('notes')
         return
       }
       if (isChatPluginCenterPath(path)) {
@@ -3128,6 +3158,39 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     [applyConversation, refreshSidebar, restoreStreamingPreview, syncConversationRoute],
   )
 
+  const handleSaveMessageToNote = useCallback(
+    async (messageId: string) => {
+      const conv = currentConversationRef.current
+      if (!conv) return false
+      const message = conv.messages.find((m) => m.id === messageId)
+      if (!message) return false
+      const content = message.content?.trim() || ''
+      if (!content) return false
+
+      const firstLine = content
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.length > 0)
+      const title = firstLine
+        ? firstLine
+            .replace(/^#+\s*/, '')
+            .replace(/\*\*|__|\*|_|`>/g, '')
+            .slice(0, 40)
+            .trim() || '对话笔记'
+        : '对话笔记'
+      try {
+        await api.notesCreate(title, content, '', 'chat')
+        setStreamError('')
+        return true
+      } catch (err) {
+        console.error('Failed to save message to note:', err)
+        setStreamError(err instanceof Error ? err.message : String(err) || '存为笔记失败')
+        return false
+      }
+    },
+    [],
+  )
+
   // 多答组「选中条」（任务 06-30 / D5）：标记某组进下一轮历史的列。默认第一列；用户点选改。
   const handleSetGroupSelection = useCallback(
     async (groupId: string, messageId: string) => {
@@ -3626,6 +3689,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               <KnowledgeCenter />
             </Suspense>
           </div>
+        ) : chatView === 'notes' ? (
+          <div key="notes" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <NotesCenter />
+            </Suspense>
+          </div>
         ) : chatView === 'plugins' ? (
           <div key="plugins" className={`chat-motion-view-in chat-win-titlebar-safe relative flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? 'pt-12' : ''}`}>
             {centerPageTopStrip}
@@ -3834,6 +3904,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                       onRegenerateMessage={handleRegenerateMessage}
                       onForkMessage={handleForkMessage}
                       onDeleteMessage={handleDeleteMessage}
+                      onSaveMessageToNote={handleSaveMessageToNote}
                       onRetryLastUser={handleRegenerateMessage}
                       onExecuteAgentPlan={handleExecuteAgentPlan}
                       groupSelections={currentConversation?.group_selections ?? currentConversation?.groupSelections ?? {}}

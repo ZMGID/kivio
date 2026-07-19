@@ -68,6 +68,7 @@ interface MessageBubbleProps {
   onRegenerateMessage?: (messageId: string, newContent?: string) => Promise<void>
   onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
+  onSaveMessageToNote?: (messageId: string) => Promise<boolean>
   agentPlanOverride?: AgentPlanState | null
   onExecuteAgentPlan?: (messageId: string) => Promise<void> | void
 }
@@ -841,6 +842,7 @@ function MessageBubbleComponent({
   onRegenerateMessage,
   onForkMessage,
   onDeleteMessage,
+  onSaveMessageToNote,
   agentPlanOverride = null,
   onExecuteAgentPlan,
 }: MessageBubbleProps) {
@@ -1227,6 +1229,11 @@ function MessageBubbleComponent({
                 ? () => {
                     void onDeleteMessage!(message.id)
                   }
+                : undefined
+            }
+            onSaveToNote={
+              onSaveMessageToNote
+                ? async () => onSaveMessageToNote(message.id)
                 : undefined
             }
           />

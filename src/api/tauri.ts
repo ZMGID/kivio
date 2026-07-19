@@ -1048,6 +1048,33 @@ export type PluginActionResult = {
   status: PluginStatus
 }
 
+/** 笔记元信息（列表用） */
+export type NoteMeta = {
+  id: string
+  title: string
+  /** 列表卡片预览：正文压成单行的前若干字符 */
+  preview: string
+  /** 单层文件夹名；空串 = 库根 */
+  folder: string
+  /** 'user' | 'chat' */
+  origin: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 完整笔记（编辑器用） */
+export type Note = {
+  id: string
+  title: string
+  content: string
+  /** 单层文件夹名；空串 = 库根 */
+  folder: string
+  /** 'user' | 'chat' */
+  origin: string
+  createdAt: string
+  updatedAt: string
+}
+
 /** 交给 Kivio AI 的安装任务（含官方 README URL + Kivio 契约） */
 export type PluginInstallBrief = {
   pluginId: string
@@ -1653,6 +1680,20 @@ export const api = {
   pluginsSetEnabled: (id: string, enabled: boolean) =>
     invoke<PluginActionResult>('plugins_set_enabled', { id, enabled }),
   pluginsUninstall: (id: string) => invoke<PluginActionResult>('plugins_uninstall', { id }),
+
+  /** 扩展 → 笔记 */
+  notesList: () => invoke<NoteMeta[]>('notes_list'),
+  notesRead: (id: string) => invoke<Note>('notes_read', { id }),
+  notesCreate: (title: string, content: string, folder: string, origin: string) =>
+    invoke<Note>('notes_create', { title, content, folder, origin }),
+  notesUpdate: (id: string, title: string, content: string, folder: string) =>
+    invoke<Note>('notes_update', { id, title, content, folder }),
+  notesFoldersList: () => invoke<string[]>('notes_folders_list'),
+  notesFolderCreate: (name: string) => invoke<string[]>('notes_folder_create', { name }),
+  notesFolderRename: (oldName: string, newName: string) =>
+    invoke<string[]>('notes_folder_rename', { old: oldName, new: newName }),
+  notesFolderDelete: (name: string) => invoke<string[]>('notes_folder_delete', { name }),
+  notesDelete: (id: string) => invoke<void>('notes_delete', { id }),
 
   testHimalayaEmail: (account: EmailAccountConfig, existingAccounts?: EmailAccountConfig[]) =>
     invoke<string>('test_himalaya_email_cmd', { account, existingAccounts }),

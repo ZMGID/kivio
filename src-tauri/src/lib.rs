@@ -16,6 +16,7 @@ pub mod lens_commands;
 pub mod macos_ocr;
 pub mod mcp;
 pub mod native_tools;
+pub mod notes;
 pub mod offline_models;
 pub mod path_env;
 pub mod plugins;
@@ -567,6 +568,15 @@ pub fn run() {
             plugins::plugins_install_brief,
             plugins::plugins_set_enabled,
             plugins::plugins_uninstall,
+            notes::notes_list,
+            notes::notes_read,
+            notes::notes_create,
+            notes::notes_update,
+            notes::notes_delete,
+            notes::notes_folders_list,
+            notes::notes_folder_create,
+            notes::notes_folder_rename,
+            notes::notes_folder_delete,
             skills::chat_skills_list,
             skills::chat_skills_read,
             skills::chat_skills_import,

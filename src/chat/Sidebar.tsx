@@ -8,6 +8,7 @@ import {
   Layers,
   LayoutGrid,
   MoreHorizontal,
+  NotebookPen,
   Plus,
   Puzzle,
   Search,
@@ -44,7 +45,7 @@ function resolveChatUserProfile(
 
 const modLabel = isMac ? '⌘' : 'Ctrl'
 
-export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'plugins'
+export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'plugins'
 
 const extensionSubItems: Array<{
   id: ExtensionsNavItem
@@ -55,6 +56,7 @@ const extensionSubItems: Array<{
   { id: 'skill', label: 'Skill', icon: SkillIcon },
   { id: 'mcp', label: 'MCP', icon: McpIcon },
   { id: 'knowledge', label: '知识库', icon: KnowledgeIcon },
+  { id: 'notes', label: '笔记', icon: (props) => <NotebookPen size={props.size} className={props.className} strokeWidth={1.75} /> },
   { id: 'plugins', label: '插件', icon: (props) => <Puzzle size={props.size} className={props.className} strokeWidth={1.75} /> },
 ]
 
@@ -246,7 +248,7 @@ function ExtensionsNav({
         />
       </button>
       {expanded && (
-        <div className="ml-[26px] mt-0.5">
+        <div className="ml-[12px] mt-0.5 grid grid-cols-2 gap-x-1">
           {extensionSubItems.map((item) => {
             const active = activeItem === item.id
             const Icon = item.icon
@@ -255,7 +257,7 @@ function ExtensionsNav({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-2 text-left text-[13px] transition-colors ${
+                className={`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900 dark:text-neutral-100'
                     : 'text-neutral-700 hover:bg-black/[0.04] hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100'

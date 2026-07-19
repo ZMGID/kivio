@@ -5060,3 +5060,41 @@ body {
     width: 34px;
   }
 }
+
+/* ===== 笔记编辑器 (Milkdown Crepe) =====
+   融入页面：透明背景、去掉 frame 自带卡片/内边距、字体跟随系统，
+   与标题左对齐。深色变量特异性高于 frame.css 的 .milkdown，自动生效。 */
+.kv-note-editor .milkdown {
+  --crepe-color-background: transparent;
+  --crepe-font-default: inherit;
+  --crepe-font-title: inherit;
+  background: transparent;
+}
+
+.kv-note-editor .milkdown .ProseMirror {
+  padding: 0;
+}
+
+.kv-note-editor .milkdown .ProseMirror:focus {
+  outline: none;
+}
+
+.dark .kv-note-editor .milkdown {
+  --crepe-color-background: transparent;
+  --crepe-color-on-background: #e6e6e6;
+  --crepe-color-surface: #121212;
+  --crepe-color-surface-low: #1c1c1c;
+  --crepe-color-on-surface: #d1d1d1;
+  --crepe-color-on-surface-variant: #a9a9a9;
+  --crepe-color-outline: #757575;
+  --crepe-color-primary: #b5b5b5;
+  --crepe-color-secondary: #4d4d4d;
+  --crepe-color-on-secondary: #d6d6d6;
+  --crepe-color-inverse: #e5e5e5;
+  --crepe-color-on-inverse: #2a2a2a;
+  --crepe-color-inline-code: #ff6666;
+  --crepe-color-error: #ff6666;
+  --crepe-color-hover: #232323;
+  --crepe-color-selected: #2f2f2f;
+  --crepe-color-inline-area: #2b2b2b;
+}

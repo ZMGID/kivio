@@ -34,6 +34,7 @@ interface MessageGroupProps {
   onRegenerateMessage?: (messageId: string) => Promise<void>
   onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
+  onSaveMessageToNote?: (messageId: string) => Promise<boolean>
 }
 
 interface GroupColumn {
@@ -89,6 +90,7 @@ function GroupColumnView({
   onRegenerateMessage,
   onForkMessage,
   onDeleteMessage,
+  onSaveMessageToNote,
 }: {
   column: GroupColumn
   conversationId?: string | null
@@ -104,6 +106,7 @@ function GroupColumnView({
   onRegenerateMessage?: (messageId: string) => Promise<void>
   onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
+  onSaveMessageToNote?: (messageId: string) => Promise<boolean>
 }) {
   const { message, streaming } = column
   const wrapperClass = showColumnChrome
@@ -161,6 +164,7 @@ function GroupColumnView({
             onRegenerateMessage={!live ? onRegenerateMessage : undefined}
             onForkMessage={!live ? onForkMessage : undefined}
             onDeleteMessage={!live ? onDeleteMessage : undefined}
+            onSaveMessageToNote={!live ? onSaveMessageToNote : undefined}
           />
         </ColumnScrollBody>
       ) : (
@@ -174,6 +178,7 @@ function GroupColumnView({
           onRegenerateMessage={!live ? onRegenerateMessage : undefined}
           onForkMessage={!live ? onForkMessage : undefined}
           onDeleteMessage={!live ? onDeleteMessage : undefined}
+          onSaveMessageToNote={!live ? onSaveMessageToNote : undefined}
         />
       )}
     </div>
@@ -264,6 +269,7 @@ function MessageGroupBase({
   onRegenerateMessage,
   onForkMessage,
   onDeleteMessage,
+  onSaveMessageToNote,
 }: MessageGroupProps) {
   // 订阅 group store 版本号：流式列内容更新时驱动重渲。
   useGroupsVersion()
@@ -329,6 +335,7 @@ function MessageGroupBase({
               onRegenerateMessage={onRegenerateMessage}
               onForkMessage={onForkMessage}
               onDeleteMessage={onDeleteMessage}
+              onSaveMessageToNote={onSaveMessageToNote}
             />
           ))}
         </div>
@@ -348,6 +355,7 @@ function MessageGroupBase({
           onRegenerateMessage={onRegenerateMessage}
           onForkMessage={onForkMessage}
           onDeleteMessage={onDeleteMessage}
+          onSaveMessageToNote={onSaveMessageToNote}
         />
       )}
       <GroupFooter

@@ -38,6 +38,7 @@ interface MessageListProps {
   onRegenerateMessage?: (messageId: string, newContent?: string) => Promise<void>
   onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
+  onSaveMessageToNote?: (messageId: string) => Promise<boolean>
   onExecuteAgentPlan?: (messageId: string) => Promise<void> | void
   // 失败发送后线程末尾留下的孤儿用户消息：点「重试」用它的 id 重新生成。
   onRetryLastUser?: (messageId: string) => void
@@ -92,6 +93,7 @@ function MessageListBase({
   onRegenerateMessage,
   onForkMessage,
   onDeleteMessage,
+  onSaveMessageToNote,
   onExecuteAgentPlan,
   onRetryLastUser,
   groupSelections = {},
@@ -573,6 +575,7 @@ function MessageListBase({
               onRegenerateMessage={streaming || streamFrozen ? undefined : onRegenerateMessage}
               onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
               onDeleteMessage={onDeleteMessage}
+              onSaveMessageToNote={onSaveMessageToNote}
               agentPlanOverride={msg.id === legacyPlanMessageId ? agentPlanState : null}
               onExecuteAgentPlan={msg.role === 'assistant' ? onExecuteAgentPlan : undefined}
             />
@@ -591,6 +594,7 @@ function MessageListBase({
               onRegenerateMessage={streaming || streamFrozen ? undefined : onRegenerateMessage}
               onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
               onDeleteMessage={onDeleteMessage}
+              onSaveMessageToNote={onSaveMessageToNote}
             />
           )
         }
@@ -600,6 +604,7 @@ function MessageListBase({
               conversationId={conversationId}
               groupId={item.groupId}
               messages={[]}
+              onSaveMessageToNote={onSaveMessageToNote}
             />
           )
         case 'streaming':
@@ -665,6 +670,7 @@ function MessageListBase({
       onRegenerateMessage,
       onForkMessage,
       onDeleteMessage,
+      onSaveMessageToNote,
       onExecuteAgentPlan,
       onRetryLastUser,
       streaming,
