@@ -78,7 +78,8 @@ pub async fn detect_agent_models(
 }
 
 pub async fn detect_all_agents(cwd: &Path) -> Vec<DetectedAgent> {
-    // 保留：设置页/诊断路径可能需要"一次性全量含模型"。普通列表走 detect_availability_all + 懒查模型。
+    // ponytail: 全量含模型的一次性检测。普通列表已改走 detect_availability_all + 懒查模型；
+    // 保留此函数供潜在的"诊断/一键全量"用途，无调用方时不产生警告（pub 视为对外 API）。
     let handles: Vec<_> = AGENT_DEFS
         .iter()
         .map(|def| {

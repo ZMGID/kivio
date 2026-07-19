@@ -156,6 +156,8 @@ pub struct AppState {
     /// single-flight：可用性探测的全局串行锁——并发调用只实跑一次，后到者持锁后复查缓存即命中。
     pub availability_probe_lock: tokio::sync::Mutex<()>,
     /// single-flight：按 (agent:cwd) key 的模型探测锁，避免同一目标并发重探。
+    // ponytail: 无上限增长，每 (agent, cwd) 一项（会话×agent 级，量很小）；若日后 key 基数变大，
+    // 改成带容量上限的 LRU 或探测完即移除空闲锁。
     pub model_probe_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     /// Phase 2 持久会话注册表：conversation_id → 活会话（仅持有控制通道，不持有 Child）。
     /// 仅在 get/insert/remove 时短暂持锁，绝不跨 turn await 持锁。
