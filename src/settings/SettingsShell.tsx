@@ -320,6 +320,84 @@ function resolveDefaultModelsAfterModelRemoval(
 }
 
 /**
+ * 头像：可点击的圆形头像，点击=选本地图片 → canvas 缩到 256px → 存 data URL
+ * （避免把大图 base64 塞进 settings.json）。空时显示应用默认 logo。value 仍是字符串，
+ * 可直接当 <img src>，与旧的 URL 值兼容。
+ */
+function AvatarField({
+  value,
+  onChange,
+  zh,
+}: {
+  value: string
+  onChange: (v: string) => void
+  zh: boolean
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // 允许再次选同一文件
+    if (!file || !file.type.startsWith('image/')) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const img = new Image()
+      img.onload = () => {
+        const max = 256
+        const scale = Math.min(1, max / Math.max(img.width, img.height))
+        const w = Math.max(1, Math.round(img.width * scale))
+        const h = Math.max(1, Math.round(img.height * scale))
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          onChange(String(reader.result))
+          return
+        }
+        ctx.drawImage(img, 0, 0, w, h)
+        onChange(canvas.toDataURL('image/jpeg', 0.85))
+      }
+      img.src = String(reader.result)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        title={zh ? '点击上传头像' : 'Click to upload avatar'}
+        data-tauri-drag-region="false"
+        className="group relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-white ring-1 ring-black/[0.05] transition dark:bg-neutral-900 dark:ring-white/[0.08]"
+      >
+        {value ? (
+          <img src={value} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <img src="/icon.png" alt="" className="h-[82%] w-[82%] object-contain" draggable={false} />
+        )}
+        <span className="absolute inset-0 hidden items-center justify-center bg-black/45 text-white group-hover:flex">
+          <Upload size={14} />
+        </span>
+      </button>
+      {value && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          title={zh ? '移除头像' : 'Remove avatar'}
+          data-tauri-drag-region="false"
+          className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-neutral-700 text-white ring-2 ring-white hover:bg-neutral-900 dark:bg-neutral-500 dark:ring-neutral-900"
+        >
+          <X size={10} />
+        </button>
+      )}
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+    </div>
+  )
+}
+
+/**
  * 设置面板主组件（standalone / embedded 双宿主）
  */
 export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>(function SettingsShell(
@@ -2080,12 +2158,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       ]}
                     />
                   </SettingRow>
-                  <SettingRow label={t.autoPaste}>
-                    <Toggle
-                      checked={settings.autoPaste ?? true}
-                      onChange={(v) => updateSettings({ autoPaste: v })}
-                    />
-                  </SettingRow>
                 </SettingsGroup>
 
                 <SettingsGroup title={t.sectionModel}>
@@ -2383,25 +2455,19 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {activeTab === 'chat' && (
               <>
                 <SettingsGroup title={lang === 'zh' ? '个人资料' : 'Profile'}>
-                  <SettingRow
-                    label={lang === 'zh' ? '用户名' : 'Display name'}
-                  >
-                    <Input
-                      value={chatConfig.userDisplayName || ''}
-                      onChange={(userDisplayName) => updateChat({ userDisplayName })}
-                      placeholder={lang === 'zh' ? '选填' : 'Optional'}
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    label={lang === 'zh' ? '头像' : 'Avatar'}
-                    stack
-                  >
-                    <Input
+                  <div className="flex items-center gap-3 py-1">
+                    <AvatarField
                       value={chatConfig.userAvatar || ''}
                       onChange={(userAvatar) => updateChat({ userAvatar })}
-                      placeholder="https://..."
+                      zh={lang === 'zh'}
                     />
-                  </SettingRow>
+                    <Input
+                      className="min-w-0 flex-1"
+                      value={chatConfig.userDisplayName || ''}
+                      onChange={(userDisplayName) => updateChat({ userDisplayName })}
+                      placeholder={lang === 'zh' ? '用户名（选填）' : 'Display name (optional)'}
+                    />
+                  </div>
                 </SettingsGroup>
 
                 <SettingsGroup title={lang === 'zh' ? '工作目录' : 'Workspace'}>
