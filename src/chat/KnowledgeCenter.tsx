@@ -582,7 +582,7 @@ export function KnowledgeCenter() {
 
           {/* Tab 行 */}
           <div className="mt-5 flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
-            {([['libraries', '知识库'], ['rag', 'RAG 设置'], ['test', '检索测试']] as const).map(([id, label]) => (
+            {([['libraries', '知识库'], ['test', '检索'], ['rag', 'RAG 设置']] as const).map(([id, label]) => (
               <button
                 key={id}
                 type="button"
