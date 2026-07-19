@@ -1146,6 +1146,29 @@ pub(crate) fn open_settings_window_for_activation(app: &AppHandle) -> Result<(),
         let _ = focus_lens_window(app);
         return Ok(());
     }
+    // 激活（单实例二次启动 / Windows 普通启动）时，优先把用户当前已开的主窗口带到前台：
+    // 绝不强跳 Chat，更不能把正在 #chat/settings 配置的用户重置回 #chat（会丢失填到一半的
+    // API key）。只有一个主窗口都没开时，才新开 Chat 作为默认入口。
+    for label in ["settings", "chat", "main"] {
+        let Some(window) = app.get_webview_window(label) else {
+            continue;
+        };
+        if !window.is_visible().unwrap_or(false) {
+            continue;
+        }
+        #[cfg(target_os = "macos")]
+        set_macos_regular_activation_policy(app);
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+        #[cfg(target_os = "macos")]
+        if label == "chat" {
+            apply_macos_traffic_light_position(&window);
+        }
+        return Ok(());
+    }
     open_chat_window(app)
 }
 
@@ -1260,8 +1283,11 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                         return;
                     }
                 }
-                if let Err(err) = open_chat_window(app) {
-                    eprintln!("Tray click chat trigger error: {}", err);
+                // 托盘图标点击 = 把 Kivio 带到前台：优先聚焦当前已开的窗口，不强跳 Chat，
+                // 也不把停在 #chat/settings 的用户重置回 #chat（丢失填到一半的配置）。
+                // 一个窗口都没开时才新开 Chat。
+                if let Err(err) = open_settings_window_for_activation(app) {
+                    eprintln!("Tray click activation error: {}", err);
                 }
             }
         })

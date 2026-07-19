@@ -630,14 +630,14 @@ pub fn run() {
                         eprintln!("Failed to open chat on dock reopen: {err}");
                     }
                 } else if let Some(window) = first_visible_user_window(app_handle) {
-                    if window.label() == "chat" {
-                        if let Err(err) = open_chat_window(app_handle) {
-                            eprintln!("Failed to restore chat on dock reopen: {err}");
-                        }
-                    } else {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                    // 已有可见窗口：只把它带到前台，绝不调 open_chat_window——那会把停在
+                    // #chat/settings 的用户重置回 #chat，丢失填到一半的配置。
+                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+                    if window.is_minimized().ok().unwrap_or(false) {
+                        let _ = window.unminimize();
                     }
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 } else if let Err(err) = open_chat_window(app_handle) {
                     eprintln!("Failed to open chat on dock reopen: {err}");
                 }
