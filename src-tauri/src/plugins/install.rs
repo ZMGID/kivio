@@ -79,22 +79,42 @@ pub fn list_plugin_statuses() -> Result<Vec<PluginStatus>, String> {
     Ok(PLUGIN_CATALOG.iter().map(status_for).collect())
 }
 
-fn status_for(catalog: &CatalogPlugin) -> PluginStatus {
-    let kivio = kivio_binary_path(catalog.id);
-    // 此处不再重复 enrich（list 已做）；单条 status 也走完整 resolve
-    let path = resolve_binary(catalog.id);
-    let installed = path.is_some();
+/// 无 spawn 的缓存态列表：只查文件（kivio 托管路径）+ meta.json（enabled/version），
+/// 不跑 `which` / `--version` 子进程。前端首屏用它秒开页面；完整探测只在手动刷新/操作后跑。
+pub fn list_plugin_statuses_cached() -> Result<Vec<PluginStatus>, String> {
+    Ok(PLUGIN_CATALOG.iter().map(status_for_cached).collect())
+}
+
+/// 填充 mcp_active（settings 里该 server 是否已注册且 enabled）。纯 settings 读，无 spawn。
+fn fill_mcp_active(list: &mut [PluginStatus], state: &AppState) {
+    let settings = state.settings_read();
+    for status in list.iter_mut() {
+        if let Some(sid) = status.mcp_server_id.as_deref() {
+            status.mcp_active = settings
+                .chat_tools
+                .servers
+                .iter()
+                .any(|s| s.id == sid && s.enabled && !s.command.trim().is_empty());
+        }
+    }
+}
+
+/// 构造一条 PluginStatus。`installed` 由调用方决定（精确探测用 `path.is_some()`，缓存态用
+/// kivio 路径存在 + meta 记录），`path`/`version` 同理由调用方按快/慢路径填入。
+fn build_status(
+    catalog: &CatalogPlugin,
+    kivio: &Option<PathBuf>,
+    path: Option<PathBuf>,
+    installed: bool,
+    version: Option<String>,
+) -> PluginStatus {
     let source = if kivio.is_some() {
         "kivio".to_string()
-    } else if path.is_some() {
+    } else if installed {
         "system".to_string()
     } else {
         "none".to_string()
     };
-    let version = path
-        .as_ref()
-        .and_then(|p| probe_version(p))
-        .or_else(|| read_meta(catalog.id).and_then(|m| m.version));
     let enabled = is_enabled(catalog.id) && installed;
     let skill_count = catalog.skill_ids.len() as u32;
     let mcp_count = if catalog.mcp.is_some() { 1 } else { 0 };
@@ -108,7 +128,7 @@ fn status_for(catalog: &CatalogPlugin) -> PluginStatus {
                 .map(|d| d.join("SKILL.md").is_file())
                 .unwrap_or(false)
         });
-    // MCP 是否已挂到 settings 由 list_plugin_statuses_with_state 再补
+    // MCP 是否已挂到 settings 由 fill_mcp_active 再补
     let mcp_server_id = has_mcp.then(|| plugin_mcp_server_id(catalog.id));
     PluginStatus {
         id: catalog.id.to_string(),
@@ -134,20 +154,47 @@ fn status_for(catalog: &CatalogPlugin) -> PluginStatus {
     }
 }
 
+fn status_for(catalog: &CatalogPlugin) -> PluginStatus {
+    let kivio = kivio_binary_path(catalog.id);
+    // 此处不再重复 enrich（list 已做）；单条 status 也走完整 resolve（含 which spawn）。
+    let path = resolve_binary(catalog.id);
+    let installed = path.is_some();
+    let version = path
+        .as_ref()
+        .and_then(|p| probe_version(p))
+        .or_else(|| read_meta(catalog.id).and_then(|m| m.version));
+    build_status(catalog, &kivio, path, installed, version)
+}
+
+/// 缓存态：无子进程。installed 取「kivio 托管二进制存在」或「meta 记录装过/启用过」，
+/// version 直接用 meta 缓存值。system-PATH 安装但无 meta 的插件此处可能暂显未装，随后
+/// 被手动刷新的完整探测修正——秒开优先，短暂不精确可接受。
+fn status_for_cached(catalog: &CatalogPlugin) -> PluginStatus {
+    let kivio = kivio_binary_path(catalog.id);
+    let meta = read_meta(catalog.id);
+    let installed = kivio.is_some()
+        || meta
+            .as_ref()
+            .map(|m| m.enabled || m.version.is_some() || m.installed_at.is_some())
+            .unwrap_or(false);
+    let version = meta.and_then(|m| m.version);
+    build_status(catalog, &kivio, kivio.clone(), installed, version)
+}
+
 /// 用 AppState 填充 mcp_active（settings 里是否已注册且 enabled）
 pub fn list_plugin_statuses_with_state(state: &AppState) -> Result<Vec<PluginStatus>, String> {
     refresh_process_path_for_detection();
-    let settings = state.settings_read();
     let mut list: Vec<PluginStatus> = PLUGIN_CATALOG.iter().map(status_for).collect();
-    for status in &mut list {
-        if let Some(sid) = status.mcp_server_id.as_deref() {
-            status.mcp_active = settings
-                .chat_tools
-                .servers
-                .iter()
-                .any(|s| s.id == sid && s.enabled && !s.command.trim().is_empty());
-        }
-    }
+    fill_mcp_active(&mut list, state);
+    Ok(list)
+}
+
+/// 缓存态 + mcp_active（无 spawn）。前端首屏用。
+pub fn list_plugin_statuses_cached_with_state(
+    state: &AppState,
+) -> Result<Vec<PluginStatus>, String> {
+    let mut list = list_plugin_statuses_cached()?;
+    fill_mcp_active(&mut list, state);
     Ok(list)
 }
 

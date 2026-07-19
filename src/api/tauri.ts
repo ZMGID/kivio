@@ -1646,6 +1646,8 @@ export const api = {
 
   /** 能力插件列表（目录 + 安装/启用状态） */
   pluginsList: () => invoke<PluginStatus[]>('plugins_list'),
+  // Cached (no-spawn) status for instant first paint; follow with pluginsList to refine.
+  pluginsListCached: () => invoke<PluginStatus[]>('plugins_list_cached'),
   /** 取「让 AI 安装」任务 brief（含标准化安装文档） */
   pluginsInstallBrief: (id: string) => invoke<PluginInstallBrief>('plugins_install_brief', { id }),
   pluginsSetEnabled: (id: string, enabled: boolean) =>

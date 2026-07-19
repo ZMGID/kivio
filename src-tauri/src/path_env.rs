@@ -110,18 +110,31 @@ const LOGIN_SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 /// Merge the current `PATH` with the login-shell `PATH` and common install
 /// directories, deduplicate (preserving order), and write the result back to
-/// the process `PATH`. Safe to call multiple times and harmless in `dev`
-/// (where the process already has the full shell `PATH`).
+/// the process `PATH`.
+///
+/// The expensive part — spawning the user's login shell to read its `PATH` —
+/// runs **at most once per process** (guarded by [`Once`]). Startup calls this
+/// first (`lib.rs`), so every later caller (plugin/CLI detection via
+/// `refresh_process_path_for_detection`) is a no-op: the process `PATH` is
+/// already fixed and doesn't change, and re-running `fish -l -i` each time the
+/// plugins page opens added seconds for no benefit.
+// ponytail: once-per-process. A CLI installed into a *new* dir mid-session
+// (not one of common_dirs_macos) won't be seen until restart — rare on macOS,
+// where AI installs land in ~/.local/bin etc. (already in defaults).
 #[cfg(target_os = "macos")]
 pub fn enrich_path_macos() {
-    let current = std::env::var("PATH").unwrap_or_default();
-    let login = login_shell_path();
-    let defaults = common_dirs_macos(std::env::var_os("HOME").map(std::path::PathBuf::from));
+    use std::sync::Once;
+    static DONE: Once = Once::new();
+    DONE.call_once(|| {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let login = login_shell_path();
+        let defaults = common_dirs_macos(std::env::var_os("HOME").map(std::path::PathBuf::from));
 
-    let merged = merge_paths_unix(&current, login.as_deref(), &defaults);
-    if !merged.is_empty() {
-        std::env::set_var("PATH", merged);
-    }
+        let merged = merge_paths_unix(&current, login.as_deref(), &defaults);
+        if !merged.is_empty() {
+            std::env::set_var("PATH", merged);
+        }
+    });
 }
 
 /// Merge the current `PATH`, the (optional) login-shell `PATH`, and the
@@ -329,35 +342,39 @@ fn is_drive_rooted(s: &str) -> bool {
 ///    identical to the registry-only path.
 #[cfg(target_os = "windows")]
 pub fn enrich_path_windows() {
-    let current = std::env::var("PATH").unwrap_or_default();
-    let system = read_registry_path(true).map(|p| expand_env_vars(&p));
-    let user = read_registry_path(false).map(|p| expand_env_vars(&p));
-    let defaults = common_dirs_windows();
+    use std::sync::Once;
+    static DONE: Once = Once::new();
+    DONE.call_once(|| {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let system = read_registry_path(true).map(|p| expand_env_vars(&p));
+        let user = read_registry_path(false).map(|p| expand_env_vars(&p));
+        let defaults = common_dirs_windows();
 
-    // ① Registry + defaults → process PATH. Must land before the probe so the
-    // probe can locate pwsh even when the process PATH was a stale snapshot.
-    let merged = merge_paths_windows(
-        &current,
-        system.as_deref(),
-        user.as_deref(),
-        None,
-        &defaults,
-    );
-    if !merged.is_empty() {
-        std::env::set_var("PATH", &merged);
-    }
-
-    // ② Profile probe → merge live $env:PATH additions. On any failure/timeout
-    // `profile_shell_path` returns None and we leave the phase-1 PATH untouched
-    // (behaviour identical to the pre-profile version). The phase-1 result is
-    // the `current` here, so version-manager dirs the registry can't see get
-    // folded in; defaults are already present from phase 1.
-    if let Some(profile) = profile_shell_path() {
-        let remerged = merge_paths_windows(&merged, None, None, Some(&profile), &[]);
-        if !remerged.is_empty() {
-            std::env::set_var("PATH", remerged);
+        // ① Registry + defaults → process PATH. Must land before the probe so the
+        // probe can locate pwsh even when the process PATH was a stale snapshot.
+        let merged = merge_paths_windows(
+            &current,
+            system.as_deref(),
+            user.as_deref(),
+            None,
+            &defaults,
+        );
+        if !merged.is_empty() {
+            std::env::set_var("PATH", &merged);
         }
-    }
+
+        // ② Profile probe → merge live $env:PATH additions. On any failure/timeout
+        // `profile_shell_path` returns None and we leave the phase-1 PATH untouched
+        // (behaviour identical to the pre-profile version). The phase-1 result is
+        // the `current` here, so version-manager dirs the registry can't see get
+        // folded in; defaults are already present from phase 1.
+        if let Some(profile) = profile_shell_path() {
+            let remerged = merge_paths_windows(&merged, None, None, Some(&profile), &[]);
+            if !remerged.is_empty() {
+                std::env::set_var("PATH", remerged);
+            }
+        }
+    });
 }
 
 /// Merge the process `PATH` with the system + user registry `PATH` values, the

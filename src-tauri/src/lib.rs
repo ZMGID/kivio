@@ -551,6 +551,7 @@ pub fn run() {
             connectors::himalaya::himalaya_install_cmd,
             connectors::himalaya::test_himalaya_email_cmd,
             plugins::plugins_list,
+            plugins::plugins_list_cached,
             plugins::plugins_install_brief,
             plugins::plugins_set_enabled,
             plugins::plugins_uninstall,

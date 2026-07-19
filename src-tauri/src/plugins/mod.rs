@@ -13,8 +13,9 @@ mod state;
 
 pub use catalog::{catalog_plugin, CatalogPlugin, PLUGIN_CATALOG};
 pub use install::{
-    get_install_brief, list_plugin_statuses, list_plugin_statuses_with_state, set_plugin_enabled,
-    uninstall_plugin, PluginActionResult, PluginInstallBrief, PluginStatus,
+    get_install_brief, list_plugin_statuses, list_plugin_statuses_cached_with_state,
+    list_plugin_statuses_with_state, set_plugin_enabled, uninstall_plugin, PluginActionResult,
+    PluginInstallBrief, PluginStatus,
 };
 pub use lifecycle::{
     ensure_officecli_mcp_flush_env, plugin_skill_available, skill_owned_by_plugin,
@@ -32,6 +33,12 @@ use crate::state::AppState;
 #[tauri::command]
 pub fn plugins_list(state: State<'_, AppState>) -> Result<Vec<PluginStatus>, String> {
     list_plugin_statuses_with_state(&state)
+}
+
+/// 无 spawn 的缓存态列表：前端首屏立即渲染，再拉 `plugins_list` 覆盖为精确探测。
+#[tauri::command]
+pub fn plugins_list_cached(state: State<'_, AppState>) -> Result<Vec<PluginStatus>, String> {
+    list_plugin_statuses_cached_with_state(&state)
 }
 
 /// 返回交给 Agent 的安装任务（规范文档 + 用户消息）。前端据此开新对话并自动发送。

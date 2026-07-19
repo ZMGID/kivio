@@ -246,23 +246,24 @@ export function PluginCenter({ onRequestAiInstall }: PluginCenterProps) {
   const [tab, setTab] = useState<TabId>('plaza')
   const [plugins, setPlugins] = useState<PluginStatus[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [statusMsg, setStatusMsg] = useState('')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [installBusyId, setInstallBusyId] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
+  // 打开页面：只读缓存态（无子进程，~2ms 秒开）。缓存来自 meta.json，对已装/启用的插件已准确。
+  const loadCached = useCallback(async () => {
     if (!isTauriRuntime()) {
       setPlugins([])
       setLoading(false)
       setError('插件管理需在 Kivio 应用内使用')
       return
     }
-    setLoading(true)
     setError('')
     try {
-      const list = await api.pluginsList()
-      setPlugins(list)
+      const cached = await api.pluginsListCached()
+      setPlugins(cached)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setPlugins([])
@@ -271,9 +272,25 @@ export function PluginCenter({ onRequestAiInstall }: PluginCenterProps) {
     }
   }, [])
 
+  // 完整探测（which/--version 子进程，较慢）：仅手动刷新 / 启用 / 卸载后调用，覆盖为精确状态。
+  const refresh = useCallback(async () => {
+    if (!isTauriRuntime()) return
+    setRefreshing(true)
+    setError('')
+    try {
+      const list = await api.pluginsList()
+      setPlugins(list)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRefreshing(false)
+      setLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    void loadCached()
+  }, [loadCached])
 
   const patchStatus = useCallback((status: PluginStatus) => {
     setPlugins((prev) => prev.map((p) => (p.id === status.id ? status : p)))
@@ -376,8 +393,8 @@ export function PluginCenter({ onRequestAiInstall }: PluginCenterProps) {
                 <Puzzle size={24} className="text-neutral-500" />
                 插件
               </h1>
-              <IconButton size="lg" label="刷新检测" onClick={() => void refresh()} disabled={loading}>
-                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+              <IconButton size="lg" label="刷新检测" onClick={() => void refresh()} disabled={refreshing}>
+                <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
               </IconButton>
             </div>
             <p className="mt-3.5 max-w-2xl text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
