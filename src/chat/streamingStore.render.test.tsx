@@ -12,6 +12,7 @@ import {
 import { createEmptyStreamSnapshot } from './conversationRuns'
 import type { ConversationStreamSnapshot } from './conversationRuns'
 import type { ChatMessage } from './types'
+import * as messageNavigator from './messageNavigator'
 
 // 真实集成：挂载真 MessageList（订阅真 streamingStore），按 Chat 各 helper 的调用方式驱动 store，
 // 验证「流式更新只重渲订阅者、不波及兄弟节点」这一核心收益，以及各 helper→store 映射的渲染结果。
@@ -29,6 +30,7 @@ async function flush() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   act(() => {
     reset()
     setCoarse({ streaming: false, streamFrozen: false, cancelling: false, streamError: '' })
@@ -137,6 +139,22 @@ describe('MessageList ← streamingStore 集成', () => {
     expect(screen.getByText(/frame 4/)).toBeInTheDocument()
     // 兄弟节点渲染次数不变 —— 证明 store 把更新隔离到订阅者。
     expect(siblingRenders).toBe(baseline)
+  })
+
+  it('流式内容帧不重建历史导航索引', async () => {
+    const buildNavigator = vi.spyOn(messageNavigator, 'buildMessageNavigatorNodes')
+    const messages = Array.from({ length: 40 }, (_, index) => message(index))
+    render(<MessageList messages={messages} conversationId="navigator-perf-c1" />)
+    await flush()
+    const baseline = buildNavigator.mock.calls.length
+
+    act(() => setCoarse({ streaming: true }))
+    for (let i = 0; i < 8; i++) {
+      act(() => setSnapshot(snapWith({ content: `token frame ${i}`, streaming: true })))
+    }
+    await flush()
+
+    expect(buildNavigator).toHaveBeenCalledTimes(baseline)
   })
 
   it('cancelCurrentRunLocally 等价：coarse streaming:false+frozen:true + patchSnapshot 冻结保留文本', async () => {

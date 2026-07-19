@@ -64,36 +64,55 @@ fn push_unique(
 /// caller), wait for it to finish on a helper thread, and return its stdout as
 /// a lossy `String` if it exits successfully within `timeout`. Returns `None`
 /// on spawn error, non-zero exit, I/O error, or timeout — so callers fall back
-/// to their defaults. Never panics, never blocks past `timeout`. Output
+/// to their defaults. Never panics; timeout cleanup may add only the short
+/// kill/reap margin. Output
 /// post-processing (trim / empty / validity checks) is left to the caller.
 ///
-/// On timeout the helper thread is detached: we've moved the child into it and
-/// can't easily kill it after the fact, but the shells we run just print their
-/// `PATH` and exit; a pathologically slow rc/profile is reaped by the OS when
-/// the orphaned thread eventually closes its pipe. Startup proceeds with the
-/// caller's defaults regardless. Shared by the macOS login-shell probe and the
-/// Windows profile probe so their timeout semantics can't drift apart.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// Stdout is drained on a helper thread while the caller retains ownership of
+/// the child. On timeout we kill + reap the process and join the reader before
+/// returning, so startup never leaves a zombie process or detached thread.
+/// Shared by the macOS login-shell probe and the Windows profile probe so their
+/// timeout semantics can't drift apart.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn capture_stdout_with_timeout(
     mut cmd: std::process::Command,
     timeout: std::time::Duration,
 ) -> Option<String> {
-    let child = cmd.spawn().ok()?;
+    use std::io::Read;
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        let out = child.wait_with_output();
-        let _ = tx.send(out);
+    let mut child = cmd.spawn().ok()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
     });
+    let deadline = std::time::Instant::now() + timeout;
 
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) if output.status.success() => {
-            let _ = handle.join();
-            Some(String::from_utf8_lossy(&output.stdout).to_string())
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let bytes = reader.join().ok()?.ok()?;
+                return status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&bytes).to_string());
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            // Timeout or an inability to poll the process: terminate it, reap
+            // it, and join the pipe reader before returning. This avoids both
+            // zombie children and detached helper threads during app startup.
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return None;
+            }
         }
-        // Non-zero exit, I/O error, or timeout: detach the helper thread (see
-        // the doc comment) and bail so the caller uses its defaults.
-        _ => None,
     }
 }
 
@@ -618,6 +637,47 @@ fn read_registry_path(system: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_stdout_timeout_terminates_and_reaps_child() {
+        use std::process::{Command, Stdio};
+
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "exec sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        let started = std::time::Instant::now();
+        assert_eq!(
+            capture_stdout_with_timeout(command, std::time::Duration::from_millis(40)),
+            None
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "timeout cleanup should kill and reap promptly"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_stdout_returns_successful_output() {
+        use std::process::{Command, Stdio};
+
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "printf 'probe-ok'"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        assert_eq!(
+            capture_stdout_with_timeout(command, std::time::Duration::from_secs(1)),
+            Some("probe-ok".to_string())
+        );
+    }
     use std::path::PathBuf;
 
     #[test]

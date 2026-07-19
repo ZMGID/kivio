@@ -68,6 +68,18 @@ type RenderItem =
   | { kind: 'compaction-summary'; key: string; boundary: CompactionBoundaryView }
   | { kind: 'compaction-progress'; key: string; afterIndex: number }
 
+type RenderSlot =
+  | { kind: 'history'; item: RenderItem }
+  | { kind: 'dynamic' }
+  | { kind: 'error' }
+  | { kind: 'bottom' }
+
+const BOTTOM_SPACER_ITEM: RenderItem = {
+  kind: 'spacer',
+  key: 'padding-bottom',
+  size: LIST_EDGE_PADDING_PX,
+}
+
 // R8（多模型一问多答）：多答组的「本次所发模型」列表，渲染在该组对应 user 消息顶部。
 type GroupModelLabel = { providerId: string | null; model: string | null }
 
@@ -95,6 +107,28 @@ function MessageListBase({
   // 多答组实时流：订阅 group store 版本号，活跃组列内容更新时驱动重渲。
   const groupsVersion = useGroupsVersion()
   const liveGroup = conversationId ? getActiveGroup(conversationId) : undefined
+  // Group column objects are mutated in place for every stream delta. Only model
+  // identity changes should rebuild historical rows; content deltas stay in the
+  // dedicated live-group row.
+  const liveGroupModelsKey = liveGroup
+    ? `${liveGroup.groupId}\0${liveGroup.columns
+      .map((column) => `${column.providerId ?? ''}:${column.model ?? ''}`)
+      .join('\0')}`
+    : ''
+  const liveGroupId = liveGroup?.groupId ?? null
+  const liveGroupColumns = liveGroup?.columns
+  const liveGroupModels = useMemo(() => (
+    liveGroupId && liveGroupColumns
+      ? {
+        key: liveGroupModelsKey,
+        groupId: liveGroupId,
+        labels: liveGroupColumns.map((column) => ({
+          providerId: column.providerId,
+          model: column.model,
+        })),
+      }
+      : null
+  ), [liveGroupColumns, liveGroupId, liveGroupModelsKey])
   const streaming = coarse.streaming
   const streamFrozen = coarse.streamFrozen
   const error = coarse.streamError
@@ -219,8 +253,9 @@ function MessageListBase({
     pendingCompactionAfterIndex,
   ])
 
-  // 把消息 + 流式预览 + 占位拼成统一的虚拟列表项数组。
-  const items = useMemo<RenderItem[]>(() => {
+  // 历史项只在消息/压缩边界/组模型身份变化时重建。高频流式文本不进入依赖，
+  // 避免长会话每帧遍历并重新分配整个历史数组。
+  const historyItems = useMemo<RenderItem[]>(() => {
     const list: RenderItem[] = [
       { kind: 'spacer', key: 'padding-top', size: LIST_EDGE_PADDING_PX },
     ]
@@ -241,10 +276,14 @@ function MessageListBase({
       }
     }
     // 流式态下本组 assistant 尚未落库 → 从实时列补出模型列表，让 user 消息标签即时出现。
-    if (liveGroup && liveGroup.columns.length > 0 && !sentModelsByGroup.has(liveGroup.groupId)) {
+    if (
+      liveGroupModels
+      && liveGroupModels.labels.length > 0
+      && !sentModelsByGroup.has(liveGroupModels.groupId)
+    ) {
       sentModelsByGroup.set(
-        liveGroup.groupId,
-        liveGroup.columns.map((col) => ({ providerId: col.providerId, model: col.model })),
+        liveGroupModels.groupId,
+        liveGroupModels.labels,
       )
     }
 
@@ -274,16 +313,21 @@ function MessageListBase({
       }
     }
 
-    // 实时多答组：流式中（active group 存在）追加一个 live-group item，取代单流预览气泡。
+    return list
+  }, [folded, liveGroupModels, messageIndexById, appendCompactionSlot])
+
+  // 高频变化只更新固定的尾部 slot，不重建历史项。
+  const dynamicItem = useMemo<RenderItem | null>(() => {
     const hasLiveGroup = Boolean(liveGroup && (coarse.streaming || coarse.streamFrozen))
     const hasStreamingPreview =
       !hasLiveGroup &&
       (streaming || streamFrozen) &&
       (streamingContent || streamingReasoning || streamingToolCalls.length > 0 || streamingSegments.length > 0)
     if (hasLiveGroup && liveGroup) {
-      list.push({ kind: 'live-group', key: `live-group-${liveGroup.groupId}`, groupId: liveGroup.groupId })
-    } else if (hasStreamingPreview) {
-      list.push({
+      return { kind: 'live-group', key: `live-group-${liveGroup.groupId}`, groupId: liveGroup.groupId }
+    }
+    if (hasStreamingPreview) {
+      return {
         kind: 'streaming',
         key: 'streaming-assistant',
         messageStreaming: streaming && !streamFrozen,
@@ -298,22 +342,10 @@ function MessageListBase({
           segments: streamingSegments,
           timestamp: Math.floor(Date.now() / 1000),
         },
-      })
-    } else if (streaming) {
-      list.push({ kind: 'thinking', key: 'thinking' })
+      }
     }
-
-    if (error) {
-      // 末尾是用户消息 = 失败发送遗留的孤儿，给它一个重试入口；其它错误不显示重试。
-      const last = messages[messages.length - 1]
-      const retryMessageId = last && last.role === 'user' ? last.id : null
-      list.push({ kind: 'error', key: 'error', text: error, retryMessageId })
-    }
-    list.push({ kind: 'spacer', key: 'padding-bottom', size: LIST_EDGE_PADDING_PX })
-    return list
+    return streaming ? { kind: 'thinking', key: 'thinking' } : null
   }, [
-    messages,
-    folded,
     liveGroup,
     coarse.streaming,
     coarse.streamFrozen,
@@ -324,15 +356,29 @@ function MessageListBase({
     reasoningStreaming,
     streamingToolCalls,
     streamingSegments,
-    error,
-    appendCompactionSlot,
-    messageIndexById,
   ])
 
+  const errorItem = useMemo<RenderItem | null>(() => {
+    if (!error) return null
+    const last = messages[messages.length - 1]
+    const retryMessageId = last && last.role === 'user' ? last.id : null
+    return { kind: 'error', key: 'error', text: error, retryMessageId }
+  }, [error, messages])
+
+  // Virtua's `data + render function` path avoids flattening an O(N) React
+  // children tree every frame. Three fixed tail slot kinds resolve their current
+  // payload in the render callback; the data array changes only with history.
+  const renderSlots = useMemo<RenderSlot[]>(() => [
+    ...historyItems.map((item): RenderSlot => ({ kind: 'history', item })),
+    { kind: 'dynamic' },
+    { kind: 'error' },
+    { kind: 'bottom' },
+  ], [historyItems])
+
   const navigatorNodes = useMemo(() => {
-    const renderIndexByKey = new Map(items.map((item, index) => [item.key, index]))
+    const renderIndexByKey = new Map(historyItems.map((item, index) => [item.key, index]))
     return buildMessageNavigatorNodes({ folded, boundaries, renderIndexByKey })
-  }, [boundaries, folded, items])
+  }, [boundaries, folded, historyItems])
   navigatorNodesRef.current = navigatorNodes
   const navigatorTurnCount = navigatorNodes.reduce(
     (count, node) => count + (node.kind === 'turn' ? 1 : 0),
@@ -374,7 +420,7 @@ function MessageListBase({
   }, [navigateToNavigatorNode])
 
   const scrollToBottom = useCallback((smooth = false) => {
-    const index = items.length - 1
+    const index = renderSlots.length - 1
     if (index < 0) return
     const handle = virtualizerRef.current
     if (handle) {
@@ -391,13 +437,30 @@ function MessageListBase({
     if (smooth && !prefersReducedMotion()) { el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); return }
     el.scrollTop = el.scrollHeight
     lastScrollOffsetRef.current = el.scrollTop
-  }, [items.length])
+  }, [renderSlots.length])
+
+  const scrollFrameRef = useRef<number | null>(null)
+  const pendingSmoothScrollRef = useRef(false)
+  const scheduleScrollToBottom = useCallback((smooth = false) => {
+    pendingSmoothScrollRef.current ||= smooth
+    if (scrollFrameRef.current != null) return
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null
+      const shouldSmooth = pendingSmoothScrollRef.current
+      pendingSmoothScrollRef.current = false
+      if (stickToBottomRef.current) scrollToBottom(shouldSmooth)
+    })
+  }, [scrollToBottom])
+
+  useLayoutEffect(() => () => {
+    if (scrollFrameRef.current != null) cancelAnimationFrame(scrollFrameRef.current)
+  }, [])
 
   const handleJumpToBottom = useCallback(() => {
     stickToBottomRef.current = true
     updateAtBottom(true)
-    scrollToBottom(true)
-  }, [scrollToBottom, updateAtBottom])
+    scheduleScrollToBottom(true)
+  }, [scheduleScrollToBottom, updateAtBottom])
 
   // 滚轮向上 = 明确的离开底部意图，立即解除跟随。按钮显隐仍只由实际滚动几何决定，
   // 避免在底部阈值内 wheel 先显示、scroll 又隐藏，造成一帧闪烁和重复重渲。
@@ -457,8 +520,8 @@ function MessageListBase({
     updateActiveNavigatorNode(lastNode?.id ?? null)
     updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
     // 等虚拟列表用最新 items 渲染后再对齐底部
-    requestAnimationFrame(() => scrollToBottom())
-    // 仅在 conversationId 变化时重置；scrollToBottom 依赖 items.length，故不列入依赖避免误触发
+    scheduleScrollToBottom()
+    // 仅在 conversationId 变化时重置；scheduleScrollToBottom 依赖项数，故不列入依赖避免误触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, updateActiveNavigatorNode, updateAtBottom, updateVisibleNavigatorNodes])
 
@@ -476,17 +539,13 @@ function MessageListBase({
   // mount 后撑高）时重测，这里在每次内容/项数变化后重新对齐末尾，保证持续钉底。
   useLayoutEffect(() => {
     if (!stickToBottomRef.current) return
-    scrollToBottom()
+    scheduleScrollToBottom()
   }, [
-    items,
-    streaming,
-    streamingContent,
-    streamingReasoning,
-    reasoningStreaming,
-    streamingToolCalls,
-    streamingSegments,
+    renderSlots,
+    dynamicItem,
+    errorItem,
     groupsVersion,
-    scrollToBottom,
+    scheduleScrollToBottom,
   ])
 
   const renderItem = useCallback(
@@ -618,6 +677,25 @@ function MessageListBase({
     ],
   )
 
+  const renderSlot = useCallback((slot: RenderSlot) => {
+    const item = slot.kind === 'history'
+      ? slot.item
+      : slot.kind === 'dynamic'
+        ? dynamicItem
+        : slot.kind === 'error'
+          ? errorItem
+          : BOTTOM_SPACER_ITEM
+    if (!item) return <div aria-hidden="true" />
+    return (
+      <div
+        className={item.kind === 'spacer' ? undefined : 'pb-0.5'}
+        data-chat-message-list-item={item.kind}
+      >
+        {renderItem(item)}
+      </div>
+    )
+  }, [dynamicItem, errorItem, renderItem])
+
   return (
     <div className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= 4 ? 'has-message-navigator' : ''}`}>
       {navigatorTurnCount >= 4 && (
@@ -635,16 +713,13 @@ function MessageListBase({
         className="chat-motion-view-in custom-scrollbar flex-1 overflow-y-auto"
       >
         <div className="chat-message-list-inner mx-auto w-full max-w-4xl px-6">
-          <Virtualizer ref={virtualizerRef} scrollRef={scrollRef} onScroll={handleScroll}>
-            {items.map((item) => (
-              <div
-                key={item.key}
-                className={item.kind === 'spacer' ? undefined : 'pb-0.5'}
-                data-chat-message-list-item={item.kind}
-              >
-                {renderItem(item)}
-              </div>
-            ))}
+          <Virtualizer
+            ref={virtualizerRef}
+            scrollRef={scrollRef}
+            onScroll={handleScroll}
+            data={renderSlots}
+          >
+            {renderSlot}
           </Virtualizer>
         </div>
       </div>

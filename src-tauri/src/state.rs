@@ -37,6 +37,13 @@ pub struct PendingPythonRun {
     pub export_ctx: SandboxExportContext,
 }
 
+#[derive(Debug)]
+pub struct TimedCacheEntry<V> {
+    created_at: Instant,
+    last_accessed: Instant,
+    value: V,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingChatExternalMessage {
@@ -135,26 +142,17 @@ pub struct AppState {
     pub external_slash_commands_cache: Mutex<
         HashMap<
             String,
-            (
-                Instant,
-                Vec<crate::external_agents::types::ExternalCliSlashCommand>,
-            ),
+            TimedCacheEntry<Vec<crate::external_agents::types::ExternalCliSlashCommand>>,
         >,
     >,
     /// 外部 CLI 模型列表探测缓存（agent_id:cwd → 模型选项）。
     pub external_agent_models_cache: Mutex<
-        HashMap<
-            String,
-            (
-                Instant,
-                Vec<crate::external_agents::types::RuntimeModelOption>,
-            ),
-        >,
+        HashMap<String, TimedCacheEntry<Vec<crate::external_agents::types::RuntimeModelOption>>>,
     >,
     /// 外部 CLI 全量检测结果缓存（cwd → available/version/auth/models）。避免 RuntimePicker /
     /// 设置页每次打开都重探全部 CLI，同时隔离项目级模型配置。force_refresh 时跳过当前 cwd。
     pub external_detected_agents_cache:
-        Mutex<HashMap<String, (Instant, Vec<crate::external_agents::types::DetectedAgent>)>>,
+        Mutex<HashMap<String, TimedCacheEntry<Vec<crate::external_agents::types::DetectedAgent>>>>,
     /// Phase 2 持久会话注册表：conversation_id → 活会话（仅持有控制通道，不持有 Child）。
     /// 仅在 get/insert/remove 时短暂持锁，绝不跨 turn await 持锁。
     pub external_live_sessions:
@@ -215,29 +213,57 @@ pub struct AppState {
 
 /// 单个 key 触发 failover 后的冷却时长。
 pub const KEY_COOLDOWN: Duration = Duration::from_secs(60);
+const EXTERNAL_DISCOVERY_CACHE_CAPACITY: usize = 64;
+const EXTERNAL_DISCOVERY_CACHE_RETENTION: Duration = Duration::from_secs(300);
 
-/// 共享的 TTL 缓存读取：命中且未过期返回克隆，否则移除过期条目并返回 None。
+/// 共享的 TTL 缓存读取：每次访问全表清理过期项，命中时刷新 LRU 时间。
 fn get_cached<V: Clone>(
-    cache: &Mutex<HashMap<String, (Instant, V)>>,
+    cache: &Mutex<HashMap<String, TimedCacheEntry<V>>>,
     key: &str,
     ttl: Duration,
 ) -> Option<V> {
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((created_at, value)) = cache.get(key) {
-        if created_at.elapsed() <= ttl {
-            return Some(value.clone());
-        }
-    }
-    cache.remove(key);
-    None
+    cache.retain(|_, entry| entry.created_at.elapsed() <= ttl);
+    let entry = cache.get_mut(key)?;
+    entry.last_accessed = Instant::now();
+    Some(entry.value.clone())
 }
 
-/// 共享的 TTL 缓存写入：以当前时刻为创建时间插入。
-fn set_cached<V>(cache: &Mutex<HashMap<String, (Instant, V)>>, key: String, value: V) {
-    cache
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, (Instant::now(), value));
+/// 共享的有界缓存写入：先清理历史项，再按 LRU 淘汰到容量以内。
+fn set_cached<V>(
+    cache: &Mutex<HashMap<String, TimedCacheEntry<V>>>,
+    key: String,
+    value: V,
+    retention: Duration,
+    capacity: usize,
+) {
+    let now = Instant::now();
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|_, entry| entry.created_at.elapsed() <= retention);
+    cache.insert(
+        key,
+        TimedCacheEntry {
+            created_at: now,
+            last_accessed: now,
+            value,
+        },
+    );
+    while cache.len() > capacity.max(1) {
+        let Some(oldest_key) = cache
+            .iter()
+            .min_by(|(key_a, entry_a), (key_b, entry_b)| {
+                entry_a
+                    .last_accessed
+                    .cmp(&entry_b.last_accessed)
+                    .then_with(|| entry_a.created_at.cmp(&entry_b.created_at))
+                    .then_with(|| key_a.cmp(key_b))
+            })
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest_key);
+    }
 }
 
 impl AppState {
@@ -595,7 +621,13 @@ impl AppState {
         cache_key: String,
         commands: Vec<crate::external_agents::types::ExternalCliSlashCommand>,
     ) {
-        set_cached(&self.external_slash_commands_cache, cache_key, commands);
+        set_cached(
+            &self.external_slash_commands_cache,
+            cache_key,
+            commands,
+            EXTERNAL_DISCOVERY_CACHE_RETENTION,
+            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
+        );
     }
 
     pub fn get_cached_external_agent_models(
@@ -611,7 +643,13 @@ impl AppState {
         cache_key: String,
         models: Vec<crate::external_agents::types::RuntimeModelOption>,
     ) {
-        set_cached(&self.external_agent_models_cache, cache_key, models);
+        set_cached(
+            &self.external_agent_models_cache,
+            cache_key,
+            models,
+            EXTERNAL_DISCOVERY_CACHE_RETENTION,
+            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
+        );
     }
 
     pub fn get_cached_detected_agents(
@@ -627,7 +665,13 @@ impl AppState {
         cache_key: String,
         agents: Vec<crate::external_agents::types::DetectedAgent>,
     ) {
-        set_cached(&self.external_detected_agents_cache, cache_key, agents);
+        set_cached(
+            &self.external_detected_agents_cache,
+            cache_key,
+            agents,
+            EXTERNAL_DISCOVERY_CACHE_RETENTION,
+            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
+        );
     }
 
     /// Phase 2: return the control channel of a reusable live session for this conversation
@@ -876,6 +920,89 @@ mod tests {
         assert!(st
             .get_cached_detected_agents("/project-b", Duration::from_secs(60))
             .is_none());
+    }
+
+    #[test]
+    fn bounded_cache_sweeps_all_expired_entries_on_read() {
+        let cache = Mutex::new(HashMap::from([
+            (
+                "expired".to_string(),
+                TimedCacheEntry {
+                    created_at: Instant::now() - Duration::from_secs(10),
+                    last_accessed: Instant::now() - Duration::from_secs(10),
+                    value: 1u32,
+                },
+            ),
+            (
+                "fresh".to_string(),
+                TimedCacheEntry {
+                    created_at: Instant::now(),
+                    last_accessed: Instant::now() - Duration::from_secs(1),
+                    value: 2u32,
+                },
+            ),
+        ]));
+
+        assert_eq!(get_cached(&cache, "fresh", Duration::from_secs(5)), Some(2));
+        let guard = cache.lock().unwrap();
+        assert_eq!(guard.len(), 1);
+        assert!(!guard.contains_key("expired"));
+    }
+
+    #[test]
+    fn bounded_cache_evicts_least_recently_used_entry() {
+        let cache = Mutex::new(HashMap::new());
+        set_cached(&cache, "a".into(), 1u32, Duration::from_secs(60), 2);
+        set_cached(&cache, "b".into(), 2u32, Duration::from_secs(60), 2);
+        assert_eq!(get_cached(&cache, "a", Duration::from_secs(60)), Some(1));
+        set_cached(&cache, "c".into(), 3u32, Duration::from_secs(60), 2);
+
+        let guard = cache.lock().unwrap();
+        assert!(guard.contains_key("a"));
+        assert!(guard.contains_key("c"));
+        assert!(!guard.contains_key("b"));
+    }
+
+    #[test]
+    fn bounded_cache_update_replaces_value_and_refreshes_ttl() {
+        let cache = Mutex::new(HashMap::new());
+        set_cached(&cache, "same".into(), 1u32, Duration::from_secs(60), 2);
+        {
+            let mut guard = cache.lock().unwrap();
+            let entry = guard.get_mut("same").unwrap();
+            entry.created_at = Instant::now() - Duration::from_secs(10);
+            entry.last_accessed = entry.created_at;
+        }
+
+        set_cached(&cache, "same".into(), 2u32, Duration::from_secs(5), 2);
+
+        assert_eq!(get_cached(&cache, "same", Duration::from_secs(5)), Some(2));
+        assert_eq!(cache.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn bounded_cache_remains_within_capacity_under_concurrent_writes() {
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+        let threads: Vec<_> = (0..8)
+            .map(|worker| {
+                let cache = Arc::clone(&cache);
+                std::thread::spawn(move || {
+                    for item in 0..32 {
+                        set_cached(
+                            &cache,
+                            format!("{worker}:{item}"),
+                            item,
+                            Duration::from_secs(60),
+                            16,
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert!(cache.lock().unwrap().len() <= 16);
     }
 
     #[test]

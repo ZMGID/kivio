@@ -40,6 +40,7 @@ pub mod windows_ocr;
 
 use std::time::Duration;
 
+use futures::StreamExt;
 use tauri::{Emitter, Manager, State};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
@@ -63,6 +64,8 @@ use windows::{ensure_overlay_panel, restore_previous_frontmost_app};
 
 /// 自启动参数，用于区分用户手动启动和系统自动启动
 const AUTOSTART_ARG: &str = "--from-autostart";
+/// Bound startup process/memory spikes when many MCP servers are enabled.
+const MCP_STARTUP_WARMUP_CONCURRENCY: usize = 2;
 
 #[cfg(target_os = "macos")]
 const USER_WINDOW_LABELS: &[&str] = &["chat", "main"];
@@ -399,18 +402,26 @@ pub fn run() {
                         .filter(|server| crate::mcp::registry::mcp_server_is_runtime_eligible(server))
                         .cloned()
                         .collect();
-                    let mut warmups = tokio::task::JoinSet::new();
-                    for server in servers {
-                        let app_handle = app_handle.clone();
-                        warmups.spawn(async move {
-                            // 启动竞态加固：若 AppState 尚未 manage，跳过该 server 预热（lazy 连接兜底）。
-                            let Some(state) = app_handle.try_state::<AppState>() else {
-                                return;
-                            };
-                            let _ = state.mcp_get_or_connect(&app_handle, &server).await;
-                        });
+                    if !servers.is_empty() {
+                        eprintln!(
+                            "[mcp] warming {} server(s) with concurrency {}",
+                            servers.len(),
+                            MCP_STARTUP_WARMUP_CONCURRENCY
+                        );
                     }
-                    while warmups.join_next().await.is_some() {}
+                    futures::stream::iter(servers)
+                        .for_each_concurrent(MCP_STARTUP_WARMUP_CONCURRENCY, |server| {
+                            let app_handle = app_handle.clone();
+                            async move {
+                                // 启动竞态加固：若 AppState 尚未 manage，跳过该 server
+                                // 预热（lazy 连接兜底）。
+                                let Some(state) = app_handle.try_state::<AppState>() else {
+                                    return;
+                                };
+                                let _ = state.mcp_get_or_connect(&app_handle, &server).await;
+                            }
+                        })
+                        .await;
                 });
             }
 
@@ -592,6 +603,8 @@ pub fn run() {
                     if killed > 0 {
                         eprintln!("Killed {killed} background command process group(s) on exit.");
                     }
+                    #[cfg(target_os = "macos")]
+                    state.macos_ocr.shutdown();
                     // OfficeCLI live preview (`officecli watch`) 等插件附属进程
                     crate::plugins::stop_all_previews();
                 }

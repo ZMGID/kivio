@@ -65,6 +65,37 @@ const playEntranceAnimation = messageStreaming
 - Assert the explicit live/streaming state still receives the intended class.
 - For regressions involving virtualization, verify with real wheel deltas and a long conversation; component tests alone do not reproduce DOM churn.
 
+### Streaming data in virtualized lists
+
+**Trigger**: A virtualized list contains a high-frequency streaming tail while historical rows are
+stable.
+
+**Contract**:
+
+- Keep historical `data` and navigator/index derivations dependent only on structural message
+  identity, grouping, and boundary changes.
+- Represent streaming, error, and bottom content as fixed tail slots whose payload is resolved by
+  the render callback. Token deltas must not rebuild an O(N) data array or navigator map.
+- Coalesce automatic bottom alignment with `requestAnimationFrame`; keep at most one pending frame
+  and cancel it on unmount.
+- Test `ResizeObserver` mocks must deliver asynchronously. A synchronous callback during React or
+  virtua mount can produce a test-only lifecycle `flushSync` warning that browsers do not model.
+
+```tsx
+const slots = useMemo(
+  () => [...historyItems.map(item => ({ kind: 'history', item })), tailSlot],
+  [historyItems],
+)
+
+<Virtualizer data={slots}>{renderSlot}</Virtualizer>
+```
+
+**Tests required**:
+
+- Spy on the structural navigator builder and assert repeated stream frames do not call it again.
+- Verify bottom scrolling is coalesced and cleanup cancels a pending frame.
+- Run the long-list streaming test without React lifecycle `flushSync` warnings.
+
 ---
 
 ## Accessibility
@@ -84,3 +115,13 @@ const playEntranceAnimation = messageStreaming
 **Cause**: CSS entrance classes are attached unconditionally to a component that a virtualizer repeatedly mounts and unmounts.
 
 **Prevention**: before adding mount animation to list content, determine whether remounts can happen during scrolling. Drive motion from semantic state such as `messageStreaming`, not component lifetime.
+
+### Treating token content as list structure
+
+**Symptom**: CPU usage grows with conversation length during streaming even though only the last
+assistant message changes.
+
+**Cause**: token deltas rebuild historical row arrays, navigator maps, or flattened React children.
+
+**Prevention**: separate structural history data from fixed dynamic tail slots and verify the
+structural builder call count in tests.

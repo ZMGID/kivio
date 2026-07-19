@@ -50,8 +50,10 @@ if (typeof window !== 'undefined') {
         target,
         contentRect: { height: size, width: 600 } as DOMRectReadOnly,
       } as unknown as ResizeObserverEntry
-      // 同步回调一次，模拟元素被测量
-      this.cb([entry], this as unknown as ResizeObserver)
+      // 浏览器的 ResizeObserver 通知发生在独立的 observer delivery 阶段，
+      // 不能在 React/virtua 正在挂载的 lifecycle 内同步回调。异步投递既更贴近
+      // 真实行为，也避免 virtua 为修正尺寸调用 flushSync 时触发 React 警告。
+      queueMicrotask(() => this.cb([entry], this as unknown as ResizeObserver))
     }
     unobserve() {}
     disconnect() {}

@@ -68,6 +68,11 @@ static PREVIEW: Mutex<PreviewRuntime> = Mutex::new(PreviewRuntime {
 
 /// reload 事件广播：每次导出完成 send 一个递增序号，SSE 连接收到即推 reload。
 static RELOAD_TX: Mutex<Option<watch::Sender<u64>>> = Mutex::new(None);
+/// Listener + all active SSE connections share this shutdown signal.
+static SERVER_SHUTDOWN_TX: Mutex<Option<watch::Sender<bool>>> = Mutex::new(None);
+/// Owning handle for the listener accept loop; abort is the final immediate
+/// fallback after broadcasting graceful shutdown to listener + connections.
+static SERVER_TASK: Mutex<Option<tauri::async_runtime::JoinHandle<()>>> = Mutex::new(None);
 
 /// MCP 工具成功返回后调用：若为 OfficeCLI 文档操作则异步刷新本地 HTML 预览。
 pub fn note_after_officecli_tool(
@@ -158,10 +163,26 @@ Do NOT call `officecli watch` yourself (MCP edits do not push to watch; Kivio se
 
 /// 关闭插件 / 卸载 / 退出时清理标记（HTML 文件可保留）。
 pub fn stop_all_previews() {
-    let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
-    guard.active_path = None;
-    guard.browser_opened = false;
-    guard.generation = guard.generation.wrapping_add(1);
+    {
+        let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+        guard.active_path = None;
+        guard.browser_opened = false;
+        guard.generation = guard.generation.wrapping_add(1);
+        guard.server_port = None;
+    }
+    // Dropping the reload sender ends legacy receivers; the explicit shutdown
+    // signal also wakes the accept loop and every heartbeat immediately.
+    RELOAD_TX.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(tx) = SERVER_SHUTDOWN_TX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        let _ = tx.send(true);
+    }
+    if let Some(task) = SERVER_TASK.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        task.abort();
+    }
     // 顺带清掉可能残留的 watch 进程（旧实现或用户手动起的）
     kill_watch_leftovers();
 }
@@ -302,25 +323,42 @@ async fn ensure_preview_server() -> Option<u16> {
     let port = listener.local_addr().ok()?.port();
 
     let (tx, _rx) = watch::channel(0u64);
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     {
         let mut guard = RELOAD_TX.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(tx);
+        *guard = Some(tx.clone());
+    }
+    {
+        let mut guard = SERVER_SHUTDOWN_TX.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(shutdown_tx);
     }
     {
         let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
         guard.server_port = Some(port);
     }
 
-    tauri::async_runtime::spawn(async move {
+    let server_task = tauri::async_runtime::spawn(async move {
         loop {
-            let Ok((stream, _addr)) = listener.accept().await else {
-                continue;
-            };
-            tauri::async_runtime::spawn(async move {
-                let _ = handle_preview_connection(stream).await;
-            });
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+                accepted = listener.accept() => {
+                    let Ok((stream, _addr)) = accepted else {
+                        continue;
+                    };
+                    let reload_rx = tx.subscribe();
+                    let connection_shutdown_rx = shutdown_rx.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = handle_preview_connection(stream, reload_rx, connection_shutdown_rx).await;
+                    });
+                }
+            }
         }
     });
+    *SERVER_TASK.lock().unwrap_or_else(|e| e.into_inner()) = Some(server_task);
     Some(port)
 }
 
@@ -334,9 +372,24 @@ fn notify_reload() {
 
 /// 极简 HTTP：`GET /` 回预览 HTML，`GET /events` 挂 SSE 推 reload。
 /// 单用户本地回环，无需完整 HTTP 栈（ponytail: 手写足够，别拉 axum）。
-async fn handle_preview_connection(mut stream: TcpStream) -> std::io::Result<()> {
+async fn handle_preview_connection(
+    mut stream: TcpStream,
+    mut reload_rx: watch::Receiver<u64>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> std::io::Result<()> {
     let mut buf = [0u8; 2048];
-    let n = stream.read(&mut buf).await?;
+    let n = tokio::select! {
+        changed = shutdown_rx.changed() => {
+            if changed.is_err() || *shutdown_rx.borrow() {
+                return Ok(());
+            }
+            return Ok(());
+        }
+        result = stream.read(&mut buf) => result?,
+    };
+    if n == 0 {
+        return Ok(());
+    }
     let req = String::from_utf8_lossy(&buf[..n]);
     let path = req
         .lines()
@@ -351,20 +404,18 @@ async fn handle_preview_connection(mut stream: TcpStream) -> std::io::Result<()>
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\nretry: 1500\n\n",
             )
             .await?;
-        let mut rx = {
-            let guard = RELOAD_TX.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref() {
-                Some(tx) => tx.subscribe(),
-                None => return Ok(()),
-            }
-        };
         loop {
             tokio::select! {
-                changed = rx.changed() => {
+                changed = reload_rx.changed() => {
                     if changed.is_err() {
                         return Ok(()); // sender 没了，结束连接
                     }
                     stream.write_all(b"event: reload\ndata: 1\n\n").await?;
+                }
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return Ok(());
+                    }
                 }
                 _ = tokio::time::sleep(Duration::from_secs(25)) => {
                     // 心跳，防中间层/浏览器判死连接
@@ -700,6 +751,8 @@ fn normalize_path_key(path: &str) -> String {
 mod tests {
     use super::*;
 
+    static PREVIEW_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn extracts_quoted_windows_path() {
         let cmd = r#"create "C:\Users\11028\OneDrive\Desktop\2026Q2_业务回顾.pptx""#;
@@ -800,5 +853,95 @@ mod tests {
         assert!(c.contains("batch"));
         assert!(c.contains("a.pptx"));
         assert!(extract_office_doc_path(&c).is_some());
+    }
+
+    #[test]
+    fn stop_clears_server_runtime_state() {
+        let _serial = PREVIEW_TEST_LOCK.lock().unwrap();
+        let (reload_tx, _reload_rx) = watch::channel(0u64);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        *RELOAD_TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(reload_tx);
+        *SERVER_SHUTDOWN_TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(shutdown_tx);
+        {
+            let mut preview = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+            preview.active_path = Some("/tmp/deck.pptx".into());
+            preview.browser_opened = true;
+            preview.server_port = Some(26316);
+        }
+
+        stop_all_previews();
+
+        let preview = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(preview.active_path.is_none());
+        assert!(!preview.browser_opened);
+        assert!(preview.server_port.is_none());
+        assert!(RELOAD_TX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
+        assert!(SERVER_SHUTDOWN_TX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
+        assert!(SERVER_TASK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none());
+        assert!(*shutdown_rx.borrow());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_releases_listener_and_closes_sse_connection() {
+        let _serial = PREVIEW_TEST_LOCK.lock().unwrap();
+        stop_all_previews();
+        let port = ensure_preview_server().await.expect("preview server");
+        let mut stream = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect preview server");
+        let mut half_open = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect half-open preview client");
+        stream
+            .write_all(b"GET /events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("write request");
+        let mut response = [0u8; 256];
+        let read = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut response))
+            .await
+            .expect("SSE response timeout")
+            .expect("read SSE response");
+        assert!(String::from_utf8_lossy(&response[..read]).contains("text/event-stream"));
+
+        stop_all_previews();
+        let closed = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut response))
+            .await
+            .expect("SSE close timeout");
+        assert!(matches!(closed, Ok(0) | Err(_)));
+        let half_open_closed =
+            tokio::time::timeout(Duration::from_secs(1), half_open.read(&mut response))
+                .await
+                .expect("half-open connection close timeout");
+        assert!(matches!(half_open_closed, Ok(0) | Err(_)));
+
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("preview port should be released");
+        drop(listener);
+
+        let restarted_port = ensure_preview_server()
+            .await
+            .expect("preview server should restart after stop");
+        assert_eq!(
+            PREVIEW
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .server_port,
+            Some(restarted_port)
+        );
+        stop_all_previews();
+        let restarted_listener = TcpListener::bind(("127.0.0.1", restarted_port))
+            .await
+            .expect("restarted preview port should also be released");
+        drop(restarted_listener);
     }
 }

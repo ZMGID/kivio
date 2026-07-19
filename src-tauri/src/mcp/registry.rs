@@ -982,8 +982,16 @@ pub(super) async fn run_python_via_pyodide(
         return Err(format!("Failed to start Python runner: {err}"));
     }
 
-    let wait =
-        tokio::time::timeout(Duration::from_millis(timeout_ms.saturating_add(5_000)), rx).await;
+    // The Worker gives cold Pyodide initialization a 10s grace and resets itself
+    // at timeout_ms + 10s. Keep the Rust receiver slightly later so the frontend
+    // always gets the first chance to terminate the memory-heavy Worker and send
+    // a structured completion instead of continuing after this command returns.
+    const PYODIDE_FRONTEND_GRACE_MS: u64 = 10_000;
+    const PYODIDE_COMPLETION_TRANSPORT_GRACE_MS: u64 = 2_000;
+    let wait_ms = timeout_ms
+        .saturating_add(PYODIDE_FRONTEND_GRACE_MS)
+        .saturating_add(PYODIDE_COMPLETION_TRANSPORT_GRACE_MS);
+    let wait = tokio::time::timeout(Duration::from_millis(wait_ms), rx).await;
 
     match wait {
         Ok(Ok(result)) => {

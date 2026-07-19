@@ -2,6 +2,7 @@
 // 协议(每行一条 JSON):
 //   启动: { "type": "ready", "available": Bool }
 //   请求: { "id": Int, "action": "ocr", "imagePath": String }
+//   关闭: { "action": "shutdown" }
 //   完成: { "id": Int, "type": "done", "content": String }
 //   错误: { "id": Int, "type": "error", "message": String }
 
@@ -42,24 +43,33 @@ func handleOCR(id: Int, imagePath: String) async {
   }
 }
 
-func dispatch(_ raw: String) {
+/// 返回 false 表示主循环应立即退出。
+func dispatch(_ raw: String) -> Bool {
   guard let data = raw.data(using: .utf8),
         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-        let id = obj["id"] as? Int,
         let action = obj["action"] as? String else {
-    return
+    return true
+  }
+
+  if action == "shutdown" {
+    return false
+  }
+
+  guard let id = obj["id"] as? Int else {
+    return true
   }
 
   guard action == "ocr" else {
     emit(["id": id, "type": "error", "message": "unknown action: \(action)"])
-    return
+    return true
   }
   guard let imagePath = obj["imagePath"] as? String else {
     emit(["id": id, "type": "error", "message": "ocr action 缺 imagePath 字段"])
-    return
+    return true
   }
 
   Task { await handleOCR(id: id, imagePath: imagePath) }
+  return true
 }
 
 @main
@@ -68,7 +78,7 @@ struct KivioOCRHelper {
     emit(["type": "ready", "available": true])
     while let line = readLine(strippingNewline: true) {
       if line.isEmpty { continue }
-      dispatch(line)
+      if !dispatch(line) { break }
     }
   }
 }

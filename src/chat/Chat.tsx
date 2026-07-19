@@ -2097,13 +2097,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
+    let clientPromise: Promise<typeof import('./pyodideClient')> | null = null
 
     const setupListener = async () => {
       unlisten = await api.onChatRunPython((payload) => {
         if (cancelled) return
         void (async () => {
           try {
-            const { runPythonInSandbox } = await import('./pyodideClient')
+            clientPromise ??= import('./pyodideClient')
+            const { runPythonInSandbox } = await clientPromise
             const outcome = await runPythonInSandbox(payload.code, payload.timeoutMs, payload.files)
             await api.chatPythonComplete(
               payload.runId,
@@ -2133,6 +2135,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     return () => {
       cancelled = true
       unlisten?.()
+      void clientPromise
+        ?.then(({ disposePythonSandbox }) => disposePythonSandbox())
+        .catch(() => {})
     }
   }, [])
 

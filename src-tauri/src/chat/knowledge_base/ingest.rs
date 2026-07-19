@@ -198,19 +198,34 @@ async fn index_one(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<usize, 
 /// read-modify-write over its JSON files (docs/chunks/library counts), so all
 /// index writes for one kb must be serialized or concurrent uploads silently
 /// overwrite each other's chunks (lost update).
-/// ponytail: process-global registry of per-kb locks. Kivio is a single-user
-/// desktop app; a global map keyed by kb_id is enough — no AppState field, no
-/// 3-constructor churn. Move into AppState if this ever needs per-window scope.
+/// The registry stores Weak handles and is pruned after indexing, so historical
+/// library IDs do not accumulate for the lifetime of the desktop process.
+fn kb_lock_registry() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+> {
+    use std::sync::{Mutex, OnceLock};
+    static LOCKS: OnceLock<
+        Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    > = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
 fn kb_lock_for(kb_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
-    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .entry(kb_id.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
+    let mut guard = kb_lock_registry().lock().unwrap_or_else(|e| e.into_inner());
+    guard.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = guard.get(kb_id).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    guard.insert(kb_id.to_string(), std::sync::Arc::downgrade(&lock));
+    lock
+}
+
+fn prune_kb_locks() {
+    kb_lock_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, lock| lock.strong_count() > 0);
 }
 
 /// Apply the terminal status + counts + event for one finished document.
@@ -238,6 +253,9 @@ async fn run_index(app: AppHandle, kb_id: String, doc_id: String) {
     let _guard = lock.lock().await;
     let result = index_one(&app, &kb_id, &doc_id).await;
     finish_index(&app, &kb_id, &doc_id, result);
+    drop(_guard);
+    drop(lock);
+    prune_kb_locks();
 }
 
 // ===== commands =====
@@ -453,6 +471,9 @@ pub(crate) async fn kb_reindex_library(app: AppHandle, kb_id: String) -> Result<
         if ids.is_empty() {
             let _ = refresh_library_counts(&app2, &kb_id);
         }
+        drop(_guard);
+        drop(lock);
+        prune_kb_locks();
     });
     Ok(())
 }
@@ -513,5 +534,62 @@ mod tests {
         assert_eq!(sanitize_filename("报告.pdf"), "报告.pdf"); // CJK is alphanumeric
         assert_eq!(sanitize_filename(""), "file");
         assert_eq!(sanitize_filename("../etc/passwd"), ".._etc_passwd");
+    }
+
+    #[test]
+    fn kb_lock_registry_reuses_live_lock_and_reclaims_dead_lock() {
+        let kb_id = format!("kb-lock-test-{}", uuid::Uuid::new_v4());
+        let first = kb_lock_for(&kb_id);
+        let first_weak = std::sync::Arc::downgrade(&first);
+        let second = kb_lock_for(&kb_id);
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+
+        drop(first);
+        drop(second);
+        assert!(first_weak.upgrade().is_none());
+        prune_kb_locks();
+        assert!(!kb_lock_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&kb_id));
+    }
+
+    #[test]
+    fn concurrent_kb_lock_lookup_returns_one_live_lock() {
+        let kb_id = format!("kb-lock-concurrent-{}", uuid::Uuid::new_v4());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let kb_id = kb_id.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    kb_lock_for(&kb_id)
+                })
+            })
+            .collect();
+        let locks: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert!(locks
+            .iter()
+            .skip(1)
+            .all(|lock| std::sync::Arc::ptr_eq(&locks[0], lock)));
+        drop(locks);
+        prune_kb_locks();
+    }
+
+    #[tokio::test]
+    async fn different_kb_locks_do_not_block_each_other() {
+        let first = kb_lock_for(&format!("kb-lock-a-{}", uuid::Uuid::new_v4()));
+        let second = kb_lock_for(&format!("kb-lock-b-{}", uuid::Uuid::new_v4()));
+        let _first_guard = first.lock().await;
+
+        let second_guard =
+            tokio::time::timeout(std::time::Duration::from_millis(100), second.lock())
+                .await
+                .expect("different knowledge bases should lock independently");
+        drop(second_guard);
     }
 }

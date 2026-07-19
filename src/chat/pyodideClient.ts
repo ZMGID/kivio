@@ -9,9 +9,9 @@ import type { PythonInputFile, PythonRunOutcome } from './pyodideRunner'
 // 空闲多久后卸载 worker。同一任务里连续多步 Python 复用同一运行时、不重载；
 // 用户/agent 停止使用后释放。设短了会频繁重载（matplotlib/numpy 冷启动数秒），设长了占用久。
 const IDLE_TERMINATE_MS = 60_000
-// 主线程兜底超时 = 执行预算 + 冷加载预算。worker 内部已按 timeoutMs 限制执行，这里再防 worker
-// 整体卡死（如 pyodide 加载 hang）导致 Promise 永不 resolve。
-const COLD_LOAD_BUDGET_MS = 120_000
+// Worker 内部的 timeoutMs 只覆盖 Python 执行；主线程额外给首次加载一个短宽限。
+// Rust 侧等待预算为 timeoutMs + 12s，始终晚于这里 2s，避免后端先返回而 Worker 继续占内存。
+const COLD_LOAD_GRACE_MS = 10_000
 
 interface PendingRun {
   resolve: (outcome: PythonRunOutcome) => void
@@ -50,6 +50,11 @@ function rejectAllPending(err: Error) {
   pending.clear()
 }
 
+function resetWorker(err: Error) {
+  rejectAllPending(err)
+  terminateWorker()
+}
+
 function ensureWorker(): Worker {
   if (worker) return worker
   const next = new Worker(new URL('./pyodideWorker.ts', import.meta.url), { type: 'module' })
@@ -66,8 +71,10 @@ function ensureWorker(): Worker {
   }
   next.onerror = (event) => {
     // worker 整体崩溃：拒绝所有挂起任务并销毁，下次调用重建。
-    rejectAllPending(new Error(`Python worker 异常：${event.message || '未知错误'}`))
-    terminateWorker()
+    resetWorker(new Error(`Python worker 异常：${event.message || '未知错误'}`))
+  }
+  next.onmessageerror = () => {
+    resetWorker(new Error('Python worker 返回了无法解析的消息，已重置沙盒。'))
   }
   worker = next
   return next
@@ -86,12 +93,23 @@ export function runPythonInSandbox(
   const id = ++seq
   return new Promise<PythonRunOutcome>((resolve, reject) => {
     const guard = setTimeout(() => {
-      pending.delete(id)
-      // 卡死则杀掉整个 worker（连同可能 hang 的 pyodide），下次调用冷重建。
-      terminateWorker()
-      reject(new Error('Python 执行超时：worker 无响应，已重置沙盒，请重试。'))
-    }, timeoutMs + COLD_LOAD_BUDGET_MS)
+      // Pyodide 无法安全中断单次执行。卡死时必须重置整个 Worker，并立即
+      // 拒绝所有并发 pending，不能让其他 Promise 等到各自的 guard 才结束。
+      resetWorker(new Error('Python 执行超时：worker 无响应，已重置沙盒，请重试。'))
+    }, timeoutMs + COLD_LOAD_GRACE_MS)
     pending.set(id, { resolve, reject, guard })
-    target.postMessage({ id, code, timeoutMs, files })
+    try {
+      target.postMessage({ id, code, timeoutMs, files })
+    } catch (err) {
+      clearTimeout(guard)
+      pending.delete(id)
+      scheduleIdleTerminate()
+      reject(err instanceof Error ? err : new Error(String(err)))
+    }
   })
+}
+
+/** Chat/WebView teardown 时主动释放 Pyodide WASM 内存并结束所有挂起调用。 */
+export function disposePythonSandbox() {
+  resetWorker(new Error('Python 沙盒已关闭。'))
 }

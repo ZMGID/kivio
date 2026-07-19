@@ -57,6 +57,11 @@ async fn run_pi_rpc_session(
 - Kivio must not parse OpenCode JSONC or reproduce provider/config merge rules.
 - Full detection cache key: `cwd`.
 - Model metadata cache key: `agent_id:cwd`.
+- Slash-command, model-metadata, and full-detection caches are all bounded to 64 entries with a
+  300-second creation TTL. Reads refresh LRU access time but do not extend creation TTL; reads and
+  writes sweep all expired entries.
+- Capacity eviction is least-recently-used with deterministic tie-breaking. Cache locks cover only
+  map maintenance and cloning, never CLI probing or other I/O.
 - A frontend context change clears prior results; late responses from the old context are ignored.
 - Pi `agent_end` is logical completion only. Close stdin to trigger Pi shutdown, then keep draining
   stdout until EOF so queued writes can flush.
@@ -72,6 +77,8 @@ async fn run_pi_rpc_session(
 | Pi stdout read fails before `agent_end` | Return an error |
 | User cancels before or after `agent_end` | Kill the child and return `cancelled` |
 | Pi writes protocol lines after `agent_end` | Keep the pipe open, drain the lines, and do not surface them as a new turn |
+| More than 64 distinct cwd/cache keys are visited | Evict least-recently-used entries; map length remains bounded |
+| A cache entry is older than 300 seconds | Remove it on the next cache read or write, even when another key is requested |
 
 ### 5. Good / Base / Bad Cases
 
@@ -90,6 +97,8 @@ async fn run_pi_rpc_session(
 - Parser test: accept custom providers and multi-segment model IDs.
 - Parser test: reject invalid/empty output and deduplicate IDs.
 - Cache test: a value stored under cwd A is not returned for cwd B.
+- Cache tests: TTL sweep, update refresh, deterministic LRU eviction, and concurrent writes never
+  exceed capacity.
 - UI behavior: a conversation change clears previous results and ignores stale promises.
 - Pi regression: write `agent_end`, delay, write a trailing line, and assert the writer does not see
   a broken pipe.
@@ -108,6 +117,7 @@ if event == AgentEnd {
 
 let cwd = std::env::temp_dir(); // Drops project-local CLI config.
 let cache_key = agent_id;       // Cross-project cache collision.
+cache.insert(cache_key, value); // Unbounded for the process lifetime.
 ```
 
 #### Correct
@@ -121,4 +131,5 @@ if event == AgentEnd {
 
 let cwd = resolve_effective_cwd(app, conversation_id, project_id)?;
 let cache_key = format!("{agent_id}:{}", cwd.to_string_lossy());
+set_cached(&cache, cache_key, value, CACHE_TTL, CACHE_CAPACITY);
 ```
