@@ -1496,14 +1496,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     return null
   }, [chatView])
 
+  const [settingsExiting, setSettingsExiting] = useState(false)
   const handleSettingsClose = useCallback(() => {
-    setChatView('conversation')
-    syncConversationRoute(currentConversationIdRef.current)
-    void loadSkills()
-    void refreshToolIndicator()
-    const pending = pendingAfterSettingsCloseRef.current
-    pendingAfterSettingsCloseRef.current = null
-    pending?.()
+    // 先播退场下滑动画，动画结束再真正切视图卸载（与 CSS 时长对齐）。
+    setSettingsExiting(true)
+    window.setTimeout(() => {
+      setSettingsExiting(false)
+      setChatView('conversation')
+      syncConversationRoute(currentConversationIdRef.current)
+      void loadSkills()
+      void refreshToolIndicator()
+      const pending = pendingAfterSettingsCloseRef.current
+      pendingAfterSettingsCloseRef.current = null
+      pending?.()
+    }, 150)
   }, [loadSkills, refreshToolIndicator, syncConversationRoute])
 
   // 中心页（技能/MCP/插件/专家）没有自己的返回按钮，离开靠侧栏选会话/新建等任意路径。
@@ -3711,7 +3717,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             />
           </div>
         ) : chatView === 'settings' ? (
-          <div key="settings" className="chat-motion-view-in chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col">
+          <div key="settings" className={`${settingsExiting ? 'chat-motion-settings-out' : 'chat-motion-settings-in'} chat-win-titlebar-safe flex min-h-0 min-w-0 flex-1 flex-col`}>
             <Suspense fallback={null}>
               <SettingsShell
                 ref={settingsRef}

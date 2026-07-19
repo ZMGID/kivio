@@ -1425,6 +1425,43 @@ body {
   }
 }
 
+/* 设置页入场：整页接管窗口时从底部上滑（sheet 感），位移量明显大于通用 view-in。
+   opacity 起点不为 0：全透明阶段的位移是看不见的，起点给 0.35 让滑动过程可感。 */
+.chat-motion-settings-in {
+  animation: chat-motion-settings-in 420ms var(--kv-ease-standard) both;
+  will-change: transform, opacity;
+}
+
+@keyframes chat-motion-settings-in {
+  from {
+    opacity: 0.35;
+    transform: translateY(14%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 设置页退场：下滑淡出。退场要加速曲线（越滑越快），减速曲线会在半途「停住」；
+   时长与 Chat.tsx handleSettingsClose 的卸载延时一致（150ms），终点全透明避免冻帧可见。 */
+.chat-motion-settings-out {
+  animation: chat-motion-settings-out 150ms cubic-bezier(0.4, 0, 1, 1) both;
+  will-change: transform, opacity;
+  pointer-events: none;
+}
+
+@keyframes chat-motion-settings-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10%);
+  }
+}
+
 /* 设置 section 切换入场（对齐 LiveAgent settingsSectionIn / settingsSectionTitleIn）：
    标题与内容各自 key={activeTab} 重播，内容 14px + 轻缩放，标题 8px。 */
 .settings-section-enter {
@@ -1855,6 +1892,8 @@ body {
   .chat-motion-fade-up,
   .chat-motion-bubble-in,
   .chat-motion-view-in,
+  .chat-motion-settings-in,
+  .chat-motion-settings-out,
   .settings-section-enter,
   .settings-section-title-enter,
   .chat-motion-popover,
@@ -2228,7 +2267,9 @@ body {
 }
 
 .settings-embedded-savebar .kv-btn:not(.primary) {
+  min-width: 72px;
   border-radius: 8px;
+  padding: 6px 16px;
 }
 
 /* 模型页：加宽、拉高左侧供应商列表，预设合并在列表内 */

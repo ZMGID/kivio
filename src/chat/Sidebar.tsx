@@ -1058,7 +1058,7 @@ export const Sidebar = memo(function Sidebar({
             {activeTab === 'projects' && (
             <section key="projects" className="chat-motion-tab-in group/projects px-3 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
-                  {visibleProjects.map((project, index) => {
+                  {visibleProjects.map((project) => {
                     const active = selectedProject?.id === project.id
                     const projectConversations = projectConversationMap.get(project.id) ?? []
                     const collapsedProject = collapsedProjectIds.has(project.id)
@@ -1069,14 +1069,11 @@ export const Sidebar = memo(function Sidebar({
                     return (
                       <div key={project.id}>
                         <div
-                          className={`chat-motion-row group flex min-w-0 items-center rounded-lg ${
+                          className={`group flex min-w-0 items-center rounded-lg ${
                             active
                               ? 'bg-black/[0.04] dark:bg-white/[0.08]'
                               : 'hover:bg-black/[0.035] dark:hover:bg-white/[0.06]'
                           }`}
-                          style={{
-                            ['--chat-motion-delay' as string]: `${Math.min(index, 12) * 18}ms`,
-                          }}
                         >
                           <button
                             type="button"
@@ -1202,7 +1199,7 @@ export const Sidebar = memo(function Sidebar({
                       新建一个集（系统提示词 + 默认助手）
                     </button>
                   ) : (
-                    sets.map((set, index) => {
+                    sets.map((set) => {
                       const active = selectedSet?.id === set.id
                       const setConversations = setConversationMap.get(set.id) ?? []
                       const collapsedSet = collapsedSetIds.has(set.id)
@@ -1213,12 +1210,11 @@ export const Sidebar = memo(function Sidebar({
                       return (
                         <div key={set.id}>
                           <div
-                            className={`chat-motion-row group flex min-w-0 items-center rounded-lg ${
+                            className={`group flex min-w-0 items-center rounded-lg ${
                               active
                                 ? 'bg-black/[0.04] dark:bg-white/[0.08]'
                                 : 'hover:bg-black/[0.035] dark:hover:bg-white/[0.06]'
                             }`}
-                            style={{ ['--chat-motion-delay' as string]: `${Math.min(index, 12) * 18}ms` }}
                           >
                             <button
                               type="button"
