@@ -2870,8 +2870,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {activeTab === 'externalAgents' && (
               <ExternalAgentsSettings
                 lang={lang}
-                chatConfig={chatConfig}
-                onChatChange={updateChat}
               />
             )}
 
