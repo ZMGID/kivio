@@ -153,6 +153,10 @@ pub struct AppState {
     /// 设置页每次打开都重探全部 CLI，同时隔离项目级模型配置。force_refresh 时跳过当前 cwd。
     pub external_detected_agents_cache:
         Mutex<HashMap<String, TimedCacheEntry<Vec<crate::external_agents::types::DetectedAgent>>>>,
+    /// single-flight：可用性探测的全局串行锁——并发调用只实跑一次，后到者持锁后复查缓存即命中。
+    pub availability_probe_lock: tokio::sync::Mutex<()>,
+    /// single-flight：按 (agent:cwd) key 的模型探测锁，避免同一目标并发重探。
+    pub model_probe_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     /// Phase 2 持久会话注册表：conversation_id → 活会话（仅持有控制通道，不持有 Child）。
     /// 仅在 get/insert/remove 时短暂持锁，绝不跨 turn await 持锁。
     pub external_live_sessions:
@@ -301,6 +305,8 @@ impl AppState {
             external_slash_commands_cache: Mutex::new(HashMap::new()),
             external_agent_models_cache: Mutex::new(HashMap::new()),
             external_detected_agents_cache: Mutex::new(HashMap::new()),
+            availability_probe_lock: tokio::sync::Mutex::new(()),
+            model_probe_locks: Mutex::new(HashMap::new()),
             external_live_sessions: Mutex::new(HashMap::new()),
             pending_chat_external_sends: Mutex::new(Vec::new()),
             pending_selection: Mutex::new(None),
@@ -674,6 +680,19 @@ impl AppState {
         );
     }
 
+    /// single-flight：取（或创建）某 (agent:cwd) key 的模型探测锁。持锁期间探测，
+    /// 释放后并发者复查缓存即命中，避免同一目标并发重探。
+    pub fn model_probe_lock_for(&self, key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .model_probe_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        locks
+            .entry(key.to_string())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     /// Phase 2: return the control channel of a reusable live session for this conversation
     /// (same agent + cwd, actor still alive). Removes a stale/mismatched entry as a side effect.
     pub fn external_live_session_control(
@@ -920,6 +939,17 @@ mod tests {
         assert!(st
             .get_cached_detected_agents("/project-b", Duration::from_secs(60))
             .is_none());
+    }
+
+    #[test]
+    fn model_probe_lock_is_shared_per_key_and_distinct_across_keys() {
+        let st = test_state();
+        let a1 = st.model_probe_lock_for("claude:/proj");
+        let a2 = st.model_probe_lock_for("claude:/proj");
+        let b = st.model_probe_lock_for("codex:/proj");
+        // 同 key 复用同一把锁（single-flight 生效），不同 key 各自独立。
+        assert!(std::sync::Arc::ptr_eq(&a1, &a2));
+        assert!(!std::sync::Arc::ptr_eq(&a1, &b));
     }
 
     #[test]

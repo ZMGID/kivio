@@ -36,7 +36,6 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
 
   useEffect(() => {
     let active = true
-    setAgents([])
     void chatApi.detectExternalAgents(false, conversationId)
       .then((list) => {
         if (active) setAgents(list)
@@ -192,28 +191,35 @@ function ExternalModelSelectorBase({
 }: ExternalModelSelectorProps) {
   const [open, setOpen] = useState(false)
   const [reasoningOpen, setReasoningOpen] = useState(false)
-  const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
+  // 懒查：只探选中 agent 的模型（cwd-scoped），不再拉全量列表。保留上次结果，不清空闪。
+  const [models, setModels] = useState<DetectedExternalAgent['models']>([])
+  const [reasoningOptions, setReasoningOptions] = useState<
+    NonNullable<DetectedExternalAgent['reasoningOptions']>
+  >([])
 
   useEffect(() => {
+    const agentId = agentRuntime.externalAgentId
+    if (!agentId) {
+      setModels([])
+      setReasoningOptions([])
+      return
+    }
     let active = true
-    setAgents([])
-    void chatApi.detectExternalAgents(false, conversationId)
-      .then((list) => {
-        if (active) setAgents(list)
+    void chatApi
+      .detectExternalAgentModels(agentId, conversationId)
+      .then((result) => {
+        if (!active) return
+        setModels(result.models)
+        setReasoningOptions(result.reasoningOptions)
       })
       .catch(() => {
-        if (active) setAgents([])
+        /* 保留上次结果，不清空 */
       })
     return () => {
       active = false
     }
-  }, [conversationId])
+  }, [agentRuntime.externalAgentId, conversationId])
 
-  const agent = agents.find((item) => item.id === agentRuntime.externalAgentId)
-  // Empty list means the CLI didn't report any models — render an explicit empty state instead
-  // of injecting a synthetic "Default" that the backend normalizes away / ignores anyway.
-  const models = useMemo(() => agent?.models ?? [], [agent])
-  const reasoningOptions = useMemo(() => agent?.reasoningOptions ?? [], [agent])
   const currentReasoning = agentRuntime.externalReasoning ?? 'default'
   const currentReasoningLabel =
     reasoningOptions.find((o) => o.id === currentReasoning)?.label ?? currentReasoning

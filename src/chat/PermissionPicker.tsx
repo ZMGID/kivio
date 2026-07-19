@@ -49,7 +49,6 @@ function PermissionPickerBase({
 
   useEffect(() => {
     let active = true
-    setAgents([])
     void chatApi.detectExternalAgents(false, conversationId)
       .then((list) => {
         if (active) setAgents(list)

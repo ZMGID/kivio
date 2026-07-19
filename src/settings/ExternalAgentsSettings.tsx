@@ -59,7 +59,24 @@ export function ExternalAgentsSettings({
     setScanning(true)
     try {
       const list = await chatApi.detectExternalAgents(force)
-      setAgents(list)
+      setAgents(list) // 先展示可用性（秒回），下面再懒查每个可用 agent 的真实模型并合并。
+      // 设置页需展示每个 agent 的真实模型列表/数量：对 available agent 并行懒查（走缓存+single-flight）。
+      const enriched = await Promise.all(
+        list.map(async (agent) => {
+          if (!agent.available) return agent
+          try {
+            const { models, reasoningOptions } = await chatApi.detectExternalAgentModels(
+              agent.id,
+              null,
+              force,
+            )
+            return { ...agent, models, reasoningOptions }
+          } catch {
+            return agent
+          }
+        }),
+      )
+      setAgents(enriched)
     } catch (err) {
       console.error('[ExternalAgentsSettings] detect failed:', err)
       setAgents([])

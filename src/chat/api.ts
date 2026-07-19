@@ -1434,6 +1434,24 @@ export const chatApi = {
     return result.agents ?? []
   },
 
+  // 懒查：只探选中 agent 的模型（cwd-scoped）。列表阶段不查模型，避免对所有 CLI 跑昂贵探测。
+  async detectExternalAgentModels(
+    agentId: string,
+    conversationId?: string | null,
+    force = false,
+  ): Promise<{
+    models: DetectedExternalAgent['models']
+    reasoningOptions: NonNullable<DetectedExternalAgent['reasoningOptions']>
+  }> {
+    if (!isTauriRuntime()) return { models: [], reasoningOptions: [] }
+    const result = await invoke<{
+      success: boolean
+      models?: DetectedExternalAgent['models']
+      reasoningOptions?: NonNullable<DetectedExternalAgent['reasoningOptions']>
+    }>('chat_detect_external_agent_models', { agentId, conversationId, force })
+    return { models: result.models ?? [], reasoningOptions: result.reasoningOptions ?? [] }
+  },
+
   async listExternalCliSlashCommands(
     agentId: string,
     conversationId?: string | null,

@@ -544,6 +544,7 @@ pub fn run() {
             chat::commands::mutations::chat_regenerate_message,
             chat::commands::mutations::chat_fork_conversation,
             external_agents::commands::chat_detect_external_agents,
+            external_agents::commands::chat_detect_external_agent_models,
             external_agents::commands::chat_list_external_cli_slash_commands,
             external_agents::commands::chat_set_agent_runtime,
             chat::memory::chat_memory_get,

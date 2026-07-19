@@ -13,10 +13,72 @@ use crate::proc::NoConsoleWindow;
 
 pub const EXTERNAL_AGENT_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
 
+/// 可用性缓存与 cwd 无关（binary/version/auth 都不随目录变），用全局常量 key + 长 TTL。
+/// 换会话直接命中，不再重测。手动刷新（force）绕过。
+pub const AVAILABILITY_CACHE_KEY: &str = "__availability__";
+pub const AVAILABILITY_CACHE_TTL: Duration = Duration::from_secs(600);
+
+/// 只探可用性（binary + version + auth），**不跑昂贵的模型探测**（claude 达 25s）。
+/// models 回填 `fallback_models`——列表阶段不展示真实模型，选中后由模型层懒查覆盖。
+pub async fn detect_availability_single(def: &RuntimeAgentDef) -> DetectedAgent {
+    let path = super::spawn::resolve_binary(def).await;
+    let available = path.is_some();
+    let version = if available {
+        probe_version(def, path.as_deref()).await
+    } else {
+        None
+    };
+    let auth_status = if available {
+        probe_auth(def, path.as_deref()).await
+    } else {
+        Some("unavailable".to_string())
+    };
+    DetectedAgent {
+        id: def.id.to_string(),
+        name: def.name.to_string(),
+        available,
+        path: path.map(|p| p.to_string_lossy().into_owned()),
+        version,
+        models: fallback_models_from_pairs(def.fallback_models),
+        reasoning_options: reasoning_options_from_pairs(def.reasoning_options),
+        sandbox_options: sandbox_options_for(def.id),
+        auth_status,
+    }
+}
+
+/// 并发探测所有 CLI 的可用性（cwd 无关）。
+pub async fn detect_availability_all() -> Vec<DetectedAgent> {
+    let handles: Vec<_> = AGENT_DEFS
+        .iter()
+        .map(|def| tokio::spawn(async move { detect_availability_single(def).await }))
+        .collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for handle in handles {
+        if let Ok(agent) = handle.await {
+            out.push(agent);
+        }
+    }
+    out
+}
+
+/// 只探单个 agent 的模型（cwd-scoped），供懒查命令用。返回 (models, reasoning_options)。
+pub async fn detect_agent_models(
+    def: &RuntimeAgentDef,
+    cwd: &Path,
+) -> (Vec<RuntimeModelOption>, Vec<RuntimeModelOption>) {
+    let path = super::spawn::resolve_binary(def).await;
+    let models = if path.is_some() {
+        probe_models(def, path.as_deref(), cwd)
+            .await
+            .unwrap_or_else(|| fallback_models_from_pairs(def.fallback_models))
+    } else {
+        fallback_models_from_pairs(def.fallback_models)
+    };
+    (models, reasoning_options_from_pairs(def.reasoning_options))
+}
+
 pub async fn detect_all_agents(cwd: &Path) -> Vec<DetectedAgent> {
-    // Probe every CLI concurrently — each detection does a binary lookup + version + auth
-    // (5s timeout) + model probe, so serial detection stacked those latencies. Order is
-    // preserved by collecting the join handles in registry order.
+    // 保留：设置页/诊断路径可能需要"一次性全量含模型"。普通列表走 detect_availability_all + 懒查模型。
     let handles: Vec<_> = AGENT_DEFS
         .iter()
         .map(|def| {
