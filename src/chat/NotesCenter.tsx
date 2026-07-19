@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
+  Check,
   ChevronLeft,
   Folder,
+  FolderInput,
   FolderPlus,
   MessageSquare,
   NotebookPen,
@@ -83,6 +85,16 @@ export function NotesCenter() {
   const [tab, setTab] = useState<NotesTab>('recent')
   // 库内当前文件夹：null = 库根（显示文件夹 + 散笔记），字符串 = 进入该文件夹
   const [currentFolder, setCurrentFolder] = useState<string | null>(null)
+  // 文件夹命名弹框：WKWebView 不支持 window.prompt（恒返回 null），故用内联输入。
+  // 输入走非受控 ref，规避中文 IME 合成期受控写回吞字（与编辑器同款处理）。
+  const [folderDialog, setFolderDialog] = useState<
+    | { mode: 'create'; assignNoteId?: string }
+    | { mode: 'rename'; original: string }
+    | null
+  >(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
+  // 卡片「移动到文件夹」菜单：当前展开的笔记 id。
+  const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null)
 
   // 编辑器态：null 表示列表态
   const [editing, setEditing] = useState<Note | null>(null)
@@ -275,32 +287,58 @@ export function NotesCenter() {
   )
 
   /* ===== 文件夹管理（用原生 prompt/confirm，不做自定义弹窗） ===== */
-  const createFolder = useCallback(async () => {
-    const name = window.prompt('新建文件夹名称')?.trim()
-    if (!name) return
-    setError('')
-    try {
-      setFolders(await api.notesFolderCreate(name))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }, [])
-
-  const renameFolder = useCallback(
-    async (name: string) => {
-      const next = window.prompt('重命名文件夹', name)?.trim()
-      if (!next || next === name) return
+  const moveNoteToFolder = useCallback(
+    async (id: string, folder: string) => {
+      setMoveMenuFor(null)
       setError('')
       try {
-        await api.notesFolderRename(name, next)
-        if (currentFolder === name) setCurrentFolder(next)
+        const note = await api.notesRead(id)
+        if (note.folder === folder) return
+        await api.notesUpdate(id, note.title, note.content, folder)
         await loadNotes()
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       }
     },
-    [currentFolder, loadNotes],
+    [loadNotes],
   )
+
+  const createFolder = useCallback(() => {
+    setFolderDialog({ mode: 'create' })
+  }, [])
+
+  const renameFolder = useCallback((name: string) => {
+    setFolderDialog({ mode: 'rename', original: name })
+  }, [])
+
+  const submitFolderDialog = useCallback(async () => {
+    if (!folderDialog) return
+    const name = (folderInputRef.current?.value ?? '').trim()
+    if (!name) return
+    if (folderDialog.mode === 'rename' && name === folderDialog.original) {
+      setFolderDialog(null)
+      return
+    }
+    setError('')
+    try {
+      if (folderDialog.mode === 'create') {
+        setFolders(await api.notesFolderCreate(name))
+        // 若来自卡片「新建文件夹并移入」，创建后把该笔记归入新文件夹。
+        if (folderDialog.assignNoteId) {
+          const note = await api.notesRead(folderDialog.assignNoteId)
+          await api.notesUpdate(note.id, note.title, note.content, name)
+          await loadNotes()
+        }
+      } else {
+        await api.notesFolderRename(folderDialog.original, name)
+        if (currentFolder === folderDialog.original) setCurrentFolder(name)
+        await loadNotes()
+      }
+      setFolderDialog(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [folderDialog, currentFolder, loadNotes])
 
   const deleteFolder = useCallback(
     async (name: string) => {
@@ -365,35 +403,14 @@ export function NotesCenter() {
             更新于 {formatDateTime(editing.updatedAt)} · {charCount} 字
           </p>
 
-          <div className="mt-2.5 flex shrink-0 items-center gap-1.5">
-            {isChat ? (
+          {isChat && (
+            <div className="mt-2.5 flex shrink-0 items-center gap-1.5">
               <span className="inline-flex items-center gap-1.5 rounded-md bg-neutral-100/70 px-2 py-0.5 text-[12.5px] text-neutral-500 dark:bg-neutral-800/60 dark:text-neutral-400">
                 <MessageSquare size={13} />
                 来自对话
               </span>
-            ) : (
-              <>
-                <Folder size={13} className="text-neutral-400 dark:text-neutral-500" />
-                <input
-                  key={`folder-${editing.id}`}
-                  type="text"
-                  list="note-folder-list"
-                  defaultValue={editing.folder}
-                  onChange={(e) => {
-                    folderRef.current = e.target.value
-                    scheduleSave()
-                  }}
-                  placeholder="库根目录"
-                  className="w-44 rounded-md bg-neutral-100/70 px-2 py-0.5 text-[12.5px] text-neutral-600 placeholder:text-neutral-400 focus:bg-neutral-100 focus:outline-none dark:bg-neutral-800/60 dark:text-neutral-300 dark:focus:bg-neutral-800"
-                />
-                <datalist id="note-folder-list">
-                  {folders.map((f) => (
-                    <option key={f} value={f} />
-                  ))}
-                </datalist>
-              </>
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="custom-scrollbar mt-3 min-h-0 flex-1 overflow-y-auto">
             <MilkdownNoteEditor
@@ -641,18 +658,81 @@ export function NotesCenter() {
                           <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-50">
                             {displayTitle(note.title)}
                           </h3>
-                          <IconButton
-                            size="xs"
-                            variant="ghost"
-                            label="删除笔记"
-                            className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              void deleteNote(note.id)
-                            }}
-                          >
-                            <Trash2 size={13} />
-                          </IconButton>
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            <div className="relative">
+                              <IconButton
+                                size="xs"
+                                variant="ghost"
+                                label="移动到文件夹"
+                                className={`transition-opacity ${moveMenuFor === note.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setMoveMenuFor((prev) => (prev === note.id ? null : note.id))
+                                }}
+                              >
+                                <FolderInput size={13} />
+                              </IconButton>
+                              {moveMenuFor === note.id && (
+                                <>
+                                  <div
+                                    className="fixed inset-0 z-40"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setMoveMenuFor(null)
+                                    }}
+                                  />
+                                  <div
+                                    className="absolute right-0 z-50 mt-1 max-h-64 w-44 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-neutral-700 hover:bg-black/[0.05] dark:text-neutral-300 dark:hover:bg-white/[0.08]"
+                                      onClick={() => void moveNoteToFolder(note.id, '')}
+                                    >
+                                      {note.folder.trim() === '' && <Check size={12} className="text-[#C56646]" />}
+                                      <span className={note.folder.trim() === '' ? '' : 'ml-[18px]'}>库根目录</span>
+                                    </button>
+                                    {folders.map((f) => (
+                                      <button
+                                        key={f}
+                                        type="button"
+                                        className="flex w-full items-center gap-2 truncate px-3 py-1.5 text-left text-[12.5px] text-neutral-700 hover:bg-black/[0.05] dark:text-neutral-300 dark:hover:bg-white/[0.08]"
+                                        onClick={() => void moveNoteToFolder(note.id, f)}
+                                      >
+                                        {note.folder.trim() === f && <Check size={12} className="text-[#C56646]" />}
+                                        <span className={`truncate ${note.folder.trim() === f ? '' : 'ml-[18px]'}`}>{f}</span>
+                                      </button>
+                                    ))}
+                                    <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />
+                                    <button
+                                      type="button"
+                                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-neutral-600 hover:bg-black/[0.05] dark:text-neutral-400 dark:hover:bg-white/[0.08]"
+                                      onClick={() => {
+                                        setMoveMenuFor(null)
+                                        setFolderDialog({ mode: 'create', assignNoteId: note.id })
+                                      }}
+                                    >
+                                      <FolderPlus size={12} />
+                                      新建文件夹…
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                            <IconButton
+                              size="xs"
+                              variant="ghost"
+                              label="删除笔记"
+                              className={`transition-opacity ${moveMenuFor === note.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void deleteNote(note.id)
+                              }}
+                            >
+                              <Trash2 size={13} />
+                            </IconButton>
+                          </div>
                         </div>
                         <p className="line-clamp-3 min-w-0 flex-1 text-[13px] leading-relaxed text-neutral-500 dark:text-neutral-400">
                           {note.preview || <span className="text-neutral-300 dark:text-neutral-600">无内容</span>}
@@ -684,6 +764,44 @@ export function NotesCenter() {
           )}
         </div>
       </main>
+
+      {folderDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4"
+          onMouseDown={() => setFolderDialog(null)}
+        >
+          <div
+            className="w-full max-w-xs rounded-xl border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+              {folderDialog.mode === 'create' ? '新建文件夹' : '重命名文件夹'}
+            </h3>
+            <input
+              ref={folderInputRef}
+              autoFocus
+              defaultValue={folderDialog.mode === 'rename' ? folderDialog.original : ''}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void submitFolderDialog()
+                }
+                if (e.key === 'Escape') setFolderDialog(null)
+              }}
+              placeholder="文件夹名称"
+              className="mt-3 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-[13px] text-neutral-900 outline-none focus:border-[#C56646] dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setFolderDialog(null)}>
+                取消
+              </Button>
+              <Button size="sm" onClick={() => void submitFolderDialog()}>
+                确定
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
