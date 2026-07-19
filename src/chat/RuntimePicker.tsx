@@ -265,7 +265,7 @@ function ExternalModelSelectorBase({
                       onModelChange(model.id)
                       setOpen(false)
                     }}
-                    className={`block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
+                    className={`block w-full px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800 ${
                       agentRuntime.externalModel === model.id ? 'font-semibold' : ''
                     }`}
                   >

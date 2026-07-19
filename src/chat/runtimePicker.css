@@ -55,6 +55,11 @@
   object-fit: contain;
 }
 
+/* logo-mark.png 是纯黑单色 mark，暗色下黑贴黑不可见 → 反色成白。 */
+.dark .kv-runtime-picker__builtin-logo {
+  filter: invert(1);
+}
+
 .kv-runtime-picker__popover {
   position: absolute;
   top: calc(100% + 8px);
