@@ -2137,9 +2137,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
             {/* ===== 快捷键标签页：集中所有全局热键 ===== */}
             {activeTab === 'hotkeys' && (
-              <SettingsGroup title={t.tabHotkeys}>
-                <SettingRow label={t.tabTranslate} stack>
+              <SettingsGroup title={t.tabHotkeys} className="kv-hotkey-list">
+                <SettingRow label={t.tabTranslate}>
                   <HotkeyInput
+                    inline
                     value={settings.hotkey}
                     placeholder={t.hotkeyPlaceholder}
                     recording={recordingTarget === 'main'}
@@ -2152,8 +2153,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     error={conflictMessageFor('main')}
                   />
                 </SettingRow>
-                <SettingRow label={t.chatHotkeyLabel} stack>
+                <SettingRow label={t.chatHotkeyLabel}>
                   <HotkeyInput
+                    inline
                     value={settings.chatHotkey}
                     placeholder={t.hotkeyPlaceholder}
                     recording={recordingTarget === 'chat'}
@@ -2166,8 +2168,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     error={conflictMessageFor('chat')}
                   />
                 </SettingRow>
-                <SettingRow label={t.screenshotHotkey} stack>
+                <SettingRow label={t.screenshotHotkey}>
                   <HotkeyInput
+                    inline
                     value={settings.screenshotTranslation?.hotkey ?? ''}
                     placeholder="CommandOrControl+Shift+A"
                     recording={recordingTarget === 'screenshotTranslation'}
@@ -2180,8 +2183,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     error={conflictMessageFor('screenshotTranslation')}
                   />
                 </SettingRow>
-                <SettingRow label={t.screenshotTextHotkey} stack>
+                <SettingRow label={t.screenshotTextHotkey}>
                   <HotkeyInput
+                    inline
                     value={settings.screenshotTranslation?.textHotkey ?? ''}
                     placeholder="CommandOrControl+Shift+T"
                     recording={recordingTarget === 'screenshotTranslationText'}
@@ -2194,8 +2198,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     error={conflictMessageFor('screenshotTranslationText')}
                   />
                 </SettingRow>
-                <SettingRow label={t.replaceTranslateHotkey} stack>
+                <SettingRow label={t.replaceTranslateHotkey}>
                   <HotkeyInput
+                    inline
                     value={settings.screenshotTranslation?.replaceHotkey ?? ''}
                     placeholder="CommandOrControl+Shift+R"
                     recording={recordingTarget === 'screenshotTranslationReplace'}
@@ -2208,8 +2213,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     error={conflictMessageFor('screenshotTranslationReplace')}
                   />
                 </SettingRow>
-                <SettingRow label={t.lensTabLabel} stack>
+                <SettingRow label={t.lensTabLabel}>
                   <HotkeyInput
+                    inline
                     value={settings.lens?.hotkey ?? ''}
                     placeholder="CommandOrControl+Shift+G"
                     recording={recordingTarget === 'lens'}

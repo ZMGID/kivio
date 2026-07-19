@@ -407,6 +407,7 @@ export function HotkeyInput({
   onClear,
   clearLabel,
   error,
+  inline = false,
 }: {
   value: string
   placeholder: string
@@ -418,13 +419,14 @@ export function HotkeyInput({
   onClear?: () => void
   clearLabel?: string
   error?: string
+  inline?: boolean
 }) {
   const showClear = !!onClear && !!value && !recording
   return (
-    <div className="space-y-1">
+    <div className={`space-y-1 ${inline ? 'flex flex-col items-end' : ''}`}>
       <div className="flex items-center gap-2">
         <div
-          className={`kv-hotkey flex-1 ${recording ? 'recording' : ''} ${error ? 'error' : ''}`}
+          className={`kv-hotkey ${inline ? '' : 'flex-1'} ${recording ? 'recording' : ''} ${error ? 'error' : ''}`}
         >
           {recording ? (
             <span className="kv-hotkey-record-label animate-pulse">{recordingPlaceholder}</span>

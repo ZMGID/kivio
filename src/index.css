@@ -2429,6 +2429,21 @@ body {
   .settings-embedded-nav-item > span:not(.settings-embedded-nav-icon) {
     display: none;
   }
+
+  /* 窄栏（52px 图标轨）里「返回对话」也收成纯图标居中，否则文字被挤成竖排。tooltip 保留标签。 */
+  .settings-embedded-back {
+    align-self: stretch;
+    justify-content: center;
+    gap: 0;
+    margin-left: 4px;
+    margin-right: 4px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .settings-embedded-back > span {
+    display: none;
+  }
 }
 
 @container settings-shell (max-width: 720px) {
@@ -3267,6 +3282,10 @@ body {
   font-size: 11.5px;
   color: var(--accent);
   font-weight: 500;
+}
+/* 快捷键列表：紧凑两栏 + 行间细分隔线 */
+.kv-hotkey-list .kv-row + .kv-row {
+  border-top: 1px solid var(--border-subtle);
 }
 
 .kv-btn {
