@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { api, isTauriRuntime } from './api/tauri'
 import { getSettingsCached } from './api/settingsCache'
 import { i18n, type Lang } from './settings/i18n'
@@ -264,7 +265,9 @@ function App() {
     const root = document.documentElement
     if (isChatPath(hashPath())) {
       const scale = Math.min(1.4, Math.max(0.8, settings.uiFontScale ?? 1))
-      root.style.setProperty('zoom', String(scale))
+      // 用原生 webview 缩放（等同浏览器 Cmd+加号），而非 CSS zoom —— CSS zoom 会打乱
+      // 聊天消息列表 virtua 虚拟滚动的 scrollTop/scrollHeight 几何量，导致流式生成时跟随钉底失效。
+      if (isTauriRuntime()) void getCurrentWebview().setZoom(scale).catch(() => {})
       const family = (settings.uiFontFamily ?? '').trim()
       // 默认字体栈与 index.css 的 --font-sans 保持一致；自定义字体拼到最前，缺失时回退系统字体。
       root.style.setProperty(

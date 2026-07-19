@@ -19,6 +19,7 @@ import {
 } from './messageNavigator'
 import { useStreamCoarse, useStreamSnapshot } from './streamingStore'
 import { getActiveGroup, useGroupsVersion } from './groupStreamingStore'
+import { useScrollFollow } from './scroll/useScrollFollow'
 import { prefersReducedMotion } from './utils'
 import type { Lang } from '../settings/i18n'
 
@@ -52,8 +53,6 @@ interface MessageListProps {
 }
 
 const LIST_EDGE_PADDING_PX = 16
-const BOTTOM_LEAVE_THRESHOLD_PX = 32
-const BOTTOM_REENTER_THRESHOLD_PX = 16
 
 // 列表里每一项的统一形态。整条会话全量喂给虚拟列表（消息都在内存，virtua 只渲可见项），
 // 屏外的气泡连同其 KaTeX host / Markdown / 图片 DOM 真正从 DOM 卸载。
@@ -68,18 +67,6 @@ type RenderItem =
   | { kind: 'compaction-divider'; key: string; boundary: CompactionBoundaryView; animate: boolean }
   | { kind: 'compaction-summary'; key: string; boundary: CompactionBoundaryView }
   | { kind: 'compaction-progress'; key: string; afterIndex: number }
-
-type RenderSlot =
-  | { kind: 'history'; item: RenderItem }
-  | { kind: 'dynamic' }
-  | { kind: 'error' }
-  | { kind: 'bottom' }
-
-const BOTTOM_SPACER_ITEM: RenderItem = {
-  kind: 'spacer',
-  key: 'padding-bottom',
-  size: LIST_EDGE_PADDING_PX,
-}
 
 // R8（多模型一问多答）：多答组的「本次所发模型」列表，渲染在该组对应 user 消息顶部。
 type GroupModelLabel = { providerId: string | null; model: string | null }
@@ -106,8 +93,8 @@ function MessageListBase({
   // 流式预览状态直接订阅 streamingStore——只有本组件随每帧内容重渲，Chat/侧栏/输入栏不动。
   const coarse = useStreamCoarse()
   const snapshot = useStreamSnapshot()
-  // 多答组实时流：订阅 group store 版本号，活跃组列内容更新时驱动重渲。
-  const groupsVersion = useGroupsVersion()
+  // 多答组实时流：订阅 group store 版本号，活跃组列内容更新时驱动重渲（仅需订阅，值本身不用）。
+  useGroupsVersion()
   const liveGroup = conversationId ? getActiveGroup(conversationId) : undefined
   // Group column objects are mutated in place for every stream delta. Only model
   // identity changes should rebuild historical rows; content deltas stay in the
@@ -142,26 +129,30 @@ function MessageListBase({
   const streamingToolCalls = snapshot.toolCalls
   const streamingSegments = snapshot.segments
 
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const virtualizerRef = useRef<VirtualizerHandle>(null)
-  // 用户是否“贴在底部”——决定流式生成时是否跟随钉底。默认 true（初次渲染贴底）
-  const stickToBottomRef = useRef(true)
+  // hook 需要通过 state 拿到元素以便重新绑定监听；virtua 需要 RefObject。回调 ref 同时喂两者。
+  const [viewportEl, setViewportEl] = useState<HTMLDivElement | null>(null)
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
+  const setScrollEl = useCallback((el: HTMLDivElement | null) => {
+    scrollRef.current = el
+    setViewportEl(el)
+  }, [])
   const prevMessageCountRef = useRef(0)
-  // 是否贴在底部——驱动「回到底部」按钮的显隐（ref 不触发渲染，故另用 state）
-  const atBottomRef = useRef(true)
-  const [atBottom, setAtBottom] = useState(true)
   const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null)
   const [visibleNavigatorNodeIds, setVisibleNavigatorNodeIds] = useState<string[]>([])
-  const lastScrollOffsetRef = useRef(0)
   const navigatorNodesRef = useRef<MessageNavigatorNode[]>([])
   const activeNavigatorNodeIdRef = useRef<string | null>(null)
   const visibleNavigatorNodeIdsRef = useRef<string[]>([])
 
-  const updateAtBottom = useCallback((next: boolean) => {
-    if (atBottomRef.current === next) return
-    atBottomRef.current = next
-    setAtBottom(next)
-  }, [])
+  // 底部跟随：ResizeObserver 驱动钉底 + 只在明确用户手势时解除（见 scroll/scrollFollowCore）。
+  // 流式气泡渲染在虚拟列表「之外」（正常流式 DOM，见下方），故钉底用默认 scrollTop=scrollHeight
+  // 即精确，不会因 virtua 对增长中那条消息的估算→测量校正而闪动。
+  const { handle: followHandle, following } = useScrollFollow({
+    viewport: viewportEl,
+    content: contentEl,
+    trackKeys: true,
+  })
 
   const legacyPlanMessageId = useMemo(() => {
     const legacyPlan = agentPlanState?.plan?.trim()
@@ -370,12 +361,8 @@ function MessageListBase({
   // Virtua's `data + render function` path avoids flattening an O(N) React
   // children tree every frame. Three fixed tail slot kinds resolve their current
   // payload in the render callback; the data array changes only with history.
-  const renderSlots = useMemo<RenderSlot[]>(() => [
-    ...historyItems.map((item): RenderSlot => ({ kind: 'history', item })),
-    { kind: 'dynamic' },
-    { kind: 'error' },
-    { kind: 'bottom' },
-  ], [historyItems])
+  // 只有历史项进虚拟列表。流式气泡/错误/底部留白渲染在虚拟列表之外（正常流式 DOM），
+  // 这样增长中的那条消息按真实高度测量，钉底精确、不闪。
 
   const navigatorNodes = useMemo(() => {
     const renderIndexByKey = new Map(historyItems.map((item, index) => [item.key, index]))
@@ -403,14 +390,14 @@ function MessageListBase({
   const navigateToNavigatorNode = useCallback((node: MessageNavigatorNode) => {
     const handle = virtualizerRef.current
     if (!handle) return
-    stickToBottomRef.current = false
-    updateAtBottom(false)
+    // 跳到上方消息：先脱离跟随，否则跟随纠正器会把视口又钉回底部。
+    followHandle.releaseFollow()
     updateActiveNavigatorNode(node.id)
     handle.scrollToIndex(node.targetRenderIndex, {
       align: 'start',
       smooth: !prefersReducedMotion(),
     })
-  }, [updateActiveNavigatorNode, updateAtBottom])
+  }, [followHandle, updateActiveNavigatorNode])
 
   const handleNavigatorStep = useCallback((direction: -1 | 1) => {
     const nodes = navigatorNodesRef.current
@@ -421,77 +408,17 @@ function MessageListBase({
     navigateToNavigatorNode(nodes[nextIndex])
   }, [navigateToNavigatorNode])
 
-  const scrollToBottom = useCallback((smooth = false) => {
-    const index = renderSlots.length - 1
-    if (index < 0) return
-    const handle = virtualizerRef.current
-    if (handle) {
-      handle.scrollToIndex(index, {
-        align: 'end',
-        smooth: smooth && !prefersReducedMotion(),
-      })
-      lastScrollOffsetRef.current = handle.scrollOffset
-      return
-    }
-
-    const el = scrollRef.current
-    if (!el) return
-    if (smooth && !prefersReducedMotion()) { el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); return }
-    el.scrollTop = el.scrollHeight
-    lastScrollOffsetRef.current = el.scrollTop
-  }, [renderSlots.length])
-
-  const scrollFrameRef = useRef<number | null>(null)
-  const pendingSmoothScrollRef = useRef(false)
-  const scheduleScrollToBottom = useCallback((smooth = false) => {
-    pendingSmoothScrollRef.current ||= smooth
-    if (scrollFrameRef.current != null) return
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null
-      const shouldSmooth = pendingSmoothScrollRef.current
-      pendingSmoothScrollRef.current = false
-      if (stickToBottomRef.current) scrollToBottom(shouldSmooth)
-    })
-  }, [scrollToBottom])
-
-  useLayoutEffect(() => () => {
-    if (scrollFrameRef.current != null) cancelAnimationFrame(scrollFrameRef.current)
-  }, [])
-
   const handleJumpToBottom = useCallback(() => {
-    stickToBottomRef.current = true
-    updateAtBottom(true)
-    scheduleScrollToBottom(true)
-  }, [scheduleScrollToBottom, updateAtBottom])
+    followHandle.jumpToBottom()
+  }, [followHandle])
 
-  // 滚轮向上 = 明确的离开底部意图，立即解除跟随。按钮显隐仍只由实际滚动几何决定，
-  // 避免在底部阈值内 wheel 先显示、scroll 又隐藏，造成一帧闪烁和重复重渲。
-  const handleWheel = (e: React.WheelEvent) => {
-    if (e.deltaY < 0) {
-      stickToBottomRef.current = false
-    }
-  }
-
-  // 滚动监听：用 virtua 的 scroll geometry 判断贴底/离开底部。
+  // 滚动监听：只更新消息导航器的可见/激活项。跟随钉底由 useScrollFollow 独立处理，不在此判断。
   const handleScroll = useCallback((nextOffset: number) => {
     const el = scrollRef.current
     const handle = virtualizerRef.current
     const offset = handle?.scrollOffset ?? nextOffset
     const scrollSize = handle?.scrollSize ?? el?.scrollHeight ?? 0
     const viewportSize = handle?.viewportSize ?? el?.clientHeight ?? 0
-    const bottomDistance = scrollSize - offset - viewportSize
-    // 离开底部仍沿用 32px；重新进入用更小的 16px，防止 virtua 测量抖动时
-    // 在同一个临界值附近反复挂载/卸载按钮。
-    const bottom = atBottomRef.current
-      ? bottomDistance <= BOTTOM_LEAVE_THRESHOLD_PX
-      : bottomDistance <= BOTTOM_REENTER_THRESHOLD_PX
-    if (offset < lastScrollOffsetRef.current - 1) {
-      stickToBottomRef.current = false
-    } else if (bottom) {
-      stickToBottomRef.current = true
-    }
-    lastScrollOffsetRef.current = offset
-    updateAtBottom(bottom)
 
     if (handle) {
       const readingOffset = Math.min(
@@ -512,43 +439,24 @@ function MessageListBase({
         lastVisibleIndex,
       ))
     }
-  }, [updateActiveNavigatorNode, updateAtBottom, updateVisibleNavigatorNodes])
+  }, [updateActiveNavigatorNode, updateVisibleNavigatorNodes])
 
-  // 切换会话：重置跟随并瞬间定位到底部
+  // 切换会话：重置跟随并瞬间定位到底部（ResizeObserver 首次投递也会兜底钉一次）。
   useLayoutEffect(() => {
-    stickToBottomRef.current = true
-    updateAtBottom(true)
+    followHandle.stickToBottom()
     const lastNode = navigatorNodesRef.current[navigatorNodesRef.current.length - 1]
     updateActiveNavigatorNode(lastNode?.id ?? null)
     updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
-    // 等虚拟列表用最新 items 渲染后再对齐底部
-    scheduleScrollToBottom()
-    // 仅在 conversationId 变化时重置；scheduleScrollToBottom 依赖项数，故不列入依赖避免误触发
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, updateActiveNavigatorNode, updateAtBottom, updateVisibleNavigatorNodes])
+  }, [conversationId, followHandle, updateActiveNavigatorNode, updateVisibleNavigatorNodes])
 
   // 自己发出新消息时强制回到底部（即使刚才正往上翻历史）
   useLayoutEffect(() => {
     const count = messages.length
     if (count > prevMessageCountRef.current && messages[count - 1]?.role === 'user') {
-      stickToBottomRef.current = true
-      updateAtBottom(true)
+      followHandle.stickToBottom()
     }
     prevMessageCountRef.current = count
-  }, [messages, updateAtBottom])
-
-  // 仅在“贴底”时随内容增长钉住底部。virtua 内置 ResizeObserver 会在变高（KaTeX/图片
-  // mount 后撑高）时重测，这里在每次内容/项数变化后重新对齐末尾，保证持续钉底。
-  useLayoutEffect(() => {
-    if (!stickToBottomRef.current) return
-    scheduleScrollToBottom()
-  }, [
-    renderSlots,
-    dynamicItem,
-    errorItem,
-    groupsVersion,
-    scheduleScrollToBottom,
-  ])
+  }, [messages, followHandle])
 
   const renderItem = useCallback(
     (item: RenderItem) => {
@@ -683,15 +591,7 @@ function MessageListBase({
     ],
   )
 
-  const renderSlot = useCallback((slot: RenderSlot) => {
-    const item = slot.kind === 'history'
-      ? slot.item
-      : slot.kind === 'dynamic'
-        ? dynamicItem
-        : slot.kind === 'error'
-          ? errorItem
-          : BOTTOM_SPACER_ITEM
-    if (!item) return <div aria-hidden="true" />
+  const renderHistoryRow = useCallback((item: RenderItem) => {
     return (
       <div
         className={item.kind === 'spacer' ? undefined : 'pb-0.5'}
@@ -700,7 +600,7 @@ function MessageListBase({
         {renderItem(item)}
       </div>
     )
-  }, [dynamicItem, errorItem, renderItem])
+  }, [renderItem])
 
   return (
     <div className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= 4 ? 'has-message-navigator' : ''}`}>
@@ -714,22 +614,33 @@ function MessageListBase({
         />
       )}
       <div
-        ref={scrollRef}
-        onWheel={handleWheel}
+        ref={setScrollEl}
         className="chat-motion-view-in custom-scrollbar flex-1 overflow-y-auto"
       >
-        <div className="chat-message-list-inner mx-auto w-full max-w-4xl px-6">
+        <div ref={setContentEl} className="chat-message-list-inner mx-auto w-full max-w-4xl px-6">
           <Virtualizer
             ref={virtualizerRef}
             scrollRef={scrollRef}
             onScroll={handleScroll}
-            data={renderSlots}
+            data={historyItems}
           >
-            {renderSlot}
+            {renderHistoryRow}
           </Virtualizer>
+          {/* 流式气泡/错误/底部留白在虚拟列表之外正常流式渲染，保证钉底不闪 */}
+          {dynamicItem && (
+            <div className="pb-0.5" data-chat-message-list-item={dynamicItem.kind}>
+              {renderItem(dynamicItem)}
+            </div>
+          )}
+          {errorItem && (
+            <div className="pb-0.5" data-chat-message-list-item={errorItem.kind}>
+              {renderItem(errorItem)}
+            </div>
+          )}
+          <div aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
         </div>
       </div>
-      {!atBottom && (
+      {!following && (
         <button
           type="button"
           onClick={handleJumpToBottom}
