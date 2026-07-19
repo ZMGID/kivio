@@ -5,6 +5,8 @@ import type { AgentPlanState, ChatMessage, ConversationContextState } from './ty
 import { MessageBubble } from './MessageBubble'
 import { MessageGroup } from './MessageGroup'
 import { MessageNavigator } from './ChatMessageNavigator'
+import { MessageContextMenu, type MessageMenuAnchor } from './MessageContextMenu'
+import { copyToClipboard } from '../utils/clipboard'
 import { CompactionDivider } from './CompactionDivider'
 import { CompactionInProgress } from './CompactionInProgress'
 import { CompactionSummaryPanel } from './CompactionSummaryPanel'
@@ -144,6 +146,10 @@ function MessageListBase({
   const navigatorNodesRef = useRef<MessageNavigatorNode[]>([])
   const activeNavigatorNodeIdRef = useRef<string | null>(null)
   const visibleNavigatorNodeIdsRef = useRef<string[]>([])
+  // 消息区内置右键菜单（原生菜单被全局屏蔽，见 main.tsx）。
+  const [msgMenu, setMsgMenu] = useState<
+    { anchor: MessageMenuAnchor; selectionText: string; messageText: string | null } | null
+  >(null)
 
   // 底部跟随：ResizeObserver 驱动钉底 + 只在明确用户手势时解除（见 scroll/scrollFollowCore）。
   // 流式气泡渲染在虚拟列表「之外」（正常流式 DOM，见下方），故钉底用默认 scrollTop=scrollHeight
@@ -441,6 +447,26 @@ function MessageListBase({
     }
   }, [updateActiveNavigatorNode, updateVisibleNavigatorNodes])
 
+  // 消息区右键：读取当前选中文本 + 命中的消息，弹内置菜单。两者都空则不弹（放行给全局屏蔽）。
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    const selectionText = (window.getSelection()?.toString() ?? '').trim()
+    const targetEl = (e.target as Element | null)?.closest?.('[data-message-id]') as HTMLElement | null
+    const id = targetEl?.dataset.messageId ?? null
+    let messageText: string | null = null
+    if (id === 'streaming-assistant') {
+      messageText = streamingContent.trim() || null
+    } else if (id) {
+      messageText = messages.find((m) => m.id === id)?.content?.trim() || null
+    }
+    if (!selectionText && !messageText) return
+    e.preventDefault()
+    const left = Math.min(e.clientX, window.innerWidth - 184)
+    const top = Math.min(e.clientY, window.innerHeight - 96)
+    setMsgMenu({ anchor: { left, top }, selectionText, messageText })
+  }, [messages, streamingContent])
+
+  const closeMsgMenu = useCallback(() => setMsgMenu(null), [])
+
   // 切换会话：重置跟随并瞬间定位到底部（ResizeObserver 首次投递也会兜底钉一次）。
   useLayoutEffect(() => {
     followHandle.stickToBottom()
@@ -592,10 +618,12 @@ function MessageListBase({
   )
 
   const renderHistoryRow = useCallback((item: RenderItem) => {
+    const messageId = item.kind === 'message' ? item.message.id : undefined
     return (
       <div
         className={item.kind === 'spacer' ? undefined : 'pb-0.5'}
         data-chat-message-list-item={item.kind}
+        data-message-id={messageId}
       >
         {renderItem(item)}
       </div>
@@ -615,6 +643,7 @@ function MessageListBase({
       )}
       <div
         ref={setScrollEl}
+        onContextMenu={handleContextMenu}
         className="chat-motion-view-in custom-scrollbar flex-1 overflow-y-auto"
       >
         <div ref={setContentEl} className="chat-message-list-inner mx-auto w-full max-w-4xl px-6">
@@ -628,7 +657,7 @@ function MessageListBase({
           </Virtualizer>
           {/* 流式气泡/错误/底部留白在虚拟列表之外正常流式渲染，保证钉底不闪 */}
           {dynamicItem && (
-            <div className="pb-0.5" data-chat-message-list-item={dynamicItem.kind}>
+            <div className="pb-0.5" data-chat-message-list-item={dynamicItem.kind} data-message-id="streaming-assistant">
               {renderItem(dynamicItem)}
             </div>
           )}
@@ -650,6 +679,16 @@ function MessageListBase({
         >
           <ChevronDown size={18} strokeWidth={2} />
         </button>
+      )}
+      {msgMenu && (
+        <MessageContextMenu
+          anchor={msgMenu.anchor}
+          hasSelection={msgMenu.selectionText.length > 0}
+          canCopyMessage={msgMenu.messageText != null}
+          onCopySelection={() => void copyToClipboard(msgMenu.selectionText)}
+          onCopyMessage={() => msgMenu.messageText && void copyToClipboard(msgMenu.messageText)}
+          onClose={closeMsgMenu}
+        />
       )}
     </div>
   )
