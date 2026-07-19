@@ -379,3 +379,36 @@ Fixed Pi RPC shutdown EPIPE, added project-scoped OpenCode native model discover
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Resource lifecycle and performance hardening
+
+**Date**: 2026-07-19
+**Task**: Resource lifecycle and performance hardening
+**Branch**: `main`
+
+### Summary
+
+Fixed child, Worker, OCR helper, Preview server, cache, knowledge-base lock, MessageList streaming, and MCP warmup lifecycle issues; added regression coverage and executable Trellis specs; all frontend, Rust, and Swift gates passed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `48e6f3a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 11
-- **Last Active**: 2026-07-17
+- **Total Sessions**: 12
+- **Last Active**: 2026-07-19
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~381 | Active |
+| `journal-1.md` | ~414 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 12 | 2026-07-19 | Resource lifecycle and performance hardening | `48e6f3a` | `main` |
 | 11 | 2026-07-17 | 发布 Kivio Desktop v2.8.0 | `c02be5e` | `main` |
 | 10 | 2026-07-17 | Fix external agent integration issues | `13055fa`, `6edb78c`, `dfdfd96` | `codex/fix-external-agent-issues` |
 | 9 | 2026-07-17 | Optional model temperature and metadata refresh | `54d17e1` | `main` |
