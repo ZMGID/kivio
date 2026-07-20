@@ -1158,6 +1158,31 @@ pub fn email_accounts_system_prompt(
 }
 
 /**
+ * 独立截图标注功能配置（截图 → 箭头/矩形/马赛克标注 → 复制/保存）
+ */
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ScreenshotAnnotateConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_screenshot_annotate_hotkey")]
+    pub hotkey: String,
+}
+
+fn default_screenshot_annotate_hotkey() -> String {
+    "CommandOrControl+Shift+S".to_string()
+}
+
+impl Default for ScreenshotAnnotateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hotkey: default_screenshot_annotate_hotkey(),
+        }
+    }
+}
+
+/**
  * 应用完整设置
  */
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1203,6 +1228,8 @@ pub struct Settings {
     pub providers: Vec<ModelProvider>,
     #[serde(default)]
     pub screenshot_translation: ScreenshotTranslationConfig,
+    #[serde(default)]
+    pub screenshot_annotate: ScreenshotAnnotateConfig,
     #[serde(default, alias = "cowork")]
     pub lens: LensConfig,
     #[serde(default)]
@@ -1370,6 +1397,7 @@ impl Default for Settings {
             translator_prompt: None,
             providers: vec![],
             screenshot_translation: ScreenshotTranslationConfig::default(),
+            screenshot_annotate: ScreenshotAnnotateConfig::default(),
             lens: LensConfig::default(),
             chat: ChatConfig::default(),
             chat_memory: ChatMemoryConfig::default(),
@@ -1887,6 +1915,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.screenshot_translation.replace_hotkey =
         normalize_hotkey(&settings.screenshot_translation.replace_hotkey);
     settings.lens.hotkey = normalize_hotkey(&settings.lens.hotkey);
+    settings.screenshot_annotate.hotkey = normalize_hotkey(&settings.screenshot_annotate.hotkey);
 
     // 规范化提示词（去除首尾空白，空值转为 None）
     settings.translator_prompt = normalize_optional_prompt(settings.translator_prompt.take());

@@ -924,6 +924,11 @@ export type Settings = {
     /** 替换翻译自定义提示词（仅翻译规则，JSON 输出契约固定）。空 → 内置替换模板 */
     replacePrompt?: string
   }
+  /** 独立截图标注（截图 → 箭头/矩形/马赛克 → 复制/保存） */
+  screenshotAnnotate?: {
+    enabled: boolean
+    hotkey: string
+  }
   lens: {
     enabled: boolean
     hotkey: string
@@ -1487,6 +1492,10 @@ function normalizeSettings(settings: Settings): Settings {
       textPrompt: current.screenshotTranslation?.textPrompt ?? '',
       replacePrompt: current.screenshotTranslation?.replacePrompt ?? '',
     },
+    screenshotAnnotate: {
+      enabled: current.screenshotAnnotate?.enabled ?? true,
+      hotkey: current.screenshotAnnotate?.hotkey ?? 'CommandOrControl+Shift+S',
+    },
     lens: {
       enabled: current.lens?.enabled ?? true,
       hotkey: current.lens?.hotkey ?? 'CommandOrControl+Shift+G',
@@ -1900,6 +1909,10 @@ export const api = {
     invoke<{ success: boolean; imageId?: string; error?: string }>(
       'lens_register_annotated_image', { base64Png }
     ),
+  lensCopyImageToClipboard: (base64Png: string) =>
+    invoke<{ success: boolean; error?: string }>('lens_copy_image_to_clipboard', { base64Png }),
+  lensSaveAnnotatedPng: (base64Png: string, path: string) =>
+    invoke<{ success: boolean; error?: string }>('lens_save_annotated_png', { base64Png, path }),
   lensTranslate: (imageId: string) =>
     invoke<{ success: boolean; original?: string; translated?: string; error?: string }>(
       'lens_translate', { imageId }

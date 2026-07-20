@@ -6,8 +6,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::commands::apply_launch_at_startup;
 use crate::lens_commands::{
-    lens_close, lens_request, lens_request_replace, lens_request_translate,
-    lens_request_translate_text, request_lens_close,
+    lens_close, lens_request, lens_request_replace, lens_request_screenshot,
+    lens_request_translate, lens_request_translate_text, request_lens_close,
 };
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -477,6 +477,7 @@ enum HotkeyScope {
     Screenshot,
     ScreenshotText,
     ScreenshotReplace,
+    ScreenshotAnnotate,
     Lens,
 }
 
@@ -713,6 +714,42 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
                         err.to_string(),
                     ));
                 }
+            }
+        }
+    }
+
+    if settings.screenshot_annotate.enabled {
+        let hotkey = settings.screenshot_annotate.hotkey.trim().to_string();
+        if !hotkey.is_empty() {
+            let hotkey_key = hotkey.to_lowercase();
+            if !registered.insert(hotkey_key) {
+                errors.push(HotkeyError {
+                    kind: HotkeyErrorKind::Duplicate,
+                    scope: HotkeyScope::ScreenshotAnnotate,
+                    hotkey: hotkey.clone(),
+                    raw: None,
+                });
+            } else if let Err(err) =
+                shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        if lens_is_active(app) {
+                            let _ = request_lens_close(app);
+                        } else {
+                            let handle = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(err) = lens_request_screenshot(handle) {
+                                    eprintln!("Screenshot annotate trigger error: {err}");
+                                }
+                            });
+                        }
+                    }
+                })
+            {
+                errors.push(classify_hotkey_error(
+                    HotkeyScope::ScreenshotAnnotate,
+                    hotkey,
+                    err.to_string(),
+                ));
             }
         }
     }

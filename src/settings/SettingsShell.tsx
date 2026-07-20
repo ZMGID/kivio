@@ -482,7 +482,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
   const [confirmDeleteProviderId, setConfirmDeleteProviderId] = useState<string | null>(null)
-  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'>(null)
+  const [recordingTarget, setRecordingTarget] = useState<null | 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'screenshotAnnotate' | 'lens'>(null)
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [chatSystemPromptInteracted, setChatSystemPromptInteracted] = useState(false)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
@@ -552,7 +552,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   // OS 层面的冲突(Spotlight 占用 Cmd+Space 等)仍需保存后从后端拿到结果。
   // 返回每个 scope 对应的"和谁冲突"——前端各 HotkeyInput 拿到对应 scope 的伙伴名后,
   // 用 hotkeyScope* 模板自己拼本地化字符串。
-  type HotkeyScopeKey = 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens'
+  type HotkeyScopeKey = 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'screenshotAnnotate' | 'lens'
   const hotkeyConflicts = useMemo<Partial<Record<HotkeyScopeKey, HotkeyScopeKey>>>(() => {
     if (!settings) return {}
     const slots: Array<{ scope: HotkeyScopeKey; hotkey: string; enabled: boolean }> = [
@@ -574,6 +574,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         enabled: settings.screenshotTranslation?.enabled !== false
           && settings.screenshotTranslation?.replaceEnabled !== false,
       },
+      { scope: 'screenshotAnnotate', hotkey: settings.screenshotAnnotate?.hotkey || '', enabled: settings.screenshotAnnotate?.enabled !== false },
       { scope: 'lens', hotkey: settings.lens?.hotkey || '', enabled: settings.lens?.enabled !== false },
     ]
     const groups = new Map<string, HotkeyScopeKey[]>()
@@ -595,12 +596,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     return out
   }, [settings])
 
-  const SCOPE_I18N_KEY: Record<HotkeyScopeKey, 'hotkeyScopeTranslator' | 'hotkeyScopeChat' | 'hotkeyScopeScreenshot' | 'hotkeyScopeScreenshotText' | 'hotkeyScopeScreenshotReplace' | 'hotkeyScopeLens'> = {
+  const SCOPE_I18N_KEY: Record<HotkeyScopeKey, 'hotkeyScopeTranslator' | 'hotkeyScopeChat' | 'hotkeyScopeScreenshot' | 'hotkeyScopeScreenshotText' | 'hotkeyScopeScreenshotReplace' | 'annotateHotkeyLabel' | 'hotkeyScopeLens'> = {
     main: 'hotkeyScopeTranslator',
     chat: 'hotkeyScopeChat',
     screenshotTranslation: 'hotkeyScopeScreenshot',
     screenshotTranslationText: 'hotkeyScopeScreenshotText',
     screenshotTranslationReplace: 'hotkeyScopeScreenshotReplace',
+    screenshotAnnotate: 'annotateHotkeyLabel',
     lens: 'hotkeyScopeLens',
   }
   const conflictMessageFor = (scope: HotkeyScopeKey): string | undefined => {
@@ -1588,6 +1590,20 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [])
 
   /**
+   * 更新截图标注配置
+   */
+  const updateScreenshotAnnotate = useCallback((updates: Partial<NonNullable<SettingsData['screenshotAnnotate']>>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const current = prev.screenshotAnnotate || {
+        enabled: true,
+        hotkey: 'CommandOrControl+Shift+S',
+      }
+      return { ...prev, screenshotAnnotate: { ...current, ...updates } }
+    })
+  }, [])
+
+  /**
    * 更新 Lens 配置
    */
   const updateLens = useCallback((updates: Partial<SettingsData['lens']>) => {
@@ -1732,7 +1748,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   /**
    * 切换快捷键录制状态
    */
-  const toggleRecording = (target: 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'lens') => {
+  const toggleRecording = (target: 'main' | 'chat' | 'screenshotTranslation' | 'screenshotTranslationText' | 'screenshotTranslationReplace' | 'screenshotAnnotate' | 'lens') => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
 
@@ -1782,6 +1798,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         updateScreenshotTranslation({ textHotkey: hotkey })
       } else if (recordingTarget === 'screenshotTranslationReplace') {
         updateScreenshotTranslation({ replaceHotkey: hotkey })
+      } else if (recordingTarget === 'screenshotAnnotate') {
+        updateScreenshotAnnotate({ hotkey })
       } else if (recordingTarget === 'lens') {
         updateLens({ hotkey })
       }
@@ -1789,7 +1807,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [recordingTarget, updateLens, updateScreenshotTranslation, updateSettings])
+  }, [recordingTarget, updateLens, updateScreenshotAnnotate, updateScreenshotTranslation, updateSettings])
 
   const loadingShellClass =
     variant === 'embedded'
@@ -2373,6 +2391,21 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     onClear={() => updateScreenshotTranslation({ replaceHotkey: '' })}
                     clearLabel={t.hotkeyClear}
                     error={conflictMessageFor('screenshotTranslationReplace')}
+                  />
+                </SettingRow>
+                <SettingRow label={t.annotateHotkeyLabel}>
+                  <HotkeyInput
+                    inline
+                    value={settings.screenshotAnnotate?.hotkey ?? ''}
+                    placeholder="CommandOrControl+Shift+S"
+                    recording={recordingTarget === 'screenshotAnnotate'}
+                    onToggleRecording={() => toggleRecording('screenshotAnnotate')}
+                    recordLabel={t.hotkeyRecord}
+                    recordingLabel={t.hotkeyRecording}
+                    recordingPlaceholder={t.hotkeyRecordingPlaceholder}
+                    onClear={() => updateScreenshotAnnotate({ hotkey: '' })}
+                    clearLabel={t.hotkeyClear}
+                    error={conflictMessageFor('screenshotAnnotate')}
                   />
                 </SettingRow>
                 <SettingRow label={t.lensTabLabel}>

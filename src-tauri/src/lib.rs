@@ -464,6 +464,8 @@ pub fn run() {
             lens_commands::lens_capture_window,
             lens_commands::lens_capture_region,
             lens_commands::lens_register_annotated_image,
+            lens_commands::lens_copy_image_to_clipboard,
+            lens_commands::lens_save_annotated_png,
             lens_commands::lens_ask,
             lens_commands::lens_send_to_chat,
             lens_commands::lens_send_history_to_chat,
