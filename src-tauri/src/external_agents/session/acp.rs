@@ -105,6 +105,15 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
     let mut out = vec![default_model_option()];
     let mut seen = HashSet::from(["default".to_string()]);
 
+    // 有 currentModelId（如 grok 的 models.currentModelId）时，把 default 占位标成
+    // "Default (<真实模型名>)" —— 否则单模型 CLI 的胶囊上永远只见 "Default"，
+    // 用户无从知道探测其实成功了（与 claude 的 label_for_claude_model 呈现一致）。
+    let current_id = result
+        .get("models")
+        .and_then(|m| m.get("currentModelId"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
     if let Some(config_options) = result.get("configOptions").and_then(|v| v.as_array()) {
         for raw_option in config_options {
             let option = match raw_option.as_object() {
@@ -157,6 +166,15 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                     continue;
                 }
                 let name = model.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+                let window = model
+                    .get("_meta")
+                    .and_then(|m| m.get("totalContextTokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
+                if current_id == Some(id) {
+                    out[0].label = format!("Default ({name})");
+                    out[0].context_window_tokens = window;
+                }
                 out.push(RuntimeModelOption {
                     id: id.to_string(),
                     label: if name != id {
@@ -164,7 +182,8 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                     } else {
                         id.to_string()
                     },
-                    context_window_tokens: None,
+                    // grok 等在 _meta.totalContextTokens 报真实窗口（如 500000）；没有则留空。
+                    context_window_tokens: window,
                 });
             }
         }
@@ -173,11 +192,20 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
     out
 }
 
-/// 把某个 ACP `result`/`update` 里解析出的模型并入累加器（去重、跳过 default 占位）。
-/// 供 `detect_acp_models` 主结果与异步 `session/update` 推送共用。
-fn merge_acp_models(acc: &mut Vec<RuntimeModelOption>, seen: &mut HashSet<String>, value: &Value) {
+/// 把某个 ACP `result`/`update` 里解析出的模型并入累加器（去重）。default 占位不进 `acc`，
+/// 但若其标签被 `normalize_models` 用 currentModelId 富化过（"Default (Grok 4.5)"），
+/// 则更新 `default_slot`，最终装配时替换普通占位。
+fn merge_acp_models(
+    acc: &mut Vec<RuntimeModelOption>,
+    seen: &mut HashSet<String>,
+    default_slot: &mut RuntimeModelOption,
+    value: &Value,
+) {
     for model in normalize_models(value) {
         if model.id == "default" {
+            if model.label != "Default" {
+                *default_slot = model;
+            }
             continue;
         }
         if seen.insert(model.id.clone()) {
@@ -192,6 +220,7 @@ fn merge_acp_models(acc: &mut Vec<RuntimeModelOption>, seen: &mut HashSet<String
 fn collect_acp_models_from_lines(lines: &[&str]) -> Option<Vec<RuntimeModelOption>> {
     let mut collected: Vec<RuntimeModelOption> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut default_slot = default_model_option();
     for line in lines {
         if line.trim().is_empty() {
             continue;
@@ -202,18 +231,18 @@ fn collect_acp_models_from_lines(lines: &[&str]) -> Option<Vec<RuntimeModelOptio
         };
         if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
             if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
-                merge_acp_models(&mut collected, &mut seen, update);
+                merge_acp_models(&mut collected, &mut seen, &mut default_slot, update);
             }
             continue;
         }
         if let Some(result) = value.get("result") {
-            merge_acp_models(&mut collected, &mut seen, result);
+            merge_acp_models(&mut collected, &mut seen, &mut default_slot, result);
         }
     }
     if collected.is_empty() {
         return None;
     }
-    let mut out = vec![default_model_option()];
+    let mut out = vec![default_slot];
     out.extend(collected);
     Some(out)
 }
@@ -242,6 +271,7 @@ pub async fn detect_acp_models(
     let mut expected_id: u64 = 1;
     let mut next_id: u64 = 2;
     let mut collected: Vec<RuntimeModelOption> = Vec::new();
+    let mut default_slot = default_model_option();
     let mut seen: HashSet<String> = HashSet::new();
     let deadline = Duration::from_secs(timeout_secs);
 
@@ -291,7 +321,7 @@ pub async fn detect_acp_models(
         // 异步模型推送：session/update 通知里携带的模型（N4）。
         if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
             if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
-                merge_acp_models(&mut collected, &mut seen, update);
+                merge_acp_models(&mut collected, &mut seen, &mut default_slot, update);
             }
             continue;
         }
@@ -325,7 +355,7 @@ pub async fn detect_acp_models(
             continue;
         }
         if expected_id == 2 {
-            merge_acp_models(&mut collected, &mut seen, result);
+            merge_acp_models(&mut collected, &mut seen, &mut default_slot, result);
             // 不立即退出：再留 1.5s 收异步推送的模型。若此后无推送则窗口到点结束。
             post_window = Some(std::time::Instant::now());
             continue;
@@ -335,7 +365,7 @@ pub async fn detect_acp_models(
     if collected.is_empty() {
         return None;
     }
-    let mut out = vec![default_model_option()];
+    let mut out = vec![default_slot];
     out.extend(collected);
     Some(out)
 }
@@ -1577,6 +1607,24 @@ mod tests {
         assert!(models.iter().any(|m| m.id == "claude-sonnet"));
         // gpt-5 出现在两处，去重后仅一次。
         assert_eq!(models.iter().filter(|m| m.id == "gpt-5").count(), 1);
+    }
+
+    #[test]
+    fn acp_models_default_slot_enriched_by_current_model_id() {
+        // grok 形态：session/new 结果带 models.currentModelId + availableModels（含 _meta 窗口）。
+        // default 占位应富化为 "Default (Grok 4.5)" 并继承窗口，真实模型进列表。
+        let lines = [
+            r#"{"id":2,"result":{"sessionId":"s1","models":{"currentModelId":"grok-4.5","availableModels":[{"modelId":"grok-4.5","name":"Grok 4.5","_meta":{"totalContextTokens":500000}}]}}}"#,
+        ];
+        let models = collect_acp_models_from_lines(&lines).expect("models");
+        assert_eq!(models[0].id, "default");
+        assert_eq!(models[0].label, "Default (Grok 4.5)");
+        assert_eq!(models[0].context_window_tokens, Some(500_000));
+        let real = models
+            .iter()
+            .find(|m| m.id == "grok-4.5")
+            .expect("real model");
+        assert_eq!(real.context_window_tokens, Some(500_000));
     }
 
     #[test]
