@@ -412,3 +412,36 @@ Fixed child, Worker, OCR helper, Preview server, cache, knowledge-base lock, Mes
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 删除 Kivio Code 终端 agent 功能
+
+**Date**: 2026-07-20
+**Task**: 删除 Kivio Code 终端 agent 功能
+**Branch**: `main`
+
+### Summary
+
+删除 kivio_code/ 模块、kivio-code binary、kivio code 子命令、cli_install 及相关 Tauri 命令与前端设置页。app_data_dir 搬迁到独立 app_data.rs。清理遗留死代码(force_compact/safe_context_window_for_model/native_enter_plan_mode_tool)与 5 个死依赖。净删约 25200 行,build/typecheck/lint/测试通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `aa6995a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
