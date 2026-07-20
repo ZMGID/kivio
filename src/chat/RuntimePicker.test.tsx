@@ -136,7 +136,7 @@ describe('ExternalModelSelector', () => {
     expect(onModelChange).not.toHaveBeenCalled()
   })
 
-  it('无当前模型概念时胶囊显示「自动」', async () => {
+  it('无当前模型概念时胶囊显示「Auto」', async () => {
     detectModels.mockResolvedValue({
       models: [{ id: 'default', label: 'Default' }],
       reasoningOptions: [],
@@ -152,6 +152,6 @@ describe('ExternalModelSelector', () => {
         conversationId={null}
       />,
     )
-    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('自动'))
+    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Auto'))
   })
 })

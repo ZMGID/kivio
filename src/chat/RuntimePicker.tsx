@@ -33,7 +33,7 @@ function externalRuntime(agentId: string, model?: string | null): AgentRuntimeCo
 
 // 胶囊显示：把裸 "Default" 映射为「自动」（不再向用户暴露内部占位名）。
 function mapDefaultLabel(label: string): string {
-  return label === 'Default' ? '自动' : label
+  return label === 'Default' ? 'Auto' : label
 }
 
 // 胶囊只显示模型名尾巴，去掉 provider 前缀（"foo/mimo-v2.5-pro" → "mimo-v2.5-pro"），
@@ -321,7 +321,7 @@ function ExternalModelSelectorBase({
     const opt = reasoningOptions.find((o) => o.id === reasoningPillValue)
     const raw = opt?.label ?? reasoningPillValue
     // 未显式选择推理等级（default）时显示「自动」，不再暴露裸 "Default"。
-    return raw === 'Default' || reasoningPillValue === 'default' ? '自动' : raw
+    return raw === 'Default' || reasoningPillValue === 'default' ? 'Auto' : raw
   }, [reasoningOptions, reasoningPillValue])
   const displayName = useMemo(() => {
     const currentId = agentRuntime.externalModel
@@ -337,7 +337,7 @@ function ExternalModelSelectorBase({
       return stripProviderPrefix(mapDefaultLabel(inList?.label ?? currentModel))
     }
     if (loading) return '获取中…'
-    return '自动'
+    return 'Auto'
   }, [agentRuntime.externalModel, models, currentModel, loading])
 
   if (agentRuntime.kind !== 'external' || !agentRuntime.externalAgentId) {
@@ -401,7 +401,7 @@ function ExternalModelSelectorBase({
                       agentRuntime.externalModel === model.id ? 'font-semibold' : ''
                     }`}
                   >
-                    {model.id === 'default' ? '自动（CLI 默认）' : model.label}
+                    {model.id === 'default' ? 'Auto（CLI 默认）' : model.label}
                   </button>
                 ))
               )}
@@ -454,7 +454,7 @@ function ExternalModelSelectorBase({
                       }`}
                     >
                       <span className="min-w-0 truncate">
-                        {option.id === 'default' ? '自动（CLI 默认）' : option.label}
+                        {option.id === 'default' ? 'Auto（CLI 默认）' : option.label}
                       </span>
                       {active && <Check size={15} className="shrink-0 text-neutral-500" />}
                     </button>
