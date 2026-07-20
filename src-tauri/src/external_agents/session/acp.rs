@@ -17,6 +17,13 @@ use crate::proc::NoConsoleWindow;
 
 const ACP_PROTOCOL_VERSION: i64 = 1;
 
+/// ACP 模型探测结果：模型列表 + CLI 当前配置的模型/推理等级（用于胶囊回填，见 R "同步 CLI 当前配置"）。
+pub struct AcpModelsProbe {
+    pub models: Vec<RuntimeModelOption>,
+    pub current_model: Option<String>,
+    pub current_reasoning: Option<String>,
+}
+
 /// Handshake timeouts (缺陷 4 / R3): Paseo uses 60s; desktop starts at 30s. `initialize` and
 /// `session/new` each get their own budget so a slow one doesn't starve the other.
 const ACP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -247,12 +254,61 @@ fn collect_acp_models_from_lines(lines: &[&str]) -> Option<Vec<RuntimeModelOptio
     Some(out)
 }
 
+/// 从一个 ACP `result`/`update` 里抽取 CLI 当前配置：`models.currentModelId` 作为当前模型，
+/// 当前模型条目的 `_meta.reasoningEfforts` 里 `default=true` 的 id 作为当前推理等级（grok 实测 high）。
+/// 结构未知时保守返回 None（不破坏 default 富化路径）。
+fn extract_acp_current(value: &Value) -> (Option<String>, Option<String>) {
+    let models = value.get("models");
+    let current_id = models
+        .and_then(|m| m.get("currentModelId"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let mut current_reasoning = None;
+    if let (Some(models_obj), Some(cur)) = (models, current_id.as_deref()) {
+        if let Some(available) = models_obj.get("availableModels").and_then(|v| v.as_array()) {
+            for model in available {
+                if model.get("modelId").and_then(|v| v.as_str()) != Some(cur) {
+                    continue;
+                }
+                let meta = model.get("_meta");
+                // 首选 default=true 的 reasoningEfforts 条目；退而求其次读标量 reasoningEffort。
+                if let Some(efforts) = meta
+                    .and_then(|m| m.get("reasoningEfforts"))
+                    .and_then(|v| v.as_array())
+                {
+                    for effort in efforts {
+                        if effort.get("default").and_then(|v| v.as_bool()) == Some(true) {
+                            current_reasoning = effort
+                                .get("id")
+                                .or_else(|| effort.get("value"))
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string);
+                            break;
+                        }
+                    }
+                }
+                if current_reasoning.is_none() {
+                    current_reasoning = meta
+                        .and_then(|m| m.get("reasoningEffort"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                }
+                break;
+            }
+        }
+    }
+    (current_id, current_reasoning)
+}
+
 pub async fn detect_acp_models(
     bin: &Path,
     args: &[&str],
     cwd: &Path,
     timeout_secs: u64,
-) -> Option<Vec<RuntimeModelOption>> {
+) -> Option<AcpModelsProbe> {
     let mut child = Command::new(bin)
         .args(args)
         .current_dir(cwd)
@@ -273,6 +329,8 @@ pub async fn detect_acp_models(
     let mut collected: Vec<RuntimeModelOption> = Vec::new();
     let mut default_slot = default_model_option();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut current_model: Option<String> = None;
+    let mut current_reasoning: Option<String> = None;
     let deadline = Duration::from_secs(timeout_secs);
 
     write_rpc(
@@ -322,6 +380,9 @@ pub async fn detect_acp_models(
         if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
             if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
                 merge_acp_models(&mut collected, &mut seen, &mut default_slot, update);
+                let (cm, cr) = extract_acp_current(update);
+                current_model = current_model.or(cm);
+                current_reasoning = current_reasoning.or(cr);
             }
             continue;
         }
@@ -356,6 +417,9 @@ pub async fn detect_acp_models(
         }
         if expected_id == 2 {
             merge_acp_models(&mut collected, &mut seen, &mut default_slot, result);
+            let (cm, cr) = extract_acp_current(result);
+            current_model = current_model.or(cm);
+            current_reasoning = current_reasoning.or(cr);
             // 不立即退出：再留 1.5s 收异步推送的模型。若此后无推送则窗口到点结束。
             post_window = Some(std::time::Instant::now());
             continue;
@@ -367,7 +431,11 @@ pub async fn detect_acp_models(
     }
     let mut out = vec![default_slot];
     out.extend(collected);
-    Some(out)
+    Some(AcpModelsProbe {
+        models: out,
+        current_model,
+        current_reasoning,
+    })
 }
 
 fn parse_available_commands(
@@ -1917,6 +1985,38 @@ mod tests {
         });
         let models = normalize_models(&result);
         assert!(models.iter().any(|m| m.id == "grok-4.3"));
+    }
+
+    #[test]
+    fn extract_acp_current_reads_current_model_and_reasoning() {
+        // grok 形态：currentModelId + 当前模型的 _meta.reasoningEfforts 里 default=true。
+        let result = json!({
+            "models": {
+                "currentModelId": "grok-4.5",
+                "availableModels": [
+                    { "modelId": "grok-4.5", "name": "Grok 4.5", "_meta": {
+                        "reasoningEfforts": [
+                            { "id": "low", "default": false },
+                            { "id": "high", "default": true }
+                        ]
+                    }},
+                    { "modelId": "grok-4-fast", "name": "Grok 4 Fast" }
+                ]
+            }
+        });
+        let (model, reasoning) = extract_acp_current(&result);
+        assert_eq!(model.as_deref(), Some("grok-4.5"));
+        assert_eq!(reasoning.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn extract_acp_current_none_without_current() {
+        let result = json!({
+            "models": { "availableModels": [ { "modelId": "gpt-5" } ] }
+        });
+        let (model, reasoning) = extract_acp_current(&result);
+        assert!(model.is_none());
+        assert!(reasoning.is_none());
     }
 
     // ---- N3: per-turn model / reasoning change decisions (Step 5) ----

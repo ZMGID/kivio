@@ -8,7 +8,10 @@ const FALLBACK_MODELS: &[(&str, &str)] = &[
     // 只给默认 + 当前 managed:kimi-code 主力型号（oauth 登录即得），前端会标注为「默认列表」。
     ("default", "Default"),
     ("kimi-code/k3", "K3 (kimi-code/k3)"),
-    ("kimi-code/kimi-for-coding", "K2.7 Coding (kimi-code/kimi-for-coding)"),
+    (
+        "kimi-code/kimi-for-coding",
+        "K2.7 Coding (kimi-code/kimi-for-coding)",
+    ),
 ];
 
 pub fn build_kimi_args(

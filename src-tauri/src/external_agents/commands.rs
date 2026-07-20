@@ -77,13 +77,7 @@ pub async fn chat_detect_external_agent_models(
             EXTERNAL_AGENT_MODELS_CACHE_TTL,
             EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
         ) {
-            return Ok(serde_json::json!({
-                "success": true,
-                "models": cached.models,
-                "reasoningOptions": crate::external_agents::types::reasoning_options_from_pairs(def.reasoning_options),
-                "source": cached.source.as_str(),
-                "cached": true,
-            }));
+            return Ok(cached_models_payload(def, &cached, true));
         }
     }
 
@@ -95,39 +89,63 @@ pub async fn chat_detect_external_agent_models(
             EXTERNAL_AGENT_MODELS_CACHE_TTL,
             EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
         ) {
-            return Ok(serde_json::json!({
-                "success": true,
-                "models": cached.models,
-                "reasoningOptions": crate::external_agents::types::reasoning_options_from_pairs(def.reasoning_options),
-                "source": cached.source.as_str(),
-                "cached": true,
-            }));
+            return Ok(cached_models_payload(def, &cached, true));
         }
     }
-    let (models, reasoning_options, source, probe_error) = detect_agent_models(def, &cwd).await;
-    if !models.is_empty() {
+    let probe = detect_agent_models(def, &cwd).await;
+    if !probe.models.is_empty() {
         // probed 长 TTL，fallback 短 TTL 负缓存——由 get 侧按 source 分别裁定过期。
         state.set_cached_external_agent_models(
             key,
             CachedAgentModels {
-                models: models.clone(),
-                source,
+                models: probe.models.clone(),
+                source: probe.source,
+                current_model: probe.current_model.clone(),
+                current_reasoning: probe.current_reasoning.clone(),
             },
         );
     }
     let mut payload = serde_json::json!({
         "success": true,
-        "models": models,
-        "reasoningOptions": reasoning_options,
-        "source": source.as_str(),
+        "models": probe.models,
+        "reasoningOptions": probe.reasoning_options,
+        "source": probe.source.as_str(),
         "cached": false,
     });
-    if source == ModelSource::Fallback {
-        if let Some(err) = probe_error {
+    if let Some(model) = probe.current_model {
+        payload["currentModel"] = serde_json::Value::String(model);
+    }
+    if let Some(reasoning) = probe.current_reasoning {
+        payload["currentReasoning"] = serde_json::Value::String(reasoning);
+    }
+    if probe.source == ModelSource::Fallback {
+        if let Some(err) = probe.probe_error {
             payload["probeError"] = serde_json::Value::String(err);
         }
     }
     Ok(payload)
+}
+
+/// 组装缓存命中的返回 JSON：模型 + reasoning 选项（从 def 静态表）+ 来源 + CLI 当前配置。
+fn cached_models_payload(
+    def: &crate::external_agents::types::RuntimeAgentDef,
+    cached: &CachedAgentModels,
+    cached_flag: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "success": true,
+        "models": cached.models,
+        "reasoningOptions": crate::external_agents::types::reasoning_options_from_pairs(def.reasoning_options),
+        "source": cached.source.as_str(),
+        "cached": cached_flag,
+    });
+    if let Some(model) = &cached.current_model {
+        payload["currentModel"] = serde_json::Value::String(model.clone());
+    }
+    if let Some(reasoning) = &cached.current_reasoning {
+        payload["currentReasoning"] = serde_json::Value::String(reasoning.clone());
+    }
+    payload
 }
 
 #[tauri::command]

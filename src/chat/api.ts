@@ -1444,6 +1444,9 @@ export const chatApi = {
     reasoningOptions: NonNullable<DetectedExternalAgent['reasoningOptions']>
     source: 'probed' | 'fallback'
     probeError?: string
+    // CLI 自己当前配置的模型/推理等级（用于胶囊自动同步「同步 CLI 当前配置」）。null = 无当前概念。
+    currentModel?: string | null
+    currentReasoning?: string | null
   }> {
     if (!isTauriRuntime()) {
       return { models: [], reasoningOptions: [], source: 'probed' }
@@ -1454,6 +1457,8 @@ export const chatApi = {
       reasoningOptions?: NonNullable<DetectedExternalAgent['reasoningOptions']>
       source?: 'probed' | 'fallback'
       probeError?: string
+      currentModel?: string | null
+      currentReasoning?: string | null
     }>('chat_detect_external_agent_models', { agentId, conversationId, force })
     return {
       models: result.models ?? [],
@@ -1461,6 +1466,8 @@ export const chatApi = {
       // 向后兼容：旧后端不返回 source 时视为 probed（不显示降级角标）。
       source: result.source ?? 'probed',
       probeError: result.probeError,
+      currentModel: result.currentModel ?? null,
+      currentReasoning: result.currentReasoning ?? null,
     }
   },
 

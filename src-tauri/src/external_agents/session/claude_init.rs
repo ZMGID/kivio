@@ -165,10 +165,12 @@ pub async fn probe_claude_init(
     parse_claude_init_info(&init)
 }
 
+/// 返回 (模型目录, 当前解析模型)。当前模型 = CLI 对 "default" 实际解析出的模型（如
+/// "claude-fable-5[1m]"），供胶囊展示 CLI 当前配置；探不到时为 None。
 pub async fn detect_claude_models(
     resolved_bin: &Path,
     cwd: &Path,
-) -> Option<Vec<RuntimeModelOption>> {
+) -> Option<(Vec<RuntimeModelOption>, Option<String>)> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 
@@ -182,6 +184,9 @@ pub async fn detect_claude_models(
     .await
     .ok()
     .flatten();
+    let current_model = default_info
+        .as_ref()
+        .map(|info| info.resolved_model.clone());
     out.push(RuntimeModelOption {
         id: "default".to_string(),
         label: match &default_info {
@@ -212,7 +217,7 @@ pub async fn detect_claude_models(
         }
     }
 
-    Some(out)
+    Some((out, current_model))
 }
 
 /// Static catalog entry for a Claude `--model` alias — label + context window with no probe.

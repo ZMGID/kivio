@@ -147,9 +147,8 @@ pub struct AppState {
     >,
     /// 外部 CLI 模型列表探测缓存（agent_id:cwd → 模型选项 + 来源）。probed 结果长 TTL，
     /// fallback（探测失败降级）短 TTL 负缓存，防止连续失败风暴。
-    pub external_agent_models_cache: Mutex<
-        HashMap<String, TimedCacheEntry<crate::external_agents::types::CachedAgentModels>>,
-    >,
+    pub external_agent_models_cache:
+        Mutex<HashMap<String, TimedCacheEntry<crate::external_agents::types::CachedAgentModels>>>,
     /// 外部 CLI 全量检测结果缓存（cwd → available/version/auth/models）。避免 RuntimePicker /
     /// 设置页每次打开都重探全部 CLI，同时隔离项目级模型配置。force_refresh 时跳过当前 cwd。
     pub external_detected_agents_cache:
@@ -990,6 +989,8 @@ mod tests {
             CachedAgentModels {
                 models: vec![one("gpt-5")],
                 source: ModelSource::Probed,
+                current_model: None,
+                current_reasoning: None,
             },
         );
         assert!(st
@@ -1002,6 +1003,8 @@ mod tests {
             CachedAgentModels {
                 models: vec![one("default")],
                 source: ModelSource::Fallback,
+                current_model: None,
+                current_reasoning: None,
             },
         );
         assert!(st
@@ -1013,6 +1016,8 @@ mod tests {
             CachedAgentModels {
                 models: vec![one("default")],
                 source: ModelSource::Fallback,
+                current_model: None,
+                current_reasoning: None,
             },
         );
         let hit = st.get_cached_external_agent_models(

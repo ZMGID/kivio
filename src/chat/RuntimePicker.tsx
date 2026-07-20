@@ -31,6 +31,18 @@ function externalRuntime(agentId: string, model?: string | null): AgentRuntimeCo
   }
 }
 
+// 胶囊显示：把裸 "Default" 映射为「自动」（不再向用户暴露内部占位名）。
+function mapDefaultLabel(label: string): string {
+  return label === 'Default' ? '自动' : label
+}
+
+// 胶囊只显示模型名尾巴，去掉 provider 前缀（"foo/mimo-v2.5-pro" → "mimo-v2.5-pro"），
+// 避免有意义的尾部被截断；下拉列表仍保留完整 id。
+function stripProviderPrefix(label: string): string {
+  const slash = label.lastIndexOf('/')
+  return slash >= 0 ? label.slice(slash + 1) : label
+}
+
 function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: RuntimePickerProps) {
   const [open, setOpen] = useState(false)
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
@@ -235,8 +247,16 @@ function ExternalModelSelectorBase({
   const [loading, setLoading] = useState(false)
   // source: probed=真实探测 / fallback=探测失败降级静态表（显示"默认列表"角标 + 重试）。
   const [source, setSource] = useState<'probed' | 'fallback'>('probed')
+  // CLI 自己当前配置的模型（codex config.toml / ACP currentModelId / claude resolved）。用于胶囊
+  // 显示真实名字并在用户未显式选择时自动同步；null = 该 CLI 无「当前」概念 → 显示「自动」。
+  const [currentModel, setCurrentModel] = useState<string | null>(null)
   // 请求代际：agent 切换/卸载时使在途请求失效，防止旧结果覆盖新 agent 或卸载后 setState。
   const modelsReqIdRef = useRef(0)
+  // 用 ref 读最新 runtime / onModelChange，避免把它们塞进 loadModels 依赖导致每次选模型重探。
+  const runtimeRef = useRef(agentRuntime)
+  runtimeRef.current = agentRuntime
+  const onModelChangeRef = useRef(onModelChange)
+  onModelChangeRef.current = onModelChange
 
   const loadModels = useCallback(
     (agentId: string, force?: boolean) => {
@@ -249,6 +269,25 @@ function ExternalModelSelectorBase({
           setModels(result.models)
           setReasoningOptions(result.reasoningOptions)
           setSource(result.source)
+          setCurrentModel(result.currentModel ?? null)
+          // 自动同步 CLI 当前配置：仅当用户未显式选择（externalModel 空 / 'default'）时。
+          const rt = runtimeRef.current
+          const explicitModel = !!rt.externalModel && rt.externalModel !== 'default'
+          if (explicitModel) return
+          const cur = result.currentModel
+          // 当前模型是列表里可选的真实 id（grok / codex）才回填 externalModel；claude 的 resolved
+          // model 不在别名目录里，不回填（发送仍走 CLI 默认），仅由显示层展示其名字。
+          const selectable = !!cur && result.models.some((m) => m.id === cur)
+          const nextModel = selectable ? (cur as string) : rt.externalModel ?? 'default'
+          const explicitReasoning =
+            !!rt.externalReasoning && rt.externalReasoning !== 'default'
+          const nextReasoning =
+            !explicitReasoning && result.currentReasoning
+              ? result.currentReasoning
+              : rt.externalReasoning ?? null
+          if (nextModel !== (rt.externalModel ?? 'default') || nextReasoning !== (rt.externalReasoning ?? null)) {
+            onModelChangeRef.current(nextModel, nextReasoning)
+          }
         })
         .catch(() => {
           if (modelsReqIdRef.current !== reqId) return
@@ -270,25 +309,36 @@ function ExternalModelSelectorBase({
       setModels([])
       setReasoningOptions([])
       setSource('probed')
+      setCurrentModel(null)
       return
     }
     // loadModels 自身先 ++reqId 使旧在途请求失效（agent/conversation 变更时 effect 重跑即覆盖）。
     void loadModels(agentId)
   }, [agentRuntime.externalAgentId, loadModels])
 
-  const currentReasoning = agentRuntime.externalReasoning ?? 'default'
-  const currentReasoningLabel =
-    reasoningOptions.find((o) => o.id === currentReasoning)?.label ?? currentReasoning
+  const reasoningPillValue = agentRuntime.externalReasoning ?? 'default'
+  const currentReasoningLabel = useMemo(() => {
+    const opt = reasoningOptions.find((o) => o.id === reasoningPillValue)
+    const raw = opt?.label ?? reasoningPillValue
+    // 未显式选择推理等级（default）时显示「自动」，不再暴露裸 "Default"。
+    return raw === 'Default' || reasoningPillValue === 'default' ? '自动' : raw
+  }, [reasoningOptions, reasoningPillValue])
   const displayName = useMemo(() => {
     const currentId = agentRuntime.externalModel
-    const selected = currentId ? models.find((item) => item.id === currentId) : undefined
-    // On the pill, show the model name only — drop the provider prefix (e.g.
-    // "zmfooogreencloud/mimo-v2.5-pro" → "mimo-v2.5-pro") so the meaningful tail isn't truncated.
-    // The dropdown keeps the full id.
-    const rawLabel = selected?.label ?? currentId ?? '选择模型'
-    const slash = rawLabel.lastIndexOf('/')
-    return slash >= 0 ? rawLabel.slice(slash + 1) : rawLabel
-  }, [agentRuntime.externalModel, models])
+    const explicit = !!currentId && currentId !== 'default'
+    // 显式选择：显示所选模型 label（探测中列表未到时退回原始 id）。
+    if (explicit) {
+      const selected = models.find((item) => item.id === currentId)
+      return stripProviderPrefix(mapDefaultLabel(selected?.label ?? currentId))
+    }
+    // 未显式选择：优先显示 CLI 当前配置模型的真实名字；探测中显示「获取中…」；都没有则「自动」。
+    if (currentModel) {
+      const inList = models.find((item) => item.id === currentModel)
+      return stripProviderPrefix(mapDefaultLabel(inList?.label ?? currentModel))
+    }
+    if (loading) return '获取中…'
+    return '自动'
+  }, [agentRuntime.externalModel, models, currentModel, loading])
 
   if (agentRuntime.kind !== 'external' || !agentRuntime.externalAgentId) {
     return null
@@ -351,7 +401,7 @@ function ExternalModelSelectorBase({
                       agentRuntime.externalModel === model.id ? 'font-semibold' : ''
                     }`}
                   >
-                    {model.label}
+                    {model.id === 'default' ? '自动（CLI 默认）' : model.label}
                   </button>
                 ))
               )}
@@ -388,7 +438,7 @@ function ExternalModelSelectorBase({
               />
               <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[160px] overflow-y-auto rounded-2xl border border-neutral-200/90 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
                 {reasoningOptions.map((option) => {
-                  const active = option.id === currentReasoning
+                  const active = option.id === reasoningPillValue
                   return (
                     <button
                       key={option.id}
@@ -403,7 +453,9 @@ function ExternalModelSelectorBase({
                           : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800/80'
                       }`}
                     >
-                      <span className="min-w-0 truncate">{option.label}</span>
+                      <span className="min-w-0 truncate">
+                        {option.id === 'default' ? '自动（CLI 默认）' : option.label}
+                      </span>
                       {active && <Check size={15} className="shrink-0 text-neutral-500" />}
                     </button>
                   )

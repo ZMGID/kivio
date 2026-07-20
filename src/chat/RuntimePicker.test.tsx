@@ -85,4 +85,73 @@ describe('ExternalModelSelector', () => {
     expect(screen.queryByText('探测失败，显示默认列表')).not.toBeInTheDocument()
     expect(screen.getByText('gpt-5')).toBeInTheDocument()
   })
+
+  it('探测到 CLI 当前模型/推理时自动同步（未显式选择）', async () => {
+    const onModelChange = vi.fn()
+    detectModels.mockResolvedValue({
+      models: [
+        { id: 'default', label: 'Default' },
+        { id: 'grok-4.5', label: 'Grok 4.5' },
+      ],
+      reasoningOptions: [
+        { id: 'default', label: 'Default' },
+        { id: 'high', label: 'High' },
+      ],
+      source: 'probed',
+      currentModel: 'grok-4.5',
+      currentReasoning: 'high',
+    })
+
+    render(
+      <ExternalModelSelector
+        agentRuntime={runtime}
+        onModelChange={onModelChange}
+        conversationId={null}
+      />,
+    )
+    await waitFor(() =>
+      expect(onModelChange).toHaveBeenCalledWith('grok-4.5', 'high'),
+    )
+  })
+
+  it('用户已显式选择模型时不被当前配置覆盖', async () => {
+    const onModelChange = vi.fn()
+    const explicit: AgentRuntimeConfig = { ...runtime, externalModel: 'gpt-5' }
+    detectModels.mockResolvedValue({
+      models: [{ id: 'gpt-5', label: 'gpt-5' }],
+      reasoningOptions: [],
+      source: 'probed',
+      currentModel: 'gpt-5.6-sol',
+      currentReasoning: 'high',
+    })
+
+    render(
+      <ExternalModelSelector
+        agentRuntime={explicit}
+        onModelChange={onModelChange}
+        conversationId={null}
+      />,
+    )
+    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('gpt-5'))
+    expect(onModelChange).not.toHaveBeenCalled()
+  })
+
+  it('无当前模型概念时胶囊显示「自动」', async () => {
+    detectModels.mockResolvedValue({
+      models: [{ id: 'default', label: 'Default' }],
+      reasoningOptions: [],
+      source: 'probed',
+      currentModel: null,
+      currentReasoning: null,
+    })
+
+    render(
+      <ExternalModelSelector
+        agentRuntime={runtime}
+        onModelChange={() => {}}
+        conversationId={null}
+      />,
+    )
+    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('自动'))
+  })
 })

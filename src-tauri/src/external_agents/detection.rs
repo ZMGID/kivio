@@ -66,35 +66,116 @@ pub async fn detect_availability_all() -> Vec<DetectedAgent> {
     out
 }
 
+/// 单个 agent 的模型探测结果：模型列表 + reasoning 选项 + 来源 + 失败摘要，以及 CLI 自己当前
+/// 配置的模型/推理等级（current_*，用于胶囊回填「同步 CLI 当前配置」）。current_* 拿不到 → None
+/// → 前端显示「自动」。
+pub struct AgentModelsResult {
+    pub models: Vec<RuntimeModelOption>,
+    pub reasoning_options: Vec<RuntimeModelOption>,
+    pub source: ModelSource,
+    pub probe_error: Option<String>,
+    pub current_model: Option<String>,
+    pub current_reasoning: Option<String>,
+}
+
 /// 只探单个 agent 的模型（cwd-scoped），供懒查命令用。返回模型、reasoning 选项，以及来源
-/// （probed=真实探测 / fallback=探测失败降级静态表）与失败摘要。
-pub async fn detect_agent_models(
-    def: &RuntimeAgentDef,
-    cwd: &Path,
-) -> (
-    Vec<RuntimeModelOption>,
-    Vec<RuntimeModelOption>,
-    ModelSource,
-    Option<String>,
-) {
+/// （probed=真实探测 / fallback=探测失败降级静态表）、失败摘要与 CLI 当前配置。
+pub async fn detect_agent_models(def: &RuntimeAgentDef, cwd: &Path) -> AgentModelsResult {
     let reasoning = reasoning_options_from_pairs(def.reasoning_options);
     let path = super::spawn::resolve_binary(def).await;
     let Some(_) = path.as_ref() else {
-        return (
-            fallback_models_from_pairs(def.fallback_models),
-            reasoning,
-            ModelSource::Fallback,
-            Some("CLI 未安装或不在 PATH".to_string()),
-        );
+        return AgentModelsResult {
+            models: fallback_models_from_pairs(def.fallback_models),
+            reasoning_options: reasoning,
+            source: ModelSource::Fallback,
+            probe_error: Some("CLI 未安装或不在 PATH".to_string()),
+            current_model: None,
+            current_reasoning: None,
+        };
     };
     match probe_models(def, path.as_deref(), cwd).await {
-        Ok(models) => (models, reasoning, ModelSource::Probed, None),
-        Err(err) => (
-            fallback_models_from_pairs(def.fallback_models),
-            reasoning,
-            ModelSource::Fallback,
-            Some(err),
-        ),
+        Ok((models, mut current_model, mut current_reasoning)) => {
+            // codex 的当前模型/推理不来自 `debug models`（其输出仅供列表），而是读 config.toml 顶层键。
+            if def.id == "codex" {
+                let (cm, cr) = read_codex_current_config();
+                current_model = current_model.or(cm);
+                current_reasoning = current_reasoning.or(cr);
+            }
+            AgentModelsResult {
+                models,
+                reasoning_options: reasoning,
+                source: ModelSource::Probed,
+                probe_error: None,
+                current_model,
+                current_reasoning,
+            }
+        }
+        Err(err) => AgentModelsResult {
+            models: fallback_models_from_pairs(def.fallback_models),
+            reasoning_options: reasoning,
+            source: ModelSource::Fallback,
+            probe_error: Some(err),
+            current_model: None,
+            current_reasoning: None,
+        },
+    }
+}
+
+/// 读 codex 当前配置：`~/.codex/config.toml` 顶层 `model` 与 `model_reasoning_effort`。手写扫描
+/// 顶层 `key = "value"` 行（遇首个 `[section]` 即停），无 toml 依赖。缺文件/键 → None。
+fn read_codex_current_config() -> (Option<String>, Option<String>) {
+    let Some(base) = directories::BaseDirs::new() else {
+        return (None, None);
+    };
+    let path = base.home_dir().join(".codex").join("config.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => parse_codex_config_toplevel(&text),
+        Err(_) => (None, None),
+    }
+}
+
+/// 从 config.toml 文本抽取顶层 `model` / `model_reasoning_effort`。只认第一个 `[section]` 之前的
+/// 顶层键，避免误取某个 profile/section 下的同名键。
+fn parse_codex_config_toplevel(text: &str) -> (Option<String>, Option<String>) {
+    let mut model = None;
+    let mut reasoning = None;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            break; // 进入 section 表头，顶层键区结束
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "model" if model.is_none() => model = unquote_toml_scalar(value),
+            "model_reasoning_effort" if reasoning.is_none() => {
+                reasoning = unquote_toml_scalar(value)
+            }
+            _ => {}
+        }
+    }
+    (model, reasoning)
+}
+
+/// 解析一个 TOML 标量右值：去引号（`"..."` / `'...'`），或裸值截到行内 `#` 注释。空 → None。
+fn unquote_toml_scalar(value: &str) -> Option<String> {
+    let v = value.trim();
+    let out = if let Some(rest) = v.strip_prefix('"') {
+        rest.split('"').next().unwrap_or("")
+    } else if let Some(rest) = v.strip_prefix('\'') {
+        rest.split('\'').next().unwrap_or("")
+    } else {
+        v.split('#').next().unwrap_or("").trim()
+    };
+    let out = out.trim();
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.to_string())
     }
 }
 
@@ -133,6 +214,7 @@ pub async fn detect_single_agent(def: &RuntimeAgentDef, cwd: &Path) -> DetectedA
     let models = if available {
         probe_models(def, path.as_deref(), cwd)
             .await
+            .map(|(models, _, _)| models)
             .unwrap_or_else(|_| fallback_models_from_pairs(def.fallback_models))
     } else {
         fallback_models_from_pairs(def.fallback_models)
@@ -218,11 +300,16 @@ async fn probe_auth(def: &RuntimeAgentDef, path: Option<&std::path::Path>) -> Op
     }
 }
 
+/// 探测模型列表 + CLI 当前配置。返回 `(models, current_model, current_reasoning)`。
+/// current_* 仅 ACP（currentModelId）与 claude（resolved model）路径能给出；其余为 None
+/// （codex 的当前配置由上层 detect_agent_models 从 config.toml 补齐）。
+type ProbeModelsOutput = (Vec<RuntimeModelOption>, Option<String>, Option<String>);
+
 async fn probe_models(
     def: &RuntimeAgentDef,
     path: Option<&std::path::Path>,
     cwd: &Path,
-) -> Result<Vec<RuntimeModelOption>, String> {
+) -> Result<ProbeModelsOutput, String> {
     let bin = path.ok_or_else(|| "CLI 可执行文件未定位".to_string())?;
 
     // OpenCode's native command is the source of truth for merged global/project JSONC config.
@@ -230,7 +317,7 @@ async fn probe_models(
     if def.id == "opencode" {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
         if let Some(models) = probe_opencode_models(bin, cwd, timeout_secs).await {
-            return Ok(models);
+            return Ok((models, None, None));
         }
     }
 
@@ -244,6 +331,7 @@ async fn probe_models(
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
         return detect_acp_models(bin, &args, cwd, timeout_secs)
             .await
+            .map(|probe| (probe.models, probe.current_model, probe.current_reasoning))
             .ok_or_else(|| "ACP 模型探测未返回模型（可能未登录或握手失败）".to_string());
     }
 
@@ -255,7 +343,7 @@ async fn probe_models(
         )
         .await
         {
-            Ok(Some(models)) => Ok(models),
+            Ok(Some((models, current_model))) => Ok((models, current_model, None)),
             Ok(None) => Err("Claude 初始化未上报模型".to_string()),
             Err(_) => Err(format!("Claude 模型探测超时（{timeout_secs}s）")),
         };
@@ -288,6 +376,7 @@ async fn probe_models(
             stderr
         };
         return parse_pi_models(text.as_ref())
+            .map(|models| (models, None, None))
             .ok_or_else(|| "未从 pi 输出解析出模型".to_string());
     }
 
@@ -299,6 +388,7 @@ async fn probe_models(
     }
     let text = String::from_utf8_lossy(&output.stdout);
     parse_models_list(def.id, text.as_ref())
+        .map(|models| (models, None, None))
         .ok_or_else(|| "未从列模型输出解析出模型".to_string())
 }
 
@@ -505,5 +595,32 @@ mod tests {
         assert!(
             parse_opencode_models("invalid\n/providerless\nprovider/\nlog line here\n").is_none()
         );
+    }
+
+    #[test]
+    fn codex_config_reads_toplevel_model_and_reasoning() {
+        let (model, reasoning) = parse_codex_config_toplevel(
+            "model = \"gpt-5.6-sol\"\nmodel_reasoning_effort = \"high\"\n",
+        );
+        assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(reasoning.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn codex_config_missing_keys_are_none() {
+        let (model, reasoning) =
+            parse_codex_config_toplevel("# just a comment\napproval_policy = \"on-request\"\n");
+        assert!(model.is_none());
+        assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn codex_config_ignores_keys_inside_sections() {
+        // 顶层 model 才算数；[section] 之后的同名键（如 profile 覆盖）不应被误取。
+        let text = "model = \"gpt-5.6-sol\"\n\n[profiles.fast]\nmodel = \"o3-mini\"\nmodel_reasoning_effort = \"low\"\n";
+        let (model, reasoning) = parse_codex_config_toplevel(text);
+        assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
+        // 顶层没有 model_reasoning_effort（只在 section 里）→ None。
+        assert!(reasoning.is_none());
     }
 }

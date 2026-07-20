@@ -80,10 +80,16 @@ impl ModelSource {
 }
 
 /// 模型探测缓存条目：带来源，供 state 层按来源应用不同 TTL（probed 长、fallback 短负缓存）。
+/// 同时缓存 CLI 当前配置的模型/推理等级（current_*），使缓存命中也能回填胶囊。
 #[derive(Debug, Clone)]
 pub struct CachedAgentModels {
     pub models: Vec<RuntimeModelOption>,
     pub source: ModelSource,
+    /// CLI 自己当前配置的模型 id（codex config.toml / ACP currentModelId / claude resolved model）。
+    /// None = 该 CLI 无「当前模型」概念，前端显示「自动」。
+    pub current_model: Option<String>,
+    /// CLI 当前配置的推理等级 id（codex model_reasoning_effort / ACP default reasoning effort）。
+    pub current_reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
