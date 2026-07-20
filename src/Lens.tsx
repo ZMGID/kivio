@@ -2264,7 +2264,7 @@ export default function Lens() {
       {showBar && (
         <div
           ref={barRef}
-          className="absolute ease-out"
+          className="absolute z-[40] ease-out"
           onMouseDown={(e) => { if (stage !== 'select') e.stopPropagation() }}
           onMouseMove={(e) => { if (stage !== 'select') e.stopPropagation() }}
           onMouseUp={(e) => { if (stage !== 'select') e.stopPropagation() }}
