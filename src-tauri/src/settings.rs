@@ -128,6 +128,11 @@ pub struct ModelInfo {
     pub omit_temperature: Option<bool>,
     pub capabilities: Option<ModelCapabilities>,
     pub pricing: Option<ModelPricing>,
+    /// 每模型额外请求体字段（原样 merge 进 chat/completions body 根部）。
+    /// 用于给严格 OpenAI-compat 端点塞标准 schema 之外的私有旋钮，例如 NVIDIA NIM /
+    /// vLLM / SGLang 的 `chat_template_kwargs`、GLM 的 thinking 开关等。仅用于 model_overrides。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

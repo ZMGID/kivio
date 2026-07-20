@@ -36,11 +36,15 @@ export function ModelDetailDrawer({
   const [temperatureInput, setTemperatureInput] = useState(
     resolved.temperature?.toString() ?? '',
   )
+  const [extraBodyInput, setExtraBodyInput] = useState(
+    resolved.extraBody ? JSON.stringify(resolved.extraBody, null, 2) : '',
+  )
 
   useEffect(() => {
     const next = resolveModelInfo(modelName, overrides)
     setForm(next)
     setTemperatureInput(next.temperature?.toString() ?? '')
+    setExtraBodyInput(next.extraBody ? JSON.stringify(next.extraBody, null, 2) : '')
   }, [modelName, overrides])
 
   const updateField = useCallback(<K extends keyof ModelInfo>(key: K, value: ModelInfo[K]) => {
@@ -89,16 +93,46 @@ export function ModelDetailDrawer({
     !Number.isFinite(parsedTemperature) || parsedTemperature < 0 || parsedTemperature > 2
   )
 
+  // extraBody：留空=无覆盖；否则必须是合法 JSON 对象。非对象/解析失败视为无效并阻止保存。
+  const updateExtraBody = useCallback((value: string) => {
+    setExtraBodyInput(value)
+    const trimmed = value.trim()
+    if (!trimmed) {
+      setForm(prev => ({ ...prev, extraBody: undefined }))
+      return
+    }
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        setForm(prev => ({ ...prev, extraBody: parsed }))
+      }
+    } catch {
+      // 无效 JSON：保留输入文本，由 extraBodyInvalid 拦截保存，不改 form。
+    }
+  }, [])
+
+  const extraBodyInvalid = (() => {
+    const trimmed = extraBodyInput.trim()
+    if (!trimmed) return false
+    try {
+      const parsed = JSON.parse(trimmed)
+      return !(parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+    } catch {
+      return true
+    }
+  })()
+
   const handleSave = useCallback(() => {
-    if (temperatureInvalid) return
+    if (temperatureInvalid || extraBodyInvalid) return
     onSave(modelName, form)
-  }, [modelName, form, onSave, temperatureInvalid])
+  }, [modelName, form, onSave, temperatureInvalid, extraBodyInvalid])
 
   const handleReset = useCallback(() => {
     onReset(modelName)
     if (dbDefaults) {
       setForm(dbDefaults)
       setTemperatureInput(dbDefaults.temperature?.toString() ?? '')
+      setExtraBodyInput(dbDefaults.extraBody ? JSON.stringify(dbDefaults.extraBody, null, 2) : '')
     }
   }, [modelName, onReset, dbDefaults])
 
@@ -124,6 +158,11 @@ export function ModelDetailDrawer({
     input: lang === 'zh' ? '输入' : 'Input',
     output: lang === 'zh' ? '输出' : 'Output',
     cachedInput: lang === 'zh' ? '缓存输入' : 'Cached Input',
+    extraBody: lang === 'zh' ? '额外请求体 (JSON)' : 'Extra Request Body (JSON)',
+    extraBodyHint: lang === 'zh'
+      ? '原样合并进请求体根部。用于端点私有参数，如 NVIDIA NIM / vLLM 的 chat_template_kwargs。留空则不发送。'
+      : 'Merged into the request body root. For endpoint-specific params like NVIDIA NIM / vLLM chat_template_kwargs. Leave blank to omit.',
+    extraBodyInvalid: lang === 'zh' ? '请输入合法的 JSON 对象。' : 'Enter a valid JSON object.',
     save: lang === 'zh' ? '保存' : 'Save',
     reset: lang === 'zh' ? '重置为默认值' : 'Reset to Defaults',
     noDatabase: lang === 'zh' ? '未在数据库中找到此模型，可手动填写参数。' : 'Model not found in database. You can fill in parameters manually.',
@@ -246,6 +285,22 @@ export function ModelDetailDrawer({
               </div>
             </div>
           </div>
+
+          <div className="kv-drawer-section">
+            <label className="kv-drawer-label">{t.extraBody}</label>
+            <textarea
+              className="kv-input font-mono text-[12px] min-h-[88px] resize-y"
+              value={extraBodyInput}
+              onChange={(e) => updateExtraBody(e.target.value)}
+              placeholder={'{\n  "chat_template_kwargs": { "thinking": true }\n}'}
+              spellCheck={false}
+              data-tauri-drag-region="false"
+              aria-invalid={extraBodyInvalid}
+            />
+            <p className={`mt-1 text-[11px] ${extraBodyInvalid ? 'text-red-500' : 'text-neutral-400 dark:text-neutral-500'}`}>
+              {extraBodyInvalid ? t.extraBodyInvalid : t.extraBodyHint}
+            </p>
+          </div>
         </div>
 
         <div className="kv-drawer-footer">
@@ -263,7 +318,7 @@ export function ModelDetailDrawer({
           <Button
             variant="primary"
             onClick={handleSave}
-            disabled={!isDirty || temperatureInvalid}
+            disabled={!isDirty || temperatureInvalid || extraBodyInvalid}
             data-tauri-drag-region="false"
           >
             {t.save}

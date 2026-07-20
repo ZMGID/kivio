@@ -514,6 +514,20 @@ impl OpenAiChatProvider<'_> {
         {
             body["reasoning_effort"] = Value::String(level.to_string());
         }
+        // 模型级额外请求体字段（model_overrides[model].extra_body）：原样 merge 进 body 根部，
+        // 给严格端点塞标准 schema 外的私有旋钮（NVIDIA NIM / vLLM `chat_template_kwargs` 等）。
+        // 放在单次 provider_options 之前，让显式的单次覆盖仍然最后生效。
+        if let Some(extra) = self
+            .provider
+            .model_overrides
+            .get(&request.model)
+            .and_then(|info| info.extra_body.as_ref())
+            .and_then(|value| value.as_object())
+        {
+            for (key, value) in extra {
+                body[key] = value.clone();
+            }
+        }
         if let Some(overrides) = request.options.provider_options.as_object() {
             for (key, value) in overrides {
                 body[key] = value.clone();
@@ -1071,6 +1085,65 @@ mod tests {
     fn explicit_request_temperature_wins_over_provider_override() {
         let body = build_openai_temperature_body(Some(0.4), Some(1.2));
         assert_eq!(body["temperature"], serde_json::json!(1.2), "body: {body}");
+    }
+
+    #[test]
+    fn model_extra_body_merges_into_request_body_root() {
+        // model_overrides[model].extra_body 原样进 body 根部（NVIDIA NIM chat_template_kwargs 用例）。
+        let state =
+            AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
+        let mut model_overrides = std::collections::HashMap::new();
+        model_overrides.insert(
+            "deepseek-ai/deepseek-v4-pro".to_string(),
+            ModelInfo {
+                extra_body: Some(serde_json::json!({
+                    "chat_template_kwargs": { "thinking": true }
+                })),
+                ..ModelInfo::default()
+            },
+        );
+        let provider = ModelProvider {
+            id: "nv".into(),
+            name: "NV".into(),
+            api_keys: vec!["nvapi-test".into()],
+            api_key_legacy: None,
+            base_url: "https://integrate.api.nvidia.com/v1".into(),
+            available_models: vec!["deepseek-ai/deepseek-v4-pro".into()],
+            enabled_models: vec!["deepseek-ai/deepseek-v4-pro".into()],
+            enabled: true,
+            api_format: "openai_chat".into(),
+            model_overrides,
+            compress_request_body: false,
+        };
+        let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+        let request = GenerateRequest {
+            model: "deepseek-ai/deepseek-v4-pro".into(),
+            system: String::new(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: vec![MessagePart::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            options: GenerateOptions::default(),
+            metadata: Default::default(),
+        };
+        let body = adapter.request_body(&request, false);
+        assert_eq!(
+            body["chat_template_kwargs"],
+            serde_json::json!({ "thinking": true }),
+            "body: {body}"
+        );
+
+        // 无 override 的模型不受影响。
+        let plain = GenerateRequest {
+            model: "other-model".into(),
+            ..request
+        };
+        let plain_body = adapter.request_body(&plain, false);
+        assert!(
+            plain_body.get("chat_template_kwargs").is_none(),
+            "body: {plain_body}"
+        );
     }
 
     #[test]
