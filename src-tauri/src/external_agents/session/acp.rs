@@ -17,6 +17,16 @@ use crate::proc::NoConsoleWindow;
 
 const ACP_PROTOCOL_VERSION: i64 = 1;
 
+/// Handshake timeouts (缺陷 4 / R3): Paseo uses 60s; desktop starts at 30s. `initialize` and
+/// `session/new` each get their own budget so a slow one doesn't starve the other.
+const ACP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+const ACP_SESSION_NEW_TIMEOUT: Duration = Duration::from_secs(30);
+/// Wall-clock guard for the one-shot `run_acp_session` prompt phase (A3): external CLIs run long
+/// legitimate tasks, so this only trips on a truly hung stdout — not a normal long turn.
+const ACP_ONESHOT_WALL_CLOCK: Duration = Duration::from_secs(600);
+
+use crate::external_agents::spawn::{fold_stderr, join_stderr_tail as join_tail};
+
 #[derive(Debug, Clone)]
 pub struct AcpMcpServer {
     pub server_type: String,
@@ -712,6 +722,10 @@ pub async fn run_acp_session(
 
     let mut reader = BufReader::new(stdout).lines();
 
+    // A3: wall-clock guard so a hung stdout (prompt response never arrives / EOF never comes)
+    // can't spin the loop forever and later block `child.wait()`.
+    let wall_clock_start = std::time::Instant::now();
+
     while !finished {
         if cancel_check() {
             if let Some(ref sid) = session_id {
@@ -726,6 +740,12 @@ pub async fn run_acp_session(
             let _ = stdin.shutdown().await;
             let _ = child.start_kill();
             return Err("cancelled".to_string());
+        }
+
+        if wall_clock_start.elapsed() > ACP_ONESHOT_WALL_CLOCK {
+            let _ = stdin.shutdown().await;
+            let _ = child.start_kill();
+            return Err("ACP session timed out (wall-clock)".to_string());
         }
 
         let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
@@ -914,14 +934,117 @@ pub struct AcpSession {
     reader: Lines<BufReader<ChildStdout>>,
     session_id: String,
     next_id: u64,
+    /// Ring-buffered stderr tail (N1): drained for the process lifetime, joined on close / error
+    /// so a silent handshake/turn failure surfaces the CLI's stderr.
+    stderr_tail: tokio::task::JoinHandle<String>,
+    /// The `configOptions` id for the model selector, if this agent exposes one (used by
+    /// `session/set_config_option`); `None` → fall back to `session/set_model`.
+    model_config_id: Option<String>,
+    /// The `configOptions` id for reasoning/thinking level, if any. `None` (e.g. grok, whose
+    /// reasoning is a launch flag) → a reasoning change forces a reconnect instead.
+    reasoning_config_id: Option<String>,
+    /// Normalized model/reasoning the live session currently reflects, for mid-turn change
+    /// detection (N3). `None` = agent default.
+    current_model: Option<String>,
+    current_reasoning: Option<String>,
+}
+
+/// Sentinel returned by `run_turn` when a config change (reasoning without a config option) can
+/// only take effect by relaunching the CLI with new args — `run_persistent_turn` reconnects fresh.
+pub const NEEDS_RECONNECT: &str = "__needs_reconnect__";
+
+fn normalize_opt(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "default")
+        .map(str::to_string)
+}
+
+/// Scan an ACP `session/new` result's `configOptions` for the model + reasoning selector ids.
+fn find_config_ids(result: &Value) -> (Option<String>, Option<String>) {
+    let mut model_id = None;
+    let mut reasoning_id = None;
+    if let Some(config_options) = result.get("configOptions").and_then(|v| v.as_array()) {
+        for raw in config_options {
+            let Some(option) = raw.as_object() else {
+                continue;
+            };
+            let id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let category = option
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let id_l = id.to_lowercase();
+            if model_id.is_none() && (id == "model" || category == "model") {
+                model_id = Some(id.to_string());
+            } else if reasoning_id.is_none()
+                && (id_l.contains("reasoning")
+                    || id_l.contains("thought")
+                    || id_l.contains("thinking")
+                    || id_l.contains("effort")
+                    || category == "reasoning"
+                    || category == "thought")
+            {
+                reasoning_id = Some(id.to_string());
+            }
+        }
+    }
+    (model_id, reasoning_id)
+}
+
+/// Build the ACP request to switch the session model: `set_config_option` when the agent exposes a
+/// model config id, else `set_model`. Pure so the per-turn model-switch (N3) is unit-testable.
+fn model_set_rpc(
+    session_id: &str,
+    model_config_id: Option<&str>,
+    chosen: &str,
+) -> (&'static str, Value) {
+    match model_config_id {
+        Some(cfg) => (
+            "session/set_config_option",
+            json!({ "sessionId": session_id, "configId": cfg, "value": chosen }),
+        ),
+        None => (
+            "session/set_model",
+            json!({ "sessionId": session_id, "modelId": chosen }),
+        ),
+    }
+}
+
+/// What a mid-turn reasoning change needs (N3): nothing, an in-session `set_config_option`, or a
+/// full relaunch (agents whose reasoning is a launch flag, e.g. grok).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReasoningAction {
+    NoChange,
+    SetConfig { config_id: String, value: String },
+    Reconnect,
+}
+
+fn reasoning_action(
+    current: &Option<String>,
+    desired: &Option<String>,
+    config_id: &Option<String>,
+) -> ReasoningAction {
+    if current == desired {
+        return ReasoningAction::NoChange;
+    }
+    match config_id {
+        Some(cfg) => ReasoningAction::SetConfig {
+            config_id: cfg.clone(),
+            value: desired.clone().unwrap_or_else(|| "default".to_string()),
+        },
+        None => ReasoningAction::Reconnect,
+    }
 }
 
 impl AcpSession {
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         resolved_bin: &Path,
         args: &[String],
         cwd: &Path,
         model: Option<&str>,
+        reasoning: Option<&str>,
         mcp_servers: &[AcpMcpServer],
         resume_session: Option<&str>,
     ) -> Result<Self, String> {
@@ -934,94 +1057,118 @@ impl AcpSession {
             .no_console_window()
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| format!("spawn acp agent: {e}"))?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "stdin unavailable".to_string())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "stdout unavailable".to_string())?;
+            .map_err(|e| format!("spawn: {e}"))?;
+        // N1: drain stderr for the process lifetime.
+        let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
+        let mut stdin = match child.stdin.take() {
+            Some(s) => s,
+            None => {
+                let tail = join_tail(&mut child, stderr_tail).await;
+                return Err(fold_stderr("spawn: stdin unavailable".to_string(), &tail));
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                let tail = join_tail(&mut child, stderr_tail).await;
+                return Err(fold_stderr("spawn: stdout unavailable".to_string(), &tail));
+            }
+        };
         let mut reader = BufReader::new(stdout).lines();
 
-        write_rpc(
-            &mut stdin,
-            1,
-            "initialize",
-            json!({
-                "protocolVersion": ACP_PROTOCOL_VERSION,
-                "clientCapabilities": { "terminal": false },
-                "clientInfo": { "name": "kivio", "version": "external-agents" },
-            }),
-        )
-        .await?;
-        acp_read_until_id(&mut reader, &mut stdin, 1, Duration::from_secs(15)).await?;
+        // Fallible handshake, isolated so an error path can kill the child and fold in stderr.
+        let handshake = async {
+            write_rpc(
+                &mut stdin,
+                1,
+                "initialize",
+                json!({
+                    "protocolVersion": ACP_PROTOCOL_VERSION,
+                    "clientCapabilities": { "terminal": false },
+                    "clientInfo": { "name": "kivio", "version": "external-agents" },
+                }),
+            )
+            .await
+            .map_err(|e| format!("initialize: {e}"))?;
+            acp_read_until_id(&mut reader, &mut stdin, 1, ACP_INITIALIZE_TIMEOUT)
+                .await
+                .map_err(|e| format!("initialize: {e}"))?;
 
-        // session/new for a fresh session, session/load to resume a prior one.
-        let mut next_id: u64 = 2;
-        let (method, params) = match resume_session.filter(|s| !s.is_empty()) {
-            Some(sid) => {
-                let mut p = build_session_new_params(cwd, mcp_servers);
-                p["sessionId"] = json!(sid);
-                ("session/load", p)
-            }
-            None => ("session/new", build_session_new_params(cwd, mcp_servers)),
-        };
-        write_rpc(&mut stdin, next_id, method, params).await?;
-        let result =
-            acp_read_until_id(&mut reader, &mut stdin, next_id, Duration::from_secs(20)).await?;
-        next_id += 1;
-
-        let session_id = match resume_session.filter(|s| !s.is_empty()) {
-            Some(sid) => sid.to_string(),
-            None => result
-                .get("sessionId")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .ok_or_else(|| "invalid session/new response".to_string())?,
-        };
-
-        // Optional model selection (set_config_option / set_model), mirroring run_acp_session.
-        if let Some(chosen) = model.filter(|m| !m.is_empty() && *m != "default") {
-            let mut model_config_id: Option<String> = None;
-            if let Some(config_options) = result.get("configOptions").and_then(|v| v.as_array()) {
-                for raw in config_options {
-                    if let Some(option) = raw.as_object() {
-                        let id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        if id == "model"
-                            || option.get("category").and_then(|v| v.as_str()) == Some("model")
-                        {
-                            model_config_id = Some(id.to_string());
-                            break;
-                        }
-                    }
+            // session/new for a fresh session, session/load to resume a prior one.
+            let mut next_id: u64 = 2;
+            let (method, params) = match resume_session.filter(|s| !s.is_empty()) {
+                Some(sid) => {
+                    let mut p = build_session_new_params(cwd, mcp_servers);
+                    p["sessionId"] = json!(sid);
+                    ("session/load", p)
                 }
-            }
-            let (set_method, set_params) = match &model_config_id {
-                Some(cfg) => (
-                    "session/set_config_option",
-                    json!({ "sessionId": session_id, "configId": cfg, "value": chosen }),
-                ),
-                None => (
-                    "session/set_model",
-                    json!({ "sessionId": session_id, "modelId": chosen }),
-                ),
+                None => ("session/new", build_session_new_params(cwd, mcp_servers)),
             };
-            write_rpc(&mut stdin, next_id, set_method, set_params).await?;
-            // Best-effort: wait for the ack but don't fail the session if the agent ignores it.
-            let _ =
-                acp_read_until_id(&mut reader, &mut stdin, next_id, Duration::from_secs(10)).await;
+            write_rpc(&mut stdin, next_id, method, params)
+                .await
+                .map_err(|e| format!("session-new: {e}"))?;
+            let result =
+                acp_read_until_id(&mut reader, &mut stdin, next_id, ACP_SESSION_NEW_TIMEOUT)
+                    .await
+                    .map_err(|e| format!("session-new: {e}"))?;
             next_id += 1;
-        }
 
-        Ok(Self {
-            child,
-            stdin,
-            reader,
-            session_id,
-            next_id,
-        })
+            let session_id = match resume_session.filter(|s| !s.is_empty()) {
+                Some(sid) => sid.to_string(),
+                None => result
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| "session-new: invalid session/new response".to_string())?,
+            };
+
+            let (model_config_id, reasoning_config_id) = find_config_ids(&result);
+
+            // Optional model selection (set_config_option / set_model), mirroring run_acp_session.
+            let chosen_model = normalize_opt(model);
+            if let Some(chosen) = chosen_model.as_deref() {
+                let (set_method, set_params) =
+                    model_set_rpc(&session_id, model_config_id.as_deref(), chosen);
+                write_rpc(&mut stdin, next_id, set_method, set_params)
+                    .await
+                    .map_err(|e| format!("session-new: {e}"))?;
+                // Best-effort: wait for the ack but don't fail the session if the agent ignores it.
+                let _ =
+                    acp_read_until_id(&mut reader, &mut stdin, next_id, Duration::from_secs(10))
+                        .await;
+                next_id += 1;
+            }
+
+            Ok::<_, String>((
+                session_id,
+                next_id,
+                model_config_id,
+                reasoning_config_id,
+                chosen_model,
+            ))
+        }
+        .await;
+
+        match handshake {
+            Ok((session_id, next_id, model_config_id, reasoning_config_id, current_model)) => {
+                Ok(Self {
+                    child,
+                    stdin,
+                    reader,
+                    session_id,
+                    next_id,
+                    stderr_tail,
+                    model_config_id,
+                    reasoning_config_id,
+                    current_model,
+                    current_reasoning: normalize_opt(reasoning),
+                })
+            }
+            Err(msg) => {
+                let tail = join_tail(&mut child, stderr_tail).await;
+                Err(fold_stderr(msg, &tail))
+            }
+        }
     }
 
     pub fn session_id(&self) -> &str {
@@ -1030,13 +1177,70 @@ impl AcpSession {
 
     /// Run one prompt turn over the live session. Emits events into `events`; an incoming
     /// `Cancel` on `control` sends `session/cancel` without killing the process.
+    ///
+    /// `model`/`reasoning` are re-applied per turn (N3): a model change goes through
+    /// `session/set_config_option` / `session/set_model` in-session; a reasoning change with no
+    /// config option (grok's launch-flag reasoning) returns `Err(NEEDS_RECONNECT)` so the caller
+    /// relaunches the CLI with new args.
     pub async fn run_turn(
         &mut self,
         prompt: &str,
+        model: Option<&str>,
+        reasoning: Option<&str>,
         images: &[crate::external_agents::attachments::ImageBlock],
         events: &mpsc::Sender<UnifiedAgentEvent>,
         control: &mut mpsc::Receiver<SessionCommand>,
     ) -> Result<(), String> {
+        // Apply mid-session config changes before sending the prompt (N3).
+        let desired_reasoning = normalize_opt(reasoning);
+        match reasoning_action(
+            &self.current_reasoning,
+            &desired_reasoning,
+            &self.reasoning_config_id,
+        ) {
+            ReasoningAction::NoChange => {}
+            ReasoningAction::SetConfig { config_id, value } => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let _ = write_rpc(
+                    &mut self.stdin,
+                    id,
+                    "session/set_config_option",
+                    json!({ "sessionId": self.session_id, "configId": config_id, "value": value }),
+                )
+                .await;
+                let _ = acp_read_until_id(
+                    &mut self.reader,
+                    &mut self.stdin,
+                    id,
+                    Duration::from_secs(10),
+                )
+                .await;
+                self.current_reasoning = desired_reasoning;
+            }
+            // Reasoning is a launch flag (grok) — only a relaunch with new args applies it.
+            ReasoningAction::Reconnect => return Err(NEEDS_RECONNECT.to_string()),
+        }
+
+        let desired_model = normalize_opt(model);
+        if desired_model != self.current_model {
+            if let Some(chosen) = desired_model.as_deref() {
+                let id = self.next_id;
+                self.next_id += 1;
+                let (method, params) =
+                    model_set_rpc(&self.session_id, self.model_config_id.as_deref(), chosen);
+                let _ = write_rpc(&mut self.stdin, id, method, params).await;
+                let _ = acp_read_until_id(
+                    &mut self.reader,
+                    &mut self.stdin,
+                    id,
+                    Duration::from_secs(10),
+                )
+                .await;
+            }
+            self.current_model = desired_model;
+        }
+
         let prompt_id = self.next_id;
         self.next_id += 1;
         write_rpc(
@@ -1146,6 +1350,8 @@ impl AcpSession {
         let _ = self.stdin.shutdown().await;
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+        // Child is dead → its stderr hit EOF → the drain task finishes; join it so the task ends.
+        let _ = self.stderr_tail.await;
     }
 }
 
@@ -1227,12 +1433,25 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionC
             match cmd {
                 SessionCommand::RunTurn {
                     prompt,
+                    model,
+                    reasoning,
                     images,
                     events,
                     done,
-                    ..
                 } => {
-                    let result = session.run_turn(&prompt, &images, &events, &mut rx).await;
+                    // Invariant (A4): `run_turn` sends all its `events` before returning, and mpsc
+                    // preserves order, so every event is already queued when `done` fires — the
+                    // caller's post-`done` `try_recv` drain sees them all. Keep `done.send` LAST.
+                    let result = session
+                        .run_turn(
+                            &prompt,
+                            model.as_deref(),
+                            reasoning.as_deref(),
+                            &images,
+                            &events,
+                            &mut rx,
+                        )
+                        .await;
                     let _ = done.send(result);
                 }
                 SessionCommand::Cancel => {}
@@ -1285,7 +1504,7 @@ mod tests {
 
         let bin = which_bin("cursor-agent").expect("cursor-agent on PATH");
         let cwd = std::env::temp_dir();
-        let session = AcpSession::connect(&bin, &["acp".to_string()], &cwd, None, &[], None)
+        let session = AcpSession::connect(&bin, &["acp".to_string()], &cwd, None, None, &[], None)
             .await
             .expect("connect cursor-agent acp");
         let sid = session.session_id().to_string();
@@ -1531,6 +1750,79 @@ mod tests {
         });
         let models = normalize_models(&result);
         assert!(models.iter().any(|m| m.id == "grok-4.3"));
+    }
+
+    // ---- N3: per-turn model / reasoning change decisions (Step 5) ----
+
+    #[test]
+    fn model_set_rpc_uses_config_option_when_id_present() {
+        let (method, params) = model_set_rpc("sess-1", Some("model"), "grok-4.5");
+        assert_eq!(method, "session/set_config_option");
+        assert_eq!(params["sessionId"], json!("sess-1"));
+        assert_eq!(params["configId"], json!("model"));
+        assert_eq!(params["value"], json!("grok-4.5"));
+    }
+
+    #[test]
+    fn model_set_rpc_falls_back_to_set_model() {
+        let (method, params) = model_set_rpc("sess-1", None, "sonnet-4");
+        assert_eq!(method, "session/set_model");
+        assert_eq!(params["sessionId"], json!("sess-1"));
+        assert_eq!(params["modelId"], json!("sonnet-4"));
+    }
+
+    #[test]
+    fn reasoning_action_no_change_when_equal() {
+        let cur = Some("high".to_string());
+        let want = Some("high".to_string());
+        assert_eq!(
+            reasoning_action(&cur, &want, &Some("reasoning".to_string())),
+            ReasoningAction::NoChange
+        );
+    }
+
+    #[test]
+    fn reasoning_action_sets_config_when_option_available() {
+        let cur = Some("low".to_string());
+        let want = Some("high".to_string());
+        assert_eq!(
+            reasoning_action(&cur, &want, &Some("reasoning_effort".to_string())),
+            ReasoningAction::SetConfig {
+                config_id: "reasoning_effort".to_string(),
+                value: "high".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn reasoning_action_reconnects_when_launch_flag_only() {
+        // grok: reasoning is a launch flag → no config id → change forces a reconnect.
+        let cur = Some("low".to_string());
+        let want = Some("high".to_string());
+        assert_eq!(
+            reasoning_action(&cur, &want, &None),
+            ReasoningAction::Reconnect
+        );
+    }
+
+    #[test]
+    fn find_config_ids_picks_model_and_reasoning() {
+        let result = json!({
+            "configOptions": [
+                { "id": "model", "options": [] },
+                { "id": "reasoning_effort", "options": [] },
+            ]
+        });
+        let (model_id, reasoning_id) = find_config_ids(&result);
+        assert_eq!(model_id.as_deref(), Some("model"));
+        assert_eq!(reasoning_id.as_deref(), Some("reasoning_effort"));
+    }
+
+    #[test]
+    fn find_config_ids_none_when_absent() {
+        let (model_id, reasoning_id) = find_config_ids(&json!({}));
+        assert!(model_id.is_none());
+        assert!(reasoning_id.is_none());
     }
 
     fn event_variant(event: &UnifiedAgentEvent) -> &'static str {

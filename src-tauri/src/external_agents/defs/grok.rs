@@ -114,9 +114,7 @@ mod tests {
         assert_eq!(args.first().map(String::as_str), Some("agent"));
         assert_eq!(args.last().map(String::as_str), Some("stdio"));
         assert!(args.windows(2).any(|w| w == ["-m", "grok-4.5"]));
-        assert!(args
-            .windows(2)
-            .any(|w| w == ["--reasoning-effort", "high"]));
+        assert!(args.windows(2).any(|w| w == ["--reasoning-effort", "high"]));
         assert!(args.contains(&"--always-approve".to_string()));
     }
 
@@ -144,7 +142,10 @@ mod tests {
             GROK_AGENT_DEF.model_probe,
             Some(ModelProbeStrategy::Acp)
         ));
-        assert_eq!(GROK_AGENT_DEF.model_probe_args, Some(&["agent", "stdio"][..]));
+        assert_eq!(
+            GROK_AGENT_DEF.model_probe_args,
+            Some(&["agent", "stdio"][..])
+        );
         assert!(matches!(GROK_AGENT_DEF.slash_strategy, SlashStrategy::Acp));
     }
 
@@ -170,7 +171,10 @@ mod tests {
         );
         assert!(detected.available, "grok binary not found on PATH");
         assert_eq!(detected.auth_status.as_deref(), Some("ok"));
-        assert!(detected.models.len() > 1, "ACP model probe returned nothing");
+        assert!(
+            detected.models.len() > 1,
+            "ACP model probe returned nothing"
+        );
 
         let bin = resolve_binary(&GROK_AGENT_DEF).await.expect("resolve grok");
         let args = build_grok_args(

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStderr, Command};
 use tokio::time::timeout;
 
 use crate::external_agents::types::{PromptInputFormat, RuntimeAgentDef};
@@ -20,28 +20,62 @@ pub struct SpawnedAgent {
 /// lines are dropped and the buffer is capped at `STDERR_CAP_CHARS` (keeping the tail — the last
 /// lines are usually the actual error). Call before the stdout read loop; await after `wait()`.
 pub fn drain_stderr(child: &mut Child) -> tokio::task::JoinHandle<String> {
-    const STDERR_CAP_CHARS: usize = 8192;
-    let stderr = child.stderr.take();
+    spawn_stderr_tail(child.stderr.take())
+}
+
+/// Ring-buffer stderr drain for persistent sessions (N1): the CLI process is long-lived and its
+/// stderr is `take()`n separately from stdout, so we can't use `drain_stderr(&mut Child)`. Spawns a
+/// task that accumulates the tail (last `STDERR_CAP_CHARS`) until stderr hits EOF (i.e. the child
+/// dies / is killed), then returns it. Join the handle on close / error to fold into diagnostics.
+pub fn spawn_stderr_tail(stderr: Option<ChildStderr>) -> tokio::task::JoinHandle<String> {
     tokio::spawn(async move {
-        let Some(stderr) = stderr else {
-            return String::new();
-        };
-        let mut reader = BufReader::new(stderr).lines();
-        let mut out = String::new();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(&line);
-            if out.chars().count() > STDERR_CAP_CHARS {
-                out = tail_chars(&out, STDERR_CAP_CHARS);
-            }
+        match stderr {
+            Some(stderr) => accumulate_tail(stderr, STDERR_CAP_CHARS).await,
+            None => String::new(),
         }
-        out
     })
+}
+
+const STDERR_CAP_CHARS: usize = 8192;
+
+/// Kill the child (so its stderr hits EOF) and join the drain task to recover the stderr tail.
+/// Used by persistent sessions on a handshake/connect error path (N1 + R2).
+pub async fn join_stderr_tail(
+    child: &mut Child,
+    stderr_tail: tokio::task::JoinHandle<String>,
+) -> String {
+    let _ = child.start_kill();
+    stderr_tail.await.unwrap_or_default()
+}
+
+/// Append a drained stderr tail to an error message when non-empty (for R2 diagnostics).
+pub fn fold_stderr(msg: String, stderr_tail: &str) -> String {
+    if stderr_tail.trim().is_empty() {
+        msg
+    } else {
+        format!("{msg}\nstderr: {}", stderr_tail.trim())
+    }
+}
+
+/// Read lines from `reader` until EOF, keeping only the last `cap` characters (char-boundary safe).
+/// Blank lines are dropped. Extracted from the drain tasks so the ring-buffer bound is unit-testable
+/// without spawning a real process.
+async fn accumulate_tail<R: AsyncRead + Unpin>(reader: R, cap: usize) -> String {
+    let mut lines = BufReader::new(reader).lines();
+    let mut out = String::new();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&line);
+        if out.chars().count() > cap {
+            out = tail_chars(&out, cap);
+        }
+    }
+    out
 }
 
 /// Keep the last `max_chars` characters of `value` (char-boundary safe).
@@ -263,7 +297,10 @@ mod tests {
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["type"], serde_json::json!("text"));
         assert_eq!(arr[1]["type"], serde_json::json!("image"));
-        assert_eq!(arr[1]["source"]["media_type"], serde_json::json!("image/png"));
+        assert_eq!(
+            arr[1]["source"]["media_type"],
+            serde_json::json!("image/png")
+        );
         assert_eq!(arr[1]["source"]["data"], serde_json::json!("AAAA"));
     }
 
@@ -276,5 +313,30 @@ mod tests {
         };
         let content = stream_json_user_content("/compact", std::slice::from_ref(&img));
         assert_eq!(content, serde_json::json!("/compact"));
+    }
+
+    #[tokio::test]
+    async fn accumulate_tail_keeps_only_the_tail_and_finishes_on_eof() {
+        // 200 numbered lines far exceeding an 8-char cap → only the last chars survive, and the
+        // task completes once the in-memory reader hits EOF.
+        let mut input = String::new();
+        for i in 0..200 {
+            input.push_str(&format!("line{i}\n"));
+        }
+        let tail = accumulate_tail(input.as_bytes(), 8).await;
+        assert!(
+            tail.chars().count() <= 8,
+            "tail should be capped, got {tail:?}"
+        );
+        assert!(
+            tail.ends_with("line199"),
+            "tail should keep the end, got {tail:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn accumulate_tail_drops_blank_lines() {
+        let tail = accumulate_tail("\n\nhello\n\nworld\n".as_bytes(), 8192).await;
+        assert_eq!(tail, "hello\nworld");
     }
 }

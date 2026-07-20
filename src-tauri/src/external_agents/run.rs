@@ -171,17 +171,24 @@ pub async fn run_external_cli_reply(
     ) = if is_slash {
         (Vec::new(), Vec::new())
     } else if def.supports_native_image {
-        crate::external_agents::attachments::load_image_blocks(image_paths, def.image_mime_whitelist)
+        crate::external_agents::attachments::load_image_blocks(
+            image_paths,
+            def.image_mime_whitelist,
+        )
     } else {
         (Vec::new(), image_paths.to_vec())
     };
     if !is_slash {
-        composed.full_prompt.push_str(
-            &crate::external_agents::attachments::image_paths_note(&degraded_image_paths),
-        );
         composed
             .full_prompt
-            .push_str(&crate::external_agents::attachments::file_attachments_note(file_paths));
+            .push_str(&crate::external_agents::attachments::image_paths_note(
+                &degraded_image_paths,
+            ));
+        composed
+            .full_prompt
+            .push_str(&crate::external_agents::attachments::file_attachments_note(
+                file_paths,
+            ));
     }
 
     let mut extra_dirs = extra_allowed_dirs_for_agent(def, &settings.chat_tools.skill_scan_paths);
@@ -378,6 +385,11 @@ pub async fn run_external_cli_reply(
     // keep their process alive in the registry, so there is nothing to wait on here.
     let exit_code: Option<i32> = match spawned_opt {
         Some(mut spawned) => {
+            // A6: on a read error the child may still be running (e.g. an I/O error that didn't
+            // kill it) — kill first so `wait()` can't block on a live process.
+            if read_result.is_err() {
+                let _ = spawned.child.start_kill();
+            }
             let status = spawned.child.wait().await.map_err(|e| e.to_string())?;
             status.code()
         }
@@ -387,15 +399,24 @@ pub async fn run_external_cli_reply(
         Some(task) => task.await.unwrap_or_default(),
         None => String::new(),
     };
+    // R2: a read error (non-cancel) becomes a classified, actionable bubble — the raw error goes
+    // into a collapsible `<details>` rather than being shown verbatim as the bubble body.
+    let mut error_rendered = false;
     if let Err(err) = &read_result {
-        stream_outcome = if err == "cancelled" {
-            "cancelled"
+        if err == "cancelled" {
+            stream_outcome = "cancelled".to_string();
         } else {
-            "error"
-        }
-        .to_string();
-        if err != "cancelled" && content.trim().is_empty() && raw_output.trim().is_empty() {
-            raw_output = format!("{} 读取输出失败：{}", def.name, err);
+            stream_outcome = "error".to_string();
+            let classified =
+                crate::external_agents::errors::classify(err, exit_code, &stderr_output, &agent_id);
+            let bubble = classified.render_bubble();
+            if content.trim().is_empty() {
+                content = bubble;
+            } else {
+                content.push_str("\n\n");
+                content.push_str(&bubble);
+            }
+            error_rendered = true;
         }
     } else if exit_code.map(|code| code != 0).unwrap_or(false) {
         if content.trim().is_empty() {
@@ -405,7 +426,7 @@ pub async fn run_external_cli_reply(
 
     // Fill empty content from the richest available fallback: captured raw stdout lines first,
     // then stderr (as an explicit failure), then the slash / no-output placeholders.
-    if content.trim().is_empty() {
+    if !error_rendered && content.trim().is_empty() {
         if !raw_output.trim().is_empty() {
             content = raw_output.trim().to_string();
         } else if !stderr_output.trim().is_empty() {
@@ -431,8 +452,12 @@ pub async fn run_external_cli_reply(
     }
 
     // A nonzero exit with stderr is a failure even if the CLI also produced some stdout — append
-    // the stderr (unless it's already the content) so the error is visible, not swallowed.
-    if exit_code.map(|code| code != 0).unwrap_or(false) && !stderr_output.trim().is_empty() {
+    // the stderr (unless it's already the content) so the error is visible, not swallowed. Skipped
+    // when a classified error bubble already folded the stderr into its `<details>`.
+    if !error_rendered
+        && exit_code.map(|code| code != 0).unwrap_or(false)
+        && !stderr_output.trim().is_empty()
+    {
         stream_outcome = "error".to_string();
         if !content.contains(stderr_output.trim()) {
             if !content.trim().is_empty() {
@@ -584,17 +609,17 @@ where
     E: FnMut(UnifiedAgentEvent),
     C: Fn() -> bool,
 {
-    use crate::external_agents::session::live::{LiveSession, SessionCommand};
+    use crate::external_agents::session::live::LiveSession;
     use crate::external_agents::session::{
         clear_live_handle, load_live_handle, save_live_handle, LiveSessionHandle,
     };
-    use tokio::sync::{mpsc, oneshot};
 
     let cwd_str = cwd.to_string_lossy().to_string();
     let protocol_tag = persistent_protocol_tag(protocol);
 
-    // 1. Reuse a live session already in the registry; 2. resume a persisted one; 3. fresh.
-    let (control, prompt) =
+    // Establish the control channel: 1. reuse a live session in the registry; 2. resume a
+    // persisted one; 3. connect fresh.
+    let (mut control, mut prompt) =
         match state.external_live_session_control(conversation_id, agent_id, &cwd_str) {
             Some(control) => (control, reuse_prompt.to_string()),
             None => {
@@ -609,6 +634,7 @@ where
                     args,
                     cwd,
                     model.as_deref(),
+                    reasoning.as_deref(),
                     sandbox.as_deref(),
                     &mcp_servers,
                     resume_native,
@@ -643,6 +669,206 @@ where
             }
         };
 
+    // At most one automatic fresh reconnect after a non-cancel / non-auth failure (R3), plus one
+    // reconnect for a config change that only a relaunch can apply (R4 NeedsReconnect). Each is
+    // gated by its own bool so a persistently-failing session can't loop.
+    let mut retried_after_failure = false;
+    let mut reconnected_for_config = false;
+    loop {
+        let outcome = drive_persistent_turn(
+            &control,
+            prompt.clone(),
+            model.clone(),
+            reasoning.clone(),
+            images,
+            emit,
+            cancel,
+        )
+        .await;
+
+        let err = match outcome {
+            Ok(()) => return Ok(()),
+            Err(e) => e,
+        };
+
+        // The turn's session is no longer usable — drop it from the registry.
+        state.remove_external_live_session(conversation_id);
+
+        match persistent_failure_action(
+            &err,
+            agent_id,
+            retried_after_failure,
+            reconnected_for_config,
+        ) {
+            // Cancelled keeps the persisted handle so a later turn can resume the native session.
+            PersistentFailureAction::Cancelled => return Err(err),
+            // Auth / exhausted retries → drop the handle (process likely dead) and surface the error.
+            PersistentFailureAction::Fatal => {
+                clear_live_handle(app, conversation_id);
+                return Err(err);
+            }
+            // Launch-flag config change (reasoning) → relaunch fresh with the new `args`.
+            PersistentFailureAction::ReconnectConfig => {
+                reconnected_for_config = true;
+            }
+            // Transient failure → drop the stale handle and reconnect fresh once.
+            PersistentFailureAction::RetryFresh => {
+                retried_after_failure = true;
+                clear_live_handle(app, conversation_id);
+            }
+        }
+
+        control = reconnect_fresh(
+            app,
+            state,
+            conversation_id,
+            agent_id,
+            protocol,
+            protocol_tag,
+            resolved_bin,
+            args,
+            cwd,
+            &cwd_str,
+            model.as_deref(),
+            reasoning.as_deref(),
+            sandbox.as_deref(),
+            &mcp_servers,
+        )
+        .await?;
+        prompt = first_prompt.to_string();
+    }
+}
+
+/// Connect a FRESH persistent session (no resume), persist its handle, and register it. Used by
+/// `run_persistent_turn`'s auto-reconnect / config-reconnect paths.
+#[allow(clippy::too_many_arguments)]
+async fn reconnect_fresh(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    conversation_id: &str,
+    agent_id: &str,
+    protocol: StreamFormat,
+    protocol_tag: &str,
+    resolved_bin: &std::path::Path,
+    args: &[String],
+    cwd: &std::path::Path,
+    cwd_str: &str,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    sandbox: Option<&str>,
+    mcp_servers: &[AcpMcpServer],
+) -> Result<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>, String>
+{
+    use crate::external_agents::session::live::LiveSession;
+    use crate::external_agents::session::{save_live_handle, LiveSessionHandle};
+
+    let (control, native_id, _resumed) = connect_persistent_session(
+        protocol,
+        resolved_bin,
+        args,
+        cwd,
+        model,
+        reasoning,
+        sandbox,
+        mcp_servers,
+        None,
+    )
+    .await?;
+    let _ = save_live_handle(
+        app,
+        conversation_id,
+        &LiveSessionHandle {
+            agent_id: agent_id.to_string(),
+            protocol: protocol_tag.to_string(),
+            native_id,
+            cwd: cwd_str.to_string(),
+        },
+    );
+    state.register_external_live_session(
+        conversation_id.to_string(),
+        LiveSession {
+            control: control.clone(),
+            agent_id: agent_id.to_string(),
+            cwd: cwd_str.to_string(),
+            last_activity: std::time::Instant::now(),
+        },
+    );
+    Ok(control)
+}
+
+/// What `run_persistent_turn` should do after a turn fails. Pure so the retry policy is unit
+/// testable without a Tauri context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistentFailureAction {
+    /// User cancellation — surface as-is, keep the persisted handle for a later resume.
+    Cancelled,
+    /// Relaunch fresh to apply a launch-flag config change (reasoning without a config option).
+    ReconnectConfig,
+    /// Transient failure — reconnect fresh once and re-send the prompt.
+    RetryFresh,
+    /// Auth failure or exhausted retries — give up and surface the error.
+    Fatal,
+}
+
+fn persistent_failure_action(
+    err: &str,
+    agent_id: &str,
+    retried_after_failure: bool,
+    reconnected_for_config: bool,
+) -> PersistentFailureAction {
+    if err == "cancelled" {
+        return PersistentFailureAction::Cancelled;
+    }
+    if err == crate::external_agents::session::acp::NEEDS_RECONNECT {
+        // Only relaunch once for a config change; a repeat means the relaunch didn't help.
+        return if reconnected_for_config {
+            PersistentFailureAction::Fatal
+        } else {
+            PersistentFailureAction::ReconnectConfig
+        };
+    }
+    // Auth is never auto-retried (a doomed retry could trigger a login storm).
+    if crate::external_agents::errors::is_auth_error(err, agent_id) {
+        return PersistentFailureAction::Fatal;
+    }
+    if retried_after_failure {
+        PersistentFailureAction::Fatal
+    } else {
+        PersistentFailureAction::RetryFresh
+    }
+}
+
+/// True when a cancel was requested (`cancel_at` set) and the grace period has elapsed without the
+/// turn winding down — the caller escalates to `Close` (A5). Pure for unit testing.
+fn cancel_should_escalate(
+    cancel_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+    grace: std::time::Duration,
+) -> bool {
+    matches!(cancel_at, Some(t) if now.saturating_duration_since(t) >= grace)
+}
+
+/// Send one `RunTurn` on `control` and pump its events/terminal result. On user cancel, send a
+/// protocol-level `Cancel`; if the turn doesn't wind down within `CANCEL_ESCALATE_GRACE`, escalate
+/// to `Close` (A5) so a hung session can't block cancellation indefinitely.
+async fn drive_persistent_turn<E, C>(
+    control: &tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
+    prompt: String,
+    model: Option<String>,
+    reasoning: Option<String>,
+    images: &[crate::external_agents::attachments::ImageBlock],
+    emit: &mut E,
+    cancel: &C,
+) -> Result<(), String>
+where
+    E: FnMut(UnifiedAgentEvent),
+    C: Fn() -> bool,
+{
+    use crate::external_agents::session::live::SessionCommand;
+    use tokio::sync::{mpsc, oneshot};
+
+    const CANCEL_ESCALATE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
     let (events_tx, mut events_rx) = mpsc::channel::<UnifiedAgentEvent>(64);
     let (done_tx, done_rx) = oneshot::channel::<Result<(), String>>();
     if control
@@ -657,31 +883,23 @@ where
         .await
         .is_err()
     {
-        state.remove_external_live_session(conversation_id);
-        clear_live_handle(app, conversation_id);
         return Err("外部 CLI 会话已结束，请重试".to_string());
     }
 
     let mut done_rx = done_rx;
     let mut events_open = true;
     let mut cancel_sent = false;
+    let mut cancel_at: Option<std::time::Instant> = None;
     loop {
         tokio::select! {
             biased;
             result = &mut done_rx => {
+                // Invariant (A4): the actor sends every `event` before `done`, and mpsc preserves
+                // order, so all remaining events are already queued — drain them before returning.
                 while let Ok(event) = events_rx.try_recv() {
                     emit(event);
                 }
-                let outcome = result.unwrap_or_else(|_| Err("session actor dropped".to_string()));
-                // A non-cancel failure means the process likely died — drop the live session and
-                // its persisted handle so the next turn connects fresh.
-                if let Err(ref e) = outcome {
-                    state.remove_external_live_session(conversation_id);
-                    if e != "cancelled" {
-                        clear_live_handle(app, conversation_id);
-                    }
-                }
-                return outcome;
+                return result.unwrap_or_else(|_| Err("session actor dropped".to_string()));
             }
             maybe_event = events_rx.recv(), if events_open => {
                 match maybe_event {
@@ -693,7 +911,13 @@ where
         }
         if !cancel_sent && cancel() {
             cancel_sent = true;
+            cancel_at = Some(std::time::Instant::now());
             let _ = control.send(SessionCommand::Cancel).await;
+        }
+        // A5: protocol-level cancel didn't wind the turn down in time → escalate to a hard Close.
+        if cancel_should_escalate(cancel_at, std::time::Instant::now(), CANCEL_ESCALATE_GRACE) {
+            let _ = control.send(SessionCommand::Close).await;
+            return Err("cancelled".to_string());
         }
     }
 }
@@ -708,12 +932,14 @@ fn persistent_protocol_tag(protocol: StreamFormat) -> &'static str {
 
 /// Connect (or resume) a persistent protocol session, returning its control channel, native id,
 /// and whether a resume actually succeeded. Falls back to a fresh session if resume fails.
+#[allow(clippy::too_many_arguments)]
 async fn connect_persistent_session(
     protocol: StreamFormat,
     resolved_bin: &std::path::Path,
     args: &[String],
     cwd: &std::path::Path,
     model: Option<&str>,
+    reasoning: Option<&str>,
     sandbox: Option<&str>,
     mcp_servers: &[AcpMcpServer],
     resume_native: Option<String>,
@@ -746,6 +972,9 @@ async fn connect_persistent_session(
                     let id = session.thread_id().to_string();
                     return Ok((spawn_codex_session_actor(session), id, true));
                 }
+                // C3: resume failed → fall through to fresh so the caller overwrites the stale
+                // live handle (whose native_id is dead) instead of retrying a doomed resume.
+                eprintln!("[external-agent] codex resume failed, connecting fresh");
             }
             let session =
                 CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None)
@@ -755,16 +984,27 @@ async fn connect_persistent_session(
         }
         StreamFormat::AcpJsonRpc => {
             if let Some(sid) = resume_native.as_deref() {
-                if let Ok(session) =
-                    AcpSession::connect(resolved_bin, args, cwd, model, mcp_servers, Some(sid))
-                        .await
+                if let Ok(session) = AcpSession::connect(
+                    resolved_bin,
+                    args,
+                    cwd,
+                    model,
+                    reasoning,
+                    mcp_servers,
+                    Some(sid),
+                )
+                .await
                 {
                     let id = session.session_id().to_string();
                     return Ok((spawn_acp_session_actor(session), id, true));
                 }
+                // C3: resume failed → connect fresh; the caller's save_live_handle overwrites the
+                // stale handle so the next turn won't attempt the dead native_id again.
+                eprintln!("[external-agent] acp resume failed, connecting fresh");
             }
             let session =
-                AcpSession::connect(resolved_bin, args, cwd, model, mcp_servers, None).await?;
+                AcpSession::connect(resolved_bin, args, cwd, model, reasoning, mcp_servers, None)
+                    .await?;
             let id = session.session_id().to_string();
             Ok((spawn_acp_session_actor(session), id, false))
         }
@@ -1011,5 +1251,65 @@ mod tests {
         assert_eq!(segments[0].text.as_deref(), Some("before"));
         assert_eq!(segments[1].text.as_deref(), Some("after"));
         assert_eq!(after.phase, ChatMessageSegmentPhase::ToolLoop);
+    }
+
+    // ---- Persistent-session retry policy (R3 / R4) ----
+
+    use crate::external_agents::session::acp::NEEDS_RECONNECT;
+
+    #[test]
+    fn cancelled_failure_is_surfaced_as_is() {
+        assert_eq!(
+            persistent_failure_action("cancelled", "grok", false, false),
+            PersistentFailureAction::Cancelled
+        );
+    }
+
+    #[test]
+    fn auth_failure_is_never_retried() {
+        assert_eq!(
+            persistent_failure_action("Authentication required", "grok", false, false),
+            PersistentFailureAction::Fatal
+        );
+    }
+
+    #[test]
+    fn transient_failure_retries_fresh_once() {
+        assert_eq!(
+            persistent_failure_action("ACP session exited mid-turn", "cursor-agent", false, false),
+            PersistentFailureAction::RetryFresh
+        );
+        // Already retried → give up.
+        assert_eq!(
+            persistent_failure_action("ACP session exited mid-turn", "cursor-agent", true, false),
+            PersistentFailureAction::Fatal
+        );
+    }
+
+    #[test]
+    fn needs_reconnect_relaunches_once_then_gives_up() {
+        assert_eq!(
+            persistent_failure_action(NEEDS_RECONNECT, "grok", false, false),
+            PersistentFailureAction::ReconnectConfig
+        );
+        assert_eq!(
+            persistent_failure_action(NEEDS_RECONNECT, "grok", false, true),
+            PersistentFailureAction::Fatal
+        );
+    }
+
+    #[test]
+    fn cancel_escalates_only_after_grace() {
+        let now = std::time::Instant::now();
+        let grace = std::time::Duration::from_secs(10);
+        // No cancel requested → never escalate.
+        assert!(!cancel_should_escalate(None, now, grace));
+        // Cancel just now → within grace, don't escalate.
+        assert!(!cancel_should_escalate(Some(now), now, grace));
+        // Cancel 11s ago → escalate to Close.
+        let past = now
+            .checked_sub(std::time::Duration::from_secs(11))
+            .expect("instant in range");
+        assert!(cancel_should_escalate(Some(past), now, grace));
     }
 }

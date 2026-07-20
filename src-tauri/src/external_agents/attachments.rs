@@ -98,10 +98,8 @@ pub fn materialize_images_to_tempdir(images: &[ImageBlock]) -> Vec<PathBuf> {
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("png");
-        let dest = std::env::temp_dir().join(format!(
-            "kivio-ext-img-{}.{ext}",
-            uuid::Uuid::new_v4()
-        ));
+        let dest =
+            std::env::temp_dir().join(format!("kivio-ext-img-{}.{ext}", uuid::Uuid::new_v4()));
         if std::fs::copy(&img.path, &dest).is_ok() {
             out.push(dest);
         }
@@ -177,8 +175,7 @@ mod tests {
 
     #[test]
     fn load_blocks_missing_file_degrades() {
-        let (native, degraded) =
-            load_image_blocks(&[PathBuf::from("/no/such/img.png")], &[]);
+        let (native, degraded) = load_image_blocks(&[PathBuf::from("/no/such/img.png")], &[]);
         assert!(native.is_empty());
         assert_eq!(degraded.len(), 1);
     }

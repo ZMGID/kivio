@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::external_agents::session::live::SessionCommand;
+use crate::external_agents::spawn::{fold_stderr, join_stderr_tail};
 use crate::external_agents::stream::usage_from_numbers;
 use crate::external_agents::types::{ExternalCliSlashCommand, UnifiedAgentEvent};
 use crate::proc::NoConsoleWindow;
@@ -397,6 +398,31 @@ fn is_compact_slash(prompt: &str) -> bool {
     prompt.trim() == "/compact"
 }
 
+/// Build the `turn/start` params, applying the per-turn `model` / reasoning `effort` (R4: codex
+/// applies both every turn, so a mid-session switch takes effect on the next turn). Pure so the
+/// per-turn application is unit-testable.
+fn build_codex_turn_params(
+    thread_id: &str,
+    cwd: &str,
+    input: Vec<Value>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Value {
+    let mut turn_params = json!({
+        "threadId": thread_id,
+        "input": input,
+        "cwd": cwd,
+        "approvalPolicy": "never",
+    });
+    if let Some(effort) = effort {
+        turn_params["effort"] = json!(effort);
+    }
+    if let Some(model) = model {
+        turn_params["model"] = json!(model);
+    }
+    turn_params
+}
+
 /// A live Codex app-server connection: one `thread/start` (or `thread/resume`), then many
 /// `turn/start` calls over the same process. Owned exclusively by its actor task.
 pub struct CodexAppServerSession {
@@ -407,7 +433,13 @@ pub struct CodexAppServerSession {
     cwd: String,
     next_id: u64,
     emitted_tools: HashSet<String>,
+    /// Ring-buffered stderr tail (N1), joined on close / error for diagnostics.
+    stderr_tail: tokio::task::JoinHandle<String>,
 }
+
+/// Handshake timeouts (缺陷 4 / R3): 30s each, up from 15/20s.
+const CODEX_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+const CODEX_THREAD_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl CodexAppServerSession {
     /// Spawn `codex app-server`, `initialize`, then create or resume a thread. The process and
@@ -429,63 +461,89 @@ impl CodexAppServerSession {
             .no_console_window()
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| format!("spawn codex app-server: {e}"))?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "stdin unavailable".to_string())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "stdout unavailable".to_string())?;
+            .map_err(|e| format!("spawn: {e}"))?;
+        // N1: drain stderr for the process lifetime.
+        let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
+        let mut stdin = match child.stdin.take() {
+            Some(s) => s,
+            None => {
+                let tail = join_stderr_tail(&mut child, stderr_tail).await;
+                return Err(fold_stderr("spawn: stdin unavailable".to_string(), &tail));
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                let tail = join_stderr_tail(&mut child, stderr_tail).await;
+                return Err(fold_stderr("spawn: stdout unavailable".to_string(), &tail));
+            }
+        };
         let mut reader = BufReader::new(stdout).lines();
 
         let cwd_str = cwd.to_string_lossy().to_string();
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
 
-        write_rpc(
-            &mut stdin,
-            1,
-            "initialize",
-            json!({ "clientInfo": { "name": "kivio", "title": "kivio", "version": "0" } }),
-        )
-        .await?;
-        read_until_response(&mut reader, &mut stdin, 1, Duration::from_secs(15)).await?;
+        let handshake = async {
+            write_rpc(
+                &mut stdin,
+                1,
+                "initialize",
+                json!({ "clientInfo": { "name": "kivio", "title": "kivio", "version": "0" } }),
+            )
+            .await
+            .map_err(|e| format!("initialize: {e}"))?;
+            read_until_response(&mut reader, &mut stdin, 1, CODEX_INITIALIZE_TIMEOUT)
+                .await
+                .map_err(|e| format!("initialize: {e}"))?;
 
-        let (method, mut params) = match resume_thread.filter(|t| !t.is_empty()) {
-            Some(tid) => ("thread/resume", json!({ "threadId": tid })),
-            None => (
-                "thread/start",
-                json!({
-                    "cwd": cwd_str,
-                    "sandbox": sandbox.filter(|s| !s.is_empty()).unwrap_or("workspace-write"),
-                    "approvalPolicy": "never",
-                }),
-            ),
-        };
-        if let Some(m) = chosen_model {
-            params["model"] = json!(m);
+            let (method, mut params) = match resume_thread.filter(|t| !t.is_empty()) {
+                Some(tid) => ("thread/resume", json!({ "threadId": tid })),
+                None => (
+                    "thread/start",
+                    json!({
+                        "cwd": cwd_str,
+                        "sandbox": sandbox.filter(|s| !s.is_empty()).unwrap_or("workspace-write"),
+                        "approvalPolicy": "never",
+                    }),
+                ),
+            };
+            if let Some(m) = chosen_model {
+                params["model"] = json!(m);
+            }
+            write_rpc(&mut stdin, 2, method, params)
+                .await
+                .map_err(|e| format!("thread-start: {e}"))?;
+            let result =
+                read_until_response(&mut reader, &mut stdin, 2, CODEX_THREAD_START_TIMEOUT)
+                    .await
+                    .map_err(|e| format!("thread-start: {e}"))?;
+            let thread_id = result
+                .get("thread")
+                .and_then(|t| t.get("id"))
+                .and_then(|v| v.as_str())
+                .or_else(|| result.get("threadId").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .ok_or_else(|| format!("thread-start: invalid {method} response"))?;
+            Ok::<_, String>(thread_id)
         }
-        write_rpc(&mut stdin, 2, method, params).await?;
-        let result =
-            read_until_response(&mut reader, &mut stdin, 2, Duration::from_secs(20)).await?;
-        let thread_id = result
-            .get("thread")
-            .and_then(|t| t.get("id"))
-            .and_then(|v| v.as_str())
-            .or_else(|| result.get("threadId").and_then(|v| v.as_str()))
-            .map(str::to_string)
-            .ok_or_else(|| format!("invalid {method} response"))?;
+        .await;
 
-        Ok(Self {
-            child,
-            stdin,
-            reader,
-            thread_id,
-            cwd: cwd_str,
-            next_id: 3,
-            emitted_tools: HashSet::new(),
-        })
+        match handshake {
+            Ok(thread_id) => Ok(Self {
+                child,
+                stdin,
+                reader,
+                thread_id,
+                cwd: cwd_str,
+                next_id: 3,
+                emitted_tools: HashSet::new(),
+                stderr_tail,
+            }),
+            Err(msg) => {
+                let tail = join_stderr_tail(&mut child, stderr_tail).await;
+                Err(fold_stderr(msg, &tail))
+            }
+        }
     }
 
     pub fn thread_id(&self) -> &str {
@@ -525,18 +583,13 @@ impl CodexAppServerSession {
             for path in crate::external_agents::attachments::materialize_images_to_tempdir(images) {
                 input.push(json!({ "type": "localImage", "path": path.to_string_lossy() }));
             }
-            let mut turn_params = json!({
-                "threadId": self.thread_id,
-                "input": input,
-                "cwd": self.cwd,
-                "approvalPolicy": "never",
-            });
-            if let Some(effort) = chosen_effort {
-                turn_params["effort"] = json!(effort);
-            }
-            if let Some(m) = chosen_model {
-                turn_params["model"] = json!(m);
-            }
+            let turn_params = build_codex_turn_params(
+                &self.thread_id,
+                &self.cwd,
+                input,
+                chosen_model,
+                chosen_effort,
+            );
             write_rpc(&mut self.stdin, turn_id, "turn/start", turn_params).await?;
         }
 
@@ -624,6 +677,7 @@ impl CodexAppServerSession {
         let _ = self.stdin.shutdown().await;
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+        let _ = self.stderr_tail.await;
     }
 }
 
@@ -797,6 +851,9 @@ pub fn spawn_codex_session_actor(
                     events,
                     done,
                 } => {
+                    // Invariant (A4): `run_turn` sends every `event` before returning, and mpsc
+                    // preserves order, so the caller's post-`done` drain sees them all. `done.send`
+                    // stays LAST.
                     let result = session
                         .run_turn(
                             &prompt,
@@ -1101,6 +1158,34 @@ mod tests {
             got_text || got_error,
             "expected at least one TextDelta or a clean Error, got: {seq:?}"
         );
+    }
+
+    #[test]
+    fn build_codex_turn_params_applies_model_and_effort_per_turn() {
+        let params = build_codex_turn_params(
+            "thread-1",
+            "/work",
+            vec![json!({ "type": "text", "text": "hi" })],
+            Some("gpt-5.3-codex"),
+            Some("high"),
+        );
+        assert_eq!(params["threadId"], json!("thread-1"));
+        assert_eq!(params["model"], json!("gpt-5.3-codex"));
+        assert_eq!(params["effort"], json!("high"));
+        assert_eq!(params["approvalPolicy"], json!("never"));
+    }
+
+    #[test]
+    fn build_codex_turn_params_omits_defaults() {
+        let params = build_codex_turn_params(
+            "thread-1",
+            "/work",
+            vec![json!({ "type": "text", "text": "hi" })],
+            None,
+            None,
+        );
+        assert!(params.get("model").is_none());
+        assert!(params.get("effort").is_none());
     }
 
     #[test]

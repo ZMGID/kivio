@@ -4,6 +4,7 @@ pub mod compact;
 pub mod context;
 pub mod defs;
 pub mod detection;
+pub mod errors;
 pub mod prompt;
 pub mod registry;
 pub mod run;
