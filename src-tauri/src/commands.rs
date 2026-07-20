@@ -515,6 +515,8 @@ pub(crate) async fn fetch_models(
 
 /// 测试供应商连接是否可用
 /// 多 key：测试时只用第一个 key（避免一次连接测试遍历多 key 让用户困惑）
+/// 有 model 时发一条极小对话请求（`max_tokens:1`），比 /models 更能反映“能不能调模型”，
+/// 也不依赖供应商支持 /models；无 model 时回退到 /models 探测。
 #[tauri::command]
 pub(crate) async fn test_provider_connection(
     state: State<'_, AppState>,
@@ -522,6 +524,7 @@ pub(crate) async fn test_provider_connection(
     provider: Option<ProviderConnectionInput>,
 ) -> Result<serde_json::Value, String> {
     let settings = state.settings_read().clone();
+    let model = provider.as_ref().and_then(|p| p.model.clone());
     let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
 
     let api_key = match api_keys.first() {
@@ -535,11 +538,33 @@ pub(crate) async fn test_provider_connection(
     };
 
     let retry_attempts = effective_retry_attempts(&settings);
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let result = send_with_retry("Provider API", retry_attempts, || {
-        with_standard_request_timeout(state.http.get(url.clone()).bearer_auth(&api_key)).send()
-    })
-    .await;
+    let base = base_url.trim_end_matches('/');
+
+    let result = match model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        Some(model) => {
+            let url = format!("{base}/chat/completions");
+            let body = serde_json::json!({
+                "model": model,
+                "messages": [{ "role": "user", "content": "hi" }],
+                "max_tokens": 1,
+            });
+            send_with_retry("Provider API", retry_attempts, || {
+                with_standard_request_timeout(
+                    state.http.post(url.clone()).bearer_auth(&api_key).json(&body),
+                )
+                .send()
+            })
+            .await
+        }
+        None => {
+            let url = format!("{base}/models");
+            send_with_retry("Provider API", retry_attempts, || {
+                with_standard_request_timeout(state.http.get(url.clone()).bearer_auth(&api_key))
+                    .send()
+            })
+            .await
+        }
+    };
 
     match result {
         Ok(_) => Ok(serde_json::json!({ "success": true })),

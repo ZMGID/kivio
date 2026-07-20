@@ -292,6 +292,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
         id: provider.id,
         baseUrl: provider.baseUrl,
         apiKeys: provider.apiKeys,
+        model: provider.enabledModels[0] ?? provider.availableModels[0],
       })
       if (result.success) {
         setTestFeedback({ ok: true, message: t.connectionOk })

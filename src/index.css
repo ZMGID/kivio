@@ -3203,6 +3203,12 @@ body {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .kv-input::placeholder { color: var(--text-faint); }
+/* Windows WebView2 (Edge) 给 password 框注入原生的 reveal/clear 眼睛图标，
+   会和我们自定义的显示切换按钮叠成两个眼睛。全局隐藏原生的。 */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
 .kv-input.mono,
 .kv-textarea.mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -4332,6 +4338,76 @@ body {
   padding: 10px 14px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* ===== 供应商模型批量测试弹窗 ===== */
+.kv-model-test-modal {
+  width: min(560px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  max-height: min(640px, calc(100vh - 64px));
+}
+.kv-mtest-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.kv-mtest-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.kv-mtest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.kv-mtest-check {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.kv-mtest-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kv-mtest-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  flex-shrink: 0;
+}
+.kv-mtest-status--ok { color: var(--success, #16a34a); }
+.kv-mtest-status--fail { color: var(--danger, #c44); }
+.kv-mtest-error {
+  margin: 0 2px 8px;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--danger, #c44);
+  background: color-mix(in srgb, var(--danger, #c44) 8%, transparent);
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
 /* ===== Capability Badges ===== */

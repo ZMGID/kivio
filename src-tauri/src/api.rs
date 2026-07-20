@@ -52,6 +52,10 @@ pub struct ProviderConnectionInput {
     pub api_keys: Vec<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+    /// 连接测试用的模型：有则发一条极小对话请求（比 /models 更能反映“能不能调模型”，
+    /// 且不依赖供应商支持 /models）；无则回退到 /models 探测。
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 impl ProviderConnectionInput {

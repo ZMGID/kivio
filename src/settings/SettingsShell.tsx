@@ -47,6 +47,7 @@ import { UsageStatsPanel } from './UsageStatsPanel'
 import { RequestDebugPanel } from './RequestDebugPanel'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { ModelDetailDrawer } from '../components/ModelDetailDrawer'
+import { ProviderModelTestModal } from '../components/ProviderModelTestModal'
 import { Button, IconButton } from '../components/Button'
 import { resolveModelInfo } from '../data/modelMatching'
 import { useWindowInteractionFocus } from '../utils/windowFocus'
@@ -489,11 +490,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [systemFonts, setSystemFonts] = useState<string[]>([])
   const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
   const [permissionsLoading, setPermissionsLoading] = useState(false)
-  const [testingProviderId, setTestingProviderId] = useState<string | null>(null)
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
   const [modelPickerProviderId, setModelPickerProviderId] = useState<string | null>(null)
   const [drawerModel, setDrawerModel] = useState<{ providerId: string; model: string } | null>(null)
-  const [providerTestFeedback, setProviderTestFeedback] = useState<Record<string, { ok: boolean; message: string }>>({})
+  const [modelTestProviderId, setModelTestProviderId] = useState<string | null>(null)
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [memoryDrafts, setMemoryDrafts] = useState<Record<MemoryLayerKey, string>>({ l1: '', l2: '' })
   const [memorySnapshots, setMemorySnapshots] = useState<Record<MemoryLayerKey, string>>({ l1: '', l2: '' })
@@ -912,10 +912,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     void refreshReplacePackStatus(tier)
   }, [refreshReplacePackStatus, settings?.screenshotTranslation?.rapidOcrTier])
 
-  useEffect(() => {
-    setProviderTestFeedback({})
-  }, [lang])
-
   const retryAttempts = settings?.retryAttempts
 
   useEffect(() => {
@@ -1109,44 +1105,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     handleSave,
     handleSaveAndClose,
   ])
-
-  /**
-   * 测试提供商连接
-   */
-  const handleTestConnection = async (providerId: string) => {
-    setTestingProviderId(providerId)
-    setProviderTestFeedback((prev) => {
-      const next = { ...prev }
-      delete next[providerId]
-      return next
-    })
-    try {
-      const provider = settings?.providers.find((p) => p.id === providerId)
-      const result = await api.testProviderConnection(providerId, provider
-        ? {
-          id: provider.id,
-          baseUrl: provider.baseUrl,
-          apiKeys: provider.apiKeys,
-        }
-        : undefined)
-      if (result.success) {
-        setProviderTestFeedback((prev) => ({ ...prev, [providerId]: { ok: true, message: t.connectionOk } }))
-      } else {
-        setProviderTestFeedback((prev) => ({
-          ...prev,
-          [providerId]: { ok: false, message: `${t.connectionFailed}${result.error || 'Unknown error'}` },
-        }))
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      setProviderTestFeedback((prev) => ({
-        ...prev,
-        [providerId]: { ok: false, message: `${t.connectionFailed}${message}` },
-      }))
-    } finally {
-      setTestingProviderId(null)
-    }
-  }
 
   /**
    * 打开 macOS 系统权限设置
@@ -3345,9 +3303,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                           <div className="kv-row">
                             <div className="kv-row-text">
                               <span className="kv-row-label">{t.testConnection}</span>
-                              {providerTestFeedback[provider.id]?.message && (
-                                <p className="kv-row-desc">{providerTestFeedback[provider.id]?.message}</p>
-                              )}
                             </div>
                             <div className="kv-row-control kv-row-control-cluster">
                               <Button
@@ -3362,12 +3317,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                               </Button>
                               <Button
                                 size="sm"
-                                onClick={() => handleTestConnection(provider.id)}
-                                disabled={testingProviderId === provider.id}
+                                onClick={() => setModelTestProviderId(provider.id)}
                                 data-tauri-drag-region="false"
                               >
-                                <RefreshCw size={10} className={testingProviderId === provider.id ? 'animate-spin' : ''} />
-                                {testingProviderId === provider.id ? t.testingConnection : t.testConnection}
+                                <RefreshCw size={10} />
+                                {t.testConnection}
                               </Button>
                             </div>
                           </div>
@@ -3694,6 +3648,20 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           onReset={(modelName) => resetModelOverride(drawerModel.providerId, modelName)}
         />
       )}
+      {modelTestProviderId && settings && (() => {
+        const p = settings.providers.find(pv => pv.id === modelTestProviderId)
+        if (!p) return null
+        return (
+          <ProviderModelTestModal
+            providerId={p.id}
+            baseUrl={p.baseUrl}
+            apiKeys={p.apiKeys}
+            models={p.enabledModels}
+            lang={lang}
+            onClose={() => setModelTestProviderId(null)}
+          />
+        )
+      })()}
       {/* 未保存更改确认弹窗 */}
       {closeConfirmOpen && (
         <div className="kv-modal-backdrop" data-tauri-drag-region="false">
