@@ -6,6 +6,7 @@ import { MessageBubble } from './MessageBubble'
 import { MessageGroup } from './MessageGroup'
 import { MessageNavigator } from './ChatMessageNavigator'
 import { MessageContextMenu, type MessageMenuAnchor } from './MessageContextMenu'
+import { AddSelectionToChat } from './AddSelectionToChat'
 import { copyToClipboard } from '../utils/clipboard'
 import { CompactionDivider } from './CompactionDivider'
 import { CompactionInProgress } from './CompactionInProgress'
@@ -690,6 +691,7 @@ function MessageListBase({
           onClose={closeMsgMenu}
         />
       )}
+      <AddSelectionToChat containerEl={viewportEl} lang={lang} />
     </div>
   )
 }

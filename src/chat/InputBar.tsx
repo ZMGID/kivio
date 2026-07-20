@@ -22,11 +22,14 @@ import {
   Sparkles,
   Square,
   Terminal,
+  TextQuote,
   Wrench,
+  X,
   Zap,
 } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
 import { SourcesButton } from './SourcesButton'
+import { onComposerInsert } from './composerInsert'
 import { AssistantPicker } from './AssistantPicker'
 import { MultiModelSelector } from './MultiModelSelector'
 import { Button, IconButton } from '../components/Button'
@@ -458,6 +461,7 @@ export function InputBar({
   contextSlot,
 }: InputBarProps) {
   const [input, setInput] = useState('')
+  const [quotes, setQuotes] = useState<string[]>([])
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState('')
   const [dragActive, setDragActive] = useState(false)
@@ -613,6 +617,16 @@ export function InputBar({
     textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
     textarea.style.overflowY = textarea.scrollHeight > 160 ? 'auto' : 'hidden'
   }, [])
+
+  // 消息区「添加到聊天」：把选中文字作为引用卡片挂到输入框上方（发送时才拼进正文）。
+  const insertQuoteFromSelection = useCallback((text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    setQuotes((prev) => [...prev, trimmed])
+    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+  }, [])
+
+  useEffect(() => onComposerInsert(insertQuoteFromSelection), [insertQuoteFromSelection])
 
   const syncSlashToken = useCallback((value: string, cursor: number) => {
     const token = findActiveSlashToken(value, cursor)
@@ -923,9 +937,16 @@ export function InputBar({
 
   const handleSend = () => {
     const trimmed = input.trim()
-    if ((!trimmed && attachments.length === 0) || disabled || sendDisabledReason) return
-    onSend(trimmed, attachments)
+    if ((!trimmed && quotes.length === 0 && attachments.length === 0) || disabled || sendDisabledReason) return
+    const quotedBlock = quotes
+      .map((q) => q.split('\n').map((line) => `> ${line}`).join('\n'))
+      .join('\n\n')
+    const content = quotedBlock
+      ? (trimmed ? `${quotedBlock}\n\n${trimmed}` : quotedBlock)
+      : trimmed
+    onSend(content, attachments)
     setInput('')
+    setQuotes([])
     setAttachments([])
     setAttachmentError('')
     setToolPanelOpen(false)
@@ -1593,6 +1614,25 @@ export function InputBar({
           {attachmentError && (
             <div className="chat-motion-fade-up mb-2 px-1 text-[12px] text-red-500 dark:text-red-400">
               {attachmentError}
+            </div>
+          )}
+          {quotes.length > 0 && (
+            <div className="chat-motion-fade-up mb-2 flex flex-col gap-1.5">
+              {quotes.map((q, i) => (
+                <div key={i} className="kv-quote-chip">
+                  <TextQuote size={14} className="kv-quote-chip-icon" />
+                  <span className="kv-quote-chip-text">{q}</span>
+                  <button
+                    type="button"
+                    className="kv-quote-chip-remove"
+                    onClick={() => setQuotes((prev) => prev.filter((_, idx) => idx !== i))}
+                    aria-label="移除引用"
+                    data-tauri-drag-region="false"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
           {(sendDisabledReason || toolStatusHint) && !attachmentError && (

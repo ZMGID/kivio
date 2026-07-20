@@ -3290,8 +3290,7 @@ input[type="password"]::-ms-clear {
   color: var(--text-faint);
   cursor: default;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: center;  justify-content: center;
   padding: 0;
 }
 .kv-hotkey-clear {
@@ -5215,3 +5214,68 @@ input[type="password"]::-ms-clear {
   --crepe-color-selected: #2f2f2f;
   --crepe-color-inline-area: #2b2b2b;
 }
+
+/* 消息区划词「添加到聊天」浮动按钮 */
+.kv-add-to-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #1f1f22;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  cursor: default;
+  white-space: nowrap;
+  animation: kv-add-to-chat-in 90ms ease-out;
+}
+.dark .kv-add-to-chat {
+  color: #f0f0f0;
+  background: #2a2a2d;
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.kv-add-to-chat:hover { border-color: color-mix(in srgb, var(--accent, #2f6ff0) 55%, currentColor); }
+@keyframes kv-add-to-chat-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 输入框上方的引用卡片 */
+.kv-quote-chip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: var(--bg-input-subtle, var(--bg-hover));
+  border: 1px solid var(--border);
+}
+.kv-quote-chip-icon { flex-shrink: 0; margin-top: 1px; color: var(--text-muted); }
+.kv-quote-chip-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.kv-quote-chip-remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: var(--text-faint);
+  cursor: default;
+}
+.kv-quote-chip-remove:hover { color: var(--text); background: var(--bg-hover); }
