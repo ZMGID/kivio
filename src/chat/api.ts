@@ -1442,14 +1442,26 @@ export const chatApi = {
   ): Promise<{
     models: DetectedExternalAgent['models']
     reasoningOptions: NonNullable<DetectedExternalAgent['reasoningOptions']>
+    source: 'probed' | 'fallback'
+    probeError?: string
   }> {
-    if (!isTauriRuntime()) return { models: [], reasoningOptions: [] }
+    if (!isTauriRuntime()) {
+      return { models: [], reasoningOptions: [], source: 'probed' }
+    }
     const result = await invoke<{
       success: boolean
       models?: DetectedExternalAgent['models']
       reasoningOptions?: NonNullable<DetectedExternalAgent['reasoningOptions']>
+      source?: 'probed' | 'fallback'
+      probeError?: string
     }>('chat_detect_external_agent_models', { agentId, conversationId, force })
-    return { models: result.models ?? [], reasoningOptions: result.reasoningOptions ?? [] }
+    return {
+      models: result.models ?? [],
+      reasoningOptions: result.reasoningOptions ?? [],
+      // 向后兼容：旧后端不返回 source 时视为 probed（不显示降级角标）。
+      source: result.source ?? 'probed',
+      probeError: result.probeError,
+    }
   },
 
   async listExternalCliSlashCommands(

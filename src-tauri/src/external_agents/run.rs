@@ -17,7 +17,6 @@ use crate::chat::types::{
     ToolCallStatus,
 };
 use crate::chat::Conversation;
-use crate::external_agents::detection::detect_single_agent;
 use crate::external_agents::prompt::{
     compose_external_prompt, compose_external_prompt_passthrough, cwd_hint, is_cli_slash_input,
 };
@@ -85,17 +84,20 @@ pub async fn run_external_cli_reply(
     let def = get_agent_def(&agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
 
     let cwd = resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
-    let detected = detect_single_agent(def, &cwd).await;
-    if !detected.available {
-        return Err(format!(
-            "{} 未安装或不可用，请确认 CLI 在 PATH 中。",
-            def.name
-        ));
-    }
-
+    // N2：回复路径不再跑完整检测（version/auth/模型探测可达 10-25s）。可用性/auth 的展示
+    // 交给列表阶段；这里只解析二进制（唯一必需项），把第 2+ 轮的前置开销压到 <500ms。
+    let probe_start = Instant::now();
     let resolved_bin = resolve_binary(def)
         .await
-        .ok_or_else(|| format!("无法定位 {} 可执行文件", def.bin))?;
+        .ok_or_else(|| format!("{} 未安装或不可用，请确认 CLI 在 PATH 中。", def.name))?;
+    // 计时日志仅 debug 构建输出（供 <500ms 验收测量），release 不刷 stderr。
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "[external-agent] {} 前置二进制解析耗时 {}ms",
+            def.id,
+            probe_start.elapsed().as_millis()
+        );
+    }
 
     let is_slash = is_cli_slash_input(latest_user_message);
 

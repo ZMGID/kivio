@@ -4,10 +4,11 @@ use super::super::types::{
 };
 
 const FALLBACK_MODELS: &[(&str, &str)] = &[
+    // Kimi Code 的真实模型来自 `kimi provider list --json`（下方 list_models_args）；探测失败时
+    // 只给默认 + 当前 managed:kimi-code 主力型号（oauth 登录即得），前端会标注为「默认列表」。
     ("default", "Default"),
-    ("kimi-k2-turbo-preview", "kimi-k2-turbo-preview"),
-    ("moonshot-v1-8k", "moonshot-v1-8k"),
-    ("moonshot-v1-32k", "moonshot-v1-32k"),
+    ("kimi-code/k3", "K3 (kimi-code/k3)"),
+    ("kimi-code/kimi-for-coding", "K2.7 Coding (kimi-code/kimi-for-coding)"),
 ];
 
 pub fn build_kimi_args(
@@ -41,8 +42,10 @@ pub const KIMI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     auth_probe_args: None,
     fallback_models: FALLBACK_MODELS,
     reasoning_options: &[],
-    list_models_args: None,
-    list_models_timeout_secs: None,
+    // `kimi provider list --json` 输出 providers/models 配置 JSON；模型键即 --model 别名
+    // （如 kimi-code/k3）。解析见 detection.rs::parse_models_list 的 "kimi" 分支。
+    list_models_args: Some(&["provider", "list", "--json"]),
+    list_models_timeout_secs: Some(10),
     models_from_stderr: false,
     model_probe: None,
     model_probe_args: None,

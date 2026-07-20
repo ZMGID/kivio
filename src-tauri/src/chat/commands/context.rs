@@ -12,7 +12,9 @@ use crate::chat::{
     ChatMessage, CompactionBoundaryRecord, ContextUsageSegment, Conversation,
     ConversationContextState, ConversationContextSummary,
 };
-use crate::external_agents::detection::EXTERNAL_AGENT_MODELS_CACHE_TTL;
+use crate::external_agents::detection::{
+    EXTERNAL_AGENT_MODELS_CACHE_TTL, EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
+};
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{ModelProvider, ProviderApiFormat};
 use crate::skills;
@@ -531,14 +533,18 @@ pub(super) async fn compute_context_state(
                 })
         });
         let cached_models = model_cache_key.as_deref().and_then(|cache_key| {
-            state.get_cached_external_agent_models(cache_key, EXTERNAL_AGENT_MODELS_CACHE_TTL)
+            state.get_cached_external_agent_models(
+                cache_key,
+                EXTERNAL_AGENT_MODELS_CACHE_TTL,
+                EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
+            )
         });
         return Ok(
             crate::external_agents::context::compute_external_context_state_with_probe(
                 conversation,
                 false,
                 None,
-                cached_models.as_deref(),
+                cached_models.as_ref().map(|c| c.models.as_slice()),
                 None,
             )
             .await,

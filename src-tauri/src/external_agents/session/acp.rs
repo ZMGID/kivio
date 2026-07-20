@@ -173,6 +173,51 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
     out
 }
 
+/// 把某个 ACP `result`/`update` 里解析出的模型并入累加器（去重、跳过 default 占位）。
+/// 供 `detect_acp_models` 主结果与异步 `session/update` 推送共用。
+fn merge_acp_models(acc: &mut Vec<RuntimeModelOption>, seen: &mut HashSet<String>, value: &Value) {
+    for model in normalize_models(value) {
+        if model.id == "default" {
+            continue;
+        }
+        if seen.insert(model.id.clone()) {
+            acc.push(model);
+        }
+    }
+}
+
+/// 测试替身：复刻 `detect_acp_models` 读循环的行处理（跳空行 / 跳非 JSON banner / 合并
+/// result 与异步 session/update 推送），不启子进程。生产循环与此共用 `merge_acp_models`。
+#[cfg(test)]
+fn collect_acp_models_from_lines(lines: &[&str]) -> Option<Vec<RuntimeModelOption>> {
+    let mut collected: Vec<RuntimeModelOption> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
+            if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
+                merge_acp_models(&mut collected, &mut seen, update);
+            }
+            continue;
+        }
+        if let Some(result) = value.get("result") {
+            merge_acp_models(&mut collected, &mut seen, result);
+        }
+    }
+    if collected.is_empty() {
+        return None;
+    }
+    let mut out = vec![default_model_option()];
+    out.extend(collected);
+    Some(out)
+}
+
 pub async fn detect_acp_models(
     bin: &Path,
     args: &[&str],
@@ -196,7 +241,8 @@ pub async fn detect_acp_models(
 
     let mut expected_id: u64 = 1;
     let mut next_id: u64 = 2;
-    let mut models: Option<Vec<RuntimeModelOption>> = None;
+    let mut collected: Vec<RuntimeModelOption> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let deadline = Duration::from_secs(timeout_secs);
 
     write_rpc(
@@ -213,10 +259,19 @@ pub async fn detect_acp_models(
     .ok()?;
 
     let started = std::time::Instant::now();
+    // 收到 session/new 结果后再留一个短窗口（1.5s）收异步 session/update 推送的模型（N4）——
+    // 部分 CLI 在 session/new 之后才异步推模型列表（参照 detect_acp_commands 的通知处理）。
+    let mut post_window: Option<std::time::Instant> = None;
     loop {
         if started.elapsed() > deadline {
             let _ = child.start_kill();
             break;
+        }
+        if let Some(since) = post_window {
+            if since.elapsed() > Duration::from_millis(1500) {
+                let _ = child.start_kill();
+                break;
+            }
         }
         let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
             Ok(Ok(Some(line))) => line,
@@ -224,18 +279,38 @@ pub async fn detect_acp_models(
             Ok(Err(_)) => break,
             Err(_) => continue,
         };
-        let value: Value = serde_json::from_str(line.trim()).ok()?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // banner / 日志等非 JSON 行跳过（对齐同文件其他 reader），别因一行噪声放弃整个探测（缺陷 3）。
+        let value: Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // 异步模型推送：session/update 通知里携带的模型（N4）。
+        if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
+            if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
+                merge_acp_models(&mut collected, &mut seen, update);
+            }
+            continue;
+        }
+
         if rpc_error_message(&value).is_some() {
             if value.get("id").and_then(|v| v.as_u64()) != Some(expected_id) {
                 continue;
             }
+            // 匹配 id 的错误：结束探测；已收到的部分模型仍返回，否则判失败。
             let _ = child.start_kill();
-            return None;
+            break;
         }
         if value.get("id").and_then(|v| v.as_u64()) != Some(expected_id) {
             continue;
         }
-        let result = value.get("result")?;
+        let result = match value.get("result") {
+            Some(r) => r,
+            None => continue,
+        };
         if expected_id == 1 {
             expected_id = next_id;
             write_rpc(
@@ -250,13 +325,19 @@ pub async fn detect_acp_models(
             continue;
         }
         if expected_id == 2 {
-            models = Some(normalize_models(result));
-            let _ = child.start_kill();
-            break;
+            merge_acp_models(&mut collected, &mut seen, result);
+            // 不立即退出：再留 1.5s 收异步推送的模型。若此后无推送则窗口到点结束。
+            post_window = Some(std::time::Instant::now());
+            continue;
         }
     }
 
-    models.filter(|m| m.len() > 1)
+    if collected.is_empty() {
+        return None;
+    }
+    let mut out = vec![default_model_option()];
+    out.extend(collected);
+    Some(out)
 }
 
 fn parse_available_commands(
@@ -1469,6 +1550,44 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionC
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acp_models_skip_banner_and_parse_json() {
+        // 首行 banner（非 JSON）后跟 session/new 结果，仍应解析出模型。
+        let lines = [
+            "cursor-agent v1.2.3 starting…",
+            "",
+            r#"{"id":2,"result":{"models":{"availableModels":[{"modelId":"gpt-5","name":"GPT-5"},{"modelId":"o3"}]}}}"#,
+        ];
+        let models = collect_acp_models_from_lines(&lines).expect("models parsed past banner");
+        assert!(models.iter().any(|m| m.id == "gpt-5"));
+        assert!(models.iter().any(|m| m.id == "o3"));
+        assert_eq!(models[0].id, "default");
+    }
+
+    #[test]
+    fn acp_models_merge_async_session_update_push() {
+        // session/new 结果给出一个模型，随后异步 session/update 推送更多模型 → 合并去重。
+        let lines = [
+            r#"{"id":2,"result":{"models":{"availableModels":[{"modelId":"gpt-5"}]}}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"configOptions":[{"id":"model","options":[{"value":"claude-sonnet","name":"Claude Sonnet"},{"value":"gpt-5"}]}]}}}"#,
+        ];
+        let models = collect_acp_models_from_lines(&lines).expect("merged models");
+        assert!(models.iter().any(|m| m.id == "gpt-5"));
+        assert!(models.iter().any(|m| m.id == "claude-sonnet"));
+        // gpt-5 出现在两处，去重后仅一次。
+        assert_eq!(models.iter().filter(|m| m.id == "gpt-5").count(), 1);
+    }
+
+    #[test]
+    fn acp_models_none_when_no_models_present() {
+        let lines = [
+            "banner line",
+            r#"{"id":1,"result":{}}"#,
+            r#"{"id":2,"result":{}}"#,
+        ];
+        assert!(collect_acp_models_from_lines(&lines).is_none());
+    }
 
     #[test]
     fn acp_prompt_blocks_text_only_when_no_images() {

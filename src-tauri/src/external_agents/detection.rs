@@ -7,11 +7,14 @@ use crate::external_agents::session::claude_init::detect_claude_models;
 use crate::external_agents::session::pi_rpc::parse_pi_models;
 use crate::external_agents::types::{
     default_model_option, fallback_models_from_pairs, reasoning_options_from_pairs, DetectedAgent,
-    ModelProbeStrategy, RuntimeAgentDef, RuntimeModelOption,
+    ModelProbeStrategy, ModelSource, RuntimeAgentDef, RuntimeModelOption,
 };
 use crate::proc::NoConsoleWindow;
 
 pub const EXTERNAL_AGENT_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
+/// fallback（探测失败降级）结果的短负缓存 TTL：防止用户反复打开下拉连续触发 15s 探测风暴，
+/// 又能在登录/网络恢复后较快重探。force 刷新绕过。
+pub const EXTERNAL_AGENT_MODELS_FALLBACK_TTL: Duration = Duration::from_secs(30);
 
 /// 可用性缓存与 cwd 无关（binary/version/auth 都不随目录变），用全局常量 key + 长 TTL。
 /// 换会话直接命中，不再重测。手动刷新（force）绕过。
@@ -54,27 +57,45 @@ pub async fn detect_availability_all() -> Vec<DetectedAgent> {
         .collect();
     let mut out = Vec::with_capacity(handles.len());
     for handle in handles {
-        if let Ok(agent) = handle.await {
-            out.push(agent);
+        match handle.await {
+            Ok(agent) => out.push(agent),
+            // B4：join 失败（探测 task panic）不再静默吞掉——记录以便定位。
+            Err(err) => eprintln!("[external-agent] availability probe task join failed: {err}"),
         }
     }
     out
 }
 
-/// 只探单个 agent 的模型（cwd-scoped），供懒查命令用。返回 (models, reasoning_options)。
+/// 只探单个 agent 的模型（cwd-scoped），供懒查命令用。返回模型、reasoning 选项，以及来源
+/// （probed=真实探测 / fallback=探测失败降级静态表）与失败摘要。
 pub async fn detect_agent_models(
     def: &RuntimeAgentDef,
     cwd: &Path,
-) -> (Vec<RuntimeModelOption>, Vec<RuntimeModelOption>) {
+) -> (
+    Vec<RuntimeModelOption>,
+    Vec<RuntimeModelOption>,
+    ModelSource,
+    Option<String>,
+) {
+    let reasoning = reasoning_options_from_pairs(def.reasoning_options);
     let path = super::spawn::resolve_binary(def).await;
-    let models = if path.is_some() {
-        probe_models(def, path.as_deref(), cwd)
-            .await
-            .unwrap_or_else(|| fallback_models_from_pairs(def.fallback_models))
-    } else {
-        fallback_models_from_pairs(def.fallback_models)
+    let Some(_) = path.as_ref() else {
+        return (
+            fallback_models_from_pairs(def.fallback_models),
+            reasoning,
+            ModelSource::Fallback,
+            Some("CLI 未安装或不在 PATH".to_string()),
+        );
     };
-    (models, reasoning_options_from_pairs(def.reasoning_options))
+    match probe_models(def, path.as_deref(), cwd).await {
+        Ok(models) => (models, reasoning, ModelSource::Probed, None),
+        Err(err) => (
+            fallback_models_from_pairs(def.fallback_models),
+            reasoning,
+            ModelSource::Fallback,
+            Some(err),
+        ),
+    }
 }
 
 pub async fn detect_all_agents(cwd: &Path) -> Vec<DetectedAgent> {
@@ -112,7 +133,7 @@ pub async fn detect_single_agent(def: &RuntimeAgentDef, cwd: &Path) -> DetectedA
     let models = if available {
         probe_models(def, path.as_deref(), cwd)
             .await
-            .unwrap_or_else(|| fallback_models_from_pairs(def.fallback_models))
+            .unwrap_or_else(|_| fallback_models_from_pairs(def.fallback_models))
     } else {
         fallback_models_from_pairs(def.fallback_models)
     };
@@ -201,36 +222,48 @@ async fn probe_models(
     def: &RuntimeAgentDef,
     path: Option<&std::path::Path>,
     cwd: &Path,
-) -> Option<Vec<RuntimeModelOption>> {
-    let bin = path?;
+) -> Result<Vec<RuntimeModelOption>, String> {
+    let bin = path.ok_or_else(|| "CLI 可执行文件未定位".to_string())?;
 
     // OpenCode's native command is the source of truth for merged global/project JSONC config.
     // Older versions without `models` fall through to ACP, then the static definition fallback.
     if def.id == "opencode" {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
         if let Some(models) = probe_opencode_models(bin, cwd, timeout_secs).await {
-            return Some(models);
+            return Ok(models);
         }
     }
 
     if def.model_probe == Some(ModelProbeStrategy::Acp) {
-        let args: Vec<&str> = def.model_probe_args?.iter().copied().collect();
+        let args: Vec<&str> = def
+            .model_probe_args
+            .ok_or_else(|| "缺少 ACP 模型探测参数".to_string())?
+            .iter()
+            .copied()
+            .collect();
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
-        return detect_acp_models(bin, &args, cwd, timeout_secs).await;
+        return detect_acp_models(bin, &args, cwd, timeout_secs)
+            .await
+            .ok_or_else(|| "ACP 模型探测未返回模型（可能未登录或握手失败）".to_string());
     }
 
     if def.model_probe == Some(ModelProbeStrategy::ClaudeInit) {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(25);
-        return tokio::time::timeout(
+        return match tokio::time::timeout(
             Duration::from_secs(timeout_secs),
             detect_claude_models(bin, cwd),
         )
         .await
-        .ok()
-        .flatten();
+        {
+            Ok(Some(models)) => Ok(models),
+            Ok(None) => Err("Claude 初始化未上报模型".to_string()),
+            Err(_) => Err(format!("Claude 模型探测超时（{timeout_secs}s）")),
+        };
     }
 
-    let args = def.list_models_args?;
+    let args = def
+        .list_models_args
+        .ok_or_else(|| "该 CLI 未配置列模型命令".to_string())?;
     let timeout_secs = def.list_models_timeout_secs.unwrap_or(5);
     let output = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
@@ -241,8 +274,8 @@ async fn probe_models(
             .output(),
     )
     .await
-    .ok()?
-    .ok()?;
+    .map_err(|_| format!("列模型命令超时（{timeout_secs}s）"))?
+    .map_err(|e| format!("列模型命令启动失败：{e}"))?;
 
     // Pi prints its model table to stdout (the `models_from_stderr` name is historical — older
     // builds used stderr). Prefer whichever stream actually has content, then parse the table.
@@ -254,14 +287,19 @@ async fn probe_models(
         } else {
             stderr
         };
-        return parse_pi_models(text.as_ref());
+        return parse_pi_models(text.as_ref())
+            .ok_or_else(|| "未从 pi 输出解析出模型".to_string());
     }
 
     if !output.status.success() {
-        return None;
+        return Err(format!(
+            "列模型命令退出码非零：{}",
+            output.status.code().unwrap_or(-1)
+        ));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     parse_models_list(def.id, text.as_ref())
+        .ok_or_else(|| "未从列模型输出解析出模型".to_string())
 }
 
 async fn probe_opencode_models(
@@ -343,6 +381,31 @@ fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOpt
                 out[0].context_window_tokens = out[1].context_window_tokens;
             }
         }
+        "kimi" => {
+            // `kimi provider list --json` → { "models": { "<id>": { displayName, maxContextSize } } }.
+            // 键即 --model 别名（如 kimi-code/k3）。
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(models) = value.get("models").and_then(|v| v.as_object()) {
+                    for (id, entry) in models {
+                        if id.is_empty() {
+                            continue;
+                        }
+                        let display = entry.get("displayName").and_then(|v| v.as_str());
+                        out.push(RuntimeModelOption {
+                            id: id.clone(),
+                            label: match display {
+                                Some(name) if name != id => format!("{name} ({id})"),
+                                _ => id.clone(),
+                            },
+                            context_window_tokens: entry
+                                .get("maxContextSize")
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as u32),
+                        });
+                    }
+                }
+            }
+        }
         _ => {}
     }
     if out.len() > 1 {
@@ -392,6 +455,20 @@ mod tests {
         assert_eq!(models[0].context_window_tokens, Some(272000));
         let o3 = models.iter().find(|m| m.id == "o3").unwrap();
         assert_eq!(o3.context_window_tokens, None);
+    }
+
+    #[test]
+    fn parse_kimi_provider_list_json_models() {
+        let models = parse_models_list(
+            "kimi",
+            r#"{"models":{"kimi-code/k3":{"displayName":"K3","maxContextSize":1048576},"kimi-code/kimi-for-coding":{"displayName":"K2.7 Coding","maxContextSize":262144}}}"#,
+        )
+        .unwrap();
+        let k3 = models.iter().find(|m| m.id == "kimi-code/k3").unwrap();
+        assert_eq!(k3.label, "K3 (kimi-code/k3)");
+        assert_eq!(k3.context_window_tokens, Some(1048576));
+        assert!(models.iter().any(|m| m.id == "kimi-code/kimi-for-coding"));
+        assert_eq!(models[0].id, "default");
     }
 
     #[test]

@@ -145,9 +145,10 @@ pub struct AppState {
             TimedCacheEntry<Vec<crate::external_agents::types::ExternalCliSlashCommand>>,
         >,
     >,
-    /// 外部 CLI 模型列表探测缓存（agent_id:cwd → 模型选项）。
+    /// 外部 CLI 模型列表探测缓存（agent_id:cwd → 模型选项 + 来源）。probed 结果长 TTL，
+    /// fallback（探测失败降级）短 TTL 负缓存，防止连续失败风暴。
     pub external_agent_models_cache: Mutex<
-        HashMap<String, TimedCacheEntry<Vec<crate::external_agents::types::RuntimeModelOption>>>,
+        HashMap<String, TimedCacheEntry<crate::external_agents::types::CachedAgentModels>>,
     >,
     /// 外部 CLI 全量检测结果缓存（cwd → available/version/auth/models）。避免 RuntimePicker /
     /// 设置页每次打开都重探全部 CLI，同时隔离项目级模型配置。force_refresh 时跳过当前 cwd。
@@ -638,18 +639,37 @@ impl AppState {
         );
     }
 
+    /// 读模型探测缓存：按条目来源应用不同 TTL——probed 用 `probed_ttl`，fallback 用
+    /// `fallback_ttl`（短负缓存）。任一超时视为未命中。
     pub fn get_cached_external_agent_models(
         &self,
         cache_key: &str,
-        ttl: Duration,
-    ) -> Option<Vec<crate::external_agents::types::RuntimeModelOption>> {
-        get_cached(&self.external_agent_models_cache, cache_key, ttl)
+        probed_ttl: Duration,
+        fallback_ttl: Duration,
+    ) -> Option<crate::external_agents::types::CachedAgentModels> {
+        use crate::external_agents::types::ModelSource;
+        let mut cache = self
+            .external_agent_models_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let max_ttl = probed_ttl.max(fallback_ttl);
+        cache.retain(|_, entry| entry.created_at.elapsed() <= max_ttl);
+        let entry = cache.get_mut(cache_key)?;
+        let ttl = match entry.value.source {
+            ModelSource::Probed => probed_ttl,
+            ModelSource::Fallback => fallback_ttl,
+        };
+        if entry.created_at.elapsed() > ttl {
+            return None;
+        }
+        entry.last_accessed = Instant::now();
+        Some(entry.value.clone())
     }
 
     pub fn set_cached_external_agent_models(
         &self,
         cache_key: String,
-        models: Vec<crate::external_agents::types::RuntimeModelOption>,
+        models: crate::external_agents::types::CachedAgentModels,
     ) {
         set_cached(
             &self.external_agent_models_cache,
@@ -952,6 +972,55 @@ mod tests {
         // 同 key 复用同一把锁（single-flight 生效），不同 key 各自独立。
         assert!(std::sync::Arc::ptr_eq(&a1, &a2));
         assert!(!std::sync::Arc::ptr_eq(&a1, &b));
+    }
+
+    #[test]
+    fn external_agent_models_cache_applies_source_aware_ttl() {
+        use crate::external_agents::types::{CachedAgentModels, ModelSource, RuntimeModelOption};
+        let st = test_state();
+        let one = |id: &str| RuntimeModelOption {
+            id: id.to_string(),
+            label: id.to_string(),
+            context_window_tokens: None,
+        };
+
+        // probed 条目在长 TTL 内命中，短 fallback TTL 不影响它。
+        st.set_cached_external_agent_models(
+            "claude:/p".to_string(),
+            CachedAgentModels {
+                models: vec![one("gpt-5")],
+                source: ModelSource::Probed,
+            },
+        );
+        assert!(st
+            .get_cached_external_agent_models("claude:/p", Duration::from_secs(300), Duration::ZERO)
+            .is_some());
+
+        // fallback 条目按短 TTL 裁定：TTL=0 立即视为过期（负缓存到点即重探）。
+        st.set_cached_external_agent_models(
+            "codex:/p".to_string(),
+            CachedAgentModels {
+                models: vec![one("default")],
+                source: ModelSource::Fallback,
+            },
+        );
+        assert!(st
+            .get_cached_external_agent_models("codex:/p", Duration::from_secs(300), Duration::ZERO)
+            .is_none());
+        // 同一 fallback 条目在足够长的 fallback TTL 内仍命中。
+        st.set_cached_external_agent_models(
+            "codex:/p".to_string(),
+            CachedAgentModels {
+                models: vec![one("default")],
+                source: ModelSource::Fallback,
+            },
+        );
+        let hit = st.get_cached_external_agent_models(
+            "codex:/p",
+            Duration::from_secs(300),
+            Duration::from_secs(30),
+        );
+        assert!(matches!(hit.map(|c| c.source), Some(ModelSource::Fallback)));
     }
 
     #[test]

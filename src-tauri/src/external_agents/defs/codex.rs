@@ -39,7 +39,8 @@ pub const CODEX_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
     list_models_args: Some(&["debug", "models"]),
-    list_models_timeout_secs: None,
+    // `codex debug models` cold-start can exceed 5s（首次要拉配置/鉴权）；给 15s 免误判失败（F4）。
+    list_models_timeout_secs: Some(15),
     models_from_stderr: false,
     model_probe: None,
     model_probe_args: None,

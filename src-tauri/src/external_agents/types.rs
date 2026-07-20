@@ -61,6 +61,31 @@ pub struct RuntimeModelOption {
     pub context_window_tokens: Option<u32>,
 }
 
+/// 模型下拉列表的来源：真实探测得到，还是探测失败后降级到静态表（fallback）。
+/// 前端据此显示"默认列表"角标 + 重试。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    Probed,
+    Fallback,
+}
+
+impl ModelSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelSource::Probed => "probed",
+            ModelSource::Fallback => "fallback",
+        }
+    }
+}
+
+/// 模型探测缓存条目：带来源，供 state 层按来源应用不同 TTL（probed 长、fallback 短负缓存）。
+#[derive(Debug, Clone)]
+pub struct CachedAgentModels {
+    pub models: Vec<RuntimeModelOption>,
+    pub source: ModelSource,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectedAgent {

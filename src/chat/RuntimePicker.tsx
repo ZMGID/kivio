@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useState } from 'react'
-import { ChevronDown, Check, Brain } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, Check, Brain, RefreshCw, Loader2 } from 'lucide-react'
 import { AgentIcon } from './AgentIcon'
 import { chatApi, type DetectedExternalAgent } from './api'
 import { chatTitlebarPillButtonClass } from './platform'
+import { IconButton } from '../components/Button'
 import type { AgentRuntimeConfig } from './types'
 import './runtimePicker.css'
 
@@ -33,22 +34,40 @@ function externalRuntime(agentId: string, model?: string | null): AgentRuntimeCo
 function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: RuntimePickerProps) {
   const [open, setOpen] = useState(false)
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
+  const [refreshing, setRefreshing] = useState(false)
+  // 请求代际：conversationId 切换 / 手动刷新会并发发起检测，只让最新一次的结果落地
+  // （也兜住卸载后 setState）。
+  const agentsReqIdRef = useRef(0)
+
+  const loadAgents = useCallback(
+    (force: boolean) => {
+      const reqId = ++agentsReqIdRef.current
+      // 初次检测与手动刷新共用同一 in-flight 态：spinner + 「正在检测本机 CLI…」提示，
+      // 避免首探未返回时误显示「PATH 中未发现可用 CLI」。
+      setRefreshing(true)
+      return chatApi
+        .detectExternalAgents(force, conversationId)
+        .then((list) => {
+          if (agentsReqIdRef.current === reqId) setAgents(list)
+          return list
+        })
+        .catch((err) => {
+          console.error('Failed to detect external agents:', err)
+          if (agentsReqIdRef.current === reqId && !force) setAgents([])
+          return null
+        })
+        .finally(() => {
+          if (agentsReqIdRef.current === reqId) setRefreshing(false)
+        })
+    },
+    [conversationId],
+  )
 
   useEffect(() => {
-    let active = true
-    void chatApi.detectExternalAgents(false, conversationId)
-      .then((list) => {
-        if (active) setAgents(list)
-      })
-      .catch((err) => {
-        if (!active) return
-        console.error('Failed to detect external agents:', err)
-        setAgents([])
-      })
-    return () => {
-      active = false
-    }
-  }, [conversationId])
+    // 每次 loadAgents 调用自身会先 ++reqId 使旧在途请求失效；卸载后 setState 在 React 18
+    // 是安全 no-op，无需 cleanup 递增（避免 exhaustive-deps 对 cleanup 读 ref 的告警）。
+    void loadAgents(false)
+  }, [loadAgents])
 
   const usesExternal = agentRuntime.kind === 'external' && !!agentRuntime.externalAgentId
   const availableAgents = useMemo(
@@ -69,6 +88,8 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
 
   const selectExternal = (agent: DetectedExternalAgent) => {
     if (!agent.available) return
+    // 隐式契约（D3）：后端各探测路径都把合成的 "default" 占位放在 models[0]
+    // （default_model_option / fallback_models 首项），因此这里取 [0] 即「让 CLI 用自己的默认模型」。
     const defaultModel = agent.models[0]?.id ?? 'default'
     onRuntimeChange(externalRuntime(agent.id, defaultModel))
     setOpen(false)
@@ -144,9 +165,24 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
             </div>
 
             <div className="kv-runtime-picker__row">
-              <span className="kv-runtime-picker__label">代理</span>
+              <div className="kv-runtime-picker__agents-head">
+                <span className="kv-runtime-picker__label">代理</span>
+                <IconButton
+                  size="xs"
+                  variant="ghost"
+                  label="刷新本机 CLI"
+                  onClick={() => {
+                    void loadAgents(true)
+                  }}
+                  disabled={refreshing}
+                >
+                  <RefreshCw size={13} className={refreshing ? 'animate-spin' : undefined} />
+                </IconButton>
+              </div>
               {agents.length === 0 ? (
-                <span className="kv-runtime-picker__hint">正在检测本机 CLI…</span>
+                <span className="kv-runtime-picker__hint">
+                  {refreshing ? '正在检测本机 CLI…' : 'PATH 中未发现可用 CLI'}
+                </span>
               ) : availableAgents.length === 0 ? (
                 <span className="kv-runtime-picker__hint">PATH 中未发现可用 CLI</span>
               ) : (
@@ -196,29 +232,49 @@ function ExternalModelSelectorBase({
   const [reasoningOptions, setReasoningOptions] = useState<
     NonNullable<DetectedExternalAgent['reasoningOptions']>
   >([])
+  const [loading, setLoading] = useState(false)
+  // source: probed=真实探测 / fallback=探测失败降级静态表（显示"默认列表"角标 + 重试）。
+  const [source, setSource] = useState<'probed' | 'fallback'>('probed')
+  // 请求代际：agent 切换/卸载时使在途请求失效，防止旧结果覆盖新 agent 或卸载后 setState。
+  const modelsReqIdRef = useRef(0)
+
+  const loadModels = useCallback(
+    (agentId: string, force?: boolean) => {
+      const reqId = ++modelsReqIdRef.current
+      setLoading(true)
+      return chatApi
+        .detectExternalAgentModels(agentId, conversationId, force)
+        .then((result) => {
+          if (modelsReqIdRef.current !== reqId) return
+          setModels(result.models)
+          setReasoningOptions(result.reasoningOptions)
+          setSource(result.source)
+        })
+        .catch(() => {
+          if (modelsReqIdRef.current !== reqId) return
+          // 不再静默吞错：置为降级态，展示重试。保留上次模型列表不清空。
+          setSource('fallback')
+        })
+        .finally(() => {
+          if (modelsReqIdRef.current === reqId) setLoading(false)
+        })
+    },
+    [conversationId],
+  )
 
   useEffect(() => {
     const agentId = agentRuntime.externalAgentId
     if (!agentId) {
+      // 失效在途请求，防止旧结果落到已清空的状态上。
+      modelsReqIdRef.current++
       setModels([])
       setReasoningOptions([])
+      setSource('probed')
       return
     }
-    let active = true
-    void chatApi
-      .detectExternalAgentModels(agentId, conversationId)
-      .then((result) => {
-        if (!active) return
-        setModels(result.models)
-        setReasoningOptions(result.reasoningOptions)
-      })
-      .catch(() => {
-        /* 保留上次结果，不清空 */
-      })
-    return () => {
-      active = false
-    }
-  }, [agentRuntime.externalAgentId, conversationId])
+    // loadModels 自身先 ++reqId 使旧在途请求失效（agent/conversation 变更时 effect 重跑即覆盖）。
+    void loadModels(agentId)
+  }, [agentRuntime.externalAgentId, loadModels])
 
   const currentReasoning = agentRuntime.externalReasoning ?? 'default'
   const currentReasoningLabel =
@@ -249,18 +305,38 @@ function ExternalModelSelectorBase({
           <span className="max-w-[140px] truncate font-medium text-neutral-800 dark:text-neutral-200">
             {displayName}
           </span>
-          <ChevronDown
-            size={15}
-            className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`}
-          />
+          {loading ? (
+            <Loader2 size={14} className="shrink-0 animate-spin text-neutral-400" />
+          ) : (
+            <ChevronDown
+              size={15}
+              className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`}
+            />
+          )}
         </button>
         {open && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
             <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 max-h-[min(320px,50vh)] min-w-[200px] overflow-y-auto rounded-2xl border border-neutral-200/90 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+              {source === 'fallback' && (
+                <div className="kv-runtime-picker__fallback mx-1 my-1">
+                  <span>探测失败，显示默认列表</span>
+                  <button
+                    type="button"
+                    className="kv-runtime-picker__fallback-retry"
+                    disabled={loading}
+                    onClick={() => {
+                      const agentId = agentRuntime.externalAgentId
+                      if (agentId) void loadModels(agentId, true)
+                    }}
+                  >
+                    重试
+                  </button>
+                </div>
+              )}
               {models.length === 0 ? (
                 <div className="px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">
-                  该 CLI 未上报可用模型
+                  {loading ? '正在探测模型…' : '该 CLI 未上报可用模型'}
                 </div>
               ) : (
                 models.map((model) => (

@@ -4,10 +4,11 @@ use crate::chat::storage::{load_conversation, save_conversation};
 use crate::chat::types::AgentRuntimeConfig;
 use crate::external_agents::detection::{
     detect_agent_models, detect_availability_all, AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL,
-    EXTERNAL_AGENT_MODELS_CACHE_TTL,
+    EXTERNAL_AGENT_MODELS_CACHE_TTL, EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
 };
 use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::slash::{cache_key, list_external_cli_slash_commands};
+use crate::external_agents::types::{CachedAgentModels, ModelSource};
 use crate::external_agents::workspace::resolve_detection_cwd;
 use crate::state::AppState;
 
@@ -71,13 +72,16 @@ pub async fn chat_detect_external_agent_models(
     let key = cache_key(&agent_id, &cwd_key);
 
     if !force {
-        if let Some(models) =
-            state.get_cached_external_agent_models(&key, EXTERNAL_AGENT_MODELS_CACHE_TTL)
-        {
+        if let Some(cached) = state.get_cached_external_agent_models(
+            &key,
+            EXTERNAL_AGENT_MODELS_CACHE_TTL,
+            EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
+        ) {
             return Ok(serde_json::json!({
                 "success": true,
-                "models": models,
+                "models": cached.models,
                 "reasoningOptions": crate::external_agents::types::reasoning_options_from_pairs(def.reasoning_options),
+                "source": cached.source.as_str(),
                 "cached": true,
             }));
         }
@@ -86,27 +90,44 @@ pub async fn chat_detect_external_agent_models(
     let lock = state.model_probe_lock_for(&key);
     let _guard = lock.lock().await;
     if !force {
-        if let Some(models) =
-            state.get_cached_external_agent_models(&key, EXTERNAL_AGENT_MODELS_CACHE_TTL)
-        {
+        if let Some(cached) = state.get_cached_external_agent_models(
+            &key,
+            EXTERNAL_AGENT_MODELS_CACHE_TTL,
+            EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
+        ) {
             return Ok(serde_json::json!({
                 "success": true,
-                "models": models,
+                "models": cached.models,
                 "reasoningOptions": crate::external_agents::types::reasoning_options_from_pairs(def.reasoning_options),
+                "source": cached.source.as_str(),
                 "cached": true,
             }));
         }
     }
-    let (models, reasoning_options) = detect_agent_models(def, &cwd).await;
+    let (models, reasoning_options, source, probe_error) = detect_agent_models(def, &cwd).await;
     if !models.is_empty() {
-        state.set_cached_external_agent_models(key, models.clone());
+        // probed 长 TTL，fallback 短 TTL 负缓存——由 get 侧按 source 分别裁定过期。
+        state.set_cached_external_agent_models(
+            key,
+            CachedAgentModels {
+                models: models.clone(),
+                source,
+            },
+        );
     }
-    Ok(serde_json::json!({
+    let mut payload = serde_json::json!({
         "success": true,
         "models": models,
         "reasoningOptions": reasoning_options,
+        "source": source.as_str(),
         "cached": false,
-    }))
+    });
+    if source == ModelSource::Fallback {
+        if let Some(err) = probe_error {
+            payload["probeError"] = serde_json::Value::String(err);
+        }
+    }
+    Ok(payload)
 }
 
 #[tauri::command]

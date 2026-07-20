@@ -19,7 +19,7 @@ const REASONING: &[(&str, &str)] = &[
 ];
 
 pub fn build_pi_args(
-    ctx: &RuntimeContext,
+    _ctx: &RuntimeContext,
     options: &RuntimeBuildOptions,
     _prompt: Option<&str>,
 ) -> Vec<String> {
@@ -40,12 +40,10 @@ pub fn build_pi_args(
         args.push("--thinking".to_string());
         args.push(reasoning.clone());
     }
-    for dir in &ctx.extra_allowed_dirs {
-        if !dir.is_empty() {
-            args.push("--append-system-prompt".to_string());
-            args.push(dir.clone());
-        }
-    }
+    // 注意：pi 无「授权目录」flag（`--help` 无 --add-dir/allowed-dir 等价项，只有 --approve 信任
+    // 项目本地文件）。此前把 extra_allowed_dirs 塞进 `--append-system-prompt` 是误用——该 flag
+    // 是「向系统提示追加文本/文件内容」，会把目录路径当提示词写进去，既不授权也污染上下文。
+    // 附件目录路径已在 prompt 文本的附件说明块里给出，pi 靠自身文件权限模型读取，无需此处注入。
     args
 }
 
@@ -98,6 +96,8 @@ mod tests {
         );
         assert!(args.contains(&"rpc".to_string()));
         assert!(args.contains(&"--thinking".to_string()));
-        assert!(args.contains(&"--append-system-prompt".to_string()));
+        // extra_allowed_dirs 不再被塞进 --append-system-prompt（pi 无授权目录 flag）。
+        assert!(!args.contains(&"--append-system-prompt".to_string()));
+        assert!(!args.contains(&"/skills".to_string()));
     }
 }
