@@ -252,6 +252,9 @@ function ExternalModelSelectorBase({
   const [currentModel, setCurrentModel] = useState<string | null>(null)
   // 请求代际：agent 切换/卸载时使在途请求失效，防止旧结果覆盖新 agent 或卸载后 setState。
   const modelsReqIdRef = useRef(0)
+  // 上次探测的 agent：仅在真正切换 agent 时清空 currentModel。模型列表刻意跨请求保留（防闪），
+  // 但 currentModel 驱动胶囊主文案——若不清，新 agent 探测期间/失败后会一直显示上个 CLI 的模型名。
+  const lastAgentIdRef = useRef<string | null>(null)
   // 用 ref 读最新 runtime / onModelChange，避免把它们塞进 loadModels 依赖导致每次选模型重探。
   const runtimeRef = useRef(agentRuntime)
   runtimeRef.current = agentRuntime
@@ -302,14 +305,18 @@ function ExternalModelSelectorBase({
   )
 
   useEffect(() => {
-    const agentId = agentRuntime.externalAgentId
+    const agentId = agentRuntime.externalAgentId ?? null
+    if (lastAgentIdRef.current !== agentId) {
+      lastAgentIdRef.current = agentId
+      // 换 agent：旧 CLI 的 currentModel 立刻失效（探测中显示「获取中…」而非上个 CLI 的模型名）。
+      setCurrentModel(null)
+    }
     if (!agentId) {
       // 失效在途请求，防止旧结果落到已清空的状态上。
       modelsReqIdRef.current++
       setModels([])
       setReasoningOptions([])
       setSource('probed')
-      setCurrentModel(null)
       return
     }
     // loadModels 自身先 ++reqId 使旧在途请求失效（agent/conversation 变更时 effect 重跑即覆盖）。

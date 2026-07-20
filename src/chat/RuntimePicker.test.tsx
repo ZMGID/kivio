@@ -154,4 +154,46 @@ describe('ExternalModelSelector', () => {
     )
     await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Auto'))
   })
+
+  it('切换 agent 时旧 CLI 的 currentModel 立即失效（不残留在胶囊上）', async () => {
+    detectModels.mockImplementation((agentId: unknown) => {
+      if (agentId === 'cursor') {
+        return Promise.resolve({
+          models: [
+            { id: 'default', label: 'Default' },
+            { id: 'grok-4.5', label: 'Grok 4.5' },
+          ],
+          reasoningOptions: [],
+          source: 'probed',
+          currentModel: 'grok-4.5',
+          currentReasoning: null,
+        })
+      }
+      // 新 agent 探测 pending：胶囊应显示「获取中…」，而不是上个 CLI 的 Grok 4.5。
+      return new Promise(() => {})
+    })
+
+    const { rerender } = render(
+      <ExternalModelSelector
+        agentRuntime={runtime}
+        onModelChange={() => {}}
+        conversationId={null}
+      />,
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('button')).toHaveTextContent('Grok 4.5'),
+    )
+
+    rerender(
+      <ExternalModelSelector
+        agentRuntime={{ ...runtime, externalAgentId: 'claude', externalModel: 'default' }}
+        onModelChange={() => {}}
+        conversationId={null}
+      />,
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('button')).toHaveTextContent('获取中…'),
+    )
+    expect(screen.getByRole('button')).not.toHaveTextContent('Grok 4.5')
+  })
 })
