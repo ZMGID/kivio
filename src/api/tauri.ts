@@ -795,6 +795,7 @@ export type ProviderConnectionInput = {
   baseUrl: string
   apiKeys: string[]
   model?: string
+  apiFormat?: string
 }
 
 export type DefaultModelSelection = {

@@ -3656,6 +3656,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             providerId={p.id}
             baseUrl={p.baseUrl}
             apiKeys={p.apiKeys}
+            apiFormat={p.apiFormat}
             models={p.enabledModels}
             lang={lang}
             onClose={() => setModelTestProviderId(null)}

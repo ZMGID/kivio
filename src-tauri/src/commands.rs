@@ -17,7 +17,7 @@ use crate::prompts::{
 use crate::rapidocr;
 use crate::settings::{
     default_chat_system_prompt, default_lens_system_prompt, default_question_prompt,
-    persist_settings, sanitize_settings, Settings,
+    persist_settings, sanitize_settings, ProviderApiFormat, Settings,
 };
 #[cfg(target_os = "macos")]
 use crate::shortcuts::{check_accessibility, check_screen_recording_permission};
@@ -515,8 +515,10 @@ pub(crate) async fn fetch_models(
 
 /// 测试供应商连接是否可用
 /// 多 key：测试时只用第一个 key（避免一次连接测试遍历多 key 让用户困惑）
-/// 有 model 时发一条极小对话请求（`max_tokens:1`），比 /models 更能反映“能不能调模型”，
+/// 有 model 时发一条极小对话请求，比 /models 更能反映“能不能调模型”，
 /// 也不依赖供应商支持 /models；无 model 时回退到 /models 探测。
+/// 请求按供应商的 api_format 走对应协议（URL + 鉴权 + body），
+/// 否则 Anthropic/Gemini/Responses 供应商会对本可用的模型误报失败。
 #[tauri::command]
 pub(crate) async fn test_provider_connection(
     state: State<'_, AppState>,
@@ -525,6 +527,17 @@ pub(crate) async fn test_provider_connection(
 ) -> Result<serde_json::Value, String> {
     let settings = state.settings_read().clone();
     let model = provider.as_ref().and_then(|p| p.model.clone());
+    // 协议优先取前端传入（未保存的编辑中配置），缺省回退 settings 里已保存的。
+    let api_format = provider
+        .as_ref()
+        .and_then(|p| p.api_format.as_deref())
+        .map(ProviderApiFormat::from_raw)
+        .or_else(|| {
+            settings
+                .get_provider(&provider_id)
+                .map(|p| p.api_format_kind())
+        })
+        .unwrap_or(ProviderApiFormat::OpenAiChat);
     let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
 
     let api_key = match api_keys.first() {
@@ -542,25 +555,68 @@ pub(crate) async fn test_provider_connection(
 
     let result = match model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
         Some(model) => {
-            let url = format!("{base}/chat/completions");
-            let body = serde_json::json!({
-                "model": model,
-                "messages": [{ "role": "user", "content": "hi" }],
-                "max_tokens": 1,
-            });
+            let (url, body) = match api_format {
+                ProviderApiFormat::AnthropicMessages => (
+                    format!("{base}/messages"),
+                    serde_json::json!({
+                        "model": model,
+                        "messages": [{ "role": "user", "content": "hi" }],
+                        "max_tokens": 1,
+                    }),
+                ),
+                ProviderApiFormat::Gemini => (
+                    format!(
+                        "{base}/models/{}:generateContent",
+                        model.trim_start_matches("models/")
+                    ),
+                    serde_json::json!({
+                        "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }],
+                        "generationConfig": { "maxOutputTokens": 1 },
+                    }),
+                ),
+                ProviderApiFormat::OpenAiResponses => (
+                    format!("{base}/responses"),
+                    serde_json::json!({
+                        "model": model,
+                        "input": "hi",
+                        "max_output_tokens": 16,
+                    }),
+                ),
+                ProviderApiFormat::OpenAiChat => (
+                    format!("{base}/chat/completions"),
+                    serde_json::json!({
+                        "model": model,
+                        "messages": [{ "role": "user", "content": "hi" }],
+                        "max_tokens": 1,
+                    }),
+                ),
+            };
             send_with_retry("Provider API", retry_attempts, || {
-                with_standard_request_timeout(
-                    state.http.post(url.clone()).bearer_auth(&api_key).json(&body),
-                )
-                .send()
+                let request = state.http.post(url.clone()).json(&body);
+                let request = match api_format {
+                    ProviderApiFormat::AnthropicMessages => request
+                        .header("x-api-key", &api_key)
+                        .header("anthropic-version", "2023-06-01"),
+                    ProviderApiFormat::Gemini => request.header("x-goog-api-key", &api_key),
+                    _ => request.bearer_auth(&api_key),
+                };
+                with_standard_request_timeout(request).send()
             })
             .await
         }
         None => {
+            // /models 探测（Gemini 原生同样有 GET /models；Anthropic 也提供 /models）。
             let url = format!("{base}/models");
             send_with_retry("Provider API", retry_attempts, || {
-                with_standard_request_timeout(state.http.get(url.clone()).bearer_auth(&api_key))
-                    .send()
+                let request = state.http.get(url.clone());
+                let request = match api_format {
+                    ProviderApiFormat::AnthropicMessages => request
+                        .header("x-api-key", &api_key)
+                        .header("anthropic-version", "2023-06-01"),
+                    ProviderApiFormat::Gemini => request.header("x-goog-api-key", &api_key),
+                    _ => request.bearer_auth(&api_key),
+                };
+                with_standard_request_timeout(request).send()
             })
             .await
         }

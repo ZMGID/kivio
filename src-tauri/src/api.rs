@@ -56,6 +56,10 @@ pub struct ProviderConnectionInput {
     /// 且不依赖供应商支持 /models）；无则回退到 /models 探测。
     #[serde(default)]
     pub model: Option<String>,
+    /// 供应商接口协议（openai_chat / anthropic_messages / openai_responses / gemini），
+    /// 测试请求按它选 URL 和鉴权方式；缺省时从 settings 里的供应商配置读取。
+    #[serde(default)]
+    pub api_format: Option<String>,
 }
 
 impl ProviderConnectionInput {

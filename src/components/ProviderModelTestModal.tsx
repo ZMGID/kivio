@@ -16,6 +16,7 @@ export function ProviderModelTestModal({
   providerId,
   baseUrl,
   apiKeys,
+  apiFormat,
   models,
   lang,
   onClose,
@@ -23,6 +24,7 @@ export function ProviderModelTestModal({
   providerId: string
   baseUrl: string
   apiKeys: string[]
+  apiFormat: string
   models: string[]
   lang: Lang
   onClose: () => void
@@ -65,7 +67,7 @@ export function ProviderModelTestModal({
     await Promise.all(
       targets.map(async (model) => {
         try {
-          const r = await api.testProviderConnection(providerId, { id: providerId, baseUrl, apiKeys, model })
+          const r = await api.testProviderConnection(providerId, { id: providerId, baseUrl, apiKeys, apiFormat, model })
           setResults((prev) => ({
             ...prev,
             [model]: r.success ? { status: 'ok' } : { status: 'fail', error: r.error },
