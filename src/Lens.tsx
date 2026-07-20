@@ -103,8 +103,8 @@ const LENS_HIDE_IDLE_TIMEOUT_MS = 120
 // 第二次 take 必然拿到 null（已被第一次消费）。若此时 enterSelect({}) 会把第一次已
 // 加载的 freezeFrameImageId/冻结帧清掉（且第一次的异步加载已被 cleanup 的
 // cancelPendingMotion 作废）→ 冻结帧永远出不来。缓存最近一次 take 到的载荷，
-// mount 时 take 到 null 就用缓存重放，保证双挂载下第二次 enterSelect 仍带完整载荷。
-let lastResetPayloadCache: LensResetPayload = {}
+// mount 时 take 到 null 就用缓存重放。resetBeforeHide 时清空，避免跨会话串台。
+let lastResetPayloadCache: LensResetPayload | null = null
 
 const waitForVisibleIdle = (timeout = LENS_HIDE_IDLE_TIMEOUT_MS) => new Promise<void>((resolve) => {
   const idleWindow = window as Window & {
@@ -616,21 +616,40 @@ export default function Lens() {
     // 冷挂载 与 复用收到 lens:reset 走同一路径：主动 take 后端暂存的复位载荷（frame +
     // freezeFrameImageId）再 enterSelect。后端保证每次打开只会触发其中一个（冷创建→挂载；
     // 复用→事件），所以每次打开只跑一次 enterSelect，不会双跑把 take-once 的选区吞掉。
-    const consumeAndEnter = async (fromMount: boolean) => {
-      let payload: LensResetPayload = {}
+    //
+    // 冷创建竞态：后端 lens_request_internal 里"截冻结帧(200ms+) → 写 payload"发生在
+    // ensure_lens_window 之后，而 vite/生产 bundle 挂载可能更快 → mount 的 take 先到，
+    // 拿到 empty。所以 mount 路径 take 到 empty 时要轮询重试（150ms × 12 ≈ 1.8s 覆盖
+    // 慢机冻结帧耗时），拿到才 enter；全部落空再用缓存（StrictMode 双挂载重放）或空载荷兜底。
+    let disposed = false
+    const takeOnce = async (): Promise<LensResetPayload | null> => {
       try {
         const raw = await api.lensTakeResetPayload()
         if (raw) {
-          payload = readLensResetPayload(JSON.parse(raw))
+          const payload = readLensResetPayload(JSON.parse(raw))
           lastResetPayloadCache = payload
-        } else if (fromMount) {
-          // StrictMode 双挂载重放：见 lastResetPayloadCache 注释
-          payload = lastResetPayloadCache
+          return payload
         }
       } catch (err) {
         console.error('[lens] take reset payload failed', err)
       }
-      void enterSelect(payload)
+      return null
+    }
+    const consumeAndEnter = async (fromMount: boolean) => {
+      let payload = await takeOnce()
+      if (!payload && fromMount) {
+        for (let i = 0; i < 12 && !payload && !disposed; i++) {
+          // StrictMode 第二次挂载：本会话已缓存（resetBeforeHide 会清空缓存），直接重放
+          if (lastResetPayloadCache) {
+            payload = lastResetPayloadCache
+            break
+          }
+          await new Promise(r => setTimeout(r, 150))
+          payload = await takeOnce()
+        }
+      }
+      if (disposed) return
+      void enterSelect(payload ?? {})
     }
     void consumeAndEnter(true)
     const handleReset = () => {
@@ -638,6 +657,7 @@ export default function Lens() {
     }
     window.addEventListener('lens:reset', handleReset)
     return () => {
+      disposed = true
       window.removeEventListener('lens:reset', handleReset)
       cancelPendingMotion()
     }
@@ -858,6 +878,8 @@ export default function Lens() {
   const resetBeforeHide = useCallback(() => {
     cancelPendingMotion()
     releaseFreezeCanvas()
+    // 会话结束：清掉 take-once 载荷缓存，避免下次 StrictMode 重放到旧会话的冻结帧
+    lastResetPayloadCache = null
     fullscreenMetricsRef.current = null
     translateStartRef.current = null
     // 防御：和 enterSelect 同理 —— reset 路径不该走持久化

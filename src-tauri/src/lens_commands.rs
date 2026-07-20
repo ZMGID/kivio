@@ -2224,11 +2224,16 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
 /// 的情况——丢事件也能从这里拉到冻结帧。无 pending（已被取走 / 未设置）返回 None。
 #[tauri::command]
 pub(crate) fn lens_take_reset_payload(state: State<'_, AppState>) -> Option<String> {
-    state
+    let taken = state
         .lens_pending_reset
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .take()
+        .take();
+    eprintln!(
+        "[lens-freeze] take_reset_payload -> {}",
+        taken.as_deref().unwrap_or("<empty>")
+    );
+    taken
 }
 
 /// 冻结帧：进入选择态前抓取当前显示器整帧，之后的区域截图从该帧裁剪（双端常开，无开关）。
@@ -2265,6 +2270,7 @@ fn prepare_freeze_frame(app: &AppHandle, frame: Option<LensFrame>) -> Option<Str
         err
     })
     .ok()?;
+    eprintln!("[lens-freeze] captured frame -> {}", path.display());
     let image_id = insert_temp_explain_image(app, path);
     let state = app.state::<AppState>();
     {
