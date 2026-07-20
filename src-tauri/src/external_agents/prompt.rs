@@ -71,8 +71,15 @@ pub fn compose_external_prompt(
 }
 
 fn build_transcript(conversation: &Conversation) -> String {
+    // 末条 user 消息由 `# User request` 尾部的 latest 唯一承载,transcript 必须排除它,
+    // 否则同一条消息在 prompt 中出现两次(缺陷 1 / C1 / N9)。按索引精确定位最后一条
+    // user——而非按文本匹配——避免用户连续两轮发相同文本时把历史里的旧消息误跳。
+    let skip_idx = conversation.messages.iter().rposition(|m| m.role == "user");
     let mut lines = Vec::new();
-    for message in &conversation.messages {
+    for (idx, message) in conversation.messages.iter().enumerate() {
+        if Some(idx) == skip_idx {
+            continue;
+        }
         let role = message.role.as_str();
         let label = match role {
             "user" => "user",
@@ -98,8 +105,19 @@ pub fn cwd_hint(cwd: &str) -> String {
 mod tests {
     use super::*;
     use crate::chat::types::{
-        AgentPlanState, AgentRuntimeConfig, AgentTodoState, Conversation, ConversationContextState,
+        AgentPlanState, AgentRuntimeConfig, AgentTodoState, ChatMessage, Conversation,
+        ConversationContextState,
     };
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("m-{role}-{content}"),
+            "role": role,
+            "content": content,
+            "timestamp": 0,
+        }))
+        .unwrap()
+    }
 
     fn empty_conversation() -> Conversation {
         Conversation {
@@ -146,6 +164,63 @@ mod tests {
         assert!(composed.full_prompt.contains("# Instructions"));
         assert!(composed.full_prompt.contains("skill body"));
         assert!(composed.full_prompt.contains("hello"));
+    }
+
+    #[test]
+    fn transcript_excludes_last_user_so_latest_appears_once() {
+        // 非空会话:2 user + 1 assistant,末条 user 即 latest。skip_transcript=false 时
+        // build_transcript 参与,末条文本必须只在尾部出现一次,历史消息保留。
+        let mut conv = empty_conversation();
+        conv.messages = vec![
+            msg("user", "first question"),
+            msg("assistant", "an answer"),
+            msg("user", "latest question"),
+        ];
+        let composed = compose_external_prompt(
+            &conv,
+            "system rules",
+            None,
+            None,
+            None,
+            false,
+            false,
+            "latest question",
+        );
+        assert_eq!(
+            composed.full_prompt.matches("latest question").count(),
+            1,
+            "latest user message must appear exactly once, got: {}",
+            composed.full_prompt
+        );
+        // 历史仍在。
+        assert!(composed.full_prompt.contains("first question"));
+        assert!(composed.full_prompt.contains("an answer"));
+    }
+
+    #[test]
+    fn transcript_skips_last_user_even_when_regenerate_tail_is_assistant() {
+        // regenerate 形态:消息列表末位是 assistant,但最后一条 user 在其之前。
+        // rposition 精确定位末条 user 并跳过,latest 仍由尾部唯一承载。
+        let mut conv = empty_conversation();
+        conv.messages = vec![
+            msg("user", "earlier turn"),
+            msg("assistant", "earlier reply"),
+            msg("user", "regen target"),
+            msg("assistant", "stale reply being regenerated"),
+        ];
+        let composed =
+            compose_external_prompt(&conv, "sys", None, None, None, false, false, "regen target");
+        assert_eq!(
+            composed.full_prompt.matches("regen target").count(),
+            1,
+            "the last user message must not be duplicated: {}",
+            composed.full_prompt
+        );
+        assert!(composed.full_prompt.contains("earlier turn"));
+        assert!(composed.full_prompt.contains("earlier reply"));
+        assert!(composed
+            .full_prompt
+            .contains("stale reply being regenerated"));
     }
 
     #[test]

@@ -571,6 +571,106 @@ fn apply_acp_session_update(
     }
 }
 
+/// 按消息边界维护助手正文/思考的累积游标,替代旧的全局 `emitted_text` 前缀裁剪(缺陷 2 / N7)。
+///
+/// 上游三种语义统一在一个分支里:
+/// - 纯增量 delta(每条 chunk 是新片段)——`starts_with(current)` 除首条(current 为空)外不命中,
+///   整段作为 delta 追加。
+/// - 按消息累积快照(chunk 以本消息已发文本为前缀)——前缀裁剪出增量。
+/// - 整轮累积快照(旧行为:快照以整轮全文为前缀)——边界事件后快照仍以旧前缀开头,`on_boundary`
+///   置位的 `boundary_pending` 因 `starts_with` 命中而不触发重置,行为与旧全局前缀裁剪完全一致。
+#[derive(Default)]
+struct AcpTextAssembler {
+    current: String,
+    boundary_pending: bool,
+}
+
+impl AcpTextAssembler {
+    /// 见到 tool_call / thought 等边界事件时置位。只置位,不立即清空——由下一条 chunk 的
+    /// `starts_with` 检查决定是否真是新消息起点(保证整轮累积语义向后兼容)。
+    fn on_boundary(&mut self) {
+        self.boundary_pending = true;
+    }
+
+    /// 返回本条 chunk 应发出的增量;无新增内容时返回 `None`。
+    fn push_chunk(&mut self, text: &str) -> Option<String> {
+        // 边界后的第一条 chunk 若不再以当前消息累积文本为前缀,视为新消息:重置游标。
+        if self.boundary_pending && !text.starts_with(self.current.as_str()) {
+            self.current.clear();
+        }
+        self.boundary_pending = false;
+        let delta = if text.starts_with(self.current.as_str()) {
+            text[self.current.len()..].to_string()
+        } else {
+            text.to_string()
+        };
+        if delta.is_empty() {
+            return None;
+        }
+        self.current.push_str(&delta);
+        Some(delta)
+    }
+}
+
+/// 一次 ACP turn 的去重状态:正文与思考各持一个消息级游标 + 已发工具 id 集合。
+#[derive(Default)]
+struct AcpUpdateState {
+    text: AcpTextAssembler,
+    thought: AcpTextAssembler,
+    emitted_tools: HashSet<String>,
+}
+
+fn acp_update_text(update: &serde_json::Map<String, Value>) -> &str {
+    update
+        .get("content")
+        .and_then(|c| c.get("text"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
+/// 把一条 ACP `session/update` 映射为事件(text / thought / tool),一次性驱动
+/// (`run_acp_session`)与持久驱动(`AcpSession::run_turn`)共用同一份去重逻辑。
+fn acp_apply_session_update(
+    update: &serde_json::Map<String, Value>,
+    state: &mut AcpUpdateState,
+    sink: &mut dyn FnMut(UnifiedAgentEvent),
+) {
+    let session_update = update
+        .get("sessionUpdate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match session_update {
+        "agent_thought_chunk" => {
+            // 思考块开始意味着上一条正文消息结束——为正文游标标记边界。
+            state.text.on_boundary();
+            let text = acp_update_text(update);
+            if !text.is_empty() {
+                if let Some(delta) = state.thought.push_chunk(text) {
+                    sink(UnifiedAgentEvent::ThinkingDelta { delta });
+                }
+            }
+        }
+        "agent_message_chunk" => {
+            // 正文块开始意味着上一条思考消息结束——为思考游标标记边界。
+            state.thought.on_boundary();
+            let text = acp_update_text(update);
+            if !text.is_empty() {
+                if let Some(delta) = state.text.push_chunk(text) {
+                    sink(UnifiedAgentEvent::TextDelta { delta });
+                }
+            }
+        }
+        _ => {
+            // tool_call / tool_call_update 是消息边界:发出工具事件后,重置正文与思考游标,
+            // 使其后到来的累积快照被识别为新消息起点。
+            if apply_acp_session_update(update, &mut state.emitted_tools, &mut |e| sink(e)) {
+                state.text.on_boundary();
+                state.thought.on_boundary();
+            }
+        }
+    }
+}
+
 pub async fn run_acp_session(
     child: &mut Child,
     prompt: &str,
@@ -595,8 +695,7 @@ pub async fn run_acp_session(
     let mut prompt_request_id: Option<u64> = None;
     let mut set_model_request_id: Option<u64> = None;
     let mut model_config_id: Option<String> = None;
-    let mut emitted_text = String::new();
-    let mut emitted_acp_tools = HashSet::new();
+    let mut update_state = AcpUpdateState::default();
     let mut finished = false;
 
     write_rpc(
@@ -667,47 +766,7 @@ pub async fn run_acp_session(
                     .and_then(|p| p.get("update"))
                     .and_then(|v| v.as_object())
                 {
-                    let session_update = update
-                        .get("sessionUpdate")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if session_update == "agent_thought_chunk" {
-                        if let Some(text) = update
-                            .get("content")
-                            .and_then(|c| c.get("text"))
-                            .and_then(|v| v.as_str())
-                        {
-                            if !text.is_empty() {
-                                sink(UnifiedAgentEvent::ThinkingDelta {
-                                    delta: text.to_string(),
-                                });
-                            }
-                        }
-                        continue;
-                    }
-                    if session_update == "agent_message_chunk" {
-                        if let Some(text) = update
-                            .get("content")
-                            .and_then(|c| c.get("text"))
-                            .and_then(|v| v.as_str())
-                        {
-                            if !text.is_empty() {
-                                let delta = if text.starts_with(&emitted_text) {
-                                    text[emitted_text.len()..].to_string()
-                                } else {
-                                    text.to_string()
-                                };
-                                if !delta.is_empty() {
-                                    emitted_text.push_str(&delta);
-                                    sink(UnifiedAgentEvent::TextDelta { delta });
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                    if apply_acp_session_update(update, &mut emitted_acp_tools, &mut sink) {
-                        continue;
-                    }
+                    acp_apply_session_update(update, &mut update_state, &mut sink);
                 }
                 continue;
             }
@@ -991,8 +1050,7 @@ impl AcpSession {
         )
         .await?;
 
-        let mut emitted_text = String::new();
-        let mut emitted_tools: HashSet<String> = HashSet::new();
+        let mut update_state = AcpUpdateState::default();
 
         loop {
             match control.try_recv() {
@@ -1054,12 +1112,7 @@ impl AcpSession {
                         .and_then(|v| v.as_object())
                     {
                         let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
-                        acp_apply_turn_update(
-                            update,
-                            &mut emitted_text,
-                            &mut emitted_tools,
-                            &mut |e| buf.push(e),
-                        );
+                        acp_apply_session_update(update, &mut update_state, &mut |e| buf.push(e));
                         for e in buf {
                             let _ = events.send(e).await;
                         }
@@ -1093,57 +1146,6 @@ impl AcpSession {
         let _ = self.stdin.shutdown().await;
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
-    }
-}
-
-/// Map one ACP `session/update` to events (text / thought / tool), shared by the persistent
-/// turn loop. Mirrors the inline handling in `run_acp_session`.
-fn acp_apply_turn_update(
-    update: &serde_json::Map<String, Value>,
-    emitted_text: &mut String,
-    emitted_tools: &mut HashSet<String>,
-    sink: &mut dyn FnMut(UnifiedAgentEvent),
-) {
-    let session_update = update
-        .get("sessionUpdate")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if session_update == "agent_thought_chunk" {
-        if let Some(text) = update
-            .get("content")
-            .and_then(|c| c.get("text"))
-            .and_then(|v| v.as_str())
-        {
-            if !text.is_empty() {
-                sink(UnifiedAgentEvent::ThinkingDelta {
-                    delta: text.to_string(),
-                });
-            }
-        }
-        return;
-    }
-    if session_update == "agent_message_chunk" {
-        if let Some(text) = update
-            .get("content")
-            .and_then(|c| c.get("text"))
-            .and_then(|v| v.as_str())
-        {
-            if !text.is_empty() {
-                let delta = if text.starts_with(emitted_text.as_str()) {
-                    text[emitted_text.len()..].to_string()
-                } else {
-                    text.to_string()
-                };
-                if !delta.is_empty() {
-                    emitted_text.push_str(&delta);
-                    sink(UnifiedAgentEvent::TextDelta { delta });
-                }
-            }
-        }
-        return;
-    }
-    if apply_acp_session_update(update, emitted_tools, &mut |e| sink(e)) {
-        return;
     }
 }
 
@@ -1393,6 +1395,129 @@ mod tests {
             UnifiedAgentEvent::ToolResult { tool_use_id, content, is_error }
                 if tool_use_id == "acp-1" && content == "done" && !*is_error
         )));
+    }
+
+    // ---- AcpTextAssembler / shared update-dedup (Step 2) ----
+
+    fn msg_chunk(text: &str) -> serde_json::Map<String, Value> {
+        serde_json::Map::from_iter([
+            ("sessionUpdate".to_string(), json!("agent_message_chunk")),
+            ("content".to_string(), json!({ "text": text })),
+        ])
+    }
+
+    fn thought_chunk(text: &str) -> serde_json::Map<String, Value> {
+        serde_json::Map::from_iter([
+            ("sessionUpdate".to_string(), json!("agent_thought_chunk")),
+            ("content".to_string(), json!({ "text": text })),
+        ])
+    }
+
+    fn tool_call_update(id: &str) -> serde_json::Map<String, Value> {
+        serde_json::Map::from_iter([
+            ("sessionUpdate".to_string(), json!("tool_call")),
+            ("toolCallId".to_string(), json!(id)),
+            ("title".to_string(), json!("Write")),
+        ])
+    }
+
+    fn run_updates(updates: &[serde_json::Map<String, Value>]) -> (String, Vec<UnifiedAgentEvent>) {
+        let mut state = AcpUpdateState::default();
+        let mut events = Vec::new();
+        for u in updates {
+            acp_apply_session_update(u, &mut state, &mut |e| events.push(e));
+        }
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                UnifiedAgentEvent::TextDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        (text, events)
+    }
+
+    #[test]
+    fn assembler_passes_through_incremental_deltas() {
+        let mut a = AcpTextAssembler::default();
+        assert_eq!(a.push_chunk("Hello"), Some("Hello".to_string()));
+        assert_eq!(a.push_chunk(" world"), Some(" world".to_string()));
+    }
+
+    #[test]
+    fn assembler_trims_per_message_accumulated_snapshots() {
+        let mut a = AcpTextAssembler::default();
+        assert_eq!(a.push_chunk("Hel"), Some("Hel".to_string()));
+        assert_eq!(a.push_chunk("Hello"), Some("lo".to_string()));
+        // 重复快照无新增内容。
+        assert_eq!(a.push_chunk("Hello"), None);
+    }
+
+    #[test]
+    fn assembler_resets_on_boundary_for_new_message() {
+        let mut a = AcpTextAssembler::default();
+        assert_eq!(a.push_chunk("Hello"), Some("Hello".to_string()));
+        a.on_boundary();
+        // 新消息累积快照,不以旧全文为前缀 → 视为新消息重置游标。
+        assert_eq!(a.push_chunk("Bye"), Some("Bye".to_string()));
+        assert_eq!(a.push_chunk("Byebye"), Some("bye".to_string()));
+    }
+
+    #[test]
+    fn assembler_whole_turn_snapshot_stays_backward_compatible() {
+        let mut a = AcpTextAssembler::default();
+        assert_eq!(a.push_chunk("Hello"), Some("Hello".to_string()));
+        a.on_boundary();
+        // 整轮累积语义:边界后的快照仍以旧全文开头 → 不重置,只裁出增量(不重不漏)。
+        assert_eq!(a.push_chunk("Hello world"), Some(" world".to_string()));
+    }
+
+    #[test]
+    fn driver_incremental_no_duplication() {
+        let (text, _) = run_updates(&[msg_chunk("Hello"), msg_chunk(" there")]);
+        assert_eq!(text, "Hello there");
+    }
+
+    #[test]
+    fn driver_per_message_snapshots_with_tool_call_no_dup() {
+        // msg1 按消息累积 → tool_call(边界)→ msg2 按消息累积。
+        let (text, events) = run_updates(&[
+            msg_chunk("Loo"),
+            msg_chunk("Looking"),
+            tool_call_update("t1"),
+            msg_chunk("Don"),
+            msg_chunk("Done"),
+        ]);
+        assert_eq!(text, "LookingDone");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, UnifiedAgentEvent::ToolUse { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn driver_whole_turn_snapshots_with_tool_call_no_dup_no_loss() {
+        // 整轮累积:tool_call 后的快照仍以前一段正文为前缀,只应发出新尾巴。
+        let (text, _) = run_updates(&[
+            msg_chunk("Looking"),
+            tool_call_update("t1"),
+            msg_chunk("LookingDone"),
+        ]);
+        assert_eq!(text, "LookingDone");
+    }
+
+    #[test]
+    fn driver_thought_then_message_are_separate_streams() {
+        // 思考块与正文块互为边界,各自独立累积,互不裁剪对方内容。
+        let (text, events) = run_updates(&[thought_chunk("plan"), msg_chunk("plan answer")]);
+        // 正文以 "plan answer" 起头,思考游标不影响正文;正文应完整发出。
+        assert_eq!(text, "plan answer");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, UnifiedAgentEvent::ThinkingDelta { delta } if delta == "plan")));
     }
 
     #[test]

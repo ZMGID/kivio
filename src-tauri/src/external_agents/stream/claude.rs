@@ -168,6 +168,9 @@ impl ClaudeStreamState {
         let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match event_type {
             "message_start" => {
+                // 新 assistant 消息开始:复位 `text_streamed`(N7)。否则上一条消息经 delta
+                // 流式发出后此标志一直为真,导致后续整块交付的 assistant 消息正文被永久跳过。
+                self.text_streamed = false;
                 self.current_message_id = event
                     .get("message")
                     .and_then(|v| v.get("id"))
@@ -292,6 +295,32 @@ mod tests {
             UnifiedAgentEvent::ToolUse { id, name, .. }
                 if id == "toolu-1" && name == "Write"
         )));
+    }
+
+    #[test]
+    fn text_streamed_resets_per_message() {
+        // msg1 经 delta 流式发出;msg2 只以整块 assistant 帧交付。复位后两条正文都应发出。
+        let chunks = [
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-1"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"first"}}}"#,
+            r#"{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"first"}]}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-2"}}}"#,
+            r#"{"type":"assistant","message":{"id":"msg-2","content":[{"type":"text","text":"second"}]}}"#,
+        ];
+        let mut state = ClaudeStreamState::default();
+        let mut events = Vec::new();
+        for raw in chunks {
+            let value: Value = serde_json::from_str(raw).unwrap();
+            state.handle_value(&value, &mut |e| events.push(e));
+        }
+        let texts: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                UnifiedAgentEvent::TextDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["first", "second"]);
     }
 
     #[test]
