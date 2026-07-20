@@ -14,7 +14,7 @@ import { ArrowSvg } from './lens/ArrowSvg'
 import { ReplaceTranslateOverlay } from './lens/ReplaceTranslateOverlay'
 import { ARROW_MIN_DRAG_PX, composeAnnotatedImage } from './lens/annotation'
 import { HISTORY_MAX, HISTORY_THUMB_SIZE, loadHistoryFromStorage, makeThumbnail, saveHistoryToStorage } from './lens/history'
-import { DRAG_THRESHOLD, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeAnchoredBar, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
+import { ANCHOR_GAP, DRAG_THRESHOLD, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
 
 // 翻译卡缩放后内容区高度固定，此值预留 header+footer+padding，
 // 保证「卡整体高 = chrome + 内容」不被 overflow-hidden 裁掉底部复制栏。
@@ -1086,8 +1086,8 @@ export default function Lens() {
     })
   }, [barRect])
 
-  /** 截图后在前端直接算 bar 位置，让对话栏飞到选区外侧。
-   *  优先右侧，其次左侧；左右都放不下时回退到下方或上方。 */
+  /** 截图后在前端直接算 bar 位置，让对话栏飞到选区左/右侧。
+   *  优先右侧，右侧空间不够再放左侧；都不够时贴大空间一侧。 */
   const flyBarToAnchor = async (
     anchorAbsX: number,
     anchorAbsY: number,
@@ -1102,19 +1102,30 @@ export default function Lens() {
     const vw = window.innerWidth
     const vh = window.innerHeight
     const barW = mode === 'chat' ? computeChatBarWidth(metrics) : Math.min(cardWidthRef.current, vw - FLOATING_PADDING * 2)
-    const totalH = READY_BAR_H + 8 + metrics.ANSWER_H
-    const targetRect = computeAnchoredBar({
-      viewportWidth: vw,
-      viewportHeight: vh,
-      anchorX: ax,
-      anchorY: ay,
-      anchorWidth: anchorW,
-      anchorHeight: anchorH,
-      barWidth: barW,
-      sideContentHeight: totalH,
-    })
-    const targetX = targetRect.x
-    const targetY = targetRect.y
+    const ANSWER_H = metrics.ANSWER_H
+
+    const rightStart = ax + anchorW + ANCHOR_GAP
+    const spaceRight = vw - rightStart - 16
+    const spaceLeft = ax - ANCHOR_GAP - 16
+
+    let targetX: number
+    if (spaceRight >= barW) {
+      targetX = rightStart
+    } else if (spaceLeft >= barW) {
+      targetX = ax - barW - ANCHOR_GAP
+    } else {
+      // 左右都放不下完整 bar：贴空间更大的一侧屏幕边
+      targetX = spaceRight >= spaceLeft ? vw - barW - 16 : 16
+    }
+
+    // 垂直：与选区中心对齐；总高度需容纳 bar + 8 + answer 区
+    const totalH = READY_BAR_H + 8 + ANSWER_H
+    let targetY = ay + anchorH / 2 - READY_BAR_H / 2
+    if (targetY + totalH > vh - 16) targetY = vh - totalH - 16
+    if (targetY < 16) targetY = 16
+
+    if (targetX < 16) targetX = 16
+    if (targetX + barW > vw - 16) targetX = vw - barW - 16
 
     // translate 模式截完直接进 translating；chat 模式进 ready 等用户提问
     const targetStage: Stage = (mode === 'translate' || mode === 'replace') ? 'translating' : 'ready'
