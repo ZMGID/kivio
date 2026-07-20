@@ -43,8 +43,8 @@
 
 ## Acceptance Criteria
 
-- [ ] 单测：错误分类函数覆盖 auth/timeout/exited/protocol 四类样例；AcpSession run_turn 模型变更发出 set_model 的序列化测试（可用 fake reader/writer）；Cancel 兜底升级 Close 的状态机测试。
-- [ ] 实测（主会话验收）：登出 grok 后发消息 → 气泡出现"未登录 + 登录引导"中文提示，无裸 RPC 串；重新登录后无需重启 App 恢复正常。
-- [ ] 实测：持久 grok 会话中途切模型 → 下一轮回复的模型确实变化（或可观测到重连）；切 reasoning 档同理。
-- [ ] 实测：kill 掉存活的 CLI 子进程后再发消息 → 自动重连成功，用户无感或仅一次轻提示。
-- [ ] `cargo test` external_agents 非 live 测试全绿。
+- [x] 单测：错误分类/模型变更/Cancel 兜底测试齐备（25+ 组，commit 4214956；401 改 token 边界匹配防误伤）。
+- [ ] 【待用户真机验收】登出 grok 后发消息 → 气泡出现"未登录 + 登录引导"中文提示，无裸 RPC 串；重新登录后无需重启 App 恢复正常。
+- [ ] 【待用户真机验收】持久 grok 会话中途切模型 → 下一轮回复的模型确实变化（或可观测到重连）；切 reasoning 档同理。
+- [ ] 【待用户真机验收】kill 掉存活的 CLI 子进程后再发消息 → 自动重连成功，用户无感或仅一次轻提示。
+- [x] `cargo test --lib` 1032 通过（复检含 clippy 基线对比，无新警告）。

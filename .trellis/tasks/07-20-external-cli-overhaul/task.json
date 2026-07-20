@@ -21,7 +21,8 @@
   "children": [
     "07-20-cli-message-chain",
     "07-20-cli-session-lifecycle",
-    "07-20-cli-detection-models"
+    "07-20-cli-detection-models",
+    "07-20-cli-native-sessions"
   ],
   "parent": null,
   "relatedFiles": [],

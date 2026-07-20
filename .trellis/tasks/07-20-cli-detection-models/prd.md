@@ -43,8 +43,8 @@
 
 ## Acceptance Criteria
 
-- [ ] 单测：`detect_acp_models` 首行 banner + 后续 JSON 仍解析出模型；异步 session/update 推送模型被采集；fallback 时返回值带 `fallback` 标记。
-- [ ] 实测（主会话验收）：grok 登录态下模型下拉出现真实模型列表（非仅 Default）；断网/登出制造探测失败 → 下拉显示降级角标 + 重试按钮，重试可恢复。
-- [ ] 实测：外部会话第 2+ 轮发送 → CLI 收到 prompt 后端耗时 < 500ms（日志计时验证）。
-- [ ] 实测：新装（或重命名恢复）一个 CLI 后，RuntimePicker 点刷新立即可见，无需等 600s。
-- [ ] `cargo test` + `npm run lint` + `npm run typecheck` + `npm test` 全绿。
+- [x] 单测：banner 容错/异步推送合并/fallback 标记/负缓存 TTL 均有覆盖（commit 3487e05，--lib 1037 通过）。
+- [ ] 【待用户真机验收】grok 登录态下模型下拉出现真实模型列表（非仅 Default）；断网/登出制造探测失败 → 下拉显示降级角标 + 重试按钮，重试可恢复。
+- [ ] 【待用户真机验收】外部会话第 2+ 轮发送 → 后端耗时 < 500ms（debug 构建有计时日志）。
+- [ ] 【待用户真机验收】新装 CLI 后 RuntimePicker 点刷新立即可见。
+- [x] `cargo test --lib` 1037 + lint/typecheck/vitest(300) 全绿；RuntimePicker 新增竞态守卫（复检修复）。

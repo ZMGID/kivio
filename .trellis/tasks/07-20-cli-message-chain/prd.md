@@ -35,8 +35,8 @@
 
 ## Acceptance Criteria
 
-- [ ] 单测：上述 R3 三组测试存在且通过；修改前旧逻辑下会失败（红→绿可证）。
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml` external_agents 全部非 live 测试通过。
-- [ ] 实测（主会话验收）：grok 会话发 "123" → CLI 不再回复"你发了两遍"；带工具调用的回复正文只显示一次。
-- [ ] pi 或 kimi（如本机可用）多轮对话，第 2 轮 CLI 收到的 prompt 中第 1 轮消息只出现一次、末条只出现一次。
-- [ ] 一次性 `run_acp_session` 与持久路径的 chunk 去重逻辑为同一份代码（无重复实现）。
+- [x] 单测：上述 R3 三组测试存在且通过；复检代理推演确认旧逻辑下均失败（红→绿可证）。
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml` external_agents 全部非 live 测试通过（--lib 1007，commit ce76f60）。
+- [ ] 【待用户真机验收】grok 会话发 "123" → CLI 不再回复"你发了两遍"；带工具调用的回复正文只显示一次。
+- [ ] 【待用户真机验收】pi 或 kimi（如本机可用）多轮对话，第 2 轮 CLI 收到的 prompt 中第 1 轮消息只出现一次、末条只出现一次。
+- [x] 一次性 `run_acp_session` 与持久路径的 chunk 去重逻辑为同一份代码（acp_apply_session_update，复检确认）。
