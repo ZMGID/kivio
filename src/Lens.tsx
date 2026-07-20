@@ -99,6 +99,13 @@ const waitForFrames = (frames: number) => new Promise<void>((resolve) => {
 
 const LENS_HIDE_IDLE_TIMEOUT_MS = 120
 
+// take-once 复位载荷的前端缓存：React StrictMode 开发模式下 mount effect 会跑两次，
+// 第二次 take 必然拿到 null（已被第一次消费）。若此时 enterSelect({}) 会把第一次已
+// 加载的 freezeFrameImageId/冻结帧清掉（且第一次的异步加载已被 cleanup 的
+// cancelPendingMotion 作废）→ 冻结帧永远出不来。缓存最近一次 take 到的载荷，
+// mount 时 take 到 null 就用缓存重放，保证双挂载下第二次 enterSelect 仍带完整载荷。
+let lastResetPayloadCache: LensResetPayload = {}
+
 const waitForVisibleIdle = (timeout = LENS_HIDE_IDLE_TIMEOUT_MS) => new Promise<void>((resolve) => {
   const idleWindow = window as Window & {
     requestIdleCallback?: (cb: () => void, options?: { timeout?: number }) => number
@@ -609,19 +616,25 @@ export default function Lens() {
     // 冷挂载 与 复用收到 lens:reset 走同一路径：主动 take 后端暂存的复位载荷（frame +
     // freezeFrameImageId）再 enterSelect。后端保证每次打开只会触发其中一个（冷创建→挂载；
     // 复用→事件），所以每次打开只跑一次 enterSelect，不会双跑把 take-once 的选区吞掉。
-    const consumeAndEnter = async () => {
+    const consumeAndEnter = async (fromMount: boolean) => {
       let payload: LensResetPayload = {}
       try {
         const raw = await api.lensTakeResetPayload()
-        if (raw) payload = readLensResetPayload(JSON.parse(raw))
+        if (raw) {
+          payload = readLensResetPayload(JSON.parse(raw))
+          lastResetPayloadCache = payload
+        } else if (fromMount) {
+          // StrictMode 双挂载重放：见 lastResetPayloadCache 注释
+          payload = lastResetPayloadCache
+        }
       } catch (err) {
         console.error('[lens] take reset payload failed', err)
       }
       void enterSelect(payload)
     }
-    void consumeAndEnter()
+    void consumeAndEnter(true)
     const handleReset = () => {
-      void consumeAndEnter()
+      void consumeAndEnter(false)
     }
     window.addEventListener('lens:reset', handleReset)
     return () => {
