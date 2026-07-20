@@ -455,10 +455,6 @@ pub struct LensConfig {
     /// 进入截图选择态时是否显示顶部提示。默认 true，避免用户按下快捷键后看不出已进入截图模式。
     #[serde(default = "default_true")]
     pub show_capture_hint: bool,
-    /// Windows 兼容模式：进入截图选择态前先抓取当前显示器冻结帧，再在覆盖层内显示和裁剪冻结帧。
-    /// Windows 默认 true（规避浏览器视频在透明置顶 WebView2 下变黑）；其他平台不生效。
-    #[serde(default = "default_windows_freeze_frame_selection")]
-    pub windows_freeze_frame_selection: bool,
     #[serde(default)]
     pub web_search: LensWebSearchConfig,
 }
@@ -490,7 +486,6 @@ impl Default for LensConfig {
             send_to_chat: true,
             message_order: "asc".to_string(),
             show_capture_hint: true,
-            windows_freeze_frame_selection: default_windows_freeze_frame_selection(),
             web_search: LensWebSearchConfig::default(),
         }
     }
@@ -2515,12 +2510,6 @@ fn default_false() -> bool {
     false
 }
 
-/// 冻结帧选区默认值：Windows 默认开启（规避透明置顶 WebView2 下浏览器视频变黑，
-/// 且配合优化后的依赖性能良好），其他平台保持关闭。该功能本身仅 Windows 生效。
-fn default_windows_freeze_frame_selection() -> bool {
-    cfg!(target_os = "windows")
-}
-
 fn default_api_format() -> String {
     "openai_chat".to_string()
 }
@@ -3681,18 +3670,6 @@ mod tests {
 
         let cfg: LensConfig = serde_json::from_str("{}").expect("empty lens config should load");
         assert!(cfg.send_to_chat);
-    }
-
-    #[test]
-    fn lens_windows_freeze_frame_selection_defaults_per_platform() {
-        // Windows 默认开启，其他平台默认关闭。
-        let expected = cfg!(target_os = "windows");
-
-        let s = Settings::default();
-        assert_eq!(s.lens.windows_freeze_frame_selection, expected);
-
-        let cfg: LensConfig = serde_json::from_str("{}").expect("empty lens config should load");
-        assert_eq!(cfg.windows_freeze_frame_selection, expected);
     }
 
     #[test]

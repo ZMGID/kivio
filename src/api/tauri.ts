@@ -946,8 +946,6 @@ export type Settings = {
     messageOrder?: 'asc' | 'desc'
     /** 进入截图选择态时是否显示顶部提示（默认 true） */
     showCaptureHint?: boolean
-    /** Windows 兼容模式：进入选择态前冻结当前画面，再从冻结帧裁剪（默认 false） */
-    windowsFreezeFrameSelection?: boolean
     /** Lens 联网搜索配置 */
     webSearch?: {
       enabled: boolean
@@ -1509,8 +1507,6 @@ function normalizeSettings(settings: Settings): Settings {
       sendToChat: current.lens?.sendToChat ?? true,
       messageOrder: current.lens?.messageOrder === 'desc' ? 'desc' : 'asc',
       showCaptureHint: current.lens?.showCaptureHint ?? true,
-      windowsFreezeFrameSelection:
-        current.lens?.windowsFreezeFrameSelection ?? navigator.platform.startsWith('Win'),
       webSearch: {
         enabled: current.lens?.webSearch?.enabled ?? false,
         provider: current.lens?.webSearch?.provider ?? 'tavily',

@@ -318,7 +318,11 @@ fn ensure_overlay_window(
     }
 
     // chat 模式 hash 为 '#lens'（readModeFromHash 默认即 chat）；其余模式带 query。
-    let hash = if mode == "translate" || mode == "translateText" || mode == "replace" || mode == "screenshot" {
+    let hash = if mode == "translate"
+        || mode == "translateText"
+        || mode == "replace"
+        || mode == "screenshot"
+    {
         format!("lens?mode={mode}")
     } else {
         "lens".to_string()

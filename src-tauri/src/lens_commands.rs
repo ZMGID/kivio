@@ -119,7 +119,7 @@ fn unregister_lens_escape_shortcut(app: &AppHandle) {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn insert_temp_explain_image(app: &AppHandle, path: PathBuf) -> String {
     let image_id = Uuid::new_v4().to_string();
     let state = app.state::<AppState>();
@@ -517,7 +517,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
             "[lens-timing]   ..after_position +{}ms",
             __t0.elapsed().as_millis()
         );
-        freeze_frame_image_id = prepare_windows_freeze_frame(app, frame);
+        freeze_frame_image_id = prepare_freeze_frame(app, frame);
     }
     eprintln!(
         "[lens-timing] after_freeze_capture +{}ms",
@@ -2231,15 +2231,25 @@ pub(crate) fn lens_take_reset_payload(state: State<'_, AppState>) -> Option<Stri
         .take()
 }
 
-#[cfg(target_os = "windows")]
-fn prepare_windows_freeze_frame(app: &AppHandle, frame: Option<LensFrame>) -> Option<String> {
-    let settings = app.state::<AppState>().settings_read().clone();
-    if !settings.lens.windows_freeze_frame_selection {
-        return None;
-    }
+/// 冻结帧：进入选择态前抓取当前显示器整帧，之后的区域截图从该帧裁剪（双端常开，无开关）。
+/// - Windows：规避浏览器视频在透明置顶 WebView2 下变黑。
+/// - macOS：SCK 捕获时排除自身 PID（webview 此刻虽未显示，防御复用窗口的边缘态）。
+/// 捕获失败静默降级：返回 None，前端照常走实时透明覆盖 + 现场截图路径。
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn prepare_freeze_frame(app: &AppHandle, frame: Option<LensFrame>) -> Option<String> {
     let frame = frame?;
     let width = frame.width.round().max(1.0) as u32;
     let height = frame.height.round().max(1.0) as u32;
+    let exclude_self_pid: Option<i32> = {
+        #[cfg(target_os = "macos")]
+        {
+            Some(std::process::id() as i32)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    };
     let path = capture_region_image(
         frame.x.round() as i32,
         frame.y.round() as i32,
@@ -2248,7 +2258,7 @@ fn prepare_windows_freeze_frame(app: &AppHandle, frame: Option<LensFrame>) -> Op
         width,
         height,
         1.0,
-        None,
+        exclude_self_pid,
     )
     .map_err(|err| {
         eprintln!("[lens-freeze] capture failed: {err}");
@@ -2267,8 +2277,8 @@ fn prepare_windows_freeze_frame(app: &AppHandle, frame: Option<LensFrame>) -> Op
     Some(image_id)
 }
 
-#[cfg(not(target_os = "windows"))]
-fn prepare_windows_freeze_frame(_app: &AppHandle, _frame: Option<LensFrame>) -> Option<String> {
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn prepare_freeze_frame(_app: &AppHandle, _frame: Option<LensFrame>) -> Option<String> {
     None
 }
 
@@ -2731,7 +2741,9 @@ pub(crate) fn lens_register_annotated_image(
 
 /// 截图标注：把合成后的 PNG 写入系统剪贴板（解码为 RGBA 后走 arboard）。
 #[tauri::command]
-pub(crate) async fn lens_copy_image_to_clipboard(base64_png: String) -> Result<serde_json::Value, String> {
+pub(crate) async fn lens_copy_image_to_clipboard(
+    base64_png: String,
+) -> Result<serde_json::Value, String> {
     // 解码 + 剪贴板都是阻塞操作，放 blocking 线程避免卡 UI 事件循环
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let bytes = general_purpose::STANDARD

@@ -1622,7 +1622,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         sendToChat: true,
         messageOrder: 'asc' as const,
         showCaptureHint: true,
-        windowsFreezeFrameSelection: getPlatform() === 'windows',
         webSearch: {
           enabled: false,
           provider: 'tavily' as const,
@@ -2494,14 +2493,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                           onChange={(v) => updateLens({ showCaptureHint: v })}
                         />
                       </SettingRow>
-                      {platform === 'windows' && (
-                        <SettingRow label={t.lensWindowsFreezeFrameSelection} description={t.lensWindowsFreezeFrameSelectionHint}>
-                          <Toggle
-                            checked={settings.lens?.windowsFreezeFrameSelection === true}
-                            onChange={(v) => updateLens({ windowsFreezeFrameSelection: v })}
-                          />
-                        </SettingRow>
-                      )}
                     </SettingsGroup>
 
                     <SettingsGroup title={t.engine}>
