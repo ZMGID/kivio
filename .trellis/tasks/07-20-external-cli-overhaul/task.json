@@ -1,0 +1,30 @@
+{
+  "id": "external-cli-overhaul",
+  "name": "external-cli-overhaul",
+  "title": "外部 CLI Agent 连接与消息链路改造",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhimen",
+  "assignee": "zhimen",
+  "createdAt": "2026-07-20",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-20-cli-message-chain",
+    "07-20-cli-session-lifecycle",
+    "07-20-cli-detection-models"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
