@@ -48,56 +48,6 @@ pub(crate) fn get_settings(state: State<AppState>) -> Settings {
     state.settings_read().clone()
 }
 
-/// 读取 kivio-code 的独立配置（`<app_data>/kivio-code/config.json`）。它与共享 `Settings`
-/// 分开存储，由 GUI 的 Kivio Code 设置页读写,CLI 启动时消费。缺失/损坏时回退默认值（不报错）。
-#[tauri::command]
-pub(crate) fn get_kivio_code_config() -> crate::kivio_code::config::KivioCodeConfig {
-    crate::kivio_code::config::load()
-}
-
-/// 保存 kivio-code 的独立配置。失败（无法解析 app data 目录 / 写盘失败）时返回错误串。
-#[tauri::command]
-pub(crate) fn set_kivio_code_config(
-    config: crate::kivio_code::config::KivioCodeConfig,
-) -> Result<(), String> {
-    crate::kivio_code::config::save(&config)
-}
-
-/// 全局指令文件路径:`<app_data>/agents/AGENTS.md`——kivio-code 每轮注入系统提示的全局那一层
-/// （等价于 Claude Code 的 `~/.claude/CLAUDE.md`）。用与 CLI 读取相同的 `settings_loader::app_data_dir`
-/// 解析,确保 GUI 写入处 == CLI 读取处。
-fn kivio_code_global_instructions_path() -> Option<std::path::PathBuf> {
-    crate::kivio_code::settings_loader::app_data_dir()
-        .map(|dir| dir.join("agents").join("AGENTS.md"))
-}
-
-/// 读取全局指令文件内容（缺失/不可读 → 空串,不报错）。
-#[tauri::command]
-pub(crate) fn get_kivio_code_global_instructions() -> String {
-    kivio_code_global_instructions_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_default()
-}
-
-/// 保存全局指令文件（按需创建 `agents/` 目录）。无法解析目录 / 写盘失败时返回错误串。
-#[tauri::command]
-pub(crate) fn set_kivio_code_global_instructions(content: String) -> Result<(), String> {
-    let path = kivio_code_global_instructions_path()
-        .ok_or_else(|| "could not resolve app data directory".to_string())?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, content).map_err(|e| e.to_string())
-}
-
-/// 「安装命令行工具」：把 `kivio` 命令注册进当前用户的 PATH，使任意终端可用 `kivio code`。
-/// Windows 改 `HKCU\Environment\Path` 并广播 WM_SETTINGCHANGE；macOS 在 `~/.local/bin`
-/// 建到主程序的软链。由 Kivio Code 设置页的按钮手动触发,不在安装时自动改 PATH。
-#[tauri::command]
-pub(crate) fn install_cli_command() -> Result<crate::cli_install::InstallCliResult, String> {
-    crate::cli_install::install_cli()
-}
-
 /// 前端解析好主题（含 system）后调用：把 chat 窗口的原生背景设为对应主题色，
 /// 避免伸缩时露出白色清屏底色导致暗色下闪白。仅对 label=="chat" 生效；
 /// macOS/Linux 透明窗口在 windows 模块内为 no-op。

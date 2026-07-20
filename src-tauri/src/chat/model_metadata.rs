@@ -8,11 +8,6 @@ const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 200_000;
 const MIN_TEMPERATURE: f64 = 0.0;
 const MAX_TEMPERATURE: f64 = 2.0;
 
-/// 安全窗口比例（Gap 3）：模型窗口元数据常偏乐观（`gpt-5*` 猜 128k，真实代理可能仅 ~100k；
-/// 用户 override 也可能虚报 400k）。所有压缩/footer 预算都基于对解析窗口打过这个安全折扣的
-/// `safe_window`，而非裸窗口，给元数据偏差留余量。
-pub(crate) const SAFE_WINDOW_RATIO: f32 = 0.9;
-
 fn context_window_from_model_info(info: Option<&ModelInfo>) -> Option<usize> {
     info.and_then(|info| info.context_window)
         .and_then(|tokens| usize::try_from(tokens).ok())
@@ -323,17 +318,6 @@ pub(crate) fn context_window_for_model(
     (FALLBACK_CONTEXT_WINDOW_TOKENS, true)
 }
 
-/// 解析模型窗口后打 `SAFE_WINDOW_RATIO` 安全折扣得到的 `safe_window`（Gap 3）。压缩触发预算
-/// 与 footer 量表都应基于这个值（而非裸窗口），让所有预算与同一个保守窗口一致。
-/// `window == 0`（未知）时返回 0，调用方据此跳过压缩/降级显示。
-pub(crate) fn safe_context_window_for_model(
-    provider: Option<&ModelProvider>,
-    model: &str,
-) -> usize {
-    let (window, _is_fallback) = context_window_for_model(provider, model);
-    ((window as f32) * SAFE_WINDOW_RATIO) as usize
-}
-
 pub(crate) fn chat_max_output_tokens_for_model(
     provider: Option<&ModelProvider>,
     model: &str,
@@ -462,32 +446,6 @@ mod tests {
         assert_eq!(
             context_window_for_model(None, "deepseek-v4-flash"),
             (1_048_576, false)
-        );
-    }
-
-    #[test]
-    fn safe_window_applies_ratio_to_resolved_window() {
-        // Gap 3: safe_window = resolved window × SAFE_WINDOW_RATIO (0.9). All compaction
-        // and footer budgets derive from this conservative window, not the optimistic raw one.
-        assert_eq!(SAFE_WINDOW_RATIO, 0.9);
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            "gpt-5.3-codex-spark".to_string(),
-            ModelInfo {
-                context_window: Some(128_000),
-                ..ModelInfo::default()
-            },
-        );
-        let provider = test_provider_with_overrides(overrides);
-        let (raw, _is_fallback) = context_window_for_model(Some(&provider), "gpt-5.3-codex-spark");
-        assert_eq!(raw, 128_000);
-        assert_eq!(
-            safe_context_window_for_model(Some(&provider), "gpt-5.3-codex-spark"),
-            (128_000_f32 * 0.9) as usize
-        );
-        assert_eq!(
-            safe_context_window_for_model(Some(&provider), "gpt-5.3-codex-spark"),
-            115_200
         );
     }
 

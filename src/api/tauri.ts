@@ -1088,25 +1088,6 @@ export type PluginInstallBrief = {
   userMessage: string
 }
 
-/** kivio-code CLI 的独立配置(存于 <app_data>/kivio-code/config.json,与共享 Settings 分开)。 */
-export type KivioCodeConfig = {
-  /** 读取 CLAUDE.md / .claude 上下文文件(默认 true)。 */
-  readClaudeDir: boolean
-  /** kivio-code 专属默认 provider id;空/缺省时回退到共享 Chat 模型。 */
-  defaultProviderId?: string | null
-  /** kivio-code 专属默认模型名(裸名,无 provider 前缀);与 defaultProviderId 搭配。 */
-  defaultModel?: string | null
-  /** 工具审批策略:'auto' | 'readonly_auto_sensitive_confirm' | 'always_confirm';缺省为 auto。 */
-  approvalPolicy?: string | null
-}
-
-/** install_cli_command 的返回:是否成功 / 是否已安装 / 给用户的提示信息。 */
-export type InstallCliResult = {
-  ok: boolean
-  alreadyInstalled: boolean
-  message: string
-}
-
 export type UsageRange = 'today' | '1d' | '7d' | '30d'
 
 export type UsageStatsQuery = {
@@ -1596,17 +1577,6 @@ export const api = {
   // 某模型支持的思考等级列表（数据来自模型库 reasoningEfforts）。
   reasoningEffortsForModel: (model: string, apiFormat?: string) =>
     invoke<string[]>('chat_reasoning_efforts_for_model', { model, apiFormat }),
-  // kivio-code 的独立配置（与共享 Settings 分开存储，走专用命令读写）。
-  getKivioCodeConfig: () => invoke<KivioCodeConfig>('get_kivio_code_config'),
-  saveKivioCodeConfig: (config: KivioCodeConfig) =>
-    invoke<void>('set_kivio_code_config', { config }),
-  // kivio-code 全局指令文件(<app_data>/agents/AGENTS.md),每轮注入系统提示。
-  getKivioCodeGlobalInstructions: () =>
-    invoke<string>('get_kivio_code_global_instructions'),
-  saveKivioCodeGlobalInstructions: (content: string) =>
-    invoke<void>('set_kivio_code_global_instructions', { content }),
-  // 「安装命令行工具」:把 kivio 命令注册进用户 PATH(Win)/软链到 ~/.local/bin(mac),使 `kivio code` 可用。
-  installCliCommand: () => invoke<InstallCliResult>('install_cli_command'),
   // 把（Windows 不透明）chat 窗口的原生背景设为当前主题色，避免伸缩时闪白。其他窗口/平台为 no-op。
   setChatWindowBackground: (isDark: boolean) =>
     invoke('set_chat_window_background', { isDark }).catch(() => {}),

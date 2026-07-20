@@ -253,35 +253,6 @@ pub fn native_web_search_tool() -> ChatToolDefinition {
     }
 }
 
-/// `enter_plan_mode` — kivio-code-only signal tool. The model calls this (instead of
-/// editing) when it judges the build-mode task complex / multi-step / multi-file. It does
-/// NOT change state itself: the interactive layer detects the `enter_plan_mode` tool record
-/// at turn end and runs a read-only planning pass, then pauses for the user to `proceed`.
-/// Only advertised in build mode when `auto_plan` is on (never in plan mode, never to
-/// sub-agents). The `reason` arg is optional and shown to the user.
-pub fn native_enter_plan_mode_tool() -> ChatToolDefinition {
-    ChatToolDefinition {
-        id: "native__enter_plan_mode".to_string(),
-        name: "enter_plan_mode".to_string(),
-        description: "Switch to read-only PLAN mode before doing anything else for this request. Call this as your FIRST action when the task is complex, multi-step, touches architecture, or spans multiple files — instead of editing. After you call it, STOP immediately: do not call other tools and do not edit; a read-only planning pass runs next and the user reviews the plan before any implementation. For a small, single-file, well-scoped change, skip this and just do the work.".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "Optional one-line reason why this task needs planning first (shown to the user)."
-                }
-            }
-        }),
-        sensitive: false,
-        annotations: None,
-        output_schema: None,
-    }
-}
-
 pub fn native_skill_activate_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "skill__activate".to_string(),

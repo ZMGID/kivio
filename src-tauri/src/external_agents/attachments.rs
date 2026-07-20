@@ -19,7 +19,7 @@ pub struct ImageBlock {
     pub path: PathBuf,
 }
 
-/// 按扩展名推断图片 MIME（与 GUI/`kivio_code::vision` 的 `image_mime_for_path` 一致）。
+/// 按扩展名推断图片 MIME（与 GUI 的 `image_mime_for_path` 一致）。
 pub fn image_mime_for_path(path: &Path) -> &'static str {
     let ext = path
         .extension()

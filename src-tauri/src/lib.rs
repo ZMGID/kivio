@@ -2,15 +2,14 @@
 
 pub mod agents;
 pub mod api;
+pub mod app_data;
 pub mod capture_geometry;
 pub mod chat;
-pub mod cli_install;
 pub mod commands;
 pub mod connectors;
 pub mod external_agents;
 pub mod fonts;
 pub mod inpainting;
-pub mod kivio_code;
 pub mod lens;
 pub mod lens_commands;
 #[cfg(target_os = "macos")]
@@ -442,11 +441,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             fonts::list_system_fonts,
-            commands::get_kivio_code_config,
-            commands::set_kivio_code_config,
-            commands::get_kivio_code_global_instructions,
-            commands::set_kivio_code_global_instructions,
-            commands::install_cli_command,
             commands::set_chat_window_background,
             commands::get_default_prompt_templates,
             commands::save_settings,

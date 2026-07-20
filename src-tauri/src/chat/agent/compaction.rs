@@ -684,7 +684,7 @@ fn summary_output_tokens(config_max: u32) -> u32 {
 /// `focus` 为手动 `/compact <focus>` 透传的聚焦指令（自动路径为 None）。
 /// 成功返回压缩后的完整消息序列；空摘要 / 失败 / 无可摘要旧段时返回 None（调用方据此降级）。
 ///
-/// 自动路径（`maybe_compact_send_view`）与手动路径（`force_compact`）都走这里，避免重复摘要逻辑。
+/// 自动路径（`maybe_compact_send_view`）走这里，避免重复摘要逻辑。
 /// `keep_tokens`：受保护近期窗口大小——自动路径传 `min(RECENT_KEEP_TOKENS, budget)`（窗口比
 /// `RECENT_KEEP_TOKENS` 还小的模型上，近期窗口不能大过压缩预算，否则压完仍超窗），手动路径传 `RECENT_KEEP_TOKENS`。
 /// `window`：模型上下文窗口（tokens）——据此把**摘要请求自身的输入**封顶到
@@ -1376,45 +1376,6 @@ pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunSt
             );
             state.runtime_messages.clone()
         }
-    }
-}
-
-/// 手动 `/compact [focus]`：强制压缩 `messages`（**无视预算**），走与自动路径相同的
-/// serialize→summary→replace 核心（R10）。`focus` 透传进摘要 prompt。成功返回压缩后的完整历史
-/// 供交互层替换其 `runtime_messages`；无可摘要旧段 / 空摘要 / 失败时返回 None（调用方据此提示）。
-/// 强制压缩不接取消（用户主动触发）。
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn force_compact(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
-    model: &str,
-    messages: &[Value],
-    config_max_output_tokens: u32,
-    retry_attempts: usize,
-    conversation_id: &str,
-    message_id: &str,
-    focus: Option<&str>,
-) -> Option<Vec<Value>> {
-    let window = context_window_for_model(Some(provider), model).0;
-    match summarize_history(
-        state,
-        provider,
-        model,
-        messages,
-        RECENT_KEEP_TOKENS,
-        window,
-        config_max_output_tokens,
-        retry_attempts,
-        conversation_id,
-        message_id,
-        focus,
-        None,
-    )
-    .await
-    {
-        // 强制压缩不接取消（cancel=None）→ Cancelled 不可达，与 Failed 同样降级为 None。
-        CompactOutcome::Compacted(messages, _summary) => Some(messages),
-        CompactOutcome::Cancelled | CompactOutcome::Failed => None,
     }
 }
 

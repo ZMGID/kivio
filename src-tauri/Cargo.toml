@@ -6,8 +6,7 @@ description = "Kivio Desktop - Screen-level AI assistant for macOS/Windows"
 authors = ["ZM"]
 license = "GPL-3.0-or-later"
 edition = "2021"
-# 项目有两个 binary（kivio 主应用 + kivio-code CLI）。`tauri dev` 跑裸 `cargo run`，
-# 没有 default-run 会因「不知道跑哪个 binary」直接报错退出。固定默认跑主应用 kivio。
+# `tauri dev` 跑裸 `cargo run`，没有 default-run 会因「不知道跑哪个 binary」直接报错退出。
 default-run = "kivio"
 
 [lib]
@@ -17,10 +16,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "kivio"
 path = "src/main.rs"
-
-[[bin]]
-name = "kivio-code"
-path = "src/bin/kivio-code.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -50,26 +45,10 @@ html-escape = "0.2"
 regex = "1"
 ignore = "0.4"
 
-# kivio-code 终端 agent CLI 用：参数解析 + 跨平台 app-data 目录定位。
-clap = { version = "4", features = ["derive"] }
+# 跨平台 app-data 目录定位。
 directories = "5"
 
-# Kivio Code CLI / TUI
-crossterm = "0.29"
-unicode-width = "0.2"
-unicode-segmentation = "1"
 unicode-normalization = "0.1"
-# TUI Markdown 渲染：pulldown-cmark 解析 + syntect 代码块语法高亮。
-# syntect 默认特性会拉入 onig（C 依赖）；这里关默认、改用纯 Rust 的 fancy-regex 后端，
-# 保持 cargo build 不需要外部 C 工具链。
-pulldown-cmark = { version = "0.13", default-features = false }
-syntect = { version = "5", default-features = false, features = [
-  "default-syntaxes",
-  "default-themes",
-  "regex-fancy",
-  "parsing",
-  "html",
-] }
 
 # 工具库
 base64 = "0.22"

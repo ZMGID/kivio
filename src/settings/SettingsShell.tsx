@@ -33,7 +33,7 @@ import {
 import { i18n } from './i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  CodeIcon, AgentIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon,
+  AgentIcon, WebSearchIcon, ConnectorsIcon, UsageIcon, ProvidersIcon, AboutIcon,
 } from './NavIcons'
 import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, stableStringify } from './utils'
 import { PROVIDER_PRESETS, type ProviderPreset } from './providerPresets'
@@ -45,7 +45,6 @@ import { PromptField, ScreenshotTranslationSettings } from './ScreenshotTranslat
 import { initialReplacePackProgressState, reduceReplacePackProgress } from './replacePackProgress'
 import { UsageStatsPanel } from './UsageStatsPanel'
 import { RequestDebugPanel } from './RequestDebugPanel'
-import { KivioCodeSettings } from './KivioCodeSettings'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { ModelDetailDrawer } from '../components/ModelDetailDrawer'
 import { Button, IconButton } from '../components/Button'
@@ -62,7 +61,7 @@ import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
 import { defaultChatTools } from './chatToolsShared'
 
-export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'kivioCode' | 'externalAgents' | 'webSearch' | 'connectors' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'webSearch' | 'connectors' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 type MemoryLayerKey = 'l1' | 'l2'
@@ -1890,7 +1889,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'chat' as const, label: t.tabChatClient, icon: ChatIcon },
     { id: 'memory' as const, label: t.tabMemory, icon: MemoryIcon },
     { id: 'mixer' as const, label: t.tabMixer, icon: MixerIcon },
-    { id: 'kivioCode' as const, label: 'Kivio Code', icon: CodeIcon },
     { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: AgentIcon },
     { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
@@ -1931,12 +1929,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       subtitle: lang === 'zh'
         ? '按副任务路由模型：视觉、标题总结、上下文压缩、生图。'
         : 'Route models by side task: vision, title summaries, context compression, and image generation.',
-    },
-    kivioCode: {
-      title: 'Kivio Code',
-      subtitle: lang === 'zh'
-        ? '终端编码代理的模型、审批与上下文。'
-        : 'Model, approval, and context for the terminal agent.',
     },
     externalAgents: {
       title: t.tabExternalAgents,
@@ -3045,11 +3037,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   )}
                 </SettingsGroup>
               </>
-            )}
-
-            {/* ===== Kivio Code 标签页 ===== */}
-            {activeTab === 'kivioCode' && (
-              <KivioCodeSettings lang={lang} providers={settings.providers} />
             )}
 
             {activeTab === 'externalAgents' && (
