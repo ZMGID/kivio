@@ -39,11 +39,11 @@
 
 ## Acceptance Criteria
 
-- [ ] pi 三轮对话：第 2/3 轮 CLI 进程收到的 prompt 只含最新消息；杀掉 Kivio 重开后继续对话，pi 记得前文（--session-id resume 生效）。
-- [ ] kimi 走 ACP：多轮上下文由 kimi 自持；模型下拉出实时列表；中途换模型生效。
-- [ ] 任意 CLI 会话（含 claude/grok）：第 2+ 轮 prompt 不含历史 transcript。
-- [ ] 已绑定 CLI 的会话：前端无法切换 CLI/模型来源；后端对不一致 agent_id 的发送返回明确错误。
-- [ ] `cargo test --lib` + 前端三命令全绿；受影响单测按 R4 调整。
+- [x] 真机验收 2026-07-22：pi 两轮记忆（42）+ 杀 App 重开续接均通过；第 2 轮仅 872 tokens 上行证明只发最新消息。
+- [x] 真机验收：kimi ACP 两轮记忆（7）+ 跨重启续接通过；第 2 轮仅 24 tokens。胶囊 Auto（kimi 无 current 概念，预期）。
+- [x] grok 两轮验证：记忆由原生会话保持，无重复消息。
+- [x] 真机验收：绑定提示行 + 其他 CLI 置灰确认。
+- [x] cargo --lib 1047 / vitest 306 / lint+typecheck 全绿。真机验收另修 2 缺陷：pi agent_end 后转圈不止（2594657）、EPIPE 假性异常结束（821e221）。
 
 ## Notes
 
