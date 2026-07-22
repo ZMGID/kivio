@@ -384,10 +384,19 @@ where
 {
     let mut reader = BufReader::new(stdout).lines();
     let mut agent_ended = false;
+    // agent_end 后等待 pi flush + 自行退出的宽限期。带 --session-id 时 pi 收尾要落盘会话，
+    // 可能不再因 stdin EOF 立即退出——宽限期一到就主动 break，不再无限等 EOF（否则 UI 转圈不止）。
+    let mut ended_at: Option<std::time::Instant> = None;
+    const AGENT_END_GRACE: Duration = Duration::from_secs(3);
 
     loop {
         if cancel_check() {
             return Err("cancelled".to_string());
+        }
+        if let Some(since) = ended_at {
+            if since.elapsed() > AGENT_END_GRACE {
+                break;
+            }
         }
 
         let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
@@ -429,6 +438,7 @@ where
 
         if map_pi_rpc_event(&value, sink) == PiRpcOutcome::AgentEnd {
             agent_ended = true;
+            ended_at = Some(std::time::Instant::now());
             // The process may already be closing its stdin side after emitting agent_end. Shutdown
             // is only the signal to begin Pi's flush-and-exit path, so a concurrent close is safe.
             let _ = stdin.shutdown().await;
