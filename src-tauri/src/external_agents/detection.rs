@@ -100,6 +100,15 @@ pub async fn detect_agent_models(def: &RuntimeAgentDef, cwd: &Path) -> AgentMode
                 let (cm, cr) = read_codex_current_config();
                 current_model = current_model.or(cm);
                 current_reasoning = current_reasoning.or(cr);
+            } else if def.id == "pi" {
+                // pi 的当前模型来自 ~/.pi/agent/settings.json（defaultProvider/defaultModel）。
+                // reasoning 是每次调用参数，不从配置读。
+                current_model = current_model.or_else(read_pi_current_config);
+            } else if def.id == "kimi" && current_model.is_none() {
+                // kimi 走 ACP 但 session/new 不上报 currentModelId → 降级读 ~/.kimi-code/config.toml。
+                let (cm, cr) = read_kimi_current_config();
+                current_model = cm;
+                current_reasoning = current_reasoning.or(cr);
             }
             AgentModelsResult {
                 models,
@@ -177,6 +186,96 @@ fn unquote_toml_scalar(value: &str) -> Option<String> {
     } else {
         Some(out.to_string())
     }
+}
+
+/// 读 pi 当前配置：`~/.pi/agent/settings.json` 的 `defaultProvider`+`defaultModel`，拼成
+/// `provider/model`（与 pi --list-models 的 id 形态一致，可回填选择）。缺文件/键 → None。
+fn read_pi_current_config() -> Option<String> {
+    let base = directories::BaseDirs::new()?;
+    let path = base
+        .home_dir()
+        .join(".pi")
+        .join("agent")
+        .join("settings.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    parse_pi_current_model(&text)
+}
+
+/// 从 pi settings.json 文本抽取当前模型 id。优先 `defaultProvider/defaultModel` 拼接；provider
+/// 缺失但 defaultModel 自身已含 `/` 则直接用 defaultModel；defaultModel 缺失 → None。
+fn parse_pi_current_model(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let str_field = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let model = str_field("defaultModel")?;
+    match str_field("defaultProvider") {
+        Some(provider) => Some(format!("{provider}/{model}")),
+        None if model.contains('/') => Some(model.to_string()),
+        None => None,
+    }
+}
+
+/// 读 kimi 当前配置：`~/.kimi-code/config.toml`。ACP 探测无 currentModelId 时降级用此。
+/// 缺文件/键 → None。
+fn read_kimi_current_config() -> (Option<String>, Option<String>) {
+    let Some(base) = directories::BaseDirs::new() else {
+        return (None, None);
+    };
+    let path = base.home_dir().join(".kimi-code").join("config.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => parse_kimi_config(&text),
+        Err(_) => (None, None),
+    }
+}
+
+/// 从 kimi config.toml 文本抽取 `(default_model, thinking_effort)`。`default_model` 取顶层键；
+/// `thinking_effort` 取 `[thinking]` section 内 `effort`，且仅当同 section `enabled = true` 时给出。
+/// 手写 section-aware 扫描（无 toml 依赖）——codex 顶层扫描器遇 section 即停，无法读进 section。
+fn parse_kimi_config(text: &str) -> (Option<String>, Option<String>) {
+    let mut default_model = None;
+    let mut section: Option<String> = None; // None = 顶层
+    let mut thinking_enabled = false;
+    let mut thinking_effort: Option<String> = None;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[') {
+            section = Some(rest.split(']').next().unwrap_or("").trim().to_string());
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        match section.as_deref() {
+            None if key == "default_model" && default_model.is_none() => {
+                default_model = unquote_toml_scalar(value);
+            }
+            Some("thinking") => match key {
+                "enabled" => {
+                    thinking_enabled = unquote_toml_scalar(value).as_deref() == Some("true")
+                }
+                "effort" if thinking_effort.is_none() => {
+                    thinking_effort = unquote_toml_scalar(value)
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    let reasoning = if thinking_enabled {
+        thinking_effort
+    } else {
+        None
+    };
+    (default_model, reasoning)
 }
 
 pub async fn detect_all_agents(cwd: &Path) -> Vec<DetectedAgent> {
@@ -582,5 +681,57 @@ mod tests {
         assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
         // 顶层没有 model_reasoning_effort（只在 section 里）→ None。
         assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn pi_config_joins_provider_and_model() {
+        let model = parse_pi_current_model(
+            "{\"defaultProvider\":\"edgefn\",\"defaultModel\":\"DeepSeek-V4-Flash\"}",
+        );
+        assert_eq!(model.as_deref(), Some("edgefn/DeepSeek-V4-Flash"));
+    }
+
+    #[test]
+    fn pi_config_uses_model_alone_when_provider_missing() {
+        // provider 缺失但 model 自身已含 `/` → 直接用。
+        let model = parse_pi_current_model("{\"defaultModel\":\"edgefn/DeepSeek-V4-Flash\"}");
+        assert_eq!(model.as_deref(), Some("edgefn/DeepSeek-V4-Flash"));
+        // provider 缺失且 model 不含 `/` → None（无法拼出合法 id）。
+        assert!(parse_pi_current_model("{\"defaultModel\":\"gpt\"}").is_none());
+    }
+
+    #[test]
+    fn pi_config_missing_model_is_none() {
+        assert!(parse_pi_current_model("{\"defaultProvider\":\"edgefn\"}").is_none());
+        assert!(parse_pi_current_model("{}").is_none());
+        // 非法 JSON 也不 panic → None。
+        assert!(parse_pi_current_model("not json").is_none());
+    }
+
+    #[test]
+    fn kimi_config_reads_default_model_and_thinking_effort() {
+        let text = "default_model = \"kimi-code/kimi-for-coding\"\n\n[thinking]\nenabled = true\neffort = \"high\"\n";
+        let (model, reasoning) = parse_kimi_config(text);
+        assert_eq!(model.as_deref(), Some("kimi-code/kimi-for-coding"));
+        assert_eq!(reasoning.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn kimi_config_effort_none_when_thinking_disabled() {
+        // enabled=false → effort 不生效，reasoning=None；default_model 仍读到。
+        let text =
+            "default_model = \"kimi-code/kimi-for-coding\"\n[thinking]\nenabled = false\neffort = \"high\"\n";
+        let (model, reasoning) = parse_kimi_config(text);
+        assert_eq!(model.as_deref(), Some("kimi-code/kimi-for-coding"));
+        assert!(reasoning.is_none());
+    }
+
+    #[test]
+    fn kimi_config_respects_section_boundaries() {
+        // default_model 只认顶层；[thinking] 之外的 effort 不算数，缺 default_model → None。
+        let text = "[other]\ndefault_model = \"wrong\"\neffort = \"low\"\n\n[thinking]\nenabled = true\neffort = \"medium\"\n";
+        let (model, reasoning) = parse_kimi_config(text);
+        assert!(model.is_none());
+        assert_eq!(reasoning.as_deref(), Some("medium"));
     }
 }
