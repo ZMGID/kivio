@@ -1,13 +1,14 @@
 # External CLI Agents — 执行契约与约定
 
-> 来源：任务 07-20-external-cli-overhaul（三个子任务 ce76f60 / 4214956 / 3487e05 的审计与修复）。
-> 适用：`src-tauri/src/external_agents/**` 及其前端对接面（`src/chat/RuntimePicker.tsx`、`src/chat/api.ts`）。
+> 来源：任务 07-20-external-cli-overhaul（子任务 ce76f60 / 4214956 / 3487e05 / 3456997 的审计与修复）。
+> 适用：`src-tauri/src/external_agents/**` 及其前端对接面（`src/chat/RuntimePicker.tsx`、`src/chat/api.ts`、`src/chat/Chat.tsx` 的运行时切换）。
 
 ## 消息链路（prompt.rs / session/acp.rs）
 
-1. **末条 user 消息单一事实源**：`compose_external_prompt` 中 `latest_user_message` 由 `# User request` 尾部唯一承载；`build_transcript` 必须跳过最后一条 user 消息（按 `rposition` 索引，不按文本匹配）。任何改动不得让同一条用户消息在 full_prompt 中出现两次。
+1. **只发最新消息，历史归 CLI 原生会话**（3456997 起）：`compose_external_prompt` 不重放 transcript——首轮 = instructions + 最新消息，resume 轮 = 仅最新消息。全部 9 个 CLI 均有原生会话（claude `--resume` / codex thread / ACP `session/load` 含 kimi / pi `--session-id`）。禁止任何形式的历史重放回归；fresh 重连丢上下文时必须发可见提示（TextDelta blockquote，cancelled 不发）。
 2. **禁止全局文本前缀去重**：ACP assistant/thought 输出的去重走 `AcpTextAssembler`（按消息边界维护累积游标，`on_boundary` 只置位、`push_chunk` 的 starts_with 决定是否重置）。一次性驱动 `run_acp_session` 与持久驱动 `AcpSession::run_turn` 必须共用 `acp_apply_session_update`——不要再出现两份拷贝。
 3. **流 parser 的 per-message 状态**：类似 `text_streamed` 的"已流式"标志必须在新消息开始（message_start / 新 message id）时复位，不能是整轮全局 bool。
+3b. **会话-CLI 绑定**：有消息的外部会话禁切 kind/external_agent_id（后端 `check_runtime_switch_allowed` 纯函数 + 前端 locked）；model/reasoning/sandbox 放行。前端任何"回写运行时"的路径（如 draft 落地）必须与后端放行条件一致——只对空会话生效，否则被校验拒绝卡死发送。
 
 ## 会话生命周期（session/*、run.rs、errors.rs）
 

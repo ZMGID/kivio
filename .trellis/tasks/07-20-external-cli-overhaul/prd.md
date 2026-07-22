@@ -32,7 +32,7 @@
 | `07-20-cli-message-chain` 消息链路正确性 | 1（prompt 重复）、2（ACP 去重）、C1、N7、N9 + 对应测试缺口 | **已实现+复检**（commit ce76f60），待真机验收 |
 | `07-20-cli-session-lifecycle` 会话生命周期与自愈 | N1（stderr 挂死）、4（错误裸奔）、N3（换模型无效）、A3/A5/A6/A4、C2/C3、B3 | **已实现+复检**（commit 4214956），待真机验收 |
 | `07-20-cli-detection-models` 检测/模型探测/前端 | 3（探测放弃）、N2（每轮探测）、N4、B2/B4、D1/D2/D3、F2/F4、N5 | **已实现+复检**（commit 3487e05），待真机验收 |
-| `07-20-cli-native-sessions` pi/kimi 原生会话 + 会话-CLI 绑定 | 用户补充需求：废除历史重放、pi --session-id、kimi 迁 ACP、CLI 绑定不可切换 | **planning**（prd 已定稿，待前三项验收通过后开工） |
+| `07-20-cli-native-sessions` pi/kimi 原生会话 + 会话-CLI 绑定 | 用户补充需求：废除历史重放、pi --session-id、kimi 迁 ACP、CLI 绑定不可切换 | **已实现+复检**（commit 3456997），待真机验收 |
 
 依赖关系同时写入各子任务 prd.md；父任务本身无直接实现工作，负责收口验收。
 
@@ -42,7 +42,9 @@
 - mid-turn 进程死亡的错误串不含 stderr 尾部（tail 只在 connect/close 路径 join；随后的重连失败会带上）。
 - ACP 模型探测固定多等 1.5s 通知窗口（懒查 + 缓存下可接受；若要消除需探测协议里的"目录已完整"信号）。
 - Paseo 式 managed-process registry 对账（进程残留清扫）未引入。
-- kimi `--add-dir` 未接（并入 native-sessions 任务 R2）。
+- kimi `--add-dir` 未接（kimi 已迁 ACP，cwd 即工作区，不再需要）。
+- pi/kimi 存量会话升级后一次性上下文丢失（旧版靠重放、无原生 session 可续），静默失忆 → 发布说明提示。
+- 持久协议 reuse 轮不带附件路径说明块；claude/pi resume 轮 skip_instructions 时 skill body 一并被 skip（均为存量行为，复检 1a 观察项）。
 
 ## 跨子任务验收标准（父任务收口时全部满足）
 
