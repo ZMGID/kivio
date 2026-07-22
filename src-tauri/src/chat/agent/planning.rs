@@ -1,13 +1,12 @@
 use serde_json::Value;
 
 use crate::chat::model::{
-    generate_request_from_openai_messages, AnthropicMessagesProvider, GenerateOptions,
-    GenerateOutput, GenerateRequest, GenerateRequestContext, LanguageModelProvider, ModelError,
-    OpenAiChatProvider, OpenAiResponsesProvider, PendingToolCall, StreamPart, StreamSink,
+    generate_request_from_openai_messages, generate_with_chat_provider, stream_with_chat_provider,
+    GenerateOptions, GenerateOutput, GenerateRequest, GenerateRequestContext, ModelError,
+    PendingToolCall, StreamPart, StreamSink,
 };
 use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase};
 use crate::mcp::ChatToolDefinition;
-use crate::settings::ProviderApiFormat;
 
 use super::finalize::{
     cancelled_run_result_from_state, cancelled_tool_round_run_result,
@@ -680,64 +679,4 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
         );
     }
     Ok(stream_output)
-}
-pub(crate) async fn generate_with_chat_provider(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
-    retry_attempts: usize,
-    request: crate::chat::model::GenerateRequest,
-) -> Result<GenerateOutput, ModelError> {
-    match provider.api_format_kind() {
-        ProviderApiFormat::OpenAiChat => {
-            OpenAiChatProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-        ProviderApiFormat::AnthropicMessages => {
-            AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-        ProviderApiFormat::OpenAiResponses => {
-            OpenAiResponsesProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-        ProviderApiFormat::Gemini => {
-            crate::chat::model::GeminiProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-    }
-}
-
-pub(crate) async fn stream_with_chat_provider(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
-    retry_attempts: usize,
-    request: crate::chat::model::GenerateRequest,
-    sink: &mut (dyn crate::chat::model::StreamSink + Send),
-) -> Result<GenerateOutput, ModelError> {
-    match provider.api_format_kind() {
-        ProviderApiFormat::OpenAiChat => {
-            OpenAiChatProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
-        }
-        ProviderApiFormat::AnthropicMessages => {
-            AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
-        }
-        ProviderApiFormat::OpenAiResponses => {
-            OpenAiResponsesProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
-        }
-        ProviderApiFormat::Gemini => {
-            crate::chat::model::GeminiProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
-        }
-    }
 }

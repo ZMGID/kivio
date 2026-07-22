@@ -485,7 +485,7 @@ impl OpenAiResponsesProvider<'_> {
                 model: &request.model,
                 source: &source,
                 operation: &operation,
-                status: "error",
+                status: crate::usage::failure_status_from_message(error),
                 status_code: crate::api::extract_status_code(error),
                 usage: None,
                 usage_source: "missing",

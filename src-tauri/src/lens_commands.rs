@@ -17,13 +17,14 @@ use uuid::Uuid;
 use xcap::Monitor;
 
 use crate::api::{
-    apply_model_temperature, build_ocr_request_body, call_openai_ocr, call_openai_text,
-    call_vision_api, effective_retry_attempts, stream_chat_call, stream_translate_combined,
+    call_openai_ocr, call_openai_text, call_vision_api, effective_retry_attempts,
+    ocr_image_message, stream_chat_call, stream_translate_combined,
 };
 #[cfg(target_os = "windows")]
 use crate::capture_geometry::{
     monitor_for_region, windows_monitor_region, CaptureMonitor, CaptureRect,
 };
+use crate::chat::model::{ModelMessage, ModelRole};
 use crate::lens;
 use crate::prompts::{
     build_combined_translate_prompt, build_ocr_direct_translation_prompt,
@@ -43,7 +44,7 @@ use crate::shortcuts::{capture_active_selection, get_mouse_position, open_chat_w
 use crate::state::{
     AppState, PendingChatExternalAttachment, PendingChatExternalMessage, PendingChatExternalSend,
 };
-use crate::utils::{language_name, provider_supports_thinking_field, resolve_target_lang};
+use crate::utils::{language_name, resolve_target_lang};
 use crate::web_search::{format_web_context, search_web, WebSearchResult};
 use crate::windows;
 
@@ -1490,14 +1491,10 @@ pub(crate) async fn lens_translate(
                 &state,
                 &ocr_provider,
                 &settings.screenshot_translation.model,
-                build_ocr_request_body(
-                    &temp_path,
-                    &prompt,
-                    st_thinking,
-                    &ocr_provider,
-                    &settings.screenshot_translation.model,
-                )?,
+                String::new(),
+                vec![ocr_image_message(&temp_path, &prompt)?],
                 retry_attempts,
+                st_thinking,
                 &image_id,
                 "translated",
                 "lens-translate-stream",
@@ -1555,14 +1552,10 @@ pub(crate) async fn lens_translate(
             &state,
             &ocr_provider,
             &settings.screenshot_translation.model,
-            build_ocr_request_body(
-                &temp_path,
-                &prompt,
-                st_thinking,
-                &ocr_provider,
-                &settings.screenshot_translation.model,
-            )?,
+            String::new(),
+            vec![ocr_image_message(&temp_path, &prompt)?],
             retry_attempts,
+            st_thinking,
             &image_id,
             "lens-translate-stream",
             "screenshot_translation",
@@ -1686,21 +1679,15 @@ pub(crate) async fn lens_translate_text(
     );
 
     let translated = if st_stream {
-        let mut body = serde_json::json!({
-          "messages": [{ "role": "user", "content": prompt }],
-          "stream": true,
-        });
-        apply_model_temperature(&mut body, &provider, &settings.screenshot_translation.model);
-        if !st_thinking && provider_supports_thinking_field(&provider.base_url) {
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
-        }
         match stream_chat_call(
             &app,
             &state,
             &provider,
             &settings.screenshot_translation.model,
-            body,
+            String::new(),
+            vec![ModelMessage::text(ModelRole::User, prompt.clone())],
             retry_attempts,
+            st_thinking,
             &request_id,
             "translated",
             "lens-translate-stream",
@@ -1870,21 +1857,18 @@ async fn local_ocr_then_translate(
     // 3) Translate via configured provider.
     let translated = if st_stream {
         // Cloud streaming: 用 stream_chat_call + 文字消息（不带 image）
-        let mut body = serde_json::json!({
-          "messages": [{ "role": "user", "content": translate_prompt }],
-          "stream": true,
-        });
-        apply_model_temperature(&mut body, translate_provider, translate_model);
-        if !st_thinking && provider_supports_thinking_field(&translate_provider.base_url) {
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
-        }
         match stream_chat_call(
             app,
             state,
             translate_provider,
             translate_model,
-            body,
+            String::new(),
+            vec![ModelMessage::text(
+                ModelRole::User,
+                translate_prompt.clone(),
+            )],
             retry_attempts,
+            st_thinking,
             image_id,
             "translated",
             "lens-translate-stream",
