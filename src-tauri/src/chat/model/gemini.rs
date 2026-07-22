@@ -700,6 +700,17 @@ fn normalize_gemini_schema(schema: Value) -> Value {
                     }
                 }
             }
+            // 约束型组合子（所有分支都无 type，只有 required 等纯约束）：Vertex 要求
+            // anyOf 分支是带 type 的完整 schema，此形态直接剥掉，其余字段保留。
+            for key in ["anyOf", "oneOf", "allOf"] {
+                let constraint_only = map
+                    .get(key)
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|branches| branches.iter().all(|it| it.get("type").is_none()));
+                if constraint_only {
+                    map.remove(key);
+                }
+            }
             for key in [
                 "$schema",
                 "additionalProperties",
@@ -1212,5 +1223,88 @@ mod tests {
         assert!(out.tool_calls[0].id.starts_with("call_"));
         // 由 functionCall 存在推导 tool_calls（而非 STOP→stop）
         assert_eq!(out.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn normalize_strips_constraint_only_anyof() {
+        // present_artifacts 形态：顶层 anyOf 各分支只有 required 无 type，Vertex 会拒。
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "artifact_ids": { "type": "array", "items": { "type": "string" } },
+                "paths": { "type": "array", "items": { "type": "string" } },
+                "caption": { "type": "string" }
+            },
+            "anyOf": [
+                { "required": ["artifact_ids"] },
+                { "required": ["paths"] }
+            ]
+        });
+        let out = normalize_gemini_schema(schema);
+        assert!(out.get("anyOf").is_none());
+        assert_eq!(out["type"], "object");
+        assert_eq!(out["properties"]["caption"]["type"], "string");
+    }
+
+    #[test]
+    fn function_declarations_for_real_present_artifacts_pass_vertex_validation() {
+        // 验收标准：真实 present_artifacts 工具定义经 gemini_function_declarations 后，
+        // parameters 无 anyOf 且顶层带 type:object（否则 Vertex 拒整个请求）。
+        let def = crate::mcp::types::native_present_artifacts_tool();
+        let decls = gemini_function_declarations(&[ModelTool::from(&def)]);
+        assert_eq!(decls.len(), 1);
+        let params = &decls[0]["parameters"];
+        assert!(params.get("anyOf").is_none());
+        assert_eq!(params["type"], "object");
+        assert!(params.get("additionalProperties").is_none());
+    }
+
+    #[test]
+    fn normalize_strips_nested_constraint_only_combinators() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "inner": {
+                    "type": "object",
+                    "properties": { "a": { "type": "string" } },
+                    "oneOf": [ { "required": ["a"] } ]
+                }
+            },
+            "allOf": [ { "required": ["inner"] } ]
+        });
+        let out = normalize_gemini_schema(schema);
+        assert!(out.get("allOf").is_none());
+        assert!(out["properties"]["inner"].get("oneOf").is_none());
+        assert_eq!(out["properties"]["inner"]["type"], "object");
+    }
+
+    #[test]
+    fn normalize_still_collapses_nullable_anyof() {
+        let schema = serde_json::json!({
+            "description": "可空字符串",
+            "anyOf": [ { "type": "string" }, { "type": "null" } ]
+        });
+        let out = normalize_gemini_schema(schema);
+        assert_eq!(out["type"], "string");
+        assert_eq!(out["description"], "可空字符串");
+        assert!(out.get("anyOf").is_none());
+    }
+
+    #[test]
+    fn normalize_keeps_typed_polymorphic_anyof() {
+        // 分支带 type 的多态 anyOf：Vertex 支持，原样透传。
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [ { "type": "string" }, { "type": "integer" } ]
+                }
+            }
+        });
+        let out = normalize_gemini_schema(schema);
+        let branches = out["properties"]["value"]["anyOf"].as_array().unwrap();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0]["type"], "string");
+        assert_eq!(branches[1]["type"], "integer");
     }
 }
