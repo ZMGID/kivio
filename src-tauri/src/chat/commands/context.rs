@@ -514,24 +514,23 @@ pub(super) async fn compute_context_state(
     last_user_image_paths: &[PathBuf],
 ) -> Result<ConversationContextState, String> {
     if conversation.agent_runtime.is_external() {
-        let model_cache_key = crate::external_agents::workspace::resolve_effective_cwd(
-            app,
-            &conversation.id,
-            conversation.project_id.as_deref(),
-        )
-        .ok()
-        .and_then(|cwd| {
-            conversation
-                .agent_runtime
-                .external_agent_id
-                .as_deref()
-                .map(|agent_id| {
-                    crate::external_agents::slash::cache_key(
-                        agent_id,
-                        cwd.to_string_lossy().as_ref(),
-                    )
-                })
-        });
+        // 缓存 key 必须与写入方 chat_detect_external_agent_models 一致：探测 cwd
+        // （resolve_detection_cwd，非项目会话 = __global__），否则该读取恒 miss。
+        let model_cache_key =
+            crate::external_agents::workspace::resolve_detection_cwd(app, Some(&conversation.id))
+                .ok()
+                .and_then(|cwd| {
+                    conversation
+                        .agent_runtime
+                        .external_agent_id
+                        .as_deref()
+                        .map(|agent_id| {
+                            crate::external_agents::slash::cache_key(
+                                agent_id,
+                                cwd.to_string_lossy().as_ref(),
+                            )
+                        })
+                });
         let cached_models = model_cache_key.as_deref().and_then(|cache_key| {
             state.get_cached_external_agent_models(
                 cache_key,

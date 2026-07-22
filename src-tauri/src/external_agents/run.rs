@@ -274,7 +274,13 @@ pub async fn run_external_cli_reply(
     let mut segment_tracker = StreamSegmentTracker::default();
     let conversation_id = conversation.id.clone();
     let started_at = Instant::now();
-    let slash_cache_key = slash::cache_key(&agent_id, &cwd.to_string_lossy());
+    // 缓存 key 用探测 cwd（resolve_detection_cwd，非项目会话 = __global__），与斜杠探测的
+    // 读取 key 一致——运行时从 CLI init 学到的真实命令列表才能覆盖探测缓存（含空负缓存）。
+    // 执行 cwd（上面的 `cwd`）保持每会话独立，仅缓存 key 用全局 scope。
+    let slash_cache_key =
+        crate::external_agents::workspace::resolve_detection_cwd(app, Some(&conversation.id))
+            .map(|detection_cwd| slash::cache_key(&agent_id, &detection_cwd.to_string_lossy()))
+            .unwrap_or_else(|_| slash::cache_key(&agent_id, &cwd.to_string_lossy()));
 
     let mut emit_event = |event: UnifiedAgentEvent| {
         if let Some(commands) = slash::slash_commands_from_event(&event) {

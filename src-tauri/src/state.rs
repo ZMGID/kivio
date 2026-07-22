@@ -616,12 +616,32 @@ impl AppState {
         }
     }
 
+    /// 斜杠命令缓存读取，TTL 随结果空/非空区分：非空命令列表用长 TTL（`full_ttl`），
+    /// 空列表（CLI 不上报任何斜杠命令 / 探测超时降级为空）用短 TTL（`empty_ttl`）做**负缓存**，
+    /// 避免切会话/切 agent 每次 useEffect 都重探（kimi 侧每探测一次即落一个空壳会话）。
     pub fn get_cached_external_slash_commands(
         &self,
         cache_key: &str,
-        ttl: Duration,
+        full_ttl: Duration,
+        empty_ttl: Duration,
     ) -> Option<Vec<crate::external_agents::types::ExternalCliSlashCommand>> {
-        get_cached(&self.external_slash_commands_cache, cache_key, ttl)
+        let mut cache = self
+            .external_slash_commands_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let max_ttl = full_ttl.max(empty_ttl);
+        cache.retain(|_, entry| entry.created_at.elapsed() <= max_ttl);
+        let entry = cache.get_mut(cache_key)?;
+        let ttl = if entry.value.is_empty() {
+            empty_ttl
+        } else {
+            full_ttl
+        };
+        if entry.created_at.elapsed() > ttl {
+            return None;
+        }
+        entry.last_accessed = Instant::now();
+        Some(entry.value.clone())
     }
 
     pub fn set_cached_external_slash_commands(
@@ -1026,6 +1046,37 @@ mod tests {
             Duration::from_secs(30),
         );
         assert!(matches!(hit.map(|c| c.source), Some(ModelSource::Fallback)));
+    }
+
+    #[test]
+    fn external_slash_commands_cache_negative_caches_empty_with_short_ttl() {
+        use crate::external_agents::types::ExternalCliSlashCommand;
+        let st = test_state();
+        let cmd = |name: &str| ExternalCliSlashCommand {
+            slash: format!("/{name}"),
+            name: name.to_string(),
+            description: None,
+            argument_hint: None,
+        };
+
+        // 非空命令列表走长 TTL：短(empty) TTL=0 不影响它，仍命中。
+        st.set_cached_external_slash_commands("kimi:/g".to_string(), vec![cmd("compact")]);
+        assert!(st
+            .get_cached_external_slash_commands("kimi:/g", Duration::from_secs(300), Duration::ZERO)
+            .is_some());
+
+        // 空列表（负缓存）按短 TTL 裁定：empty TTL=0 立即过期 → 到点重探。
+        st.set_cached_external_slash_commands("grok:/g".to_string(), Vec::new());
+        assert!(st
+            .get_cached_external_slash_commands("grok:/g", Duration::from_secs(300), Duration::ZERO)
+            .is_none());
+        // 但空列表在足够长的 empty TTL 内仍命中（TTL 内不重探）。
+        let hit = st.get_cached_external_slash_commands(
+            "grok:/g",
+            Duration::from_secs(300),
+            Duration::from_secs(30),
+        );
+        assert!(matches!(hit, Some(ref v) if v.is_empty()));
     }
 
     #[test]
