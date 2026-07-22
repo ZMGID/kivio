@@ -18,10 +18,12 @@
 
 ## 跨子任务验收
 
-- [ ] Vertex Gemini 供应商：聊天中带 `present_artifacts` 工具能正常发出请求（子任务 1）。
-- [ ] `api_format=gemini` 供应商被选为截图翻译/Lens/翻译器模型时，请求走 Gemini 原生协议不再 404（子任务 2）。
-- [ ] `cargo test --manifest-path src-tauri/Cargo.toml` 与前端 lint/typecheck 全绿。
+- [x] Vertex Gemini 供应商：聊天中带 `present_artifacts` 工具能正常发出请求（子任务 1，commit `cf5825d`）——`normalize_gemini_schema` 剥约束型 anyOf/oneOf/allOf，单测覆盖真实工具定义。
+- [x] `api_format=gemini` 供应商被选为截图翻译/Lens/翻译器模型时，请求走 Gemini 原生协议不再 404（子任务 2，commit `9346d76`）——五个入口统一走 chat/model 适配器，代码级验证通过。
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml` 全绿（1066 passed）；前端 `lint`/`typecheck` 全绿。
+
+**待用户手动 smoke（无 e2e，需运行 GUI）**：OpenAI 供应商回归（翻译器/截图翻译/Lens 问答/流式/取消）；Gemini（`api_format=gemini`）供应商在截图翻译 + Lens 上确认 404 已消失。
 
 ## 完成定义
 
-两个子任务均归档后，本父任务做最终集成回顾并归档。父任务本身无直接实现工作。
+两个子任务均已完成并归档。代码级验收（编译/单测/lint/typecheck）全绿；GUI 端到端 smoke 待用户执行。
