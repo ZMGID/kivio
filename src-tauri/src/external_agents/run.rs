@@ -415,6 +415,17 @@ pub async fn run_external_cli_reply(
         Some(task) => task.await.unwrap_or_default(),
         None => String::new(),
     };
+    // 出口诊断（仅 debug 构建）：定位「生成异常结束」这类 outcome 误判时的第一手数据。
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "[external-agent] {} turn done: read_result={:?} exit_code={:?} stderr_len={} stderr_tail={:?}",
+            def.id,
+            read_result.as_ref().err(),
+            exit_code,
+            stderr_output.len(),
+            tail_chars(stderr_output.trim(), 200),
+        );
+    }
     // R2: a read error (non-cancel) becomes a classified, actionable bubble — the raw error goes
     // into a collapsible `<details>` rather than being shown verbatim as the bubble body.
     let mut error_rendered = false;

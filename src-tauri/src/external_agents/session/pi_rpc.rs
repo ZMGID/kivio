@@ -366,8 +366,18 @@ pub async fn run_pi_rpc_session(
         .map_err(|e| e.to_string())?;
 
     let result = drain_pi_rpc_output(stdout, &mut stdin, &mut sink, cancel_check).await;
-    if matches!(&result, Err(err) if err == "cancelled") {
-        let _ = child.start_kill();
+    match &result {
+        Err(err) if err == "cancelled" => {
+            let _ = child.start_kill();
+        }
+        Ok(()) => {
+            // agent_end 已收、轮次在协议层完成。立刻终止子进程：drain 返回时 stdout 读端已随
+            // reader drop 关闭，pi 若还在冲刷输出会撞 EPIPE 以退出码 1 死掉，被出口的
+            // 「非零退出+stderr」规则误判为「生成异常结束」。主动 kill 使退出走信号
+            // （status.code()=None），出口规则不触发。
+            let _ = child.start_kill();
+        }
+        Err(_) => {}
     }
     result
 }
