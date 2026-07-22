@@ -29,10 +29,10 @@
 
 | 子任务 | 覆盖缺陷（kivio-audit 编号） | 状态 |
 |---|---|---|
-| `07-20-cli-message-chain` 消息链路正确性 | 1（prompt 重复）、2（ACP 去重）、C1、N7、N9 + 对应测试缺口 | **已实现+复检**（commit ce76f60），待真机验收 |
-| `07-20-cli-session-lifecycle` 会话生命周期与自愈 | N1（stderr 挂死）、4（错误裸奔）、N3（换模型无效）、A3/A5/A6/A4、C2/C3、B3 | **已实现+复检**（commit 4214956），待真机验收 |
-| `07-20-cli-detection-models` 检测/模型探测/前端 | 3（探测放弃）、N2（每轮探测）、N4、B2/B4、D1/D2/D3、F2/F4、N5 | **已实现+复检**（commit 3487e05），待真机验收 |
-| `07-20-cli-native-sessions` pi/kimi 原生会话 + 会话-CLI 绑定 | 用户补充需求：废除历史重放、pi --session-id、kimi 迁 ACP、CLI 绑定不可切换 | **已实现+复检**（commit 3456997），待真机验收 |
+| `07-20-cli-message-chain` 消息链路正确性 | 1（prompt 重复）、2（ACP 去重）、C1、N7、N9 + 对应测试缺口 | **完成**（ce76f60，真机验收通过 07-22） |
+| `07-20-cli-session-lifecycle` 会话生命周期与自愈 | N1（stderr 挂死）、4（错误裸奔）、N3（换模型无效）、A3/A5/A6/A4、C2/C3、B3 | **完成**（4214956，真机验收通过 07-22） |
+| `07-20-cli-detection-models` 检测/模型探测/前端 | 3（探测放弃）、N2（每轮探测）、N4、B2/B4、D1/D2/D3、F2/F4、N5 | **完成**（3487e05 + 验收反馈修复 268d328/d86e355/6289822/254bd72/b52c8ce） |
+| `07-20-cli-native-sessions` pi/kimi 原生会话 + 会话-CLI 绑定 | 用户补充需求：废除历史重放、pi --session-id、kimi 迁 ACP、CLI 绑定不可切换 | **完成**（3456997 + 真机修复 2594657/821e221，验收通过 07-22） |
 
 依赖关系同时写入各子任务 prd.md；父任务本身无直接实现工作，负责收口验收。
 
@@ -59,3 +59,10 @@
 
 - Rust 错误沿用 `Result<_, String>`；子进程一律 `no_console_window()`；`chat-stream`/`chat-tool` 事件 payload 形状是 UI 契约不可改。
 - 每个子任务的验收由主会话执行，不由实现子代理自证。
+
+## 收口记录（2026-07-22 真机验收）
+
+全部子任务归档。真机验收结果：codex/grok 模型同步显示 ✓；消息不重复 ✓；第 2+ 轮前置 3-7ms ✓；
+pi 42 / kimi 7 两轮记忆 + 跨 App 重启续接 ✓（第 2 轮上行仅数百 tokens，证明只发最新消息）；
+会话-CLI 绑定置灰 ✓。验收中另修 2 缺陷：pi agent_end 后转圈不止、EPIPE 假性"生成异常结束"。
+E1（登出错误分类）/E2（中途换模型）未逐项真机验证，有单测覆盖，出问题按 errors.rs/acp.rs 契约排查。
