@@ -2686,7 +2686,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
     }
 
-    if (!agentRuntimesEqual(normalizeAgentRuntime(conversation), draftAgentRuntime)) {
+    // 草稿运行时只落到「尚无消息」的会话（欢迎页选好 CLI → 首次发送建会话的场景）。已有消息的
+    // 会话以其自身运行时为准：draft 在切换会话/重启后可能是陈旧的（如初始 BUILTIN），无条件回写
+    // 会被后端会话-CLI 绑定校验（R3 check_runtime_switch_allowed）拒绝，把正常发送直接卡死；
+    // 旧行为则是静默把外部会话重置回 draft，同样错误。空会话判定与后端放行条件一致。
+    if (
+      (conversation.messages?.length ?? 0) === 0
+      && !agentRuntimesEqual(normalizeAgentRuntime(conversation), draftAgentRuntime)
+    ) {
       try {
         conversation = await chatApi.setAgentRuntime(conversation.id, draftAgentRuntime)
         applyConversation(conversation)
@@ -3806,6 +3813,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                     agentRuntime={activeAgentRuntime}
                     onRuntimeChange={handleRuntimeChange}
                     conversationId={currentConversation?.id}
+                    locked={
+                      !!currentConversation &&
+                      (currentConversation.messages?.length ?? 0) > 0 &&
+                      usesExternalRuntime
+                    }
                   />
                 </div>
                 <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">

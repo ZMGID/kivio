@@ -443,60 +443,34 @@ fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOpt
         return None;
     }
     let mut out = vec![default_model_option()];
-    match agent_id {
-        "codex" => {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(models) = value.get("models").and_then(|v| v.as_array()) {
-                    for entry in models {
-                        let id = entry
-                            .get("slug")
-                            .or_else(|| entry.get("id"))
-                            .and_then(|v| v.as_str())?;
-                        out.push(RuntimeModelOption {
-                            id: id.to_string(),
-                            label: id.to_string(),
-                            // codex reports the real window per model (e.g. 272000); without
-                            // it the context gauge falls back to the generic 200K estimate.
-                            context_window_tokens: entry
-                                .get("context_window")
-                                .and_then(|v| v.as_u64())
-                                .map(|v| v as u32),
-                        });
-                    }
-                }
-            }
-            // "Default" = codex picks its own default (the first listed model), so give the
-            // synthetic entry that model's window instead of leaving it unknown.
-            if out.len() > 1 {
-                out[0].context_window_tokens = out[1].context_window_tokens;
-            }
-        }
-        "kimi" => {
-            // `kimi provider list --json` → { "models": { "<id>": { displayName, maxContextSize } } }.
-            // 键即 --model 别名（如 kimi-code/k3）。
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(models) = value.get("models").and_then(|v| v.as_object()) {
-                    for (id, entry) in models {
-                        if id.is_empty() {
-                            continue;
-                        }
-                        let display = entry.get("displayName").and_then(|v| v.as_str());
-                        out.push(RuntimeModelOption {
-                            id: id.clone(),
-                            label: match display {
-                                Some(name) if name != id => format!("{name} ({id})"),
-                                _ => id.clone(),
-                            },
-                            context_window_tokens: entry
-                                .get("maxContextSize")
-                                .and_then(|v| v.as_u64())
-                                .map(|v| v as u32),
-                        });
-                    }
+    // 曾是多 CLI 的 match（kimi `provider list --json` 分支随 kimi 迁 ACP 删除）；现在只剩
+    // codex 一家还走文本 list-models 探测。
+    if agent_id == "codex" {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(models) = value.get("models").and_then(|v| v.as_array()) {
+                for entry in models {
+                    let id = entry
+                        .get("slug")
+                        .or_else(|| entry.get("id"))
+                        .and_then(|v| v.as_str())?;
+                    out.push(RuntimeModelOption {
+                        id: id.to_string(),
+                        label: id.to_string(),
+                        // codex reports the real window per model (e.g. 272000); without
+                        // it the context gauge falls back to the generic 200K estimate.
+                        context_window_tokens: entry
+                            .get("context_window")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32),
+                    });
                 }
             }
         }
-        _ => {}
+        // "Default" = codex picks its own default (the first listed model), so give the
+        // synthetic entry that model's window instead of leaving it unknown.
+        if out.len() > 1 {
+            out[0].context_window_tokens = out[1].context_window_tokens;
+        }
     }
     if out.len() > 1 {
         Some(out)
@@ -545,20 +519,6 @@ mod tests {
         assert_eq!(models[0].context_window_tokens, Some(272000));
         let o3 = models.iter().find(|m| m.id == "o3").unwrap();
         assert_eq!(o3.context_window_tokens, None);
-    }
-
-    #[test]
-    fn parse_kimi_provider_list_json_models() {
-        let models = parse_models_list(
-            "kimi",
-            r#"{"models":{"kimi-code/k3":{"displayName":"K3","maxContextSize":1048576},"kimi-code/kimi-for-coding":{"displayName":"K2.7 Coding","maxContextSize":262144}}}"#,
-        )
-        .unwrap();
-        let k3 = models.iter().find(|m| m.id == "kimi-code/k3").unwrap();
-        assert_eq!(k3.label, "K3 (kimi-code/k3)");
-        assert_eq!(k3.context_window_tokens, Some(1048576));
-        assert!(models.iter().any(|m| m.id == "kimi-code/kimi-for-coding"));
-        assert_eq!(models[0].id, "default");
     }
 
     #[test]

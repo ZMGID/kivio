@@ -1,13 +1,14 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ExternalModelSelector } from './RuntimePicker'
+import { ExternalModelSelector, RuntimePicker } from './RuntimePicker'
 import type { AgentRuntimeConfig } from './types'
 
 const detectModels = vi.fn()
+const detectAgents = vi.fn()
 
 vi.mock('./api', () => ({
   chatApi: {
-    detectExternalAgents: vi.fn(() => Promise.resolve([])),
+    detectExternalAgents: (...args: unknown[]) => detectAgents(...args),
     detectExternalAgentModels: (...args: unknown[]) => detectModels(...args),
   },
 }))
@@ -195,5 +196,64 @@ describe('ExternalModelSelector', () => {
       expect(screen.getByRole('button')).toHaveTextContent('获取中…'),
     )
     expect(screen.getByRole('button')).not.toHaveTextContent('Grok 4.5')
+  })
+})
+
+describe('RuntimePicker（会话-CLI 绑定锁）', () => {
+  beforeEach(() => {
+    detectAgents.mockReset()
+    detectAgents.mockResolvedValue([
+      { id: 'cursor', name: 'Cursor Agent', available: true, models: [{ id: 'default', label: 'Default' }] },
+      { id: 'claude', name: 'Claude Code', available: true, models: [{ id: 'default', label: 'Default' }] },
+    ])
+  })
+
+  it('locked 时展示绑定提示且所有切换项 disabled', async () => {
+    const onRuntimeChange = vi.fn()
+    render(
+      <RuntimePicker
+        agentRuntime={runtime}
+        onRuntimeChange={onRuntimeChange}
+        conversationId="c1"
+        locked
+      />,
+    )
+    await waitFor(() => expect(detectAgents).toHaveBeenCalled())
+    // 打开 popover（chip 是第一个按钮）。
+    act(() => {
+      fireEvent.click(screen.getAllByRole('button')[0])
+    })
+    expect(screen.getByText('会话已绑定当前 CLI，新建会话可切换')).toBeInTheDocument()
+    // 模式切换按钮禁用。
+    expect(screen.getByRole('tab', { name: '内置 Agent' })).toBeDisabled()
+    expect(screen.getByRole('tab', { name: '本地 CLI' })).toBeDisabled()
+    // 点内置 Agent 不触发切换。
+    act(() => {
+      fireEvent.click(screen.getByRole('tab', { name: '内置 Agent' }))
+    })
+    expect(onRuntimeChange).not.toHaveBeenCalled()
+    // 非当前 agent 的代理按钮禁用（claude），当前 agent（cursor）保持可选。
+    expect(screen.getByRole('radio', { name: /Claude Code/ })).toBeDisabled()
+  })
+
+  it('未 locked 时切换项可用', async () => {
+    const onRuntimeChange = vi.fn()
+    render(
+      <RuntimePicker
+        agentRuntime={runtime}
+        onRuntimeChange={onRuntimeChange}
+        conversationId="c1"
+      />,
+    )
+    await waitFor(() => expect(detectAgents).toHaveBeenCalled())
+    act(() => {
+      fireEvent.click(screen.getAllByRole('button')[0])
+    })
+    expect(screen.queryByText('会话已绑定当前 CLI，新建会话可切换')).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '内置 Agent' })).not.toBeDisabled()
+    act(() => {
+      fireEvent.click(screen.getByRole('tab', { name: '内置 Agent' }))
+    })
+    expect(onRuntimeChange).toHaveBeenCalled()
   })
 })

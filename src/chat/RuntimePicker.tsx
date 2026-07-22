@@ -13,6 +13,9 @@ interface RuntimePickerProps {
   agentRuntime: AgentRuntimeConfig
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void
   conversationId?: string | null
+  // 会话-CLI 绑定（R3）：已产生消息的外部会话锁定运行时来源——不可换 CLI / 不可切回内置。
+  // 锁定时 popover 仍可展开查看，但所有切换项 disabled 并显示提示行。
+  locked?: boolean
 }
 
 const BUILTIN: AgentRuntimeConfig = {
@@ -43,7 +46,7 @@ function stripProviderPrefix(label: string): string {
   return slash >= 0 ? label.slice(slash + 1) : label
 }
 
-function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: RuntimePickerProps) {
+function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId, locked = false }: RuntimePickerProps) {
   const [open, setOpen] = useState(false)
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
   const [refreshing, setRefreshing] = useState(false)
@@ -94,11 +97,13 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
   }, [agentRuntime.externalAgentId, currentAgent?.name, usesExternal])
 
   const selectBuiltin = () => {
+    if (locked) return
     onRuntimeChange(BUILTIN)
     setOpen(false)
   }
 
   const selectExternal = (agent: DetectedExternalAgent) => {
+    if (locked) return
     if (!agent.available) return
     // 隐式契约（D3）：后端各探测路径都把合成的 "default" 占位放在 models[0]
     // （default_model_option / fallback_models 首项），因此这里取 [0] 即「让 CLI 用自己的默认模型」。
@@ -108,6 +113,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
   }
 
   const selectLocalCliMode = () => {
+    if (locked) return
     if (usesExternal && currentAgent?.available) return
     const firstAvailable = availableAgents[0]
     if (firstAvailable) {
@@ -151,6 +157,11 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
             className="kv-runtime-picker__popover chat-motion-popover"
             role="menu"
           >
+            {locked && (
+              <div className="kv-runtime-picker__locked-hint">
+                会话已绑定当前 CLI，新建会话可切换
+              </div>
+            )}
             <div className="kv-runtime-picker__row">
               <span className="kv-runtime-picker__label">模式</span>
               <div className="kv-runtime-picker__seg" role="tablist">
@@ -158,6 +169,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
                   type="button"
                   role="tab"
                   aria-selected={!usesExternal}
+                  disabled={locked}
                   className={`kv-runtime-picker__seg-btn${!usesExternal ? ' is-active' : ''}`}
                   onClick={selectBuiltin}
                 >
@@ -167,7 +179,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
                   type="button"
                   role="tab"
                   aria-selected={usesExternal}
-                  disabled={availableAgents.length === 0}
+                  disabled={locked || availableAgents.length === 0}
                   className={`kv-runtime-picker__seg-btn${usesExternal ? ' is-active' : ''}`}
                   onClick={selectLocalCliMode}
                 >
@@ -207,6 +219,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId }: Ru
                         type="button"
                         role="radio"
                         aria-checked={active}
+                        disabled={locked && !active}
                         title={agent.version ?? undefined}
                         onClick={() => selectExternal(agent)}
                         className={`kv-runtime-picker__agent${active ? ' is-active' : ''}`}

@@ -38,6 +38,22 @@ use crate::external_agents::workspace::{extra_allowed_dirs_for_agent, resolve_ef
 use crate::skills::read_skill_detail;
 use crate::state::AppState;
 
+/// Emitted (as a leading text banner) when a persistent-session turn expected to resume a native
+/// session but had to reconnect fresh — the CLI's prior context is gone (R4 "resume 失败降级：
+/// 提示上下文已丢失而非静默重放"). Rendered as a markdown blockquote so it reads as a system notice
+/// and stays visually separate from the answer. TextDelta is chosen over Raw because Raw is only
+/// surfaced when the turn produces no other output (see `apply_unified_event`), which would make
+/// the notice silently vanish on the common case where the fresh turn does answer — defeating the
+/// "不静默" goal. This uses the existing TextDelta variant, so no event/payload shape changes.
+const CONTEXT_RESET_NOTICE: &str =
+    "> ⚠️ 会话上下文已重置：原生会话无法恢复，本轮之前的对话历史对该 CLI 不可见。\n\n";
+
+fn context_reset_notice_event() -> UnifiedAgentEvent {
+    UnifiedAgentEvent::TextDelta {
+        delta: CONTEXT_RESET_NOTICE.to_string(),
+    }
+}
+
 pub async fn run_external_cli_slash_command(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -153,13 +169,11 @@ pub async fn run_external_cli_reply(
         compose_external_prompt_passthrough(latest_user_message)
     } else {
         compose_external_prompt(
-            conversation,
             &daemon_instructions,
             skill_body.as_deref(),
             skill_dir.as_deref(),
             skill_folder.as_deref(),
             resume_ctx.skip_instructions,
-            resume_ctx.is_resuming,
             latest_user_message,
         )
     };
@@ -630,6 +644,10 @@ where
                         h.agent_id == agent_id && h.cwd == cwd_str && h.protocol == protocol_tag
                     })
                     .map(|h| h.native_id);
+                // We intended to continue an existing native session iff a matching handle was
+                // persisted. If the resume then fails and we fall back to fresh, the prior context
+                // is lost and the user must be told (R4) rather than silently getting a blank slate.
+                let intended_resume = resume_native.is_some();
                 let (control, native_id, resumed) = connect_persistent_session(
                     protocol,
                     resolved_bin,
@@ -667,6 +685,10 @@ where
                 } else {
                     first_prompt.to_string()
                 };
+                // Intended to resume but ended up fresh → warn about the lost context.
+                if intended_resume && !resumed {
+                    emit(context_reset_notice_event());
+                }
                 (control, prompt)
             }
         };
@@ -738,6 +760,9 @@ where
         )
         .await?;
         prompt = first_prompt.to_string();
+        // A fresh reconnect after an in-run session failure drops whatever context that session
+        // had accumulated this run — surface it rather than silently continuing on a blank slate.
+        emit(context_reset_notice_event());
     }
 }
 

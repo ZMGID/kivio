@@ -173,6 +173,18 @@ pub fn chat_set_agent_runtime(
     agent_runtime: AgentRuntimeConfig,
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
+
+    // Session ↔ CLI binding (R3): once an external CLI has produced a message, its native session
+    // is bound to this conversation — switching CLI or dropping back to the builtin loop would
+    // orphan that session's history. Reject a runtime *source* change (kind / external_agent_id)
+    // on a non-empty conversation whose current runtime is external; model / reasoning / sandbox
+    // tweaks stay allowed. Builtin conversations are never locked (multi-model switching is fine).
+    check_runtime_switch_allowed(
+        &conversation.agent_runtime,
+        conversation.messages.is_empty(),
+        &agent_runtime,
+    )?;
+
     conversation.agent_runtime = agent_runtime;
     conversation.updated_at = chrono::Local::now().timestamp();
     save_conversation(&app, &conversation)?;
@@ -180,4 +192,88 @@ pub fn chat_set_agent_runtime(
         "success": true,
         "conversation": conversation,
     }))
+}
+
+/// Pure binding rule for `chat_set_agent_runtime` (extracted so it is unit-testable without a Tauri
+/// `AppHandle`). Returns `Err` with a user-facing message when the switch is forbidden.
+fn check_runtime_switch_allowed(
+    current: &AgentRuntimeConfig,
+    messages_is_empty: bool,
+    next: &AgentRuntimeConfig,
+) -> Result<(), String> {
+    if !current.is_external() || messages_is_empty {
+        return Ok(());
+    }
+    let normalize_id = |id: &Option<String>| {
+        id.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let kind_changed = current.kind != next.kind;
+    let id_changed = normalize_id(&current.external_agent_id) != normalize_id(&next.external_agent_id);
+    if kind_changed || id_changed {
+        let bound_name = current
+            .external_agent_id
+            .as_deref()
+            .and_then(get_agent_def)
+            .map(|d| d.name.to_string())
+            .or_else(|| normalize_id(&current.external_agent_id))
+            .unwrap_or_else(|| "当前 CLI".to_string());
+        return Err(format!("会话已绑定 {bound_name}，新建会话可切换 CLI"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::types::AgentRuntimeKind;
+
+    fn external(id: &str, model: &str) -> AgentRuntimeConfig {
+        AgentRuntimeConfig {
+            kind: AgentRuntimeKind::External,
+            external_agent_id: Some(id.to_string()),
+            external_model: Some(model.to_string()),
+            external_reasoning: None,
+            external_sandbox: None,
+        }
+    }
+
+    #[test]
+    fn empty_conversation_allows_any_switch() {
+        let current = external("claude", "default");
+        let next = AgentRuntimeConfig::default(); // builtin
+        assert!(check_runtime_switch_allowed(&current, true, &next).is_ok());
+        let next2 = external("codex", "default");
+        assert!(check_runtime_switch_allowed(&current, true, &next2).is_ok());
+    }
+
+    #[test]
+    fn non_empty_external_rejects_agent_and_kind_change() {
+        let current = external("claude", "default");
+        // Switch to a different CLI.
+        let to_other = external("codex", "default");
+        assert!(check_runtime_switch_allowed(&current, false, &to_other).is_err());
+        // Switch back to builtin.
+        let to_builtin = AgentRuntimeConfig::default();
+        assert!(check_runtime_switch_allowed(&current, false, &to_builtin).is_err());
+    }
+
+    #[test]
+    fn non_empty_external_allows_model_and_reasoning_change() {
+        let current = external("claude", "default");
+        let same_agent_new_model = external("claude", "sonnet");
+        assert!(check_runtime_switch_allowed(&current, false, &same_agent_new_model).is_ok());
+        let mut with_reasoning = external("claude", "default");
+        with_reasoning.external_reasoning = Some("high".to_string());
+        assert!(check_runtime_switch_allowed(&current, false, &with_reasoning).is_ok());
+    }
+
+    #[test]
+    fn non_empty_builtin_is_never_locked() {
+        let current = AgentRuntimeConfig::default(); // builtin
+        let to_external = external("claude", "default");
+        assert!(check_runtime_switch_allowed(&current, false, &to_external).is_ok());
+    }
 }
