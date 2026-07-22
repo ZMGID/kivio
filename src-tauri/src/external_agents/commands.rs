@@ -211,7 +211,8 @@ fn check_runtime_switch_allowed(
             .map(str::to_string)
     };
     let kind_changed = current.kind != next.kind;
-    let id_changed = normalize_id(&current.external_agent_id) != normalize_id(&next.external_agent_id);
+    let id_changed =
+        normalize_id(&current.external_agent_id) != normalize_id(&next.external_agent_id);
     if kind_changed || id_changed {
         let bound_name = current
             .external_agent_id
