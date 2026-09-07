@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="280" viewBox="0 0 800 280" role="img" aria-label="ZMGID/kivio star history">
-  <title>ZMGID/kivio · 569 stars</title>
+  <title>ZMGID/kivio · 576 stars</title>
   <rect width="100%" height="100%" fill="#fff"/>
   <line x1="48" y1="240.0" x2="776" y2="240.0" stroke="#e5e7eb"/>
   <text x="40" y="244.0" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">0</text>
-  <line x1="48" y1="187.1" x2="776" y2="187.1" stroke="#e5e7eb"/>
-  <text x="40" y="191.1" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">142</text>
-  <line x1="48" y1="133.8" x2="776" y2="133.8" stroke="#e5e7eb"/>
-  <text x="40" y="137.8" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">285</text>
-  <line x1="48" y1="80.9" x2="776" y2="80.9" stroke="#e5e7eb"/>
-  <text x="40" y="84.9" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">427</text>
+  <line x1="48" y1="187.0" x2="776" y2="187.0" stroke="#e5e7eb"/>
+  <text x="40" y="191.0" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">144</text>
+  <line x1="48" y1="134.0" x2="776" y2="134.0" stroke="#e5e7eb"/>
+  <text x="40" y="138.0" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">288</text>
+  <line x1="48" y1="81.0" x2="776" y2="81.0" stroke="#e5e7eb"/>
+  <text x="40" y="85.0" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">432</text>
   <line x1="48" y1="28.0" x2="776" y2="28.0" stroke="#e5e7eb"/>
-  <text x="40" y="32.0" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">569</text>
-  <path d="M48.0,239.6 L345.7,239.3 L349.2,229.2 L352.8,223.2 L356.4,216.5 L360.0,212.1 L363.6,211.3 L367.2,206.1 L370.8,202.0 L374.3,200.9 L377.9,197.9 L381.5,194.2 L385.1,193.4 L392.3,193.1 L395.9,192.7 L410.2,192.3 L421.0,191.6 L424.6,189.3 L435.3,189.0 L446.1,188.6 L464.0,187.1 L471.2,186.0 L478.3,185.2 L481.9,184.1 L485.5,183.7 L507.0,183.4 L525.0,183.0 L528.6,177.0 L532.1,164.7 L535.7,155.1 L539.3,143.1 L542.9,142.0 L546.5,139.4 L550.1,138.7 L564.4,137.9 L568.0,136.8 L571.6,136.4 L575.2,134.9 L578.8,134.2 L582.3,132.0 L585.9,130.8 L589.5,130.1 L593.1,129.7 L603.9,129.3 L618.2,127.5 L621.8,120.4 L625.4,112.9 L629.0,105.1 L632.6,96.9 L636.1,92.1 L639.7,91.3 L643.3,91.0 L646.9,89.1 L650.5,86.5 L654.1,85.0 L657.7,83.9 L661.2,82.4 L664.8,82.0 L668.4,78.3 L672.0,76.4 L675.6,73.5 L679.2,72.7 L682.8,71.6 L686.3,70.1 L689.9,69.0 L693.5,68.2 L697.1,67.1 L700.7,65.3 L704.3,63.4 L707.9,61.5 L711.4,60.0 L715.0,58.6 L718.6,56.7 L722.2,55.6 L725.8,51.8 L729.4,51.1 L733.0,46.6 L736.6,43.3 L740.1,39.9 L743.7,38.8 L747.3,37.7 L750.9,35.8 L754.5,34.3 L758.1,32.1 L761.7,30.2 L765.2,29.1 L772.4,28.4 L776.0,28.0" fill="none" stroke="#4f46e5" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <text x="40" y="32.0" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">576</text>
+  <path d="M48.0,239.6 L333.0,239.3 L336.5,229.3 L339.9,223.4 L343.3,216.8 L346.8,212.4 L350.2,211.7 L353.6,206.5 L357.1,202.5 L360.5,201.4 L363.9,198.4 L367.4,194.7 L370.8,194.0 L377.7,193.6 L381.1,193.3 L394.8,192.9 L405.1,192.2 L408.6,189.9 L418.9,189.6 L429.2,189.2 L446.3,187.7 L453.2,186.6 L460.1,185.9 L463.5,184.8 L466.9,184.4 L487.5,184.1 L504.7,183.7 L508.2,177.8 L511.6,165.7 L515.0,156.1 L518.5,144.3 L521.9,143.2 L525.3,141.0 L528.8,140.3 L542.5,139.5 L545.9,138.4 L549.4,138.0 L552.8,136.6 L556.2,135.8 L559.7,133.6 L563.1,132.5 L566.5,131.8 L570.0,131.4 L580.3,131.1 L594.0,129.2 L597.4,122.2 L600.9,114.9 L604.3,107.1 L607.7,99.0 L611.2,94.6 L614.6,93.9 L618.0,93.5 L621.5,91.7 L624.9,89.1 L628.3,87.6 L631.8,86.5 L635.2,85.0 L638.6,84.7 L642.1,81.0 L645.5,79.2 L648.9,76.2 L652.4,75.5 L655.8,74.4 L659.2,72.9 L662.7,71.8 L666.1,71.1 L669.5,70.0 L673.0,68.1 L676.4,66.3 L679.8,64.4 L683.3,63.0 L686.7,61.5 L690.2,59.7 L693.6,58.5 L697.0,54.9 L700.5,54.1 L703.9,49.7 L707.3,46.4 L710.8,43.1 L714.2,42.0 L717.6,40.9 L721.1,39.0 L724.5,37.6 L727.9,35.4 L731.4,33.5 L734.8,32.4 L741.7,31.7 L745.1,31.3 L758.8,30.9 L762.3,30.2 L765.7,29.8 L769.1,29.1 L772.6,28.4 L776.0,28.0" fill="none" stroke="#4f46e5" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round"/>
   <text x="48" y="268" text-anchor="start" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">2026-02-06</text>
-  <text x="400" y="268" text-anchor="middle" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">2026-07-15</text>
-  <text x="776" y="268" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">2026-08-28</text>
-  <text x="48" y="18" font-size="13" fill="#111827" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="600">ZMGID/kivio · 569 stars</text>
+  <text x="400" y="268" text-anchor="middle" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">2026-07-18</text>
+  <text x="776" y="268" text-anchor="end" font-size="11" fill="#6b7280" font-family="ui-sans-serif,system-ui,sans-serif">2026-09-06</text>
+  <text x="48" y="18" font-size="13" fill="#111827" font-family="ui-sans-serif,system-ui,sans-serif" font-weight="600">ZMGID/kivio · 576 stars</text>
 </svg>
