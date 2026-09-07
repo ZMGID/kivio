@@ -2,6 +2,7 @@ import { memo, useMemo, useState, type ReactNode } from 'react'
 import { Check, Columns2, Square } from 'lucide-react'
 import type { ChatMessage, ModelRef } from './types'
 import { MessageBubble } from './MessageBubble'
+import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import { ModelIcon } from './ModelIcon'
 import { getActiveGroup, useGroupVersion, type GroupColumnSnapshot } from './groupStreamingStore'
 import { useMultiAnswerViewMode } from './multiAnswerViewMode'
@@ -37,6 +38,8 @@ interface MessageGroupProps {
   onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
   onSaveMessageToNote?: (messageId: string) => Promise<boolean>
+  outlineEligible?: boolean
+  onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }
 
 interface GroupColumn {
@@ -95,6 +98,8 @@ function GroupColumnView({
   onForkMessage,
   onDeleteMessage,
   onSaveMessageToNote,
+  outlineEligible = false,
+  onOutlineSourceChange,
 }: {
   column: GroupColumn
   conversationId?: string | null
@@ -113,6 +118,8 @@ function GroupColumnView({
   onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
   onSaveMessageToNote?: (messageId: string) => Promise<boolean>
+  outlineEligible?: boolean
+  onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
   const { message, streaming } = column
   const wrapperClass = showColumnChrome
@@ -176,6 +183,8 @@ function GroupColumnView({
             onForkMessage={!live ? onForkMessage : undefined}
             onDeleteMessage={!live ? onDeleteMessage : undefined}
             onSaveMessageToNote={!live ? onSaveMessageToNote : undefined}
+            outlineEligible={outlineEligible && !live}
+            onOutlineSourceChange={onOutlineSourceChange}
           />
         </ColumnScrollBody>
       ) : (
@@ -193,6 +202,8 @@ function GroupColumnView({
           onForkMessage={!live ? onForkMessage : undefined}
           onDeleteMessage={!live ? onDeleteMessage : undefined}
           onSaveMessageToNote={!live ? onSaveMessageToNote : undefined}
+          outlineEligible={outlineEligible && !live}
+          onOutlineSourceChange={onOutlineSourceChange}
         />
       )}
     </div>
@@ -286,6 +297,8 @@ function MessageGroupBase({
   onForkMessage,
   onDeleteMessage,
   onSaveMessageToNote,
+  outlineEligible = false,
+  onOutlineSourceChange,
 }: MessageGroupProps) {
   // 订阅 group store 版本号：流式列内容更新时驱动重渲。
   // 版本号还必须进下面 columns 的 memo deps —— store 是原地 mutate 列对象，
@@ -358,6 +371,8 @@ function MessageGroupBase({
               onForkMessage={onForkMessage}
               onDeleteMessage={onDeleteMessage}
               onSaveMessageToNote={onSaveMessageToNote}
+              outlineEligible={outlineEligible}
+              onOutlineSourceChange={onOutlineSourceChange}
             />
           ))}
         </div>
@@ -380,6 +395,8 @@ function MessageGroupBase({
           onForkMessage={onForkMessage}
           onDeleteMessage={onDeleteMessage}
           onSaveMessageToNote={onSaveMessageToNote}
+          outlineEligible={outlineEligible}
+          onOutlineSourceChange={onOutlineSourceChange}
         />
       )}
       <GroupFooter

@@ -1,5 +1,9 @@
+import type { ParsedMarkdownHeading } from './markdownHeadingOutline'
+
 export type SettledMarkdownCacheEntry = {
   normalized: string
+  /** 只在已挂载的正式回答请求目录时填充，避免普通 Markdown 多做一次 AST 解析。 */
+  outline?: ParsedMarkdownHeading[]
 }
 
 const MAX_ENTRIES = 96
@@ -23,6 +27,17 @@ export function getSettledMarkdownCacheEntry(
   const cached = entries.get(content)
   if (cached) return touch(content, cached)
   return touch(content, build())
+}
+
+export function getSettledMarkdownOutline(
+  content: string,
+  build: () => SettledMarkdownCacheEntry,
+  buildOutline: (normalized: string) => ParsedMarkdownHeading[],
+): SettledMarkdownCacheEntry {
+  const entry = getSettledMarkdownCacheEntry(content, build)
+  if (entry.outline !== undefined) return entry
+  entry.outline = buildOutline(entry.normalized)
+  return touch(content, entry)
 }
 
 export function clearSettledMarkdownCache(): void {
