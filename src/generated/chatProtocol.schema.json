@@ -508,6 +508,49 @@
             "revision"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "type": "string"
+            },
+            "goalState": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChatGoalStatePayload"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "protocolVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scope": {
+              "const": "conversation",
+              "type": "string"
+            },
+            "type": {
+              "const": "goal_updated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "protocolVersion",
+            "scope",
+            "conversationId",
+            "revision"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -538,6 +581,165 @@
         "omittedCount"
       ],
       "type": "object"
+    },
+    "ChatGoalCriterionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidenceKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidenceRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "verified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "verified"
+      ],
+      "type": "object"
+    },
+    "ChatGoalStatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "activeRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "automaticRuns": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "criteria": {
+          "items": {
+            "$ref": "#/$defs/ChatGoalCriterionPayload"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastResponseFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "noProgressRuns": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "outputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "progressRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "progressSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ChatGoalStatus"
+        },
+        "statusReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "objective",
+        "status",
+        "criteria",
+        "progressRevision",
+        "automaticRuns",
+        "noProgressRuns",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ChatGoalStatus": {
+      "enum": [
+        "active",
+        "verifying",
+        "waiting",
+        "paused",
+        "blocked",
+        "completed",
+        "cancelled"
+      ],
+      "type": "string"
     },
     "ChatPlanMode": {
       "enum": [

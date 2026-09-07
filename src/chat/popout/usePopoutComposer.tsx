@@ -11,6 +11,7 @@ import { isPluginManagedServer, preservePluginManagedServers } from '../../setti
 import { i18n, type Lang } from '../../settings/i18n'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../utils/chatTools'
 import { chatApi, type AgentRuntimeConfig } from '../api'
+import { insertTextIntoComposer } from '../composerInsert'
 import { mergeCompactionContextState } from '../compactionBoundary'
 import { applyLiveContextUsage } from '../contextPanel'
 import { mergeClearContextState } from '../contextClearBoundary'
@@ -169,14 +170,17 @@ export function usePopoutComposer({
   const activeAgentPlanMode = conversation?.agent_plan_state?.mode
     ?? conversation?.agentPlanState?.mode
     ?? 'act'
+  const currentGoal = conversation?.goal_state ?? conversation?.goalState
+  const goalActive = !!currentGoal && !['completed', 'cancelled'].includes(currentGoal.status)
   const composerModes = useMemo(
     () => derivePermissionModes({
       target: 'composer',
       agentRuntime: runtime,
       agents: detectedExternalAgents,
       agentPlanMode: activeAgentPlanMode,
+      goalActive,
     }),
-    [runtime, detectedExternalAgents, activeAgentPlanMode],
+    [runtime, detectedExternalAgents, activeAgentPlanMode, goalActive],
   )
   const composerPresets = useMemo(
     () => deriveDshPresetModes(runtime, dshCustomPresets),
@@ -519,8 +523,16 @@ export function usePopoutComposer({
       applyConversationMeta(setConversation, next)
       return
     }
+    if (value === 'goal') {
+      if (!goalActive) insertTextIntoComposer('/goal ')
+      return
+    }
+    if (goalActive) {
+      const paused = await chatApi.pauseGoal(conversationId)
+      setConversation(paused)
+    }
     await handleAgentPlanModeChange(value as AgentPlanMode)
-  }, [conversationId, handleAgentPlanModeChange, runtime, setConversation, usesExternalRuntime])
+  }, [conversationId, goalActive, handleAgentPlanModeChange, runtime, setConversation, usesExternalRuntime])
 
   const handleExternalPresetChange = useCallback(async (preset: string) => {
     const next = await chatApi.setAgentRuntime(conversationId, {

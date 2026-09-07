@@ -36,6 +36,7 @@ interface UseMessageQueueParams {
     options: { conversationOverride: Conversation },
   ) => Promise<boolean>
   onRestoreToComposer: (message: QueuedMessage) => void
+  onPendingChange?: (conversationId: string, pending: boolean) => void
 }
 
 let steerSeq = 0
@@ -51,7 +52,7 @@ function nextQueuedId(): string {
  * 只在内存里。`steer` / `followUp` 成功只标记已提交，**不出队**；出队等插话卡
  * （实时事件或落库对账）。收尾一律走 `settleAfterRun`。
  */
-export function useMessageQueue({ onSendMessage, onRestoreToComposer }: UseMessageQueueParams) {
+export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingChange }: UseMessageQueueParams) {
   const [queued, setQueued] = useState<Record<string, QueuedMessage[]>>({})
   const queuedRef = useRef(queued)
   /**
@@ -60,8 +61,8 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer }: UseMessa
    * 又会调 drain —— 标志此刻仍然挂着，第二条就永远发不出去了。
    */
   const claimedRef = useRef<Set<string>>(new Set())
-  const callbacksRef = useRef({ onSendMessage, onRestoreToComposer })
-  callbacksRef.current = { onSendMessage, onRestoreToComposer }
+  const callbacksRef = useRef({ onSendMessage, onRestoreToComposer, onPendingChange })
+  callbacksRef.current = { onSendMessage, onRestoreToComposer, onPendingChange }
 
   const patch = useCallback((
     conversationId: string,
@@ -79,6 +80,10 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer }: UseMessa
     }
     queuedRef.current = next
     setQueued(next)
+    callbacksRef.current.onPendingChange?.(
+      conversationId,
+      nextItems.some((item) => !isQueuedSubmitted(item)),
+    )
   }, [])
 
   const find = (conversationId: string, messageId: string) => (

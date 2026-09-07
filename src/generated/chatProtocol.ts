@@ -31,6 +31,12 @@ export type ChatPlanStatus = "empty" | "draft" | "approved";
 
 export type ChatPlanStatePayload = { mode: ChatPlanMode, status: ChatPlanStatus, plan: string | null, updatedAt: number, };
 
+export type ChatGoalStatus = "active" | "verifying" | "waiting" | "paused" | "blocked" | "completed" | "cancelled";
+
+export type ChatGoalCriterionPayload = { id: string, text: string, verified: boolean, evidence: string | null, evidenceKind: string | null, evidenceRef: string | null, };
+
+export type ChatGoalStatePayload = { id: string, version: number, objective: string, status: ChatGoalStatus, criteria: Array<ChatGoalCriterionPayload>, statusReason: string | null, progressSummary: string | null, progressRevision: number, activeRunId: string | null, automaticRuns: number, noProgressRuns: number, lastResponseFingerprint: string | null, inputTokens: number | null, outputTokens: number | null, totalTokens: number | null, createdAt: number, updatedAt: number, };
+
 export type ChatCompactionBoundaryPayload = { id: string, sourceUntilMessageId: string, displayAfterMessageId: string | null, tokenEstimateBefore: number, tokenEstimateAfter: number, summaryContent: string, trigger: string, createdAt: number, };
 
 export type ChatContextClearBoundaryPayload = { id: string, sourceUntilMessageId: string, createdAt: number, };
@@ -53,9 +59,9 @@ export type ChatRunEvent = { "type": "run_started", recovery: ChatRunRecoveryMet
 
 export type ChatRunEventEnvelope = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, scope: "run", conversationId: string, runId: string, messageId: string, seq: number, baseRevision: number, } & ({ "type": "run_started", recovery: ChatRunRecoveryMetadata | null, } | { "type": "text_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "reasoning_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "tool_updated", tool: ChatToolPayload, } | { "type": "subagent_updated", parentToolCallId: string, taskId: string, name: string, model: string | null, depth: number, status: string, preview: string | null, steps: Array<string>, } | { "type": "context_usage_updated", usage: ChatContextUsagePayload, } | { "type": "compaction_updated", phase: string, trigger: string | null, boundary: ChatCompactionBoundaryPayload | null, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "session_consent_requested" } | { "type": "tool_approval_requested", toolCallId: string, name: string, source: string, serverId: string | null, target: string | null, argumentsPreview: string, sensitivity: string, } | { "type": "tool_approval_withdrawn", toolCallId: string, } | { "type": "user_prompt_requested", toolCallId: string, name: string, source: string, prompt: ChatAskUserPromptPayload, structuredContent: unknown, } | { "type": "hook_failed", hookName: string, event: string, message: string, } | { "type": "status_note_updated", note: string | null, } | { "type": "queued_texts_restored", texts: Array<string>, } | { "type": "run_completed", full: string, conversationRevision: number, } | { "type": "run_failed", error: string, full: string, conversationRevision: number, } | { "type": "run_cancelled", full: string, conversationRevision: number, });
 
-export type ChatConversationEvent = { "type": "context_updated", contextState: ChatContextStatePayload, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, };
+export type ChatConversationEvent = { "type": "context_updated", contextState: ChatContextStatePayload, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "goal_updated", goalState: ChatGoalStatePayload | null, };
 
-export type ChatConversationEventEnvelope = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, scope: "conversation", conversationId: string, revision: number, } & ({ "type": "context_updated", contextState: ChatContextStatePayload, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, });
+export type ChatConversationEventEnvelope = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, scope: "conversation", conversationId: string, revision: number, } & ({ "type": "context_updated", contextState: ChatContextStatePayload, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "goal_updated", goalState: ChatGoalStatePayload | null, });
 
 export type ChatProtocolEvent = ChatRunEventEnvelope | ChatConversationEventEnvelope;
 

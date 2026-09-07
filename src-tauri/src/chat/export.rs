@@ -236,6 +236,7 @@ mod tests {
             context_state: ConversationContextState::default(),
             agent_todo_state: AgentTodoState::default(),
             agent_plan_state: AgentPlanState::default(),
+            goal_state: None,
             knowledge_base_ids: vec![],
             force_knowledge_search: false,
             additional_directories: Vec::new(),

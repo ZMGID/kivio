@@ -338,6 +338,48 @@ impl From<&crate::chat::AgentPlanState> for ChatPlanStatePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ChatGoalStatus { Active, Verifying, Waiting, Paused, Blocked, Completed, Cancelled }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename_all = "camelCase")]
+pub struct ChatGoalCriterionPayload {
+    pub id: String, pub text: String, pub verified: bool,
+    pub evidence: Option<String>, pub evidence_kind: Option<String>, pub evidence_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename_all = "camelCase")]
+pub struct ChatGoalStatePayload {
+    pub id: String, pub version: u64, pub objective: String, pub status: ChatGoalStatus,
+    pub criteria: Vec<ChatGoalCriterionPayload>, pub status_reason: Option<String>,
+    pub progress_summary: Option<String>, pub progress_revision: u64,
+    pub active_run_id: Option<String>, pub automatic_runs: u64, pub no_progress_runs: u32,
+    pub last_response_fingerprint: Option<String>,
+    pub input_tokens: Option<u64>, pub output_tokens: Option<u64>, pub total_tokens: Option<u64>,
+    pub created_at: i64, pub updated_at: i64,
+}
+
+impl From<&crate::chat::GoalState> for ChatGoalStatePayload {
+    fn from(g:&crate::chat::GoalState)->Self { Self {
+        id:g.id.clone(), version:g.version, objective:g.objective.clone(), status:match g.status {
+            crate::chat::GoalStatus::Active=>ChatGoalStatus::Active, crate::chat::GoalStatus::Verifying=>ChatGoalStatus::Verifying,
+            crate::chat::GoalStatus::Waiting=>ChatGoalStatus::Waiting, crate::chat::GoalStatus::Paused=>ChatGoalStatus::Paused,
+            crate::chat::GoalStatus::Blocked=>ChatGoalStatus::Blocked, crate::chat::GoalStatus::Completed=>ChatGoalStatus::Completed,
+            crate::chat::GoalStatus::Cancelled=>ChatGoalStatus::Cancelled },
+        criteria:g.criteria.iter().map(|c|ChatGoalCriterionPayload{id:c.id.clone(),text:c.text.clone(),verified:c.verified,evidence:c.evidence.clone(),evidence_kind:c.evidence_kind.clone(),evidence_ref:c.evidence_ref.clone()}).collect(),
+        status_reason:g.status_reason.clone(), progress_summary:g.progress_summary.clone(), progress_revision:g.progress_revision,
+        active_run_id:g.active_run_id.clone(), automatic_runs:g.automatic_runs,
+        no_progress_runs:g.no_progress_runs, last_response_fingerprint:g.last_response_fingerprint.clone(),
+        input_tokens:g.input_tokens, output_tokens:g.output_tokens,
+        total_tokens:g.total_tokens, created_at:g.created_at, updated_at:g.updated_at,
+    }}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(rename_all = "camelCase")]
 pub struct ChatCompactionBoundaryPayload {
@@ -724,6 +766,9 @@ pub enum ChatConversationEvent {
     },
     PlanUpdated {
         plan_state: ChatPlanStatePayload,
+    },
+    GoalUpdated {
+        goal_state: Option<ChatGoalStatePayload>,
     },
 }
 

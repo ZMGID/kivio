@@ -1014,7 +1014,7 @@ async fn call_native_tool(
         let ctx = native_ctx
             .as_ref()
             .ok_or_else(|| format!("{} requires a conversation context", entry.name))?;
-        return handler(app, &ctx.conversation_id, &tool.name, arguments).await;
+        return handler(app, ctx, &tool.name, arguments).await;
     }
     if let NativeToolCall::SubAgent(handler) = &entry.call {
         // Sub-agent management tools manage agents, not files: dispatch before

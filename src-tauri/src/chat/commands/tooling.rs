@@ -179,6 +179,13 @@ pub(super) fn append_agent_todo_tools(tools: &mut Vec<ChatToolDefinition>) -> bo
     true
 }
 
+pub(super) fn append_goal_tools(
+    tools: &mut Vec<ChatToolDefinition>,
+    goal: Option<&crate::chat::types::GoalState>,
+) -> bool {
+    crate::chat::goal::append_tool_definitions(tools, goal)
+}
+
 pub(super) fn append_agent_ask_user_tools(tools: &mut Vec<ChatToolDefinition>) -> bool {
     crate::chat::ask_user::append_tool_definitions(tools);
     true

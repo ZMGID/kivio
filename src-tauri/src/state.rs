@@ -229,6 +229,9 @@ pub struct AppState {
     /// 不在轮首注入（那是 `pending_chat_steering`）。仅内存、不持久化。
     /// 同样按 conversation_id 建键，前端在 `reply_models ≥ 2` 时不给自动 follow-up。
     pub pending_chat_follow_up: Mutex<HashMap<String, Vec<crate::chat::agent::SteeringMessage>>>,
+    /// Frontend-only queued user input marker. Goal continuation yields at a run boundary so the
+    /// normal queue drain can persist and execute the user's message first.
+    pub pending_goal_user_queue: Mutex<HashSet<String>>,
     /// Lens 启动前抓到的选中文本：放在这里等前端 enterSelect 来取走。
     /// 取一次清一次（take 语义）。无选中 / 取过 / translate 模式 = None。
     pub pending_selection: Mutex<Option<String>>,
@@ -424,6 +427,7 @@ impl AppState {
             pending_chat_external_sends: Mutex::new(Vec::new()),
             pending_chat_steering: Mutex::new(HashMap::new()),
             pending_chat_follow_up: Mutex::new(HashMap::new()),
+            pending_goal_user_queue: Mutex::new(HashSet::new()),
             pending_selection: Mutex::new(None),
             lens_freeze_frame_image_id: Mutex::new(None),
             lens_pending_reset: Mutex::new(None),
@@ -756,6 +760,15 @@ impl AppState {
             .remove(conversation_id);
     }
 
+    pub fn set_goal_user_queue_pending(&self, conversation_id:&str, pending:bool){
+        let mut queued=self.pending_goal_user_queue.lock().unwrap_or_else(|e|e.into_inner());
+        if pending{queued.insert(conversation_id.to_string());}else{queued.remove(conversation_id);}
+    }
+
+    pub fn has_goal_user_queue_pending(&self, conversation_id:&str)->bool{
+        self.pending_goal_user_queue.lock().unwrap_or_else(|e|e.into_inner()).contains(conversation_id)
+    }
+
     /// 对话被删除时清理其按 conversation_id 累积的运行态痕迹：活跃 generation 集合、
     /// 会话级工具同意标记、按工具名的「总是允许」集合。三者都严格按 conversation_id 取键，对话删除后再不会被
     /// 引用，是最无歧义的有界清理点（不影响其它活跃对话）。generation 号本身来自进程级
@@ -775,6 +788,7 @@ impl AppState {
             .retain(|(conv, _)| conv != conversation_id);
         self.clear_chat_steering(conversation_id);
         self.clear_chat_follow_up(conversation_id);
+        self.set_goal_user_queue_pending(conversation_id,false);
     }
 
     /// 尝试占用某个对话的某条 run 回复槽位。同会话允许多条 run 并存（多模型一问多答）；

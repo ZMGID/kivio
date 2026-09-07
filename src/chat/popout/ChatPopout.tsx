@@ -5,6 +5,7 @@ import { configureChatProtocolFilter } from '../../api/chatProtocol'
 import { ApprovalCard } from '../ApprovalCard'
 import { AskUserBlock } from '../AskUserBlock'
 import { InputBar } from '../InputBar'
+import { GoalCard } from '../GoalCard'
 import { ChatTitlebar } from '../ChatTitlebar'
 import { usesNativeTitlebar } from '../platform'
 import { IconButton } from '../../components/Button'
@@ -167,6 +168,15 @@ function ChatPopoutBody({
             </IconButton>
           </div>
         </div>
+      )}
+      {(session.conversation?.goal_state ?? session.conversation?.goalState) && (
+        <GoalCard
+          goal={(session.conversation?.goal_state ?? session.conversation?.goalState)!}
+          onEdit={session.editGoal}
+          onPause={session.pauseGoal}
+          onResume={session.resumeGoal}
+          onCancel={session.cancelGoal}
+        />
       )}
       <Suspense fallback={<MessageListLoading />}>
         <MessageList key={conversationId} {...session.messageListProps} />

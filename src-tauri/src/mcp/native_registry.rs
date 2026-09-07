@@ -87,7 +87,7 @@ pub enum NativeToolCall {
     /// resolution because it only needs the conversation id, matching the
     /// legacy `RegistryToolExecutor` special case which never resolved a
     /// workspace for todo tools.
-    Conversation(for<'a> fn(&'a AppHandle, &'a str, &'a str, Value) -> NativeToolFuture<'a>),
+    Conversation(for<'a> fn(&'a AppHandle, &'a NativeToolContext, &'a str, Value) -> NativeToolFuture<'a>),
     /// Host-mediated tool (ask_user): intercepted in
     /// `chat/agent/execute.rs::execute_ask_user_call` and must never reach
     /// the registry dispatcher.
@@ -423,6 +423,12 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::todo::handle_conversation_tool_call),
     },
+    NativeToolEntry { name: crate::chat::goal::GET_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(0), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: true, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
+    NativeToolEntry { name: crate::chat::goal::INIT_GOAL_CRITERIA_TOOL, def: || crate::chat::goal::tool_definitions().remove(1), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
+    NativeToolEntry { name: crate::chat::goal::REPORT_GOAL_PROGRESS_TOOL, def: || crate::chat::goal::tool_definitions().remove(2), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
+    NativeToolEntry { name: crate::chat::goal::COMPLETE_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(3), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
+    NativeToolEntry { name: crate::chat::goal::BLOCK_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(4), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
+    NativeToolEntry { name: crate::chat::goal::WAIT_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(5), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
     NativeToolEntry {
         name: crate::chat::ask_user::ASK_USER_TOOL_NAME,
         def: crate::chat::ask_user::ask_user_tool,
@@ -1254,6 +1260,12 @@ mod tests {
         "memory_modify",
         "memory_search",
         "todo_write",
+        "get_goal",
+        "initialize_goal_criteria",
+        "report_goal_progress",
+        "goal_complete",
+        "goal_blocked",
+        "goal_wait",
         "ask_user",
         "agent",
     ];
@@ -1357,6 +1369,12 @@ mod tests {
                 "memory_modify",
                 "memory_search",
                 "todo_write",
+                "get_goal",
+                "initialize_goal_criteria",
+                "report_goal_progress",
+                "goal_complete",
+                "goal_blocked",
+                "goal_wait",
                 "ask_user",
                 "agent",
             ]
@@ -1389,6 +1407,7 @@ mod tests {
                 "kivio_inspect",
                 "memory_read",
                 "memory_search",
+                "get_goal",
             ],
             "memory_read/memory_search are read-only but deliberately not parallel-safe"
         );

@@ -723,11 +723,22 @@ pub(super) fn build_fork_messages_before_anchor(
 #[tauri::command]
 pub(crate) async fn chat_fork_conversation(
     app: AppHandle,
+    state: State<'_, AppState>,
     conversation_id: String,
     message_id: String,
     exclude_anchor: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let source = load_conversation(&app, &conversation_id)?;
+    let mut source = load_conversation(&app, &conversation_id)?;
+    if source.goal_state.as_ref().is_some_and(|goal| crate::chat::goal::is_running(goal.status)) {
+        state.cancel_chat_generation(&conversation_id);
+        source = crate::chat::repository::repository(&app).mutate(&app,&conversation_id,|conversation|{
+            if let Some(goal)=conversation.goal_state.as_mut().filter(|goal|crate::chat::goal::is_running(goal.status)){
+                goal.version+=1;goal.status=crate::chat::types::GoalStatus::Paused;goal.status_reason=Some("Paused before creating a history branch".into());goal.active_run_id=None;goal.updated_at=chrono::Local::now().timestamp();
+            }
+            Ok(())
+        }).await.map_err(crate::chat::repository::repository_error)?;
+        crate::chat::goal::emit_goal_state(&app,&source);
+    }
     let anchor_idx = find_message_index(&source, &message_id)?;
 
     let now = chrono::Local::now().timestamp();
@@ -778,6 +789,7 @@ pub(crate) async fn chat_fork_conversation(
         context_state: ConversationContextState::default(),
         agent_todo_state: AgentTodoState::default(),
         agent_plan_state: AgentPlanState::default(),
+        goal_state: None,
         knowledge_base_ids: source.knowledge_base_ids.clone(),
         force_knowledge_search: source.force_knowledge_search,
         additional_directories: source.additional_directories.clone(),
@@ -905,6 +917,7 @@ pub(crate) async fn chat_delete_conversation(
 #[tauri::command]
 pub(crate) async fn chat_update_conversation(
     app: AppHandle,
+    state: State<'_, AppState>,
     conversation_id: String,
     title: Option<String>,
     pinned: Option<bool>,
@@ -923,8 +936,26 @@ pub(crate) async fn chat_update_conversation(
     web_search_mode: Option<String>,
     reply_models: Option<Vec<crate::chat::ModelRef>>,
 ) -> Result<serde_json::Value, String> {
+    let pauses_goal = project_id.is_some()
+        || set_id.is_some()
+        || provider_id.is_some()
+        || model.is_some()
+        || additional_directories.is_some()
+        || reply_models.is_some();
+    if pauses_goal {
+        state.cancel_chat_generation(&conversation_id);
+    }
     let mut conversation = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, |conversation| {
+            if pauses_goal {
+                if let Some(goal) = conversation.goal_state.as_mut().filter(|goal| crate::chat::goal::is_running(goal.status)) {
+                    goal.version += 1;
+                    goal.status = crate::chat::types::GoalStatus::Paused;
+                    goal.status_reason = Some("Paused because the execution context changed".into());
+                    goal.active_run_id = None;
+                    goal.updated_at = chrono::Local::now().timestamp();
+                }
+            }
             if let Some(t) = title {
                 if !super::title::is_placeholder_title(&t) {
                     conversation.title = t;
@@ -1074,6 +1105,10 @@ pub(crate) async fn chat_update_conversation(
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
+
+    if pauses_goal {
+        crate::chat::goal::emit_goal_state(&app, &conversation);
+    }
 
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({

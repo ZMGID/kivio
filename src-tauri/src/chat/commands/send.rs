@@ -20,6 +20,50 @@ use super::fan_out::run_reply_fan_out;
 use super::reply_runtime::{resolve_reply_arms, ChatSendReservation, CHAT_REPLY_BUSY_ERROR};
 use super::title::{generate_title, is_placeholder_title};
 
+/// Continue an already-active Goal without creating a synthetic user message.
+#[tauri::command]
+pub(crate) async fn chat_continue_goal(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<serde_json::Value, String> {
+    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    else {
+        return Ok(serde_json::json!({ "success": false, "error": CHAT_REPLY_BUSY_ERROR }));
+    };
+    let mut conversation = load_conversation(&app, &conversation_id)?;
+    let goal = conversation.goal_state.as_ref().ok_or("No Goal exists")?;
+    if !crate::chat::goal::is_running(goal.status) {
+        return Err("Goal is not active".into());
+    }
+    let outcome = complete_assistant_reply(
+        &app,
+        &state,
+        &mut conversation,
+        None,
+        None,
+        &[],
+        None,
+        crate::chat::agent::AgentRunEntry::Send,
+    ).await;
+    strip_transcripts_for_frontend(&mut conversation);
+    match outcome {
+        Ok(()) => Ok(serde_json::json!({
+            "success": true,
+            "conversation": conversation,
+        })),
+        Err(error) if error == "cancelled" => Ok(serde_json::json!({
+            "success": true,
+            "conversation": conversation,
+        })),
+        Err(error) => Ok(serde_json::json!({
+            "success": false,
+            "conversation": conversation,
+            "error": error,
+        })),
+    }
+}
+
 /// 发送消息
 #[tauri::command]
 pub(crate) async fn chat_send_message(
@@ -46,6 +90,32 @@ pub(crate) async fn chat_send_message(
     };
 
     let mut conversation = load_conversation(&app, &conversation_id)?;
+
+    if content.trim() == "/goal" {
+        strip_transcripts_for_frontend(&mut conversation);
+        return Ok(serde_json::json!({
+            "success": true,
+            "conversation": conversation,
+        }));
+    }
+
+    let goal_started = content.trim().strip_prefix("/goal").and_then(|rest| {
+        if !rest.chars().next().is_some_and(char::is_whitespace) { return None; }
+        let objective = rest.trim(); (!objective.is_empty()).then_some(objective.to_string())
+    });
+    if goal_started.is_some() && conversation.goal_state.as_ref().is_some_and(|goal| {
+        !matches!(goal.status, crate::chat::types::GoalStatus::Completed | crate::chat::types::GoalStatus::Cancelled)
+    }) {
+        return Err("An unfinished Goal already exists. Use the Goal card's edit action to replace it.".into());
+    }
+    let resumed_waiting_goal = goal_started.is_none()
+        && conversation.goal_state.as_ref().is_some_and(|goal| {
+            matches!(goal.status, crate::chat::types::GoalStatus::Waiting)
+        });
+    let waiting_goal_guard = resumed_waiting_goal.then(|| {
+        let goal = conversation.goal_state.as_ref().expect("waiting Goal was checked");
+        (goal.id.clone(), goal.version)
+    });
 
     // Keep the user's command and task verbatim. Skill instructions are resolved
     // in reply preparation, so send, retry and edit all use the same path.
@@ -136,6 +206,8 @@ pub(crate) async fn chat_send_message(
         .mutate(&app, &conversation_id, {
             let user_message = user_message.clone();
             let provisional_title = provisional_title.clone();
+            let goal_started = goal_started.clone();
+            let waiting_goal_guard = waiting_goal_guard.clone();
             move |latest| {
                 if latest
                     .messages
@@ -145,6 +217,24 @@ pub(crate) async fn chat_send_message(
                     return Err(format!("message already exists: {}", user_message.id));
                 }
                 latest.messages.push(user_message);
+                if let Some(objective) = goal_started.as_deref() {
+                    if latest.goal_state.as_ref().is_some_and(|goal| {
+                        !matches!(goal.status, crate::chat::types::GoalStatus::Completed | crate::chat::types::GoalStatus::Cancelled)
+                    }) {
+                        return Err("An unfinished Goal already exists. Use the Goal card's edit action to replace it.".into());
+                    }
+                    crate::chat::goal::start(latest, objective)?;
+                } else if let Some((goal_id, goal_version)) = waiting_goal_guard.as_ref() {
+                    let goal = latest.goal_state.as_mut().ok_or("The waiting Goal no longer exists")?;
+                    if goal.id != *goal_id || goal.version != *goal_version || goal.status != crate::chat::types::GoalStatus::Waiting {
+                        return Err("The Goal changed before the user reply was saved; retry the message".into());
+                    }
+                    goal.version += 1;
+                    goal.status = crate::chat::types::GoalStatus::Active;
+                    goal.status_reason = None;
+                    goal.active_run_id = None;
+                    goal.updated_at = chrono::Local::now().timestamp();
+                }
                 if let Some(title) = provisional_title {
                     if is_placeholder_title(&latest.title) {
                         latest.title = title;
@@ -155,6 +245,9 @@ pub(crate) async fn chat_send_message(
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
+    if goal_started.is_some() || resumed_waiting_goal {
+        crate::chat::goal::emit_goal_state(&app, &conversation);
+    }
 
     match compute_context_state(
         &app,

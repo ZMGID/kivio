@@ -226,6 +226,66 @@ pub struct AgentPlanState {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    Active,
+    Verifying,
+    Waiting,
+    Paused,
+    Blocked,
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalCriterion {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub verified: bool,
+    #[serde(default)]
+    pub evidence: Option<String>,
+    #[serde(default)]
+    pub evidence_kind: Option<String>,
+    #[serde(default)]
+    pub evidence_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalState {
+    pub id: String,
+    pub version: u64,
+    pub objective: String,
+    pub status: GoalStatus,
+    #[serde(default)]
+    pub criteria: Vec<GoalCriterion>,
+    #[serde(default)]
+    pub status_reason: Option<String>,
+    #[serde(default)]
+    pub progress_summary: Option<String>,
+    #[serde(default)]
+    pub progress_revision: u64,
+    #[serde(default)]
+    pub last_recorded_progress_revision: u64,
+    #[serde(default)]
+    pub active_run_id: Option<String>,
+    #[serde(default)]
+    pub automatic_runs: u64,
+    #[serde(default)]
+    pub no_progress_runs: u32,
+    #[serde(default)]
+    pub last_response_fingerprint: Option<String>,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// 工具调用状态（保存在 assistant message metadata 中）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -528,6 +588,9 @@ pub struct Conversation {
     pub agent_todo_state: AgentTodoState,
     #[serde(default)]
     pub agent_plan_state: AgentPlanState,
+    /// Persistent single-objective Goal state. Missing in legacy files means no Goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_state: Option<GoalState>,
     /// 本会话挂载的知识库 id 列表；`knowledge_search` 缺省检索这些库。
     #[serde(default)]
     pub knowledge_base_ids: Vec<String>,

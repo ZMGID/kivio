@@ -96,6 +96,7 @@ export interface ChatConversationPaneProps {
   onSelectConversation: (id: string) => void
   importedHistoryStale: boolean
   pendingSlot: ReactNode
+  goalSlot?: ReactNode
   queuedMessages: QueuedMessage[]
   canSteerQueuedMessages: boolean
   onSteerQueuedMessage: (messageId: string) => void
@@ -135,6 +136,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   onSelectConversation,
   importedHistoryStale,
   pendingSlot,
+  goalSlot,
   queuedMessages,
   canSteerQueuedMessages,
   onSteerQueuedMessage,
@@ -243,6 +245,8 @@ export const ChatConversationPane = memo(function ChatConversationPane({
                 </span>
               </div>
             )}
+
+            {goalSlot}
 
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>

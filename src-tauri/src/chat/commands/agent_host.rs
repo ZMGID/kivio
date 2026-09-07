@@ -308,6 +308,16 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
         skill_cache: Option<&'a mut skills::SkillRunCache>,
     ) -> crate::chat::agent::ToolExecutorFuture<'a> {
         Box::pin(async move {
+            if ctx.depth == 0 {
+                if let Ok(conversation) = crate::chat::storage::load_conversation(&self.app, ctx.conversation_id) {
+                    if conversation.goal_state.as_ref().is_some_and(|goal| {
+                        goal.status == crate::chat::types::GoalStatus::Completed
+                            && goal.active_run_id.as_deref() == Some(ctx.run_id)
+                    }) {
+                        return Err("Goal completion was accepted; no further tools may run in this turn".into());
+                    }
+                }
+            }
             let native_ctx = mcp::registry::NativeToolContext {
                 // Conversation-scoped tools (todo / native workspace) target the
                 // tool conversation, which equals the run conversation for a

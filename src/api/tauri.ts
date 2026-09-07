@@ -19,6 +19,7 @@ import type {
   ChatSegmentPayload as GeneratedChatSegmentPayload,
 } from '../generated/chatProtocol'
 import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary } from '../chat/automation/types'
+import type { GoalState } from '../chat/types'
 
 // ========== 类型定义 ==========
 
@@ -211,6 +212,11 @@ export type ChatPlanState = {
 export type ChatPlanPayload = {
   conversationId: string
   planState: ChatPlanState
+}
+
+export type ChatGoalPayload = {
+  conversationId: string
+  goalState: GoalState | null
 }
 
 export type ChatToolStatus =
@@ -2167,6 +2173,13 @@ export const api = {
     return onChatProtocol((event) => {
       if (event.type !== 'plan_updated') return
       listener({ conversationId: event.conversationId, planState: event.planState as ChatPlanState })
+    })
+  },
+  onChatGoal: (listener: (payload: ChatGoalPayload) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return onChatProtocol((event) => {
+      if (event.type !== 'goal_updated' || event.scope !== 'conversation') return
+      listener({ conversationId: event.conversationId, goalState: (event.goalState as GoalState | null) ?? null })
     })
   },
   onChatTool: (listener: (payload: ChatToolProgressPayload) => void) => {

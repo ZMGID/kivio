@@ -376,6 +376,9 @@ pub fn run() {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     chat::draft_journal::recover_orphan_drafts(&handle).await;
+                    if let Err(error) = chat::goal::pause_unfinished_after_restart(&handle).await {
+                        eprintln!("Failed to pause unfinished Goals after restart: {error}");
+                    }
                 });
             }
             // Dock 的 workspace 文件监听服务（文件树 / Git 面板的秒级刷新源）。
@@ -635,6 +638,14 @@ pub fn run() {
             chat::commands::interaction::chat_take_external_sends,
             chat::commands::interaction::chat_set_agent_plan_mode,
             chat::commands::interaction::chat_execute_agent_plan,
+            chat::goal::chat_get_goal,
+            chat::goal::chat_start_goal,
+            chat::goal::chat_edit_goal,
+            chat::goal::chat_pause_goal,
+            chat::goal::chat_resume_goal,
+            chat::goal::chat_cancel_goal,
+            chat::goal::chat_set_goal_user_queue_pending,
+            chat::commands::send::chat_continue_goal,
             chat::commands::send::chat_send_message,
             chat::commands::interaction::chat_cancel_stream,
             chat::commands::interaction::chat_confirm_tool_call,

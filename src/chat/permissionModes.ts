@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Code2, Eye, FilePen, Layers, ListChecks, Network, ShieldAlert, ShieldCheck, ShieldQuestion, Sparkles, Terminal, Wand2, Zap } from 'lucide-react'
+import { Code2, Eye, FilePen, Layers, ListChecks, Network, ShieldAlert, ShieldCheck, ShieldQuestion, Sparkles, Target, Terminal, Wand2, Zap } from 'lucide-react'
 import { APPROVAL_POLICY_OPTIONS } from './approvalPolicies'
 import { chatApi, type DshAgentPresetOption } from './api'
 import type { AgentPlanMode, AgentRuntimeConfig, DetectedExternalAgent } from './types'
@@ -28,6 +28,8 @@ export interface PermissionModesInput {
   approvalPolicy?: string | null
   /** 内置 Agent 会话 + composer：Kivio 三档当前值。 */
   agentPlanMode?: AgentPlanMode | null
+  /** An unfinished Goal selects the Goal entry without changing the persisted Act strategy. */
+  goalActive?: boolean
 }
 
 export interface PermissionModes {
@@ -38,6 +40,7 @@ export interface PermissionModes {
 /** Kivio Agent 三档 —— 仅内置 Agent 运行时显示；Kivio Chat 不显示此胶囊。 */
 export const AGENT_MODE_OPTIONS: ModeOption[] = [
   { value: 'act', label: 'Act', description: '普通模式 · Normal', icon: Zap, tone: 'neutral' },
+  { value: 'goal', label: 'Goal', description: '持续执行一个目标 · Persistent execution', icon: Target, tone: 'violet' },
   { value: 'plan', label: 'Plan', description: '计划模式 · Enter plan mode', icon: ListChecks, tone: 'emerald' },
   {
     value: 'orchestrate',
@@ -188,6 +191,7 @@ export function derivePermissionModes({
   agents = [],
   approvalPolicy,
   agentPlanMode,
+  goalActive = false,
 }: PermissionModesInput): PermissionModes {
   const usesExternal = agentRuntime.kind === 'external' && !!agentRuntime.externalAgentId
   const usesChat = agentRuntime.kind === 'chat'
@@ -203,7 +207,9 @@ export function derivePermissionModes({
   }
 
   if (target === 'composer') {
-    const current = AGENT_MODE_OPTIONS.some((option) => option.value === agentPlanMode)
+    const current = goalActive
+      ? 'goal'
+      : AGENT_MODE_OPTIONS.some((option) => option.value === agentPlanMode)
       ? (agentPlanMode as string)
       : AGENT_MODE_OPTIONS[0].value
     return { options: AGENT_MODE_OPTIONS, current }

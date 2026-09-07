@@ -513,6 +513,7 @@ mod tests {
             set_id: None,
             context_state: ConversationContextState::default(),
             agent_plan_state: AgentPlanState::default(),
+            goal_state: None,
             agent_todo_state: AgentTodoState::default(),
             knowledge_base_ids: Vec::new(),
             force_knowledge_search: false,

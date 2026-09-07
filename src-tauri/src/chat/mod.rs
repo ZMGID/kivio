@@ -8,6 +8,7 @@ pub mod draft_journal;
 pub mod dsml_tools;
 pub mod export;
 pub mod gc;
+pub mod goal;
 pub mod hooks;
 pub mod workflow_hooks;
 mod image_collage;

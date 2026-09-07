@@ -39,6 +39,15 @@ pub(crate) async fn chat_set_agent_plan_mode(
     let mode = crate::chat::plan::mode_from_str(&mode)?;
     let mut conversation = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, |conversation| {
+            if mode != crate::chat::types::AgentPlanMode::Act {
+                if let Some(goal) = conversation.goal_state.as_mut().filter(|g| crate::chat::goal::is_running(g.status)) {
+                    goal.version += 1;
+                    goal.status = crate::chat::types::GoalStatus::Paused;
+                    goal.status_reason = Some("Paused because the Agent mode changed".into());
+                    goal.active_run_id = None;
+                    goal.updated_at = chrono::Local::now().timestamp();
+                }
+            }
             conversation.agent_plan_state =
                 crate::chat::plan::with_mode(&conversation.agent_plan_state, mode);
             Ok(())
@@ -120,11 +129,26 @@ pub(super) fn approve_agent_plan_for_execution(
 
 /// 取消指定对话的当前 Chat 生成或工具执行。
 #[tauri::command]
-pub(crate) fn chat_cancel_stream(
-    state: State<AppState>,
+pub(crate) async fn chat_cancel_stream(
+    app: AppHandle,
+    state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<(), String> {
     state.cancel_chat_generation(&conversation_id);
+    if let Ok(conversation) = crate::chat::repository::repository(&app)
+        .mutate(&app, &conversation_id, |conversation| {
+            if let Some(goal) = conversation.goal_state.as_mut().filter(|g| crate::chat::goal::is_running(g.status)) {
+                goal.version += 1;
+                goal.status = crate::chat::types::GoalStatus::Paused;
+                goal.status_reason = Some("Paused by user".into());
+                goal.active_run_id = None;
+                goal.updated_at = chrono::Local::now().timestamp();
+            }
+            Ok(())
+        }).await
+    {
+        crate::chat::goal::emit_goal_state(&app, &conversation);
+    }
     Ok(())
 }
 

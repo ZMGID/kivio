@@ -23,6 +23,7 @@ import {
   Square,
   Terminal,
   TextQuote,
+  Target,
   WandSparkles,
   Wrench,
   X,
@@ -153,6 +154,7 @@ function nextBlankProjectName(projects: ChatProject[], t: I18n): string {
 
 type SlashCommandId =
   | 'help'
+  | 'goal'
   | 'plan'
   | 'orchestrate'
   | 'new'
@@ -178,6 +180,15 @@ const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
     category: 'Local',
     kind: 'action',
     keywords: ['help', 'commands', '帮助', '命令'],
+  },
+  {
+    id: 'goal',
+    slash: '/goal',
+    title: '/goal',
+    description: 'Start or manage a persistent Goal',
+    category: 'Local',
+    kind: 'action',
+    keywords: ['goal', 'objective', '目标', '持续执行'],
   },
   {
     id: 'plan',
@@ -265,6 +276,8 @@ function slashCommandIcon(command: SlashCommandDefinition) {
       return CircleHelp
     case 'plan':
       return ListChecks
+    case 'goal':
+      return Target
     case 'orchestrate':
       return Network
     case 'new':
@@ -1148,6 +1161,16 @@ export const InputBar = memo(function InputBar({
     setSlashPanelOpen(false)
 
     switch (command.id) {
+      case 'goal':
+        setInput('/goal ')
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current
+          if (!textarea) return
+          textarea.focus({ preventScroll: true })
+          textarea.selectionStart = 6
+          textarea.selectionEnd = 6
+        })
+        return
       case 'plan':
         await setAgentPlanMode('plan')
         return

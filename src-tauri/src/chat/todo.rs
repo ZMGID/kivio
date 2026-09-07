@@ -94,11 +94,12 @@ pub fn format_prompt(state: &AgentTodoState, todo_tools_available: bool) -> Stri
 /// deliberately does not resolve a native tool workspace.
 pub fn handle_conversation_tool_call<'a>(
     app: &'a AppHandle,
-    conversation_id: &'a str,
+    ctx: &'a crate::mcp::registry::NativeToolContext,
     tool_name: &'a str,
     arguments: Value,
 ) -> crate::mcp::native_registry::NativeToolFuture<'a> {
     Box::pin(async move {
+        let conversation_id = ctx.conversation_id.as_str();
         if !is_agent_todo_tool_name(tool_name) {
             return Err(format!("Unknown todo tool: {tool_name}"));
         }

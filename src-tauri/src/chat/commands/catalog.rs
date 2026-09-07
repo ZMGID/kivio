@@ -204,7 +204,7 @@ pub(super) fn reconcile_conversation_orphan_tool_segments(conversation: &mut Con
 /// ⚠️ 中断草稿（`stream_outcome == Some("interrupted")`）的转录是「继续」恢复工具上下文
 /// 所必需的（见 commit 9d247b0），**绝不剥**。仅剥已完成的 assistant 消息（至多保留最后
 /// 一条中断草稿的转录，体积有界）。
-pub(super) fn strip_transcripts_for_frontend(conversation: &mut Conversation) {
+pub(crate) fn strip_transcripts_for_frontend(conversation: &mut Conversation) {
     for message in conversation.messages.iter_mut() {
         if message.role != "assistant" {
             continue;
@@ -427,6 +427,7 @@ pub(crate) async fn create_chat_conversation_internal(
                 context_state: ConversationContextState::default(),
                 agent_todo_state: AgentTodoState::default(),
                 agent_plan_state: AgentPlanState::default(),
+                goal_state: None,
                 knowledge_base_ids: Vec::new(),
                 force_knowledge_search: false,
                 additional_directories: Vec::new(),
@@ -793,6 +794,7 @@ pub(crate) async fn chat_create_builder_conversation(
         context_state: ConversationContextState::default(),
         agent_todo_state: AgentTodoState::default(),
         agent_plan_state: AgentPlanState::default(),
+        goal_state: None,
         knowledge_base_ids: Vec::new(),
         force_knowledge_search: false,
         additional_directories: Vec::new(),

@@ -96,16 +96,25 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
     }).current).toBe('plan')
   })
 
-  it('内置 Agent 会话给 Kivio 三档', () => {
+  it('内置 Agent 会话给 Kivio 四档', () => {
     const { options, current } = derivePermissionModes({
       target: 'composer',
       agentRuntime: builtinRuntime,
       agents,
       agentPlanMode: 'plan',
     })
-    expect(options.map((o) => o.value)).toEqual(['act', 'plan', 'orchestrate'])
-    expect(options.map((o) => o.label)).toEqual(['Act', 'Plan', 'Orchestrate'])
+    expect(options.map((o) => o.value)).toEqual(['act', 'goal', 'plan', 'orchestrate'])
+    expect(options.map((o) => o.label)).toEqual(['Act', 'Goal', 'Plan', 'Orchestrate'])
     expect(current).toBe('plan')
+  })
+
+  it('未完成 Goal 在底栏保持选中，同时后端策略仍为 Act', () => {
+    expect(derivePermissionModes({
+      target: 'composer',
+      agentRuntime: builtinRuntime,
+      agentPlanMode: 'act',
+      goalActive: true,
+    }).current).toBe('goal')
   })
 
   it('内置会话没有档位状态时回落 act', () => {

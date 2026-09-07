@@ -18,6 +18,7 @@ import type {
   ConversationListItem,
   ConversationSearchHit,
   AgentPlanMode,
+  GoalState,
   DetectedExternalAgent,
   PendingAttachment,
 } from './types'
@@ -25,6 +26,24 @@ import type { ThinkingLevel, WebSearchMode, ModelRef, AdditionalDirectory } from
 import type { CliImportResult, ImportableCliSession } from './types'
 
 export type { DetectedExternalAgent, AgentRuntimeConfig }
+
+async function invokeGoalMutation(command: string, conversationId: string, extra: Record<string, unknown> = {}): Promise<Conversation> {
+  const result = await invoke<{ success: boolean; conversation?: Conversation; error?: string }>(command, { conversationId, ...extra })
+  if (!result.success || !result.conversation) throw new Error(result.error || 'Goal update failed')
+  return result.conversation
+}
+
+function mockGoalStatus(conversationId: string, status: GoalState['status']): Conversation {
+  const conversations = loadMockConversations()
+  const index = conversations.findIndex((item) => item.id === conversationId)
+  if (index < 0) throw new Error('Conversation not found')
+  const old = conversations[index].goal_state ?? conversations[index].goalState
+  if (!old) throw new Error('No Goal exists')
+  const goal: GoalState = { ...old, version: old.version + 1, status, status_reason: status === 'active' ? null : `Goal ${status}`, updated_at: nowSeconds() }
+  conversations[index] = { ...conversations[index], goal_state: goal, goalState: goal, updated_at: nowSeconds() }
+  saveMockConversations(conversations)
+  return conversations[index]
+}
 
 /** `chat_external_cli_scan_cc_switch` 的返回。`hasApiKey` 是布尔，后端不回明文 key。 */
 export interface CcSwitchProvider {
@@ -794,6 +813,33 @@ const mockChatApi = {
     saveMockConversations(conversations)
     return conversation
   },
+
+  async startGoal(conversationId: string, objective: string): Promise<Conversation> {
+    const conversations = loadMockConversations()
+    const index = conversations.findIndex((item) => item.id === conversationId)
+    if (index < 0) throw new Error('Conversation not found')
+    const now = nowSeconds()
+    const goal: GoalState = { id: `goal_${crypto.randomUUID()}`, version: 1, objective, status: 'active', criteria: [], automatic_runs: 0, no_progress_runs: 0, created_at: now, updated_at: now }
+    conversations[index] = { ...conversations[index], goal_state: goal, goalState: goal, updated_at: now }
+    saveMockConversations(conversations)
+    return conversations[index]
+  },
+  async editGoal(conversationId: string, objective: string): Promise<Conversation> {
+    const conversations = loadMockConversations(); const index = conversations.findIndex((item) => item.id === conversationId)
+    if (index < 0) throw new Error('Conversation not found')
+    const old = conversations[index].goal_state ?? conversations[index].goalState
+    if (!old) throw new Error('No Goal exists')
+    const goal: GoalState = { ...old, version: old.version + 1, objective, status: 'active', criteria: [], status_reason: null, progress_summary: null, no_progress_runs: 0, updated_at: nowSeconds() }
+    conversations[index] = { ...conversations[index], goal_state: goal, goalState: goal, updated_at: nowSeconds() }; saveMockConversations(conversations); return conversations[index]
+  },
+  async pauseGoal(conversationId: string): Promise<Conversation> { return mockGoalStatus(conversationId, 'paused') },
+  async resumeGoal(conversationId: string): Promise<Conversation> { return mockGoalStatus(conversationId, 'active') },
+  async continueGoal(conversationId: string): Promise<Conversation> { return mockGoalStatus(conversationId, 'active') },
+  async setGoalUserQueuePending(conversationId: string, pending: boolean): Promise<void> {
+    void conversationId
+    void pending
+  },
+  async cancelGoal(conversationId: string): Promise<Conversation> { return mockGoalStatus(conversationId, 'cancelled') },
 
   async executeAgentPlan(conversationId: string, messageId?: string): Promise<Conversation> {
     const conversations = loadMockConversations()
@@ -2020,6 +2066,29 @@ export const chatApi = {
       throw new Error(result.error || 'Failed to set plan mode')
     }
     return result.conversation
+  },
+
+  async startGoal(conversationId: string, objective: string): Promise<Conversation> {
+    return invokeGoalMutation('chat_start_goal', conversationId, { objective })
+  },
+  async editGoal(conversationId: string, objective: string): Promise<Conversation> {
+    return invokeGoalMutation('chat_edit_goal', conversationId, { objective })
+  },
+  async pauseGoal(conversationId: string): Promise<Conversation> {
+    return invokeGoalMutation('chat_pause_goal', conversationId)
+  },
+  async resumeGoal(conversationId: string): Promise<Conversation> {
+    return invokeGoalMutation('chat_resume_goal', conversationId)
+  },
+  async continueGoal(conversationId: string): Promise<Conversation> {
+    return invokeGoalMutation('chat_continue_goal', conversationId)
+  },
+  async setGoalUserQueuePending(conversationId: string, pending: boolean): Promise<void> {
+    if (!isTauriRuntime()) return
+    await invoke<void>('chat_set_goal_user_queue_pending', { conversationId, pending })
+  },
+  async cancelGoal(conversationId: string): Promise<Conversation> {
+    return invokeGoalMutation('chat_cancel_goal', conversationId)
   },
 
   async executeAgentPlan(conversationId: string, messageId?: string): Promise<Conversation> {

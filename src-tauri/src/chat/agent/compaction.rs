@@ -1945,6 +1945,7 @@ mod tests {
             context_state: Default::default(),
             agent_todo_state: Default::default(),
             agent_plan_state: Default::default(),
+            goal_state: None,
             knowledge_base_ids: Vec::new(),
             force_knowledge_search: false,
             additional_directories: Vec::new(),
