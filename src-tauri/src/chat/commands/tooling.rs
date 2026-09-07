@@ -7,13 +7,10 @@ use crate::skills;
 use crate::state::AppState;
 
 /// Detect a leading `/skill <args>` slash trigger in a user message and, when it
-/// matches an enabled skill, rewrite the message body to pin that skill.
-///
-/// Returns `(skill_id, rewritten_content)` on a match. The rewrite is
-/// `"[Skill: name]\n\n{body}"` where `body` is the skill body with `$ARGUMENTS`
-/// / `$ARG_NAME` substituted from the trailing words. The resolved id then flows
-/// through the existing pin chain (`resolve_forced_skill_id` -> active Skill
-/// catalog/prompt injection). Skill activation never changes enabled tools.
+/// matches an enabled skill, prepare its instructions for the system context.
+/// Returns `(skill_id, instructions)` with argument placeholders substituted.
+/// Never replace the user message: its command and task must survive display,
+/// persistence, editing and replay. Skill activation never changes enabled tools.
 ///
 /// `disable_model_invocation` only gates *model* auto-invocation, so it is
 /// intentionally ignored here — an explicit user slash command may still trigger
@@ -54,9 +51,49 @@ pub(super) fn try_apply_skill_slash_trigger(
         );
     }
 
-    let rendered = skills::substitute_arguments(&record.body, args_raw, &record.meta.arguments);
-    let rewritten = format!("[Skill: {}]\n\n{}", record.meta.name, rendered);
-    Some((record.meta.id.clone(), rewritten))
+    let mut rendered = record.clone();
+    rendered.body = skills::substitute_arguments(&record.body, args_raw, &record.meta.arguments);
+    Some((record.meta.id.clone(), skills::activate_skill(&rendered)))
+}
+
+/// Shared by replies (including retries) and context accounting. Explicit slash
+/// instructions are loaded once, independently of the visible user content.
+pub(super) fn resolve_request_skill(
+    registry: &skills::SkillRegistry,
+    chat_tools: &mut crate::settings::ChatToolsConfig,
+    assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
+    content: &str,
+    requested: Option<&str>,
+    obsidian_vault_configured: bool,
+) -> (Option<String>, Option<skills::SkillDetail>) {
+    let slash = try_apply_skill_slash_trigger(
+        registry,
+        chat_tools,
+        assistant_snapshot,
+        content,
+        obsidian_vault_configured,
+    );
+    let id = resolve_forced_skill_id(
+        chat_tools,
+        assistant_snapshot,
+        registry,
+        slash.as_ref().map(|(id, _)| id.as_str()).or(requested),
+        obsidian_vault_configured,
+    );
+    let detail = id
+        .as_deref()
+        .and_then(|id| registry.find(id))
+        .map(|record| skills::SkillDetail {
+            meta: record.meta.clone(),
+            body: slash
+                .as_ref()
+                .map(|(_, body)| body.clone())
+                .unwrap_or_else(|| record.body.clone()),
+        });
+    if slash.is_some() {
+        chat_tools.skill_fallback_mode = "skill_md_only".to_string();
+    }
+    (id, detail)
 }
 
 pub(super) fn resolve_forced_skill_id(

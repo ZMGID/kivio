@@ -8,7 +8,6 @@ use crate::chat::attachments::{
 use crate::chat::storage::{conversation_attachments_dir, load_conversation};
 use crate::chat::Attachment;
 use crate::chat::ChatMessage;
-use crate::skills;
 use crate::state::AppState;
 
 use super::catalog::strip_transcripts_for_frontend;
@@ -20,7 +19,6 @@ use super::context::{
 use super::fan_out::run_reply_fan_out;
 use super::reply_runtime::{resolve_reply_arms, ChatSendReservation, CHAT_REPLY_BUSY_ERROR};
 use super::title::{generate_title, is_placeholder_title};
-use super::tooling::try_apply_skill_slash_trigger;
 
 /// 发送消息
 #[tauri::command]
@@ -49,37 +47,8 @@ pub(crate) async fn chat_send_message(
 
     let mut conversation = load_conversation(&app, &conversation_id)?;
 
-    // Backend slash-trigger preprocessing (承重路径): plain text `/commit msg`
-    // pins the skill and rewrites the body even without the front-end popover
-    // (also covers paste / external API / mobile entry points).
-    // External CLI conversations pass slash commands straight through to the agent.
-    let (content, active_skill_id) = if conversation.agent_runtime.is_external() {
-        (content, active_skill_id)
-    } else {
-        let settings = state.settings_read().clone();
-        let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
-            &app,
-            &conversation,
-            &settings.chat_tools.native_tools.working_directory,
-        )
-        .ok();
-        let registry = skills::build_registry_in(
-            &app,
-            &settings.chat_tools.skill_scan_paths,
-            skill_cwd.as_deref(),
-        )
-        .unwrap_or_default();
-        match try_apply_skill_slash_trigger(
-            &registry,
-            &settings.chat_tools,
-            conversation.assistant_snapshot.as_ref(),
-            &content,
-            crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
-        ) {
-            Some((skill_id, rewritten)) => (rewritten, Some(skill_id)),
-            None => (content, active_skill_id),
-        }
-    };
+    // Keep the user's command and task verbatim. Skill instructions are resolved
+    // in reply preparation, so send, retry and edit all use the same path.
 
     let mut message_attachments = save_message_attachments(&app, &conversation_id, attachments)?;
     // 虚拟文本附件（memory:// 标记、不落盘）：持久化附件记录（含正文，随对话消息保存，

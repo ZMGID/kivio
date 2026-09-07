@@ -42,7 +42,7 @@ use super::resolve_thinking;
 use super::tooling::{
     append_agent_ask_user_tools, append_agent_todo_tools, apply_agent_plan_tool_filter,
     apply_chat_mode_tool_filter, apply_inline_code_request_tool_filter,
-    apply_web_search_mode_tool_filter, list_tools_for_chat, resolve_forced_skill_id,
+    apply_web_search_mode_tool_filter, list_tools_for_chat, resolve_request_skill,
 };
 
 pub(super) async fn complete_assistant_reply(
@@ -375,27 +375,31 @@ pub(super) async fn complete_assistant_reply_inner(
         skill_cwd.as_deref(),
     )
     .unwrap_or_default();
-    let requested_skill_id = active_skill_id.or(conversation.active_skill_id.as_deref());
-    let skill_id = resolve_forced_skill_id(
-        &settings.chat_tools,
-        conversation.assistant_snapshot.as_ref(),
+    let mut effective_chat_tools = settings.chat_tools.clone();
+    // Read the stored text, before attachment/vision augmentation, so those
+    // documents never become slash arguments. This also covers edited retries.
+    let user_content = conversation
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.content.as_str())
+        .unwrap_or_default();
+    let (skill_id, active_skill_detail) = resolve_request_skill(
         &skill_registry,
-        requested_skill_id,
+        &mut effective_chat_tools,
+        conversation.assistant_snapshot.as_ref(),
+        if conversation.agent_runtime.is_chat() {
+            ""
+        } else {
+            user_content
+        },
+        active_skill_id.or(conversation.active_skill_id.as_deref()),
         crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
     );
     if skill_id.is_none() && conversation.active_skill_id.is_some() {
         conversation.active_skill_id = None;
     }
-    let active_skill_detail = skill_id.as_deref().and_then(|id| {
-        skills::read_skill_detail_in(
-            app,
-            &settings.chat_tools.skill_scan_paths,
-            id,
-            skill_cwd.as_deref(),
-        )
-        .ok()
-    });
-    let mut effective_chat_tools = settings.chat_tools.clone();
     if arm.is_some() || probe {
         // 多答 fan-out（决策 D1 注）：N 条并行 run 若各自弹工具审批会产生 N 倍弹窗、
         // 且无法对应到具体列。多模型臂内一律自动批准（静默执行）。单模型保持原审批策略。

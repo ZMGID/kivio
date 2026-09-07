@@ -36,7 +36,7 @@ use super::reply_runtime::resolve_reply_arms;
 use super::sanitization::sanitize_image_payloads_for_model;
 use super::title::{build_title_summary_prompt, generate_title, sanitize_generated_title};
 use super::tooling::{
-    apply_chat_mode_tool_filter, should_answer_inline_without_file_write,
+    apply_chat_mode_tool_filter, resolve_request_skill, should_answer_inline_without_file_write,
     try_apply_skill_slash_trigger,
 };
 use super::*;
@@ -150,7 +150,7 @@ fn slash_skill_registry(record: skills::SkillRecord) -> skills::SkillRegistry {
 }
 
 #[test]
-fn slash_trigger_rewrites_body_and_pins_skill() {
+fn slash_trigger_prepares_instructions_and_pins_skill() {
     let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
     let chat_tools = crate::settings::ChatToolsConfig::default();
 
@@ -159,10 +159,99 @@ fn slash_trigger_rewrites_body_and_pins_skill() {
             .expect("slash trigger should match");
 
     assert_eq!(skill_id, "commit");
-    assert!(rewritten.starts_with("[Skill: Commit]\n\n"));
+    assert!(rewritten.starts_with("<skill_content name=\"Commit\">"));
+    assert!(rewritten.contains("Skill directory:"));
     assert!(rewritten.contains("Write a commit for: fix login"));
     // first positional arg ($MESSAGE) → "fix"
     assert!(rewritten.contains("subject fix"));
+}
+
+#[test]
+fn slash_trigger_keeps_user_task_and_loads_instructions_once() {
+    let mut record = slash_skill_record("frontend-design", "Frontend Design", vec![]);
+    record.body = "Create distinctive interfaces.".to_string();
+    let registry = slash_skill_registry(record);
+    // Re-resolve persisted/edited text for every reply, including no-argument use.
+    for input in [
+        "/frontend-design",
+        "/frontend-design 做一个登录页",
+        "/frontend-design 改成深色",
+    ] {
+        for tools_available in [false, true] {
+            let mut chat_tools = crate::settings::ChatToolsConfig::default();
+            chat_tools.skill_fallback_mode = "progressive".to_string();
+            let (id, detail) = resolve_request_skill(
+                &registry,
+                &mut chat_tools,
+                None,
+                input,
+                Some("another-skill"),
+                false,
+            );
+            assert_eq!(id.as_deref(), Some("frontend-design"));
+            let prompt = agent_prepare::build_chat_system_prompt(
+                "zh-CN",
+                false,
+                false,
+                &registry,
+                &chat_tools,
+                tools_available,
+                &[],
+                id.as_deref(),
+                detail.as_ref(),
+                None,
+                None,
+                "",
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            );
+            assert_eq!(prompt.matches("Create distinctive interfaces.").count(), 1);
+            assert!(!prompt.contains("Activate it with the skill tool"));
+            let conversation = test_conversation_with_messages(vec![test_chat_message(
+                "user-slash",
+                "user",
+                input,
+                1,
+            )]);
+            let stored = serde_json::to_string(&conversation).unwrap();
+            assert!(!stored.contains("Create distinctive interfaces."));
+            let reloaded: Conversation = serde_json::from_str(&stored).unwrap();
+            let messages =
+                build_chat_api_messages(None, &prompt, &reloaded, Some(0), None, &[]).unwrap();
+            assert_eq!(messages[1]["content"], input);
+        }
+    }
+}
+
+#[test]
+fn slash_trigger_resolves_arguments_without_changing_registry_or_other_turns() {
+    let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/ci"]));
+    for (input, expected) in [
+        ("/ci fix login", "fix login"),
+        ("/ci fix logout", "fix logout"),
+    ] {
+        let mut config = crate::settings::ChatToolsConfig::default();
+        let (_, detail) = resolve_request_skill(&registry, &mut config, None, input, None, false);
+        assert!(detail
+            .unwrap()
+            .body
+            .contains(&format!("Write a commit for: {expected}")));
+    }
+    assert!(registry.records[0].body.contains("$ARGUMENTS"));
+    let mut config = crate::settings::ChatToolsConfig::default();
+    config.skill_fallback_mode = "progressive".to_string();
+    let (id, detail) =
+        resolve_request_skill(&registry, &mut config, None, "next task", None, false);
+    assert!(id.is_none() && detail.is_none());
+    assert_eq!(config.skill_fallback_mode, "progressive");
 }
 
 #[test]
@@ -187,6 +276,40 @@ fn slash_trigger_skips_disabled_skill() {
     assert!(
         try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix", false).is_none()
     );
+}
+
+#[test]
+fn slash_trigger_respects_assistant_policy_but_allows_explicit_only_skills() {
+    let mut record = slash_skill_record("commit", "Commit", vec![]);
+    record.meta.disable_model_invocation = true;
+    let registry = slash_skill_registry(record);
+    let mut config = crate::settings::ChatToolsConfig::default();
+    config.skill_fallback_mode = "progressive".to_string();
+    let (id, _) = resolve_request_skill(&registry, &mut config, None, "/commit fix", None, false);
+    assert_eq!(id.as_deref(), Some("commit"));
+
+    let assistant = crate::chat::types::ChatAssistantSnapshot {
+        id: "restricted".to_string(),
+        name: "Restricted".to_string(),
+        description: String::new(),
+        source: "user".to_string(),
+        system_prompt: String::new(),
+        provider_id: String::new(),
+        model: String::new(),
+        mcp_server_ids: vec![],
+        skill_ids: vec![],
+    };
+    config.skill_fallback_mode = "progressive".to_string();
+    let (id, detail) = resolve_request_skill(
+        &registry,
+        &mut config,
+        Some(&assistant),
+        "/commit fix",
+        None,
+        false,
+    );
+    assert!(id.is_none() && detail.is_none());
+    assert_eq!(config.skill_fallback_mode, "progressive");
 }
 
 fn test_provider(id: &str, name: &str, enabled_models: Vec<&str>) -> ModelProvider {

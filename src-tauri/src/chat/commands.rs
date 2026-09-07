@@ -56,11 +56,11 @@ pub(crate) mod mutations;
 
 pub(crate) use interaction::{emit_chat_stream_delta, emit_chat_tool_record};
 pub(crate) use messages::push_assistant_message;
+pub(crate) use tooling::apply_chat_mode_tool_filter;
 use tooling::{
     append_agent_ask_user_tools, append_agent_todo_tools, apply_agent_plan_tool_filter,
-    apply_inline_code_request_tool_filter, list_tools_for_chat, resolve_forced_skill_id,
+    apply_inline_code_request_tool_filter, list_tools_for_chat,
 };
-pub(crate) use tooling::apply_chat_mode_tool_filter;
 
 #[cfg(test)]
 mod tests;

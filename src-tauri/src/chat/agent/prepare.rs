@@ -646,7 +646,13 @@ pub fn build_chat_system_prompt_with_segments(
         let fallback = chat_tools.skill_fallback_mode.as_str();
         if let Some(skill_id) = active_skill_id.filter(|id| !id.trim().is_empty()) {
             let mut skill_prompt = format!("User pinned skill for this message: {skill_id}");
-            if tools_available {
+            if matches!(fallback, "skill_md_only" | "legacy_full_body")
+                && active_skill_detail.is_some_and(|skill| !skill.body.trim().is_empty())
+            {
+                skill_prompt.push_str(
+                    ". Its instructions are already loaded in Active Skill below; follow them without calling the skill tool again.",
+                );
+            } else if tools_available {
                 skill_prompt.push_str(
                     ". Activate it with the skill tool to load its full instructions for this message.",
                 );
