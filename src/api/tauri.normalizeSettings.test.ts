@@ -85,9 +85,10 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings(input).keepChatWindowAlive).toBe(false)
   })
 
-  it('旧设置的回复完成通知默认开启，并保留显式关闭的选择', () => {
-    expect(normalizeSettings(baseSettings()).chatCompletionNotifications).toBe(true)
+  it('旧设置的回复完成通知默认关闭，并保留显式开启或关闭的选择', () => {
+    expect(normalizeSettings(baseSettings()).chatCompletionNotifications).toBe(false)
     expect(normalizeSettings(baseSettings({ chatCompletionNotifications: false })).chatCompletionNotifications).toBe(false)
+    expect(normalizeSettings(baseSettings({ chatCompletionNotifications: true })).chatCompletionNotifications).toBe(true)
   })
 
   it('保留 chat.externalCliAgents（回归：重建 chat 时丢掉 → 供应商列表变空）', () => {

@@ -3235,6 +3235,7 @@ version = "2.9.7"
 dependencies = [
  "arboard",
  "base64 0.22.1",
+ "block2",
  "calamine",
  "chrono",
  "cocoa",
@@ -3254,6 +3255,9 @@ dependencies = [
  "notify",
  "oar-ocr",
  "objc",
+ "objc2",
+ "objc2-foundation",
+ "objc2-user-notifications",
  "objc_exception",
  "ort",
  "pdf-extract",
@@ -4491,6 +4495,18 @@ dependencies = [
  "bitflags 2.13.1",
  "objc2",
  "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
+name = "objc2-user-notifications"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
+dependencies = [
+ "bitflags 2.13.1",
+ "block2",
+ "objc2",
  "objc2-foundation",
 ]
 

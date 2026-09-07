@@ -1102,7 +1102,7 @@ export type Settings = {
   launchMinimizedToTray: boolean
   /** 关闭聊天窗口时隐藏复用（默认 false = 销毁）。下次打开无需重新加载，占用更多内存。 */
   keepChatWindowAlive?: boolean
-  /** 回复完成时发送系统通知，默认开启；正在查看该对话时不提醒。 */
+  /** 回复完成时发送系统通知，默认关闭；开启后正在查看该对话时不提醒。 */
   chatCompletionNotifications?: boolean
   translatorProviderId: string
   translatorModel: string
@@ -1747,7 +1747,7 @@ export function normalizeSettings(settings: Settings): Settings {
     launchAtStartup: current.launchAtStartup ?? false,
     launchMinimizedToTray: current.launchMinimizedToTray ?? false,
     keepChatWindowAlive: current.keepChatWindowAlive ?? false,
-    chatCompletionNotifications: current.chatCompletionNotifications ?? true,
+    chatCompletionNotifications: current.chatCompletionNotifications ?? false,
     translatorProviderId: current.translatorProviderId ?? '',
     translatorModel: current.translatorModel ?? '',
     chatProviderId: effectiveChatModel.providerId,

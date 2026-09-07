@@ -22,6 +22,8 @@ pub mod offline_models;
 pub mod path_env;
 pub mod plugins;
 pub mod proc;
+#[cfg(any(target_os = "macos", test))]
+mod macos_hang_watchdog;
 pub mod prompts;
 pub mod provider_request;
 pub mod provider_oauth;
@@ -520,6 +522,8 @@ pub fn run() {
                     }
                 });
             }
+            #[cfg(target_os = "macos")]
+            macos_hang_watchdog::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

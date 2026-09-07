@@ -1,33 +1,40 @@
 //! Native system notification shared by unattended automations and chat completion.
 //! Failures are logged and never interrupt the originating task.
 
+#[cfg(target_os = "windows")]
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+#[path = "notify_macos.rs"]
+mod macos;
+
 pub(crate) fn show(app: &tauri::AppHandle, title: &str, body: &str) {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let _ = app;
     let title = sanitize_toast_text(title, 80);
     let body = sanitize_toast_text(body, 240);
     #[cfg(target_os = "macos")]
-    macos_notify(&title, &body);
+    macos::show(app, title, body);
     #[cfg(target_os = "windows")]
-    windows_notify(
-        &app.config().identifier,
-        app.config()
+    {
+        let app_id = app.config().identifier.clone();
+        let display_name = app
+            .config()
             .product_name
-            .as_deref()
-            .unwrap_or("Kivio Desktop"),
-        &title,
-        &body,
-    );
+            .clone()
+            .unwrap_or_else(|| "Kivio Desktop".into());
+        tauri::async_runtime::spawn_blocking(move || {
+            windows_notify(&app_id, &display_name, &title, &body);
+        });
+    }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         eprintln!("system notification: {title}: {body}");
     }
 }
 
-/// Collapse control breaks so Windows PowerShell here-strings / AppleScript
-/// literals cannot be closed by interpolated node output.
+/// Collapse control breaks so Windows PowerShell here-strings cannot be closed
+/// by interpolated node output; keep previews single-line on every platform.
 fn sanitize_toast_text(s: &str, max: usize) -> String {
     let collapsed: String = s
         .chars()
@@ -46,23 +53,6 @@ fn truncate(s: &str, max: usize) -> String {
         out.push(ch);
     }
     out
-}
-
-#[cfg(target_os = "macos")]
-fn macos_notify(title: &str, body: &str) {
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        applescript_escape(body),
-        applescript_escape(title)
-    );
-    if let Err(error) = Command::new("osascript").arg("-e").arg(script).spawn() {
-        eprintln!("system notification failed to start: {error}");
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn applescript_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(target_os = "windows")]

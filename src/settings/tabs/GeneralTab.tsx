@@ -252,7 +252,7 @@ export function BehaviorGroup({
       </SettingRow>
       <SettingRow label={t.chatCompletionNotifications} description={t.chatCompletionNotificationsDesc}>
         <Toggle
-          checked={settings.chatCompletionNotifications ?? true}
+          checked={settings.chatCompletionNotifications ?? false}
           onChange={(v) => onUpdateSettings({ chatCompletionNotifications: v })}
           ariaLabel={t.chatCompletionNotifications}
         />

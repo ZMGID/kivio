@@ -112,6 +112,10 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "
 
 # macOS 平台特有依赖（系统 API 调用）
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSError", "NSObject", "NSString"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 cocoa = "0.26"
 objc = "0.2"
 # objc 0.2.7 内部用的就是 objc_exception 0.1：提供裸 @try/@catch（C 层），用于在 FFI 边界拦截

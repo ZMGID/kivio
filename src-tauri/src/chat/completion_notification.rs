@@ -19,9 +19,32 @@ pub(crate) fn notify_reply_completed(
         crate::settings::resolve_chat_language(&settings)
     };
 
-    // Read the live window state at completion time: the user may have switched
-    // apps or conversations while the reply was being generated.
-    if app.webview_windows().values().any(|window| {
+    let (title, body) = completion_copy(&language, &conversation.title, &conversation.messages);
+    let conversation_id = conversation.id.clone();
+    let queued_at = std::time::Instant::now();
+    let handle = app.clone();
+    // Window getters perform a blocking event-loop round trip on worker threads.
+    // Never keep the send reservation / IPC reply waiting for that round trip.
+    // On the main thread Tauri executes these getters directly. No application
+    // locks or borrowed conversation state cross this dispatch boundary.
+    if let Err(error) = app.run_on_main_thread(move || {
+        // Avoid a burst of stale notifications after sleep or an unresponsive UI.
+        if queued_at.elapsed() > std::time::Duration::from_secs(15) {
+            eprintln!("completion notification skipped: main-thread dispatch exceeded 15s");
+            return;
+        }
+        if !is_viewing_conversation(&handle, &conversation_id) {
+            crate::automation::notify::show(&handle, &title, &body);
+        }
+    }) {
+        eprintln!("completion notification dispatch failed: {error}");
+    }
+}
+
+fn is_viewing_conversation(app: &tauri::AppHandle, conversation_id: &str) -> bool {
+    // Read live state when dispatched: the user may have switched apps or
+    // conversations while the reply was being generated.
+    app.webview_windows().values().any(|window| {
         let label = window.label();
         if label != "chat" && !crate::chat::popout::is_popout_label(label) {
             return false;
@@ -33,18 +56,13 @@ pub(crate) fn notify_reply_completed(
             return false;
         }
         if let Some(id) = crate::chat::popout::conversation_id_from_label(label) {
-            return id == conversation.id;
+            return id == conversation_id;
         }
         window
             .url()
             .ok()
-            .is_some_and(|url| route_shows_conversation(url.fragment(), &conversation.id))
-    }) {
-        return;
-    }
-
-    let (title, body) = completion_copy(&language, &conversation.title, &conversation.messages);
-    crate::automation::notify::show(app, &title, &body);
+            .is_some_and(|url| route_shows_conversation(url.fragment(), conversation_id))
+    })
 }
 
 fn is_foreground_window(window: &tauri::WebviewWindow) -> bool {
