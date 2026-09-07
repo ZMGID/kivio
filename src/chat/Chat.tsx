@@ -4159,18 +4159,22 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const conversationId = currentConversationIdRef.current
     if (!conversationId) return
     try {
-      let updated = await mutation(conversationId)
+      const updated = await mutation(conversationId)
       applyConversationIfCurrent(conversationId, updated)
       const goal = updated.goal_state ?? updated.goalState
       if (continueWhenActive && goal && (goal.status === 'active' || goal.status === 'verifying')) {
-        updated = await chatApi.continueGoal(conversationId)
-        applyConversationIfCurrent(conversationId, updated)
+        void chatApi.continueGoal(conversationId).then((result) => {
+          applyConversationIfCurrent(conversationId, result)
+        }).catch((error) => {
+          setStreamErrorForConversation(conversationId, error instanceof Error ? error.message : String(error))
+        })
       }
     } catch (error) {
       setStreamErrorForConversation(
         conversationId,
         typeof error === 'string' ? error : (error as Error).message || 'Goal 操作失败',
       )
+      throw error
     }
   }, [applyConversationIfCurrent, setStreamErrorForConversation])
 

@@ -511,12 +511,13 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     mutation: (id: string) => Promise<Conversation>,
     continueWhenActive = false,
   ) => {
-    let updated = await mutation(conversationId)
+    const updated = await mutation(conversationId)
     setConversation(updated)
     const goal = updated.goal_state ?? updated.goalState
     if (continueWhenActive && goal && (goal.status === 'active' || goal.status === 'verifying')) {
-      updated = await chatApi.continueGoal(conversationId)
-      setConversation(updated)
+      void chatApi.continueGoal(conversationId).then(setConversation).catch((error) => {
+        setStreamCoarse({ streamError: error instanceof Error ? error.message : String(error) })
+      })
     }
   }, [conversationId])
 

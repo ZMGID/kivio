@@ -54,6 +54,13 @@ function openModeMenu(pillLabel: string) {
 }
 
 describe('InputBar 底栏模式胶囊', () => {
+  it('Goal occupies the composer status row and replaces its Todo indicator', () => {
+    render(<InputBar onSend={() => {}} goalSlot={<div data-testid="goal">Goal status</div>}
+      agentTodoState={{ items: [{ id: 'todo', content: 'pending work', status: 'pending' }] }} />)
+    expect(screen.getByTestId('goal').closest('.chat-composer-status')).toBeInTheDocument()
+    expect(screen.queryByText('Todo')).not.toBeInTheDocument()
+  })
+
   it('内置模型会话显示 Act / Goal / Plan / Orchestrate 四档', () => {
     const runtime: AgentRuntimeConfig = { kind: 'builtin' }
     renderComposer(derivePermissionModes({

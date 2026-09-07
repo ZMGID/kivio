@@ -1205,6 +1205,21 @@ pub struct ChatProtocolHub {
 }
 
 impl ChatProtocolHub {
+    /// Read the authoritative, already folded tool records of this exact live run.
+    /// Goal validation must not wait for the assistant's final message to be saved.
+    pub(crate) fn running_snapshot(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        message_id: &str,
+    ) -> Option<&ChatRunSnapshot> {
+        let snapshot = &self.runs.get(run_id)?.snapshot;
+        (snapshot.status == ChatRunStatus::Running
+            && snapshot.conversation_id == conversation_id
+            && snapshot.message_id == message_id)
+            .then_some(snapshot)
+    }
+
     fn prune(&mut self) {
         let now = Instant::now();
         self.runs.retain(|_, run| {

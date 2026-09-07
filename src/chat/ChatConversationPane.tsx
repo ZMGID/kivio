@@ -194,7 +194,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
                 active={showEmptyHero}
               />
               <div className="chat-motion-fade-up" style={{ ['--chat-motion-delay' as string]: '120ms' }}>
-                <InputBar {...inputBarProps} layout="inline" />
+                <InputBar {...inputBarProps} goalSlot={goalSlot} layout="inline" />
               </div>
             </div>
           </div>
@@ -246,8 +246,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
               </div>
             )}
 
-            {goalSlot}
-
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
                 <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} />
@@ -271,7 +269,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
               </div>
             )}
 
-            <InputBar {...inputBarProps} />
+            <InputBar {...inputBarProps} goalSlot={goalSlot} />
           </>
         )}
         {conversationLoading && (

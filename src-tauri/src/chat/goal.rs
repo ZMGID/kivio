@@ -4,12 +4,14 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::chat::model::ModelUsage;
-use crate::chat::types::{Conversation, GoalCriterion, GoalState, GoalStatus, ToolCallStatus};
+use crate::chat::types::{Conversation, GoalCriterion, GoalState, GoalStatus};
 use crate::mcp::native_registry::NativeToolFuture;
 use crate::mcp::registry::NativeToolContext;
 use crate::mcp::types::McpToolCallResult;
 use crate::mcp::ChatToolDefinition;
 use crate::state::AppState;
+
+mod evidence;
 
 pub const GET_GOAL_TOOL: &str = "get_goal";
 pub const INIT_GOAL_CRITERIA_TOOL: &str = "initialize_goal_criteria";
@@ -225,58 +227,6 @@ fn require_current<'a>(
     Ok(goal)
 }
 
-fn invalid_evidence_references(conversation: &Conversation) -> std::collections::HashSet<String> {
-    let mut invalid = std::collections::HashSet::new();
-    let Some(goal) = conversation.goal_state.as_ref() else {
-        return invalid;
-    };
-    for criterion in &goal.criteria {
-        let kind = criterion.evidence_kind.as_deref().unwrap_or("");
-        let reference = criterion.evidence_ref.as_deref().unwrap_or("").trim();
-        let valid = match kind {
-            "tool_result" => {
-                let referenced = conversation
-                    .messages
-                    .iter()
-                    .flat_map(|m| m.tool_calls.iter())
-                    .find(|t| t.id == reference);
-                referenced.is_some_and(|tool| {
-                    if tool.status != ToolCallStatus::Success {
-                        return false;
-                    }
-                    let checked_at = tool.completed_at.or(tool.started_at).unwrap_or(0);
-                    !conversation
-                        .messages
-                        .iter()
-                        .flat_map(|m| m.tool_calls.iter())
-                        .any(|later| {
-                            later.status == ToolCallStatus::Success
-                                && is_mutating_tool(&later.name)
-                                && later.completed_at.or(later.started_at).unwrap_or(0) > checked_at
-                        })
-                })
-            }
-            "source" => reference.starts_with("https://") || reference.starts_with("http://"),
-            "artifact" => conversation.messages.iter().any(|m| {
-                m.artifacts.iter().any(|a| {
-                    a.id.as_deref() == Some(reference)
-                        || a.name == reference
-                        || a.path.as_deref() == Some(reference)
-                })
-            }),
-            "model_self_check" => conversation
-                .messages
-                .iter()
-                .any(|m| m.id == reference && m.role == "assistant"),
-            _ => false,
-        };
-        if !valid {
-            invalid.insert(criterion.id.clone());
-        }
-    }
-    invalid
-}
-
 fn is_mutating_tool(name: &str) -> bool {
     matches!(
         name,
@@ -302,6 +252,14 @@ pub fn handle_conversation_tool_call<'a>(
             return Err("Sub-agents cannot mutate the parent Goal".into());
         }
         let conversation_id = &ctx.conversation_id;
+        let state = app.state::<AppState>();
+        let live = state
+            .chat_protocol
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .running_snapshot(conversation_id, &ctx.run_id, &ctx.message_id)
+            .cloned();
+        let mut validation_errors = Vec::new();
         let persisted = crate::chat::repository::repository(app)
             .mutate(app, conversation_id, |conversation| {
                 match tool_name {
@@ -354,7 +312,7 @@ pub fn handle_conversation_tool_call<'a>(
                             },
                             &ctx.run_id,
                         )?;
-                        let mut changed = false;
+                        let previous_criteria = g.criteria.clone();
                         for ev in a.evidence {
                             let c = g
                                 .criteria
@@ -363,34 +321,37 @@ pub fn handle_conversation_tool_call<'a>(
                                 .ok_or_else(|| format!("Unknown criterion: {}", ev.criterion_id))?;
                             let evidence = ev.summary.trim().to_string();
                             let reference = ev.reference.trim().to_string();
-                            changed |= !c.verified
-                                || c.evidence.as_deref() != Some(evidence.as_str())
-                                || c.evidence_kind.as_deref() != Some(ev.kind.as_str())
-                                || c.evidence_ref.as_deref() != Some(reference.as_str());
-                            c.verified = true;
                             c.evidence = Some(evidence);
                             c.evidence_kind = Some(ev.kind);
                             c.evidence_ref = Some(reference);
                         }
-                        g.status =
-                            if !g.criteria.is_empty() && g.criteria.iter().all(|c| c.verified) {
-                                GoalStatus::Verifying
-                            } else {
-                                GoalStatus::Active
-                            };
                         let summary = a.summary.trim().to_string();
-                        changed |= g.progress_summary.as_deref() != Some(summary.as_str());
                         g.progress_summary = Some(summary);
-                        if changed {
+                        g.updated_at = chrono::Local::now().timestamp();
+                        validation_errors = evidence::refresh(conversation, live.as_ref());
+                        let g = conversation
+                            .goal_state
+                            .as_mut()
+                            .expect("Goal was validated");
+                        let has_new_evidence = g.criteria.iter().any(|criterion| {
+                            criterion.verified
+                                && previous_criteria
+                                    .iter()
+                                    .find(|old| old.id == criterion.id)
+                                    .is_none_or(|old| {
+                                        !old.verified
+                                            || old.evidence_kind != criterion.evidence_kind
+                                            || old.evidence_ref != criterion.evidence_ref
+                                    })
+                        });
+                        if has_new_evidence {
                             g.progress_revision += 1;
                             g.no_progress_runs = 0;
                         }
-                        g.updated_at = chrono::Local::now().timestamp();
                     }
                     COMPLETE_GOAL_TOOL => {
                         let a: SummaryArgs = serde_json::from_value(arguments.clone())
                             .map_err(|e| format!("Invalid arguments: {e}"))?;
-                        let invalid_refs = invalid_evidence_references(conversation);
                         if app
                             .state::<AppState>()
                             .has_goal_user_queue_pending(conversation_id)
@@ -413,29 +374,23 @@ pub fn handle_conversation_tool_call<'a>(
                                 "Initialize acceptance criteria before completing the Goal".into(),
                             );
                         }
-                        let missing: Vec<_> = g
-                            .criteria
-                            .iter()
-                            .filter(|c| {
-                                !c.verified || c.evidence.as_deref().is_none_or(str::is_empty)
-                            })
-                            .map(|c| c.id.clone())
-                            .collect();
-                        if !missing.is_empty() {
-                            return Err(format!("Unverified criteria: {}", missing.join(", ")));
+                        validation_errors = evidence::refresh(conversation, live.as_ref());
+                        if live
+                            .as_ref()
+                            .is_some_and(|run| !run.pending_interactions.is_empty())
+                        {
+                            validation_errors.push(
+                                "Resolve pending user input or approval before completing the Goal"
+                                    .into(),
+                            );
                         }
-                        let invalid: Vec<_> = g
-                            .criteria
-                            .iter()
-                            .filter(|c| invalid_refs.contains(&c.id))
-                            .map(|c| c.id.clone())
-                            .collect();
-                        if !invalid.is_empty() {
-                            return Err(format!(
-                                "Invalid, missing, failed, or stale evidence references: {}",
-                                invalid.join(", ")
-                            ));
+                        if !validation_errors.is_empty() {
+                            return Ok(());
                         }
+                        let g = conversation
+                            .goal_state
+                            .as_mut()
+                            .expect("Goal was validated");
                         g.status = GoalStatus::Completed;
                         g.status_reason = Some(a.summary.trim().into());
                         g.progress_summary = Some(a.summary.trim().into());
@@ -485,7 +440,19 @@ pub fn handle_conversation_tool_call<'a>(
             .map_err(crate::chat::repository::repository_error)?;
         emit_goal_state(app, &persisted);
         let goal = persisted.goal_state.clone().ok_or("No Goal exists")?;
-        Ok(goal_tool_result(&goal, tool_name))
+        let mut result = goal_tool_result(&goal, tool_name);
+        if !validation_errors.is_empty() {
+            // Persist corrected checkboxes even when the completion request is rejected.
+            // Returning Err inside repository::mutate would discard those corrections.
+            result.is_error = tool_name == COMPLETE_GOAL_TOOL;
+            result.content.push_str(&format!(
+                "\nEvidence still required:\n{}",
+                validation_errors.join("\n")
+            ));
+            result.raw["validationErrors"] = serde_json::json!(validation_errors);
+            result.structured_content = Some(result.raw.clone());
+        }
+        Ok(result)
     })
 }
 
