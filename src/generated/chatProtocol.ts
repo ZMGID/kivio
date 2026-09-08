@@ -35,7 +35,7 @@ export type ChatGoalStatus = "active" | "verifying" | "waiting" | "paused" | "bl
 
 export type ChatGoalCriterionPayload = { id: string, text: string, verified: boolean, evidence: string | null, evidenceKind: string | null, evidenceRef: string | null, };
 
-export type ChatGoalStatePayload = { id: string, version: number, objective: string, status: ChatGoalStatus, criteria: Array<ChatGoalCriterionPayload>, statusReason: string | null, progressSummary: string | null, progressRevision: number, activeRunId: string | null, automaticRuns: number, noProgressRuns: number, lastResponseFingerprint: string | null, inputTokens: number | null, outputTokens: number | null, totalTokens: number | null, createdAt: number, updatedAt: number, };
+export type ChatGoalStatePayload = { id: string, version: number, objective: string, status: ChatGoalStatus, criteria: Array<ChatGoalCriterionPayload>, statusReason: string | null, progressSummary: string | null, progressRevision: number, activeRunId: string | null, automaticRuns: number, noProgressRuns: number, lastResponseFingerprint: string | null, inputTokens: number | null, outputTokens: number | null, totalTokens: number | null, createdAt: number, updatedAt: number, completedAt: number | null, completedMessageId: string | null, };
 
 export type ChatCompactionBoundaryPayload = { id: string, sourceUntilMessageId: string, displayAfterMessageId: string | null, tokenEstimateBefore: number, tokenEstimateAfter: number, summaryContent: string, trigger: string, createdAt: number, };
 

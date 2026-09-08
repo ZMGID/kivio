@@ -167,6 +167,7 @@ import { measureChatSurface, onChatPerfProfiler, useChatPerfLongTaskProbe, useCh
 import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
 import { ChatConversationPane } from './ChatConversationPane'
 import { GoalCard } from './GoalCard'
+import { composerGoal } from './goalPresentation'
 import { PopoutOccupiedPlaceholder } from './popout/PopoutOccupiedPlaceholder'
 import { emptyPopoutConversation, stripConversationMessages } from './popout/conversationStub'
 import {
@@ -1188,6 +1189,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     ?? currentConversation?.agentPlanState?.mode
     ?? 'act'
   const currentGoal = currentConversation?.goal_state ?? currentConversation?.goalState
+  const visibleGoal = composerGoal(currentGoal, currentConversation?.messages ?? [])
   const goalActive = !!currentGoal && !['completed', 'cancelled'].includes(currentGoal.status)
   const composerModes = useMemo(
     () => derivePermissionModes({
@@ -5492,9 +5494,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onSelectConversation={handleSelectConversation}
             importedHistoryStale={importedHistoryStale}
             pendingSlot={pendingSlot}
-            goalSlot={currentGoal ? (
+            goalSlot={visibleGoal ? (
               <GoalCard
-                goal={currentGoal}
+                goal={visibleGoal}
                 onEdit={handleEditGoal}
                 onPause={handlePauseGoal}
                 onResume={handleResumeGoal}

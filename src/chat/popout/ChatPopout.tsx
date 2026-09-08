@@ -6,6 +6,7 @@ import { ApprovalCard } from '../ApprovalCard'
 import { AskUserBlock } from '../AskUserBlock'
 import { InputBar } from '../InputBar'
 import { GoalCard } from '../GoalCard'
+import { composerGoal } from '../goalPresentation'
 import { ChatTitlebar } from '../ChatTitlebar'
 import { usesNativeTitlebar } from '../platform'
 import { IconButton } from '../../components/Button'
@@ -125,6 +126,8 @@ function ChatPopoutBody({
   lang: Lang
 }) {
   const session = usePopoutSession(conversationId, lang)
+  const visibleGoal = composerGoal(session.conversation?.goal_state ?? session.conversation?.goalState,
+    session.conversation?.messages ?? [])
   const titlebar = (
     <PopoutTitlebar
       conversation={session.conversation}
@@ -173,9 +176,9 @@ function ChatPopoutBody({
         <MessageList key={conversationId} {...session.messageListProps} />
       </Suspense>
       <PopoutPendingSlot session={session} />
-      <InputBar {...session.inputBarProps} goalSlot={(session.conversation?.goal_state ?? session.conversation?.goalState) && (
+      <InputBar {...session.inputBarProps} goalSlot={visibleGoal && (
         <GoalCard
-          goal={(session.conversation?.goal_state ?? session.conversation?.goalState)!}
+          goal={visibleGoal}
           onEdit={session.editGoal}
           onPause={session.pauseGoal}
           onResume={session.resumeGoal}

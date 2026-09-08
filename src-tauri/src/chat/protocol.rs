@@ -361,6 +361,10 @@ pub struct ChatGoalStatePayload {
     pub last_response_fingerprint: Option<String>,
     pub input_tokens: Option<u64>, pub output_tokens: Option<u64>, pub total_tokens: Option<u64>,
     pub created_at: i64, pub updated_at: i64,
+    #[serde(default)]
+    pub completed_at: Option<i64>,
+    #[serde(default)]
+    pub completed_message_id: Option<String>,
 }
 
 impl From<&crate::chat::GoalState> for ChatGoalStatePayload {
@@ -376,6 +380,7 @@ impl From<&crate::chat::GoalState> for ChatGoalStatePayload {
         no_progress_runs:g.no_progress_runs, last_response_fingerprint:g.last_response_fingerprint.clone(),
         input_tokens:g.input_tokens, output_tokens:g.output_tokens,
         total_tokens:g.total_tokens, created_at:g.created_at, updated_at:g.updated_at,
+        completed_at:g.completed_at, completed_message_id:g.completed_message_id.clone(),
     }}
 }
 

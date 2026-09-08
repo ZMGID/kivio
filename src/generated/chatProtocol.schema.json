@@ -634,6 +634,21 @@
           "minimum": 0,
           "type": "integer"
         },
+        "completedAt": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "completedMessageId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "createdAt": {
           "format": "int64",
           "type": "integer"

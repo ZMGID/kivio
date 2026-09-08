@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from 'vitest'
 import { GoalCard } from './GoalCard'
 
 describe('GoalCard', () => {
+  it('shows a completion timestamp and k tokens with exact usage on hover', () => {
+    const finished = new Date('2026-09-08T01:23:00+08:00')
+    const { container } = render(<GoalCard
+      goal={{ id: 'done', version: 1, objective: '检查商品', status: 'completed', criteria: [],
+        total_tokens: 6485801, completed_at: finished.getTime() / 1000, updated_at: finished.getTime() / 1000 + 600 }}
+      onEdit={vi.fn()} onPause={vi.fn()} onResume={vi.fn()} onCancel={vi.fn()} />)
+    expect(screen.getByText('6485.8k tokens')).toHaveAttribute('title', `${(6485801).toLocaleString()} tokens`)
+    expect(container.querySelector('time')).toHaveAttribute('datetime', finished.toISOString())
+    expect(container.querySelector('time')).toHaveTextContent('完成于')
+  })
+
   it('defaults to collapsed and routes controls without requiring expansion', async () => {
     const pause = vi.fn()
     const cancel = vi.fn()

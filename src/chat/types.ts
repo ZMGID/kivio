@@ -502,6 +502,10 @@ export interface GoalState {
   outputTokens?: number | null
   total_tokens?: number | null
   totalTokens?: number | null
+  completed_at?: number | null
+  completedAt?: number | null
+  completed_message_id?: string | null
+  completedMessageId?: string | null
   created_at?: number
   createdAt?: number
   updated_at?: number

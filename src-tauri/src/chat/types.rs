@@ -282,6 +282,10 @@ pub struct GoalState {
     pub output_tokens: Option<u64>,
     #[serde(default)]
     pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub completed_at: Option<i64>,
+    #[serde(default)]
+    pub completed_message_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

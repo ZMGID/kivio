@@ -78,6 +78,8 @@ pub fn start(conversation: &mut Conversation, objective: &str) -> Result<GoalSta
         input_tokens: None,
         output_tokens: None,
         total_tokens: None,
+        completed_at: None,
+        completed_message_id: None,
         created_at: now,
         updated_at: now,
     };
@@ -392,6 +394,8 @@ pub fn handle_conversation_tool_call<'a>(
                             .as_mut()
                             .expect("Goal was validated");
                         g.status = GoalStatus::Completed;
+                        g.completed_at = Some(chrono::Local::now().timestamp());
+                        g.completed_message_id = Some(ctx.message_id.clone());
                         g.status_reason = Some(a.summary.trim().into());
                         g.progress_summary = Some(a.summary.trim().into());
                         g.updated_at = chrono::Local::now().timestamp();
@@ -712,6 +716,8 @@ pub async fn chat_edit_goal(
         };
         g.status_reason = None;
         g.criteria.clear();
+        g.completed_at = None;
+        g.completed_message_id = None;
         g.active_run_id = None;
         g.no_progress_runs = 0;
         g.last_response_fingerprint = None;
@@ -791,6 +797,26 @@ fn response(mut c: Conversation) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completion_metadata_preserves_old_goals_and_round_trips_through_protocol() {
+        let mut goal: GoalState = serde_json::from_value(serde_json::json!({
+            "id":"g", "version":1, "objective":"Deliver a plan", "status":"completed",
+            "created_at":10, "updated_at":20
+        }))
+        .unwrap();
+        assert_eq!(goal.completed_at, None);
+        assert_eq!(goal.completed_message_id, None);
+        goal.completed_at = Some(18);
+        goal.completed_message_id = Some("result".into());
+        let saved: GoalState =
+            serde_json::from_value(serde_json::to_value(&goal).unwrap()).unwrap();
+        assert_eq!(saved, goal);
+        let event = serde_json::to_value(crate::chat::protocol::ChatGoalStatePayload::from(&saved))
+            .unwrap();
+        assert_eq!(event["completedAt"], 18);
+        assert_eq!(event["completedMessageId"], "result");
+        assert_eq!(event["updatedAt"], 20);
+    }
     #[test]
     fn fingerprint_normalizes_case_and_space() {
         assert_eq!(normalize_fingerprint(" Done!  NOW "), "done now");

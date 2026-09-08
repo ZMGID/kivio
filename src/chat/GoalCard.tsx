@@ -1,6 +1,8 @@
 import { useId, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Circle, CirclePause, CirclePlay, Pencil, Target, X } from 'lucide-react'
 import type { GoalState } from './types'
+import { formatTokens } from '../utils/tokens'
+import { goalCompletedAt } from './goalPresentation'
 
 const evidenceLabels: Record<string, string> = {
   model_self_check: '模型自检', tool_result: '实际检查通过', source: '来源引用', artifact: '产物引用',
@@ -25,6 +27,9 @@ export function GoalCard({ goal, onEdit, onPause, onResume, onCancel }: {
   const running = goal.status === 'active' || goal.status === 'verifying'
   const terminal = goal.status === 'completed' || goal.status === 'cancelled'
   const usage = goal.total_tokens ?? goal.totalTokens
+  const completedAt = goalCompletedAt(goal)
+  const completedDate = completedAt != null && Number.isFinite(completedAt)
+    ? new Date(completedAt * 1000) : null
   const act = async (action: () => void | Promise<void>) => {
     setBusy(true)
     setError('')
@@ -51,7 +56,11 @@ export function GoalCard({ goal, onEdit, onPause, onResume, onCancel }: {
             <span className="font-semibold">Goal</span>
             <span className="shrink-0 rounded-full bg-violet-200/70 px-1.5 py-0.5 text-[10px] dark:bg-violet-300/15">{goal.status}</span>
             {goal.criteria.length > 0 && <span className="shrink-0 whitespace-nowrap text-violet-600 dark:text-violet-300">已验证 {verified}/{goal.criteria.length} 项</span>}
-            {usage != null && <span className="hidden shrink-0 whitespace-nowrap text-violet-500 sm:inline dark:text-violet-300">{usage.toLocaleString()} tokens</span>}
+            {usage != null && <span title={`${usage.toLocaleString()} tokens`} className="hidden shrink-0 whitespace-nowrap text-violet-500 sm:inline dark:text-violet-300">{formatTokens(usage)} tokens</span>}
+            {completedDate && <time dateTime={completedDate.toISOString()} title={completedDate.toLocaleString()}
+              className="shrink-0 whitespace-nowrap text-neutral-500 dark:text-neutral-400">
+              完成于 {completedDate.toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}
+            </time>}
             <span className="min-w-0 flex-1 truncate opacity-75" title={goal.objective}>{goal.objective}</span>
           </button>
           {isEditing && <div className="mt-2" role="group" aria-label="编辑 Goal">
