@@ -22,6 +22,10 @@ it('follows the focused answer and its inner scroll in side-by-side mode', async
   ]} />)
   try {
     await act(async () => { await Promise.resolve() })
+    // Consume the initial outline measurement before installing synthetic geometry.
+    // CI may reach this frame sooner than local runs; changing a DOM mock does not
+    // itself notify the navigator that layout has changed.
+    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) })
     const viewport = view.container.querySelector<HTMLElement>('.chat-scroll-viewport')!
     Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 800 })
     viewport.getBoundingClientRect = () => ({ top: 0, bottom: 800, height: 800 } as DOMRect)
@@ -34,6 +38,7 @@ it('follows the focused answer and its inner scroll in side-by-side mode', async
       root.querySelector<HTMLElement>('h1')!.getBoundingClientRect = () => ({ top: 120 - body.scrollTop } as DOMRect)
       root.querySelector<HTMLElement>('h2')!.getBoundingClientRect = () => ({ top: 900 - body.scrollTop } as DOMRect)
     }
+    fireEvent.scroll(viewport)
     await waitFor(() => expect(screen.getByRole('button', { name: '跳转到：A first' })).toHaveAttribute('aria-current', 'location'))
     const second = view.container.querySelectorAll<HTMLElement>('.chat-message-group-col')[1]
     fireEvent.mouseOver(second)
@@ -68,6 +73,7 @@ it('updates the current heading on scroll in a single-turn conversation', async 
   answer.getBoundingClientRect = () => ({ top: -offset, bottom: 2000-offset, height: 2000 } as DOMRect)
   answer.querySelector<HTMLElement>('h1')!.getBoundingClientRect = () => ({ top: 100-offset } as DOMRect)
   answer.querySelector<HTMLElement>('h2')!.getBoundingClientRect = () => ({ top: 600-offset } as DOMRect)
+  fireEvent.scroll(viewport)
   await waitFor(() => expect(screen.getByRole('button', {name: '跳转到：First'})).toHaveAttribute('aria-current', 'location'))
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)) })
   offset = 500
