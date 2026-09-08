@@ -18,6 +18,7 @@ vi.mock('./platform', () => ({ isMac: false, isWindows: true, usesNativeTitlebar
 vi.mock('./utils', () => ({ isTauriRuntime: () => true }))
 vi.mock('../api/tauri', () => ({
   api: {
+    chatReportNotificationView: vi.fn(async () => {}),
     chatWindowApplyMica: () => hoisted.applyMica(),
     chatWindowSetOpaque: vi.fn(),
     chatTrafficLightCenterY: vi.fn(),

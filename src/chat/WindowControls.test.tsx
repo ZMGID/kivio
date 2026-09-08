@@ -13,7 +13,10 @@ const native = vi.hoisted(() => ({
 vi.mock('./platform', () => ({ isMac: false, isWindows: true, usesNativeTitlebar: false }))
 vi.mock('./utils', () => ({ isTauriRuntime: () => true }))
 vi.mock('./chatWindowEffects', () => ({ syncChatWindowEffect: async () => false }))
-vi.mock('../api/tauri', () => ({ api: { toggleMaximizeWindow: () => native.toggle() } }))
+vi.mock('../api/tauri', () => ({ api: {
+  toggleMaximizeWindow: () => native.toggle(),
+  chatReportNotificationView: vi.fn(async () => {}),
+} }))
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     isMaximized: async () => native.maximized,
