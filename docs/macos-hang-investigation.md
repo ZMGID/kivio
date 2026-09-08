@@ -3,15 +3,16 @@
 ## 已知现象与范围
 
 - 用户确认：卡住的是 Kivio；Windows 正常；问题始于本版或最近一两个版本。
+- 用户补充对照结果：测试者在旧版关闭通知后未再出现卡死。这是通知路径的触发证据，不是修复版已通过实机验证，也尚不能区分窗口查询与原生发送中的具体阻塞点。
 - 尚缺：macOS 版本、触发动作、卡死时线程堆栈。当前开发环境是 Windows，不能把静态排查当作 Mac 实机复现。
 - 对比范围：v2.9.5 → v2.9.6 → v2.9.7，另检查 v2.9.4 → v2.9.5 的弹出窗口变更。
 
 ## 确认的问题与修复
 
-1. `a97aa82c` 在 v2.9.7 加入聊天回复通知；`79b3fc71` 加入同步窗口状态 / URL 查询。Tauri runtime 2.10.0 的 getter 在工作线程上发送主线程消息后执行无超时 `recv()`。通知位于 `complete_assistant_reply` 返回之前，而 `ChatSendReservation` 到发送命令返回才释放。因此通知查询受阻会把回复收尾和下一次发送一起拖住。修复将自有数据复制后投递主线程判断，发送命令不再等待窗口查询；延迟超过 15 秒的通知丢弃。主线程上的 getter 直接执行，不经过跨线程等待。
-2. 原 macOS 发送端使用 `osascript display notification`，不绑定 Kivio 的原生通知身份，不检查退出结果，也不回收 Child。替换为 `UNUserNotificationCenter`：以实际 .app bundle 身份请求授权，授权 / 发送均使用异步回调，记录拒绝和发送错误，不再创建脚本进程。前台 delegate 允许显示其他对话的提醒；正在查看的对话仍由聊天层抑制。
+1. `a97aa82c` 在 v2.9.7 加入聊天回复通知；`79b3fc71` 加入同步窗口状态 / URL 查询。Tauri runtime 2.10.0 的 getter 在工作线程上发送主线程消息后执行无超时 `recv()`。通知位于 `complete_assistant_reply` 返回之前，而 `ChatSendReservation` 到发送命令返回才释放。因此通知查询受阻会把回复收尾和下一次发送一起拖住。第一轮修复将判断投递到主线程，但仍保留原生窗口接口。此次进一步彻底移除通知路径中的窗口状态 / URL 查询：页面在焦点、可见性、路由变化时报告正在查看的对话；原生失焦、隐藏关闭、销毁时清理缓存。回复收尾只读取缓存，设置或缓存锁忙时不等待，不再向主线程投递通知判断。
+2. 原 macOS 发送端使用 `osascript display notification`，不绑定 Kivio 的原生通知身份，不检查退出结果，也不回收 Child。替换为 `UNUserNotificationCenter`：以实际 .app bundle 身份请求授权，授权 / 发送均使用异步回调，记录拒绝和发送错误，不再创建脚本进程。此次将原生调用入口移至独立工作线程，队列上限 16 条，通过 `try_send` 投递，队列满时跳过，排队超过 15 秒则丢弃；系统通知调用阻塞时，回复和 UI 无需等待该线程。Apple 文档允许从任意应用线程使用共享通知中心；授权和发送结果由系统异步回调。前台 delegate 允许显示其他对话的提醒；正在查看的对话仍由聊天层抑制。
 3. 原生通知在未打包的 `tauri dev` / `cargo run` 环境不能冒充已安装的 Kivio。调用通知中心前核对 `.app` 路径及 bundle identifier，避免无 bundle 环境的 Objective-C 异常；开发模式会明确记录跳过原因。通知弹窗必须用打包后的 Mac 应用验证。
-4. Windows 的注册身份、XML 转义、PowerShell 发送内容保留，进程启动移到 blocking pool，避免新的主线程通知判断把 PowerShell 启动搬到 UI 线程。
+4. Windows 的注册身份、XML 转义、PowerShell 发送内容保留，进程启动使用 blocking pool。
 
 ## 其他回归路径的检查结果
 
@@ -45,6 +46,11 @@ macOS 增加独立原生主线程 watchdog：每 5 秒最多投递一个心跳�
 5. 对长对话进行回复收尾、窗口缩放和侧栏 / Dock 展开收起；如果再卡死，以现场堆栈继续定位，不预先认定通知是唯一根因。
 
 ## 本次验证结果
+
+- 本轮 Windows Rust：`scripts/win-cargo-test.ps1 --lib notification` 共 19 项通过，包含工作线程模拟通知服务阻塞 / 队列满、查看状态缓存更新及锁忙不等待测试。
+- 本轮前端：`notificationView`、`tauri.normalizeSettings`、`GeneralTab` 三份测试共 30 项通过，覆盖焦点、隐藏、路由、卸载及 IPC 未返回 / 拒绝；`tsc --noEmit` 和修改组件 / 新模块的 ESLint 检查通过。
+- 本轮 macOS 通知模块及其测试再次通过下述隔离工程的目标平台类型检查，尚未在 Mac 实机执行。
+先前验证记录：
 
 - Windows Rust：`scripts/win-cargo-test.ps1 --lib notification`（16 项）、`--lib automation::notify::tests`（4 项）、`--lib macos_hang_watchdog`（2 项）均通过；去掉重复项共 20 项。其中通知 XML / 注册测试不实际发送通知。
 - 前端：`useChatWidthLayout`、`useLiveRowMeasurement`、`useScrollFollow` 和 `messageListVirtualization` 四份测试共 57 项通过。

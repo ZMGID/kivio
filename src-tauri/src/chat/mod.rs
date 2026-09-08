@@ -4,6 +4,7 @@ pub mod ask_user;
 pub mod attachments;
 pub mod commands;
 mod completion_notification;
+pub(crate) mod notification_viewing;
 pub mod draft_journal;
 pub mod dsml_tools;
 pub mod export;

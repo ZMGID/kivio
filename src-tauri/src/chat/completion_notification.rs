@@ -4,7 +4,6 @@
 
 use crate::chat::{ChatMessage, Conversation};
 use crate::state::AppState;
-use tauri::Manager;
 
 pub(crate) fn notify_reply_completed(
     app: &tauri::AppHandle,
@@ -12,85 +11,25 @@ pub(crate) fn notify_reply_completed(
     conversation: &Conversation,
 ) {
     let language = {
-        let settings = state.settings_read();
+        // Notifications are optional; do not wait behind a settings writer.
+        let settings = match state.settings.try_read() {
+            Ok(settings) => settings,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
         if !settings.chat_completion_notifications {
             return;
         }
         crate::settings::resolve_chat_language(&settings)
     };
 
+    // Never query AppKit / WebKit to decide whether to notify. Even dispatching
+    // getters to the main thread couples this optional feature to the UI loop.
+    if super::notification_viewing::is_viewing(&conversation.id) {
+        return;
+    }
     let (title, body) = completion_copy(&language, &conversation.title, &conversation.messages);
-    let conversation_id = conversation.id.clone();
-    let queued_at = std::time::Instant::now();
-    let handle = app.clone();
-    // Window getters perform a blocking event-loop round trip on worker threads.
-    // Never keep the send reservation / IPC reply waiting for that round trip.
-    // On the main thread Tauri executes these getters directly. No application
-    // locks or borrowed conversation state cross this dispatch boundary.
-    if let Err(error) = app.run_on_main_thread(move || {
-        // Avoid a burst of stale notifications after sleep or an unresponsive UI.
-        if queued_at.elapsed() > std::time::Duration::from_secs(15) {
-            eprintln!("completion notification skipped: main-thread dispatch exceeded 15s");
-            return;
-        }
-        if !is_viewing_conversation(&handle, &conversation_id) {
-            crate::automation::notify::show(&handle, &title, &body);
-        }
-    }) {
-        eprintln!("completion notification dispatch failed: {error}");
-    }
-}
-
-fn is_viewing_conversation(app: &tauri::AppHandle, conversation_id: &str) -> bool {
-    // Read live state when dispatched: the user may have switched apps or
-    // conversations while the reply was being generated.
-    app.webview_windows().values().any(|window| {
-        let label = window.label();
-        if label != "chat" && !crate::chat::popout::is_popout_label(label) {
-            return false;
-        }
-        let focused = is_foreground_window(window);
-        let visible = window.is_visible().unwrap_or(false);
-        let minimized = window.is_minimized().unwrap_or(false);
-        if !is_viewing_window(focused, visible, minimized) {
-            return false;
-        }
-        if let Some(id) = crate::chat::popout::conversation_id_from_label(label) {
-            return id == conversation_id;
-        }
-        window
-            .url()
-            .ok()
-            .is_some_and(|url| route_shows_conversation(url.fragment(), conversation_id))
-    })
-}
-
-fn is_foreground_window(window: &tauri::WebviewWindow) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        // Tauri's Windows is_focused uses GetActiveWindow (thread-local).
-        // GetForegroundWindow answers whether this window is active system-wide.
-        window.hwnd().ok().is_some_and(|hwnd| unsafe {
-            ::windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 == hwnd.0
-        })
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        window.is_focused().unwrap_or(false)
-    }
-}
-
-fn is_viewing_window(focused: bool, visible: bool, minimized: bool) -> bool {
-    focused && visible && !minimized
-}
-
-fn route_shows_conversation(fragment: Option<&str>, conversation_id: &str) -> bool {
-    // Conversation IDs are generated as URL-safe `conv_…` identifiers. Ignore
-    // hash query parameters, matching the frontend's chatRoutes.ts parser.
-    fragment
-        .and_then(|fragment| fragment.split('?').next())
-        .and_then(|route| route.strip_prefix("chat/"))
-        == Some(conversation_id)
+    crate::automation::notify::show(app, &title, &body);
 }
 
 fn completion_copy(
@@ -140,46 +79,13 @@ fn preview(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{completion_copy, is_viewing_window, route_shows_conversation};
+    use super::completion_copy;
 
     fn message(role: &str, content: &str) -> crate::chat::ChatMessage {
         serde_json::from_value(serde_json::json!({
             "id": role, "role": role, "content": content, "timestamp": 0
         }))
         .unwrap()
-    }
-
-    #[test]
-    fn only_a_visible_focused_non_minimized_window_suppresses_notifications() {
-        assert!(is_viewing_window(true, true, false));
-        assert!(!is_viewing_window(false, true, false)); // Another app is active.
-        assert!(!is_viewing_window(true, false, false)); // Hidden keep-alive window.
-        assert!(!is_viewing_window(true, true, true)); // Minimized window.
-    }
-
-    #[test]
-    fn suppresses_only_the_conversation_being_viewed() {
-        assert!(route_shows_conversation(
-            Some("chat/conv_current"),
-            "conv_current"
-        ));
-        assert!(route_shows_conversation(
-            Some("chat/conv_current?mode=chat"),
-            "conv_current"
-        ));
-        for route in [
-            None,
-            Some("chat"),
-            Some("chat/conv_other"),
-            Some("chat/conv_current_more"),
-            Some("chat/settings?tab=general"),
-            Some("chat/popout/conv_current"),
-        ] {
-            assert!(
-                !route_shows_conversation(route, "conv_current"),
-                "{route:?}"
-            );
-        }
     }
 
     #[test]

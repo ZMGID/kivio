@@ -8,6 +8,24 @@ use std::process::Command;
 #[path = "notify_macos.rs"]
 mod macos;
 
+/// One isolated, bounded worker: a stuck OS notification service must not
+/// consume Tokio workers, block the UI, or create a thread per reply.
+#[cfg(any(target_os = "macos", test))]
+fn start_notification_worker<T: Send + 'static>(
+    capacity: usize,
+    mut deliver: impl FnMut(T) + Send + 'static,
+) -> std::io::Result<std::sync::mpsc::SyncSender<T>> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(capacity);
+    std::thread::Builder::new()
+        .name("kivio-notifications".into())
+        .spawn(move || {
+            while let Ok(message) = rx.recv() {
+                deliver(message);
+            }
+        })?;
+    Ok(tx)
+}
+
 pub(crate) fn show(app: &tauri::AppHandle, title: &str, body: &str) {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let _ = app;
@@ -149,6 +167,38 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::sanitize_toast_text;
+
+    #[test]
+    fn stalled_notification_service_never_blocks_producers_and_queue_is_bounded() {
+        use std::sync::mpsc::{channel, TrySendError};
+        use std::time::Duration;
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let (delivered_tx, delivered_rx) = channel();
+        let sender = super::start_notification_worker(1, move |value| {
+            if value == 1 {
+                entered_tx.send(()).unwrap();
+                // Simulate an OS service that does not return until released.
+                release_rx.recv().unwrap();
+            }
+            delivered_tx.send(value).unwrap();
+        })
+        .unwrap();
+        sender.try_send(1).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        sender.try_send(2).unwrap();
+        let overflow = sender.try_send(3);
+        release_tx.send(()).unwrap();
+        assert!(matches!(overflow, Err(TrySendError::Full(3))));
+        assert_eq!(
+            delivered_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            1
+        );
+        assert_eq!(
+            delivered_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            2
+        );
+    }
 
     #[cfg(target_os = "windows")]
     use super::windows_script;

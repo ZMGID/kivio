@@ -2075,6 +2075,8 @@ export const api = {
   /** macOS 交通灯中心距内容顶缘的真实距离（CSS px）。取不到返回 null，前端退回默认值。 */
   chatTrafficLightCenterY: (): Promise<number | null> =>
     invoke('chat_traffic_light_center_y'),
+  chatReportNotificationView: (route: string, viewing: boolean): Promise<void> =>
+    invoke('chat_report_notification_view', { route, viewing }),
   resizeWindow: async (width: number, height: number) => {
     const win = getCurrentWindow()
     await win.setSize(new LogicalSize(width, height))

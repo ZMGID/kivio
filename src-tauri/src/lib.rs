@@ -171,6 +171,7 @@ pub fn run() {
                         .keep_chat_window_alive;
                     if keep_alive {
                         api.prevent_close();
+                        chat::notification_viewing::clear_window(window.label());
                         hide_chat_window(window.app_handle(), window);
                     }
                     return;
@@ -209,6 +210,9 @@ pub fn run() {
                     return;
                 }
             }
+            tauri::WindowEvent::Focused(false) => {
+                chat::notification_viewing::clear_window(window.label());
+            }
             tauri::WindowEvent::Focused(true) =>
             {
                 #[cfg(target_os = "macos")]
@@ -222,6 +226,7 @@ pub fn run() {
             }
             tauri::WindowEvent::Destroyed => {
                 let label = window.label();
+                chat::notification_viewing::clear_window(label);
                 if crate::chat::popout::is_popout_label(label) {
                     crate::chat::popout::on_popout_destroyed(window.app_handle(), label);
                 } else if label == "chat" {
@@ -540,6 +545,7 @@ pub fn run() {
             windows::chat_window_apply_mica,
             windows::chat_window_set_opaque,
             windows::chat_traffic_light_center_y,
+            chat::notification_viewing::chat_report_notification_view,
             windows::chat_remember_last_route,
             fonts::list_system_fonts,
             commands::get_default_prompt_templates,

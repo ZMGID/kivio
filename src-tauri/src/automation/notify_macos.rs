@@ -1,5 +1,5 @@
 //! Native notifications belong to Kivio's bundle, not osascript / Script Editor.
-//! Authorization and delivery use callbacks; never wait for them on the UI thread.
+//! Start native delivery on a bounded worker; Apple completes it asynchronously.
 
 use block2::{DynBlock, RcBlock};
 use objc2::{
@@ -13,6 +13,10 @@ use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
     UNNotificationPresentationOptions, UNNotificationRequest, UNUserNotificationCenter,
     UNUserNotificationCenterDelegate,
+};
+use std::{
+    sync::{mpsc::SyncSender, OnceLock},
+    time::{Duration, Instant},
 };
 
 define_class!(
@@ -41,7 +45,7 @@ define_class!(
 );
 
 thread_local! {
-    // UNUserNotificationCenter.delegate is weak. Retain it for the main thread's
+    // UNUserNotificationCenter.delegate is weak. Retain it for the worker thread's
     // lifetime, otherwise foreground notifications silently disappear again.
     static DELEGATE: Retained<KivioNotificationDelegate> = unsafe {
         msg_send![KivioNotificationDelegate::class(), new]
@@ -49,10 +53,39 @@ thread_local! {
 }
 
 pub(super) fn show(app: &tauri::AppHandle, title: String, body: String) {
-    let identifier = app.config().identifier.clone();
-    if let Err(error) = app.run_on_main_thread(move || show_native(&identifier, title, body)) {
-        eprintln!("macOS notification dispatch failed: {error}");
+    static WORKER: OnceLock<Option<SyncSender<PendingNotification>>> = OnceLock::new();
+    let worker = WORKER.get_or_init(|| {
+        super::start_notification_worker(16, |message: PendingNotification| {
+            if message.queued_at.elapsed() > Duration::from_secs(15) {
+                eprintln!("macOS notification skipped: expired in delivery queue");
+                return;
+            }
+            objc2::rc::autoreleasepool(|_| {
+                show_native(&message.identifier, message.title, message.body);
+            });
+        })
+        .map_err(|error| eprintln!("macOS notification worker failed to start: {error}"))
+        .ok()
+    });
+    if let Some(worker) = worker {
+        let message = PendingNotification {
+            identifier: app.config().identifier.clone(),
+            title,
+            body,
+            queued_at: Instant::now(),
+        };
+        // Never wait if usernoted is stuck or the notification queue is full.
+        if worker.try_send(message).is_err() {
+            eprintln!("macOS notification skipped: worker unavailable or queue full");
+        }
     }
+}
+
+struct PendingNotification {
+    identifier: String,
+    title: String,
+    body: String,
+    queued_at: Instant,
 }
 
 fn show_native(identifier: &str, title: String, body: String) {
