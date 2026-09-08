@@ -988,9 +988,9 @@ function MessageListBase({
     (count, node) => count + (node.kind === 'turn' ? 1 : 0),
     0,
   )
-  // 滚动回调里读，走 ref：导航器没渲染（< 2 轮）就别做整列表测量。
+  // 标题目录在第一轮即可出现，也需要滚动同步；两个导航器都没有时才跳过测量。
   const navigatorEnabledRef = useRef(false)
-  navigatorEnabledRef.current = navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS
+  navigatorEnabledRef.current = navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS || outlineSources.size > 0
 
   const updateActiveNavigatorNode = useCallback((nodeId: string | null) => {
     if (activeNavigatorNodeIdRef.current === nodeId) return

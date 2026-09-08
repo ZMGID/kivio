@@ -1190,7 +1190,12 @@ const MarkdownDocument = memo(function MarkdownDocument({
     let frame: number | null = null
     let published = false
     const apply = () => {
-      const headings = root.querySelectorAll<HTMLElement>('h1, h2, h3')
+      // Match the outline parser's root-only heading policy. Nested headings
+      // and empty headings must not shift every subsequent anchor by one.
+      const headings = [...root.querySelectorAll<HTMLElement>('h1, h2, h3')].filter((heading) => (
+        !heading.closest('blockquote, li, details')
+        && (heading.textContent?.trim() || [...heading.querySelectorAll('img')].some((image) => image.alt.trim()))
+      ))
       if (headings.length < outlineItems.length) return
       outlineItems.forEach((item, index) => {
         const heading = headings[index]
