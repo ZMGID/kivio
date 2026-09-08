@@ -1121,6 +1121,10 @@ function MessageListBase({
     const el = scrollRef.current
     const heading = contentEl?.querySelector(`#${CSS.escape(anchorId)}`) as HTMLElement | null
     if (!heading || !el) return false
+    const column = heading.closest<HTMLElement>('.chat-message-group-col-body')
+    if (column) {
+      column.scrollTop += heading.getBoundingClientRect().top - column.getBoundingClientRect().top - HEADING_NAVIGATOR_TOP_INSET_PX
+    }
     const nextOffset = Math.max(
       0,
       heading.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - HEADING_NAVIGATOR_TOP_INSET_PX,
@@ -1166,10 +1170,20 @@ function MessageListBase({
     if (!(height > 0)) {
       return { ready: false as const, height: 0, offsetPx: Number.POSITIVE_INFINITY }
     }
+    const headingTarget = headingNavigationTargetRef.current
+    const heading = headingTarget?.targetIndex === targetRenderIndex
+      ? row.querySelector<HTMLElement>(`#${CSS.escape(headingTarget.anchorId)}`)
+      : null
+    // Heading jumps settle at the heading, rather than waiting for the whole
+    // answer's top to align (which never happens for a heading midway down it).
+    const desiredOffset = heading
+      ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight,
+        heading.getBoundingClientRect().top - viewportRect.top + el.scrollTop - HEADING_NAVIGATOR_TOP_INSET_PX))
+      : null
     return {
       ready: true as const,
       height,
-      offsetPx: Math.abs(rowRect.top - viewportRect.top),
+      offsetPx: desiredOffset == null ? Math.abs(rowRect.top - viewportRect.top) : Math.abs(el.scrollTop - desiredOffset),
     }
   }, [contentEl, rowHasPendingMedia])
 
@@ -1585,10 +1599,14 @@ function MessageListBase({
       return
     }
     const items = outlineItemsByOwner.get(ownerMessageId) ?? []
+    const column = target.closest<HTMLElement>('.chat-message-group-col-body')
+    const headingReadingY = column
+      ? column.getBoundingClientRect().top + column.clientHeight * 0.3
+      : readingY
     let active: MarkdownHeadingOutlineItem | null = null
     for (const item of items) {
       const heading = target.querySelector(`#${CSS.escape(item.anchorId)}`) as HTMLElement | null
-      if (heading && heading.getBoundingClientRect().top <= readingY) active = item
+      if (heading && heading.getBoundingClientRect().top <= headingReadingY) active = item
     }
     active ??= items[0] ?? null
     setActiveOutlineAnchorId((current) => current === active?.anchorId ? current : active?.anchorId ?? null)
@@ -2108,6 +2126,12 @@ function MessageListBase({
         onContextMenu={handleContextMenu}
         onClickCapture={handleDisclosureClick}
         onScroll={handleNavigatorScroll}
+        onScrollCapture={(event) => {
+          if (event.target !== event.currentTarget) scheduleNavigatorSync()
+        }}
+        onMouseOverCapture={(event) => {
+          if (event.target instanceof Element && event.target.closest('.chat-message-group-col')) scheduleNavigatorSync()
+        }}
         className={`chat-scroll-viewport chat-motion-view-in custom-scrollbar flex-1 overflow-y-auto ${navigatorLockActive ? 'is-navigator-locking' : ''}`}
 
 

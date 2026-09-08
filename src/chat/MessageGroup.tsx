@@ -133,7 +133,7 @@ function GroupColumnView({
     <div
       onMouseEnter={onMouseEnter}
       className={wrapperClass}
-      data-chat-message-group-focused={isFocused ? 'true' : undefined}
+      data-chat-message-group-focused={isFocused ? 'true' : 'false'}
     >
       {showColumnChrome && (
         <div className="mb-1 flex items-center justify-between gap-2">
