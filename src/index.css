@@ -712,6 +712,21 @@ html.windows body {
   contain: layout paint;
 }
 
+/* 原 max-w-4xl (56rem) 扣掉两侧 px-6：单条消息与每个模型共用阅读上限。 */
+.chat-reading-content {
+  width: 100%;
+  max-width: 53rem;
+  margin-inline: auto;
+}
+
+.chat-message-group-wrap[data-view-mode='columns'] {
+  max-width: calc(var(--chat-group-columns) * (53rem + 0.75rem) - 0.75rem);
+}
+
+.chat-message-group-col {
+  max-width: 53rem;
+}
+
 /* 聊天滚动容器禁用浏览器 overflow-anchor：上方行测高时浏览器会偷偷改 scrollTop，
    和导航跳转的 paint 前钉住打架，表现为落地后上下抽一下。 */
 .chat-scroll-viewport {
@@ -1534,6 +1549,16 @@ button.chat-composer-status-item:hover {
     padding-right: 3.25rem;
   }
   .has-heading-navigator .chat-message-list-inner {
+    padding-left: 3.25rem;
+  }
+}
+
+/* 并排区域在宽屏也会延伸到边缘，为两侧导航器保留空间。 */
+@container chat-main (min-width: 1000px) {
+  .has-message-navigator .chat-message-list-inner--wide {
+    padding-right: 3.25rem;
+  }
+  .has-heading-navigator .chat-message-list-inner--wide {
     padding-left: 3.25rem;
   }
 }

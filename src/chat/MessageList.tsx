@@ -12,6 +12,7 @@ import type { AgentPlanState, ChatMessage, ConversationContextState, DegradedAns
 import { MessageBubble } from './MessageBubble'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { MessageGroup } from './MessageGroup'
+import { useMultiAnswerViewMode } from './multiAnswerViewMode'
 import { MessageNavigator } from './ChatMessageNavigator'
 import { ChatHeadingOutline } from './ChatHeadingOutline'
 import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
@@ -737,7 +738,10 @@ function MessageListBase({
     return { kind: 'error', key: 'error', text: error, retryMessageId }
   }, [error, messages])
 
-  const layoutKey = `${conversationId ?? 'empty'}:${contentWidth}`
+  const [multiAnswerViewMode] = useMultiAnswerViewMode()
+  const hasWideGroups = multiAnswerViewMode === 'columns'
+    && (Boolean(liveGroup) || historyItems.some((item) => item.kind === 'group'))
+  const layoutKey = `${conversationId ?? 'empty'}:${contentWidth}:${multiAnswerViewMode}`
   const { liveRowRef, getLiveRowSize, measureRow } = useLiveRowMeasurement(layoutKey, liveRowKey)
   const measurementRevision = useMemo(
     () => historyItems.map(measurementKey).join('|'),
@@ -781,7 +785,8 @@ function MessageListBase({
         })
         height += estimateMessageRenderHeight({
           texts,
-          width: contentWidth,
+          // Ordinary replies keep their reading width even when a group widens the list.
+          width: Math.min(contentWidth, 848),
           toolCallCount: toolCalls.length,
           attachmentCount: (message.attachments ?? []).length,
           artifactCount,
@@ -2087,16 +2092,20 @@ function MessageListBase({
           className={virtualItem ? 'absolute left-0 top-0 w-full pb-0.5' : 'w-full pb-0.5'}
           style={virtualItem ? { transform: `translateY(${virtualItem.start}px)` } : undefined}
         >
-          {renderItem(item)}
+          {item.kind === 'group' || item.kind === 'live-group'
+            ? renderItem(item)
+            : <div className="chat-reading-content">{renderItem(item)}</div>}
         </div>
       ))}
       {errorItem && (
-        <div className="pb-0.5" data-chat-message-list-item={errorItem.kind}>
+        <div className="chat-reading-content pb-0.5" data-chat-message-list-item={errorItem.kind}>
           {renderItem(errorItem)}
         </div>
       )}
       {(messages.length > 0 || streaming) && (
-        <StreamStatusLine active={streaming && !streamFrozen && !liveGroup} />
+        <div className="chat-reading-content">
+          <StreamStatusLine active={streaming && !streamFrozen && !liveGroup} />
+        </div>
       )}
       <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
     </div>
@@ -2136,7 +2145,7 @@ function MessageListBase({
 
 
       >
-        <div ref={setContentEl} className="chat-message-list-inner mx-auto w-full max-w-4xl px-6">
+        <div ref={setContentEl} className={`chat-message-list-inner mx-auto w-full px-6 ${hasWideGroups ? 'chat-message-list-inner--wide' : 'max-w-4xl'}`}>
           <div data-chat-rows-root className="relative w-full">
             <div aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
             <div data-chat-message-list-item="tail" className="w-full pb-0.5">
