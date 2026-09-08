@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import {
   ArrowRight,
@@ -39,6 +40,7 @@ interface DraftAnswer {
 }
 
 interface ParsedAskUser {
+  async?: boolean
   title: string
   phase: AskUserPhase | string
   questions: AskUserQuestion[]
@@ -157,6 +159,7 @@ function parseAskUser(toolCall: ToolCallRecord): ParsedAskUser | null {
     const questions = normalizeQuestions(askUser.questions)
     if (questions.length > 0) {
       return {
+        async: askUser.async === true,
         title: typeof askUser.title === 'string' && askUser.title.trim()
           ? askUser.title.trim()
           : '需要确认',
@@ -271,6 +274,7 @@ function preventMouseFocus(event: ReactMouseEvent<HTMLButtonElement>) {
 }
 
 export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUserBlockProps) {
+  const asyncQuestions = useContext(AsyncQuestionsContext)
   const parsed = useMemo(() => parseAskUser(toolCall), [toolCall])
   const parsedRef = useRef(parsed)
   parsedRef.current = parsed
@@ -331,7 +335,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
 
   // 消息流里的痕迹：待答时只留一行。整张可作答的卡片吊在输入框上方（docked），
   // 两处都渲染整张会出现两个能点的副本、焦点也会打架。
-  if (!docked && parsed.phase === 'awaiting') {
+  if (!docked && parsed.phase === 'awaiting' && !parsed.async) {
     return (
       <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[11.5px] leading-5 text-neutral-400 dark:text-neutral-500">
         <MessageSquareMore size={12} strokeWidth={1.9} className="shrink-0" />
@@ -341,6 +345,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   }
 
   const awaiting = parsed.phase === 'awaiting'
+    && (!parsed.async || Boolean(asyncQuestions && !asyncQuestions.closedIds.has(toolCall.id)))
   const currentQuestion = parsed.questions[visibleIndex]
   const currentAnswer = currentQuestion
     ? draft[currentQuestion.id] ?? { selectedOptionIds: [], customText: '' }
@@ -455,7 +460,18 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
           },
         ]
       }))
-      await api.chatSubmitUserChoice(toolCallId, answers, skipped)
+      if (parsed.async) {
+        if (!asyncQuestions) throw new Error('当前视图无法发送答复')
+        const text = parsed.questions.map((question) => {
+          const answer = answers[question.id]
+          const labels = answer.selected_option_ids.map((id) => optionLabel(question, id))
+          if (answer.custom_text) labels.push(answer.custom_text)
+          return `${question.prompt}\n${labels.join('；')}`
+        }).join('\n\n')
+        await asyncQuestions.reply(toolCall.id, skipped ? null : text)
+      } else {
+        await api.chatSubmitUserChoice(toolCallId, answers, skipped)
+      }
       // 后端没有「已答复」事件（`resolve_user_prompt` 只清重放快照），所以由这里通知宿主
       // 收起面板。答复成功才收 —— 失败要把错误留在面板上让用户重试。
       onResolved?.()
@@ -527,7 +543,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
               <X size={14} strokeWidth={2} />
             </IconButton>
           ) : (
-            <span className={`text-[11px] ${phaseTone(parsed.phase)}`}>{phaseLabel(parsed.phase)}</span>
+            <span className={`text-[11px] ${phaseTone(parsed.phase)}`}>{parsed.async ? '已收起' : phaseLabel(parsed.phase)}</span>
           )}
         </div>
       </div>
@@ -660,7 +676,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                   {question.prompt}
                 </div>
                 <div className="mt-0.5 break-words text-[12px] leading-5 text-neutral-500 dark:text-neutral-400">
-                  {readonlySummary(question, parsed.answers[question.id])}
+                  {parsed.async ? '此问题已收起' : readonlySummary(question, parsed.answers[question.id])}
                 </div>
               </div>
             ))}

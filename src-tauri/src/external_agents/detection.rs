@@ -1019,6 +1019,7 @@ pub async fn detect_single_agent(def: &RuntimeAgentDef, cwd: &Path) -> DetectedA
 /// Agents without a meaningful sandbox flag return an empty list (no capsule shown).
 pub fn sandbox_options_for(agent_id: &str) -> Vec<RuntimeModelOption> {
     let pairs: &[(&str, &str)] = match agent_id {
+        "grok" => &[("ask", "工具请求时确认"), ("full", "完全放行 (默认)")],
         "antigravity" => &[
             ("default", "遵循 CLI 配置"),
             ("plan", "计划"),
@@ -1215,6 +1216,23 @@ async fn probe_models(
         };
     }
 
+    if def.id == "pi" {
+        if let Some(probe) = crate::external_agents::session::pi_rpc::detect_pi_models(
+            bin,
+            cwd,
+            def.list_models_timeout_secs.unwrap_or(20),
+        )
+        .await
+        {
+            return Ok(probe_ok(
+                probe.models,
+                probe.current_model,
+                probe.current_reasoning,
+                Vec::new(),
+                probe.reasoning_by_model,
+            ));
+        }
+    }
     let args = def
         .list_models_args
         .ok_or_else(|| "该 CLI 未配置列模型命令".to_string())?;
@@ -1246,7 +1264,7 @@ async fn probe_models(
             .map(|models| {
                 // `thinking no` 的模型给空档位表 → 前端隐藏 effort 胶囊（pi 对无思考
                 // 模型的 get_available_thinking_levels 也只回 ["off"]，给档位是骗人）。
-                // `thinking yes` 不建表，回落 def 静态档位（off..xhigh 全档）。
+                // RPC 不可用时保留旧表格路径；`thinking yes` 只能回落静态档位。
                 let reasoning_by_model: HashMap<String, Vec<RuntimeModelOption>> =
                     crate::external_agents::session::pi_rpc::parse_pi_model_thinking(text.as_ref())
                         .into_iter()

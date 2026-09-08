@@ -22,7 +22,7 @@ use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext, Runtime
 /// 这里 id / label 与 cc-gui 字面一致；Kivio 额外在列表头保留 `default`（Auto / 不传
 /// `--model`），这是本应用胶囊语义，cc-gui 没有这一行。
 const CLAUDE_BUILTIN_TIERS: &[(&str, &str)] = &[
-    ("claude-fable-5", "Fable 5"),
+    ("claude-fable-5-1", "Fable 5.1"),
     ("claude-opus-5", "Opus 5"),
     ("claude-sonnet-5", "Sonnet 5"),
     ("claude-haiku-4-5-20251001", "Haiku 4.5"),
@@ -378,7 +378,10 @@ pub fn resolve_claude_cli_model(selected: &str) -> String {
         return selected.to_string();
     }
     // 只对 builtin catalog id 做家族映射；用户手填 / 旧会话里的自定义 id 原样透传。
-    let is_catalog = CLAUDE_BUILTIN_TIERS.iter().any(|(id, _)| *id == selected);
+    // Existing conversations may still store the previous Fable tier. Preserve its
+    // provider override semantics even though the picker now offers Fable 5.1.
+    let is_catalog = selected == "claude-fable-5"
+        || CLAUDE_BUILTIN_TIERS.iter().any(|(id, _)| *id == selected);
     if !is_catalog {
         return selected.to_string();
     }
@@ -435,7 +438,7 @@ pub fn map_claude_config_to_catalog_id(raw: &str) -> Option<String> {
     }
     // Bare aliases + concrete ids → current curated tier.
     match claude_model_family_key(raw) {
-        Some("fable") => Some("claude-fable-5".to_string()),
+        Some("fable") => Some("claude-fable-5-1".to_string()),
         Some("opus") => Some("claude-opus-5".to_string()),
         Some("sonnet") => Some("claude-sonnet-5".to_string()),
         Some("haiku") => Some("claude-haiku-4-5-20251001".to_string()),
@@ -641,12 +644,25 @@ mod tests {
 
     #[test]
     fn builtin_catalog_matches_cc_gui() {
+        assert_eq!(
+            &crate::external_agents::defs::claude::CLAUDE_AGENT_DEF.fallback_models[1..],
+            CLAUDE_BUILTIN_TIERS,
+            "fallback and configured model catalogs must stay aligned",
+        );
+        assert_eq!(
+            map_claude_config_to_catalog_id("fable").as_deref(),
+            Some("claude-fable-5-1")
+        );
+        assert_eq!(
+            map_claude_config_to_catalog_id("claude-fable-5-1").as_deref(),
+            Some("claude-fable-5-1")
+        );
         // 与 desktop-cc-gui `get_builtin_claude_models` 字面一致。
         assert_eq!(CLAUDE_BUILTIN_TIERS.len(), 4);
         assert_eq!(
             CLAUDE_BUILTIN_TIERS,
             &[
-                ("claude-fable-5", "Fable 5"),
+                ("claude-fable-5-1", "Fable 5.1"),
                 ("claude-opus-5", "Opus 5"),
                 ("claude-sonnet-5", "Sonnet 5"),
                 ("claude-haiku-4-5-20251001", "Haiku 4.5"),
@@ -773,7 +789,7 @@ mod tests {
 
         let (models, _) = build_claude_model_catalog();
         // tier id 稳定；label 变成映射后的 runtime id（cc-gui 同款）。
-        let fable = models.iter().find(|m| m.id == "claude-fable-5").unwrap();
+        let fable = models.iter().find(|m| m.id == "claude-fable-5-1").unwrap();
         assert_eq!(fable.label, "kimi-k3");
         let opus = models.iter().find(|m| m.id == "claude-opus-5").unwrap();
         assert_eq!(opus.label, "MiniMax-M4[1m]");
@@ -795,6 +811,7 @@ mod tests {
 
         // 传给 CLI 的是 runtime，不是 catalog id。
         assert_eq!(resolve_claude_cli_model("claude-fable-5"), "kimi-k3");
+        assert_eq!(resolve_claude_cli_model("claude-fable-5-1"), "kimi-k3");
         assert_eq!(resolve_claude_cli_model("claude-sonnet-5"), "GLM-5.1");
         assert_eq!(resolve_claude_cli_model("claude-opus-5"), "MiniMax-M4[1m]");
         // 非 catalog id 原样透传。

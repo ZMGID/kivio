@@ -536,6 +536,7 @@ pub(crate) async fn run_external_cli_reply_in(
         auto_allow_tools: std::sync::atomic::AtomicBool::new(
             permission_mode_from_args(&args)
                 .is_some_and(crate::external_agents::defs::claude::claude_mode_auto_allows_tools)
+                || (agent_id == "grok" && args.iter().any(|arg| arg == "--always-approve"))
                 || crate::external_agents::ask_user::auto_allow_ordinary_tools(&agent_id),
         ),
     });
@@ -1355,7 +1356,13 @@ fn launch_config_for_turn(
     }
     if matches!(protocol, StreamFormat::AcpJsonRpc) {
         return LaunchConfig {
-            flags: additional_dirs_key.to_string(),
+            // Grok's ask mode removes the process-bound --always-approve flag.
+            // A live full-access process must be relaunched before this choice can apply.
+            flags: if sandbox == Some("ask") {
+                serde_json::json!(["ask", additional_dirs_key]).to_string()
+            } else {
+                additional_dirs_key.to_string()
+            },
             instructions: None,
         };
     }
@@ -1594,7 +1601,9 @@ fn turn_asks_for_permission(args: &[String]) -> bool {
 /// 没有这条 flag 的 CLI（dsh 的 `session/ask`）靠 `ask_user::needs_host` —— 加了
 /// codec 就会开通道。
 fn turn_needs_approval_host(args: &[String], agent_id: &str) -> bool {
-    turn_asks_for_permission(args) || crate::external_agents::ask_user::needs_host(agent_id)
+    turn_asks_for_permission(args)
+        || agent_id == "grok"
+        || crate::external_agents::ask_user::needs_host(agent_id)
 }
 
 /// 本轮 argv 里的权限档位（`--permission-mode` 的值）。
@@ -3996,6 +4005,7 @@ mod tests {
         // dsh 没有 `--permission-prompt-tool`：问用户靠 codec 开通道。
         assert!(turn_needs_approval_host(&[], "dsh"));
         assert!(turn_needs_approval_host(&[], "codex"));
+        assert!(turn_needs_approval_host(&[], "grok"));
         assert!(turn_needs_approval_host(&[], "cursor-agent"));
         assert!(!turn_needs_approval_host(&[], "cursor"));
         assert!(!turn_needs_approval_host(&[], "claude"));
@@ -4527,6 +4537,12 @@ mod tests {
     /// model/reasoning/sandbox/provider; Codex fingerprints sandbox only; ACP stays default.
     #[test]
     fn launch_config_fingerprints_process_bound_protocols() {
+        let grok = |sandbox| launch_config_for_turn(
+            StreamFormat::AcpJsonRpc, None, None, sandbox, None, None, "",
+        );
+        assert_eq!(grok(None), grok(Some("full")));
+        assert!(!grok(None).accepts(&grok(Some("ask"))));
+        assert!(!grok(Some("ask")).accepts(&grok(Some("full"))));
         let claude = launch_config_for_turn(
             StreamFormat::ClaudeStreamJson,
             Some("opus"),

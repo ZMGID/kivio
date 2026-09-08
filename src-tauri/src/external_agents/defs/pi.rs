@@ -16,6 +16,7 @@ const REASONING: &[(&str, &str)] = &[
     ("medium", "Medium"),
     ("high", "High"),
     ("xhigh", "XHigh"),
+    ("max", "Max"),
 ];
 
 pub fn build_pi_args(

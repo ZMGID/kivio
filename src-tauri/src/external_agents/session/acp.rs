@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -109,7 +109,7 @@ pub fn is_missing_acp_session_error(err: &str) -> bool {
 }
 
 async fn write_rpc(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut (impl AsyncWrite + Unpin),
     id: u64,
     method: &str,
     params: Value,
@@ -129,7 +129,7 @@ async fn write_rpc(
 }
 
 async fn write_rpc_result(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut (impl AsyncWrite + Unpin),
     id: &Value,
     result: Value,
 ) -> Result<(), String> {
@@ -1789,6 +1789,7 @@ impl AcpSession {
                 &mut self.stdin,
                 &mut self.terminals,
                 Duration::from_millis(200),
+                approvals.is_some(),
             )
             .await?
             {
@@ -1832,7 +1833,7 @@ impl AcpSession {
                     }
                     continue;
                 }
-                if method.starts_with("cursor/") {
+                if method.starts_with("cursor/") || method == "session/request_permission" {
                     handle_cursor_extension(
                         &mut self.stdin,
                         &value,
@@ -1890,18 +1891,14 @@ async fn acp_read_until_id(
         if start.elapsed() > overall {
             return Err("ACP handshake timeout".to_string());
         }
-        match acp_next_message(reader, stdin, terminals, Duration::from_millis(200)).await? {
+        match acp_next_message(reader, stdin, terminals, Duration::from_millis(200), false).await? {
             AcpNext::Value(value) => {
                 if let Some(method) = value.get("method").and_then(Value::as_str) {
                     if method.starts_with("cursor/") {
                         if let Some(id) = value.get("id") {
                             let params = value.get("params").unwrap_or(&Value::Null);
-                            write_rpc_result(
-                                stdin,
-                                id,
-                                cursor_handshake_result(method, params),
-                            )
-                            .await?;
+                            write_rpc_result(stdin, id, cursor_handshake_result(method, params))
+                                .await?;
                         }
                         continue;
                     }
@@ -1933,6 +1930,7 @@ async fn acp_next_message(
     stdin: &mut ChildStdin,
     terminals: &mut AcpTerminalHost,
     slice: Duration,
+    host_permissions: bool,
 ) -> Result<AcpNext, String> {
     flush_terminal_side_effects(stdin, terminals).await?;
     let line = match timeout(slice, reader.next_line()).await {
@@ -1948,6 +1946,11 @@ async fn acp_next_message(
         Ok(v) => v,
         Err(_) => return Ok(AcpNext::Idle),
     };
+    if host_permissions
+        && value.get("method").and_then(Value::as_str) == Some("session/request_permission")
+    {
+        return Ok(AcpNext::Value(value));
+    }
     if handle_agent_to_client_request(&value, stdin, terminals).await? {
         return Ok(AcpNext::Idle);
     }
@@ -1989,7 +1992,9 @@ fn acp_json_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn cursor_extension_is_blocking(method: &str) -> bool {
-    method == "cursor/ask_question" || method == "cursor/create_plan"
+    method == "cursor/ask_question"
+        || method == "cursor/create_plan"
+        || method == "session/request_permission"
 }
 
 fn cursor_cancelled_result() -> Value {
@@ -2125,8 +2130,25 @@ fn cursor_decision_result(method: &str, decision: &ApprovalDecision) -> Value {
     }
 }
 
+fn acp_permission_result(params: &Value, approved: bool) -> Value {
+    // A host approval authorizes this call only, never a persistent upstream grant.
+    let option = approved
+        .then(|| params.get("options").and_then(Value::as_array))
+        .flatten()
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("kind").and_then(Value::as_str) == Some("allow_once"))
+        })
+        .and_then(|option| option.get("optionId").and_then(Value::as_str));
+    match option {
+        Some(id) => json!({ "outcome": { "outcome": "selected", "optionId": id } }),
+        None => cursor_cancelled_result(),
+    }
+}
+
 async fn handle_cursor_extension(
-    stdin: &mut ChildStdin,
+    stdin: &mut (impl AsyncWrite + Unpin),
     value: &Value,
     method: &str,
     events: &mpsc::Sender<UnifiedAgentEvent>,
@@ -2150,10 +2172,14 @@ async fn handle_cursor_extension(
         return write_rpc_result(stdin, id, cursor_cancelled_result()).await;
     };
     let request_id = jsonrpc_id_key(id);
-    let tool_call_id = acp_json_str(&params, "toolCallId")
+    let permission = method == "session/request_permission";
+    let tool = params.get("toolCall").unwrap_or(&params);
+    let tool_call_id = acp_json_str(tool, "toolCallId")
         .map(str::to_string)
         .unwrap_or_else(|| format!("cursor-{request_id}"));
-    let tool_name = if method == "cursor/create_plan" {
+    let tool_name = if permission {
+        acp_json_str(tool, "title").unwrap_or("ACP tool")
+    } else if method == "cursor/create_plan" {
         "cursor/create_plan"
     } else {
         "cursor/ask_question"
@@ -2162,7 +2188,11 @@ async fn handle_cursor_extension(
         request_id: request_id.clone(),
         tool_call_id,
         tool_name: tool_name.to_string(),
-        input: params,
+        input: if permission {
+            tool.clone()
+        } else {
+            params.clone()
+        },
         requires_user_interaction: method == "cursor/ask_question",
     };
     if bridge.requests.send(ask).await.is_err() {
@@ -2202,7 +2232,12 @@ async fn handle_cursor_extension(
         }
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
             Ok(Some(decision)) if decision.request_id == request_id => {
-                return write_rpc_result(stdin, id, cursor_decision_result(method, &decision)).await;
+                let result = if permission {
+                    acp_permission_result(&params, decision.approved)
+                } else {
+                    cursor_decision_result(method, &decision)
+                };
+                return write_rpc_result(stdin, id, result).await;
             }
             Ok(Some(_)) | Err(_) => continue,
             Ok(None) => {
@@ -2223,13 +2258,14 @@ async fn handle_agent_to_client_request(
     if method == "session/request_permission" {
         let option_id =
             choose_permission_outcome(value.get("params").and_then(|p| p.get("options")));
-        if let (Some(id), Some(option_id)) = (value.get("id"), option_id) {
-            write_rpc_result(
-                stdin,
-                id,
-                json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
-            )
-            .await?;
+        if let Some(id) = value.get("id") {
+            let result = match option_id {
+                Some(option_id) => {
+                    json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
+                }
+                None => cursor_cancelled_result(),
+            };
+            write_rpc_result(stdin, id, result).await?;
         }
         return Ok(true);
     }
@@ -2336,6 +2372,144 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionC
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn permission_request_waits_for_host_and_echoes_wire_id() {
+        for approved in [true, false] {
+            let (mut writer, reader) = tokio::io::duplex(4096);
+            let (asks, mut requests) = mpsc::channel(1);
+            let (decisions, replies) = mpsc::channel(1);
+            let mut bridge = ApprovalBridge {
+                requests: asks,
+                decisions: replies,
+            };
+            let (_commands, mut control) = mpsc::channel(1);
+            let (events, _events_rx) = mpsc::channel(1);
+            let value = json!({"id": 42, "method": "session/request_permission", "params": {
+                "toolCall": {"toolCallId": "tool-7", "title": "Write file", "rawInput": {"path": "a.txt"}},
+                "options": [{"kind": "allow_once", "optionId": "approve"}]
+            }});
+            let mut next_id = 50;
+            let handler = handle_cursor_extension(
+                &mut writer,
+                &value,
+                "session/request_permission",
+                &events,
+                &mut control,
+                Some(&mut bridge),
+                &mut next_id,
+                "session-1",
+            );
+            let user = async {
+                let ask = requests.recv().await.expect("host request");
+                assert_eq!(ask.tool_call_id, "tool-7");
+                assert_eq!(ask.tool_name, "Write file");
+                decisions
+                    .send(ApprovalDecision {
+                        request_id: ask.request_id,
+                        approved,
+                        updated_input: None,
+                        set_permission_mode: None,
+                    })
+                    .await
+                    .unwrap();
+            };
+            let (result, ()) = timeout(Duration::from_secs(2), async {
+                tokio::join!(handler, user)
+            })
+            .await
+            .expect("approval must settle");
+            result.unwrap();
+            let line = BufReader::new(reader)
+                .lines()
+                .next_line()
+                .await
+                .unwrap()
+                .unwrap();
+            let response: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(response["id"], 42);
+            assert_eq!(
+                response["result"]["outcome"]["outcome"],
+                if approved { "selected" } else { "cancelled" }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_request_cancels_when_host_is_missing_or_turn_is_cancelled() {
+        for cancel in [false, true] {
+            let (mut writer, reader) = tokio::io::duplex(4096);
+            let (asks, _requests) = mpsc::channel(1);
+            let (_decisions, replies) = mpsc::channel(1);
+            let mut bridge = ApprovalBridge {
+                requests: asks,
+                decisions: replies,
+            };
+            let (commands, mut control) = mpsc::channel(1);
+            let (events, _events_rx) = mpsc::channel(1);
+            if cancel {
+                commands.send(SessionCommand::Cancel).await.unwrap();
+            }
+            let value =
+                json!({"id": "req-1", "method": "session/request_permission", "params": {}});
+            let mut next_id = 50;
+            let result = timeout(
+                Duration::from_secs(2),
+                handle_cursor_extension(
+                    &mut writer,
+                    &value,
+                    "session/request_permission",
+                    &events,
+                    &mut control,
+                    cancel.then_some(&mut bridge),
+                    &mut next_id,
+                    "session-1",
+                ),
+            )
+            .await
+            .expect("must not hang");
+            assert_eq!(result.is_err(), cancel);
+            let mut lines = BufReader::new(reader).lines();
+            let response: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(response["id"], "req-1");
+            assert_eq!(response["result"], cursor_cancelled_result());
+            if cancel {
+                let response: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(response["method"], "session/cancel");
+            }
+        }
+    }
+
+    #[test]
+    fn permission_decisions_never_escalate_to_persistent_grants() {
+        let params = json!({"options": [
+            {"optionId": "forever", "kind": "allow_always"},
+            {"optionId": "once", "kind": "allow_once"}
+        ]});
+        assert_eq!(
+            acp_permission_result(&params, true)["outcome"]["optionId"],
+            "once"
+        );
+        assert_eq!(
+            acp_permission_result(&params, false),
+            cursor_cancelled_result()
+        );
+        assert_eq!(
+            acp_permission_result(
+                &json!({"options": [
+                    {"optionId": "forever", "kind": "allow_always"}
+                ]}),
+                true
+            ),
+            cursor_cancelled_result()
+        );
+        assert_eq!(
+            acp_permission_result(&Value::Null, true),
+            cursor_cancelled_result()
+        );
+    }
 
     /// grok 上游 503 时的静默重试必须变成一行可见状态。样本取自本机 grok 1.0.3
     /// `_x.ai/session_notification` 的原样 update。

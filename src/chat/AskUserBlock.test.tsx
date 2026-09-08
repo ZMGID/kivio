@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { AskUserBlock } from './AskUserBlock'
+import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import type { ToolCallRecord } from './types'
 
 /** 待答的问用户卡片。`variant="docked"` 是吊在输入框上方的那张（用户在这里作答）；
@@ -29,6 +30,40 @@ const RETRY_QUESTION = {
 }
 
 describe('AskUserBlock', () => {
+  it('answers asynchronous inline cards through ordinary messages without stealing focus', async () => {
+    const reply = vi.fn().mockResolvedValue(undefined)
+    render(<AsyncQuestionsContext.Provider value={{ closedIds: new Set(), reply }}>
+      <input aria-label="composer" autoFocus />
+      <AskUserBlock toolCall={askUserCall({
+        async: true, phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
+      })} />
+    </AsyncQuestionsContext.Provider>)
+    expect(screen.getByLabelText('composer')).toHaveFocus()
+    fireEvent.click(screen.getAllByRole('option')[1])
+    await waitFor(() => expect(reply).toHaveBeenCalledWith('tool-1', '用哪种方式重试？\n立即重试'))
+  })
+
+  it('supports free text and skipping async questions, and closes superseded cards', async () => {
+    const reply = vi.fn().mockResolvedValue(undefined)
+    const call = askUserCall({ async: true, phase: 'awaiting', questions: [{
+      id: '0', prompt: '还有补充吗？', options: [], allow_custom: true,
+    }], answers: {} })
+    const { rerender } = render(<AsyncQuestionsContext.Provider value={{ closedIds: new Set(), reply }}>
+      <AskUserBlock toolCall={call} />
+    </AsyncQuestionsContext.Provider>)
+    const input = screen.getByPlaceholderText('自己写一个…')
+    fireEvent.change(input, { target: { value: '保留兼容性' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(reply).toHaveBeenCalledWith('tool-1', '还有补充吗？\n保留兼容性'))
+    fireEvent.click(screen.getByLabelText('跳过这次询问'))
+    await waitFor(() => expect(reply).toHaveBeenCalledWith('tool-1', null))
+    rerender(<AsyncQuestionsContext.Provider value={{ closedIds: new Set(['tool-1']), reply }}>
+      <AskUserBlock toolCall={call} />
+    </AsyncQuestionsContext.Provider>)
+    expect(screen.queryByPlaceholderText('自己写一个…')).not.toBeInTheDocument()
+    expect(screen.getByText('此问题已收起')).toBeInTheDocument()
+  })
+
   it('renders the question as the title with numbered options', () => {
     render(<AskUserBlock variant="docked" toolCall={askUserCall({
       phase: 'awaiting',

@@ -1,7 +1,7 @@
 //! Grok CLI (xAI "Grok Build") external agent definition.
 //!
 //! Grok speaks the Agent Client Protocol over `grok agent stdio` (ACP handshake verified
-//! against v0.2.103–0.2.114; launch flags re-checked on grok 1.0.4, changelog through 1.0.5):
+//! against v0.2.103–0.2.114; launch flags re-checked on grok 1.0.13):
 //! `initialize` → `session/new` (result carries `models.availableModels`) → `session/set_model`
 //! → `session/prompt`, with `agent_thought_chunk` / `agent_message_chunk` / `tool_call` /
 //! `tool_call_update` session updates and an async `available_commands_update` push — all
@@ -58,9 +58,12 @@ pub fn build_grok_args(
         args.push("--reasoning-effort".to_string());
         args.push(effort.clone());
     }
-    // Headless driver auto-answers permission requests anyway; --always-approve skips the
-    // round-trips entirely (same spirit as claude's bypassPermissions default).
-    args.push("--always-approve".to_string());
+    // Grok's agent subcommand has no --permission-mode / --sandbox flags. In ask mode,
+    // leave approval to session/request_permission and Kivio's host approval card.
+    // Keep the previous full-access default for existing conversations.
+    if options.sandbox.as_deref() != Some("ask") {
+        args.push("--always-approve".to_string());
+    }
     // 必须在 `stdio` 之前：这是 `grok agent` 的 option，不是 stdio 子命令的。
     // 官方 agent-mode 文档：`--no-leader` = 即使 config 开了 leader 也起本地进程。
     args.push("--no-leader".to_string());
@@ -104,6 +107,20 @@ pub const GROK_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ask_mode_leaves_permissions_to_the_host() {
+        let args = build_grok_args(
+            &ctx(),
+            &RuntimeBuildOptions {
+                model: None,
+                reasoning: None,
+                sandbox: Some("ask".to_string()),
+            },
+            None,
+        );
+        assert_eq!(args, ["agent", "--no-leader", "stdio"]);
+    }
 
     fn ctx() -> RuntimeContext {
         RuntimeContext {

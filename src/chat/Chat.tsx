@@ -30,6 +30,7 @@ import {
 } from './chatRoutes'
 import { ApprovalCard } from './ApprovalCard'
 import { AskUserBlock } from './AskUserBlock'
+import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { ChatTitlebar } from './ChatTitlebar'
 import { withExternalModel } from './externalModelEffort'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
@@ -3606,6 +3607,37 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [canFollowUpCurrentConversation])
 
+  const [closedAsyncQuestions, setClosedAsyncQuestions] = useState<Record<string, string[]>>({})
+  const asyncQuestionsValue = useMemo(() => {
+    const conversationId = currentConversation?.id ?? ''
+    const closedIds = new Set(closedAsyncQuestions[conversationId] ?? [])
+    // A later user turn supersedes earlier questions, including after app restart.
+    let hasLaterUser = false
+    for (const message of [...(currentConversation?.messages ?? [])].reverse()) {
+      if (message.role === 'user') hasLaterUser = true
+      if (hasLaterUser) {
+        for (const tool of message.tool_calls ?? message.toolCalls ?? []) closedIds.add(tool.id)
+      }
+    }
+    return {
+      closedIds,
+      reply: async (toolId: string, text: string | null) => {
+        const conversation = currentConversationRef.current
+        if (!conversation || conversation.id !== conversationId) throw new Error('对话已切换，请重试')
+        if (text) {
+          const queued = messageQueueRef.current.enqueue(conversation.id, text, [])
+          if (!queued) throw new Error('答复未能加入消息队列，请重试')
+          if (!generatingConversationIdsRef.current.has(conversation.id)) {
+            void messageQueueRef.current.drain(conversation)
+          }
+        }
+        setClosedAsyncQuestions((previous) => ({
+          ...previous, [conversationId]: [...(previous[conversationId] ?? []), toolId],
+        }))
+      },
+    }
+  }, [closedAsyncQuestions, currentConversation])
+
   const handleSteerQueuedMessage = useCallback((messageId: string) => {
     const conversationId = currentConversationIdRef.current
     if (!conversationId) return
@@ -5316,6 +5348,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   return (
     <LangContext.Provider value={uiLang}>
+    <AsyncQuestionsContext.Provider value={asyncQuestionsValue}>
     <Profiler id="ChatShell" onRender={onChatPerfProfiler}>
       <div
         className={`chat-window-shell${usesNativeTitlebar ? ' chat-window-shell--native-titlebar' : ''}`}
@@ -5542,6 +5575,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       )}
       </div>
     </Profiler>
+    </AsyncQuestionsContext.Provider>
     </LangContext.Provider>
   )
 }

@@ -1,5 +1,7 @@
 # External CLI adapter catch-up (2026-09-01)
 
+后续复核与修复见 [2026-09-08 记录](./external-cli-verified-fixes-2026-09-08.md)，包含 Codex 异步问题、Pi 思考档位、Grok 权限确认及 Claude Fable 5.1。
+
 **Question:** Which of the ten Kivio **external CLI agents** shipped protocol-relevant changes since the last adapter catch-up, and what should we patch?
 
 **Last dedicated catch-up:** 2026-08-21 (`f4437c58` Claude 2.1.238, `56b44909` Codex 0.148, `e5851c20` dsh rc.8, `dff08acb` Grok `--no-leader`). Later related work: ACP terminal (`3b0ad43e` / `f62386ca`, Aug 25) and **附加目录** (`fa4ba69b`, Aug 28).

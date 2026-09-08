@@ -683,6 +683,56 @@ fn emit_thread_item(
     include_result: bool,
 ) {
     match item.get("type").and_then(|v| v.as_str()) {
+        Some("agentMessage") if include_result => {
+            // 0.153 async questions are notifications, not reverse RPC. Emit a completed
+            // display card; its answer is an ordinary user message, never an approval reply.
+            let questions: Vec<Value> = item
+                .get("questions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(|(index, question)| {
+                    let title = json_str(question, "title")?;
+                    let options: Vec<Value> = question
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                        .filter_map(|(oi, option)| {
+                            let label = option.as_str()?.trim();
+                            (!label.is_empty())
+                                .then(|| json!({ "id": oi.to_string(), "label": label }))
+                        })
+                        .collect();
+                    Some(
+                        json!({ "id": index.to_string(), "prompt": title, "options": options,
+                        "allow_custom": true, "allow_multiple": false }),
+                    )
+                })
+                .collect();
+            if questions.is_empty() {
+                return;
+            }
+            let Some(id) = item_id(item).map(|id| format!("codex-async-{id}")) else {
+                return;
+            };
+            if !emitted_tools.insert(id.clone()) {
+                return;
+            }
+            sink(UnifiedAgentEvent::ToolUse {
+                id: id.clone(),
+                name: "request_user_input_async".to_string(),
+                input: json!({ "askUser": { "phase": "awaiting", "async": true,
+                    "questions": questions, "answers": {} } }),
+            });
+            sink(UnifiedAgentEvent::ToolResult {
+                tool_use_id: id,
+                content: String::new(),
+                is_error: false,
+            });
+        }
         Some("commandExecution") => {
             emit_command_execution(item, emitted_tools, sink, include_result)
         }
@@ -2489,6 +2539,58 @@ pub fn spawn_codex_session_actor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn async_questions_emit_one_nonblocking_card_only_on_completion() {
+        let params = json!({"item": {"type": "agentMessage", "id": "msg-1",
+        "text": "fallback", "questions": [
+            {"title": "Choose a color", "options": ["Red", "Blue"]},
+            {"title": "Anything else?", "options": null}
+        ]}});
+        let mut emitted = HashSet::new();
+        let mut events = Vec::new();
+        for method in ["item/started", "item/completed", "item/completed"] {
+            assert_eq!(
+                map_codex_notification(method, &params, &mut emitted, &mut |event| events
+                    .push(event)),
+                CodexMapResult::Continue
+            );
+            if method == "item/started" {
+                assert!(events.is_empty());
+            }
+        }
+        assert_eq!(events.len(), 2);
+        let UnifiedAgentEvent::ToolUse { input, .. } = &events[0] else {
+            panic!("card missing");
+        };
+        assert_eq!(input["askUser"]["async"], true);
+        assert_eq!(
+            input["askUser"]["questions"][0]["options"][1]["label"],
+            "Blue"
+        );
+        assert_eq!(input["askUser"]["questions"][1]["options"], json!([]));
+        assert!(matches!(
+            &events[1],
+            UnifiedAgentEvent::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn legacy_agent_messages_and_empty_questions_do_not_create_cards() {
+        for questions in [Value::Null, json!([]), json!([{"title": " "}])] {
+            let (events, _) = collect(
+                "item/completed",
+                &json!({"item": {
+                    "type": "agentMessage", "id": "legacy", "questions": questions
+                }})
+                .to_string(),
+            );
+            assert!(events.is_empty());
+        }
+    }
 
     fn collect(method: &str, raw: &str) -> (Vec<UnifiedAgentEvent>, CodexMapResult) {
         let params: Value = serde_json::from_str(raw).unwrap();

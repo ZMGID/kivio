@@ -22,6 +22,100 @@ use crate::external_agents::types::{
 use crate::proc::NoConsoleWindow;
 
 type SharedPiWriter<W> = Arc<Mutex<W>>;
+
+pub struct PiModelsProbe {
+    pub models: Vec<RuntimeModelOption>,
+    pub reasoning_by_model: HashMap<String, Vec<RuntimeModelOption>>,
+    pub current_model: Option<String>,
+    pub current_reasoning: Option<String>,
+}
+
+/// Same capability semantics as Pi's getSupportedThinkingLevels (0.84.4–0.85.1).
+/// Null disables a level; xhigh/max require an explicit non-null mapping.
+fn pi_model_reasoning(model: &Value) -> Vec<RuntimeModelOption> {
+    if model.get("reasoning").and_then(Value::as_bool) != Some(true) {
+        return Vec::new();
+    }
+    let map = model.get("thinkingLevelMap");
+    let mut options = vec![default_model_option()];
+    for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
+        let mapped = map.and_then(|map| map.get(level));
+        if mapped.is_some_and(Value::is_null)
+            || (matches!(level, "xhigh" | "max") && mapped.is_none())
+        {
+            continue;
+        }
+        options.push(RuntimeModelOption {
+            id: level.to_string(),
+            label: level.to_string(),
+            context_window_tokens: None,
+        });
+    }
+    options
+}
+
+/// Read-only RPC discovery. No set_model (which persists settings), no prompt or session file.
+pub async fn detect_pi_models(bin: &Path, cwd: &Path, timeout_secs: u64) -> Option<PiModelsProbe> {
+    let def = &crate::external_agents::defs::pi::PI_AGENT_DEF;
+    let mut child = crate::external_agents::spawn::agent_probe_command(def, bin)
+        .args(["--mode", "rpc", "--no-session"])
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .no_console_window()
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    let result = timeout(Duration::from_secs(timeout_secs), async {
+        let mut stdin = child.stdin.take()?;
+        let mut reader = BufReader::new(child.stdout.take()?).lines();
+        stdin.write_all(b"{\"id\":\"models\",\"type\":\"get_available_models\"}\n{\"id\":\"state\",\"type\":\"get_state\"}\n").await.ok()?;
+        let mut models = None;
+        let mut state = None;
+        while let Some(line) = reader.next_line().await.ok()? {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else { continue; };
+            if value.get("type").and_then(Value::as_str) != Some("response") { continue; }
+            match value.get("id").and_then(Value::as_str) {
+                Some("models") => {
+                    if value.get("success").and_then(Value::as_bool) != Some(true) { return None; }
+                    models = value.pointer("/data/models").and_then(Value::as_array).cloned();
+                    if models.is_none() { return None; }
+                }
+                Some("state") => state = Some(value.get("data").cloned().unwrap_or(Value::Null)),
+                _ => {}
+            }
+            if models.is_some() && state.is_some() { break; }
+        }
+        let mut out = PiModelsProbe {
+            models: vec![default_model_option()], reasoning_by_model: HashMap::new(),
+            current_model: None, current_reasoning: None,
+        };
+        for model in models? {
+            let provider = model.get("provider")?.as_str()?;
+            let id = model.get("id")?.as_str()?;
+            let full_id = format!("{provider}/{id}");
+            out.reasoning_by_model.insert(full_id.clone(), pi_model_reasoning(&model));
+            out.models.push(RuntimeModelOption {
+                id: full_id, label: format!("{id} · {provider}"),
+                context_window_tokens: model.get("contextWindow").and_then(Value::as_u64)
+                    .and_then(|tokens| u32::try_from(tokens).ok()),
+            });
+        }
+        if let Some(state) = state {
+            if let Some(model) = state.get("model").filter(|model| model.is_object()) {
+                out.reasoning_by_model.insert("default".to_string(), pi_model_reasoning(model));
+                out.current_model = model.get("provider").and_then(Value::as_str).zip(model.get("id").and_then(Value::as_str))
+                    .map(|(provider, id)| format!("{provider}/{id}"));
+            }
+            out.current_reasoning = state.get("thinkingLevel").and_then(Value::as_str).map(str::to_string);
+        }
+        (out.models.len() > 1).then_some(out)
+    }).await.ok().flatten();
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    result
+}
 struct PiControlWaiter {
     completion: oneshot::Sender<Result<(), String>>,
     injection: Option<(MessageInjectionKind, String, String)>,
@@ -1687,6 +1781,31 @@ mod tests {
     use super::*;
     use tokio::io::{duplex, sink, AsyncReadExt};
 
+    #[test]
+    fn model_thinking_map_preserves_holes_and_explicit_extended_levels() {
+        let levels = |model: Value| {
+            pi_model_reasoning(&model)
+                .into_iter()
+                .map(|option| option.id)
+                .collect::<Vec<_>>()
+        };
+        assert!(levels(json!({"reasoning": false})).is_empty());
+        assert_eq!(
+            levels(json!({"reasoning": true})),
+            ["default", "off", "minimal", "low", "medium", "high"]
+        );
+        assert_eq!(
+            levels(json!({"reasoning": true, "thinkingLevelMap": {
+                "off": null, "minimal": null, "medium": null, "xhigh": "xhigh", "max": "max"
+            }})),
+            ["default", "low", "high", "xhigh", "max"]
+        );
+        assert!(
+            !levels(json!({"reasoning": true, "thinkingLevelMap": {"max": null}}))
+                .contains(&"max".to_string())
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires live pi CLI on PATH"]
     async fn live_detect_pi_commands() {
@@ -2676,18 +2795,12 @@ mod tests {
             .await
             .expect("abort");
         let mut lines = BufReader::new(&mut output_reader).lines();
-        let first: Value = serde_json::from_str(
-            &lines
-                .next_line()
-                .await
-                .expect("read")
-                .expect("clear_queue"),
-        )
-        .expect("json");
-        let second: Value = serde_json::from_str(
-            &lines.next_line().await.expect("read").expect("abort"),
-        )
-        .expect("json");
+        let first: Value =
+            serde_json::from_str(&lines.next_line().await.expect("read").expect("clear_queue"))
+                .expect("json");
+        let second: Value =
+            serde_json::from_str(&lines.next_line().await.expect("read").expect("abort"))
+                .expect("json");
         assert_eq!(first["type"], "clear_queue");
         assert_eq!(second["type"], "abort");
         assert_eq!(first["id"], "kivio-control-2");
