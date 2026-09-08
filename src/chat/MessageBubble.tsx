@@ -15,7 +15,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { AssistantMessageMeta } from './AssistantMessageMeta'
 import { ChatAttachments } from './ChatAttachments'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
-import { ChatMarkdown } from './ChatMarkdown'
+import { ChatMarkdown, type ChatMarkdownOutlineSource, type MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { GeneratedFileArtifacts } from './GeneratedFileArtifacts'
 import { MarkdownStreamingContext } from './markdownStreaming'
@@ -88,6 +88,9 @@ interface MessageBubbleProps {
   onSaveMessageToNote?: (messageId: string) => Promise<boolean>
   agentPlanOverride?: AgentPlanState | null
   onExecuteAgentPlan?: (messageId: string) => Promise<void> | void
+  /** 仅已落库助手消息注册标题来源；live 行必须保持目录静默到 twin 提交。 */
+  outlineEligible?: boolean
+  onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }
 
 function markdownImageSources(content: string): Set<string> {
@@ -507,12 +510,14 @@ function TimelineTextSegment({
   citations,
   conversationId,
   process = false,
+  outlineSource,
 }: {
   segment: ChatMessageSegment
   artifacts: ChatToolArtifact[]
   citations?: Map<number, CitationView>
   conversationId?: string | null
   process?: boolean
+  outlineSource?: ChatMarkdownOutlineSource
 }) {
   const text = segmentText(segment).trim()
   if (!text) return null
@@ -525,6 +530,7 @@ function TimelineTextSegment({
         conversationId={conversationId}
         citations={citations}
         onImageClick={handleChatImageClick}
+        outlineSource={outlineSource}
       />
     </div>
   )
@@ -812,6 +818,9 @@ function TimelineSegments({
   reasoningStreaming,
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
+  outlineEligible = false,
+  ownerMessageId,
+  onOutlineSourceChange,
 }: {
   segments: ChatMessageSegment[]
   toolCalls: ToolCallRecord[]
@@ -821,6 +830,9 @@ function TimelineSegments({
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
+  outlineEligible?: boolean
+  ownerMessageId: string
+  onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
   const prepared = useMemo(() => {
     const ordered = orderedSegments(segments)
@@ -879,6 +891,15 @@ function TimelineSegments({
                 artifacts={artifacts}
                 citations={citations}
                 conversationId={conversationId}
+                outlineSource={
+                  outlineEligible && onOutlineSourceChange
+                    ? {
+                      ownerMessageId,
+                      sourceId: item.segment.id,
+                      onChange: onOutlineSourceChange,
+                    }
+                    : undefined
+                }
               />
             </div>
           )
@@ -955,6 +976,8 @@ function MessageBubbleComponent({
   onSaveMessageToNote,
   agentPlanOverride = null,
   onExecuteAgentPlan,
+  outlineEligible = false,
+  onOutlineSourceChange,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   // 历史消息会被虚拟列表反复卸载/挂载；只让真正的流式预览播放进入动画，
@@ -1039,6 +1062,14 @@ function MessageBubbleComponent({
     hasGeneratedImages,
     hasGeneratedFiles,
   } = prepared
+  const outlineSource = useMemo<ChatMarkdownOutlineSource | undefined>(() => {
+    if (!outlineEligible || messageStreaming || !onOutlineSourceChange) return undefined
+    return {
+      ownerMessageId: message.id,
+      sourceId: message.id,
+      onChange: onOutlineSourceChange,
+    }
+  }, [message.id, messageStreaming, onOutlineSourceChange, outlineEligible])
   // 后端 recovery.rs 产出的降级描述；旧会话无此字段 → undefined → 不渲染卡片。
   // content 仍保留同一段文本（旧前端 / 外部 CLI 只读 content），但卡片已经完整表达了
   // 同样的信息 —— 这里不再把它当正文渲染，避免一模一样的内容出现两遍。
@@ -1185,6 +1216,7 @@ function MessageBubbleComponent({
     <div
       {...hoverProps}
       className={`flex justify-start py-3 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}
+      data-chat-outline-owner={outlineEligible ? message.id : undefined}
     >
       <div className="w-full min-w-0">
         {toolCalls.length > 0 && !hasTimelineSegments && (
@@ -1250,6 +1282,9 @@ function MessageBubbleComponent({
               reasoningStreaming={reasoningStreaming}
               reasoningDurationMs={reasoningDurationMs}
               reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
+              outlineEligible={outlineEligible}
+              ownerMessageId={message.id}
+              onOutlineSourceChange={onOutlineSourceChange}
             />
             {hasGeneratedImages && (
               <GeneratedImageArtifacts
@@ -1273,6 +1308,7 @@ function MessageBubbleComponent({
                   artifacts={renderArtifacts}
                   conversationId={conversationId}
                   onImageClick={handleChatImageClick}
+                  outlineSource={outlineSource}
                 />
               )}
               {hasGeneratedImages && (

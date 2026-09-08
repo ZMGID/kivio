@@ -1182,6 +1182,180 @@ button.chat-composer-status-item:hover {
   pointer-events: none;
 }
 
+/* 回答标题目录：和右侧轮次导航共用主区的绝对层，不参与消息列宽度计算。
+   收起时只保留短刻度；展开层向正文内侧覆盖，第一条标题直接顶在面板顶部。 */
+.chat-heading-navigator {
+  position: absolute;
+  z-index: 13;
+  top: 16px;
+  bottom: 16px;
+  left: 12px;
+  width: 26px;
+}
+
+.chat-heading-navigator-rail {
+  display: flex;
+  height: 100%;
+  width: 26px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  scrollbar-width: none;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-standard);
+}
+
+.chat-heading-navigator-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-heading-navigator-tick {
+  display: flex;
+  width: 26px;
+  min-height: 13px;
+  flex: 0 0 13px;
+  align-items: center;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: rgb(163 163 163);
+  cursor: pointer;
+}
+
+.chat-heading-navigator-tick > span {
+  display: block;
+  width: calc(8px + min(var(--heading-depth), 2) * 2px);
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: width var(--kv-dur-fast) var(--kv-ease-standard), color var(--kv-dur-fast) var(--kv-ease-standard);
+}
+
+.chat-heading-navigator-tick:hover,
+.chat-heading-navigator-tick:focus-visible,
+.chat-heading-navigator-tick.is-active {
+  color: rgb(23 23 23);
+  outline: none;
+}
+
+.chat-heading-navigator-tick:focus-visible > span {
+  width: 16px;
+}
+
+.chat-heading-navigator-panel {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  display: flex;
+  box-sizing: border-box;
+  width: 26px;
+  height: max-content;
+  max-height: 100%;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgb(229 229 229 / 0.95);
+  border-radius: 14px;
+  background: var(--theme-surface-soft);
+  padding: 6px;
+  box-shadow: 0 14px 38px rgb(0 0 0 / 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transform-origin: left center;
+  visibility: hidden;
+  transition:
+    width 220ms var(--kv-ease-standard),
+    opacity 140ms var(--kv-ease-standard),
+    visibility 0s linear 220ms;
+}
+
+.chat-heading-navigator.is-expanded .chat-heading-navigator-rail {
+  opacity: 0;
+}
+
+.chat-heading-navigator.is-expanded .chat-heading-navigator-panel {
+  width: min(300px, calc(100vw - 48px));
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.chat-heading-navigator-item {
+  display: flex;
+  width: 100%;
+  min-height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 0;
+  border-radius: 7px;
+  padding: 5px 8px 5px calc(8px + var(--heading-indent));
+  background: transparent;
+  color: rgb(82 82 82);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-heading-navigator-item.has-level-toggle {
+  padding-right: 29px;
+}
+
+.chat-heading-navigator-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-heading-navigator-item:hover,
+.chat-heading-navigator-item:focus-visible,
+.chat-heading-navigator-item.is-active {
+  background: rgb(23 23 23 / 0.07);
+  color: rgb(23 23 23);
+  outline: none;
+}
+
+.chat-heading-navigator-level-toggle {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
+  background: var(--theme-surface-soft);
+}
+
+.dark .chat-heading-navigator-tick {
+  color: rgb(115 115 115);
+}
+
+.dark .chat-heading-navigator-tick:hover,
+.dark .chat-heading-navigator-tick:focus-visible,
+.dark .chat-heading-navigator-tick.is-active {
+  color: rgb(245 245 245);
+}
+
+.dark .chat-heading-navigator-panel {
+  border-color: rgb(64 64 64 / 0.95);
+  background: #262629;
+}
+
+.dark .chat-heading-navigator-item {
+  color: rgb(190 190 190);
+}
+
+.dark .chat-heading-navigator-item:hover,
+.dark .chat-heading-navigator-item:focus-visible,
+.dark .chat-heading-navigator-item.is-active {
+  background: rgb(245 245 245 / 0.1);
+  color: rgb(245 245 245);
+}
+
+.dark .chat-heading-navigator-level-toggle {
+  background: #262629;
+}
+
 .chat-message-navigator-viewport {
   height: 100%;
   overflow-y: auto;
@@ -1348,6 +1522,9 @@ button.chat-composer-status-item:hover {
   .chat-message-navigator {
     display: none;
   }
+  .chat-heading-navigator {
+    display: none;
+  }
 }
 
 /* 720–999px 时消息列几乎占满容器，右侧没有足够留白；为贴滚动条的轨道预留安全区，
@@ -1356,10 +1533,20 @@ button.chat-composer-status-item:hover {
   .has-message-navigator .chat-message-list-inner {
     padding-right: 3.25rem;
   }
+  .has-heading-navigator .chat-message-list-inner {
+    padding-left: 3.25rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .chat-message-navigator-tick {
+    transition: none;
+  }
+  .chat-heading-navigator-tick > span {
+    transition: none;
+  }
+  .chat-heading-navigator-rail,
+  .chat-heading-navigator-panel {
     transition: none;
   }
 }

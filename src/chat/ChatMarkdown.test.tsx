@@ -1,5 +1,5 @@
-import { render } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { render, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { ChatMarkdown } from './ChatMarkdown'
 import { clearSettledMarkdownCache, settledMarkdownCacheSize } from './settledMarkdownCache'
 
@@ -62,5 +62,31 @@ describe('ChatMarkdown artifact 图片', () => {
     expect(images).toHaveLength(2)
     expect(images[0]?.getAttribute('style') ?? '').toContain('128px')
     expect(container.querySelectorAll('[data-chat-md-image]')).toHaveLength(2)
+  })
+})
+
+describe('ChatMarkdown 标题目录锚点', () => {
+  it('registers a settled answer outline and renders stable heading ids', async () => {
+    const onChange = vi.fn()
+    const { container, unmount } = render(
+      <ChatMarkdown
+        content={'# Start\n\n## Next'}
+        outlineSource={{ ownerMessageId: 'answer-1', sourceId: 'answer-1', onChange }}
+      />,
+    )
+    await waitFor(() => {
+      expect(container.querySelector('h1')).toHaveAttribute('id', 'user-content-chat-heading-answer-1-0')
+      expect(container.querySelector('h2')).toHaveAttribute('id', 'user-content-chat-heading-answer-1-1')
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+        ownerMessageId: 'answer-1',
+        sourceId: 'answer-1',
+        items: expect.arrayContaining([
+          expect.objectContaining({ title: 'Start', depth: 1 }),
+          expect.objectContaining({ title: 'Next', depth: 2 }),
+        ]),
+      }))
+    })
+    unmount()
+    expect(onChange).toHaveBeenLastCalledWith({ ownerMessageId: 'answer-1', sourceId: 'answer-1', items: null })
   })
 })

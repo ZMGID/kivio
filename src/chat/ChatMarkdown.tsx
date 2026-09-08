@@ -19,7 +19,12 @@ import { citationPopoverPosition, type CitationPopoverPosition } from './citatio
 import { isWebCitation } from './webSearchCitations'
 import { ChatInlineImage } from './ChatInlineImage'
 import { MarkdownStreamingContext } from './markdownStreaming'
-import { getSettledMarkdownCacheEntry } from './settledMarkdownCache'
+import { getSettledMarkdownCacheEntry, getSettledMarkdownOutline, type SettledMarkdownCacheEntry } from './settledMarkdownCache'
+import {
+  markdownHeadingAnchorId,
+  type MarkdownHeadingOutlineItem,
+  parseMarkdownHeadingOutline,
+} from './markdownHeadingOutline'
 import { ChatHeavyIsland } from './ChatHeavyIsland'
 import { useConversationTransition } from './conversationTransitionStore'
 import { api } from '../api/tauri'
@@ -37,7 +42,22 @@ interface ChatMarkdownProps {
   variant?: 'default' | 'reasoning' | 'lens' | 'lens-muted'
   /** 引用：把答案里的 `[n]` 渲染成可点来源片段（n → KB 命中片段或联网来源）。 */
   citations?: Map<number, CitationView>
+  /** 已完成助手回答才传入；ChatMarkdown 负责把同一份规范化 Markdown 的标题注册给消息目录。 */
+  outlineSource?: ChatMarkdownOutlineSource
 }
+
+export type MarkdownOutlineSourceUpdate = {
+  ownerMessageId: string
+  sourceId: string
+  items: MarkdownHeadingOutlineItem[] | null
+}
+
+export type ChatMarkdownOutlineSource = {
+  ownerMessageId: string
+  sourceId: string
+  onChange: (update: MarkdownOutlineSourceUpdate) => void
+}
+
 
 // 排版只走 Streamdown 默认样式；变体只改外壳字号/颜色。
 // 代码块 / 表格 / 本地链接 / artifact 图仍用 components 做应用能力，不改正文排版。
@@ -1129,23 +1149,84 @@ const MarkdownDocument = memo(function MarkdownDocument({
   components,
   remarkPlugins,
   streaming,
+  outlineSource,
+  documentRoot,
 }: {
   content: string
   components: Components
   remarkPlugins: PluggableList
   streaming: boolean
+  outlineSource?: ChatMarkdownOutlineSource
+  documentRoot: HTMLDivElement | null
 }) {
-  const normalized = useMemo(() => {
+  const outlineSourceId = outlineSource?.sourceId
+  const outlineOwnerMessageId = outlineSource?.ownerMessageId
+  const onOutlineSourceChange = outlineSource?.onChange
+  const entry = useMemo<SettledMarkdownCacheEntry>(() => {
     const build = () => {
       const normalizedContent = preserveLocalMarkdownLinks(
         normalizeMarkdownForRender(normalizeLegacyCliReport(normalizeLegacyErrorDetails(content))),
       )
       return { normalized: normalizedContent }
     }
-    return streaming
-      ? build().normalized
-      : getSettledMarkdownCacheEntry(content, build).normalized
-  }, [content, streaming])
+    if (streaming) return build()
+    if (outlineSourceId) {
+      return getSettledMarkdownOutline(content, build, parseMarkdownHeadingOutline)
+    }
+    return getSettledMarkdownCacheEntry(content, build)
+  }, [content, outlineSourceId, streaming])
+  const outlineItems = useMemo<MarkdownHeadingOutlineItem[]>(() => {
+    if (!outlineSourceId || streaming || !entry.outline) return []
+    return entry.outline.map((heading) => ({
+      ...heading,
+      sourceId: outlineSourceId,
+      anchorId: markdownHeadingAnchorId(outlineSourceId, heading.ordinal),
+    }))
+  }, [entry.outline, outlineSourceId, streaming])
+  useLayoutEffect(() => {
+    if (!outlineSourceId || !outlineOwnerMessageId || !onOutlineSourceChange || streaming) return
+    const root = documentRoot
+    if (!root) return
+    let frame: number | null = null
+    let published = false
+    const apply = () => {
+      // Match the outline parser's root-only heading policy. Nested headings
+      // and empty headings must not shift every subsequent anchor by one.
+      const headings = [...root.querySelectorAll<HTMLElement>('h1, h2, h3')].filter((heading) => (
+        !heading.closest('blockquote, li, details')
+        && (heading.textContent?.trim() || [...heading.querySelectorAll('img')].some((image) => image.alt.trim()))
+      ))
+      if (headings.length < outlineItems.length) return
+      outlineItems.forEach((item, index) => {
+        const heading = headings[index]
+        if (heading) heading.id = item.anchorId
+      })
+      if (!published) {
+        published = true
+        onOutlineSourceChange({ ownerMessageId: outlineOwnerMessageId, sourceId: outlineSourceId, items: outlineItems })
+      }
+    }
+    const observer = typeof MutationObserver === 'undefined'
+      ? null
+      : new MutationObserver(apply)
+    observer?.observe(root, { childList: true, subtree: true })
+    apply()
+    // Streamdown 可在父级 layout effect 之后才提交异步 block；下一帧补一次让目录只在
+    // 可定位的 heading DOM 已存在时注册。
+    frame = requestAnimationFrame(apply)
+    return () => {
+      if (frame != null) cancelAnimationFrame(frame)
+      observer?.disconnect()
+      onOutlineSourceChange({ ownerMessageId: outlineOwnerMessageId, sourceId: outlineSourceId, items: null })
+    }
+  }, [
+    documentRoot,
+    outlineItems,
+    onOutlineSourceChange,
+    outlineOwnerMessageId,
+    outlineSourceId,
+    streaming,
+  ])
 
   // Keep one parser mode and document identity through completion. Static mode
   // parses the whole document differently from streaming's memoized blocks,
@@ -1172,7 +1253,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
       urlTransform={chatMarkdownUrlTransform}
       linkSafety={{ enabled: false }}
     >
-      {normalized}
+      {entry.normalized}
     </Streamdown>
   )
 })
@@ -1185,8 +1266,10 @@ function ChatMarkdownComponent({
   onImageClick,
   variant = 'default',
   citations,
+  outlineSource,
 }: ChatMarkdownProps) {
   const streaming = useContext(MarkdownStreamingContext)
+  const [documentRoot, setDocumentRoot] = useState<HTMLDivElement | null>(null)
   const remarkPlugins = useMemo<PluggableList>(() => {
     const plugins: PluggableList = [...streamdownRemarkPlugins]
     if (citations && citations.size > 0) {
@@ -1229,13 +1312,20 @@ function ChatMarkdownComponent({
   }, [artifacts, conversationId, onImageClick, citations])
 
   return (
-    <div className={markdownShellClass(variant)} dir="auto">
+    <div
+      className={markdownShellClass(variant)}
+      dir="auto"
+      ref={setDocumentRoot}
+      data-chat-outline-source-id={outlineSource && !streaming ? outlineSource.sourceId : undefined}
+    >
       <MarkdownErrorBoundary fallbackText={content}>
         <MarkdownDocument
           content={content}
           components={components}
           remarkPlugins={remarkPlugins}
           streaming={streaming}
+          outlineSource={outlineSource}
+          documentRoot={documentRoot}
         />
       </MarkdownErrorBoundary>
     </div>
