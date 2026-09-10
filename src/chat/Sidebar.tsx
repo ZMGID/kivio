@@ -754,22 +754,26 @@ export const Sidebar = memo(function Sidebar({
     const silent = options?.silent ?? false
     if (!silent) setLoading(true)
     try {
-      const [projectData, setData, assistantData, conversationData, pinData] = await Promise.all([
+      const conversationsPromise = chatApi.getConversations(0, 80)
+      const extrasPromise = Promise.all([
         chatApi.getProjects(),
         chatApi.getSets(),
         chatApi.getAssistants(),
-        chatApi.getConversations(0, 80),
         chatApi.getConversationPins(),
       ])
-      setProjects(projectData)
-      setSets(setData)
-      setConversationPins(pinData)
-      setAssistants(assistantData)
+      const conversationData = await conversationsPromise
       setConversations(conversationData)
       // 真实列表已落地：通知父组件剪掉已被接管的乐观条目。必须在 setConversations 同一批
       // 更新里发出，两个 state 才会在同一次 commit 中切换——行实例（key=id）无缝从乐观
       // 条目换到真实条目，SwapTitle 不重挂。
       onConversationsLoaded?.()
+      if (!silent) setLoading(false)
+
+      const [projectData, setData, assistantData, pinData] = await extrasPromise
+      setProjects(projectData)
+      setSets(setData)
+      setConversationPins(pinData)
+      setAssistants(assistantData)
       if (projectForLoad && !projectData.some((project) => project.id === projectForLoad.id)) {
         onSelectProject(null)
       }

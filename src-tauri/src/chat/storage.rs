@@ -1,6 +1,8 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -115,65 +117,118 @@ pub(crate) fn read_conversation_file(path: &Path, id: &str) -> Result<Conversati
     serde_json::from_str(&content).map_err(|e| format!("对话文件已损坏，无法加载（{id}）：{e}"))
 }
 
-fn load_conversation_list_in_dir(dir: &Path) -> Result<Vec<ConversationListItem>, String> {
-    let entries = fs::read_dir(dir).map_err(|e| format!("read conversations dir: {e}"))?;
-    let mut conversations = Vec::new();
+struct ConversationIndexCacheEntry {
+    index: ConversationIndex,
+    needs_persist: bool,
+}
 
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                eprintln!("skip unreadable conversation dir entry: {e}");
-                continue;
-            }
-        };
-        let path = entry.path();
-        if path.file_name().and_then(|name| name.to_str()) == Some("index.json")
-            || path.extension().and_then(|ext| ext.to_str()) != Some("json")
-        {
+fn conversation_index_cache() -> &'static Mutex<HashMap<PathBuf, ConversationIndexCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, ConversationIndexCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_conversation_index_cache(dir: PathBuf, index: ConversationIndex, needs_persist: bool) {
+    conversation_index_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(
+            dir,
+            ConversationIndexCacheEntry {
+                index,
+                needs_persist,
+            },
+        );
+}
+
+pub(crate) fn conversation_index_needs_persist(app: &AppHandle) -> bool {
+    let Ok(dir) = conversations_dir(app) else {
+        return false;
+    };
+    conversation_index_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&dir)
+        .is_some_and(|entry| entry.needs_persist)
+}
+
+/// 把内存里补齐的索引写回 `index.json`。调用方必须持有 `index_lock`。
+pub(crate) fn persist_healed_conversation_index(app: &AppHandle) -> Result<(), String> {
+    if !conversation_index_needs_persist(app) {
+        return Ok(());
+    }
+    let index = load_index_or_scan(app)?;
+    save_index(app, &index)
+}
+
+/// 索引缺的会话才读正文；已在 index 里的条目原样保留，绝不整目录重扫。
+fn merge_missing_conversations(
+    dir: &Path,
+    mut index: ConversationIndex,
+    file_ids: &[String],
+) -> ConversationIndex {
+    let indexed: HashSet<String> = index
+        .conversations
+        .iter()
+        .map(|item| item.id.clone())
+        .collect();
+    for id in file_ids {
+        if indexed.contains(id) {
             continue;
         }
-
-        let id = match path.file_stem().and_then(|stem| stem.to_str()) {
-            Some(id) if validate_conversation_id(id).is_ok() => id,
-            _ => continue,
-        };
-
+        let path = dir.join(format!("{id}.json"));
         match read_conversation_file(&path, id) {
-            Ok(conversation) => conversations.push(ConversationListItem::from(&conversation)),
+            Ok(conversation) => index
+                .conversations
+                .push(ConversationListItem::from(&conversation)),
             Err(e) => eprintln!("skip corrupt conversation file {id}: {e}"),
         }
     }
-
-    Ok(conversations)
+    index
 }
 
 pub(crate) fn load_index_or_scan(app: &AppHandle) -> Result<ConversationIndex, String> {
-    load_index_or_scan_in_dir(&conversations_dir(app)?)
+    let dir = conversations_dir(app)?;
+    let file_ids = conversation_file_ids_in_dir(&dir).unwrap_or_default();
+    let mut cache = conversation_index_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(entry) = cache.get(&dir) {
+        if index_covers_files(&entry.index, &file_ids) {
+            return Ok(entry.index.clone());
+        }
+    }
+    let (index, healed) = load_index_or_scan_in_dir(&dir)?;
+    let needs_persist = healed || cache.get(&dir).is_some_and(|entry| entry.needs_persist);
+    cache.insert(
+        dir,
+        ConversationIndexCacheEntry {
+            index: index.clone(),
+            needs_persist,
+        },
+    );
+    Ok(index)
 }
 
 /// index.json 只是缓存；conv_<id>.json 才是真相源。
 ///
-/// 对账口径必须**廉价**：一次 readdir 只比文件名，不读也不反序列化任何对话正文。曾经改成
-/// "全量读所有 conv_*.json 再逐条比 revision"，于是 500 个会话的用户每次刷侧栏都要把几百 MB
-/// JSON 同步解析一遍，index.json 这层缓存等于作废。索引里缺任一磁盘文件（索引残缺/缺失/写坏）
-/// 才退化成全量重扫；多余的幽灵条目无害，按 updated_at 排序时会被过滤掉。
+/// 对账口径必须**廉价**：一次 readdir 只比文件名，不读也不反序列化任何对话正文。
+/// 索引缺文件时只读缺的那几份，补进现有条目——不要把已索引的会话整本再 parse 一遍。
+/// 多余的幽灵条目无害，按 updated_at 排序时会被过滤掉。
 ///
-/// **只读不写**：自愈落盘统一交给持有 `index_lock` 的写路径（`repository::persist_locked` /
-/// `bulk_mutate_loaded` / `delete_conversation`）。这里顺手 `save_index` 会绕开那把锁，
-/// 和并发的持久化 lost update——刚存的会话会在侧栏短暂消失。
-fn load_index_or_scan_in_dir(dir: &Path) -> Result<ConversationIndex, String> {
+/// **只读不写**：自愈落盘统一交给持有 `index_lock` 的写路径（`persist_healed_conversation_index`
+/// / `repository::persist_locked` / `bulk_mutate_loaded` / `delete_conversation`）。这里顺手
+/// `save_index` 会绕开那把锁，和并发的持久化 lost update——刚存的会话会在侧栏短暂消失。
+fn load_index_or_scan_in_dir(dir: &Path) -> Result<(ConversationIndex, bool), String> {
     let file_ids = conversation_file_ids_in_dir(dir).unwrap_or_default();
     match load_index_in_dir(dir) {
-        Ok(index) if index_covers_files(&index, &file_ids) => Ok(index),
-        Ok(_) => Ok(ConversationIndex {
-            conversations: load_conversation_list_in_dir(dir)?,
-        }),
+        Ok(index) if index_covers_files(&index, &file_ids) => Ok((index, false)),
+        Ok(index) => Ok((merge_missing_conversations(dir, index, &file_ids), true)),
         Err(e) => {
             eprintln!("conversation index unavailable, rebuilding list from files: {e}");
-            Ok(ConversationIndex {
-                conversations: load_conversation_list_in_dir(dir)?,
-            })
+            Ok((
+                merge_missing_conversations(dir, ConversationIndex::default(), &file_ids),
+                true,
+            ))
         }
     }
 }
@@ -274,7 +329,11 @@ fn load_index_in_dir(dir: &Path) -> Result<ConversationIndex, String> {
 pub(crate) fn save_index(app: &AppHandle, index: &ConversationIndex) -> Result<(), String> {
     let path = index_file_path(app)?;
     let content = serde_json::to_string(index).map_err(|e| format!("serialize index: {e}"))?;
-    atomic_write(&path, &content, "index")
+    atomic_write(&path, &content, "index")?;
+    if let Some(dir) = path.parent() {
+        remember_conversation_index_cache(dir.to_path_buf(), index.clone(), false);
+    }
+    Ok(())
 }
 
 pub fn load_project_index(app: &AppHandle) -> Result<ChatProjectIndex, String> {
@@ -2762,7 +2821,7 @@ mod index_self_heal_tests {
         };
         // 索引覆盖全部文件(还多一个幽灵条目 conv_b)→ 信任
         assert!(index_covers_files(&index, &["conv_a".to_string()]));
-        // 有文件(conv_c)不在索引 → 需重建
+        // 有文件(conv_c)不在索引 → 需补缺
         assert!(!index_covers_files(
             &index,
             &["conv_a".to_string(), "conv_c".to_string()]
@@ -2773,7 +2832,7 @@ mod index_self_heal_tests {
     ///
     /// 这条挂了就意味着"侧栏刷新退化成全量扫盘"那个性能回退回来了——500 个会话的用户每点
     /// 一次侧栏就要同步解析几百 MB JSON。这里用"文件名合法但正文是坏 JSON"的会话当探针:
-    /// 只要还有人去读正文,它就会被判为损坏并从列表里消失。
+    /// 已在索引里的条目只要有人去读正文,就会被判损坏并从列表里消失。
     #[test]
     fn cheap_reconciliation_trusts_index_without_reading_conversation_bodies() {
         let dir = temp_dir();
@@ -2787,18 +2846,73 @@ mod index_self_heal_tests {
         .unwrap();
         fs::write(dir.join("conv_a.json"), "{ not json at all").unwrap();
 
-        let index = load_index_or_scan_in_dir(&dir).unwrap();
+        let (index, healed) = load_index_or_scan_in_dir(&dir).unwrap();
+        assert!(!healed);
         assert_eq!(index.conversations.len(), 1);
         assert_eq!(index.conversations[0].id, "conv_a");
 
-        // 出现索引没覆盖的文件才允许退化成全量重扫。
+        // 索引没覆盖的新文件只读那一份；已在索引里的会话仍然不读正文。
         fs::write(dir.join("conv_b.json"), "{ also broken").unwrap();
-        assert!(load_index_or_scan_in_dir(&dir)
-            .unwrap()
-            .conversations
-            .is_empty());
+        let (index, healed) = load_index_or_scan_in_dir(&dir).unwrap();
+        assert!(healed);
+        assert_eq!(index.conversations.len(), 1);
+        assert_eq!(index.conversations[0].id, "conv_a");
 
-        // 且重扫只读不写:自愈落盘归持有 index_lock 的写路径,这里写回就会 lost update。
+        // 且补缺只读不写:自愈落盘归持有 index_lock 的写路径,这里写回就会 lost update。
+        assert_eq!(load_index_in_dir(&dir).unwrap().conversations.len(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_index_entries_are_merged_without_rereading_indexed_bodies() {
+        let dir = temp_dir();
+        fs::write(
+            dir.join("index.json"),
+            serde_json::to_string(&ConversationIndex {
+                conversations: vec![list_item("conv_a", Some(1))],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        // 已索引会话正文损坏：如果补缺时整目录重扫，conv_a 会被当成坏文件丢掉。
+        fs::write(dir.join("conv_a.json"), "{ not json at all").unwrap();
+        fs::write(
+            dir.join("conv_b.json"),
+            serde_json::json!({
+                "id": "conv_b",
+                "title": "new",
+                "provider_id": "provider",
+                "model": "model",
+                "created_at": 2,
+                "updated_at": 2,
+                "messages": [{
+                    "id": "msg_1",
+                    "role": "user",
+                    "content": "hello from the new conversation",
+                    "timestamp": 2
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let (index, healed) = load_index_or_scan_in_dir(&dir).unwrap();
+        assert!(healed);
+        let mut ids: Vec<_> = index
+            .conversations
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["conv_a", "conv_b"]);
+        let added = index
+            .conversations
+            .iter()
+            .find(|item| item.id == "conv_b")
+            .expect("merged missing conversation");
+        assert_eq!(added.title, "new");
+        assert_eq!(added.preview, "hello from the new conversation");
+
         assert_eq!(load_index_in_dir(&dir).unwrap().conversations.len(), 1);
         fs::remove_dir_all(&dir).ok();
     }

@@ -233,13 +233,14 @@ impl ConversationRepository {
         super::storage::load_conversation(app, id).map_err(Into::into)
     }
 
-    /// 以下三个纯读操作只拿共享 barrier，且**不拿 `index_lock`**。
+    /// 以下纯读操作只拿共享 barrier。索引完整时**不拿 `index_lock`**。
     ///
     /// `index_lock` 存在的意义是串行化 index.json 的 read-modify-write（`persist_locked` /
-    /// `bulk_mutate_loaded` / `delete_conversation`）；纯读方不改任何东西，而 `atomic_write`
-    /// 是 write-temp + rename，读者只会看到完整的旧版本或完整的新版本，撕不了。以前这几个
-    /// 读操作既拿独占 barrier 又拿 index_lock，于是"流式回答中途在侧栏搜一下"会让 agent 每轮
-    /// 的 `persist_partial_assistant` 排队等一次全量文件扫描，反之亦然。
+    /// `bulk_mutate_loaded` / `delete_conversation` / 残缺索引的补缺落盘）；纯读方不改任何
+    /// 东西，而 `atomic_write` 是 write-temp + rename，读者只会看到完整的旧版本或完整的新
+    /// 版本，撕不了。以前这几个读操作既拿独占 barrier 又拿 index_lock，于是"流式回答中途在
+    /// 侧栏搜一下"会让 agent 每轮的 `persist_partial_assistant` 排队等一次全量文件扫描，
+    /// 反之亦然。索引缺条目时会在读完后补缺并持 `index_lock` 写回一次，避免下次开窗再读正文。
     ///
     /// 共享 barrier 依然挡住 `bulk_mutate_loaded`（它拿独占），所以"批量迁移期间读到半套数据"
     /// 这条不变式没变。加锁顺序仍是 barrier → conversation → index，没有新的环。
@@ -253,8 +254,23 @@ impl ConversationRepository {
         set_id: Option<String>,
     ) -> RepositoryResult<Vec<ConversationListItem>> {
         let _barrier = self.barrier.read().await;
-        super::storage::get_conversations(app, offset, limit, folder, project_id, set_id)
-            .map_err(Into::into)
+        let app_for_read = app.clone();
+        let conversations = Self::spawn_storage(
+            move || {
+                super::storage::get_conversations(
+                    &app_for_read,
+                    offset,
+                    limit,
+                    folder,
+                    project_id,
+                    set_id,
+                )
+            },
+            "list conversations",
+        )
+        .await?;
+        self.persist_healed_index_if_needed(app).await;
+        Ok(conversations)
     }
 
     pub async fn search(
@@ -264,7 +280,15 @@ impl ConversationRepository {
         limit: usize,
     ) -> RepositoryResult<Vec<super::ConversationSearchHit>> {
         let _barrier = self.barrier.read().await;
-        super::storage::search_conversations(app, query, limit).map_err(Into::into)
+        let app_for_read = app.clone();
+        let query = query.to_string();
+        let hits = Self::spawn_storage(
+            move || super::storage::search_conversations(&app_for_read, &query, limit),
+            "search conversations",
+        )
+        .await?;
+        self.persist_healed_index_if_needed(app).await;
+        Ok(hits)
     }
 
     /// 对话库查询（筛选/排序/分页 + total）。共享 barrier，不挡单会话写。
@@ -274,7 +298,43 @@ impl ConversationRepository {
         query: super::storage::ConversationLibraryQuery,
     ) -> RepositoryResult<super::storage::ConversationLibraryPage> {
         let _barrier = self.barrier.read().await;
-        super::storage::query_conversations(app, query).map_err(Into::into)
+        let app_for_read = app.clone();
+        let page = Self::spawn_storage(
+            move || super::storage::query_conversations(&app_for_read, query),
+            "query conversation library",
+        )
+        .await?;
+        self.persist_healed_index_if_needed(app).await;
+        Ok(page)
+    }
+
+    async fn spawn_storage<T, F>(op: F, label: &'static str) -> RepositoryResult<T>
+    where
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+        T: Send + 'static,
+    {
+        tauri::async_runtime::spawn_blocking(op)
+            .await
+            .map_err(|error| {
+                ConversationRepositoryError::Storage(format!("{label} join: {error}"))
+            })?
+            .map_err(Into::into)
+    }
+
+    async fn persist_healed_index_if_needed(&self, app: &AppHandle) {
+        if !super::storage::conversation_index_needs_persist(app) {
+            return;
+        }
+        let _index = self.index_lock.lock().await;
+        let app = app.clone();
+        if let Err(error) = Self::spawn_storage(
+            move || super::storage::persist_healed_conversation_index(&app),
+            "persist healed conversation index",
+        )
+        .await
+        {
+            eprintln!("{error}");
+        }
     }
 
     /// 只读探查，不写。"同一个空对话被两个新建请求同时复用"这条不变式由调用方的
@@ -292,16 +352,30 @@ impl ConversationRepository {
         assistant_id: Option<&str>,
     ) -> RepositoryResult<Option<Conversation>> {
         let _barrier = self.barrier.read().await;
-        super::storage::find_reusable_blank_conversation(
-            app,
-            provider_id,
-            model,
-            folder,
-            project_id,
-            set_id,
-            assistant_id,
+        let app_for_read = app.clone();
+        let provider_id = provider_id.to_string();
+        let model = model.to_string();
+        let folder = folder.map(str::to_string);
+        let project_id = project_id.map(str::to_string);
+        let set_id = set_id.map(str::to_string);
+        let assistant_id = assistant_id.map(str::to_string);
+        let found = Self::spawn_storage(
+            move || {
+                super::storage::find_reusable_blank_conversation(
+                    &app_for_read,
+                    &provider_id,
+                    &model,
+                    folder.as_deref(),
+                    project_id.as_deref(),
+                    set_id.as_deref(),
+                    assistant_id.as_deref(),
+                )
+            },
+            "find reusable blank conversation",
         )
-        .map_err(Into::into)
+        .await?;
+        self.persist_healed_index_if_needed(app).await;
+        Ok(found)
     }
 
     pub async fn delete(&self, app: &AppHandle, id: &str) -> RepositoryResult<Vec<String>> {
