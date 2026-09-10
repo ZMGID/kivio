@@ -148,17 +148,13 @@ pub(crate) async fn chat_get_conversation(
 ) -> Result<serde_json::Value, String> {
     let repository = crate::chat::repository::repository(&app);
     // 存量迁移：老会话的 `model_messages` 里可能还躺着图片 base64（外置是后来才补的）。
-    // 打开时顺手外置一次，之后这份 JSON 就回到 KB 量级。谓词是廉价扫描，无图零开销；
+    // 打开时顺手外置一次，之后这份 JSON 就回到 KB 量级。一次读盘；无图不写。
     // 迁移失败只记警告——它是优化，绝不该挡住打开会话。
     let mut conversation = match repository
         .externalize_stored_images(&app, &conversation_id)
         .await
     {
-        Ok(Some(migrated)) => migrated,
-        Ok(None) => repository
-            .get(&app, &conversation_id)
-            .await
-            .map_err(crate::chat::repository::repository_error)?,
+        Ok(conversation) => conversation,
         Err(err) => {
             eprintln!("externalize stored images failed ({conversation_id}): {err}");
             repository

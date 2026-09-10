@@ -230,7 +230,13 @@ impl ConversationRepository {
         let _barrier = self.barrier.read().await;
         let lock = self.conversation_lock(id);
         let _conversation = lock.lock().await;
-        super::storage::load_conversation(app, id).map_err(Into::into)
+        let app = app.clone();
+        let id = id.to_string();
+        Self::spawn_storage(
+            move || super::storage::load_conversation(&app, &id),
+            "load conversation",
+        )
+        .await
     }
 
     /// 以下纯读操作只拿共享 barrier。索引完整时**不拿 `index_lock`**。
@@ -475,33 +481,35 @@ impl ConversationRepository {
         self.persist_locked(app, latest).await
     }
 
-    /// 存量迁移：把落盘 `model_messages` 里残留的图片 base64 外置成附件文件引用。
+    /// 打开会话：一次读盘。老会话 `model_messages` 里若还躺着图片 base64，顺手外置后写回
+    /// （新写入天然会外置，所以只覆盖「打开过但再也没发消息」的存量）。
     ///
-    /// 新写入天然会外置（`write_conversation_file` 每次落盘都跑），所以这里只为一种情况
-    /// 存在：**老会话被打开、但用户没再发消息**——那份几十 MB 的 JSON 会一直躺在盘上，
-    /// 每次打开都要全量 parse。谓词是廉价扫描，绝大多数会话直接返回 `None`、零开销。
-    ///
-    /// **不 bump `updated_at`**（同 `update_context` 的理由：迁移不是用户编辑，不该把会话
-    /// 顶到"最近更新"最前面）。revision 照常推进，并发写方的 CAS 语义不变。
-    /// 返回 `None` = 无需迁移。
+    /// **不 bump `updated_at`**（同 `update_context`：迁移不是用户编辑，不该顶到最近）。
+    /// revision 照常推进。无图时直接返回刚读到的会话，不再二次 `get`。
     pub async fn externalize_stored_images(
         &self,
         app: &AppHandle,
         id: &str,
-    ) -> RepositoryResult<Option<Conversation>> {
+    ) -> RepositoryResult<Conversation> {
         let _barrier = self.barrier.read().await;
         let lock = self.conversation_lock(id);
         let _conversation = lock.lock().await;
-        let mut latest = super::storage::load_conversation(app, id)?;
+        let app_for_read = app.clone();
+        let id_owned = id.to_string();
+        let mut latest = Self::spawn_storage(
+            move || super::storage::load_conversation(&app_for_read, &id_owned),
+            "load conversation",
+        )
+        .await?;
         if !latest.messages.iter().any(|message| {
             super::attachments::message_has_model_message_image_to_externalize(message)
                 || super::attachments::message_has_api_message_image_to_externalize(message)
         }) {
-            return Ok(None);
+            return Ok(latest);
         }
         increment_revision(&mut latest)?;
         // 真正的外置发生在 write_conversation_file 里（唯一的落盘出口）。
-        self.persist_locked(app, latest).await.map(Some)
+        self.persist_locked(app, latest).await
     }
 
     pub async fn prepare_ordinary_workspace(

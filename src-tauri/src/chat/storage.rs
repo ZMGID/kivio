@@ -1052,8 +1052,8 @@ fn compare_library_items(
 
 /// 全量索引搜索：在所有对话（不止侧栏默认加载的前 N 个）的标题/预览/文件夹里做大小写
 /// 不敏感子串匹配，按更新时间倒序返回前 limit 个。让侧栏搜索能找到已掉出"最近"列表的老对话。
-/// 元数据命中只读 index.json（轻量）；没命中的才逐个读对话正文做全文匹配——所以这个函数的
-/// 成本与对话总数成正比，别放在任何全局写锁里。
+/// 元数据命中只读 index.json（轻量）；没命中的才读对话正文。先按 `updated_at` 排再扫，
+/// 凑够 limit 就停——结果集与「扫完全部再截断」相同，不必为了第 31 条去解析更旧的整本 JSON。
 ///
 /// 每条命中附带首个匹配位置（`match_field` / `match_message_id` / `match_snippet`），
 /// 供全局搜索高亮片段与「点进结果跳到那条消息」。
@@ -1063,23 +1063,28 @@ pub fn search_conversations(
     limit: usize,
 ) -> Result<Vec<ConversationSearchHit>, String> {
     let needle = query.trim().to_lowercase();
-    if needle.is_empty() {
+    if needle.is_empty() || limit == 0 {
         return Ok(vec![]);
     }
     let index = load_index_or_scan(app)?;
     let mut hits: Vec<ConversationSearchHit> = Vec::new();
-    for c in index.conversations {
-        // 侧栏搜索不包含归档
-        if c.archived {
-            continue;
-        }
+    for c in rank_conversations_for_search(index.conversations) {
         if let Some(hit) = match_conversation_for_search(app, c, &needle) {
             hits.push(hit);
+            if hits.len() >= limit {
+                break;
+            }
         }
     }
-    hits.sort_by(|a, b| b.item.updated_at.cmp(&a.item.updated_at));
-    hits.truncate(limit);
     Ok(hits)
+}
+
+fn rank_conversations_for_search(
+    mut items: Vec<ConversationListItem>,
+) -> Vec<ConversationListItem> {
+    items.retain(|item| !item.archived);
+    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    items
 }
 
 /// 构造一条搜索命中：优先标题 → 预览 → 文件夹 → 助手/模型 → 正文/思考（首条消息）。
@@ -1141,9 +1146,7 @@ fn match_conversation_for_search(
         });
     }
 
-    let Ok(conv) = load_conversation(app, &item.id) else {
-        return None;
-    };
+    let conv = load_conversation_for_search(app, &item.id, needle)?;
     first_message_match(&conv, needle).map(|(field, message_id, snippet)| ConversationSearchHit {
         item,
         match_field: field,
@@ -1152,13 +1155,36 @@ fn match_conversation_for_search(
     })
 }
 
-/// 全文匹配：读会话文件，扫所有消息的 content 与 reasoning（大小写不敏感）。
-/// 读/解析失败按不匹配处理，不让单个坏文件毁掉整次搜索。
+/// 全文匹配：原文里连关键词都没有就跳过 serde；读/解析失败按不匹配处理。
 fn conversation_content_matches(app: &AppHandle, id: &str, needle: &str) -> bool {
-    let Ok(conv) = load_conversation(app, id) else {
+    load_conversation_for_search(app, id, needle)
+        .is_some_and(|conv| messages_match(&conv, needle))
+}
+
+fn load_conversation_for_search(
+    app: &AppHandle,
+    id: &str,
+    needle_lower: &str,
+) -> Option<Conversation> {
+    let path = conversation_file_path(app, id).ok()?;
+    let raw = fs::read_to_string(path).ok()?;
+    if !conversation_raw_might_contain(&raw, needle_lower) {
+        return None;
+    }
+    serde_json::from_str(&raw).ok()
+}
+
+/// 正文搜索的廉价预筛：文件原文里没有 needle 就不必反序列化整本对话。
+/// 不含 ASCII 字母时（中文/数字/符号）大小写折叠是空操作，直接 `contains`。
+fn conversation_raw_might_contain(raw: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
         return false;
-    };
-    messages_match(&conv, needle)
+    }
+    if needle_lower.chars().all(|c| !c.is_ascii_alphabetic()) {
+        raw.contains(needle_lower)
+    } else {
+        raw.to_lowercase().contains(needle_lower)
+    }
 }
 
 fn messages_match(conv: &Conversation, needle: &str) -> bool {
@@ -2915,6 +2941,50 @@ mod index_self_heal_tests {
 
         assert_eq!(load_index_in_dir(&dir).unwrap().conversations.len(), 1);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    fn search_item(id: &str, updated_at: i64, archived: bool) -> ConversationListItem {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "revision": 1,
+            "title": id,
+            "preview": "",
+            "provider_id": "provider",
+            "model": "model",
+            "message_count": 0,
+            "created_at": 1,
+            "updated_at": updated_at,
+            "archived": archived
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn search_ranks_unarchived_newest_first() {
+        let ranked = rank_conversations_for_search(vec![
+            search_item("conv_old", 1, false),
+            search_item("conv_archived", 9, true),
+            search_item("conv_new", 5, false),
+        ]);
+        let ids: Vec<_> = ranked.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["conv_new", "conv_old"]);
+    }
+
+    #[test]
+    fn search_raw_prefilter_skips_serde_when_needle_absent() {
+        let raw = r#"{"id":"conv_a","messages":[{"content":"你好世界"}]}"#;
+        assert!(conversation_raw_might_contain(raw, "你好"));
+        assert!(!conversation_raw_might_contain(raw, "不存在的词"));
+        assert!(!conversation_raw_might_contain(raw, "hello"));
+        assert!(conversation_raw_might_contain(
+            r#"{"content":"HELLO WORLD"}"#,
+            "hello"
+        ));
+        assert!(!conversation_raw_might_contain(
+            r#"{"content":"HELLO WORLD"}"#,
+            "missing"
+        ));
+        assert!(!conversation_raw_might_contain(raw, ""));
     }
 }
 
