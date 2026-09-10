@@ -1174,17 +1174,24 @@ fn load_conversation_for_search(
     serde_json::from_str(&raw).ok()
 }
 
-/// 正文搜索的廉价预筛：文件原文里没有 needle 就不必反序列化整本对话。
-/// 不含 ASCII 字母时（中文/数字/符号）大小写折叠是空操作，直接 `contains`。
+/// 保守预筛：只有确定解码后的正文也不可能匹配时，才跳过反序列化。
+/// 转义可能打断查询文本，也可能改变非 ASCII 字母的上下文大小写转换。
 fn conversation_raw_might_contain(raw: &str, needle_lower: &str) -> bool {
     if needle_lower.is_empty() {
         return false;
     }
-    if needle_lower.chars().all(|c| !c.is_ascii_alphabetic()) {
-        raw.contains(needle_lower)
-    } else {
-        raw.to_lowercase().contains(needle_lower)
+    if raw.contains('\\')
+        && (raw.contains(r"\u")
+            || needle_lower.chars().any(|c| {
+                matches!(c, '"' | '\\' | '/')
+                    || c.is_control()
+                    || (!c.is_ascii() && (c.is_lowercase() || c.is_uppercase()))
+            }))
+    {
+        return true;
     }
+    // 与 first_message_match 一样保留 Unicode 大小写语义。
+    raw.contains(needle_lower) || raw.to_lowercase().contains(needle_lower)
 }
 
 fn messages_match(conv: &Conversation, needle: &str) -> bool {
@@ -2985,6 +2992,77 @@ mod index_self_heal_tests {
             "missing"
         ));
         assert!(!conversation_raw_might_contain(raw, ""));
+        assert!(!conversation_raw_might_contain(
+            r#"{"content":"first line\nsecond line"}"#,
+            "missing"
+        ));
+    }
+
+    fn assert_search_prefilter_preserves_match(encoded_text: &str, needle: &str) {
+        for field in ["content", "reasoning"] {
+            let mut value = serde_json::json!({
+                "id": "conv_search",
+                "title": "Search regression",
+                "provider_id": "provider",
+                "model": "model",
+                "created_at": 1,
+                "updated_at": 1,
+                "messages": [{
+                    "id": "msg_search",
+                    "role": "assistant",
+                    "content": "",
+                    "timestamp": 1
+                }]
+            });
+            value["messages"][0][field] = serde_json::json!("__search_text__");
+            // 保留输入的 JSON 转义写法，覆盖导入文件中非规范但合法的编码。
+            let raw = value
+                .to_string()
+                .replace(r#""__search_text__""#, encoded_text);
+            let conversation: Conversation = serde_json::from_str(&raw).unwrap();
+            let needle_lower = needle.to_lowercase();
+            assert!(
+                messages_match(&conversation, &needle_lower),
+                "fixture must match {field}: {encoded_text} / {needle:?}"
+            );
+            assert!(
+                conversation_raw_might_contain(&raw, &needle_lower),
+                "prefilter rejected {field}: {encoded_text} / {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_raw_prefilter_preserves_json_escaped_matches() {
+        for (encoded, needle) in [
+            (r#""C:\\Users\\alice""#, r"c:\users\alice"),
+            (r#""say \"hello\"""#, "\"hello\""),
+            (r#""first\nsecond""#, "first\nsecond"),
+            (r#""first\tsecond""#, "first\tsecond"),
+            (r#""first\rsecond""#, "first\rsecond"),
+            (r#""first\bsecond""#, "first\u{0008}second"),
+            (r#""first\fsecond""#, "first\u{000c}second"),
+            (r#""foo\/bar""#, "foo/bar"),
+            (r#""\u4f60\u597d""#, "你好"),
+            (r#""fo\u006fbar""#, "foobar"),
+            (r#""\uD83D\uDE00""#, "😀"),
+        ] {
+            assert_search_prefilter_preserves_match(encoded, needle);
+        }
+    }
+
+    #[test]
+    fn search_raw_prefilter_preserves_unicode_case_matches() {
+        for (encoded, needle) in [
+            (r#""ПРИВЕТ""#, "привет"),
+            (r#""É""#, "é"),
+            (r#""ΟΣ""#, "ος"),
+            (r#""\nΣ""#, "σ"),
+            (r#""İ""#, "i\u{0307}"),
+            (r#""\u00c9""#, "é"),
+        ] {
+            assert_search_prefilter_preserves_match(encoded, needle);
+        }
     }
 }
 
