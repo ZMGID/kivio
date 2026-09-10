@@ -799,6 +799,15 @@ pub(crate) fn mcp_server_is_runtime_eligible(server: &ChatMcpServer) -> bool {
     if !server.enabled {
         return false;
     }
+    // Package ownership must be resolved before the broader catalog-plugin prefix.
+    // Use the same owner switch as package skills and lifecycle reconciliation.
+    if let Some(package_id) = server
+        .connector_id
+        .as_deref()
+        .and_then(|connector_id| connector_id.strip_prefix("plugin:package:"))
+    {
+        return crate::plugins::packages::owner_enabled(package_id);
+    }
     if let Some(plugin_id) = server
         .connector_id
         .as_deref()
@@ -1294,6 +1303,48 @@ mod tests {
         assert!(!mcp_server_is_runtime_eligible(&server));
 
         server.enabled = true;
+        assert!(mcp_server_is_runtime_eligible(&server));
+    }
+
+    #[test]
+    fn package_runtime_eligibility_tracks_owner_and_server_switches() {
+        let root = tempfile::tempdir().unwrap();
+        let _scope = crate::plugins::packages::TestPackagesRoot::new(root.path());
+        let id = uuid::Uuid::new_v4().to_string();
+        let dir = root.path().join(&id);
+        fs::create_dir(&dir).unwrap();
+        let record = dir.join("record.json");
+        let mut server = enabled_server("package-test");
+        server.connector_id = Some(format!("plugin:package:{id}"));
+
+        assert!(!mcp_server_is_runtime_eligible(&server), "missing package");
+        fs::write(&record, r#"{"enabled":true}"#).unwrap();
+        assert!(mcp_server_is_runtime_eligible(&server), "enabled package");
+        let settings = settings_with_servers(vec![server.clone()]);
+        assert_eq!(select_warmup_servers(&settings, None).len(), 1);
+        assert_eq!(
+            select_warmup_servers(&settings, Some(&[server.id.clone()])).len(),
+            1
+        );
+
+        server.enabled = false;
+        assert!(!mcp_server_is_runtime_eligible(&server), "disabled server");
+        server.enabled = true;
+        fs::write(&record, r#"{"enabled":false}"#).unwrap();
+        assert!(!mcp_server_is_runtime_eligible(&server), "disabled package");
+        assert!(select_warmup_servers(&settings, None).is_empty());
+        fs::write(&record, "invalid json").unwrap();
+        assert!(!mcp_server_is_runtime_eligible(&server), "broken record");
+
+        for connector in [
+            "plugin:package:",
+            "plugin:package:invalid",
+            "plugin:missing-plugin",
+        ] {
+            server.connector_id = Some(connector.into());
+            assert!(!mcp_server_is_runtime_eligible(&server), "{connector}");
+        }
+        server.connector_id = Some("connector:example".into());
         assert!(mcp_server_is_runtime_eligible(&server));
     }
 

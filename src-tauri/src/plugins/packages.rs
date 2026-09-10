@@ -38,9 +38,37 @@ pub struct Resolved {
     pub servers: Vec<ChatMcpServer>,
 }
 fn packages_root() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(root) = TEST_PACKAGES_ROOT.with(|root| root.borrow().clone()) {
+        return Ok(root);
+    }
     super::plugins_root()
         .map(|p| p.join("packages"))
         .ok_or("Application data directory unavailable".into())
+}
+
+// Scoped to the test thread so runtime tests can use real package records without
+// touching installed plugins or changing process-wide environment variables.
+#[cfg(test)]
+thread_local! {
+    static TEST_PACKAGES_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestPackagesRoot(Option<PathBuf>);
+
+#[cfg(test)]
+impl TestPackagesRoot {
+    pub(crate) fn new(root: &Path) -> Self {
+        Self(TEST_PACKAGES_ROOT.with(|slot| slot.replace(Some(root.to_path_buf()))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestPackagesRoot {
+    fn drop(&mut self) {
+        TEST_PACKAGES_ROOT.with(|slot| slot.replace(self.0.take()));
+    }
 }
 fn package_dir(id: &str) -> Result<PathBuf, String> {
     uuid::Uuid::parse_str(id).map_err(|_| "Invalid package id")?;
