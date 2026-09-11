@@ -4,6 +4,48 @@ import { describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
+describe('assistant body visibility', () => {
+  it('copies the questions and final supplement without private reasoning or tool output', async () => {
+    const user = userEvent.setup()
+    const message: ChatMessage = {
+      id: 'copy-questions', role: 'assistant', timestamp: 1, content: '请回答上面的问题。',
+      segments: [
+        { id: 'questions', kind: 'text', phase: 'tool_loop', order: 1, text: '目标用户是谁？' },
+        { id: 'reasoning', kind: 'reasoning', phase: 'tool_loop', order: 2, text: 'private reasoning' },
+        { id: 'final', kind: 'text', phase: 'plain', order: 3, text: '请回答上面的问题。' },
+      ],
+    }
+    render(<MessageBubble message={message} />)
+    await user.click(screen.getByRole('button', { name: '复制' }))
+    expect(await navigator.clipboard.readText()).toBe('目标用户是谁？\n\n请回答上面的问题。')
+  })
+
+  it('keeps questions visible as tools arrive and the answer completes', () => {
+    const questions = 'Q1 目标用户是谁？Q2 有何差异？Q3 首个交付是什么？Q4 有哪些约束？'
+    const message: ChatMessage = {
+      id: 'questions-before-tools', role: 'assistant', content: '', timestamp: 1,
+      segments: [{ id: 'questions', kind: 'text', phase: 'tool_loop', order: 1, text: questions }],
+    }
+    const { rerender } = render(<MessageBubble message={message} messageStreaming />)
+    expect(screen.getByText(questions)).toBeVisible()
+    const completed: ChatMessage = {
+      ...message,
+      content: '环境检查完成。请回答上面四个问题。',
+      segments: [
+        ...message.segments!,
+        { id: 'check', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'check' },
+        { id: 'final', kind: 'text', phase: 'plain', order: 3, text: '环境检查完成。请回答上面四个问题。' },
+      ],
+      tool_calls: [{ id: 'check', name: 'bash', source: 'native', status: 'completed' }],
+    }
+    rerender(<MessageBubble message={completed} messageStreaming />)
+    expect(screen.getByText(questions)).toBeVisible()
+    rerender(<MessageBubble message={completed} />)
+    expect(screen.getByText(questions)).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'false')
+  })
+})
+
 describe('MessageBubble mount motion', () => {
   const assistantMessage: ChatMessage = {
     id: 'assistant-motion',
@@ -369,7 +411,7 @@ describe('MessageBubble timeline grouping', () => {
     expect(screen.getByText('answer')).toBeInTheDocument()
   })
 
-  it('folds tool-loop commentary into the collapsed working shell', async () => {
+  it('keeps tool-loop text visible while tool details stay collapsed', async () => {
     const user = userEvent.setup()
     const message: ChatMessage = {
       id: 'msg-commentary',
@@ -392,7 +434,7 @@ describe('MessageBubble timeline grouping', () => {
     }
 
     render(<MessageBubble message={message} />)
-    expect(screen.queryByText('looking around')).not.toBeInTheDocument()
+    expect(screen.getByText('looking around')).toBeInTheDocument()
     expect(screen.getByText('answer')).toBeInTheDocument()
     expect(screen.getAllByLabelText('过程分组')).toHaveLength(1)
 
@@ -498,7 +540,7 @@ describe('MessageBubble timeline grouping', () => {
     expect(screen.getAllByText('file-0.ts').length).toBeGreaterThan(0)
   })
 
-  it('renders tool → text → tool as one working shell', () => {
+  it('keeps text between two collapsed tool groups visible', () => {
     const message: ChatMessage = {
       id: 'msg-3',
       role: 'assistant',
@@ -516,8 +558,8 @@ describe('MessageBubble timeline grouping', () => {
     }
 
     render(<MessageBubble message={message} />)
-    expect(screen.getAllByLabelText('过程分组')).toHaveLength(1)
-    expect(screen.queryByText('middle')).not.toBeInTheDocument()
+    expect(screen.getAllByLabelText('过程分组')).toHaveLength(2)
+    expect(screen.getByText('middle')).toBeInTheDocument()
   })
 
   it('keeps the last group expanded while the message is streaming', () => {

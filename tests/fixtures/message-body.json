@@ -1,0 +1,102 @@
+[
+  {
+    "name":"whitespace-only stream segments participate in the raw mirror",
+    "content":"Q\nA",
+    "segments":[
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Q"},
+      {"id":"space","kind":"text","phase":"tool_loop","order":2,"text":"\n"},
+      {"id":"a","kind":"text","phase":"plain","order":3,"text":"A"}
+    ],
+    "expected":"Q\n\nA"
+  },
+  {
+    "name":"raw streamed text is a mirror without paragraph separators",
+    "content":"Question?Answer.",
+    "segments":[
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Question?"},
+      {"id":"f","kind":"text","phase":"plain","order":2,"text":"Answer."}
+    ],
+    "expected":"Question?\n\nAnswer."
+  },
+  {
+    "name":"raw streamed whitespace is preserved when checking mirrors",
+    "content":"Question?\nAnswer.",
+    "segments":[
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Question?\n"},
+      {"id":"f","kind":"text","phase":"plain","order":2,"text":"Answer."}
+    ],
+    "expected":"Question?\n\nAnswer."
+  },
+  {
+    "name":"stored content aggregates only plain and synthesis segments",
+    "content":"Answer.\n\nMore.",
+    "segments":[
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Question?"},
+      {"id":"a","kind":"text","phase":"plain","order":2,"text":"Answer."},
+      {"id":"b","kind":"text","phase":"synthesis","order":3,"text":"More."}
+    ],
+    "expected":"Question?\n\nAnswer.\n\nMore."
+  },
+  {
+    "name": "questions before tools and final supplement",
+    "content": "Please answer the questions above.",
+    "segments": [
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Q1 Who is this for? Q2 What should it do?"},
+      {"id":"t","kind":"tool","phase":"tool_loop","order":2,"tool_call_id":"check"},
+      {"id":"r","kind":"reasoning","phase":"plain","order":3,"text":"private reasoning"},
+      {"id":"f","kind":"text","phase":"plain","order":4,"text":"Please answer the questions above."}
+    ],
+    "expected": "Q1 Who is this for? Q2 What should it do?\n\nPlease answer the questions above."
+  },
+  {
+    "name": "legacy normalization adds a duplicate synthesis",
+    "content": "Question?\n\nMore context.",
+    "segments": [
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Question?"},
+      {"id":"c","kind":"text","phase":"tool_loop","order":2,"text":"More context."},
+      {"id":"seg_3_synthesis_text","kind":"text","phase":"synthesis","order":3,"text":"Question?\n\nMore context."}
+    ],
+    "expected": "Question?\n\nMore context."
+  },
+  {
+    "name": "repeated model text is not deduplicated",
+    "content": "Question?",
+    "segments": [
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Question?"},
+      {"id":"f","kind":"text","phase":"synthesis","order":2,"text":"Question?"}
+    ],
+    "expected": "Question?\n\nQuestion?"
+  },
+  {
+    "name": "nonoverlapping legacy synthesis is retained",
+    "content": "Final answer.",
+    "segments": [
+      {"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Question?"},
+      {"id":"seg_2_synthesis_text","kind":"text","phase":"synthesis","order":2,"text":"Final answer."}
+    ],
+    "expected": "Question?\n\nFinal answer."
+  },
+  {
+    "name":"stored final is missing from partial segments",
+    "content":"Final answer.",
+    "segments":[{"id":"q","kind":"text","phase":"tool_loop","order":1,"text":"Question?"}],
+    "expected":"Question?\n\nFinal answer."
+  },
+  {"name":"content only legacy message","content":"Legacy answer.","segments":[],"expected":"Legacy answer."},
+  {
+    "name":"process segments with content fallback",
+    "content":"Recovered answer.",
+    "segments":[{"id":"r","kind":"reasoning","phase":"tool_loop","order":1,"text":"private reasoning"}],
+    "expected":"Recovered answer."
+  },
+  {
+    "name":"interrupted text and auxiliary text without final",
+    "content":"",
+    "segments":[
+      {"id":"b","kind":"text","phase":"tool_loop","order":2,"text":"Choose an option."},
+      {"id":"a","kind":"text","phase":"auxiliary","order":1,"text":"Need your input."}
+    ],
+    "expected":"Need your input.\n\nChoose an option."
+  },
+  {"name":"reasoning only is not body","content":"","segments":[{"id":"r","kind":"reasoning","phase":"plain","order":1,"text":"private reasoning"}],"expected":""}
+]

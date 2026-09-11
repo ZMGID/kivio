@@ -3,7 +3,10 @@ use std::path::Path;
 use chrono::{Local, TimeZone};
 use tauri::AppHandle;
 
-use super::{storage::load_conversation, Attachment, ChatMessage, Conversation};
+use super::{
+    storage::load_conversation, Attachment, ChatMessage, ChatMessageSegmentKind,
+    ChatMessageSegmentPhase, Conversation,
+};
 
 #[derive(Clone, Copy)]
 struct ExportLabels {
@@ -71,8 +74,62 @@ fn attachment_placeholder(attachment: &Attachment, labels: ExportLabels) -> Stri
     }
 }
 
+/// Display/export projection, independent of stored content and model replay.
+/// Kept in sync with messageBody.ts through tests/fixtures/message-body.json.
+fn message_body_text(message: &ChatMessage) -> String {
+    if message.role != "assistant" {
+        return message.content.clone();
+    }
+    let mut segments: Vec<_> = message.segments.iter().collect();
+    segments.sort_by_key(|segment| segment.order);
+    let mut parts: Vec<&str> = Vec::new();
+    let mut raw_parts: Vec<&str> = Vec::new();
+    let mut final_parts: Vec<&str> = Vec::new();
+    for segment in segments {
+        if segment.kind != ChatMessageSegmentKind::Text {
+            continue;
+        }
+        raw_parts.push(segment.text.as_deref().unwrap_or_default());
+        let text = segment.text.as_deref().unwrap_or_default().trim();
+        if text.is_empty() {
+            continue;
+        }
+        // Only normalize_assistant_segments' known fallback can be a duplicate;
+        // identical independently generated text must still be retained.
+        let synthesized = segment
+            .id
+            .strip_prefix("seg_")
+            .and_then(|id| id.strip_suffix("_synthesis_text"))
+            .is_some_and(|order| !order.is_empty() && order.bytes().all(|b| b.is_ascii_digit()))
+            && matches!(
+                segment.phase,
+                ChatMessageSegmentPhase::Plain | ChatMessageSegmentPhase::Synthesis
+            );
+        if synthesized && text == parts.join("\n\n") {
+            continue;
+        }
+        parts.push(text);
+        if matches!(
+            segment.phase,
+            ChatMessageSegmentPhase::Plain | ChatMessageSegmentPhase::Synthesis
+        ) {
+            final_parts.push(text);
+        }
+    }
+    let content = message.content.trim();
+    let is_content_mirror = parts.contains(&content)
+        || content == parts.join("\n\n")
+        || content == raw_parts.join("").trim()
+        || content == final_parts.join("\n\n");
+    if !content.is_empty() && !is_content_mirror {
+        parts.push(content);
+    }
+    parts.join("\n\n")
+}
+
 fn render_message(message: &ChatMessage, labels: ExportLabels) -> Option<String> {
-    let body = message.content.trim();
+    let body = message_body_text(message);
+    let body = body.trim();
     if body.is_empty() && message.attachments.is_empty() {
         return None;
     }
@@ -154,6 +211,34 @@ mod tests {
         AgentPlanState, AgentRuntimeConfig, AgentTodoState, ConversationContextState,
     };
     use std::collections::HashMap;
+
+    #[test]
+    fn exported_body_matches_visible_body_fixtures() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/message-body.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let mut conversation = conversation();
+            let mut message = conversation.messages.remove(1);
+            message.content = case["content"].as_str().unwrap().to_string();
+            message.segments = serde_json::from_value(case["segments"].clone()).unwrap();
+            message.attachments.clear();
+            let before = serde_json::to_value(&message).unwrap();
+            conversation.messages = vec![message.clone()];
+            let rendered = render_conversation_markdown(&conversation, "en");
+            let mut expected = message.clone();
+            expected.content = case["expected"].as_str().unwrap().to_string();
+            expected.segments.clear();
+            conversation.messages = vec![expected];
+            assert_eq!(
+                rendered,
+                render_conversation_markdown(&conversation, "en"),
+                "{}",
+                case["name"]
+            );
+            assert_eq!(serde_json::to_value(&message).unwrap(), before);
+        }
+    }
 
     fn conversation() -> Conversation {
         Conversation {

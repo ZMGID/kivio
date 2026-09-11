@@ -284,14 +284,14 @@ describe('groupTimelineSegments', () => {
     expect(items[0].type === 'group' && items[0].segments.map((s) => s.id)).toEqual(['r', 't1', 't2'])
   })
 
-  it('folds commentary that still has tools after it into one process group', () => {
+  it('keeps text between tools outside both process groups', () => {
     const items = groupTimelineSegments([
       toolSegment('t1', 1, 'call-1'),
       segment({ id: 'txt', kind: 'text', order: 2, text: 'between' }),
       toolSegment('t2', 3, 'call-2'),
     ])
-    expect(items).toHaveLength(1)
-    expect(items[0].type === 'group' && items[0].segments.map((s) => s.id)).toEqual(['t1', 'txt', 't2'])
+    expect(items.map(item => item.type)).toEqual(['group', 'text', 'group'])
+    expect(items[1].type === 'text' && items[1].segment.id).toBe('txt')
   })
 
   it('keeps trailing synthesis/plain text outside the process group', () => {
@@ -303,26 +303,26 @@ describe('groupTimelineSegments', () => {
     expect(items[1].type === 'text' && items[1].segment.id).toBe('txt')
   })
 
-  it('folds tool_loop commentary into the group and leaves the final answer out', () => {
+  it('keeps tool_loop text and the final answer outside the group', () => {
     const items = groupTimelineSegments([
       toolSegment('t1', 1, 'call-1'),
       segment({ id: 'note', kind: 'text', order: 2, phase: 'tool_loop', text: 'looking around' }),
       segment({ id: 'ans', kind: 'text', order: 3, phase: 'synthesis', text: 'done' }),
     ])
-    expect(items).toHaveLength(2)
-    expect(items[0].type === 'group' && items[0].segments.map((s) => s.id)).toEqual(['t1', 'note'])
-    expect(items[1].type === 'text' && items[1].segment.id).toBe('ans')
+    expect(items.map(item => item.type)).toEqual(['group', 'text', 'text'])
+    expect(items[1].type === 'text' && items[1].segment.id).toBe('note')
+    expect(items[2].type === 'text' && items[2].segment.id).toBe('ans')
   })
 
-  it('folds leading plain text that is followed by tools into the process group', () => {
+  it('keeps leading plain text visible when tools follow it', () => {
     const items = groupTimelineSegments([
       segment({ id: 'intro', kind: 'text', order: 1, text: 'I will read the file' }),
       toolSegment('t1', 2, 'call-1'),
       segment({ id: 'ans', kind: 'text', order: 3, phase: 'synthesis', text: 'done' }),
     ])
-    expect(items).toHaveLength(2)
-    expect(items[0].type === 'group' && items[0].segments.map((s) => s.id)).toEqual(['intro', 't1'])
-    expect(items[1].type === 'text' && items[1].segment.id).toBe('ans')
+    expect(items.map(item => item.type)).toEqual(['text', 'group', 'text'])
+    expect(items[0].type === 'text' && items[0].segment.id).toBe('intro')
+    expect(items[2].type === 'text' && items[2].segment.id).toBe('ans')
   })
 
   it('groups a pure reasoning run', () => {

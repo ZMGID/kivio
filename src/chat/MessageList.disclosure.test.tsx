@@ -21,7 +21,7 @@ async function mount() {
   const { container } = render(<MessageList conversationId="disclosure-regression" messages={[
     { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
     { id: 'answer', role: 'assistant', content: 'Answer', timestamp: 2, segments: [
-      { id: 'process', kind: 'text', phase: 'tool_loop', order: 0, text: 'Process details' },
+      { id: 'process', kind: 'reasoning', phase: 'tool_loop', order: 0, text: 'Process details' },
       { id: 'final', kind: 'text', phase: 'synthesis', order: 1, text: 'Answer' },
     ] },
     { id: 'next-question', role: 'user', content: 'Next question', timestamp: 3 },

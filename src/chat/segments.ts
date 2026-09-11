@@ -401,25 +401,10 @@ export type TimelineGroupItem =
   | { type: 'group'; segments: ChatMessageSegment[] }
   | { type: 'standaloneTool'; segment: ChatMessageSegment }
 
-/** Codex commentary：工具循环旁白，进 Working 壳，不是终稿。 */
-export function isProcessCommentaryText(segment: ChatMessageSegment): boolean {
-  return segment.kind === 'text' && (segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
-}
-
-function isGroupableProcess(
-  segment: ChatMessageSegment,
-  isStandalone?: (segment: ChatMessageSegment) => boolean,
-): boolean {
-  if (segment.kind === 'reasoning') return true
-  if (segment.kind === 'tool') return !isStandalone?.(segment)
-  return isProcessCommentaryText(segment)
-}
-
 /**
- * 把一轮里的过程收进 Working 组，终稿留在外面（对标 Codex App 的 Working / Worked for）。
- * - 过程：reasoning、非 standalone 的 tool、`tool_loop`/`auxiliary` 正文，以及后面还有过程的
- *   `plain`/`synthesis` 旁白（模型在工具之间写的话）。
- * - 终稿：最后一个过程之后的 `plain`/`synthesis` 正文，始终展开。
+ * 把思考和工具记录收进 Working 组，普通正文始终留在时间线上。
+ * phase 只表示执行阶段；工具前/工具间的文字也可能是需要用户回答的问题。
+ * 追加工具或思考不能将已展示的正文搬进折叠组。
  * - `isStandalone` 命中的 tool（ask_user / subagent / 产物卡）常驻打断，不进壳。
  * - 空白 reasoning/text 先过滤，避免空组或假分隔。
  */
@@ -427,13 +412,6 @@ export function groupTimelineSegments(
   orderedSegments: ChatMessageSegment[],
   isStandalone?: (segment: ChatMessageSegment) => boolean,
 ): TimelineGroupItem[] {
-  let lastProcessIndex = -1
-  for (let index = 0; index < orderedSegments.length; index++) {
-    const segment = orderedSegments[index]
-    if (!segmentHasContent(segment)) continue
-    if (isGroupableProcess(segment, isStandalone)) lastProcessIndex = index
-  }
-
   const items: TimelineGroupItem[] = []
   let current: ChatMessageSegment[] | null = null
   for (let index = 0; index < orderedSegments.length; index++) {
@@ -444,10 +422,7 @@ export function groupTimelineSegments(
       items.push({ type: 'standaloneTool', segment })
       continue
     }
-    const foldText =
-      segment.kind === 'text' &&
-      (isProcessCommentaryText(segment) || index < lastProcessIndex)
-    if (segment.kind === 'text' && !foldText) {
+    if (segment.kind === 'text') {
       current = null
       items.push({ type: 'text', segment })
       continue

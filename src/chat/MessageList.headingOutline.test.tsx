@@ -63,7 +63,7 @@ describe('MessageList heading outline', () => {
     expect(screen.queryByRole('button', { name: 'bbb' })).not.toBeInTheDocument()
   })
 
-  it('shows the settled current assistant outline but not its process text', async () => {
+  it('includes tool-loop body headings but excludes reasoning from the settled outline', async () => {
     const { container } = render(
       <MessageList
         conversationId="outline-current-message"
@@ -72,8 +72,9 @@ describe('MessageList heading outline', () => {
           {
             id: 'answer', role: 'assistant', content: '# Final one\n## Final two', timestamp: 2,
             segments: [
-              { id: 'process', kind: 'text', phase: 'tool_loop', order: 0, text: '# Process heading' },
-              { id: 'final', kind: 'text', phase: 'synthesis', order: 1, text: '# Final one\n## Final two' },
+              { id: 'process', kind: 'reasoning', phase: 'tool_loop', order: 0, text: '# Process heading' },
+              { id: 'questions', kind: 'text', phase: 'tool_loop', order: 1, text: '# Questions' },
+              { id: 'final', kind: 'text', phase: 'synthesis', order: 2, text: '# Final one\n## Final two' },
             ],
           },
         ]}
@@ -91,6 +92,7 @@ describe('MessageList heading outline', () => {
     await waitFor(() => expect(screen.getByLabelText('回答标题目录')).toBeInTheDocument())
     fireEvent.pointerEnter(screen.getByLabelText('回答标题目录'))
     expect(screen.getByRole('button', { name: 'Final one' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Questions' })).toBeInTheDocument()
     expect(screen.queryByText('Process heading')).not.toBeInTheDocument()
 
     // With only one turn, scrolling away must still clear the answer outline.

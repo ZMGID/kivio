@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { copyToClipboard } from '../utils/clipboard'
+import { messageBodySegments, messageBodyText } from './messageBody'
 import { AssistantMessageMeta } from './AssistantMessageMeta'
 import { ChatAttachments } from './ChatAttachments'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
@@ -33,13 +34,11 @@ import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
 import { buildCitationMap, type CitationView } from './citations'
 import {
-  compareTimelineSegments,
   clusterToolCallsForDisplay,
   formatWorkDuration,
   groupTimelineSegments,
   groupWorkDurationMs,
   isImageReadToolCall,
-  isProcessCommentaryText,
   isStandaloneToolCard,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
@@ -378,10 +377,6 @@ function AgentPlanAction({
   )
 }
 
-function orderedSegments(segments?: ChatMessageSegment[]): ChatMessageSegment[] {
-  return [...(segments ?? [])].sort(compareTimelineSegments)
-}
-
 function segmentText(segment: ChatMessageSegment): string {
   return segment.text ?? ''
 }
@@ -521,9 +516,8 @@ function TimelineTextSegment({
 }) {
   const text = segmentText(segment).trim()
   if (!text) return null
-  const isProcessText = process || isProcessCommentaryText(segment)
   return (
-    <div className={isProcessText ? 'text-neutral-600 dark:text-neutral-300' : undefined}>
+    <div className={process ? 'text-neutral-600 dark:text-neutral-300' : undefined}>
       <ChatMarkdown
         content={text}
         artifacts={artifacts}
@@ -835,7 +829,7 @@ function TimelineSegments({
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
   const prepared = useMemo(() => {
-    const ordered = orderedSegments(segments)
+    const ordered = segments
     const toolCallById = new Map<string, ToolCallRecord>()
     for (const toolCall of toolCalls) {
       const id = toolRecordId(toolCall)
@@ -981,6 +975,7 @@ function MessageBubbleComponent({
   onOutlineSourceChange,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
+  const bodyText = useMemo(() => messageBodyText(message), [message])
   // 历史消息会被虚拟列表反复卸载/挂载；只让真正的流式预览播放进入动画，
   // 否则滚动时每个重新进入 DOM 的旧气泡都会淡入并上移，看起来像刷新且阻滞滚动。
   const playEntranceAnimation = messageStreaming
@@ -996,7 +991,7 @@ function MessageBubbleComponent({
     // 降级文案同时走三条路：content、时间线 text 分段、以及这张卡片。卡片已完整表达，
     // 另外两条都要按文本相等剔掉，否则同一段话在气泡里出现两遍（正是用户看到的样子）。
     const degradedText = degraded?.text.trim() ?? ''
-    const timelineSegments = orderedSegments(message.segments).filter(
+    const timelineSegments = messageBodySegments(message).filter(
       (segment) =>
         !degradedText || segment.kind !== 'text' || segmentText(segment).trim() !== degradedText,
     )
@@ -1335,9 +1330,9 @@ function MessageBubbleComponent({
           />
         )}
 
-        {message.content.trim().length > 0 && !isDirectImageGenerationPending && (
+        {bodyText.trim().length > 0 && !isDirectImageGenerationPending && (
           <AssistantMessageMeta
-            content={message.content}
+            content={bodyText}
             reasoning={message.reasoning}
             timestamp={message.timestamp}
             tokensPerSec={tokensPerSec}
