@@ -895,7 +895,8 @@ function TimelineSegments({
                   outlineEligible && onOutlineSourceChange
                     ? {
                       ownerMessageId,
-                      sourceId: item.segment.id,
+                      // Segment ids are only unique within their owning message.
+                      sourceId: JSON.stringify([ownerMessageId, item.segment.id]),
                       onChange: onOutlineSourceChange,
                     }
                     : undefined
@@ -1066,7 +1067,7 @@ function MessageBubbleComponent({
     if (!outlineEligible || messageStreaming || !onOutlineSourceChange) return undefined
     return {
       ownerMessageId: message.id,
-      sourceId: message.id,
+      sourceId: JSON.stringify([message.id]),
       onChange: onOutlineSourceChange,
     }
   }, [message.id, messageStreaming, onOutlineSourceChange, outlineEligible])
