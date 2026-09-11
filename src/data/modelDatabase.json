@@ -1,8 +1,22 @@
 {
   "_meta": {
-    "version": "2026-09-06",
+    "version": "2026-09-12",
     "description": "AI model database for Kivio. Keyed by model ID patterns. Used for auto-filling model info when adding models.",
     "sources": [
+      "https://deepseek.com/en/news/deepseek-v4-1-flash/",
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://api-docs.deepseek.com/guides/thinking_mode/",
+      "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash",
+      "https://openai.com/index/introducing-chatgpt-images-2-5/",
+      "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
+      "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-cyber",
+      "https://developers.openai.com/api/docs/models",
+      "https://www.inceptionlabs.ai/blog/introducing-mercury-2-5",
+      "https://huggingface.co/inclusionAI/Ling-3.0-flash",
+      "https://huggingface.co/inclusionAI/Ling-3.0-flash-VL",
+      "https://nex-agi.com/",
+      "https://sakana.ai/fugu-max-release/",
       "https://help.aliyun.com/en/model-studio/qwen3-8-max",
       "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B",
       "https://docs.mistral.ai/models",
@@ -73,6 +87,100 @@
       "https://ai.volcengine.com/model",
       "https://research.doubao.com/zh/seed2_1"
     ]
+  },
+
+  "deepseek-flash": {
+    "displayName": "DeepSeek V4.1 Flash",
+    "contextWindow": 1048576,
+    "maxOutput": 384000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "reasoningEfforts": ["low", "high", "xhigh", "max"],
+    "pricing": { "input": 0.3, "output": 1.2, "cachedInput": 0.006 }
+  },
+  "gpt-image-2.5-flare": {
+    "displayName": "GPT Image 2.5 Flare",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "imageGeneration": true },
+    "pricing": { "input": 5, "output": 30, "cachedInput": 1.25 }
+  },
+  "gpt-image-2.5-flare-2026-09-08": {
+    "displayName": "GPT Image 2.5 Flare (2026-09-08)",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "imageGeneration": true },
+    "pricing": { "input": 5, "output": 30, "cachedInput": 1.25 }
+  },
+  "gpt-image-2.5-sunburst": {
+    "displayName": "GPT Image 2.5 Sunburst",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "imageGeneration": true },
+    "pricing": { "input": 5, "output": 30, "cachedInput": 1.25 }
+  },
+  "gpt-image-2.5-sunburst-2026-09-08": {
+    "displayName": "GPT Image 2.5 Sunburst (2026-09-08)",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "imageGeneration": true },
+    "pricing": { "input": 5, "output": 30, "cachedInput": 1.25 }
+  },
+  "gpt-5.6-cyber": {
+    "displayName": "GPT-5.6 Cyber",
+    "contextWindow": 256000,
+    "maxOutput": 128000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+    "pricing": { "input": 12.5, "output": 75, "cachedInput": 1.25 }
+  },
+  "mercury-2.5": {
+    "displayName": "Mercury 2.5",
+    "contextWindow": 260000,
+    "maxOutput": 65536,
+    "capabilities": { "vision": false, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "pricing": { "input": 0.04, "output": 0.15, "cachedInput": 0.004 }
+  },
+  "ling-3.0-flash": {
+    "displayName": "Ling 3.0 Flash",
+    "contextWindow": 262144,
+    "maxOutput": 32768,
+    "capabilities": { "vision": false, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "pricing": { "input": 0.021, "output": 0.063, "cachedInput": 0.0042 }
+  },
+  "ling-3.0-flash-vl": {
+    "displayName": "Ling 3.0 Flash VL",
+    "contextWindow": 262144,
+    "maxOutput": 32768,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "pricing": { "input": 0.06, "output": 0.18, "cachedInput": 0.012 }
+  },
+  "nex-n2.5-mini": {
+    "displayName": "Nex N2.5 Mini",
+    "contextWindow": 262144,
+    "maxOutput": 235929,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "pricing": { "input": 0, "output": 0 }
+  },
+  "nex-n2.5-pro": {
+    "displayName": "Nex N2.5 Pro",
+    "contextWindow": 262144,
+    "maxOutput": 235929,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "pricing": { "input": 0, "output": 0 }
+  },
+  "fugu-max": {
+    "displayName": "Fugu Max",
+    "contextWindow": 1000000,
+    "maxOutput": 128000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "pricing": { "input": 2, "output": 6, "cachedInput": 0.25 }
+  },
+  "fugu-ultra-v2": {
+    "displayName": "Fugu Ultra V2",
+    "contextWindow": 1000000,
+    "maxOutput": 128000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "pricing": { "input": 5, "output": 30, "cachedInput": 0.5 }
   },
 
   "qwen3.8-max-0902": {
@@ -357,7 +465,7 @@
 
   "gpt-6-astra": {
     "displayName": "GPT-6 Astra",
-    "contextWindow": 1050000,
+    "contextWindow": 256000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -503,7 +611,7 @@
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
-    "pricing": { "input": 5.00, "output": 30.00, "cachedInput": 0.50 }
+    "pricing": { "input": 4.00, "output": 20.00, "cachedInput": 0.40 }
   },
   "gpt-5.6-sol": {
     "displayName": "GPT-5.6 Sol",
@@ -511,7 +619,7 @@
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
-    "pricing": { "input": 5.00, "output": 30.00, "cachedInput": 0.50 }
+    "pricing": { "input": 4.00, "output": 20.00, "cachedInput": 0.40 }
   },
   "gpt-5.6-terra": {
     "displayName": "GPT-5.6 Terra",
@@ -519,7 +627,7 @@
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
-    "pricing": { "input": 2.50, "output": 15.00, "cachedInput": 0.25 }
+    "pricing": { "input": 2.00, "output": 12.00, "cachedInput": 0.20 }
   },
   "gpt-5.6-luna": {
     "displayName": "GPT-5.6 Luna",
@@ -527,7 +635,7 @@
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
-    "pricing": { "input": 1.00, "output": 6.00, "cachedInput": 0.10 }
+    "pricing": { "input": 0.20, "output": 1.20, "cachedInput": 0.02 }
   },
   "gpt-5.5": {
     "displayName": "GPT-5.5",
@@ -1025,20 +1133,20 @@
   },
 
   "deepseek-v4-flash-vision-exp": {
-    "displayName": "DeepSeek V4 Flash Vision Exp",
+    "displayName": "DeepSeek V4.1 Flash (Legacy Vision Alias)",
     "contextWindow": 1048576,
     "maxOutput": 384000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
     "reasoningEfforts": ["low", "high", "xhigh", "max"],
-    "pricing": { "input": 0.44, "output": 1.32, "cachedInput": 0.014 }
+    "pricing": { "input": 0.3, "output": 1.2, "cachedInput": 0.006 }
   },
   "deepseek-v4-flash": {
-    "displayName": "DeepSeek V4 Flash",
+    "displayName": "DeepSeek V4.1 Flash (Legacy Alias)",
     "contextWindow": 1048576,
     "maxOutput": 384000,
-    "capabilities": { "vision": false, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
     "reasoningEfforts": ["low", "high", "xhigh", "max"],
-    "pricing": { "input": 0.44, "output": 1.32, "cachedInput": 0.014 }
+    "pricing": { "input": 0.3, "output": 1.2, "cachedInput": 0.006 }
   },
   "deepseek-v4-pro": {
     "displayName": "DeepSeek V4 Pro",

@@ -29,7 +29,7 @@ describe('matchModel', () => {
 
   it('resolves September models through provider and effort aliases without losing variants', () => {
     expect(matchModel('gemini-3.8-flash-high')).toEqual(matchModelExact('gemini-3.8-flash'))
-    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(1050000)
+    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(256000)
     expect(matchModel('anthropic/claude-fable-5-1')?.displayName).toBe('Claude Fable 5.1')
     expect(matchModel('claude-mythos-5-1')?.displayName).toBe('Claude Mythos 5.1')
     expect(matchModel('meta/muse-spark-1.3-contributor')?.pricing?.input).toBe(0.1)
@@ -87,6 +87,11 @@ describe('matchModel', () => {
     expect(matchModel('gpt-5.6-luna')?.displayName).toBe('GPT-5.6 Luna')
     expect(matchModel('gpt-5.6-sol')?.displayName).toBe('GPT-5.6 Sol')
     expect(matchModel('gpt-5.6-terra')?.displayName).toBe('GPT-5.6 Terra')
+    expect(matchModel('gpt-5.6')?.contextWindow).toBe(256_000)
+    expect(matchModel('gpt-5.6-sol')?.contextWindow).toBe(256_000)
+    expect(matchModel('gpt-5.6-terra')?.contextWindow).toBe(256_000)
+    expect(matchModel('gpt-5.6-luna')?.contextWindow).toBe(256_000)
+    expect(matchModel('gpt-6-astra')?.contextWindow).toBe(256_000)
     expect(matchModel('gpt-5.5')?.displayName).toBe('GPT-5.5')
     expect(matchModel('gpt-5')?.displayName).toBe('GPT-5')
   })
@@ -94,6 +99,16 @@ describe('matchModel', () => {
   it('recognizes image generation model naming patterns', () => {
     const info = matchModel('dall-e-3')
     expect(info?.capabilities?.imageGeneration).toBe(true)
+
+    const flare = matchModel('gpt-image-2.5-flare')
+    expect(flare?.displayName).toBe('GPT Image 2.5 Flare')
+    expect(flare?.capabilities?.vision).toBe(true)
+    expect(flare?.capabilities?.imageGeneration).toBe(true)
+    expect(flare?.pricing?.output).toBe(30)
+
+    const sunburstSnapshot = matchModel('gpt-image-2.5-sunburst-2026-09-08')
+    expect(sunburstSnapshot?.displayName).toBe('GPT Image 2.5 Sunburst (2026-09-08)')
+    expect(sunburstSnapshot?.capabilities?.imageGeneration).toBe(true)
   })
 
   it('matches current Grok Imagine image ids without collapsing variants', () => {
@@ -381,17 +396,35 @@ describe('matchModel', () => {
     expect(matchModel('qwen3.5-flash')?.displayName).not.toBe('Qwen3.5 Plus')
   })
 
-  it('matches DeepSeek V4 official windows and the vision-exp sibling', () => {
+  it('matches DeepSeek V4.1 Flash and its temporarily routed legacy aliases', () => {
+    const current = matchModel('deepseek-flash')
+    expect(current?.displayName).toBe('DeepSeek V4.1 Flash')
+    expect(current?.contextWindow).toBe(1_048_576)
+    expect(current?.maxOutput).toBe(384_000)
+    expect(current?.capabilities?.vision).toBe(true)
+    expect(current?.reasoningEfforts).toEqual(['low', 'high', 'xhigh', 'max'])
+    expect(current?.pricing?.input).toBe(0.3)
+
     const flash = matchModel('deepseek-v4-flash')
-    expect(flash?.displayName).toBe('DeepSeek V4 Flash')
+    expect(flash?.displayName).toBe('DeepSeek V4.1 Flash (Legacy Alias)')
     expect(flash?.contextWindow).toBe(1_048_576)
     expect(flash?.maxOutput).toBe(384_000)
-    expect(flash?.capabilities?.vision).toBe(false)
+    expect(flash?.capabilities?.vision).toBe(true)
     expect(flash?.capabilities?.reasoning).toBe(true)
-    expect(flash?.pricing?.input).toBe(0.44)
+    expect(flash?.pricing?.input).toBe(0.3)
     expect(matchModel('deepseek-v4-pro')?.maxOutput).toBe(384_000)
     expect(matchModel('deepseek-v4-flash-vision-exp')?.capabilities?.vision).toBe(true)
-    expect(matchModel('deepseek-v4-flash-vision-exp')?.displayName).not.toBe('DeepSeek V4 Flash')
+    expect(matchModel('deepseek-v4-flash-vision-exp')?.displayName).toContain('Legacy Vision Alias')
+  })
+
+  it('matches other newly released September models without family collapse', () => {
+    expect(matchModel('inception/mercury-2.5')?.displayName).toBe('Mercury 2.5')
+    expect(matchModel('inclusionai/ling-3.0-flash')?.capabilities?.vision).toBe(false)
+    expect(matchModel('inclusionai/ling-3.0-flash-vl')?.capabilities?.vision).toBe(true)
+    expect(matchModel('nex-agi/nex-n2.5-pro:free')?.displayName).toBe('Nex N2.5 Pro')
+    expect(matchModel('sakana/fugu-max')?.contextWindow).toBe(1_000_000)
+    expect(matchModel('sakana/fugu-ultra-v2')?.displayName).toBe('Fugu Ultra V2')
+    expect(matchModel('gpt-5.6-cyber')?.contextWindow).toBe(256_000)
   })
 
   it('matches MiniMax M2.7 as a thinking model without collapsing onto highspeed', () => {
