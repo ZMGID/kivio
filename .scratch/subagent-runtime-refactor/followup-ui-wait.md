@@ -48,3 +48,13 @@
 最新《双代理审查聊天流程与权限》中 A 的错误以 `recovered:` 开头并包含完整报告。实际缺陷是控制适配器只接受 `completed`，将共享执行循环成功恢复的答复转成 Err，丢失独立 result / usage；没有证据证明本次因报告格式校验失败，也不能从该旧记录确定最初流式请求的具体异常。新增生产适配器→真实 Runtime 落盘测试，先复现 Failed，再验证成功恢复的非空、非降级答复保存为 Completed 并保留用量；取消、空答复、确定性降级兜底不能借此变成成功。恢复答复带明确说明，旧失败记录只改善呈现，不修改历史状态。
 
 默认派工参数说明放宽为用户语言的自然文字/Markdown，避免额外硬性格式、段落数和每句话的引用约束；用户明确要求的格式仍遵守。Rust 子代理模块 50 项通过；UI、TypeScript 与 ESLint 验证记录在 `ordinary-chat-*.log`，Playwright 查看了真实 MessageBubble 的本地固定数据预览。
+
+## DeepSeek 全面复测
+
+2026-09-13 使用用户现有的 DeepSeek 官方 provider 和 `deepseek-flash` 做了 opt-in 实网测试；密钥仅注入测试进程环境，未写入源码、日志或测试数据。裸 Responses 请求在 1024 output token 上限下返回自然中文正文。120 token 探针只产生推理并以 incomplete 结束，说明较低输出预算本身会造成无正文，不能把这种现象归因于报告格式。
+
+新增 `live_deepseek_subagent_scenarios`，通过生产 OpenAI Responses 适配器和共享 Agent loop 验证三种实网路径：自由格式中文答复；模型调用只读 `read` 工具、受控 executor 返回结果、随后完成 synthesis；父代理读取两份已送达子代理报告并当轮汇总。三种场景在一次测试中全部通过并保留 provider usage。测试默认 ignore，仅在显式提供 `KIVIO_LIVE_DS_KEY` 时运行，不影响离线测试。
+
+同时复跑：SubAgent Rust 模块 50 项全过；协作终答补写的两项确定性测试通过；前端全量 201 文件 / 1537 项、TypeScript、相关 ESLint 全过。Playwright 在 900×700 验证任务页只出现“正在运行 / 已关闭”两组、不显示主代理，并人工查看截图。日志：`live-deepseek-loop.log`、`comprehensive-subagent-rust.log`、`comprehensive-frontend.log`、`comprehensive-types.log`、`comprehensive-lint.log`。
+
+实网测试覆盖 provider、共享循环、工具往返和结果汇总；supervisor/持久化由真实 Runtime 确定性测试覆盖。没有向用户对话库写入测试会话，也没有自动操作原生桌面窗口，因此本轮不宣称完成原生窗口级的全链路测试。

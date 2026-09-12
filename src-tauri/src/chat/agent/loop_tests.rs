@@ -3927,3 +3927,81 @@ async fn collaboration_summary_repair_is_bounded_and_accepts_short_findings() {
         assert_eq!(server.captured_bodies().len(), expected_calls);
     }
 }
+
+/// Opt-in smoke for the production provider adapter and shared agent loop.
+/// The caller supplies credentials through the process environment; nothing is
+/// read from or written to the user's conversation store.
+#[tokio::test]
+#[ignore = "requires KIVIO_LIVE_DS_KEY"]
+async fn live_deepseek_subagent_scenarios() {
+    let key = std::env::var("KIVIO_LIVE_DS_KEY").expect("KIVIO_LIVE_DS_KEY");
+    let base_url =
+        std::env::var("KIVIO_LIVE_DS_URL").unwrap_or_else(|_| "https://api.deepseek.com/v1".into());
+    let model = std::env::var("KIVIO_LIVE_DS_MODEL").unwrap_or_else(|_| "deepseek-flash".into());
+    let state = test_app_state();
+    let live_config = |suffix: &str| {
+        let mut config = test_run_config(&state, &base_url);
+        config.conversation_id = format!("live-ds-{suffix}");
+        config.run_id = format!("run-{suffix}");
+        config.message_id = format!("message-{suffix}");
+        config.provider.api_keys = vec![key.clone()];
+        config.provider.api_format = "openai_responses".into();
+        config.provider.name = "DeepSeek live smoke".into();
+        config.provider.base_url = base_url.clone();
+        config.model = model.clone();
+        config.max_output_tokens = 2048;
+        config
+    };
+
+    // Flexible prose through the production provider adapter and shared loop.
+    let mut config = live_config("prose");
+    config.tools.clear();
+    config.runtime_messages = vec![
+        serde_json::json!({"role":"system","content":"You are a read-only sub-agent. Answer naturally in the user's language. Useful partial findings with limitations are acceptable."}),
+        serde_json::json!({"role":"user","content":"用自然中文简短说明：你完成了一次真实 API 测试，并给出一个观察。不要使用固定模板。"}),
+    ];
+    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+        .await
+        .expect("live DeepSeek loop should return a usable answer");
+    assert_eq!(result.stream_outcome, "completed");
+    assert!(result.content.chars().count() >= 12, "answer was too short");
+    assert!(
+        result.usage.is_some(),
+        "live provider usage should be retained"
+    );
+
+    // Planning -> tool contract -> executor -> final synthesis.
+    let mut config = live_config("tool");
+    config.tools = vec![native_read_file_tool()];
+    config.effective_chat_tools.max_tool_rounds = Some(1);
+    config.runtime_messages = vec![
+        serde_json::json!({"role":"system","content":"You are a read-only sub-agent. You must use the provided read tool once before answering."}),
+        serde_json::json!({"role":"user","content":"Call read for README.md. Then briefly summarize the returned tool result in Chinese."}),
+    ];
+    let executor = RecordingExecutor::default();
+    let result = run_agent_loop(config, &TestHost::default(), &executor)
+        .await
+        .expect("live DeepSeek tool round should complete");
+    assert_eq!(result.stream_outcome, "completed");
+    assert!(result
+        .tool_records
+        .iter()
+        .any(|record| record.name == "read"));
+    assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+    assert!(!result.content.trim().is_empty());
+
+    // Parent synthesis over two delivered child reports, without a rigid schema.
+    let mut config = live_config("collect");
+    config.tools.clear();
+    config.runtime_messages = vec![
+        serde_json::json!({"role":"system","content":"Answer the user using the collected child results."}),
+        serde_json::json!({"role":"user","content":"结合两个子代理结果给出自然、简短的中文结论。"}),
+        serde_json::json!({"role":"assistant","content":"[Sub-agent: A · Completed]\n发现等待只应由终态唤醒。", "subagent_parent_persisted":true}),
+        serde_json::json!({"role":"assistant","content":"[Sub-agent: B · Completed]\n发现恢复后的完整答复应该保留。", "subagent_parent_persisted":true}),
+    ];
+    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+        .await
+        .expect("live DeepSeek collection synthesis should complete");
+    assert_eq!(result.stream_outcome, "completed");
+    assert!(result.content.chars().count() >= 12);
+}
