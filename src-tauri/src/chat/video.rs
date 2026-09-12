@@ -3,9 +3,10 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 use std::{fs::File, io::Read, path::Path};
 
-/// Leaves room for base64 expansion inside a 20 MiB request.
+/// Leaves room for base64 expansion inside a 20 MB request.
 pub(crate) const MAX_VIDEO_BYTES: usize = 14 * 1024 * 1024;
-pub(crate) const MAX_VIDEO_REQUEST_BYTES: usize = 20 * 1024 * 1024;
+// Generate Content documents 20 MB, not 20 MiB. Use decimal bytes conservatively.
+pub(crate) const MAX_VIDEO_REQUEST_BYTES: usize = 20_000_000;
 
 pub(crate) fn has_video(request: &super::model::GenerateRequest) -> bool {
     request
@@ -103,8 +104,20 @@ pub(crate) fn validate_body(body: &Value) -> Result<(), super::model::ModelError
         .map_err(|e| super::model::ModelError::new(e.to_string()))?;
     if counter.0 > MAX_VIDEO_REQUEST_BYTES {
         return Err(super::model::ModelError::new(
-            "包含视频的请求超过 20 MiB，请裁剪视频或减少附件及上下文。",
+            "包含视频的请求超过 20 MB，请裁剪视频或减少附件及上下文。",
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_body_limit_counts_json_bytes_in_decimal_mb() {
+        // JSON quotes also count: the first body is exactly 20,000,000 bytes.
+        assert!(validate_body(&Value::String("x".repeat(19_999_998))).is_ok());
+        assert!(validate_body(&Value::String("x".repeat(19_999_999))).is_err());
+    }
 }

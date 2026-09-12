@@ -887,6 +887,30 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn imported_video_models_use_database_defaults() {
+        let provider = test_provider_with_overrides(HashMap::new());
+        for model in [
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "moonshotai/kimi-k2.7-code",
+            "gemini-3-pro-preview",
+            "models/gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3.8-flash",
+        ] {
+            assert_eq!(model_supports_video(&provider, model), Some(true), "{model}");
+        }
+        for model in [
+            "gemini-3-pro-image-preview",
+            "gemini-embedding-001",
+            "kimi-k2",
+            "kimi-k2.7",
+        ] {
+            assert_ne!(model_supports_video(&provider, model), Some(true), "{model}");
+        }
+    }
+
     fn db_display_name(model: &str) -> Option<String> {
         model_database_entry(model)
             .and_then(|entry| entry.get("displayName"))

@@ -1040,6 +1040,12 @@
     "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.25, "output": 1.50, "cachedInput": 0.025 }
   },
+  "gemini-3-pro-preview": {
+    "displayName": "Gemini 3 Pro Preview",
+    "contextWindow": 1048576,
+    "maxOutput": 65536,
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true }
+  },
   "gemini-3-flash-preview": {
     "displayName": "Gemini 3 Flash Preview",
     "contextWindow": 1048576,
@@ -1253,7 +1259,7 @@
     "displayName": "Kimi K2.7 Code",
     "contextWindow": 262144,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": [],
     "pricing": { "input": 0.95, "output": 4.00, "cachedInput": 0.19 }
   },
@@ -1261,7 +1267,7 @@
     "displayName": "Kimi K2.7 Code HighSpeed",
     "contextWindow": 262144,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": [],
     "pricing": { "input": 1.90, "output": 8.00, "cachedInput": 0.38 }
   },

@@ -708,6 +708,13 @@ fn gemini_parts_from_message(
                 if data.is_empty() {
                     parts.push(serde_json::json!({"text":"[视频附件不可用，请重新添加]"}));
                 } else {
+                    // Generate Content documents QuickTime; retain legacy stored MIME
+                    // and other providers' video/mov wire format outside this adapter.
+                    let mime_type = if mime_type == "video/mov" {
+                        "video/quicktime"
+                    } else {
+                        mime_type.as_str()
+                    };
                     parts.push(serde_json::json!({"inlineData":{"mimeType":mime_type,"data":data}}));
                 }
             }
@@ -1650,6 +1657,31 @@ mod tests {
             gemini_url(base, "models/gemini-3.1-flash-lite", true),
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse"
         );
+    }
+
+    #[test]
+    fn video_request_uses_inline_blob_and_normalizes_legacy_mov() {
+        let request = GenerateRequest {
+            model: "gemini-3.8-flash".into(),
+            system: String::new(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: vec![MessagePart::Video {
+                    mime_type: "video/mov".into(),
+                    data: "AA==".into(),
+                    path: None,
+                }],
+            }],
+            tools: Vec::new(),
+            options: GenerateOptions::default(),
+            metadata: Default::default(),
+        };
+        for stream in [false, true] {
+            let body = body_for(&request, stream);
+            assert_eq!(body["contents"][0]["parts"][0], serde_json::json!({
+                "inlineData": {"mimeType": "video/quicktime", "data": "AA=="}
+            }));
+        }
     }
 
     #[test]

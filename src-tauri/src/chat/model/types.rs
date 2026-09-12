@@ -1263,6 +1263,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn video_chat_content_retains_data_url_format() {
+        let message = ModelMessage {
+            role: ModelRole::User,
+            content: vec![MessagePart::Video {
+                mime_type: "video/mov".into(),
+                data: "AA==".into(),
+                path: None,
+            }],
+        };
+        let messages = openai_messages_from_model_message(&message);
+        assert_eq!(messages[0]["content"][0], serde_json::json!({
+            "type": "video_url",
+            "video_url": {"url": "data:video/mov;base64,AA=="}
+        }));
+    }
+
+    #[test]
     fn model_error_kind_marks_stream_read_interrupts_without_message_matching() {
         let stream_error = ModelError::with_kind(
             "temporary stream failure",
