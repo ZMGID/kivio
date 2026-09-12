@@ -26,3 +26,9 @@
 本次 UI 验证不是远程 provider 端到端运行。更新后的真实 provider 行为、原生窗口退出/重开仍需实际试用。现有试用记录仅作为诊断证据，没有修改用户会话数据。
 
 本地日志：`frontend-followup.log`、`ui-final-check.log`、`ui-dock-types.log`、`ui-dock-lint.log`、`runtime-regression-green.log`、`summary-final-check.log`。预览与截图在 `ui-preview/`，不纳入代码提交。
+
+## 父对话原始报告误显示
+
+后续截图暴露了另一处遗漏：结果回收为去重和恢复保存的 `subagent-result-<execution>` 助手消息，被聊天列表当作普通答复渲染。共享 MessageList 现在按后端保留的回执 ID 和 assistant 角色过滤显示，覆盖主窗口、独立窗口及已有历史；不删除存储、不修改模型上下文、不按正文标题猜测类型。报告仍可在任务详情查看。
+
+新增真实 MessageList 渲染测试先复现误显示，再验证隐藏内部报告、保留主代理结论以及不误隐藏用户/助手引用的同类标题。消息列表、虚拟化、提纲和子代理面板共 38 项通过；TypeScript 和 ESLint 通过。日志：`receipt-red.log`、`receipt-green.log`、`receipt-types.log`。

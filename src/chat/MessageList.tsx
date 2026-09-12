@@ -212,7 +212,7 @@ type GroupModelLabel = { providerId: string | null; model: string | null }
 
 function MessageListBase({
   conversationId,
-  messages,
+  messages: storedMessages,
   renderRequestId = 0,
   onInitialRender,
   agentPlanState = null,
@@ -238,6 +238,12 @@ function MessageListBase({
   focusMessageId = null,
   onFocusMessageHandled,
 }: MessageListProps) {
+  // Durable worker receipts belong to the model context and the task dock,
+  // not the parent timeline. Use the backend's reserved receipt identity so
+  // existing conversations are covered without hiding quoted report text.
+  const messages = useMemo(() => storedMessages.filter(message => !(
+    message.role === 'assistant' && message.id.startsWith('subagent-result-')
+  )), [storedMessages])
   useChatPerfRenderProbe('MessageList', {
     conversationId,
     messages: messages.length,
