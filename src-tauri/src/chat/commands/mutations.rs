@@ -729,15 +729,30 @@ pub(crate) async fn chat_fork_conversation(
     exclude_anchor: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let mut source = load_conversation(&app, &conversation_id)?;
-    if source.goal_state.as_ref().is_some_and(|goal| crate::chat::goal::is_running(goal.status)) {
+    if source
+        .goal_state
+        .as_ref()
+        .is_some_and(|goal| crate::chat::goal::is_running(goal.status))
+    {
         state.cancel_chat_generation(&conversation_id);
-        source = crate::chat::repository::repository(&app).mutate(&app,&conversation_id,|conversation|{
-            if let Some(goal)=conversation.goal_state.as_mut().filter(|goal|crate::chat::goal::is_running(goal.status)){
-                goal.version+=1;goal.status=crate::chat::types::GoalStatus::Paused;goal.status_reason=Some("Paused before creating a history branch".into());goal.active_run_id=None;goal.updated_at=chrono::Local::now().timestamp();
-            }
-            Ok(())
-        }).await.map_err(crate::chat::repository::repository_error)?;
-        crate::chat::goal::emit_goal_state(&app,&source);
+        source = crate::chat::repository::repository(&app)
+            .mutate(&app, &conversation_id, |conversation| {
+                if let Some(goal) = conversation
+                    .goal_state
+                    .as_mut()
+                    .filter(|goal| crate::chat::goal::is_running(goal.status))
+                {
+                    goal.version += 1;
+                    goal.status = crate::chat::types::GoalStatus::Paused;
+                    goal.status_reason = Some("Paused before creating a history branch".into());
+                    goal.active_run_id = None;
+                    goal.updated_at = chrono::Local::now().timestamp();
+                }
+                Ok(())
+            })
+            .await
+            .map_err(crate::chat::repository::repository_error)?;
+        crate::chat::goal::emit_goal_state(&app, &source);
     }
     let anchor_idx = find_message_index(&source, &message_id)?;
 
@@ -889,6 +904,15 @@ pub(crate) async fn chat_delete_conversation(
     state: tauri::State<'_, crate::state::AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
+    let runtime = crate::chat::sub_agent::control::runtime(&app)?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.delete_conversation(&conversation_id),
+    )
+    .await
+    .map_err(|_| {
+        "Sub-agent cleanup is still pending; retry deletion after it ends".to_string()
+    })??;
     // 删对话即终止其持久外部 CLI 会话（actor 关闭子进程）并清掉跨重启 resume 句柄。
     state.remove_external_live_session(&conversation_id);
     crate::external_agents::session::clear_live_handle(&app, &conversation_id);
@@ -948,10 +972,15 @@ pub(crate) async fn chat_update_conversation(
     let mut conversation = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, |conversation| {
             if pauses_goal {
-                if let Some(goal) = conversation.goal_state.as_mut().filter(|goal| crate::chat::goal::is_running(goal.status)) {
+                if let Some(goal) = conversation
+                    .goal_state
+                    .as_mut()
+                    .filter(|goal| crate::chat::goal::is_running(goal.status))
+                {
                     goal.version += 1;
                     goal.status = crate::chat::types::GoalStatus::Paused;
-                    goal.status_reason = Some("Paused because the execution context changed".into());
+                    goal.status_reason =
+                        Some("Paused because the execution context changed".into());
                     goal.active_run_id = None;
                     goal.updated_at = chrono::Local::now().timestamp();
                 }
@@ -1227,6 +1256,20 @@ pub(crate) async fn chat_bulk_delete_conversations(
     let mut deleted = 0usize;
     let mut warnings: Vec<String> = Vec::new();
     for conversation_id in ids {
+        let runtime = crate::chat::sub_agent::control::runtime(&app)?;
+        if !matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                runtime.delete_conversation(&conversation_id)
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            warnings.push(format!(
+                "{conversation_id}: sub-agent cleanup is still pending"
+            ));
+            continue;
+        }
         // 与单条删除一致：外部 CLI 会话 / 后台命令 / 运行态小 map 都先清，
         // 否则工作区被占着时副产物清理会失败，用户体感「删不掉」。
         state.remove_external_live_session(&conversation_id);

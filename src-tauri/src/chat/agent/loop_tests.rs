@@ -27,6 +27,10 @@ struct RecordedDelta {
 
 #[derive(Default)]
 struct TestHost {
+    managed: Option<(
+        Arc<crate::chat::sub_agent::runtime::Runtime>,
+        crate::chat::sub_agent::runtime::Record,
+    )>,
     records: Mutex<Vec<ToolCallRecord>>,
     deltas: Mutex<Vec<RecordedDelta>>,
     /// Per-call snapshot sizes from `persist_partial_assistant`:
@@ -130,6 +134,36 @@ impl TestHost {
 }
 
 impl AgentHost for TestHost {
+    fn close_runtime_input(&self) -> Result<(), String> {
+        if let Some((runtime, record)) = &self.managed {
+            runtime.close_input(&record.conversation_id, &record.id, &record.current().id)?;
+        }
+        Ok(())
+    }
+    fn requires_tool_completion(&self) -> bool {
+        self.managed.is_some()
+    }
+
+    fn checkpoint_runtime<'a>(
+        &'a self,
+        _conversation: &'a str,
+        _run: &'a str,
+        history: &'a [Value],
+        finishing: bool,
+    ) -> super::super::host::AgentHostFuture<'a, Result<Vec<Value>, String>> {
+        Box::pin(async move {
+            match &self.managed {
+                Some((runtime, record)) => runtime.checkpoint(
+                    &record.conversation_id,
+                    &record.id,
+                    &record.current().id,
+                    history,
+                    finishing,
+                ),
+                None => Ok(Vec::new()),
+            }
+        })
+    }
     fn emit_stream_delta(
         &self,
         _conversation_id: &str,
@@ -225,6 +259,9 @@ impl AgentHost for TestHost {
     }
 
     fn is_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
+        if let Some((runtime, record)) = &self.managed {
+            return runtime.running(&record.conversation_id, &record.id, &record.current().id);
+        }
         !self.cancel_flag.load(Ordering::SeqCst)
     }
 
@@ -2882,6 +2919,149 @@ async fn run_loop_under_budget_sends_messages_untouched() {
         "under-budget send view must be untouched"
     );
     assert!(bodies[1].contains(&"A".repeat(600)));
+}
+
+/// Fallback D: streamed synthesis returns an empty answer after tool results;
+#[tokio::test]
+async fn subagent_empty_planning_recovery_does_not_repeat_tool_work() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec!["[DONE]".to_string()]),
+        MockResponse::Sse(vec!["[DONE]".to_string()]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.depth = 1;
+    config.effective_chat_tools.max_tool_rounds = Some(6);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let result = crate::chat::sub_agent::run_worker_loop(config, &host, &executor)
+        .await
+        .expect("shared recovery preserves a completed result");
+    assert_eq!(result.stream_outcome, "recovered");
+    assert_eq!(
+        executor.events(),
+        vec!["start:read", "finish:read"],
+        "completed tool work is never restarted"
+    );
+    let bodies = server.captured_bodies();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "empty provider output recovers from existing tools, without a fresh worker run"
+    );
+    assert!(bodies
+        .iter()
+        .skip(1)
+        .all(|body| body.contains("result:read")));
+}
+
+#[tokio::test]
+async fn managed_worker_stop_keeps_tool_owned_until_it_returns() {
+    use crate::chat::sub_agent::runtime::{Profile, Runtime, Status};
+    struct HeldTool {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+    impl ToolExecutor for HeldTool {
+        fn call<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            _tool: &'a ChatToolDefinition,
+            _arguments: Value,
+            _cache: Option<&'a mut skills::SkillRunCache>,
+        ) -> super::super::execute::ToolExecutorFuture<'a> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                let _permit = self.release.acquire().await.unwrap();
+                Ok(McpToolCallResult {
+                    content: "read completed".into(),
+                    is_error: false,
+                    raw: Value::Null,
+                    artifacts: vec![],
+                    structured_content: None,
+                    follow_up_user_messages: vec![],
+                })
+            })
+        }
+    }
+    let server = MockModelServer::start(vec![MockResponse::Sse(planning_tool_call_sse_events())]);
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(Runtime::open(directory.path().into()).unwrap());
+    runtime.set_limit(1);
+    let record = runtime
+        .start(
+            "conv_a",
+            "parent",
+            "request",
+            "worker",
+            Profile::default(),
+            "read",
+        )
+        .unwrap();
+    let host = TestHost {
+        managed: Some((runtime.clone(), record.clone())),
+        ..TestHost::default()
+    };
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let executor = HeldTool {
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    let url = server.base_url.clone();
+    runtime.spawn_task(&record, async move {
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &url);
+        config.depth = 1;
+        let result = crate::chat::sub_agent::run_worker_loop(config, &host, &executor).await?;
+        Ok((result.content, None))
+    });
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    runtime
+        .stop("conv_a", &record.id, &record.current().id, true)
+        .unwrap();
+    sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        runtime.get("conv_a", &record.id).unwrap().current().status,
+        Status::Stopping
+    );
+    assert!(runtime
+        .start(
+            "conv_a",
+            "parent",
+            "other",
+            "worker",
+            Profile::default(),
+            "read"
+        )
+        .is_err());
+    release.add_permits(1);
+    let mut events = runtime.subscribe();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime
+            .get("conv_a", &record.id)
+            .unwrap()
+            .current()
+            .status
+            .active()
+        {
+            events.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime.get("conv_a", &record.id).unwrap().current().status,
+        Status::Interrupted
+    );
+    assert_eq!(
+        server.captured_bodies().len(),
+        1,
+        "stop prevents the next model step"
+    );
 }
 
 /// Fallback D: streamed synthesis returns an empty answer after tool results;

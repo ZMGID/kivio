@@ -27,6 +27,7 @@ pub enum AgentStreamPolicy {
     SynthesisDeferEmpty,
 }
 
+#[derive(Clone)]
 pub struct AgentRunConfig<'a> {
     pub state: &'a AppState,
     pub conversation_id: String,

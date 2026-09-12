@@ -1931,7 +1931,27 @@ async function onChatProtocol(
 
 // ========== API 导出 ==========
 
+export type SubAgentExecution = { id: string; status: string; prompt: string; result?: string; error?: string; usage?: unknown }
+export type SubAgentRecord = {
+  id: string; name: string; sequence: number
+  profile: { model: string; agentType: string }
+  runs: SubAgentExecution[]
+  messages: { id: string; sender: string; text: string; consumedBy?: string }[]
+  history: unknown[]; tools: unknown[]; preview?: string; steps?: string[]
+}
+export type SubAgentSnapshot = { sequence: number; agents: SubAgentRecord[] }
+export type SubAgentListRequest = { operation: 'list' | 'wait'; cursor?: number; timeout_ms?: number }
+export type SubAgentRecordRequest = { operation: 'get' | 'message' | 'continue' | 'stop'; id: string; execution_id?: string; message_id?: string; message?: string }
+export type SubAgentControlRequest = SubAgentListRequest | SubAgentRecordRequest
+function chatSubagentControl(conversationId: string, args: SubAgentListRequest): Promise<SubAgentSnapshot>
+function chatSubagentControl(conversationId: string, args: SubAgentRecordRequest): Promise<SubAgentRecord>
+function chatSubagentControl(conversationId: string, args: SubAgentControlRequest): Promise<SubAgentSnapshot | SubAgentRecord>
+function chatSubagentControl(conversationId: string, args: SubAgentControlRequest): Promise<SubAgentSnapshot | SubAgentRecord> {
+  return invoke('chat_subagent_control', { conversationId, arguments: args })
+}
+
 export const api = {
+  chatSubagentControl,
   /** 一次状态扫描可选附带行数统计，供同工作目录的 Git 徽标共享。 */
   async dockGitSnapshot(workdir: string, includeDiffStat = false): Promise<GitSnapshot> {
     const raw = await invoke<{ state: unknown; diffStat?: unknown }>('dock_git_snapshot', { workdir, includeDiffStat })

@@ -9,6 +9,27 @@ use super::execute::ToolExecutionContext;
 pub type AgentHostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait AgentHost: Send + Sync {
+    /// A managed worker must not claim cleanup merely because a tool future was
+    /// dropped. Keep ownership until the operation itself returns.
+    fn requires_tool_completion(&self) -> bool {
+        false
+    }
+    fn run_ended(&self, _conversation_id: &str) {}
+    /// Failed workers preserve pending input for an explicit continuation.
+    fn close_runtime_input(&self) -> Result<(), String> {
+        Ok(())
+    }
+    /// Durable hosts checkpoint the complete (possibly compacted) context and
+    /// atomically consume their inbox. Other hosts retain their existing path.
+    fn checkpoint_runtime<'a>(
+        &'a self,
+        _conversation_id: &'a str,
+        _run_id: &'a str,
+        _history: &'a [serde_json::Value],
+        _finishing: bool,
+    ) -> AgentHostFuture<'a, Result<Vec<serde_json::Value>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
         None
     }

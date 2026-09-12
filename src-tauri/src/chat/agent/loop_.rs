@@ -163,6 +163,7 @@ struct HookRunGuard<'a> {
 
 impl Drop for HookRunGuard<'_> {
     fn drop(&mut self) {
+        self.host.run_ended(self.conversation_id);
         if let Some(hooks) = self.hooks {
             if !self
                 .host
@@ -359,8 +360,43 @@ pub async fn run_agent_loop(
             // 已经落进历史，本轮还没开始调模型）。信箱为空时零开销。
             inject_steering_messages(&env, &mut state, round).await?;
 
+            let incoming = host
+                .checkpoint_runtime(
+                    &config.conversation_id,
+                    &config.run_id,
+                    &state.runtime_messages,
+                    false,
+                )
+                .await?;
+            state.runtime_messages.extend(incoming.iter().cloned());
+            state.generated_api_messages.extend(
+                incoming
+                    .into_iter()
+                    .filter(|message| message["subagent_parent_persisted"] != true),
+            );
+
             let planned = match planning_step(&env, &mut state, round).await? {
                 PlanningStepOutcome::FinalAnswer => {
+                    let incoming = host
+                        .checkpoint_runtime(
+                            &config.conversation_id,
+                            &config.run_id,
+                            &state.runtime_messages,
+                            true,
+                        )
+                        .await?;
+                    if !incoming.is_empty() {
+                        if let Some(message) = state.planning_final_message.take() {
+                            absorb_final_answer(&mut state, message);
+                        }
+                        state.runtime_messages.extend(incoming.iter().cloned());
+                        state.generated_api_messages.extend(
+                            incoming
+                                .into_iter()
+                                .filter(|message| message["subagent_parent_persisted"] != true),
+                        );
+                        continue;
+                    }
                     // 立刻引导：终答时还有没送达的插话 ⇒ 吸收终答、下一轮轮首注入。
                     // 原生 follow-up：等终答，不打断工具循环；吸收后在本边界注入一条再续跑。
                     if steering_pending(&env, &mut state) {
@@ -426,8 +462,43 @@ pub async fn run_agent_loop(
                 &state.generated_api_messages,
             )
             .await;
+            let incoming = host
+                .checkpoint_runtime(
+                    &config.conversation_id,
+                    &config.run_id,
+                    &state.runtime_messages,
+                    false,
+                )
+                .await?;
+            state.runtime_messages.extend(incoming.iter().cloned());
+            state.generated_api_messages.extend(
+                incoming
+                    .into_iter()
+                    .filter(|message| message["subagent_parent_persisted"] != true),
+            );
         }
     }
+
+    // A managed tool may finish cleanup after cancellation. Recheck before
+    // synthesis, including the tool-round-limit path that skips the loop top.
+    if !host.is_generation_active(&config.conversation_id, config.generation) {
+        let result = cancelled_run_result_from_state(&env, &mut state);
+        return Ok(attach_usage(result, &mut state));
+    }
+    let incoming = host
+        .checkpoint_runtime(
+            &config.conversation_id,
+            &config.run_id,
+            &state.runtime_messages,
+            true,
+        )
+        .await?;
+    state.runtime_messages.extend(incoming.iter().cloned());
+    state.generated_api_messages.extend(
+        incoming
+            .into_iter()
+            .filter(|message| message["subagent_parent_persisted"] != true),
+    );
 
     if state.provider_tools_unsupported {
         patch_system_message(

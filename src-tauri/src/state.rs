@@ -605,6 +605,7 @@ impl AppState {
     /// 直接移除键：空集合与无键语义等价（is_active 都判 false），且 sub-agent 每次
     /// spawn 用一次性合成 conversation_id，留空集合会无界累积。
     pub fn cancel_chat_generation(&self, conversation_id: &str) {
+        self.sub_agents.stop_conversation(conversation_id);
         self.chat_active_generations
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -706,6 +707,15 @@ impl AppState {
             .unwrap_or_else(|e| e.into_inner())
             .remove(conversation_id)
             .unwrap_or_default()
+    }
+
+    pub fn has_chat_pending_input(&self, conversation_id: &str) -> bool {
+        self.pending_chat_steering.lock().unwrap_or_else(|e| e.into_inner()).get(conversation_id).is_some_and(|messages| !messages.is_empty())
+            || self.pending_chat_follow_up.lock().unwrap_or_else(|e| e.into_inner()).get(conversation_id).is_some_and(|messages| !messages.is_empty())
+    }
+
+    pub fn has_chat_active_generation(&self, conversation_id: &str) -> bool {
+        self.chat_active_generations.lock().unwrap_or_else(|e| e.into_inner()).get(conversation_id).is_some_and(|active| !active.is_empty())
     }
 
     /// run 结束时丢掉没来得及消费的插话——否则它会漏进**下一条** run 的第一轮。

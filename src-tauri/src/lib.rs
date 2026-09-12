@@ -611,6 +611,7 @@ pub fn run() {
             chat::commands::send::chat_continue_goal,
             chat::commands::send::chat_send_message,
             chat::commands::interaction::chat_cancel_stream,
+            chat::sub_agent::control::chat_subagent_control,
             chat::commands::interaction::chat_confirm_tool_call,
             chat::commands::interaction::chat_respond_session_consent,
             chat::commands::interaction::chat_submit_user_choice,
@@ -788,6 +789,16 @@ pub fn run() {
                 } else {
                     // 真正退出：同步排干 MCP 连接池，杀掉所有持久子进程，避免孤儿进程。
                     let state: State<AppState> = app_handle.state();
+                    if let Ok(runtime) = chat::sub_agent::control::runtime(app_handle) {
+                        let stopped = tauri::async_runtime::block_on(async {
+                            tokio::time::timeout(std::time::Duration::from_secs(5), runtime.shutdown()).await
+                        });
+                        if !matches!(stopped, Ok(Ok(()))) {
+                            eprintln!("Child cleanup has not completed; keeping the application alive.");
+                            api.prevent_exit();
+                            return;
+                        }
+                    }
                     // 自动化先于 MCP：运行中的图可能正跑 agent loop（依赖 MCP/供应商）或
                     // 命令节点（Child 靠 kill_on_drop 收尸）。先标记取消、限时等收尾，
                     // 此时运行时还活着，select! 的取消分支才来得及 drop 掉 Child。

@@ -314,22 +314,29 @@ pub async fn execute_tool_call(
     let started = Instant::now();
     let timeout_ms = effective_tool_timeout_ms(settings, tool, &call.arguments);
     let call_fut = executor.call(ctx, tool, call.arguments.clone(), skill_cache);
-    let result = tokio::select! {
-        result = async {
-            if timeout_ms == NO_OUTER_TOOL_TIMEOUT {
-                Ok(call_fut.await)
-            } else {
-                timeout(Duration::from_millis(timeout_ms), call_fut).await
+    let result = if host.requires_tool_completion() {
+        // Cancellation stops further steps, but the worker remains "stopping"
+        // until this operation returns. Its own native/provider deadlines still
+        // apply; an unconfirmed operation never frees the worker's capacity.
+        Ok(call_fut.await)
+    } else {
+        tokio::select! {
+            result = async {
+                if timeout_ms == NO_OUTER_TOOL_TIMEOUT {
+                    Ok(call_fut.await)
+                } else {
+                    timeout(Duration::from_millis(timeout_ms), call_fut).await
+                }
+            } => result,
+            _ = host.wait_for_generation_inactive(ctx.conversation_id, ctx.generation) => {
+                record.status = ToolCallStatus::Cancelled;
+                record.duration_ms = Some(started.elapsed().as_millis() as u64);
+                record.completed_at = Some(chrono::Local::now().timestamp());
+                record.error = Some("Tool call cancelled".to_string());
+                host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+                let content = record.error.clone().unwrap_or_default();
+                return (record, content, Vec::new());
             }
-        } => result,
-        _ = host.wait_for_generation_inactive(ctx.conversation_id, ctx.generation) => {
-            record.status = ToolCallStatus::Cancelled;
-            record.duration_ms = Some(started.elapsed().as_millis() as u64);
-            record.completed_at = Some(chrono::Local::now().timestamp());
-            record.error = Some("Tool call cancelled".to_string());
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
-            let content = record.error.clone().unwrap_or_default();
-            return (record, content, Vec::new());
         }
     };
     record.duration_ms = Some(started.elapsed().as_millis() as u64);
@@ -936,15 +943,6 @@ fn effective_tool_timeout_ms(
             .unwrap_or(crate::native_tools::DEFAULT_BASH_OUTPUT_WAIT_MS)
             .min(CHAT_TOOL_MAX_TIMEOUT_MS);
         return default_timeout_ms.max(wait_ms);
-    }
-    // The `agent` spawn tool runs a whole sub-agent loop whose own budget
-    // (SUB_AGENT_MAX_ATTEMPTS × the inner run) is far longer than the default
-    // generic tool timeout (120s). Without a longer outer timeout, the generic
-    // 120s would fire first and mis-kill a still-running sub-agent. Give the
-    // outer call a large backstop and let the sub-agent's inner lifecycle +
-    // cascade cancel govern it.
-    if tool.source == "native" && tool.name == crate::chat::sub_agent::AGENT_TOOL_NAME {
-        return crate::chat::sub_agent::SUB_AGENT_TOOL_TIMEOUT_MS.max(default_timeout_ms);
     }
     if tool.source == "native" && tool.name == "automation_run" {
         return crate::automation::tools::run_timeout_ms(arguments).max(default_timeout_ms);
@@ -1837,35 +1835,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_spawn_uses_sub_agent_backstop_timeout() {
-        // The `agent` spawn tool must outlast the sub-agent's own run budget so the
-        // outer 120s default does not mis-kill a long sub-agent run.
+    fn asynchronous_agent_admission_uses_normal_tool_timeout() {
         let mut settings = Settings::default();
         settings.chat_tools.tool_timeout_ms = 120_000;
         let tool = crate::chat::sub_agent::agent_tool(&[]);
-        let arguments = serde_json::json!({ "prompt": "do a focused sub-task" });
-
         assert_eq!(
-            effective_tool_timeout_ms(&settings, &tool, &arguments),
-            crate::chat::sub_agent::SUB_AGENT_TOOL_TIMEOUT_MS
-        );
-        assert!(
-            crate::chat::sub_agent::SUB_AGENT_TOOL_TIMEOUT_MS > 120_000,
-            "agent timeout must exceed the default generic tool timeout"
-        );
-    }
-
-    #[test]
-    fn agent_spawn_respects_larger_user_default_timeout() {
-        // If the user configured an even larger generic timeout, honor it.
-        let mut settings = Settings::default();
-        settings.chat_tools.tool_timeout_ms = crate::chat::sub_agent::SUB_AGENT_TOOL_TIMEOUT_MS + 1;
-        let tool = crate::chat::sub_agent::agent_tool(&[]);
-        let arguments = serde_json::json!({ "prompt": "do a focused sub-task" });
-
-        assert_eq!(
-            effective_tool_timeout_ms(&settings, &tool, &arguments),
-            crate::chat::sub_agent::SUB_AGENT_TOOL_TIMEOUT_MS + 1
+            effective_tool_timeout_ms(&settings, &tool, &serde_json::json!({"prompt":"inspect"})),
+            120_000
         );
     }
 

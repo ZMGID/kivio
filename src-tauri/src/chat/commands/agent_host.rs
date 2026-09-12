@@ -24,6 +24,49 @@ pub(super) struct ChatAgentHost<'a> {
 }
 
 impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
+    fn run_ended(&self, conversation_id: &str) {
+        if let Ok(runtime) = crate::chat::sub_agent::control::runtime(&self.app) {
+            if let Err(error) = runtime.stop_parent(conversation_id, Some(&self.run_id)) {
+                eprintln!("Cannot seal child collaboration: {error}");
+            }
+        }
+    }
+
+    fn checkpoint_runtime<'a>(
+        &'a self,
+        conversation_id: &'a str,
+        run_id: &'a str,
+        _history: &'a [serde_json::Value],
+        finishing: bool,
+    ) -> crate::chat::agent::AgentHostFuture<'a, Result<Vec<serde_json::Value>, String>> {
+        Box::pin(async move {
+            let runtime = crate::chat::sub_agent::control::runtime(&self.app)?;
+            runtime.register_parent(run_id);
+            let mut events = runtime.subscribe();
+            loop {
+                events.borrow_and_update();
+                let (incoming, pending) = crate::chat::sub_agent::control::collect_results(
+                    &self.app,
+                    conversation_id,
+                    run_id,
+                )
+                .await?;
+                if !incoming.is_empty()
+                    || !finishing
+                    || !pending
+                    || self.state.has_chat_pending_input(conversation_id)
+                {
+                    return Ok(incoming);
+                }
+                if !self.state.has_chat_active_generation(conversation_id) {
+                    return Err("cancelled".into());
+                }
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_millis(100), events.changed())
+                        .await;
+            }
+        })
+    }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
         Some(&self.workflow_hooks)
     }
@@ -309,12 +352,17 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
     ) -> crate::chat::agent::ToolExecutorFuture<'a> {
         Box::pin(async move {
             if ctx.depth == 0 {
-                if let Ok(conversation) = crate::chat::storage::load_conversation(&self.app, ctx.conversation_id) {
+                if let Ok(conversation) =
+                    crate::chat::storage::load_conversation(&self.app, ctx.conversation_id)
+                {
                     if conversation.goal_state.as_ref().is_some_and(|goal| {
                         goal.status == crate::chat::types::GoalStatus::Completed
                             && goal.active_run_id.as_deref() == Some(ctx.run_id)
                     }) {
-                        return Err("Goal completion was accepted; no further tools may run in this turn".into());
+                        return Err(
+                            "Goal completion was accepted; no further tools may run in this turn"
+                                .into(),
+                        );
                     }
                 }
             }

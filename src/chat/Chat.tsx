@@ -1,3 +1,4 @@
+import { SubAgentPanel } from './SubAgentPanel'
 import { freezeCancelledStream, isLocallyCancelledPayload } from './streamCancellation'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { PanelRight, SquareArrowOutUpRight } from 'lucide-react'
@@ -5516,7 +5517,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onSelectConversation={handleSelectConversation}
             importedHistoryStale={importedHistoryStale}
             pendingSlot={pendingSlot}
-            goalSlot={visibleGoal ? (
+            goalSlot={<>{currentConversation?.id && <SubAgentPanel key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} />}{visibleGoal ? (
               <GoalCard
                 goal={visibleGoal}
                 onEdit={handleEditGoal}
@@ -5524,7 +5525,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 onResume={handleResumeGoal}
                 onCancel={handleCancelGoal}
               />
-            ) : null}
+            ) : null}</>}
             queuedMessages={currentQueuedMessages}
             canSteerQueuedMessages={canSteerCurrentConversation}
             onSteerQueuedMessage={handleSteerQueuedMessage}

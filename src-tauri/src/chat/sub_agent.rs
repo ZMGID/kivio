@@ -1,48 +1,13 @@
-//! Multi-agent / sub-agent runtime (P3).
-//!
-//! A sub-agent is "a fresh isolated message history run through the same
-//! `run_agent_loop`" — there is no second execution engine. `run_sub_agent`
-//! builds an isolated `AgentRunConfig` (system + user only, a synthetic
-//! `conversation_id` for generation/streaming isolation, but the PARENT
-//! conversation as `tool_conversation_id` so the child's native file tools
-//! resolve the parent's project workspace), wraps it in a `SubAgentHost`, and
-//! reuses the existing loop. The `agent` native tool spawns one and reports
-//! live nested progress onto the parent tool card. The spawn is BLOCKING +
-//! single-result: it awaits `run_sub_agent` to completion and returns the full
-//! result inline (the Claude Code Task model). Parallelism comes from the model
-//! emitting MULTIPLE `agent` tool calls in a single message — `agent` is
-//! `parallel_safe`, so a single round runs them concurrently via
-//! `execute_parallel_chunk` (join_all, capped by `MAX_PARALLEL_TOOL_CALLS_PER_ROUND`
-//! and the `SubAgentManager` semaphore). There is no `background`/`await`/`poll`
-//! machinery: the wait stays in the runtime, never in the model token loop.
-//!
-//! Orchestrator-worker model: a sub-agent is a PURE WORKER. It receives one
-//! self-contained prompt, runs in isolation, and returns a result. It is given
-//! NO todo tools and NO todo prompt, so it cannot read or mutate any todo list.
-//! Task delegation is top-down: the parent conversation owns its todos and uses
-//! its own todo tools to set `owner` (= sub-agent name) and status itself.
-//!
-//! Safety rails (research doc 05 + architecture P3):
-//! - the `agent` tool is stripped from every sub-agent's tool table
-//!   (`filter::filter_tools_for_agent`), so in practice nesting is a single
-//!   level: only the top-level chat (depth 0) can spawn.
-//! - depth guard (`MAX_SUB_AGENT_DEPTH`): defense-in-depth backstop should the
-//!   strip ever regress; with the strip in place depth ≥ 2 is unreachable.
-//! - a `Semaphore` caps concurrent sub-agents (desktop API-quota sensitive);
-//!   the cap defaults to `DEFAULT_SUB_AGENT_CONCURRENCY` and is user-overridable
-//!   live via `settings.chat_tools.sub_agent_concurrency`.
-//! - `SubAgentHost` auto-denies approval-gated (sensitive) tools at depth > 0
-//!   and cascades parent cancellation.
+//! Built-in child collaboration: durable identities, asynchronous executions,
+//! explicit messages/continuation and independent cancellation. All model and
+//! tool work uses the shared Agent loop; control/storage live in child modules.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
-use tokio::sync::Semaphore;
 
 use crate::agents::AgentDefinition;
 use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_system_prompt};
@@ -58,6 +23,9 @@ use crate::mcp::types::McpToolCallResult;
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{ModelProvider, Settings};
 use crate::skills::SkillRegistry;
+
+pub mod control;
+pub mod runtime;
 use crate::state::AppState;
 
 /// An agent at depth ≥ this cannot spawn another sub-agent. Top-level chat is
@@ -65,42 +33,19 @@ use crate::state::AppState;
 /// defense-in-depth backstop, not the real limiter — `filter_tools_for_agent`
 /// always strips the `agent` tool from sub-agents, so actual nesting is one
 /// level and depth ≥ 2 is unreachable unless that strip regresses.
-pub const MAX_SUB_AGENT_DEPTH: u8 = 3;
+pub const MAX_SUB_AGENT_DEPTH: u8 = 1;
 /// Default concurrent sub-agent cap. User-overridable (live) via
 /// `settings.chat_tools.sub_agent_concurrency`, clamped to
 /// `[SUB_AGENT_CONCURRENCY_MIN, SUB_AGENT_CONCURRENCY_MAX]`.
 pub const DEFAULT_SUB_AGENT_CONCURRENCY: usize = 12;
 pub const SUB_AGENT_CONCURRENCY_MIN: usize = 1;
 pub const SUB_AGENT_CONCURRENCY_MAX: usize = 64;
-/// 保留的任务记录上限（运行中 + 已完成）。任务表通过 `get`/`list` 按需读取——
-/// 包括完成很久之后——所以不能按短 TTL 删；改为封顶保留，超限时优先丢弃「最老的
-/// 已完成」记录（绝不丢运行中的）。并发受 sub_agent_concurrency 限，故总有已完成
-/// 记录可回收。把「每条记录持有子 agent 完整 result 文本」的进程级泄漏封到约
-/// MAX_SUB_AGENT_TASKS × 数 KB。
-const MAX_SUB_AGENT_TASKS: usize = 128;
-/// Max attempts for a single sub-agent run. Reasoning models (e.g. DeepSeek-V4)
-/// intermittently return an empty assistant message in the planning step, which
-/// `run_agent_loop` surfaces as `Err`. Top-level chat recovers via user resend;
-/// a sub-agent has no resend loop, so we retry the run once before giving up.
-const SUB_AGENT_MAX_ATTEMPTS: usize = 2;
-/// Substring identifying the "model returned an empty assistant message" error
-/// produced by `run_agent_loop`. Single source of truth for both the retry
-/// predicate (`should_retry_sub_agent`) and the user-facing error mapping.
-const EMPTY_RESPONSE_MARKER: &str = "empty assistant response";
-/// Outer per-tool-call timeout for the `agent` spawn tool. The sub-agent run
-/// itself has no inner wall-clock cap (it finishes naturally or via cascade
-/// cancel); the default generic tool timeout (120s) is far shorter and would
-/// mis-kill a long-running sub-agent doing real multi-round work. This generous
-/// backstop only guards against a wedged spawn never returning at all — normal
-/// lifecycle is governed by completion + cascade cancel, not by this value.
-pub const SUB_AGENT_TOOL_TIMEOUT_MS: u64 = 660_000;
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 350;
-const RESULT_PREVIEW_MAX: usize = 4000;
 
 pub const AGENT_TOOL_NAME: &str = "agent";
 
 pub fn is_sub_agent_tool_name(name: &str) -> bool {
-    name == AGENT_TOOL_NAME
+    matches!(name, AGENT_TOOL_NAME | "agent_control")
 }
 
 /// Whether an agent at `depth` may spawn a sub-agent. The child runs at
@@ -110,226 +55,35 @@ pub fn depth_allows_spawn(depth: u8) -> bool {
     depth < MAX_SUB_AGENT_DEPTH
 }
 
-/// Whether a failed sub-agent run should be retried. Retry ONLY the empty
-/// assistant response case (reasoning models intermittently return an empty
-/// planning message and a sub-agent has no user resend loop), with attempts
-/// remaining and the parent generation still active.
-///
-/// Deliberately narrow: a retry re-runs the whole agent loop from scratch, so
-/// any other error class would re-execute side effects already performed in the
-/// failed attempt (e.g. a run that wrote files over several rounds and only then
-/// hit a fatal provider error would write them twice). A cancellation (own stop
-/// or parent cascade) is never retried.
-fn should_retry_sub_agent(
-    outcome: &Result<AgentRunResult, String>,
-    attempt: usize,
-    parent_active: bool,
-) -> bool {
-    matches!(outcome, Err(err) if err.contains(EMPTY_RESPONSE_MARKER))
-        && attempt + 1 < SUB_AGENT_MAX_ATTEMPTS
-        && parent_active
-}
-
-// ---------------------------------------------------------------------------
-// Task registry (lives on AppState)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SubAgentStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubAgentTaskRecord {
-    pub id: String,
-    pub name: String,
-    pub agent_type: String,
-    pub status: SubAgentStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    pub depth: u8,
-    pub created_at: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<i64>,
-    /// Provider token usage for this sub-agent's own run (input/output/total),
-    /// surfaced on the parent tool card. None until the run completes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<SubAgentUsage>,
-}
-
-/// Compact token usage for a finished sub-agent run, derived from the run's
-/// `AgentRunResult.usage` (the sub-agent's own provider usage, not overlapping
-/// the parent conversation's). All fields optional: providers may omit any.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubAgentUsage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_tokens: Option<u64>,
-}
-
-impl SubAgentUsage {
-    fn from_model_usage(usage: &crate::chat::model::ModelUsage) -> Self {
-        Self {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            total_tokens: usage.total_tokens,
-        }
-    }
-}
-
-/// Process-level sub-agent task table + concurrency gate. Held on `AppState`.
+/// Process-owned durable runtime, initialized at the application's data path.
+#[derive(Default)]
 pub struct SubAgentManager {
-    tasks: Mutex<HashMap<String, SubAgentTaskRecord>>,
-    by_name: Mutex<HashMap<String, String>>,
-    semaphore: Arc<Semaphore>,
-    /// Current configured permit count; lets `set_concurrency` compute the delta
-    /// to add/remove (tokio Semaphore exposes no total capacity).
-    configured: AtomicUsize,
+    durable: Mutex<Option<Arc<runtime::Runtime>>>,
 }
-
-impl Default for SubAgentManager {
-    fn default() -> Self {
-        Self {
-            tasks: Mutex::new(HashMap::new()),
-            by_name: Mutex::new(HashMap::new()),
-            semaphore: Arc::new(Semaphore::new(DEFAULT_SUB_AGENT_CONCURRENCY)),
-            configured: AtomicUsize::new(DEFAULT_SUB_AGENT_CONCURRENCY),
-        }
-    }
-}
-
 impl SubAgentManager {
-    fn lock_tasks(&self) -> std::sync::MutexGuard<'_, HashMap<String, SubAgentTaskRecord>> {
-        self.tasks.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn register(&self, record: SubAgentTaskRecord) {
-        {
-            let mut by_name = self.by_name.lock().unwrap_or_else(|e| e.into_inner());
-            by_name.insert(record.name.clone(), record.id.clone());
-        }
-        let evicted = {
-            let mut tasks = self.lock_tasks();
-            tasks.insert(record.id.clone(), record);
-            Self::evict_completed_over_cap(&mut tasks)
-        };
-        // 清掉被驱逐 id 的 name→id 反查，但只删仍指向被驱逐 id 的项——同名任务可能
-        // 已被更新的 id 覆盖，那条映射要留给新任务。
-        if !evicted.is_empty() {
-            let mut by_name = self.by_name.lock().unwrap_or_else(|e| e.into_inner());
-            by_name.retain(|_, id| !evicted.contains(id));
-        }
-    }
-
-    /// 超过 MAX_SUB_AGENT_TASKS 时，按完成时间从老到新丢弃「已完成」记录，绝不丢
-    /// 运行中的。返回被驱逐的 id 供调用方清理 `by_name`。
-    fn evict_completed_over_cap(tasks: &mut HashMap<String, SubAgentTaskRecord>) -> Vec<String> {
-        let mut evicted = Vec::new();
-        if tasks.len() <= MAX_SUB_AGENT_TASKS {
-            return evicted;
-        }
-        let mut completed: Vec<(String, i64)> = tasks
-            .values()
-            .filter(|r| r.completed_at.is_some())
-            .map(|r| (r.id.clone(), r.completed_at.unwrap_or(r.created_at)))
-            .collect();
-        completed.sort_by_key(|(_, ts)| *ts);
-        for (id, _) in &completed {
-            if tasks.len() <= MAX_SUB_AGENT_TASKS {
-                break;
-            }
-            tasks.remove(id);
-            evicted.push(id.clone());
-        }
-        evicted
-    }
-
-    pub fn set_status(&self, id: &str, status: SubAgentStatus) {
-        if let Some(record) = self.lock_tasks().get_mut(id) {
-            record.status = status;
-        }
-    }
-
-    pub fn finish(
-        &self,
-        id: &str,
-        status: SubAgentStatus,
-        result: Option<String>,
-        error: Option<String>,
-        usage: Option<SubAgentUsage>,
-    ) {
-        if let Some(record) = self.lock_tasks().get_mut(id) {
-            record.status = status;
-            record.result = result;
-            record.error = error;
-            record.usage = usage;
-            record.completed_at = Some(chrono::Local::now().timestamp());
-        }
-    }
-
-    pub fn get(&self, id_or_name: &str) -> Option<SubAgentTaskRecord> {
-        if let Some(record) = self.lock_tasks().get(id_or_name) {
-            return Some(record.clone());
-        }
-        let resolved = self
-            .by_name
+    pub fn set_concurrency(&self, limit: usize) {
+        if let Some(runtime) = self
+            .durable
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(id_or_name)
-            .cloned();
-        resolved.and_then(|id| self.lock_tasks().get(&id).cloned())
+            .as_ref()
+        {
+            runtime.set_limit(limit);
+        }
     }
-
-    pub fn list(&self) -> Vec<SubAgentTaskRecord> {
-        let mut all: Vec<SubAgentTaskRecord> = self.lock_tasks().values().cloned().collect();
-        all.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        all
-    }
-
-    fn semaphore(&self) -> Arc<Semaphore> {
-        self.semaphore.clone()
-    }
-
-    /// Resize the concurrency gate live. Growing adds permits synchronously;
-    /// shrinking spawns a task that acquires the surplus and forgets it (so it
-    /// waits for in-flight runs to release). Deltas are always computed against
-    /// `configured`, so a rapid grow/shrink pair still converges to the latest
-    /// target.
-    /// ponytail: shrink relies on a tokio runtime (always present in-app) and is
-    /// only ever called serially from settings-save / startup — no concurrent
-    /// callers to race the swap.
-    pub fn set_concurrency(&self, target: usize) {
-        let target = target.clamp(SUB_AGENT_CONCURRENCY_MIN, SUB_AGENT_CONCURRENCY_MAX);
-        let prev = self.configured.swap(target, Ordering::SeqCst);
-        if target > prev {
-            self.semaphore.add_permits(target - prev);
-        } else if target < prev {
-            let sem = self.semaphore.clone();
-            let remove = (prev - target) as u32;
-            tauri::async_runtime::spawn(async move {
-                if let Ok(permits) = sem.acquire_many(remove).await {
-                    permits.forget();
-                }
-            });
+    pub fn stop_conversation(&self, conversation: &str) {
+        if let Some(runtime) = self
+            .durable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if let Err(error) = runtime.stop_parent(conversation, None) {
+                eprintln!("Cannot save child cancellation: {error}");
+            }
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Sub-agent host: forwards live progress, denies sensitive tools, cascades cancel
-// ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct ProgressState {
@@ -403,6 +157,7 @@ impl ProgressState {
 }
 
 struct SubAgentHost {
+    managed: Option<(Arc<runtime::Runtime>, String)>,
     workflow_hooks: crate::chat::workflow_hooks::Runtime,
     app: AppHandle,
     parent_conversation_id: String,
@@ -444,6 +199,18 @@ impl SubAgentHost {
             guard.last_emit = Some(now);
             (clip(&guard.text, 1200), guard.aggregate_steps())
         };
+        if let Some((runtime, run)) = &self.managed {
+            if let Err(error) = runtime.progress(
+                &self.parent_conversation_id,
+                &self.task_id,
+                run,
+                text,
+                steps,
+            ) {
+                eprintln!("Cannot save child progress: {error}");
+            }
+            return;
+        }
         crate::chat::protocol::emit_run_event(
             &self.app,
             &self.parent_run_id,
@@ -462,6 +229,35 @@ impl SubAgentHost {
 }
 
 impl AgentHost for SubAgentHost {
+    fn requires_tool_completion(&self) -> bool {
+        self.managed.is_some()
+    }
+    fn close_runtime_input(&self) -> Result<(), String> {
+        if let Some((runtime, run)) = &self.managed {
+            runtime.close_input(&self.parent_conversation_id, &self.task_id, run)?;
+        }
+        Ok(())
+    }
+    fn checkpoint_runtime<'a>(
+        &'a self,
+        _conversation_id: &'a str,
+        _run_id: &'a str,
+        history: &'a [Value],
+        finishing: bool,
+    ) -> AgentHostFuture<'a, Result<Vec<Value>, String>> {
+        Box::pin(async move {
+            match &self.managed {
+                Some((runtime, run)) => runtime.checkpoint(
+                    &self.parent_conversation_id,
+                    &self.task_id,
+                    run,
+                    history,
+                    finishing,
+                ),
+                None => Ok(Vec::new()),
+            }
+        })
+    }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
         Some(&self.workflow_hooks)
     }
@@ -542,6 +338,13 @@ impl AgentHost for SubAgentHost {
     }
 
     fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
+        if let Some((runtime, run)) = &self.managed {
+            return runtime.running(&self.parent_conversation_id, &self.task_id, run)
+                && self
+                    .app
+                    .state::<AppState>()
+                    .is_chat_generation_active(conversation_id, generation);
+        }
         // Cascade: the sub-agent run is active only while BOTH its own
         // generation and the parent generation are live. Parent cancel ⇒
         // sub-agent stops on its next loop check.
@@ -576,6 +379,7 @@ impl AgentHost for SubAgentHost {
 
 struct SubAgentToolExecutor {
     app: AppHandle,
+    managed: Option<(String, String, String)>,
 }
 
 impl ToolExecutor for SubAgentToolExecutor {
@@ -587,6 +391,9 @@ impl ToolExecutor for SubAgentToolExecutor {
         skill_cache: Option<&'a mut crate::skills::SkillRunCache>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
+            if let Some((conversation, id, run)) = &self.managed {
+                control::runtime(&self.app)?.tool_record(conversation, id, run, serde_json::json!({"id":ctx.tool_call_id,"name":tool.name,"arguments":arguments,"status":"unknown"}))?;
+            }
             let native_ctx = crate::mcp::registry::NativeToolContext {
                 conversation_id: ctx.tool_conversation_id.to_string(),
                 message_id: ctx.message_id.to_string(),
@@ -595,7 +402,7 @@ impl ToolExecutor for SubAgentToolExecutor {
                 generation: ctx.generation,
                 depth: ctx.depth,
             };
-            crate::mcp::registry::call_tool(
+            let result = crate::mcp::registry::call_tool(
                 &self.app,
                 &self.app.state::<AppState>(),
                 tool,
@@ -603,7 +410,11 @@ impl ToolExecutor for SubAgentToolExecutor {
                 skill_cache,
                 Some(native_ctx),
             )
-            .await
+            .await;
+            if let Some((conversation, id, run)) = &self.managed {
+                control::runtime(&self.app)?.tool_record(conversation, id, run, serde_json::json!({"id":ctx.tool_call_id,"name":tool.name,"status":if result.is_ok() {"returned"} else {"failed"},"result":format!("{result:?}")}))?;
+            }
+            result
         })
     }
 }
@@ -653,6 +464,7 @@ fn resolve_sub_agent_provider_model(
 }
 
 pub struct SubAgentRequest {
+    pub managed: Option<runtime::Record>,
     pub task_id: String,
     pub name: String,
     pub agent_type: String,
@@ -673,123 +485,175 @@ pub struct SubAgentRequest {
     pub skill_project_cwd: Option<std::path::PathBuf>,
 }
 
-/// Run a sub-agent to completion. Builds an isolated config and reuses
-/// `run_agent_loop`. Takes an owned `AppHandle` and re-resolves `AppState` from
-/// it (`app.state::<AppState>()`). Awaited inline by the synchronous `agent`
-/// spawn handler. Cancellation cascades from the parent via `SubAgentHost`. Up
-/// to `SUB_AGENT_MAX_ATTEMPTS` tries: reasoning models occasionally return an
-/// empty planning response (surfaced as `Err`); since a sub-agent has no user
-/// resend loop, we retry once on non-cancel errors.
+/// Run one worker with the shared loop's bounded model-step recovery.
+/// Never restart a whole task after an error: its tools may already have run.
+pub(crate) async fn run_worker_loop(
+    mut config: AgentRunConfig<'_>,
+    host: &dyn AgentHost,
+    executor: &dyn ToolExecutor,
+) -> Result<AgentRunResult, String> {
+    let mut previous: Option<AgentRunResult> = None;
+    loop {
+        let incoming = host
+            .checkpoint_runtime(
+                &config.conversation_id,
+                &config.run_id,
+                &config.runtime_messages,
+                false,
+            )
+            .await?;
+        config.runtime_messages.extend(incoming);
+        let mut result = run_agent_loop(config.clone(), host, executor).await?;
+        let mut history = result.compacted_history.clone().unwrap_or_else(|| {
+            let mut history = config.runtime_messages.clone();
+            history.extend(result.api_messages.iter().cloned());
+            history
+        });
+        if result.stream_outcome != "completed" {
+            host.close_runtime_input()?;
+        }
+        let incoming = host
+            .checkpoint_runtime(&config.conversation_id, &config.run_id, &history, true)
+            .await?;
+        if let Some(mut prior) = previous.take() {
+            if let Some(old) = prior.usage {
+                let total = result.usage.get_or_insert_with(Default::default);
+                let add = |slot: &mut Option<u64>, value: Option<u64>| {
+                    if let Some(value) = value {
+                        *slot = Some(slot.unwrap_or(0).saturating_add(value));
+                    }
+                };
+                add(&mut total.input_tokens, old.input_tokens);
+                add(&mut total.output_tokens, old.output_tokens);
+                add(&mut total.total_tokens, old.total_tokens);
+                add(&mut total.cached_input_tokens, old.cached_input_tokens);
+                add(
+                    &mut total.cache_creation_input_tokens,
+                    old.cache_creation_input_tokens,
+                );
+                add(&mut total.reasoning_tokens, old.reasoning_tokens);
+            }
+            prior.api_messages.extend(result.api_messages);
+            result.api_messages = prior.api_messages;
+            prior.tool_records.extend(result.tool_records);
+            result.tool_records = prior.tool_records;
+            prior.segments.extend(result.segments);
+            result.segments = prior.segments;
+        }
+        if incoming.is_empty() || result.stream_outcome != "completed" {
+            return Ok(result);
+        }
+        history.extend(incoming);
+        config.runtime_messages = history;
+        previous = Some(result);
+    }
+}
+
 async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunResult, String> {
     let state = app.state::<AppState>();
     let state: &AppState = &state;
     let sub_conversation_id = format!("subagent-{}", req.task_id);
 
-    let mut last_outcome: Result<AgentRunResult, String> = Err("Sub-agent did not run".to_string());
+    let sub_generation = state.next_chat_generation(&sub_conversation_id);
+    let sub_run_id = req
+        .managed
+        .as_ref()
+        .map(|r| r.current().id.clone())
+        .unwrap_or_else(|| format!("subrun-{}", req.task_id));
+    let sub_message_id = format!("submsg-{}", req.task_id);
 
-    for attempt in 0..SUB_AGENT_MAX_ATTEMPTS {
-        // A cascade cancel between attempts must short-circuit: never retry once
-        // the parent generation is gone.
-        if attempt > 0
-            && !state.is_chat_generation_active(&req.parent_conversation_id, req.parent_generation)
-        {
-            return Err("cancelled".to_string());
-        }
+    let runtime_messages = req
+        .managed
+        .as_ref()
+        .map(|r| r.history.clone())
+        .unwrap_or_else(|| {
+            vec![
+                serde_json::json!({ "role": "system", "content": req.system_prompt }),
+                serde_json::json!({ "role": "user", "content": req.prompt }),
+            ]
+        });
 
-        // Fresh generation + runtime per attempt. The config is moved into
-        // `run_agent_loop`, so host/executor/config are rebuilt each iteration.
-        let sub_generation = state.next_chat_generation(&sub_conversation_id);
-        let sub_run_id = format!("subrun-{}", req.task_id);
-        let sub_message_id = format!("submsg-{}", req.task_id);
+    let host = SubAgentHost {
+        managed: req.managed.as_ref().map(|r| {
+            (
+                control::runtime(&app).expect("runtime already initialized"),
+                r.current().id.clone(),
+            )
+        }),
+        workflow_hooks: crate::plugins::packages::hook_runtime(
+            req.skill_project_cwd
+                .clone()
+                .unwrap_or_else(std::env::temp_dir),
+            req.agent_type.clone(),
+            None,
+        ),
+        app: app.clone(),
+        parent_conversation_id: req.parent_conversation_id.clone(),
+        parent_run_id: req.parent_run_id.clone(),
+        parent_tool_call_id: req.parent_tool_call_id.clone(),
+        parent_generation: req.parent_generation,
+        task_id: req.task_id.clone(),
+        name: req.name.clone(),
+        model: req.model.clone(),
+        depth: req.depth,
+        progress: Mutex::new(ProgressState::default()),
+    };
+    let executor = SubAgentToolExecutor {
+        app: app.clone(),
+        managed: req.managed.as_ref().map(|r| {
+            (
+                r.conversation_id.clone(),
+                r.id.clone(),
+                r.current().id.clone(),
+            )
+        }),
+    };
 
-        let runtime_messages = vec![
-            serde_json::json!({ "role": "system", "content": req.system_prompt }),
-            serde_json::json!({ "role": "user", "content": req.prompt }),
-        ];
+    let thinking_enabled = req.settings.chat.thinking_enabled;
+    let max_output_tokens = req.max_output_tokens;
+    let retry_attempts = if req.settings.retry_enabled {
+        req.settings.retry_attempts as usize
+    } else {
+        1
+    };
+    let effective_chat_tools = req.settings.chat_tools.clone();
 
-        let host = SubAgentHost {
-            workflow_hooks: crate::plugins::packages::hook_runtime(
-                req.skill_project_cwd
-                    .clone()
-                    .unwrap_or_else(std::env::temp_dir),
-                req.agent_type.clone(),
-                None,
-            ),
-            app: app.clone(),
-            parent_conversation_id: req.parent_conversation_id.clone(),
-            parent_run_id: req.parent_run_id.clone(),
-            parent_tool_call_id: req.parent_tool_call_id.clone(),
-            parent_generation: req.parent_generation,
-            task_id: req.task_id.clone(),
-            name: req.name.clone(),
-            model: req.model.clone(),
-            depth: req.depth,
-            progress: Mutex::new(ProgressState::default()),
-        };
-        let executor = SubAgentToolExecutor { app: app.clone() };
+    let config = AgentRunConfig {
+        state,
+        conversation_id: sub_conversation_id.clone(),
+        tool_conversation_id: req.parent_conversation_id.clone(),
+        depth: req.depth,
+        run_id: sub_run_id,
+        message_id: sub_message_id,
+        generation: sub_generation,
+        provider: req.provider.clone(),
+        model: req.model.clone(),
+        runtime_messages,
+        tools: req.tools.clone(),
+        blocked_tool_calls: Vec::new(),
+        settings: req.settings.clone(),
+        effective_chat_tools,
+        language: req.language.clone(),
+        thinking_enabled,
+        thinking_level: None,
+        // 子代理不做联网搜索（父代理的搜索结果已在上下文里）。
+        web_search_mode: crate::chat::types::WebSearchMode::Off,
+        max_output_tokens,
+        retry_attempts,
+        assistant_snapshot: None,
+        provider_tools_fallback_system_prompt: req.system_prompt.clone(),
+        initial_anchor_total_tokens: None,
+        initial_anchor_trailing_estimate: 0,
+        skill_project_cwd: req.skill_project_cwd.clone(),
+    };
 
-        let thinking_enabled = req.settings.chat.thinking_enabled;
-        let max_output_tokens = req.max_output_tokens;
-        let retry_attempts = if req.settings.retry_enabled {
-            req.settings.retry_attempts as usize
-        } else {
-            1
-        };
-        let effective_chat_tools = req.settings.chat_tools.clone();
-
-        let config = AgentRunConfig {
-            state,
-            conversation_id: sub_conversation_id.clone(),
-            tool_conversation_id: req.parent_conversation_id.clone(),
-            depth: req.depth,
-            run_id: sub_run_id,
-            message_id: sub_message_id,
-            generation: sub_generation,
-            provider: req.provider.clone(),
-            model: req.model.clone(),
-            runtime_messages,
-            tools: req.tools.clone(),
-            blocked_tool_calls: Vec::new(),
-            settings: req.settings.clone(),
-            effective_chat_tools,
-            language: req.language.clone(),
-            thinking_enabled,
-            thinking_level: None,
-            // 子代理不做联网搜索（父代理的搜索结果已在上下文里）。
-            web_search_mode: crate::chat::types::WebSearchMode::Off,
-            max_output_tokens,
-            retry_attempts,
-            assistant_snapshot: None,
-            provider_tools_fallback_system_prompt: req.system_prompt.clone(),
-            initial_anchor_total_tokens: None,
-            initial_anchor_trailing_estimate: 0,
-            skill_project_cwd: req.skill_project_cwd.clone(),
-        };
-
-        // No wall-clock cap: a sub-agent now runs to natural completion or until
-        // cancelled via generation cascade (parent stop ⇒ host.is_generation_active
-        // flips false ⇒ the loop ends gracefully). A 300s hard timeout was removed
-        // because real multi-round file work legitimately exceeds it.
-        let outcome = run_agent_loop(config, &host, &executor).await;
-        // Retire this attempt's generation on every exit path (success or failure).
-        // Otherwise the synthetic generation reads "active" forever and entries
-        // accumulate in chat_active_generations.
-        state.cancel_chat_generation(&sub_conversation_id);
-
-        // Success or cancellation → return immediately.
-        if matches!(outcome, Ok(_)) || matches!(&outcome, Err(err) if err == "cancelled") {
-            return outcome;
-        }
-
-        let parent_active =
-            state.is_chat_generation_active(&req.parent_conversation_id, req.parent_generation);
-        if !should_retry_sub_agent(&outcome, attempt, parent_active) {
-            return outcome;
-        }
-        last_outcome = outcome;
-    }
-
-    last_outcome
+    // No wall-clock cap: a sub-agent now runs to natural completion or until
+    // cancelled via generation cascade (parent stop ⇒ host.is_generation_active
+    // flips false ⇒ the loop ends gracefully). A 300s hard timeout was removed
+    // because real multi-round file work legitimately exceeds it.
+    let outcome = run_worker_loop(config, &host, &executor).await;
+    state.cancel_chat_generation(&sub_conversation_id);
+    outcome
 }
 
 // ---------------------------------------------------------------------------
@@ -840,7 +704,7 @@ pub fn agent_tool(defs: &[AgentDefinition]) -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__agent".to_string(),
         name: AGENT_TOOL_NAME.to_string(),
-        description: "Spawn a sub-agent to handle a focused sub-task and return its result. The sub-agent runs with its own fresh context and a restricted toolset, and this call BLOCKS until it finishes, returning the full result inline. Use for delegating self-contained research/implementation/review work. To run sub-agents in PARALLEL, emit MULTIPLE agent tool calls in a SINGLE message — they execute concurrently and each returns its own result. Provide a complete, self-contained prompt — the sub-agent cannot see this conversation.".to_string(),
+        description: "Start a child task asynchronously and return its identity and execution receipt. Provide a complete task; fresh children do not inherit parent history. Continue independent work, collect results with agent_control, and wait for required child results before finishing. Ordinary messages supplement an active child; explicit continue starts an idle child. Children share the parent working directory: avoid concurrent edits to the same file.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -890,7 +754,7 @@ pub fn agent_tool(defs: &[AgentDefinition]) -> ChatToolDefinition {
 }
 
 pub fn tool_definitions(defs: &[AgentDefinition]) -> Vec<ChatToolDefinition> {
-    vec![agent_tool(defs)]
+    vec![agent_tool(defs), control::definition()]
 }
 
 /// Append sub-agent management tools (model-facing), skipping the `agent`
@@ -902,7 +766,7 @@ pub fn append_tool_definitions(
     defs: &[AgentDefinition],
 ) {
     for tool in tool_definitions(defs) {
-        if tool.name == AGENT_TOOL_NAME && !allow_spawn {
+        if is_sub_agent_tool_name(&tool.name) && !allow_spawn {
             continue;
         }
         if !tools
@@ -998,12 +862,7 @@ fn clip(text: &str, max: usize) -> String {
     format!("{truncated}…")
 }
 
-/// Spawn handler (the `agent` tool). Async (Box::pin). Drives `run_sub_agent`
-/// to completion and returns the result inline (BLOCKING, single-result — the
-/// Claude Code Task model). Parallelism comes from the model emitting multiple
-/// `agent` tool calls in one round; the loop runs them concurrently because
-/// `agent` is `parallel_safe`. The wait stays in the runtime, never in the
-/// model token loop.
+/// Resolve the child configuration, durably admit work, and return a receipt.
 pub fn handle_agent_spawn<'a>(
     ctx: SubAgentCallCtx<'a>,
 ) -> std::pin::Pin<
@@ -1197,38 +1056,6 @@ pub fn handle_agent_spawn<'a>(
             .map(|s| s.to_string())
             .unwrap_or_else(|| def.name.clone());
 
-        let manager = &ctx.state.sub_agents;
-        manager.register(SubAgentTaskRecord {
-            id: task_id.clone(),
-            name: name.clone(),
-            agent_type: def.name.clone(),
-            // Pending until a concurrency permit is acquired; flipped to Running
-            // once the run actually starts (below). The window is tiny.
-            status: SubAgentStatus::Pending,
-            result: None,
-            error: None,
-            depth: ctx.native_ctx.depth + 1,
-            created_at: chrono::Local::now().timestamp(),
-            completed_at: None,
-            usage: None,
-        });
-
-        // Arm the drop backstop as soon as the record exists: a drop while
-        // queued on the semaphore below would otherwise leave it stuck in
-        // Pending (uncollectable — eviction only drops completed records).
-        let mut drop_guard = SpawnDropGuard {
-            app: ctx.app.clone(),
-            task_id: task_id.clone(),
-            armed: true,
-        };
-
-        // Concurrency gate: an OWNED permit, held for the lifetime of the run.
-        // acquire_owned only errors if the semaphore is closed (never — it lives
-        // on AppState). Held across the await below so concurrent fan-out is
-        // capped by the SubAgentManager semaphore.
-        let _permit = manager.semaphore().acquire_owned().await.ok();
-        manager.set_status(&task_id, SubAgentStatus::Running);
-
         // Model-aware output cap: prefer the model library / provider override
         // (matching top-level chat); the raw setting is only a fallback.
         let max_output_tokens = crate::chat::model_metadata::chat_max_output_tokens_on_wire(
@@ -1240,6 +1067,7 @@ pub fn handle_agent_spawn<'a>(
         let parent_run_id = ctx.native_ctx.run_id.clone();
         let parent_tool_call_id = ctx.native_ctx.tool_call_id.clone().unwrap_or_default();
         let request = SubAgentRequest {
+            managed: None,
             task_id: task_id.clone(),
             name: name.clone(),
             agent_type: def.name.clone(),
@@ -1259,229 +1087,18 @@ pub fn handle_agent_spawn<'a>(
             skill_project_cwd: skill_cwd.clone(),
         };
 
-        // Owned context the finalizer needs.
-        let finalize_ctx = FinalizeCtx {
-            app: ctx.app.clone(),
-            task_id: task_id.clone(),
-            name: name.clone(),
-            agent_type: def.name.clone(),
-            model: request.model.clone(),
-        };
-
-        // Blocking + single-result: await completion and return the result
-        // inline. The permit is held for the duration of this await. The drop
-        // guard covers the paths where this future is dropped instead of
-        // resuming (user stop / outer timeout) — see finalize_dropped_spawn.
-        let app = ctx.app.clone();
-        let outcome = run_sub_agent(app, request).await;
-        drop_guard.armed = false;
-        Ok(finalize_sub_agent_outcome(finalize_ctx, outcome))
+        let key = ctx.native_ctx.tool_call_id.as_deref().unwrap_or(&task_id);
+        let record = control::launch(ctx.app, request, key)?;
+        let value = serde_json::json!({"type":"subagent_started","id":record.id,"execution_id":record.current().id,"name":record.name,"conversation_id":parent_conversation_id,"status":"accepted"});
+        Ok(McpToolCallResult {
+            content: value.to_string(),
+            is_error: false,
+            raw: Value::Null,
+            artifacts: Vec::new(),
+            structured_content: Some(value),
+            follow_up_user_messages: Vec::new(),
+        })
     })
-}
-
-/// Owned context the outcome finalizer needs.
-struct FinalizeCtx {
-    app: AppHandle,
-    task_id: String,
-    name: String,
-    agent_type: String,
-    model: String,
-}
-
-/// Backstop cleanup when the `agent` spawn future is dropped mid-run instead of
-/// returning: the tool scheduler's `tokio::select!` drops it when the user stops
-/// the parent generation (that branch always wins the race against the loop's
-/// own cascade-cancel checkpoint) or when the outer 660s backstop timeout
-/// fires. A dropped future never reaches `run_sub_agent`'s post-await cleanup
-/// nor `finalize_sub_agent_outcome`, which would leak (a) a task record stuck
-/// in `Running` forever — uncollectable, since eviction only drops completed
-/// records — and (b) the synthetic sub-conversation's active generation.
-fn finalize_dropped_spawn(state: &AppState, task_id: &str) {
-    state.sub_agents.finish(
-        task_id,
-        SubAgentStatus::Cancelled,
-        None,
-        Some("cancelled".to_string()),
-        None,
-    );
-    state.cancel_chat_generation(&format!("subagent-{task_id}"));
-}
-
-/// RAII wrapper arming [`finalize_dropped_spawn`]. Disarmed on the normal
-/// return path right after `run_sub_agent` resolves (no await between the two,
-/// so the window is drop-free).
-struct SpawnDropGuard {
-    app: AppHandle,
-    task_id: String,
-    armed: bool,
-}
-
-impl Drop for SpawnDropGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            finalize_dropped_spawn(&self.app.state::<AppState>(), &self.task_id);
-        }
-    }
-}
-
-/// Turn a sub-agent run outcome into the task record update + tool result.
-/// Marks the record finished and returns the `McpToolCallResult` (returned
-/// inline to the parent loop). The synchronous path emits NO terminal
-/// Protocol subagent update: the full result (status + content + usage) propagates
-/// inline via the tool update flow, and the card keeps the last running progress
-/// event's accumulated steps/preview — a terminal event (whose payload omits
-/// steps/preview) would overwrite `subagentProgress` with empty arrays and wipe
-/// that step history. Resolves `AppState`/manager from the owned `AppHandle`.
-fn finalize_sub_agent_outcome(
-    ctx: FinalizeCtx,
-    outcome: Result<AgentRunResult, String>,
-) -> McpToolCallResult {
-    let state = ctx.app.state::<AppState>();
-    let manager = &state.sub_agents;
-    compute_sub_agent_finalization(
-        manager,
-        &SubAgentFinalizeParams {
-            task_id: &ctx.task_id,
-            name: &ctx.name,
-            agent_type: &ctx.agent_type,
-            model: &ctx.model,
-        },
-        outcome,
-    )
-}
-
-/// Borrowed inputs for [`compute_sub_agent_finalization`]. Mirrors the
-/// `AppHandle`-bound fields of [`FinalizeCtx`] but free of any Tauri runtime
-/// dependency so the finalization logic can be unit-tested directly.
-#[derive(Clone, Copy)]
-struct SubAgentFinalizeParams<'a> {
-    task_id: &'a str,
-    name: &'a str,
-    agent_type: &'a str,
-    model: &'a str,
-}
-
-/// Pure finalization: update the manager record for the outcome and build the
-/// `McpToolCallResult` returned inline to the parent loop. Free of `AppHandle`
-/// so it is directly testable.
-fn compute_sub_agent_finalization(
-    manager: &SubAgentManager,
-    params: &SubAgentFinalizeParams<'_>,
-    outcome: Result<AgentRunResult, String>,
-) -> McpToolCallResult {
-    let SubAgentFinalizeParams {
-        task_id,
-        name,
-        agent_type,
-        model,
-    } = *params;
-
-    match outcome {
-        // A cancelled run (own stop or parent cascade) now returns
-        // Ok(cancelled_result) from every loop phase, not just an
-        // Err("cancelled") from the planning/stream path. Detect it via
-        // `stream_outcome` so a cancelled sub-agent is reported as
-        // `cancelled` to the parent — never as a `completed` result whose
-        // "content" is just the stopped-generation placeholder.
-        Ok(run) if run.stream_outcome == "cancelled" => {
-            manager.finish(task_id, SubAgentStatus::Cancelled, None, None, None);
-            let structured = serde_json::json!({
-                "type": "subagent",
-                "taskId": task_id,
-                "name": name,
-                "agentType": agent_type,
-                "model": model,
-                "status": "cancelled",
-                "error": "cancelled",
-            });
-            McpToolCallResult {
-                content: format!("[Sub-agent: {} ({})] cancelled", name, agent_type),
-                is_error: false,
-                raw: structured.clone(),
-                artifacts: Vec::new(),
-                structured_content: Some(structured),
-                follow_up_user_messages: Vec::new(),
-            }
-        }
-        Ok(run) => {
-            let content = if run.content.trim().is_empty() {
-                "(sub-agent produced no text output)".to_string()
-            } else {
-                run.content.clone()
-            };
-            let usage = run.usage.as_ref().map(SubAgentUsage::from_model_usage);
-            manager.finish(
-                task_id,
-                SubAgentStatus::Completed,
-                Some(clip(&content, RESULT_PREVIEW_MAX)),
-                None,
-                usage.clone(),
-            );
-            let mut structured = serde_json::json!({
-                "type": "subagent",
-                "taskId": task_id,
-                "name": name,
-                "agentType": agent_type,
-                "model": model,
-                "status": "completed",
-                "result": clip(&content, RESULT_PREVIEW_MAX),
-            });
-            if let Some(usage) = usage {
-                if let Some(obj) = structured.as_object_mut() {
-                    obj.insert(
-                        "usage".to_string(),
-                        serde_json::to_value(&usage).unwrap_or(Value::Null),
-                    );
-                }
-            }
-            McpToolCallResult {
-                content: format!("[Sub-agent: {} ({})]\n\n{}", name, agent_type, content),
-                is_error: false,
-                raw: structured.clone(),
-                artifacts: Vec::new(),
-                structured_content: Some(structured),
-                follow_up_user_messages: Vec::new(),
-            }
-        }
-        Err(err) => {
-            let cancelled = err == "cancelled";
-            let status = if cancelled {
-                SubAgentStatus::Cancelled
-            } else {
-                SubAgentStatus::Failed
-            };
-            // Surface a clean, user/model-facing message instead of the raw
-            // internal error string. The empty-assistant-response case (a
-            // reasoning model returning nothing in planning) is the common
-            // failure; other errors keep their original text.
-            let display_err = if err.contains(EMPTY_RESPONSE_MARKER) {
-                "Subagent 运行失败：模型返回了空响应（可重试）。".to_string()
-            } else {
-                err.clone()
-            };
-            manager.finish(task_id, status, None, Some(display_err.clone()), None);
-            let structured = serde_json::json!({
-                "type": "subagent",
-                "taskId": task_id,
-                "name": name,
-                "agentType": agent_type,
-                "model": model,
-                "status": if cancelled { "cancelled" } else { "failed" },
-                "error": display_err,
-            });
-            McpToolCallResult {
-                content: format!(
-                    "[Sub-agent: {} ({})] failed: {}",
-                    name, agent_type, display_err
-                ),
-                is_error: !cancelled,
-                raw: structured.clone(),
-                artifacts: Vec::new(),
-                structured_content: Some(structured),
-                follow_up_user_messages: Vec::new(),
-            }
-        }
-    }
 }
 
 // Registry dispatch entry point (returns NativeToolFuture so the static
@@ -1884,372 +1501,11 @@ mod tests {
     }
 
     #[test]
-    fn manager_register_and_lookup_by_id_and_name() {
-        let manager = SubAgentManager::default();
-        manager.register(SubAgentTaskRecord {
-            id: "agent-1".to_string(),
-            name: "researcher".to_string(),
-            agent_type: "researcher".to_string(),
-            status: SubAgentStatus::Running,
-            result: None,
-            error: None,
-            depth: 1,
-            created_at: 100,
-            completed_at: None,
-            usage: None,
-        });
-        assert_eq!(manager.get("agent-1").unwrap().name, "researcher");
-        assert_eq!(manager.get("researcher").unwrap().id, "agent-1");
-        manager.finish(
-            "agent-1",
-            SubAgentStatus::Completed,
-            Some("done".into()),
-            None,
-            None,
-        );
-        let rec = manager.get("agent-1").unwrap();
-        assert_eq!(rec.status, SubAgentStatus::Completed);
-        assert_eq!(rec.result.as_deref(), Some("done"));
-        assert_eq!(manager.list().len(), 1);
-    }
-
-    fn running_record(id: &str) -> SubAgentTaskRecord {
-        SubAgentTaskRecord {
-            id: id.to_string(),
-            name: id.to_string(),
-            agent_type: "general-purpose".to_string(),
-            status: SubAgentStatus::Running,
-            result: None,
-            error: None,
-            depth: 1,
-            created_at: 0,
-            completed_at: None,
-            usage: None,
-        }
-    }
-
-    /// A record starts Pending (before a permit is acquired) and flips to
-    /// Running once the run starts.
-    #[test]
-    fn pending_then_running_status_flow() {
-        let manager = SubAgentManager::default();
-        let mut rec = running_record("agent-p");
-        rec.status = SubAgentStatus::Pending;
-        manager.register(rec);
-        assert_eq!(
-            manager.get("agent-p").unwrap().status,
-            SubAgentStatus::Pending
-        );
-        manager.set_status("agent-p", SubAgentStatus::Running);
-        assert_eq!(
-            manager.get("agent-p").unwrap().status,
-            SubAgentStatus::Running
-        );
-    }
-
-    #[test]
-    fn manager_caps_table_and_evicts_oldest_completed() {
-        let manager = SubAgentManager::default();
-        // One running task that must never be evicted.
-        manager.register(SubAgentTaskRecord {
-            id: "running".to_string(),
-            name: "running".to_string(),
-            agent_type: "t".to_string(),
-            status: SubAgentStatus::Running,
-            result: None,
-            error: None,
-            depth: 1,
-            created_at: 0,
-            completed_at: None,
-            usage: None,
-        });
-        // MAX + 50 completed tasks, ascending completed_at so we know the order.
-        for i in 0..(MAX_SUB_AGENT_TASKS + 50) {
-            manager.register(SubAgentTaskRecord {
-                id: format!("done-{i}"),
-                name: format!("done-{i}"),
-                agent_type: "t".to_string(),
-                status: SubAgentStatus::Completed,
-                result: Some("r".to_string()),
-                error: None,
-                depth: 1,
-                created_at: i as i64 + 1,
-                completed_at: Some(i as i64 + 1),
-                usage: None,
-            });
-        }
-        // Capped.
-        assert!(manager.list().len() <= MAX_SUB_AGENT_TASKS);
-        // Running task survived despite being the oldest by created_at.
-        assert!(manager.get("running").is_some());
-        // Oldest completed evicted; newest completed retained.
-        assert!(manager.get("done-0").is_none());
-        assert!(manager
-            .get(&format!("done-{}", MAX_SUB_AGENT_TASKS + 49))
-            .is_some());
-        // by_name reverse lookup for an evicted id is gone too (no leak there).
-        assert!(manager.get("done-0").is_none());
-    }
-
-    #[test]
-    fn depth_guard_rejects_at_max_depth() {
-        // Acceptance #2: depth >= 3 cannot spawn.
+    fn children_cannot_delegate_again() {
         assert!(depth_allows_spawn(0));
-        assert!(depth_allows_spawn(1));
-        assert!(depth_allows_spawn(2));
-        assert!(!depth_allows_spawn(3));
-        assert!(!depth_allows_spawn(4));
-        assert_eq!(MAX_SUB_AGENT_DEPTH, 3);
+        assert!(!depth_allows_spawn(1));
+        assert!(!depth_allows_spawn(2));
     }
-
-    #[test]
-    fn dropped_spawn_backstop_cancels_record_and_retires_generation() {
-        // The tool scheduler's select! drops the spawn future on user stop /
-        // outer timeout. The backstop must (a) move the record out of
-        // Pending/Running so it stays evictable, and (b) retire the synthetic
-        // sub-conversation's generation so chat_active_generations doesn't leak.
-        let state = crate::state::test_app_state();
-        state.sub_agents.register(running_record("agent-drop"));
-        let sub_gen = state.next_chat_generation("subagent-agent-drop");
-        assert!(state.is_chat_generation_active("subagent-agent-drop", sub_gen));
-
-        finalize_dropped_spawn(&state, "agent-drop");
-
-        assert_eq!(
-            state.sub_agents.get("agent-drop").unwrap().status,
-            SubAgentStatus::Cancelled
-        );
-        assert!(!state.is_chat_generation_active("subagent-agent-drop", sub_gen));
-        // The one-shot synthetic conversation key itself is gone (no map growth).
-        assert!(!state
-            .chat_active_generations
-            .lock()
-            .unwrap()
-            .contains_key("subagent-agent-drop"));
-    }
-
-    #[test]
-    fn host_cancels_when_parent_generation_cancelled() {
-        // Acceptance #3: parent cancel cascades to the sub-agent.
-        let state = crate::state::test_app_state();
-        let parent_gen = state.next_chat_generation("conv-parent");
-        let sub_gen = state.next_chat_generation("subagent-x");
-        // Both live → active.
-        assert!(generation_cascade_active(
-            &state,
-            "subagent-x",
-            sub_gen,
-            "conv-parent",
-            parent_gen
-        ));
-        // Cancel the PARENT → sub-agent must report inactive (cascade).
-        state.cancel_chat_generation("conv-parent");
-        assert!(!generation_cascade_active(
-            &state,
-            "subagent-x",
-            sub_gen,
-            "conv-parent",
-            parent_gen
-        ));
-    }
-
-    fn ok_run_result() -> Result<AgentRunResult, String> {
-        Ok(AgentRunResult {
-            content: "done".to_string(),
-            reasoning: None,
-            tool_records: Vec::new(),
-            segments: Vec::new(),
-            api_messages: Vec::new(),
-            stream_outcome: String::new(),
-            usage: None,
-            last_step_usage: None,
-            compacted_history: None,
-            compaction_boundary: None,
-            compaction_summary: None,
-            images: Vec::new(),
-            degraded: None,
-        })
-    }
-
-    /// A cancelled run now surfaces as `Ok(result)` with `stream_outcome ==
-    /// "cancelled"` from the planning/loop-top paths (not just `Err("cancelled")`
-    /// from the tool round). `run_sub_agent` short-circuits any `Ok(_)`, so it is
-    /// never retried; `should_retry_sub_agent` returns false for it because it is
-    /// not an `Err`.
-    fn ok_cancelled_run_result() -> Result<AgentRunResult, String> {
-        Ok(AgentRunResult {
-            content: "已停止生成。".to_string(),
-            reasoning: None,
-            tool_records: Vec::new(),
-            segments: Vec::new(),
-            api_messages: Vec::new(),
-            stream_outcome: "cancelled".to_string(),
-            usage: None,
-            last_step_usage: None,
-            compacted_history: None,
-            compaction_boundary: None,
-            compaction_summary: None,
-            images: Vec::new(),
-            degraded: None,
-        })
-    }
-
-    fn finalize_params<'a>(task_id: &'a str) -> SubAgentFinalizeParams<'a> {
-        SubAgentFinalizeParams {
-            task_id,
-            name: "Researcher",
-            agent_type: "general-purpose",
-            model: "test-model",
-        }
-    }
-
-    /// A completed run flips the record to Completed and returns a non-error
-    /// result whose structured content carries the completed status.
-    #[test]
-    fn compute_finalization_completed() {
-        let manager = SubAgentManager::default();
-        manager.register(running_record("ok"));
-        let result =
-            compute_sub_agent_finalization(&manager, &finalize_params("ok"), ok_run_result());
-        assert!(!result.is_error);
-        let structured = result.structured_content.expect("structured");
-        assert_eq!(structured["status"], "completed");
-        assert_eq!(manager.get("ok").unwrap().status, SubAgentStatus::Completed);
-    }
-
-    /// A cancelled run (Ok with stream_outcome == "cancelled") maps to Cancelled,
-    /// never Completed, and is not surfaced as a tool error.
-    #[test]
-    fn compute_finalization_cancelled_outcome_maps_to_cancelled() {
-        let manager = SubAgentManager::default();
-        manager.register(running_record("cancel"));
-        let result = compute_sub_agent_finalization(
-            &manager,
-            &finalize_params("cancel"),
-            ok_cancelled_run_result(),
-        );
-        assert!(!result.is_error);
-        let structured = result.structured_content.expect("structured");
-        assert_eq!(structured["status"], "cancelled");
-        assert_eq!(
-            manager.get("cancel").unwrap().status,
-            SubAgentStatus::Cancelled
-        );
-    }
-
-    /// An Err outcome maps the record to Failed with the error preserved and the
-    /// result surfaced as a tool error.
-    #[test]
-    fn compute_finalization_error_outcome_maps_to_failed() {
-        let manager = SubAgentManager::default();
-        manager.register(running_record("fail"));
-        let result = compute_sub_agent_finalization(
-            &manager,
-            &finalize_params("fail"),
-            Err("boom".to_string()),
-        );
-        assert!(
-            result.is_error,
-            "a real failure must surface as a tool error"
-        );
-        let structured = result.structured_content.expect("structured");
-        assert_eq!(structured["status"], "failed");
-        assert_eq!(structured["error"], "boom");
-        let rec = manager.get("fail").unwrap();
-        assert_eq!(rec.status, SubAgentStatus::Failed);
-        assert_eq!(rec.error.as_deref(), Some("boom"));
-    }
-
-    /// An Err("cancelled") maps to Cancelled (not Failed) and is not a tool error.
-    #[test]
-    fn compute_finalization_err_cancelled_maps_to_cancelled() {
-        let manager = SubAgentManager::default();
-        manager.register(running_record("errcancel"));
-        let result = compute_sub_agent_finalization(
-            &manager,
-            &finalize_params("errcancel"),
-            Err("cancelled".to_string()),
-        );
-        assert!(!result.is_error);
-        let structured = result.structured_content.expect("structured");
-        assert_eq!(structured["status"], "cancelled");
-        assert_eq!(
-            manager.get("errcancel").unwrap().status,
-            SubAgentStatus::Cancelled
-        );
-    }
-
-    #[test]
-    fn retry_only_on_recoverable_error_with_attempts_and_active_parent() {
-        // SUB_AGENT_MAX_ATTEMPTS == 2: attempt 0 may retry, attempt 1 may not.
-        assert_eq!(SUB_AGENT_MAX_ATTEMPTS, 2);
-
-        let recoverable: Result<AgentRunResult, String> =
-            Err("Chat tools planning returned an empty assistant response".to_string());
-
-        // First attempt, parent alive, recoverable error → retry.
-        assert!(should_retry_sub_agent(&recoverable, 0, true));
-        // Last attempt → no retry even though recoverable.
-        assert!(!should_retry_sub_agent(&recoverable, 1, true));
-        // Parent cancelled → never retry (cascade).
-        assert!(!should_retry_sub_agent(&recoverable, 0, false));
-
-        // Cancellation is not a recoverable error → never retry.
-        let cancelled: Result<AgentRunResult, String> = Err("cancelled".to_string());
-        assert!(!should_retry_sub_agent(&cancelled, 0, true));
-
-        // Any OTHER fatal error must NOT retry: a retry re-runs the whole loop, so
-        // a run that already wrote files over several rounds before failing would
-        // repeat those side effects. Only the empty-response class is retryable.
-        for other in [
-            "provider request failed: 500 Internal Server Error",
-            "context length exceeded",
-            "tool execution failed: write_file denied",
-        ] {
-            let fatal: Result<AgentRunResult, String> = Err(other.to_string());
-            assert!(
-                !should_retry_sub_agent(&fatal, 0, true),
-                "must not retry (side-effect replay): {other}"
-            );
-        }
-
-        // Success → never retry.
-        assert!(!should_retry_sub_agent(&ok_run_result(), 0, true));
-
-        // An Ok(cancelled) result (planning/loop-top cancellation now returns
-        // Ok, not Err) → never retried: it is not an Err, so should_retry is
-        // false, and run_sub_agent short-circuits any Ok(_) before retrying.
-        assert!(!should_retry_sub_agent(&ok_cancelled_run_result(), 0, true));
-    }
-
-    // -----------------------------------------------------------------------
-    // Parallel fan-out: multiple `agent` tool calls in ONE round run
-    // concurrently (Claude Code model — blocking + single-result per call, with
-    // parallelism coming from the model emitting several `agent` calls at once).
-    //
-    // The orchestrator's `run_agent_loop` is the REAL production engine, driven
-    // against a scripted mock model wire. The `agent` tool is test-shimmed (the
-    // production `handle_agent_spawn` is bound to a concrete `AppHandle<Wry>`,
-    // which a `tao` event loop can't build off the main thread), but the shim
-    // replicates the blocking contract: each call awaits to completion and
-    // returns the full result inline. Concurrency is PROVEN by a barrier — every
-    // dispatched `agent` call must reach "in-flight" before ANY is allowed to
-    // finish, which is only possible if they run in parallel.
-
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::Arc;
-
-    use crate::chat::agent::{
-        run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, ToolExecutionContext,
-        ToolExecutor, ToolExecutorFuture,
-    };
-    use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
-    use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
-    use crate::state::AppState;
-
-    // -----------------------------------------------------------------------
-    // resolve_sub_agent_provider_model: the three-tier priority.
-    // -----------------------------------------------------------------------
 
     fn named_provider(id: &str) -> ModelProvider {
         ModelProvider {
@@ -2338,413 +1594,5 @@ mod tests {
                 .expect("resolves");
         assert_eq!(provider.id, "parent-p");
         assert_eq!(model, "parent-model");
-    }
-
-    fn test_provider(base_url: &str) -> ModelProvider {
-        ModelProvider {
-            id: "test-provider".to_string(),
-            name: "Test Provider".to_string(),
-            api_keys: vec!["test-key".to_string()],
-            api_key_legacy: None,
-            base_url: base_url.to_string(),
-            available_models: Vec::new(),
-            enabled_models: Vec::new(),
-            enabled: true,
-            api_format: "openai_chat".to_string(),
-            model_overrides: std::collections::HashMap::new(),
-            compress_request_body: false,
-            request: Default::default(),
-            active_key_index: 0,
-        }
-    }
-
-    /// Body-capturing multi-response mock for the orchestrator's
-    /// OpenAI-compatible chat endpoint: serves one canned JSON completion per
-    /// accepted connection (in accept order) and records each request body.
-    struct MockOrchestratorServer {
-        base_url: String,
-        captured_bodies: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl MockOrchestratorServer {
-        fn start(responses: Vec<String>) -> Self {
-            use std::io::{Read as _, Write as _};
-            use std::net::TcpListener;
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind orchestrator server");
-            let addr = listener.local_addr().expect("orchestrator server addr");
-            let captured = Arc::new(Mutex::new(Vec::new()));
-            let captured_for_thread = Arc::clone(&captured);
-            std::thread::spawn(move || {
-                for body in responses {
-                    let Ok((mut stream, _)) = listener.accept() else {
-                        return;
-                    };
-                    stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                        .ok();
-                    let mut buf = Vec::new();
-                    let mut chunk = [0u8; 1024];
-                    let header_end = loop {
-                        let Ok(n) = stream.read(&mut chunk) else {
-                            break 0;
-                        };
-                        if n == 0 {
-                            break 0;
-                        }
-                        buf.extend_from_slice(&chunk[..n]);
-                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                            break pos + 4;
-                        }
-                    };
-                    if header_end == 0 {
-                        continue;
-                    }
-                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
-                    let content_length = headers
-                        .lines()
-                        .find_map(|line| line.strip_prefix("content-length:"))
-                        .and_then(|value| value.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    while buf.len() < header_end + content_length {
-                        let Ok(n) = stream.read(&mut chunk) else {
-                            break;
-                        };
-                        if n == 0 {
-                            break;
-                        }
-                        buf.extend_from_slice(&chunk[..n]);
-                    }
-                    captured_for_thread
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push(String::from_utf8_lossy(&buf[header_end..]).into_owned());
-                    let body = sse_body_from_completion_json(&body);
-                    let _ = write!(
-                        stream,
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ = stream.flush();
-                }
-            });
-            Self {
-                base_url: format!("http://{addr}/v1"),
-                captured_bodies: captured,
-            }
-        }
-
-        fn captured_bodies(&self) -> Vec<String> {
-            self.captured_bodies
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-        }
-    }
-
-    /// 把一份非流式 chat-completion JSON 固件转成 SSE 响应体。
-    ///
-    /// 「要完整结果」的模型调用现在**一律走流式线**（见 planning.rs 上
-    /// `call_chat_completion_output_with_usage` 的注释）。固件用非流式 JSON 写着更好读，所以在出口做一次机械转换
-    /// （与 `agent/loop_tests.rs::sse_from_completion_json` 同形；两个测试模块互不可见，
-    /// 为二十行搭一个共享 test-util 模块不划算）。
-    fn sse_body_from_completion_json(body: &str) -> String {
-        let parsed: Value = serde_json::from_str(body).expect("mock body must be valid JSON");
-        let message = &parsed["choices"][0]["message"];
-        let mut events: Vec<String> = Vec::new();
-        if let Some(content) = message["content"].as_str().filter(|text| !text.is_empty()) {
-            events
-                .push(serde_json::json!({"choices":[{"delta":{"content": content}}]}).to_string());
-        }
-        if let Some(tool_calls) = message["tool_calls"].as_array() {
-            // 流式约定要 index；参数不切片（测试只关心最终 draft）。
-            let deltas = tool_calls
-                .iter()
-                .enumerate()
-                .map(|(index, call)| {
-                    let mut call = call.clone();
-                    call["index"] = serde_json::json!(index);
-                    call
-                })
-                .collect::<Vec<_>>();
-            events.push(
-                serde_json::json!({"choices":[{"delta":{"tool_calls": deltas}}]}).to_string(),
-            );
-        }
-        if let Some(finish) = parsed["choices"][0]["finish_reason"].as_str() {
-            events.push(
-                serde_json::json!({"choices":[{"delta":{},"finish_reason": finish}]}).to_string(),
-            );
-        }
-        if let Some(usage) = parsed.get("usage").filter(|usage| !usage.is_null()) {
-            events.push(serde_json::json!({"choices":[],"usage": usage}).to_string());
-        }
-        events.push("[DONE]".to_string());
-        events
-            .iter()
-            .map(|event| format!("data: {event}\n\n"))
-            .collect()
-    }
-
-    /// A no-tool-call final assistant answer (ends the loop).
-    fn final_answer_json(text: &str) -> String {
-        serde_json::json!({
-            "choices": [{
-                "finish_reason": "stop",
-                "message": { "role": "assistant", "content": text }
-            }],
-            "usage": { "prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18 }
-        })
-        .to_string()
-    }
-
-    /// One assistant turn with N parallel `agent` tool calls (no background param
-    /// — the production blocking contract). `calls` is `(tool_call_id, name)`.
-    fn fanout_agent_calls_json(calls: &[(&str, &str)]) -> String {
-        let tool_calls: Vec<Value> = calls
-            .iter()
-            .map(|(call_id, name)| {
-                serde_json::json!({
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": "agent",
-                        "arguments": serde_json::json!({
-                            "name": name,
-                            "prompt": "do the task"
-                        }).to_string()
-                    }
-                })
-            })
-            .collect();
-        serde_json::json!({
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": { "role": "assistant", "content": Value::Null, "tool_calls": tool_calls }
-            }],
-            "usage": { "prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10 }
-        })
-        .to_string()
-    }
-
-    /// Orchestrator host: inert stream/record surface; generation governed solely
-    /// by the orchestrator conversation's generation in the real `AppState`.
-    struct OrchestratorHost {
-        state: Arc<AppState>,
-        conversation_id: String,
-    }
-
-    impl AgentHost for OrchestratorHost {
-        fn emit_stream_delta(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            _delta: &str,
-            _reasoning_delta: Option<&str>,
-            _segment: Option<&ChatMessageSegment>,
-        ) {
-        }
-        fn emit_tool_record(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            _record: &ToolCallRecord,
-        ) {
-        }
-        fn request_tool_approval<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
-        ) -> AgentHostFuture<'a, bool> {
-            Box::pin(async move { true })
-        }
-        fn request_user_response<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
-            _prompt: AskUserPromptPayload,
-        ) -> AgentHostFuture<'a, AskUserResponseResult> {
-            Box::pin(async move {
-                AskUserResponseResult {
-                    phase: "cancelled".to_string(),
-                    answers: HashMap::new(),
-                }
-            })
-        }
-        fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-            let _ = conversation_id;
-            self.state
-                .is_chat_generation_active(&self.conversation_id, generation)
-        }
-        fn wait_for_generation_inactive<'a>(
-            &'a self,
-            conversation_id: &'a str,
-            generation: u64,
-        ) -> AgentHostFuture<'a, ()> {
-            Box::pin(async move {
-                loop {
-                    if !self.is_generation_active(conversation_id, generation) {
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-        }
-    }
-
-    /// Orchestrator executor whose `agent` tool BLOCKS until completion (the
-    /// production contract). Concurrency is proven via a shared barrier: each call
-    /// increments `in_flight`, then waits until `in_flight == expected` before
-    /// returning. If the loop ran the calls serially this would deadlock (the
-    /// first call would block forever waiting for the others to start), so the
-    /// test only completes if they run concurrently.
-    struct ParallelFanoutExecutor {
-        expected: usize,
-        in_flight: Arc<AtomicUsize>,
-        max_observed: Arc<AtomicUsize>,
-    }
-
-    impl ToolExecutor for ParallelFanoutExecutor {
-        fn call<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            tool: &'a ChatToolDefinition,
-            arguments: Value,
-            _skill_cache: Option<&'a mut crate::skills::SkillRunCache>,
-        ) -> ToolExecutorFuture<'a> {
-            let expected = self.expected;
-            let in_flight = Arc::clone(&self.in_flight);
-            let max_observed = Arc::clone(&self.max_observed);
-            let tool_name = tool.name.clone();
-            Box::pin(async move {
-                assert_eq!(tool_name, AGENT_TOOL_NAME, "only agent calls expected");
-                let name = arguments
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("worker")
-                    .to_string();
-                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                max_observed.fetch_max(now, Ordering::SeqCst);
-                // Block until every dispatched call is in-flight at once.
-                for _ in 0..500 {
-                    if in_flight.load(Ordering::SeqCst) >= expected {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-                assert!(
-                    in_flight.load(Ordering::SeqCst) >= expected,
-                    "all dispatched agent calls must be in-flight concurrently"
-                );
-                Ok(McpToolCallResult {
-                    content: format!("[Sub-agent: {name}] RESULT_{name}"),
-                    is_error: false,
-                    raw: Value::Null,
-                    artifacts: Vec::new(),
-                    structured_content: None,
-                    follow_up_user_messages: Vec::new(),
-                })
-            })
-        }
-    }
-
-    fn orchestrator_run_config<'a>(
-        state: &'a AppState,
-        base_url: &str,
-        conversation_id: &str,
-    ) -> AgentRunConfig<'a> {
-        AgentRunConfig {
-            state,
-            conversation_id: conversation_id.to_string(),
-            tool_conversation_id: conversation_id.to_string(),
-            depth: 0,
-            run_id: "orch-run".to_string(),
-            message_id: "orch-msg".to_string(),
-            generation: state.next_chat_generation(conversation_id),
-            provider: test_provider(base_url),
-            model: "test-model".to_string(),
-            runtime_messages: vec![
-                serde_json::json!({ "role": "system", "content": "you orchestrate workers" }),
-                serde_json::json!({ "role": "user", "content": "research three topics in parallel" }),
-            ],
-            tools: vec![agent_tool(&[])],
-            blocked_tool_calls: Vec::new(),
-            settings: Settings::default(),
-            effective_chat_tools: ChatToolsConfig {
-                max_tool_rounds: Some(8),
-                ..ChatToolsConfig::default()
-            },
-            language: "zh-CN".to_string(),
-            thinking_enabled: false,
-            thinking_level: None,
-            // 子代理不做联网搜索（父代理的搜索结果已在上下文里）。
-            web_search_mode: crate::chat::types::WebSearchMode::Off,
-            max_output_tokens: 1024,
-            retry_attempts: 1,
-            assistant_snapshot: None,
-            provider_tools_fallback_system_prompt: String::new(),
-            initial_anchor_total_tokens: None,
-            initial_anchor_trailing_estimate: 0,
-            skill_project_cwd: None,
-        }
-    }
-
-    /// THE parallel-fan-out test. The orchestrator model emits THREE `agent`
-    /// tool calls in ONE assistant turn; the loop runs them concurrently via
-    /// `execute_parallel_chunk` (join_all). The blocking executor (each call
-    /// waits until all three are in-flight before returning) only completes if
-    /// they truly run in parallel — serial execution would deadlock and hit the
-    /// timeout. All three results return together; a final answer ends the run.
-    #[tokio::test]
-    async fn three_agent_calls_in_one_round_run_concurrently_and_all_return() {
-        let orchestrator = MockOrchestratorServer::start(vec![
-            fanout_agent_calls_json(&[("call_a", "A"), ("call_b", "B"), ("call_c", "C")]),
-            final_answer_json("All three workers finished."),
-        ]);
-        let state = Arc::new(crate::state::test_app_state());
-
-        let in_flight = Arc::new(AtomicUsize::new(0));
-        let max_observed = Arc::new(AtomicUsize::new(0));
-        let executor = ParallelFanoutExecutor {
-            expected: 3,
-            in_flight: Arc::clone(&in_flight),
-            max_observed: Arc::clone(&max_observed),
-        };
-        let host = OrchestratorHost {
-            state: Arc::clone(&state),
-            conversation_id: "orch-conv".to_string(),
-        };
-
-        let config = orchestrator_run_config(&state, &orchestrator.base_url, "orch-conv");
-        let result = tokio::time::timeout(
-            Duration::from_secs(20),
-            run_agent_loop(config, &host, &executor),
-        )
-        .await
-        .expect("parallel fan-out must not deadlock (it would if calls ran serially)")
-        .expect("orchestrator run completes Ok");
-
-        // The run reached its final answer.
-        assert_eq!(result.stream_outcome, "completed");
-        assert_eq!(result.content, "All three workers finished.");
-
-        // All three agent calls were in-flight at once — true concurrency.
-        assert_eq!(
-            max_observed.load(Ordering::SeqCst),
-            3,
-            "all three agent calls must execute concurrently in one round"
-        );
-
-        // The second model request's history must carry ALL three agent results.
-        let bodies = orchestrator.captured_bodies();
-        assert_eq!(bodies.len(), 2, "fan-out round + final = 2 model requests");
-        for tag in ["RESULT_A", "RESULT_B", "RESULT_C"] {
-            assert!(
-                bodies[1].contains(tag),
-                "round-2 request history must contain {tag} from the concurrent fan-out"
-            );
-        }
     }
 }

@@ -566,6 +566,14 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
+  const receipt = objectValue(toolCall.structured_content ?? toolCall.structuredContent)
+  if (receipt?.type === 'subagent_started') {
+    return <div className="rounded border border-neutral-200 p-3 text-sm dark:border-neutral-700">
+      <div className="font-medium">{stringValue(receipt.name)} · 派工已受理</div>
+      <div className="text-neutral-500">在子代理面板查看执行状态和完整结果。</div>
+    </div>
+  }
+
   const agentType = subagentAgentType(view, args)
   const name = subagentName(view, args)
   const model = view?.model || ''

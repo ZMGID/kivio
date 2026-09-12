@@ -87,7 +87,9 @@ pub enum NativeToolCall {
     /// resolution because it only needs the conversation id, matching the
     /// legacy `RegistryToolExecutor` special case which never resolved a
     /// workspace for todo tools.
-    Conversation(for<'a> fn(&'a AppHandle, &'a NativeToolContext, &'a str, Value) -> NativeToolFuture<'a>),
+    Conversation(
+        for<'a> fn(&'a AppHandle, &'a NativeToolContext, &'a str, Value) -> NativeToolFuture<'a>,
+    ),
     /// Host-mediated tool (ask_user): intercepted in
     /// `chat/agent/execute.rs::execute_ask_user_call` and must never reach
     /// the registry dispatcher.
@@ -423,12 +425,66 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::todo::handle_conversation_tool_call),
     },
-    NativeToolEntry { name: crate::chat::goal::GET_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(0), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: true, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
-    NativeToolEntry { name: crate::chat::goal::INIT_GOAL_CRITERIA_TOOL, def: || crate::chat::goal::tool_definitions().remove(1), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
-    NativeToolEntry { name: crate::chat::goal::REPORT_GOAL_PROGRESS_TOOL, def: || crate::chat::goal::tool_definitions().remove(2), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
-    NativeToolEntry { name: crate::chat::goal::COMPLETE_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(3), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
-    NativeToolEntry { name: crate::chat::goal::BLOCK_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(4), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
-    NativeToolEntry { name: crate::chat::goal::WAIT_GOAL_TOOL, def: || crate::chat::goal::tool_definitions().remove(5), enabled: |_,_,_| false, parallel_safe: false, bypasses_approval: true, read_only: false, requires_session_consent: false, call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call) },
+    NativeToolEntry {
+        name: crate::chat::goal::GET_GOAL_TOOL,
+        def: || crate::chat::goal::tool_definitions().remove(0),
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
+    },
+    NativeToolEntry {
+        name: crate::chat::goal::INIT_GOAL_CRITERIA_TOOL,
+        def: || crate::chat::goal::tool_definitions().remove(1),
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
+    },
+    NativeToolEntry {
+        name: crate::chat::goal::REPORT_GOAL_PROGRESS_TOOL,
+        def: || crate::chat::goal::tool_definitions().remove(2),
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
+    },
+    NativeToolEntry {
+        name: crate::chat::goal::COMPLETE_GOAL_TOOL,
+        def: || crate::chat::goal::tool_definitions().remove(3),
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
+    },
+    NativeToolEntry {
+        name: crate::chat::goal::BLOCK_GOAL_TOOL,
+        def: || crate::chat::goal::tool_definitions().remove(4),
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
+    },
+    NativeToolEntry {
+        name: crate::chat::goal::WAIT_GOAL_TOOL,
+        def: || crate::chat::goal::tool_definitions().remove(5),
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
+    },
     NativeToolEntry {
         name: crate::chat::ask_user::ASK_USER_TOOL_NAME,
         def: crate::chat::ask_user::ask_user_tool,
@@ -450,19 +506,22 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         // name/shape here, so an empty role list is correct.
         def: || crate::chat::sub_agent::agent_tool(&[]),
         enabled: |_, _, _| false,
-        // parallel_safe = true: each `agent` spawn runs in isolation (its own
-        // synthetic conversation/generation/message history), bypasses approval,
-        // and is capped by the SubAgentManager semaphore (default 12, user-
-        // configurable). Concurrent fan-out is the core value of multi-agent: a
-        // single round may dispatch several `agent` calls in parallel (scheduler
-        // caps at MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 12, semaphore at the
-        // setting). Each call blocks until its sub-agent finishes and returns the
-        // full result inline (Claude Code Task model).
+        // Independent durable admissions can be submitted concurrently.
         parallel_safe: true,
         bypasses_approval: true,
         read_only: false,
         requires_session_consent: false,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::dispatch_agent_spawn),
+    },
+    NativeToolEntry {
+        name: "agent_control",
+        def: crate::chat::sub_agent::control::definition,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::SubAgent(crate::chat::sub_agent::control::dispatch),
     },
 ];
 
@@ -1268,6 +1327,7 @@ mod tests {
         "goal_wait",
         "ask_user",
         "agent",
+        "agent_control",
     ];
 
     #[test]
@@ -1348,7 +1408,7 @@ mod tests {
              bash_output joins it because it is a pure read-only registry/log read \
              (and lists jobs when given no job_id); `agent` joins it because each \
              spawn runs in isolation (own conversation/generation/message history), \
-             bypasses approval, and is capped by the SubAgentManager semaphore \
+             bypasses approval, and is capped by atomic runtime admission \
              (default 12), making concurrent fan-out the core multi-agent value"
         );
     }
@@ -1377,6 +1437,7 @@ mod tests {
                 "goal_wait",
                 "ask_user",
                 "agent",
+                "agent_control",
             ]
         );
     }
