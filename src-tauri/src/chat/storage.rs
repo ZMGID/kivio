@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     AdditionalDirectory, ChatAssistant, ChatAssistantIndex, ChatAssistantSnapshot, ChatProject,
@@ -16,6 +16,10 @@ use super::{
 };
 
 const WRITE_RETRY_ATTEMPTS: usize = 3;
+
+#[cfg(test)]
+#[path = "storage_restart_tests.rs"]
+mod restart_goal_tests;
 
 fn temporary_write_path(path: &Path) -> PathBuf {
     path.parent()
@@ -115,6 +119,80 @@ pub(crate) fn atomic_write(path: &Path, content: &str, label: &str) -> Result<()
 pub(crate) fn read_conversation_file(path: &Path, id: &str) -> Result<Conversation, String> {
     let content = fs::read_to_string(path).map_err(|e| format!("读取对话文件失败（{id}）：{e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("对话文件已损坏，无法加载（{id}）：{e}"))
+}
+
+/// Only the identity needed to recheck a restart candidate under its keyed lock.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct RestartGoal {
+    pub id: String,
+    pub version: u64,
+    pub status: super::GoalStatus,
+}
+
+/// Stop as soon as goal_state is decoded. New files put it before messages;
+/// legacy files are streamed through IgnoredAny without allocating the history.
+/// This is candidate discovery, not full-file validation: candidates are loaded
+/// normally again under the repository lock before any change is persisted.
+fn read_restart_goal(reader: impl Read) -> Result<Option<RestartGoal>, String> {
+    struct GoalVisitor<'a>(&'a mut Option<Option<RestartGoal>>);
+    impl<'de> serde::de::Visitor<'de> for GoalVisitor<'_> {
+        type Value = ();
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a conversation object")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "goal_state" {
+                    *self.0 = Some(map.next_value()?);
+                    // Returning Ok here would make serde_json expect the closing
+                    // brace. This private sentinel intentionally cancels parsing;
+                    // only a successfully decoded goal_state enables the fast exit.
+                    return Err(serde::de::Error::custom("Goal header decoded"));
+                }
+                map.next_value::<serde::de::IgnoredAny>()?;
+            }
+            Ok(())
+        }
+    }
+
+    let mut found = None;
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(reader));
+    let result = serde::Deserializer::deserialize_map(&mut deserializer, GoalVisitor(&mut found));
+    match found {
+        Some(goal) => Ok(goal),
+        None => result.map(|()| None).map_err(|error| error.to_string()),
+    }
+}
+
+pub(crate) fn restart_goal_candidates(
+    app: &AppHandle,
+) -> Result<Vec<(String, RestartGoal)>, String> {
+    restart_goal_candidates_in_dir(&conversations_dir(app)?)
+}
+
+fn restart_goal_candidates_in_dir(dir: &Path) -> Result<Vec<(String, RestartGoal)>, String> {
+    // Read the actual files, not index.json: a crash between the conversation
+    // write and the index write must not conceal a running Goal.
+    let mut candidates = Vec::new();
+    for id in conversation_file_ids_in_dir(dir)? {
+        let path = dir.join(format!("{id}.json"));
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                eprintln!("skip unreadable Goal recovery file {id}: {error}");
+                continue;
+            }
+        };
+        match read_restart_goal(file) {
+            Ok(Some(goal)) if super::goal::is_running(goal.status) => candidates.push((id, goal)),
+            Ok(_) => {}
+            Err(error) => eprintln!("skip invalid Goal recovery file {id}: {error}"),
+        }
+    }
+    Ok(candidates)
 }
 
 struct ConversationIndexCacheEntry {
@@ -1157,8 +1235,7 @@ fn match_conversation_for_search(
 
 /// 全文匹配：原文里连关键词都没有就跳过 serde；读/解析失败按不匹配处理。
 fn conversation_content_matches(app: &AppHandle, id: &str, needle: &str) -> bool {
-    load_conversation_for_search(app, id, needle)
-        .is_some_and(|conv| messages_match(&conv, needle))
+    load_conversation_for_search(app, id, needle).is_some_and(|conv| messages_match(&conv, needle))
 }
 
 fn load_conversation_for_search(

@@ -42,7 +42,8 @@ use super::resolve_thinking;
 use super::tooling::{
     append_agent_ask_user_tools, append_agent_todo_tools, append_goal_tools, apply_agent_plan_tool_filter,
     apply_chat_mode_tool_filter, apply_inline_code_request_tool_filter,
-    apply_web_search_mode_tool_filter, list_tools_for_chat, resolve_request_skill,
+    apply_web_search_mode_tool_filter, await_chat_tool_discovery, list_tools_for_chat,
+    resolve_request_skill,
 };
 
 pub(super) async fn complete_assistant_reply(
@@ -468,13 +469,33 @@ pub(super) async fn complete_assistant_reply_inner(
             Some(session_model_for_conversation(conversation)),
         ),
     );
-    let tool_list = list_tools_for_chat(
-        app,
+    let tool_list = await_chat_tool_discovery(
         state.inner(),
-        &settings,
-        Some(session_model_for_conversation(conversation)),
+        &conversation.id,
+        run_generation,
+        list_tools_for_chat(
+            app,
+            state.inner(),
+            &settings,
+            Some(session_model_for_conversation(conversation)),
+        ),
     )
     .await;
+    let tool_list = match tool_list {
+        Ok(tools) => tools,
+        Err(error) => {
+            return finish_reply_failure(
+                app,
+                conversation,
+                &assistant_message_id,
+                &run_id,
+                arm.is_some(),
+                &mut protocol_guard,
+                error,
+            )
+            .await;
+        }
+    };
     let unavailable_mcp_servers = tool_list.unavailable_mcp_servers;
     let mut tools = tool_list.tools;
     agent_prepare::apply_assistant_mcp_restrictions(
@@ -785,44 +806,16 @@ pub(super) async fn complete_assistant_reply_inner(
     let result = match result {
         Ok(result) => result,
         Err(error) => {
-            if arm.is_some() {
-                protocol_guard.defer_terminal();
-                return Ok(ArmReplyOutcome {
-                    message: None,
-                    run_id: Some(run_id),
-                    error: Some(error),
-                });
-            }
-            let (terminal_content, terminal_revision) =
-                match crate::chat::repository::repository(app)
-                    .get(app, &conversation.id)
-                    .await
-                {
-                    Ok(latest) => {
-                        let content = latest
-                            .messages
-                            .iter()
-                            .find(|message| message.id == assistant_message_id)
-                            .map(|message| message.content.clone())
-                            .unwrap_or_default();
-                        let revision = latest.revision;
-                        *conversation = latest;
-                        (content, revision)
-                    }
-                    Err(_) => (String::new(), conversation.revision),
-                };
-            crate::chat::protocol::finish_run(
+            return finish_reply_failure(
                 app,
+                conversation,
+                &assistant_message_id,
                 &run_id,
-                if error == "cancelled" {
-                    "cancelled"
-                } else {
-                    "error"
-                },
-                &terminal_content,
-                terminal_revision,
-            );
-            return Err(error);
+                arm.is_some(),
+                &mut protocol_guard,
+                error,
+            )
+            .await;
         }
     };
 
@@ -989,6 +982,56 @@ pub(super) async fn complete_assistant_reply_inner(
         run_id: None,
         error: None,
     })
+}
+
+/// Preparation cancellation and agent-loop failures share the same terminal
+/// protocol and latest persisted conversation, including a concurrently paused Goal.
+async fn finish_reply_failure(
+    app: &AppHandle,
+    conversation: &mut Conversation,
+    assistant_message_id: &str,
+    run_id: &str,
+    is_arm: bool,
+    protocol_guard: &mut crate::chat::protocol::RegisteredRunGuard,
+    error: String,
+) -> Result<ArmReplyOutcome, String> {
+    if is_arm {
+        protocol_guard.defer_terminal();
+        return Ok(ArmReplyOutcome {
+            message: None,
+            run_id: Some(run_id.to_string()),
+            error: Some(error),
+        });
+    }
+    let (terminal_content, terminal_revision) = match crate::chat::repository::repository(app)
+        .get(app, &conversation.id)
+        .await
+    {
+        Ok(latest) => {
+            let content = latest
+                .messages
+                .iter()
+                .find(|message| message.id == assistant_message_id)
+                .map(|message| message.content.clone())
+                .unwrap_or_default();
+            let revision = latest.revision;
+            *conversation = latest;
+            (content, revision)
+        }
+        Err(_) => (String::new(), conversation.revision),
+    };
+    crate::chat::protocol::finish_run(
+        app,
+        run_id,
+        if error == "cancelled" {
+            "cancelled"
+        } else {
+            "error"
+        },
+        &terminal_content,
+        terminal_revision,
+    );
+    Err(error)
 }
 
 pub(super) fn agent_run_entry_label(entry: crate::chat::agent::AgentRunEntry) -> &'static str {

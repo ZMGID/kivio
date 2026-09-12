@@ -26,6 +26,7 @@ import {
   useDshCustomPresets,
 } from '../permissionModes'
 import { SessionUsageStrip } from '../SessionUsageStrip'
+import { findUnavailableRecommendedTools } from '../toolAvailability'
 import type {
   AdditionalDirectory,
   AgentPlanMode,
@@ -78,16 +79,6 @@ function normalizeSkill(skill: import('../../api/tauri').SkillMeta): SkillMeta {
     disableModelInvocation: skill.disableModelInvocation,
     files: skill.files,
   }
-}
-
-function toolMatchesRecommendation(tool: ChatToolDefinition, recommended: string): boolean {
-  const name = recommended.trim()
-  if (!name) return false
-  return (
-    tool.name === name
-    || tool.id === name
-    || `${tool.serverId ?? ''}:${tool.name}` === name
-  )
 }
 
 function isBlankConversation(conversation: Conversation | null): boolean {
@@ -152,6 +143,7 @@ export function usePopoutComposer({
   const [contextError, setContextError] = useState('')
   const [contextCompressing, setContextCompressing] = useState(false)
   const [enabledTools, setEnabledTools] = useState<ChatToolDefinition[]>([])
+  const [toolDiscoveryPending, setToolDiscoveryPending] = useState(true)
   const [enabledToolCount, setEnabledToolCount] = useState<number | null>(null)
   const [toolsDisabledReason, setToolsDisabledReason] = useState('')
   const [toolsRequested, setToolsRequested] = useState(false)
@@ -227,7 +219,11 @@ export function usePopoutComposer({
   }, [patchContextState])
 
   const refreshToolIndicator = useCallback(async () => {
+    setToolDiscoveryPending(true)
+    setToolsDisabledReason('')
+    setEnabledToolCount(null)
     if (!isTauriRuntime()) {
+      setToolDiscoveryPending(false)
       setEnabledTools([])
       setEnabledToolCount(null)
       setToolsDisabledReason('')
@@ -254,6 +250,7 @@ export function usePopoutComposer({
           : nextDisabledSkillIds,
       )
       if (!chatTools) {
+        setToolDiscoveryPending(false)
         setEnabledTools([])
         setEnabledToolCount(null)
         setToolsDisabledReason('')
@@ -266,17 +263,21 @@ export function usePopoutComposer({
         || hasEnabledSkillRuntime(chatTools.nativeTools)
       setToolsRequested(requested)
       if (!requested) {
+        setToolDiscoveryPending(false)
         setEnabledTools([])
         setEnabledToolCount(null)
         setToolsDisabledReason('')
         return
       }
-      const result = await api.chatMcpListTools()
+      const result = await api.chatMcpListTools(true)
       const tools = result.success ? result.tools : []
+      const discoveryPending = Boolean(result.discoveryPending)
+      setToolDiscoveryPending(discoveryPending)
       setEnabledTools(tools)
-      setEnabledToolCount(tools.length)
+      setEnabledToolCount(discoveryPending ? null : tools.length)
       setToolsDisabledReason(result.success ? '' : result.error || '工具不可用')
     } catch (err) {
+      setToolDiscoveryPending(false)
       setEnabledTools([])
       setToolsRequested(false)
       setEnabledToolCount(null)
@@ -290,6 +291,10 @@ export function usePopoutComposer({
       setMcpServers(next.chatTools?.servers ?? [])
       setWebSearchEnabled(next.chatTools?.nativeTools?.webSearch !== false)
     })
+  }, [refreshToolIndicator])
+
+  useTauriEvent(api.onMcpServerState, (event) => {
+    if (event.state.kind !== 'connecting') void refreshToolIndicator()
   }, [refreshToolIndicator])
 
   useEffect(() => {
@@ -565,10 +570,8 @@ export function usePopoutComposer({
   )
   const recommendedTools = skillRecommendedTools(effectiveSkill)
   const unavailableRecommendedTools = useMemo(
-    () => recommendedTools.filter(
-      (recommended) => !enabledTools.some((tool) => toolMatchesRecommendation(tool, recommended)),
-    ),
-    [enabledTools, recommendedTools],
+    () => findUnavailableRecommendedTools(recommendedTools, enabledTools, toolDiscoveryPending),
+    [enabledTools, recommendedTools, toolDiscoveryPending],
   )
   const toolStatusHint = useMemo(() => {
     if (toolsDisabledReason && (enabledToolCount ?? 0) === 0 && (toolsRequested || recommendedTools.length > 0)) {

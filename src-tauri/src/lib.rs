@@ -48,7 +48,6 @@ pub mod windows_ocr;
 
 use std::time::Duration;
 
-use futures::StreamExt;
 use tauri::{Emitter, Manager, State};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
@@ -72,8 +71,6 @@ use windows::{ensure_overlay_panel, restore_previous_frontmost_app};
 
 /// 自启动参数，用于区分用户手动启动和系统自动启动
 const AUTOSTART_ARG: &str = "--from-autostart";
-/// Bound startup process/memory spikes when many MCP servers are enabled.
-const MCP_STARTUP_WARMUP_CONCURRENCY: usize = 2;
 
 #[cfg(target_os = "macos")]
 const USER_WINDOW_LABELS: &[&str] = &["chat", "main"];
@@ -477,48 +474,8 @@ pub fn run() {
                 });
             }
 
-            // 启动期并行预热：对每个已启用的 MCP server 建立持久连接（非阻塞）。
-            // 失败仅置 Error 态（mcp_get_or_connect 内部已发事件），不影响启动。
-            {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    // 启动竞态加固：若 AppState 尚未 manage，跳过预热（首次使用时会 lazy 连接）。
-                    let Some(state) = app_handle.try_state::<AppState>() else {
-                        return;
-                    };
-                    let settings = state.settings_read().clone();
-                    if !settings.chat_tools.enabled {
-                        return;
-                    }
-                    let servers: Vec<_> = settings
-                        .chat_tools
-                        .servers
-                        .iter()
-                        .filter(|server| crate::mcp::registry::mcp_server_is_runtime_eligible(server))
-                        .cloned()
-                        .collect();
-                    if !servers.is_empty() {
-                        eprintln!(
-                            "[mcp] warming {} server(s) with concurrency {}",
-                            servers.len(),
-                            MCP_STARTUP_WARMUP_CONCURRENCY
-                        );
-                    }
-                    futures::stream::iter(servers)
-                        .for_each_concurrent(MCP_STARTUP_WARMUP_CONCURRENCY, |server| {
-                            let app_handle = app_handle.clone();
-                            async move {
-                                // 启动竞态加固：若 AppState 尚未 manage，跳过该 server
-                                // 预热（lazy 连接兜底）。
-                                let Some(state) = app_handle.try_state::<AppState>() else {
-                                    return;
-                                };
-                                let _ = state.mcp_get_or_connect(Some(&app_handle), &server).await;
-                            }
-                        })
-                        .await;
-                });
-            }
+            // MCP connects when generation discovers tools or the user explicitly
+            // enables/tests a server. Tray startup must not launch tool processes.
 
             // 手动启动默认打开聊天窗口；自启 / 「启动后最小化到托盘」则只留托盘常驻。
             if !skip_chat_on_launch {
@@ -799,6 +756,7 @@ pub fn run() {
             dock::fs::dock_fs_delete,
             dock::fs::dock_fs_open_path,
             dock::git::dock_git_status,
+            dock::git::dock_git_snapshot,
             dock::git::dock_git_diff,
             dock::git::dock_git_log,
             dock::git::dock_git_commit_diff,

@@ -111,9 +111,9 @@ export const RightDock = memo(function RightDock({
   const filesActive = open && activeTab === 'files'
   const gitActive = open && activeTab === 'git'
   const terminalActive = open && activeTab === 'terminal'
-  // 终端面板一挂载就建 PTY + xterm/WebGL（约 25MB PowerShell + GPU 画布），
-  // 且切 tab 不断会话。没点过「终端」就不要挂，避免每个会话窗口白送一份常驻壳。
-  const [terminalMounted, setTerminalMounted] = useState(() => activeTab === 'terminal')
+  // 代码提前加载，PTY 和画布只在首次真正打开终端时创建，之后切标签保留会话。
+  // Dock 折叠时即使记住了终端标签，也不能提前启动 shell。
+  const [terminalMounted, setTerminalMounted] = useState(() => terminalActive)
   useEffect(() => {
     if (terminalActive) setTerminalMounted(true)
   }, [terminalActive])

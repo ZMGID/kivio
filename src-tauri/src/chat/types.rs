@@ -560,6 +560,11 @@ pub struct Conversation {
     /// Legacy conversation files deserialize as revision 0.
     #[serde(default)]
     pub revision: u64,
+    /// Keep this before messages, including an explicit null for ordinary chats:
+    /// restart recovery can inspect the Goal without reading the history body.
+    /// Missing in legacy files still means no Goal.
+    #[serde(default)]
+    pub goal_state: Option<GoalState>,
     pub title: String,
     pub provider_id: String,
     pub model: String,
@@ -592,9 +597,6 @@ pub struct Conversation {
     pub agent_todo_state: AgentTodoState,
     #[serde(default)]
     pub agent_plan_state: AgentPlanState,
-    /// Persistent single-objective Goal state. Missing in legacy files means no Goal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal_state: Option<GoalState>,
     /// 本会话挂载的知识库 id 列表；`knowledge_search` 缺省检索这些库。
     #[serde(default)]
     pub knowledge_base_ids: Vec<String>,

@@ -108,6 +108,11 @@ export type GitDiffStat = {
   files: GitDiffStatFile[]
 }
 
+export type GitSnapshot = {
+  state: GitRepoState
+  diffStat: GitDiffStat | null
+}
+
 /** 变更类命令统一返回：state 为操作后的全新 GitRepoState。 */
 export type GitMutationResult = {
   ok: boolean

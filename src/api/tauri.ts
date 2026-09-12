@@ -20,6 +20,7 @@ import type {
 } from '../generated/chatProtocol'
 import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary } from '../chat/automation/types'
 import type { GoalState } from '../chat/types'
+import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from '../chat/dock/types'
 
 // ========== 类型定义 ==========
 
@@ -1929,6 +1930,15 @@ async function onChatProtocol(
 // ========== API 导出 ==========
 
 export const api = {
+  /** 一次状态扫描可选附带行数统计，供同工作目录的 Git 徽标共享。 */
+  async dockGitSnapshot(workdir: string, includeDiffStat = false): Promise<GitSnapshot> {
+    const raw = await invoke<{ state: unknown; diffStat?: unknown }>('dock_git_snapshot', { workdir, includeDiffStat })
+    return {
+      state: normalizeGitRepoState(raw.state),
+      diffStat: raw.diffStat == null ? null : normalizeGitDiffStat(raw.diffStat),
+    }
+  },
+
   providerOAuthStart: (provider: ProviderOAuthConfig['provider'], useSystemProxy = true) =>
     invoke<ProviderOAuthLogin>('provider_oauth_start', { provider, useSystemProxy }),
   providerOAuthPoll: (loginId: string) => invoke<ProviderOAuthPoll>('provider_oauth_poll', { loginId }),
@@ -2359,8 +2369,8 @@ export const api = {
     }
     return invoke<{ success: boolean; requests: ChatExternalSendRequest[]; error?: string | null }>('chat_take_external_sends')
   },
-  chatMcpListTools: () =>
-    invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null }>('chat_mcp_list_tools'),
+  chatMcpListTools: (cachedOnly = false) =>
+    invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null; discoveryPending?: boolean }>('chat_mcp_list_tools', { cachedOnly }),
   chatMcpTestServer: (server: ChatMcpServer, timeoutMs?: number) =>
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null }>(
       'chat_mcp_test_server',

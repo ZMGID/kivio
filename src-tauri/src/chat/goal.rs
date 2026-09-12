@@ -580,22 +580,27 @@ pub async fn claim_run(
 
 pub async fn pause_unfinished_after_restart(app: &AppHandle) -> Result<usize, String> {
     crate::chat::repository::repository(app)
-        .bulk_mutate(app, |conversation| {
-            let Some(goal) = conversation.goal_state.as_mut() else {
-                return Ok(false);
-            };
-            if !is_running(goal.status) {
-                return Ok(false);
-            }
-            goal.version += 1;
-            goal.status = GoalStatus::Paused;
-            goal.status_reason = Some("Paused after application restart".into());
-            goal.active_run_id = None;
-            goal.updated_at = chrono::Local::now().timestamp();
-            Ok(true)
-        })
+        .pause_unfinished_goals_after_restart(app)
         .await
         .map_err(crate::chat::repository::repository_error)
+}
+
+pub(crate) fn pause_interrupted_goal(
+    conversation: &mut Conversation,
+    candidate: &super::storage::RestartGoal,
+) -> Result<bool, String> {
+    let Some(goal) = conversation.goal_state.as_mut() else {
+        return Ok(false);
+    };
+    if goal.id != candidate.id || goal.version != candidate.version || !is_running(goal.status) {
+        return Ok(false);
+    }
+    goal.version = goal.version.checked_add(1).ok_or("Goal version overflow")?;
+    goal.status = GoalStatus::Paused;
+    goal.status_reason = Some("Paused after application restart".into());
+    goal.active_run_id = None;
+    goal.updated_at = chrono::Local::now().timestamp();
+    Ok(true)
 }
 
 pub async fn pause_after_error(

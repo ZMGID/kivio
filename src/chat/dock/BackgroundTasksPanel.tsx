@@ -1,12 +1,11 @@
 // Background tasks 面板：内置 run_command 后台作业 + 外部 CLI（claude）自报的后台任务。
 // Running（可停止）/ Finished（可清空）两段，2.5s 轮询；inactive 时停轮询（同兄弟面板惯例）。
-import { useEffect, useRef, useState } from 'react'
+import { useRef } from 'react'
 import { Bot, Square, TerminalSquare } from 'lucide-react'
 import { api, type BackgroundTaskInfo } from '../../api/tauri'
 import { i18n, type Lang } from '../../settings/i18n'
 import { partitionTasks } from '../backgroundTasks'
-
-const POLL_MS = 2500
+import { updateBackgroundTasks, useBackgroundTasks } from '../useBackgroundTasks'
 
 function formatElapsed(secs: number): string {
   if (secs < 60) return `${secs}s`
@@ -30,35 +29,13 @@ type BackgroundTasksPanelProps = {
 
 export function BackgroundTasksPanel({ active, lang, conversationId }: BackgroundTasksPanelProps) {
   const t = i18n[lang]
-  const [tasks, setTasks] = useState<BackgroundTaskInfo[]>([])
+  const tasks = useBackgroundTasks(conversationId, active)
   const stopping = useRef<Set<string>>(new Set())
-
-  useEffect(() => {
-    // 换对话立刻清掉上一个对话的列表，别等下一次轮询。
-    setTasks([])
-    if (!active || !conversationId) return
-    let cancelled = false
-    const tick = async () => {
-      if (document.hidden) return
-      try {
-        const next = await api.chatListBackgroundTasks(conversationId)
-        if (!cancelled) setTasks(next)
-      } catch {
-        if (!cancelled) setTasks([])
-      }
-    }
-    void tick()
-    const timer = window.setInterval(tick, POLL_MS)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [active, conversationId])
 
   const { running, finished } = partitionTasks(tasks)
 
   const stop = async (task: BackgroundTaskInfo) => {
-    if (stopping.current.has(task.id)) return
+    if (!conversationId || stopping.current.has(task.id)) return
     stopping.current.add(task.id)
     try {
       if (task.source === 'builtin') {
@@ -66,7 +43,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
       } else {
         await api.chatStopExternalBackgroundTask(task.conversationId ?? '', task.id)
       }
-      setTasks((prev) =>
+      updateBackgroundTasks(conversationId, (prev) =>
         prev.map((item) => (item.id === task.id ? { ...item, status: 'stopped' as const } : item)),
       )
     } catch {
@@ -80,7 +57,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
     if (!conversationId) return
     try {
       await api.chatClearFinishedBackgroundTasks(conversationId)
-      setTasks((prev) => prev.filter((item) => item.status === 'running'))
+      updateBackgroundTasks(conversationId, (prev) => prev.filter((item) => item.status === 'running'))
     } catch {
       // next poll reflects the real state
     }

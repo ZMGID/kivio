@@ -133,6 +133,23 @@ pub(super) struct ChatToolList {
     pub unavailable_mcp_servers: Vec<String>,
 }
 
+/// Wait for the run's catalog while retaining the shared MCP connection tasks.
+pub(super) async fn await_chat_tool_discovery(
+    state: &AppState,
+    conversation_id: &str,
+    generation: u64,
+    discovery: impl std::future::Future<Output = ChatToolList>,
+) -> Result<ChatToolList, String> {
+    tokio::select! {
+        // A run cancelled during earlier preparation must not open transports.
+        biased;
+        _ = super::interaction::wait_for_chat_cancel(state, conversation_id, generation) => {
+            Err("cancelled".into())
+        }
+        catalog = discovery => Ok(catalog),
+    }
+}
+
 pub(crate) async fn list_tools_for_chat(
     app: &AppHandle,
     state: &AppState,
@@ -356,6 +373,111 @@ fn has_inline_code_request_intent(text: &str, normalized: &str) -> bool {
     const EN_MARKERS: &[&str] = &["```", "code block", "fenced code"];
     ZH_MARKERS.iter().any(|marker| text.contains(marker))
         || EN_MARKERS.iter().any(|marker| normalized.contains(marker))
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use crate::chat::commands::reply_runtime::{ChatReplyGuard, ChatSendReservation};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn cancelled_cold_mcp_discovery_releases_the_conversation_for_resend() {
+        let state = crate::state::test_app_state();
+        let conversation_id = "conv_cancel_discovery";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            assert!(connection.read(&mut request).await.unwrap() > 0);
+            started_tx.send(()).unwrap();
+            // Accept the actual MCP initialize request, but never answer it.
+            std::future::pending::<()>().await;
+            drop(connection);
+        });
+        let mut settings = Settings::default();
+        settings.chat_tools.enabled = true;
+        settings.chat_tools.servers = vec![crate::settings::ChatMcpServer {
+            id: "cancel-cold-discovery".into(),
+            name: "Stalled cold MCP".into(),
+            enabled: true,
+            transport: "streamable_http".into(),
+            url: format!("http://{address}/mcp"),
+            ..Default::default()
+        }];
+        let generation = state.next_chat_generation(conversation_id);
+        let reply = async {
+            let _send = ChatSendReservation::try_acquire(&state, conversation_id).unwrap();
+            let _reply =
+                ChatReplyGuard::try_new(&state, conversation_id, "run-discovery", generation)
+                    .unwrap();
+            await_chat_tool_discovery(&state, conversation_id, generation, async {
+                let (tools, unavailable_mcp_servers) =
+                    mcp::registry::collect_enabled_mcp_tool_defs(&state, None, &settings).await;
+                ChatToolList {
+                    tools,
+                    unavailable_mcp_servers,
+                }
+            })
+            .await
+        };
+        let cancel = async {
+            tokio::time::timeout(Duration::from_secs(1), started_rx)
+                .await
+                .expect("real MCP discovery must start before cancellation")
+                .unwrap();
+            assert!(ChatSendReservation::try_acquire(&state, conversation_id).is_none());
+            state.cancel_chat_generation(conversation_id);
+        };
+        let (result, ()) =
+            tokio::join!(tokio::time::timeout(Duration::from_secs(2), reply), cancel);
+        server_task.abort();
+        state.mcp_disconnect_all().await;
+        assert!(
+            result.is_ok(),
+            "stopping during MCP discovery must not wait for its 30s handshake timeout"
+        );
+        assert!(matches!(result.unwrap(), Err(error) if error == "cancelled"));
+        assert!(ChatSendReservation::try_acquire(&state, conversation_id).is_some());
+        assert!(!state.is_chat_generation_active(conversation_id, generation));
+    }
+
+    #[tokio::test]
+    async fn cancelled_run_does_not_start_tool_discovery() {
+        let state = crate::state::test_app_state();
+        let id = "conv_already_cancelled";
+        let generation = state.next_chat_generation(id);
+        state.cancel_chat_generation(id);
+        let started = AtomicBool::new(false);
+        let result = await_chat_tool_discovery(&state, id, generation, async {
+            started.store(true, Ordering::SeqCst);
+            ChatToolList::default()
+        })
+        .await;
+        assert!(matches!(result, Err(error) if error == "cancelled"));
+        assert!(!started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn active_run_keeps_the_discovered_tool_catalog() {
+        let state = crate::state::test_app_state();
+        let id = "conv_discovery_success";
+        let generation = state.next_chat_generation(id);
+        let result = await_chat_tool_discovery(&state, id, generation, async {
+            ChatToolList {
+                tools: vec![mcp::types::native_web_fetch_tool()],
+                unavailable_mcp_servers: vec!["Unavailable fixture".into()],
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.tools[0].id, "native__web_fetch");
+        assert_eq!(result.unavailable_mcp_servers, ["Unavailable fixture"]);
+    }
 }
 
 #[cfg(test)]

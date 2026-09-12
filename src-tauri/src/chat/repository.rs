@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, Weak};
@@ -199,6 +199,10 @@ pub struct ConversationRepository {
     barrier: RwLock<()>,
     conversation_locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
     index_lock: Mutex<()>,
+    /// Goal mutations made by this process while startup recovery is pending.
+    /// Ordinary message/context writes do not enter this set. Drop it when
+    /// recovery finishes so it never becomes a lifetime-long conversation cache.
+    restart_goal_changes: StdMutex<Option<HashSet<String>>>,
 }
 
 impl Default for ConversationRepository {
@@ -207,11 +211,111 @@ impl Default for ConversationRepository {
             barrier: RwLock::new(()),
             conversation_locks: StdMutex::new(HashMap::new()),
             index_lock: Mutex::new(()),
+            restart_goal_changes: StdMutex::new(Some(HashSet::new())),
         }
     }
 }
 
 impl ConversationRepository {
+    fn note_goal_change(
+        &self,
+        id: &str,
+        before: Option<&super::GoalState>,
+        after: Option<&super::GoalState>,
+    ) {
+        if before == after {
+            return;
+        }
+        if let Some(changes) = self
+            .restart_goal_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+        {
+            changes.insert(id.to_string());
+        }
+    }
+
+    fn goal_changed_since_start(&self, id: &str) -> bool {
+        self.restart_goal_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|changes| changes.contains(id))
+    }
+
+    pub async fn pause_unfinished_goals_after_restart(
+        &self,
+        app: &AppHandle,
+    ) -> RepositoryResult<usize> {
+        let result = self.pause_unfinished_goals_after_restart_inner(app).await;
+        *self
+            .restart_goal_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        result
+    }
+
+    async fn pause_unfinished_goals_after_restart_inner(
+        &self,
+        app: &AppHandle,
+    ) -> RepositoryResult<usize> {
+        let candidates = {
+            let _barrier = self.barrier.read().await;
+            let app = app.clone();
+            Self::spawn_storage(
+                move || super::storage::restart_goal_candidates(&app),
+                "find Goals interrupted by restart",
+            )
+            .await?
+        };
+        let mut changed = 0;
+        for (id, candidate) in candidates {
+            let _barrier = self.barrier.read().await;
+            let lock = self.conversation_lock(&id);
+            let _conversation = lock.lock().await;
+            // A new/resumed/claimed Goal from this launch must survive even if
+            // its file was observed by the background startup scan.
+            if self.goal_changed_since_start(&id) {
+                continue;
+            }
+            let app_for_read = app.clone();
+            let id_for_read = id.clone();
+            let latest = Self::spawn_storage(
+                move || {
+                    let path = super::storage::conversation_file_path(&app_for_read, &id_for_read)?;
+                    if !path.exists() {
+                        return Ok(None);
+                    }
+                    super::storage::read_conversation_file(&path, &id_for_read).map(Some)
+                },
+                "load interrupted Goal conversation",
+            )
+            .await;
+            let mut latest = match latest {
+                Ok(Some(latest)) => latest,
+                Ok(None) => continue,
+                Err(error) => {
+                    // One damaged conversation must not prevent other Goals
+                    // from being paused. The original file remains untouched.
+                    eprintln!("skip interrupted Goal {id}: {error}");
+                    continue;
+                }
+            };
+            if !super::goal::pause_interrupted_goal(&mut latest, &candidate)? {
+                continue;
+            }
+            increment_revision(&mut latest)?;
+            latest.updated_at = chrono::Local::now().timestamp();
+            let persisted = self.persist_locked(app, latest).await?;
+            // Reads can proceed during the scan. A window that already showed
+            // this Goal must observe its recovered state without reopening.
+            super::goal::emit_goal_state(app, &persisted);
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
     fn conversation_lock(&self, id: &str) -> Arc<Mutex<()>> {
         let mut locks = self
             .conversation_locks
@@ -566,6 +670,7 @@ impl ConversationRepository {
             )));
         }
         conversation.revision = 1;
+        self.note_goal_change(&conversation.id, None, conversation.goal_state.as_ref());
         self.persist_locked(app, conversation).await
     }
 
@@ -608,7 +713,16 @@ impl ConversationRepository {
             })??
         };
         validate_expected_revision(id, latest.revision, expected_revision)?;
+        let previous_goal = self
+            .restart_goal_changes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|_| latest.goal_state.clone());
         mutation(&mut latest)?;
+        if let Some(previous_goal) = previous_goal {
+            self.note_goal_change(id, previous_goal.as_ref(), latest.goal_state.as_ref());
+        }
         increment_revision(&mut latest)?;
         latest.updated_at = chrono::Local::now().timestamp();
         self.persist_locked(app, latest).await
@@ -934,6 +1048,30 @@ mod tests {
         let other = repository.conversation_lock("conv_b");
         assert!(Arc::ptr_eq(&first, &same));
         assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[test]
+    fn restart_goal_tracking_distinguishes_current_run_from_ordinary_writes() {
+        let repository = ConversationRepository::default();
+        let mut current = conversation();
+        super::super::goal::start(&mut current, "finish the fixture").unwrap();
+        let previous = current.goal_state.clone();
+
+        // Draft/context/message persistence preserves the Goal and must not
+        // prevent the abandoned Goal from being paused after a restart.
+        repository.note_goal_change(&current.id, previous.as_ref(), current.goal_state.as_ref());
+        assert!(!repository.goal_changed_since_start(&current.id));
+
+        // Claiming a run can leave the same id and version. Version CAS alone
+        // would miss this race and pause work started by the current process.
+        current.goal_state.as_mut().unwrap().active_run_id = Some("this-process-run".into());
+        repository.note_goal_change(&current.id, previous.as_ref(), current.goal_state.as_ref());
+        assert!(repository.goal_changed_since_start(&current.id));
+        assert!(!repository.goal_changed_since_start("conv_other"));
+
+        *repository.restart_goal_changes.lock().unwrap() = None;
+        repository.note_goal_change("conv_after_startup", None, current.goal_state.as_ref());
+        assert!(repository.restart_goal_changes.lock().unwrap().is_none());
     }
 
     fn context_state(tokens: usize) -> ConversationContextState {

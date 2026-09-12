@@ -38,6 +38,7 @@ pub struct McpListToolsResult {
     pub success: bool,
     pub tools: Vec<ChatToolDefinition>,
     pub error: Option<String>,
+    pub discovery_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,22 +87,33 @@ struct CursorMcpServer {
 pub struct EnabledToolCatalog {
     pub tools: Vec<ChatToolDefinition>,
     pub unavailable_mcp_servers: Vec<String>,
+    pub discovery_pending: bool,
 }
 
 #[tauri::command]
 pub async fn chat_mcp_list_tools(
     app: AppHandle,
     state: State<'_, AppState>,
+    cached_only: Option<bool>,
 ) -> Result<McpListToolsResult, String> {
-    let catalog = list_enabled_tool_catalog(&app, &state).await;
+    let catalog = list_enabled_tool_catalog_inner(&app, &state, cached_only.unwrap_or(false)).await;
     Ok(McpListToolsResult {
         success: true,
         tools: catalog.tools,
         error: None,
+        discovery_pending: catalog.discovery_pending,
     })
 }
 
 pub async fn list_enabled_tool_catalog(app: &AppHandle, state: &AppState) -> EnabledToolCatalog {
+    list_enabled_tool_catalog_inner(app, state, false).await
+}
+
+async fn list_enabled_tool_catalog_inner(
+    app: &AppHandle,
+    state: &AppState,
+    cached_only: bool,
+) -> EnabledToolCatalog {
     let settings = state.settings_read().clone();
     let mut tools = list_native_builtin_tool_defs(
         &settings.chat_tools.native_tools,
@@ -140,15 +152,37 @@ pub async fn list_enabled_tool_catalog(app: &AppHandle, state: &AppState) -> Ena
         tools.push(tool);
     }
 
-    let (mcp_tools, unavailable_mcp_servers) =
-        collect_enabled_mcp_tool_defs(state, Some(app), &settings).await;
+    let (mcp_tools, unavailable_mcp_servers, discovery_pending) = if cached_only {
+        let (tools, pending) = collect_display_mcp_tool_defs(state, &settings).await;
+        (tools, Vec::new(), pending)
+    } else {
+        let (tools, unavailable) = collect_enabled_mcp_tool_defs(state, Some(app), &settings).await;
+        (tools, unavailable, false)
+    };
     tools.extend(mcp_tools);
     tools.extend(list_skill_tool_defs(&settings));
 
     EnabledToolCatalog {
         tools,
         unavailable_mcp_servers,
+        discovery_pending,
     }
+}
+
+/// Passive tool indicators use the last successful schema without creating a
+/// transport. Generation and explicit discovery still obtain the live catalog.
+async fn collect_display_mcp_tool_defs(
+    state: &AppState,
+    settings: &crate::settings::Settings,
+) -> (Vec<ChatToolDefinition>, bool) {
+    let mut tools = Vec::new();
+    let mut pending = false;
+    for server in eligible_mcp_servers(settings) {
+        let (cached, incomplete) = state.mcp_display_tools(server).await;
+        tools.extend(tools_from_mcp(server, cached));
+        pending |= incomplete;
+    }
+    (tools, pending)
 }
 
 /// Discover the enabled MCP servers once. A live schema is preferred; when a
@@ -157,8 +191,8 @@ pub async fn list_enabled_tool_catalog(app: &AppHandle, state: &AppState) -> Ena
 /// already retain their schema, and failed sessions already have reconnect
 /// backoff, so another cache only creates stale-state invalidation paths.
 ///
-/// 每个 server 的现场 listing 有 [`WARM_TOOL_LIST_TIMEOUT`] 的等待上限：慢/坏 server
-/// 不再拖住整轮工具收集，超时与失败同路降级到落盘快照 / unavailable。
+/// 有快照的服务使用 [`WARM_TOOL_LIST_TIMEOUT`] 快速回退；首次发现使用完整连接预算。
+/// 各服务并行且有界，超时与失败同路降级到落盘快照 / unavailable。
 pub(crate) async fn collect_enabled_mcp_tool_defs(
     state: &AppState,
     sink: super::manager::McpEventSink<'_>,
@@ -193,9 +227,12 @@ pub(crate) async fn collect_enabled_mcp_tool_defs(
     (tools, unavailable)
 }
 
-/// 单个 server 现场 tools/list 的等待上限。已连接的 server 走池命中微秒级返回，不受影响；
-/// 未连上的 server 最多等这么久，之后本轮转入快照兜底 / unavailable。
+/// 有匹配快照时快速回退。没有快照的首次使用必须允许完整握手和发现，
+/// 否则按需连接会把正常但启动超过 3 秒的服务排除在首轮工具列表之外。
 pub(crate) const WARM_TOOL_LIST_TIMEOUT: Duration = Duration::from_secs(3);
+const COLD_TOOL_LIST_TIMEOUT: Duration = Duration::from_secs(
+    super::conn::HANDSHAKE_TIMEOUT.as_secs() + super::conn::LIST_TOOLS_TIMEOUT.as_secs(),
+);
 
 /// 有界等待的现场 listing。生产路径（sink 带 AppHandle）把 listing spawn 成独立后台任务，
 /// 超时只**放弃等待、不取消任务**——慢 server 后台继续连完，成功后 `remember_mcp_tools`
@@ -206,6 +243,11 @@ async fn list_tools_bounded(
     sink: super::manager::McpEventSink<'_>,
     server: &ChatMcpServer,
 ) -> Result<Vec<crate::mcp::types::McpTool>, String> {
+    let timeout = if state.mcp_cached_tools(server).await.is_some() {
+        WARM_TOOL_LIST_TIMEOUT
+    } else {
+        COLD_TOOL_LIST_TIMEOUT
+    };
     match sink {
         Some(app) => {
             let app = app.clone();
@@ -214,21 +256,21 @@ async fn list_tools_bounded(
                 let state = app.state::<AppState>();
                 state.mcp_list_tools(Some(&app), &owned).await
             });
-            match tokio::time::timeout(WARM_TOOL_LIST_TIMEOUT, task).await {
+            match tokio::time::timeout(timeout, task).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(join_err)) => Err(format!("MCP listing task failed: {join_err}")),
                 Err(_) => Err(format!(
                     "tools/list did not answer within {}s; connection keeps warming in the background",
-                    WARM_TOOL_LIST_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 )),
             }
         }
-        None => tokio::time::timeout(WARM_TOOL_LIST_TIMEOUT, state.mcp_list_tools(sink, server))
+        None => tokio::time::timeout(timeout, state.mcp_list_tools(sink, server))
             .await
             .unwrap_or_else(|_| {
                 Err(format!(
                     "tools/list did not answer within {}s",
-                    WARM_TOOL_LIST_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ))
             }),
     }
@@ -1259,6 +1301,52 @@ mod tests {
     use super::*;
     use crate::native_tools::ReadFileResult;
 
+    #[tokio::test]
+    async fn passive_catalog_uses_matching_snapshots_without_opening_sessions() {
+        let state = crate::state::test_app_state();
+        let server = enabled_server("passive-catalog");
+        let settings = settings_with_servers(vec![server.clone()]);
+        let (tools, pending) = collect_display_mcp_tool_defs(&state, &settings).await;
+        assert!(tools.is_empty());
+        assert!(
+            pending,
+            "an undiscovered server must not look like a server with no tools"
+        );
+        assert!(state.mcp_sessions.lock().await.is_empty());
+
+        state.set_mcp_tool_snapshot(
+            server.id.clone(),
+            crate::mcp::manager::config_fingerprint(&server),
+            vec![crate::mcp::types::McpTool {
+                name: "cached_tool".into(),
+                description: "cached".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                output_schema: None,
+                annotations: None,
+            }],
+        );
+        let (tools, pending) = collect_display_mcp_tool_defs(&state, &settings).await;
+        assert!(
+            pending,
+            "a disk snapshot is not a complete live discovery after restart"
+        );
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "cached_tool");
+        assert!(state.mcp_sessions.lock().await.is_empty());
+
+        let mut changed = settings.clone();
+        changed.chat_tools.servers[0].command = "different-server-command".into();
+        let (tools, pending) = collect_display_mcp_tool_defs(&state, &changed).await;
+        assert!(tools.is_empty());
+        assert!(pending);
+        let mut disabled = settings.clone();
+        disabled.chat_tools.enabled = false;
+        let (tools, pending) = collect_display_mcp_tool_defs(&state, &disabled).await;
+        assert!(tools.is_empty());
+        assert!(!pending);
+        assert!(state.mcp_sessions.lock().await.is_empty());
+    }
+
     #[test]
     fn read_file_tool_result_preserves_structured_content() {
         let result = ReadFileResult {
@@ -1477,7 +1565,7 @@ while True:
             let elapsed = started.elapsed();
 
             assert!(
-                elapsed < Duration::from_secs(WARM_TOOL_LIST_TIMEOUT.as_secs() + 7),
+                elapsed < Duration::from_secs(COLD_TOOL_LIST_TIMEOUT.as_secs() + 7),
                 "collection must be bounded by the per-server timeout, took {elapsed:?}"
             );
             assert!(

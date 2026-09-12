@@ -1,3 +1,4 @@
+import { freezeCancelledStream, isLocallyCancelledPayload } from './streamCancellation'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { PanelRight, SquareArrowOutUpRight } from 'lucide-react'
 import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
@@ -33,6 +34,7 @@ import { AskUserBlock } from './AskUserBlock'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { ChatTitlebar } from './ChatTitlebar'
 import { withExternalModel } from './externalModelEffort'
+import { findUnavailableRecommendedTools } from './toolAvailability'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import {
   beginConversationTransition,
@@ -451,16 +453,6 @@ function skillRecommendedTools(skill?: SkillMeta | null): string[] {
   return skill?.recommended_tools ?? skill?.recommendedTools ?? []
 }
 
-function toolMatchesRecommendation(tool: ChatToolDefinition, recommended: string): boolean {
-  const name = recommended.trim()
-  if (!name) return false
-  return (
-    tool.name === name ||
-    tool.id === name ||
-    `${tool.serverId ?? ''}:${tool.name}` === name
-  )
-}
-
 function additionalDirectoriesOf(conversation: Conversation | null | undefined): AdditionalDirectory[] {
   return conversation?.additional_directories ?? conversation?.additionalDirectories ?? []
 }
@@ -515,15 +507,6 @@ function inferSingleAttachmentSkillId(
   ))
   if (skillNames.length !== 1) return null
   return findEnabledSkillId(skills, skillNames[0])
-}
-
-function isLocallyCancelledPayload(
-  payload: { conversationId: string; runId?: string },
-  cancelledConversationId: string | null,
-  cancelledRunId: string | null,
-): boolean {
-  if (cancelledConversationId !== payload.conversationId) return false
-  return !cancelledRunId || !payload.runId || payload.runId === cancelledRunId
 }
 
 function isPlainBlankConversation(conversation: Conversation | null): boolean {
@@ -746,6 +729,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [providerOAuthTypes, setProviderOAuthTypes] = useState<Record<string, string>>({})
   const [providerBaseUrls, setProviderBaseUrls] = useState<Record<string, string>>({})
   const [enabledToolCount, setEnabledToolCount] = useState<number | null>(null)
+  const [toolDiscoveryPending, setToolDiscoveryPending] = useState(true)
   const [toolsDisabledReason, setToolsDisabledReason] = useState('')
   const [toolsRequested, setToolsRequested] = useState(false)
   const [approvalPolicy, setApprovalPolicy] = useState('readonly_auto_sensitive_confirm')
@@ -1158,9 +1142,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     // 立即停掉"生成中"视觉（撤掉取消按钮 + 停 shimmer），但保留已生成文本：
     // 切到 frozen 态冻结展示，等 send invoke 返回持久化消息时由
     // finishStreamingRunWithConversation 无缝替换（clearStreamingPreview 会清除 frozen）。
-    // 后续迟到的流事件已被 isLocallyCancelledPayload 过滤，预览不会再变动。
-    setStreamCoarse({ streaming: false, streamFrozen: true })
-    patchStreamSnapshot({ reasoningStreaming: false })
+    // 过滤迟到的内容事件，但仍接收终局事件，供没有 send invoke 的恢复运行收尾。
+    freezeCancelledStream(
+      streamSnapshotsRef.current[currentConversationIdRef.current ?? ''],
+      cancelPendingFrame,
+    )
     const conversationId = currentConversationIdRef.current
     if (conversationId) {
       delete pendingToolConfirmsRef.current[conversationId]
@@ -1170,7 +1156,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setPendingToolConfirm(null)
     setPendingSessionConsent(null)
     setPendingUserPrompt(null)
-  }, [])
+  }, [cancelPendingFrame])
 
   const resetLocalCancellation = useCallback(() => {
     locallyCancelledConversationIdRef.current = null
@@ -1294,7 +1280,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     ?? null
 
   const refreshToolIndicator = useCallback(async () => {
+    setToolDiscoveryPending(true)
+    setEnabledToolCount(null)
+    setToolsDisabledReason('')
     if (!isTauriRuntime()) {
+      setToolDiscoveryPending(false)
       setEnabledTools([])
       setEnabledToolCount(null)
       setToolsDisabledReason('')
@@ -1326,6 +1316,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           : nextDisabledSkillIds,
       )
       if (!chatTools) {
+        setToolDiscoveryPending(false)
         setEnabledTools([])
         setEnabledToolCount(null)
         setToolsDisabledReason('')
@@ -1339,17 +1330,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       const requested = anyMcpEnabled || anyNativeEnabled || skillRuntimeEnabled
       setToolsRequested(requested)
       if (!requested) {
+        setToolDiscoveryPending(false)
         setEnabledTools([])
         setEnabledToolCount(null)
         setToolsDisabledReason('')
         return
       }
-      const result = await api.chatMcpListTools()
+      const result = await api.chatMcpListTools(true)
       const tools = result.success ? result.tools : []
       setEnabledTools(tools)
-      setEnabledToolCount(tools.length)
+      setToolDiscoveryPending(Boolean(result.discoveryPending))
+      setEnabledToolCount(result.discoveryPending ? null : tools.length)
       setToolsDisabledReason(result.success ? '' : result.error || '工具不可用')
     } catch (err) {
+      setToolDiscoveryPending(false)
       setEnabledTools([])
       setToolsRequested(false)
       setEnabledToolCount(null)
@@ -1378,6 +1372,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       void refreshToolIndicator()
     }
   }, [onSettingsChange, refreshToolIndicator])
+
+  useTauriEvent(api.onMcpServerState, (event) => {
+    if (event.state.kind !== 'connecting') void refreshToolIndicator()
+  }, [refreshToolIndicator])
 
   const handleToggleMcpServer = useCallback(async (serverId: string) => {
     try {
@@ -1408,11 +1406,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [onSettingsChange, refreshToolIndicator])
 
   const unavailableRecommendedTools = useMemo(
-    () =>
-      effectiveSkillRecommendedTools.filter(
-        (recommended) => !enabledTools.some((tool) => toolMatchesRecommendation(tool, recommended)),
-      ),
-    [effectiveSkillRecommendedTools, enabledTools],
+    () => findUnavailableRecommendedTools(effectiveSkillRecommendedTools, enabledTools, toolDiscoveryPending),
+    [effectiveSkillRecommendedTools, enabledTools, toolDiscoveryPending],
   )
 
   const toolStatusHint = useMemo(() => {
@@ -1572,12 +1567,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       setMcpServers(next.chatTools?.servers ?? [])
       setUiLang((next.settingsLanguage as Lang) || 'zh')
     })
-  }, [])
-
-  // 开窗预热：后台把所有启用的 MCP server 连接并抓一次工具清单（fire-and-forget，
-  // 连接池单飞保证幂等），首轮对话的工具收集不再现场握手。
-  useEffect(() => {
-    void api.chatMcpWarmup()
   }, [])
 
   // 空闲预取各中心页 chunk，避免首次切到设置/专家/技能/插件时才触发 lazy import 而转圈；
@@ -1941,7 +1930,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           streamErrorsRef.current[conversationId] || '回复生成失败，请稍后重试。',
         )
       }
-      if (conversationId && payload.reason !== 'cancelled') {
+      if (conversationId) {
         if (currentConversationIdRef.current === conversationId) {
           await reloadConversation(conversationId, { force: true })
         }

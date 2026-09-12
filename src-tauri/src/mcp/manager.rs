@@ -694,6 +694,27 @@ impl AppState {
         self.get_mcp_tool_snapshot(&server.id, &config_fingerprint(server))
     }
 
+    /// UI-only discovery: never connect, refresh tools, extend idle lifetime, or
+    /// wait for an in-progress handshake. A disk snapshot cannot prove absence
+    /// of a tool after a server upgrade, so only a current live schema is complete.
+    pub async fn mcp_display_tools(&self, server: &ChatMcpServer) -> (Vec<McpTool>, bool) {
+        let session = self.mcp_sessions.lock().await.get(&server.id).cloned();
+        if let Some(session) = session {
+            if let Ok(guard) = session.try_lock() {
+                if guard.config_fingerprint == config_fingerprint(server)
+                    && guard.state == McpServerState::Connected
+                    && guard.tools_revision == guard.live_tools_revision()
+                {
+                    return (guard.tools.clone(), false);
+                }
+            }
+        }
+        (
+            self.mcp_cached_tools(server).await.unwrap_or_default(),
+            true,
+        )
+    }
+
     fn remember_mcp_tools(&self, server: &ChatMcpServer, tools: &[McpTool]) {
         self.set_mcp_tool_snapshot(
             server.id.clone(),
@@ -1079,6 +1100,41 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn passive_display_requires_a_current_live_schema_and_never_waits_for_handshake() {
+        let state = crate::state::test_app_state();
+        let server = stdio_server("unused-display-server", &[]);
+        let mut session = McpSession::placeholder(config_fingerprint(&server));
+        session.state = McpServerState::Connected;
+        let revisions = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        session.revision_source = Some(revisions.clone());
+        let session = Arc::new(Mutex::new(session));
+        state
+            .mcp_sessions
+            .lock()
+            .await
+            .insert(server.id.clone(), session.clone());
+        let (_, pending) = state.mcp_display_tools(&server).await;
+        assert!(
+            !pending,
+            "a current connected empty schema is known to be empty"
+        );
+        revisions.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            state.mcp_display_tools(&server).await.1,
+            "list_changed invalidates completeness"
+        );
+        let _handshake = session.lock().await;
+        let result =
+            tokio::time::timeout(Duration::from_millis(100), state.mcp_display_tools(&server))
+                .await;
+        assert!(
+            result
+                .expect("passive display must not wait for the session lock")
+                .1
+        );
+    }
     use crate::state::test_app_state;
 
     #[test]
@@ -2146,6 +2202,7 @@ while True:
             let script = r#"#!/usr/bin/env python3
 import sys, json, os, time
 delay_ms = int(os.environ.get("KIVIO_DELAY_CALL_MS", "0"))
+init_delay_ms = int(os.environ.get("KIVIO_DELAY_INIT_MS", "0"))
 marker = os.environ.get("KIVIO_CALL_MARKER", "")
 changed = False
 while True:
@@ -2167,6 +2224,8 @@ while True:
                 f.write("cancel:"+str(msg.get("params", {}).get("requestId"))+"\n")
         continue
     if method == "initialize":
+        if init_delay_ms:
+            time.sleep(init_delay_ms / 1000.0)
         resp = {"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1.0.0"}}}
     elif method == "tools/list":
         cursor = msg.get("params", {}).get("cursor")
@@ -2231,6 +2290,28 @@ while True:
 
         fn python_server(script: &std::path::Path) -> ChatMcpServer {
             stdio_server(python_command(), &["-u", script.to_str().unwrap()])
+        }
+
+        #[tokio::test]
+        async fn cold_catalog_keeps_tools_from_a_server_starting_after_three_seconds() {
+            let script = write_fake_server();
+            let state = test_app_state();
+            let mut server = python_server(&script);
+            server
+                .env
+                .insert("KIVIO_DELAY_INIT_MS".into(), "3200".into());
+            let mut settings = crate::settings::Settings::default();
+            settings.chat_tools.enabled = true;
+            settings.chat_tools.servers = vec![server];
+            let (tools, unavailable) =
+                crate::mcp::registry::collect_enabled_mcp_tool_defs(&state, None, &settings).await;
+            state.mcp_disconnect_all().await;
+            let _ = std::fs::remove_file(script);
+            assert!(
+                unavailable.is_empty(),
+                "a healthy cold server must be available on the first turn"
+            );
+            assert!(tools.iter().any(|tool| tool.name == "echo"));
         }
 
         /// 一个**只实现 2026-07-28** 的假服务器：对 `initialize` 回 `-32601`

@@ -159,6 +159,8 @@ fn kill_git_process_tree(pid: u32, child: &mut Child) {
 }
 
 fn run_git(workdir: &str, args: &[&str]) -> Result<Output, String> {
+    #[cfg(test)]
+    tests::record_git_command(args);
     let mut command = Command::new("git");
     configure_git_command(&mut command);
     command
@@ -1263,6 +1265,11 @@ pub struct GitDiffStatResponse {
 /// untracked 文件按行数计为新增（与 patch 合成同一 128KB / 文本约束，二进制不计行）。
 fn git_diff_stat_sync(workdir: &str) -> Result<GitDiffStatResponse, String> {
     let state = git_status_sync(workdir)?;
+    git_diff_stat_for_state(&state)
+}
+
+/// 复用本轮状态，避免徽标先 status、统计内部又 status 一次。
+fn git_diff_stat_for_state(state: &GitRepoState) -> Result<GitDiffStatResponse, String> {
     if state.status != "ready" {
         return Ok(GitDiffStatResponse {
             files_changed: 0,
@@ -1332,6 +1339,39 @@ pub async fn dock_git_diff_stat(workdir: String) -> Result<GitDiffStatResponse, 
         .map_err(|e| format!("dock_git_diff_stat join: {e}"))?
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSnapshotResponse {
+    pub state: GitRepoState,
+    pub diff_stat: Option<GitDiffStatResponse>,
+}
+
+fn git_snapshot_sync(
+    workdir: &str,
+    include_diff_stat: bool,
+) -> Result<GitSnapshotResponse, String> {
+    let state = git_status_sync(workdir)?;
+    // 统计是增强信息：失败仍返回分支状态，下轮刷新可恢复。
+    let diff_stat = if include_diff_stat && state.status == "ready" {
+        git_diff_stat_for_state(&state).ok()
+    } else {
+        None
+    };
+    Ok(GitSnapshotResponse { state, diff_stat })
+}
+
+#[tauri::command]
+pub async fn dock_git_snapshot(
+    workdir: String,
+    include_diff_stat: Option<bool>,
+) -> Result<GitSnapshotResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_snapshot_sync(&workdir, include_diff_stat.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| format!("dock_git_snapshot join: {e}"))?
+}
+
 fn git_add_to_gitignore_sync(workdir: &str, path: String) -> Result<GitOperationResponse, String> {
     let state = ensure_ready_state(workdir)?;
     let path = validate_repo_relative_path(&path)?;
@@ -1388,9 +1428,29 @@ pub async fn dock_git_status(workdir: String) -> Result<GitRepoState, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static TEMP_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    thread_local! {
+        static GIT_COMMANDS: RefCell<Option<Vec<Vec<String>>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn record_git_command(args: &[&str]) {
+        GIT_COMMANDS.with(|commands| {
+            if let Some(commands) = commands.borrow_mut().as_mut() {
+                commands.push(args.iter().map(|arg| arg.to_string()).collect());
+            }
+        });
+    }
+
+    fn capture_git_commands<T>(run: impl FnOnce() -> T) -> (T, Vec<Vec<String>>) {
+        GIT_COMMANDS.with(|commands| *commands.borrow_mut() = Some(Vec::new()));
+        let result = run();
+        let commands = GIT_COMMANDS.with(|commands| commands.borrow_mut().take().unwrap());
+        (result, commands)
+    }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1587,6 +1647,45 @@ mod tests {
             .find(|f| f.path == "b.txt")
             .expect("b.txt stat");
         assert_eq!((b.additions, b.deletions), (2, 0));
+        let (snapshot, commands) = capture_git_commands(|| git_snapshot_sync(&root, true).unwrap());
+        assert_eq!(snapshot.state.status, "ready");
+        assert_eq!(
+            commands.iter().filter(|args| args[0] == "status").count(),
+            1
+        );
+        assert_eq!(commands.iter().filter(|args| args[0] == "diff").count(), 1);
+        assert_eq!(
+            serde_json::to_value(snapshot.diff_stat.unwrap()).unwrap(),
+            serde_json::to_value(&dirty).unwrap()
+        );
+
+        let (branch_only, commands) =
+            capture_git_commands(|| git_snapshot_sync(&root, false).unwrap());
+        assert_eq!(branch_only.state.status, "ready");
+        assert!(branch_only.diff_stat.is_none());
+        assert_eq!(
+            commands.iter().filter(|args| args[0] == "status").count(),
+            1
+        );
+        assert!(!commands.iter().any(|args| args[0] == "diff"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn snapshot_handles_unborn_and_non_repo_workdirs() {
+        let dir = temp_dir("snapshot");
+        let root = dir.to_str().unwrap();
+        let no_repo = git_snapshot_sync(root, true).expect("non-repo snapshot");
+        assert_eq!(no_repo.state.status, "not_repo");
+        assert!(no_repo.diff_stat.is_none());
+        git_init_sync(root, None).expect("init");
+        fs::write(dir.join("new.txt"), "one\ntwo\n").expect("untracked file");
+        let snapshot = git_snapshot_sync(root, true).expect("unborn snapshot");
+        let stat = snapshot.diff_stat.expect("unborn stats");
+        assert_eq!(
+            (stat.files_changed, stat.additions, stat.deletions),
+            (1, 2, 0)
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }

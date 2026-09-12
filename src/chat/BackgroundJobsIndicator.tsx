@@ -1,11 +1,8 @@
-import { useEffect, useState } from 'react'
 import { TerminalSquare } from 'lucide-react'
-import { api, type BackgroundTaskInfo } from '../api/tauri'
 import { useT } from '../settings/i18n'
 import { chatTitlebarIconButtonClass } from './platform'
 import { partitionTasks } from './backgroundTasks'
-
-const POLL_MS = 2500
+import { useBackgroundTasks } from './useBackgroundTasks'
 
 /**
  * Header status light for background tasks (built-in `run_command background:true`
@@ -23,28 +20,7 @@ export function BackgroundJobsIndicator({
   onOpen: () => void
 }) {
   const t = useT()
-  const [tasks, setTasks] = useState<BackgroundTaskInfo[]>([])
-
-  useEffect(() => {
-    setTasks([])
-    if (!conversationId) return
-    let cancelled = false
-    const tick = async () => {
-      if (document.hidden) return
-      try {
-        const next = await api.chatListBackgroundTasks(conversationId)
-        if (!cancelled) setTasks(next)
-      } catch {
-        if (!cancelled) setTasks([])
-      }
-    }
-    void tick()
-    const timer = window.setInterval(tick, POLL_MS)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [conversationId])
+  const tasks = useBackgroundTasks(conversationId)
 
   if (tasks.length === 0) return null
 

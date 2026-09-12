@@ -1,5 +1,5 @@
 // 状态条右端的 diff 徽标：绿 +adds / 红 −dels，无改动时不渲染，点击进 Git 面板。
-// 与工具栏的 GitStatusPill 各自实例化 useGitBadge（毫秒级查询，换取互不耦合）。
+// 与工具栏的 GitStatusPill 共享按工作目录缓存的快照。
 import { i18n, type Lang } from '../../settings/i18n'
 import { useGitBadge } from './useGitBadge'
 
@@ -11,7 +11,7 @@ type GitDiffChipProps = {
 
 export function GitDiffChip({ workdir, lang, onOpenGitPanel }: GitDiffChipProps) {
   const t = i18n[lang]
-  const { state, diffStat } = useGitBadge(workdir)
+  const { state, diffStat } = useGitBadge(workdir, true)
 
   if (state?.status !== 'ready' || !diffStat || diffStat.filesChanged === 0) return null
 

@@ -1,8 +1,5 @@
-// Git 徽标共享数据源：dock_git_status + dock_git_diff_stat，
-// workspace:activity 秒级驱动 + watcher 不可用时 10s 兜底轮询。
-// 签名相同跳过 setState；GitStatusPill（工具栏）与 GitDiffChip（状态条）各自实例化，
-// 后端调用翻倍但都是毫秒级查询，换取两个组件互不耦合。
-import { useCallback, useEffect, useRef, useState } from 'react'
+// 按工作目录共享 Git 快照、watcher 和兜底轮询；无消费者时释放缓存。
+import { useCallback, useSyncExternalStore } from 'react'
 import { dockApi } from './api'
 import { gitStatusSignature } from './gitReviewModel'
 import type { GitDiffStat, GitRepoState } from './types'
@@ -12,81 +9,147 @@ export type GitBadge = {
   state: GitRepoState | null
   diffStat: GitDiffStat | null
   loading: boolean
-  /** 变更操作（如 init）返回的权威 state 直接写入，不等下一轮 refresh。 */
+  /** 变更操作返回的权威 state 立即共享，旧查询不能覆盖它。 */
   applyMutationState: (next: GitRepoState) => void
   refresh: (options?: { silent?: boolean }) => Promise<void>
 }
 
-export function useGitBadge(workdir: string): GitBadge {
-  const [state, setState] = useState<GitRepoState | null>(null)
-  const [diffStat, setDiffStat] = useState<GitDiffStat | null>(null)
-  const [loading, setLoading] = useState(false)
-  const signatureRef = useRef('')
+type Snapshot = Pick<GitBadge, 'state' | 'diffStat' | 'loading'>
+const EMPTY: Snapshot = { state: null, diffStat: null, loading: false }
+const stores = new Map<string, GitBadgeStore>()
 
-  const applyState = useCallback((next: GitRepoState) => {
-    const signature = gitStatusSignature(next)
-    if (signature === signatureRef.current) return
-    signatureRef.current = signature
-    setState(next)
-  }, [])
+function sameStat(left: GitDiffStat | null, right: GitDiffStat | null): boolean {
+  return left === right || Boolean(left && right &&
+    left.filesChanged === right.filesChanged &&
+    left.additions === right.additions && left.deletions === right.deletions)
+}
 
-  const applyMutationState = useCallback((next: GitRepoState) => {
-    signatureRef.current = gitStatusSignature(next)
-    setState(next)
-  }, [])
+class GitBadgeStore {
+  private snapshot = EMPTY
+  private signature = gitStatusSignature(null)
+  private listeners = new Map<() => void, boolean>()
+  private unsubscribe: (() => void) | null = null
+  private timer: ReturnType<typeof setInterval> | null = null
+  private inFlight: Promise<void> | null = null
+  private pending = false
+  private epoch = 0
 
-  const refresh = useCallback(
-    async (options?: { silent?: boolean }) => {
-      if (!workdir) return
-      if (!options?.silent) setLoading(true)
-      try {
-        const next = await dockApi.gitStatus(workdir)
-        applyState(next)
-        if (next.status === 'ready') {
-          const stat = await dockApi.gitDiffStat(workdir).catch(() => null)
-          if (stat) {
-            setDiffStat((prev) =>
-              prev &&
-              prev.filesChanged === stat.filesChanged &&
-              prev.additions === stat.additions &&
-              prev.deletions === stat.deletions
-                ? prev
-                : stat,
-            )
-          }
-        } else {
-          setDiffStat(null)
-        }
-      } catch {
-        // 静默：状态类信息不打断用户，下一轮刷新会自愈。
-      } finally {
-        setLoading(false)
+  constructor(private workdir: string) {}
+
+  getSnapshot = (): Snapshot => this.snapshot
+
+  private publish(next: Snapshot) {
+    const previous = this.snapshot
+    const signature = next.state === previous.state ? this.signature : gitStatusSignature(next.state)
+    const state = signature === this.signature ? previous.state : next.state
+    const diffStat = sameStat(previous.diffStat, next.diffStat) ? previous.diffStat : next.diffStat
+    if (state === previous.state && diffStat === previous.diffStat && next.loading === previous.loading) return
+    this.signature = signature
+    this.snapshot = { state, diffStat, loading: next.loading }
+    for (const listener of this.listeners.keys()) listener()
+  }
+
+  private wantsDiff() {
+    return [...this.listeners.values()].some(Boolean)
+  }
+
+  subscribe(listener: () => void, includeDiffStat: boolean): () => void {
+    const hadDiff = this.wantsDiff()
+    this.listeners.set(listener, includeDiffStat)
+    if (this.workdir && !this.unsubscribe) {
+      this.unsubscribe = workspaceActivity.subscribe(this.workdir, (event) => {
+        if (event.fs || event.git || event.truncated) void this.refresh({ silent: true })
+      })
+      if (!workspaceActivity.isAvailable()) {
+        this.timer = setInterval(() => void this.refresh({ silent: true }), 10_000)
       }
-    },
-    [applyState, workdir],
-  )
-
-  // workdir 切换：重置签名缓存并立即拉取。
-  useEffect(() => {
-    signatureRef.current = ''
-    setState(null)
-    setDiffStat(null)
-    void refresh()
-  }, [refresh])
-
-  // 外部改动（含 agent 写文件）驱动静默刷新；watcher 不可用时 10s 兜底轮询。
-  useEffect(() => {
-    if (!workdir) return
-    const unsubscribe = workspaceActivity.subscribe(workdir, (event) => {
-      if (event.fs || event.git || event.truncated) void refresh({ silent: true })
-    })
-    if (workspaceActivity.isAvailable()) return unsubscribe
-    const timer = window.setInterval(() => void refresh({ silent: true }), 10_000)
-    return () => {
-      unsubscribe()
-      window.clearInterval(timer)
+      void this.refresh()
+    } else if (!hadDiff && includeDiffStat && this.snapshot.state && !this.snapshot.diffStat) {
+      // 晚挂载的 diff 徽标需要补齐统计；同轮挂载则由下方微任务合并需求。
+      void this.refresh({ silent: true })
     }
-  }, [refresh, workdir])
+    return () => {
+      this.listeners.delete(listener)
+      // StrictMode 同轮退订/重订复用请求；真正卸载后不保留仓库列表或轮询。
+      queueMicrotask(() => {
+        if (this.listeners.size) return
+        this.unsubscribe?.()
+        this.unsubscribe = null
+        if (this.timer !== null) clearInterval(this.timer)
+        this.timer = null
+        this.pending = false
+        this.epoch += 1
+        this.snapshot = EMPTY
+        this.signature = gitStatusSignature(null)
+        if (stores.get(this.workdir) === this) stores.delete(this.workdir)
+      })
+    }
+  }
 
-  return { state, diffStat, loading, applyMutationState, refresh }
+  refresh = (options?: { silent?: boolean }): Promise<void> => {
+    if (!this.workdir || !this.listeners.size) return Promise.resolve()
+    if (!options?.silent) this.publish({ ...this.snapshot, loading: true })
+    this.pending = true
+    if (this.inFlight) return this.inFlight
+    // 延迟到微任务：同轮挂载两个消费者/批量文件事件只查询一次。
+    this.inFlight = Promise.resolve().then(async () => {
+      try {
+        while (this.pending && this.listeners.size) {
+          this.pending = false
+          const epoch = this.epoch
+          const includeDiffStat = this.wantsDiff()
+          try {
+            const next = await dockApi.gitSnapshot(this.workdir, includeDiffStat)
+            if (epoch !== this.epoch || !this.listeners.size) continue
+            this.publish({
+              state: next.state,
+              diffStat: this.wantsDiff() ? next.diffStat : null,
+              loading: this.snapshot.loading,
+            })
+            // 查询途中新增了 diff 消费者，补一次完整快照。
+            if (!includeDiffStat && this.wantsDiff()) this.pending = true
+          } catch {
+            // 状态类信息不打断用户；后续事件或手动刷新会重试。
+          }
+          // 查询途中再有事件则跑一轮尾随刷新，不并发，也不丢掉最后一次改动。
+        }
+      } finally {
+        this.inFlight = null
+        this.publish({ ...this.snapshot, loading: false })
+      }
+    })
+    return this.inFlight
+  }
+
+  applyMutationState = (state: GitRepoState) => {
+    if (!this.listeners.size) return
+    this.epoch += 1
+    this.publish({ state, diffStat: null, loading: this.snapshot.loading })
+    void this.refresh({ silent: true })
+  }
+}
+
+export function useGitBadge(workdir: string, includeDiffStat = false): GitBadge {
+  // 仅在 React 提交订阅时创建缓存；放弃的并发 render 不留下仓库条目。
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      let store = stores.get(workdir)
+      if (!store) {
+        store = new GitBadgeStore(workdir)
+        stores.set(workdir, store)
+      }
+      return store.subscribe(listener, includeDiffStat)
+    },
+    [workdir, includeDiffStat],
+  )
+  const getSnapshot = useCallback(() => stores.get(workdir)?.getSnapshot() ?? EMPTY, [workdir])
+  const refresh = useCallback(
+    (options?: { silent?: boolean }) => stores.get(workdir)?.refresh(options) ?? Promise.resolve(),
+    [workdir],
+  )
+  const applyMutationState = useCallback((next: GitRepoState) => {
+    stores.get(workdir)?.applyMutationState(next)
+  }, [workdir])
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return { ...snapshot, refresh, applyMutationState }
 }
