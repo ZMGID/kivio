@@ -43,10 +43,10 @@ it('shows task instructions as an assignment bubble', async () => {
 })
 
 it('opens agent management from a compact count without mounting details in the composer', async () => {
-  const stopMain = vi.fn()
+
   function Harness() {
     const [open, setOpen] = useState(false)
-    return <><div data-testid="composer"><SubAgentIndicator conversationId="conv_a" onOpen={() => setOpen(true)} /></div>{open && <aside><SubAgentPanel conversationId="conv_a" mainAgent={{ model: 'test', running: true, onStop: stopMain }} /></aside>}</>
+    return <><div data-testid="composer"><SubAgentIndicator conversationId="conv_a" onOpen={() => setOpen(true)} /></div>{open && <aside><SubAgentPanel conversationId="conv_a" /></aside>}</>
   }
   render(<Harness />)
   const indicator = await screen.findByRole('button', { name: '子代理 1 · 打开任务' })
@@ -54,9 +54,11 @@ it('opens agent management from a compact count without mounting details in the 
   fireEvent.click(indicator)
   await screen.findByText('Research')
   expect(screen.getByTestId('composer')).not.toHaveTextContent('Research')
-  expect(screen.getByText('主代理')).toBeVisible()
+  expect(screen.queryByText('主代理')).toBeNull()
+  expect(screen.getByRole('heading', { name: '正在运行 · 0' })).toBeVisible()
+  expect(screen.getByRole('heading', { name: '已关闭 · 1' })).toBeVisible()
   expect(screen.queryByRole('textbox')).toBeNull()
-  expect(stopMain).not.toHaveBeenCalled()
+
   expect(vi.mocked(api.chatSubagentControl).mock.calls.filter(([, args]) => args.operation === 'list')).toHaveLength(1)
 })
 

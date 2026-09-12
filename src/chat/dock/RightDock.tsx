@@ -8,7 +8,7 @@ import { FileTreePanel } from './FileTreePanel'
 import { GitPanel } from './GitPanel'
 import { TerminalPanel } from './TerminalPanel'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel'
-import { SubAgentPanel, type MainAgentTask } from '../SubAgentPanel'
+import { SubAgentPanel } from '../SubAgentPanel'
 
 export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
 
@@ -37,7 +37,6 @@ type RightDockProps = {
   lang: Lang
   /** 当前对话 id（任务页按对话隔离）。null = 还没有对话。 */
   conversationId: string | null
-  mainAgent?: MainAgentTask
   treeExpanded: string[]
   revealRequest: DockRevealRequest
   previewRequest: DockPreviewRequest
@@ -56,7 +55,6 @@ export const RightDock = memo(function RightDock({
   workdir,
   lang,
   conversationId,
-  mainAgent,
   treeExpanded,
   revealRequest,
   previewRequest,
@@ -187,7 +185,7 @@ export const RightDock = memo(function RightDock({
       </div>
       <div data-task-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={activeTab !== 'tasks'}>
         {open && activeTab === 'tasks' && conversationId && (
-          <SubAgentPanel key={conversationId} conversationId={conversationId} lang={lang} mainAgent={mainAgent} />
+          <SubAgentPanel key={conversationId} conversationId={conversationId} lang={lang} />
         )}
         <BackgroundTasksPanel
           hideEmpty={Boolean(conversationId)}

@@ -5546,7 +5546,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             workdir={dockWorkdir}
             lang={uiLang}
             conversationId={currentConversation?.id ?? null}
-            mainAgent={currentConversation ? { model: currentConversation.model, running: streamCoarse.streaming, onStop: () => { void handleCancelStream() } } : undefined}
             treeExpanded={treeExpanded}
             revealRequest={dockReveal}
             previewRequest={dockPreview}
