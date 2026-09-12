@@ -1299,6 +1299,7 @@ pub(super) fn build_chat_api_messages(
         messages.push(summary_message(summary));
     }
 
+    let mut remaining_video_bytes = crate::chat::video::MAX_VIDEO_BYTES;
     for (idx, message) in conversation.messages.iter().enumerate() {
         if idx < start_idx {
             continue;
@@ -1313,11 +1314,25 @@ pub(super) fn build_chat_api_messages(
             message.content.as_str()
         };
         let sanitized_content = sanitize_image_payloads_for_model(content);
+        let mut parts = Vec::new();
+        if message.role == "user" {
+            if let Some(app) = app {
+                for attachment in &message.attachments {
+                    // Extension fallback supports videos saved by older versions as ordinary files.
+                    if crate::chat::video::mime_for_name(&attachment.name).is_some() {
+                        let path = crate::chat::attachments::resolve_attachment_file_path(app, Some(&conversation.id), &attachment.path)?;
+                        parts.push(crate::chat::video::content_part(&path, &mut remaining_video_bytes)?);
+                    }
+                }
+            }
+        }
         if Some(idx) == last_user_idx && !last_user_image_paths.is_empty() {
-            let mut parts = last_user_image_paths
+            parts.extend(last_user_image_paths
                 .iter()
                 .map(image_content_part)
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, _>>()?);
+        }
+        if !parts.is_empty() {
             parts.push(serde_json::json!({ "type": "text", "text": sanitized_content }));
             messages.push(tag_ui_message_id(
                 serde_json::json!({

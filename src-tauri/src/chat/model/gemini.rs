@@ -67,6 +67,10 @@ impl GeminiProvider<'_> {
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
         let body = self.request_body(&request, false);
+        if crate::chat::video::has_video(&request) {
+            crate::chat::video::validate_request(self.provider, &request)?;
+            crate::chat::video::validate_body(&body)?;
+        }
         let url = self.endpoint_url(&request.model, false);
         let response = send_with_failover(
             self.state,
@@ -162,6 +166,10 @@ impl GeminiProvider<'_> {
         let mut measured_sink = FirstTokenStreamSink::new(sink, started);
         let sink = &mut measured_sink;
         let body = self.request_body(&request, true);
+        if crate::chat::video::has_video(&request) {
+            crate::chat::video::validate_request(self.provider, &request)?;
+            crate::chat::video::validate_body(&body)?;
+        }
         let url = self.endpoint_url(&request.model, true);
         let mut response = send_with_failover(
             self.state,
@@ -696,6 +704,13 @@ fn gemini_parts_from_message(
     let mut parts = Vec::new();
     for part in &message.content {
         match part {
+            MessagePart::Video { mime_type, data, .. } => {
+                if data.is_empty() {
+                    parts.push(serde_json::json!({"text":"[视频附件不可用，请重新添加]"}));
+                } else {
+                    parts.push(serde_json::json!({"inlineData":{"mimeType":mime_type,"data":data}}));
+                }
+            }
             MessagePart::Text { text } => {
                 if !text.is_empty() {
                     parts.push(serde_json::json!({ "text": text }));

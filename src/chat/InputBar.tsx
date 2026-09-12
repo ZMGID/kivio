@@ -57,6 +57,7 @@ import {
 import { mapExternalCliSlashCommands, externalCliAgentLabel } from './externalCliSlashCommands'
 import type { ModeOption, ModeTone } from './permissionModes'
 import { isTauriRuntime } from './utils'
+import { isVideoFile } from './attachmentType'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif']
 /** 与 `index.css` 问题优化出场 / 入场时长对齐：`--kv-dur-slow`、`slow + fast`。 */
@@ -684,7 +685,7 @@ export const InputBar = memo(function InputBar({
         const normalized = path.replace(/\\/g, '/')
         const name = normalized.split('/').filter(Boolean).pop() || t.chatAttachmentFallbackName
         const ext = name.split('.').pop()?.toLowerCase() ?? ''
-        const type: PendingAttachment['type'] = IMAGE_EXTENSIONS.includes(ext) ? 'image' : 'file'
+        const type: PendingAttachment['type'] = IMAGE_EXTENSIONS.includes(ext) ? 'image' : isVideoFile(name) ? 'video' : 'file'
         return {
           id: `pending-att-${crypto.randomUUID()}`,
           type,
@@ -1571,7 +1572,7 @@ export const InputBar = memo(function InputBar({
         }
         pastedAttachments.push({
           id: `pending-att-${crypto.randomUUID()}`,
-          type: 'file',
+          type: isVideoFile(result.name) ? 'video' : 'file',
           name: result.name,
           path: result.path,
         })
@@ -2101,6 +2102,13 @@ export const InputBar = memo(function InputBar({
                 onRemove={composerLocked ? undefined : removeAttachment}
                 onEditAttachment={setEditingAttachment}
               />
+              {attachments.some(attachment => attachment.type === 'video') && (
+                <p className="mt-2 text-[12px] text-neutral-500">
+                  {gitLang === 'zh'
+                    ? (usesExternalRuntime ? '视频将作为文件路径交给外部 CLI 代理。' : '请选择支持视频输入的模型。当前上下文视频合计最多 14 MiB。')
+                    : (usesExternalRuntime ? 'Video file paths are passed to the external CLI agent.' : 'Choose a video-capable model. Videos in the current context can total up to 14 MiB.')}
+                </p>
+              )}
             </div>
           )}
           {attachmentError && (

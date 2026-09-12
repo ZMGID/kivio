@@ -102,6 +102,10 @@ impl OpenAiChatProvider<'_> {
         label: &str,
     ) -> Result<reqwest::Response, String> {
         let anonymous = self.provider.is_opencode_free();
+        if crate::chat::video::has_video(request) {
+            crate::chat::video::validate_request(self.provider, request).map_err(|e| e.to_string())?;
+            crate::chat::video::validate_body(body).map_err(|e| e.to_string())?;
+        }
         if anonymous && !crate::opencode_free::is_free_model(&request.model) {
             return Err("OpenCode Free only supports free models; refresh the model list".into());
         }

@@ -257,6 +257,8 @@ impl CacheRetention {
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelInfo {
     pub display_name: Option<String>,
+    /// Latest upstream capability; never takes precedence over an explicit override.
+    pub advertised_video_input: Option<bool>,
     pub context_window: Option<u64>,
     pub max_output: Option<u64>,
     /// 模型级采样温度；None 表示请求默认不发送 temperature。
@@ -281,6 +283,7 @@ pub struct ModelInfo {
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelCapabilities {
     pub vision: Option<bool>,
+    pub video_input: Option<bool>,
     pub function_calling: Option<bool>,
     pub reasoning: Option<bool>,
     pub streaming: Option<bool>,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, type ModelProvider, type Settings } from '../api/tauri'
+import { applyModelCatalog } from '../data/modelCatalog'
 import { ProviderModelsPicker } from '../settings/ProviderModelsPicker'
 import { ModelPairSelect } from '../settings/ModelPairSelect'
 import { Button, IconButton } from '../components/Button'
@@ -261,14 +262,14 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
     if (!provider || fetching) return
     setFetching(true)
     try {
-      const models = await api.fetchModels(provider.id, {
+      const catalog = await api.fetchModelCatalog(provider.id, {
         id: provider.id,
         baseUrl: provider.baseUrl,
         apiKeys: provider.apiKeys,
         apiFormat: provider.apiFormat,
         request: provider.request,
       })
-      updateProvider({ availableModels: models })
+      updateProvider(applyModelCatalog(provider, catalog))
     } catch (err) {
       console.error('Failed to fetch models:', err)
     } finally {

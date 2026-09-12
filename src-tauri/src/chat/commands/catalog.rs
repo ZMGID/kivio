@@ -227,7 +227,7 @@ pub(crate) fn strip_transcripts_for_frontend(conversation: &mut Conversation) {
 fn strip_image_payloads_from_model_messages(messages: &mut [crate::chat::model::ModelMessage]) {
     for model_message in messages.iter_mut() {
         for part in model_message.content.iter_mut() {
-            if let crate::chat::model::MessagePart::Image { data, .. } = part {
+            if let crate::chat::model::MessagePart::Image { data, .. } | crate::chat::model::MessagePart::Video { data, .. } = part {
                 data.clear();
             }
         }
@@ -243,7 +243,8 @@ fn strip_image_payloads_from_api_messages(messages: &mut [serde_json::Value]) {
             continue;
         };
         for part in parts.iter_mut() {
-            let Some(image_url) = part.get_mut("image_url") else {
+            let key = if part.get("type").and_then(serde_json::Value::as_str) == Some("video_url") { "video_url" } else { "image_url" };
+            let Some(image_url) = part.get_mut(key) else {
                 continue;
             };
             // 对象形（`image_url.url`）与字符串形（Responses 的 `input_image`）都要覆盖。
@@ -257,7 +258,7 @@ fn strip_image_payloads_from_api_messages(messages: &mut [serde_json::Value]) {
             let Some(slot) = slot else { continue };
             if slot
                 .as_str()
-                .is_some_and(|url| url.starts_with("data:image/"))
+                .is_some_and(|url| url.starts_with("data:image/") || url.starts_with("data:video/"))
             {
                 *slot = serde_json::Value::String(String::new());
             }

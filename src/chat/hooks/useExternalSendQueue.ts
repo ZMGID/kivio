@@ -85,7 +85,7 @@ export function useExternalSendQueue({
           .filter((attachment) => attachment.path)
           .map<PendingAttachment>((attachment, index) => ({
             id: attachment.id || `external-${request.id}-${index}`,
-            type: attachment.type === 'file' ? 'file' : 'image',
+            type: attachment.type === 'video' ? 'video' : attachment.type === 'file' ? 'file' : 'image',
             name: attachment.name || (attachment.type === 'file' ? 'Attachment' : 'Image'),
             path: attachment.path,
           }))

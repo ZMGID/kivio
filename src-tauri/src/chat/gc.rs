@@ -289,7 +289,7 @@ pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSe
         for model_message in &message.model_messages {
             for part in &model_message.content {
                 match part {
-                    crate::chat::model::MessagePart::Image { path, .. } => {
+                    crate::chat::model::MessagePart::Image { path, .. } | crate::chat::model::MessagePart::Video { path, .. } => {
                         if let Some(path) = path.as_deref().filter(|p| !p.is_empty()) {
                             referenced.insert(path.to_string());
                         }

@@ -618,6 +618,15 @@ pub(crate) fn model_supports_vision(provider: Option<&ModelProvider>, model: &st
         .or_else(|| model_database_vision(provider_model_database_id(Some(provider), model)))
 }
 
+pub(crate) fn model_supports_video(provider: &ModelProvider, model: &str) -> Option<bool> {
+    provider.model_overrides.get(model)
+        .and_then(|info| info.capabilities.as_ref())
+        .and_then(|caps| caps.video_input)
+        .or_else(|| provider.model_overrides.get(model)?.advertised_video_input)
+        .or_else(|| model_database_entry(provider_model_database_id(Some(provider), model))?
+            .get("capabilities")?.get("videoInput")?.as_bool())
+}
+
 /// 归一化模型名：小写 + 去 `models/` 前缀 + trim。出图路由 / override 生图能力判定 /
 /// `is_image_output_model` / 名字启发式统一走这里，消除「换大小写/加 `models/` 前缀就路由错、
 /// override 精确匹配静默失效」三类脆弱。

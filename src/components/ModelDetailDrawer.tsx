@@ -38,6 +38,7 @@ export function ModelDetailDrawer({
   const hasOverride = !!overrides?.[modelName]
 
   const [form, setForm] = useState<ModelInfo>(resolved)
+  const [videoInputEdited, setVideoInputEdited] = useState(false)
   const [temperatureInput, setTemperatureInput] = useState(
     resolved.temperature?.toString() ?? '',
   )
@@ -48,6 +49,7 @@ export function ModelDetailDrawer({
   useEffect(() => {
     const next = resolveModelInfo(modelName, overrides, provider)
     setForm(next)
+    setVideoInputEdited(false)
     setTemperatureInput(next.temperature?.toString() ?? '')
     setExtraBodyInput(next.extraBody ? JSON.stringify(next.extraBody, null, 2) : '')
   }, [modelName, overrides, provider])
@@ -57,6 +59,7 @@ export function ModelDetailDrawer({
   }, [])
 
   const updateCapability = useCallback((key: keyof NonNullable<ModelInfo['capabilities']>, value: boolean) => {
+    if (key === 'videoInput') setVideoInputEdited(true)
     setForm(prev => ({
       ...prev,
       capabilities: { ...prev.capabilities, [key]: value },
@@ -141,8 +144,15 @@ export function ModelDetailDrawer({
 
   const handleSave = useCallback(() => {
     if (temperatureInvalid || extraBodyInvalid) return
-    onSave(modelName, form)
-  }, [modelName, form, onSave, temperatureInvalid, extraBodyInvalid])
+    onSave(modelName, {
+      ...form,
+      advertisedVideoInput: overrides?.[modelName]?.advertisedVideoInput,
+      capabilities: {
+        ...form.capabilities,
+        videoInput: videoInputEdited ? form.capabilities?.videoInput : overrides?.[modelName]?.capabilities?.videoInput,
+      },
+    })
+  }, [modelName, form, onSave, temperatureInvalid, extraBodyInvalid, videoInputEdited, overrides])
 
   const handleReset = useCallback(() => {
     onReset(modelName)
@@ -166,6 +176,7 @@ export function ModelDetailDrawer({
     temperatureInvalid: lang === 'zh' ? '请输入 0 到 2 之间的数值。' : 'Enter a value between 0 and 2.',
     capabilities: lang === 'zh' ? '功能' : 'Capabilities',
     vision: lang === 'zh' ? '图像输入' : 'Image Input',
+    videoInput: lang === 'zh' ? '视频输入' : 'Video Input',
     functionCalling: lang === 'zh' ? '工具调用' : 'Tool Calling',
     reasoning: lang === 'zh' ? '推理模式' : 'Reasoning',
     streaming: lang === 'zh' ? '流式输出' : 'Streaming',
@@ -275,6 +286,7 @@ export function ModelDetailDrawer({
             <label className="kv-drawer-label">{t.capabilities}</label>
             <div className="kv-drawer-toggles">
               <CapabilityToggle label={t.vision} checked={form.capabilities?.vision ?? false} onChange={(v) => updateCapability('vision', v)} />
+              <CapabilityToggle label={t.videoInput} checked={form.capabilities?.videoInput ?? false} onChange={(v) => updateCapability('videoInput', v)} />
               <CapabilityToggle label={t.functionCalling} checked={form.capabilities?.functionCalling ?? false} onChange={(v) => updateCapability('functionCalling', v)} />
               <CapabilityToggle label={t.reasoning} checked={form.capabilities?.reasoning ?? false} onChange={(v) => updateCapability('reasoning', v)} />
               <CapabilityToggle label={t.streaming} checked={form.capabilities?.streaming ?? false} onChange={(v) => updateCapability('streaming', v)} />

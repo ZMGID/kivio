@@ -305,11 +305,11 @@ fn externalize_model_message_images_in_dir(
     let mut changed = false;
     for model_message in messages.iter_mut() {
         for part in model_message.content.iter_mut() {
-            let MessagePart::Image {
+            let (MessagePart::Image {
                 mime_type,
                 data,
                 path,
-            } = part
+            } | MessagePart::Video { mime_type, data, path }) = part
             else {
                 continue;
             };
@@ -322,7 +322,7 @@ fn externalize_model_message_images_in_dir(
             let file_name = format!(
                 "{MODEL_IMAGE_FILE_PREFIX}{}.{}",
                 &sha256_hex(&bytes)[..16],
-                extension_for_image_mime(&normalize_stored_image_mime(mime_type))
+                extension_for_media_mime(&normalize_stored_image_mime(mime_type))
             );
             let dest = dir.join(&file_name);
             // 内容寻址：同哈希同内容，已存在就直接复用，不重复写盘。
@@ -343,7 +343,7 @@ pub(crate) fn message_has_model_message_image_to_externalize(message: &ChatMessa
         model_message.content.iter().any(|part| {
             matches!(
                 part,
-                MessagePart::Image { data, path, .. }
+                MessagePart::Image { data, path, .. } | MessagePart::Video { data, path, .. }
                     if !data.is_empty() && path.as_deref().is_none_or(|p| p.is_empty())
             )
         })
@@ -362,7 +362,7 @@ pub(crate) fn rehydrate_model_message_images(
 ) {
     if !messages.iter().any(|model_message| {
         model_message.content.iter().any(|part| {
-            matches!(part, MessagePart::Image { data, path, .. }
+            matches!(part, MessagePart::Image { data, path, .. } | MessagePart::Video { data, path, .. }
                 if data.is_empty() && path.as_deref().is_some_and(|p| !p.is_empty()))
         })
     }) {
@@ -381,7 +381,7 @@ fn rehydrate_model_message_images_in_dir(
 ) {
     for model_message in messages.iter_mut() {
         for part in model_message.content.iter_mut() {
-            let MessagePart::Image { data, path, .. } = part else {
+            let (MessagePart::Image { data, path, .. } | MessagePart::Video { data, path, .. }) = part else {
                 continue;
             };
             if !data.is_empty() {
@@ -412,7 +412,7 @@ fn rehydrate_model_message_images_in_dir(
 const ATTACHMENT_URI_SCHEME: &str = "kivio-attachment://";
 
 /// `api_messages` 里可能出现的图片部件 `type`（与 `agent::prepare::IMAGE_PART_TYPES` 同口径）。
-const API_IMAGE_PART_TYPES: [&str; 3] = ["image_url", "input_image", "image"];
+const API_IMAGE_PART_TYPES: [&str; 4] = ["image_url", "input_image", "image", "video_url"];
 
 /// 把 `api_messages`（OpenAI wire 格式的隐藏转录）里的图片 base64 外置。
 ///
@@ -448,7 +448,7 @@ fn externalize_api_message_images_in_dir(dir: &Path, messages: &mut [serde_json:
             let Some((mime, payload)) = parse_data_url(url.trim()) else {
                 continue; // 已经是哨兵 / 远程 URL / 非 base64 → 不动
             };
-            if !mime.starts_with("image/") {
+            if !mime.starts_with("image/") && !mime.starts_with("video/") {
                 continue;
             }
             let Ok(bytes) = general_purpose::STANDARD.decode(payload) else {
@@ -458,7 +458,7 @@ fn externalize_api_message_images_in_dir(dir: &Path, messages: &mut [serde_json:
             let file_name = format!(
                 "{MODEL_IMAGE_FILE_PREFIX}{}.{}",
                 &sha256_hex(&bytes)[..16],
-                extension_for_image_mime(&normalized)
+                extension_for_media_mime(&normalized)
             );
             let dest = dir.join(&file_name);
             // 内容寻址 ⇒ 与 `model_messages` 侧同名同文件，两份转录引用同一张图不重复写盘。
@@ -483,7 +483,7 @@ pub(crate) fn message_has_api_message_image_to_externalize(message: &ChatMessage
             .any(|slot| {
                 slot.as_str()
                     .and_then(|url| parse_data_url(url.trim()))
-                    .is_some_and(|(mime, _)| mime.starts_with("image/"))
+                    .is_some_and(|(mime, _)| mime.starts_with("image/") || mime.starts_with("video/"))
             })
     })
 }
@@ -559,7 +559,7 @@ fn parse_attachment_uri(url: &str) -> Option<(String, &str)> {
     if segments.next().is_some() {
         return None; // 多于三段 ⇒ 脏数据
     }
-    if top != "image" || subtype.is_empty() || file_name.is_empty() {
+    if !matches!(top, "image" | "video") || subtype.is_empty() || file_name.is_empty() {
         return None;
     }
     // 文件名是外置时我们自己生成的，必须是单段、不含任何路径分量。
@@ -591,7 +591,8 @@ fn api_message_image_url_slots(message: &mut serde_json::Value) -> Vec<&mut serd
         if !is_image {
             continue;
         }
-        let Some(image_url) = part.get_mut("image_url") else {
+        let key = if part.get("type").and_then(serde_json::Value::as_str) == Some("video_url") { "video_url" } else { "image_url" };
+        let Some(image_url) = part.get_mut(key) else {
             continue;
         };
         // 对象形（`image_url.url`）与字符串形（`image_url` 本身）都要覆盖。
@@ -611,6 +612,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+fn extension_for_media_mime(mime: &str) -> &str {
+    match mime {
+        "video/mp4" => "mp4", "video/mpeg" => "mpeg", "video/mov" => "mov",
+        "video/avi" => "avi", "video/x-flv" => "flv", "video/webm" => "webm",
+        "video/wmv" => "wmv", "video/3gpp" => "3gpp",
+        _ => extension_for_image_mime(mime),
+    }
 }
 
 /// 把 `MessagePart::Image` 的 mime 归一到 `extension_for_image_mime` 认识的形态
@@ -801,6 +811,9 @@ fn sanitize_attachment_name(name: &str) -> String {
 }
 
 fn attachment_type_for_name(name: &str) -> &'static str {
+    if super::video::mime_for_name(name).is_some() {
+        return "video";
+    }
     let ext = Path::new(name)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -817,6 +830,7 @@ fn attachment_type_for_name(name: &str) -> &'static str {
 fn attachment_type_label(attachment_type: &str) -> &'static str {
     match attachment_type {
         "image" => "图片",
+        "video" => "视频",
         _ => "文件",
     }
 }
@@ -864,6 +878,9 @@ fn stored_attachment_path_for_prompt(
 }
 
 fn attachment_processing_hint(attachment: &Attachment) -> String {
+    if attachment.attachment_type == "video" {
+        return "内置运行时会将视频内容发送给支持视频输入的模型。".to_string();
+    }
     if attachment.attachment_type == "image" {
         return "图片附件会随本轮请求发送给视觉模型。".to_string();
     }
@@ -898,7 +915,7 @@ pub(crate) fn compose_user_content_for_api(
         .any(|attachment| attachment.attachment_type == "image");
     let has_files = real_attachments
         .iter()
-        .any(|attachment| attachment.attachment_type != "image");
+        .any(|attachment| !matches!(attachment.attachment_type.as_str(), "image" | "video"));
     let attachment_lines = real_attachments
         .iter()
         .map(|attachment| {
@@ -928,6 +945,9 @@ pub(crate) fn compose_user_content_for_api(
         "[已添加附件]\n{}\n\n注意：{}",
         attachment_lines, capability_note
     );
+    let attachment_note = if real_attachments.iter().any(|a| a.attachment_type == "video") {
+        format!("{attachment_note}\n视频附件随内置运行时请求发送；外部 CLI 代理仅收到文件路径。")
+    } else { attachment_note };
 
     if trimmed.is_empty() {
         attachment_note

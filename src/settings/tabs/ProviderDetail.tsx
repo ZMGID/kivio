@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   Plus, Minus, Trash2, RefreshCw, Eye, EyeOff, Wrench, Brain,
   ArrowLeft, ChevronRight, SlidersHorizontal, List,
-  Image as ImageIcon,
+  Image as ImageIcon, Video,
 } from 'lucide-react'
 import { Select, Input, SettingsGroup, FieldBlock, Toggle } from '../components'
 import { Button, IconButton } from '../../components/Button'
@@ -275,6 +275,11 @@ export function ProviderDetail({
                 <ModelIcon model={model} size={16} />
                 <span className="kv-enabled-model-name" title={model}>{model}</span>
                 <span className="kv-enabled-model-badges">
+                  {caps?.videoInput && (
+                    <span className="kv-badge-mini kv-badge-mini--vision" title={lang === 'zh' ? '视频输入' : 'Video input'}>
+                      <Video size={11} strokeWidth={2} />
+                    </span>
+                  )}
                   {caps?.vision && (
                     <span className="kv-badge-mini kv-badge-mini--vision" title={lang === 'zh' ? '视觉' : 'Vision'}>
                       <Eye size={11} strokeWidth={2} />

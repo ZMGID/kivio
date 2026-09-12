@@ -195,6 +195,17 @@ pub(super) async fn complete_assistant_reply_inner(
     }
 
     let last_user_idx = conversation.messages.iter().rposition(|m| m.role == "user");
+    let has_video = conversation.messages.iter()
+        .skip(super::context::context_replay_start_index(conversation))
+        .filter(|message| message.role == "user")
+        .flat_map(|message| &message.attachments)
+        .any(|attachment| crate::chat::video::mime_for_name(&attachment.name).is_some());
+    if has_video {
+        crate::chat::video::validate_model(&provider, &resolved_model).map_err(|e| e.to_string())?;
+        if model_can_generate_images_directly(&provider, &resolved_model) {
+            return Err("视频输入请选择视频理解模型，直接生图模式暂不支持视频。".into());
+        }
+    }
     let language = crate::settings::resolve_chat_language(&settings);
     // 思考：每对话等级覆盖全局开关。None=跟随全局（现状）；"off"=强制关；low/medium/high=按家族注入。
     let (thinking_enabled, thinking_level) = resolve_thinking(

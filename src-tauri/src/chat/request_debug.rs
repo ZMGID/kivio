@@ -144,7 +144,8 @@ pub struct DebugRecordArgs<'a> {
 }
 
 /// Assemble a [`RequestDebugRecord`] from adapter-provided request/response parts.
-pub fn build_debug_record(args: DebugRecordArgs<'_>) -> RequestDebugRecord {
+pub fn build_debug_record(mut args: DebugRecordArgs<'_>) -> RequestDebugRecord {
+    redact_video_payloads(&mut args.body);
     let source = args
         .request
         .metadata
@@ -177,6 +178,22 @@ pub fn build_debug_record(args: DebugRecordArgs<'_>) -> RequestDebugRecord {
             stream: args.stream,
         },
         response: args.response,
+    }
+}
+
+fn redact_video_payloads(value: &mut Value) {
+    match value {
+        Value::String(s) if s.starts_with("data:video/") => {
+            *s = "[video bytes omitted]".into();
+        }
+        Value::Array(items) => items.iter_mut().for_each(redact_video_payloads),
+        Value::Object(map) => {
+            if map.get("mimeType").or_else(|| map.get("mime_type")).and_then(Value::as_str).is_some_and(|s| s.starts_with("video/")) {
+                if let Some(data) = map.get_mut("data") { *data = Value::String("[video bytes omitted]".into()); }
+            }
+            map.values_mut().for_each(redact_video_payloads);
+        }
+        _ => {}
     }
 }
 

@@ -32,6 +32,7 @@ pub mod sub_agent;
 pub mod todo;
 pub mod types;
 mod vision;
+pub(crate) mod video;
 
 pub use types::*;
 

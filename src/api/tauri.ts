@@ -72,7 +72,7 @@ export type ChatStreamPayload = Extract<
 
 export type ChatExternalSendAttachment = {
   id: string
-  type: 'image' | 'file'
+  type: 'image' | 'file' | 'video'
   name: string
   path: string
 }
@@ -862,6 +862,8 @@ export type LensWindowInfo = {
 // 模型能力与定价信息（来自内置数据库或用户自定义）
 export type ModelInfo = {
   displayName?: string
+  /** Latest upstream capability, separate from the user's explicit override. */
+  advertisedVideoInput?: boolean
   contextWindow?: number
   maxOutput?: number
   /** 模型级采样温度；未设置时请求不发送 temperature。 */
@@ -870,6 +872,7 @@ export type ModelInfo = {
   omitTemperature?: boolean
   capabilities?: {
     vision?: boolean
+    videoInput?: boolean
     functionCalling?: boolean
     reasoning?: boolean
     streaming?: boolean
@@ -1962,6 +1965,8 @@ export const api = {
   // 提供商相关
   fetchModels: (providerId: string, provider?: ProviderConnectionInput) =>
     invoke<string[]>('fetch_models', { providerId, provider }),
+  fetchModelCatalog: (providerId: string, provider?: ProviderConnectionInput) =>
+    invoke<{ models: string[]; capabilities: Record<string, NonNullable<ModelInfo['capabilities']>> }>('fetch_models', { providerId, provider, includeCapabilities: true }),
   testProviderConnection: (providerId: string, provider?: ProviderConnectionInput) =>
     invoke<{ success: boolean; error?: string }>('test_provider_connection', { providerId, provider }),
 

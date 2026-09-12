@@ -1305,6 +1305,7 @@ fn anthropic_content_blocks(message: &ModelMessage, role: ModelRole) -> Vec<Valu
     let mut blocks = Vec::new();
     for part in &message.content {
         match part {
+            MessagePart::Video { .. } => blocks.push(serde_json::json!({"type":"text", "text":"[视频输入不受此协议支持]"})),
             MessagePart::Text { text } => blocks.push(serde_json::json!({
                 "type": "text",
                 "text": text,

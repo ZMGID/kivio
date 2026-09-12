@@ -4,6 +4,7 @@ import {
   Download, Upload, ArrowLeft,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
+import { applyModelCatalog } from '../data/modelCatalog'
 import {
   api,
   type Settings as SettingsType,
@@ -1412,7 +1413,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     setFetchingProviderId(providerId)
     try {
       const currentProvider = settings.providers.find(p => p.id === providerId)
-      const models = await api.fetchModels(providerId, currentProvider
+      const catalog = await api.fetchModelCatalog(providerId, currentProvider
         ? {
           id: currentProvider.id,
           baseUrl: currentProvider.baseUrl,
@@ -1425,7 +1426,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         }
         : undefined)
       if (currentProvider) {
-        updateProvider(providerId, { availableModels: models })
+        updateProvider(providerId, applyModelCatalog(currentProvider, catalog))
       }
     } catch (err) {
       console.error('Failed to fetch models:', err)

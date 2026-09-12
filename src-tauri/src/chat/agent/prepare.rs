@@ -825,6 +825,7 @@ pub(crate) fn estimate_value_tokens(value: &Value) -> usize {
         Value::Array(items) => items.iter().map(estimate_value_tokens).sum(),
         Value::Object(map) => {
             if let Some(kind) = map.get("type").and_then(Value::as_str) {
+                if kind == "video_url" { return 0; }
                 if IMAGE_PART_TYPES.contains(&kind) {
                     return 0;
                 }

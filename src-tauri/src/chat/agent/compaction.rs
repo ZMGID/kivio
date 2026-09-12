@@ -303,6 +303,9 @@ fn render_multimodal_content(content: &Value) -> String {
 }
 
 fn render_content_part(part: &Value) -> String {
+    if part.get("type").and_then(Value::as_str) == Some("video_url") {
+        return "[video attachment omitted]".into();
+    }
     if let Some(kind) = part.get("type").and_then(Value::as_str) {
         if IMAGE_PART_TYPES.contains(&kind) {
             return IMAGE_PART_PLACEHOLDER.to_string();
@@ -859,6 +862,7 @@ fn estimate_model_messages_tokens(messages: &[ModelMessage]) -> usize {
                     // reasoning item 同理：encrypted_content 是密文 base64，按字符估算会
                     // 数倍虚高；其真实占用由 usage 锚点覆盖。
                     MessagePart::Image { .. }
+                    | MessagePart::Video { .. }
                     | MessagePart::ImageUrl { .. }
                     | MessagePart::ReasoningItem { .. } => 0,
                 })

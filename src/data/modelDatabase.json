@@ -492,6 +492,7 @@
     "contextWindow": 1048576,
     "maxOutput": 65536,
     "capabilities": {
+      "videoInput": true,
       "vision": true,
       "functionCalling": true,
       "reasoning": true,
@@ -973,84 +974,84 @@
     "displayName": "Gemini 2.5 Pro",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 1.25, "output": 10.00, "cachedInput": 0.3125 }
   },
   "gemini-2.5-flash": {
     "displayName": "Gemini 2.5 Flash",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.30, "output": 2.50, "cachedInput": 0.075 }
   },
   "gemini-2.5-flash-lite": {
     "displayName": "Gemini 2.5 Flash-Lite",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.10, "output": 0.40, "cachedInput": 0.025 }
   },
   "gemini-3.7-flash": {
     "displayName": "Gemini 3.7 Flash",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.75, "output": 3.75, "cachedInput": 0.075 }
   },
   "gemini-3.6-flash": {
     "displayName": "Gemini 3.6 Flash",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 1.50, "output": 7.50, "cachedInput": 0.15 }
   },
   "gemini-3.2-pro": {
     "displayName": "Gemini 3.2 Pro",
     "contextWindow": 2000000,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 2.00, "output": 12.00 }
   },
   "gemini-3.1-pro": {
     "displayName": "Gemini 3.1 Pro",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 2.00, "output": 12.00, "cachedInput": 0.20 }
   },
   "gemini-3.5-flash": {
     "displayName": "Gemini 3.5 Flash",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 1.50, "output": 9.00, "cachedInput": 0.15 }
   },
   "gemini-3.5-flash-lite": {
     "displayName": "Gemini 3.5 Flash-Lite",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.30, "output": 2.50, "cachedInput": 0.03 }
   },
   "gemini-3.1-flash-lite": {
     "displayName": "Gemini 3.1 Flash-Lite",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.25, "output": 1.50, "cachedInput": 0.025 }
   },
   "gemini-3-flash-preview": {
     "displayName": "Gemini 3 Flash Preview",
     "contextWindow": 1048576,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.50, "output": 3.00, "cachedInput": 0.05 }
   },
   "gemini-2.0-flash": {
     "displayName": "Gemini 2.0 Flash",
     "contextWindow": 1048576,
     "maxOutput": 8192,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": false, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": false, "streaming": true, "webSearch": true },
     "pricing": { "input": 0.10, "output": 0.40 }
   },
 
@@ -1244,7 +1245,7 @@
     "displayName": "Kimi K3",
     "contextWindow": 1048576,
     "maxOutput": 1048576,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "high", "max"],
     "pricing": { "input": 3.00, "output": 15.00, "cachedInput": 0.30 }
   },
@@ -1276,7 +1277,7 @@
     "displayName": "Kimi K2.6",
     "contextWindow": 262144,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": [],
     "pricing": { "input": 0.95, "output": 4.00, "cachedInput": 0.16 }
   },
@@ -1284,7 +1285,7 @@
     "displayName": "Kimi K2.5",
     "contextWindow": 262144,
     "maxOutput": 65536,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": [],
     "pricing": { "input": 0.60, "output": 3.00, "cachedInput": 0.10 }
   },
