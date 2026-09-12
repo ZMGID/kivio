@@ -62,7 +62,7 @@
 | A16 | ChatAgentHost checkpoint 等待当前 parent_run 的 active 依赖，终态包含 failed/interrupted | 代码审查；实际多模型主轮未远程实测 |
 | A17 | supervisor 独立写终态；没有结束子任务自动启动父模型的路径 | 真实 Runtime 确定性 + 代码审查 |
 | A18 | `terminal_replay_is_idempotent_and_cannot_regress_status`、`parent_receipt_and_child_outbox_recover_both_sides_of_a_crash`、`live_parent_results_are_not_claimed_by_other_model_arms` | 真实文件接收事务与重开；活跃主轮归属 |
-| A19 | 面板 unmount 不 stop；重连读取 list/get 后订阅 wait | React 操作测试；原生窗口未实测 |
+| A19 | 面板 unmount 不 stop；重连读取 list/get，输入框标记与任务页共享快照轮询 | React 操作测试；原生窗口未实测 |
 | A20 | `restart_retains_pending_messages_and_unknown_tools_without_replaying` | 实际文件重开，无自动调用 |
 | A21 | `subagent_empty_planning_recovery_does_not_repeat_tool_work` | 真实 loop、本地 HTTP、工具执行次数 |
 | A22 | 工具调用前 durable intent；重开保留 unknown 并明确核查提示 | 真文件恢复确定性；不承诺外部副作用恰好一次 |
@@ -86,5 +86,7 @@
 初审及复审指出持久接收凭据、退出/删除清理、已返回工具恢复窗口、全历史 eager loading、活跃主轮结果归属、压缩后旧工具重建、受理后取消丢失 supervisor、存储故障漏停后续任务；均已修复并新增对应回归测试或静态复核。最后一轮静态复核没有新增阻塞发现。补充复核确认失败边界保留待消费留言，以及主代理明确转达用户继续指示的来源标记；`user_requested` 是模型依据用户原文作出的声明，并非后端独立语义验证。
 
 ## 本地交付
+
+2026-09-13 用户试用后的 UI / 等待修复与验证见 [后续修复记录](followup-ui-wait.md)。
 
 任务 01—11 的实现已接通，12 的验证证据在本文集中记录。保留原任务清单以便查看原始要求，不用统一勾选掩盖未实测环境。远程 provider / 原生桌面的未验证范围保留为交付限制，不伪称已验收通过。

@@ -1,4 +1,4 @@
-import { SubAgentPanel } from './SubAgentPanel'
+import { SubAgentIndicator } from './SubAgentPanel'
 import { freezeCancelledStream, isLocallyCancelledPayload } from './streamCancellation'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { PanelRight, SquareArrowOutUpRight } from 'lucide-react'
@@ -5517,7 +5517,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onSelectConversation={handleSelectConversation}
             importedHistoryStale={importedHistoryStale}
             pendingSlot={pendingSlot}
-            goalSlot={<>{currentConversation?.id && <SubAgentPanel key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} />}{visibleGoal ? (
+            goalSlot={<>{currentConversation?.id && <SubAgentIndicator key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} onOpen={handleOpenDockTasks} />}{visibleGoal ? (
               <GoalCard
                 goal={visibleGoal}
                 onEdit={handleEditGoal}
@@ -5546,6 +5546,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             workdir={dockWorkdir}
             lang={uiLang}
             conversationId={currentConversation?.id ?? null}
+            mainAgent={currentConversation ? { model: currentConversation.model, running: streamCoarse.streaming, onStop: () => { void handleCancelStream() } } : undefined}
             treeExpanded={treeExpanded}
             revealRequest={dockReveal}
             previewRequest={dockPreview}

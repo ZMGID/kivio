@@ -90,6 +90,7 @@ impl Record {
 }
 
 struct Control {
+    result_versions: HashMap<String, u64>,
     live_parents: HashSet<String>,
     storage_errors: HashMap<String, String>,
     deleting: HashSet<String>,
@@ -112,6 +113,7 @@ pub struct Runtime {
     root: PathBuf,
     control: Mutex<Control>,
     events: tokio::sync::watch::Sender<u64>,
+    result_events: tokio::sync::watch::Sender<u64>,
 }
 
 impl Runtime {
@@ -121,6 +123,7 @@ impl Runtime {
             summaries_dirty: std::sync::atomic::AtomicBool::new(true),
             root,
             control: Mutex::new(Control {
+                result_versions: HashMap::new(),
                 live_parents: HashSet::new(),
                 storage_errors: HashMap::new(),
                 deleting: HashSet::new(),
@@ -136,6 +139,7 @@ impl Runtime {
                 handles: HashMap::new(),
             }),
             events: tokio::sync::watch::channel(0).0,
+            result_events: tokio::sync::watch::channel(0).0,
         };
         // Rebuild lightweight summaries one record at a time on startup. Never
         // retain all histories in memory while recovering interrupted workers.
@@ -156,6 +160,15 @@ impl Runtime {
             } else {
                 runtime.write_summary(&record)?;
             }
+            *runtime
+                .lock()
+                .result_versions
+                .entry(record.conversation_id.clone())
+                .or_default() += record
+                .runs
+                .iter()
+                .filter(|run| !run.status.active())
+                .count() as u64;
         }
         runtime.repair_summaries()?;
         Ok(runtime)
@@ -321,6 +334,16 @@ impl Runtime {
     }
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.events.subscribe()
+    }
+    pub fn subscribe_results(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.result_events.subscribe()
+    }
+    pub fn result_sequence(&self, conversation: &str) -> u64 {
+        self.lock()
+            .result_versions
+            .get(conversation)
+            .copied()
+            .unwrap_or(0)
     }
     pub fn sequence(&self) -> u64 {
         *self.events.borrow()
@@ -729,6 +752,12 @@ impl Runtime {
             }
         }
         self.save(&mut record)?;
+        *control
+            .result_versions
+            .entry(conversation.into())
+            .or_default() += 1;
+        self.result_events
+            .send_modify(|seq| *seq = seq.wrapping_add(1));
         control.storage_errors.remove(run);
         control.active.remove(run);
         control.owners.remove(run);
@@ -918,6 +947,41 @@ mod tests {
                 "inspect",
             )
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn model_result_wait_ignores_progress_and_wakes_on_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(dir.path().into()).unwrap();
+        let a = child(&runtime, "a");
+        let mut results = runtime.subscribe_results();
+        runtime
+            .progress(
+                "conv_a",
+                &a.id,
+                &a.current().id,
+                "reading a file".into(),
+                vec![],
+            )
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), results.changed())
+                .await
+                .is_err(),
+            "progress must not wake the parent model"
+        );
+        runtime
+            .finish(
+                "conv_a",
+                &a.id,
+                &a.current().id,
+                Ok(("report".into(), None)),
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(30), results.changed())
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

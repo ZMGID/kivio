@@ -8,6 +8,7 @@ import { FileTreePanel } from './FileTreePanel'
 import { GitPanel } from './GitPanel'
 import { TerminalPanel } from './TerminalPanel'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel'
+import { SubAgentPanel, type MainAgentTask } from '../SubAgentPanel'
 
 export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
 
@@ -36,6 +37,7 @@ type RightDockProps = {
   lang: Lang
   /** 当前对话 id（任务页按对话隔离）。null = 还没有对话。 */
   conversationId: string | null
+  mainAgent?: MainAgentTask
   treeExpanded: string[]
   revealRequest: DockRevealRequest
   previewRequest: DockPreviewRequest
@@ -54,6 +56,7 @@ export const RightDock = memo(function RightDock({
   workdir,
   lang,
   conversationId,
+  mainAgent,
   treeExpanded,
   revealRequest,
   previewRequest,
@@ -160,7 +163,7 @@ export const RightDock = memo(function RightDock({
         </IconButton>
       </div>
 
-      {/* 文件 / Git / 终端 / 任务常驻挂载，inactive 只 hidden。 */}
+      {/* 文件 / Git / 终端保留面板；子代理详情仅在任务页可见时读取。 */}
       <div className="flex min-h-0 flex-1 flex-col" hidden={activeTab !== 'files'}>
         <FileTreePanel
           workdir={workdir}
@@ -182,8 +185,12 @@ export const RightDock = memo(function RightDock({
           <TerminalPanel workdir={workdir} active={terminalActive} lang={lang} />
         )}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col" hidden={activeTab !== 'tasks'}>
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={activeTab !== 'tasks'}>
+        {open && activeTab === 'tasks' && conversationId && (
+          <SubAgentPanel key={conversationId} conversationId={conversationId} lang={lang} mainAgent={mainAgent} />
+        )}
         <BackgroundTasksPanel
+          hideEmpty={Boolean(conversationId)}
           active={open && activeTab === 'tasks'}
           lang={lang}
           conversationId={conversationId}

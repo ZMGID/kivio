@@ -271,7 +271,9 @@ pub async fn operate(
     let key = args["message_id"].as_str().unwrap_or("");
     let text = args["message"].as_str().unwrap_or("");
     match operation {
-        "list" => Ok(json!({"sequence":runtime.sequence(), "agents":runtime.list(conversation)?})),
+        "list" => Ok(
+            json!({"sequence":runtime.result_sequence(conversation), "agents":runtime.list(conversation)?}),
+        ),
         "get" => Ok(json!(runtime.get(conversation, id)?)),
         "message" => Ok(json!(runtime.send(conversation, id, key, sender, text)?)),
         "stop" => Ok(json!(runtime.stop(
@@ -302,23 +304,41 @@ pub async fn operate(
             Ok(json!(record))
         }
         "wait" => {
-            let mut events = runtime.subscribe();
-            let cursor = args["cursor"].as_u64().unwrap_or(runtime.sequence());
+            let mut events = runtime.subscribe_results();
+            let cursor = args["cursor"]
+                .as_u64()
+                .unwrap_or(runtime.result_sequence(conversation));
             let timeout = args["timeout_ms"].as_u64().unwrap_or(30_000).min(60_000);
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
-            while *events.borrow_and_update() == cursor {
-                if app.state::<AppState>().has_chat_pending_input(conversation)
-                    || tokio::time::Instant::now() >= deadline
+            let started = tokio::time::Instant::now();
+            let deadline = started + std::time::Duration::from_millis(timeout);
+            let reason = loop {
+                events.borrow_and_update();
+                if runtime.result_sequence(conversation) != cursor {
+                    break "result_ready";
+                }
+                if !runtime
+                    .list(conversation)?
+                    .iter()
+                    .any(|r| r.current().status.active())
                 {
-                    break;
+                    break "all_finished";
+                }
+                if app.state::<AppState>().has_chat_pending_input(conversation) {
+                    break "user_input";
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break "timeout";
                 }
                 let remaining = deadline
                     .saturating_duration_since(tokio::time::Instant::now())
                     .min(std::time::Duration::from_millis(100));
                 let _ = tokio::time::timeout(remaining, events.changed()).await;
-            }
-            Ok(json!({"sequence":runtime.sequence(), "agents":runtime.list(conversation)?}))
+            };
+            Ok(
+                json!({"sequence":runtime.result_sequence(conversation), "agents":runtime.list(conversation)?, "reason":reason,"waited_ms":started.elapsed().as_millis() as u64,"timeout_ms":timeout}),
+            )
         }
+
         _ => Err("Unknown sub-agent operation".into()),
     }
 }
@@ -334,7 +354,7 @@ pub async fn chat_subagent_control(
 }
 
 pub fn definition() -> ChatToolDefinition {
-    ChatToolDefinition { id: "native__agent_control".into(), name: "agent_control".into(), description: "Control children belonging to this conversation. List/get results; message only adds information (idle children do not run); continue explicitly runs an idle child or supplements an active one; stop requires the current execution_id; wait uses the returned sequence as cursor and never cancels children. Use stable message_id for retries. A user-stopped child requires a new explicit user instruction: only then set user_requested=true on continue. Never set it for automatic retries. The message retains main-agent provenance.".into(), source:"native".into(), server_id: None, server_name:Some("Kivio".into()), input_schema:json!({"type":"object","properties":{"operation":{"type":"string","enum":["list","get","message","continue","stop","wait"]},"id":{"type":"string"},"execution_id":{"type":"string"},"message_id":{"type":"string"},"message":{"type":"string"},"cursor":{"type":"integer"},"timeout_ms":{"type":"integer"},"user_requested":{"type":"boolean","description":"Only true when the user explicitly instructed continuation after stopping this child; never for automatic retries."}},"required":["operation"]}), sensitive:false, annotations:None, output_schema:None }
+    ChatToolDefinition { id: "native__agent_control".into(), name: "agent_control".into(), description: "Control children belonging to this conversation. List/get results; message only adds information (idle children do not run); continue explicitly runs an idle child or supplements an active one; stop requires the current execution_id; wait wakes for completed/failed/interrupted results, user input, or at most 60000 ms; progress alone does not wake it. Use the returned sequence as cursor. waited_ms is actual elapsed time; never infer elapsed time or a stall from the requested timeout. When all children have ended, summarize their results now; do not keep waiting or announce a future summary. Use stable message_id for retries. A user-stopped child requires a new explicit user instruction: only then set user_requested=true on continue. Never set it for automatic retries. The message retains main-agent provenance.".into(), source:"native".into(), server_id: None, server_name:Some("Kivio".into()), input_schema:json!({"type":"object","properties":{"operation":{"type":"string","enum":["list","get","message","continue","stop","wait"]},"id":{"type":"string"},"execution_id":{"type":"string"},"message_id":{"type":"string"},"message":{"type":"string"},"cursor":{"type":"integer"},"timeout_ms":{"type":"integer","minimum":0,"maximum":60000},"user_requested":{"type":"boolean","description":"Only true when the user explicitly instructed continuation after stopping this child; never for automatic retries."}},"required":["operation"]}), sensitive:false, annotations:None, output_schema:None }
 }
 
 pub fn dispatch(
@@ -352,8 +372,8 @@ pub fn dispatch(
             ctx.arguments,
         )
         .await?;
-        let content =
-            bounded_output(&serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?);
+        let value = model_view(ctx.arguments, value);
+        let content = bounded_output(&serde_json::to_string(&value).map_err(|e| e.to_string())?);
         Ok(McpToolCallResult {
             content,
             is_error: false,
@@ -365,9 +385,52 @@ pub fn dispatch(
     })
 }
 
+/// Model control replies are receipts, not copies of the worker's prompt and
+/// full transcript. The desktop keeps the complete on-demand detail contract.
+fn model_view(args: &Value, value: Value) -> Value {
+    fn summary(record: &Value) -> Value {
+        let run = record["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .cloned()
+            .unwrap_or(Value::Null);
+        json!({"id":record["id"],"name":record["name"],"execution_id":run["id"],"status":run["status"],"error":run["error"],"result_available":!run["status"].as_str().is_some_and(|s| matches!(s,"running"|"finishing"|"stopping"))})
+    }
+    if let Some(records) = value["agents"].as_array() {
+        return json!({"sequence":value["sequence"],"agents":records.iter().map(summary).collect::<Vec<_>>(),"waited_ms":value["waited_ms"],"reason":value["reason"],"timeout_ms":value["timeout_ms"]});
+    }
+    let mut result = summary(&value);
+    if matches!(args["operation"].as_str(), Some("message" | "continue")) {
+        result["accepted_message_id"] = args["message_id"].clone();
+    }
+    if args["operation"] == "get" {
+        if let Some(run) = value["runs"].as_array().and_then(|runs| runs.last()) {
+            result["result"] = run["result"].clone();
+            result["usage"] = run["usage"].clone();
+        }
+        result["messages"] = value["messages"].clone();
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_wait_receipt_excludes_full_worker_context() {
+        let record = json!({"id":"a", "name":"worker", "history":["private transcript"], "runs":[{"id":"r", "status":"completed", "prompt":"long prompt", "result":"report"}]});
+        let receipt = model_view(
+            &json!({"operation":"wait"}),
+            json!({"sequence":1,"agents":[record.clone()],"waited_ms":125,"reason":"result_ready","timeout_ms":60000}),
+        );
+        assert_eq!(receipt["waited_ms"], 125);
+        assert_eq!(receipt["agents"][0]["execution_id"], "r");
+        assert!(!receipt.to_string().contains("long prompt"));
+        assert!(!receipt.to_string().contains("private transcript"));
+        let detail = model_view(&json!({"operation":"get"}), record);
+        assert_eq!(detail["result"], "report");
+    }
 
     #[tokio::test]
     async fn parent_receipt_and_child_outbox_recover_both_sides_of_a_crash() {

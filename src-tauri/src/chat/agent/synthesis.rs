@@ -35,6 +35,48 @@ pub(crate) async fn synthesis_step(
     env: &LoopEnv<'_>,
     state: &mut RunState,
 ) -> Result<SynthesisFlow, String> {
+    let collaboration = state
+        .runtime_messages
+        .iter()
+        .any(|message| message["subagent_parent_persisted"] == true);
+    if collaboration {
+        state.runtime_messages.push(json!({"role":"system", "content":"Sub-agent results are now available. This is the final answer: synthesize the findings for the user now, including limitations. Do not end with a promise to check or summarize later; no automatic follow-up turn is scheduled."}));
+    }
+    let first = synthesis_attempt(env, state).await?;
+    let SynthesisFlow::Completed(completed) = &first else {
+        return Ok(first);
+    };
+    if !collaboration || !is_deferred_summary(&completed.response) {
+        return Ok(first);
+    }
+    // Only repair the final model response, never re-run child work or tools.
+    state
+        .runtime_messages
+        .push(json!({"role":"assistant", "content":completed.response}));
+    state.runtime_messages.push(json!({"role":"system", "content":"The previous response only announced future work. Provide the actual findings now using the collected results. If evidence is insufficient, explicitly say what is missing instead of promising another turn."}));
+    let repaired = synthesis_attempt(env, state).await?;
+    if matches!(&repaired, SynthesisFlow::Completed(answer) if is_deferred_summary(&answer.response))
+    {
+        return Err("Sub-agent results are saved, but the main agent did not produce a final summary after one repair attempt".into());
+    }
+    Ok(repaired)
+}
+
+fn is_deferred_summary(text: &str) -> bool {
+    let text = text.trim().to_lowercase();
+    text.chars().count() <= 180
+        && (((text.contains("我先") || text.contains("稍后"))
+            && (text.contains("再给你结论")
+                || text.contains("再给你总结")
+                || text.contains("再汇总")))
+            || ((text.starts_with("i'll ") || text.starts_with("i will "))
+                && (text.contains("then summarize") || text.contains("then give you"))))
+}
+
+async fn synthesis_attempt(
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+) -> Result<SynthesisFlow, String> {
     let config = env.config;
     let host = env.host;
     state.step_number = state.step_number.saturating_add(1);

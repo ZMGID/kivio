@@ -3876,3 +3876,54 @@ async fn run_loop_smoke_tool_then_final_answer_round_trips() {
         bodies[1]
     );
 }
+
+#[tokio::test]
+async fn collaboration_final_answer_is_not_a_promise_to_summarize_later() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(vec![r#"{"choices":[{"delta":{"content":"两边的报告都回来了。我先核一下最关键的几行，再给你结论。"}}]}"#.into(), "[DONE]".into()]),
+        MockResponse::Sse(vec![r#"{"choices":[{"delta":{"content":"综合结论：聊天流程与权限控制均缺少取消后的清理确认。"}}]}"#.into(), "[DONE]".into()]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.tools.clear();
+    config.runtime_messages.push(serde_json::json!({"role":"assistant","content":"[Sub-agent: A · Completed]\n聊天流程缺少取消清理", "subagent_parent_persisted":true}));
+    let host = TestHost::default();
+    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+        .await
+        .unwrap();
+    assert!(
+        result.content.contains("综合结论"),
+        "a preparatory sentence is not a completed collaboration: {}",
+        result.content
+    );
+    assert_eq!(
+        server.captured_bodies().len(),
+        2,
+        "only the final model answer is repaired, no tool work is restarted"
+    );
+}
+
+#[tokio::test]
+async fn collaboration_summary_repair_is_bounded_and_accepts_short_findings() {
+    for (answer, expected_calls, succeeds) in [
+        ("结论：未发现取消处理。", 1, true),
+        ("我先核对，再给你结论。", 2, false),
+    ] {
+        let events = vec![
+            serde_json::json!({"choices":[{"delta":{"content":answer}}]}).to_string(),
+            "[DONE]".into(),
+        ];
+        let server = MockModelServer::start(vec![
+            MockResponse::Sse(events.clone()),
+            MockResponse::Sse(events),
+        ]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.tools.clear();
+        config.runtime_messages.push(serde_json::json!({"role":"assistant","content":"[Sub-agent: A · Completed]\n未发现取消处理", "subagent_parent_persisted":true}));
+        let result =
+            run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default()).await;
+        assert_eq!(result.is_ok(), succeeds);
+        assert_eq!(server.captured_bodies().len(), expected_calls);
+    }
+}

@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { api } from '../api/tauri'
-import { SubAgentPanel } from './SubAgentPanel'
+import { SubAgentPanel, SubAgentIndicator } from './SubAgentPanel'
+import { useState } from 'react'
 
 vi.mock('../api/tauri', () => ({ api: { chatSubagentControl: vi.fn() } }))
 const record = {
@@ -33,6 +34,31 @@ it('unmounting the panel does not stop its worker', async () => {
   await screen.findByText('Research')
   view.unmount()
   expect(vi.mocked(api.chatSubagentControl).mock.calls.some(([, args]) => args.operation === 'stop')).toBe(false)
+})
+
+it('keeps the full task prompt collapsed when opening a child result', async () => {
+  render(<SubAgentPanel conversationId="conv_a" />)
+  fireEvent.click(await screen.findByText('Research'))
+  await screen.findByText('Full result')
+  expect(screen.getByText('Inspect', { exact: true })).not.toBeVisible()
+})
+
+it('opens agent management from a compact count without mounting details in the composer', async () => {
+  const stopMain = vi.fn()
+  function Harness() {
+    const [open, setOpen] = useState(false)
+    return <><div data-testid="composer"><SubAgentIndicator conversationId="conv_a" onOpen={() => setOpen(true)} /></div>{open && <aside><SubAgentPanel conversationId="conv_a" mainAgent={{ model: 'test', running: true, onStop: stopMain }} /></aside>}</>
+  }
+  render(<Harness />)
+  const indicator = await screen.findByRole('button', { name: '子代理 1 · 打开任务' })
+  expect(screen.queryByText('Research')).toBeNull()
+  fireEvent.click(indicator)
+  await screen.findByText('Research')
+  expect(screen.getByTestId('composer')).not.toHaveTextContent('Research')
+  expect(screen.getByText('主代理')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: '停止整个协作' }))
+  expect(stopMain).toHaveBeenCalledOnce()
+  expect(vi.mocked(api.chatSubagentControl).mock.calls.filter(([, args]) => args.operation === 'list')).toHaveLength(1)
 })
 
 it('a failed connection can reload the durable snapshot without starting work', async () => {

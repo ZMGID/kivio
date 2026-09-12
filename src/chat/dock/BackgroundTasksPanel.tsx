@@ -21,13 +21,14 @@ function TaskGlyph({ kind }: { kind: string }) {
 }
 
 type BackgroundTasksPanelProps = {
+  hideEmpty?: boolean
   active: boolean
   lang: Lang
   /** 面板按对话隔离：只展示当前对话自己的任务。null = 还没有对话（新建未发送）。 */
   conversationId: string | null
 }
 
-export function BackgroundTasksPanel({ active, lang, conversationId }: BackgroundTasksPanelProps) {
+export function BackgroundTasksPanel({ active, lang, conversationId, hideEmpty = false }: BackgroundTasksPanelProps) {
   const t = i18n[lang]
   const tasks = useBackgroundTasks(conversationId, active)
   const stopping = useRef<Set<string>>(new Set())
@@ -71,6 +72,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
         : t.chatBgStatusStopped
 
   if (tasks.length === 0) {
+    if (hideEmpty) return null
     return (
       <div className="grid flex-1 place-items-center px-6 text-center text-[12.5px] text-neutral-400 dark:text-neutral-500">
         {t.chatBgEmpty}
@@ -79,7 +81,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
   }
 
   return (
-    <div className="chat-popover-scroll min-h-0 flex-1 overflow-y-auto px-2 py-2">
+    <div className="shrink-0 px-2 py-2">
       {running.length > 0 && (
         <div className="px-1 py-1.5 text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
           {t.chatBgRunning} · {running.length}
