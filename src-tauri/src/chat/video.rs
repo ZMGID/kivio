@@ -69,19 +69,23 @@ pub(crate) fn validate_model(
     model: &str,
 ) -> Result<(), super::model::ModelError> {
     use super::model::ModelError;
-    use crate::settings::ProviderApiFormat;
-    if !matches!(
-        provider.api_format_kind(),
-        ProviderApiFormat::OpenAiChat | ProviderApiFormat::Gemini
-    ) || provider.request.oauth.is_some()
-    {
-        return Err(ModelError::new(
-            "视频输入需要 API Key 供应商，使用 Kimi OpenAI Chat 或 Gemini 原生协议。",
-        ));
-    }
     if super::model_metadata::model_supports_video(provider, model) != Some(true) {
         return Err(ModelError::new(format!(
             "模型 {model} 未启用视频输入，请选择支持视频的模型，或在模型详情中启用视频输入。"
+        )));
+    }
+    Ok(())
+}
+
+/// Adapters without a video encoder must not silently replace the video with text.
+/// This is a transport limitation, separate from model capability and authentication.
+pub(crate) fn reject_unimplemented_transport(
+    request: &super::model::GenerateRequest,
+    adapter: &str,
+) -> Result<(), super::model::ModelError> {
+    if has_video(request) {
+        return Err(super::model::ModelError::new(format!(
+            "Kivio 的 {adapter} 适配器尚未实现视频传输；请为此模型配置 OpenAI Chat 或 Gemini 传输方式。"
         )));
     }
     Ok(())
@@ -113,6 +117,23 @@ pub(crate) fn validate_body(body: &Value) -> Result<(), super::model::ModelError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_model_gate_depends_on_capability_not_provider_or_auth() {
+        for format in ["openai_chat", "gemini", "anthropic_messages", "openai_responses", "xai_responses"] {
+            for oauth in [Value::Null, json!({"provider": "kimi"})] {
+                for capability in [Value::Null, json!(false), json!(true)] {
+                    let provider = serde_json::from_value(json!({
+                        "id": "custom", "name": "Custom", "baseUrl": "https://relay.example",
+                        "apiFormat": format, "request": {"oauth": oauth},
+                        "modelOverrides": {"private-video-model": {"capabilities": {"videoInput": capability}}}
+                    })).unwrap();
+                    let result = validate_model(&provider, "private-video-model");
+                    assert_eq!(result.is_ok(), capability == json!(true), "{format}: {result:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn video_body_limit_counts_json_bytes_in_decimal_mb() {

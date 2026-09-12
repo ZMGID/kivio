@@ -96,6 +96,7 @@ const SOURCE_BADGE: Record<string, { zh: string; en: string; cls: string }> = {
   chat_title_summary: { zh: '标题', en: 'Title', cls: 'bg-teal-500/10 text-teal-600 dark:text-teal-300' },
   chat_compression: { zh: '压缩', en: 'Compress', cls: 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-300' },
   chat_aux_vision: { zh: '视觉', en: 'Vision', cls: 'bg-pink-500/10 text-pink-600 dark:text-pink-300' },
+  chat_aux_video: { zh: '视频分析', en: 'Video analysis', cls: 'bg-pink-500/10 text-pink-600 dark:text-pink-300' },
   chat_image_generation: { zh: '绘图', en: 'Image', cls: 'bg-rose-500/10 text-rose-600 dark:text-rose-300' },
   chat_prompt_optimize: { zh: '优化', en: 'Rewrite', cls: 'bg-lime-500/10 text-lime-600 dark:text-lime-300' },
   translator: { zh: '翻译', en: 'Translate', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-300' },

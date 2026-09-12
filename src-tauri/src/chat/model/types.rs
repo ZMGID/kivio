@@ -1197,7 +1197,7 @@ fn responses_items_from_model_message(
     for part in &message.content {
         match part {
             MessagePart::Video { .. } => {
-                // Dispatch rejects video on Responses; never mislabel it as an image.
+                // The Responses adapter rejects video before serialization; never mislabel it as an image.
                 content_parts.push(serde_json::json!({"type":text_part_type,"text":"[视频输入不受此协议支持]"}));
             }
             MessagePart::Text { text } => {

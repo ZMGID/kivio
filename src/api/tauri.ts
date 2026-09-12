@@ -981,6 +981,7 @@ export type DefaultModelSelection = {
 export type DefaultModelsConfig = {
   chat: DefaultModelSelection
   vision: DefaultModelSelection
+  videoAnalysis: DefaultModelSelection
   titleSummary: DefaultModelSelection
   compression: DefaultModelSelection
   imageGeneration: DefaultModelSelection
@@ -1680,6 +1681,7 @@ function normalizeDefaultModels(
   return {
     chat: normalizeDefaultModelSelection(config?.chat ?? legacyChat),
     vision: normalizeDefaultModelSelection(config?.vision),
+    videoAnalysis: normalizeDefaultModelSelection(config?.videoAnalysis),
     titleSummary: normalizeDefaultModelSelection(config?.titleSummary),
     compression: normalizeDefaultModelSelection(config?.compression),
     imageGeneration: normalizeDefaultModelSelection(config?.imageGeneration),

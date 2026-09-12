@@ -185,6 +185,7 @@ function defaultDefaultModels(chatProviderId = '', chatModel = ''): SettingsData
   return {
     chat: { providerId: chatProviderId, model: chatModel },
     vision: { providerId: '', model: '' },
+    videoAnalysis: { providerId: '', model: '' },
     titleSummary: { providerId: '', model: '' },
     compression: { providerId: '', model: '' },
     imageGeneration: { providerId: '', model: '' },
@@ -202,6 +203,9 @@ function clearDefaultModelProvider(
     vision: defaultModels.vision.providerId === providerId
       ? { providerId: '', model: '' }
       : defaultModels.vision,
+    videoAnalysis: defaultModels.videoAnalysis.providerId === providerId
+      ? { providerId: '', model: '' }
+      : defaultModels.videoAnalysis,
     titleSummary: defaultModels.titleSummary.providerId === providerId
       ? { providerId: '', model: '' }
       : defaultModels.titleSummary,
@@ -232,6 +236,9 @@ function resolveDefaultModelsAfterModelRemoval(
     vision: defaultModels.vision.providerId === providerId
       ? { ...defaultModels.vision, model: resolveAfterRemoval(defaultModels.vision.model) }
       : defaultModels.vision,
+    videoAnalysis: defaultModels.videoAnalysis.providerId === providerId
+      ? { ...defaultModels.videoAnalysis, model: resolveAfterRemoval(defaultModels.videoAnalysis.model) }
+      : defaultModels.videoAnalysis,
     titleSummary: defaultModels.titleSummary.providerId === providerId
       ? { ...defaultModels.titleSummary, model: resolveAfterRemoval(defaultModels.titleSummary.model) }
       : defaultModels.titleSummary,

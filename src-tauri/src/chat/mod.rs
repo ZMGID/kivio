@@ -33,6 +33,7 @@ pub mod todo;
 pub mod types;
 mod vision;
 pub(crate) mod video;
+mod video_analysis;
 
 pub use types::*;
 

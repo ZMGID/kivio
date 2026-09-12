@@ -201,8 +201,10 @@ pub(super) async fn complete_assistant_reply_inner(
         .filter(|message| message.role == "user")
         .flat_map(|message| &message.attachments)
         .any(|attachment| crate::chat::video::mime_for_name(&attachment.name).is_some());
+    let auxiliary_video_model = crate::chat::video_analysis::select_model(
+        &settings, &provider, &resolved_model, has_video,
+    )?;
     if has_video {
-        crate::chat::video::validate_model(&provider, &resolved_model).map_err(|e| e.to_string())?;
         if model_can_generate_images_directly(&provider, &resolved_model) {
             return Err("视频输入请选择视频理解模型，直接生图模式暂不支持视频。".into());
         }
@@ -638,7 +640,7 @@ pub(super) async fn complete_assistant_reply_inner(
         _ => system_prompt,
     };
 
-    let runtime_messages = match build_chat_api_messages(
+    let mut runtime_messages = match build_chat_api_messages(
         Some(app),
         &system_prompt,
         conversation,
@@ -659,6 +661,55 @@ pub(super) async fn complete_assistant_reply_inner(
             return Err(error);
         }
     };
+    if let Some(video_model) = auxiliary_video_model {
+        let mut record = crate::chat::video_analysis::tool_record(
+            &settings, &video_model, crate::chat::video_analysis::video_count(&runtime_messages),
+        );
+        let started = Instant::now();
+        emit_chat_stream_delta(app, &run_id, "", None, Some(&tool_segment_for_record(&record, 100, None)));
+        emit_chat_tool_record(app, &run_id, &record);
+        let analysis = tokio::select! {
+            result = crate::chat::video_analysis::analyze(
+                state.inner(), &settings, &video_model, &runtime_messages,
+                &conversation.id, &assistant_message_id, retry_attempts, &language,
+            ) => result,
+            _ = wait_for_chat_cancel(state.inner(), &conversation.id, run_generation) => {
+                finish_auxiliary_vision_tool_record(
+                    &mut record, ToolCallStatus::Cancelled, started, None,
+                    Some("Mixer video analysis cancelled".into()),
+                );
+                emit_chat_tool_record(app, &run_id, &record);
+                if arm.is_some() {
+                    protocol_guard.defer_terminal();
+                    return Ok(ArmReplyOutcome { message: None, run_id: Some(run_id), error: Some("cancelled".into()) });
+                }
+                crate::chat::protocol::finish_run(app, &run_id, "cancelled", "", conversation.revision);
+                return Err("cancelled".into());
+            }
+        };
+        match analysis {
+            Ok(content) => {
+                finish_auxiliary_vision_tool_record(
+                    &mut record, ToolCallStatus::Success, started,
+                    Some(truncate_chars(content.trim(), 1000)), None,
+                );
+                emit_chat_tool_record(app, &run_id, &record);
+                auxiliary_tool_records.push(record);
+                crate::chat::video_analysis::apply_analysis(&mut runtime_messages, &content, &language);
+            }
+            Err(error) => {
+                finish_auxiliary_vision_tool_record(
+                    &mut record, ToolCallStatus::Error, started, None, Some(error.clone()),
+                );
+                emit_chat_tool_record(app, &run_id, &record);
+                if arm.is_some() {
+                    protocol_guard.defer_terminal();
+                    return Ok(ArmReplyOutcome { message: None, run_id: Some(run_id), error: Some(error) });
+                }
+                return Err(error);
+            }
+        }
+    }
     let mut fallback_chat_tools = effective_chat_tools.clone();
     if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
         fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();

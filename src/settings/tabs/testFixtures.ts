@@ -30,6 +30,7 @@ export function makeSettings(overrides: Partial<SettingsData> = {}): SettingsDat
     defaultModels: {
       chat: { providerId: '', model: '' },
       vision: { providerId: '', model: '' },
+      videoAnalysis: { providerId: '', model: '' },
       titleSummary: { providerId: '', model: '' },
       compression: { providerId: '', model: '' },
       imageGeneration: { providerId: '', model: '' },

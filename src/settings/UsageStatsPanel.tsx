@@ -26,6 +26,7 @@ const SOURCE_OPTIONS = [
   'chat_title_summary',
   'chat_compression',
   'chat_aux_vision',
+  'chat_aux_video',
   'chat_image_generation',
   'knowledge_base',
 ]
@@ -44,6 +45,7 @@ function sourceLabel(source: string, lang: string) {
     chat_title_summary: '标题总结',
     chat_compression: '上下文压缩',
     chat_aux_vision: '辅助视觉',
+    chat_aux_video: '视频分析',
     chat_image_generation: '图片生成',
     knowledge_base: '知识库',
   }
@@ -56,6 +58,7 @@ function sourceLabel(source: string, lang: string) {
     chat_title_summary: 'Title summary',
     chat_compression: 'Context compression',
     chat_aux_vision: 'Aux vision',
+    chat_aux_video: 'Video analysis',
     chat_image_generation: 'Image generation',
     knowledge_base: 'Knowledge base',
   }

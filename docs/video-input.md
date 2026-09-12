@@ -4,10 +4,25 @@ Kivio's built-in Agent and Chat runtimes accept local video attachments through
 the existing file picker, drag-and-drop and file paste workflows. Video is a
 separate model capability from image input.
 
-- Use an API-key provider with OpenAI Chat (Kimi) or Gemini native format.
+- Video eligibility is determined by the selected model's **Video Input** capability,
+  independent of provider identity, endpoint, API format, or API-key/OAuth authentication.
+  The current OpenAI Chat and Gemini adapters serialize video data; Responses and
+  Anthropic adapters report an unimplemented video transport explicitly.
 - Enable **Video Input** in the model details. Known supported Gemini and Kimi
   models have defaults; fetching the Kimi model catalog also imports
   `supports_video_in`. Existing explicit capability overrides take precedence.
+- **Settings > Mixer > Video analysis model** supplies video understanding when
+  the main model lacks video input. A capable main model always receives videos
+  directly, even with an explicit auxiliary selection. Auto picks an enabled,
+  credentialed model with video input; an explicit selection takes priority over
+  auto candidates and is validated before use. With no available model, the chat
+  reports how to configure one instead of silently dropping the video.
+- The auxiliary model analyzes all videos in the active context in relation to
+  the user questions, then the main model answers from its observations. The
+  chat shows a video analysis step; usage logs classify it as video analysis.
+  Retry and follow-up requests re-analyze the active videos, so they incur another
+  auxiliary call. Cleared or summarized videos are not replayed. Cancellation or
+  analysis failure stops the reply. Original attachments remain unchanged.
 - Send a video and a question. The video card opens the local file in its default
   application. External CLI agents continue receiving file paths rather than
   native video content.
@@ -17,7 +32,7 @@ separate model capability from image input.
   toward the request limit. Trim videos or clear context when needed.
 - Follow-up questions and regeneration reload videos from conversation storage.
   Cleared or summarized history is excluded. Missing files produce an error.
-- Unsupported models and protocols must fail explicitly, without sending video
+- Unsupported models and unimplemented video transports must fail explicitly, without sending video
   bytes as image or text content.
 - Persisted transcripts externalize video bytes; estimates and summaries do not
   treat base64 as text tokens. Request debugging omits video bytes.

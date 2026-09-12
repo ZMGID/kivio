@@ -827,6 +827,8 @@ pub fn chat_usage_source_for_label(label: &str) -> String {
         "chat_compression".to_string()
     } else if lower.contains("auxiliary vision") {
         "chat_aux_vision".to_string()
+    } else if lower.contains("auxiliary video") {
+        "chat_aux_video".to_string()
     } else if lower.contains("image generation") {
         "chat_image_generation".to_string()
     } else if lower.contains("prompt optimize") {

@@ -24,6 +24,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     defaultModels: {
       chat: { providerId: '', model: '' },
       vision: { providerId: '', model: '' },
+      videoAnalysis: { providerId: '', model: '' },
       titleSummary: { providerId: '', model: '' },
       compression: { providerId: '', model: '' },
       imageGeneration: { providerId: '', model: '' },
@@ -85,6 +86,7 @@ const configuredBindings = {
   defaultModels: {
     chat: { providerId: 'p1', model: 'gpt-4o' },
     vision: { providerId: '', model: '' },
+    videoAnalysis: { providerId: '', model: '' },
     titleSummary: { providerId: '', model: '' },
     compression: { providerId: '', model: '' },
     imageGeneration: { providerId: '', model: '' },

@@ -182,6 +182,7 @@ impl OpenAiResponsesProvider<'_> {
     }
 
     async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
+        crate::chat::video::reject_unimplemented_transport(&request, "Responses")?;
         let label = request_label(&request, "Responses API");
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
@@ -314,6 +315,7 @@ impl OpenAiResponsesProvider<'_> {
         sink: &mut (dyn StreamSink + Send),
     ) -> Result<GenerateOutput, ModelError> {
         let label = request_label(&request, "Responses stream");
+        crate::chat::video::reject_unimplemented_transport(&request, "Responses")?;
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
         let mut measured_sink = FirstTokenStreamSink::new(sink, started);

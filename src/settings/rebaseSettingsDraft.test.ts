@@ -13,6 +13,7 @@ function settings(partial: Record<string, unknown>): Settings {
     defaultModels: {
       chat: { providerId: 'p1', model: 'm1' },
       vision: { providerId: '', model: '' },
+      videoAnalysis: { providerId: '', model: '' },
       titleSummary: { providerId: '', model: '' },
       compression: { providerId: '', model: '' },
       imageGeneration: { providerId: '', model: '' },

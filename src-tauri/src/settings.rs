@@ -957,7 +957,7 @@ impl Default for DefaultModelSelection {
 }
 
 impl DefaultModelSelection {
-    fn is_configured(&self) -> bool {
+    pub(crate) fn is_configured(&self) -> bool {
         !self.provider_id.trim().is_empty()
     }
 }
@@ -1008,6 +1008,9 @@ pub struct DefaultModelsConfig {
     pub chat: DefaultModelSelection,
     #[serde(default)]
     pub vision: DefaultModelSelection,
+    /// Video-capable auxiliary model; empty selects an enabled capable model automatically.
+    #[serde(default)]
+    pub video_analysis: DefaultModelSelection,
     #[serde(default)]
     pub title_summary: DefaultModelSelection,
     #[serde(default)]
@@ -1025,6 +1028,7 @@ impl Default for DefaultModelsConfig {
         Self {
             chat: DefaultModelSelection::default(),
             vision: DefaultModelSelection::default(),
+            video_analysis: DefaultModelSelection::default(),
             title_summary: DefaultModelSelection::default(),
             compression: DefaultModelSelection::default(),
             image_generation: DefaultModelSelection::default(),
@@ -2199,6 +2203,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         for selection in [
             &mut settings.default_models.chat,
             &mut settings.default_models.vision,
+            &mut settings.default_models.video_analysis,
             &mut settings.default_models.title_summary,
             &mut settings.default_models.compression,
             &mut settings.default_models.image_generation,
@@ -2288,6 +2293,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
         sanitize_default_model_selection(&mut settings.default_models.chat, &settings.providers);
         sanitize_default_model_selection(&mut settings.default_models.vision, &settings.providers);
+        sanitize_default_model_selection(&mut settings.default_models.video_analysis, &settings.providers);
         sanitize_default_model_selection(
             &mut settings.default_models.title_summary,
             &settings.providers,

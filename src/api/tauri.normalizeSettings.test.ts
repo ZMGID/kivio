@@ -29,6 +29,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     defaultModels: {
       chat: { providerId: '', model: '' },
       vision: { providerId: '', model: '' },
+      videoAnalysis: { providerId: '', model: '' },
       titleSummary: { providerId: '', model: '' },
       compression: { providerId: '', model: '' },
       imageGeneration: { providerId: '', model: '' },
@@ -62,6 +63,17 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     ...overrides,
   } as Settings
 }
+
+describe('video analysis mixer settings', () => {
+  it('旧配置缺少视频槽位时默认自动选择，保存的独立选项可恢复', () => {
+    const legacy = baseSettings()
+    delete (legacy.defaultModels as Partial<Settings['defaultModels']>).videoAnalysis
+    expect(normalizeSettings(legacy).defaultModels.videoAnalysis).toEqual({ providerId: '', model: '' })
+    const configured = baseSettings()
+    configured.defaultModels.videoAnalysis = { providerId: 'relay', model: 'custom-video' }
+    expect(normalizeSettings(configured).defaultModels.videoAnalysis).toEqual({ providerId: 'relay', model: 'custom-video' })
+  })
+})
 
 describe('normalizeSettings', () => {
   it('旧设置缺少 translucentSidebar 时默认关闭', () => {

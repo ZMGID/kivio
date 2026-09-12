@@ -11,6 +11,7 @@ import {
   Download,
   ExternalLink,
   Eye,
+  Film,
   FilePen,
   FilePlus2,
   FileSearch,
@@ -205,6 +206,8 @@ function toolGlyph(toolCall: ToolCallRecord): LucideIcon | ComponentType<{ size?
       return Save
     case 'mixer_vision':
       return Eye
+    case 'mixer_video_analysis':
+      return Film
     case 'mixer_generate_image':
       return ImagePlus
     case 'agent':
@@ -1477,6 +1480,7 @@ function getToolName(toolCall: ToolCallRecord): string {
   if (raw === 'automation_runs') return 'Automation runs'
   if (raw === 'automation_delete') return 'Delete automation'
   if (raw === 'mixer_vision') return 'Vision'
+  if (raw === 'mixer_video_analysis') return 'Video analysis'
   if (raw === 'mixer_generate_image') return 'Generate image'
   if (raw === 'todo_write' || raw === 'todo_update') return 'Update todos'
   if (structuredTodoState(toolCall)) return 'Update todos'
@@ -1603,6 +1607,10 @@ function getToolTarget(toolCall: ToolCallRecord): string {
       case 'mixer_vision': {
         const count = numberValue(args?.images)
         return count > 0 ? `${count} image${count > 1 ? 's' : ''}` : ''
+      }
+      case 'mixer_video_analysis': {
+        const count = numberValue(args?.videos)
+        return count > 0 ? `${count} video${count > 1 ? 's' : ''}` : ''
       }
       case 'mixer_generate_image':
         return compactText(firstString(args?.prompt), 140)
