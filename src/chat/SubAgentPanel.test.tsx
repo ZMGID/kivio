@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { api } from '../api/tauri'
 import { SubAgentPanel, SubAgentIndicator } from './SubAgentPanel'
@@ -18,16 +18,15 @@ beforeEach(() => {
     return record
   })
 })
-it('idle information is a message; explicit continuation starts work', async () => {
+it('opens a read-only conversation without message or editing controls', async () => {
   render(<SubAgentPanel conversationId="conv_a" />)
   fireEvent.click(await screen.findByText('Research'))
   await screen.findByText('Full result')
-  fireEvent.change(screen.getByLabelText('补充信息或后续任务'), { target: { value: 'Inspect another case' } })
-  fireEvent.click(screen.getByRole('button', { name: '留言' }))
-  await waitFor(() => expect(api.chatSubagentControl).toHaveBeenCalledWith('conv_a', expect.objectContaining({ operation: 'message', id: 'child', message: 'Inspect another case' })))
-  fireEvent.change(screen.getByLabelText('补充信息或后续任务'), { target: { value: 'Continue research' } })
-  fireEvent.click(screen.getByRole('button', { name: '继续' }))
-  await waitFor(() => expect(api.chatSubagentControl).toHaveBeenCalledWith('conv_a', expect.objectContaining({ operation: 'continue' })))
+  expect(screen.getByText('Inspect', { exact: true })).toBeVisible()
+  expect(screen.queryByRole('textbox')).toBeNull()
+  expect(screen.queryByRole('button', { name: '继续' })).toBeNull()
+  expect(screen.queryByText('完整历史与工具记录')).toBeNull()
+  expect(api.chatSubagentControl).not.toHaveBeenCalledWith('conv_a', expect.objectContaining({ operation: 'message' }))
 })
 it('unmounting the panel does not stop its worker', async () => {
   const view = render(<SubAgentPanel conversationId="conv_a" />)
@@ -36,11 +35,11 @@ it('unmounting the panel does not stop its worker', async () => {
   expect(vi.mocked(api.chatSubagentControl).mock.calls.some(([, args]) => args.operation === 'stop')).toBe(false)
 })
 
-it('keeps the full task prompt collapsed when opening a child result', async () => {
+it('shows task instructions as an assignment bubble', async () => {
   render(<SubAgentPanel conversationId="conv_a" />)
   fireEvent.click(await screen.findByText('Research'))
   await screen.findByText('Full result')
-  expect(screen.getByText('Inspect', { exact: true })).not.toBeVisible()
+  expect(screen.getByText('Inspect', { exact: true })).toBeVisible()
 })
 
 it('opens agent management from a compact count without mounting details in the composer', async () => {
@@ -56,8 +55,8 @@ it('opens agent management from a compact count without mounting details in the 
   await screen.findByText('Research')
   expect(screen.getByTestId('composer')).not.toHaveTextContent('Research')
   expect(screen.getByText('主代理')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: '停止整个协作' }))
-  expect(stopMain).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('textbox')).toBeNull()
+  expect(stopMain).not.toHaveBeenCalled()
   expect(vi.mocked(api.chatSubagentControl).mock.calls.filter(([, args]) => args.operation === 'list')).toHaveLength(1)
 })
 
