@@ -57,6 +57,7 @@ const handleChatImageClick = (src: string, alt: string, name?: string) =>
   openChatImageViewer({ src, alt, name })
 
 interface MessageBubbleProps {
+  readOnly?: boolean
   message: ChatMessage
   conversationId?: string | null
   tokensPerSec?: number
@@ -952,6 +953,7 @@ function TimelineSegments({
 }
 
 function MessageBubbleComponent({
+  readOnly = false,
   message,
   conversationId,
   tokensPerSec,
@@ -1332,6 +1334,7 @@ function MessageBubbleComponent({
 
         {bodyText.trim().length > 0 && !isDirectImageGenerationPending && (
           <AssistantMessageMeta
+            readOnly={readOnly}
             content={bodyText}
             reasoning={message.reasoning}
             timestamp={message.timestamp}

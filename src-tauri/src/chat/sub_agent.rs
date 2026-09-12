@@ -714,7 +714,7 @@ pub fn agent_tool(defs: &[AgentDefinition]) -> ChatToolDefinition {
                 "prompt": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Complete, self-contained task for the sub-agent (it has no access to this conversation)."
+                    "description": "Complete, self-contained task for the sub-agent (it has no access to this conversation). Ask for a useful answer in the user's language. Prefer natural prose or Markdown; do not add rigid schemas, exact paragraph counts, or per-sentence citation requirements unless the user explicitly needs them. Useful partial findings with clear limitations are acceptable."
                 },
                 "subagent_type": {
                     "type": "string",

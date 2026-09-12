@@ -190,14 +190,33 @@ fn spawn(app: AppHandle, request: SubAgentRequest, runtime: Arc<Runtime>) {
             id: format!("subagent-{}", request.task_id),
         };
         match super::run_sub_agent(app, request).await {
-            Ok(result) if result.stream_outcome == "completed" => Ok((
+            Ok(result) => worker_output(
+                &result.stream_outcome,
                 result.content,
                 result.usage.and_then(|u| serde_json::to_value(u).ok()),
-            )),
-            Ok(result) => Err(format!("{}: {}", result.stream_outcome, result.content)),
+                result.degraded.is_some(),
+            ),
             Err(error) => Err(error),
         }
     });
+}
+
+fn worker_output(
+    outcome: &str,
+    content: String,
+    usage: Option<Value>,
+    degraded: bool,
+) -> Result<(String, Option<Value>), String> {
+    if outcome == "completed" && !degraded {
+        Ok((content, usage))
+    } else if outcome == "recovered" && !degraded && !content.trim().is_empty() {
+        Ok((
+            format!("[Recovered response / 恢复后生成的答复]\n\n{content}"),
+            usage,
+        ))
+    } else {
+        Err(format!("{outcome}: {content}"))
+    }
 }
 
 async fn prepare_continuation(app: &AppHandle, record: &Record) -> Result<SubAgentRequest, String> {
@@ -416,6 +435,50 @@ fn model_view(args: &Value, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovered_worker_report_is_saved_as_a_result_with_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(dir.path().into()).unwrap();
+        let child = runtime
+            .start(
+                "conv",
+                "parent",
+                "key",
+                "worker",
+                Profile::default(),
+                "Investigate",
+            )
+            .unwrap();
+        let output = worker_output(
+            "recovered",
+            "A complete report in free-form prose".into(),
+            Some(json!({"input_tokens":123})),
+            false,
+        );
+        runtime
+            .finish("conv", &child.id, &child.current().id, output)
+            .unwrap();
+        let saved = runtime.get("conv", &child.id).unwrap();
+        assert_eq!(
+            saved.current().status,
+            super::super::runtime::Status::Completed
+        );
+        assert!(saved
+            .current()
+            .result
+            .as_ref()
+            .unwrap()
+            .contains("complete report"));
+        assert_eq!(saved.current().usage.as_ref().unwrap()["input_tokens"], 123);
+    }
+
+    #[test]
+    fn recovery_does_not_turn_cancellation_or_degraded_fallback_into_success() {
+        assert!(worker_output("cancelled", "partial".into(), None, false).is_err());
+        assert!(worker_output("recovered", "fallback".into(), None, true).is_err());
+        assert!(worker_output("recovered", " ".into(), None, false).is_err());
+    }
 
     #[test]
     fn model_wait_receipt_excludes_full_worker_context() {

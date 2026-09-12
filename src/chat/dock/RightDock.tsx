@@ -185,7 +185,7 @@ export const RightDock = memo(function RightDock({
           <TerminalPanel workdir={workdir} active={terminalActive} lang={lang} />
         )}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={activeTab !== 'tasks'}>
+      <div data-task-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={activeTab !== 'tasks'}>
         {open && activeTab === 'tasks' && conversationId && (
           <SubAgentPanel key={conversationId} conversationId={conversationId} lang={lang} mainAgent={mainAgent} />
         )}

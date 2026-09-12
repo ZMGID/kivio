@@ -8,6 +8,7 @@ import { ReplyWithModelButton } from './ReplyWithModelButton'
 import type { MessageUsage, ModelRef } from './types'
 
 interface AssistantMessageMetaProps {
+  readOnly?: boolean
   content: string
   reasoning?: string
   timestamp: number
@@ -42,6 +43,7 @@ function realUsageTokens(usage?: MessageUsage | null): { total: number; label: s
 }
 
 export function AssistantMessageMeta({
+  readOnly = false,
   content,
   reasoning,
   timestamp,
@@ -104,7 +106,7 @@ export function AssistantMessageMeta({
     <div
       className="msg-hover-reveal mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-neutral-400 opacity-0 transition-opacity duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] [will-change:opacity] focus-within:opacity-100 dark:text-neutral-500"
     >
-      <span className="shrink-0">{formatAssistantMessageTime(timestamp)}</span>
+      {timestamp > 0 && <span className="shrink-0">{formatAssistantMessageTime(timestamp)}</span>}
       {runEntryLabel && <span className="shrink-0">{runEntryLabel}</span>}
       {streamOutcomeLabel && <span className="shrink-0">{streamOutcomeLabel}</span>}
 
@@ -116,7 +118,7 @@ export function AssistantMessageMeta({
         >
           {copied ? <Check size={13} strokeWidth={2} className="chat-motion-pop" /> : <Copy size={13} strokeWidth={2} />}
         </IconButton>
-        <IconButton
+        {!readOnly && <><IconButton
           size="xs"
           onClick={() => void handleSaveToNote()}
           disabled={!onSaveToNote}
@@ -146,7 +148,7 @@ export function AssistantMessageMeta({
           title="从这里建分支（复制到新对话）"
         >
           <GitBranch size={13} strokeWidth={2} />
-        </IconButton>
+        </IconButton></>}
       </div>
 
       {speed != null && (

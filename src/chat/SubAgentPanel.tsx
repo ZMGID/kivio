@@ -65,8 +65,8 @@ export function SubAgentPanel({ conversationId, lang = 'zh', mainAgent }: { conv
       <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-neutral-200 bg-white/95 px-2 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95">
         <IconButton label={t('返回任务列表', 'Back to tasks')} size="sm" variant="ghost" onClick={() => { setSelectedId(null); setSelected(null) }}><ChevronLeft size={15} /></IconButton>
         <SubAgentAvatar id={selectedId} size={24} />
-        <div className="min-w-0 flex-1"><div className="truncate font-medium">{selected?.name ?? children.find(child => child.id === selectedId)?.name}</div><div className="mt-0.5 truncate text-[11px] text-neutral-400">{selected?.profile.model}</div></div>
-        <span className="text-[11px] text-neutral-400">{labels[selected?.runs.at(-1)?.status ?? '']}</span>
+        <span className="min-w-0 flex-1 truncate font-medium">{selected?.name ?? children.find(child => child.id === selectedId)?.name}</span>
+        <span className="max-w-[35%] truncate text-[11px] text-neutral-400" title={labels[selected?.runs.at(-1)?.status ?? '']}>{selected?.profile.model}</span>
       </div>
       {selected ? <SubAgentConversation key={selected.id} child={selected} lang={lang} /> : <p role="status" className="p-5 text-xs text-neutral-400">{t('正在加载对话…', 'Loading conversation…')}</p>}
     </div>}
