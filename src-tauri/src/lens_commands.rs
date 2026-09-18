@@ -325,6 +325,7 @@ fn lens_position_fullscreen(app: &AppHandle, window: &WebviewWindow) -> Option<L
         y: ly,
         width: lw,
         height: lh,
+        #[cfg(target_os = "windows")]
         monitor: CaptureMonitor {
             x: mp.x,
             y: mp.y,
