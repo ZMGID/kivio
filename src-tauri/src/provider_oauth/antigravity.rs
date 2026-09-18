@@ -4,7 +4,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpSocket},
 };
 
 pub const BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
@@ -67,9 +67,8 @@ pub(super) async fn start(proxy: bool) -> Result<Login, String> {
     if !active.is_empty() {
         return Err("Antigravity login is already pending; cancel it first".into());
     }
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 51121))
-        .await
-        .map_err(|_| {
+    let listener =
+        callback_listener((std::net::Ipv4Addr::LOCALHOST, 51121).into()).map_err(|_| {
             "Cannot listen on localhost:51121; close another Antigravity login and retry"
         })?;
     let verifier = random_secret();
@@ -100,6 +99,16 @@ pub(super) async fn start(proxy: bool) -> Result<Login, String> {
         interval: 3,
         expires_at: expires,
     })
+}
+
+fn callback_listener(address: std::net::SocketAddr) -> std::io::Result<TcpListener> {
+    let socket = TcpSocket::new_v4()?;
+    // A completed callback can leave the accepted connection in TIME_WAIT on Unix.
+    // Reusing the address lets an immediate retry bind the fixed OAuth callback port.
+    #[cfg(unix)]
+    socket.set_reuseaddr(true)?;
+    socket.bind(address)?;
+    socket.listen(1024)
 }
 
 // Reject unexpected paths, methods, duplicate parameters and state before accepting a code.
@@ -436,7 +445,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn cancel_releases_listener_without_saving_credentials() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = callback_listener("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = listener.local_addr().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let task = tokio::spawn(authorize(
@@ -454,12 +463,12 @@ mod tests {
         );
         assert_eq!(poll(&id).await.unwrap().unwrap().status, "pending");
         cancel(&id).await;
-        let _listener = TcpListener::bind(address).await.unwrap();
+        let _listener = callback_listener(address).unwrap();
         assert!(poll(&id).await.is_none());
     }
     #[tokio::test]
     async fn callback_rejects_bad_state_then_accepts_denial() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = callback_listener("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(authorize(
             listener,
@@ -479,7 +488,7 @@ mod tests {
             assert!(!response.contains(state));
         }
         assert!(task.await.unwrap().err().unwrap().contains("declined"));
-        let _listener = TcpListener::bind(address).await.unwrap();
+        let _listener = callback_listener(address).unwrap();
     }
     #[test]
     fn validates_callback() {
