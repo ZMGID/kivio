@@ -79,5 +79,14 @@ export function decodeConversationRouteId(path: string): string | null {
 }
 
 export function isRememberableChatRoute(path: string): boolean {
-  return decodeConversationRouteId(path) !== null
+  const kind = chatRouteKind(path)
+  if (kind === 'conversation') return decodeConversationRouteId(path) !== null
+  return kind === 'assistants'
+    || kind === 'skill'
+    || kind === 'plugins'
+    || kind === 'sessions'
+    || kind === 'automations'
+    || kind === 'mcp'
+    || kind === 'knowledge'
+    || kind === 'notes'
 }

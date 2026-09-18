@@ -43,6 +43,20 @@ describe('normalizeStoredChatRoute', () => {
     expect(normalizeStoredChatRoute('chat/conv-1')).toBe('#chat/conv-1')
   })
 
+  it.each([
+    'chat',
+    'chat/assistants',
+    'chat/skill/item',
+    'chat/plugins',
+    'chat/sessions',
+    'chat/automations/a-1',
+    'chat/mcp',
+    'chat/knowledge',
+    'chat/notes/n-1',
+  ])('preserves the existing rememberable center route %s', (path) => {
+    expect(normalizeStoredChatRoute(path)).toBe(`#${path}`)
+  })
+
   it('rejects settings / onboarding / non-chat values', () => {
     expect(normalizeStoredChatRoute('#chat/settings')).toBeNull()
     expect(normalizeStoredChatRoute('#chat/settings?tab=general')).toBeNull()

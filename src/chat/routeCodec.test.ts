@@ -5,6 +5,7 @@ import {
   encodeChatRouteId,
   isChatOnboardingPath,
   isChatPath,
+  isRememberableChatRoute,
   isChatSettingsPath,
   pathFromHash,
 } from './routeCodec'
@@ -36,6 +37,32 @@ describe('chat route codec', () => {
     expect(decodeChatRouteId('chat/', 'chat/a%2Fb')).toBe('a/b')
     expect(decodeChatRouteId('chat/', 'chat/a/b')).toBeNull()
     expect(decodeChatRouteId('chat/', 'chat/%E0%A4%A')).toBeNull()
+  })
+
+  it('preserves rememberable center routes while rejecting transient and corrupt routes', () => {
+    for (const path of [
+      'chat/assistants',
+      'chat/skill/item',
+      'chat/plugins',
+      'chat/sessions',
+      'chat/automations/a-1',
+      'chat/mcp',
+      'chat/knowledge',
+      'chat/notes/n-1',
+    ]) {
+      expect(isRememberableChatRoute(path), path).toBe(true)
+    }
+    for (const path of [
+      'chat',
+      'chat/settings',
+      'chat/onboarding',
+      'chat/popout/c-1',
+      'chat/a/b',
+      'chat/%E0%A4%A',
+      'lens',
+    ]) {
+      expect(isRememberableChatRoute(path), path).toBe(false)
+    }
   })
 
   it.each([

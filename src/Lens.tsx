@@ -1713,7 +1713,10 @@ export default function Lens() {
       const result = await api.lensAsk(effectiveImageId || '', sendMessages, {
         webSearch: mode === 'chat' && webSearchEnabled && webSearchAvailable,
       })
-      if (!isRequestCurrent(requestToken)) return
+      // A stream `done` event is emitted before the invoke result returns and
+      // clears activeRequest. The final result still belongs to this request
+      // unless cancellation, close/reopen or a newer request advanced its token.
+      if (!isRequestLatest(requestToken)) return
       if (!result.success) {
         const errText = `${t.lensError}: ${result.error}`
         setMessages(prev => {
@@ -1750,7 +1753,7 @@ export default function Lens() {
       finishRequest(requestToken)
       finishAnswering()
     } catch (err) {
-      if (!isRequestCurrent(requestToken)) return
+      if (!isRequestLatest(requestToken)) return
       const msg = err instanceof Error ? err.message : String(err)
       setMessages(prev => {
         const last = prev[prev.length - 1]
@@ -1910,9 +1913,9 @@ export default function Lens() {
   // 取消任何正在跑的流，避免后端继续 emit delta 灌入新恢复的 messages（如果新旧 imageId 巧合相同会污染）
   const restoreHistory = (item: HistoryItem) => {
     setHistoryOpen(false)
-    if (streaming) {
-      void cancelActiveRequest().catch(err => console.error(err))
-    }
+    // Invalidate even after a stream `done` event cleared activeRequest: the
+    // invoke result may still be in flight and must not overwrite restored history.
+    void cancelActiveRequest().catch(err => console.error(err))
     // 截图会话：item.id 是可解析的图片句柄。纯文本会话（无缩略图）后端 image_id 必须留空，
     // 否则 lens-stream 事件 imageId 对不上、追问又会被当成有图去读图报错。
     const isTextOnly = !item.imagePreview

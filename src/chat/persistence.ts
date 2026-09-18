@@ -72,7 +72,9 @@ export function normalizeStoredChatRoute(value: string | null): string | null {
   if (!value) return null
   const route = value.startsWith('#') ? value : `#${value}`
   const path = pathFromHash(route)
-  if (!isRememberableChatRoute(path)) return null
+  // Rust accepts the root route when loading legacy/persisted state, but the
+  // live route observer deliberately remembers only concrete chat sub-routes.
+  if (path !== 'chat' && !isRememberableChatRoute(path)) return null
   return route
 }
 
