@@ -1,4 +1,4 @@
-//! Isolated `run_agent_loop` / external-CLI host for `action.agent` nodes.
+//! Application coordinator for `action.agent` nodes.
 //! Auto-approves tools (unattended schedule/hotkey cannot prompt). Built-in
 //! and Chat runs do not write a sidebar conversation (`auto_{id}` workspace
 //! only). External CLI needs a `conv_` session, so it uses an archived
@@ -26,8 +26,151 @@ use crate::mcp::ChatToolDefinition;
 use crate::skills;
 use crate::state::AppState;
 
-use super::types::NodeOutput;
+use super::types::{AgentNodeRequest, NodeOutput};
 use super::workspace;
+
+pub(crate) fn begin_run(app: &AppHandle, automation_id: &str, run_id: &str) -> Result<(), String> {
+    app.state::<AppState>()
+        .automation_runs
+        .begin(automation_id, run_id)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn finish_run_slot(app: &AppHandle, automation_id: &str, run_id: &str) {
+    app.state::<AppState>()
+        .automation_runs
+        .finish(automation_id, run_id);
+}
+
+pub(crate) fn active_automation_ids(app: &AppHandle) -> Vec<String> {
+    app.state::<AppState>()
+        .automation_runs
+        .active_automation_ids()
+}
+
+pub(crate) fn automation_runs_empty(app: &AppHandle) -> bool {
+    app.state::<AppState>().automation_runs.is_empty()
+}
+
+pub(crate) fn mark_run_cancelled(app: &AppHandle, automation_id: &str) -> bool {
+    app.state::<AppState>()
+        .automation_runs
+        .mark_cancelled(automation_id)
+        .is_some()
+}
+
+pub(crate) fn is_run_cancelled(app: &AppHandle, run_id: &str) -> bool {
+    app.state::<AppState>().automation_runs.is_cancelled(run_id)
+}
+
+trait ChatCancelPort {
+    fn cancel_generation(&self, conversation_id: &str);
+}
+
+trait AutomationActivityPort {
+    fn chat_generation_active(&self, conversation_id: &str, generation: u64) -> bool;
+    fn automation_run_active(&self, automation_id: &str, run_id: &str) -> bool;
+}
+
+impl AutomationActivityPort for AppState {
+    fn chat_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
+        self.is_chat_generation_active(conversation_id, generation)
+    }
+
+    fn automation_run_active(&self, automation_id: &str, run_id: &str) -> bool {
+        self.automation_runs.is_active(automation_id, run_id)
+    }
+}
+
+fn chat_owner_active_with(
+    port: &dyn AutomationActivityPort,
+    chat_generation: Option<(&str, u64)>,
+) -> bool {
+    chat_generation
+        .map(|(conversation_id, generation)| {
+            port.chat_generation_active(conversation_id, generation)
+        })
+        .unwrap_or(true)
+}
+
+pub(crate) fn chat_owner_active(app: &AppHandle, chat_generation: Option<(&str, u64)>) -> bool {
+    let state = app.state::<AppState>();
+    chat_owner_active_with(&*state, chat_generation)
+}
+
+pub(crate) fn automation_run_active(app: &AppHandle, automation_id: &str, run_id: &str) -> bool {
+    let state = app.state::<AppState>();
+    automation_run_active_with(&*state, automation_id, run_id)
+}
+
+fn automation_run_active_with(
+    port: &dyn AutomationActivityPort,
+    automation_id: &str,
+    run_id: &str,
+) -> bool {
+    port.automation_run_active(automation_id, run_id)
+}
+
+impl ChatCancelPort for AppState {
+    fn cancel_generation(&self, conversation_id: &str) {
+        self.cancel_chat_generation(conversation_id);
+    }
+}
+
+fn cancel_agent_generations_with(
+    port: &dyn ChatCancelPort,
+    automation_id: &str,
+    agent_node_ids: impl IntoIterator<Item = String>,
+) {
+    port.cancel_generation(&workspace::conversation_id(automation_id));
+    port.cancel_generation(&workspace::external_conversation_id(automation_id, ""));
+    for node_id in agent_node_ids {
+        port.cancel_generation(&workspace::external_conversation_id(
+            automation_id,
+            &node_id,
+        ));
+    }
+}
+
+pub(crate) fn cancel_agent_generations(
+    app: &AppHandle,
+    automation_id: &str,
+    agent_node_ids: impl IntoIterator<Item = String>,
+) {
+    let state = app.state::<AppState>();
+    cancel_agent_generations_with(&*state, automation_id, agent_node_ids);
+}
+
+pub(crate) fn settings_language(app: &AppHandle) -> String {
+    app.state::<AppState>()
+        .settings_read()
+        .settings_language
+        .clone()
+        .unwrap_or_else(|| "zh".to_string())
+}
+
+pub(crate) fn automation_working_directory(app: &AppHandle) -> String {
+    app.state::<AppState>()
+        .settings_read()
+        .chat_tools
+        .native_tools
+        .working_directory
+        .clone()
+}
+
+pub(crate) fn http_client(app: &AppHandle) -> reqwest::Client {
+    app.state::<AppState>().http.clone()
+}
+
+pub(crate) async fn run_captured_command(
+    app: &AppHandle,
+    command: &str,
+    cwd: std::path::PathBuf,
+    timeout_ms: u64,
+) -> Result<crate::native_tools::CapturedCommand, String> {
+    let state = app.state::<AppState>();
+    crate::native_tools::run_captured_command(command, cwd, timeout_ms, Some(&*state)).await
+}
 
 struct WorkflowAgentHost {
     app: AppHandle,
@@ -147,20 +290,24 @@ impl ToolExecutor for WorkflowToolExecutor {
 
 pub(crate) async fn run_agent_node(
     app: &AppHandle,
-    automation_id: &str,
-    run_id: &str,
-    node_id: &str,
-    spec_json: &serde_json::Value,
+    request: AgentNodeRequest,
 ) -> Result<NodeOutput, String> {
-    let spec = AgentSpec::from_json(spec_json);
+    let spec = AgentSpec::from_json(&request.spec);
     let prompt = spec.prompt.trim();
     if prompt.is_empty() {
         return Err("Agent prompt is empty".to_string());
     }
     if spec.runtime_kind == AgentRuntimeKind::External {
-        return run_external_agent_node(app, automation_id, run_id, node_id, &spec).await;
+        return run_external_agent_node(
+            app,
+            &request.automation_id,
+            &request.run_id,
+            &request.node_id,
+            &spec,
+        )
+        .await;
     }
-    run_builtin_agent_node(app, automation_id, run_id, prompt, &spec).await
+    run_builtin_agent_node(app, &request.automation_id, &request.run_id, prompt, &spec).await
 }
 
 struct AgentSpec {
@@ -678,6 +825,85 @@ async fn load_or_create_external_conversation(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[derive(Default)]
+    struct FakeChatCancelPort {
+        cancelled: Mutex<Vec<String>>,
+    }
+
+    struct FakeActivityPort {
+        chat_active: bool,
+        run_active: bool,
+    }
+
+    impl AutomationActivityPort for FakeActivityPort {
+        fn chat_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
+            self.chat_active
+        }
+
+        fn automation_run_active(&self, _automation_id: &str, _run_id: &str) -> bool {
+            self.run_active
+        }
+    }
+
+    impl ChatCancelPort for FakeChatCancelPort {
+        fn cancel_generation(&self, conversation_id: &str) {
+            self.cancelled
+                .lock()
+                .unwrap()
+                .push(conversation_id.to_string());
+        }
+    }
+
+    #[test]
+    fn cancellation_crosses_the_chat_port_for_every_agent_workspace() {
+        let port = FakeChatCancelPort::default();
+        cancel_agent_generations_with(
+            &port,
+            "daily",
+            ["summarize".to_string(), "publish".to_string()],
+        );
+        assert_eq!(
+            *port.cancelled.lock().unwrap(),
+            vec![
+                workspace::conversation_id("daily"),
+                workspace::external_conversation_id("daily", ""),
+                workspace::external_conversation_id("daily", "summarize"),
+                workspace::external_conversation_id("daily", "publish"),
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_activity_checks_are_owned_by_the_application_port() {
+        let active = FakeActivityPort {
+            chat_active: true,
+            run_active: true,
+        };
+        assert!(chat_owner_active_with(&active, None));
+        assert!(chat_owner_active_with(&active, Some(("conversation", 7))));
+        assert!(automation_run_active_with(&active, "automation", "run"));
+
+        let cancelled = FakeActivityPort {
+            chat_active: false,
+            run_active: false,
+        };
+        assert!(!chat_owner_active_with(
+            &cancelled,
+            Some(("conversation", 7))
+        ));
+        assert!(!automation_run_active_with(&cancelled, "automation", "run"));
+    }
+
+    #[test]
+    fn automation_runner_has_no_app_state_dependency() {
+        let runner = include_str!("runner.rs");
+        assert!(!runner.contains("AppState"));
+        assert!(!runner.contains("state::<"));
+        let tools = include_str!("tools.rs");
+        assert!(!tools.contains("AppState"));
+        assert!(!tools.contains("state::<"));
+    }
 
     #[test]
     fn spec_defaults_to_builtin_and_merges_legacy_skill() {

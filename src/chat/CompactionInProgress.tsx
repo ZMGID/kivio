@@ -1,4 +1,4 @@
-import { i18n, type Lang } from '../settings/i18n'
+import { i18n, type Lang } from '../settings/public/i18n'
 
 interface CompactionInProgressProps {
   lang?: Lang

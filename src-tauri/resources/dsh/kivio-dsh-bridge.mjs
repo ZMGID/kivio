@@ -478,11 +478,16 @@ export function apply(ctx, config) {
     if (method === 'shutdown') setImmediate(() => disposeAndExit())
     return result
   })
-  ctx.effect(() => {
-    return ctx.userQuestions.registerProvider({
-      ask: (request) => askViaHost(transport, server, request),
-    })
-  }, 'kivio-jsonrpc.user-questions')
+  // dsh 0.1.5 replaced the provider slot with a scoped Cordis waterfall.
+  // A root listener still receives the agent scope in `this`; the request also
+  // carries the exact live root agent, which is what session/ask needs.
+  ctx.effect(
+    () =>
+      ctx.on('user-questions/request', function (request) {
+        return askViaHost(transport, server, request)
+      }),
+    'kivio-jsonrpc.user-questions',
+  )
   ctx.effect(() => {
     transport.start()
     return async () => {

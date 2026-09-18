@@ -1,4 +1,4 @@
-//! Kivio-maintained command catalog, verified with agy 1.1.26. No runtime discovery.
+//! Kivio-maintained command catalog, verified with agy 1.2.6. No runtime discovery.
 //! Reports cannot enter the NDJSON stream: agy emits ERROR and exits. Run them
 //! separately without a conversation binding; native skill expansion stays in-stream.
 use std::path::Path;
@@ -7,6 +7,56 @@ use std::time::Duration;
 use crate::external_agents::spawn::{cli_command, fold_stderr};
 use crate::external_agents::types::ExternalCliSlashCommand;
 use crate::proc::NoConsoleWindow;
+
+pub(crate) fn structured_error(stderr: &str) -> Option<String> {
+    let payload = stderr
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("AGY_ERROR:"))?
+        .trim();
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let text = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let mut parts = Vec::new();
+    if let Some(message) = text(&["message", "error", "detail"]) {
+        parts.push(message.to_string());
+    }
+    if let Some(status) = text(&["canonical_status", "canonicalStatus", "status"]) {
+        parts.push(format!("状态：{status}"));
+    }
+    if let Some(code) = text(&["http_code", "httpCode", "grpc_code", "grpcCode", "code"]) {
+        parts.push(format!("代码：{code}"));
+    } else if let Some(code) = value
+        .get("http_code")
+        .or_else(|| value.get("httpCode"))
+        .or_else(|| value.get("code"))
+        .and_then(serde_json::Value::as_i64)
+    {
+        parts.push(format!("代码：{code}"));
+    }
+    if let Some(retryable) = value.get("retryable").and_then(serde_json::Value::as_bool) {
+        parts.push(if retryable {
+            "可重试".to_string()
+        } else {
+            "不可重试".to_string()
+        });
+    }
+    if let Some(error_id) = text(&["error_id", "errorId"]) {
+        parts.push(format!("错误 ID：{error_id}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+pub(crate) fn fold_error(base: String, stderr: &str) -> String {
+    match structured_error(stderr) {
+        Some(detail) => format!("{base}\n{detail}"),
+        None => fold_stderr(base, stderr),
+    }
+}
 
 pub fn is_report(name: &str) -> bool {
     matches!(
@@ -60,6 +110,7 @@ pub fn is_terminal_only(name: &str) -> bool {
             | "title"
             | "voice"
             | "record"
+            | "remote-control"
     )
 }
 
@@ -87,7 +138,14 @@ pub fn report_args(args: &[String], prompt: &str) -> Vec<String> {
             index += 1;
         }
     }
-    out.extend(["-p".into(), prompt.trim().into()]);
+    // agy 1.2.6 changed the default print timeout to unlimited. Keep Kivio's report
+    // subprocess bounded on both sides so a stuck report cannot outlive its UI turn.
+    out.extend([
+        "--print-timeout".into(),
+        "55s".into(),
+        "-p".into(),
+        prompt.trim().into(),
+    ]);
     out
 }
 
@@ -112,13 +170,13 @@ pub async fn report(
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        return Err(fold_stderr(
-            format!(
-                "Antigravity 命令退出码：{}\n{stdout}",
-                output.status.code().unwrap_or(-1)
-            ),
-            &stderr,
-        ));
+        let code = output.status.code().unwrap_or(-1);
+        let base = if code == 3 {
+            format!("Antigravity 请求失败\n{stdout}")
+        } else {
+            format!("Antigravity 命令退出码：{code}\n{stdout}")
+        };
+        return Err(fold_error(base, &stderr));
     }
     Ok(if stdout.is_empty() {
         stderr.trim().to_string()
@@ -239,9 +297,23 @@ mod tests {
                 "high",
                 "--add-dir",
                 "C:\\my files",
+                "--print-timeout",
+                "55s",
                 "-p",
                 "/model"
             ]
         );
+    }
+
+    #[test]
+    fn agy_126_structured_errors_are_human_readable() {
+        let stderr = "debug line\nAGY_ERROR: {\"message\":\"quota exhausted\",\"canonical_status\":\"RESOURCE_EXHAUSTED\",\"http_code\":429,\"retryable\":true,\"error_id\":\"err-7\"}\n";
+        let error = structured_error(stderr).expect("structured error");
+        assert!(error.contains("quota exhausted"));
+        assert!(error.contains("RESOURCE_EXHAUSTED"));
+        assert!(error.contains("429"));
+        assert!(error.contains("可重试"));
+        assert!(error.contains("err-7"));
+        assert!(!error.contains("AGY_ERROR"));
     }
 }

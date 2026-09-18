@@ -1,3 +1,5 @@
+import type { ProviderApiFormat } from '../api/tauri'
+
 // Presets only prefill provider metadata. Models are fetched from the provider API
 // and explicitly enabled by the user.
 
@@ -9,7 +11,7 @@ export type ProviderPreset = {
   /** 申请 API Key 的页面（在 API 密钥区显示「获取 API Key」引导链接）。本地/无需 key 的可省略。 */
   apiKeyUrl?: string
   /** 接口协议，省略即 openai_chat。Grok 之类有专属协议的必须写明，否则一键添加出来是错的。 */
-  apiFormat?: string
+  apiFormat?: ProviderApiFormat
   /** 赞助位：预设网格置顶并打标。 */
   sponsored?: boolean
 }

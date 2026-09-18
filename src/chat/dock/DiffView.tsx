@@ -3,7 +3,7 @@
 // 折叠态本来就不渲染 hunk 行，成本已可控。
 import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, FileCode } from 'lucide-react'
-import { i18n, type Lang } from '../../settings/i18n'
+import { i18n, type Lang } from '../../settings/public/i18n'
 import { countDiffStats, intralineRanges, parseDiff, type DiffFile, type DiffLine } from './diffParse'
 
 type DiffViewProps = {

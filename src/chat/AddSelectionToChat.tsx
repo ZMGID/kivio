@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { MessageSquarePlus } from 'lucide-react'
 import { insertIntoComposer } from './composerInsert'
-import type { Lang } from '../settings/i18n'
+import type { Lang } from '../settings/public/i18n'
 
 const BTN_WIDTH = 116
 

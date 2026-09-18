@@ -8,12 +8,18 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
+use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::session::live::{ApprovalAsk, ApprovalBridge, SessionCommand};
-use crate::external_agents::spawn::{fold_stderr, join_stderr_tail};
+use crate::external_agents::spawn::{agent_cli_command, fold_stderr, join_stderr_tail};
 use crate::external_agents::stream::{usage_from_parts, CliUsageParts};
 use crate::external_agents::types::{ExternalCliSlashCommand, UnifiedAgentEvent};
 use crate::proc::NoConsoleWindow;
 use crate::utils::strip_windows_verbatim_prefix;
+
+fn codex_cli_command(resolved_bin: &Path) -> tokio::process::Command {
+    let def = get_agent_def("codex").expect("codex RuntimeAgentDef must be registered");
+    agent_cli_command(def, resolved_bin)
+}
 
 /// Codex `app-server` speaks newline-delimited JSON-RPC over stdio (one JSON object per line,
 /// no `Content-Length` framing). Responses omit the `jsonrpc` field, so we never require it.
@@ -458,7 +464,7 @@ fn map_codex_notification(
         // (`reconnect 7/50`) until `turn/completed`.
         "error" | "thread/realtime/error" => {
             let message = codex_error_message(params);
-            if crate::external_agents::errors::is_non_retryable_codex_error(&message, "codex") {
+            if crate::external_agents::errors::is_non_retryable_error(&message, "codex") {
                 return CodexMapResult::TurnFailed(message);
             }
             sink(UnifiedAgentEvent::StatusNote {
@@ -1292,7 +1298,7 @@ impl CodexAppServerSession {
         sandbox: Option<&str>,
         resume_thread: Option<&str>,
     ) -> Result<Self, String> {
-        let mut child = crate::external_agents::spawn::cli_command(resolved_bin)
+        let mut child = codex_cli_command(resolved_bin)
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
@@ -1660,9 +1666,11 @@ async fn answer_codex_server_request(
     next_id: &mut u64,
     asks_for_approval: bool,
 ) -> Result<(), String> {
-    if method == "item/tool/requestUserInput" {
-        return answer_codex_user_input(stdin, id, params, approvals, control, thread_id, next_id)
-            .await;
+    if method == "item/tool/requestUserInput" || is_codex_elicitation(method) {
+        return answer_codex_user_interaction(
+            stdin, method, id, params, approvals, control, thread_id, next_id,
+        )
+        .await;
     }
     if is_codex_tool_approval(method) {
         return answer_codex_tool_approval(
@@ -1776,8 +1784,9 @@ async fn answer_codex_tool_approval(
     }
 }
 
-async fn answer_codex_user_input(
+async fn answer_codex_user_interaction(
     stdin: &mut ChildStdin,
+    method: &str,
     id: &Value,
     params: &Value,
     approvals: Option<&mut ApprovalBridge>,
@@ -1785,7 +1794,12 @@ async fn answer_codex_user_input(
     thread_id: &str,
     next_id: &mut u64,
 ) -> Result<(), String> {
+    let elicitation = is_codex_elicitation(method);
     let Some(bridge) = approvals else {
+        if elicitation {
+            return write_rpc_result(stdin, id, json!({ "action": "decline", "content": null }))
+                .await;
+        }
         return write_rpc_error(stdin, id, -32603, "ask-user host unavailable").await;
     };
     let request_id = rpc_id_key(id);
@@ -1795,17 +1809,31 @@ async fn answer_codex_user_input(
     let ask = ApprovalAsk {
         request_id: request_id.clone(),
         tool_call_id,
-        tool_name: "requestUserInput".to_string(),
+        tool_name: if elicitation {
+            method.to_string()
+        } else {
+            "requestUserInput".to_string()
+        },
         input: params.clone(),
         requires_user_interaction: true,
     };
     if bridge.requests.send(ask).await.is_err() {
+        if elicitation {
+            return write_rpc_result(stdin, id, json!({ "action": "decline", "content": null }))
+                .await;
+        }
         return write_rpc_error(stdin, id, -32603, "ask-user host closed").await;
     }
     loop {
         match control.try_recv() {
             Ok(SessionCommand::Cancel) => {
-                let _ = write_rpc_error(stdin, id, -32603, "cancelled").await;
+                if elicitation {
+                    let _ =
+                        write_rpc_result(stdin, id, json!({ "action": "cancel", "content": null }))
+                            .await;
+                } else {
+                    let _ = write_rpc_error(stdin, id, -32603, "cancelled").await;
+                }
                 let iid = *next_id;
                 *next_id += 1;
                 let _ = write_rpc(
@@ -1818,7 +1846,13 @@ async fn answer_codex_user_input(
                 return Err("cancelled".to_string());
             }
             Ok(SessionCommand::Close) => {
-                let _ = write_rpc_error(stdin, id, -32603, "closed").await;
+                if elicitation {
+                    let _ =
+                        write_rpc_result(stdin, id, json!({ "action": "cancel", "content": null }))
+                            .await;
+                } else {
+                    let _ = write_rpc_error(stdin, id, -32603, "closed").await;
+                }
                 return Err("closed".to_string());
             }
             Ok(SessionCommand::RunTurn { done, .. }) => {
@@ -1830,22 +1864,48 @@ async fn answer_codex_user_input(
             Ok(SessionCommand::StopTask { .. }) => {}
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                let _ = write_rpc_error(stdin, id, -32603, "control channel closed").await;
+                if elicitation {
+                    let _ =
+                        write_rpc_result(stdin, id, json!({ "action": "cancel", "content": null }))
+                            .await;
+                } else {
+                    let _ = write_rpc_error(stdin, id, -32603, "control channel closed").await;
+                }
                 return Err("control channel closed".to_string());
             }
         }
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
             Ok(Some(decision)) if decision.request_id == request_id => {
                 if decision.approved {
-                    let payload = decision
-                        .updated_input
-                        .unwrap_or_else(|| json!({ "answers": {} }));
+                    let payload = decision.updated_input.unwrap_or_else(|| {
+                        if elicitation {
+                            json!({ "action": "accept", "content": {} })
+                        } else {
+                            json!({ "answers": {} })
+                        }
+                    });
                     return write_rpc_result(stdin, id, payload).await;
+                }
+                if elicitation {
+                    return write_rpc_result(
+                        stdin,
+                        id,
+                        json!({ "action": "decline", "content": null }),
+                    )
+                    .await;
                 }
                 return write_rpc_error(stdin, id, -32603, "user declined").await;
             }
             Ok(Some(_)) | Err(_) => continue,
             Ok(None) => {
+                if elicitation {
+                    return write_rpc_result(
+                        stdin,
+                        id,
+                        json!({ "action": "decline", "content": null }),
+                    )
+                    .await;
+                }
                 return write_rpc_error(stdin, id, -32603, "ask-user host closed").await;
             }
         }
@@ -2188,7 +2248,7 @@ pub async fn detect_codex_models(
     cwd: &Path,
     timeout_secs: u64,
 ) -> Option<CodexModelsProbe> {
-    let mut child = crate::external_agents::spawn::cli_command(resolved_bin)
+    let mut child = codex_cli_command(resolved_bin)
         .arg("app-server")
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
@@ -2408,7 +2468,7 @@ pub async fn detect_codex_commands(
         .collect();
 
     // Best-effort: pull skills via the app-server. Failure leaves just the built-ins.
-    if let Ok(mut child) = crate::external_agents::spawn::cli_command(resolved_bin)
+    if let Ok(mut child) = codex_cli_command(resolved_bin)
         .arg("app-server")
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
@@ -2539,6 +2599,27 @@ pub fn spawn_codex_session_actor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_codex_paths_do_not_use_the_binary_compatibility_launcher() {
+        let production = include_str!("codex_app_server.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        assert!(
+            !production.contains("spawn::cli_command("),
+            "Codex session/probe paths must use RuntimeAgentDef launch policy"
+        );
+    }
+
+    #[test]
+    fn production_codex_launcher_applies_definition_policy_to_a_renamed_wsl_binary() {
+        let command = codex_cli_command(Path::new(r"\\wsl$\Ubuntu\usr\bin\company-codex-wrapper"));
+        assert!(command
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_HOME" && value.is_some()));
+    }
 
     #[test]
     fn async_questions_emit_one_nonblocking_card_only_on_completion() {

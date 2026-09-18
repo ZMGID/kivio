@@ -1,10 +1,11 @@
 //! Codex CLI external agent: `codex app-server` JSON-RPC (stdio).
 //!
-//! Handshake / turn / steer last verified against the 0.148.0 schema (`thread/start` still
+//! Handshake / turn / steer base schema was verified against 0.148.0 and launch/API deltas
+//! re-checked through 0.155.0 (`thread/start` still
 //! takes the kebab `sandbox` string; `turn/start` uses `sandboxPolicy` only as a last-resort
 //! override). 0.149 rejects the obsolete `permissionProfile` field — Kivio never sent it.
-//! 0.152 adds `clock` items and `openai/elicitation` form requests (declined until we have
-//! a form UI; `-32601` would hang the turn).
+//! 0.152 adds `clock` items and `openai/elicitation` form requests; Kivio maps supported form
+//! schemas to its structured question card and safely declines unsupported URL/oversized forms.
 //!
 //! Approval: workspace-write / read-only send `approvalPolicy: "on-request"` and route
 //! command/file/permissions RPCs through the existing tool-approval card. The 「完全」档
@@ -57,12 +58,49 @@ pub const CODEX_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     auth_probe_args: Some(&["login", "status"]),
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
+    sandbox_options: &[
+        ("read-only", "只读"),
+        ("workspace-write", "工作区写 (默认)"),
+        ("danger-full-access", "完全"),
+    ],
     list_models_args: Some(&["debug", "models"]),
     // `codex debug models` cold-start can exceed 5s（首次要拉配置/鉴权）；给 15s 免误判失败（F4）。
     list_models_timeout_secs: Some(20),
     models_from_stderr: false,
-    model_probe: None,
+    model_probe: Some(super::super::types::ModelProbeStrategy::CodexAppServer),
     model_probe_args: None,
+    current_config: super::super::types::CurrentConfigStrategy::Codex,
+    provider_profile: super::super::types::ProviderProfileStrategy::Codex,
+    native_providers: super::super::types::NativeProviderStrategy::None,
+    context_window: super::super::types::ContextWindowStrategy::Generic,
+    usage_fallback: super::super::types::UsageFallbackStrategy::None,
+    error_policy: super::super::types::AgentErrorPolicy::login_with_detail(
+        "codex login",
+        super::super::types::AgentErrorDetailStrategy::CodexAppServer,
+    ),
+    launch: super::super::types::AgentLaunchPolicy::WSL_SHARED_CODEX_HOME,
+    instructions_via_launch_flag: false,
+    compact_prompt: Some("/compact"),
+    install: super::super::types::AgentInstallSpec {
+        npm_package: Some("@openai/codex"),
+        npm_install_args: &[],
+        pypi_package: None,
+        script_unix: None,
+        script_windows: None,
+        update: super::super::types::UpdateStrategy::Command(&["update"]),
+        latest_version: super::super::types::LatestVersionStrategy::Registry,
+        docs: "https://developers.openai.com/codex/cli/",
+        config_dir: Some(".codex"),
+        config_dir_env: None,
+        requires_pnpm: false,
+        post_install: super::super::types::PostInstallStrategy::None,
+    },
+    import: super::super::types::AgentImportPolicy {
+        discovery: super::super::types::ImportDiscoveryStrategy::FileHistory,
+        history_source: super::super::types::HistorySourceStrategy::CodexRollout,
+        history_title: super::super::types::HistoryTitleStrategy::None,
+    },
+    run: super::super::types::AgentRunPolicy::STANDARD,
     slash_strategy: super::super::types::SlashStrategy::CodexAppServer,
     env: &[],
     max_prompt_arg_bytes: None,

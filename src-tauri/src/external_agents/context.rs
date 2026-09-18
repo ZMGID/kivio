@@ -10,7 +10,9 @@ use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::session::claude_init::{
     context_window_from_claude_model_alias, context_window_from_claude_resolved_model,
 };
-use crate::external_agents::types::RuntimeModelOption;
+use crate::external_agents::types::{
+    ContextWindowStrategy, RuntimeModelOption, UsageFallbackStrategy,
+};
 
 pub const CONTEXT_SOURCE_BUILTIN: &str = "kivio_builtin";
 pub const CONTEXT_SOURCE_EXTERNAL: &str = "external_cli";
@@ -100,21 +102,26 @@ pub fn context_window_for_external_model(
         }
     }
 
-    if agent_id == "claude" {
-        if let Some(tokens) = context_window_from_claude_model_alias(lookup_id) {
-            return (Some(tokens as usize), false);
+    let strategy = get_agent_def(agent_id)
+        .map(|def| def.context_window)
+        .unwrap_or(ContextWindowStrategy::Generic);
+    match strategy {
+        ContextWindowStrategy::Claude => {
+            if let Some(tokens) = context_window_from_claude_model_alias(lookup_id) {
+                return (Some(tokens as usize), false);
+            }
+            if lookup_id != "default" {
+                if let Some(tokens) = context_window_from_claude_resolved_model(lookup_id) {
+                    return (Some(tokens as usize), false);
+                }
+            }
         }
-        if lookup_id != "default" {
-            if let Some(tokens) = context_window_from_claude_resolved_model(lookup_id) {
+        ContextWindowStrategy::Kimi => {
+            if let Some(tokens) = context_window_from_kimi_model(lookup_id) {
                 return (Some(tokens as usize), false);
             }
         }
-    }
-
-    if agent_id == "kimi" {
-        if let Some(tokens) = context_window_from_kimi_model(lookup_id) {
-            return (Some(tokens as usize), false);
-        }
+        ContextWindowStrategy::Generic => {}
     }
 
     if lookup_id == "default" {
@@ -270,7 +277,10 @@ pub fn collect_external_session_usage(
         };
     }
 
-    if agent_id == "kimi" {
+    let usage_fallback = get_agent_def(agent_id)
+        .map(|def| def.usage_fallback)
+        .unwrap_or(UsageFallbackStrategy::None);
+    if usage_fallback == UsageFallbackStrategy::KimiWireLog {
         if let Some(usage) = work_dir.and_then(kimi_usage::latest_turn_usage) {
             return ExternalSessionUsage {
                 // kimi 的 input_tokens 已含 cache（inputOther + CacheRead + CacheCreation），

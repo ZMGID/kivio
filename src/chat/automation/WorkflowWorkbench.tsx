@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
-import { useLang } from '../../settings/i18n'
+import { useLang } from '../../settings/public/i18n'
 import { Button } from '../../components/Button'
-import { Select } from '../../settings/components'
+import { Select } from '../../settings/public/controls'
 import { dataFields, insertReference, templateFields, upstreamNodes } from './workflowData'
 import { isAttachmentType, isStepType, type Automation, type AutomationRun, type FlowNode, type NodeOutput, type ValidationIssue } from './types'
 

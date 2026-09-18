@@ -4,7 +4,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { LangContext } from '../../settings/i18n'
+import { LangContext } from '../../settings/public/i18n'
 import { PopoutOccupiedPlaceholder } from './PopoutOccupiedPlaceholder'
 
 describe('PopoutOccupiedPlaceholder', () => {

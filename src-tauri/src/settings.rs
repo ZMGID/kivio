@@ -178,7 +178,9 @@ impl ModelProvider {
     }
 
     pub fn has_credentials(&self) -> bool {
-        if self.is_opencode_free() { return true; }
+        if self.is_opencode_free() {
+            return true;
+        }
         if let Some(auth) = &self.request.oauth {
             return auth.credential_id.is_some();
         }
@@ -2294,7 +2296,10 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
         sanitize_default_model_selection(&mut settings.default_models.chat, &settings.providers);
         sanitize_default_model_selection(&mut settings.default_models.vision, &settings.providers);
-        sanitize_default_model_selection(&mut settings.default_models.video_analysis, &settings.providers);
+        sanitize_default_model_selection(
+            &mut settings.default_models.video_analysis,
+            &settings.providers,
+        );
         sanitize_default_model_selection(
             &mut settings.default_models.title_summary,
             &settings.providers,
@@ -2864,9 +2869,7 @@ fn onboarding_status_is_set(raw: &str) -> bool {
 }
 
 fn provider_has_usable_config(provider: &ModelProvider) -> bool {
-    provider.enabled
-        && provider.has_credentials()
-        && !provider.enabled_models.is_empty()
+    provider.enabled && provider.has_credentials() && !provider.enabled_models.is_empty()
 }
 
 fn settings_has_usable_provider_config(settings: &Settings) -> bool {
@@ -2893,21 +2896,10 @@ fn normalize_onboarding_status(settings: &Settings) -> String {
  * 这样老版本（v2.3.x）反序列化时仍能从 apiKey 字段读到主 key 不丢。
  * 新版加载时 sanitize_settings 会把 api_key_legacy.take() 合并回 api_keys 并去重，无副作用。
  */
-pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    crate::external_agents::overrides::sync_from_settings(settings);
-    // 镜像同步之后立刻物化：供应商的落地文件（claude 的 `--settings` 覆盖 / codex 的私有
-    // CODEX_HOME）必须与设置同生共死。放在这里而不是让前端保存后再调一个命令，是因为
-    // 前端只要漏调一次，用户就会得到「选了供应商但没生效」——而这种 bug 完全不报错。
-    crate::external_agents::provider_profile::materialize_all();
-    // 供应商可能变了：模型列表（300s）与可用性（600s）两个探测缓存都得作废。
-    // 首次启动的内置专家迁移会在 AppState manage 之前保存设置，此时还没有缓存可清；
-    // 必须用 try_state，否则新装用户会在启动期 panic。
-    use tauri::Manager;
-    if let Some(state) = app.try_state::<crate::state::AppState>() {
-        state.clear_all_external_agent_models_cache();
-        state.clear_detected_agents_cache();
-    }
-    let mut to_persist = settings.clone();
+fn settings_for_persistence(settings: &Settings) -> (Settings, Settings) {
+    let canonical = sanitize_settings(settings.clone());
+    let mut to_persist = canonical.clone();
+
     // Keep legacy top-level chat fields from turning Lens/Translator fallback into
     // an explicit defaultModels.chat selection on the next load.
     mirror_explicit_chat_default_for_persistence(&mut to_persist);
@@ -2927,14 +2919,175 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
     to_persist.screenshot_translation.use_system_ocr = matches!(ocr_mode, OcrMode::System);
     to_persist.screenshot_translation.ocr_mode = Some(ocr_mode);
 
+    (canonical, to_persist)
+}
+
+/// A coherent settings value + generation captured before an operation that may await.
+/// The generation is deliberately opaque to callers; it is only accepted again by
+/// [`commit_settings`] for compare-and-swap publication.
+pub(crate) struct SettingsSnapshot {
+    pub settings: Settings,
+    pub revision: u64,
+}
+
+pub(crate) fn settings_snapshot(state: &crate::state::AppState) -> SettingsSnapshot {
+    // Writers advance the generation while holding this same write lock, so reading the value
+    // and generation under a read guard produces one coherent snapshot.
+    let settings = state.settings_read();
+    SettingsSnapshot {
+        settings: settings.clone(),
+        revision: state.settings_revision(),
+    }
+}
+
+fn commit_settings_with(
+    state: &crate::state::AppState,
+    expected_revision: u64,
+    next: Settings,
+    persist: impl FnOnce(&Settings) -> Result<(), String>,
+) -> Result<Settings, String> {
+    state.publish_settings_transaction(
+        Some(expected_revision),
+        |_| Ok(sanitize_settings(next)),
+        persist,
+    )
+}
+
+fn update_settings_with(
+    state: &crate::state::AppState,
+    update: impl FnOnce(&mut Settings) -> Result<(), String>,
+    persist: impl FnOnce(&Settings) -> Result<(), String>,
+) -> Result<Settings, String> {
+    state.publish_settings_transaction(
+        None,
+        |current| {
+            let mut next = current.clone();
+            update(&mut next)?;
+            Ok(sanitize_settings(next))
+        },
+        persist,
+    )
+}
+
+/// Canonical in-memory update for headless/runtime paths that intentionally have no AppHandle.
+/// It still participates in the same revisioned serial history as durable settings writes.
+pub(crate) fn update_settings_in_memory(
+    state: &crate::state::AppState,
+    update: impl FnOnce(&mut Settings) -> Result<(), String>,
+) -> Result<Settings, String> {
+    update_settings_with(state, update, |_| Ok(()))
+}
+
+/// Atomically canonicalize, persist, and publish a settings mutation. Every writer that both
+/// changes AppState and saves settings must use this interface so disk and memory advance as one
+/// serial history.
+pub(crate) fn update_settings(
+    app: &AppHandle,
+    state: &crate::state::AppState,
+    update: impl FnOnce(&mut Settings) -> Result<(), String>,
+) -> Result<Settings, String> {
+    update_settings_with(state, update, |canonical| persist_settings(app, canonical))
+}
+
+/// Publish a full settings snapshot only if no side writer committed since it was captured.
+/// Callers may safely do asynchronous preparation between [`settings_snapshot`] and this call;
+/// no synchronous lock is held across that await.
+pub(crate) fn commit_settings(
+    app: &AppHandle,
+    state: &crate::state::AppState,
+    expected_revision: u64,
+    next: Settings,
+) -> Result<Settings, String> {
+    commit_settings_with(state, expected_revision, next, |canonical| {
+        persist_settings(app, canonical)
+    })
+}
+
+fn persist_then_apply_with_rollback(
+    persist: impl FnOnce() -> Result<(), String>,
+    rollback_unpersisted: impl FnOnce() -> Result<(), String>,
+    apply: impl FnOnce() -> Result<(), String>,
+    rollback_persisted: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = persist() {
+        return match rollback_unpersisted() {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!("{error}; cache rollback failed: {rollback_error}")),
+        };
+    }
+    if let Err(error) = apply() {
+        return match rollback_persisted() {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!("{error}; rollback failed: {rollback_error}")),
+        };
+    }
+    Ok(())
+}
+
+fn apply_external_agent_settings(settings: &Settings) -> Result<(), String> {
+    crate::external_agents::overrides::sync_from_settings(settings);
+    crate::external_agents::provider_profile::materialize_all()
+}
+
+pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let (canonical, to_persist) = settings_for_persistence(settings);
     let store = StoreBuilder::new(app, SETTINGS_STORE)
         .build()
         .map_err(|e| e.to_string())?;
+    let previous_value = store.get("settings");
+    let previous_settings = previous_value
+        .clone()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .map(sanitize_settings)
+        .unwrap_or_default();
     store.set(
         "settings".to_string(),
         serde_json::to_value(&to_persist).map_err(|e| e.to_string())?,
     );
-    store.save().map_err(|e| e.to_string())
+    let previous_cache_value = previous_value.clone();
+    persist_then_apply_with_rollback(
+        || store.save().map_err(|e| e.to_string()),
+        || {
+            match previous_cache_value {
+                Some(value) => store.set("settings".to_string(), value),
+                None => {
+                    store.delete("settings");
+                }
+            }
+            Ok(())
+        },
+        || apply_external_agent_settings(&canonical),
+        || {
+            match previous_value {
+                Some(value) => {
+                    store.set("settings".to_string(), value);
+                }
+                None => {
+                    store.delete("settings");
+                }
+            }
+            let disk_rollback = store.save().map_err(|err| err.to_string());
+            crate::external_agents::overrides::sync_from_settings(&previous_settings);
+            let profile_rollback = crate::external_agents::provider_profile::materialize_all();
+            match (disk_rollback, profile_rollback) {
+                (Ok(()), Ok(())) => Ok(()),
+                (disk, profile) => Err(format!(
+                    "settings: {}; provider: {}",
+                    disk.err().unwrap_or_else(|| "none".to_string()),
+                    profile.err().unwrap_or_else(|| "none".to_string())
+                )),
+            }
+        },
+    )?;
+
+    // 供应商可能变了：模型列表（300s）与可用性（600s）两个探测缓存都得作废。
+    // 首次启动的内置专家迁移会在 AppState manage 之前保存设置，此时还没有缓存可清。
+    use tauri::Manager;
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        state.clear_all_external_agent_models_cache();
+        state.clear_detected_agents_cache();
+    }
+    Ok(())
 }
 
 /**
@@ -3256,6 +3409,133 @@ fn normalize_hotkey(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
+    use crate::state::test_app_state;
+
+    #[test]
+    fn failed_durable_save_does_not_apply_external_settings_side_effects() {
+        let applied = std::cell::Cell::new(false);
+        let cache_rolled_back = std::cell::Cell::new(false);
+        let durable_rolled_back = std::cell::Cell::new(false);
+
+        let result = persist_then_apply_with_rollback(
+            || Err("disk full".to_string()),
+            || {
+                cache_rolled_back.set(true);
+                Ok(())
+            },
+            || {
+                applied.set(true);
+                Ok(())
+            },
+            || {
+                durable_rolled_back.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "disk full");
+        assert!(!applied.get());
+        assert!(cache_rolled_back.get());
+        assert!(!durable_rolled_back.get());
+    }
+
+    #[test]
+    fn failed_external_settings_apply_rolls_back_the_durable_save() {
+        let cache_rolled_back = std::cell::Cell::new(false);
+        let rolled_back = std::cell::Cell::new(false);
+        let result = persist_then_apply_with_rollback(
+            || Ok(()),
+            || {
+                cache_rolled_back.set(true);
+                Ok(())
+            },
+            || Err("profile write failed".to_string()),
+            || {
+                rolled_back.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "profile write failed");
+        assert!(!cache_rolled_back.get());
+        assert!(rolled_back.get());
+    }
+
+    #[test]
+    fn settings_side_write_commits_the_same_canonical_value_that_is_persisted() {
+        let state = test_app_state();
+        let persisted = RefCell::new(None);
+
+        let committed = update_settings_with(
+            &state,
+            |settings| {
+                settings.chat_tools.servers.push(ChatMcpServer {
+                    id: " spaced ".into(),
+                    name: " Spaced server ".into(),
+                    command: " npx ".into(),
+                    args: vec!["  package-name  ".into()],
+                    ..Default::default()
+                });
+                Ok(())
+            },
+            |canonical| {
+                *persisted.borrow_mut() = Some(canonical.clone());
+                Ok(())
+            },
+        )
+        .expect("side write should commit");
+
+        let in_memory = state.settings_read().clone();
+        let persisted = persisted.into_inner().expect("persist called");
+        assert_eq!(committed.chat_tools.servers[0].id, "spaced");
+        assert_eq!(committed.chat_tools.servers[0].command, "npx");
+        assert_eq!(committed.chat_tools.servers[0].args, ["package-name"]);
+        assert_eq!(in_memory.chat_tools.servers[0].id, "spaced");
+        assert_eq!(persisted.chat_tools.servers[0].id, "spaced");
+    }
+
+    #[test]
+    fn stale_full_save_cannot_overwrite_a_newer_side_write() {
+        let state = test_app_state();
+        let full_save = settings_snapshot(&state);
+        let persisted = RefCell::new(Settings::default());
+
+        update_settings_with(
+            &state,
+            |settings| {
+                settings.favorite_models = vec!["provider:newer".into()];
+                Ok(())
+            },
+            |canonical| {
+                *persisted.borrow_mut() = canonical.clone();
+                Ok(())
+            },
+        )
+        .expect("side write should commit first");
+
+        let mut stale = full_save.settings;
+        stale.theme = "light".into();
+        let error = commit_settings_with(&state, full_save.revision, stale, |canonical| {
+            *persisted.borrow_mut() = canonical.clone();
+            Ok(())
+        })
+        .expect_err("stale full save must report a conflict");
+
+        assert!(error.contains("settings changed"), "{error}");
+        assert_eq!(
+            state.settings_read().favorite_models,
+            ["provider:newer"],
+            "the newer in-memory side write must survive"
+        );
+        assert_eq!(
+            persisted.borrow().favorite_models,
+            ["provider:newer"],
+            "the newer persisted side write must survive"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -3284,7 +3564,8 @@ mod tests {
         for enabled in [false, true] {
             let settings: Settings = serde_json::from_value(serde_json::json!({
                 "chatCompletionNotifications": enabled
-            })).unwrap();
+            }))
+            .unwrap();
             let saved = serde_json::to_value(&settings).unwrap();
             assert_eq!(saved["chatCompletionNotifications"], enabled);
             let reloaded: Settings = serde_json::from_value(saved).unwrap();
@@ -4519,6 +4800,31 @@ mod tests {
         assert!(s.chat_provider_id.is_empty());
         assert!(s.chat_model.is_empty());
         assert!(s.default_models.chat.provider_id.is_empty());
+    }
+
+    #[test]
+    fn persistence_projection_canonicalizes_before_adding_legacy_mirrors() {
+        let mut raw = Settings::default();
+        raw.theme = "sepia".to_string();
+        raw.theme_color = "mint".to_string();
+        raw.retry_attempts = 0;
+        raw.screenshot_translation.ocr_mode = Some(OcrMode::RapidOcr);
+        raw.screenshot_translation.use_system_ocr = true;
+
+        let (canonical, persisted) = settings_for_persistence(&raw);
+
+        assert_eq!(canonical.theme, "system");
+        assert_eq!(canonical.theme_color, "neutral");
+        assert_eq!(canonical.retry_attempts, 1);
+        assert_eq!(
+            canonical.screenshot_translation.ocr_mode,
+            Some(OcrMode::RapidOcr)
+        );
+        assert!(!persisted.screenshot_translation.use_system_ocr);
+        assert_eq!(
+            persisted.screenshot_translation.ocr_mode,
+            Some(OcrMode::RapidOcr)
+        );
     }
 
     #[test]

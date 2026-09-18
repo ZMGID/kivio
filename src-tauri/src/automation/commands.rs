@@ -91,11 +91,8 @@ pub fn automation_cancel(app: AppHandle, id: String) -> Result<(), String> {
 pub fn automation_active_run(app: AppHandle, id: String) -> Result<Option<AutomationRun>, String> {
     let run_id = app
         .state::<crate::state::AppState>()
-        .automation_active_runs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&id)
-        .cloned();
+        .automation_runs
+        .active_run(&id);
     run_id
         .map(|run_id| history::get(&app, &id, &run_id))
         .transpose()

@@ -101,6 +101,10 @@ export interface AskUserOption {
 export interface AskUserQuestion {
   id: string
   prompt: string
+  /** Historical prompts without this field remain required. */
+  required?: boolean
+  value_schema?: Record<string, unknown>
+  valueSchema?: Record<string, unknown>
   options: AskUserOption[]
   allow_multiple?: boolean
   allowMultiple?: boolean

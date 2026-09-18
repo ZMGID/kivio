@@ -20,6 +20,7 @@
     "package:check": "node scripts/check-desktop-package.mjs",
     "test:packaging": "node --test scripts/check-desktop-package.test.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "architecture:check": "node --test scripts/check-architecture.test.mjs && node scripts/check-architecture.mjs",
     "typecheck": "npm run protocol:check && tsc --noEmit",
     "test": "vitest run",
     "test:replace-visual": "node scripts/generate-replace-visual-fixtures.mjs --check && vitest run src/lens/replaceVisualBenchmark.test.ts",

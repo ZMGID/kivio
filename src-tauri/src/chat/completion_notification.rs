@@ -12,7 +12,7 @@ pub(crate) fn notify_reply_completed(
 ) {
     let language = {
         // Notifications are optional; do not wait behind a settings writer.
-        let settings = match state.settings.try_read() {
+        let settings = match state.try_settings_read() {
             Ok(settings) => settings,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { LangContext, i18n } from '../settings/i18n'
+import { LangContext, i18n } from '../settings/public/i18n'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 
 describe('chat shell i18n', () => {

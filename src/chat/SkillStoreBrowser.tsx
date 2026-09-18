@@ -1,12 +1,12 @@
 // ClawHub 技能商店内联浏览（无 modal 外壳，供 SkillCenter「技能商店」tab 用）。
-// 排序/搜索/翻页 + 一键安装（下载走后端 chat_skills_install_from_url）。数据层见 ../settings/skillMarket.ts。
+// 排序/搜索/翻页 + 一键安装（下载走后端 chat_skills_install_from_url）。数据层见 ../settings/public/skills.ts。
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Check, Download, ExternalLink, Loader2, Search, Star } from 'lucide-react'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
-import { Select } from '../settings/components'
-import { useT } from '../settings/i18n'
+import { Select } from '../settings/public/controls'
+import { useT } from '../settings/public/i18n'
 import {
   buildClawHubDownloadUrl,
   CLAWHUB_SORT_OPTIONS,
@@ -15,7 +15,7 @@ import {
   searchClawHubSkills,
   type ClawHubSkillCard,
   type ClawHubSort,
-} from '../settings/skillMarket'
+} from '../settings/public/skills'
 
 type Props = {
   onInstalled: () => void

@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::external_agents::registry::{get_agent_def, AGENT_DEFS};
+use crate::external_agents::types::{
+    HistorySourceStrategy, HistoryTitleStrategy, ImportDiscoveryStrategy, RuntimeAgentDef,
+};
+
 /// 一条可导入的原生会话。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -527,11 +532,27 @@ fn collect_codex_in_dir(dir: &Path, project_root: &str, out: &mut Vec<Importable
     }
 }
 
-/// 三个读文件的 CLI 合起来枚举。走 ACP 的 opencode / kimi 不在这里。
+fn list_file_sessions_for(def: &RuntimeAgentDef, project_root: &str) -> Vec<ImportableSession> {
+    let mut sessions = match def.import.history_source {
+        HistorySourceStrategy::ClaudeJsonl => list_claude_sessions(project_root),
+        HistorySourceStrategy::GrokDirectory => list_grok_sessions(project_root),
+        HistorySourceStrategy::CodexRollout => list_codex_sessions(project_root),
+        HistorySourceStrategy::None => Vec::new(),
+    };
+    for session in &mut sessions {
+        session.agent_id = def.id.to_string();
+    }
+    sessions
+}
+
+/// 所有声明 file-history discovery 的 CLI 合起来枚举。
 pub fn list_file_based_sessions(project_root: &str) -> Vec<ImportableSession> {
-    let mut out = list_claude_sessions(project_root);
-    out.extend(list_grok_sessions(project_root));
-    out.extend(list_codex_sessions(project_root));
+    let mut out = Vec::new();
+    for def in AGENT_DEFS {
+        if def.import.discovery == ImportDiscoveryStrategy::FileHistory {
+            out.extend(list_file_sessions_for(def, project_root));
+        }
+    }
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     out
 }
@@ -539,13 +560,6 @@ pub fn list_file_based_sessions(project_root: &str) -> Vec<ImportableSession> {
 // ---------------------------------------------------------------------------------------------
 // ACP（opencode / kimi）
 // ---------------------------------------------------------------------------------------------
-
-/// 走 ACP 协议枚举的代理（ADR-0003）。
-///
-/// gemini 和 hermes **不在**这里：gemini 的 ACP 没有 `session/list` 且 `loadSession=false`
-/// （导进来续不了聊），hermes 不记工作目录。cursor 本机未安装、能力未验证，
-/// 但它和 opencode 走同一套 ACP，探针返回 `None` 时会自然表现为"不支持"，不必特判。
-pub const ACP_IMPORT_AGENTS: &[&str] = &["opencode", "kimi", "cursor"];
 
 /// 用 ACP `session/list` 枚举某个代理在 `project_root` 下的会话。
 ///
@@ -771,8 +785,9 @@ fn classify_binding_files(
 
 /// 定位读文件那几个 CLI 的历史来源。
 fn history_source_path(agent_id: &str, session_id: &str, project_root: &str) -> Option<PathBuf> {
-    match agent_id {
-        "claude" => {
+    let def = get_agent_def(agent_id)?;
+    match def.import.history_source {
+        HistorySourceStrategy::ClaudeJsonl => {
             let root = claude_projects_root()?;
             for project_dir in std::fs::read_dir(&root).ok()?.flatten() {
                 let candidate = project_dir.path().join(format!("{session_id}.jsonl"));
@@ -782,7 +797,7 @@ fn history_source_path(agent_id: &str, session_id: &str, project_root: &str) -> 
             }
             None
         }
-        "grok" => {
+        HistorySourceStrategy::GrokDirectory => {
             let root = grok_sessions_root()?;
             for cwd_dir in std::fs::read_dir(&root).ok()?.flatten() {
                 let candidate = cwd_dir.path().join(session_id).join("chat_history.jsonl");
@@ -792,7 +807,7 @@ fn history_source_path(agent_id: &str, session_id: &str, project_root: &str) -> 
             }
             None
         }
-        "codex" => {
+        HistorySourceStrategy::CodexRollout => {
             // 文件名形如 `rollout-<时间>-<uuid>.jsonl`，按 uuid 后缀匹配。
             let root = codex_sessions_root()?;
             for l1 in read_subdirs(&root) {
@@ -810,7 +825,7 @@ fn history_source_path(agent_id: &str, session_id: &str, project_root: &str) -> 
             }
             None
         }
-        _ => {
+        HistorySourceStrategy::None => {
             let _ = project_root;
             None
         }
@@ -823,7 +838,6 @@ async fn load_acp_history(
     project_root: &str,
     session_id: &str,
 ) -> Option<Vec<crate::external_agents::import_history::ImportedMessage>> {
-    use crate::external_agents::registry::get_agent_def;
     use crate::external_agents::session::acp::probe_acp_session_history;
     use crate::external_agents::spawn::resolve_binary;
     use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext};
@@ -856,6 +870,54 @@ async fn load_acp_history(
     ))
 }
 
+fn parse_file_history(
+    strategy: HistorySourceStrategy,
+    path: &Path,
+) -> Result<Vec<crate::external_agents::import_history::ImportedMessage>, String> {
+    use crate::external_agents::import_history::{
+        parse_claude_history, parse_codex_history, parse_grok_history,
+    };
+
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("读取会话失败：{e}"))?;
+    let messages = match strategy {
+        HistorySourceStrategy::ClaudeJsonl => parse_claude_history(&raw),
+        HistorySourceStrategy::GrokDirectory => parse_grok_history(&raw),
+        HistorySourceStrategy::CodexRollout => parse_codex_history(&raw),
+        HistorySourceStrategy::None => return Err("该代理没有文件历史解析策略".to_string()),
+    };
+    Ok(messages)
+}
+
+async fn load_import_history(
+    def: &RuntimeAgentDef,
+    project_root: &str,
+    session_id: &str,
+) -> Result<
+    (
+        Vec<crate::external_agents::import_history::ImportedMessage>,
+        Option<PathBuf>,
+        Option<i64>,
+    ),
+    String,
+> {
+    match def.import.discovery {
+        ImportDiscoveryStrategy::FileHistory => {
+            let path = history_source_path(def.id, session_id, project_root)
+                .ok_or_else(|| "原生会话文件已移动或删除，请刷新导入列表".to_string())?;
+            let messages = parse_file_history(def.import.history_source, &path)?;
+            let mtime = file_mtime_ms(&path);
+            Ok((messages, Some(path), mtime))
+        }
+        ImportDiscoveryStrategy::Acp => {
+            let messages = load_acp_history(def.id, project_root, session_id)
+                .await
+                .ok_or_else(|| "该代理当前不支持读取原生会话历史".to_string())?;
+            Ok((messages, None, None))
+        }
+        ImportDiscoveryStrategy::None => Err(format!("{} 不支持导入原生会话", def.name)),
+    }
+}
+
 /// `LiveSessionHandle.protocol` 用的协议串。
 fn protocol_label(format: crate::external_agents::types::StreamFormat) -> &'static str {
     use crate::external_agents::types::StreamFormat;
@@ -883,8 +945,11 @@ pub async fn list_importable_for_project(
     }
 
     let mut sessions = list_file_based_sessions(&root);
-    for agent in ACP_IMPORT_AGENTS {
-        if let Some(list) = list_acp_sessions(agent, &root).await {
+    for def in AGENT_DEFS
+        .iter()
+        .filter(|def| def.import.discovery == ImportDiscoveryStrategy::Acp)
+    {
+        if let Some(list) = list_acp_sessions(def.id, &root).await {
             sessions.extend(list);
         }
     }
@@ -911,9 +976,6 @@ pub async fn import_one_session(
         AgentPlanState, AgentRuntimeConfig, AgentRuntimeKind, Attachment, Conversation,
         ConversationContextState,
     };
-    use crate::external_agents::import_history::{
-        parse_claude_history, parse_codex_history, parse_grok_history,
-    };
     use crate::external_agents::registry::get_agent_def;
 
     let def = get_agent_def(agent_id).ok_or_else(|| format!("未知的 CLI：{agent_id}"))?;
@@ -924,28 +986,7 @@ pub async fn import_one_session(
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "该项目没有绑定本地目录".to_string())?;
 
-    // 历史来源：读文件的三个各自解析；opencode 走 ACP 重放；kimi / 其它没有可读历史。
-    let source = history_source_path(agent_id, session_id, &root);
-    let (messages, source_mtime) = match (agent_id, source.as_ref()) {
-        ("claude", Some(path)) => {
-            let raw = std::fs::read_to_string(path).map_err(|e| format!("读取会话失败：{e}"))?;
-            (parse_claude_history(&raw), file_mtime_ms(path))
-        }
-        ("grok", Some(path)) => {
-            let raw = std::fs::read_to_string(path).map_err(|e| format!("读取会话失败：{e}"))?;
-            (parse_grok_history(&raw), file_mtime_ms(path))
-        }
-        ("codex", Some(path)) => {
-            let raw = std::fs::read_to_string(path).map_err(|e| format!("读取会话失败：{e}"))?;
-            (parse_codex_history(&raw), file_mtime_ms(path))
-        }
-        _ => (
-            load_acp_history(agent_id, &root, session_id)
-                .await
-                .unwrap_or_default(),
-            None,
-        ),
-    };
+    let (messages, source, source_mtime) = load_import_history(def, &root, session_id).await?;
 
     // 与对话的 created_at/updated_at 一致：**秒**。
     let now = chrono::Local::now().timestamp();
@@ -1083,9 +1124,10 @@ pub async fn import_one_session(
 /// 这才是用户在 CLI 里看到的那个标题；退回第一句用户消息只是兜底，不是期望结果。
 fn source_title(agent_id: &str, source: Option<&Path>) -> Option<String> {
     let path = source?;
-    match agent_id {
-        "claude" => claude_session_detail(path).1,
-        "grok" => {
+    let def = get_agent_def(agent_id)?;
+    match def.import.history_title {
+        HistoryTitleStrategy::Claude => claude_session_detail(path).1,
+        HistoryTitleStrategy::Grok => {
             // transcript 是 `chat_history.jsonl`，标题在同目录的 `summary.json` 里。
             let summary = path.parent()?.join("summary.json");
             let raw = std::fs::read_to_string(summary).ok()?;
@@ -1098,7 +1140,7 @@ fn source_title(agent_id: &str, source: Option<&Path>) -> Option<String> {
                 .map(truncate_title)
         }
         // codex 的 rollout 里没有标题字段，只能退回第一句用户消息。
-        _ => None,
+        HistoryTitleStrategy::None => None,
     }
 }
 
@@ -1466,11 +1508,17 @@ mod tests {
     async fn smoke_list_acp_sessions_against_real_clis() {
         let root = std::env::var("KIVIO_IMPORT_ROOT")
             .unwrap_or_else(|_| std::env::current_dir().unwrap().display().to_string());
-        for agent in ACP_IMPORT_AGENTS {
-            match list_acp_sessions(agent, &root).await {
-                None => println!("[{agent}] 不支持导入（未声明 loadSession 或无 session/list）"),
+        for def in AGENT_DEFS
+            .iter()
+            .filter(|def| def.import.discovery == ImportDiscoveryStrategy::Acp)
+        {
+            match list_acp_sessions(def.id, &root).await {
+                None => println!(
+                    "[{}] 不支持导入（未声明 loadSession 或无 session/list）",
+                    def.id
+                ),
                 Some(list) => {
-                    println!("[{agent}] {} 条", list.len());
+                    println!("[{}] {} 条", def.id, list.len());
                     for s in list.iter().take(3) {
                         println!("    {}  {:?}  cwd={}", s.session_id, s.title, s.cwd);
                     }
@@ -1482,5 +1530,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn missing_file_history_is_an_error_instead_of_an_empty_import() {
+        let missing =
+            std::env::temp_dir().join(format!("missing-import-{}.jsonl", uuid::Uuid::new_v4()));
+        let error = parse_file_history(HistorySourceStrategy::ClaudeJsonl, &missing)
+            .expect_err("a disappeared source must fail");
+        assert!(error.contains("读取会话失败"));
+    }
+
+    #[tokio::test]
+    async fn agent_without_import_discovery_is_rejected() {
+        let def = get_agent_def("pi").expect("pi def");
+        let error = load_import_history(def, ".", "session")
+            .await
+            .expect_err("unsupported agents must not create empty conversations");
+        assert!(error.contains("不支持导入"));
     }
 }

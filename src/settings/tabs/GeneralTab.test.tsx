@@ -20,7 +20,7 @@ describe('AppearanceGroup', () => {
       settings: makeSettings({ theme: 'dark', uiFontFamily: 'Inter', uiFontMono: 'Menlo' }),
       t,
       lang: 'zh' as const,
-      themeColor: 'default',
+      themeColor: 'neutral',
       systemFonts: ['Inter', 'Menlo', 'Arial'],
       uiFontPxInput: '14',
       onUpdateSettings: vi.fn(),

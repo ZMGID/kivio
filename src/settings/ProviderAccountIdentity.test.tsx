@@ -8,7 +8,8 @@ vi.mock('../api/tauri', async () => {
   const actual = await vi.importActual<typeof import('../api/tauri')>('../api/tauri')
   return { ...actual, api: { ...actual.api, providerOAuthAccount: vi.fn() } }
 })
-const provider = { ...makeProvider(), request: { oauth: { provider: 'antigravity' as const, credentialId: 'one' } } }
+const baseProvider = makeProvider()
+const provider = { ...baseProvider, request: { ...baseProvider.request, oauth: { provider: 'antigravity' as const, credentialId: 'one' } } }
 beforeEach(() => vi.resetAllMocks())
 
 it('shows email, name and the provider account ID', async () => {
@@ -24,7 +25,7 @@ it('ignores an old account response after switching credentials', async () => {
   vi.mocked(api.providerOAuthAccount).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     .mockResolvedValueOnce({ email: null, name: null, accountId: 'new-account' })
   const view = render(<ProviderAccountIdentity provider={provider} lang="zh" />)
-  view.rerender(<ProviderAccountIdentity provider={{ ...provider, request: { oauth: { provider: 'antigravity', credentialId: 'two' } } }} lang="zh" />)
+  view.rerender(<ProviderAccountIdentity provider={{ ...provider, request: { ...provider.request, oauth: { provider: 'antigravity', credentialId: 'two' } } }} lang="zh" />)
   expect(await screen.findByText('账号 ID：new-account')).toBeInTheDocument()
   await act(async () => finish({ email: 'old@example.com', name: null, accountId: 'old-account' }))
   expect(screen.queryByText('old@example.com')).not.toBeInTheDocument()

@@ -5,7 +5,7 @@ import { resolveBlobMood } from './kivioBlobSim'
 import { isAskUserToolName } from './askUserTools'
 import { useStatusQuip } from './blobQuips'
 import { useConversationTransition } from './conversationTransitionStore'
-import type { Lang } from '../settings/i18n'
+import type { Lang } from '../settings/public/i18n'
 
 export const StreamStatusLogo = memo(function StreamStatusLogo({
   size = 28,

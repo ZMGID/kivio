@@ -1,0 +1,2437 @@
+/* ===== Chat 主窗口（圆角 + 交通灯） ===== */
+.chat-window-shell {
+  container-type: size;
+  container-name: chat-window;
+  position: relative;
+  height: 100%;
+  width: 100%;
+  color: var(--text);
+  display: flex;
+  /* Windows / Linux：第一行是全宽标题栏带，第二行才是侧栏 + 主区（见 .chat-titlebar-strip）。
+     macOS 用系统 Overlay 标题栏、不渲染那条带，此时只有内容一行，column 与 row 等价。 */
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: var(--theme-surface);
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.55),
+    0 0 0 0.5px rgba(0, 0, 0, 0.08),
+    0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+.dark .chat-window-shell {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #212121;
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.04),
+    0 0 0 0.5px rgba(255, 255, 255, 0.05),
+    0 2px 12px rgba(0, 0, 0, 0.38);
+}
+
+.chat-window-host--win:not(.chat-window-host--maximized) .chat-window-shell {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.dark .chat-window-host--win:not(.chat-window-host--maximized) .chat-window-shell {
+  border: none;
+  box-shadow: none;
+}
+
+.chat-window-host--maximized {
+  padding: 0;
+}
+
+.chat-window-host--maximized .chat-window-shell {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* macOS 原生 Overlay 标题栏：去掉自绘圆角边框，交给系统窗口壳 */
+.chat-window-shell--native-titlebar {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.dark .chat-window-shell--native-titlebar {
+  box-shadow: none;
+}
+
+/* ===== 侧栏 / 主区 / 右 Dock 的共同外观 =====
+   外沿和面板间隙共用 --chat-card-inset，缝隙透出窗口底色。
+   色彩对齐 Claude Code：卡片与外壳几乎同亮度（差 ~2%），分离感几乎全部来自那道缝 +
+   一条极淡的 hairline。反直觉但关键 —— 灰阶差一旦超过 4%，就从「一张纸浮起来」
+   退回「几块拼在一起的板」。所以用 --theme-surface-soft（≈2% 差）而不是 muted（3.5%，偏重），
+   描边也不能用 border-strong（近白卡片上会读成一条灰线）。
+   高度由 flex align-items:stretch 减掉上下 margin 得出（所以三者都不能再挂 h-full）。 */
+/* macOS 保留原生交通灯对应的卡片位置；Windows / Linux 使用紧凑外沿。 */
+:root {
+  --chat-card-top: 8px;
+  --chat-card-inset: 8px;
+  --chat-card-radius: 12px;
+  /* 交通灯中心距窗口内容顶缘的距离；整条 macOS 顶栏线（灯 / 侧栏那两枚图标 / 模型 /
+     思考强度 / 审批）都对到这条线上。默认 30px 只是兜底 —— 真值由 ChatWindowHost
+     从 AppKit 量出来后覆写，因为它随 macOS 版本变（见 windows.rs 那条注释）。 */
+  --chat-traffic-center-y: 30px;
+}
+
+.chat-window-shell:has(> .chat-titlebar-strip) {
+  --chat-card-top: 1px;
+  --chat-card-inset: 4px;
+  --chat-card-radius: 8px;
+}
+
+.chat-sidebar-shell,
+.chat-main-pane,
+.chat-center-page,
+.chat-dock-shell {
+  border-radius: var(--chat-card-radius);
+  background: var(--theme-surface-soft);
+  border: 1px solid rgba(24, 24, 27, 0.07);
+  box-shadow:
+    0 1px 2px rgba(24, 24, 27, 0.04),
+    0 5px 14px -8px rgba(24, 24, 27, 0.10);
+}
+
+.chat-main-pane {
+  container-type: size;
+  container-name: chat-main;
+  overflow: hidden;
+  /* Keep Markdown/layout invalidation inside the reading surface when the
+     sidebar or right dock changes the available width. */
+  contain: layout paint;
+  /* 左右缝隙由侧栏和 Dock 提供，避免相邻 margin 叠加；折叠后仍保留同宽外沿。 */
+  margin: var(--chat-card-top) 0 var(--chat-card-inset);
+}
+
+/* 弹出窗没有侧栏 / Dock，自己补左右外沿。 */
+.chat-main-pane--lone {
+  margin-left: var(--chat-card-inset);
+  margin-right: var(--chat-card-inset);
+}
+
+.chat-message-list-inner {
+  contain: layout paint;
+}
+
+/* 原 max-w-4xl (56rem) 扣掉两侧 px-6：单条消息与每个模型共用阅读上限。 */
+.chat-reading-content {
+  width: 100%;
+  max-width: 53rem;
+  margin-inline: auto;
+}
+
+.chat-message-group-wrap[data-view-mode='columns'] {
+  max-width: calc(var(--chat-group-columns) * (53rem + 0.75rem) - 0.75rem);
+}
+
+.chat-message-group-col {
+  max-width: 53rem;
+}
+
+/* 聊天滚动容器禁用浏览器 overflow-anchor：上方行测高时浏览器会偷偷改 scrollTop，
+   和导航跳转的 paint 前钉住打架，表现为落地后上下抽一下。 */
+.chat-scroll-viewport {
+  overflow-anchor: none;
+}
+.kv-sidebar-groups {
+  overflow-anchor: none;
+}
+.chat-scroll-viewport.is-navigator-locking {
+  /* 锁定期再挡一层，避免系统/插件改滚动节奏 */
+  overscroll-behavior: contain;
+}
+
+
+/* 扩展中心页（助手 / Skill / MCP / 知识库 / 笔记 / 插件）：与会话主区同一张浮起的纸。
+   刻意不复用 .chat-main-pane —— 那个带 container-name: chat-main，会把会话布局的容器
+   查询接到中心页宽度上。右缝也得自己补：会话页由收起态 Dock 的 margin-left 提供，
+   中心页不渲染 Dock（见 Chat.tsx 的 `chatView === 'conversation' && <RightDock>`）。 */
+.chat-center-page {
+  margin: var(--chat-card-top) var(--chat-card-inset) var(--chat-card-inset) 0;
+  overflow: hidden;
+}
+
+/* 内嵌设置页：齐边铺满聊天窗口。不跟会话主区那套缝/圆角/阴影走 ——
+   设置是整页工作面（左导航 + 右主区），浮卡缝会让顶栏三键/导航顶边读成「没贴齐」。
+   引导页（.onboarding-shell.settings-embedded）仍用浮卡规则。 */
+.chat-window-shell .settings-embedded:not(.onboarding-shell) {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 用户气泡：底色得从主区卡片上「站起来」。原先写死 neutral-100 / neutral-800，是照旧底色
+   （亮 #ffffff、暗 #212121）挑的；卡片改成 --theme-surface-soft (#f9f8f6) / #262629 之后，
+   亮色只差 1.6% 且冷暖相反，暗色 #262626 vs #262629 几乎同色 —— 气泡直接读不出来。
+   跟卡片-外壳那 ~2% 的「同一张纸」原则不同：气泡是小面积前景块，要的是能一眼框出边界。 */
+.chat-user-bubble {
+  background: var(--theme-surface-hover);
+}
+
+/* 暗色里「浮起」= 更亮（压深读作凹陷），与三张卡片同一套判断。 */
+.dark .chat-user-bubble {
+  background: #313134;
+}
+
+/* Markdown 纯图片段落拆掉 <p> 盒，磁贴在正文流里并排换行。 */
+.chat-markdown p:has(> [data-chat-md-image]):not(:has(> :not([data-chat-md-image]):not(br))) {
+  display: contents;
+}
+.chat-markdown p:has(> [data-chat-md-image]):not(:has(> :not([data-chat-md-image]):not(br))) > br {
+  display: none;
+}
+
+/* 消息悬停操作/元信息条的显隐。`data-msg-hovered` 由 MessageBubble 的指针逻辑维护
+   （enter 置位、document pointermove 兜底清除），这里只负责按属性显隐。
+   不走 React state：滚动时消息从光标下滑过会连环触发 enter/leave，
+   走 state 每次都是整棵 MessageBubble 重渲——滚动不顺滑的主因之一。
+   行自身的 opacity-0 / transition / will-change（WKWebView 合成层，别删）在组件类名里。 */
+[data-msg-hovered] .msg-hover-reveal {
+  opacity: 1;
+}
+
+/* 主区内的 MessageList 加载占位（Chat.tsx 的 MessageListLoading）跟主区卡片同色。 */
+.chat-themed-surface {
+  background: var(--theme-surface-soft);
+}
+
+.chat-sidebar-shell {
+  width: var(--chat-sidebar-width, 240px);
+  margin: var(--chat-card-top) var(--chat-card-inset) var(--chat-card-inset);
+  /* 折叠时只做透明度动画。不要 transition margin-left：它会让 flex 主区在每一帧改变宽度，
+     长聊天里的 Markdown / 代码块随之连续重排，侧栏动画会把聊天区一起拖卡。布局位置一次切换，
+     由外壳 overflow:hidden 裁掉滑出的卡片。也不要 transition width：拖拽调宽走 rAF 直写变量。 */
+  transition:
+    opacity var(--kv-dur-normal) var(--kv-ease-out);
+}
+
+/* 右缘拖拽手柄：6px 命中区，hover / 拖动时才露出细线，避免常驻一条分割线。 */
+.chat-sidebar-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.chat-sidebar-resize::after {
+  content: '';
+  position: absolute;
+  top: 16%;
+  right: 0;
+  bottom: 16%;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background-color var(--kv-dur-instant) linear;
+}
+
+.chat-sidebar-resize:hover::after,
+.chat-window-shell.is-sidebar-resizing .chat-sidebar-resize::after {
+  background: rgba(24, 24, 27, 0.22);
+}
+
+.dark .chat-sidebar-resize:hover::after,
+.dark .chat-window-shell.is-sidebar-resizing .chat-sidebar-resize::after {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.chat-window-shell.is-sidebar-resizing,
+.chat-window-shell.is-sidebar-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.chat-window-shell.is-sidebar-resizing .chat-titlebar-strip-nav {
+  transition: none;
+}
+
+/* 侧栏顶栏：只上移那俩图标，卡片本身沿用统一外沿。
+   基线（Windows / Linux）保持 5/3，行总高 40。macOS 见下面那条按灯对齐的覆写。 */
+.chat-sidebar-shell > .chat-sidebar-titlebar-row {
+  align-items: flex-start;
+  padding-top: 5px;
+  padding-bottom: 3px;
+}
+
+/* macOS：图标是 h-8（32px）按钮，要让按钮中心落在窗口的 --chat-traffic-center-y
+   （= 交通灯中心实测值，见 :root）→ 卡片内 padding-top = center − card-top − 16。
+   padding-bottom 补足，行总高恒定 40，下方内容不位移。
+   max() 兜底：万一量到的 center 小得离谱，负 padding 会让整条声明失效。 */
+.chat-window-host--mac-titlebar .chat-sidebar-shell > .chat-sidebar-titlebar-row {
+  padding-top: max(0px, calc(var(--chat-traffic-center-y) - var(--chat-card-top) - 16px));
+  padding-bottom: max(0px, calc(8px + 16px + var(--chat-card-top) - var(--chat-traffic-center-y)));
+}
+
+.chat-sidebar-shell.is-collapsed {
+  /* 负 margin 等于侧栏宽，卡片完全出屏；margin-right 留给主区当左侧外沿。 */
+  margin-left: calc(-1 * var(--chat-sidebar-width, 240px));
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 设置页齐边铺满：撤掉折叠侧栏留下的外沿，避免导航栏左边透出桌面。 */
+.chat-sidebar-shell.is-collapsed.is-settings-cover {
+  margin-right: 0;
+}
+
+.chat-dock-shell {
+  /* 宽度由内联 CSS 变量 --chat-dock-width 驱动（拖拽时 rAF 直写，不经 React）。 */
+  width: var(--chat-dock-width, 360px);
+  margin: var(--chat-card-top) var(--chat-card-inset) var(--chat-card-inset);
+  /* 折叠：负 margin-right 把整张卡片滑出右侧，宽度不变内容不被压缩。 */
+  transition:
+    margin-right var(--kv-dur-slow) var(--kv-ease-standard),
+    opacity var(--kv-dur-normal) var(--kv-ease-out);
+}
+
+.chat-dock-shell.is-collapsed {
+  /* 卡片完全出屏，margin-left 仍留给主区当右侧外沿。 */
+  margin-right: calc(-1 * var(--chat-dock-width, 360px));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-composer-shell {
+  background: var(--theme-surface);
+}
+
+/* 有 field-sizing 时高度跟内容走，避开 JS 把 height 塌成 auto 的回流。 */
+.chat-composer-shell textarea {
+  field-sizing: content;
+}
+
+/* 问题优化：两拍，必须看得出「字被换过」。
+   等待 = 草稿失焦呼吸；落地 = 旧稿先化开淡出，换字后再清晰落入。
+   不用扫光 / background-clip:text（WebView 会退化成色块）。 */
+.chat-composer-shell textarea.is-optimizing {
+  caret-color: transparent;
+  animation: chat-composer-optimize-wait 1.7s ease-in-out infinite;
+}
+
+.chat-composer-shell textarea.is-optimize-out {
+  caret-color: transparent;
+  animation: chat-composer-optimize-out var(--kv-dur-slow) var(--kv-ease-out) forwards;
+}
+
+.chat-composer-shell textarea.is-optimize-reveal {
+  animation: chat-composer-optimize-in calc(var(--kv-dur-slow) + var(--kv-dur-fast)) var(--kv-ease-standard) both;
+}
+
+@keyframes chat-composer-optimize-wait {
+  0%, 100% {
+    opacity: 0.4;
+    filter: blur(0.8px);
+  }
+  50% {
+    opacity: 0.9;
+    filter: blur(0);
+  }
+}
+
+@keyframes chat-composer-optimize-out {
+  from {
+    opacity: 0.72;
+    filter: blur(0.4px);
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes chat-composer-optimize-in {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: none;
+  }
+}
+
+.kv-icon-btn.is-prompt-optimizing,
+.kv-icon-btn.is-prompt-optimizing:disabled {
+  opacity: 1;
+  cursor: default;
+  animation: chat-composer-optimize-wand 1.4s ease-in-out infinite;
+}
+
+@keyframes chat-composer-optimize-wand {
+  0%, 100% { opacity: 0.35; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-composer-shell textarea.is-optimizing,
+  .chat-composer-shell textarea.is-optimize-out,
+  .chat-composer-shell textarea.is-optimize-reveal {
+    animation: none;
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+  .kv-icon-btn.is-prompt-optimizing,
+  .kv-icon-btn.is-prompt-optimizing:disabled {
+    animation: none;
+    transform: none;
+  }
+}
+
+/* 斜杠命令高亮：透明字 + 同几何叠层，textarea 只负责光标和选区。 */
+.chat-composer-highlight {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.chat-composer-slash {
+  color: var(--accent);
+}
+
+.chat-composer-shell textarea.is-slash-highlight {
+  color: transparent;
+  caret-color: var(--text, #171717);
+}
+
+.dark .chat-composer-shell textarea.is-slash-highlight {
+  caret-color: var(--text, #f5f5f5);
+}
+
+/* ===== 输入区三层结构 =====
+   原来是「一个 28px 大圆角盒子，图标全塞在里面」→ 盒子被撑到 ~100px 高。
+   改为三条独立横条（对齐 Claude Code）：
+     ① .chat-composer-status  上下文状态条（项目/集/知识库 + 上下文占用），灰底，仅在有内容时渲染
+     ② .chat-composer-shell   纯输入框，白底描边，高度只由文本决定
+     ③ .chat-composer-tools   功能栏，完全裸露坐在窗口底色上，无背景无边框
+   三层各自决定高度，输入框因此能收到单行。 */
+.chat-composer-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  margin-bottom: 6px;
+  border-radius: 7px;
+  /* 底色用 soft（≈2% 亮度差）而非 muted（3.5%）：灰阶差超过 ~4% 就会从
+     「浮在纸面上的一层信息」读成「一块拼上去的灰板」（同 .chat-sidebar-shell 的权衡）。 */
+  background: var(--theme-surface-soft);
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.chat-composer-status:empty {
+  display: none;
+}
+
+.dark .chat-composer-status {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+/* 无项目且无改动时状态条内容为空（diff 徽标自隐藏），空条直接不显示。 */
+.chat-composer-status:empty {
+  display: none;
+}
+
+/* 排队中的消息（运行中发的那几条，等轮末自动发出）。
+   与 ①状态条同一视觉家族：soft 底、无描边、faint 字 —— 它是「浮在纸面上的一层待办信息」，
+   不是审批卡那种要人当场决定的东西。用描边白卡会把注意力从正在生成的回答上抢走。 */
+.chat-composer-queue {
+  margin-bottom: 6px;
+  border-radius: 7px;
+  background: var(--theme-surface-soft);
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.dark .chat-composer-queue {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+/* 输入框功能栏右侧的用量小字（缓存命中/↑输入/↓输出）：主区容器过窄时直接隐藏，
+   避免和模式胶囊、上下文指示器挤在一行。容器查询挂在 .chat-main-pane 的
+   container-name: chat-main 上，自动扣掉侧栏/Dock 的实际宽度。 */
+@container chat-main (max-width: 640px) {
+  .chat-session-usage {
+    display: none;
+  }
+}
+
+/* 一条排队消息。动作键平时透明（不占注意力也不跳版：仍然挂载、只是不可见），
+   指针悬停或键盘聚焦到行内任意控件时才现出来。 */
+.chat-composer-queue-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.dark .chat-composer-queue-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.chat-composer-queue-actions {
+  opacity: 0;
+  transition: opacity var(--kv-dur-instant) var(--kv-ease-out);
+}
+
+.chat-composer-queue-row:hover .chat-composer-queue-actions,
+.chat-composer-queue-row:focus-within .chat-composer-queue-actions {
+  opacity: 1;
+}
+
+/* 指针不可用（触屏）时没有 hover 可言，一律显形。 */
+@media (hover: none) {
+  .chat-composer-queue-actions {
+    opacity: 1;
+  }
+}
+
+/* 状态条内的一格（项目、集、知识库…）：图标 + 文字，可点则有 hover */
+.chat-composer-status-item {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 5px;
+  color: var(--text);
+  transition: background-color var(--kv-dur-instant) var(--kv-ease-out);
+}
+
+button.chat-composer-status-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.dark button.chat-composer-status-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.chat-composer-status-item > svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.chat-composer-status-sep {
+  flex-shrink: 0;
+  color: var(--theme-surface-border-strong);
+}
+
+.chat-composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 0 2px;
+}
+
+/* 裸露工具栏上的图标钮：原来是极浅的细线图标，飘在点阵背景上立不住。
+   加深到 --text-faint 之上一档，并让 hover 有明确的底，读作「可按」。 */
+.chat-composer-tools .kv-icon-btn {
+  color: #71717a;
+}
+
+.dark .chat-composer-tools .kv-icon-btn {
+  color: #a1a1aa;
+}
+
+.chat-composer-tools .kv-icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.dark .chat-composer-tools .kv-icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+/* 图标统一 16px：各调用点传的是 18（原来在高盒子里合适），裸栏里偏大。
+   在这里统一压一档，省得逐个改 size=。 */
+.chat-composer-tools .kv-icon-btn > svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 输入框内的发送键：只有箭头，没有底圆（28px 仍是点击热区，视觉上不占面积）。
+   空输入时是淡灰箭头，有内容时才上强调色 —— 强调只在「真的可以发」这一刻出现。
+   去掉填充后箭头是细描边，颜色比原来的圆底加深一档才够看清。 */
+.chat-composer-send {
+  color: var(--text-faint);
+}
+
+.chat-composer-send.is-ready {
+  color: #2f6ff0;
+}
+
+.chat-composer-send.is-ready:hover {
+  color: #2960d8;
+}
+
+.chat-composer-send.is-ready:active {
+  transform: scale(0.9);
+}
+
+.dark .chat-composer-send.is-ready {
+  color: #5c8df7;
+}
+
+.dark .chat-composer-send.is-ready:hover {
+  color: #6f9bf8;
+}
+
+.chat-message-navigator {
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  right: 12px;
+  z-index: 12;
+  width: 26px;
+  pointer-events: none;
+}
+
+/* 回答标题目录：和右侧轮次导航共用主区的绝对层，不参与消息列宽度计算。
+   收起时只保留短刻度；展开层向正文内侧覆盖，第一条标题直接顶在面板顶部。 */
+.chat-heading-navigator {
+  position: absolute;
+  z-index: 13;
+  top: 16px;
+  bottom: 16px;
+  left: 12px;
+  width: 26px;
+}
+
+.chat-heading-navigator-rail {
+  display: flex;
+  height: 100%;
+  width: 26px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  scrollbar-width: none;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-standard);
+}
+
+.chat-heading-navigator-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-heading-navigator-tick {
+  display: flex;
+  width: 26px;
+  min-height: 13px;
+  flex: 0 0 13px;
+  align-items: center;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: rgb(163 163 163);
+  cursor: pointer;
+}
+
+.chat-heading-navigator-tick > span {
+  display: block;
+  width: calc(8px + min(var(--heading-depth), 2) * 2px);
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: width var(--kv-dur-fast) var(--kv-ease-standard), color var(--kv-dur-fast) var(--kv-ease-standard);
+}
+
+.chat-heading-navigator-tick:hover,
+.chat-heading-navigator-tick:focus-visible,
+.chat-heading-navigator-tick.is-active {
+  color: rgb(23 23 23);
+  outline: none;
+}
+
+.chat-heading-navigator-tick:focus-visible > span {
+  width: 16px;
+}
+
+.chat-heading-navigator-panel {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  display: flex;
+  box-sizing: border-box;
+  width: 26px;
+  height: max-content;
+  max-height: 100%;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgb(229 229 229 / 0.95);
+  border-radius: 14px;
+  background: var(--theme-surface-soft);
+  padding: 6px;
+  box-shadow: 0 14px 38px rgb(0 0 0 / 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transform-origin: left center;
+  visibility: hidden;
+  transition:
+    width 220ms var(--kv-ease-standard),
+    opacity 140ms var(--kv-ease-standard),
+    visibility 0s linear 220ms;
+}
+
+.chat-heading-navigator.is-expanded .chat-heading-navigator-rail {
+  opacity: 0;
+}
+
+.chat-heading-navigator.is-expanded .chat-heading-navigator-panel {
+  width: min(300px, calc(100vw - 48px));
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.chat-heading-navigator-item {
+  display: flex;
+  width: 100%;
+  min-height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 0;
+  border-radius: 7px;
+  padding: 5px 8px 5px calc(8px + var(--heading-indent));
+  background: transparent;
+  color: rgb(82 82 82);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-heading-navigator-item.has-level-toggle {
+  padding-right: 29px;
+}
+
+.chat-heading-navigator-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-heading-navigator-item:hover,
+.chat-heading-navigator-item:focus-visible,
+.chat-heading-navigator-item.is-active {
+  background: rgb(23 23 23 / 0.07);
+  color: rgb(23 23 23);
+  outline: none;
+}
+
+.chat-heading-navigator-level-toggle {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
+  background: var(--theme-surface-soft);
+}
+
+.dark .chat-heading-navigator-tick {
+  color: rgb(115 115 115);
+}
+
+.dark .chat-heading-navigator-tick:hover,
+.dark .chat-heading-navigator-tick:focus-visible,
+.dark .chat-heading-navigator-tick.is-active {
+  color: rgb(245 245 245);
+}
+
+.dark .chat-heading-navigator-panel {
+  border-color: rgb(64 64 64 / 0.95);
+  background: #262629;
+}
+
+.dark .chat-heading-navigator-item {
+  color: rgb(190 190 190);
+}
+
+.dark .chat-heading-navigator-item:hover,
+.dark .chat-heading-navigator-item:focus-visible,
+.dark .chat-heading-navigator-item.is-active {
+  background: rgb(245 245 245 / 0.1);
+  color: rgb(245 245 245);
+}
+
+.dark .chat-heading-navigator-level-toggle {
+  background: #262629;
+}
+
+.chat-message-navigator-viewport {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  pointer-events: auto;
+}
+
+.chat-message-navigator-track {
+  display: flex;
+  min-height: 100%;
+  width: 26px;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.chat-message-navigator-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-message-navigator-node {
+  display: flex;
+  width: 26px;
+  min-height: 13px;
+  flex: 0 0 13px;
+  align-items: center;
+  justify-content: flex-end;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: rgb(163 163 163);
+  cursor: pointer;
+}
+
+.chat-message-navigator-tick {
+  display: block;
+  width: var(--message-navigator-node-width, 8px);
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: width var(--kv-dur-fast) var(--kv-ease-standard),
+    height var(--kv-dur-fast) var(--kv-ease-standard),
+    color var(--kv-dur-fast) var(--kv-ease-standard);
+}
+
+.chat-message-navigator-node:hover,
+.chat-message-navigator-node:focus-visible {
+  color: rgb(82 82 82);
+  outline: none;
+}
+
+.chat-message-navigator-node:focus-visible .chat-message-navigator-tick {
+  width: 15px;
+}
+
+.chat-message-navigator-node.is-visible,
+.chat-message-navigator-node.is-active {
+  color: rgb(23 23 23);
+}
+
+.chat-message-navigator-node.is-active .chat-message-navigator-tick {
+  width: var(--message-navigator-node-width, 8px);
+  height: 1.5px;
+}
+
+.chat-message-navigator-compaction-mark {
+  display: flex;
+  width: var(--message-navigator-node-width, 10px);
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-message-navigator-compaction-mark > span {
+  display: block;
+  width: var(--message-navigator-node-width, 10px);
+  height: 1px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark {
+  width: 18px;
+}
+
+.chat-message-navigator-node.is-compaction:focus-visible .chat-message-navigator-compaction-mark > span {
+  width: 18px;
+}
+
+.chat-message-navigator-preview {
+  position: fixed;
+  z-index: 1000;
+  width: min(320px, calc(100vw - 32px));
+  transform: translateY(-50%);
+  border: 1px solid rgb(229 229 229 / 0.95);
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.96);
+  padding: 14px 16px;
+  color: rgb(38 38 38);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 0.12);
+  backdrop-filter: blur(18px);
+  pointer-events: none;
+}
+
+.chat-message-navigator-preview-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.chat-message-navigator-preview-title span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.chat-message-navigator-preview-answer {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 9px 0 0;
+  color: rgb(115 115 115);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.chat-message-navigator-preview-model {
+  margin-top: 11px;
+  color: rgb(163 163 163);
+  font-size: 12px;
+}
+
+.dark .chat-message-navigator-node {
+  color: rgb(115 115 115);
+}
+
+.dark .chat-message-navigator-node:hover,
+.dark .chat-message-navigator-node:focus-visible {
+  color: rgb(190 190 190);
+}
+
+.dark .chat-message-navigator-node.is-visible,
+.dark .chat-message-navigator-node.is-active {
+  color: rgb(245 245 245);
+}
+
+.dark .chat-message-navigator-preview {
+  border-color: rgb(64 64 64 / 0.95);
+  background: rgb(38 38 38 / 0.96);
+  color: rgb(245 245 245);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 0.4);
+}
+
+.dark .chat-message-navigator-preview-answer {
+  color: rgb(180 180 180);
+}
+
+@container chat-main (max-width: 719px) {
+  .chat-message-navigator {
+    display: none;
+  }
+  .chat-heading-navigator {
+    display: none;
+  }
+}
+
+/* 720–999px 时消息列几乎占满容器，右侧没有足够留白；为贴滚动条的轨道预留安全区，
+   避免刻度与 Markdown 正文右缘重叠。更宽时消息列居中，轨道自然落在其右侧外。 */
+@container chat-main (min-width: 720px) and (max-width: 999px) {
+  .has-message-navigator .chat-message-list-inner {
+    padding-right: 3.25rem;
+  }
+  .has-heading-navigator .chat-message-list-inner {
+    padding-left: 3.25rem;
+  }
+}
+
+/* 并排区域在宽屏也会延伸到边缘，为两侧导航器保留空间。 */
+@container chat-main (min-width: 1000px) {
+  .has-message-navigator .chat-message-list-inner--wide {
+    padding-right: 3.25rem;
+  }
+  .has-heading-navigator .chat-message-list-inner--wide {
+    padding-left: 3.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-navigator-tick {
+    transition: none;
+  }
+  .chat-heading-navigator-tick > span {
+    transition: none;
+  }
+  .chat-heading-navigator-rail,
+  .chat-heading-navigator-panel {
+    transition: none;
+  }
+}
+
+/* 暗色同理：外壳 #212121，三张卡片只比它亮一点点（不是压深 —— 暗色里「浮起」= 更亮，
+   压深读作凹陷）。 */
+.dark .chat-sidebar-shell,
+.dark .chat-main-pane,
+.dark .chat-center-page,
+.dark .chat-dock-shell,
+.dark .chat-themed-surface,
+.dark .chat-conversation-loading {
+  background: #262629;
+}
+
+.dark .chat-sidebar-shell,
+.dark .chat-main-pane,
+.dark .chat-center-page,
+.dark .chat-dock-shell {
+  border-color: rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 5px 16px -8px rgba(0, 0, 0, 0.45);
+}
+
+/* 系统窗口材质（macOS Menu / Windows Mica）激活：外壳让开，材质从卡片四周那道 8px
+   缝里透出来；侧栏 / Dock 只留一层 scrim 保证文字对比度 —— Mica 是壁纸取色，不保证可读性，
+   所以两端都要留，不能像纯透明那样把字直接放到壁纸上。
+   主区卡片刻意不透：那是长文本阅读面，正文压在壁纸取色上会掉可读性。
+   模糊由系统合成器负责，这里绝不加 backdrop-filter。 */
+.chat-window-host--native-effect .chat-window-shell,
+.dark .chat-window-host--native-effect .chat-window-shell {
+  background: transparent;
+}
+
+.chat-window-host--native-effect .chat-sidebar-shell,
+.chat-window-host--native-effect .chat-dock-shell {
+  background: color-mix(in srgb, var(--theme-surface-soft) 72%, transparent);
+}
+
+/* 暗色 scrim 更薄：深底 Mica 本身偏暗，66% 实色会把壁纸取色吃没，读成「没开半透明」。 */
+.dark .chat-window-host--native-effect .chat-sidebar-shell,
+.dark .chat-window-host--native-effect .chat-dock-shell {
+  background: color-mix(in srgb, #262629 48%, transparent);
+}
+
+/* 原生控件的暗色方案只挂在不透明阅读面上，绝不挂 html：
+   WebView2 会给 color-scheme:dark 的根节点铺一层不透明深色 canvas，挡住 Mica。 */
+.chat-main-pane,
+.chat-center-page,
+.settings-embedded,
+.onboarding-shell,
+.window-frosted {
+  color-scheme: light;
+}
+
+.dark .chat-main-pane,
+.dark .chat-center-page,
+.dark .settings-embedded,
+.dark .onboarding-shell,
+.dark .window-frosted {
+  color-scheme: dark;
+}
+
+.dark .chat-composer-shell {
+  background: rgb(23, 23, 23);
+}
+
+/* —— 主内容区：宽度 —— */
+@container chat-main (max-width: 560px) {
+  .chat-composer-footer {
+    padding-left: 1rem;
+    padding-right: 1rem;
+    padding-bottom: 1rem;
+    padding-top: 0.375rem;
+  }
+
+  .chat-message-list-inner {
+    padding-left: 1rem;
+    padding-right: 1rem;
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+}
+
+@container chat-main (max-width: 520px) {
+  .chat-model-selector-label {
+    max-width: 6.5rem;
+  }
+
+  .chat-titlebar-context-label,
+  .chat-titlebar-todo-current {
+    display: none;
+  }
+
+  /* 思考等级先收成纯图标；再窄（480）整块隐藏。tooltip 仍在。 */
+  .chat-thinking-level-label {
+    display: none;
+  }
+
+  .chat-titlebar-assistant-label {
+    max-width: 4.5rem;
+  }
+}
+
+@container chat-main (max-width: 480px) {
+  .chat-titlebar-pill {
+    height: 30px;
+    gap: 0.25rem;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+    font-size: 12px;
+  }
+
+  .chat-titlebar-pill-icon {
+    height: 1.375rem;
+    width: 1.375rem;
+  }
+
+  /* 紧凑模式：模型选择器只留图标（名字截断成"d."很难看 + 下拉箭头一起藏）。仍可点开。 */
+  .chat-model-selector-label,
+  .chat-model-selector-caret {
+    display: none;
+  }
+
+  /* 更窄时整块思考 pill 隐藏（避免只剩图标和模型图标糊在一起）。可从宽窗重新调档。 */
+  .chat-thinking-pill-wrap {
+    display: none;
+  }
+
+  .chat-model-selector-menu {
+    min-width: min(240px, calc(100cqw - 1rem));
+    max-width: calc(100cqw - 1rem);
+  }
+
+  .chat-composer-shell {
+    padding-top: 0.375rem;
+    padding-bottom: 0.375rem;
+  }
+}
+
+@container chat-main (max-width: 440px) {
+  /* 窄窗口收紧灯与图标的间距。跟上面的 92px 同源，同样不再补那多余的 8px。 */
+  .chat-titlebar-row--collapsed-mac {
+    padding-left: 72px;
+  }
+
+  .chat-titlebar-row {
+    gap: 0.375rem;
+  }
+
+  .chat-empty-hero {
+    padding-left: 0.875rem;
+    padding-right: 0.875rem;
+    padding-bottom: 1.5rem;
+  }
+
+  .chat-empty-hero-stack {
+    gap: 1.25rem !important;
+  }
+
+  .chat-model-selector-label {
+    max-width: 4.75rem;
+  }
+}
+
+@container chat-main (max-width: 400px) {
+  .chat-titlebar-assistant-label,
+  .chat-titlebar-assistant-divider {
+    display: none;
+  }
+
+  .chat-titlebar-assistant-pill {
+    padding-right: 0.375rem;
+  }
+}
+
+/* —— 主内容区：高度（矮窗） —— */
+@container chat-main (max-height: 520px) {
+  .chat-empty-hero {
+    justify-content: flex-start;
+    padding-top: 1.25rem;
+    padding-bottom: 1rem;
+  }
+
+  .chat-empty-hero-stack {
+    gap: 1rem !important;
+  }
+
+  .chat-empty-hero-title {
+    font-size: 1.25rem;
+  }
+}
+
+@container chat-main (max-height: 440px) {
+  .chat-empty-hero {
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+  }
+
+  .chat-empty-hero-stack {
+    gap: 0.75rem !important;
+  }
+
+  .chat-composer-shell {
+    padding-top: 0.375rem;
+    padding-bottom: 0.375rem;
+  }
+
+  /* 窄容器：状态条压扁一档，长项目名靠 min-width:0 + truncate 自行收缩 */
+  .chat-composer-status {
+    min-height: 28px;
+    padding: 0 6px;
+    font-size: 11.5px;
+  }
+
+  .chat-composer-footer {
+    padding-bottom: 1rem;
+  }
+}
+
+/* —— 整窗：助手中心等子视图 —— */
+@container chat-window (max-width: 720px) {
+  .assistant-center-layout {
+    flex-direction: column;
+  }
+
+  .assistant-center-sidebar {
+    width: 100%;
+    max-height: 38%;
+    border-right: none;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  }
+
+  .dark .assistant-center-sidebar {
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+}
+
+/* 空对话页 */
+.chat-empty-hero {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--theme-surface-soft);
+}
+
+.dark .chat-empty-hero {
+  background-color: #262629;
+}
+
+.chat-empty-hero-dot-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.chat-empty-hero-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.chat-empty-hero-heading {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding-left: 4px;
+}
+
+.chat-empty-hero-title {
+  margin: 0;
+  min-width: 0;
+  font-size: 1.375rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: #171717;
+}
+
+.dark .chat-empty-hero-title {
+  color: #fafafa;
+}
+
+.chat-typewriter-cursor {
+  display: inline-block;
+  margin-left: 0.02em;
+  font-weight: 400;
+  color: var(--tw-prose-body, #a3a3a3);
+  animation: chat-typewriter-blink 1s step-end infinite;
+}
+
+.dark .chat-typewriter-cursor {
+  color: #737373;
+}
+
+@keyframes chat-typewriter-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* 侧栏对话「生成中」：G7 慢波（四竖线，无圆环） */
+.chat-gen-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 11px;
+  width: 14px;
+  flex-shrink: 0;
+}
+.chat-gen-wave > span {
+  display: block;
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: #71717a;
+  transform-origin: center;
+  animation: chat-gen-wave 1.4s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+}
+.dark .chat-gen-wave > span {
+  background: #a1a1aa;
+}
+.chat-gen-wave > span:nth-child(1) { animation-delay: 0s; }
+.chat-gen-wave > span:nth-child(2) { animation-delay: 0.2s; }
+.chat-gen-wave > span:nth-child(3) { animation-delay: 0.4s; }
+.chat-gen-wave > span:nth-child(4) { animation-delay: 0.6s; }
+@keyframes chat-gen-wave {
+  0%, 100% {
+    transform: scaleY(0.32);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-gen-wave > span {
+    animation: none;
+    opacity: 0.7;
+    transform: scaleY(0.65);
+  }
+}
+
+/* 侧栏会话行尾：短龄 / 慢波 / pin+归档 互斥替换。
+   平时显示 2m/13h；悬停或焦点让给按钮；生成中优先慢波（悬停同样让给按钮）。
+   已置顶时针常驻左侧，短龄叠在右侧归档位上，悬停换成归档。
+   慢波保持 .chat-gen-wave 原始 14×11 尺寸 + absolute right-1（与 4a68189 一致），
+   绝不要 width/height:auto 去铺满槽——那会把竖线拉高，动画就不是原来那个了。
+   互斥用 visibility（unlayered），避免 Tailwind group-hover 盖不过 unlayered 样式。 */
+.kv-conv-age {
+  visibility: visible;
+}
+.kv-conv-row:hover .kv-conv-age,
+.kv-conv-row:focus-within .kv-conv-age,
+.kv-conv-trailing[data-busy] > .kv-conv-age {
+  visibility: hidden;
+}
+.kv-conv-trailing[data-busy] > .kv-conv-wave {
+  visibility: visible;
+}
+.kv-conv-trailing[data-busy] > .kv-conv-actions {
+  visibility: hidden;
+}
+.kv-conv-row:hover .kv-conv-trailing[data-busy] > .kv-conv-wave,
+.kv-conv-row:focus-within .kv-conv-trailing[data-busy] > .kv-conv-wave {
+  visibility: hidden;
+}
+.kv-conv-row:hover .kv-conv-trailing[data-busy] > .kv-conv-actions,
+.kv-conv-row:focus-within .kv-conv-trailing[data-busy] > .kv-conv-actions {
+  visibility: visible;
+}
+
+/* 侧栏归档退场：高度收到 0，下面的行跟着滑上来，而不是瞬间塌洞抽一下。
+   1fr→0fr 与 .chat-motion-reveal 同一套；wrap 无 position，不改 .kv-conv-row 的 offsetParent。 */
+.kv-conv-exit {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows var(--kv-dur-fast) var(--kv-ease-standard),
+    opacity var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-conv-exit.is-exiting {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+}
+.kv-conv-exit > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+
+
+.chat-motion-fade-up {
+  animation: chat-motion-fade-up var(--chat-motion-duration, var(--kv-dur-normal)) var(--kv-ease-standard) both;
+  animation-delay: var(--chat-motion-delay, 0ms);
+}
+
+/* 气泡入场：在 fade-up 基础上加轻微缩放，对齐 LiveAgent chatBubbleIn。
+   单列出来（不改 chat-motion-fade-up）避免影响附件 chip/提示行等复用点。 */
+.chat-motion-bubble-in {
+  animation: chat-motion-bubble-in var(--kv-dur-normal) var(--kv-ease-standard) both;
+}
+
+/* 视图/页面切换入场：三段式递进（对齐 LiveAgent hubPageIn/hubPanelIn）——
+   整页轻位移打底，中心页内部大块（头部→tab 行→内容）再依序入场，见下方级联规则。
+   注意：Chat.tsx 各视图分支的包裹 div 带 key={view}，否则 React 原地复用 DOM 节点、
+   动画只在首挂载播一次，视图间切换不重播（正是「切换没效果」的根因）。 */
+/* fill 用 backwards 而非 both：动画结束后不能残留 transform —— NotesCenter / SkillCenter
+   等中心页内有 `fixed inset-0` 遮罩与弹窗，任何非 none 的 transform（包括 translateY(0)
+   保留下来的 matrix(1,0,0,1,0,0)）都会把它们的包含块从视口钉到本元素上，遮罩不再铺满窗口。 */
+.chat-motion-view-in {
+  animation: chat-motion-view-in 280ms var(--kv-ease-standard) backwards;
+}
+
+/* 中心页内部层级递进：只作用于中心页结构（assistant-center-root > main > 容器 > 大块）。
+   设置页（无 assistant-center-root）不受影响，卡片自身的 fade-up stagger 在更深层、互不干扰。 */
+.chat-motion-view-in .assistant-center-root > main > div > * {
+  animation: chat-motion-panel-in 380ms var(--kv-ease-standard) both;
+}
+
+.chat-motion-view-in .assistant-center-root > main > div > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.chat-motion-view-in .assistant-center-root > main > div > *:nth-child(n + 3) {
+  animation-delay: 110ms;
+}
+
+@keyframes chat-motion-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.chat-motion-popover {
+  transform-origin: var(--chat-popover-origin, top left);
+  animation: chat-motion-popover var(--kv-dur-fast) var(--kv-ease-standard) both;
+}
+
+.chat-motion-row {
+  animation: chat-motion-row 180ms var(--kv-ease-standard) both;
+  animation-delay: var(--chat-motion-delay, 0ms);
+}
+
+/* 会话标题替换过渡（打字机）：新标题逐字打出，末尾光标闪烁，由 SwapTitle 组件驱动
+   （打字间隔与 SwapTitle.tsx 的 TYPE_INTERVAL_MS 对应）。打字结束光标即卸载。
+   reduced-motion 由全局 0.01ms 兜底压平（光标静止，打字瞬发完成）。 */
+.kv-title-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 0.95em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  background: currentColor;
+  animation: kv-title-caret-blink 0.9s steps(1, end) infinite;
+}
+@keyframes kv-title-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* 生成中的临时标题（第一句消息截断，isProvisionalTitle 判定）置灰，
+   模型标题落地时随打字机过渡一起恢复。 */
+.kv-title-provisional {
+  opacity: 0.55;
+}
+
+/* 全局搜索跳转到命中消息时的短暂高亮 */
+@keyframes kv-search-focus-flash {
+  0% {
+    box-shadow: inset 0 0 0 9999px rgba(251, 191, 36, 0.28);
+  }
+  100% {
+    box-shadow: inset 0 0 0 9999px rgba(251, 191, 36, 0);
+  }
+}
+.kv-search-focus-flash {
+  animation: kv-search-focus-flash 1.5s ease-out 1;
+  border-radius: 10px;
+}
+
+/* 右键/上下文菜单：容器 popover 入场后，直接子项（菜单项）再逐项级联进入。
+   仅在打开态挂载（关闭走 chat-motion-popover-out，不带此 class，避免退场时重播）。
+   纯 CSS nth-child 级联，复用 chat-motion-row 关键帧（reduced-motion 全局兜底覆盖）。 */
+.chat-motion-menu-cascade > * {
+  animation: chat-motion-row 160ms var(--kv-ease-standard) both;
+}
+.chat-motion-menu-cascade > *:nth-child(1) { animation-delay: 20ms; }
+.chat-motion-menu-cascade > *:nth-child(2) { animation-delay: 44ms; }
+.chat-motion-menu-cascade > *:nth-child(3) { animation-delay: 68ms; }
+.chat-motion-menu-cascade > *:nth-child(4) { animation-delay: 92ms; }
+.chat-motion-menu-cascade > *:nth-child(n + 5) { animation-delay: 112ms; }
+
+/* ===== 弹出菜单统一规格 =====
+   之前 12 个文件各自手搓（px-3.5 py-2 / px-2.5 py-2 / gap-3 / gap-2.5 …），
+   行高和内距都不一致、整体偏大。这里定一套：菜单项 26px 行高、12px 字、
+   10px 横内距、图标 14px。改这里 = 全站菜单一起变。
+   注意：不含定位/入场动画（那些留在各自的 fixed + chat-motion-* 上）。 */
+.kv-menu {
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--theme-surface-border);
+  background: var(--theme-surface);
+  color: var(--text);
+  box-shadow:
+    0 0 0 0.5px rgba(24, 24, 27, 0.04),
+    0 4px 12px -4px rgba(24, 24, 27, 0.12),
+    0 12px 28px -12px rgba(24, 24, 27, 0.18);
+}
+
+.dark .kv-menu {
+  border-color: rgba(255, 255, 255, 0.09);
+  background: #2a2a2c;
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.05),
+    0 4px 14px -4px rgba(0, 0, 0, 0.5),
+    0 14px 32px -14px rgba(0, 0, 0, 0.6);
+}
+
+.kv-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--text);
+  transition: background-color var(--kv-dur-instant) var(--kv-ease-out);
+}
+
+.kv-menu-item:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.dark .kv-menu-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.kv-menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 菜单项内的 lucide 图标：统一压到 14px 且不参与 flex 收缩 */
+.kv-menu-item > svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+/* 只管尺寸的变体：给那些自带选中态/hover 条件类的选择器项用（picker 里的模板字符串），
+   套上它统一行高与内距，颜色和 hover 仍归调用方。 */
+.kv-menu-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  min-height: 28px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.kv-menu-item--danger {
+  color: var(--danger);
+}
+
+.kv-menu-item--danger > svg {
+  color: currentColor;
+}
+
+.kv-menu-item--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+/* 右侧从属信息（快捷键、当前值） */
+.kv-menu-hint {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.kv-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--theme-surface-border);
+}
+
+.dark .kv-menu-sep {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 分组小标题 */
+.kv-menu-label {
+  padding: 6px 8px 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.chat-motion-soft-pulse {
+  animation: chat-motion-soft-pulse 1.8s ease-in-out infinite;
+}
+
+/* 多模型头像堆叠：新模型加入时从小弹入 */
+.chat-model-stack-item {
+  animation: chat-model-stack-in var(--kv-dur-normal) var(--kv-ease-spring) both;
+}
+
+@keyframes chat-model-stack-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.chat-motion-search-reveal {
+  animation: chat-motion-search-reveal 180ms var(--kv-ease-standard) both;
+}
+
+.chat-motion-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition:
+    grid-template-rows 180ms var(--kv-ease-standard),
+    opacity 160ms var(--kv-ease-out),
+    transform 180ms var(--kv-ease-standard);
+}
+
+.chat-motion-reveal.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.chat-motion-reveal > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.image-generation-pending {
+  width: min(360px, calc(100vw - 3rem));
+  max-width: 100%;
+}
+
+.image-generation-pending-frame {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #f3f4f5;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.075),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 1px 2px rgba(0, 0, 0, 0.025);
+}
+
+.dark .image-generation-pending-frame {
+  background: #252527;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.075),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.image-generation-pending-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 46%, transparent 0 46%, rgba(243, 244, 245, 0.42) 76%),
+    linear-gradient(180deg, rgba(243, 244, 245, 0.24), transparent 42%, rgba(243, 244, 245, 0.34));
+}
+
+.dark .image-generation-pending-frame::after {
+  background:
+    radial-gradient(circle at 50% 46%, transparent 0 46%, rgba(37, 37, 39, 0.48) 76%),
+    linear-gradient(180deg, rgba(37, 37, 39, 0.28), transparent 42%, rgba(37, 37, 39, 0.38));
+}
+
+.image-generation-pending-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #a3a3a3;
+  box-shadow: 0 0 0 0 rgba(163, 163, 163, 0.3);
+  animation: image-generation-indicator-pulse 1.8s ease-in-out infinite;
+}
+
+.dark .image-generation-pending-indicator {
+  background: #8a8a8a;
+  box-shadow: 0 0 0 0 rgba(138, 138, 138, 0.24);
+}
+
+/* timeline 分组头「生成中」放射状短线 spinner：步进旋转配阶梯透明度，经典「线条逐根追逐渐隐」观感。 */
+@keyframes kv-tick-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.kv-tick-spinner {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: kv-tick-spinner-rotate 0.9s steps(8) infinite;
+}
+
+/* 退出动画：元素移除前缩小淡出。NOTE: 故意不在 reduced-motion 里设 animation:none，
+   靠全局兜底把时长压到 0.01ms —— 这样 animationend 仍会触发，依赖它清理 DOM 的逻辑（附件移除）不会卡住。 */
+@keyframes chat-motion-exit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+.chat-motion-exit {
+  animation: chat-motion-exit var(--kv-dur-fast) var(--kv-ease-out) both;
+  pointer-events: none;
+}
+
+/* 纯透明度淡入：模态/对话框 backdrop 等 */
+@keyframes chat-motion-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.chat-motion-fade {
+  animation: chat-motion-fade var(--kv-dur-fast) var(--kv-ease-out) both;
+}
+
+/* 居中模态入场：从中心轻微放大 + 上移淡入（transform-origin 默认 center） */
+@keyframes chat-motion-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.chat-motion-modal-in {
+  animation: chat-motion-modal-in var(--kv-dur-normal) var(--kv-ease-standard) both;
+}
+
+/* 浮层退场（见 useCloseAnimation）：模态面板 / backdrop / popover 关闭时反向淡出。
+   刻意不进 reduced-motion 的 animation:none 列表——保留 0.01ms 让 animationend 触发、卸载不卡。 */
+@keyframes chat-motion-modal-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+.chat-motion-modal-out {
+  animation: chat-motion-modal-out var(--kv-dur-normal) var(--kv-ease-out) both;
+}
+
+@keyframes chat-motion-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.chat-motion-fade-out {
+  animation: chat-motion-fade-out var(--kv-dur-fast) var(--kv-ease-out) both;
+}
+
+@keyframes chat-motion-popover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+}
+.chat-motion-popover-out {
+  transform-origin: var(--chat-popover-origin, top left);
+  animation: chat-motion-popover-out var(--kv-dur-fast) var(--kv-ease-out) both;
+}
+
+/* 微动效：成功反馈（复制 ✓ 等）弹入。靠全局兜底在 reduced-motion 下变瞬时。 */
+@keyframes chat-motion-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  60% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.chat-motion-pop {
+  animation: chat-motion-pop var(--kv-dur-fast) var(--kv-ease-spring) both;
+}
+
+/* 骨架屏：加载占位的流光。reduced-motion 下由全局兜底冻结为近静态。 */
+@keyframes kv-skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.kv-skeleton {
+  background-color: rgba(0, 0, 0, 0.04);
+  background-image: linear-gradient(
+    100deg,
+    rgba(0, 0, 0, 0) 30%,
+    rgba(0, 0, 0, 0.05) 50%,
+    rgba(0, 0, 0, 0) 70%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: kv-skeleton-shimmer 1.6s linear infinite;
+}
+
+.dark .kv-skeleton {
+  background-color: rgba(255, 255, 255, 0.05);
+  background-image: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 30%,
+    rgba(255, 255, 255, 0.07) 50%,
+    rgba(255, 255, 255, 0) 70%
+  );
+}
+
+@keyframes chat-motion-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes chat-motion-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chat-motion-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 会话页入场：设置页下滑退场后，聊天区跟着抬起，否则聊天界面是直接 pop 出来的。
+   fill 用 backwards 而非 both：动画结束后不能残留 transform —— .chat-main-pane 内有
+   InputBar 的 `fixed inset-0` 遮罩，任何 transform 都会把它们的包含块钉到本元素上。 */
+.chat-motion-pane-in {
+  animation: chat-motion-view-in 260ms var(--kv-ease-standard) backwards;
+}
+
+/* 会话正文切换是高频交互，不需要整页 280ms 的入场动画。
+   保留极短的位移让交接不生硬，但把主区可交互时间提前，避免出现
+   Logo 已结束、正文还在慢慢淡入的拖尾感。 */
+.chat-message-list-switch-in {
+  animation-duration: 120ms;
+  animation-timing-function: var(--kv-ease-out);
+}
+
+/* 设置页入场：从底部轻微上浮。位移用固定 px 而非 %（% 是元素自身高度，整页高度下会变成
+   100px+ 的长距离平移，读起来像"整页在挪"而不是 sheet 抬起）。
+   opacity 起点不为 0：全透明阶段的位移是看不见的，给 0.2 让上浮过程可感。
+
+   为什么用 pre-enter + transition 而不是 animation（对齐 CompactionDivider 的双 rAF 模式）：
+   CSS animation 走墙钟时间，而 SettingsShell 那棵树很大，挂载帧的布局/绘制常吃掉上百毫秒 ——
+   等首帧真正画出来，动画已经跑完大半，体感就是"没有动画"。改成先静态铺好起始态，
+   双 rAF（首帧绘制之后）再加 --entered 触发过渡，整段位移就一定可见。 */
+.chat-motion-settings-in {
+  opacity: 0.2;
+  transform: translateY(24px);
+  will-change: transform, opacity;
+}
+
+.chat-motion-settings-in--entered {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 320ms var(--kv-ease-standard),
+    transform 320ms var(--kv-ease-standard);
+}
+
+/* 设置页退场：下滑淡出。退场要加速曲线（越滑越快），减速曲线会在半途「停住」；
+   时长与 Chat.tsx handleSettingsClose 的卸载延时一致（220ms）——进出时长不能差太多，
+   否则是"缓缓推上来、啪一下掉下去"。终点全透明避免冻帧可见。 */
+.chat-motion-settings-out {
+  animation: chat-motion-settings-out 220ms cubic-bezier(0.4, 0, 1, 1) both;
+  will-change: transform, opacity;
+  pointer-events: none;
+}
+
+@keyframes chat-motion-settings-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+/* 设置 section 切换入场（对齐 LiveAgent settingsSectionIn / settingsSectionTitleIn）：
+   标题与内容各自 key={activeTab} 重播，内容 14px + 轻缩放，标题 8px。 */
+.settings-section-enter {
+  animation: settings-section-in 0.3s var(--kv-ease-standard) both;
+  will-change: transform, opacity;
+}
+.settings-section-title-enter {
+  animation: settings-section-title-in 0.24s var(--kv-ease-standard) both;
+  will-change: transform, opacity;
+}
+@keyframes settings-section-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes settings-section-title-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes image-generation-indicator-pulse {
+  0%, 100% {
+    opacity: 0.48;
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(163, 163, 163, 0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 5px rgba(163, 163, 163, 0.12);
+  }
+}
+
+@keyframes chat-motion-popover {
+  from {
+    opacity: 0;
+    transform: translateY(var(--chat-popover-start-y, -3px)) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chat-motion-row {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes chat-motion-soft-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 rgba(232, 160, 144, 0);
+    transform: translateZ(0) scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(232, 160, 144, 0.12);
+    transform: translateZ(0) scale(1.015);
+  }
+}
+
+@keyframes chat-motion-search-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 页内 tab 内容切换（中心页 已安装/市场/…、侧栏 最近/集/项目）：
+   比整页 view-in 轻一档的 6px 上浮，快进快停；包裹节点需 key={tab} 以便每次切换重播。 */
+.chat-motion-tab-in {
+  /* backwards：播完卸掉 transform，避免 fill-mode:both 把 translateY(0) 留在层上，
+     子节点增删时整列合成层闪一下（侧栏归档最明显）。 */
+  animation: chat-motion-tab-in 200ms var(--kv-ease-standard) backwards;
+}
+
+@keyframes chat-motion-tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* tab 激活下划线：从中心横向展开（配合内容 tab-in，切换指向感更强）。 */
+.chat-motion-tab-underline {
+  animation: chat-motion-tab-underline var(--kv-dur-fast) var(--kv-ease-standard) both;
+}
+
+@keyframes chat-motion-tab-underline {
+  from {
+    transform: scaleX(0.4);
+    opacity: 0.4;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+/* 运行中状态的统一亮度呼吸（避免渐变文字/遮罩在不同 WebView 上产生色块）。 */
+@keyframes chat-motion-text-pulse {
+  0%,
+  100% {
+    opacity: 0.68;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 子 Agent「运行中」状态行：紫色文字亮度呼吸（autonomous agent working） */
+.chat-motion-subagent-shimmer {
+  color: rgb(139, 92, 246);
+  animation: chat-motion-text-pulse 2s ease-in-out infinite;
+}
+
+.dark .chat-motion-subagent-shimmer {
+  color: rgb(196, 181, 253);
+}
+
+/* 普通工具「运行中」状态：accent blue 工具名亮度呼吸，整行不缩放/发光。
+   颜色与已完成 ✓ 的 #2f6ff0 / dark #5c8df7 同源。 */
+.chat-motion-tool-shimmer {
+  color: #2f6ff0;
+  animation: chat-motion-text-pulse 2s ease-in-out infinite;
+}
+
+.dark .chat-motion-tool-shimmer {
+  color: #5c8df7;
+}
+
+.chat-compaction-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0 4px;
+  color: var(--color-neutral-500, #737373);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  user-select: none;
+}
+
+.chat-compaction-divider--animate {
+  animation: chat-compaction-divider-in 680ms var(--kv-ease-standard) both;
+}
+
+.chat-compaction-divider--pre-enter {
+  opacity: 0;
+}
+
+.chat-compaction-divider--pre-enter .chat-compaction-divider-line {
+  opacity: 0;
+  transform: scaleX(0);
+}
+
+.chat-compaction-divider--pre-enter .chat-compaction-divider-content {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.chat-compaction-divider-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(120, 120, 120, 0.28);
+  transform-origin: center;
+}
+
+.chat-compaction-divider--animate .chat-compaction-divider-line {
+  animation: chat-compaction-line-in 560ms var(--kv-ease-standard) both;
+}
+
+.chat-compaction-divider--animate .chat-compaction-divider-content {
+  animation: chat-compaction-content-in 560ms 120ms var(--kv-ease-standard) both;
+}
+
+.chat-compaction-divider-line--dim {
+  opacity: 0.55;
+}
+
+.chat-compaction-divider-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.chat-compaction-divider-arrow {
+  color: rgba(120, 120, 120, 0.72);
+}
+
+.chat-context-clear-badge {
+  border: 1px solid rgba(120, 120, 120, 0.28);
+  border-radius: 999px;
+  padding: 2px 10px;
+  line-height: 1.4;
+  color: var(--color-neutral-500, #737373);
+  background: var(--bg-primary, transparent);
+}
+
+.chat-compaction-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0 4px;
+  animation: chat-compaction-progress-in 320ms var(--kv-ease-standard) both;
+}
+
+.chat-compaction-progress-label {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chat-compaction-summary {
+  margin: 0 0 8px;
+}
+
+.chat-compaction-summary-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 2px 0 6px;
+  font-size: 11px;
+  color: var(--color-neutral-500, #737373);
+  cursor: pointer;
+}
+
+.chat-compaction-summary-toggle:hover {
+  color: var(--color-neutral-700, #404040);
+}
+
+.dark .chat-compaction-summary-toggle:hover {
+  color: var(--color-neutral-300, #d4d4d4);
+}
+
+.chat-compaction-summary-body {
+  /* 原来是 18px，用来和已删掉的 14px 折叠箭头对齐；现在标题左侧没有图标了。 */
+  margin-left: 0;
+  padding-bottom: 8px;
+  font-size: 12px;
+  color: var(--color-neutral-600, #525252);
+}
+
+.dark .chat-compaction-summary-body {
+  color: var(--color-neutral-300, #d4d4d4);
+}
+
+@keyframes chat-compaction-line-in {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes chat-compaction-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes chat-compaction-divider-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes chat-compaction-progress-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 子 Agent 头部星芒指示器：字符摩点星芒。非运行态静止暗淡，运行中逐帧循环摩变（Claude Code 风格） */
+.subagent-sparkle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.15em;
+  height: 1.2em;
+  overflow: hidden;
+  text-align: center;
+  line-height: 1;
+  vertical-align: -0.1em;
+  font-variant-emoji: text;
+}
+
+.subagent-sparkle::before {
+  content: '✶';
+  opacity: 0.55;
+  line-height: 1;
+}
+
+.dark .subagent-sparkle::before {
+  opacity: 0.6;
+}
+
+@keyframes subagent-sparkle-cycle {
+  0% {
+    content: '·';
+  }
+  16.66% {
+    content: '✱';
+  }
+  33.33% {
+    content: '✷';
+  }
+  50% {
+    content: '✶';
+  }
+  66.66% {
+    content: '✳';
+  }
+  83.33% {
+    content: '✢';
+  }
+}
+
+.subagent-sparkle.is-running::before {
+  opacity: 1;
+  animation: subagent-sparkle-cycle 1.4s steps(1, end) infinite;
+}
+
+/* Advisor/Subagent 卡片 eyebrow：运行中像终端光标一样步进闪烁（呼应官网运行轨迹的方块光标）。
+   静止态不动。reduced-motion 由全局 * 兜底压到 0.01ms。 */
+@keyframes kv-card-eyebrow-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0.18; }
+}
+.kv-card-eyebrow--running {
+  animation: kv-card-eyebrow-blink 1.1s steps(1, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 全局兜底：覆盖内联 Tailwind transition / animate 工具类等未被下方具名规则捕获的动效。
+     用 0.01ms 而非 0，保留 transitionend/animationend 事件（附件退出动画等依赖它清理 DOM）。
+     注：chat-motion-fade / chat-motion-modal-in / chat-motion-exit / chat-motion-pop 刻意不进下方
+     animation:none 列表，仅靠本兜底压到 0.01ms —— 这样它们的 animationend 仍会触发、逻辑不卡住。
+     kv-skeleton 见下方单独的静态规则。 */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 骨架屏：停掉流光，留静态底色作占位（否则单次极短动画会把渐变冻结到屏外、看不见）。 */
+  .kv-skeleton {
+    animation: none;
+    background-image: none;
+  }
+
+  /* 按钮按压缩放：reduced-motion 下取消（全局只压时长、不移除 transform，须显式重置）。 */
+  .kv-btn:active:not(:disabled),
+  .kv-icon-btn:active:not(:disabled) {
+    transform: none;
+  }
+
+  .chat-motion-fade-up,
+  .chat-motion-bubble-in,
+  .chat-motion-view-in,
+  .chat-motion-pane-in,
+  .chat-motion-settings-out,
+  .settings-section-enter,
+  .settings-section-title-enter,
+  .chat-motion-popover,
+  .chat-motion-row,
+  .chat-motion-soft-pulse,
+  .chat-motion-search-reveal,
+  .chat-compaction-divider--pre-enter,
+  .chat-compaction-divider--animate,
+  .chat-compaction-divider--animate .chat-compaction-divider-line,
+  .chat-compaction-divider--animate .chat-compaction-divider-content,
+  .chat-compaction-progress {
+    animation: none;
+  }
+
+  .chat-motion-reveal {
+    transition: none;
+    transform: none;
+  }
+
+  /* 设置页入场改用 pre-enter + transition（见上方注释），animation:none 管不到它 ——
+     直接把起始态压平成终态，双 rAF 一到就是原地，无位移。 */
+  .chat-motion-settings-in {
+    opacity: 1;
+    transform: none;
+  }
+
+  .reasoning-shimmer-text,
+  .chat-motion-subagent-shimmer,
+  .chat-motion-tool-shimmer {
+    animation: none;
+    color: inherit;
+  }
+
+  .kv-stream-logo,
+  .kv-stream-dot-logo {
+    animation: none;
+    opacity: 1;
+  }
+
+  .chat-typewriter-cursor {
+    display: none;
+    animation: none;
+  }
+
+  .subagent-sparkle.is-running::before {
+    animation: none;
+    content: '✶';
+    opacity: 0.55;
+  }
+
+  .chat-motion-reveal {
+    opacity: 1;
+  }
+
+  .chat-motion-reveal:not(.is-open) {
+    display: none;
+  }
+
+  .image-generation-pending-indicator {
+    animation: none;
+  }
+}
+
+.chat-window-shell button:focus {
+  outline: none;
+}
+
+.chat-window-shell button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+  /* 键盘聚焦时焦点环缓入；失焦时瞬退（不拖尾），是更利落的行为。 */
+  transition: box-shadow var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+.dark .chat-window-shell button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
+}

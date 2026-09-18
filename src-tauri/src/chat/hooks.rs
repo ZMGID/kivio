@@ -562,7 +562,23 @@ async fn run_http_hook(hook: &HookDef, body: &str) -> Result<(), String> {
     let method = reqwest::Method::from_bytes(hook.method.as_bytes())
         .map_err(|_| format!("invalid HTTP method {}", hook.method))?;
     let send_body = method != reqwest::Method::GET && method != reqwest::Method::HEAD;
-    let mut request = crate::api::build_http_client()
+    // Loopback hooks are local IPC. Sending them through an environment/system proxy can both
+    // leak the payload and make an otherwise healthy local integration depend on proxy health.
+    let direct = reqwest::Url::parse(hook.url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+    let client = if direct {
+        crate::api::build_direct_http_client()
+    } else {
+        crate::api::build_http_client()
+    };
+    let mut request = client
         .request(method, hook.url.trim())
         .timeout(std::time::Duration::from_millis(hook.timeout_ms))
         .header("content-type", "application/json")

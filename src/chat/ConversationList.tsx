@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, Pin } from 'lucide-react'
 import type { ChatProject, ChatSet, ConversationListItem } from './types'
-import { i18n, type I18n, type Lang } from '../settings/i18n'
+import { i18n, type I18n, type Lang } from '../settings/public/i18n'
 import { chatApi, normalizeAgentRuntime } from './api'
 import {
   displayConversationTitle,

@@ -68,10 +68,20 @@ fn text_only_video_replay_preserves_identity_without_opening_missing_files() {
             "attachments": [{"id": "v1", "type": "video", "name": "clip.mp4", "path": "missing.mp4"}]}]
     })).unwrap();
     let messages = super::context::build_chat_api_messages_with_video(
-        None, "system", &conversation, Some(0), None, &[], false,
-    ).unwrap();
+        None,
+        "system",
+        &conversation,
+        Some(0),
+        None,
+        &[],
+        false,
+    )
+    .unwrap();
     assert_eq!(crate::chat::video_analysis::video_count(&messages), 0);
-    assert!(messages[1]["content"][0]["text"].as_str().unwrap().contains("clip.mp4 [v1]"));
+    assert!(messages[1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("clip.mp4 [v1]"));
     assert_eq!(messages[1]["content"][1]["text"], "Hello");
     assert_eq!(conversation.messages[0].attachments.len(), 1);
 }
@@ -81,7 +91,10 @@ fn video_analysis_tool_is_available_in_chat_and_plan_without_extra_approval() {
     let tool = crate::chat::video_analysis::tool_definition();
     assert!(agent_prepare::builtin_tool_bypasses_approval(&tool));
     let mut tools = vec![tool.clone()];
-    assert!(super::tooling::apply_chat_mode_tool_filter(&mut tools, true, &Default::default()).is_empty());
+    assert!(
+        super::tooling::apply_chat_mode_tool_filter(&mut tools, true, &Default::default())
+            .is_empty()
+    );
     assert_eq!(tools.len(), 1);
     assert!(super::tooling::apply_agent_plan_tool_filter(&mut tools, true).is_empty());
     assert_eq!(tools.len(), 1);

@@ -1,7 +1,7 @@
 // 共享的 chatTools 相关常量 / 钳制 / 格式化 / MCP 服务器辅助函数。
 // 从 SettingsShell 抽出，供 SettingsShell、McpCenter、SkillCenter 复用，避免重复实现。
 
-import { type ChatMcpServer, type ChatToolsConfig, defaultNativeTools } from '../api/tauri'
+import { type ChatMcpServer } from '../api/tauri'
 
 // 工具轮次默认**不限**（null）。此常量仅供 clamp 兜底与旧值展示，不再是默认值。
 export const CHAT_TOOL_LEGACY_DEFAULT_ROUNDS = 20
@@ -58,25 +58,6 @@ export function formatToolTimeoutLabel(ms: number, lang: string): string {
     return lang === 'zh' ? `${seconds} 秒` : `${seconds} sec`
   }
   return `${ms} ms`
-}
-
-export function defaultChatTools(): ChatToolsConfig {
-  return {
-    enabled: false,
-    servers: [],
-    hooks: [],
-    skillScanPaths: [],
-    skillAutoMatch: true,
-    skillFallbackMode: 'progressive',
-    disabledSkillIds: [],
-    maxToolRounds: null,
-    toolTimeoutMs: 60_000,
-    mcpIdleTimeoutMs: 600_000,
-    approvalPolicy: 'readonly_auto_sensitive_confirm',
-    subAgentConcurrency: 12,
-    requestDebugEnabled: false,
-    nativeTools: defaultNativeTools(),
-  }
 }
 
 export function newMcpServer(): ChatMcpServer {

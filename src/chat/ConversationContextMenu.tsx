@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight, Copy, Download, Folder, Hash, Layers, RotateCcw, SquareArrowOutUpRight, Trash2 } from 'lucide-react'
-import { i18n, type Lang } from '../settings/i18n'
+import { i18n, type Lang } from '../settings/public/i18n'
 import type { ChatProject, ChatSet } from './types'
 import { useCloseAnimation } from './useCloseAnimation'
 import { useClampedMenuPosition } from './useClampedMenuPosition'

@@ -159,10 +159,18 @@ pub fn header_pairs(
         upsert_pair(&mut pairs, name, value);
     }
     if provider.is_opencode_free() {
-        if !pairs.iter().any(|(name, _)| name.eq_ignore_ascii_case("user-agent")) {
-            pairs.push(("User-Agent".into(), concat!("Kivio/", env!("CARGO_PKG_VERSION")).into()));
+        if !pairs
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+        {
+            pairs.push((
+                "User-Agent".into(),
+                concat!("Kivio/", env!("CARGO_PKG_VERSION")).into(),
+            ));
         }
-        pairs.retain(|(name, _)| !name.eq_ignore_ascii_case("authorization") && !name.eq_ignore_ascii_case("x-api-key"));
+        pairs.retain(|(name, _)| {
+            !name.eq_ignore_ascii_case("authorization") && !name.eq_ignore_ascii_case("x-api-key")
+        });
         if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
             upsert_pair(&mut pairs, "x-opencode-session".into(), id.into());
         }
@@ -213,7 +221,9 @@ mod tests {
         provider.api_keys.clear();
         assert!(provider.has_credentials());
         let pairs = header_pairs(&provider, Some("conversation-1"));
-        assert!(!pairs.iter().any(|(name, _)| name.eq_ignore_ascii_case("authorization")));
+        assert!(!pairs
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization")));
         assert!(pairs.contains(&("x-opencode-session".into(), "conversation-1".into())));
         provider.base_url = "https://opencode.ai/zen/go/v1".into();
         assert!(!provider.has_credentials());

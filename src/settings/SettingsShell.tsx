@@ -16,7 +16,6 @@ import {
   type ChatToolsConfig,
   type ChatNativeToolsConfig,
   type ChatMemoryConfig,
-  defaultNativeTools,
   type ReplaceTranslationPackStatus,
   type RapidOcrTier,
 } from '../api/tauri'
@@ -34,8 +33,8 @@ import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
   AgentIcon, WebSearchIcon, PluginsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
 } from './NavIcons'
-import { SessionCenter, type SessionCenterProps } from '../chat/SessionCenter'
-import { PluginCenter, type PluginCenterSection } from '../chat/PluginCenter'
+import { SessionCenter, type SessionCenterProps } from '../chat/public/sessionCenter'
+import { PluginCenter, type PluginCenterSection } from '../chat/public/pluginCenter'
 import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, resolveSettingsSaveEcho, stableStringify } from './utils'
 import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
@@ -43,6 +42,7 @@ import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
 import { initialReplacePackProgressState, reduceReplacePackProgress } from './replacePackProgress'
 import { UsageStatsPanel } from './UsageStatsPanel'
 import { RequestDebugPanel } from './RequestDebugPanel'
+import { createProviderRequestDraft } from './public/providerDraft'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { HotkeysTab } from './tabs/HotkeysTab'
 import { LensTab } from './tabs/LensTab'
@@ -56,14 +56,13 @@ import { ComputerControlTab } from './tabs/ComputerControlTab'
 import { AppearanceGroup, BehaviorGroup, PermissionsGroup } from './tabs/GeneralTab'
 import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
 import { MEMORY_L1_MAX_BYTES, utf8ByteLength, type MemoryLayerKey } from './memoryLayers'
-import { ModelDetailDrawer } from '../components/ModelDetailDrawer'
-import { ProviderModelTestModal } from '../components/ProviderModelTestModal'
+import { ModelDetailDrawer } from './ModelDetailDrawer'
+import { ProviderModelTestModal } from './ProviderModelTestModal'
 import { Button } from '../components/Button'
 import { resolveModelInfo } from '../data/modelMatching'
-import { loadLastModel, resolvePreferredChatModel } from '../chat/lastModel'
+import { loadLastModel, resolvePreferredChatModel } from '../chat/public/modelPreference'
 import { useWindowInteractionFocus } from '../utils/windowFocus'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
-import { normalizeThemeColorId } from '../themeColors'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from './uiFont'
 import {
   SettingRow,
@@ -71,7 +70,6 @@ import {
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
-import { defaultChatTools } from './chatToolsShared'
 import { persistThenClose, type SettingsCloseOptions } from './settingsClose'
 
 export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'plugins' | 'sessions' | 'usage' | 'providers' | 'about'
@@ -117,40 +115,6 @@ export type HotkeyScopeKey =
   | 'screenshotAnnotate'
   | 'lens'
 
-function defaultChatConfig(): NonNullable<SettingsData['chat']> {
-  return {
-    streamEnabled: true,
-    thinkingEnabled: true,
-    maxOutputTokens: 16384,
-    defaultLanguage: '',
-    systemPrompt: '',
-    promptOptimizePrompt: '',
-    userDisplayName: '',
-    userAvatar: '',
-    defaultAgentRuntime: {
-      kind: 'builtin',
-      externalAgentId: null,
-      externalModel: null,
-      externalReasoning: null,
-    },
-    chatMode: {
-      systemPrompt: '',
-      webSearch: true,
-      webFetch: true,
-      knowledgeSearch: true,
-      memoryTools: true,
-      mcpReadOnly: true,
-    },
-  }
-}
-
-function defaultChatMemory(): ChatMemoryConfig {
-  return {
-    enabled: false,
-    toolWriteConfirm: false,
-  }
-}
-
 function resolveEffectiveChatModel(settings: SettingsData): { provider?: ModelProvider, model: string } {
   const selected = resolvePreferredChatModel({
     providers: settings.providers,
@@ -179,19 +143,6 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
       : 'fallback'
 
   return { maxOutput, source, model, provider }
-}
-
-function defaultDefaultModels(chatProviderId = '', chatModel = ''): SettingsData['defaultModels'] {
-  return {
-    chat: { providerId: chatProviderId, model: chatModel },
-    vision: { providerId: '', model: '' },
-    videoAnalysis: { providerId: '', model: '' },
-    titleSummary: { providerId: '', model: '' },
-    compression: { providerId: '', model: '' },
-    imageGeneration: { providerId: '', model: '' },
-    promptOptimize: { providerId: '', model: '' },
-    advisor: { providerId: '', model: '' },
-  }
 }
 
 function clearDefaultModelProvider(
@@ -349,10 +300,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const lang = settings?.settingsLanguage || 'zh'
   const t = i18n[lang]
-  const themeColor = normalizeThemeColorId(settings?.themeColor)
-  const chatTools = settings?.chatTools || defaultChatTools()
-  const nativeBuiltinToolsEnabled = hasEnabledNativeBuiltinTool(chatTools.nativeTools)
-  const skillRuntimeEnabled = hasEnabledSkillRuntime(chatTools.nativeTools)
+  const chatTools = settings?.chatTools
+  const nativeBuiltinToolsEnabled = chatTools ? hasEnabledNativeBuiltinTool(chatTools.nativeTools) : false
+  const skillRuntimeEnabled = chatTools ? hasEnabledSkillRuntime(chatTools.nativeTools) : false
   // 判断是否有未保存的更改（自动保存会在防抖后清掉）
   const hasUnsavedChanges = settings ? stableStringify(settings) !== initialSettingsSnapshot : false
   // 同步当前草稿快照到 ref（SWR 校准回调据此判断草稿是否 pristine）。
@@ -395,22 +345,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       },
       {
         scope: 'screenshotTranslation',
-        hotkey: settings.screenshotTranslation?.hotkey || '',
-        enabled: settings.screenshotTranslation?.enabled !== false,
+        hotkey: settings.screenshotTranslation.hotkey,
+        enabled: settings.screenshotTranslation.enabled,
       },
       {
         scope: 'screenshotTranslationText',
-        hotkey: settings.screenshotTranslation?.textHotkey || '',
-        enabled: settings.screenshotTranslation?.enabled !== false,
+        hotkey: settings.screenshotTranslation.textHotkey,
+        enabled: settings.screenshotTranslation.enabled,
       },
       {
         scope: 'screenshotTranslationReplace',
-        hotkey: settings.screenshotTranslation?.replaceHotkey || '',
-        enabled: settings.screenshotTranslation?.enabled !== false
-          && settings.screenshotTranslation?.replaceEnabled !== false,
+        hotkey: settings.screenshotTranslation.replaceHotkey || '',
+        enabled: settings.screenshotTranslation.enabled
+          && settings.screenshotTranslation.replaceEnabled !== false,
       },
-      { scope: 'screenshotAnnotate', hotkey: settings.screenshotAnnotate?.hotkey || '', enabled: settings.screenshotAnnotate?.enabled !== false },
-      { scope: 'lens', hotkey: settings.lens?.hotkey || '', enabled: settings.lens?.enabled !== false },
+      { scope: 'screenshotAnnotate', hotkey: settings.screenshotAnnotate.hotkey, enabled: settings.screenshotAnnotate.enabled },
+      { scope: 'lens', hotkey: settings.lens.hotkey, enabled: settings.lens.enabled },
     ]
     const groups = new Map<string, HotkeyScopeKey[]>()
     for (const s of slots) {
@@ -753,7 +703,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   useEffect(() => {
     if (retryAttempts === undefined) return
-    setRetryAttemptsInput(String(retryAttempts ?? 3))
+    setRetryAttemptsInput(String(retryAttempts))
   }, [retryAttempts])
 
   const uiFontScale = settings?.uiFontScale
@@ -989,22 +939,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     if (value.trim() === '') return
     const parsed = Number.parseInt(value, 10)
     if (Number.isNaN(parsed)) return
-    const clamped = Math.min(5, Math.max(1, parsed))
+    const clamped = Math.min(8, Math.max(1, parsed))
     updateSettings({ retryAttempts: clamped })
   }
 
   const handleRetryAttemptsBlur = () => {
     if (!settings) return
     if (retryAttemptsInput.trim() === '') {
-      setRetryAttemptsInput(String(settings.retryAttempts ?? 3))
+      setRetryAttemptsInput(String(settings.retryAttempts))
       return
     }
     const parsed = Number.parseInt(retryAttemptsInput, 10)
     if (Number.isNaN(parsed)) {
-      setRetryAttemptsInput(String(settings.retryAttempts ?? 3))
+      setRetryAttemptsInput(String(settings.retryAttempts))
       return
     }
-    const clamped = Math.min(5, Math.max(1, parsed))
+    const clamped = Math.min(8, Math.max(1, parsed))
     setRetryAttemptsInput(String(clamped))
     if (clamped !== settings.retryAttempts) {
       updateSettings({ retryAttempts: clamped })
@@ -1087,9 +1037,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   ) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.defaultModels || defaultDefaultModels(prev.chatProviderId, prev.chatModel)
       const defaultModels = {
-        ...current,
+        ...prev.defaultModels,
         [key]: { providerId, model },
       }
       return {
@@ -1103,21 +1052,19 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const updateChatTools = useCallback((updates: Partial<ChatToolsConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.chatTools || defaultChatTools()
-      return { ...prev, chatTools: { ...current, ...updates } }
+      return { ...prev, chatTools: { ...prev.chatTools, ...updates } }
     })
   }, [])
 
   const updateNativeTools = useCallback((updates: Partial<ChatNativeToolsConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const chatTools = prev.chatTools || defaultChatTools()
+      const chatTools = prev.chatTools
       return {
         ...prev,
         chatTools: {
           ...chatTools,
           nativeTools: {
-            ...defaultNativeTools(),
             ...chatTools.nativeTools,
             ...updates,
           },
@@ -1197,6 +1144,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       enabledModels: [],
       enabled: true,
       apiFormat: 'openai_chat',
+      request: createProviderRequestDraft(),
     }
     setSettings({
       ...settings,
@@ -1218,7 +1166,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       enabledModels: [],
       enabled: true,
       apiFormat: preset.apiFormat ?? 'openai_chat',
-      request: preset.oauth ? { oauth: { provider: preset.oauth } } : undefined,
+      request: createProviderRequestDraft(preset.oauth),
     }
     setSettings({
       ...settings,
@@ -1455,19 +1403,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const updateScreenshotTranslation = useCallback((updates: Partial<SettingsData['screenshotTranslation']>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.screenshotTranslation || {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+A',
-        textHotkey: 'CommandOrControl+Shift+T',
-        providerId: 'default-ocr',
-        model: '',
-        directTranslate: false,
-        thinkingEnabled: false,
-        streamEnabled: true,
-        ocrMode: 'cloud_vision',
-        prompt: ''
-      }
-      return { ...prev, screenshotTranslation: { ...current, ...updates } }
+      return { ...prev, screenshotTranslation: { ...prev.screenshotTranslation, ...updates } }
     })
   }, [])
 
@@ -1477,11 +1413,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const updateScreenshotAnnotate = useCallback((updates: Partial<NonNullable<SettingsData['screenshotAnnotate']>>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.screenshotAnnotate || {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+S',
-      }
-      return { ...prev, screenshotAnnotate: { ...current, ...updates } }
+      return { ...prev, screenshotAnnotate: { ...prev.screenshotAnnotate, ...updates } }
     })
   }, [])
 
@@ -1491,69 +1423,33 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const updateLens = useCallback((updates: Partial<SettingsData['lens']>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.lens || {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+G',
-        providerId: '',
-        model: '',
-        defaultLanguage: '',
-        streamEnabled: true,
-        thinkingEnabled: true,
-        systemPrompt: '',
-        questionPrompt: '',
-        sendToChat: true,
-        messageOrder: 'asc' as const,
-        showCaptureHint: true,
-        webSearch: {
-          enabled: false,
-          provider: 'tavily' as const,
-          tavilyApiKey: '',
-          exaApiKey: '',
-          maxResults: 5,
-          searchDepth: 'basic' as const,
-        },
-      }
-      return { ...prev, lens: { ...current, ...updates } }
+      return { ...prev, lens: { ...prev.lens, ...updates } }
     })
   }, [])
 
   const updateChat = useCallback((updates: Partial<NonNullable<SettingsData['chat']>>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.chat || defaultChatConfig()
-      return { ...prev, chat: { ...current, ...updates } }
+      return { ...prev, chat: { ...prev.chat, ...updates } }
     })
   }, [])
 
   const updateChatMemory = useCallback((updates: Partial<ChatMemoryConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const current = prev.chatMemory || defaultChatMemory()
-      return { ...prev, chatMemory: { ...current, ...updates } }
+      return { ...prev, chatMemory: { ...prev.chatMemory, ...updates } }
     })
   }, [])
 
   const updateLensWebSearch = useCallback((updates: Partial<NonNullable<SettingsData['lens']['webSearch']>>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const currentLens = prev.lens || {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+G',
-      }
-      const currentWebSearch = currentLens.webSearch || {
-        enabled: false,
-        provider: 'tavily' as const,
-        tavilyApiKey: '',
-        exaApiKey: '',
-        maxResults: 5,
-        searchDepth: 'basic' as const,
-      }
       return {
         ...prev,
         lens: {
-          ...currentLens,
+          ...prev.lens,
           webSearch: {
-            ...currentWebSearch,
+            ...prev.lens.webSearch!,
             ...updates,
           },
         },
@@ -1632,28 +1528,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const toggleRecording = (target: HotkeyScopeKey) => {
     setRecordingTarget((current) => (current === target ? null : target))
   }
-
-  // 当前语言对应的默认 lens 提示词
-  const lensDefaults = defaultPrompts?.lensPrompts?.[settings?.lens?.defaultLanguage === 'en' ? 'en' : 'zh']
-  const chatLangKey = settings?.chat?.defaultLanguage === 'en' ? 'en' : 'zh'
-  const chatDefaults = defaultPrompts?.chatPrompts?.[chatLangKey]
-  const chatRuntimeDefaults = defaultPrompts?.chatRuntimePrompt
-  const chatConfig = settings?.chat || defaultChatConfig()
-  const chatMemory = settings?.chatMemory || defaultChatMemory()
-  const chatFallbackMaxOutputTokens = chatConfig.maxOutputTokens ?? 16384
-  const effectiveChatMaxOutput = settings
-    ? resolveEffectiveChatMaxOutput(settings, chatFallbackMaxOutputTokens)
-    : { maxOutput: chatFallbackMaxOutputTokens, source: 'fallback' as const, model: '', provider: undefined }
-  const chatMaxOutputSourceLabel = effectiveChatMaxOutput.source === 'override'
-    ? (lang === 'zh' ? '模型参数' : 'Model override')
-    : effectiveChatMaxOutput.source === 'database'
-      ? (lang === 'zh' ? '内置模型库' : 'Model database')
-      : (lang === 'zh' ? '兜底设置' : 'Fallback setting')
-  const chatMaxOutputModelLabel = effectiveChatMaxOutput.model
-    ? (effectiveChatMaxOutput.provider?.name
-      ? `${effectiveChatMaxOutput.provider.name} / ${effectiveChatMaxOutput.model}`
-      : effectiveChatMaxOutput.model)
-    : (lang === 'zh' ? '未配置聊天模型' : 'No chat model configured')
 
   // 快捷键录制监听
   useEffect(() => {
@@ -1737,6 +1611,27 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       </div>
     )
   }
+
+  // These values come from the canonical backend response. Do not synthesize persisted defaults
+  // in the webview: legacy omissions are migrated before get_settings returns.
+  const lensDefaults = defaultPrompts?.lensPrompts?.[settings.lens.defaultLanguage === 'en' ? 'en' : 'zh']
+  const chatLangKey = settings.chat.defaultLanguage === 'en' ? 'en' : 'zh'
+  const chatDefaults = defaultPrompts?.chatPrompts?.[chatLangKey]
+  const chatRuntimeDefaults = defaultPrompts?.chatRuntimePrompt
+  const chatConfig = settings.chat
+  const themeColor = settings.themeColor
+  const chatMemory = settings.chatMemory
+  const effectiveChatMaxOutput = resolveEffectiveChatMaxOutput(settings, chatConfig.maxOutputTokens)
+  const chatMaxOutputSourceLabel = effectiveChatMaxOutput.source === 'override'
+    ? (lang === 'zh' ? '模型参数' : 'Model override')
+    : effectiveChatMaxOutput.source === 'database'
+      ? (lang === 'zh' ? '内置模型库' : 'Model database')
+      : (lang === 'zh' ? '兜底设置' : 'Fallback setting')
+  const chatMaxOutputModelLabel = effectiveChatMaxOutput.model
+    ? (effectiveChatMaxOutput.provider?.name
+      ? `${effectiveChatMaxOutput.provider.name} / ${effectiveChatMaxOutput.model}`
+      : effectiveChatMaxOutput.model)
+    : (lang === 'zh' ? '未配置聊天模型' : 'No chat model configured')
 
   const navItems = [
     { id: 'general' as const, label: t.tabGeneral, icon: GeneralIcon },
@@ -2073,7 +1968,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 t={t}
                 lang={lang}
                 chatConfig={chatConfig}
-                chatTools={chatTools}
+                chatTools={settings.chatTools}
                 chatMemory={chatMemory}
                 chatDefaults={chatDefaults}
                 chatRuntimeDefaults={chatRuntimeDefaults}
@@ -2117,7 +2012,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 settings={settings}
                 t={t}
                 lang={lang}
-                chatTools={chatTools}
+                chatTools={settings.chatTools}
                 hasChatProvider={Boolean(chatProvider)}
                 defaultPromptOptimize={defaultPrompts?.promptOptimizePrompts?.[lang] ?? ''}
                 onUpdateDefaultModel={updateDefaultModel}
@@ -2135,14 +2030,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             )}
 
             {activeTab === 'computerControl' && (
-              <ComputerControlTab lang={lang} tools={settings.chatTools || defaultChatTools()} onChange={updateChatTools} />
+              <ComputerControlTab lang={lang} tools={settings.chatTools} onChange={updateChatTools} />
             )}
 
             {/* ===== Hooks 标签页（对话生命周期） ===== */}
             {activeTab === 'hooks' && (
               <HooksTab
                 lang={lang}
-                hooks={chatTools.hooks ?? []}
+                hooks={settings.chatTools.hooks ?? []}
                 onChange={(hooks) => updateChatTools({ hooks })}
               />
             )}
@@ -2155,7 +2050,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 lang={lang}
                 connectors={
                   <ConnectorsPanel
-                    servers={chatTools.servers}
+                    servers={settings.chatTools.servers}
                     updateChatTools={updateChatTools}
                     obsidianVaultPath={settings?.obsidianVaultPath ?? ''}
                     onObsidianVaultPathChange={(path) => updateSettings({ obsidianVaultPath: path })}
@@ -2226,7 +2121,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 ) : (
                   <RequestDebugPanel
                     lang={lang}
-                    enabled={chatTools.requestDebugEnabled ?? false}
+                    enabled={settings.chatTools.requestDebugEnabled ?? false}
                     onToggleEnabled={(v) => updateChatTools({ requestDebugEnabled: v })}
                   />
                 )}

@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { ProviderRequestPanel } from './ProviderRequestPanel'
 import { makeProvider } from './tabs/testFixtures'
 import { i18n } from './i18n'
-import { resolvePromptCacheRetention } from '../api/tauri'
 
 const t = i18n.zh
 
@@ -24,27 +23,6 @@ function renderPanel(overrides: Partial<Parameters<typeof makeProvider>[0]> = {}
   )
   return { onUpdateProvider, provider }
 }
-
-describe('resolvePromptCacheRetention', () => {
-  it('defaults to short and migrates legacy bool only when retention invalid', () => {
-    expect(resolvePromptCacheRetention(undefined)).toBe('short')
-    expect(resolvePromptCacheRetention({})).toBe('short')
-    expect(resolvePromptCacheRetention({ promptCaching: false })).toBe('none')
-    expect(resolvePromptCacheRetention({ promptCaching: true })).toBe('short')
-    expect(resolvePromptCacheRetention({ promptCacheRetention: 'long' })).toBe('long')
-    expect(resolvePromptCacheRetention({ promptCacheRetention: 'none' })).toBe('none')
-    // 合法 retention 优先于遗留 bool（与 Rust sanitize 同序）
-    expect(
-      resolvePromptCacheRetention({ promptCaching: false, promptCacheRetention: 'long' }),
-    ).toBe('long')
-    expect(
-      resolvePromptCacheRetention({ promptCaching: true, promptCacheRetention: 'none' }),
-    ).toBe('none')
-    expect(
-      resolvePromptCacheRetention({ promptCaching: false, promptCacheRetention: '???' }),
-    ).toBe('none')
-  })
-})
 
 describe('ProviderRequestPanel', () => {
   it('renders every section of the page', () => {
@@ -72,7 +50,7 @@ describe('ProviderRequestPanel', () => {
   })
 
   it('disables retention control on protocols with no cache field', () => {
-    for (const apiFormat of ['gemini', 'xai_responses']) {
+    for (const apiFormat of ['gemini', 'xai_responses'] as const) {
       cleanup()
       renderPanel({ apiFormat })
       expect(screen.getByText(t.promptCachingUnsupported), apiFormat).toBeTruthy()

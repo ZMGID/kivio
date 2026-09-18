@@ -14,12 +14,7 @@ import {
   type HeaderIssue,
   type ProviderCustomHeader,
 } from './providerRequest'
-import {
-  normalizeProviderApiFormat,
-  promptCachingSupported,
-  resolvePromptCacheRetention,
-  type PromptCacheRetention,
-} from '../api/tauri'
+import { promptCachingSupported, type PromptCacheRetention } from '../api/tauri'
 import type { I18n, Lang } from './i18n'
 import type { ModelProvider, ProviderRequestConfig } from '../api/tauri'
 
@@ -66,8 +61,8 @@ export function ProviderRequestPanel({
   const [importText, setImportText] = useState('')
   const [importError, setImportError] = useState<string | null>(null)
   const [importSummary, setImportSummary] = useState<string | null>(null)
-  const config = provider.request ?? {}
-  const headers = config.customHeaders ?? []
+  const config = provider.request
+  const headers = config.customHeaders
 
   // 行的身份用稳定 uid，不用 index。删掉中间一行、或导入时折叠了重复行，index 全会重排——
   // 「这行动过没有」「这行是不是存过盘的」跟着挪到别人身上，表现就是刚点出来的空行立刻飘红。
@@ -88,11 +83,11 @@ export function ProviderRequestPanel({
   // 进入本页时就存在的那批行是存过盘的，一进来就该校验。
   const [initialUids] = useState(() => new Set(uids.current))
 
-  const apiFormat = normalizeProviderApiFormat(provider.apiFormat)
+  const apiFormat = provider.apiFormat
   const isAnthropic = apiFormat === 'anthropic_messages'
   // 三态 none|short|long（对齐 pi）。Gemini / xAI 无可发字段，选择器禁用。
   const cachingSupported = promptCachingSupported(provider.apiFormat)
-  const retention = resolvePromptCacheRetention(config)
+  const retention = config.promptCacheRetention
 
   const patch = (updates: Partial<ProviderRequestConfig>) =>
     onUpdateProvider(provider.id, { request: { ...config, ...updates } })
@@ -125,8 +120,8 @@ export function ProviderRequestPanel({
   }
 
   // 身份预设与自定义头可能都写了 User-Agent，用户得看得见最后哪条赢。
-  const ua = effectiveUserAgent(headers, config.cliIdentity ?? '', config.cliIdentityVersion ?? '')
-  const rawVersion = (config.cliIdentityVersion ?? '').trim()
+  const ua = effectiveUserAgent(headers, config.cliIdentity, config.cliIdentityVersion)
+  const rawVersion = config.cliIdentityVersion.trim()
   const versionIssue = rawVersion !== '' && !isValidHeaderValue(rawVersion)
 
   const identityOptions = [
@@ -171,7 +166,7 @@ export function ProviderRequestPanel({
       <SettingRow label={t.useSystemProxy} description={t.useSystemProxyHint}>
         <Toggle
           ariaLabel={t.useSystemProxy}
-          checked={config.useSystemProxy !== false}
+          checked={config.useSystemProxy}
           onChange={(useSystemProxy) => patch({ useSystemProxy })}
         />
       </SettingRow>
@@ -192,7 +187,7 @@ export function ProviderRequestPanel({
           value={cachingSupported ? retention : 'none'}
           disabled={!cachingSupported}
           onChange={(promptCacheRetention) =>
-            patch({ promptCacheRetention, promptCaching: null })
+            patch({ promptCacheRetention: promptCacheRetention as PromptCacheRetention, promptCaching: null })
           }
           options={RETENTION_OPTIONS.map((value) => ({
             value,
@@ -221,7 +216,7 @@ export function ProviderRequestPanel({
       <SettingRow label={t.cliIdentity} description={t.cliIdentityHint}>
         <Select
           className="w-40"
-          value={config.cliIdentity ?? ''}
+          value={config.cliIdentity}
           onChange={(cliIdentity) => patch({ cliIdentity })}
           options={identityOptions}
         />
@@ -229,7 +224,7 @@ export function ProviderRequestPanel({
       {config.cliIdentity ? (
         <FieldBlock label={t.cliIdentityVersion}>
           <Input
-            value={config.cliIdentityVersion ?? ''}
+            value={config.cliIdentityVersion}
             onChange={(cliIdentityVersion) => patch({ cliIdentityVersion })}
             placeholder={CLI_IDENTITY_BUILTIN_VERSIONS[config.cliIdentity] ?? ''}
             className={versionIssue ? '!border-red-500' : ''}

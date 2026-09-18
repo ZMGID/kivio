@@ -49,6 +49,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Architecture boundaries
+        run: npm run architecture:check
+
       # typecheck 本身就串了 protocol:check（见 package.json），生成物漂移在这一步拦住。
       - name: Typecheck
         run: npm run typecheck

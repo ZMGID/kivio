@@ -1,0 +1,26 @@
+/*
+ * Canonical application stylesheet entry.
+ *
+ * Imports intentionally follow the exact line order of the former monolithic index.css.
+ * A domain can therefore own more than one numbered fragment when another domain appeared
+ * between its rules. Reordering these imports is a cascade change and requires visual review.
+ */
+@import "../index.css";
+/* Former index.css 205-500: cross-window surfaces, markdown primitives, scrollbars. */
+@import "./shared-surfaces.css";
+/* Former index.css 501-552: Settings-owned card and control primitives. */
+@import "./settings-controls.css";
+/* Former index.css 553-594: shared Translate/Lens effects and Chat host reset. */
+@import "./window-effects.css";
+/* Former index.css 595-3032: Chat-owned main window, composer, messages, and motion. */
+@import "./chat-01-main.css";
+/* Former index.css 3033-3639: Settings-owned embedded shell. */
+@import "./settings-01-embedded.css";
+/* Former index.css 3640-3875: Chat-owned titlebar and platform window controls. */
+@import "./chat-02-titlebar.css";
+/* Former index.css 3876-8236: Settings-owned pages, dialogs, and onboarding. */
+@import "./settings-02-pages.css";
+/* Former index.css 8237-8274: Notes-owned Milkdown editor integration. */
+@import "./notes-editor.css";
+/* Former index.css 8275-8401: Chat-owned selection and loading overlays. */
+@import "./chat-03-overlays.css";

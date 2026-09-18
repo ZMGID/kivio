@@ -3,12 +3,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ChevronDown, FolderOpen, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
-import { McpIcon } from '../settings/NavIcons'
-import { useLang, useT } from '../settings/i18n'
+import { McpIcon } from '../settings/public/icons'
+import { useLang, useT } from '../settings/public/i18n'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   api,
-  defaultNativeTools,
   type ChatMcpServer,
   type ChatNativeToolsConfig,
   type ChatToolsConfig,
@@ -17,7 +16,7 @@ import {
   type Settings,
 } from '../api/tauri'
 import { peekSettings, refreshSettings, saveSettingsCached, subscribeSettings } from '../api/settingsCache'
-import { Toggle, Select, Input } from '../settings/components'
+import { Toggle, Select, Input } from '../settings/public/controls'
 import { Button, IconButton } from '../components/Button'
 import { McpRegistryBrowser } from './McpRegistryBrowser'
 import {
@@ -28,7 +27,6 @@ import {
   clampSubAgentConcurrency,
   clampToolRounds,
   clampToolTimeoutMs,
-  defaultChatTools,
   envToText,
   formatToolRoundsLabel,
   formatToolTimeoutLabel,
@@ -36,8 +34,8 @@ import {
   SUB_AGENT_CONCURRENCY_PRESETS,
   textToArgs,
   textToEnv,
-} from '../settings/chatToolsShared'
-import { adoptFreshPluginManagedServers, isPluginManagedServer, preservePluginManagedServers } from '../settings/connectorCatalog'
+} from '../settings/public/mcpTools'
+import { adoptFreshPluginManagedServers, isPluginManagedServer, preservePluginManagedServers } from '../settings/public/connectors'
 import {
   buildInstalledMcpList,
   entriesOfKind,
@@ -88,9 +86,9 @@ export function McpCenter() {
   const [query, setQuery] = useState('')
   const settingsRef = useRef<Settings | null>(null)
 
-  const chatTools = settings?.chatTools ?? defaultChatTools()
-  const servers = chatTools.servers
-  const nativeTools = chatTools.nativeTools ?? defaultNativeTools()
+  const chatTools = settings?.chatTools
+  const servers = useMemo(() => chatTools?.servers ?? [], [chatTools?.servers])
+  const nativeTools = chatTools?.nativeTools
   const installedEntries = useMemo(
     () => buildInstalledMcpList(servers, settings?.lens?.webSearch),
     [servers, settings?.lens?.webSearch],
@@ -137,12 +135,12 @@ export function McpCenter() {
     return subscribeSettings((fresh) => {
       setSettings((prev) => {
         if (!prev) return fresh
-        const prevServers = prev.chatTools?.servers ?? []
-        const nextServers = adoptFreshPluginManagedServers(prevServers, fresh.chatTools?.servers ?? [])
+        const prevServers = prev.chatTools.servers
+        const nextServers = adoptFreshPluginManagedServers(prevServers, fresh.chatTools.servers)
         if (nextServers === prevServers) return prev
         const next = {
           ...prev,
-          chatTools: { ...(prev.chatTools ?? defaultChatTools()), servers: nextServers },
+          chatTools: { ...prev.chatTools, servers: nextServers },
         }
         settingsRef.current = next
         return next
@@ -175,7 +173,7 @@ export function McpCenter() {
   const persistChatTools = useCallback((updates: Partial<ChatToolsConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
-      const next: Settings = { ...prev, chatTools: { ...(prev.chatTools ?? defaultChatTools()), ...updates } }
+      const next: Settings = { ...prev, chatTools: { ...prev.chatTools, ...updates } }
       settingsRef.current = next
       return next
     })
@@ -184,7 +182,7 @@ export function McpCenter() {
         const fresh = await refreshSettings()
         const merged: Settings = {
           ...fresh,
-          chatTools: { ...(fresh.chatTools ?? defaultChatTools()), ...updates },
+          chatTools: { ...fresh.chatTools, ...updates },
         }
         const saved = await saveSettingsCached(merged)
         settingsRef.current = saved
@@ -195,19 +193,20 @@ export function McpCenter() {
   }, [])
 
   const updateNativeTools = useCallback((updates: Partial<ChatNativeToolsConfig>) => {
-    const base = settingsRef.current?.chatTools?.nativeTools ?? defaultNativeTools()
-    persistChatTools({ nativeTools: { ...defaultNativeTools(), ...base, ...updates } })
+    const base = settingsRef.current?.chatTools.nativeTools
+    if (!base) return
+    persistChatTools({ nativeTools: { ...base, ...updates } })
   }, [persistChatTools])
 
   // 变更服务器：先读后端 fresh（保住后端 OAuth 刷新过的 token），再按 id 施加改动后整存。
   const mutateServers = useCallback(async (fn: (servers: ChatMcpServer[]) => ChatMcpServer[]) => {
     try {
       const fresh = await refreshSettings()
-      const prevServers = fresh.chatTools?.servers ?? []
+      const prevServers = fresh.chatTools.servers
       const nextServers = preservePluginManagedServers(prevServers, fn(prevServers))
       const merged: Settings = {
         ...fresh,
-        chatTools: { ...(fresh.chatTools ?? defaultChatTools()), servers: nextServers },
+        chatTools: { ...fresh.chatTools, servers: nextServers },
       }
       const saved = await saveSettingsCached(merged)
       settingsRef.current = saved
@@ -290,6 +289,7 @@ export function McpCenter() {
   }, [cliScan, cliSelected, mutateServers, t])
 
   const handleTest = useCallback(async (server: ChatMcpServer) => {
+    if (!chatTools) return
     setTestingId(server.id)
     setTestFeedback((prev) => {
       const next = { ...prev }
@@ -309,7 +309,7 @@ export function McpCenter() {
     } finally {
       setTestingId(null)
     }
-  }, [chatTools.toolTimeoutMs, t])
+  }, [chatTools, t])
 
   // OAuth 授权 remote(streamable_http) MCP：复用连接器 PKCE+DCR，把返回的 auth+Authorization 拼回本条。
   const handleOauth = useCallback(async (entry: McpInstalledEntry) => {
@@ -662,7 +662,7 @@ export function McpCenter() {
                     <div key={tool.key} className="flex items-center justify-between px-4 py-2.5">
                       <span className="text-[13px] text-neutral-800 dark:text-neutral-100">{tool.label}</span>
                       <Toggle
-                        checked={tool.defaultOn ? nativeTools[tool.key] !== false : nativeTools[tool.key] === true}
+                        checked={tool.defaultOn ? nativeTools?.[tool.key] !== false : nativeTools?.[tool.key] === true}
                         onChange={(checked) => updateNativeTools({ [tool.key]: checked } as Partial<ChatNativeToolsConfig>)}
                       />
                     </div>
@@ -674,17 +674,17 @@ export function McpCenter() {
                 <div className="mb-3 text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">{t.chatMcpToolRuntimeTitle}</div>
                 <div className="flex items-center justify-between rounded-md border border-neutral-200 px-4 py-3 dark:border-neutral-800">
                   <span className="text-[13px] text-neutral-800 dark:text-neutral-100">{t.chatMcpEnableMcp}</span>
-                  <Toggle checked={chatTools.enabled} onChange={(enabled) => persistChatTools({ enabled })} />
+                  <Toggle checked={chatTools?.enabled ?? false} onChange={(enabled) => persistChatTools({ enabled })} />
                 </div>
                 <div className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] items-stretch gap-x-4 gap-y-5">
-                  {renderRuntimeSelect(t.chatMcpApprovalPolicy, chatTools.approvalPolicy || 'auto', (approvalPolicy) => persistChatTools({ approvalPolicy }), [
+                  {renderRuntimeSelect(t.chatMcpApprovalPolicy, chatTools?.approvalPolicy || 'auto', (approvalPolicy) => persistChatTools({ approvalPolicy }), [
                     { value: 'readonly_auto_sensitive_confirm', label: t.chatMcpApprovalOnce },
                     { value: 'always_confirm', label: t.chatMcpApprovalAlways },
                     { value: 'auto', label: t.chatMcpApprovalAuto },
                   ])}
                   {renderRuntimeSelect(
                     t.chatMcpMaxToolRounds,
-                    chatTools.maxToolRounds === null ? 'unlimited' : String(clampToolRounds(chatTools.maxToolRounds)),
+                    chatTools?.maxToolRounds == null ? 'unlimited' : String(clampToolRounds(chatTools.maxToolRounds)),
                     (value) => persistChatTools({ maxToolRounds: value === 'unlimited' ? null : clampToolRounds(value) }),
                     [
                       ...CHAT_TOOL_ROUND_PRESETS.map((rounds) => ({ value: String(rounds), label: formatToolRoundsLabel(rounds, lang) })),
@@ -693,20 +693,20 @@ export function McpCenter() {
                   )}
                   {renderRuntimeSelect(
                     t.chatMcpSubagentConcurrency,
-                    String(clampSubAgentConcurrency(chatTools.subAgentConcurrency)),
+                    String(clampSubAgentConcurrency(chatTools?.subAgentConcurrency)),
                     (value) => persistChatTools({ subAgentConcurrency: clampSubAgentConcurrency(value) }),
                     SUB_AGENT_CONCURRENCY_PRESETS.map((n) => ({ value: String(n), label: String(n) })),
                   )}
                   {renderRuntimeSelect(
                     t.chatMcpToolTimeout,
-                    String(clampToolTimeoutMs(chatTools.toolTimeoutMs)),
+                    String(clampToolTimeoutMs(chatTools?.toolTimeoutMs)),
                     (value) => persistChatTools({ toolTimeoutMs: clampToolTimeoutMs(value) }),
                     CHAT_TOOL_TIMEOUT_PRESETS_MS.map((ms) => ({ value: String(ms), label: formatToolTimeoutLabel(ms, lang) })),
                     t.chatMcpToolTimeoutDesc,
                   )}
                   {renderRuntimeSelect(
                     t.chatMcpIdleTimeout,
-                    String(clampMcpIdleTimeoutMs(chatTools.mcpIdleTimeoutMs)),
+                    String(clampMcpIdleTimeoutMs(chatTools?.mcpIdleTimeoutMs)),
                     (value) => persistChatTools({ mcpIdleTimeoutMs: clampMcpIdleTimeoutMs(value) }),
                     MCP_IDLE_TIMEOUT_PRESETS_MS.map((ms) => ({ value: String(ms), label: formatToolTimeoutLabel(ms, lang) })),
                     t.chatMcpIdleTimeoutDesc,

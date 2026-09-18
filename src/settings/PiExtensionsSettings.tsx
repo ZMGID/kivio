@@ -11,11 +11,11 @@ import {
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
-  chatApi,
+  piExtensionsSettingsApi,
   type PiExtensionInventory,
   type PiExtensionPackage,
   type PiLocalExtension,
-} from '../chat/api'
+} from '../chat/public/piExtensionsSettings'
 import { Button, IconButton } from '../components/Button'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from './i18n'
@@ -40,7 +40,7 @@ export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () 
     setLoading(true)
     setError(null)
     try {
-      setInventory(await chatApi.piExtensionsInventory())
+      setInventory(await piExtensionsSettingsApi.piExtensionsInventory())
     } catch (nextError) {
       setError(errorMessage(nextError))
       setInventory(null)
@@ -74,7 +74,7 @@ export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () 
     const value = source.trim()
     if (!value) return
     await runAction('install', async () => {
-      const response = await chatApi.piExtensionInstall(value)
+      const response = await piExtensionsSettingsApi.piExtensionInstall(value)
       setSource('')
       return response
     })
@@ -125,14 +125,14 @@ export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () 
         <IconButton
           size="sm"
           label={t.externalAgentsPiExtensionsOpenDir}
-          onClick={() => void chatApi.piExtensionsOpenDir()}
+          onClick={() => void piExtensionsSettingsApi.piExtensionsOpenDir()}
         >
           <FolderOpen size={13} />
         </IconButton>
         <Button
           size="sm"
           disabled={busy !== null || !inventory?.packages.length}
-          onClick={() => void runAction('update-all', () => chatApi.piExtensionUpdate())}
+          onClick={() => void runAction('update-all', () => piExtensionsSettingsApi.piExtensionUpdate())}
         >
           <RefreshCw size={12} className={busy === 'update-all' ? 'animate-spin' : ''} />
           {busy === 'update-all'
@@ -296,7 +296,7 @@ function PackageRow({
   const remove = () => {
     if (!window.confirm(t.externalAgentsPiExtensionsRemoveConfirm.replace('{name}', item.name)))
       return
-    void onRun(actionKey, () => chatApi.piExtensionRemove(item.source))
+    void onRun(actionKey, () => piExtensionsSettingsApi.piExtensionRemove(item.source))
   }
   return (
     <div className="kv-row kv-pi-extension-row">
@@ -324,7 +324,7 @@ function PackageRow({
               disabled={busy !== null}
               onChange={(enabled) =>
                 void onRun(actionKey, () =>
-                  chatApi.piExtensionSetEnabled('package', item.source, enabled),
+                  piExtensionsSettingsApi.piExtensionSetEnabled('package', item.source, enabled),
                 )
               }
               ariaLabel={`${item.name} ${t.externalAgentsEnable}`}
@@ -339,7 +339,7 @@ function PackageRow({
           size="sm"
           label={t.externalAgentsPiExtensionsOpen}
           disabled={!item.path || busy !== null}
-          onClick={() => void chatApi.piExtensionOpen('package', item.source)}
+          onClick={() => void piExtensionsSettingsApi.piExtensionOpen('package', item.source)}
         >
           <FolderOpen size={13} />
         </IconButton>
@@ -347,7 +347,7 @@ function PackageRow({
           size="sm"
           label={t.externalAgentsPiExtensionsUpdate}
           disabled={busy !== null}
-          onClick={() => void onRun(actionKey, () => chatApi.piExtensionUpdate(item.source))}
+          onClick={() => void onRun(actionKey, () => piExtensionsSettingsApi.piExtensionUpdate(item.source))}
         >
           <RefreshCw size={13} className={working ? 'animate-spin' : ''} />
         </IconButton>
@@ -397,7 +397,7 @@ function LocalExtensionRow({
           disabled={busy !== null}
           onChange={(enabled) =>
             void onRun(actionKey, () =>
-              chatApi.piExtensionSetEnabled('local', item.relativePath, enabled),
+              piExtensionsSettingsApi.piExtensionSetEnabled('local', item.relativePath, enabled),
             )
           }
           ariaLabel={`${item.name} ${t.externalAgentsEnable}`}
@@ -406,7 +406,7 @@ function LocalExtensionRow({
           size="sm"
           label={t.externalAgentsPiExtensionsOpen}
           disabled={busy !== null}
-          onClick={() => void chatApi.piExtensionOpen('local', item.relativePath)}
+          onClick={() => void piExtensionsSettingsApi.piExtensionOpen('local', item.relativePath)}
         >
           <FolderOpen size={13} />
         </IconButton>

@@ -50,7 +50,10 @@ pub fn is_provider(p: &ModelProvider) -> bool {
 
 pub(crate) fn model_includes_effort(model: &str) -> bool {
     model.trim().rsplit_once('-').is_some_and(|(_, suffix)| {
-        matches!(suffix.to_ascii_lowercase().as_str(), "low" | "medium" | "high")
+        matches!(
+            suffix.to_ascii_lowercase().as_str(),
+            "low" | "medium" | "high"
+        )
     })
 }
 pub fn unwrap_response(mut value: Value) -> Value {

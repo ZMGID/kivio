@@ -1,7 +1,7 @@
 import { useLayoutEffect, useState } from 'react'
 import { Scissors } from 'lucide-react'
 import { formatTokens } from '../utils/tokens'
-import { i18n, type Lang } from '../settings/i18n'
+import { i18n, type Lang } from '../settings/public/i18n'
 import {
   compactionRecordTokens,
   compactionTriggerLabel,

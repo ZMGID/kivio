@@ -707,7 +707,10 @@ fn spawn_open_command(target: &Path, kind: &str, mode: &str) -> Result<(), Strin
     let target_text = if let Some(unc) = target_text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{unc}")
     } else {
-        target_text.strip_prefix(r"\\?\").unwrap_or(&target_text).to_string()
+        target_text
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&target_text)
+            .to_string()
     };
     let mut command = Command::new("explorer.exe");
     if mode == "reveal" && kind == "file" {

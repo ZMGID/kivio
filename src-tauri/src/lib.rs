@@ -14,21 +14,21 @@ pub mod external_agents;
 pub mod fonts;
 pub mod lens;
 pub mod lens_commands;
+#[cfg(any(target_os = "macos", test))]
+mod macos_hang_watchdog;
 #[cfg(target_os = "macos")]
 pub mod macos_ocr;
 pub mod mcp;
 pub mod native_tools;
 pub mod notes;
 pub mod offline_models;
+mod opencode_free;
 pub mod path_env;
 pub mod plugins;
 pub mod proc;
-#[cfg(any(target_os = "macos", test))]
-mod macos_hang_watchdog;
 pub mod prompts;
-pub mod provider_request;
 pub mod provider_oauth;
-mod opencode_free;
+pub mod provider_request;
 pub mod rapidocr;
 pub mod replace_translation;
 #[cfg(target_os = "macos")]

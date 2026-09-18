@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AskUserBlock } from './AskUserBlock'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
+import { api } from '../api/tauri'
+import mcpContract from './fixtures/ask-user-mcp-contract.json'
 import type { ToolCallRecord } from './types'
 
 /** 待答的问用户卡片。`variant="docked"` 是吊在输入框上方的那张（用户在这里作答）；
@@ -30,6 +32,152 @@ const RETRY_QUESTION = {
 }
 
 describe('AskUserBlock', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('round-trips the Rust MCP contract fixture through the form without losing optional or typed values', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: mcpContract.expectedQuestions, answers: {},
+    })} />)
+    fireEvent.click(screen.getByRole('option', { name: /否/ }))
+    expect(screen.getByText('environment')).toBeInTheDocument()
+    expect(screen.getByText('提交')).toBeDisabled()
+    fireEvent.click(screen.getByLabelText('下一题'))
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: 'draft' } })
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '' } })
+    fireEvent.click(screen.getByLabelText('下一题'))
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '0' } })
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', mcpContract.answers, false))
+  })
+
+  it('renders a schema enum with only one legal choice', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [{
+        id: 'mode', prompt: '工作模式', options: [{ id: '0', label: '只读' }], required: true,
+        valueSchema: { type: 'string', enum: ['readonly'] },
+      }], answers: {},
+    })} />)
+    fireEvent.click(screen.getByRole('option', { name: /只读/ }))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      mode: { selected_option_ids: ['0'], custom_text: null },
+    }, false))
+  })
+
+  it('preserves a rejected draft for correction and submits zero and false without treating them as missing', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice')
+      .mockRejectedValueOnce(new Error('count: expected a finite number'))
+      .mockResolvedValue(undefined)
+    const resolved = vi.fn()
+    const payload = {
+      phase: 'awaiting', questions: [
+        { id: 'count', prompt: '数量', options: [], allow_custom: true, required: true, valueSchema: { type: 'number' } },
+        { id: 'enabled', prompt: '是否启用', required: true, options: [{ id: 'true', label: '是' }, { id: 'false', label: '否' }], valueSchema: { type: 'boolean' } },
+      ], answers: {},
+    }
+    const { rerender } = render(<AskUserBlock variant="docked" toolCall={askUserCall(payload)} onResolved={resolved} />)
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: 'invalid' } })
+    fireEvent.click(screen.getByLabelText('下一题'))
+    fireEvent.click(screen.getByText('否'))
+    fireEvent.click(screen.getByText('提交'))
+    await screen.findByText('count: expected a finite number')
+    expect(resolved).not.toHaveBeenCalled()
+    rerender(<AskUserBlock variant="docked" toolCall={askUserCall({ ...payload })} onResolved={resolved} />)
+    expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByLabelText('上一题'))
+    expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('invalid')
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '0' } })
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenLastCalledWith('tool-1', {
+      count: { selected_option_ids: [], custom_text: '0' },
+      enabled: { selected_option_ids: ['false'], custom_text: null },
+    }, false))
+    expect(resolved).toHaveBeenCalledOnce()
+  })
+
+  it('keeps historical questions without required mandatory', () => {
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [RETRY_QUESTION, { ...RETRY_QUESTION, id: 'next' }], answers: {},
+    })} />)
+    expect(screen.getByLabelText('下一题')).toBeDisabled()
+    expect(screen.getByText('提交')).toBeDisabled()
+  })
+
+  it('sends only one response when an answer and cancellation arrive in the same render batch', async () => {
+    let finish: (() => void) | undefined
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve }))
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
+    })} />)
+    act(() => {
+      fireEvent.click(screen.getAllByRole('option')[0])
+      fireEvent.click(screen.getByLabelText('跳过这次询问'))
+    })
+    const responseCount = submit.mock.calls.length
+    await act(async () => finish?.())
+    expect(responseCount).toBe(1)
+  })
+
+  it('distinguishes an explicitly edited empty string from an omitted optional string', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [{
+        id: 'note', prompt: '补充说明', options: [], allow_custom: true, required: false,
+        value_schema: { type: 'string' },
+      }], answers: {},
+    })} />)
+    const input = screen.getByPlaceholderText('自己写一个…')
+    fireEvent.change(input, { target: { value: 'draft' } })
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      note: { selected_option_ids: [], custom_text: '' },
+    }, false))
+    submit.mockRestore()
+  })
+
+  it('explicitly accepts an all-optional form with an empty object without applying schema defaults', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting',
+      questions: [{
+        id: 'note', prompt: '补充说明', options: [], allow_custom: true, required: false,
+        valueSchema: { type: 'string', default: '自动填入' },
+      }],
+      answers: {},
+    })} />)
+    expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('')
+    expect(submit).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {}, false))
+    submit.mockRestore()
+  })
+
+  it('allows skipping an optional middle question and omits it from the submitted answers', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting',
+      questions: [
+        RETRY_QUESTION,
+        { id: 'note', prompt: '补充说明', options: [], allow_custom: true, required: false },
+        { id: 'last', prompt: '确认方案', options: RETRY_QUESTION.options },
+      ],
+      answers: {},
+    })} />)
+    fireEvent.click(screen.getAllByRole('option')[0])
+    expect(screen.getByLabelText('下一题')).toBeEnabled()
+    expect(screen.getByText('提交')).toBeDisabled()
+    fireEvent.click(screen.getByLabelText('下一题'))
+    fireEvent.click(screen.getAllByRole('option')[1])
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      '0': { selected_option_ids: ['0'], custom_text: null },
+      last: { selected_option_ids: ['1'], custom_text: null },
+    }, false))
+    submit.mockRestore()
+  })
+
   it('answers asynchronous inline cards through ordinary messages without stealing focus', async () => {
     const reply = vi.fn().mockResolvedValue(undefined)
     render(<AsyncQuestionsContext.Provider value={{ closedIds: new Set(), reply }}>

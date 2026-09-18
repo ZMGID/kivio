@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { LangContext } from '../settings/i18n'
+import { LangContext } from '../settings/public/i18n'
 
 type ResizeEvent = { payload: { width: number; height: number } }
 

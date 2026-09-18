@@ -2,15 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, type ModelProvider, type Settings } from '../api/tauri'
 import { applyModelCatalog } from '../data/modelCatalog'
-import { ProviderModelsPicker } from '../settings/ProviderModelsPicker'
-import { ModelPairSelect } from '../settings/ModelPairSelect'
+import { ModelPairSelect, ProviderModelsPicker } from '../settings/public/modelSelection'
 import { Button, IconButton } from '../components/Button'
-import { Input, Label } from '../settings/components'
-import type { I18n } from '../settings/i18n'
-import type { Lang } from '../settings/i18n'
-import { PROVIDER_PRESETS, type ProviderPreset } from '../settings/providerPresets'
-import { isProviderEnabled } from '../settings/utils'
-import { ProviderIcon } from '../chat/ModelIcon'
+import { Input, Label } from '../settings/public/controls'
+import type { I18n, Lang } from '../settings/public/i18n'
+import { PROVIDER_PRESETS, type ProviderPreset } from '../settings/public/modelSelection'
+import { isProviderEnabled } from '../settings/public/providers'
+import { ProviderIcon } from '../chat/public/modelIcons'
+import { createProviderRequestDraft } from '../settings/public/providerDraft'
 
 type ProviderSetupPanelProps = {
   t: I18n
@@ -81,6 +80,7 @@ function freshCustomProvider(id: string, lang: Lang, index: number): ModelProvid
     enabledModels: [],
     enabled: true,
     apiFormat: 'openai_chat',
+    request: createProviderRequestDraft(),
   }
 }
 
@@ -94,6 +94,7 @@ function freshPresetProvider(preset: ProviderPreset, id: string): ModelProvider 
     enabledModels: [],
     enabled: true,
     apiFormat: preset.apiFormat ?? 'openai_chat',
+    request: createProviderRequestDraft(preset.oauth),
   }
 }
 

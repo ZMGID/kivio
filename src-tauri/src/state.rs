@@ -2,19 +2,17 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
+        atomic::{AtomicI32, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
     },
     time::{Duration, Instant},
 };
 
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
+use serde::Serialize;
 
 #[cfg(target_os = "macos")]
 use crate::macos_ocr::MacOcrClient;
-use crate::mcp::manager::McpSession;
 use crate::mcp::types::McpTool;
 use crate::offline_models::OfflineModelManager;
 use crate::rapidocr::RapidOcrClient;
@@ -27,33 +25,6 @@ pub struct PendingChatExternalAttachment {
     pub r#type: String,
     pub name: String,
     pub path: String,
-}
-
-/// 一条挂起的会话级授权。run_id 用来在应答/取消/超时时撤掉快照里的授权卡。
-#[derive(Debug)]
-pub struct PendingSessionConsent {
-    pub run_id: String,
-    pub sender: oneshot::Sender<bool>,
-}
-
-/// 一条挂起的敏感工具审批。除 sender 外还带上 conversation_id + 工具名，因为
-/// 「总是允许」是在响应命令（只拿到 tool_call_id）里落表的，得知道往哪条键上记。
-#[derive(Debug)]
-pub struct PendingToolApproval {
-    pub conversation_id: String,
-    pub tool_name: String,
-    pub sender: oneshot::Sender<ToolApprovalOutcome>,
-}
-
-/// 用户对一张审批卡的答复。
-///
-/// 绝大多数审批只有「允许 / 拒绝」，`permission_mode` 恒为 `None`。它存在的唯一理由是
-/// claude 的计划批准（`ExitPlanMode`）：那张卡是**三选一**（批准并自动放行 / 批准但逐步
-/// 确认 / 拒绝），选哪一档决定了批准之后要把 CLI 切到哪个权限模式。
-#[derive(Debug, Clone, Default)]
-pub struct ToolApprovalOutcome {
-    pub approved: bool,
-    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug)]
@@ -82,59 +53,27 @@ pub struct PendingChatExternalSend {
     pub messages: Vec<PendingChatExternalMessage>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpToolSnapshot {
-    pub config_fingerprint: String,
-    pub tools: Vec<McpTool>,
-}
-
-fn mcp_tool_snapshot_path(usage_dir: &std::path::Path) -> PathBuf {
-    usage_dir.join("mcp-tool-snapshots.json")
-}
-
-fn load_mcp_tool_snapshots(usage_dir: &std::path::Path) -> HashMap<String, McpToolSnapshot> {
-    let path = mcp_tool_snapshot_path(usage_dir);
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return HashMap::new();
-    };
-    match serde_json::from_str(&content) {
-        Ok(snapshots) => snapshots,
-        Err(err) => {
-            eprintln!(
-                "Failed to load MCP tool snapshots from {}: {err}",
-                path.display()
-            );
-            HashMap::new()
-        }
-    }
-}
-
 /// 应用全局状态
 /// 使用 RwLock 保护 settings，允许多读单写；
-/// Mutex 用于 explain_images 等需要独占访问的数据；
-/// AtomicBool 标记 lens 是否正在进行，防止并发热键触发。
+/// Lens 的图片身份、流 generation 与会话状态由 `lens::LensRuntimeState` 持有；
+/// 组合根只保存领域句柄。
 pub struct AppState {
-    pub settings: RwLock<Settings>,
-    pub explain_images: Mutex<HashMap<String, PathBuf>>,
-    pub current_explain_image_id: Mutex<Option<String>>,
-    pub lens_busy: AtomicBool,
-    /// Lens 会话代号：每次 `lens_request_internal` 成功开启一个新浮窗会话就 +1。
-    /// 强制关闭 watchdog（`schedule_forced_lens_close`）用它判断"宽限期内是否已开了新会话"，
-    /// 避免迟到的 watchdog 误杀用户刚刚重新打开的浮窗。
-    pub lens_open_seq: AtomicU64,
-    /// 最近一次 Lens 开启的时刻。busy 自愈（busy=true 但无浮窗可见 → 清 busy）必须避开
-    /// "正在开启中"的窗口期：开启过程要截冻结帧（200-500ms），此时窗口尚不可见，若立即
-    /// 自愈会让快速连按热键并发跑两次 lens_request_internal（take-once 复位载荷被吞，
-    /// 前端进入坏状态）。宽限期内（LENS_OPEN_GRACE）不自愈。
-    pub lens_opened_at: Mutex<Option<std::time::Instant>>,
+    settings: RwLock<Settings>,
+    /// Monotonic generation for persisted settings commits. Full settings saves snapshot this
+    /// value before doing async workspace migration and compare it again at commit time, so a
+    /// newer lightweight/plugin/self-config write cannot be overwritten by a stale snapshot.
+    settings_revision: AtomicU64,
+    /// Serializes full async saves (including workspace migration) without blocking lightweight
+    /// writers. Lightweight writers advance `settings_revision`, so the full save still detects
+    /// them at its final CAS commit.
+    pub(crate) settings_save_lock: tokio::sync::Mutex<()>,
+    lens_runtime: crate::lens::LensRuntimeState,
     /// macOS：打开浮窗前记下的前台 App PID（0 = 无 / 前台就是 Kivio 自己），关闭浮窗时据此把
     /// 前台交还给原来的 App，避免 Kivio 变成"前台却无窗口"而触发 RunEvent::Reopen 误开 Chat。
     /// lens（含截图/选词翻译）与输入翻译是各自独立、可同时存在的浮窗，各占一个槽，避免相互覆盖。
     /// 详见 spec/backend/window-lifecycle.md。
     pub prev_frontmost_pid_lens: AtomicI32,
     pub prev_frontmost_pid_main: AtomicI32,
-    /// 流式取消代号：每开新的流就 +1，跑流的循环检测到代号变了就立即结束。
-    pub explain_stream_generation: AtomicU64,
     /// Chat 流式取消代号分配器。仅作**单调递增的 generation 号分配器**（never 重用）：
     /// 每条 run 取一个全局唯一号，不表达「活跃」语义。会话内唯一即够用（号只用于集合成员
     /// 判定），故用一个进程级 `AtomicU64` 计数器即可，无需按 conversation_id 分桶。
@@ -161,32 +100,9 @@ pub struct AppState {
     pub chat_popout_conversations: Mutex<HashSet<String>>,
     /// 串行化弹出窗创建，避免两个 async open 都看到 < MAX 再各建一个。
     pub chat_popout_create_lock: tokio::sync::Mutex<()>,
-    /// 等待用户确认的敏感 Chat tool 调用（key = tool_call_id）。
-    pub pending_chat_tool_approvals: Mutex<HashMap<String, PendingToolApproval>>,
-    /// 本对话已按工具名授予的「总是允许」集合：`(conversation_id, 小写工具名)`。
-    /// 仅内存、不持久化，重启后重新询问（同 `chat_session_consent` 的取舍）。
-    pub chat_tool_always_allow: Mutex<HashSet<(String, String)>>,
-    /// 本会话(conversation_id)已授予「文件/命令」工具的会话级授权集合。
-    /// 仅内存、不持久化:重启后重新授权(也是一道轻量安全属性)。
-    pub chat_session_consent: Mutex<HashSet<String>>,
-    /// 等待用户响应的会话级授权请求(按 conversation_id,同一会话同时至多一个)。
-    pub pending_chat_session_consents: Mutex<HashMap<String, PendingSessionConsent>>,
-    /// 串行化会话授权弹窗:同一时刻全局只发一个授权请求。首轮多个并行只读工具
-    /// (read/grep/find/ls)同时触发授权时,避免互相覆盖 pending sender 导致「假拒绝」——
-    /// 拿到锁后先复查 has_chat_consent,领头者授权后其余直接复用、不再弹窗。
-    pub chat_consent_prompt_lock: tokio::sync::Mutex<()>,
-    /// 等待用户回答的 Chat ask_user 澄清卡片。
-    pub pending_chat_user_prompts:
-        Mutex<HashMap<String, crate::chat::ask_user::PendingAskUserPrompt>>,
-    /// 外部 CLI 的问用户答完之后的 `askUser` 结构化载荷（键 = 工具调用 id）。
-    ///
-    /// 为什么要绕一道：那条卡片的记录是 CLI 的流解析层建的（`structured_content` 是 claude
-    /// 的原始入参），而答案只有审批宿主那侧知道，两边在不同的任务里。不放进落盘记录的话，
-    /// 消息流里那块「问了什么 + 选了什么」刷新一次就没了 —— 只剩一行看不见的灰字。
-    ///
-    /// ponytail: 只在 `ToolResult` 落地时消费一次并移除；那一轮死在半路的残留会留到进程退出
-    /// （一条询问一个小 JSON，量级可忽略）。真要收严就在轮末按 run 清一次。
-    pub answered_ask_user_content: Mutex<HashMap<String, serde_json::Value>>,
+    /// Chat 审批、会话授权与 ask-user 的瞬态状态。领域句柄私有持有所有 map/lock，
+    /// 组合根只负责生命周期，调用方只能走原子行为方法。
+    chat_interactions: crate::chat::interaction_state::ChatInteractionState,
     /// 保护 Chat 空白会话复用的短临界区，避免快速多次新建时并发创建多个空白对话。
     pub chat_create_conversation_lock: tokio::sync::Mutex<()>,
     /// 外部 CLI 斜杠命令探测缓存（agent_id:cwd → 命令列表）。
@@ -232,15 +148,6 @@ pub struct AppState {
     /// Frontend-only queued user input marker. Goal continuation yields at a run boundary so the
     /// normal queue drain can persist and execute the user's message first.
     pub pending_goal_user_queue: Mutex<HashSet<String>>,
-    /// Lens 启动前抓到的选中文本：放在这里等前端 enterSelect 来取走。
-    /// 取一次清一次（take 语义）。无选中 / 取过 / translate 模式 = None。
-    pub pending_selection: Mutex<Option<String>>,
-    /// Windows 冻结帧选择模式的临时截图 id。仅在进入 select 态前预抓屏幕时使用。
-    pub lens_freeze_frame_image_id: Mutex<Option<String>>,
-    /// Lens 进入 select 态的复位载荷（frame + freezeFrameImageId 的 JSON）。前端冷挂载时
-    /// 主动 take 来兜底：Windows 关闭即销毁后,下次冷启的 webview 可能晚于 Rust 的 lens:reset
-    /// eval 才挂上监听 → 事件被丢。改放 AppState 供拉取,丢事件也不丢冻结帧。take 语义。
-    pub lens_pending_reset: Mutex<Option<String>>,
     /// API Key 多 key failover 状态：(provider_id, key_idx) → 冷却到期时间。
     /// 某个 key 触发 quota/rate-limit/auth 失败时进入冷却，KEY_COOLDOWN 秒内不再选用。
     pub key_cooldowns: Mutex<HashMap<(String, usize), Instant>>,
@@ -260,13 +167,8 @@ pub struct AppState {
     /// 仅内存、不落盘（`ImageRoute` 是运行时枚举，非配置）。
     pub image_route_cache:
         Mutex<HashMap<(String, String), crate::chat::image_generation::ImageRoute>>,
-    /// MCP 持久连接池：server_id → 该 server 的长连接会话。
-    /// 每会话独立 `Arc<Mutex>`，A 服务器握手不阻塞 B；外层 `tokio::sync::Mutex`
-    /// 只在命中判断 / 插入 / 移除时短暂持有，绝不跨握手 await。
-    pub mcp_sessions: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<McpSession>>>>,
-    /// Last successful MCP tool schemas, independent from transport/session lifetime.
-    /// Persisted so startup failures can still expose tools discovered by a previous run.
-    pub mcp_tool_snapshots: Mutex<HashMap<String, McpToolSnapshot>>,
+    /// MCP 会话池与持久化工具 schema 快照的领域句柄；内部索引只由 mcp 模块拥有。
+    mcp_runtime: crate::mcp::McpRuntimeState,
     /// Token usage ledger directory under app data. Model providers can append records
     /// without needing an AppHandle threaded through every call path.
     pub usage_dir: PathBuf,
@@ -297,10 +199,8 @@ pub struct AppState {
     /// 请求（脱敏 headers + body）+ 响应摘要。默认关闭（`chat_tools.request_debug_enabled`），
     /// 关闭时 adapter 短路、不构造记录。仅内存、不落盘，进程退出即清。
     pub request_debug: Mutex<VecDeque<crate::chat::request_debug::RequestDebugRecord>>,
-    /// 正在执行的自动化：automation_id → run_id。同一条自动化同时只跑一轮。
-    pub automation_active_runs: Mutex<HashMap<String, String>>,
-    /// 用户取消的 automation run_id 集合。
-    pub automation_cancelled_runs: Mutex<HashSet<String>>,
+    /// 自动化运行生命周期的领域句柄；内部索引与转换只由 automation 模块拥有。
+    pub(crate) automation_runs: crate::automation::AutomationRunState,
 }
 
 /// 一条外部 CLI 后台任务（claude 的 `system/task_started` / `task_notification`）。
@@ -376,6 +276,12 @@ fn set_cached<V>(
 }
 
 impl AppState {
+    pub(crate) fn chat_interactions(
+        &self,
+    ) -> &crate::chat::interaction_state::ChatInteractionState {
+        &self.chat_interactions
+    }
+
     /// 集中构造点：`lib.rs::run` 的 `app.manage`、`new_headless`、以及测试用 `test_app_state`
     /// 三处唯一的差异只有 `settings` / `usage_dir` / `http` 与两个 OCR 客户端；其余字段全是
     /// 同样的空默认值。这里统一构造，三处只提供差异字段，避免同一份 ~40 行字面量重复三次。
@@ -387,7 +293,7 @@ impl AppState {
         offline_models: std::sync::Arc<OfflineModelManager>,
         rapidocr: std::sync::Arc<RapidOcrClient>,
     ) -> Self {
-        let mcp_tool_snapshots = load_mcp_tool_snapshots(&usage_dir);
+        let mcp_runtime = crate::mcp::McpRuntimeState::load(&usage_dir);
         let active_key_idx = settings
             .providers
             .iter()
@@ -395,14 +301,11 @@ impl AppState {
             .collect();
         AppState {
             settings: RwLock::new(settings),
-            explain_images: Mutex::new(HashMap::new()),
-            current_explain_image_id: Mutex::new(None),
-            lens_busy: AtomicBool::new(false),
-            lens_open_seq: AtomicU64::new(0),
-            lens_opened_at: Mutex::new(None),
+            settings_revision: AtomicU64::new(0),
+            settings_save_lock: tokio::sync::Mutex::new(()),
+            lens_runtime: crate::lens::LensRuntimeState::default(),
             prev_frontmost_pid_lens: AtomicI32::new(0),
             prev_frontmost_pid_main: AtomicI32::new(0),
-            explain_stream_generation: AtomicU64::new(0),
             chat_stream_generation: AtomicU64::new(0),
             chat_active_generations: Mutex::new(HashMap::new()),
             chat_active_replies: Mutex::new(HashMap::new()),
@@ -410,13 +313,7 @@ impl AppState {
             chat_protocol_subscribers: Mutex::new(HashMap::new()),
             chat_popout_conversations: Mutex::new(HashSet::new()),
             chat_popout_create_lock: tokio::sync::Mutex::new(()),
-            pending_chat_tool_approvals: Mutex::new(HashMap::new()),
-            chat_tool_always_allow: Mutex::new(HashSet::new()),
-            chat_session_consent: Mutex::new(HashSet::new()),
-            pending_chat_session_consents: Mutex::new(HashMap::new()),
-            chat_consent_prompt_lock: tokio::sync::Mutex::new(()),
-            pending_chat_user_prompts: Mutex::new(HashMap::new()),
-            answered_ask_user_content: Mutex::new(HashMap::new()),
+            chat_interactions: crate::chat::interaction_state::ChatInteractionState::default(),
             chat_create_conversation_lock: tokio::sync::Mutex::new(()),
             external_slash_commands_cache: Mutex::new(HashMap::new()),
             external_agent_models_cache: Mutex::new(HashMap::new()),
@@ -428,17 +325,13 @@ impl AppState {
             pending_chat_steering: Mutex::new(HashMap::new()),
             pending_chat_follow_up: Mutex::new(HashMap::new()),
             pending_goal_user_queue: Mutex::new(HashSet::new()),
-            pending_selection: Mutex::new(None),
-            lens_freeze_frame_image_id: Mutex::new(None),
-            lens_pending_reset: Mutex::new(None),
             key_cooldowns: Mutex::new(HashMap::new()),
             active_key_idx: Mutex::new(active_key_idx),
             prompt_cache_key_unsupported: Mutex::new(HashSet::new()),
             prompt_cache_retention_unsupported: Mutex::new(HashSet::new()),
             reasoning_replay_unsupported: Mutex::new(HashSet::new()),
             image_route_cache: Mutex::new(HashMap::new()),
-            mcp_sessions: tokio::sync::Mutex::new(HashMap::new()),
-            mcp_tool_snapshots: Mutex::new(mcp_tool_snapshots),
+            mcp_runtime,
             usage_dir,
             http,
             http_direct: std::sync::OnceLock::new(),
@@ -450,8 +343,7 @@ impl AppState {
             background_commands: Arc::new(Mutex::new(HashMap::new())),
             external_background_tasks: Mutex::new(HashMap::new()),
             request_debug: Mutex::new(VecDeque::new()),
-            automation_active_runs: Mutex::new(HashMap::new()),
-            automation_cancelled_runs: Mutex::new(HashSet::new()),
+            automation_runs: crate::automation::AutomationRunState::default(),
         }
     }
 
@@ -491,48 +383,59 @@ impl AppState {
     pub fn settings_read(&self) -> std::sync::RwLockReadGuard<'_, Settings> {
         self.settings.read().unwrap_or_else(|e| e.into_inner())
     }
-    /// 安全写入设置（锁中毒时返回内部数据，不 panic）
-    pub fn settings_write(&self) -> std::sync::RwLockWriteGuard<'_, Settings> {
-        self.settings.write().unwrap_or_else(|e| e.into_inner())
+    /// Non-blocking read for optional work such as desktop notifications.
+    pub(crate) fn try_settings_read(
+        &self,
+    ) -> Result<
+        std::sync::RwLockReadGuard<'_, Settings>,
+        std::sync::TryLockError<std::sync::RwLockReadGuard<'_, Settings>>,
+    > {
+        self.settings.try_read()
+    }
+    /// The only production write primitive for the in-memory settings value. It keeps the
+    /// revision check, durable action and publication under one serialization lock, so sibling
+    /// modules cannot obtain a raw write guard and silently bypass the settings transaction.
+    pub(crate) fn publish_settings_transaction(
+        &self,
+        expected_revision: Option<u64>,
+        build_canonical: impl FnOnce(&Settings) -> Result<Settings, String>,
+        persist: impl FnOnce(&Settings) -> Result<(), String>,
+    ) -> Result<Settings, String> {
+        let mut current = self.settings.write().unwrap_or_else(|e| e.into_inner());
+        let actual_revision = self.settings_revision();
+        if let Some(expected_revision) = expected_revision {
+            if actual_revision != expected_revision {
+                return Err(format!(
+                    "settings changed while the save was in progress (expected revision {expected_revision}, actual {actual_revision}); please retry"
+                ));
+            }
+        }
+
+        let canonical = build_canonical(&current)?;
+        persist(&canonical)?;
+        *current = canonical.clone();
+        self.advance_settings_revision();
+        Ok(canonical)
+    }
+    #[cfg(test)]
+    pub(crate) fn update_settings_for_test(&self, update: impl FnOnce(&mut Settings)) {
+        let mut settings = self.settings.write().unwrap_or_else(|e| e.into_inner());
+        update(&mut settings);
+        self.advance_settings_revision();
+    }
+    pub(crate) fn settings_revision(&self) -> u64 {
+        self.settings_revision.load(Ordering::Acquire)
+    }
+    pub(crate) fn advance_settings_revision(&self) -> u64 {
+        self.settings_revision.fetch_add(1, Ordering::Release) + 1
     }
     /// 开发者「请求调试」开关。关时 adapter 短路，不构造任何记录（零开销）。
     pub fn request_debug_enabled(&self) -> bool {
         self.settings_read().chat_tools.request_debug_enabled
     }
-    /// 安全获取解释图片映射锁
-    pub fn images_lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, PathBuf>> {
-        self.explain_images
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-    /// 安全获取当前解释图片 ID 锁
-    pub fn current_id_lock(&self) -> std::sync::MutexGuard<'_, Option<String>> {
-        self.current_explain_image_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-    /// 标记一次 Lens 浮窗会话开启：会话代号 +1 并记录开启时刻。
-    /// 返回新代号，供强制关闭 watchdog 快照比对。
-    pub fn mark_lens_opened(&self) -> u64 {
-        let seq = self
-            .lens_open_seq
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
-        *self
-            .lens_opened_at
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
-        seq
-    }
-    /// Lens 是否处于"刚开启"宽限期内（窗口可能还没来得及可见）。
-    /// busy 自愈逻辑在宽限期内不得清 busy，否则快速连按热键会并发双开。
-    pub fn lens_open_in_grace(&self) -> bool {
-        const LENS_OPEN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-        self.lens_opened_at
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .map(|at| at.elapsed() < LENS_OPEN_GRACE)
-            .unwrap_or(false)
+    /// Lens 领域句柄。字段保持私有；调用方只能通过领域操作推进状态。
+    pub(crate) fn lens(&self) -> &crate::lens::LensRuntimeState {
+        &self.lens_runtime
     }
 
     /// 选择一个可用的 API Key 索引：
@@ -630,35 +533,26 @@ impl AppState {
 
     /// 该会话是否已授予文件/命令工具的会话级授权。
     pub fn has_chat_consent(&self, conversation_id: &str) -> bool {
-        self.chat_session_consent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(conversation_id)
+        self.chat_interactions.has_session_consent(conversation_id)
     }
 
     /// 记录该会话已授予文件/命令工具的会话级授权(本进程内有效)。
     pub fn grant_chat_consent(&self, conversation_id: &str) {
-        self.chat_session_consent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(conversation_id.to_string());
+        self.chat_interactions
+            .grant_session_consent(conversation_id);
     }
 
     /// 该对话是否已对某个工具按下过「总是允许」。工具名统一小写后比较：内置 agent 报的是
     /// `write`，外部 CLI 报的是自己的原名（claude 的 `Write`），不归一化两边对不上。
     pub fn has_tool_always_allow(&self, conversation_id: &str, tool_name: &str) -> bool {
-        self.chat_tool_always_allow
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(&(conversation_id.to_string(), tool_name.to_ascii_lowercase()))
+        self.chat_interactions
+            .has_tool_always_allow(conversation_id, tool_name)
     }
 
     /// 记录「本对话内该工具不再询问」(本进程内有效)。
     pub fn grant_tool_always_allow(&self, conversation_id: &str, tool_name: &str) {
-        self.chat_tool_always_allow
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((conversation_id.to_string(), tool_name.to_ascii_lowercase()));
+        self.chat_interactions
+            .grant_tool_always_allow(conversation_id, tool_name);
     }
 
     /// 判断指定 conversation 的某条 Chat 运行是否仍然有效（其 generation 仍在活跃集合内）。
@@ -710,12 +604,25 @@ impl AppState {
     }
 
     pub fn has_chat_pending_input(&self, conversation_id: &str) -> bool {
-        self.pending_chat_steering.lock().unwrap_or_else(|e| e.into_inner()).get(conversation_id).is_some_and(|messages| !messages.is_empty())
-            || self.pending_chat_follow_up.lock().unwrap_or_else(|e| e.into_inner()).get(conversation_id).is_some_and(|messages| !messages.is_empty())
+        self.pending_chat_steering
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(conversation_id)
+            .is_some_and(|messages| !messages.is_empty())
+            || self
+                .pending_chat_follow_up
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(conversation_id)
+                .is_some_and(|messages| !messages.is_empty())
     }
 
     pub fn has_chat_active_generation(&self, conversation_id: &str) -> bool {
-        self.chat_active_generations.lock().unwrap_or_else(|e| e.into_inner()).get(conversation_id).is_some_and(|active| !active.is_empty())
+        self.chat_active_generations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(conversation_id)
+            .is_some_and(|active| !active.is_empty())
     }
 
     /// run 结束时丢掉没来得及消费的插话——否则它会漏进**下一条** run 的第一轮。
@@ -770,13 +677,23 @@ impl AppState {
             .remove(conversation_id);
     }
 
-    pub fn set_goal_user_queue_pending(&self, conversation_id:&str, pending:bool){
-        let mut queued=self.pending_goal_user_queue.lock().unwrap_or_else(|e|e.into_inner());
-        if pending{queued.insert(conversation_id.to_string());}else{queued.remove(conversation_id);}
+    pub fn set_goal_user_queue_pending(&self, conversation_id: &str, pending: bool) {
+        let mut queued = self
+            .pending_goal_user_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if pending {
+            queued.insert(conversation_id.to_string());
+        } else {
+            queued.remove(conversation_id);
+        }
     }
 
-    pub fn has_goal_user_queue_pending(&self, conversation_id:&str)->bool{
-        self.pending_goal_user_queue.lock().unwrap_or_else(|e|e.into_inner()).contains(conversation_id)
+    pub fn has_goal_user_queue_pending(&self, conversation_id: &str) -> bool {
+        self.pending_goal_user_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(conversation_id)
     }
 
     /// 对话被删除时清理其按 conversation_id 累积的运行态痕迹：活跃 generation 集合、
@@ -788,17 +705,10 @@ impl AppState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(conversation_id);
-        self.chat_session_consent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id);
-        self.chat_tool_always_allow
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|(conv, _)| conv != conversation_id);
+        self.chat_interactions.forget_conversation(conversation_id);
         self.clear_chat_steering(conversation_id);
         self.clear_chat_follow_up(conversation_id);
-        self.set_goal_user_queue_pending(conversation_id,false);
+        self.set_goal_user_queue_pending(conversation_id, false);
     }
 
     /// 尝试占用某个对话的某条 run 回复槽位。同会话允许多条 run 并存（多模型一问多答）；
@@ -858,20 +768,142 @@ impl AppState {
         }
     }
 
+    fn mcp_manager(&self) -> crate::mcp::McpManager<'_> {
+        let config = {
+            let settings = self.settings_read();
+            crate::mcp::McpManagerConfig::from_settings(&settings)
+        };
+        crate::mcp::McpManager::new(&self.mcp_runtime, &self.http, config, self)
+    }
+
+    pub fn mcp_idle_timeout(&self) -> Duration {
+        self.mcp_manager().mcp_idle_timeout()
+    }
+
+    pub async fn mcp_get_or_connect(
+        &self,
+        sink: Option<&tauri::AppHandle>,
+        server: &crate::settings::ChatMcpServer,
+    ) -> Result<Arc<tokio::sync::Mutex<crate::mcp::manager::McpSession>>, String> {
+        self.mcp_manager().mcp_get_or_connect(sink, server).await
+    }
+
+    pub async fn mcp_call_tool(
+        &self,
+        sink: Option<&tauri::AppHandle>,
+        server: &crate::settings::ChatMcpServer,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::mcp::types::McpToolCallResult, String> {
+        self.mcp_manager()
+            .mcp_call_tool(sink, server, name, arguments)
+            .await
+    }
+
+    pub async fn mcp_list_tools(
+        &self,
+        sink: Option<&tauri::AppHandle>,
+        server: &crate::settings::ChatMcpServer,
+    ) -> Result<Vec<McpTool>, String> {
+        self.mcp_manager().mcp_list_tools(sink, server).await
+    }
+
+    pub async fn mcp_cached_tools(
+        &self,
+        server: &crate::settings::ChatMcpServer,
+    ) -> Option<Vec<McpTool>> {
+        self.mcp_manager().mcp_cached_tools(server).await
+    }
+
+    pub async fn mcp_display_tools(
+        &self,
+        server: &crate::settings::ChatMcpServer,
+    ) -> (Vec<McpTool>, bool) {
+        self.mcp_manager().mcp_display_tools(server).await
+    }
+
+    pub async fn mcp_unreachable_server_ids(&self) -> Vec<String> {
+        self.mcp_manager().mcp_unreachable_server_ids().await
+    }
+
+    pub async fn mcp_server_state(
+        &self,
+        server_id: &str,
+    ) -> crate::mcp::manager::McpServerStatusSnapshot {
+        self.mcp_manager().mcp_server_state(server_id).await
+    }
+
+    pub async fn mcp_reload_server(&self, sink: Option<&tauri::AppHandle>, server_id: &str) {
+        self.mcp_manager().mcp_reload_server(sink, server_id).await;
+    }
+
+    pub async fn mcp_reap_idle(
+        &self,
+        idle_timeout: Duration,
+    ) -> Vec<(
+        String,
+        Arc<tokio::sync::Mutex<crate::mcp::manager::McpSession>>,
+    )> {
+        self.mcp_manager().mcp_reap_idle(idle_timeout).await
+    }
+
+    pub async fn mcp_keepalive_http(&self, sink: Option<&tauri::AppHandle>) {
+        self.mcp_manager().mcp_keepalive_http(sink).await;
+    }
+
+    pub async fn mcp_disconnect_all(&self) {
+        self.mcp_manager().mcp_disconnect_all().await;
+    }
+
+    pub async fn mcp_disconnect_server(&self, server_id: &str) {
+        self.mcp_manager().mcp_disconnect_server(server_id).await;
+    }
+
+    pub fn kill_mcp_children_now(&self) -> usize {
+        self.mcp_manager().kill_mcp_children_now()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn mcp_test_insert_session(
+        &self,
+        server_id: &str,
+        session: Arc<tokio::sync::Mutex<crate::mcp::manager::McpSession>>,
+    ) {
+        self.mcp_runtime
+            .get_or_insert_session(server_id, || session)
+            .await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn mcp_test_session(
+        &self,
+        server_id: &str,
+    ) -> Option<Arc<tokio::sync::Mutex<crate::mcp::manager::McpSession>>> {
+        self.mcp_runtime.session(server_id).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn mcp_test_sessions_empty(&self) -> bool {
+        self.mcp_runtime.sessions_empty().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn mcp_test_session_count(&self) -> usize {
+        self.mcp_runtime.session_count().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn mcp_test_has_session(&self, server_id: &str) -> bool {
+        self.mcp_runtime.has_session(server_id).await
+    }
+
     pub fn get_mcp_tool_snapshot(
         &self,
         server_id: &str,
         config_fingerprint: &str,
     ) -> Option<Vec<McpTool>> {
-        let snapshots = self
-            .mcp_tool_snapshots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        snapshots
-            .get(server_id)
-            .filter(|snapshot| snapshot.config_fingerprint == config_fingerprint)
-            .map(|snapshot| snapshot.tools.clone())
-            .filter(|tools| !tools.is_empty())
+        self.mcp_runtime
+            .tool_snapshot(server_id, config_fingerprint)
     }
 
     pub fn set_mcp_tool_snapshot(
@@ -880,32 +912,8 @@ impl AppState {
         config_fingerprint: String,
         tools: Vec<McpTool>,
     ) {
-        if tools.is_empty() {
-            return;
-        }
-        let mut snapshots = self
-            .mcp_tool_snapshots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        snapshots.insert(
-            server_id,
-            McpToolSnapshot {
-                config_fingerprint,
-                tools,
-            },
-        );
-        let content = match serde_json::to_string_pretty(&*snapshots) {
-            Ok(content) => content,
-            Err(err) => {
-                eprintln!("Failed to serialize MCP tool snapshots: {err}");
-                return;
-            }
-        };
-        let path = mcp_tool_snapshot_path(&self.usage_dir);
-        if let Err(err) = crate::chat::storage::atomic_write(&path, &content, "MCP tool snapshots")
-        {
-            eprintln!("Failed to persist MCP tool snapshots: {err}");
-        }
+        self.mcp_runtime
+            .set_tool_snapshot(server_id, config_fingerprint, tools);
     }
 
     /// 斜杠命令缓存读取，TTL 随结果空/非空区分：非空命令列表用长 TTL（`full_ttl`），
@@ -1578,6 +1586,35 @@ impl AppState {
     }
 }
 
+impl crate::mcp::McpSettingsPersistence for AppState {
+    fn store_refreshed_server(
+        &self,
+        sink: Option<&tauri::AppHandle>,
+        server: &crate::settings::ChatMcpServer,
+    ) {
+        let Some(app) = sink else {
+            if let Err(error) = crate::settings::update_settings_in_memory(self, |settings| {
+                crate::mcp::manager::apply_refreshed_auth_to_settings(settings, server);
+                Ok(())
+            }) {
+                eprintln!("Failed to update refreshed OAuth token in memory: {error}");
+            }
+            return;
+        };
+
+        let mut probe = self.settings_read().clone();
+        if !crate::mcp::manager::apply_refreshed_auth_to_settings(&mut probe, server) {
+            return;
+        }
+        if let Err(error) = crate::settings::update_settings(app, self, |settings| {
+            crate::mcp::manager::apply_refreshed_auth_to_settings(settings, server);
+            Ok(())
+        }) {
+            eprintln!("Failed to persist refreshed OAuth token: {error}");
+        }
+    }
+}
+
 #[cfg(test)]
 /// 构造一个最小可用的 AppState 用于单测（cooldown / MCP 连接池等）。
 /// 不涉及网络，Client::new() 即可（不会发请求）。供 state / mcp::manager 测试复用。
@@ -1860,7 +1897,7 @@ mod tests {
         let usage_dir =
             std::env::temp_dir().join(format!("kivio-test-usage-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&usage_dir).expect("create usage dir");
-        std::fs::write(mcp_tool_snapshot_path(&usage_dir), "{ not json !!")
+        std::fs::write(usage_dir.join("mcp-tool-snapshots.json"), "{ not json !!")
             .expect("write corrupt snapshot file");
 
         // 损坏文件 = 视为无缓存，不 panic
@@ -1884,7 +1921,7 @@ mod tests {
         assert!(st.get_mcp_tool_snapshot("empty", "fp").is_none());
 
         st.set_mcp_tool_snapshot("srv".into(), "fp".into(), vec![sample_mcp_tool("echo")]);
-        let raw = std::fs::read_to_string(mcp_tool_snapshot_path(&usage_dir))
+        let raw = std::fs::read_to_string(usage_dir.join("mcp-tool-snapshots.json"))
             .expect("snapshot file exists");
         // 落盘内容只有工具 schema + 指纹哈希：不该出现 headers/env/token 之类的键
         assert!(raw.contains("config_fingerprint"));

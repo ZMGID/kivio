@@ -9,7 +9,7 @@ import {
   shortModelName,
 } from './format'
 import type { ChatProject, ChatSet, ConversationListItem } from '../types'
-import { i18n } from '../../settings/i18n'
+import { i18n } from '../../settings/public/i18n'
 
 function item(partial: Partial<ConversationListItem> = {}): ConversationListItem {
   return {

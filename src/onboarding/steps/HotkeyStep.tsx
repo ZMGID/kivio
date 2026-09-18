@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Settings } from '../../api/tauri'
-import { HotkeyInput, Select, Toggle } from '../../settings/components'
-import type { I18n } from '../../settings/i18n'
-import { buildHotkey } from '../../settings/utils'
+import { HotkeyInput, Select, Toggle } from '../../settings/public/controls'
+import type { I18n } from '../../settings/public/i18n'
+import { buildHotkey } from '../../settings/public/hotkeys'
 import { OnboardingFormRow } from '../OnboardingFormRow'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'
 
@@ -83,7 +83,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
         id: 'lens',
         label: t.onboardingHotkeyLens,
         hint: t.onboardingHotkeyLensHint,
-        value: settings.lens?.hotkey || 'CommandOrControl+Shift+G',
+        value: settings.lens.hotkey,
         placeholder: 'CommandOrControl+Shift+G',
         onClear: () => onChange({
           ...settings,
@@ -129,7 +129,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
           id: 'screenshot',
           label: t.onboardingHotkeyScreenshot,
           hint: t.onboardingHotkeyScreenshotHint,
-          value: settings.screenshotTranslation?.hotkey || 'CommandOrControl+Shift+A',
+          value: settings.screenshotTranslation.hotkey,
           placeholder: 'CommandOrControl+Shift+A',
           onClear: () => onChange({
             ...settings,
@@ -140,7 +140,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
           id: 'selectedText',
           label: t.onboardingHotkeySelectedText,
           hint: t.onboardingHotkeySelectedTextHint,
-          value: settings.screenshotTranslation?.textHotkey || 'CommandOrControl+Shift+T',
+          value: settings.screenshotTranslation.textHotkey,
           placeholder: 'CommandOrControl+Shift+T',
           onClear: () => onChange({
             ...settings,
@@ -162,7 +162,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
     },
   ]
 
-  const replaceEnabled = settings.screenshotTranslation?.replaceEnabled !== false
+  const replaceEnabled = settings.screenshotTranslation.replaceEnabled !== false
 
   return (
     <OnboardingStepFrame title={t.onboardingHotkeyTitle} subtitle={t.onboardingHotkeyDesc}>

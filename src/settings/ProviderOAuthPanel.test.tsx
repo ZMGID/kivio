@@ -14,7 +14,8 @@ vi.mock('../api/tauri', async () => {
 })
 const login: ProviderOAuthLogin = { loginId: 'login-1', userCode: 'ABCD-1234', verificationUrl: 'https://auth.openai.com/codex/device', interval: 3, expiresAt: 1900000000 }
 function setup() {
-  const provider = { ...makeProvider(), request: { oauth: { provider: 'codex' as const } } }
+  const base = makeProvider()
+  const provider = { ...base, request: { ...base.request, oauth: { provider: 'codex' as const } } }
   const update = vi.fn()
   return { ...render(<ProviderOAuthPanel provider={provider} lang="zh" onUpdateProvider={update} />), update, provider }
 }
@@ -23,7 +24,8 @@ async function start() {
 }
 describe('model OAuth onboarding', () => {
   it('uses the browser callback flow for Antigravity without showing a device code', async () => {
-    const provider = { ...makeProvider(), request: { oauth: { provider: 'antigravity' as const } } }
+    const base = makeProvider()
+    const provider = { ...base, request: { ...base.request, oauth: { provider: 'antigravity' as const } } }
     const browserLogin = { ...login, userCode: '', verificationUrl: 'https://accounts.google.com/o/oauth2/v2/auth' }
     vi.mocked(api.providerOAuthStart).mockResolvedValue(browserLogin)
     render(<ProviderOAuthPanel provider={provider} lang="zh" onUpdateProvider={vi.fn()} />)
@@ -53,7 +55,7 @@ describe('model OAuth onboarding', () => {
     const { update, provider } = setup()
     vi.mocked(api.providerOAuthPoll).mockResolvedValue({ status: 'authorized', interval: 0, auth: { provider: 'codex', credentialId: 'credential-1' } })
     await start(); await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-    expect(update).toHaveBeenCalledWith(provider.id, { request: { oauth: { provider: 'codex', credentialId: 'credential-1' } } })
+    expect(update).toHaveBeenCalledWith(provider.id, { request: { ...provider.request, oauth: { provider: 'codex', credentialId: 'credential-1' } } })
     expect(screen.queryByText('ABCD-1234')).toBeNull()
     expect(JSON.stringify(update.mock.calls)).not.toContain('access_token')
   })
@@ -93,6 +95,6 @@ describe('model OAuth onboarding', () => {
   it('requires an OAuth reference even when old API keys remain', () => {
     const { provider } = setup()
     expect(providerHasCredentials({ ...provider, apiKeys: ['old-key'] })).toBe(false)
-    expect(providerHasCredentials({ ...provider, apiKeys: [], request: { oauth: { provider: 'codex', credentialId: 'id' } } })).toBe(true)
+    expect(providerHasCredentials({ ...provider, apiKeys: [], request: { ...provider.request, oauth: { provider: 'codex', credentialId: 'id' } } })).toBe(true)
   })
 })

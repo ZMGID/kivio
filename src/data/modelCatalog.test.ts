@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { ModelProvider } from '../api/tauri'
 import { applyModelCatalog } from './modelCatalog'
 import { resolveModelInfo } from './modelMatching'
+import { createProviderRequestDraft } from '../settings/public/providerDraft'
 
 const provider: ModelProvider = {
   id: 'test', name: 'Test', baseUrl: 'https://example.com/v1', apiKeys: [],
   apiFormat: 'openai_chat', availableModels: [], enabledModels: [], enabled: true,
+  request: createProviderRequestDraft(),
 }
 
 describe('imported model video capabilities', () => {

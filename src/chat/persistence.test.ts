@@ -18,6 +18,7 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from './persistence'
+import { decodeConversationRouteId } from './routeCodec'
 
 
 describe('hashPath', () => {
@@ -48,6 +49,18 @@ describe('normalizeStoredChatRoute', () => {
     expect(normalizeStoredChatRoute('#chat/onboarding')).toBeNull()
     expect(normalizeStoredChatRoute('#lens')).toBeNull()
     expect(normalizeStoredChatRoute(null)).toBeNull()
+  })
+
+  it.each([
+    ['chat/conv-1', 'conv-1', '#chat/conv-1'],
+    ['chat/a%2Fb', 'a/b', '#chat/a%2Fb'],
+    ['chat/%E0%A4%A', null, null],
+    ['chat/a/b', null, null],
+    ['chat/', null, null],
+    ['chat/settings', null, null],
+  ])('keeps navigation decoding and recovery policy aligned for %s', (path, decoded, remembered) => {
+    expect(decodeConversationRouteId(path)).toBe(decoded)
+    expect(normalizeStoredChatRoute(`#${path}`)).toBe(remembered)
   })
 })
 

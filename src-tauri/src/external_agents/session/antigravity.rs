@@ -1,4 +1,4 @@
-//! Official agy NDJSON protocol (verified with 1.1.26).
+//! Official agy NDJSON protocol (verified with 1.2.6; core stream remains compatible).
 //! https://antigravity.google/docs/cli/headless/
 //! One init per process, one result per turn. No control RPCs or native image blocks.
 use std::collections::{HashMap, HashSet};
@@ -14,7 +14,7 @@ use tokio::time::timeout;
 
 use crate::chat::model::ModelUsage;
 use crate::external_agents::session::live::{SessionCommand, CANCELLED_SESSION_LOST};
-use crate::external_agents::spawn::{cli_command, fold_stderr, kill_agent_process_tree};
+use crate::external_agents::spawn::{cli_command, kill_agent_process_tree};
 use crate::external_agents::types::UnifiedAgentEvent;
 use crate::proc::NoConsoleWindow;
 
@@ -348,7 +348,7 @@ impl AntigravitySession {
             }
             Err(error) => {
                 session.shutdown().await;
-                Err(fold_stderr(
+                Err(crate::external_agents::antigravity_slash::fold_error(
                     error,
                     &session
                         .stderr_tail
@@ -457,7 +457,11 @@ impl AntigravitySession {
                     Some(SessionCommand::StopTask { .. }) => {}
                 },
                 note = self.stderr_rx.recv(), if stderr_open => match note {
-                    Some(text) if !text.trim().is_empty() => { let _ = events.send(UnifiedAgentEvent::StatusNote { text }).await; }
+                    Some(text) if !text.trim().is_empty() => {
+                        let text = crate::external_agents::antigravity_slash::structured_error(&text)
+                            .unwrap_or(text);
+                        let _ = events.send(UnifiedAgentEvent::StatusNote { text }).await;
+                    }
                     None => stderr_open = false,
                     _ => {}
                 },
@@ -522,7 +526,7 @@ pub fn spawn_antigravity_session_actor(
                         {
                             error
                         } else {
-                            fold_stderr(
+                            crate::external_agents::antigravity_slash::fold_error(
                                 error,
                                 &session
                                     .stderr_tail

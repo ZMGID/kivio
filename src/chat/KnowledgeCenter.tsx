@@ -27,11 +27,11 @@ import {
 } from '../api/tauri'
 import { getSettingsCached, refreshSettings, saveSettingsCached } from '../api/settingsCache'
 import { Button, IconButton } from '../components/Button'
-import { Input, Select } from '../settings/components'
-import { KnowledgeIcon } from '../settings/NavIcons'
+import { Input, Select } from '../settings/public/controls'
+import { KnowledgeIcon } from '../settings/public/icons'
 import { resolveModelInfo } from '../data/modelMatching'
-import { KnowledgeRagPanel } from '../settings/KnowledgeRagPanel'
-import { useLang, useT } from '../settings/i18n'
+import { KnowledgeRagPanel } from '../settings/public/knowledge'
+import { useLang, useT } from '../settings/public/i18n'
 import { RetrievalTestPanel } from './RetrievalTestPanel'
 import {
   kbCreateLibrary,

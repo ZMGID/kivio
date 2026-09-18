@@ -4,7 +4,7 @@ import { api, type Settings } from './tauri'
  * Settings 前端内存缓存（per-webview 模块级单例）。
  *
  * 动机：后端 get_settings 是纯内存读，但每次 invoke 都要完整 clone + IPC 序列化 +
- * normalizeSettings；一次 chat 冷启动会独立发起 5-6 次。缓存后首读之外全部即时返回，
+ * IPC 序列化；一次 chat 冷启动会独立发起 5-6 次。缓存后首读之外全部即时返回，
  * SettingsShell 还能用 peekSettings 做 stale-while-revalidate 首帧渲染。
  *
  * 自配置工具成功后广播 kivio-configuration-changed，各 webview 强制读取并通知
@@ -119,32 +119,22 @@ export async function importSettingsCached(path: string): Promise<Settings> {
 }
 
 /**
- * setFavoriteModels（轻量收藏持久化，不返回 Settings）+ 成功后把新 favoriteModels
- * 补进缓存，避免收藏切换后缓存里的收藏列表变旧。失败原样抛出且不动缓存。
+ * setFavoriteModels 的回包是后端最终 canonical Settings。缓存必须原样采用该回包，
+ * 不在前端复制 trim、去空、去重等持久化规则。失败原样抛出且不动缓存。
  */
 export async function setFavoriteModelsCached(models: string[]): Promise<void> {
-  await api.setFavoriteModels(models)
-  // 后端 set_favorite_models 会按序去重落盘；缓存里也做同样去重，保持与磁盘一致。
-  if (cached) {
-    ++readGeneration
-    cached = { ...cached, favoriteModels: [...new Set(models)] }
-    notifySettingsUpdated(cached)
-  }
+  const saved = await api.setFavoriteModels(models)
+  ++readGeneration
+  cached = saved
+  notifySettingsUpdated(saved)
 }
 
-/**
- * setTranslateCardSize（轻量翻译卡宽度持久化）+ 成功后把 clamp 后的宽度补进缓存，
- * 避免 Lens 拖拽缩放后同窗复用时 getSettingsCached 读到旧宽度、把卡片弹回默认值。
- * 失败原样抛出且不动缓存。
- */
+/** setTranslateCardSize 返回后端最终 canonical Settings，前端不复制 clamp 规则。 */
 export async function setTranslateCardSizeCached(width: number): Promise<void> {
-  await api.setTranslateCardSize(width)
-  const clamped = Math.max(360, Math.min(720, Math.round(width)))
-  if (cached) {
-    ++readGeneration
-    cached = { ...cached, screenshotTranslation: { ...cached.screenshotTranslation, cardWidth: clamped } }
-    notifySettingsUpdated(cached)
-  }
+  const saved = await api.setTranslateCardSize(width)
+  ++readGeneration
+  cached = saved
+  notifySettingsUpdated(saved)
 }
 
 /** 仅测试用：重置模块状态。 */

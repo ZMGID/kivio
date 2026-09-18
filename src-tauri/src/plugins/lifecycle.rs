@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 
 use super::catalog::{catalog_plugin, CatalogPlugin, PLUGIN_CATALOG};
 use super::state::{is_enabled, is_installed, resolve_binary, resolve_binary_for_status};
-use crate::settings::{persist_settings, ChatMcpServer, Settings};
+use crate::settings::{update_settings, ChatMcpServer, Settings};
 use crate::state::AppState;
 
 /// settings 里 MCP server id：`plugin-<plugin_id>`
@@ -39,56 +39,37 @@ pub fn disable_mcp_for_plugins(settings: &mut Settings, plugin_ids: &[&str]) -> 
     changed
 }
 
-pub fn heal_disabled_plugin_mcp(state: &AppState) -> bool {
-    let package_changed = {
-        let mut settings = state.settings_write();
-        let mut changed = false;
-        for server in &mut settings.chat_tools.servers {
-            if let Some(id) = server
-                .id
-                .strip_prefix("plugin-package-")
-                .and_then(|s| s.get(..36))
-            {
-                if server.enabled && !super::packages::owner_enabled(id) {
-                    server.enabled = false;
-                    changed = true;
-                }
+fn heal_disabled_plugin_mcp_settings(settings: &mut Settings) -> bool {
+    let mut changed = false;
+    for server in &mut settings.chat_tools.servers {
+        if let Some(id) = server
+            .id
+            .strip_prefix("plugin-package-")
+            .and_then(|s| s.get(..36))
+        {
+            if server.enabled && !super::packages::owner_enabled(id) {
+                server.enabled = false;
+                changed = true;
             }
         }
-        changed
-    };
+    }
     let disabled: Vec<&str> = PLUGIN_CATALOG
         .iter()
         .filter(|plugin| plugin.mcp.is_some() && !is_enabled(plugin.id))
         .map(|plugin| plugin.id)
         .collect();
-    if disabled.is_empty() {
-        return package_changed;
-    }
-    let needs = {
-        let guard = state.settings_read();
-        disabled.iter().any(|plugin_id| {
-            let server_id = plugin_mcp_server_id(plugin_id);
-            guard
-                .chat_tools
-                .servers
-                .iter()
-                .any(|server| server.id == server_id && server.enabled)
-        })
-    };
-    if !needs {
-        return package_changed;
-    }
-    let mut guard = state.settings_write();
-    disable_mcp_for_plugins(&mut guard, &disabled) || package_changed
+    disable_mcp_for_plugins(settings, &disabled) || changed
 }
 
 pub fn heal_and_persist_disabled_plugin_mcp(app: &AppHandle, state: &AppState) {
-    if !heal_disabled_plugin_mcp(state) {
+    let mut probe = state.settings_read().clone();
+    if !heal_disabled_plugin_mcp_settings(&mut probe) {
         return;
     }
-    let snapshot = state.settings_read().clone();
-    if let Err(err) = persist_settings(app, &snapshot) {
+    if let Err(err) = update_settings(app, state, |settings| {
+        heal_disabled_plugin_mcp_settings(settings);
+        Ok(())
+    }) {
         eprintln!("[plugins] persist healed plugin MCP: {err}");
     }
 }
@@ -157,25 +138,29 @@ pub fn apply_enable_side_effects(
     plugin_id: &str,
 ) -> Result<(), String> {
     let plugin = catalog_plugin(plugin_id).ok_or_else(|| format!("unknown plugin: {plugin_id}"))?;
+    let server = if plugin.mcp.is_some() {
+        Some(
+            materialize_mcp_server(plugin)
+                .ok_or_else(|| "插件二进制不可用，无法挂载 MCP".to_string())?,
+        )
+    } else {
+        None
+    };
 
-    let updated = {
-        let mut guard = state.settings_write();
+    update_settings(app, state, move |settings| {
         // 插件启用后 Agent 需要工具循环；总开关关掉则 MCP 不会被收集
-        if !guard.chat_tools.enabled {
-            guard.chat_tools.enabled = true;
+        if !settings.chat_tools.enabled {
+            settings.chat_tools.enabled = true;
         }
         // Skill 激活 + 终端调用依赖这些 native 开关
-        guard.chat_tools.native_tools.skill_runtime = true;
-        guard.chat_tools.native_tools.run_command = true;
+        settings.chat_tools.native_tools.skill_runtime = true;
+        settings.chat_tools.native_tools.run_command = true;
 
-        if plugin.mcp.is_some() {
-            let server = materialize_mcp_server(plugin)
-                .ok_or_else(|| "插件二进制不可用，无法挂载 MCP".to_string())?;
-            upsert_plugin_mcp_server(&mut guard, server);
+        if let Some(server) = server {
+            upsert_plugin_mcp_server(settings, server);
         }
-        guard.clone()
-    };
-    persist_settings(app, &updated)?;
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -188,17 +173,15 @@ pub async fn apply_disable_side_effects(
 ) -> Result<(), String> {
     let server_id = plugin_mcp_server_id(plugin_id);
 
-    let updated = {
-        let mut guard = state.settings_write();
-        let servers = &mut guard.chat_tools.servers;
+    update_settings(app, state, |settings| {
+        let servers = &mut settings.chat_tools.servers;
         if remove_server {
             servers.retain(|s| s.id != server_id);
         } else if let Some(slot) = servers.iter_mut().find(|s| s.id == server_id) {
             slot.enabled = false;
         }
-        guard.clone()
-    };
-    persist_settings(app, &updated)?;
+        Ok(())
+    })?;
 
     state.mcp_disconnect_server(&server_id).await;
     // OfficeCLI 等：关掉插件时一并停掉 live preview 进程
@@ -251,12 +234,10 @@ pub fn ensure_officecli_mcp_flush_env(app: &AppHandle, state: &AppState) {
     if !need {
         return;
     }
-    let updated = {
-        let mut guard = state.settings_write();
-        upsert_plugin_mcp_server(&mut guard, server);
-        guard.clone()
-    };
-    let _ = persist_settings(app, &updated);
+    let _ = update_settings(app, state, move |settings| {
+        upsert_plugin_mcp_server(settings, server);
+        Ok(())
+    });
     // 旧 stdio 子进程没有 FLUSH=each；异步断开，下一轮工具调用会按新 env 重建
     let app2 = app.clone();
     let sid = server_id;

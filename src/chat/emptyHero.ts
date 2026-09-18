@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Lang } from '../settings/i18n'
+import type { Lang } from '../settings/public/i18n'
 import type { BlobAntic } from './kivioBlobSim'
 
 /** 空会话标题：短、跟墨团配。换句间隔随机，大约一分钟上下。 */

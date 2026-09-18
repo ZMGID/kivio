@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Settings } from '../api/tauri'
+import { createProviderRequestDraft } from '../settings/public/providerDraft'
 import {
   canCompleteOnboarding,
   isProviderModelBindingUsable,
@@ -66,6 +67,7 @@ const testProvider = {
   enabledModels: ['gpt-4o'],
   enabled: true,
   apiFormat: 'openai_chat' as const,
+  request: createProviderRequestDraft(),
 }
 
 const configuredBindings = {

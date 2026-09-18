@@ -574,8 +574,14 @@ mod tests {
 
         // >32KB 的噪声 PNG（避免被 PNG 压缩到阈值之下）
         let img = image::RgbImage::from_fn(512, 512, |x, y| {
-            let v = x.wrapping_mul(2654435761).wrapping_add(y.wrapping_mul(40503));
-            image::Rgb([(v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8])
+            let v = x
+                .wrapping_mul(2654435761)
+                .wrapping_add(y.wrapping_mul(40503));
+            image::Rgb([
+                (v & 0xff) as u8,
+                ((v >> 8) & 0xff) as u8,
+                ((v >> 16) & 0xff) as u8,
+            ])
         });
         let mut buf = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgb8(img)
@@ -603,10 +609,13 @@ mod tests {
         fs::write(&text_path, b"hello kivio").expect("write txt");
         let artifact = build_delivery_artifact_for_path(&text_path).expect("text artifact");
         assert_eq!(artifact.mime_type, "text/plain");
-        assert_eq!(artifact.data_url, format!(
-            "data:text/plain;base64,{}",
-            general_purpose::STANDARD.encode(b"hello kivio")
-        ));
+        assert_eq!(
+            artifact.data_url,
+            format!(
+                "data:text/plain;base64,{}",
+                general_purpose::STANDARD.encode(b"hello kivio")
+            )
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

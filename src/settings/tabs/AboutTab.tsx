@@ -1,7 +1,7 @@
 import { RefreshCw, Download, ExternalLink } from 'lucide-react'
 import { Toggle, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
-import { ChatMarkdown } from '../../chat/ChatMarkdown'
+import { ChatMarkdown } from '../../chat/public/markdown'
 import type { I18n, Lang } from '../i18n'
 import type { Settings as SettingsData, UpdateInfo } from '../../api/tauri'
 

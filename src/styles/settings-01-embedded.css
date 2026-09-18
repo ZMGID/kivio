@@ -1,0 +1,606 @@
+/* ===== Chat 内嵌设置（对齐 Chat 侧栏 + Jan 卡片详情区） ===== */
+/* 设置面板容器查询：窗口变窄时收窄导航、模型页改单栏 */
+.settings-embedded.kv,
+.kv-window .kv-body {
+  container-type: inline-size;
+  container-name: settings-shell;
+}
+
+.chat-window-shell .settings-embedded {
+  --bg: var(--theme-surface);
+  --bg-sidebar: var(--theme-surface-muted);
+  /* 与 --bg 同色：避免 header（--bg）与滚动区/存档条（--bg-savebar）亮色下出现色差 */
+  --bg-savebar: var(--theme-surface);
+  --bg-input: var(--theme-surface);
+  --bg-input-subtle: var(--theme-surface-muted);
+  --bg-hover: var(--theme-surface-hover);
+  --bg-active: var(--theme-surface-active);
+  --bg-pill: var(--theme-surface-hover);
+  --border: var(--theme-surface-border);
+  --border-strong: var(--theme-surface-border-strong);
+  --border-input: var(--theme-surface-border-strong);
+  --divider: var(--theme-surface-titlebar);
+  --text: #171717;
+  --text-muted: #737373;
+  --text-faint: #a3a3a3;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --radius-card: 12px;
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.dark .chat-window-shell .settings-embedded {
+  --bg: #1a1a1a;
+  --bg-sidebar: #1c1c1e;
+  --bg-savebar: #1a1a1a;
+  --bg-input: #2a2a2a;
+  --bg-input-subtle: #2a2a2a;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-pill: #333333;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: #525252;
+  --border-input: #404040;
+  --divider: rgba(255, 255, 255, 0.06);
+  --text: #f5f5f5;
+  --text-muted: #a3a3a3;
+  --text-faint: #737373;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-soft: rgba(59, 130, 246, 0.15);
+}
+
+.settings-embedded-nav {
+  width: 200px;
+  /* 侧栏左右内边距抽成变量：底部「返回对话」要用负边距抵掉它，才能让分隔线通栏。 */
+  --nav-pad-x: 8px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  padding: 16px var(--nav-pad-x) 0;
+  overflow: hidden;
+}
+
+/* 设置页自带导航栏顶掉聊天侧栏时，导航栏贴窗口顶 → 也要多留卡片那 8px 才不压到灯 */
+.settings-embedded--traffic-safe .settings-embedded-nav {
+  padding-top: 60px;
+}
+
+.dark .chat-window-shell .settings-embedded-nav {
+  border-right-color: rgba(255, 255, 255, 0.08);
+  background: #1c1c1e;
+}
+
+.settings-embedded-nav-title {
+  margin: 0 12px 12px;
+  padding-top: 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  user-select: none;
+}
+
+/* 嵌入式设置左栏底部「返回对话」：落在「关于」上方，行规格对齐 nav-item */
+.settings-embedded-back {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-faint, #737373);
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease, transform var(--kv-dur-instant) var(--kv-ease-out);
+}
+.settings-embedded-back:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text);
+}
+.settings-embedded-back:active {
+  transform: scale(0.97);
+}
+.dark .chat-window-shell .settings-embedded-back {
+  color: #a3a3a3;
+}
+.dark .chat-window-shell .settings-embedded-back:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f5f5f5;
+}
+.settings-embedded-back .settings-embedded-nav-icon {
+  color: inherit;
+}
+
+.settings-embedded-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 4px;
+}
+
+/* 窗口变矮时分类列表自己滚，否则它撑满高度 + 外层 overflow:hidden 会把底部「返回对话」裁掉。 */
+.settings-embedded-nav-list:not(.settings-embedded-nav-list--footer) {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 底部「返回对话」：负边距抵掉 aside 内边距 → 分隔线通栏 */
+.settings-embedded-nav-list--footer {
+  flex-shrink: 0;
+  height: 48px;
+  justify-content: center;
+  margin: 0 calc(-1 * var(--nav-pad-x));
+  padding: 0 calc(var(--nav-pad-x) + 4px);
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+}
+.dark .chat-window-shell .settings-embedded-nav-list--footer {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+.settings-embedded-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 500;
+  color: #404040;
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.dark .chat-window-shell .settings-embedded-nav-item {
+  color: #d4d4d4;
+}
+
+.settings-embedded-nav-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.dark .chat-window-shell .settings-embedded-nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settings-embedded-nav-item.active {
+  background: rgba(0, 0, 0, 0.06);
+  color: #171717;
+}
+
+.dark .chat-window-shell .settings-embedded-nav-item.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fafafa;
+}
+
+.settings-embedded-nav-icon {
+  display: flex;
+  height: 20px;
+  width: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: #737373;
+}
+
+.dark .chat-window-shell .settings-embedded-nav-icon {
+  color: #a3a3a3;
+}
+
+.settings-embedded-nav-item.active .settings-embedded-nav-icon {
+  color: #525252;
+}
+
+.dark .chat-window-shell .settings-embedded-nav-item.active .settings-embedded-nav-icon {
+  color: #e5e5e5;
+}
+
+.settings-embedded-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.settings-embedded-header {
+  padding: 20px 28px 8px;
+}
+
+.settings-embedded-header .kv-page-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.settings-embedded-header .kv-page-sub {
+  font-size: 13px;
+  margin-top: 4px;
+  line-height: 1.45;
+}
+
+.settings-embedded-scroll {
+  /* 与 header / content 同色：原先 --bg-savebar（soft）会比顶栏 --bg（surface）深一档，
+     亮色下读成「顶栏一块、底下一块」。暗色同样走 --bg，避免标题条单独一块。 */
+  background: var(--bg);
+  padding: 8px 28px 20px;
+}
+
+.kv-scroll > .websearch-panel-root,
+.kv-scroll > .kv-providers-root {
+  flex: 1 1 auto;
+  min-height: 100%;
+  align-self: stretch;
+}
+
+.kv-scroll:has(> .websearch-panel-root),
+.kv-scroll:has(> .kv-providers-root) {
+  display: flex;
+  flex-direction: column;
+}
+
+.kv-providers-root {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.kv-providers-root > .kv-providers {
+  flex: 1 1 auto;
+  min-height: 100%;
+  align-items: stretch;
+}
+
+/* 卡片式分组（Jan 白卡片 + 圆角） */
+.settings-embedded .kv-group {
+  margin-bottom: 12px;
+  padding: 4px 16px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.settings-embedded .kv-group + .kv-group {
+  border-top: 1px solid var(--border);
+  margin-top: 0;
+}
+
+.dark .chat-window-shell .settings-embedded .kv-group {
+  background: #262626;
+  box-shadow: none;
+}
+
+.settings-embedded .kv-group-title {
+  padding-top: 10px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+.settings-embedded .kv-row + .kv-row,
+.settings-embedded .kv-row + .kv-row-stack,
+.settings-embedded .kv-row-stack + .kv-row,
+.settings-embedded .kv-row-stack + .kv-row-stack {
+  border-top-color: var(--divider);
+}
+
+.settings-embedded .kv-panel {
+  border-radius: 10px;
+  border-color: var(--border);
+  background: var(--bg-input-subtle);
+}
+
+/* 模型页：加宽、拉高左侧供应商列表，预设合并在列表内 */
+.settings-embedded .kv-providers {
+  gap: 16px;
+  align-items: stretch;
+}
+
+.settings-embedded .kv-provider-list {
+  width: 220px;
+  min-height: 100%;
+  align-self: stretch;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.dark .chat-window-shell .settings-embedded .kv-provider-list {
+  background: #262626;
+}
+
+.settings-embedded .kv-provider-item,
+.settings-embedded .kv-provider-add {
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.settings-embedded .kv-provider-item.active {
+  background: var(--bg-active);
+}
+
+.settings-embedded .kv-provider-list-items {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 4px;
+  position: relative;
+}
+
+.settings-embedded .kv-provider-list-actions {
+  margin-bottom: 6px;
+  padding-bottom: 10px;
+}
+
+/* ponytail: 模型页右侧详情去卡片化——只在 .kv-provider-detail 内覆盖通用 .kv-group 卡片样式,
+   不影响其它设置标签页。布局不变,仅去掉边框/圆角/底色/阴影,侧边内边距归零让内容对齐面板。 */
+.settings-embedded .kv-provider-detail .kv-group {
+  margin-bottom: 0;
+  padding: 6px 0 10px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+/* 暗色 + chat 内嵌的 .kv-group 底色规则特异性更高,这里同等限定覆盖掉 */
+.dark .chat-window-shell .settings-embedded .kv-provider-detail .kv-group {
+  background: none;
+}
+
+/* 分组之间用一条细线分隔,替代原来的卡片边界 */
+.settings-embedded .kv-provider-detail .kv-group + .kv-group {
+  border-top: 1px solid var(--divider);
+  margin-top: 0;
+}
+
+.settings-embedded .kv-provider-section {
+  width: 100%;
+}
+
+.settings-embedded .kv-provider-header {
+  padding: 10px 0 4px;
+}
+
+.settings-embedded .kv-provider-header-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.settings-embedded .kv-provider-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.settings-embedded .kv-provider-empty-hint {
+  margin: 0;
+  padding: 10px 0 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.kv-provider-section {
+  width: 100%;
+}
+
+.kv-provider-header {
+  padding: 8px 0 4px;
+}
+
+.kv-provider-header-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.kv-provider-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.kv-provider-empty-hint {
+  margin: 0;
+  padding: 8px 0 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.kv-provider-preset-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+}
+.kv-provider-preset-tile:hover {
+  background: var(--bg-active, var(--bg-hover));
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.kv-provider-preset-tile.is-custom {
+  background: var(--accent);
+  color: #fff;
+}
+.kv-provider-preset-tile.is-custom:hover {
+  background: var(--accent);
+  filter: brightness(1.06);
+  box-shadow: none;
+}
+.kv-provider-preset-tile.is-custom svg {
+  color: #fff;
+  width: 16px;
+  height: 16px;
+}
+.kv-provider-preset-tile-name {
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kv-provider-preset-tile-heart {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 12px;
+  height: 12px;
+  color: #f43f5e;
+}
+
+@container settings-shell (max-width: 820px) {
+  .settings-embedded-nav {
+    width: 52px;
+    --nav-pad-x: 6px;
+  }
+
+  .settings-embedded-nav-title {
+    display: none;
+  }
+
+  .settings-embedded-nav-item {
+    justify-content: center;
+    gap: 0;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .settings-embedded-nav-item > span:not(.settings-embedded-nav-icon) {
+    display: none;
+  }
+
+  /* 窄栏（52px 图标轨）里「返回对话」也收成纯图标居中，否则文字被挤成竖排。tooltip 保留标签。 */
+  .settings-embedded-back {
+    justify-content: center;
+    gap: 0;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .settings-embedded-back > span:not(.settings-embedded-nav-icon) {
+    display: none;
+  }
+}
+
+@container settings-shell (max-width: 720px) {
+  .settings-embedded .kv-providers,
+  .kv-providers {
+    flex-direction: column;
+  }
+
+  .settings-embedded .kv-provider-list,
+  .kv-provider-list {
+    width: 100%;
+    max-width: none;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .settings-embedded .kv-provider-list-items,
+  .kv-provider-list-items {
+    max-height: 140px;
+  }
+
+  .kv-provider-detail {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+}
+
+@container settings-shell (max-width: 480px) {
+  .kv-sidebar {
+    width: 52px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .kv-sidebar-brand-name,
+  .kv-sidebar-brand-ver {
+    display: none;
+  }
+
+  .kv-sidebar-brand {
+    justify-content: center;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .kv-nav-item {
+    justify-content: center;
+    gap: 0;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .kv-nav-item > span {
+    display: none;
+  }
+
+  .kv-page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .kv-scroll {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .kv-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .kv-row-control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}

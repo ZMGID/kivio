@@ -20,8 +20,7 @@ import {
 } from './chat/persistence'
 import { isChatPopoutPath } from './chat/popout/popoutRoutes'
 import { ChatErrorBoundary } from './chat/ChatErrorBoundary'
-import { normalizeThemeColorId } from './themeColors'
-import './index.css'
+import './styles/app.css'
 
 const Lens = lazy(() => import('./Lens'))
 const Chat = lazy(() => import('./chat/Chat'))
@@ -264,7 +263,7 @@ function App() {
   // 应用主题设置
   const applyTheme = async () => {
     const settings = await getSettingsCached()
-    const nextMode = (settings.theme || 'system') as 'system' | 'light' | 'dark'
+    const nextMode = settings.theme
     setThemeMode(nextMode)
     setTranslucentSidebar(settings.translucentSidebar)
     const isDark = nextMode === 'dark' || (nextMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -273,7 +272,7 @@ function App() {
     } else {
       document.documentElement.classList.remove('dark')
     }
-    document.documentElement.dataset.themeColor = normalizeThemeColorId(settings.themeColor)
+    document.documentElement.dataset.themeColor = settings.themeColor
     // UI 字号（整体缩放）+ 自定义字体：仅作用于聊天窗口，翻译窗/Lens 保持原始几何与布局。
     // 直接读 hash（稳定的 import）而非 mode state，避免让 applyTheme 变成不稳定依赖。
     const root = document.documentElement

@@ -51,7 +51,7 @@ import type {
   ChatUserPromptPayload,
   ChatHookPayload,
 } from '../../api/tauri'
-import type { Lang } from '../../settings/i18n'
+import type { Lang } from '../../settings/public/i18n'
 
 export function usePopoutSession(conversationId: string, lang: Lang) {
   const [conversation, setConversation] = useState<Conversation | null>(null)

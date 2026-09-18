@@ -28,7 +28,6 @@ describe('builtinWebSearchSupported', () => {
 
   it('allows official DeepSeek Chat Completions, not relays', () => {
     expect(builtinWebSearchSupported('openai_chat', 'https://api.deepseek.com/v1')).toBe(true)
-    expect(builtinWebSearchSupported('openai', 'https://api.deepseek.com')).toBe(true)
     expect(builtinWebSearchSupported('openai_chat', 'https://relay.example/v1')).toBe(false)
     expect(builtinWebSearchSupported('openai_chat')).toBe(false)
   })

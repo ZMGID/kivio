@@ -2,7 +2,7 @@ import { providerHasCredentials } from '../api/tauri'
 import { useMemo, useRef } from 'react'
 import { GripHorizontal } from 'lucide-react'
 import type { ModelProvider } from '../api/tauri'
-import { ProviderIcon } from '../chat/ModelIcon'
+import { ProviderIcon } from '../chat/public/modelIcons'
 import { usePointerReorder } from '../utils/pointerReorder'
 import { isProviderEnabled } from './utils'
 

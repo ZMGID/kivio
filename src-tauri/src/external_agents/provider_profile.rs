@@ -47,6 +47,8 @@ use std::sync::{LazyLock, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::external_agents::registry::get_agent_def;
+use crate::external_agents::types::ProviderProfileStrategy;
 use crate::settings::{ExternalCliAgentConfig, ExternalCliProvider};
 
 /// 设置保存与删除命令可能并发触发；三份原生文件必须作为一个逻辑事务串行合并。
@@ -274,7 +276,10 @@ fn dsh_provider_env(config: &ExternalCliAgentConfig) -> HashMap<String, String> 
 
 /// 要注入这个 CLI 子进程的供应商环境变量。dsh 合并全部并存供应商，其余 CLI 只用默认项。
 pub fn provider_env(agent_id: &str) -> HashMap<String, String> {
-    if agent_id == "dsh" {
+    let Some(def) = get_agent_def(agent_id) else {
+        return HashMap::new();
+    };
+    if matches!(def.provider_profile, ProviderProfileStrategy::Dsh) {
         return super::overrides::agent_config(agent_id)
             .map(|config| dsh_provider_env(&config))
             .unwrap_or_default();
@@ -283,7 +288,7 @@ pub fn provider_env(agent_id: &str) -> HashMap<String, String> {
     let Some(provider) = super::overrides::active_provider(agent_id) else {
         return HashMap::new();
     };
-    if agent_id == "codex" {
+    if matches!(def.provider_profile, ProviderProfileStrategy::Codex) {
         // codex 读不到 base_url 环境变量，只认 config.toml；私有 home 是唯一通道。
         return match codex_home_for(&provider.id) {
             Some(home) => HashMap::from([(
@@ -302,7 +307,8 @@ pub fn provider_env(agent_id: &str) -> HashMap<String, String> {
 
 /// claude 启动时要追加的 `--settings <path>`；无供应商 / 文件没物化成功时返回 None。
 pub fn claude_settings_override(agent_id: &str) -> Option<PathBuf> {
-    if agent_id != "claude" {
+    let def = get_agent_def(agent_id)?;
+    if !matches!(def.provider_profile, ProviderProfileStrategy::Claude) {
         return None;
     }
     let provider = super::overrides::active_provider(agent_id)?;
@@ -310,48 +316,60 @@ pub fn claude_settings_override(agent_id: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// 给所有 CLI 物化一遍当前生效的供应商。由 `persist_settings` 在同步完镜像后调用 ——
-/// 保存设置就等于落地，前端不需要记得多调一个命令。
-/// 单个失败只记日志：一个 CLI 的坏 TOML 不该拦住整次设置保存。
-pub fn materialize_all() {
+/// 给所有 CLI 物化一遍当前生效的供应商。由 `persist_settings` 在同步完镜像后调用。
+/// 尝试全部定义并汇总错误，让设置事务可以回滚已经部分落地的配置。
+pub fn materialize_all() -> Result<(), String> {
+    let mut errors = Vec::new();
     for def in crate::external_agents::registry::AGENT_DEFS {
         if let Err(err) = materialize(def.id) {
-            eprintln!("[external-agent] 供应商落地失败（{}）：{err}", def.id);
+            errors.push(format!("{}: {err}", def.id));
         }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("供应商配置落地失败：{}", errors.join("; ")))
     }
 }
 
 /// 把供应商写到盘上。OpenCode / Pi / Grok / Kimi 即使当前未启用，也要同步（或恢复）原生配置。
 pub fn materialize(agent_id: &str) -> Result<(), String> {
-    if matches!(agent_id, "opencode" | "pi") {
-        let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-        return materialize_native(agent_id, &config);
-    }
-    if agent_id == "grok" {
-        let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-        return materialize_grok(&config);
-    }
-    if agent_id == "kimi" {
-        let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-        return materialize_kimi(&config);
-    }
-    if agent_id == "dsh" {
-        let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-        let providers: Vec<_> = config
-            .providers
-            .into_iter()
-            .filter(|provider| !provider.disabled)
-            .collect();
-        return crate::external_agents::dsh_plugins::sync_kivio_model_capabilities(&providers);
-    }
-    let Some(provider) = super::overrides::active_provider(agent_id) else {
-        return Ok(());
-    };
-    match agent_id {
-        "claude" => materialize_claude(&provider),
-        "codex" => materialize_codex(&provider),
-        // 其余 CLI 纯靠环境变量，没有要落盘的东西。
-        _ => Ok(()),
+    let def = get_agent_def(agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
+    match def.provider_profile {
+        ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi => {
+            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
+            materialize_native(def.provider_profile, agent_id, &config)
+        }
+        ProviderProfileStrategy::Grok => {
+            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
+            materialize_grok(&config)
+        }
+        ProviderProfileStrategy::Kimi => {
+            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
+            materialize_kimi(&config)
+        }
+        ProviderProfileStrategy::Dsh => {
+            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
+            let providers: Vec<_> = config
+                .providers
+                .into_iter()
+                .filter(|provider| !provider.disabled)
+                .collect();
+            crate::external_agents::dsh_plugins::sync_kivio_model_capabilities(&providers)
+        }
+        ProviderProfileStrategy::Claude
+        | ProviderProfileStrategy::Codex
+        | ProviderProfileStrategy::Environment => {
+            let Some(provider) = super::overrides::active_provider(agent_id) else {
+                return Ok(());
+            };
+            match def.provider_profile {
+                ProviderProfileStrategy::Claude => materialize_claude(&provider),
+                ProviderProfileStrategy::Codex => materialize_codex(&provider),
+                ProviderProfileStrategy::Environment => Ok(()),
+                _ => unreachable!("profile strategy was narrowed above"),
+            }
+        }
     }
 }
 
@@ -621,8 +639,11 @@ pub fn persist_selected_model(
     else {
         return Ok(());
     };
-    match agent_id {
-        "claude" => {
+    let Some(def) = get_agent_def(agent_id) else {
+        return Err(format!("未知外部 Agent: {agent_id}"));
+    };
+    match def.provider_profile {
+        ProviderProfileStrategy::Claude => {
             let Some(wire) =
                 crate::external_agents::session::claude_init::claude_wire_model(Some(model))
             else {
@@ -630,7 +651,7 @@ pub fn persist_selected_model(
             };
             persist_claude_model(&wire)
         }
-        "codex" => persist_codex_model(model, reasoning),
+        ProviderProfileStrategy::Codex => persist_codex_model(model, reasoning),
         _ => Ok(()),
     }
 }
@@ -1213,25 +1234,30 @@ struct NativeProviderEntry {
     default_thinking_level: Option<String>,
 }
 
-fn materialize_native(agent_id: &str, config: &ExternalCliAgentConfig) -> Result<(), String> {
-    let paths = match agent_id {
-        "opencode" => opencode_paths(),
-        "pi" => pi_paths(),
+fn materialize_native(
+    strategy: ProviderProfileStrategy,
+    agent_id: &str,
+    config: &ExternalCliAgentConfig,
+) -> Result<(), String> {
+    let paths = match strategy {
+        ProviderProfileStrategy::OpenCode => opencode_paths(),
+        ProviderProfileStrategy::Pi => pi_paths(),
         _ => None,
     }
     .ok_or_else(|| format!("无法定位 {agent_id} 的原生配置目录"))?;
     let _guard = NATIVE_CONFIG_LOCK
         .lock()
         .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
-    materialize_native_at(agent_id, config, &paths)
+    materialize_native_with_strategy_at(strategy, agent_id, config, &paths)
 }
 
-fn materialize_native_at(
+fn materialize_native_with_strategy_at(
+    strategy: ProviderProfileStrategy,
     agent_id: &str,
     config: &ExternalCliAgentConfig,
     paths: &NativePaths,
 ) -> Result<(), String> {
-    let entries = parse_native_entries(agent_id, &config.providers)?;
+    let entries = parse_native_entries_for(strategy, &config.providers)?;
     let active = if config.current_provider.trim().is_empty() {
         None
     } else {
@@ -1265,13 +1291,13 @@ fn materialize_native_at(
         .map(|entry| entry.native_id.clone())
         .collect();
 
-    match agent_id {
-        "opencode" => {
+    match strategy {
+        ProviderProfileStrategy::OpenCode => {
             migrate_shadowed_opencode_configs(paths, &mut state, &previous_ids, &entries)?;
             let mut root = read_object_file(&paths.config, true, false, "OpenCode opencode.json")?;
             let before_root = root.clone();
             ensure_provider_id_available(&root, "provider", &previous_ids, &entries)?;
-            sync_provider_map(agent_id, &mut root, "provider", &previous_ids, &entries)?;
+            sync_provider_map(strategy, &mut root, "provider", &previous_ids, &entries)?;
 
             let mut auth = read_object_file(&paths.auth, false, true, "OpenCode auth.json")?;
             let before_auth = auth.clone();
@@ -1294,11 +1320,11 @@ fn materialize_native_at(
             write_object_if_changed(&paths.config, before_root, &root)?;
             write_object_if_changed(&paths.auth, before_auth, &auth)?;
         }
-        "pi" => {
+        ProviderProfileStrategy::Pi => {
             let mut models = read_object_file(&paths.config, false, false, "Pi models.json")?;
             let before_models = models.clone();
             ensure_provider_id_available(&models, "providers", &previous_ids, &entries)?;
-            sync_provider_map(agent_id, &mut models, "providers", &previous_ids, &entries)?;
+            sync_provider_map(strategy, &mut models, "providers", &previous_ids, &entries)?;
 
             let mut auth = read_object_file(&paths.auth, false, true, "Pi auth.json")?;
             let before_auth = auth.clone();
@@ -1367,8 +1393,8 @@ fn migrate_shadowed_opencode_configs(
     Ok(())
 }
 
-fn parse_native_entries(
-    agent_id: &str,
+fn parse_native_entries_for(
+    strategy: ProviderProfileStrategy,
     providers: &[ExternalCliProvider],
 ) -> Result<Vec<NativeProviderEntry>, String> {
     let mut entries = Vec::new();
@@ -1385,7 +1411,7 @@ fn parse_native_entries(
         let mut config = parse_object_text(&provider.config_json, "provider configJson")?;
         // 旧 configJson 可能还没写 forceAdaptiveThinking；同步到 models.json 时补上，
         // 否则 pi-cache-optimizer 会对 opus≥4.6 / sonnet≥4.6 / fable≥5 弹告警。
-        if agent_id == "pi" {
+        if strategy == ProviderProfileStrategy::Pi {
             ensure_pi_adaptive_thinking_compat(&mut config);
         }
         let auth = if provider.auth_json.trim().is_empty() {
@@ -1397,9 +1423,9 @@ fn parse_native_entries(
         if default_model.is_empty() {
             return Err(format!("供应商 {} 缺少默认模型", provider.name));
         }
-        validate_native_provider(agent_id, &config, &default_model, &provider.name)?;
-        validate_native_auth(agent_id, &auth, &provider.name)?;
-        let default_thinking_level = if agent_id == "pi" {
+        validate_native_provider(strategy, &config, &default_model, &provider.name)?;
+        validate_native_auth(strategy, &auth, &provider.name)?;
+        let default_thinking_level = if strategy == ProviderProfileStrategy::Pi {
             let level = provider.default_reasoning.trim();
             if level.is_empty() {
                 None
@@ -1514,7 +1540,7 @@ fn ensure_pi_adaptive_thinking_compat(config: &mut Map<String, Value>) {
 }
 
 fn validate_native_provider(
-    agent_id: &str,
+    strategy: ProviderProfileStrategy,
     config: &Map<String, Value>,
     default_model: &str,
     name: &str,
@@ -1524,8 +1550,8 @@ fn validate_native_provider(
             .and_then(Value::as_str)
             .is_some_and(|value| !value.trim().is_empty())
     };
-    match agent_id {
-        "opencode" => {
+    match strategy {
+        ProviderProfileStrategy::OpenCode => {
             if !nonempty(config.get("npm")) {
                 return Err(format!("供应商 {name} 的 OpenCode 配置缺少 npm"));
             }
@@ -1540,7 +1566,7 @@ fn validate_native_provider(
                 ));
             }
         }
-        "pi" => {
+        ProviderProfileStrategy::Pi => {
             const APIS: &[&str] = &[
                 "openai-completions",
                 "openai-responses",
@@ -1554,21 +1580,22 @@ fn validate_native_provider(
         }
         _ => {}
     }
-    let model_exists = match agent_id {
-        "opencode" => config
-            .get("models")
-            .and_then(Value::as_object)
-            .is_some_and(|models| models.contains_key(default_model)),
-        "pi" => config
-            .get("models")
-            .and_then(Value::as_array)
-            .is_some_and(|models| {
-                models
-                    .iter()
-                    .any(|model| model.get("id").and_then(Value::as_str) == Some(default_model))
-            }),
-        _ => true,
-    };
+    let model_exists =
+        match strategy {
+            ProviderProfileStrategy::OpenCode => config
+                .get("models")
+                .and_then(Value::as_object)
+                .is_some_and(|models| models.contains_key(default_model)),
+            ProviderProfileStrategy::Pi => config
+                .get("models")
+                .and_then(Value::as_array)
+                .is_some_and(|models| {
+                    models
+                        .iter()
+                        .any(|model| model.get("id").and_then(Value::as_str) == Some(default_model))
+                }),
+            _ => true,
+        };
     if !model_exists {
         return Err(format!("供应商 {name} 的默认模型不在 models 列表中"));
     }
@@ -1576,14 +1603,14 @@ fn validate_native_provider(
 }
 
 fn validate_native_auth(
-    agent_id: &str,
+    strategy: ProviderProfileStrategy,
     auth: &Map<String, Value>,
     name: &str,
 ) -> Result<(), String> {
-    if agent_id == "opencode" && auth.is_empty() {
+    if strategy == ProviderProfileStrategy::OpenCode && auth.is_empty() {
         return Ok(());
     }
-    let expected_type = if agent_id == "opencode" {
+    let expected_type = if strategy == ProviderProfileStrategy::OpenCode {
         "api"
     } else {
         "api_key"
@@ -1822,7 +1849,7 @@ fn remove_managed_provider_ids(
 }
 
 fn sync_provider_map(
-    agent_id: &str,
+    strategy: ProviderProfileStrategy,
     root: &mut Map<String, Value>,
     field: &str,
     previous_ids: &HashSet<String>,
@@ -1843,7 +1870,7 @@ fn sync_provider_map(
         }
     }
     for entry in entries {
-        let config = if agent_id == "opencode" {
+        let config = if strategy == ProviderProfileStrategy::OpenCode {
             previous
                 .remove(&entry.native_id)
                 .map(|existing| merge_opencode_provider(existing, &entry.config))
@@ -1999,13 +2026,16 @@ pub fn cleanup(
     native_provider_id: Option<&str>,
     provider_name: Option<&str>,
 ) {
-    match agent_id {
-        "claude" => {
+    let Some(def) = get_agent_def(agent_id) else {
+        return;
+    };
+    match def.provider_profile {
+        ProviderProfileStrategy::Claude => {
             if let Some(path) = claude_settings_path_for(provider_id) {
                 let _ = std::fs::remove_file(path);
             }
         }
-        "codex" => {
+        ProviderProfileStrategy::Codex => {
             if let Some(home) = codex_home_for(provider_id) {
                 // `sessions/` 可能是接到用户 ~/.codex/sessions 的 junction；必须先拆掉
                 // 联接再删私有 home，否则 remove_dir_all 可能顺着联接把用户会话清掉。
@@ -2013,10 +2043,14 @@ pub fn cleanup(
                 let _ = std::fs::remove_dir_all(home);
             }
         }
-        "opencode" | "pi" => {
-            if let Err(err) =
-                cleanup_native(agent_id, provider_id, native_provider_id, provider_name)
-            {
+        ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi => {
+            if let Err(err) = cleanup_native(
+                def.provider_profile,
+                agent_id,
+                provider_id,
+                native_provider_id,
+                provider_name,
+            ) {
                 eprintln!("[external-agent] 清理 {agent_id} 原生供应商失败：{err}");
             }
         }
@@ -2025,21 +2059,23 @@ pub fn cleanup(
 }
 
 fn cleanup_native(
+    strategy: ProviderProfileStrategy,
     agent_id: &str,
     provider_id: &str,
     native_provider_id: Option<&str>,
     provider_name: Option<&str>,
 ) -> Result<(), String> {
-    let paths = match agent_id {
-        "opencode" => opencode_paths(),
-        "pi" => pi_paths(),
+    let paths = match strategy {
+        ProviderProfileStrategy::OpenCode => opencode_paths(),
+        ProviderProfileStrategy::Pi => pi_paths(),
         _ => None,
     }
     .ok_or_else(|| format!("无法定位 {agent_id} 的原生配置目录"))?;
     let _guard = NATIVE_CONFIG_LOCK
         .lock()
         .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
-    cleanup_native_at(
+    cleanup_native_with_strategy_at(
+        strategy,
         agent_id,
         provider_id,
         native_provider_id,
@@ -2048,8 +2084,9 @@ fn cleanup_native(
     )
 }
 
-fn cleanup_native_at(
-    agent_id: &str,
+fn cleanup_native_with_strategy_at(
+    strategy: ProviderProfileStrategy,
+    _agent_id: &str,
     provider_id: &str,
     configured_native_id: Option<&str>,
     provider_name: Option<&str>,
@@ -2062,8 +2099,8 @@ fn cleanup_native_at(
     let matches_id =
         |value: Option<&str>| value.is_some_and(|value| native_ids.iter().any(|id| id == value));
     let mut state = read_managed_state(&paths.state)?;
-    match agent_id {
-        "opencode" => {
+    match strategy {
+        ProviderProfileStrategy::OpenCode => {
             for config_path in std::iter::once(&paths.config).chain(&paths.alternate_configs) {
                 let mut config = read_object_file(config_path, true, false, "原生 provider 配置")?;
                 let before_config = config.clone();
@@ -2084,7 +2121,7 @@ fn cleanup_native_at(
                 write_object_if_changed(config_path, before_config, &config)?;
             }
         }
-        "pi" => {
+        ProviderProfileStrategy::Pi => {
             let mut config = read_object_file(&paths.config, false, false, "原生 provider 配置")?;
             let before_config = config.clone();
             if let Some(providers) = config.get_mut("providers").and_then(Value::as_object_mut) {
@@ -2179,8 +2216,56 @@ pub(crate) fn write_private_atomic(path: &Path, content: &str) -> Result<(), Str
 }
 
 #[cfg(test)]
+fn native_strategy_for_test(agent_id: &str) -> ProviderProfileStrategy {
+    get_agent_def(agent_id)
+        .map(|def| def.provider_profile)
+        .expect("registered native-provider agent")
+}
+
+#[cfg(test)]
+fn materialize_native_at(
+    agent_id: &str,
+    config: &ExternalCliAgentConfig,
+    paths: &NativePaths,
+) -> Result<(), String> {
+    materialize_native_with_strategy_at(native_strategy_for_test(agent_id), agent_id, config, paths)
+}
+
+#[cfg(test)]
+fn cleanup_native_at(
+    agent_id: &str,
+    provider_id: &str,
+    configured_native_id: Option<&str>,
+    provider_name: Option<&str>,
+    paths: &NativePaths,
+) -> Result<(), String> {
+    cleanup_native_with_strategy_at(
+        native_strategy_for_test(agent_id),
+        agent_id,
+        provider_id,
+        configured_native_id,
+        provider_name,
+        paths,
+    )
+}
+
+#[cfg(test)]
+fn parse_native_entries(
+    agent_id: &str,
+    providers: &[ExternalCliProvider],
+) -> Result<Vec<NativeProviderEntry>, String> {
+    parse_native_entries_for(native_strategy_for_test(agent_id), providers)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_agent_has_no_provider_profile_route() {
+        let error = materialize("unknown-agent").unwrap_err();
+        assert!(error.contains("未知外部 Agent"));
+    }
 
     fn test_paths(root: &Path, pi: bool) -> NativePaths {
         NativePaths {

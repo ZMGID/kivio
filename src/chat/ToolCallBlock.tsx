@@ -47,10 +47,10 @@ import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
 import { webSearchCardView, type WebCitationView } from './webSearchCitations'
 import { AskUserBlock } from './AskUserBlock'
 import { ChatMarkdown } from './ChatMarkdown'
-import { WebSearchIcon } from '../settings/NavIcons'
+import { WebSearchIcon } from '../settings/public/icons'
 import { api } from '../api/tauri'
-import { useT } from '../settings/i18n'
-import { setHash } from './chatRoutes'
+import { useT } from '../settings/public/i18n'
+import { automationHash, setHash } from './chatRoutes'
 import { loadAttachmentDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import type { ImageReadItem } from './segments'
@@ -887,7 +887,7 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
           type="button"
           className="text-[12px] text-neutral-600 underline-offset-2 hover:underline dark:text-neutral-300"
           data-tauri-drag-region="false"
-          onClick={() => setHash(`#chat/automations/${encodeURIComponent(automationId)}`)}
+          onClick={() => setHash(automationHash(automationId))}
         >
           {t.chatAutomationOpenWorkflow}
         </button>

@@ -1301,13 +1301,18 @@ mod tests {
     #[test]
     fn successful_file_receipt_omits_code_but_preserves_disk_and_review() {
         let dir = tempfile::tempdir().unwrap();
-        let workspace = crate::native_tools::NativeToolWorkspace::global(&[
-            dir.path().to_string_lossy().into_owned(),
-        ]);
+        let workspace = crate::native_tools::NativeToolWorkspace::global(&[dir
+            .path()
+            .to_string_lossy()
+            .into_owned()]);
         let source = "def answer():\n    return 42\n".repeat(100);
-        let mut mutation = crate::native_tools::write_file(&workspace, &serde_json::json!({
-            "path": "answer.py", "content": source,
-        })).unwrap();
+        let mut mutation = crate::native_tools::write_file(
+            &workspace,
+            &serde_json::json!({
+                "path": "answer.py", "content": source,
+            }),
+        )
+        .unwrap();
         mutation.warnings.push("retained warning".into());
         let original_diff = mutation.diff.clone();
         let result = super::file_mutation_tool_result(mutation).unwrap();
@@ -1315,8 +1320,14 @@ mod tests {
         assert!(result.content.len() < 250);
         assert!(!result.content.contains("def answer"));
         assert!(result.content.contains("retained warning"));
-        assert_eq!(std::fs::read_to_string(dir.path().join("answer.py")).unwrap(), source);
-        assert_eq!(result.structured_content.as_ref().unwrap()["diff"], original_diff);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("answer.py")).unwrap(),
+            source
+        );
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["diff"],
+            original_diff
+        );
 
         let edit = crate::native_tools::edit_file(&workspace, &serde_json::json!({
             "path": "answer.py", "edits": [{"old_string": source, "new_string": "def answer():\n    return 43\n"}],
@@ -1324,8 +1335,14 @@ mod tests {
         let result = super::file_mutation_tool_result(edit).unwrap();
         assert!(!result.is_error);
         assert!(!result.content.contains("return 43"));
-        assert!(result.structured_content.as_ref().unwrap()["diff"].as_str().unwrap().contains("return 43"));
-        assert_eq!(std::fs::read_to_string(dir.path().join("answer.py")).unwrap(), "def answer():\n    return 43\n");
+        assert!(result.structured_content.as_ref().unwrap()["diff"]
+            .as_str()
+            .unwrap()
+            .contains("return 43"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("answer.py")).unwrap(),
+            "def answer():\n    return 43\n"
+        );
     }
 
     use super::*;
@@ -1342,7 +1359,7 @@ mod tests {
             pending,
             "an undiscovered server must not look like a server with no tools"
         );
-        assert!(state.mcp_sessions.lock().await.is_empty());
+        assert!(state.mcp_test_sessions_empty().await);
 
         state.set_mcp_tool_snapshot(
             server.id.clone(),
@@ -1362,7 +1379,7 @@ mod tests {
         );
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "cached_tool");
-        assert!(state.mcp_sessions.lock().await.is_empty());
+        assert!(state.mcp_test_sessions_empty().await);
 
         let mut changed = settings.clone();
         changed.chat_tools.servers[0].command = "different-server-command".into();
@@ -1374,7 +1391,7 @@ mod tests {
         let (tools, pending) = collect_display_mcp_tool_defs(&state, &disabled).await;
         assert!(tools.is_empty());
         assert!(!pending);
-        assert!(state.mcp_sessions.lock().await.is_empty());
+        assert!(state.mcp_test_sessions_empty().await);
     }
 
     #[test]

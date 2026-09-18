@@ -9,7 +9,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { I18n } from '../../settings/i18n'
+import type { I18n } from '../../settings/public/i18n'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'
 
 type WelcomeStepProps = {

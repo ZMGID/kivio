@@ -11,7 +11,7 @@
 //!
 //! 和聊天生命周期 Hooks 分家：Hooks 是对话旁路观察；自动化是用户意图的主路径。
 
-mod agent;
+mod application;
 pub(crate) mod commands;
 mod events;
 mod history;
@@ -20,6 +20,7 @@ mod interpolate;
 pub(crate) mod notify;
 mod runner;
 mod schedule;
+mod state;
 mod storage;
 pub(crate) mod tools;
 mod types;
@@ -34,4 +35,5 @@ pub(crate) use runner::{
     cancel_all as cancel_all_runs, enqueue, wait_all_finished as wait_runs_finished,
 };
 pub(crate) use schedule::spawn as spawn_scheduler;
+pub(crate) use state::AutomationRunState;
 pub(crate) use types::RunOrigin;

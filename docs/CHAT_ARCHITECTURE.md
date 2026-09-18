@@ -50,7 +50,7 @@ Conversation {
 
 ### 3. 路由设计
 
-**决策**：嵌套 hash 路由 `#chat/{conversation_id}`
+**决策**：使用统一的纯 codec 解析 Chat hash 路由；浏览器读取和最近路由持久化是独立 adapter。
 
 **原因**：
 - URL 语义清晰
@@ -59,12 +59,20 @@ Conversation {
 
 **路由表**：
 ```
-#chat                  → 对话列表（空状态）
-#chat/{id}             → 具体对话
-#translator            → 翻译器
-#settings              → 设置
-#lens                  → Lens 窗口（独立）
+#chat                         → 对话列表（空状态）
+#chat/{encoded-id}            → 具体对话
+#chat/settings[/...]          → 内嵌设置
+#chat/assistants|skill|mcp    → Chat 中心页
+#chat/automations[/id]        → 自动化列表或编辑页
+#chat/onboarding              → 引导页（不可记忆）
+#chat/popout/{encoded-id}     → 对话弹窗（不可记忆）
+#translator                   → 翻译器
+#lens                         → Lens 窗口（独立）
 ```
+
+权威实现位于 `src/chat/routeCodec.ts`。`browserRoute.ts` 只读取 `window.location`，
+`persistence.ts` 只决定哪些合法路由可恢复。非法百分号编码和未知路径必须返回可处理结果，
+不得让页面渲染抛错。
 
 ### 4. 启动逻辑
 

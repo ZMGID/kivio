@@ -59,8 +59,8 @@ export function ScreenshotTranslationSettings({
   onDownloadReplacePack,
 }: ScreenshotTranslationSettingsProps) {
   const screenshot = settings.screenshotTranslation
-  const ocrMode = screenshot?.ocrMode ?? 'cloud_vision'
-  const cardWidth = screenshot?.cardWidth ?? 480
+  const ocrMode = screenshot.ocrMode ?? 'cloud_vision'
+  const cardWidth = screenshot.cardWidth ?? 480
   const [widthDraft, setWidthDraft] = useState(String(cardWidth))
   // 外部改宽（翻译卡右下角拖拽缩放写回设置）时同步草稿，保持设置页与卡片联动。
   useEffect(() => {
@@ -87,19 +87,19 @@ export function ScreenshotTranslationSettings({
       <SettingsGroup title={t.sectionOptions}>
           <SettingRow label={t.enabled}>
             <Toggle
-              checked={screenshot?.enabled ?? true}
+              checked={screenshot.enabled}
               onChange={(enabled) => onUpdate({ enabled })}
             />
           </SettingRow>
 
-          {screenshot?.enabled !== false && (
+          {screenshot.enabled && (
             <>
               <SettingRow
                 label={t.screenshotShowOriginal}
                 description={t.screenshotShowOriginalHint}
               >
                 <Toggle
-                  checked={!(screenshot?.directTranslate ?? false)}
+                  checked={!(screenshot.directTranslate ?? false)}
                   onChange={(showOriginal) => onUpdate({ directTranslate: !showOriginal })}
                 />
               </SettingRow>
@@ -143,7 +143,7 @@ export function ScreenshotTranslationSettings({
           )}
       </SettingsGroup>
 
-      {screenshot?.enabled !== false && (
+      {screenshot.enabled && (
         <SettingsGroup title={t.replaceTranslate}>
           <SettingRow label={t.replaceTranslateEnabled}>
             <Toggle
@@ -170,7 +170,7 @@ export function ScreenshotTranslationSettings({
         </SettingsGroup>
       )}
 
-      {screenshot?.enabled !== false && (
+      {screenshot.enabled && (
         <>
           {hasSystemOcr && (
             <SettingsGroup title={t.ocrEngine}>

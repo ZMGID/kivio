@@ -500,7 +500,7 @@ pub enum StreamPart {
 pub enum ModelErrorKind {
     Other,
     StreamReadInterrupted,
-    /// 调用方主动取消（如 Lens 流的 `explain_stream_generation` 代际失配）。
+    /// 调用方主动取消（如 Lens owner 的 stream generation 代际失配）。
     /// 由 sink 在 emit 时返回，适配器沿 `?` 上抛；包装层据此把取消当正常结束处理。
     Cancelled,
 }

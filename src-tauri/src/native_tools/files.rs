@@ -969,21 +969,35 @@ fn build_diff_ops<'a>(
     // A disjoint rewrite has no common lines: emit its exact result directly.
     // Otherwise Myers preserves unchanged islands without allocating an N*M table.
     let old_set: HashSet<&str> = middle_old.iter().map(String::as_str).collect();
-    if !middle_new.iter().any(|line| old_set.contains(line.as_str())) {
-        ops.extend(middle_old.iter().map(|text| DiffOp { kind: DiffOpKind::Remove, text }));
-        ops.extend(middle_new.iter().map(|text| DiffOp { kind: DiffOpKind::Add, text }));
+    if !middle_new
+        .iter()
+        .any(|line| old_set.contains(line.as_str()))
+    {
+        ops.extend(middle_old.iter().map(|text| DiffOp {
+            kind: DiffOpKind::Remove,
+            text,
+        }));
+        ops.extend(middle_new.iter().map(|text| DiffOp {
+            kind: DiffOpKind::Add,
+            text,
+        }));
     } else {
-        for change in similar::capture_diff_slices(similar::Algorithm::Myers, middle_old, middle_new) {
+        for change in
+            similar::capture_diff_slices(similar::Algorithm::Myers, middle_old, middle_new)
+        {
             if change.tag() == similar::DiffTag::Equal {
                 ops.extend(middle_old[change.old_range()].iter().map(|text| DiffOp {
-                    kind: DiffOpKind::Equal, text,
+                    kind: DiffOpKind::Equal,
+                    text,
                 }));
             } else {
                 ops.extend(middle_old[change.old_range()].iter().map(|text| DiffOp {
-                    kind: DiffOpKind::Remove, text,
+                    kind: DiffOpKind::Remove,
+                    text,
                 }));
                 ops.extend(middle_new[change.new_range()].iter().map(|text| DiffOp {
-                    kind: DiffOpKind::Add, text,
+                    kind: DiffOpKind::Add,
+                    text,
                 }));
             }
         }
@@ -2535,11 +2549,15 @@ mod tests {
     #[test]
     fn diff_counts_match_lcs_for_repeated_lines_and_empty_files() {
         // Independent small-input oracle, including ambiguous repeated lines.
-        let sequences: Vec<String> = (0..=5).flat_map(|len| {
-            (0..(1usize << len)).map(move |bits| {
-                (0..len).map(|i| if bits & (1 << i) == 0 { "a\n" } else { "b\n" }).collect()
+        let sequences: Vec<String> = (0..=5)
+            .flat_map(|len| {
+                (0..(1usize << len)).map(move |bits| {
+                    (0..len)
+                        .map(|i| if bits & (1 << i) == 0 { "a\n" } else { "b\n" })
+                        .collect()
+                })
             })
-        }).collect();
+            .collect();
         for old in &sequences {
             for new in &sequences {
                 let a: Vec<_> = old.lines().collect();
@@ -2547,21 +2565,32 @@ mod tests {
                 let mut lcs = vec![vec![0usize; b.len() + 1]; a.len() + 1];
                 for i in 0..a.len() {
                     for j in 0..b.len() {
-                        lcs[i + 1][j + 1] = if a[i] == b[j] { lcs[i][j] + 1 }
-                            else { lcs[i][j + 1].max(lcs[i + 1][j]) };
+                        lcs[i + 1][j + 1] = if a[i] == b[j] {
+                            lcs[i][j] + 1
+                        } else {
+                            lcs[i][j + 1].max(lcs[i + 1][j])
+                        };
                     }
                 }
                 let (_, additions, removals) = unified_diff("repeat.txt", Some(old), Some(new));
                 let common = lcs[a.len()][b.len()];
-                assert_eq!((additions, removals), (b.len() - common, a.len() - common), "{old:?} -> {new:?}");
+                assert_eq!(
+                    (additions, removals),
+                    (b.len() - common, a.len() - common),
+                    "{old:?} -> {new:?}"
+                );
             }
         }
     }
 
     #[test]
     fn diff_large_disjoint_rewrite_has_exact_counts() {
-        let old = (0..10_000).map(|i| format!("old {i}\n")).collect::<String>();
-        let new = (0..10_000).map(|i| format!("new {i}\n")).collect::<String>();
+        let old = (0..10_000)
+            .map(|i| format!("old {i}\n"))
+            .collect::<String>();
+        let new = (0..10_000)
+            .map(|i| format!("new {i}\n"))
+            .collect::<String>();
         let (diff, additions, removals) = unified_diff("rewrite.txt", Some(&old), Some(&new));
         assert_eq!((additions, removals), (10_000, 10_000));
         assert_eq!(diff.matches("@@ -").count(), 1);
@@ -2572,7 +2601,9 @@ mod tests {
     fn distant_local_edits_preserve_large_file_diff() {
         let root = tempfile::tempdir().unwrap();
         let workspace = NativeToolWorkspace::project(
-            "test".into(), "Test".into(), Some(root.path().to_string_lossy().into_owned()),
+            "test".into(),
+            "Test".into(),
+            Some(root.path().to_string_lossy().into_owned()),
         );
         let lines: Vec<_> = (0..1303).map(|i| format!("原始行 {i}\r\n")).collect();
         let before = lines.concat();
@@ -2582,12 +2613,17 @@ mod tests {
         for (index, start) in [50, 250, 450, 650, 850, 1150].into_iter().enumerate() {
             let count = if index < 2 { 4 } else { 3 };
             let old = lines[start..start + count].concat();
-            let new = (0..5).map(|i| format!("替换 {index}-{i}\r\n")).collect::<String>();
+            let new = (0..5)
+                .map(|i| format!("替换 {index}-{i}\r\n"))
+                .collect::<String>();
             expected = expected.replace(&old, &new);
             edits.push(json!({"old_string": old, "new_string": new}));
         }
         let result = edit_file(&workspace, &json!({"path": "large.txt", "edits": edits})).unwrap();
-        assert_eq!(fs::read_to_string(root.path().join("large.txt")).unwrap(), expected);
+        assert_eq!(
+            fs::read_to_string(root.path().join("large.txt")).unwrap(),
+            expected
+        );
         assert_eq!((result.additions, result.removals), (30, 20));
         assert_eq!(result.diff.matches("@@ -").count(), 6);
     }

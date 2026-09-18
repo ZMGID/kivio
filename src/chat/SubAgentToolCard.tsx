@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ChevronRight, MessageCircle, Users } from 'lucide-react'
-import { useLang } from '../settings/i18n'
+import { useLang } from '../settings/public/i18n'
 import type { ToolCallRecord } from './types'
 import { useSubAgents } from './useSubAgents'
 import { SubAgentAvatar } from './SubAgentAvatar'

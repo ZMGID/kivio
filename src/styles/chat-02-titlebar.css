@@ -1,0 +1,235 @@
+/* 顶栏行下缘留白。基线（Windows / Linux）保持 10px。 */
+.chat-titlebar-row:not(.chat-sidebar-titlebar-row) {
+  padding-bottom: 10px;
+}
+
+/* macOS：整条顶栏线（灯 / 那两枚图标 / 模型 / 思考强度 / 审批）对到 --chat-traffic-center-y
+   —— 交通灯中心的实测值，不再是写死的 30（那个常数只在部分 macOS 版本上成立，见 windows.rs）。
+   用 padding-bottom 而非改行高：行仍占 52px（下方内容不位移），内容盒居中落在
+   card-top + (52 − pb)/2 = center → pb = 52 − 2*(center − card-top)。
+   排除侧栏那行：它不是 52px 居中行，自己按同一个变量算 padding-top（见 .chat-sidebar-titlebar-row）。 */
+.chat-window-host--mac-titlebar .chat-titlebar-row:not(.chat-sidebar-titlebar-row) {
+  padding-bottom: max(
+    0px,
+    calc(52px - 2 * (var(--chat-traffic-center-y) - var(--chat-card-top)))
+  );
+}
+
+/* 侧栏收起时顶栏行回到主区。收起态主区卡片左缘也在 x=8（`.is-collapsed` 用 -W 而非
+   -(W+8)，刻意把那 8px 留成左缝），与展开态侧栏卡片的左缘同位；灯 x 也按「卡片内」算过
+   （windows.rs 里 x = 14 + 8）。所以两态用同一个 92px，收起态不再额外 +8 ——
+   多补的话图标就比展开态右移 8px（历史回归：-248 → -W 时这里没跟着减）。 */
+.chat-titlebar-row--collapsed-mac {
+  padding-left: 92px;
+}
+
+/* macOS 全屏：系统隐藏交通灯，所有为灯预留的缩进都要撤掉，否则顶栏左边空一大块。
+   `pl-[92px]` 与 collapsed 的 `padding-left` 都要盖掉；Tailwind 工具类靠 !important。 */
+.chat-window-host--mac-fullscreen .chat-titlebar-row {
+  padding-left: 0.75rem !important;
+}
+
+.chat-window-host--mac-fullscreen .chat-titlebar-row--collapsed-mac {
+  padding-left: 0.75rem !important;
+}
+
+/* 全屏没有灯可对，缩进撤掉即可；垂直仍沿用上面那条统一的 30，行内保持一致。 */
+
+.chat-window-host--mac-fullscreen .settings-embedded--traffic-safe .settings-embedded-nav {
+  padding-top: 16px;
+}
+
+.chat-traffic {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.chat-traffic-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  border: none;
+  padding: 0;
+  background: var(--dot-color);
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  cursor: default;
+  transition: filter 0.12s ease;
+}
+
+.chat-traffic:hover .chat-traffic-dot {
+  filter: brightness(0.92);
+}
+
+.chat-traffic-dot--close:hover {
+  filter: none;
+  background: #ff5f57;
+}
+
+.chat-traffic-dot--minimize:hover {
+  filter: none;
+  background: #febc2e;
+}
+
+.chat-traffic-dot--maximize:hover {
+  filter: none;
+  background: #28c840;
+}
+
+/* Windows / Linux 全宽标题栏带：无独立底色（透出窗口底色）、无底边框，整条可拖拽。
+   会话页的业务控件也在这一条里 —— 非 mac 没有主区 52px 顶栏，chrome 只此一行，
+   所以高度按 32px 胶囊控件取 44（38 只够放三键，装不下控件）。
+   侧栏卡片 / Dock / 主区都在带下方，故三键可贴角、不必让各视图 padding-right 躲开。
+
+   第一枚按钮的盒子左缘与侧栏外沿对齐，共用 --chat-card-inset。 */
+.chat-titlebar-strip {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  height: 44px;
+  padding-left: var(--chat-card-inset);
+}
+
+/* 独立窗口沿用主窗口的顶栏底色，由外壳统一处理 Mica 和深浅色。
+   顶栏仍占独立一行；提高层级仅用于保证下拉菜单显示在正文之上。 */
+.chat-titlebar-strip--popout {
+  position: relative;
+  z-index: 20;
+}
+
+/* 带内导航区（侧栏开合 + 新建）。侧栏展开时撑到侧栏那一列的宽度，
+   把业务控件推到主区卡片左缘 —— 否则控件压在侧栏卡片上方，读作错位。
+   宽度 = 侧栏宽 + 面板间隙 − 顶栏 flex gap，与 `.chat-sidebar-shell` 同步。
+   用 min-width 而非 width 做过渡：width 的收起态是 auto（按钮自然宽），auto 不可插值、
+   动画会直接跳；min-width 两端都是具体值，且 max(内容宽, min-width) 天然贴合按钮宽度，
+   不必把「两枚 28px 钮 + 2px 间距」这种数字硬编码进来。
+   曲线与时长同侧栏折叠（--kv-dur-slow / --kv-ease-standard），两者才像一起移动。 */
+.chat-titlebar-strip-nav {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  transition: min-width var(--kv-dur-slow) var(--kv-ease-standard);
+}
+
+.chat-titlebar-strip-nav--reserve {
+  min-width: calc(var(--chat-sidebar-width, 240px) + var(--chat-card-inset) - 2px);
+}
+
+/* 设置页：带浮起、不占行高，让 200/52px 灰导航栏自己从 y=0 画起（见 ChatTitlebar 注释）。
+   带保持全宽且透明 —— 全宽才留住窗口拖拽区，透明才让导航栏的灰透上来。
+   只有右端三键是实体，故 z-index 压在内容上层。 */
+.chat-titlebar-strip--settings {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding-left: 0;
+}
+
+/* 带在设置页是透明浮层（见上）。导航栏不再为它留 44px，改为抬到带之上：标题因此回到
+   与页头同一条水平线，窄栏（52px 图标轨）第一枚图标也不会被带吃掉点击。
+   代价是带在导航栏这一列的拖拽区被盖住 —— 由「设置」标题自己接管拖拽（见 SettingsShell）。
+   macOS 走 .settings-embedded--traffic-safe 那条，不受影响。 */
+.settings-embedded-under-strip .settings-embedded-nav {
+  position: relative;
+  z-index: 31;
+}
+
+/* 页头右侧为三键让位（三键 3×46=138 + 呼吸 12）。只此一处需要 ——
+   下方 .kv-scroll 在页头之下，不会钻到带里。 */
+.settings-embedded-under-strip .settings-embedded-header {
+  padding-right: max(150px, var(--settings-content-inset));
+}
+
+.chat-win-controls {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+/* Windows 窗口按钮保留 46px 宽、整条顶栏高的命中区，图标与工具栏共用线宽和中性色。 */
+.chat-win-controls--win {
+  gap: 0;
+  align-self: stretch;
+}
+
+.chat-win-btn {
+  display: grid;
+  width: 46px;
+  height: 100%;
+  place-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #525252;
+  border-radius: 0;
+  line-height: 1;
+  cursor: default;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.chat-win-btn:hover {
+  background: rgba(0, 0, 0, 0.055);
+  color: #171717;
+}
+
+.chat-win-btn:active {
+  background: rgba(0, 0, 0, 0.09);
+}
+
+.chat-win-btn--close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.chat-win-btn--close:active {
+  background: #f1707a;
+  color: #fff;
+}
+
+.dark .chat-win-btn {
+  color: #a3a3a3;
+}
+
+.dark .chat-win-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5f5f5;
+}
+
+.dark .chat-win-btn:active {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.dark .chat-win-btn--close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.dark .chat-win-btn--close:active {
+  background: #f1707a;
+  color: #fff;
+}
+
+@container chat-window (max-width: 520px) {
+  .assistant-center-tabs {
+    overflow-x: auto;
+  }
+}
+
+/* 全宽标题栏在 chat-main 容器之外，极窄窗口需按整窗宽度启用同一套紧凑控件。 */
+@container chat-window (max-width: 480px) {
+  .chat-titlebar-strip .chat-model-selector-label,
+  .chat-titlebar-strip .chat-model-selector-caret,
+  .chat-titlebar-strip .chat-thinking-pill-wrap {
+    display: none;
+  }
+}

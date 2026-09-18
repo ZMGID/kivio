@@ -30,12 +30,12 @@ export function LensTab({
       <SettingsGroup title={t.lensSection}>
         <SettingRow label={t.enabled}>
           <Toggle
-            checked={settings.lens?.enabled !== false}
+            checked={settings.lens.enabled}
             onChange={(v) => onUpdateLens({ enabled: v })}
           />
         </SettingRow>
 
-        {settings.lens?.enabled !== false && (
+        {settings.lens.enabled && (
           <>
             <SettingRow label={t.lensResponseLanguage}>
               <Select
@@ -66,7 +66,7 @@ export function LensTab({
         )}
       </SettingsGroup>
 
-      {settings.lens?.enabled !== false && (
+      {settings.lens.enabled && (
         <>
           <SettingsGroup title={lang === 'zh' ? '对话' : 'Conversation'}>
             <SettingRow label={t.lensSendToChat}>

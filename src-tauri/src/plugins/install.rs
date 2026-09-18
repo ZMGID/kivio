@@ -99,7 +99,6 @@ pub fn list_plugin_statuses_cached() -> Result<Vec<PluginStatus>, String> {
 
 /// 填充 mcp_active（settings 里该 server 是否已注册且 enabled）。纯 settings 读，无 spawn。
 fn fill_mcp_active(list: &mut [PluginStatus], state: &AppState) {
-    super::lifecycle::heal_disabled_plugin_mcp(state);
     let settings = state.settings_read();
     for status in list.iter_mut() {
         if let Some(sid) = status.mcp_server_id.as_deref() {
@@ -1076,9 +1075,28 @@ pub(crate) fn write_skill_files(catalog: &CatalogPlugin) -> Result<(), String> {
 #[cfg(test)]
 mod skill_sync_tests {
     use super::{
-        build_status, catalog_plugin, get_install_brief, officecli_skill_folder,
+        build_status, catalog_plugin, fill_mcp_active, get_install_brief, officecli_skill_folder,
         official_install_program_args, official_skill_install_argvs, official_skills_need_install,
     };
+    use crate::settings::ChatMcpServer;
+    use crate::state::test_app_state;
+
+    #[test]
+    fn filling_plugin_status_is_read_only_for_settings() {
+        let state = test_app_state();
+        state.update_settings_for_test(|settings| {
+            settings.chat_tools.servers.push(ChatMcpServer {
+                id: "plugin-package-00000000-0000-0000-0000-000000000000".to_string(),
+                enabled: true,
+                ..ChatMcpServer::default()
+            })
+        });
+
+        let mut statuses = Vec::new();
+        fill_mcp_active(&mut statuses, &state);
+
+        assert!(state.settings_read().chat_tools.servers[0].enabled);
+    }
 
     #[test]
     fn official_install_wraps_readme_command() {

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Search, SquarePen, Trash2 } from 'lucide-react'
-import { useT } from '../settings/i18n'
+import { useT } from '../settings/public/i18n'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import { useCloseAnimation } from './useCloseAnimation'
 

@@ -1291,8 +1291,13 @@ pub(super) fn build_chat_api_messages(
     last_user_image_paths: &[PathBuf],
 ) -> Result<Vec<Value>, String> {
     build_chat_api_messages_with_video(
-        app, system_prompt, conversation, last_user_idx,
-        last_user_api_content, last_user_image_paths, true,
+        app,
+        system_prompt,
+        conversation,
+        last_user_idx,
+        last_user_api_content,
+        last_user_image_paths,
+        true,
     )
 }
 

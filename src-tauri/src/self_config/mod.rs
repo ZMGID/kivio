@@ -376,12 +376,7 @@ fn update_settings(
     ctx: &NativeCallCtx<'_>,
     change: impl FnOnce(&mut Settings) -> Result<(), String>,
 ) -> Result<(), String> {
-    // Read-modify-persist under the application's settings lock, just like package activation.
-    let mut current = ctx.state.settings_write();
-    let mut next = current.clone();
-    change(&mut next)?;
-    crate::settings::persist_settings(ctx.app, &next)?;
-    *current = next;
+    crate::settings::update_settings(ctx.app, ctx.state, change)?;
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 use crate::chat::types::AdditionalDirectory;
 use crate::external_agents::skill_stage::{with_skill_root_preamble, SKILLS_CWD_ALIAS};
+use crate::external_agents::types::RuntimeAgentDef;
 
 pub struct ComposedExternalPrompt {
     pub full_prompt: String,
@@ -24,8 +25,8 @@ pub fn is_cli_slash_input(content: &str) -> bool {
 ///
 /// 其余 8 个 CLI 仍走正文注入（它们没有等价 flag，或语义不同——audit N5 记着 pi 曾把
 /// 目录塞进 `--append-system-prompt`）。给任何 CLI 加这条路之前先按 spec 第 12 条核实语义。
-pub fn instructions_via_launch_flag(agent_id: &str) -> bool {
-    agent_id == "claude"
+pub fn instructions_via_launch_flag(def: &RuntimeAgentDef) -> bool {
+    def.instructions_via_launch_flag
 }
 
 pub fn compose_external_prompt_passthrough(latest_user_message: &str) -> ComposedExternalPrompt {
@@ -214,7 +215,8 @@ mod tests {
 
     #[test]
     fn instructions_via_launch_flag_only_claude() {
-        assert!(instructions_via_launch_flag("claude"));
+        let def = crate::external_agents::registry::get_agent_def("claude").expect("claude def");
+        assert!(instructions_via_launch_flag(def));
         for other in [
             "codex",
             "pi",
@@ -225,8 +227,9 @@ mod tests {
             "gemini",
             "hermes",
         ] {
+            let def = crate::external_agents::registry::get_agent_def(other).expect("agent def");
             assert!(
-                !instructions_via_launch_flag(other),
+                !instructions_via_launch_flag(def),
                 "{other} 没有核实过等价 flag，必须仍走正文注入（spec 第 12 条）"
             );
         }

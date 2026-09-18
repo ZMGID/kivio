@@ -63,7 +63,14 @@
         },
         "prompt": {
           "type": "string"
-        }
+        },
+        "required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "valueSchema": true
       },
       "required": [
         "id",

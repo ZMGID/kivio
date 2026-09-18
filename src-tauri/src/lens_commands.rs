@@ -5,7 +5,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
 };
 
 use base64::{engine::general_purpose, Engine as _};
@@ -88,12 +87,12 @@ pub(crate) fn request_lens_close(app: &AppHandle) -> Result<(), String> {
 /// 宽限期内用户重开新会话时 `lens_open_seq` 已变，watchdog 自动作废。
 fn schedule_forced_lens_close(app: &AppHandle) {
     const FORCE_CLOSE_GRACE_MS: u64 = 800;
-    let seq = app.state::<AppState>().lens_open_seq.load(Ordering::SeqCst);
+    let seq = app.state::<AppState>().lens().session_seq();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(FORCE_CLOSE_GRACE_MS)).await;
         let state = app.state::<AppState>();
-        if state.lens_open_seq.load(Ordering::SeqCst) != seq {
+        if !state.lens().is_session_current(seq) {
             return;
         }
         let still_visible = active_overlay_window(&app)
@@ -172,10 +171,7 @@ pub(crate) fn lens_set_escape_guard(app: AppHandle, active: bool) {
 fn insert_temp_explain_image(app: &AppHandle, path: PathBuf) -> String {
     let image_id = Uuid::new_v4().to_string();
     let state = app.state::<AppState>();
-    {
-        let mut map = state.images_lock();
-        map.insert(image_id.clone(), path);
-    }
+    state.lens().register_image(image_id.clone(), path);
     image_id
 }
 
@@ -206,11 +202,7 @@ pub(crate) async fn lens_read_freeze_frame(
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         {
-            let current = state
-                .lens_freeze_frame_image_id
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if current.as_deref() != Some(image_id.as_str()) {
+            if !state.lens().is_current_freeze_frame(&image_id) {
                 return Err("Freeze frame is no longer active".to_string());
             }
         }
@@ -530,23 +522,16 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     }
 
     let state = app.state::<AppState>();
-    // 自愈：busy=true 但已无浮窗可见（外部强关 / dev 重载等异常），重置 busy。
-    // 但要避开"正在开启中"的宽限期——开启过程要截冻结帧（200-500ms），窗口尚不可见，
-    // 此时若清 busy，快速连按热键会并发跑两次本函数（take-once 复位载荷被第二次吞掉）。
-    if state.lens_busy.load(Ordering::SeqCst) {
-        let visible = active_overlay_window(app).is_some();
-        if !visible && !state.lens_open_in_grace() {
-            state.lens_busy.store(false, Ordering::SeqCst);
-        }
-    }
-    if state.lens_busy.swap(true, Ordering::SeqCst) {
+    // begin_session 原子地完成 stale-busy 自愈、单会话占用、watchdog 代号和开启宽限期。
+    if state
+        .lens()
+        .begin_session(active_overlay_window(app).is_some())
+        .is_err()
+    {
         return Err("Lens already active".to_string());
     }
-    state.mark_lens_opened();
     cleanup_lens_freeze_frame(app);
-    state
-        .explain_stream_generation
-        .fetch_add(1, Ordering::SeqCst);
+    state.lens().cancel_stream();
 
     // 必须在 ensure_lens_window/show/set_focus 之前抓取。创建隐藏 webview 在 macOS 上也可能
     // 改变当前 focused UI element，导致 Cmd+C/AXSelectedText 读到 Lens 自己而不是前台 App。
@@ -560,10 +545,8 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         __t0.elapsed().as_millis()
     );
     if mode == "translateText" && pending_selection.is_none() {
-        if let Ok(mut guard) = state.pending_selection.lock() {
-            *guard = None;
-        }
-        state.lens_busy.store(false, Ordering::SeqCst);
+        state.lens().replace_selection(None);
+        state.lens().release_session();
         return Ok(());
     }
 
@@ -592,7 +575,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         match ensured {
             Ok(w) => w,
             Err(e) => {
-                state.lens_busy.store(false, Ordering::SeqCst);
+                state.lens().release_session();
                 #[cfg(target_os = "macos")]
                 windows::restore_previous_frontmost_app(app, &state.prev_frontmost_pid_lens);
                 return Err(e);
@@ -600,9 +583,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
         }
     };
     // 结果暂存在 state.pending_selection，等前端 take 走。translate 模式写 None，避免遗留旧值。
-    if let Ok(mut guard) = state.pending_selection.lock() {
-        *guard = pending_selection;
-    }
+    state.lens().replace_selection(pending_selection);
     // 把 mode 编码进 hash query，前端通过 location.hash 读取（'#lens?mode=translate'）
     let safe_mode = match mode {
         "translate" => "translate",
@@ -690,13 +671,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     let reset_detail = serde_json::to_string(&reset_detail).unwrap_or_else(|_| "{}".to_string());
     // 复位载荷（frame + freezeFrameImageId）存进 AppState：前端无论冷挂载还是复用收到 lens:reset，
     // 都通过 lens_take_reset_payload 主动 take 取走（take-once，只被消费一次）。
-    {
-        let mut pending = state
-            .lens_pending_reset
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *pending = Some(reset_detail);
-    }
+    state.lens().replace_reset_payload(reset_detail);
     // 仅"复用已存在浮窗"时才 eval：设 mode hash + 触发 lens:reset，让已挂载的前端重入 select。
     // 冷创建：mode 已烤进创建 URL，前端冷挂载会自行 take 复位载荷 + 选区——绝不能再发 lens:reset，
     // 否则 mount 的 enterSelect 与事件的 enterSelect 双跑，把 take-once 的选中文本先取后作废丢弃。
@@ -752,8 +727,8 @@ pub(crate) async fn lens_capture_window(
     app: AppHandle,
     window_id: u32,
 ) -> Result<serde_json::Value, String> {
+    let session_seq = app.state::<AppState>().lens().session_seq();
     let result = lens::capture_window(window_id);
-    let _ = app; // 保留参数避免破坏现有调用签名
 
     match result {
         Ok(path) => {
@@ -763,15 +738,16 @@ pub(crate) async fn lens_capture_window(
             // 自动归档（在 insert 前直接用 path，避免二次加锁）
             archive_captured_image(&app, &path, &image_id);
 
+            match state
+                .lens()
+                .register_current_image(session_seq, image_id.clone(), path)
             {
-                let mut map = state.images_lock();
-                map.insert(image_id.clone(), path);
+                Ok(_) => Ok(serde_json::json!({ "success": true, "imageId": image_id })),
+                Err(path) => {
+                    cleanup_temp_file(&path);
+                    Ok(serde_json::json!({ "success": false, "error": "Lens is no longer active" }))
+                }
             }
-            {
-                let mut current = state.current_id_lock();
-                *current = Some(image_id.clone());
-            }
-            Ok(serde_json::json!({ "success": true, "imageId": image_id }))
         }
         Err(err) => Ok(serde_json::json!({ "success": false, "error": err })),
     }
@@ -790,6 +766,7 @@ pub(crate) async fn lens_capture_region(
     scale_factor: f64,
     freeze_frame_image_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let session_seq = app.state::<AppState>().lens().session_seq();
     // SCK 路径：把自己 PID 传给 capture_region_image，SCK 在 GPU compositor 排除 lens webview，
     // 不再需要 hide webview + sleep 60ms 等 NSWindow.orderOut 生效（旧 `screencapture -R` 会截到全屏透明 lens 自己）。
     // Windows 版用当前浮窗的物理坐标定位显示器，并在现场截图前短暂隐藏浮窗。
@@ -859,13 +836,15 @@ pub(crate) async fn lens_capture_region(
             // 自动归档（在 insert 前直接用 path，避免二次加锁）
             archive_captured_image(&app, &path, &image_id);
 
+            if let Err(path) =
+                state
+                    .lens()
+                    .register_current_image(session_seq, image_id.clone(), path)
             {
-                let mut map = state.images_lock();
-                map.insert(image_id.clone(), path);
-            }
-            {
-                let mut current = state.current_id_lock();
-                *current = Some(image_id.clone());
+                cleanup_temp_file(&path);
+                return Ok(
+                    serde_json::json!({ "success": false, "error": "Lens is no longer active" }),
+                );
             }
             if let Some(freeze_id) = freeze_frame_image_id.as_deref() {
                 cleanup_lens_freeze_frame_if_current(&app, freeze_id);
@@ -1523,9 +1502,7 @@ fn extract_first_json_object(raw: &str) -> Option<String> {
 /// 取消正在进行的 lens 流（复用同一代号）。
 #[tauri::command]
 pub(crate) fn lens_cancel_stream(state: State<AppState>) -> Result<(), String> {
-    state
-        .explain_stream_generation
-        .fetch_add(1, Ordering::SeqCst);
+    state.lens().cancel_stream();
     Ok(())
 }
 
@@ -2306,18 +2283,11 @@ pub(crate) async fn lens_replace_translate(
 #[tauri::command]
 pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    state
-        .explain_stream_generation
-        .fetch_add(1, Ordering::SeqCst);
-    let current_id = {
-        let current = state.current_id_lock();
-        current.clone()
-    };
-    if let Some(id) = current_id {
-        cleanup_explain_image(&app, &id);
+    state.lens().cancel_stream();
+    if let Some((_id, path)) = state.lens().close_session_and_take_current() {
+        cleanup_temp_file(&path);
     }
     cleanup_lens_freeze_frame(&app);
-    state.lens_busy.store(false, Ordering::SeqCst);
     unregister_lens_escape_shortcut(&app);
     if let Some(window) = active_overlay_window(&app) {
         // Windows：无 NSPanel 限制，且默认开启冻结帧（重建时背景是截屏冻结帧，不会白闪）
@@ -2351,11 +2321,7 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
 /// 的情况——丢事件也能从这里拉到冻结帧。无 pending（已被取走 / 未设置）返回 None。
 #[tauri::command]
 pub(crate) fn lens_take_reset_payload(state: State<'_, AppState>) -> Option<String> {
-    let taken = state
-        .lens_pending_reset
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
+    let taken = state.lens().take_reset_payload();
     eprintln!(
         "[lens-freeze] take_reset_payload -> {}",
         taken.as_deref().unwrap_or("<empty>")
@@ -2406,13 +2372,7 @@ fn prepare_freeze_frame(app: &AppHandle, frame: Option<LensFrame>) -> Option<Str
     eprintln!("[lens-freeze] captured frame -> {}", path.display());
     let image_id = insert_temp_explain_image(app, path);
     let state = app.state::<AppState>();
-    {
-        let mut freeze = state
-            .lens_freeze_frame_image_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *freeze = Some(image_id.clone());
-    }
+    state.lens().replace_freeze_frame(image_id.clone());
     Some(image_id)
 }
 
@@ -2432,14 +2392,7 @@ fn capture_region_from_freeze_frame(
 ) -> Option<Result<PathBuf, String>> {
     let image_id = freeze_frame_image_id?;
     let state = app.state::<AppState>();
-    let is_current_freeze = {
-        let freeze = state
-            .lens_freeze_frame_image_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        freeze.as_deref() == Some(image_id)
-    };
-    if !is_current_freeze {
+    if !state.lens().is_current_freeze_frame(image_id) {
         return None;
     }
 
@@ -2530,13 +2483,7 @@ fn freeze_frame_crop_rect(
 
 fn cleanup_lens_freeze_frame(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let image_id = {
-        let mut freeze = state
-            .lens_freeze_frame_image_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        freeze.take()
-    };
+    let image_id = state.lens().take_freeze_frame();
     if let Some(image_id) = image_id {
         cleanup_explain_image(app, &image_id);
     }
@@ -2544,18 +2491,7 @@ fn cleanup_lens_freeze_frame(app: &AppHandle) {
 
 fn cleanup_lens_freeze_frame_if_current(app: &AppHandle, image_id: &str) {
     let state = app.state::<AppState>();
-    let should_cleanup = {
-        let mut freeze = state
-            .lens_freeze_frame_image_id
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if freeze.as_deref() == Some(image_id) {
-            *freeze = None;
-            true
-        } else {
-            false
-        }
-    };
+    let should_cleanup = state.lens().take_freeze_frame_if_current(image_id);
     if should_cleanup {
         cleanup_explain_image(app, image_id);
     }
@@ -2897,6 +2833,7 @@ pub(crate) fn lens_register_annotated_image(
     state: State<AppState>,
     base64_png: String,
 ) -> Result<serde_json::Value, String> {
+    let session_seq = state.lens().session_seq();
     let bytes = match general_purpose::STANDARD.decode(base64_png.as_bytes()) {
         Ok(b) => b,
         Err(e) => {
@@ -2917,23 +2854,22 @@ pub(crate) fn lens_register_annotated_image(
 
     // 不归档:归档目录只保留 capture 时的原图,合成版只活在 temp_dir + history。
     let image_id = Uuid::new_v4().to_string();
-    let previous_image_id = {
-        let current = state.current_id_lock();
-        current.clone()
-    };
-
-    {
-        let mut map = state.images_lock();
-        map.insert(image_id.clone(), temp_path);
-    }
-    {
-        let mut current = state.current_id_lock();
-        *current = Some(image_id.clone());
-    }
+    let previous_image_id =
+        match state
+            .lens()
+            .register_current_image(session_seq, image_id.clone(), temp_path)
+        {
+            Ok(previous) => previous,
+            Err(path) => {
+                cleanup_temp_file(&path);
+                return Ok(
+                    serde_json::json!({ "success": false, "error": "Lens is no longer active" }),
+                );
+            }
+        };
     if let Some(previous_image_id) = previous_image_id {
         if previous_image_id != image_id {
-            let mut map = state.images_lock();
-            if let Some(previous_path) = map.remove(&previous_image_id) {
+            if let Some(previous_path) = state.lens().remove_image(&previous_image_id) {
                 cleanup_temp_file(&previous_path);
             }
         }
@@ -3041,13 +2977,8 @@ fn archive_captured_image(app: &AppHandle, temp_path: &std::path::Path, image_id
 
 fn cleanup_explain_image(app: &AppHandle, image_id: &str) {
     let state = app.state::<AppState>();
-    let mut map = state.images_lock();
-    if let Some(path) = map.remove(image_id) {
+    if let Some(path) = state.lens().remove_image_and_clear_current(image_id) {
         cleanup_temp_file(&path);
-    }
-    let mut current = state.current_id_lock();
-    if current.as_deref() == Some(image_id) {
-        *current = None;
     }
 }
 
@@ -3078,16 +3009,13 @@ pub(crate) fn resolve_explain_image_path(
     image_id: &str,
 ) -> Result<PathBuf, String> {
     // 1. 活跃截图
-    {
-        let map = state.images_lock();
-        if let Some(path) = map.get(image_id).cloned() {
-            let temp_dir = std::env::temp_dir();
-            if !path.starts_with(&temp_dir) {
-                return Err("Invalid image path".to_string());
-            }
-            if path.exists() {
-                return Ok(path);
-            }
+    if let Some(path) = state.lens().image_path(image_id) {
+        let temp_dir = std::env::temp_dir();
+        if !path.starts_with(&temp_dir) {
+            return Err("Invalid image path".to_string());
+        }
+        if path.exists() {
+            return Ok(path);
         }
     }
     // 2. 历史持久副本
@@ -3110,14 +3038,13 @@ pub(crate) fn lens_commit_image_to_history(
     if dst.exists() {
         return Ok(()); // 幂等
     }
-    let map = state.images_lock();
-    let Some(src) = map.get(&image_id) else {
+    let Some(src) = state.lens().image_path(&image_id) else {
         return Err("Image is no longer available for history".to_string());
     };
     if !src.exists() {
         return Err("Image file is no longer available for history".to_string());
     }
-    fs::copy(&src, &dst).map_err(|e| format!("commit image to history: {e}"))?;
+    fs::copy(src, &dst).map_err(|e| format!("commit image to history: {e}"))?;
     Ok(())
 }
 

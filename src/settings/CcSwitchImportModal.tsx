@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
-import { chatApi, type CcSwitchProvider } from '../chat/api'
+import {
+  externalCliProviderSettingsApi,
+  type CcSwitchProvider,
+} from '../chat/public/externalCliProviderSettings'
 import { Button, IconButton } from '../components/Button'
 import { i18n, type Lang } from './i18n'
 
@@ -32,7 +35,7 @@ export function CcSwitchImportModal({
 
   useEffect(() => {
     let cancelled = false
-    void chatApi
+    void externalCliProviderSettingsApi
       .externalCliScanCcSwitch()
       .then((scan) => {
         if (cancelled) return

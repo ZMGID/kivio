@@ -940,9 +940,15 @@ impl DshJsonRpcSession {
         let _ = self.stdin.shutdown().await;
         if timeout(SHUTDOWN_GRACE, self.child.wait()).await.is_err() {
             crate::external_agents::spawn::kill_agent_process_tree(&mut self.child);
-            let _ = self.child.wait().await;
+            let _ = timeout(SHUTDOWN_GRACE, self.child.wait()).await;
         }
-        let _ = self.stderr_tail.await;
+        // Windows shims can exit before a grandchild releases the inherited stderr
+        // pipe. Never let that detached handle wedge the profile boot lock forever.
+        let mut stderr_tail = self.stderr_tail;
+        if timeout(SHUTDOWN_GRACE, &mut stderr_tail).await.is_err() {
+            stderr_tail.abort();
+            let _ = stderr_tail.await;
+        }
     }
 }
 
@@ -3550,6 +3556,34 @@ mod tests {
         assert_eq!(params["jobId"], "bash-3");
         let child = stop_job_params("kivio-1", "018b08fc-ee7f-4ea5-b77c-9c5d1c6ecf50");
         assert_eq!(child["jobId"], "018b08fc-ee7f-4ea5-b77c-9c5d1c6ecf50");
+    }
+
+    /// No model request: verifies that the installed dsh core, the version-matched profile SDK,
+    /// and Kivio's bridge can initialize and shut down together.
+    #[tokio::test]
+    #[ignore = "requires installed dsh; no model turn or account quota"]
+    async fn live_dsh_profile_handshake_without_model_turn() {
+        let bin = crate::external_agents::spawn::resolve_binary(
+            &crate::external_agents::defs::dsh::DSH_AGENT_DEF,
+        )
+        .await
+        .expect("dsh binary");
+        let cwd = std::env::current_dir().expect("cwd");
+        let args = vec!["--profile".to_string(), KIVIO_PROFILE.to_string()];
+        let session = DshJsonRpcSession::connect(
+            &bin,
+            &args,
+            &cwd,
+            None,
+            None,
+            None,
+            Some("read-only"),
+            None,
+        )
+        .await
+        .expect("dsh profile handshake");
+        assert!(!session.session_id().is_empty());
+        session.close().await;
     }
 
     /// 真机协议门：显式 `DSH_E2E=1` 才跑，避免普通测试消耗用户额度。

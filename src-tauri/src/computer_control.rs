@@ -287,7 +287,8 @@ pub async fn computer_control_update(
             // then refresh its separately versioned official Skill pack.
             state.mcp_disconnect_server(CUA_MCP_SERVER_ID).await;
             state.mcp_disconnect_server(LEGACY_CUA_MCP_SERVER_ID).await;
-            let update_result = run("cua-driver", &["update", "--apply", "--json"], None, 300).await;
+            let update_result =
+                run("cua-driver", &["update", "--apply", "--json"], None, 300).await;
             crate::path_env::refresh_path_now();
             let observed_version = extract_version(&computer_control_check(tool).await?);
             validate_self_update_result(update_result, &previous_version, &observed_version)?;

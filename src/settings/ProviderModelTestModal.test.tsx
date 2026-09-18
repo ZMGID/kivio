@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { api } from '../api/tauri'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
-import { MODEL_TEST_CONCURRENCY, runPool } from './providerModelTestPool'
+import { MODEL_TEST_CONCURRENCY, runPool } from '../components/providerModelTestPool'
 
 vi.mock('../api/tauri', () => ({
   api: {

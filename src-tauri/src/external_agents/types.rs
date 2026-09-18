@@ -31,7 +31,254 @@ pub enum PromptInputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelProbeStrategy {
     Acp,
+    OpenCodeThenAcp,
     ClaudeInit,
+    CodexAppServer,
+    DshSettings,
+    PiRpc,
+}
+
+/// Agent-owned policy for augmenting a model probe with the CLI's persisted current selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentConfigStrategy {
+    None,
+    Claude,
+    Codex,
+    Kimi,
+    Pi,
+}
+
+/// Agent-owned adapter selection for provider environment/config materialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderProfileStrategy {
+    Environment,
+    Claude,
+    Codex,
+    OpenCode,
+    Pi,
+    Grok,
+    Kimi,
+    Dsh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateStrategy {
+    None,
+    Command(&'static [&'static str]),
+    ManagedPackage {
+        package: &'static str,
+        brew_formula: &'static str,
+    },
+    KimiManaged {
+        package: &'static str,
+        brew_formula: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatestVersionStrategy {
+    Registry,
+    AntigravityRelease,
+    HermesRelease,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostInstallStrategy {
+    None,
+    DshProfile,
+}
+
+/// Installation metadata belongs to the agent definition, not to the installer dispatcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentInstallSpec {
+    pub npm_package: Option<&'static str>,
+    pub npm_install_args: &'static [&'static str],
+    pub pypi_package: Option<&'static str>,
+    pub script_unix: Option<&'static str>,
+    pub script_windows: Option<&'static str>,
+    pub update: UpdateStrategy,
+    pub latest_version: LatestVersionStrategy,
+    pub docs: &'static str,
+    pub config_dir: Option<&'static str>,
+    pub config_dir_env: Option<&'static str>,
+    pub requires_pnpm: bool,
+    pub post_install: PostInstallStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistorySourceStrategy {
+    None,
+    ClaudeJsonl,
+    CodexRollout,
+    GrokDirectory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryTitleStrategy {
+    None,
+    Claude,
+    Grok,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportDiscoveryStrategy {
+    None,
+    FileHistory,
+    Acp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentImportPolicy {
+    pub discovery: ImportDiscoveryStrategy,
+    pub history_source: HistorySourceStrategy,
+    pub history_title: HistoryTitleStrategy,
+}
+
+impl AgentImportPolicy {
+    pub const NONE: Self = Self {
+        discovery: ImportDiscoveryStrategy::None,
+        history_source: HistorySourceStrategy::None,
+        history_title: HistoryTitleStrategy::None,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdditionalDirsStrategy {
+    ConversationOnly,
+    Effective,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSelectionStrategy {
+    Direct,
+    ClaudeWire,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegenerateStrategy {
+    None,
+    PiRpc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalStrategy {
+    Default,
+    GrokAlwaysApprove,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryStrategy {
+    RetryFresh,
+    NeverReplay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentRunPolicy {
+    pub additional_dirs: AdditionalDirsStrategy,
+    pub model_selection: ModelSelectionStrategy,
+    pub regenerate: RegenerateStrategy,
+    pub approval: ApprovalStrategy,
+    pub retry: RetryStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeProviderStrategy {
+    None,
+    DshSettings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextWindowStrategy {
+    Generic,
+    Claude,
+    Kimi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageFallbackStrategy {
+    None,
+    KimiWireLog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentAuthRecovery {
+    Generic,
+    LoginCommand(&'static str),
+    SettingsApiKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentErrorDetailStrategy {
+    Generic,
+    CodexAppServer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentErrorPolicy {
+    pub auth_recovery: AgentAuthRecovery,
+    pub detail: AgentErrorDetailStrategy,
+}
+
+impl AgentErrorPolicy {
+    pub const GENERIC: Self = Self {
+        auth_recovery: AgentAuthRecovery::Generic,
+        detail: AgentErrorDetailStrategy::Generic,
+    };
+
+    pub const SETTINGS_API_KEY: Self = Self {
+        auth_recovery: AgentAuthRecovery::SettingsApiKey,
+        detail: AgentErrorDetailStrategy::Generic,
+    };
+
+    pub const fn login(command: &'static str) -> Self {
+        Self {
+            auth_recovery: AgentAuthRecovery::LoginCommand(command),
+            detail: AgentErrorDetailStrategy::Generic,
+        }
+    }
+
+    pub const fn login_with_detail(
+        command: &'static str,
+        detail: AgentErrorDetailStrategy,
+    ) -> Self {
+        Self {
+            auth_recovery: AgentAuthRecovery::LoginCommand(command),
+            detail,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentHomeStrategy {
+    None,
+    /// When the CLI is reached through WSL, point it at the Windows user's
+    /// existing Codex home so native sessions remain visible on both sides.
+    WslSharedCodexHome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentLaunchPolicy {
+    pub home: AgentHomeStrategy,
+}
+
+impl AgentLaunchPolicy {
+    pub const DEFAULT: Self = Self {
+        home: AgentHomeStrategy::None,
+    };
+
+    pub const WSL_SHARED_CODEX_HOME: Self = Self {
+        home: AgentHomeStrategy::WslSharedCodexHome,
+    };
+}
+
+impl AgentRunPolicy {
+    pub const STANDARD: Self = Self {
+        additional_dirs: AdditionalDirsStrategy::ConversationOnly,
+        model_selection: ModelSelectionStrategy::Direct,
+        regenerate: RegenerateStrategy::None,
+        approval: ApprovalStrategy::Default,
+        retry: RetryStrategy::RetryFresh,
+    };
 }
 
 /// How a CLI's `/commands` are discovered for the slash popover. We only advertise commands
@@ -174,11 +421,27 @@ pub struct RuntimeAgentDef {
     pub auth_probe_args: Option<&'static [&'static str]>,
     pub fallback_models: &'static [(&'static str, &'static str)],
     pub reasoning_options: &'static [(&'static str, &'static str)],
+    /// Native sandbox / permission levels this agent can accept. Ids are passed through
+    /// unchanged by its argument or protocol builder. Empty means there is no meaningful
+    /// user-selectable sandbox capability.
+    pub sandbox_options: &'static [(&'static str, &'static str)],
     pub list_models_args: Option<&'static [&'static str]>,
     pub list_models_timeout_secs: Option<u64>,
     pub models_from_stderr: bool,
     pub model_probe: Option<ModelProbeStrategy>,
     pub model_probe_args: Option<&'static [&'static str]>,
+    pub current_config: CurrentConfigStrategy,
+    pub provider_profile: ProviderProfileStrategy,
+    pub native_providers: NativeProviderStrategy,
+    pub context_window: ContextWindowStrategy,
+    pub usage_fallback: UsageFallbackStrategy,
+    pub error_policy: AgentErrorPolicy,
+    pub launch: AgentLaunchPolicy,
+    pub instructions_via_launch_flag: bool,
+    pub compact_prompt: Option<&'static str>,
+    pub install: AgentInstallSpec,
+    pub import: AgentImportPolicy,
+    pub run: AgentRunPolicy,
     pub slash_strategy: SlashStrategy,
     pub env: &'static [(&'static str, &'static str)],
     pub max_prompt_arg_bytes: Option<usize>,

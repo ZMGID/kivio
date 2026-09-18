@@ -1,10 +1,10 @@
-use std::{collections::HashSet, sync::atomic::Ordering, time::Duration};
+use std::{collections::HashSet, time::Duration};
 
 use arboard::Clipboard;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-use crate::commands::{apply_launch_at_startup, should_apply_launch_at_startup};
+use crate::commands::apply_launch_at_startup;
 use crate::lens_commands::{
     lens_close, lens_request, lens_request_replace, lens_request_screenshot,
     lens_request_translate, lens_request_translate_text, request_lens_close,
@@ -543,6 +543,15 @@ fn classify_hotkey_error(scope: HotkeyScope, hotkey: String, raw: String) -> Hot
 /// JSON 序列化后由前端按界面语言渲染。
 pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     let settings = app.state::<AppState>().settings_read().clone();
+    register_hotkeys_for_settings(app, &settings)
+}
+
+/// Register hotkeys from an explicit candidate. Full settings saves use this before their CAS
+/// commit so they do not have to publish uncommitted settings merely to apply runtime bindings.
+pub(crate) fn register_hotkeys_for_settings(
+    app: &AppHandle,
+    settings: &Settings,
+) -> Result<(), String> {
     let shortcut_manager = app.global_shortcut();
     shortcut_manager
         .unregister_all()
@@ -835,9 +844,13 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
                     let app = app.clone();
                     let id = automation_id.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Err(err) =
-                            crate::automation::enqueue(app, id, crate::automation::RunOrigin::Hotkey, None, None)
-                        {
+                        if let Err(err) = crate::automation::enqueue(
+                            app,
+                            id,
+                            crate::automation::RunOrigin::Hotkey,
+                            None,
+                            None,
+                        ) {
                             eprintln!("automation hotkey: {err}");
                         }
                     });
@@ -961,27 +974,16 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
 
 /// 恢复运行时设置
 /// 当保存设置失败时，将设置、热键、托盘等回滚到之前的状态
-pub(crate) fn restore_runtime_settings(
-    app: &AppHandle,
-    state: &State<AppState>,
-    previous: &Settings,
-) {
-    let current_startup = state.settings_read().launch_at_startup;
-    if should_apply_launch_at_startup(Some(current_startup), previous.launch_at_startup) {
-        if let Err(err) = apply_launch_at_startup(app, previous.launch_at_startup) {
-            eprintln!("Failed to rollback launch-at-startup setting: {err}");
-        }
-    }
-
-    {
-        let mut guard = state.settings_write();
-        *guard = previous.clone();
+pub(crate) fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>) {
+    let current = state.settings_read().clone();
+    if let Err(err) = apply_launch_at_startup(app, current.launch_at_startup) {
+        eprintln!("Failed to rollback launch-at-startup setting: {err}");
     }
     state
         .sub_agents
-        .set_concurrency(previous.chat_tools.sub_agent_concurrency);
+        .set_concurrency(current.chat_tools.sub_agent_concurrency);
 
-    if let Err(err) = register_hotkeys(app) {
+    if let Err(err) = register_hotkeys_for_settings(app, &current) {
         eprintln!(
             "Failed to rollback hotkeys: {}",
             display_hotkey_errors(&err)
@@ -1079,9 +1081,9 @@ pub(crate) fn send_paste_shortcut() {
 }
 
 /// 恢复并聚焦已有 Chat 窗口。
-fn reveal_chat_window(app: &AppHandle, window: &WebviewWindow) {
+fn reveal_chat_window(_app: &AppHandle, window: &WebviewWindow) {
     #[cfg(target_os = "macos")]
-    set_macos_regular_activation_policy(app);
+    set_macos_regular_activation_policy(_app);
 
     if window.is_minimized().ok().unwrap_or(false) {
         let _ = window.unminimize();
@@ -1244,18 +1246,7 @@ fn lens_is_active(app: &AppHandle) -> bool {
     };
 
     if let Some(state) = app.try_state::<AppState>() {
-        if state.lens_busy.load(Ordering::SeqCst) {
-            if any_overlay_visible() {
-                return true;
-            }
-            // "刚开启"宽限期内窗口可能还没来得及可见（开启要先截冻结帧，200-500ms）。
-            // 此时既不能清 busy（否则快速连按热键会并发双开 lens_request_internal，
-            // take-once 复位载荷被吞），也不当作 active（避免把正在开启的会话误关）。
-            if state.lens_open_in_grace() {
-                return false;
-            }
-            state.lens_busy.store(false, Ordering::SeqCst);
-        }
+        return state.lens().is_active_or_recover(any_overlay_visible);
     }
 
     any_overlay_visible()

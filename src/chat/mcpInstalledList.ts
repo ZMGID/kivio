@@ -1,5 +1,5 @@
 import type { ChatMcpServer, WebSearchConfig, WebSearchMcpAuth, WebSearchProviderId } from '../api/tauri'
-import { isPluginManagedServer } from '../settings/connectorCatalog'
+import { isPluginManagedServer } from '../settings/public/connectors'
 
 export const TINYFISH_MCP_ID = 'tinyfish-mcp'
 export const EXA_MCP_ID = 'exa-mcp'

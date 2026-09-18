@@ -10,6 +10,7 @@ import { useChatRouting } from './hooks/useChatRouting'
 import { useExternalSendQueue } from './hooks/useExternalSendQueue'
 import { useMessageQueue } from './hooks/useMessageQueue'
 import type { QueuedMessage } from './hooks/useMessageQueue'
+import { useComposerDraft } from './hooks/useComposerDraft'
 import { useStreamRenderFrame } from './hooks/useStreamRenderFrame'
 import { useTauriEvent } from './hooks/useTauriEvent'
 import {
@@ -105,10 +106,10 @@ import {
 } from '../api/tauri'
 import { getSettingsCached, refreshSettings, saveSettingsCached, subscribeSettings } from '../api/settingsCache'
 import { setExclusiveConversationIds } from '../api/chatProtocol'
-import { isPluginManagedServer, preservePluginManagedServers } from '../settings/connectorCatalog'
-import { OnboardingShell } from '../onboarding/OnboardingShell'
-import type { SettingsShellHandle, SettingsShellProps, SettingsTab } from '../settings/SettingsShell'
-import { i18n, LangContext, type Lang } from '../settings/i18n'
+import { isPluginManagedServer, preservePluginManagedServers } from '../settings/public/connectors'
+import { OnboardingShell } from '../onboarding/public/shell'
+import type { SettingsShellHandle, SettingsShellProps, SettingsTab } from '../settings/public/shell'
+import { i18n, LangContext, type Lang } from '../settings/public/i18n'
 import { estimateTokens } from '../utils/tokens'
 import {
   CHAT_MIN_SIZE_COLLAPSED,
@@ -209,7 +210,7 @@ const AssistantCenter = lazy(() => import('./AssistantCenter').then((module) => 
 // 共享 import thunk：lazy 与空闲预取复用同一次动态 import（模块缓存保证只加载一次）。
 // SettingsShell 依赖图很大（Markdown/KaTeX、各设置面板），dev 下首次点开设置要现场编译
 // 数百个模块而转圈数秒；挂载后空闲预取把这段成本移到用户点击之前。
-const importSettingsShell = () => import('../settings/SettingsShell')
+const importSettingsShell = () => import('../settings/public/shell')
 
 const SettingsShell = lazy(() => importSettingsShell().then((module) => ({
   default: module.SettingsShell,
@@ -696,21 +697,36 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     return next
   }, [])
   const [sidebarProfileRefreshKey, setSidebarProfileRefreshKey] = useState(0)
-  const [draftProviderId, setDraftProviderId] = useState('')
-  const [draftModel, setDraftModel] = useState('')
-  // 欢迎页（尚无会话）时挂载的知识库草稿；首次发送建会话时落到会话上。
-  const [draftKnowledgeBaseIds, setDraftKnowledgeBaseIds] = useState<string[]>([])
-  const [draftForceKnowledgeSearch, setDraftForceKnowledgeSearch] = useState(false)
-  const [draftAdditionalDirectories, setDraftAdditionalDirectories] = useState<AdditionalDirectory[]>([])
-  // 欢迎页思考等级草稿；首次发送建会话时落到会话上。null=跟随全局。
-  const [draftThinkingLevel, setDraftThinkingLevel] = useState<ThinkingLevel | null>(loadLastThinkingLevel)
-  // 欢迎页联网搜索模式草稿（任务 07-23）；首次发送建会话时落到会话上。undefined=跟随全局。
-  const [draftWebSearchMode, setDraftWebSearchMode] = useState<WebSearchMode | undefined>(undefined)
-  // 多模型一问多答（任务 06-30）：欢迎页（尚无会话）时的多答模型草稿；首次发送建会话时落到会话上。
-  const [draftReplyModels, setDraftReplyModels] = useState<ModelRef[]>([])
-  const [draftAgentRuntime, setDraftAgentRuntime] = useState<AgentRuntimeConfig>(
-    () => loadLastAgentRuntime() ?? BUILTIN_AGENT_RUNTIME,
-  )
+  // 欢迎页的输入上下文由一个 owner 管理；首次发送时统一落到新会话。
+  const {
+    value: {
+      providerId: draftProviderId,
+      model: draftModel,
+      knowledgeBaseIds: draftKnowledgeBaseIds,
+      forceKnowledgeSearch: draftForceKnowledgeSearch,
+      additionalDirectories: draftAdditionalDirectories,
+      thinkingLevel: draftThinkingLevel,
+      webSearchMode: draftWebSearchMode,
+      replyModels: draftReplyModels,
+      agentRuntime: draftAgentRuntime,
+    },
+    setProviderId: setDraftProviderId,
+    setModel: setDraftModel,
+    setProviderModel: setDraftProviderModel,
+    setKnowledgeBaseIds: setDraftKnowledgeBaseIds,
+    setForceKnowledgeSearch: setDraftForceKnowledgeSearch,
+    setAdditionalDirectories: setDraftAdditionalDirectories,
+    setThinkingLevel: setDraftThinkingLevel,
+    setWebSearchMode: setDraftWebSearchMode,
+    setReplyModels: setDraftReplyModels,
+    setAgentRuntime: setDraftAgentRuntime,
+    resetConversationContext: resetComposerDraftContext,
+  } = useComposerDraft({
+    providerId: '',
+    model: '',
+    thinkingLevel: loadLastThinkingLevel(),
+    agentRuntime: loadLastAgentRuntime() ?? BUILTIN_AGENT_RUNTIME,
+  })
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [disabledSkillIds, setDisabledSkillIds] = useState<string[]>([])
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>(() => {
@@ -1299,7 +1315,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       setMcpServers(chatTools?.servers ?? [])
       setWebSearchEnabled(chatTools?.nativeTools?.webSearch !== false)
       setProviderOAuthTypes(
-        Object.fromEntries((settings.providers ?? []).map((p) => [p.id, p.request?.oauth?.provider ?? ''])),
+        Object.fromEntries(settings.providers.map((p) => [p.id, p.request.oauth?.provider ?? ''])),
       )
       setProviderApiFormats(
         Object.fromEntries((settings.providers ?? []).map((p) => [p.id, p.apiFormat ?? ''])),
@@ -1524,7 +1540,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       setDraftProviderId('dev-provider')
       setDraftModel('dev-model')
     }
-  }, [])
+  }, [setDraftModel, setDraftProviderId])
 
   const skillProjectCwdRef = useRef('')
   const loadSkills = useCallback(async () => {
@@ -2799,13 +2815,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setSelectedProject(null)
     setSelectedSet(null)
     setAssistantStreamStatsByMessageId({})
-    setDraftProviderId(activeProviderId)
-    setDraftModel(activeModel)
-    setDraftAgentRuntime(activeAgentRuntime)
+    resetComposerDraftContext({
+      providerId: activeProviderId,
+      model: activeModel,
+      agentRuntime: activeAgentRuntime,
+    })
     saveLastAgentRuntime(activeAgentRuntime)
-    setDraftKnowledgeBaseIds([])
-    setDraftForceKnowledgeSearch(false)
-    setDraftAdditionalDirectories([])
     currentConversationIdRef.current = null
     forgetRememberedChatRoute()
     applyConversation(null)
@@ -2821,6 +2836,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     activeModel,
     activeProviderId,
     applyConversation,
+    resetComposerDraftContext,
     restoreStreamingPreview,
     syncConversationRoute,
   ])
@@ -4034,7 +4050,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof err === 'string' ? err : (err as Error).message || 'Agent 切换失败',
       )
     }
-  }, [applyConversationIfCurrent, currentConversation, setStreamErrorForConversation])
+  }, [applyConversationIfCurrent, currentConversation, setDraftAgentRuntime, setStreamErrorForConversation])
 
   const handleExternalModelChange = useCallback(async (model: string, reasoning?: string | null) => {
     // Route through handleRuntimeChange so the draft updates even before a conversation exists
@@ -4084,7 +4100,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof error === 'string' ? error : (error as Error).message || '权限模式保存失败',
       )
     }
-  }, [applyConversationIfCurrent, setStreamErrorForConversation])
+  }, [applyConversationIfCurrent, setDraftAgentRuntime, setStreamErrorForConversation])
 
   // 底栏胶囊选档：本地 CLI 写沙盒档位；内置 Agent 写 Act/Plan/Orchestrate；Chat 运行时无胶囊。
   const handleComposerModeChange = useCallback(async (value: string) => {
@@ -4141,8 +4157,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const handleCancelGoal = useCallback(() => runGoalMutation(chatApi.cancelGoal), [runGoalMutation])
 
   const handleModelChange = useCallback(async (providerId: string, model: string) => {
-    setDraftProviderId(providerId)
-    setDraftModel(model)
+    setDraftProviderModel(providerId, model)
     saveLastModel(providerId, model)
     void persistLastChatModelToSettings(providerId, model)
 
@@ -4162,7 +4177,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof err === 'string' ? err : (err as Error).message || '模型切换失败',
       )
     }
-  }, [applyConversationMeta, currentConversation, setStreamErrorForConversation])
+  }, [applyConversationMeta, currentConversation, setDraftProviderModel, setStreamErrorForConversation])
 
   const handleThinkingLevelChange = useCallback(async (level: ThinkingLevel | null) => {
     setDraftThinkingLevel(level)
@@ -4181,7 +4196,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof err === 'string' ? err : (err as Error).message || '思考等级切换失败',
       )
     }
-  }, [applyConversationMeta, currentConversation, setStreamErrorForConversation])
+  }, [applyConversationMeta, currentConversation, setDraftThinkingLevel, setStreamErrorForConversation])
 
   // 会话级三态联网搜索（任务 07-23）：设置模式,持久化到会话(欢迎页先存草稿),
   // 并记住为全局默认——之后所有新会话/未显式设置的会话自动沿用(与思考等级同款)。
@@ -4202,7 +4217,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof err === 'string' ? err : (err as Error).message || '联网搜索模式切换失败',
       )
     }
-  }, [applyConversationMeta, currentConversation, setStreamErrorForConversation])
+  }, [applyConversationMeta, currentConversation, setDraftWebSearchMode, setStreamErrorForConversation])
 
   // 多模型一问多答（任务 06-30 / D2）：变更多答模型集，持久化到会话（欢迎页先存草稿）。
   // 上限 4 由 UI 侧约束；这里直落 chatApi.updateConversation({ replyModels })。
@@ -4222,7 +4237,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof err === 'string' ? err : (err as Error).message || '多答模型更新失败',
       )
     }
-  }, [applyConversationMeta, currentConversation, setStreamErrorForConversation])
+  }, [applyConversationMeta, currentConversation, setDraftReplyModels, setStreamErrorForConversation])
 
   const handleChangeKnowledgeBaseIds = useCallback(async (ids: string[]) => {
     // the draft is applied when the conversation is created on first send.
@@ -4237,7 +4252,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     } catch (err) {
       console.error('Failed to update knowledge bases:', err)
     }
-  }, [applyConversationMeta, currentConversation])
+  }, [applyConversationMeta, currentConversation, setDraftKnowledgeBaseIds])
 
   const handleChangeAdditionalDirectories = useCallback(async (directories: AdditionalDirectory[]) => {
     setDraftAdditionalDirectories(directories)
@@ -4255,7 +4270,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof err === 'string' ? err : (err as Error).message || '附加目录更新失败',
       )
     }
-  }, [applyConversationMeta, currentConversation, setStreamErrorForConversation])
+  }, [applyConversationMeta, currentConversation, setDraftAdditionalDirectories, setStreamErrorForConversation])
 
   const handleToggleForceKnowledgeSearch = useCallback(async () => {
     const next = !(currentConversation
@@ -4272,7 +4287,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     } catch (err) {
       console.error('Failed to update force knowledge search:', err)
     }
-  }, [applyConversationMeta, currentConversation, draftForceKnowledgeSearch])
+  }, [applyConversationMeta, currentConversation, draftForceKnowledgeSearch, setDraftForceKnowledgeSearch])
 
   const handleCancelStream = useCallback(async () => {
     const conversationId = currentConversationIdRef.current

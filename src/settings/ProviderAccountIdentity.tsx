@@ -20,7 +20,7 @@ export function ProviderAccountIdentity({ provider, lang }: { provider: ModelPro
       } catch { if (!stopped) setStatus('error') }
     })()
     return () => { stopped = true }
-  }, [provider.id, provider.request?.oauth?.provider, provider.request?.oauth?.credentialId, provider.baseUrl, provider.apiFormat, provider.request?.useSystemProxy, retry])
+  }, [provider.id, provider.request.oauth?.provider, provider.request.oauth?.credentialId, provider.baseUrl, provider.apiFormat, provider.request.useSystemProxy, retry])
   return <div className="mt-2 rounded-lg border border-[var(--border)] px-3 py-2 text-sm" aria-label={zh ? '当前授权账号' : 'Authorized account'}>
     <div className="mb-1 text-xs opacity-60">{zh ? '当前账号' : 'Current account'}</div>
     {status === 'loading' && <span role="status" className="text-xs opacity-60">{zh ? '正在读取账号…' : 'Loading account…'}</span>}

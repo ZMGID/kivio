@@ -1,7 +1,7 @@
 // Dock 内共享的确认对话框（删除文件 / 丢弃变更等破坏性操作二次确认）。
 // 样式沿用 Chat.tsx pendingToolConfirm 的固定浮层模式。
 import { TriangleAlert } from 'lucide-react'
-import { i18n, type Lang } from '../../settings/i18n'
+import { i18n, type Lang } from '../../settings/public/i18n'
 
 type ConfirmDialogProps = {
   lang: Lang

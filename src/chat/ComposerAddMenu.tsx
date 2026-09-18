@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, FolderPlus, Folders, Paperclip, Plus, Slider
 import { IconButton } from '../components/Button'
 import { ComposerAddMenuCloseContext } from './composerAddMenuContext'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
-import { useT } from '../settings/i18n'
+import { useT } from '../settings/public/i18n'
 import type { AdditionalDirectory } from './types'
 import { MAX_ADDITIONAL_DIRECTORIES } from './types'
 

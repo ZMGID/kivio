@@ -37,6 +37,7 @@ interface AskUserBlockProps {
 interface DraftAnswer {
   selectedOptionIds: string[]
   customText: string
+  customTextEdited?: boolean
 }
 
 interface ParsedAskUser {
@@ -87,11 +88,15 @@ function normalizeQuestions(value: unknown): AskUserQuestion[] {
       : []
     const multiple = question.allow_multiple === true || question.allowMultiple === true
     const custom = question.allow_custom === true || question.allowCustom === true
-    // 内置 ask_user 仍要求至少两个选项；外部 CLI 的纯文本作答靠 allow_custom 放行 0 个选项。
-    if (!id || !prompt || (options.length < 2 && !custom)) continue
+    const valueSchema = objectValue(question.value_schema ?? question.valueSchema) ?? undefined
+    // 内置问题仍要求两个选项；schema 枚举允许单一合法值，纯文本允许零选项。
+    if (!id || !prompt || (options.length < (valueSchema ? 1 : 2) && !custom)) continue
     questions.push({
       id,
       prompt,
+      required: question.required !== false,
+      value_schema: valueSchema,
+      valueSchema,
       options,
       allow_multiple: multiple,
       allowMultiple: multiple,
@@ -143,12 +148,12 @@ function normalizeAnswer(value: unknown): AskUserAnswer {
     ? answer.custom_text
     : typeof answer.customText === 'string'
       ? answer.customText
-      : ''
+      : null
   return {
     selected_option_ids: selectedOptionIds,
     selectedOptionIds,
-    custom_text: customText.trim() || null,
-    customText: customText.trim() || null,
+    custom_text: customText,
+    customText,
   }
 }
 
@@ -197,10 +202,21 @@ function allowCustom(question: AskUserQuestion): boolean {
   return question.allow_custom === true || question.allowCustom === true
 }
 
+function stringValue(question: AskUserQuestion): boolean {
+  return (question.value_schema ?? question.valueSchema)?.type === 'string'
+}
+
+function draftCustomText(question: AskUserQuestion, answer: DraftAnswer): string | null {
+  if (!allowCustom(question)) return null
+  // Schema strings preserve explicit empty strings and whitespace; legacy prompts retain trimming.
+  if (stringValue(question) && answer.customTextEdited) return answer.customText
+  return answer.customText.trim() || null
+}
+
 function draftHasAnswer(question: AskUserQuestion, answer?: DraftAnswer): boolean {
   if (!answer) return false
   const hasSelection = answer.selectedOptionIds.length > 0
-  const hasCustom = allowCustom(question) && answer.customText.trim().length > 0
+  const hasCustom = draftCustomText(question, answer) !== null
   return hasSelection || hasCustom
 }
 
@@ -213,6 +229,7 @@ function createDraft(parsed: ParsedAskUser | null): Record<string, DraftAnswer> 
       {
         selectedOptionIds: answerSelectedIds(answer),
         customText: answerCustomText(answer),
+        customTextEdited: typeof (answer?.custom_text ?? answer?.customText) === 'string',
       },
     ]
   }))
@@ -294,6 +311,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   /** 键盘光标（与「已选中」是两回事：光标只是高亮，Enter 才落选）。 */
   const [activeIndex, setActiveIndex] = useState(0)
   const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
   const [submitError, setSubmitError] = useState('')
   const questionCount = parsed?.questions.length ?? 0
   const visibleIndex = questionCount > 0 ? Math.min(currentIndex, questionCount - 1) : 0
@@ -350,8 +368,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   const currentAnswer = currentQuestion
     ? draft[currentQuestion.id] ?? { selectedOptionIds: [], customText: '' }
     : { selectedOptionIds: [], customText: '' }
-  const answeredCount = parsed.questions.filter((question) => draftHasAnswer(question, draft[question.id])).length
-  const allAnswered = answeredCount === parsed.questions.length
+  const allAnswered = parsed.questions.every((question) => question.required === false || draftHasAnswer(question, draft[question.id]))
   const currentAnswered = currentQuestion ? draftHasAnswer(currentQuestion, currentAnswer) : false
   const isLastQuestion = visibleIndex >= parsed.questions.length - 1
   /** 单题（绝大多数情况）不显示进度条与上一题/下一题 —— 一道题的「1/1」和翻页键是纯噪声。 */
@@ -427,6 +444,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
       [questionId]: {
         selectedOptionIds: draftRef.current[questionId]?.selectedOptionIds ?? [],
         customText,
+        customTextEdited: true,
       },
     }
     draftRef.current = next
@@ -443,31 +461,35 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
 
   const submit = async (skipped: boolean, draftOverride?: Record<string, DraftAnswer>) => {
     const toolCallId = toolCall.toolCallId || toolCall.id
-    if (!toolCallId || submitting) return
+    if (!toolCallId || submittingRef.current) return
     // 用镜像而不是 `draft`：自定义输入框按 Enter 时，那一次 onChange 的值还没进渲染。
     const source = draftOverride ?? draftRef.current
+    submittingRef.current = true
     setSubmitting(true)
     setSubmitError('')
     try {
-      const answers = Object.fromEntries(parsed.questions.map((question) => {
-        const answer = source[question.id] ?? { selectedOptionIds: [], customText: '' }
-        const customText = allowCustom(question) ? answer.customText.trim() : ''
-        return [
-          question.id,
-          {
-            selected_option_ids: answer.selectedOptionIds,
-            custom_text: customText || null,
-          },
-        ]
-      }))
+      const answers = Object.fromEntries(parsed.questions
+        .filter((question) => question.required !== false || draftHasAnswer(question, source[question.id]))
+        .map((question) => {
+          const answer = source[question.id] ?? { selectedOptionIds: [], customText: '' }
+          const customText = draftCustomText(question, answer)
+          return [
+            question.id,
+            {
+              selected_option_ids: answer.selectedOptionIds,
+              custom_text: customText,
+            },
+          ]
+        }))
       if (parsed.async) {
         if (!asyncQuestions) throw new Error('当前视图无法发送答复')
         const text = parsed.questions.map((question) => {
           const answer = answers[question.id]
+          if (!answer) return ''
           const labels = answer.selected_option_ids.map((id) => optionLabel(question, id))
           if (answer.custom_text) labels.push(answer.custom_text)
           return `${question.prompt}\n${labels.join('；')}`
-        }).join('\n\n')
+        }).filter(Boolean).join('\n\n')
         await asyncQuestions.reply(toolCall.id, skipped ? null : text)
       } else {
         await api.chatSubmitUserChoice(toolCallId, answers, skipped)
@@ -478,6 +500,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
     } finally {
+      submittingRef.current = false
       setSubmitting(false)
     }
   }
@@ -497,6 +520,9 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
       <div className="flex items-start gap-3 px-3.5 pt-3 pb-2">
         <div className="min-w-0 flex-1 text-[14px] font-semibold leading-6 text-neutral-950 dark:text-neutral-50">
           {awaiting && currentQuestion ? currentQuestion.prompt : compactText(parsed.title, 96)}
+          {awaiting && currentQuestion?.required === false && (
+            <span className="ml-1.5 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">可选</span>
+          )}
           {awaiting && multiSelect && (
             <span className="ml-1.5 align-[1px] text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
               可多选
@@ -523,7 +549,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                 label="下一题"
                 size="xs"
                 variant="ghost"
-                disabled={!currentAnswered || isLastQuestion || submitting}
+                disabled={(!currentAnswered && currentQuestion?.required !== false) || isLastQuestion || submitting}
                 onMouseDown={preventMouseFocus}
                 onClick={goNext}
               >
@@ -634,7 +660,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                     onFocus={() => setActiveIndex(optionCount)}
                     onChange={(event) => setCustomText(currentQuestion.id, event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key !== 'Enter' || !event.currentTarget.value.trim()) return
+                      if (event.key !== 'Enter' || !draftHasAnswer(currentQuestion, draftRef.current[currentQuestion.id])) return
                       event.preventDefault()
                       if (answerOnPick) void submit(false)
                     }}
@@ -650,7 +676,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
             <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-400 dark:text-neutral-500">
               ↑↓ 切换 · Enter 选择{optionCount > 1 ? ` · 数字键 1–${Math.min(optionCount, 9)} 直选` : ''}
             </span>
-            {!answerOnPick && (
+            {(!answerOnPick || currentQuestion.required === false) && (
               <Button
                 variant="primary"
                 size="sm"

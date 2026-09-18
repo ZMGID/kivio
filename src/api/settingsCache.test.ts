@@ -5,6 +5,7 @@ const getSettingsMock = vi.fn()
 const saveSettingsMock = vi.fn()
 const importSettingsMock = vi.fn()
 const setFavoriteModelsMock = vi.fn()
+const setTranslateCardSizeMock = vi.fn()
 const onKivioConfigurationChangedMock = vi.fn()
 
 vi.mock('./tauri', () => ({
@@ -13,6 +14,7 @@ vi.mock('./tauri', () => ({
     saveSettings: (...args: unknown[]) => saveSettingsMock(...args),
     importSettings: (...args: unknown[]) => importSettingsMock(...args),
     setFavoriteModels: (...args: unknown[]) => setFavoriteModelsMock(...args),
+    setTranslateCardSize: (...args: unknown[]) => setTranslateCardSizeMock(...args),
     onKivioConfigurationChanged: (...args: unknown[]) => onKivioConfigurationChangedMock(...args),
   },
 }))
@@ -25,6 +27,7 @@ import {
   refreshSettings,
   saveSettingsCached,
   setFavoriteModelsCached,
+  setTranslateCardSizeCached,
   startBackendSettingsSync,
   subscribeSettings,
 } from './settingsCache'
@@ -38,6 +41,7 @@ beforeEach(() => {
   saveSettingsMock.mockReset()
   importSettingsMock.mockReset()
   setFavoriteModelsMock.mockReset()
+  setTranslateCardSizeMock.mockReset()
   onKivioConfigurationChangedMock.mockReset()
 })
 
@@ -132,17 +136,35 @@ describe('settingsCache', () => {
     expect(peekSettings()).toBe(settingsB)
   })
 
-  it('setFavoriteModelsCached 成功把新收藏（去重后）补进缓存；失败不动缓存', async () => {
+  it('setFavoriteModelsCached 采用后端 canonical 回包，不在前端复制 trim/去空/去重', async () => {
     getSettingsMock.mockResolvedValue(settingsA)
     await getSettingsCached()
 
-    setFavoriteModelsMock.mockResolvedValueOnce(undefined)
-    await setFavoriteModelsCached(['p:m', 'p:m', 'p:n'])
-    // 与后端 dedup_preserve_order 对齐：按序去重
-    expect(peekSettings()?.favoriteModels).toEqual(['p:m', 'p:n'])
+    const canonical = { ...settingsB, favoriteModels: ['p:m', 'p:n'] }
+    setFavoriteModelsMock.mockResolvedValueOnce(canonical)
+    await setFavoriteModelsCached([' p:m ', '', 'p:m', 'p:n'])
+    expect(setFavoriteModelsMock).toHaveBeenCalledWith([' p:m ', '', 'p:m', 'p:n'])
+    expect(peekSettings()).toBe(canonical)
 
     setFavoriteModelsMock.mockRejectedValueOnce(new Error('nope'))
     await expect(setFavoriteModelsCached(['p:other'])).rejects.toThrow('nope')
-    expect(peekSettings()?.favoriteModels).toEqual(['p:m', 'p:n'])
+    expect(peekSettings()).toBe(canonical)
+  })
+
+  it('setTranslateCardSizeCached 原样采用后端 canonical 回包', async () => {
+    getSettingsMock.mockResolvedValue(settingsA)
+    await getSettingsCached()
+
+    const canonical = {
+      ...settingsB,
+      retryAttempts: 5,
+      screenshotTranslation: { enabled: true, cardWidth: 512 },
+    } as unknown as Settings
+    setTranslateCardSizeMock.mockResolvedValueOnce(canonical)
+
+    await setTranslateCardSizeCached(999)
+
+    expect(setTranslateCardSizeMock).toHaveBeenCalledWith(999)
+    expect(peekSettings()).toBe(canonical)
   })
 })

@@ -1,8 +1,8 @@
 import { Clock3, CornerDownRight, Loader2, X } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { isQueuedSubmitted, type QueuedMessage } from './hooks/useMessageQueue'
-import type { Lang } from '../settings/i18n'
-import { i18n } from '../settings/i18n'
+import type { Lang } from '../settings/public/i18n'
+import { i18n } from '../settings/public/i18n'
 
 interface QueuedMessagesProps {
   messages: QueuedMessage[]

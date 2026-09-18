@@ -2,7 +2,7 @@ import { Fragment, useContext, type CSSProperties } from 'react'
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react'
 import { Check, Loader2, Minus, Play, Plus, Power, Trash2, X } from 'lucide-react'
 import { IconButton } from '../../../components/Button'
-import { useT } from '../../../settings/i18n'
+import { useT } from '../../../settings/public/i18n'
 import { catalogEntry, nodeSummary } from '../nodeCatalog'
 import {
   AGENT_SLOTS,

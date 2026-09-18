@@ -6,6 +6,11 @@
 //! error + exit code + stderr tail) into a collapsible `<details>` block the frontend already
 //! renders. See `research/paseo-reference.md` E.1 for the design this mirrors.
 
+use crate::external_agents::{
+    registry::get_agent_def,
+    types::{AgentAuthRecovery, AgentErrorDetailStrategy, AgentErrorPolicy},
+};
+
 /// Coarse category of an external-agent failure, chosen for the recovery action it implies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalAgentErrorKind {
@@ -56,23 +61,10 @@ impl ClassifiedError {
 
 const STDERR_DETAIL_CAP: usize = 2000;
 
-/// (display name, login command) per agent id. Kept here as a static table so `RuntimeAgentDef`
-/// stays unchanged. Unknown ids fall back to a generic name with no login command.
-fn agent_login_hint(agent_id: &str) -> (&'static str, &'static str) {
-    match agent_id {
-        "claude" => ("Claude Code", "claude /login"),
-        "codex" => ("Codex CLI", "codex login"),
-        "cursor-agent" => ("Cursor Agent", "cursor-agent login"),
-        "opencode" => ("OpenCode", "opencode auth login"),
-        "gemini" => ("Gemini CLI", "gemini"),
-        "antigravity" => ("Antigravity CLI", "agy"),
-        "kimi" => ("Kimi CLI", "kimi"),
-        "pi" => ("Pi", "pi"),
-        "hermes" => ("Hermes", "hermes"),
-        "grok" => ("Grok CLI", "grok"),
-        "dsh" => ("DeepSeek Harness", ""),
-        _ => ("外部 Agent", ""),
-    }
+fn agent_error_policy(agent_id: &str) -> (&'static str, AgentErrorPolicy) {
+    get_agent_def(agent_id)
+        .map(|def| (def.name, def.error_policy))
+        .unwrap_or(("外部 Agent", AgentErrorPolicy::GENERIC))
 }
 
 /// `needle` 作为独立 token 出现（前后都不是字母/数字）才算命中——避免 "401" 误伤
@@ -155,19 +147,20 @@ pub fn classify(
     agent_id: &str,
 ) -> ClassifiedError {
     let kind = detect_kind(raw, exit_code, stderr_tail);
-    let (name, login) = agent_login_hint(agent_id);
+    let (name, policy) = agent_error_policy(agent_id);
 
     let user_message = match kind {
         ExternalAgentErrorKind::Auth => {
-            if agent_id == "dsh" {
-                "DeepSeek Harness 缺少 API 密钥。请到设置 → 本地 CLI 管理 → DeepSeek Harness 填写官方 DeepSeek 密钥后重试。"
-                    .to_string()
-            } else if login.is_empty() {
-                format!("{name} 未登录或登录凭证已失效，请重新登录后重试。")
-            } else {
-                format!(
+            match policy.auth_recovery {
+                AgentAuthRecovery::SettingsApiKey => format!(
+                    "{name} 缺少 API 密钥。请到设置 → 本地 CLI 管理 → {name} 填写官方 DeepSeek 密钥后重试。"
+                ),
+                AgentAuthRecovery::LoginCommand(login) => format!(
                     "{name} 未登录或登录凭证已失效。请在终端运行 `{login}` 重新登录，然后重试。"
-                )
+                ),
+                AgentAuthRecovery::Generic => {
+                    format!("{name} 未登录或登录凭证已失效，请重新登录后重试。")
+                }
             }
         }
         ExternalAgentErrorKind::Timeout => {
@@ -184,14 +177,18 @@ pub fn classify(
         },
         ExternalAgentErrorKind::Protocol => {
             let lower = raw.to_lowercase();
-            if agent_id == "codex"
+            if policy.detail == AgentErrorDetailStrategy::CodexAppServer
                 && (lower.contains("usagelimitexceeded") || lower.contains("sessionbudgetexceeded"))
             {
-                "Codex CLI 已达到用量上限，请稍后再试或检查配额。".to_string()
-            } else if agent_id == "codex" && lower.contains("contextwindowexceeded") {
-                "Codex CLI 上下文已满，请压缩对话或开新会话。".to_string()
-            } else if agent_id == "codex" && lower.contains("responsetoomanyfailedattempts") {
-                "Codex CLI 多次重连仍失败，请稍后重试。".to_string()
+                format!("{name} 已达到用量上限，请稍后再试或检查配额。")
+            } else if policy.detail == AgentErrorDetailStrategy::CodexAppServer
+                && lower.contains("contextwindowexceeded")
+            {
+                format!("{name} 上下文已满，请压缩对话或开新会话。")
+            } else if policy.detail == AgentErrorDetailStrategy::CodexAppServer
+                && lower.contains("responsetoomanyfailedattempts")
+            {
+                format!("{name} 多次重连仍失败，请稍后重试。")
             } else {
                 format!("{name} 通信出错，请重试；若持续失败请检查 CLI 版本与登录状态。")
             }
@@ -220,9 +217,10 @@ pub fn is_auth_error(raw: &str, agent_id: &str) -> bool {
     detect_kind(raw, None, "") == ExternalAgentErrorKind::Auth
 }
 
-/// Codex 用量 / 窗口 / 非法请求重试没有意义，再发一次同一条 prompt 只会再烧配额。
-pub fn is_non_retryable_codex_error(raw: &str, agent_id: &str) -> bool {
-    if agent_id != "codex" {
+/// 由代理定义声明的终止类错误不应重试；重复发送同一 prompt 只会继续消耗配额。
+pub fn is_non_retryable_error(raw: &str, agent_id: &str) -> bool {
+    let (_, policy) = agent_error_policy(agent_id);
+    if policy.detail != AgentErrorDetailStrategy::CodexAppServer {
         return false;
     }
     let hay = raw.to_ascii_lowercase();
@@ -246,6 +244,30 @@ pub fn is_missing_codex_thread_error(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external_agents::{
+        registry::get_agent_def,
+        types::{AgentAuthRecovery, AgentErrorDetailStrategy},
+    };
+
+    #[test]
+    fn runtime_defs_own_auth_recovery_and_error_detail_policy() {
+        assert_eq!(
+            get_agent_def("claude").unwrap().error_policy.auth_recovery,
+            AgentAuthRecovery::LoginCommand("claude /login")
+        );
+        assert_eq!(
+            get_agent_def("dsh").unwrap().error_policy.auth_recovery,
+            AgentAuthRecovery::SettingsApiKey
+        );
+        assert_eq!(
+            get_agent_def("codex").unwrap().error_policy.detail,
+            AgentErrorDetailStrategy::CodexAppServer
+        );
+        assert_eq!(
+            get_agent_def("claude").unwrap().error_policy.detail,
+            AgentErrorDetailStrategy::Generic
+        );
+    }
 
     /// claude 的 assistant 帧用机器码而不是自然语言报认证失败——必须也归到 Auth，
     /// 否则用户拿到的是无从下手的 Protocol 提示，而不是 `claude /login`。
@@ -427,26 +449,20 @@ mod tests {
 
     #[test]
     fn codex_usage_and_window_errors_are_not_retried() {
-        assert!(is_non_retryable_codex_error(
-            "UsageLimitExceeded: quota",
-            "codex"
-        ));
-        assert!(is_non_retryable_codex_error(
+        assert!(is_non_retryable_error("UsageLimitExceeded: quota", "codex"));
+        assert!(is_non_retryable_error(
             "ContextWindowExceeded: too long",
             "codex"
         ));
-        assert!(!is_non_retryable_codex_error(
+        assert!(!is_non_retryable_error(
             "ResponseStreamDisconnected",
             "codex"
         ));
-        assert!(is_non_retryable_codex_error(
+        assert!(is_non_retryable_error(
             "ResponseTooManyFailedAttempts",
             "codex"
         ));
-        assert!(!is_non_retryable_codex_error(
-            "UsageLimitExceeded",
-            "claude"
-        ));
+        assert!(!is_non_retryable_error("UsageLimitExceeded", "claude"));
         assert!(classify("UsageLimitExceeded: quota", None, "", "codex")
             .user_message
             .contains("用量上限"));

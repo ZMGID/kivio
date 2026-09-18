@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { VList } from 'virtua'
 import { GitBranch, Loader2, X } from 'lucide-react'
-import { i18n, type Lang } from '../../settings/i18n'
+import { i18n, type Lang } from '../../settings/public/i18n'
 import { dockApi } from './api'
 import { DiffView } from './DiffView'
 import { GRAPH_COLORS, layoutGitGraph, type GraphRow } from './gitGraph'

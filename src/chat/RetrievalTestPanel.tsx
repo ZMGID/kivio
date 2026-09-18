@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { AlertCircle, Check, Copy, Search } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
-import { useT } from '../settings/i18n'
+import { useT } from '../settings/public/i18n'
 import {
   kbRetrievalTest,
   type KnowledgeLibrary,

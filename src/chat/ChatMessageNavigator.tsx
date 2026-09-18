@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Boxes, Eraser } from 'lucide-react'
-import { useT } from '../settings/i18n'
+import { useT } from '../settings/public/i18n'
 import { messageNavigatorProximityWidth, type MessageNavigatorNode } from './messageNavigator'
 
 interface PreviewAnchor {

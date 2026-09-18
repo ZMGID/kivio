@@ -142,7 +142,9 @@ export function matchModelExact(modelName: string): ModelInfo | null {
  * 合并模型信息：数据库默认值 + 用户覆盖
  * 用户覆盖的字段优先，未覆盖的字段用数据库默认
  */
-export function providerModelDatabaseId(model: string, provider?: Pick<ModelProvider, 'baseUrl' | 'request'>): string {
+type ModelProviderContext = Pick<ModelProvider, 'baseUrl'> & { request?: Pick<ModelProvider['request'], 'oauth'> }
+
+export function providerModelDatabaseId(model: string, provider?: ModelProviderContext): string {
   let kimi = provider?.request?.oauth?.provider === 'kimi'
   try { const url = new URL(provider?.baseUrl ?? ''); kimi ||= url.hostname === 'api.kimi.com' && /^\/coding(?:\/|$)/.test(url.pathname) } catch { /* Not a Kimi endpoint. */ }
   const id = model.trim().toLowerCase()
@@ -152,7 +154,7 @@ export function providerModelDatabaseId(model: string, provider?: Pick<ModelProv
 export function resolveModelInfo(
   modelName: string,
   overrides?: Record<string, ModelInfo>,
-  provider?: Pick<ModelProvider, 'baseUrl' | 'request'>,
+  provider?: ModelProviderContext,
 ): ModelInfo {
   const defaults = matchModel(providerModelDatabaseId(modelName, provider))
   const storedOverride = overrides?.[modelName]

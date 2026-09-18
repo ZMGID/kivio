@@ -14,6 +14,7 @@ describe('askUserTools', () => {
     expect(isAskUserToolName('ask_user_question')).toBe(true)
     expect(isAskUserToolName('requestUserInput')).toBe(true)
     expect(isAskUserToolName('cursor/ask_question')).toBe(true)
+    expect(isAskUserToolName('elicitation/create')).toBe(true)
     expect(isAskUserToolName('cursor/create_plan')).toBe(false)
     expect(isAskUserToolName('exit_plan_mode')).toBe(true)
     expect(isAskUserToolName('ExitPlanMode')).toBe(false)

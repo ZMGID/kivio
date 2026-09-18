@@ -165,9 +165,9 @@ fn stamp_disabled(
 ) -> Vec<crate::external_agents::types::DetectedAgent> {
     for agent in agents.iter_mut() {
         agent.disabled = crate::external_agents::overrides::is_disabled(&agent.id);
-        if agent.id == "dsh" {
-            agent.native_providers = native_provider_summaries(&agent.id);
-        }
+        agent.native_providers = get_agent_def(&agent.id)
+            .map(native_provider_summaries)
+            .unwrap_or_default();
     }
     agents
 }

@@ -4,34 +4,26 @@ use std::time::Duration;
 use chrono::{SecondsFormat, Utc};
 use futures::FutureExt;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use uuid::Uuid;
 
-use crate::native_tools::{
-    read_file, run_captured_command, write_file, NativeToolWorkspace, TOOL_OUTPUT_MAX_BYTES,
-};
+use crate::native_tools::{read_file, write_file, NativeToolWorkspace, TOOL_OUTPUT_MAX_BYTES};
 use crate::settings::{CHAT_TOOL_MAX_TIMEOUT_MS, CHAT_TOOL_MIN_TIMEOUT_MS};
-use crate::state::AppState;
 
-use super::agent;
+use super::application;
 use super::events;
 use super::history;
 use super::interpolate::{check_references, eval_if, interpolate, node_disabled};
 use super::notify;
 use super::storage;
 use super::types::{
-    Automation, AutomationRun, AutomationRunNode, AutomationRunStarted, FlowEdge, FlowNode,
-    NodeOutput, RunOrigin,
+    AgentNodeRequest, Automation, AutomationRun, AutomationRunNode, AutomationRunStarted, FlowEdge,
+    FlowNode, NodeOutput, RunOrigin,
 };
 use super::workspace;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_BODY_MAX: usize = 50 * 1024;
-/// 全局并发帽：不同 id 的 schedule/hotkey/manual 同时触发时，每条都是完整的
-/// agent loop / CLI 子进程，无帽会线性叠满 CPU/内存/供应商配额（对比 sub-agent
-/// 有 12 的信号量）。超限直接拒绝并落错误——排队会让定时任务悄悄堆积。
-const MAX_CONCURRENT_AUTOMATION_RUNS: usize = 4;
-
 pub fn enqueue(
     app: AppHandle,
     id: String,
@@ -67,23 +59,8 @@ fn enqueue_mode(
     if automation.nodes.is_empty() {
         return Err("automation has no nodes".to_string());
     }
-    let state = app.state::<AppState>();
     let run_id = Uuid::new_v4().to_string();
-    {
-        let mut active = state
-            .automation_active_runs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if active.contains_key(&id) {
-            return Err("automation is already running".to_string());
-        }
-        if active.len() >= MAX_CONCURRENT_AUTOMATION_RUNS {
-            return Err(format!(
-                "too many automations running concurrently (max {MAX_CONCURRENT_AUTOMATION_RUNS})"
-            ));
-        }
-        active.insert(id.clone(), run_id.clone());
-    }
+    application::begin_run(&app, &id, &run_id)?;
 
     let mut record = AutomationRun {
         id: run_id.clone(),
@@ -142,17 +119,7 @@ struct RunCleanup {
 
 impl Drop for RunCleanup {
     fn drop(&mut self) {
-        let state = self.app.state::<AppState>();
-        state
-            .automation_active_runs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
-        state
-            .automation_cancelled_runs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.run_id);
+        application::finish_run_slot(&self.app, &self.id, &self.run_id);
     }
 }
 
@@ -160,14 +127,7 @@ impl Drop for RunCleanup {
 /// 真正的收尾靠 [`wait_all_finished`]——等待期间运行时还活着，
 /// 命令节点的 `select!` 被取消分支唤醒后 drop 掉 Child（kill_on_drop）才来得及执行。
 pub fn cancel_all(app: &AppHandle) -> usize {
-    let ids: Vec<String> = {
-        let state = app.state::<AppState>();
-        let active = state
-            .automation_active_runs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        active.keys().cloned().collect()
-    };
+    let ids = application::active_automation_ids(app);
     for id in &ids {
         let _ = cancel(app, id);
     }
@@ -177,12 +137,7 @@ pub fn cancel_all(app: &AppHandle) -> usize {
 /// 等到 active 表清空（配合外层 timeout 使用）。
 pub async fn wait_all_finished(app: &AppHandle) {
     loop {
-        let empty = app
-            .state::<AppState>()
-            .automation_active_runs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty();
+        let empty = application::automation_runs_empty(app);
         if empty {
             return;
         }
@@ -191,39 +146,21 @@ pub async fn wait_all_finished(app: &AppHandle) {
 }
 
 pub fn cancel(app: &AppHandle, id: &str) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let run_id = state
-        .automation_active_runs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(id)
-        .cloned();
-    let Some(run_id) = run_id else {
+    if !application::mark_run_cancelled(app, id) {
         return Ok(());
-    };
-    state
-        .automation_cancelled_runs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(run_id);
-    state.cancel_chat_generation(&workspace::conversation_id(id));
-    state.cancel_chat_generation(&workspace::external_conversation_id(id, ""));
-    if let Ok(automation) = storage::get(app, id) {
-        for node in automation.nodes {
-            if node.node_type == "action.agent" {
-                state.cancel_chat_generation(&workspace::external_conversation_id(id, &node.id));
-            }
-        }
     }
+    let agent_node_ids = storage::get(app, id)
+        .ok()
+        .into_iter()
+        .flat_map(|automation| automation.nodes)
+        .filter(|node| node.node_type == "action.agent")
+        .map(|node| node.id);
+    application::cancel_agent_generations(app, id, agent_node_ids);
     Ok(())
 }
 
 fn is_cancelled(app: &AppHandle, run_id: &str) -> bool {
-    app.state::<AppState>()
-        .automation_cancelled_runs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(run_id)
+    application::is_run_cancelled(app, run_id)
 }
 
 // Keep history bounded. Missing snapshots are explicitly unavailable for replay.
@@ -451,7 +388,16 @@ async fn execute_node(
                     obj.insert("prompt".into(), json!(interpolated));
                 }
             }
-            let output = agent::run_agent_node(app, automation_id, run_id, &node.id, &spec).await?;
+            let output = application::run_agent_node(
+                app,
+                AgentNodeRequest {
+                    automation_id: automation_id.to_string(),
+                    run_id: run_id.to_string(),
+                    node_id: node.id.clone(),
+                    spec,
+                },
+            )
+            .await?;
             Ok((output, None))
         }
         "action.notify" => {
@@ -462,12 +408,7 @@ async fn execute_node(
                 .and_then(|v| v.as_str())
                 .unwrap_or("{{output}}");
             let body = interpolate(template, prev);
-            let language = app
-                .state::<AppState>()
-                .settings_read()
-                .settings_language
-                .clone()
-                .unwrap_or_else(|| "zh".to_string());
+            let language = application::settings_language(app);
             let title = if language == "en" {
                 "Kivio automation"
             } else {
@@ -615,13 +556,7 @@ fn execute_file(
     let file = node.data.get("file").cloned().unwrap_or(Value::Null);
     let op = file.get("op").and_then(Value::as_str).unwrap_or("write");
     let path = interpolate(file.get("path").and_then(Value::as_str).unwrap_or(""), prev);
-    let working_directory = app
-        .state::<AppState>()
-        .settings_read()
-        .chat_tools
-        .native_tools
-        .working_directory
-        .clone();
+    let working_directory = application::automation_working_directory(app);
     let Some(base) = workspace::workbench_dir(&working_directory, automation_id) else {
         return Err("set a working directory in Settings before using the File node".to_string());
     };
@@ -672,17 +607,10 @@ async fn execute_command(
         .saturating_mul(1000)
         .clamp(CHAT_TOOL_MIN_TIMEOUT_MS, CHAT_TOOL_MAX_TIMEOUT_MS);
     let cwd_raw = interpolate(spec.get("cwd").and_then(Value::as_str).unwrap_or(""), prev);
-    let working_directory = app
-        .state::<AppState>()
-        .settings_read()
-        .chat_tools
-        .native_tools
-        .working_directory
-        .clone();
+    let working_directory = application::automation_working_directory(app);
     let cwd = command_cwd(&working_directory, automation_id, cwd_raw.trim())?;
-    let state = app.state::<AppState>();
     let captured = tokio::select! {
-        result = run_captured_command(&cmd, cwd.clone(), timeout_ms, Some(&*state)) => result?,
+        result = application::run_captured_command(app, &cmd, cwd.clone(), timeout_ms) => result?,
         _ = wait_until_cancelled(app, run_id) => return Err("cancelled".to_string()),
     };
     let stdout = clip(&captured.stdout, TOOL_OUTPUT_MAX_BYTES);
@@ -846,7 +774,7 @@ async fn execute_http(
         prev,
     );
 
-    let client = app.state::<AppState>().http.clone();
+    let client = application::http_client(app);
     let mut request = match method.as_str() {
         "POST" => client.post(url),
         "PUT" => client.put(url),

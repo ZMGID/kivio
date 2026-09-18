@@ -691,7 +691,9 @@ pub(super) async fn complete_assistant_reply_inner(
     };
     if !video_plan.send_video && !video_plan.reports.is_empty() {
         crate::chat::video_analysis::apply_saved_reports(
-            &mut runtime_messages, &video_plan.reports, &language,
+            &mut runtime_messages,
+            &video_plan.reports,
+            &language,
         );
     }
     let mut fallback_chat_tools = effective_chat_tools.clone();
@@ -798,7 +800,8 @@ pub(super) async fn complete_assistant_reply_inner(
         app: app.clone(),
         state: state.inner(),
         video_analysis: tokio::sync::Mutex::new(crate::chat::video_analysis::VideoTool::new(
-            conversation.clone(), video_plan,
+            conversation.clone(),
+            video_plan,
         )),
     };
     let max_output_tokens = chat_max_output_tokens_on_wire(

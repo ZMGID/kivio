@@ -8,16 +8,7 @@ use crate::external_agents::workspace::resolve_effective_cwd;
 use crate::state::AppState;
 
 pub fn compact_prompt_for_agent(agent_id: &str) -> Option<&'static str> {
-    match agent_id {
-        // codex: "/compact" is intercepted in CodexAppServerSession::run_turn and sent as the
-        // real `thread/compact/start` RPC (as prompt text the model would just role-play it).
-        // pi: same deal — intercepted in run_pi_rpc_session and sent as the native
-        // `{"type":"compact"}` RPC (pi's rpc.md: built-in commands do not execute via prompt).
-        // dsh: intercepted in DshJsonRpcSession::run_turn as `session/command` →
-        // `ctx.commands.execute` (slash text as a prompt only role-plays).
-        "pi" | "claude" | "opencode" | "grok" | "codex" | "dsh" => Some("/compact"),
-        _ => None,
-    }
+    get_agent_def(agent_id).and_then(|def| def.compact_prompt)
 }
 
 pub async fn request_external_compaction(

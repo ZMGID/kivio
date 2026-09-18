@@ -1,4 +1,4 @@
-import type { I18n } from '../../settings/i18n'
+import type { I18n } from '../../settings/public/i18n'
 import type {
   AgentData,
   AgentRuntimeKind,

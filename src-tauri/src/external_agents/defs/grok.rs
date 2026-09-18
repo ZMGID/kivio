@@ -1,7 +1,7 @@
 //! Grok CLI (xAI "Grok Build") external agent definition.
 //!
 //! Grok speaks the Agent Client Protocol over `grok agent stdio` (ACP handshake verified
-//! against v0.2.103–0.2.114; launch flags re-checked on grok 1.0.13):
+//! against v0.2.103–0.2.114; launch flags and MCP form elicitation re-checked on grok 1.0.34):
 //! `initialize` → `session/new` (result carries `models.availableModels`) → `session/set_model`
 //! → `session/prompt`, with `agent_thought_chunk` / `agent_message_chunk` / `tool_call` /
 //! `tool_call_update` session updates and an async `available_commands_update` push — all
@@ -13,7 +13,8 @@
 //!   harmless duplication for the fresh-session path).
 //!
 //! 1.0.x 起 `grok agent` 会按 `[cli] use_leader` 挂到共享 leader。Kivio 每条对话要自己的
-//! 进程（取消杀树、会话隔离），所以 argv 里永远带 `--no-leader`。
+//! 进程（取消杀树、会话隔离），所以 argv 里永远带 `--no-leader`；受管进程还带
+//! `--no-auto-update`，避免运行中替换二进制。
 
 use super::super::types::{
     ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
@@ -41,7 +42,13 @@ pub fn build_grok_args(
     options: &RuntimeBuildOptions,
     _prompt: Option<&str>,
 ) -> Vec<String> {
-    let mut args = vec!["agent".to_string()];
+    // Managed ACP processes must never replace their executable while Kivio is using it.
+    // This is a hidden global flag in Grok 1.0.34, so it must precede `agent`.
+    let mut args = vec!["--no-auto-update".to_string()];
+    if options.sandbox.as_deref() == Some("strict") {
+        args.extend(["--sandbox".to_string(), "strict".to_string()]);
+    }
+    args.push("agent".to_string());
     if let Some(model) = options
         .model
         .as_ref()
@@ -58,9 +65,9 @@ pub fn build_grok_args(
         args.push("--reasoning-effort".to_string());
         args.push(effort.clone());
     }
-    // Grok's agent subcommand has no --permission-mode / --sandbox flags. In ask mode,
-    // leave approval to session/request_permission and Kivio's host approval card.
-    // Keep the previous full-access default for existing conversations.
+    // Approval and OS isolation are separate. Ask mode delegates every request to Kivio;
+    // strict mode auto-approves inside Grok's strict filesystem/network sandbox; full keeps
+    // the previous unrestricted default for existing conversations.
     if options.sandbox.as_deref() != Some("ask") {
         args.push("--always-approve".to_string());
     }
@@ -81,13 +88,56 @@ pub const GROK_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     auth_probe_args: Some(&["models"]),
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
+    sandbox_options: &[
+        ("ask", "工具请求时确认"),
+        ("strict", "严格沙箱"),
+        ("full", "完全放行 (默认)"),
+    ],
     list_models_args: None,
     list_models_timeout_secs: Some(15),
     models_from_stderr: false,
     model_probe: Some(ModelProbeStrategy::Acp),
     // 与 `build_grok_args` 的默认 argv 对齐：探测若漏掉 `--no-leader`，会挂上用户
     // 正在跑的 TUI leader，在别人的会话里 `session/new`。
-    model_probe_args: Some(&["agent", "--always-approve", "--no-leader", "stdio"]),
+    model_probe_args: Some(&[
+        "--no-auto-update",
+        "agent",
+        "--always-approve",
+        "--no-leader",
+        "stdio",
+    ]),
+    current_config: super::super::types::CurrentConfigStrategy::None,
+    provider_profile: super::super::types::ProviderProfileStrategy::Grok,
+    native_providers: super::super::types::NativeProviderStrategy::None,
+    context_window: super::super::types::ContextWindowStrategy::Generic,
+    usage_fallback: super::super::types::UsageFallbackStrategy::None,
+    error_policy: super::super::types::AgentErrorPolicy::login("grok"),
+    launch: super::super::types::AgentLaunchPolicy::DEFAULT,
+    instructions_via_launch_flag: false,
+    compact_prompt: Some("/compact"),
+    install: super::super::types::AgentInstallSpec {
+        npm_package: Some("@xai-official/grok"),
+        npm_install_args: &[],
+        pypi_package: None,
+        script_unix: Some("curl -fsSL https://x.ai/cli/install.sh | bash"),
+        script_windows: Some("irm https://x.ai/cli/install.ps1 | iex"),
+        update: super::super::types::UpdateStrategy::Command(&["update"]),
+        latest_version: super::super::types::LatestVersionStrategy::Registry,
+        docs: "https://docs.x.ai/build/cli",
+        config_dir: Some(".grok"),
+        config_dir_env: None,
+        requires_pnpm: false,
+        post_install: super::super::types::PostInstallStrategy::None,
+    },
+    import: super::super::types::AgentImportPolicy {
+        discovery: super::super::types::ImportDiscoveryStrategy::FileHistory,
+        history_source: super::super::types::HistorySourceStrategy::GrokDirectory,
+        history_title: super::super::types::HistoryTitleStrategy::Grok,
+    },
+    run: super::super::types::AgentRunPolicy {
+        approval: super::super::types::ApprovalStrategy::GrokAlwaysApprove,
+        ..super::super::types::AgentRunPolicy::STANDARD
+    },
     slash_strategy: SlashStrategy::Acp,
     env: &[],
     max_prompt_arg_bytes: None,
@@ -119,7 +169,7 @@ mod tests {
             },
             None,
         );
-        assert_eq!(args, ["agent", "--no-leader", "stdio"]);
+        assert_eq!(args, ["--no-auto-update", "agent", "--no-leader", "stdio"]);
     }
 
     fn ctx() -> RuntimeContext {
@@ -142,7 +192,8 @@ mod tests {
             },
             None,
         );
-        assert_eq!(args.first().map(String::as_str), Some("agent"));
+        assert_eq!(args.first().map(String::as_str), Some("--no-auto-update"));
+        assert_eq!(args.get(1).map(String::as_str), Some("agent"));
         assert_eq!(args.last().map(String::as_str), Some("stdio"));
         assert!(args.windows(2).any(|w| w == ["-m", "grok-4.5"]));
         assert!(args.windows(2).any(|w| w == ["--reasoning-effort", "high"]));
@@ -172,7 +223,38 @@ mod tests {
         );
         assert_eq!(
             args,
-            vec!["agent", "--always-approve", "--no-leader", "stdio"]
+            vec![
+                "--no-auto-update",
+                "agent",
+                "--always-approve",
+                "--no-leader",
+                "stdio"
+            ]
+        );
+    }
+
+    #[test]
+    fn grok_strict_mode_adds_global_sandbox_before_agent() {
+        let args = build_grok_args(
+            &ctx(),
+            &RuntimeBuildOptions {
+                model: None,
+                reasoning: None,
+                sandbox: Some("strict".to_string()),
+            },
+            None,
+        );
+        assert_eq!(
+            args,
+            [
+                "--no-auto-update",
+                "--sandbox",
+                "strict",
+                "agent",
+                "--always-approve",
+                "--no-leader",
+                "stdio"
+            ]
         );
     }
 
@@ -188,9 +270,50 @@ mod tests {
         ));
         assert_eq!(
             GROK_AGENT_DEF.model_probe_args,
-            Some(&["agent", "--always-approve", "--no-leader", "stdio"][..])
+            Some(
+                &[
+                    "--no-auto-update",
+                    "agent",
+                    "--always-approve",
+                    "--no-leader",
+                    "stdio"
+                ][..]
+            )
         );
         assert!(matches!(GROK_AGENT_DEF.slash_strategy, SlashStrategy::Acp));
+    }
+
+    /// Real CLI protocol check that stops after `initialize` + `session/new`, so it
+    /// validates the managed launch flags and ACP schema without spending a model turn.
+    #[tokio::test]
+    #[ignore = "requires an installed grok CLI"]
+    async fn grok_acp_handshake_without_model_turn() {
+        use crate::external_agents::session::acp::AcpSession;
+        use crate::external_agents::spawn::resolve_binary;
+
+        let bin = resolve_binary(&GROK_AGENT_DEF).await.expect("resolve grok");
+        let args = build_grok_args(
+            &ctx(),
+            &RuntimeBuildOptions {
+                model: None,
+                reasoning: None,
+                sandbox: Some("strict".to_string()),
+            },
+            None,
+        );
+        let session = AcpSession::connect(
+            &bin,
+            &args,
+            &std::env::temp_dir(),
+            None,
+            None,
+            &[],
+            None,
+            &[],
+        )
+        .await
+        .expect("connect grok ACP without a prompt");
+        session.close().await;
     }
 
     /// Live end-to-end over the real grok CLI: detection (binary + auth + ACP model probe)

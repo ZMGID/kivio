@@ -9,9 +9,9 @@
 mod catalog;
 mod install;
 mod lifecycle;
+pub mod packages;
 mod preview;
 mod state;
-pub mod packages;
 
 pub use catalog::{catalog_plugin, CatalogPlugin, PLUGIN_CATALOG};
 pub use install::{

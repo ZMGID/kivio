@@ -1,14 +1,14 @@
 // MCP 注册表内联浏览（无 modal 外壳，供 McpCenter「市场」tab 用）。浏览/搜索/翻页三源，
 // 一键把服务器交给 onInstall。needs_config 的条目在卡片下方内联展开填参，不弹二级窗口。
-// 数据层见 ../settings/mcpRegistry.ts。
+// 数据层见 ../settings/public/mcpRegistry.ts。
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Check, ExternalLink, Loader2, Search } from 'lucide-react'
 import type { ChatMcpServer } from '../api/tauri'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
-import { Input } from '../settings/components'
-import { useT } from '../settings/i18n'
+import { Input } from '../settings/public/controls'
+import { useT } from '../settings/public/i18n'
 import {
   applyMcpRegistryInstallConfig,
   MCP_REGISTRY_SOURCE_OPTIONS,
@@ -19,7 +19,7 @@ import {
   type McpRegistryCard,
   type McpRegistryInstallDraft,
   type McpRegistrySource,
-} from '../settings/mcpRegistry'
+} from '../settings/public/mcpRegistry'
 
 type Props = {
   existingServers: ChatMcpServer[]

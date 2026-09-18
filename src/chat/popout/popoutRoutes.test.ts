@@ -23,7 +23,10 @@ describe('popoutRoutes', () => {
 
   it('parses the conversation id from the path', () => {
     expect(getPopoutConversationIdFromPath('chat/popout/conv_abc-1')).toBe('conv_abc-1')
+    expect(getPopoutConversationIdFromPath('chat/popout/conv_a%2Fb')).toBe('conv_a/b')
     expect(getPopoutConversationIdFromPath('chat/popout/')).toBeNull()
+    expect(getPopoutConversationIdFromPath('chat/popout/a/b')).toBeNull()
+    expect(getPopoutConversationIdFromPath('chat/popout/%E0%A4%A')).toBeNull()
     expect(getPopoutConversationIdFromPath('chat/abc')).toBeNull()
   })
 

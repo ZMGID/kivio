@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { ArrowLeft, RotateCcw } from 'lucide-react'
 import type { ModelInfo, ModelProvider } from '../api/tauri'
 import { resolveModelInfo, matchModel, providerModelDatabaseId } from '../data/modelMatching'
-import { Toggle, Input } from '../settings/components'
-import { Button, IconButton } from './Button'
+import { Toggle, Input } from './components'
+import { Button, IconButton } from '../components/Button'
 
 type Lang = 'zh' | 'en'
 

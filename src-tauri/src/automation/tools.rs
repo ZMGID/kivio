@@ -5,12 +5,12 @@
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::mcp::types::McpToolCallResult;
 use crate::native_tools::TOOL_OUTPUT_MAX_BYTES;
-use crate::state::AppState;
 
+use super::application;
 use super::commands;
 use super::history;
 use super::hotkeys::fingerprint as hotkey_fingerprint;
@@ -143,25 +143,20 @@ pub(crate) async fn run(
     };
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some((conversation_id, generation)) = chat_generation {
-            if !app
-                .state::<AppState>()
-                .is_chat_generation_active(conversation_id, generation)
-            {
-                let _ = runner::cancel(app, &id);
-                guard.disarm();
-                return Ok(error_json(
-                    "cancelled",
-                    json!({
-                        "type": "automation_run",
-                        "automationId": id,
-                        "runId": run_id,
-                        "name": automation.name,
-                        "status": "cancelled",
-                    }),
-                    "Automation run was cancelled.",
-                ));
-            }
+        if !application::chat_owner_active(app, chat_generation) {
+            let _ = runner::cancel(app, &id);
+            guard.disarm();
+            return Ok(error_json(
+                "cancelled",
+                json!({
+                    "type": "automation_run",
+                    "automationId": id,
+                    "runId": run_id,
+                    "name": automation.name,
+                    "status": "cancelled",
+                }),
+                "Automation run was cancelled.",
+            ));
         }
         if Instant::now() >= deadline {
             guard.disarm();
@@ -173,7 +168,7 @@ pub(crate) async fn run(
                 "message": "Automation is still running. Use automation_runs with this run_id to inspect progress.",
             }));
         }
-        if !is_run_active(app, &id, &run_id) {
+        if !application::automation_run_active(app, &id, &run_id) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
@@ -181,16 +176,6 @@ pub(crate) async fn run(
     guard.disarm();
     let record = history::get(app, &id, &run_id)?;
     Ok(run_tool_result(&automation.name, &record))
-}
-
-fn is_run_active(app: &AppHandle, automation_id: &str, run_id: &str) -> bool {
-    app.state::<AppState>()
-        .automation_active_runs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(automation_id)
-        .map(|active| active == run_id)
-        .unwrap_or(false)
 }
 
 struct CancelOnDrop {

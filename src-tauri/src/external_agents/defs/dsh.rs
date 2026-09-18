@@ -120,12 +120,45 @@ pub const DSH_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     auth_probe_args: None,
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
+    sandbox_options: &[
+        ("read-only", "只读"),
+        ("workspace-write", "工作区写 (默认)"),
+        ("danger-full-access", "完全"),
+    ],
     // 模型列表读配置文件，不起进程（见 `detection::probe_models` 的 dsh 分支）。
     list_models_args: None,
     list_models_timeout_secs: None,
     models_from_stderr: false,
-    model_probe: None,
+    model_probe: Some(super::super::types::ModelProbeStrategy::DshSettings),
     model_probe_args: None,
+    current_config: super::super::types::CurrentConfigStrategy::None,
+    provider_profile: super::super::types::ProviderProfileStrategy::Dsh,
+    native_providers: super::super::types::NativeProviderStrategy::DshSettings,
+    context_window: super::super::types::ContextWindowStrategy::Generic,
+    usage_fallback: super::super::types::UsageFallbackStrategy::None,
+    error_policy: super::super::types::AgentErrorPolicy::SETTINGS_API_KEY,
+    launch: super::super::types::AgentLaunchPolicy::DEFAULT,
+    instructions_via_launch_flag: false,
+    compact_prompt: Some("/compact"),
+    install: super::super::types::AgentInstallSpec {
+        npm_package: Some("@deepseek-ai/dsh"),
+        npm_install_args: &[],
+        pypi_package: None,
+        script_unix: None,
+        script_windows: None,
+        update: super::super::types::UpdateStrategy::ManagedPackage {
+            package: "@deepseek-ai/dsh",
+            brew_formula: "dsh",
+        },
+        latest_version: super::super::types::LatestVersionStrategy::Registry,
+        docs: "https://github.com/deepseek-ai/deepseek-harness",
+        config_dir: Some(".dsh"),
+        config_dir_env: Some("DSH_HOME"),
+        requires_pnpm: true,
+        post_install: super::super::types::PostInstallStrategy::DshProfile,
+    },
+    import: super::super::types::AgentImportPolicy::NONE,
+    run: super::super::types::AgentRunPolicy::STANDARD,
     // 斜杠菜单：先走内建兜底，连上后 `session/commands` 覆盖缓存。
     slash_strategy: SlashStrategy::Dsh,
     // 遥测默认关：任何非空值都算关（上游的隐私开关刻意「误关优于误开」）。用户想开就
@@ -212,7 +245,10 @@ mod tests {
             &["image/jpeg", "image/png", "image/gif", "image/webp"] as &[&str]
         );
         assert!(!DSH_AGENT_DEF.resumes_session_via_cli);
-        assert!(DSH_AGENT_DEF.model_probe.is_none());
+        assert!(matches!(
+            DSH_AGENT_DEF.model_probe,
+            Some(crate::external_agents::types::ModelProbeStrategy::DshSettings)
+        ));
         assert!(DSH_AGENT_DEF.auth_probe_args.is_none());
     }
 

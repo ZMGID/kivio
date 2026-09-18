@@ -3,7 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { packageApi, type PluginPackage } from '../api/pluginPackages'
 import { refreshSettings } from '../api/settingsCache'
 import { Button } from '../components/Button'
-import type { Lang } from '../settings/i18n'
+import type { Lang } from '../settings/public/i18n'
 
 export function PluginPackages({ lang }: { lang: Lang }) {
   const zh = lang === 'zh'

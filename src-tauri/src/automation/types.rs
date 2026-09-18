@@ -193,6 +193,17 @@ pub struct NodeOutput {
     pub sources: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// Application-layer request for executing an `action.agent` node. The graph runner owns only
+/// automation data; settings, chat generations, MCP tools and runtime selection are assembled by
+/// the application coordinator.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentNodeRequest {
+    pub automation_id: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub spec: serde_json::Value,
+}
+
 impl NodeOutput {
     pub fn from_text(text: impl Into<String>) -> Self {
         let text = text.into();

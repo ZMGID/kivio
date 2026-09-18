@@ -2182,8 +2182,14 @@ async fn run_loop_context_reported_anchor_wins_then_missing_usage_falls_back() {
         .expect("run completes");
     let ticks = host.recorded_context_ticks();
     assert!(ticks.len() >= 2, "{ticks:?}");
-    assert_eq!(ticks[0].0, 10, "larger estimate must not override reported usage");
-    assert!(ticks[1].0 > 10, "missing usage must not retain a stale anchor: {ticks:?}");
+    assert_eq!(
+        ticks[0].0, 10,
+        "larger estimate must not override reported usage"
+    );
+    assert!(
+        ticks[1].0 > 10,
+        "missing usage must not retain a stale anchor: {ticks:?}"
+    );
     assert!(result.last_step_usage.is_none());
 }
 
@@ -3876,7 +3882,10 @@ async fn video_analysis_runs_only_when_the_main_model_calls_the_tool() {
         let result = run_agent_loop(config, &host, &executor).await.unwrap();
         assert_eq!(result.stream_outcome, "completed");
         if calls_video {
-            assert_eq!(executor.events(), vec!["start:mixer_video_analysis", "finish:mixer_video_analysis"]);
+            assert_eq!(
+                executor.events(),
+                vec!["start:mixer_video_analysis", "finish:mixer_video_analysis"]
+            );
             assert_eq!(result.tool_records[0].status, ToolCallStatus::Success);
             assert!(server.captured_bodies()[1].contains("result:mixer_video_analysis"));
         } else {

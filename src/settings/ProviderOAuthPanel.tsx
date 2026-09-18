@@ -11,7 +11,7 @@ export function ProviderOAuthPanel({ provider, lang, onUpdateProvider }: {
   onUpdateProvider: (id: string, updates: Partial<ModelProvider>) => void
 }) {
   const zh = lang === 'zh'
-  const auth = provider.request?.oauth
+  const auth = provider.request.oauth
   const [login, setLogin] = useState<ProviderOAuthLogin | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -66,7 +66,7 @@ export function ProviderOAuthPanel({ provider, lang, onUpdateProvider }: {
     const run = ++generation.current
     setBusy(true); setError(''); setNotice('')
     try {
-      const next = await api.providerOAuthStart(auth.provider, provider.request?.useSystemProxy !== false)
+      const next = await api.providerOAuthStart(auth.provider, provider.request.useSystemProxy)
       if (generation.current !== run) { await api.providerOAuthCancel(next.loginId); return }
       loginRef.current = next
       setLogin(next)

@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, Command};
 use tokio::time::timeout;
 
-use crate::external_agents::types::RuntimeAgentDef;
+use crate::external_agents::types::{AgentHomeStrategy, AgentLaunchPolicy, RuntimeAgentDef};
 use crate::proc::NoConsoleWindow;
 
 pub struct SpawnedAgent {
@@ -92,17 +92,27 @@ fn is_codex_cli_bin(bin: &Path) -> bool {
     })
 }
 
+/// Compatibility adapter for call sites that only have a binary path. Agent-aware
+/// orchestration must use `RuntimeAgentDef::launch` instead of inferring policy here.
+fn compatibility_launch_policy_for_bin(bin: &Path) -> AgentLaunchPolicy {
+    if is_codex_cli_bin(bin) {
+        AgentLaunchPolicy::WSL_SHARED_CODEX_HOME
+    } else {
+        AgentLaunchPolicy::DEFAULT
+    }
+}
+
 /// WSL Codex 在没有私有 `CODEX_HOME` 时改读用户那份 `~/.codex`，否则会话写进 Linux 家目录，
 /// Windows 上的 Codex CLI / TUI 看不见。
 fn extra_codex_home_for_spawn(
     cli_bin: &Path,
-    agent_id: Option<&str>,
+    home_strategy: AgentHomeStrategy,
     already_has_codex_home: bool,
 ) -> Option<PathBuf> {
     if already_has_codex_home {
         return None;
     }
-    if agent_id != Some("codex") && !is_codex_cli_bin(cli_bin) {
+    if home_strategy != AgentHomeStrategy::WslSharedCodexHome {
         return None;
     }
     crate::external_agents::provider_profile::wsl_shared_codex_home(cli_bin)
@@ -111,14 +121,14 @@ fn extra_codex_home_for_spawn(
 fn finish_codex_home(
     command: &mut Command,
     program: &Path,
-    agent_id: Option<&str>,
+    launch: AgentLaunchPolicy,
     already_has_codex_home: bool,
 ) {
     if already_has_codex_home {
         crate::external_agents::provider_profile::ensure_private_codex_sessions_shared();
         return;
     }
-    if let Some(home) = extra_codex_home_for_spawn(program, agent_id, false) {
+    if let Some(home) = extra_codex_home_for_spawn(program, launch.home, false) {
         apply_env_for_cli(
             command,
             program,
@@ -139,7 +149,8 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     for (key, value) in extra {
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
     }
-    finish_codex_home(&mut command, Path::new(program), None, has_codex_home);
+    let launch = compatibility_launch_policy_for_bin(Path::new(program));
+    finish_codex_home(&mut command, Path::new(program), launch, has_codex_home);
     command
 }
 
@@ -160,12 +171,7 @@ pub fn agent_cli_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) -> C
         has_codex_home |= key == "CODEX_HOME";
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
     }
-    finish_codex_home(
-        &mut command,
-        Path::new(program),
-        Some(def.id),
-        has_codex_home,
-    );
+    finish_codex_home(&mut command, Path::new(program), def.launch, has_codex_home);
     command
 }
 
@@ -796,11 +802,16 @@ mod tests {
         let wsl = PathBuf::from(r"\\wsl$\Ubuntu\usr\bin\codex");
         let win = PathBuf::from(r"C:\codex.exe");
         let claude = PathBuf::from(r"\\wsl$\Ubuntu\usr\bin\claude");
-        assert!(extra_codex_home_for_spawn(&win, Some("codex"), false).is_none());
-        assert!(extra_codex_home_for_spawn(&wsl, Some("codex"), true).is_none());
-        assert!(extra_codex_home_for_spawn(&claude, None, false).is_none());
-        let home =
-            extra_codex_home_for_spawn(&wsl, None, false).expect("wsl codex shares host home");
+        assert!(
+            extra_codex_home_for_spawn(&win, AgentHomeStrategy::WslSharedCodexHome, false)
+                .is_none()
+        );
+        assert!(
+            extra_codex_home_for_spawn(&wsl, AgentHomeStrategy::WslSharedCodexHome, true).is_none()
+        );
+        assert!(extra_codex_home_for_spawn(&claude, AgentHomeStrategy::None, false).is_none());
+        let home = extra_codex_home_for_spawn(&wsl, AgentHomeStrategy::WslSharedCodexHome, false)
+            .expect("wsl codex shares host home");
         assert_eq!(
             home.file_name().and_then(|name| name.to_str()),
             Some(".codex")
@@ -809,6 +820,42 @@ mod tests {
             .to_string_lossy()
             .replace('\\', "/")
             .starts_with("/mnt/"));
+    }
+
+    #[test]
+    fn agent_cli_command_uses_the_definition_home_policy_not_the_binary_name() {
+        use crate::external_agents::defs::claude::CLAUDE_AGENT_DEF;
+        use crate::external_agents::defs::codex::CODEX_AGENT_DEF;
+
+        let codex_bin = PathBuf::from(r"\\wsl$\Ubuntu\usr\bin\codex");
+        let codex = agent_cli_command(&CODEX_AGENT_DEF, &codex_bin);
+        assert!(codex
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_HOME" && value.is_some()));
+
+        // A renamed/wrapped executable must not leak Codex policy into another
+        // agent. Static launch behavior belongs to RuntimeAgentDef.
+        let claude = agent_cli_command(&CLAUDE_AGENT_DEF, &codex_bin);
+        assert!(!claude
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_HOME" && value.is_some()));
+    }
+
+    #[test]
+    fn cli_command_keeps_binary_detection_inside_the_compatibility_adapter() {
+        let codex = cli_command(r"\\wsl$\Ubuntu\usr\bin\codex");
+        assert!(codex
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_HOME" && value.is_some()));
+
+        let claude = cli_command(r"\\wsl$\Ubuntu\usr\bin\claude");
+        assert!(!claude
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_HOME" && value.is_some()));
     }
 
     #[cfg(windows)]

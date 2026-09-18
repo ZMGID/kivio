@@ -1,8 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type PluginStatus, type SkillMeta } from '../../api/tauri'
-import { defaultChatTools } from '../chatToolsShared'
 import { ComputerControlTab } from './ComputerControlTab'
+import { makeChatToolsFixture } from './testFixtures'
 
 vi.mock('../../api/tauri', async importOriginal => ({
   ...await importOriginal<typeof import('../../api/tauri')>(),
@@ -40,7 +40,7 @@ describe('ComputerControlTab', () => {
   it('shows only a compact ready state or install action', async () => {
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
     const onChange = vi.fn()
-    const tools = defaultChatTools()
+    const tools = makeChatToolsFixture()
     tools.enabled = true
     tools.servers = [cuaMcp]
     render(<ComputerControlTab lang="zh" tools={tools} onChange={onChange} />)
@@ -60,7 +60,7 @@ describe('ComputerControlTab', () => {
     let finish!: (value: SkillMeta) => void
     vi.mocked(api.computerControlInstall).mockReturnValue(new Promise(resolve => { finish = resolve }))
     const onChange = vi.fn()
-    const tools = { ...defaultChatTools(), disabledSkillIds: ['playwright-cli', 'other'] }
+    const tools = { ...makeChatToolsFixture(), disabledSkillIds: ['playwright-cli', 'other'] }
     const { rerender } = render(<ComputerControlTab lang="zh" tools={tools} onChange={onChange} />)
     await screen.findAllByText('未安装')
     fireEvent.click(screen.getAllByRole('button', { name: '安装' })[1])
@@ -77,7 +77,7 @@ describe('ComputerControlTab', () => {
   it('surfaces install failure and keeps settings unchanged', async () => {
     vi.mocked(api.computerControlInstall).mockRejectedValue(new Error('npm unavailable'))
     const onChange = vi.fn()
-    render(<ComputerControlTab lang="zh" tools={defaultChatTools()} onChange={onChange} />)
+    render(<ComputerControlTab lang="zh" tools={makeChatToolsFixture()} onChange={onChange} />)
     await screen.findAllByText('未安装')
     fireEvent.click(screen.getAllByRole('button', { name: '安装' })[1])
     expect(await screen.findByRole('alert')).toHaveTextContent('安装失败，请稍后重试。')
@@ -87,7 +87,7 @@ describe('ComputerControlTab', () => {
   it('uses the existing disabledSkillIds switch', async () => {
     vi.mocked(api.computerControlStatus).mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.0', updateAvailable: false })
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [playwrightSkill] })
-    const tools = defaultChatTools()
+    const tools = makeChatToolsFixture()
     tools.enabled = true
     const onChange = vi.fn()
     render(<ComputerControlTab lang="en" tools={tools} onChange={onChange} />)
@@ -98,7 +98,7 @@ describe('ComputerControlTab', () => {
 
   it('controls the Cua Skill and MCP together', async () => {
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
-    const tools = defaultChatTools()
+    const tools = makeChatToolsFixture()
     tools.enabled = true
     tools.servers = [{ ...cuaMcp, id: 'plugin-cua-driver', connectorId: 'plugin:cua-driver' }]
     const onChange = vi.fn()
@@ -124,7 +124,7 @@ describe('ComputerControlTab', () => {
         skillCount: 12, mcpCount: 1, mcpActive: true, mcpServerId: 'plugin-officecli',
       }),
     ])
-    render(<ComputerControlTab lang="zh" tools={defaultChatTools()} onChange={vi.fn()} />)
+    render(<ComputerControlTab lang="zh" tools={makeChatToolsFixture()} onChange={vi.fn()} />)
     expect(await screen.findByText('v0.4.0 · 1 Skill')).toBeTruthy()
     expect(screen.getByText('文档操作')).toBeTruthy()
     expect(screen.getByText('v1.8.2 · 12 Skill · 1 MCP')).toBeTruthy()
@@ -140,7 +140,7 @@ describe('ComputerControlTab', () => {
       message: '',
       status: { ...ego, enabled: false },
     })
-    render(<ComputerControlTab lang="zh" tools={defaultChatTools()} onChange={vi.fn()} />)
+    render(<ComputerControlTab lang="zh" tools={makeChatToolsFixture()} onChange={vi.fn()} />)
     const toggle = await screen.findByRole('switch', { name: 'ego lite 控制' })
     vi.mocked(api.computerControlStatus).mockClear()
     vi.mocked(api.chatSkillsList).mockClear()
@@ -154,7 +154,7 @@ describe('ComputerControlTab', () => {
 
   it('reuses the completed detection result when the page is opened again', async () => {
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
-    const tools = defaultChatTools()
+    const tools = makeChatToolsFixture()
     tools.enabled = true
     tools.servers = [cuaMcp]
 
@@ -180,7 +180,7 @@ describe('ComputerControlTab', () => {
     })
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
     vi.mocked(api.computerControlUpdate).mockResolvedValue(cuaSkill)
-    const tools = defaultChatTools()
+    const tools = makeChatToolsFixture()
     tools.enabled = true
     tools.servers = [cuaMcp]
 
@@ -198,7 +198,7 @@ describe('ComputerControlTab', () => {
     })
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
     vi.mocked(api.computerControlUpdate).mockRejectedValue(new Error('installer exited with code 1'))
-    const tools = defaultChatTools()
+    const tools = makeChatToolsFixture()
     tools.enabled = true
     tools.servers = [cuaMcp]
 

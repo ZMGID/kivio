@@ -6,7 +6,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::chat::agent::execute::truncate_chars;
 use crate::chat::attachments::{compose_text_attachments_for_api, TextAttachmentInput};
-use crate::chat::{AgentPlanState, ChatMessageSegment, Conversation, ToolCallRecord};
+use crate::chat::{AgentPlanState, ChatMessageSegment, ToolCallRecord};
 use crate::state::AppState;
 
 use super::catalog::strip_transcripts_for_frontend;
@@ -137,21 +137,16 @@ pub(crate) fn chat_confirm_tool_call(
     // 模式。普通审批不传。
     permission_mode: Option<String>,
 ) -> Result<(), String> {
-    let pending = state
-        .pending_chat_tool_approvals
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&tool_call_id);
-    if let Some(pending) = pending {
-        if approved && always.unwrap_or(false) {
-            state.grant_tool_always_allow(&pending.conversation_id, &pending.tool_name);
-        }
-        let _ = pending.sender.send(crate::state::ToolApprovalOutcome {
+    if state.chat_interactions().respond_tool_approval(
+        &tool_call_id,
+        crate::chat::interaction_state::ToolApprovalOutcome {
             approved,
             permission_mode: permission_mode
                 .map(|mode| mode.trim().to_string())
                 .filter(|mode| !mode.is_empty()),
-        });
+        },
+        always.unwrap_or(false),
+    ) {
         crate::chat::protocol::withdraw_tool_approval(&app, &tool_call_id);
         return Ok(());
     }
@@ -336,14 +331,11 @@ pub(crate) fn chat_respond_session_consent(
     conversation_id: String,
     granted: bool,
 ) -> Result<(), String> {
-    let pending = state
-        .pending_chat_session_consents
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&conversation_id);
-    if let Some(pending) = pending {
-        crate::chat::protocol::resolve_session_consent(&app, &pending.run_id);
-        let _ = pending.sender.send(granted);
+    if let Some(run_id) = state
+        .chat_interactions()
+        .respond_session_consent(&conversation_id, granted)
+    {
+        crate::chat::protocol::resolve_session_consent(&app, &run_id);
     }
     Ok(())
 }
@@ -357,36 +349,18 @@ pub(crate) fn chat_submit_user_choice(
     answers: HashMap<String, crate::chat::ask_user::AskUserAnswer>,
     skipped: bool,
 ) -> Result<(), String> {
-    let response = {
-        let pending = state
-            .pending_chat_user_prompts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(pending) = pending.get(&tool_call_id) else {
-            return Err("Clarification is no longer awaiting a response".to_string());
-        };
-        if skipped {
-            crate::chat::ask_user::skipped_response()
-        } else {
-            crate::chat::ask_user::validate_response(
-                &pending.prompt,
-                crate::chat::ask_user::AskUserResponseResult {
-                    phase: crate::chat::ask_user::ASK_USER_PHASE_ANSWERED.to_string(),
-                    answers,
-                },
-            )?
+    let response = if skipped {
+        crate::chat::ask_user::skipped_response()
+    } else {
+        crate::chat::ask_user::AskUserResponseResult {
+            phase: crate::chat::ask_user::ASK_USER_PHASE_ANSWERED.to_string(),
+            answers,
         }
     };
-    let pending = state
-        .pending_chat_user_prompts
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&tool_call_id);
-    let Some(pending) = pending else {
-        return Err("Clarification is no longer awaiting a response".to_string());
-    };
-    crate::chat::protocol::resolve_user_prompt(&app, &pending.run_id, &tool_call_id);
-    let _ = pending.sender.send(response);
+    let run_id = state
+        .chat_interactions()
+        .respond_user_prompt(&tool_call_id, response)?;
+    crate::chat::protocol::resolve_user_prompt(&app, &run_id, &tool_call_id);
     Ok(())
 }
 
@@ -538,25 +512,13 @@ pub(super) async fn request_session_consent(
     // in parallel) don't each insert a pending sender and clobber one another.
     // Whoever wins the lock prompts once; the rest re-check consent and reuse
     // the grant without a second dialog.
-    let _prompt_guard = state.chat_consent_prompt_lock.lock().await;
+    let _prompt_guard = state.chat_interactions().lock_consent_prompt().await;
     if state.has_chat_consent(conversation_id) {
         return true;
     }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    {
-        let mut pending = state
-            .pending_chat_session_consents
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Only one outstanding consent prompt per conversation.
-        pending.insert(
-            conversation_id.to_string(),
-            crate::state::PendingSessionConsent {
-                run_id: run_id.to_string(),
-                sender: tx,
-            },
-        );
-    }
+    let rx = state
+        .chat_interactions()
+        .begin_session_consent(conversation_id, run_id);
     crate::chat::protocol::emit_run_event(
         app,
         run_id,
@@ -565,11 +527,7 @@ pub(super) async fn request_session_consent(
     let result = tokio::select! {
         result = timeout(Duration::from_secs(60), rx) => result,
         _ = wait_for_chat_cancel(state, conversation_id, generation) => {
-            state
-                .pending_chat_session_consents
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(conversation_id);
+            state.chat_interactions().cancel_session_consent(conversation_id);
             crate::chat::protocol::resolve_session_consent(app, run_id);
             return false;
         }
@@ -582,10 +540,8 @@ pub(super) async fn request_session_consent(
         }
         _ => {
             state
-                .pending_chat_session_consents
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(conversation_id);
+                .chat_interactions()
+                .cancel_session_consent(conversation_id);
             false
         }
     }
@@ -612,30 +568,19 @@ pub(crate) async fn request_tool_approval_outcome(
     run_id: &str,
     generation: u64,
     record: &ToolCallRecord,
-) -> crate::state::ToolApprovalOutcome {
+) -> crate::chat::interaction_state::ToolApprovalOutcome {
     // 用户此前对该工具按过「总是允许」→ 本对话内直接放行，不弹卡、不占挂起表。
     // 内置 agent 与外部 CLI 都走这个函数，所以一处判断两条路同时生效。
     if state.has_tool_always_allow(conversation_id, &record.name) {
-        return crate::state::ToolApprovalOutcome {
+        return crate::chat::interaction_state::ToolApprovalOutcome {
             approved: true,
             permission_mode: None,
         };
     }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    {
-        let mut pending = state
-            .pending_chat_tool_approvals
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.insert(
-            record.id.clone(),
-            crate::state::PendingToolApproval {
-                conversation_id: conversation_id.to_string(),
-                tool_name: record.name.clone(),
-                sender: tx,
-            },
-        );
-    }
+    let rx =
+        state
+            .chat_interactions()
+            .begin_tool_approval(&record.id, conversation_id, &record.name);
     let summary = format_tool_approval_summary(record);
     crate::chat::protocol::emit_run_event(
         app,
@@ -655,27 +600,17 @@ pub(crate) async fn request_tool_approval_outcome(
     let result = tokio::select! {
         result = rx => result,
         _ = wait_for_chat_cancel(state, conversation_id, generation) => {
-            let mut pending = state
-                .pending_chat_tool_approvals
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.remove(&record.id);
-            drop(pending);
+            state.chat_interactions().cancel_tool_approval(&record.id);
             withdraw_tool_confirm(app, &record.id);
-            return crate::state::ToolApprovalOutcome::default();
+            return crate::chat::interaction_state::ToolApprovalOutcome::default();
         }
     };
     match result {
         Ok(value) => value,
         Err(_) => {
-            let mut pending = state
-                .pending_chat_tool_approvals
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.remove(&record.id);
-            drop(pending);
+            state.chat_interactions().cancel_tool_approval(&record.id);
             withdraw_tool_confirm(app, &record.id);
-            crate::state::ToolApprovalOutcome::default()
+            crate::chat::interaction_state::ToolApprovalOutcome::default()
         }
     }
 }
@@ -694,21 +629,9 @@ pub(crate) async fn request_user_response(
     record: &ToolCallRecord,
     prompt: crate::chat::ask_user::AskUserPromptPayload,
 ) -> crate::chat::ask_user::AskUserResponseResult {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    {
-        let mut pending = state
-            .pending_chat_user_prompts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.insert(
-            record.id.clone(),
-            crate::chat::ask_user::PendingAskUserPrompt {
-                run_id: run_id.to_string(),
-                prompt: prompt.clone(),
-                sender: tx,
-            },
-        );
-    }
+    let rx = state
+        .chat_interactions()
+        .begin_user_prompt(&record.id, run_id, prompt.clone());
 
     let empty_answers = HashMap::new();
     let structured_content = crate::chat::ask_user::structured_content(
@@ -731,11 +654,7 @@ pub(crate) async fn request_user_response(
     let result = tokio::select! {
         result = timeout(Duration::from_secs(600), rx) => result,
         _ = wait_for_chat_cancel(state, conversation_id, generation) => {
-            let mut pending = state
-                .pending_chat_user_prompts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.remove(&record.id);
+            state.chat_interactions().cancel_user_prompt(&record.id);
             crate::chat::protocol::resolve_user_prompt(app, run_id, &record.id);
             return crate::chat::ask_user::cancelled_response();
         }
@@ -743,19 +662,11 @@ pub(crate) async fn request_user_response(
     let response = match result {
         Ok(Ok(response)) => response,
         Ok(Err(_)) => {
-            let mut pending = state
-                .pending_chat_user_prompts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.remove(&record.id);
+            state.chat_interactions().cancel_user_prompt(&record.id);
             crate::chat::ask_user::cancelled_response()
         }
         Err(_) => {
-            let mut pending = state
-                .pending_chat_user_prompts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            pending.remove(&record.id);
+            state.chat_interactions().cancel_user_prompt(&record.id);
             crate::chat::ask_user::timeout_response()
         }
     };

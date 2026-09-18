@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { IconButton } from '../components/Button'
-import { useT } from '../settings/i18n'
+import { useT } from '../settings/public/i18n'
 import { primaryHeadingDepth, type MarkdownHeadingOutlineItem } from './markdownHeadingOutline'
 
 interface ChatHeadingOutlineProps {

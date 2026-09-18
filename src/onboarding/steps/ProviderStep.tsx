@@ -1,6 +1,5 @@
 import type { Settings } from '../../api/tauri'
-import type { I18n } from '../../settings/i18n'
-import type { Lang } from '../../settings/i18n'
+import type { I18n, Lang } from '../../settings/public/i18n'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'
 import { ProviderSetupPanel } from '../ProviderSetupPanel'
 import { Button } from '../../components/Button'

@@ -1163,12 +1163,10 @@ mod tests {
                 .unwrap()
                 .contains("`art_…`"),
         );
-        assert!(
-            def.input_schema["properties"]["caption"]["description"]
-                .as_str()
-                .unwrap()
-                .contains("plain-text"),
-        );
+        assert!(def.input_schema["properties"]["caption"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("plain-text"),);
     }
 
     #[test]

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ArrowLeft, ChevronDown, FileText, RefreshCw, Search, Terminal, Workflow, Globe } from 'lucide-react'
 import {
-  chatApi,
+  dshPluginSettingsApi,
   type DshPluginEntry,
   type DshPluginSettingsPatch,
   type DshPluginSettingsSnapshot,
-} from '../chat/api'
+} from '../chat/public/dshPluginSettings'
 import { Button, IconButton } from '../components/Button'
 import { Input } from './components'
 import { dshPluginShortName } from './dshPluginNames'
@@ -49,7 +49,7 @@ export function DshPluginsSettings({
     setLoading(true)
     setLoadError(null)
     try {
-      setSnapshot(await chatApi.dshPluginSettingsGet())
+      setSnapshot(await dshPluginSettingsApi.dshPluginSettingsGet())
     } catch (err) {
       setLoadError(errorMessage(err))
       setSnapshot(null)
@@ -79,7 +79,7 @@ export function DshPluginsSettings({
         ) : (
           <p className="kv-row-desc kv-dsh-plugins-copy">{t.externalAgentsDshPluginsIntro}</p>
         )}
-        <Button size="sm" onClick={() => void chatApi.dshOpenSettingsFile()}>
+        <Button size="sm" onClick={() => void dshPluginSettingsApi.dshOpenSettingsFile()}>
           <FileText size={12} />
           {t.externalAgentsDshPluginsOpenFile}
         </Button>
@@ -307,7 +307,7 @@ function useCardSave(
     setSaving(true)
     setError(null)
     try {
-      onSaved(await chatApi.dshPluginSettingsSave(buildPatch()))
+      onSaved(await dshPluginSettingsApi.dshPluginSettingsSave(buildPatch()))
     } catch (err) {
       setError(String(err))
     } finally {
@@ -568,7 +568,7 @@ function InventoryTab({ lang }: { lang: Lang }) {
     setLoading(true)
     setError(null)
     try {
-      setEntries(await chatApi.dshPluginInventory())
+      setEntries(await dshPluginSettingsApi.dshPluginInventory())
     } catch (err) {
       setError(errorMessage(err))
       setEntries(null)

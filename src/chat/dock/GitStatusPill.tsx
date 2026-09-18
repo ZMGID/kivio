@@ -2,7 +2,7 @@
 // （刷新 / 初始化仓库 / 跳转 Git 面板）。数据来自 useGitBadge。
 import { useState } from 'react'
 import { GitBranch, Loader2, PanelRight, Plus, RefreshCw } from 'lucide-react'
-import { i18n, type Lang } from '../../settings/i18n'
+import { i18n, type Lang } from '../../settings/public/i18n'
 import { dockApi } from './api'
 import { partitionStatusEntries } from './gitReviewModel'
 import { useGitBadge } from './useGitBadge'

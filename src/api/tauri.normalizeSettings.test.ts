@@ -5,7 +5,7 @@ import {
   activeKeyIndexAfterRemove,
   type Settings,
 } from './tauri'
-import { defaultChatTools } from '../settings/chatToolsShared'
+import { makeChatToolsFixture } from '../settings/tabs/testFixtures'
 
 /**
  * 最小 Settings：只保证 normalizeSettings 能跑通。
@@ -46,7 +46,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
       userAvatar: '',
     },
     providers: [],
-    chatTools: defaultChatTools(),
+    chatTools: makeChatToolsFixture(),
     retryEnabled: true,
     retryAttempts: 3,
     screenshotTranslation: {
@@ -64,46 +64,27 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
   } as Settings
 }
 
-describe('video analysis mixer settings', () => {
-  it('旧配置缺少视频槽位时默认自动选择，保存的独立选项可恢复', () => {
-    const legacy = baseSettings()
-    delete (legacy.defaultModels as Partial<Settings['defaultModels']>).videoAnalysis
-    expect(normalizeSettings(legacy).defaultModels.videoAnalysis).toEqual({ providerId: '', model: '' })
-    const configured = baseSettings()
-    configured.defaultModels.videoAnalysis = { providerId: 'relay', model: 'custom-video' }
-    expect(normalizeSettings(configured).defaultModels.videoAnalysis).toEqual({ providerId: 'relay', model: 'custom-video' })
-  })
-})
-
 describe('normalizeSettings', () => {
-  it('旧设置缺少 translucentSidebar 时默认关闭', () => {
-    const input = baseSettings()
-    delete (input as Partial<Settings>).translucentSidebar
+  it('后端 canonical 设置原样通过，不在传输层重做业务归一化', () => {
+    const input = baseSettings({
+      themeColor: 'future-accent' as Settings['themeColor'],
+      retryAttempts: 0,
+      screenshotTranslation: {
+        enabled: true,
+        hotkey: 'CommandOrControl+Shift+A',
+        textHotkey: 'CommandOrControl+Shift+T',
+        providerId: '',
+        model: '',
+        rapidOcrTier: 'future-tier' as Settings['screenshotTranslation']['rapidOcrTier'],
+      },
+    })
 
-    expect(normalizeSettings(input).translucentSidebar).toBe(false)
+    expect(normalizeSettings(input)).toBe(input)
+    expect(normalizeSettings(input).themeColor).toBe('future-accent')
+    expect(normalizeSettings(input).screenshotTranslation.rapidOcrTier).toBe('future-tier')
   })
 
-  it('旧设置缺少 launchMinimizedToTray 时默认关闭', () => {
-    const input = baseSettings()
-    delete (input as Partial<Settings>).launchMinimizedToTray
-
-    expect(normalizeSettings(input).launchMinimizedToTray).toBe(false)
-  })
-
-  it('旧设置缺少 keepChatWindowAlive 时默认关闭（关闭即销毁）', () => {
-    const input = baseSettings()
-    delete (input as Partial<Settings>).keepChatWindowAlive
-
-    expect(normalizeSettings(input).keepChatWindowAlive).toBe(false)
-  })
-
-  it('旧设置的回复完成通知默认关闭，并保留显式开启或关闭的选择', () => {
-    expect(normalizeSettings(baseSettings()).chatCompletionNotifications).toBe(false)
-    expect(normalizeSettings(baseSettings({ chatCompletionNotifications: false })).chatCompletionNotifications).toBe(false)
-    expect(normalizeSettings(baseSettings({ chatCompletionNotifications: true })).chatCompletionNotifications).toBe(true)
-  })
-
-  it('保留 chat.externalCliAgents（回归：重建 chat 时丢掉 → 供应商列表变空）', () => {
+  it('完整保留 chat.externalCliAgents 等嵌套字段', () => {
     const providers = [
       {
         id: 'p-1',
@@ -159,7 +140,7 @@ describe('normalizeSettings', () => {
     expect(out.chat?.externalCliAgents?.codex?.providers?.[0]?.id).toBe('c-1')
     expect(out.chat?.defaultAgentRuntime?.kind).toBe('external')
     expect(out.chat?.defaultAgentRuntime?.externalAgentId).toBe('claude')
-    // 其它 chat 字段仍归一
+    // 其它 chat 字段不被重建
     expect(out.chat?.streamEnabled).toBe(false)
     expect(out.chat?.systemPrompt).toBe('hi')
   })

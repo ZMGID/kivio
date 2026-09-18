@@ -1,0 +1,296 @@
+
+/* 透明窗口外壳：填满 Tauri window，但内边留 16px 给卡片阴影"散开"用。
+   不留这层 padding 的话，box-shadow 会被 window 矩形边缘裁掉 → 四个角无光晕。 */
+.window-container {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  background: transparent;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+/* 磨砂玻璃悬浮卡：作为 .window-container 的子元素填满 padding 内区域。
+   半透明白底 + 大模糊背景 + hairline 描边 + 一道柔和近对称阴影。
+   阴影偏置只 2-3px（浮起感而非下坠感），靠 blur 散开整圈光晕。 */
+.window-frosted {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--theme-surface) 98%, white) 0%, color-mix(in srgb, var(--theme-surface-soft) 94%, transparent) 100%);
+  -webkit-backdrop-filter: saturate(160%) blur(28px);
+  backdrop-filter: saturate(160%) blur(28px);
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 0 0 0.5px rgba(15, 23, 42, 0.06),
+    0 2px 8px rgba(15, 23, 42, 0.10),
+    0 8px 18px -12px rgba(15, 23, 42, 0.45);
+}
+
+.dark .window-frosted {
+  background: linear-gradient(180deg, rgba(28, 28, 30, 0.92) 0%, rgba(22, 22, 24, 0.88) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.07),
+    0 2px 10px rgba(0, 0, 0, 0.45),
+    0 8px 20px -12px rgba(0, 0, 0, 0.68);
+}
+
+.lens-floating-surface {
+  box-shadow:
+    0 0 0 0.5px rgba(15, 23, 42, 0.07),
+    0 2px 6px -2px rgba(15, 23, 42, 0.12),
+    0 12px 32px -12px rgba(15, 23, 42, 0.30);
+}
+
+.dark .lens-floating-surface {
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.08),
+    0 4px 16px -8px rgba(0, 0, 0, 0.58),
+    0 20px 52px -22px rgba(0, 0, 0, 0.82);
+}
+
+/* 思考过程「生成中」标签：柔和呼吸亮度。
+   不使用 background-clip:text 或 mask-image：两者在部分机器的 WKWebView/WebView2
+   上会退化成文字后面的矩形色块，暗色模式尤其明显。直接动画 opacity 是跨 WebView
+   最稳定的实现，文字始终由自己的前景色绘制。 */
+.reasoning-shimmer-text {
+  color: rgb(115, 115, 115);
+  animation: chat-motion-text-pulse 2.4s ease-in-out infinite;
+}
+
+.dark .reasoning-shimmer-text {
+  color: rgb(205, 205, 205);
+}
+
+.reasoning-scroll-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(212, 212, 216, 0.85);
+  border-radius: 8px;
+  background: rgba(250, 250, 250, 0.72);
+}
+
+.reasoning-scroll-frame::before,
+.reasoning-scroll-frame::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  height: 2.3rem;
+  pointer-events: none;
+}
+
+.reasoning-scroll-frame::before {
+  top: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(250, 250, 250, 0.98),
+    rgba(250, 250, 250, 0)
+  );
+}
+
+.reasoning-scroll-frame::after {
+  bottom: 0;
+  background: linear-gradient(
+    to top,
+    rgba(250, 250, 250, 0.98),
+    rgba(250, 250, 250, 0)
+  );
+}
+
+.dark .reasoning-scroll-frame {
+  border-color: rgba(82, 82, 91, 0.86);
+  background: rgba(24, 24, 27, 0.62);
+}
+
+.dark .reasoning-scroll-frame::before {
+  background: linear-gradient(
+    to bottom,
+    rgba(24, 24, 27, 0.98),
+    rgba(24, 24, 27, 0)
+  );
+}
+
+.dark .reasoning-scroll-frame::after {
+  background: linear-gradient(
+    to top,
+    rgba(24, 24, 27, 0.98),
+    rgba(24, 24, 27, 0)
+  );
+}
+
+.reasoning-scroll-box {
+  box-sizing: border-box;
+  max-height: 16rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.7rem 0.8rem;
+}
+
+.reasoning-scroll-box.is-streaming {
+  height: 8.75rem;
+  max-height: 8.75rem;
+}
+
+.reasoning-scroll-box.is-expanded {
+  max-height: 16rem;
+}
+
+.reasoning-plain-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: rgb(82, 82, 91);
+}
+
+.dark .reasoning-plain-text {
+  color: rgb(161, 161, 170);
+}
+
+/* 代码块工具条：语言标签用伪元素画，复制图标用伪元素画。
+   伪元素不进 DOM 树 —— 一个大对话里有两百多个代码块，每块省下的
+   「语言 span + lucide svg + svg 内的 rect/path」是实打实的节点数。
+   改这里要同步看 ChatMarkdown.tsx 的 CodeBlock。 */
+.kv-code-toolbar::before {
+  content: attr(data-code-lang);
+  max-width: 7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1;
+  color: rgb(163 163 163);
+}
+
+.dark .kv-code-toolbar::before {
+  color: rgb(115 115 115);
+}
+
+/* 复制图标：两个错开的圆角方块；已复制态换成一个勾。 */
+.kv-copy-glyph {
+  position: relative;
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.kv-copy-glyph::before,
+.kv-copy-glyph::after {
+  content: '';
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 1.6px solid currentColor;
+  border-radius: 2.5px;
+}
+
+.kv-copy-glyph::before {
+  left: 0;
+  top: 0;
+}
+
+.kv-copy-glyph::after {
+  right: 0;
+  bottom: 0;
+  background: var(--bg-input);
+}
+
+.kv-copy-glyph.is-copied::before {
+  left: 1px;
+  top: 2px;
+  width: 12px;
+  height: 6px;
+  border-width: 0 0 1.9px 1.9px;
+  border-radius: 0;
+  transform: rotate(-45deg);
+}
+
+.kv-copy-glyph.is-copied::after {
+  display: none;
+}
+
+/* 自定义滚动条 — 细胶囊式，常显（chat 消息列表 / 模型下拉 / 弹层等共用）。
+   ⚠️ 这里绝不能写标准属性 scrollbar-width / scrollbar-color：新版 WebKit（Safari 18.2+）
+   与 Chromium 121+ 一旦见到它们就整体禁用 ::-webkit-scrollbar 自定义样式，退化成
+   thumb 占满整个 gutter 的原生粗条（~10px）。细胶囊只能靠下方 ::-webkit-* 实现
+   （8px 槽 + 3px 透明边 ≈ 2-3px 可见胶囊，hover 变宽）。
+   需要"滚动时才出现"的容器（如侧栏会话列表）额外挂 .kv-scrollbar-autohide（见文件下方）。 */
+
+.custom-scrollbar::-webkit-scrollbar,
+.chat-model-selector-menu::-webkit-scrollbar,
+.chat-popover-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track,
+.chat-model-selector-menu::-webkit-scrollbar-track,
+.chat-popover-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 使用 background-clip 实现悬浮胶囊效果，hover 时 thumb 变宽 */
+.custom-scrollbar::-webkit-scrollbar-thumb,
+.chat-model-selector-menu::-webkit-scrollbar-thumb,
+.chat-popover-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.15);
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  min-height: 40px;
+}
+
+.custom-scrollbar:hover::-webkit-scrollbar-thumb,
+.chat-model-selector-menu:hover::-webkit-scrollbar-thumb,
+.chat-popover-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.18);
+  border-width: 2.5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.chat-model-selector-menu::-webkit-scrollbar-thumb:hover,
+.chat-popover-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.32);
+  border-width: 2px;
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb,
+.dark .chat-model-selector-menu::-webkit-scrollbar-thumb,
+.dark .chat-popover-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+.dark .custom-scrollbar:hover::-webkit-scrollbar-thumb,
+.dark .chat-model-selector-menu:hover::-webkit-scrollbar-thumb,
+.dark .chat-popover-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.dark .chat-model-selector-menu::-webkit-scrollbar-thumb:hover,
+.dark .chat-popover-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.32);
+}
+
+/* 滚动时才出现的滚动条（同样是上面的细胶囊，只切换透明度）：默认全透明（8px 槽仍占位，
+   出现时无布局抖动），JS 在 scroll 事件期间给容器挂 .is-scrolling（停止后延时摘除）。
+   刻意不用 :hover 驱动 —— hover 出现/消失的时机不可预期，观感不稳定；因此这里连
+   容器 hover 的显示规则也一并压掉，只认 .is-scrolling。规则必须排在上方 hover 规则之后
+   （同特异性靠后者胜）。 */
+.kv-scrollbar-autohide::-webkit-scrollbar-thumb,
+.kv-scrollbar-autohide:hover::-webkit-scrollbar-thumb,
+.kv-scrollbar-autohide::-webkit-scrollbar-thumb:hover,
+.dark .kv-scrollbar-autohide::-webkit-scrollbar-thumb,
+.dark .kv-scrollbar-autohide:hover::-webkit-scrollbar-thumb,
+.dark .kv-scrollbar-autohide::-webkit-scrollbar-thumb:hover {
+  background-color: transparent;
+}
+
+.kv-scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.25);
+}
+
+.dark .kv-scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.25);
+}

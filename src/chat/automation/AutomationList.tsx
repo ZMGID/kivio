@@ -1,7 +1,7 @@
 import { Button, IconButton } from '../../components/Button'
-import { Toggle } from '../../settings/components'
+import { Toggle } from '../../settings/public/controls'
 import { Plus, Trash2, Upload } from 'lucide-react'
-import { useT } from '../../settings/i18n'
+import { useT } from '../../settings/public/i18n'
 import { catalogEntry } from './nodeCatalog'
 import type { AutomationMeta } from './types'
 

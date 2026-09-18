@@ -3,7 +3,7 @@
  */
 import { render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { LangContext } from '../../settings/i18n'
+import { LangContext } from '../../settings/public/i18n'
 import type { AgentRuntimeConfig } from '../types'
 import { PopoutTitlebar } from './PopoutTitlebar'
 

@@ -2,9 +2,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Star } from 'lucide-react'
 import { type ModelProvider } from '../api/tauri'
 import { getSettingsCached, setFavoriteModelsCached, subscribeSettings } from '../api/settingsCache'
-import { useT } from '../settings/i18n'
-import { isProviderEnabled } from '../settings/utils'
+import { useT } from '../settings/public/i18n'
+import { isProviderEnabled } from '../settings/public/providers'
 import { ModelIcon } from './ModelIcon'
+import { createProviderRequestDraft } from '../settings/public/providerDraft'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import { chatTitlebarPillButtonClass } from './platform'
 
@@ -51,6 +52,7 @@ function ModelSelectorBase({
           enabledModels: currentModel ? [currentModel] : ['dev-model'],
           enabled: true,
           apiFormat: 'openai_chat',
+          request: createProviderRequestDraft(),
         },
       ])
     }

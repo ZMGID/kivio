@@ -5,7 +5,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
-import { normalizeThemeColorId } from '../themeColors'
 import {
   subscribeChatProtocol,
   subscribeChatProtocolIssues,
@@ -18,9 +17,8 @@ import type {
   ChatRunEventEnvelope,
   ChatSegmentPayload as GeneratedChatSegmentPayload,
 } from '../generated/chatProtocol'
-import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary } from '../chat/automation/types'
-import type { GoalState } from '../chat/types'
-import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from '../chat/dock/types'
+import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary, GoalState } from '../chat/public/apiContracts'
+import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from '../chat/public/apiContracts'
 
 // ========== 类型定义 ==========
 
@@ -454,25 +452,6 @@ export type ChatClipboardContent =
   | { kind: 'text'; text: string }
   | { kind: 'empty' }
 
-export function defaultNativeTools(): ChatNativeToolsConfig {
-  // Mirror the backend baseline (ChatNativeToolsConfig::default): native tools
-  // are ON by default; safety is the execution-time consent gate. web_search
-  // still only surfaces when a provider key is configured.
-  return {
-    webSearch: true,
-    webFetch: true,
-    skillRuntime: true,
-    readFile: true,
-    writeFile: true,
-    editFile: true,
-    runCommand: true,
-    knowledgeSearch: true,
-    automation: true,
-    workingDirectory: '',
-    workspaceRoots: [],
-  }
-}
-
 export type SkillFileEntry = {
   relativePath: string
   kind: 'skillmd' | 'reference' | 'script' | 'asset' | 'other' | string
@@ -506,7 +485,7 @@ export type ChatConfig = {
   videoAnalysisEnabled?: boolean
   streamEnabled?: boolean
   thinkingEnabled?: boolean
-  maxOutputTokens?: number
+  maxOutputTokens: number
   defaultLanguage?: string
   systemPrompt?: string
   /** 输入框问题优化的自定义系统提示词；空则用内置。 */
@@ -916,24 +895,31 @@ export type ProviderOAuthUsage = { plan: string | null; fetchedAt: number; windo
 export type ProviderOAuthLogin = { loginId: string; userCode: string; verificationUrl: string; interval: number; expiresAt: number }
 export type ProviderOAuthPoll = { status: 'pending' | 'authorized'; interval: number; auth: ProviderOAuthConfig | null }
 
+export type ProviderApiFormat =
+  | 'openai_chat'
+  | 'openai_responses'
+  | 'anthropic_messages'
+  | 'gemini'
+  | 'xai_responses'
+
 export function isOpenCodeFree(provider: ModelProvider): boolean {
-  return !provider.request?.oauth
-    && (!provider.apiFormat || provider.apiFormat === 'openai_chat')
+  return !provider.request.oauth
+    && provider.apiFormat === 'openai_chat'
     && provider.baseUrl.trim().replace(/\/+$/, '') === 'https://opencode.ai/zen/v1'
     && provider.apiKeys.every(key => !key.trim())
 }
 
 export function providerHasCredentials(provider: ModelProvider): boolean {
   if (isOpenCodeFree(provider)) return true
-  return provider.request?.oauth ? Boolean(provider.request.oauth.credentialId) : provider.apiKeys.some(key => key.trim() !== '')
+  return provider.request.oauth ? Boolean(provider.request.oauth.credentialId) : provider.apiKeys.some(key => key.trim() !== '')
 }
 
 export type ProviderRequestConfig = {
   oauth?: ProviderOAuthConfig | null
   /** 附加到该供应商所有请求上的自定义头。同名时覆盖 CLI 身份预设。 */
-  customHeaders?: { key: string; value: string }[]
+  customHeaders: { key: string; value: string }[]
   /** 是否跟随系统代理。默认 true；关掉走直连。 */
-  useSystemProxy?: boolean
+  useSystemProxy: boolean
   /**
    * 遗留 on/off。sanitize/normalize 时迁移进 `promptCacheRetention`，新配置不再写入。
    * @deprecated 使用 promptCacheRetention
@@ -943,11 +929,11 @@ export type ProviderRequestConfig = {
    * Prompt 缓存策略（对齐 pi）：`none` | `short`（默认）| `long`。
    * short = 发默认档字段；long = 叠加长 TTL（Anthropic 1h / OpenAI 24h）；none = 不发。
    */
-  promptCacheRetention?: 'none' | 'short' | 'long' | string
+  promptCacheRetention: 'none' | 'short' | 'long'
   /** '' 关闭 | 'claude_code' | 'codex' | 'grok' */
-  cliIdentity?: string
+  cliIdentity: string
   /** 身份版本号，空则用内置常量 */
-  cliIdentityVersion?: string
+  cliIdentityVersion: string
 }
 
 export type ModelProvider = {
@@ -960,13 +946,13 @@ export type ModelProvider = {
   availableModels: string[]
   enabledModels: string[]
   enabled: boolean
-  apiFormat: string
+  apiFormat: ProviderApiFormat
   // 对请求体做 gzip 压缩再发送。默认 false。仅用于个别前置 WAF 会扫明文请求体、
   // 把 agent 工具/系统提示里的 shell/路径/SQL 文本误判为攻击而返回 403 的供应商。
   compressRequestBody?: boolean
   modelOverrides?: Record<string, ModelInfo>
   /** 「请求配置」：自定义头 / 代理 / prompt 缓存 / CLI 身份 */
-  request?: ProviderRequestConfig
+  request: ProviderRequestConfig
 }
 
 // 提供商连接测试输入（支持使用未保存的配置进行测试）
@@ -1110,7 +1096,7 @@ export type Settings = {
   /** 关闭 AI 客户端（chat 窗口）的全局热键。 */
   closeChatHotkey: string
   theme: 'system' | 'light' | 'dark'
-  themeColor: string
+  themeColor: 'neutral' | 'warm' | 'cool'
   translucentSidebar: boolean
   uiFontScale?: number
   uiFontFamily?: string
@@ -1123,14 +1109,16 @@ export type Settings = {
   /** 关闭聊天窗口时隐藏复用（默认 false = 销毁）。下次打开无需重新加载，占用更多内存。 */
   keepChatWindowAlive?: boolean
   /** 回复完成时发送系统通知，默认关闭；开启后正在查看该对话时不提醒。 */
-  chatCompletionNotifications?: boolean
+  chatCompletionNotifications: boolean
   translatorProviderId: string
   translatorModel: string
   chatProviderId: string
   chatModel: string
   defaultModels: DefaultModelsConfig
-  chat?: ChatConfig
-  chatMemory?: ChatMemoryConfig
+  /** Canonical backend responses always contain chat settings after migration. */
+  chat: ChatConfig
+  /** Canonical backend responses always contain chat memory settings after migration. */
+  chatMemory: ChatMemoryConfig
   translatorPrompt?: string
   providers: ModelProvider[]
   chatTools: ChatToolsConfig
@@ -1179,7 +1167,7 @@ export type Settings = {
     replacePrompt?: string
   }
   /** 独立截图标注（截图 → 箭头/矩形/马赛克 → 复制/保存） */
-  screenshotAnnotate?: {
+  screenshotAnnotate: {
     enabled: boolean
     hotkey: string
   }
@@ -1215,7 +1203,7 @@ export type Settings = {
   /** Obsidian 笔记库本地路径（空表示未配置） */
   obsidianVaultPath?: string
   /** 收藏并置顶的模型键（"providerId:model"）；顺序即置顶顺序。chat 模型选择器用。 */
-  favoriteModels?: string[]
+  favoriteModels: string[]
 }
 
 /** 能力插件（领域 CLI 等）状态 —— 设置 → 插件 */
@@ -1514,31 +1502,6 @@ export type OfflineModelProgress = {
   error?: string | null
 }
 
-function normalizeProvider(provider: ModelProvider): ModelProvider {
-  const apiKeys = Array.isArray(provider.apiKeys) ? provider.apiKeys : []
-  return {
-    ...provider,
-    apiKeys,
-    activeKeyIndex: clampedActiveKeyIndex(apiKeys, provider.activeKeyIndex),
-    availableModels: Array.isArray(provider.availableModels) ? provider.availableModels : [],
-    enabledModels: Array.isArray(provider.enabledModels) ? provider.enabledModels : [],
-    enabled: provider.enabled !== false,
-    compressRequestBody: provider.compressRequestBody === true,
-    apiFormat: normalizeProviderApiFormat(provider.apiFormat),
-    request: {
-      oauth: provider.request?.oauth ?? null,
-      customHeaders: Array.isArray(provider.request?.customHeaders)
-        ? provider.request.customHeaders
-        : [],
-      // 默认跟随系统代理 —— 与加这个开关之前的行为一致。
-      useSystemProxy: provider.request?.useSystemProxy !== false,
-      promptCacheRetention: resolvePromptCacheRetention(provider.request),
-      cliIdentity: provider.request?.cliIdentity ?? '',
-      cliIdentityVersion: provider.request?.cliIdentityVersion ?? '',
-    },
-  }
-}
-
 /** 把点选下标夹到密钥池范围内；空池为 0。 */
 export function clampedActiveKeyIndex(apiKeys: string[], index?: number): number {
   if (apiKeys.length <= 0) return 0
@@ -1552,14 +1515,6 @@ export function activeKeyIndexAfterRemove(current: number, removedIdx: number, r
   if (removedIdx < current) return Math.max(0, current - 1)
   if (removedIdx === current) return Math.min(current, remaining - 1)
   return Math.min(current, remaining - 1)
-}
-
-export function normalizeProviderApiFormat(apiFormat?: string): string {
-  if (apiFormat === 'anthropic' || apiFormat === 'anthropic_messages') return 'anthropic_messages'
-  if (apiFormat === 'openai_responses' || apiFormat === 'responses') return 'openai_responses'
-  if (apiFormat === 'gemini' || apiFormat === 'google' || apiFormat === 'gemini_generate') return 'gemini'
-  if (apiFormat === 'xai' || apiFormat === 'xai_responses' || apiFormat === 'grok') return 'xai_responses'
-  return 'openai_chat'
 }
 
 /**
@@ -1586,16 +1541,15 @@ export function resolveProviderWebSearchMode<T extends 'off' | 'builtin' | 'thir
 
 export function builtinWebSearchSupported(apiFormat?: string, baseUrl?: string, oauthProvider?: string): boolean {
   if (oauthProvider === 'antigravity') return false
-  const kind = normalizeProviderApiFormat(apiFormat)
   if (
-    kind === 'openai_responses' ||
-    kind === 'xai_responses' ||
-    kind === 'gemini' ||
-    kind === 'anthropic_messages'
+    apiFormat === 'openai_responses' ||
+    apiFormat === 'xai_responses' ||
+    apiFormat === 'gemini' ||
+    apiFormat === 'anthropic_messages'
   ) {
     return true
   }
-  return kind === 'openai_chat' && isOfficialDeepSeekApi(baseUrl)
+  return apiFormat === 'openai_chat' && isOfficialDeepSeekApi(baseUrl)
 }
 
 export type PromptCacheRetention = 'none' | 'short' | 'long'
@@ -1606,292 +1560,20 @@ export type PromptCacheRetention = 'none' | 'short' | 'long'
  * 2) 否则用遗留 bool：false→none，true→short
  * 3) 否则 short
  */
-export function resolvePromptCacheRetention(
-  request?: ProviderRequestConfig | null,
-): PromptCacheRetention {
-  const raw = (request?.promptCacheRetention ?? '').trim()
-  if (raw === 'none' || raw === 'short' || raw === 'long') return raw
-  if (request?.promptCaching === false) return 'none'
-  if (request?.promptCaching === true) return 'short'
-  return 'short'
-}
-
 /** 该协议是否有可发送的客户端缓存字段（Gemini / xAI 无）。 */
-export function promptCachingSupported(apiFormat?: string): boolean {
-  const kind = normalizeProviderApiFormat(apiFormat)
-  return kind !== 'gemini' && kind !== 'xai_responses'
-}
-
-/** 当前策略是否会发客户端缓存字段。 */
-export function promptCachingEnabled(request?: ProviderRequestConfig | null): boolean {
-  return resolvePromptCacheRetention(request) !== 'none'
-}
-
-const CHAT_TOOL_MIN_ROUNDS = 1
-const CHAT_TOOL_MAX_ROUNDS = 100
-
-// 工具轮次默认不限（null）；缺失/非法输入一律归一到不限，与后端 default 对齐。
-function normalizeMaxToolRounds(value: unknown): number | null {
-  if (value === null || value === undefined) return null
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return null
-  return Math.min(CHAT_TOOL_MAX_ROUNDS, Math.max(CHAT_TOOL_MIN_ROUNDS, Math.round(parsed)))
+export function promptCachingSupported(apiFormat: ProviderApiFormat): boolean {
+  return apiFormat !== 'gemini' && apiFormat !== 'xai_responses'
 }
 
 /**
- * 归一化 chatTools。**白名单重建**：这里逐字段列举，漏掉一个字段 = 该字段每次
- * 保存/读取都被静默丢弃（hooks 就这样丢过一次）。新增 ChatToolsConfig 字段时
- * 必须同步加到这里，`normalize_chat_tools_keeps_every_field` 会守门。
+ * Tauri settings transport decoder.
+ *
+ * Rust owns defaults, migrations and canonicalization for every settings read/write path.
+ * The IPC payload already has the current camelCase wire shape, so decoding must preserve it
+ * verbatim instead of maintaining a second set of persistence rules in the webview.
  */
-export function normalizeChatTools(config?: Partial<ChatToolsConfig> | null): ChatToolsConfig {
-  const current = config ?? {}
-  return {
-    enabled: current.enabled ?? false,
-    servers: Array.isArray(current.servers) ? current.servers : [],
-    hooks: Array.isArray(current.hooks) ? current.hooks : [],
-    skillScanPaths: Array.isArray(current.skillScanPaths) ? current.skillScanPaths : [],
-    skillAutoMatch: current.skillAutoMatch ?? true,
-    skillFallbackMode: current.skillFallbackMode || 'progressive',
-    disabledSkillIds: Array.isArray(current.disabledSkillIds) ? current.disabledSkillIds : [],
-    maxToolRounds: normalizeMaxToolRounds(current.maxToolRounds),
-    toolTimeoutMs: current.toolTimeoutMs ?? 60_000,
-    mcpIdleTimeoutMs: current.mcpIdleTimeoutMs ?? 600_000,
-    approvalPolicy: current.approvalPolicy || 'readonly_auto_sensitive_confirm',
-    subAgentConcurrency: Math.min(64, Math.max(1, Math.round(current.subAgentConcurrency ?? 12))),
-    subAgentProviderId: current.subAgentProviderId ?? '',
-    subAgentModel: current.subAgentModel ?? '',
-    requestDebugEnabled: current.requestDebugEnabled ?? false,
-    nativeTools: {
-      ...defaultNativeTools(),
-      ...current.nativeTools,
-      workingDirectory: typeof current.nativeTools?.workingDirectory === 'string'
-        ? current.nativeTools.workingDirectory
-        : (Array.isArray(current.nativeTools?.workspaceRoots) ? current.nativeTools.workspaceRoots[0] ?? '' : ''),
-      workspaceRoots: Array.isArray(current.nativeTools?.workspaceRoots)
-        ? current.nativeTools.workspaceRoots
-        : [],
-    },
-  }
-}
-
-function normalizeChatMemory(config?: Partial<ChatMemoryConfig> | null): ChatMemoryConfig {
-  const current = config ?? {}
-  return {
-    enabled: current.enabled ?? false,
-    toolWriteConfirm: current.toolWriteConfirm ?? false,
-  }
-}
-
-function normalizeDefaultModelSelection(selection?: Partial<DefaultModelSelection> | null): DefaultModelSelection {
-  return {
-    providerId: selection?.providerId ?? '',
-    model: selection?.model ?? '',
-  }
-}
-
-function normalizeDefaultModels(
-  config?: Partial<DefaultModelsConfig> | null,
-  legacyChat?: Partial<DefaultModelSelection> | null,
-): DefaultModelsConfig {
-  return {
-    chat: normalizeDefaultModelSelection(config?.chat ?? legacyChat),
-    vision: normalizeDefaultModelSelection(config?.vision),
-    videoAnalysis: normalizeDefaultModelSelection(config?.videoAnalysis),
-    titleSummary: normalizeDefaultModelSelection(config?.titleSummary),
-    compression: normalizeDefaultModelSelection(config?.compression),
-    imageGeneration: normalizeDefaultModelSelection(config?.imageGeneration),
-    promptOptimize: normalizeDefaultModelSelection(config?.promptOptimize),
-    advisor: normalizeDefaultModelSelection(config?.advisor),
-  }
-}
-
-function isDefaultModelConfigured(selection: DefaultModelSelection): boolean {
-  return selection.providerId.trim() !== ''
-}
-
-function providerHasUsableConfig(provider: ModelProvider): boolean {
-  return provider.enabled !== false
-    && providerHasCredentials(provider)
-    && provider.enabledModels.length > 0
-}
-
-function settingsHasUsableProviderConfig(settings: Partial<Settings>): boolean {
-  return Array.isArray(settings.providers)
-    && settings.providers.some(providerHasUsableConfig)
-}
-
-function normalizeOnboardingStatus(current: Partial<Settings>): 'pending' | 'completed' | 'skipped' {
-  const raw = current.onboardingStatus?.trim()
-  if (raw === 'completed' || raw === 'skipped' || raw === 'pending') return raw
-  return settingsHasUsableProviderConfig(current) ? 'completed' : 'pending'
-}
-
-function prepareSettingsForSave(settings: Settings): Settings {
-  const current = settings as Partial<Settings>
-  const defaultModels = normalizeDefaultModels(current.defaultModels, {
-    providerId: current.chatProviderId ?? '',
-    model: current.chatModel ?? '',
-  })
-
-  return {
-    ...settings,
-    themeColor: normalizeThemeColorId(current.themeColor),
-    defaultModels,
-    chatProviderId: defaultModels.chat.providerId,
-    chatModel: defaultModels.chat.model,
-  }
-}
-
-/** 归一化设置（导出供单测钉死 externalCliAgents 等字段不被重建丢掉）。 */
 export function normalizeSettings(settings: Settings): Settings {
-  const current = settings as Partial<Settings>
-  const defaultModels = normalizeDefaultModels(current.defaultModels, {
-    providerId: current.chatProviderId ?? '',
-    model: current.chatModel ?? '',
-  })
-  const effectiveChatModel = isDefaultModelConfigured(defaultModels.chat)
-    ? defaultModels.chat
-    : normalizeDefaultModelSelection(
-      (current.chatProviderId?.trim()
-        ? { providerId: current.chatProviderId, model: current.chatModel ?? '' }
-        : current.lens?.providerId?.trim()
-          ? { providerId: current.lens.providerId, model: current.lens.model ?? '' }
-          : { providerId: current.translatorProviderId ?? '', model: current.translatorModel ?? '' }),
-    )
-  return {
-    ...settings,
-    hotkey: current.hotkey ?? 'CommandOrControl+Alt+T',
-    chatHotkey: current.chatHotkey ?? 'CommandOrControl+Shift+K',
-    closeChatHotkey: current.closeChatHotkey ?? 'CommandOrControl+Shift+W',
-    theme: current.theme ?? 'system',
-    themeColor: normalizeThemeColorId(current.themeColor),
-    translucentSidebar: current.translucentSidebar ?? false,
-    uiFontScale: current.uiFontScale ?? 1,
-    uiFontFamily: current.uiFontFamily ?? '',
-    uiFontMono: current.uiFontMono ?? '',
-    targetLang: current.targetLang ?? 'auto',
-    autoPaste: current.autoPaste ?? true,
-    launchAtStartup: current.launchAtStartup ?? false,
-    launchMinimizedToTray: current.launchMinimizedToTray ?? false,
-    keepChatWindowAlive: current.keepChatWindowAlive ?? false,
-    chatCompletionNotifications: current.chatCompletionNotifications ?? false,
-    translatorProviderId: current.translatorProviderId ?? '',
-    translatorModel: current.translatorModel ?? '',
-    chatProviderId: effectiveChatModel.providerId,
-    chatModel: effectiveChatModel.model,
-    defaultModels,
-    chat: {
-      videoAnalysisEnabled: current.chat?.videoAnalysisEnabled ?? true,
-      streamEnabled: current.chat?.streamEnabled ?? current.lens?.streamEnabled ?? true,
-      thinkingEnabled: current.chat?.thinkingEnabled ?? current.lens?.thinkingEnabled ?? true,
-      maxOutputTokens: current.chat?.maxOutputTokens ?? 16384,
-      defaultLanguage: current.chat?.defaultLanguage ?? '',
-      systemPrompt: current.chat?.systemPrompt ?? '',
-      promptOptimizePrompt: current.chat?.promptOptimizePrompt ?? '',
-      userDisplayName: current.chat?.userDisplayName ?? '',
-      userAvatar: current.chat?.userAvatar ?? '',
-      // 本地 CLI 覆盖（供应商列表 / 路径 / 停用）与默认运行时：之前重建 chat 时丢掉了，
-      // 自动保存回写后「所有供应商」会一直空。
-      defaultAgentRuntime: current.chat?.defaultAgentRuntime,
-      externalCliAgents: current.chat?.externalCliAgents,
-      chatMode: {
-        systemPrompt: current.chat?.chatMode?.systemPrompt ?? '',
-        webSearch: current.chat?.chatMode?.webSearch ?? true,
-        webFetch: current.chat?.chatMode?.webFetch ?? true,
-        knowledgeSearch: current.chat?.chatMode?.knowledgeSearch ?? true,
-        memoryTools: current.chat?.chatMode?.memoryTools ?? true,
-        mcpReadOnly: current.chat?.chatMode?.mcpReadOnly ?? true,
-      },
-    },
-    chatMemory: normalizeChatMemory(current.chatMemory),
-    providers: Array.isArray(current.providers) ? current.providers.map(normalizeProvider) : [],
-    chatTools: normalizeChatTools(current.chatTools),
-    retryEnabled: current.retryEnabled ?? true,
-    retryAttempts: current.retryAttempts ?? 3,
-    screenshotTranslation: {
-      enabled: current.screenshotTranslation?.enabled ?? true,
-      hotkey: current.screenshotTranslation?.hotkey ?? 'CommandOrControl+Shift+A',
-      textHotkey: current.screenshotTranslation?.textHotkey ?? 'CommandOrControl+Shift+T',
-      replaceHotkey: current.screenshotTranslation?.replaceHotkey ?? 'CommandOrControl+Shift+R',
-      replaceEnabled: current.screenshotTranslation?.replaceEnabled ?? true,
-      providerId: current.screenshotTranslation?.providerId ?? '',
-      model: current.screenshotTranslation?.model ?? '',
-      directTranslate: current.screenshotTranslation?.directTranslate ?? false,
-      thinkingEnabled: current.screenshotTranslation?.thinkingEnabled ?? false,
-      streamEnabled: current.screenshotTranslation?.streamEnabled ?? true,
-      keepFullscreenAfterCapture: current.screenshotTranslation?.keepFullscreenAfterCapture ?? true,
-      cardWidth: current.screenshotTranslation?.cardWidth ?? 480,
-      useSystemOcr: current.screenshotTranslation?.useSystemOcr ?? false,
-      ocrMode: current.screenshotTranslation?.ocrMode ?? 'cloud_vision',
-      rapidOcrTier: current.screenshotTranslation?.rapidOcrTier === 'high' ? 'high' : 'standard',
-      prompt: current.screenshotTranslation?.prompt ?? '',
-      textPrompt: current.screenshotTranslation?.textPrompt ?? '',
-      replacePrompt: current.screenshotTranslation?.replacePrompt ?? '',
-    },
-    screenshotAnnotate: {
-      enabled: current.screenshotAnnotate?.enabled ?? true,
-      hotkey: current.screenshotAnnotate?.hotkey ?? 'CommandOrControl+Shift+S',
-    },
-    lens: {
-      enabled: current.lens?.enabled ?? true,
-      hotkey: current.lens?.hotkey ?? 'CommandOrControl+Shift+G',
-      providerId: current.lens?.providerId ?? '',
-      model: current.lens?.model ?? '',
-      defaultLanguage: current.lens?.defaultLanguage ?? '',
-      streamEnabled: current.lens?.streamEnabled ?? true,
-      thinkingEnabled: current.lens?.thinkingEnabled ?? true,
-      systemPrompt: current.lens?.systemPrompt ?? '',
-      questionPrompt: current.lens?.questionPrompt ?? '',
-      sendToChat: current.lens?.sendToChat ?? true,
-      messageOrder: current.lens?.messageOrder === 'desc' ? 'desc' : 'asc',
-      showCaptureHint: current.lens?.showCaptureHint ?? true,
-      webSearch: {
-        enabled: current.lens?.webSearch?.enabled ?? false,
-        provider: current.lens?.webSearch?.provider ?? 'tavily',
-        tavilyApiKey: current.lens?.webSearch?.tavilyApiKey ?? '',
-        tavilyBaseUrl: current.lens?.webSearch?.tavilyBaseUrl ?? 'https://api.tavily.com',
-        exaApiKey: current.lens?.webSearch?.exaApiKey ?? '',
-        exaBaseUrl: current.lens?.webSearch?.exaBaseUrl ?? 'https://api.exa.ai',
-        exaMcpUrl: current.lens?.webSearch?.exaMcpUrl ?? 'https://mcp.exa.ai/mcp',
-        ollamaApiKey: current.lens?.webSearch?.ollamaApiKey ?? '',
-        ollamaBaseUrl: current.lens?.webSearch?.ollamaBaseUrl ?? 'https://ollama.com',
-        grokApiKey: current.lens?.webSearch?.grokApiKey ?? '',
-        grokModel: current.lens?.webSearch?.grokModel ?? 'grok-4-1-fast-non-reasoning',
-        grokBaseUrl: current.lens?.webSearch?.grokBaseUrl ?? 'https://api.x.ai/v1',
-        grokSystemPrompt: current.lens?.webSearch?.grokSystemPrompt
-          ?? "You are a helpful search assistant. Search the web to find accurate and up-to-date information for the user's query. Provide a comprehensive answer with citations.",
-        deepseekApiKey: current.lens?.webSearch?.deepseekApiKey ?? '',
-        deepseekModel: current.lens?.webSearch?.deepseekModel ?? 'deepseek-v4-flash',
-        deepseekBaseUrl: current.lens?.webSearch?.deepseekBaseUrl ?? 'https://api.deepseek.com',
-        deepseekSystemPrompt: current.lens?.webSearch?.deepseekSystemPrompt
-          ?? "You are a helpful search assistant. Search the web to find accurate and up-to-date information for the user's query. Provide a comprehensive answer with citations.",
-        braveApiKey: current.lens?.webSearch?.braveApiKey ?? '',
-        braveBaseUrl: current.lens?.webSearch?.braveBaseUrl ?? 'https://api.search.brave.com',
-        serperApiKey: current.lens?.webSearch?.serperApiKey ?? '',
-        serperBaseUrl: current.lens?.webSearch?.serperBaseUrl ?? 'https://google.serper.dev',
-        bochaApiKey: current.lens?.webSearch?.bochaApiKey ?? '',
-        bochaBaseUrl: current.lens?.webSearch?.bochaBaseUrl ?? 'https://api.bochaai.com',
-        zhipuApiKey: current.lens?.webSearch?.zhipuApiKey ?? '',
-        zhipuBaseUrl: current.lens?.webSearch?.zhipuBaseUrl ?? 'https://open.bigmodel.cn/api/paas/v4',
-        tinyfishApiKey: current.lens?.webSearch?.tinyfishApiKey ?? '',
-        tinyfishBaseUrl: current.lens?.webSearch?.tinyfishBaseUrl ?? 'https://api.search.tinyfish.ai',
-        tinyfishMcpUrl: current.lens?.webSearch?.tinyfishMcpUrl ?? 'https://agent.tinyfish.ai/mcp',
-        tinyfishMcpAuth: current.lens?.webSearch?.tinyfishMcpAuth ?? null,
-        searxngBaseUrl: current.lens?.webSearch?.searxngBaseUrl ?? '',
-        kimiApiKey: current.lens?.webSearch?.kimiApiKey ?? '',
-        kimiBaseUrl: current.lens?.webSearch?.kimiBaseUrl ?? 'https://api.kimi.com/coding/v1/search',
-        maxResults: current.lens?.webSearch?.maxResults ?? 5,
-        searchDepth: current.lens?.webSearch?.searchDepth ?? 'basic',
-      },
-    },
-    settingsLanguage: current.settingsLanguage ?? 'zh',
-    onboardingStatus: normalizeOnboardingStatus(current),
-    autoCheckUpdate: current.autoCheckUpdate ?? true,
-    imageArchiveEnabled: current.imageArchiveEnabled ?? false,
-    imageArchivePath: current.imageArchivePath ?? '',
-    obsidianVaultPath: current.obsidianVaultPath ?? '',
-    favoriteModels: current.favoriteModels ?? [],
-  }
+  return settings
 }
 
 // 默认提示词模板
@@ -1999,13 +1681,13 @@ export const api = {
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   listSystemFonts: () => invoke<string[]>('list_system_fonts').catch(() => [] as string[]),
   saveSettings: async (settings: Settings) =>
-    normalizeSettings(await invoke<Settings>('save_settings', { settings: prepareSettingsForSave(settings) })),
-  /** 轻量持久化收藏模型（不触发热键/托盘重注册，区别于 saveSettings 的全量事务保存）。 */
+    normalizeSettings(await invoke<Settings>('save_settings', { settings })),
+  /** 轻量持久化收藏模型；后端返回最终 canonical Settings 供缓存原样采用。 */
   setFavoriteModels: (models: string[]) =>
-    invoke<void>('set_favorite_models', { models }),
+    invoke<Settings>('set_favorite_models', { models }),
   /** 轻量持久化快速翻译卡宽度（拖拽缩放记忆；高度始终自动）。 */
   setTranslateCardSize: (width: number) =>
-    invoke<void>('set_translate_card_size', { width }),
+    invoke<Settings>('set_translate_card_size', { width }),
   exportSettings: (path: string) => invoke<void>('export_settings', { path }),
   importSettings: async (path: string) =>
     normalizeSettings(await invoke<Settings>('import_settings', { path })),
@@ -2113,10 +1795,10 @@ export const api = {
   automationRunsList: (id: string) => invoke<AutomationRunSummary[]>('automation_runs_list', { id }),
   automationActiveRun: (id: string) => invoke<AutomationRun | null>('automation_active_run', { id }),
   automationRunGet: (id: string, runId: string) => invoke<AutomationRun>('automation_run_get', { id, runId }),
-  automationTestNode: (id: string, nodeId: string, input: import('../chat/automation/types').NodeOutput) =>
+  automationTestNode: (id: string, nodeId: string, input: import('../chat/public/apiContracts').NodeOutput) =>
     invoke<AutomationRunStarted>('automation_test_node', { id, nodeId, input }),
   automationValidate: (automation: Automation) =>
-    invoke<import('../chat/automation/types').ValidationIssue[]>('automation_validate', { automation }),
+    invoke<import('../chat/public/apiContracts').ValidationIssue[]>('automation_validate', { automation }),
   onAutomationRun: (listener: (payload: AutomationRunEvent) => void) =>
     on<AutomationRunEvent>('automation-run', listener),
   onAutomationChanged: (listener: (payload: AutomationChangedEvent) => void) =>

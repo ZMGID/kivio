@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { formatTokensK } from '../utils/tokens'
-import { i18n, type Lang } from '../settings/i18n'
+import { i18n, type Lang } from '../settings/public/i18n'
 import type { ChatMessage } from './types'
 
 interface SessionUsageStripProps {

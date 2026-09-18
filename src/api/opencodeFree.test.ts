@@ -11,5 +11,5 @@ it('enables anonymous OpenCode Free only on the official endpoint and chat proto
   }
   expect(isOpenCodeFree({ ...provider, apiKeys: ['paid-key'] })).toBe(false)
   expect(isOpenCodeFree({ ...provider, apiFormat: 'anthropic_messages' })).toBe(false)
-  expect(providerHasCredentials({ ...provider, request: { oauth: { provider: 'kimi' } } })).toBe(false)
+  expect(providerHasCredentials({ ...provider, request: { ...provider.request, oauth: { provider: 'kimi' } } })).toBe(false)
 })

@@ -4,7 +4,7 @@ import { ChevronDown, Minus, Plus, RefreshCw, Search, X } from 'lucide-react'
 import type { ModelProvider } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { resolveModelInfo, providerModelDatabaseId } from '../data/modelMatching'
-import { ModelIcon } from '../chat/ModelIcon'
+import { ModelIcon } from '../chat/public/modelIcons'
 import { Input } from './components'
 
 type Lang = 'zh' | 'en'

@@ -5,7 +5,7 @@ import { Button } from '../components/Button'
 import type { Lang } from './i18n'
 
 export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider; lang: Lang }) {
-  const auth = provider.request?.oauth
+  const auth = provider.request.oauth
   const supported = auth?.provider === 'kimi' || auth?.provider === 'codex' || auth?.provider === 'antigravity'
   const [data, setData] = useState<ProviderOAuthUsage | null>(null)
   const [error, setError] = useState(false)
@@ -27,7 +27,7 @@ export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider;
       if (!cancelled) setBusy(false)
     })
     return () => { cancelled = true }
-  }, [provider.id, auth?.provider, auth?.credentialId, provider.baseUrl, provider.apiFormat, provider.request?.useSystemProxy, supported, refresh])
+  }, [provider.id, auth?.provider, auth?.credentialId, provider.baseUrl, provider.apiFormat, provider.request.useSystemProxy, supported, refresh])
 
   if (!supported || !auth?.credentialId) return null
   const label = (value: string) => zh ? ({ Weekly: '每周额度', Session: '会话额度' }[value] ?? value.replace('Code review · ', '代码审查 · ').replace(/^(\d+)h$/, '$1 小时额度')) : value

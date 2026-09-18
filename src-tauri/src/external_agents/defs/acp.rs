@@ -9,8 +9,11 @@
 //! reconnect instead of the old per-turn `-p` + `stream-json` spawn.
 
 use super::super::types::{
-    ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
-    SlashStrategy, StreamFormat,
+    AgentImportPolicy, AgentInstallSpec, AgentRunPolicy, ContextWindowStrategy,
+    CurrentConfigStrategy, ImportDiscoveryStrategy, LatestVersionStrategy, ModelProbeStrategy,
+    NativeProviderStrategy, PostInstallStrategy, PromptInputFormat, ProviderProfileStrategy,
+    RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, SlashStrategy, StreamFormat,
+    UpdateStrategy, UsageFallbackStrategy,
 };
 
 const fn acp_def(
@@ -22,6 +25,15 @@ const fn acp_def(
     fallback_models: &'static [(&'static str, &'static str)],
     launch_args: &'static [&'static str],
     env: &'static [(&'static str, &'static str)],
+    model_probe: ModelProbeStrategy,
+    current_config: CurrentConfigStrategy,
+    provider_profile: ProviderProfileStrategy,
+    context_window: ContextWindowStrategy,
+    usage_fallback: UsageFallbackStrategy,
+    error_policy: super::super::types::AgentErrorPolicy,
+    compact_prompt: Option<&'static str>,
+    import: AgentImportPolicy,
+    install: AgentInstallSpec,
     build_args: fn(&RuntimeContext, &RuntimeBuildOptions, Option<&str>) -> Vec<String>,
 ) -> RuntimeAgentDef {
     RuntimeAgentDef {
@@ -33,11 +45,24 @@ const fn acp_def(
         auth_probe_args,
         fallback_models,
         reasoning_options: &[],
+        sandbox_options: &[],
         list_models_args: None,
         list_models_timeout_secs: Some(15),
         models_from_stderr: false,
-        model_probe: Some(ModelProbeStrategy::Acp),
+        model_probe: Some(model_probe),
         model_probe_args: Some(launch_args),
+        current_config,
+        provider_profile,
+        native_providers: NativeProviderStrategy::None,
+        context_window,
+        usage_fallback,
+        error_policy,
+        launch: super::super::types::AgentLaunchPolicy::DEFAULT,
+        instructions_via_launch_flag: false,
+        compact_prompt,
+        install,
+        import,
+        run: AgentRunPolicy::STANDARD,
         slash_strategy: SlashStrategy::Acp,
         env,
         max_prompt_arg_bytes: None,
@@ -73,6 +98,12 @@ fn build_hermes_args(
 ) -> Vec<String> {
     vec!["acp".to_string(), "--accept-hooks".to_string()]
 }
+
+const ACP_IMPORT_POLICY: AgentImportPolicy = AgentImportPolicy {
+    discovery: ImportDiscoveryStrategy::Acp,
+    history_source: super::super::types::HistorySourceStrategy::None,
+    history_title: super::super::types::HistoryTitleStrategy::None,
+};
 
 const CURSOR_MODELS: &[(&str, &str)] = &[
     ("default", "Default"),
@@ -119,6 +150,87 @@ const HERMES_MODELS: &[(&str, &str)] = &[
 
 const GEMINI_ENV: &[(&str, &str)] = &[("GEMINI_CLI_TRUST_WORKSPACE", "true")];
 
+const CURSOR_INSTALL: AgentInstallSpec = AgentInstallSpec {
+    npm_package: None,
+    npm_install_args: &[],
+    pypi_package: None,
+    script_unix: Some("curl https://cursor.com/install -fsS | bash"),
+    script_windows: Some("irm 'https://cursor.com/install?win32=true' | iex"),
+    update: UpdateStrategy::Command(&["update"]),
+    latest_version: LatestVersionStrategy::Registry,
+    docs: "https://cursor.com/docs/cli",
+    config_dir: Some(".cursor"),
+    config_dir_env: None,
+    requires_pnpm: false,
+    post_install: PostInstallStrategy::None,
+};
+
+const GEMINI_INSTALL: AgentInstallSpec = AgentInstallSpec {
+    npm_package: Some("@google/gemini-cli"),
+    npm_install_args: &[],
+    pypi_package: None,
+    script_unix: None,
+    script_windows: None,
+    update: UpdateStrategy::ManagedPackage {
+        package: "@google/gemini-cli",
+        brew_formula: "gemini-cli",
+    },
+    latest_version: LatestVersionStrategy::Registry,
+    docs: "https://www.geminicli.com/docs/get-started/installation",
+    config_dir: Some(".gemini"),
+    config_dir_env: None,
+    requires_pnpm: false,
+    post_install: PostInstallStrategy::None,
+};
+
+const OPENCODE_INSTALL: AgentInstallSpec = AgentInstallSpec {
+    npm_package: Some("opencode-ai"),
+    npm_install_args: &[],
+    pypi_package: None,
+    script_unix: Some("curl -fsSL https://opencode.ai/install | bash"),
+    script_windows: None,
+    update: UpdateStrategy::Command(&["upgrade"]),
+    latest_version: LatestVersionStrategy::Registry,
+    docs: "https://opencode.ai/docs/",
+    config_dir: Some(".config/opencode"),
+    config_dir_env: None,
+    requires_pnpm: false,
+    post_install: PostInstallStrategy::None,
+};
+
+const HERMES_INSTALL: AgentInstallSpec = AgentInstallSpec {
+    npm_package: None,
+    npm_install_args: &[],
+    pypi_package: None,
+    script_unix: Some("curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"),
+    script_windows: Some("iex (irm https://hermes-agent.nousresearch.com/install.ps1)"),
+    update: UpdateStrategy::Command(&["update"]),
+    latest_version: LatestVersionStrategy::HermesRelease,
+    docs: "https://hermes-agent.nousresearch.com/docs/getting-started/installation",
+    config_dir: Some(".hermes"),
+    config_dir_env: None,
+    requires_pnpm: false,
+    post_install: PostInstallStrategy::None,
+};
+
+const KIMI_INSTALL: AgentInstallSpec = AgentInstallSpec {
+    npm_package: Some("@moonshot-ai/kimi-code"),
+    npm_install_args: &[],
+    pypi_package: None,
+    script_unix: Some("curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"),
+    script_windows: Some("irm https://code.kimi.com/kimi-code/install.ps1 | iex"),
+    update: UpdateStrategy::KimiManaged {
+        package: "@moonshot-ai/kimi-code",
+        brew_formula: "kimi-code",
+    },
+    latest_version: LatestVersionStrategy::Registry,
+    docs: "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
+    config_dir: Some(".kimi-code"),
+    config_dir_env: None,
+    requires_pnpm: false,
+    post_install: PostInstallStrategy::None,
+};
+
 // Kimi Code models used only when the ACP session/new probe reports none (offline / not logged in).
 // The real catalog now comes from the ACP `availableModels` / `configOptions` probe like the other
 // ACP agents — this table is the fallback the picker labels as "默认列表".
@@ -140,6 +252,15 @@ pub const CURSOR_AGENT_DEF: RuntimeAgentDef = acp_def(
     CURSOR_MODELS,
     &["acp"],
     &[],
+    ModelProbeStrategy::Acp,
+    CurrentConfigStrategy::None,
+    ProviderProfileStrategy::Environment,
+    ContextWindowStrategy::Generic,
+    UsageFallbackStrategy::None,
+    super::super::types::AgentErrorPolicy::login("cursor-agent login"),
+    None,
+    ACP_IMPORT_POLICY,
+    CURSOR_INSTALL,
     build_acp_args,
 );
 
@@ -152,6 +273,15 @@ pub const GEMINI_AGENT_DEF: RuntimeAgentDef = acp_def(
     GEMINI_MODELS,
     &["--acp"],
     GEMINI_ENV,
+    ModelProbeStrategy::Acp,
+    CurrentConfigStrategy::None,
+    ProviderProfileStrategy::Environment,
+    ContextWindowStrategy::Generic,
+    UsageFallbackStrategy::None,
+    super::super::types::AgentErrorPolicy::login("gemini"),
+    None,
+    AgentImportPolicy::NONE,
+    GEMINI_INSTALL,
     build_gemini_args,
 );
 
@@ -164,6 +294,15 @@ pub const OPENCODE_AGENT_DEF: RuntimeAgentDef = acp_def(
     OPENCODE_MODELS,
     &["acp"],
     &[],
+    ModelProbeStrategy::OpenCodeThenAcp,
+    CurrentConfigStrategy::None,
+    ProviderProfileStrategy::OpenCode,
+    ContextWindowStrategy::Generic,
+    UsageFallbackStrategy::None,
+    super::super::types::AgentErrorPolicy::login("opencode auth login"),
+    Some("/compact"),
+    ACP_IMPORT_POLICY,
+    OPENCODE_INSTALL,
     build_acp_args,
 );
 
@@ -176,6 +315,15 @@ pub const HERMES_AGENT_DEF: RuntimeAgentDef = acp_def(
     HERMES_MODELS,
     &["acp", "--accept-hooks"],
     &[],
+    ModelProbeStrategy::Acp,
+    CurrentConfigStrategy::None,
+    ProviderProfileStrategy::Environment,
+    ContextWindowStrategy::Generic,
+    UsageFallbackStrategy::None,
+    super::super::types::AgentErrorPolicy::login("hermes"),
+    None,
+    AgentImportPolicy::NONE,
+    HERMES_INSTALL,
     build_hermes_args,
 );
 
@@ -191,6 +339,15 @@ pub const KIMI_AGENT_DEF: RuntimeAgentDef = acp_def(
     KIMI_MODELS,
     &["acp"],
     &[],
+    ModelProbeStrategy::Acp,
+    CurrentConfigStrategy::Kimi,
+    ProviderProfileStrategy::Kimi,
+    ContextWindowStrategy::Kimi,
+    UsageFallbackStrategy::KimiWireLog,
+    super::super::types::AgentErrorPolicy::login("kimi"),
+    None,
+    ACP_IMPORT_POLICY,
+    KIMI_INSTALL,
     build_acp_args,
 );
 
@@ -222,7 +379,10 @@ mod tests {
             let args = (def.build_args)(&ctx, &opts, None);
             let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
             assert_eq!(args, expected, "launch args for {}", def.id);
-            assert!(matches!(def.model_probe, Some(ModelProbeStrategy::Acp)));
+            assert!(matches!(
+                def.model_probe,
+                Some(ModelProbeStrategy::Acp | ModelProbeStrategy::OpenCodeThenAcp)
+            ));
             assert!(matches!(def.stream_format, StreamFormat::AcpJsonRpc));
         }
     }

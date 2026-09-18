@@ -2,7 +2,7 @@ import { useContext, useState } from 'react'
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react'
 import { Plus, X } from 'lucide-react'
 import { IconButton } from '../../../components/Button'
-import { useT } from '../../../settings/i18n'
+import { useT } from '../../../settings/public/i18n'
 import { CanvasChromeContext } from './chrome'
 
 /** n8n 式连线：hover / 选中时在中点浮出「插入节点」和「删除连线」。槽边只允许删。 */

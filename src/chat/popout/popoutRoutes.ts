@@ -1,19 +1,16 @@
-export function isChatPopoutPath(path: string): boolean {
-  return path === 'chat/popout' || path.startsWith('chat/popout/')
-}
+import { hashPath } from '../browserRoute'
+import { decodeChatRouteId, encodeChatRouteId } from '../routeCodec'
+
+export { isChatPopoutPath } from '../routeCodec'
 
 export function popoutConversationHash(conversationId: string): string {
-  return `#chat/popout/${encodeURIComponent(conversationId)}`
+  return `#${encodeChatRouteId('chat/popout/', conversationId)}`
 }
 
 export function getPopoutConversationIdFromPath(path: string): string | null {
-  if (!path.startsWith('chat/popout/')) return null
-  const rest = path.slice('chat/popout/'.length)
-  if (!rest) return null
-  return decodeURIComponent(rest)
+  return decodeChatRouteId('chat/popout/', path)
 }
 
 export function getPopoutConversationId(): string | null {
-  const path = window.location.hash.replace('#', '').split('?')[0]
-  return getPopoutConversationIdFromPath(path)
+  return getPopoutConversationIdFromPath(hashPath())
 }

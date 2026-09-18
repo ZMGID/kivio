@@ -2,7 +2,7 @@
 //!
 //! 取代旧的"每次调用都 spawn + 握手"一次性连接：每个 server 维护一个
 //! 长连接 `McpSession`，stdio 子进程常驻、握手只做一次，按 server_id 挂在
-//! `AppState.mcp_sessions` 连接池里。生命周期相关的 reaper / warmup / 退出杀进程
+//! `AppState` 的 MCP 领域句柄里。生命周期相关的 reaper / warmup / 退出杀进程
 //! 由 main.rs 调度。
 //!
 //! wire 协议本身不在这里 —— 那是 `super::conn`（官方 rmcp SDK）的活。本文件只管
@@ -10,7 +10,7 @@
 //! HTTP 共用同一个 `RunningService`，不再分叉。
 //!
 //! 关键约束（见 prd 风险段）：
-//! - 绝不跨握手 / RPC await 持 `mcp_sessions` 外层池锁；命中即克隆 per-session
+//! - 绝不跨握手 / RPC await 持会话池外层锁；命中即克隆 per-session
 //!   `Arc<Mutex<McpSession>>` 后立即释放外层锁。
 //! - 会话锁只保护生命周期状态迁移；等 RPC 响应前必须先克隆 `Arc<McpService>`
 //!   并释放会话锁，否则一次丢响应就会 head-of-line 阻塞后续每个请求。
@@ -34,12 +34,12 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::settings::ChatMcpServer;
-use crate::state::AppState;
+use crate::settings::{ChatMcpServer, Settings};
 
 use super::conn::{self, McpService};
 use super::result;
 use super::types::{McpTool, McpToolCallResult};
+use super::McpRuntimeState;
 
 const MCP_DISCOVERY_RETRY_BASE: Duration = Duration::from_secs(2);
 const MCP_DISCOVERY_RETRY_MAX: Duration = Duration::from_secs(60);
@@ -137,7 +137,7 @@ impl Drop for McpSession {
 
 impl McpSession {
     /// 新建占位会话（Connecting，无 transport），插入连接池占位以阻止并发重复握手。
-    fn placeholder(fingerprint: String) -> Self {
+    pub(super) fn placeholder(fingerprint: String) -> Self {
         Self {
             config_fingerprint: fingerprint,
             state: McpServerState::Connecting,
@@ -208,25 +208,70 @@ fn spawn_stderr_tail(
     })
 }
 
-impl AppState {
+/// MCP-owned application service. Its dependencies are supplied by the composition root, so MCP
+/// lifecycle code cannot reach unrelated `AppState` domains.
+pub(crate) struct McpManager<'a> {
+    runtime: &'a McpRuntimeState,
+    http: &'a reqwest::Client,
+    config: McpManagerConfig,
+    settings_persistence: &'a dyn McpSettingsPersistence,
+}
+
+#[derive(Clone)]
+pub(crate) struct McpManagerConfig {
+    idle_timeout: Duration,
+    tool_timeout: Duration,
+    servers: Vec<ChatMcpServer>,
+    tinyfish_url: String,
+    tinyfish_auth: Option<crate::settings::ConnectorAuth>,
+}
+
+impl McpManagerConfig {
+    pub(crate) fn from_settings(settings: &Settings) -> Self {
+        Self {
+            idle_timeout: Duration::from_millis(settings.chat_tools.mcp_idle_timeout_ms),
+            tool_timeout: Duration::from_millis(settings.chat_tools.tool_timeout_ms.max(1_000)),
+            servers: settings.chat_tools.servers.clone(),
+            tinyfish_url: settings.lens.web_search.tinyfish_mcp_url.clone(),
+            tinyfish_auth: settings.lens.web_search.tinyfish_mcp_auth.clone(),
+        }
+    }
+}
+
+pub(crate) trait McpSettingsPersistence: Send + Sync {
+    fn store_refreshed_server(&self, sink: McpEventSink<'_>, server: &ChatMcpServer);
+}
+
+impl<'a> McpManager<'a> {
+    pub(crate) fn new(
+        runtime: &'a McpRuntimeState,
+        http: &'a reqwest::Client,
+        config: McpManagerConfig,
+        settings_persistence: &'a dyn McpSettingsPersistence,
+    ) -> Self {
+        Self {
+            runtime,
+            http,
+            config,
+            settings_persistence,
+        }
+    }
+
     /// 当前生效的空闲超时（来自设置 `mcp_idle_timeout_ms`）。
     pub fn mcp_idle_timeout(&self) -> Duration {
-        let ms = self.settings_read().chat_tools.mcp_idle_timeout_ms;
-        Duration::from_millis(ms)
+        self.config.idle_timeout
     }
 
     /// 取该 server 的工具超时（ms）。
     fn mcp_tool_timeout(&self) -> Duration {
-        let ms = self.settings_read().chat_tools.tool_timeout_ms.max(1_000);
-        Duration::from_millis(ms)
+        self.config.tool_timeout
     }
 
     /// 调用方手里的 server 可能是旧快照。用 settings 里同 id / 同 URL 的 OAuth 盖一层。
     fn overlay_oauth_from_settings(&self, server: &ChatMcpServer) -> ChatMcpServer {
-        let settings = self.settings_read();
         let mut out = server.clone();
         let mut best = out.auth.clone();
-        for existing in &settings.chat_tools.servers {
+        for existing in &self.config.servers {
             let same = existing.id == out.id
                 || (mcp_url_matches(&existing.url, &out.url)
                     && existing
@@ -237,11 +282,8 @@ impl AppState {
                 best = newer_oauth_auth(best, existing.auth.as_ref());
             }
         }
-        if mcp_url_matches(
-            settings.lens.web_search.tinyfish_mcp_url.trim(),
-            out.url.trim(),
-        ) {
-            best = newer_oauth_auth(best, settings.lens.web_search.tinyfish_mcp_auth.as_ref());
+        if mcp_url_matches(self.config.tinyfish_url.trim(), out.url.trim()) {
+            best = newer_oauth_auth(best, self.config.tinyfish_auth.as_ref());
         }
         if let Some(auth) = best {
             crate::connectors::oauth::apply_auth_header(&mut out, &auth.access_token);
@@ -286,17 +328,16 @@ impl AppState {
             Fresh(Arc<Mutex<McpSession>>),
         }
 
-        let resolved = {
-            let mut pool = self.mcp_sessions.lock().await;
-            match pool.get(&server.id) {
-                Some(existing) => Resolved::Existing(existing.clone()),
-                None => {
-                    let session =
-                        Arc::new(Mutex::new(McpSession::placeholder(fingerprint.clone())));
-                    pool.insert(server.id.clone(), session.clone());
-                    Resolved::Fresh(session)
-                }
-            }
+        let lookup = self
+            .runtime
+            .get_or_insert_session(&server.id, || {
+                Arc::new(Mutex::new(McpSession::placeholder(fingerprint.clone())))
+            })
+            .await;
+        let resolved = if lookup.inserted {
+            Resolved::Fresh(lookup.session)
+        } else {
+            Resolved::Existing(lookup.session)
         };
 
         match resolved {
@@ -378,7 +419,7 @@ impl AppState {
         let client_id = auth.client_id.clone();
 
         match crate::connectors::oauth::refresh_access_token(
-            &self.http,
+            self.http,
             &token_endpoint,
             &refresh_token,
             client_id.as_deref(),
@@ -393,7 +434,8 @@ impl AppState {
                 crate::connectors::oauth::apply_refreshed_token(&mut new_auth, &token, now);
                 crate::connectors::oauth::apply_auth_header(&mut updated, &token.access_token);
                 updated.auth = Some(new_auth);
-                self.store_refreshed_server(sink, &updated);
+                self.settings_persistence
+                    .store_refreshed_server(sink, &updated);
                 Some(updated)
             }
             Err(err) => {
@@ -403,23 +445,6 @@ impl AppState {
                 );
                 None
             }
-        }
-    }
-
-    /// 把刷新后的 auth 写回内存 settings；有 AppHandle 时再落盘。
-    fn store_refreshed_server(&self, sink: McpEventSink<'_>, server: &ChatMcpServer) {
-        let snapshot = {
-            let mut guard = self.settings_write();
-            if !apply_refreshed_auth_to_settings(&mut guard, server) {
-                return;
-            }
-            guard.clone()
-        };
-        let Some(app) = sink else {
-            return;
-        };
-        if let Err(err) = crate::settings::persist_settings(app, &snapshot) {
-            eprintln!("Failed to persist refreshed OAuth token: {err}");
         }
     }
 
@@ -500,7 +525,7 @@ impl AppState {
         let old = session.take_transport();
         drop(old);
 
-        let established = conn::connect(server, &self.http).await?;
+        let established = conn::connect(server, self.http).await?;
         session.child_pid = established.child_pid;
         if let Some(stderr) = established.stderr {
             // 尾巴跨重连复用，不清就会把**上一次**连接的 stderr 当成这次的原因贴出来。
@@ -698,7 +723,7 @@ impl AppState {
     /// wait for an in-progress handshake. A disk snapshot cannot prove absence
     /// of a tool after a server upgrade, so only a current live schema is complete.
     pub async fn mcp_display_tools(&self, server: &ChatMcpServer) -> (Vec<McpTool>, bool) {
-        let session = self.mcp_sessions.lock().await.get(&server.id).cloned();
+        let session = self.runtime.session(&server.id).await;
         if let Some(session) = session {
             if let Ok(guard) = session.try_lock() {
                 if guard.config_fingerprint == config_fingerprint(server)
@@ -723,12 +748,27 @@ impl AppState {
         );
     }
 
+    fn get_mcp_tool_snapshot(
+        &self,
+        server_id: &str,
+        config_fingerprint: &str,
+    ) -> Option<Vec<McpTool>> {
+        self.runtime.tool_snapshot(server_id, config_fingerprint)
+    }
+
+    fn set_mcp_tool_snapshot(
+        &self,
+        server_id: String,
+        config_fingerprint: String,
+        tools: Vec<McpTool>,
+    ) {
+        self.runtime
+            .set_tool_snapshot(server_id, config_fingerprint, tools);
+    }
+
     /// 无法降级进列表，只能在系统提示词里声明「已配置但连接失败」。
     pub async fn mcp_unreachable_server_ids(&self) -> Vec<String> {
-        let candidates: Vec<(String, Arc<Mutex<McpSession>>)> = {
-            let pool = self.mcp_sessions.lock().await;
-            pool.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        };
+        let candidates = self.runtime.session_entries().await;
         let mut out = Vec::new();
         for (id, session) in candidates {
             let guard = session.lock().await;
@@ -745,10 +785,7 @@ impl AppState {
 
     /// 读取某个 server 的状态快照（给状态命令）。无会话 ⇒ Disconnected。
     pub async fn mcp_server_state(&self, server_id: &str) -> McpServerStatusSnapshot {
-        let session = {
-            let pool = self.mcp_sessions.lock().await;
-            pool.get(server_id).cloned()
-        };
+        let session = self.runtime.session(server_id).await;
         match session {
             Some(session) => {
                 let guard = session.lock().await;
@@ -770,10 +807,7 @@ impl AppState {
 
     /// 主动丢弃某个 server 的会话（重连按钮用），下次调用透明重连。
     pub async fn mcp_reload_server(&self, sink: McpEventSink<'_>, server_id: &str) {
-        let removed = {
-            let mut pool = self.mcp_sessions.lock().await;
-            pool.remove(server_id)
-        };
+        let removed = self.runtime.remove_session(server_id).await;
         if let Some(session) = removed {
             shutdown_session(&session).await;
         }
@@ -794,10 +828,7 @@ impl AppState {
         let mut evicted = Vec::new();
         // 先并发拿每个会话的 last_used 需要锁会话；为避免锁内 await，这里改为：
         // 收集所有 (id, Arc)，释放池锁后逐个判断。
-        let candidates: Vec<(String, Arc<Mutex<McpSession>>)> = {
-            let pool = self.mcp_sessions.lock().await;
-            pool.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        };
+        let candidates = self.runtime.session_entries().await;
         let mut expired_ids = Vec::new();
         for (id, session) in &candidates {
             let guard = session.lock().await;
@@ -815,14 +846,7 @@ impl AppState {
         if expired_ids.is_empty() {
             return evicted;
         }
-        {
-            let mut pool = self.mcp_sessions.lock().await;
-            for id in &expired_ids {
-                if let Some(session) = pool.remove(id) {
-                    evicted.push((id.clone(), session));
-                }
-            }
-        }
+        evicted.extend(self.runtime.remove_sessions(&expired_ids).await);
         for (_, session) in &evicted {
             shutdown_session(session).await;
         }
@@ -833,10 +857,7 @@ impl AppState {
     /// 成功续 last_used；对端没有 ping 则记住不再打；其余失败只摘掉连接，
     /// 下次工具调用再握手（定时器里重连会每分钟打一轮 initialize）。
     pub async fn mcp_keepalive_http(&self, sink: McpEventSink<'_>) {
-        let candidates: Vec<(String, Arc<Mutex<McpSession>>)> = {
-            let pool = self.mcp_sessions.lock().await;
-            pool.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        };
+        let candidates = self.runtime.session_entries().await;
         for (id, session) in candidates {
             let (service, skip_ping) = {
                 let guard = session.lock().await;
@@ -878,10 +899,7 @@ impl AppState {
     /// 并发关，不逐个串行等 —— 每条最多等 `TRANSPORT_CLOSE_TIMEOUT`，N 个装死的
     /// server 串起来能把退出拖到 5N 秒。
     pub async fn mcp_disconnect_all(&self) {
-        let drained: Vec<(String, Arc<Mutex<McpSession>>)> = {
-            let mut pool = self.mcp_sessions.lock().await;
-            pool.drain().collect()
-        };
+        let drained = self.runtime.drain_sessions().await;
         futures::future::join_all(
             drained
                 .iter()
@@ -892,17 +910,14 @@ impl AppState {
 
     /// 断开并移除单个 server 的持久会话（插件关闭 / 卸载时用）。
     pub async fn mcp_disconnect_server(&self, server_id: &str) {
-        let session = {
-            let mut pool = self.mcp_sessions.lock().await;
-            pool.remove(server_id)
-        };
+        let session = self.runtime.remove_session(server_id).await;
         if let Some(session) = session {
             shutdown_session(&session).await;
         }
     }
 }
 
-impl AppState {
+impl McpManager<'_> {
     /// 退出兜底：按 pid 杀掉所有 stdio MCP 子进程**及其进程树**，返回杀掉的条数。
     ///
     /// 只在 `mcp_disconnect_all` 超时后用（某个会话锁拿不到，优雅关停这条路走不通）。
@@ -912,9 +927,8 @@ impl AppState {
     /// 杀树而不只杀直接子进程：MCP server 自己也可能拉起子进程（`npx` → node），
     /// `kill_on_drop` 够不到孙子。
     pub fn kill_mcp_children_now(&self) -> usize {
-        let sessions: Vec<Arc<Mutex<McpSession>>> = match self.mcp_sessions.try_lock() {
-            Ok(pool) => pool.values().cloned().collect(),
-            Err(_) => return 0,
+        let Some(sessions) = self.runtime.try_session_values() else {
+            return 0;
         };
         let mut killed = 0;
         for session in sessions {
@@ -1111,10 +1125,8 @@ mod tests {
         session.revision_source = Some(revisions.clone());
         let session = Arc::new(Mutex::new(session));
         state
-            .mcp_sessions
-            .lock()
-            .await
-            .insert(server.id.clone(), session.clone());
+            .mcp_test_insert_session(&server.id, session.clone())
+            .await;
         let (_, pending) = state.mcp_display_tools(&server).await;
         assert!(
             !pending,
@@ -1478,7 +1490,7 @@ mod tests {
             vec!["echo"]
         );
         assert!(
-            state.mcp_sessions.lock().await.is_empty(),
+            state.mcp_test_sessions_empty().await,
             "一次性连接不得进连接池"
         );
     }
@@ -1501,7 +1513,7 @@ mod tests {
         .expect("one-shot call should work");
         let parsed = result::parse_tool_result(serde_json::to_value(&raw).expect("serialize"));
         assert_eq!(parsed.content, "echo: ok");
-        assert!(state.mcp_sessions.lock().await.is_empty());
+        assert!(state.mcp_test_sessions_empty().await);
     }
 
     #[tokio::test]
@@ -1519,13 +1531,10 @@ mod tests {
             evicted.is_empty(),
             "live HTTP MCP sessions must not idle-reap (UI would flash Disconnected)"
         );
-        {
-            let pool = state.mcp_sessions.lock().await;
-            assert!(
-                pool.contains_key(&server.id),
-                "HTTP session should stay pooled"
-            );
-        }
+        assert!(
+            state.mcp_test_has_session(&server.id).await,
+            "HTTP session should stay pooled"
+        );
         state.mcp_disconnect_all().await;
     }
 
@@ -1539,18 +1548,13 @@ mod tests {
             .await
             .expect("call ok");
         let handshake_before = {
-            let pool = state.mcp_sessions.lock().await;
-            let session = pool.get(&server.id).expect("pooled").clone();
-            drop(pool);
+            let session = state.mcp_test_session(&server.id).await.expect("pooled");
             let count = session.lock().await.handshake_count;
             count
         };
         state.mcp_keepalive_http(None).await;
         {
-            let session = {
-                let pool = state.mcp_sessions.lock().await;
-                pool.get(&server.id).expect("pooled").clone()
-            };
+            let session = state.mcp_test_session(&server.id).await.expect("pooled");
             let guard = session.lock().await;
             assert_eq!(
                 guard.handshake_count, handshake_before,
@@ -1847,9 +1851,10 @@ while True:
             }
 
             let handshake_count = {
-                let pool = state.mcp_sessions.lock().await;
-                let session = pool.get(&server.id).expect("session present").clone();
-                drop(pool);
+                let session = state
+                    .mcp_test_session(&server.id)
+                    .await
+                    .expect("session present");
                 let guard = session.lock().await;
                 guard.handshake_count
             };
@@ -1866,7 +1871,7 @@ while True:
             let script = write_fake_server();
             let state = test_app_state();
             // 注入最小工具超时（1s，受 .max(1000) 约束）；server 延迟 2.5s 远超之。
-            state.settings_write().chat_tools.tool_timeout_ms = 1_000;
+            state.update_settings_for_test(|settings| settings.chat_tools.tool_timeout_ms = 1_000);
 
             let mut marker = std::env::temp_dir();
             marker.push(format!(
@@ -1894,9 +1899,10 @@ while True:
 
             // 握手仍为 1（未重连），子进程仍存活。
             let (handshake_count, pid) = {
-                let pool = state.mcp_sessions.lock().await;
-                let session = pool.get(&server.id).expect("session present").clone();
-                drop(pool);
+                let session = state
+                    .mcp_test_session(&server.id)
+                    .await
+                    .expect("session present");
                 let guard = session.lock().await;
                 // 注意不能用 `service.is_closed()` 判活：rmcp 的服务循环退出时并不 cancel
                 // token，它对池里的连接永远返回 false（见 `conn::connection_is_gone`）。
@@ -1949,10 +1955,11 @@ while True:
             r2.unwrap().expect("connect two ok");
 
             let (entries, handshake_count) = {
-                let pool = state.mcp_sessions.lock().await;
-                let entries = pool.len();
-                let session = pool.get(&server.id).expect("session present").clone();
-                drop(pool);
+                let entries = state.mcp_test_session_count().await;
+                let session = state
+                    .mcp_test_session(&server.id)
+                    .await
+                    .expect("session present");
                 let guard = session.lock().await;
                 (entries, guard.handshake_count)
             };
@@ -1992,9 +1999,10 @@ while True:
             assert_eq!(second.content, "echo: b");
 
             let handshake_count = {
-                let pool = state.mcp_sessions.lock().await;
-                let session = pool.get(&server.id).expect("session present").clone();
-                drop(pool);
+                let session = state
+                    .mcp_test_session(&server.id)
+                    .await
+                    .expect("session present");
                 let guard = session.lock().await;
                 guard.handshake_count
             };
@@ -2012,7 +2020,7 @@ while True:
             // A later request on the same stdio session must still reach the server and complete.
             let script = write_fake_server();
             let state = std::sync::Arc::new(test_app_state());
-            state.settings_write().chat_tools.tool_timeout_ms = 1_000;
+            state.update_settings_for_test(|settings| settings.chat_tools.tool_timeout_ms = 1_000);
             let server = python_server(&script);
 
             state
@@ -2073,19 +2081,16 @@ while True:
                 .mcp_call_tool(None, &server, "echo", serde_json::json!({ "text": "x" }))
                 .await
                 .expect("call ok");
-            {
-                let pool = state.mcp_sessions.lock().await;
-                assert!(pool.contains_key(&server.id));
-            }
+            assert!(state.mcp_test_has_session(&server.id).await);
 
             // 注入极小空闲超时 → 立即过期回收。
             tokio::time::sleep(Duration::from_millis(20)).await;
             let evicted = state.mcp_reap_idle(Duration::from_millis(1)).await;
             assert_eq!(evicted.len(), 1);
-            {
-                let pool = state.mcp_sessions.lock().await;
-                assert!(!pool.contains_key(&server.id), "session should be reaped");
-            }
+            assert!(
+                !state.mcp_test_has_session(&server.id).await,
+                "session should be reaped"
+            );
 
             // 回收后下次调用透明重连。
             let again = state
@@ -2098,9 +2103,10 @@ while True:
             // （上面已断言 !contains_key），下次调用新建一个全新会话并握手一次 ⇒
             // 新会话 handshake_count == 1。这证明重连走了全新握手而非复用旧连接。
             let handshake_count = {
-                let pool = state.mcp_sessions.lock().await;
-                let session = pool.get(&server.id).expect("session present").clone();
-                drop(pool);
+                let session = state
+                    .mcp_test_session(&server.id)
+                    .await
+                    .expect("session present");
                 let guard = session.lock().await;
                 guard.handshake_count
             };
@@ -2125,9 +2131,7 @@ while True:
                 .expect("call ok");
             // 记录子进程 pid。
             let pid = {
-                let pool = state.mcp_sessions.lock().await;
-                let session = pool.get(&server.id).unwrap().clone();
-                drop(pool);
+                let session = state.mcp_test_session(&server.id).await.unwrap();
                 let guard = session.lock().await;
                 assert!(guard.transport.is_some(), "expected a live stdio transport");
                 guard.child_pid
@@ -2135,10 +2139,10 @@ while True:
             assert!(pid.is_some());
 
             state.mcp_disconnect_all().await;
-            {
-                let pool = state.mcp_sessions.lock().await;
-                assert!(pool.is_empty(), "pool drained on disconnect_all");
-            }
+            assert!(
+                state.mcp_test_sessions_empty().await,
+                "pool drained on disconnect_all"
+            );
             // 给 kill 一点时间生效后确认进程不再存活。
             tokio::time::sleep(Duration::from_millis(200)).await;
             if let Some(pid) = pid {
@@ -2158,9 +2162,7 @@ while True:
                 .await
                 .expect("call ok");
             let first_fp = {
-                let pool = state.mcp_sessions.lock().await;
-                let session = pool.get(&server.id).unwrap().clone();
-                drop(pool);
+                let session = state.mcp_test_session(&server.id).await.unwrap();
                 let guard = session.lock().await;
                 guard.config_fingerprint.clone()
             };
@@ -2172,9 +2174,7 @@ while True:
                 .await
                 .expect("call ok after config change");
             let second_fp = {
-                let pool = state.mcp_sessions.lock().await;
-                let session = pool.get(&server.id).unwrap().clone();
-                drop(pool);
+                let session = state.mcp_test_session(&server.id).await.unwrap();
                 let guard = session.lock().await;
                 guard.config_fingerprint.clone()
             };
@@ -2410,7 +2410,7 @@ while True:
         async fn lost_response_does_not_block_later_request() {
             let script = write_fake_server();
             let state = std::sync::Arc::new(test_app_state());
-            state.settings_write().chat_tools.tool_timeout_ms = 1_000;
+            state.update_settings_for_test(|settings| settings.chat_tools.tool_timeout_ms = 1_000);
             let mut marker = std::env::temp_dir();
             marker.push(format!("kivio-fake-mcp-hol-{}.txt", uuid::Uuid::new_v4()));
             let mut server = python_server(&script);
@@ -2555,7 +2555,7 @@ while True:
 
             let evicted = state.mcp_reap_idle(Duration::ZERO).await;
             assert_eq!(evicted.len(), 1, "idle reap should remove the live session");
-            assert!(state.mcp_sessions.lock().await.is_empty());
+            assert!(state.mcp_test_sessions_empty().await);
             assert!(state
                 .mcp_cached_tools(&server)
                 .await
@@ -2563,8 +2563,10 @@ while True:
                 .iter()
                 .any(|tool| tool.name == "echo"));
 
-            let restarted =
-                AppState::new_headless(crate::settings::Settings::default(), usage_dir.clone());
+            let restarted = crate::state::AppState::new_headless(
+                crate::settings::Settings::default(),
+                usage_dir.clone(),
+            );
             assert!(restarted
                 .mcp_cached_tools(&server)
                 .await
@@ -2632,12 +2634,10 @@ while True:
                 .mcp_list_tools(None, &server)
                 .await
                 .expect_err("first discovery connect must fail");
-            let session = {
-                let pool = state.mcp_sessions.lock().await;
-                pool.get(&server.id)
-                    .cloned()
-                    .expect("error session retained")
-            };
+            let session = state
+                .mcp_test_session(&server.id)
+                .await
+                .expect("error session retained");
             assert_eq!(session.lock().await.consecutive_connect_failures, 1);
 
             let second = state
@@ -2698,7 +2698,7 @@ while True:
         async fn reused_stdio_session_honors_increased_tool_timeout() {
             let script = write_fake_server();
             let state = test_app_state();
-            state.settings_write().chat_tools.tool_timeout_ms = 1_000;
+            state.update_settings_for_test(|settings| settings.chat_tools.tool_timeout_ms = 1_000);
 
             let mut server = python_server(&script);
             server
@@ -2714,7 +2714,7 @@ while True:
                 "expected timeout error, got: {err}"
             );
 
-            state.settings_write().chat_tools.tool_timeout_ms = 5_000;
+            state.update_settings_for_test(|settings| settings.chat_tools.tool_timeout_ms = 5_000);
             let result = state
                 .mcp_call_tool(None, &server, "echo", serde_json::json!({ "text": "slow" }))
                 .await

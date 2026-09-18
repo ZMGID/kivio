@@ -747,37 +747,37 @@ async fn set_enabled(
         ));
     }
     let prefix = format!("plugin-package-{id}-");
-    // Snapshot + persist while holding the settings lock: unrelated user changes are preserved.
+    // Persist package metadata first, then publish settings through the unified settings commit.
+    // On settings failure the metadata write is rolled back to keep the two stores aligned.
     let old_package = resolved.package.clone();
     resolved.package.enabled = enabled;
-    let disconnect;
-    {
-        let mut settings = state.settings_write();
-        disconnect = settings
+    write_json(&package_dir(&id)?.join("record.json"), &resolved.package)?;
+    let disconnect = std::cell::RefCell::new(Vec::new());
+    let settings_result = crate::settings::update_settings(&app, &state, |settings| {
+        *disconnect.borrow_mut() = settings
             .chat_tools
             .servers
             .iter()
             .filter(|s| s.id.starts_with(&prefix))
             .map(|s| s.id.clone())
             .collect::<Vec<_>>();
-        let mut next = settings.clone();
-        next.chat_tools
+        settings
+            .chat_tools
             .servers
             .retain(|s| !s.id.starts_with(&prefix));
         if enabled {
-            next.chat_tools.enabled = true;
-            next.chat_tools.native_tools.skill_runtime = true;
-            next.chat_tools.servers.extend(resolved.servers);
+            settings.chat_tools.enabled = true;
+            settings.chat_tools.native_tools.skill_runtime = true;
+            settings.chat_tools.servers.extend(resolved.servers.clone());
         }
-        write_json(&package_dir(&id)?.join("record.json"), &resolved.package)?;
-        if let Err(e) = crate::settings::persist_settings(&app, &next) {
-            let _ = write_json(&package_dir(&id)?.join("record.json"), &old_package);
-            return Err(e);
-        }
-        *settings = next;
+        Ok(())
+    });
+    if let Err(error) = settings_result {
+        let _ = write_json(&package_dir(&id)?.join("record.json"), &old_package);
+        return Err(error);
     }
     // IDs are deterministic; disconnect both enabled and disabled snapshots.
-    for server in disconnect {
+    for server in disconnect.into_inner() {
         state.mcp_disconnect_server(&server).await;
     }
     Ok(resolved.package)

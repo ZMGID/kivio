@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { api, isTauriRuntime } from '../../api/tauri'
-import { useT } from '../../settings/i18n'
-import { getRouteAutomationId, setHash } from '../chatRoutes'
+import { useT } from '../../settings/public/i18n'
+import { automationHash, getRouteAutomationId, setHash } from '../chatRoutes'
 import { automationApi } from './api'
 import { AutomationEditor } from './AutomationEditor'
 import { AutomationList } from './AutomationList'
@@ -108,7 +108,7 @@ export function AutomationCenter() {
       setRemoteHint('')
       setCanvasEpoch(0)
       setEditing(automation)
-      setHash(`#chat/automations/${encodeURIComponent(id)}`)
+      setHash(automationHash(id))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -172,7 +172,7 @@ export function AutomationCenter() {
       setRemoteHint('')
       setCanvasEpoch(0)
       setEditing(saved)
-      setHash(`#chat/automations/${encodeURIComponent(saved.id)}`)
+      setHash(automationHash(saved.id))
       void loadList()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -192,7 +192,7 @@ export function AutomationCenter() {
       setRemoteHint('')
       setCanvasEpoch(0)
       setEditing(imported)
-      setHash(`#chat/automations/${encodeURIComponent(imported.id)}`)
+      setHash(automationHash(imported.id))
       void loadList()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

@@ -33,7 +33,7 @@ export function TranslateTab({
         <SettingRow label={t.targetLang}>
           <Select
             className="w-40"
-            value={settings.targetLang || 'auto'}
+            value={settings.targetLang}
             onChange={(v) => onUpdateSettings({ targetLang: v })}
             options={[
               { value: 'auto', label: t.langAuto },

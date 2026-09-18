@@ -147,7 +147,7 @@ async fn write_rpc_result(
 }
 
 async fn write_rpc_error(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut (impl AsyncWrite + Unpin),
     id: &Value,
     code: i64,
     message: &str,
@@ -182,9 +182,15 @@ fn agent_supports_additional_directories(initialize_result: &Value) -> bool {
 fn acp_initialize_params(terminal: bool) -> Value {
     // Live chat sessions must advertise `terminal: true` and implement `terminal/*`.
     // Probe/import processes never handle those methods, so they keep it false.
+    let mut client_capabilities = json!({ "terminal": terminal });
+    if terminal {
+        // Grok 1.0.17+ can forward MCP form elicitation over ACP. Probes do not
+        // own an interaction host, so they must not advertise the capability.
+        client_capabilities["elicitation"] = json!({ "form": {} });
+    }
     json!({
         "protocolVersion": ACP_PROTOCOL_VERSION,
-        "clientCapabilities": { "terminal": terminal },
+        "clientCapabilities": client_capabilities,
         "clientInfo": {
             "name": "kivio",
             "title": "Kivio",
@@ -1833,7 +1839,10 @@ impl AcpSession {
                     }
                     continue;
                 }
-                if method.starts_with("cursor/") || method == "session/request_permission" {
+                if method.starts_with("cursor/")
+                    || method == "session/request_permission"
+                    || method == "elicitation/create"
+                {
                     handle_cursor_extension(
                         &mut self.stdin,
                         &value,
@@ -1880,8 +1889,8 @@ impl AcpSession {
 /// Read ACP JSON-RPC lines until the response for `target_id`, auto-answering permission
 /// and `terminal/*` requests and skipping notifications.
 async fn acp_read_until_id(
-    reader: &mut Lines<BufReader<ChildStdout>>,
-    stdin: &mut ChildStdin,
+    reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
+    stdin: &mut (impl AsyncWrite + Unpin),
     terminals: &mut AcpTerminalHost,
     target_id: u64,
     overall: Duration,
@@ -1926,8 +1935,8 @@ enum AcpNext {
 }
 
 async fn acp_next_message(
-    reader: &mut Lines<BufReader<ChildStdout>>,
-    stdin: &mut ChildStdin,
+    reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
+    stdin: &mut (impl AsyncWrite + Unpin),
     terminals: &mut AcpTerminalHost,
     slice: Duration,
     host_permissions: bool,
@@ -1946,10 +1955,14 @@ async fn acp_next_message(
         Ok(v) => v,
         Err(_) => return Ok(AcpNext::Idle),
     };
-    if host_permissions
-        && value.get("method").and_then(Value::as_str) == Some("session/request_permission")
-    {
-        return Ok(AcpNext::Value(value));
+    if host_permissions {
+        let method = value.get("method").and_then(Value::as_str);
+        if matches!(
+            method,
+            Some("session/request_permission" | "elicitation/create")
+        ) {
+            return Ok(AcpNext::Value(value));
+        }
     }
     if handle_agent_to_client_request(&value, stdin, terminals).await? {
         return Ok(AcpNext::Idle);
@@ -1958,7 +1971,7 @@ async fn acp_next_message(
 }
 
 async fn flush_terminal_side_effects(
-    stdin: &mut ChildStdin,
+    stdin: &mut (impl AsyncWrite + Unpin),
     terminals: &mut AcpTerminalHost,
 ) -> Result<(), String> {
     while let Ok((id, exit)) = terminals.exit_rx().try_recv() {
@@ -1995,10 +2008,27 @@ fn cursor_extension_is_blocking(method: &str) -> bool {
     method == "cursor/ask_question"
         || method == "cursor/create_plan"
         || method == "session/request_permission"
+        || method == "elicitation/create"
 }
 
 fn cursor_cancelled_result() -> Value {
     json!({ "outcome": { "outcome": "cancelled" } })
+}
+
+fn host_request_declined_result(method: &str) -> Value {
+    if method == "elicitation/create" {
+        json!({ "action": "decline" })
+    } else {
+        cursor_cancelled_result()
+    }
+}
+
+fn host_request_cancelled_result(method: &str) -> Value {
+    if method == "elicitation/create" {
+        json!({ "action": "cancel" })
+    } else {
+        cursor_cancelled_result()
+    }
 }
 
 /// 未知的带 `id` 请求：回 cancelled 结果而不是 `-32601`。
@@ -2112,6 +2142,17 @@ fn cursor_extension_events(method: &str, params: &Value) -> Vec<UnifiedAgentEven
 }
 
 fn cursor_decision_result(method: &str, decision: &ApprovalDecision) -> Value {
+    if method == "elicitation/create" {
+        return if decision.approved {
+            decision
+                .updated_input
+                .clone()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| host_request_declined_result(method))
+        } else {
+            host_request_declined_result(method)
+        };
+    }
     if method == "cursor/create_plan" {
         return if decision.approved {
             json!({ "outcome": { "outcome": "accepted" } })
@@ -2169,15 +2210,19 @@ async fn handle_cursor_extension(
     }
 
     let Some(bridge) = approvals else {
-        return write_rpc_result(stdin, id, cursor_cancelled_result()).await;
+        return write_rpc_result(stdin, id, host_request_declined_result(method)).await;
     };
     let request_id = jsonrpc_id_key(id);
     let permission = method == "session/request_permission";
     let tool = params.get("toolCall").unwrap_or(&params);
     let tool_call_id = acp_json_str(tool, "toolCallId")
+        .or_else(|| acp_json_str(&params, "elicitationId"))
+        .or_else(|| acp_json_str(&params, "elicitation_id"))
         .map(str::to_string)
         .unwrap_or_else(|| format!("cursor-{request_id}"));
-    let tool_name = if permission {
+    let tool_name = if method == "elicitation/create" {
+        "elicitation/create"
+    } else if permission {
         acp_json_str(tool, "title").unwrap_or("ACP tool")
     } else if method == "cursor/create_plan" {
         "cursor/create_plan"
@@ -2193,15 +2238,16 @@ async fn handle_cursor_extension(
         } else {
             params.clone()
         },
-        requires_user_interaction: method == "cursor/ask_question",
+        requires_user_interaction: method == "cursor/ask_question"
+            || method == "elicitation/create",
     };
     if bridge.requests.send(ask).await.is_err() {
-        return write_rpc_result(stdin, id, cursor_cancelled_result()).await;
+        return write_rpc_result(stdin, id, host_request_declined_result(method)).await;
     }
     loop {
         match control.try_recv() {
             Ok(SessionCommand::Cancel) => {
-                let _ = write_rpc_result(stdin, id, cursor_cancelled_result()).await;
+                let _ = write_rpc_result(stdin, id, host_request_cancelled_result(method)).await;
                 let cid = *next_id;
                 *next_id += 1;
                 let _ = write_rpc(
@@ -2214,7 +2260,7 @@ async fn handle_cursor_extension(
                 return Err("cancelled".to_string());
             }
             Ok(SessionCommand::Close) => {
-                let _ = write_rpc_result(stdin, id, cursor_cancelled_result()).await;
+                let _ = write_rpc_result(stdin, id, host_request_cancelled_result(method)).await;
                 return Err("closed".to_string());
             }
             Ok(SessionCommand::RunTurn { done, .. }) => {
@@ -2226,7 +2272,7 @@ async fn handle_cursor_extension(
             Ok(SessionCommand::StopTask { .. }) => {}
             Err(mpsc::error::TryRecvError::Empty) => {}
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                let _ = write_rpc_result(stdin, id, cursor_cancelled_result()).await;
+                let _ = write_rpc_result(stdin, id, host_request_cancelled_result(method)).await;
                 return Err("control channel closed".to_string());
             }
         }
@@ -2241,7 +2287,7 @@ async fn handle_cursor_extension(
             }
             Ok(Some(_)) | Err(_) => continue,
             Ok(None) => {
-                return write_rpc_result(stdin, id, cursor_cancelled_result()).await;
+                return write_rpc_result(stdin, id, host_request_cancelled_result(method)).await;
             }
         }
     }
@@ -2249,7 +2295,7 @@ async fn handle_cursor_extension(
 
 async fn handle_agent_to_client_request(
     value: &Value,
-    stdin: &mut ChildStdin,
+    stdin: &mut (impl AsyncWrite + Unpin),
     terminals: &mut AcpTerminalHost,
 ) -> Result<bool, String> {
     let Some(method) = value.get("method").and_then(|v| v.as_str()) else {
@@ -2266,6 +2312,12 @@ async fn handle_agent_to_client_request(
                 None => cursor_cancelled_result(),
             };
             write_rpc_result(stdin, id, result).await?;
+        }
+        return Ok(true);
+    }
+    if method == "elicitation/create" {
+        if let Some(id) = value.get("id") {
+            write_rpc_result(stdin, id, host_request_declined_result(method)).await?;
         }
         return Ok(true);
     }
@@ -2372,6 +2424,100 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> mpsc::Sender<SessionC
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn handshake_declines_elicitation_before_reading_its_target_response() {
+        // Exercise the production dispatch chain, not cursor_handshake_result:
+        // acp_read_until_id -> acp_next_message(host_permissions=false)
+        // -> handle_agent_to_client_request. A peer may reuse our numeric id
+        // for its request; that request must not be mistaken for our response.
+        for request_id in [json!(7), json!("elicitation-7")] {
+            let (host, agent) = tokio::io::duplex(4096);
+            let (host_read, mut host_write) = tokio::io::split(host);
+            let (agent_read, mut agent_write) = tokio::io::split(agent);
+            let mut reader = BufReader::new(host_read).lines();
+            let mut responses = BufReader::new(agent_read).lines();
+            let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
+            let handshake = acp_read_until_id(
+                &mut reader,
+                &mut host_write,
+                &mut terminals,
+                7,
+                Duration::from_secs(2),
+            );
+            let peer = async {
+                let request = json!({
+                    "jsonrpc": "2.0", "id": request_id, "method": "elicitation/create",
+                    "params": {
+                        "mode": "form", "message": "Select environment",
+                        "requestedSchema": {"type": "object", "properties": {}}
+                    }
+                });
+                agent_write
+                    .write_all(format!("{request}\n").as_bytes())
+                    .await
+                    .unwrap();
+                let line = responses.next_line().await.unwrap().unwrap();
+                let response: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(
+                    response,
+                    json!({
+                        "jsonrpc": "2.0", "id": request_id, "result": {"action": "decline"}
+                    })
+                );
+                // The agent only completes initialize after receiving decline.
+                write_rpc_result(&mut agent_write, &json!(7), json!({"protocolVersion": 1}))
+                    .await
+                    .unwrap();
+            };
+            let (result, ()) = timeout(Duration::from_secs(3), async {
+                tokio::join!(handshake, peer)
+            })
+            .await
+            .expect("handshake must answer elicitation without an interaction host");
+            assert_eq!(result.unwrap(), json!({"protocolVersion": 1}));
+            drop(reader);
+            drop(host_write);
+            assert!(
+                responses.next_line().await.unwrap().is_none(),
+                "respond exactly once"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn live_elicitation_dispatch_reaches_host_without_handshake_decline() {
+        let (host, mut agent) = tokio::io::duplex(4096);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let mut reader = BufReader::new(host_read).lines();
+        let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
+        let request = json!({
+            "jsonrpc": "2.0", "id": "elicitation-live", "method": "elicitation/create",
+            "params": {"mode": "form", "requestedSchema": {"type": "object", "properties": {}}}
+        });
+        agent
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let message = acp_next_message(
+            &mut reader,
+            &mut host_write,
+            &mut terminals,
+            Duration::from_secs(1),
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(message, AcpNext::Value(value) if value == request));
+        drop(reader);
+        drop(host_write);
+        assert!(BufReader::new(agent)
+            .lines()
+            .next_line()
+            .await
+            .unwrap()
+            .is_none());
+    }
 
     #[tokio::test]
     async fn permission_request_waits_for_host_and_echoes_wire_id() {
@@ -2580,6 +2726,7 @@ mod tests {
         )));
         assert!(cursor_extension_is_blocking("cursor/ask_question"));
         assert!(cursor_extension_is_blocking("cursor/create_plan"));
+        assert!(cursor_extension_is_blocking("elicitation/create"));
         assert!(!cursor_extension_is_blocking("cursor/update_todos"));
         assert_eq!(
             cursor_decision_result(
@@ -2596,6 +2743,32 @@ mod tests {
         assert_eq!(
             unknown_blocking_rpc_result(),
             json!({ "outcome": { "outcome": "cancelled" } })
+        );
+        assert_eq!(
+            cursor_decision_result(
+                "elicitation/create",
+                &ApprovalDecision {
+                    request_id: "e1".to_string(),
+                    approved: true,
+                    updated_input: Some(json!({
+                        "action": "accept",
+                        "content": { "environment": "production" }
+                    })),
+                    set_permission_mode: None,
+                }
+            ),
+            json!({
+                "action": "accept",
+                "content": { "environment": "production" }
+            })
+        );
+        assert_eq!(
+            host_request_declined_result("elicitation/create"),
+            json!({ "action": "decline" })
+        );
+        assert_eq!(
+            host_request_cancelled_result("elicitation/create"),
+            json!({ "action": "cancel" })
         );
     }
 
@@ -2642,6 +2815,7 @@ mod tests {
     fn live_handshake_advertises_terminal_capability() {
         let params = acp_initialize_params(true);
         assert_eq!(params["clientCapabilities"]["terminal"], json!(true));
+        assert!(params["clientCapabilities"]["elicitation"]["form"].is_object());
         assert_eq!(params["protocolVersion"], json!(ACP_PROTOCOL_VERSION));
         assert_eq!(params["clientInfo"]["name"], json!("kivio"));
         assert_eq!(params["clientInfo"]["title"], json!("Kivio"));
@@ -2651,6 +2825,7 @@ mod tests {
         );
         let probe = acp_initialize_params(false);
         assert_eq!(probe["clientCapabilities"]["terminal"], json!(false));
+        assert!(probe["clientCapabilities"].get("elicitation").is_none());
     }
 
     #[test]

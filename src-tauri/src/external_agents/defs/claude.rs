@@ -15,7 +15,7 @@ const FALLBACK_MODELS: &[(&str, &str)] = &[
 
 /// Claude Code 的思考档位。大部分走 `--effort <level>`，两个例外见 `claude_thinking_args`。
 ///
-/// 取值在 claude 2.1.220 核实、2.1.238 官方 CLI 表仍成立：
+/// 取值在 claude 2.1.220 核实，并在 2.1.276 重新做过启动参数探针：
 /// - `--effort` 公开选项是 `low|medium|high|xhigh|max|ultracode`；
 /// - `off` 走 `--thinking disabled`（**隐藏 flag**，官方文档表已不列，见
 ///   `claude_thinking_args`）；
@@ -39,7 +39,7 @@ const REASONING: &[(&str, &str)] = &[
 ///    `default_effort` 不同，我们不该替它决定）。
 ///
 /// 2. **`off` ⇒ `--thinking disabled`**。`--thinking <mode>` 是**隐藏 flag**：
-///    `--help` 和官方 CLI 文档表（至少到 2.1.238）都不列它，靠 commander
+///    `--help` 和官方 CLI 文档表（至少到 2.1.276）都不列它，靠 commander
 ///    `.hideHelp()`。零副作用探针：不给值报 `error: option '--thinking <mode>'
 ///    argument missing`，胡编 flag 报 `error: unknown option '…'`。
 ///    二进制定义是
@@ -177,7 +177,7 @@ pub fn build_claude_args(
 /// claude 的默认权限档位。**故意仍是 `bypassPermissions`（全自动放行）**：接上审批之后
 /// 把它改成 `default` 会让所有既有用户的对话突然开始弹卡片，那是行为回退而非功能。
 /// 想要审批的用户在权限胶囊里选「每次确认」（= `default` 档，见
-/// `detection::sandbox_options_for`）。
+/// `CLAUDE_AGENT_DEF.sandbox_options`）。
 pub const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
 
 /// `--permission-prompt-tool stdio`：**每一档都带**（paseo 同款 —— 它的 `canUseTool` 回调
@@ -350,11 +350,53 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     auth_probe_args: Some(&["auth", "status"]),
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
+    // `default` asks through the stdio control channel. `auto` uses Claude's classifier and
+    // falls back to asking; `dontAsk` only permits allow-rules/read-only commands.
+    sandbox_options: &[
+        ("plan", "计划 (只读)"),
+        ("default", "每次确认"),
+        ("acceptEdits", "接受编辑"),
+        ("auto", "自动"),
+        ("dontAsk", "不打扰 (只放行安全操作)"),
+        ("bypassPermissions", "完全 (默认)"),
+    ],
     list_models_args: None,
     list_models_timeout_secs: Some(10),
     models_from_stderr: false,
     model_probe: Some(ModelProbeStrategy::ClaudeInit),
     model_probe_args: None,
+    current_config: super::super::types::CurrentConfigStrategy::Claude,
+    provider_profile: super::super::types::ProviderProfileStrategy::Claude,
+    native_providers: super::super::types::NativeProviderStrategy::None,
+    context_window: super::super::types::ContextWindowStrategy::Claude,
+    usage_fallback: super::super::types::UsageFallbackStrategy::None,
+    error_policy: super::super::types::AgentErrorPolicy::login("claude /login"),
+    launch: super::super::types::AgentLaunchPolicy::DEFAULT,
+    instructions_via_launch_flag: true,
+    compact_prompt: Some("/compact"),
+    install: super::super::types::AgentInstallSpec {
+        npm_package: Some("@anthropic-ai/claude-code"),
+        npm_install_args: &[],
+        pypi_package: None,
+        script_unix: Some("curl -fsSL https://claude.ai/install.sh | bash"),
+        script_windows: Some("irm https://claude.ai/install.ps1 | iex"),
+        update: super::super::types::UpdateStrategy::Command(&["update"]),
+        latest_version: super::super::types::LatestVersionStrategy::Registry,
+        docs: "https://code.claude.com/docs/en/setup",
+        config_dir: Some(".claude"),
+        config_dir_env: None,
+        requires_pnpm: false,
+        post_install: super::super::types::PostInstallStrategy::None,
+    },
+    import: super::super::types::AgentImportPolicy {
+        discovery: super::super::types::ImportDiscoveryStrategy::FileHistory,
+        history_source: super::super::types::HistorySourceStrategy::ClaudeJsonl,
+        history_title: super::super::types::HistoryTitleStrategy::Claude,
+    },
+    run: super::super::types::AgentRunPolicy {
+        model_selection: super::super::types::ModelSelectionStrategy::ClaudeWire,
+        ..super::super::types::AgentRunPolicy::STANDARD
+    },
     slash_strategy: super::super::types::SlashStrategy::ClaudeInit,
     // 2.1.233：Sonnet 5 / Fable 5 / Mythos 5 / Opus 4.8 及更新模型默认拆掉
     // TaskCreate/Get/Update/List 和 TodoWrite。Kivio 对话 Todo 条靠这些工具

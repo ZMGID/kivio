@@ -3,9 +3,9 @@ import { createPortal } from 'react-dom'
 import { X, RefreshCw, Check } from 'lucide-react'
 import { api } from '../api/tauri'
 import type { ProviderRequestConfig } from '../api/tauri'
-import { ModelIcon } from '../chat/ModelIcon'
-import { Button, IconButton } from './Button'
-import { MODEL_TEST_CONCURRENCY, runPool } from './providerModelTestPool'
+import { ModelIcon } from '../chat/public/modelIcons'
+import { Button, IconButton } from '../components/Button'
+import { MODEL_TEST_CONCURRENCY, runPool } from '../components/providerModelTestPool'
 
 type Lang = 'zh' | 'en'
 type Result = { status: 'queued' | 'testing' | 'ok' | 'fail'; error?: string }

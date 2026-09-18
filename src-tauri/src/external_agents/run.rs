@@ -35,7 +35,9 @@ use crate::external_agents::spawn::{
     drain_stderr, kill_agent_process_tree, resolve_binary, spawn_agent, tail_chars,
 };
 use crate::external_agents::types::{
-    RuntimeBuildOptions, RuntimeContext, StreamFormat, UnifiedAgentEvent,
+    AdditionalDirsStrategy, ApprovalStrategy, ModelSelectionStrategy, RegenerateStrategy,
+    RetryStrategy, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, StreamFormat,
+    UnifiedAgentEvent,
 };
 use crate::external_agents::workspace::{ensure_effective_cwd, extra_allowed_dirs_for_agent};
 use crate::skills::read_skill_detail_in;
@@ -243,7 +245,7 @@ pub(crate) async fn run_external_cli_reply_in(
     // `skip_instructions`（内容没变就不重发）保证了**永远不会补发** ⇒ 长会话跑一阵子后
     // 用户配置的系统提示与 Memory 静默失效，没有任何可观测信号。
     // 启动 flag 每次进程启动都重新注入，与对话历史无关，压缩影响不到。
-    let instructions_via_flag = instructions_via_launch_flag(def.id);
+    let instructions_via_flag = instructions_via_launch_flag(def);
     let system_prompt_file = if instructions_via_flag && !is_slash {
         match write_system_prompt_file(&conversation.id, daemon_instructions.trim()) {
             Ok(path) => Some(path),
@@ -299,21 +301,22 @@ pub(crate) async fn run_external_cli_reply_in(
     // turn, that leaves a blank native session, so the resubmitted prompt must carry the session
     // instructions again. Non-root forks already retain the original first-turn instruction
     // wrapper and use the ordinary resume prompt.
-    let mut pi_regenerate_root_prompt =
-        (agent_id == "pi" && matches!(entry, AgentRunEntry::Regenerate)).then(|| {
-            if is_slash {
-                compose_external_prompt_passthrough(latest_user_message)
-            } else {
-                compose_external_prompt(
-                    &daemon_instructions,
-                    skill_body.as_deref(),
-                    skill_dir.as_deref(),
-                    skill_folder.as_deref(),
-                    false,
-                    latest_user_message,
-                )
-            }
-        });
+    let mut pi_regenerate_root_prompt = (matches!(def.run.regenerate, RegenerateStrategy::PiRpc)
+        && matches!(entry, AgentRunEntry::Regenerate))
+    .then(|| {
+        if is_slash {
+            compose_external_prompt_passthrough(latest_user_message)
+        } else {
+            compose_external_prompt(
+                &daemon_instructions,
+                skill_body.as_deref(),
+                skill_dir.as_deref(),
+                skill_folder.as_deref(),
+                false,
+                latest_user_message,
+            )
+        }
+    });
 
     // 附件（slash 命令不带附件，保持 passthrough 语义）。图片：支持原生图片块的协议按白名单
     // 加载为 base64 块，其余（不支持 / 超白名单 / 读失败）降级为路径文本；文件：一律路径说明块。
@@ -384,10 +387,9 @@ pub(crate) async fn run_external_cli_reply_in(
             .filter(|path| !path.trim().is_empty())
             .collect(),
     );
-    let additional_dirs_key = if agent_id == "antigravity" {
-        extra_dirs.join("\n")
-    } else {
-        additional_cli_dirs.join("\n")
+    let additional_dirs_key = match def.run.additional_dirs {
+        AdditionalDirsStrategy::Effective => extra_dirs.join("\n"),
+        AdditionalDirsStrategy::ConversationOnly => additional_cli_dirs.join("\n"),
     };
     let runtime_ctx = RuntimeContext {
         extra_allowed_dirs: extra_dirs,
@@ -398,16 +400,17 @@ pub(crate) async fn run_external_cli_reply_in(
 
     // Claude: external_model is catalog id (picker); wire value is settings-mapped runtime.
     // Resolve once at the boundary so launch argv and mid-session set_model share one id space.
-    let wire_model = if agent_id == "claude" {
-        crate::external_agents::session::claude_init::claude_wire_model(
-            conversation.agent_runtime.external_model.as_deref(),
-        )
-    } else {
-        conversation
+    let wire_model = match def.run.model_selection {
+        ModelSelectionStrategy::ClaudeWire => {
+            crate::external_agents::session::claude_init::claude_wire_model(
+                conversation.agent_runtime.external_model.as_deref(),
+            )
+        }
+        ModelSelectionStrategy::Direct => conversation
             .agent_runtime
             .external_model
             .clone()
-            .filter(|m| !m.is_empty() && m != "default")
+            .filter(|m| !m.is_empty() && m != "default"),
     };
     let build_options = RuntimeBuildOptions {
         model: wire_model.clone(),
@@ -446,26 +449,25 @@ pub(crate) async fn run_external_cli_reply_in(
 
     let extra_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-    let pi_regenerate =
-        (agent_id == "pi" && matches!(entry, AgentRunEntry::Regenerate)).then(|| {
-            PiRegenerateRequest {
-                visible_users: conversation
-                    .messages
-                    .iter()
-                    .filter(|message| message.role == "user")
-                    .map(|message| {
-                        crate::external_agents::session::pi_rpc::PiRegenerateUserMessage {
-                            content: message.content.clone(),
-                            timestamp: message.timestamp,
-                        }
-                    })
-                    .collect(),
-                root_prompt: pi_regenerate_root_prompt
-                    .as_ref()
-                    .map(|prompt| prompt.full_prompt.clone())
-                    .unwrap_or_else(|| composed.full_prompt.clone()),
-            }
-        });
+    let pi_regenerate = (matches!(def.run.regenerate, RegenerateStrategy::PiRpc)
+        && matches!(entry, AgentRunEntry::Regenerate))
+    .then(|| PiRegenerateRequest {
+        visible_users: conversation
+            .messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(
+                |message| crate::external_agents::session::pi_rpc::PiRegenerateUserMessage {
+                    content: message.content.clone(),
+                    timestamp: message.timestamp,
+                },
+            )
+            .collect(),
+        root_prompt: pi_regenerate_root_prompt
+            .as_ref()
+            .map(|prompt| prompt.full_prompt.clone())
+            .unwrap_or_else(|| composed.full_prompt.clone()),
+    });
 
     let run_generation = state.next_chat_generation(&conversation.id);
     let run_id = format!("ext-run-{}-{}", run_generation, Uuid::new_v4());
@@ -576,7 +578,7 @@ pub(crate) async fn run_external_cli_reply_in(
     // （`--permission-prompt-tool stdio`），从 argv 读回来就不可能与 `build_args` 分叉。
     // 没有这条 flag 的 CLI（dsh 的 `session/ask`）靠 `ask_user::needs_host` 开通道，
     // 否则问用户会卡在 `NO_PROVIDER`。
-    let approval_host = turn_needs_approval_host(&args, &agent_id).then(|| ApprovalHost {
+    let approval_host = turn_needs_approval_host(&args, def).then(|| ApprovalHost {
         app,
         state,
         conversation_id: &conversation_id,
@@ -586,7 +588,8 @@ pub(crate) async fn run_external_cli_reply_in(
         auto_allow_tools: std::sync::atomic::AtomicBool::new(
             permission_mode_from_args(&args)
                 .is_some_and(crate::external_agents::defs::claude::claude_mode_auto_allows_tools)
-                || (agent_id == "grok" && args.iter().any(|arg| arg == "--always-approve"))
+                || (matches!(def.run.approval, ApprovalStrategy::GrokAlwaysApprove)
+                    && args.iter().any(|arg| arg == "--always-approve"))
                 || crate::external_agents::ask_user::auto_allow_ordinary_tools(&agent_id),
         ),
     });
@@ -1620,14 +1623,17 @@ fn persistent_failure_action(
     }
     // agy has no request ids or prompt acknowledgement. Replaying a failed in-flight
     // turn could execute tools twice. Preserve the binding and let the user retry.
-    if agent_id == "antigravity" {
+    if matches!(
+        get_agent_def(agent_id).map(|def| def.run.retry),
+        Some(RetryStrategy::NeverReplay)
+    ) {
         return PersistentFailureAction::Fatal;
     }
     // Auth is never auto-retried (a doomed retry could trigger a login storm).
     if crate::external_agents::errors::is_auth_error(err, agent_id) {
         return PersistentFailureAction::Fatal;
     }
-    if crate::external_agents::errors::is_non_retryable_codex_error(err, agent_id) {
+    if crate::external_agents::errors::is_non_retryable_error(err, agent_id) {
         return PersistentFailureAction::Fatal;
     }
     if retried_after_failure {
@@ -1723,10 +1729,10 @@ fn turn_asks_for_permission(args: &[String]) -> bool {
 /// 本轮要不要建审批 / 问用户宿主。claude 看 argv 上的 `--permission-prompt-tool`；
 /// 没有这条 flag 的 CLI（dsh 的 `session/ask`）靠 `ask_user::needs_host` —— 加了
 /// codec 就会开通道。
-fn turn_needs_approval_host(args: &[String], agent_id: &str) -> bool {
+fn turn_needs_approval_host(args: &[String], def: &RuntimeAgentDef) -> bool {
     turn_asks_for_permission(args)
-        || agent_id == "grok"
-        || crate::external_agents::ask_user::needs_host(agent_id)
+        || matches!(def.run.approval, ApprovalStrategy::GrokAlwaysApprove)
+        || crate::external_agents::ask_user::needs_host(def.id)
 }
 
 /// 本轮 argv 里的权限档位（`--permission-mode` 的值）。
@@ -2106,10 +2112,8 @@ impl ApprovalHost<'_> {
         );
         if let Some(content) = answered_record.structured_content.clone() {
             self.state
-                .answered_ask_user_content
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .insert(answered_record.id.clone(), content);
+                .chat_interactions()
+                .remember_answered_ask_user(answered_record.id.clone(), content);
         }
         let approved = answered.phase == crate::chat::ask_user::ASK_USER_PHASE_ANSWERED;
         crate::external_agents::session::live::ApprovalDecision {
@@ -2130,26 +2134,9 @@ impl ApprovalHost<'_> {
         if tool_call_ids.is_empty() {
             return;
         }
-        {
-            let mut pending = self
-                .state
-                .pending_chat_tool_approvals
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for id in tool_call_ids {
-                pending.remove(id);
-            }
-        }
-        {
-            let mut pending = self
-                .state
-                .pending_chat_user_prompts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for id in tool_call_ids {
-                pending.remove(id);
-            }
-        }
+        self.state
+            .chat_interactions()
+            .forget_tool_interactions(tool_call_ids);
         for id in tool_call_ids {
             crate::chat::commands::interaction::withdraw_tool_confirm(self.app, id);
             crate::chat::protocol::resolve_user_prompt(self.app, self.run_id, id);
@@ -3067,10 +3054,8 @@ fn apply_unified_event(
                     // 覆盖流解析层塞的原始入参 —— 否则消息流里那块刷新一次就只剩一行灰字。
                     if let Some(answered) = app
                         .state::<AppState>()
-                        .answered_ask_user_content
-                        .lock()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .remove(&tool_use_id)
+                        .chat_interactions()
+                        .take_answered_ask_user(&tool_use_id)
                     {
                         record.structured_content = Some(answered);
                     }
@@ -4126,12 +4111,18 @@ mod tests {
         // 值出现在别处（比如某个 prompt 里）不算 —— 判据只认 flag 本身。
         assert!(!turn_asks_for_permission(&["stdio".to_string()]));
         // dsh 没有 `--permission-prompt-tool`：问用户靠 codec 开通道。
-        assert!(turn_needs_approval_host(&[], "dsh"));
-        assert!(turn_needs_approval_host(&[], "codex"));
-        assert!(turn_needs_approval_host(&[], "grok"));
-        assert!(turn_needs_approval_host(&[], "cursor-agent"));
-        assert!(!turn_needs_approval_host(&[], "cursor"));
-        assert!(!turn_needs_approval_host(&[], "claude"));
+        let needs_host = |id| {
+            turn_needs_approval_host(
+                &[],
+                get_agent_def(id).expect("test agent must be registered"),
+            )
+        };
+        assert!(needs_host("dsh"));
+        assert!(needs_host("codex"));
+        assert!(needs_host("grok"));
+        assert!(needs_host("cursor-agent"));
+        assert!(get_agent_def("cursor").is_none());
+        assert!(!needs_host("claude"));
     }
 
     /// 「完全」档接上询问通道之后**用户感知不到差别**：普通工具原地放行，只有问用户卡会弹。

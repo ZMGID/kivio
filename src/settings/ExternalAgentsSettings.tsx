@@ -16,16 +16,16 @@ import {
   Workflow,
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { AgentIcon } from '../chat/AgentIcon'
+import { AgentIcon } from '../chat/public/agentIcon'
 import {
-  chatApi,
-  onExternalAgentsUpdated,
+  externalAgentSettingsApi,
   type CcSwitchProvider,
   type DetectedExternalAgent,
   type DshOfficialCredential,
   type ExternalCliInstallInfo,
-} from '../chat/api'
-import type { NativeProviderSummary } from '../chat/types'
+  type NativeProviderSummary,
+} from '../chat/public/externalAgentSettings'
+import { onExternalAgentsUpdated } from '../chat/public/externalAgentEvents'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from './i18n'
 import { Button, IconButton } from '../components/Button'
@@ -184,7 +184,7 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
   const loadAgents = useCallback(async (force = false) => {
     setScanning(true)
     try {
-      const list = await chatApi.detectExternalAgents(force)
+      const list = await externalAgentSettingsApi.detectExternalAgents(force)
       setAgents(list)
       setSelectedId((prev) => prev ?? list.find((a) => a.available)?.id ?? list[0]?.id ?? null)
     } catch (err) {
@@ -396,7 +396,7 @@ function AgentDetail({
       return
     }
     let cancelled = false
-    void chatApi
+    void externalAgentSettingsApi
       .detectExternalAgentModels(agent.id, null, false)
       .then(({ models }) => {
         if (!cancelled) setProbedModels(models)
@@ -705,7 +705,7 @@ function DshOfficialKeyCard({ lang }: { lang: Lang }) {
 
   useEffect(() => {
     let cancelled = false
-    void chatApi
+    void externalAgentSettingsApi
       .dshOfficialCredentialStatus()
       .then((next) => {
         if (!cancelled) setStatus(next)
@@ -725,7 +725,7 @@ function DshOfficialKeyCard({ lang }: { lang: Lang }) {
     setSaving(true)
     setError(null)
     try {
-      setStatus(await chatApi.dshOfficialCredentialSave(key))
+      setStatus(await externalAgentSettingsApi.dshOfficialCredentialSave(key))
       setApiKey('')
     } catch (err) {
       setError(String(err))
@@ -987,14 +987,14 @@ function ProviderSection({
       providers: providers.filter((p) => p.id !== provider.id),
       ...(current === provider.id ? { currentProvider: '' } : {}),
     })
-    void chatApi.externalCliProviderCleanup(
+    void externalAgentSettingsApi.externalCliProviderCleanup(
       agentId,
       provider.id,
       provider.nativeProviderId,
       provider.name,
     )
     if (agentId === 'dsh' && provider.nativeProviderId) {
-      void chatApi
+      void externalAgentSettingsApi
         .dshNativeProviderDelete(provider.nativeProviderId)
         .then(() => reloadAgents(true))
         .catch(() => {})
@@ -1003,7 +1003,7 @@ function ProviderSection({
 
   const editNative = async (native: NativeProviderSummary) => {
     try {
-      const detail = await chatApi.dshNativeProviderGet(native.id)
+      const detail = await externalAgentSettingsApi.dshNativeProviderGet(native.id)
       setEditing(dshNativeDetailToProvider(detail))
     } catch (err) {
       window.alert(err instanceof Error ? err.message : String(err))
@@ -1014,7 +1014,7 @@ function ProviderSection({
     if (!window.confirm(t.externalAgentsDshNativeDeleteConfirm.replace('{name}', native.name)))
       return
     try {
-      await chatApi.dshNativeProviderDelete(native.id)
+      await externalAgentSettingsApi.dshNativeProviderDelete(native.id)
     } catch (err) {
       window.alert(err instanceof Error ? err.message : String(err))
       return
@@ -1025,7 +1025,7 @@ function ProviderSection({
         providers: providers.filter((provider) => provider.id !== adopted.id),
         ...(current === adopted.id ? { currentProvider: '' } : {}),
       })
-      void chatApi.externalCliProviderCleanup(
+      void externalAgentSettingsApi.externalCliProviderCleanup(
         agentId,
         adopted.id,
         adopted.nativeProviderId,
@@ -1261,7 +1261,7 @@ function useInstall(agentId: string, reloadAgents: (force?: boolean) => Promise<
   const refresh = useCallback(async () => {
     setChecking(true)
     try {
-      setInfo(await chatApi.externalCliInstallInfo(agentId))
+      setInfo(await externalAgentSettingsApi.externalCliInstallInfo(agentId))
     } catch {
       setInfo(null)
     } finally {
@@ -1298,7 +1298,7 @@ function useInstall(agentId: string, reloadAgents: (force?: boolean) => Promise<
 
   const runInstall = () =>
     startCliInstall(agentId, {
-      install: (id) => chatApi.externalCliInstall(id),
+      install: (id) => externalAgentSettingsApi.externalCliInstall(id),
       afterDone: async () => {
         await refresh()
         await reloadAgents(true)

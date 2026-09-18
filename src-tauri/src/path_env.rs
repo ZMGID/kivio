@@ -205,8 +205,13 @@ fn common_dirs_macos(home: Option<std::path::PathBuf>) -> Vec<String> {
     ];
     if let Some(home) = home {
         if !home.as_os_str().is_empty() {
+            // This function models macOS paths even when its pure helpers are
+            // exercised by tests on Windows, so do not inherit the host path
+            // separator from `PathBuf::join`.
+            let home = home.to_string_lossy().replace('\\', "/");
+            let home = home.trim_end_matches('/');
             for rel in [".local/bin", ".cargo/bin", ".bun/bin"] {
-                dirs.push(home.join(rel).to_string_lossy().to_string());
+                dirs.push(format!("{home}/{rel}"));
             }
         }
     }

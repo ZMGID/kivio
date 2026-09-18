@@ -6,6 +6,9 @@ use tokio::sync::oneshot;
 
 use crate::mcp::ChatToolDefinition;
 
+mod value_schema;
+pub(crate) use value_schema::{answer_value, supports_value_schema};
+
 pub const ASK_USER_TOOL_NAME: &str = "ask_user";
 pub const ASK_USER_PHASE_AWAITING: &str = "awaiting";
 pub const ASK_USER_PHASE_ANSWERED: &str = "answered";
@@ -40,6 +43,15 @@ pub struct AskUserQuestion {
     pub allow_multiple: bool,
     #[serde(default)]
     pub allow_custom: bool,
+    #[serde(default = "default_required")]
+    pub required: bool,
+    /// Supported MCP form constraints, retained through history and the generated wire contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_schema: Option<Value>,
+}
+
+pub(crate) fn default_required() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,17 +216,47 @@ pub fn validate_response(
 
     let mut answers = HashMap::new();
     for question in &prompt.questions {
+        if !question.required && !response.answers.contains_key(&question.id) {
+            continue;
+        }
         let answer = response
             .answers
             .get(&question.id)
             .ok_or_else(|| format!("Missing answer for question `{}`", question.id))?;
-        answers.insert(question.id.clone(), normalize_answer(question, answer)?);
+        if !question.required
+            && answer.selected_option_ids.is_empty()
+            && answer.custom_text.is_none()
+        {
+            continue;
+        }
+        let answer = normalize_answer(question, answer)?;
+        if question.value_schema.is_some() {
+            answer_value(question, &answer)?;
+        }
+        answers.insert(question.id.clone(), answer);
     }
 
     Ok(AskUserResponseResult {
         phase: ASK_USER_PHASE_ANSWERED.to_string(),
         answers,
     })
+}
+
+/// Called while the owner's pending map is locked. Invalid submissions keep the request
+/// available for correction; successful submission/cancellation claims it exactly once.
+pub(crate) fn take_validated_response(
+    pending: &mut HashMap<String, PendingAskUserPrompt>,
+    tool_call_id: &str,
+    response: AskUserResponseResult,
+) -> Result<(PendingAskUserPrompt, AskUserResponseResult), String> {
+    let prompt = pending
+        .get(tool_call_id)
+        .ok_or("Clarification is no longer awaiting a response")?;
+    let response = validate_response(&prompt.prompt, response)?;
+    let prompt = pending
+        .remove(tool_call_id)
+        .ok_or("Clarification is no longer awaiting a response")?;
+    Ok((prompt, response))
 }
 
 pub fn skipped_response() -> AskUserResponseResult {
@@ -287,11 +329,17 @@ fn normalize_answer(
         }
     }
 
-    let custom_text = answer
-        .custom_text
-        .as_ref()
-        .map(|text| truncate_clean(text.clone(), MAX_CUSTOM_TEXT_CHARS))
-        .filter(|text| !text.is_empty());
+    let custom_text = if question.value_schema.is_some() {
+        // Typed forms distinguish omission from an explicitly supplied empty string, and
+        // validation must inspect the original text rather than a truncated/coerced value.
+        answer.custom_text.clone()
+    } else {
+        answer
+            .custom_text
+            .as_ref()
+            .map(|text| truncate_clean(text.clone(), MAX_CUSTOM_TEXT_CHARS))
+            .filter(|text| !text.is_empty())
+    };
 
     if selected.is_empty() && custom_text.is_none() {
         return Err(format!(
@@ -395,6 +443,10 @@ fn input_schema() -> Value {
                         "allow_custom": {
                             "type": "boolean",
                             "default": false
+                        },
+                        "required": {
+                            "type": "boolean",
+                            "default": true
                         }
                     },
                     "required": ["id", "prompt", "options"],
@@ -471,6 +523,143 @@ mod tests {
                 }
             ]
         })
+    }
+
+    #[test]
+    fn optional_questions_can_be_omitted_while_legacy_questions_remain_required() {
+        let prompt: AskUserPromptPayload = serde_json::from_value(serde_json::json!({
+            "questions": [{"id":"note", "prompt":"Note", "options":[],
+                "allow_custom":true, "required":false}]
+        }))
+        .unwrap();
+        let response = AskUserResponseResult {
+            phase: ASK_USER_PHASE_ANSWERED.into(),
+            answers: HashMap::new(),
+        };
+        assert!(validate_response(&prompt, response.clone())
+            .unwrap()
+            .answers
+            .is_empty());
+        let legacy: AskUserPromptPayload = serde_json::from_value(serde_json::json!({
+            "questions": [{"id":"note", "prompt":"Note", "options":[], "allow_custom":true}]
+        }))
+        .unwrap();
+        assert!(validate_response(&legacy, response)
+            .unwrap_err()
+            .contains("note"));
+    }
+
+    #[test]
+    fn invalid_submission_can_be_corrected_and_only_completed_once() {
+        let prompt: AskUserPromptPayload = serde_json::from_value(serde_json::json!({
+            "questions":[{"id":"count", "prompt":"Count", "options":[], "allow_custom":true,
+                "value_schema":{"type":"integer", "minimum":0, "maximum":5}}]
+        }))
+        .unwrap();
+        let (sender, mut receiver) = oneshot::channel();
+        let mut pending = HashMap::from([(
+            "ask".into(),
+            PendingAskUserPrompt {
+                run_id: "run".into(),
+                prompt,
+                sender,
+            },
+        )]);
+        let response = |text: &str| AskUserResponseResult {
+            phase: ASK_USER_PHASE_ANSWERED.into(),
+            answers: HashMap::from([(
+                "count".into(),
+                AskUserAnswer {
+                    selected_option_ids: vec![],
+                    custom_text: Some(text.into()),
+                },
+            )]),
+        };
+        assert!(
+            take_validated_response(&mut pending, "ask", response("bad"))
+                .err()
+                .unwrap()
+                .contains("count")
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        let (claimed, corrected) =
+            take_validated_response(&mut pending, "ask", response("0")).unwrap();
+        claimed.sender.send(corrected).unwrap();
+        assert_eq!(
+            receiver.try_recv().unwrap().answers["count"]
+                .custom_text
+                .as_deref(),
+            Some("0")
+        );
+        assert!(take_validated_response(&mut pending, "ask", response("1")).is_err());
+    }
+
+    #[test]
+    fn submission_and_cancellation_compete_for_one_pending_request() {
+        use std::sync::{Arc, Barrier, Mutex};
+        let prompt = normalize_prompt(prompt_args()).unwrap();
+        let (sender, mut receiver) = oneshot::channel();
+        let pending = Arc::new(Mutex::new(HashMap::from([(
+            "ask".into(),
+            PendingAskUserPrompt {
+                run_id: "run".into(),
+                prompt,
+                sender,
+            },
+        )])));
+        let gate = Arc::new(Barrier::new(2));
+        let answered = AskUserResponseResult {
+            phase: ASK_USER_PHASE_ANSWERED.into(),
+            answers: HashMap::from([
+                (
+                    "surface".into(),
+                    AskUserAnswer {
+                        selected_option_ids: vec!["inline".into()],
+                        custom_text: None,
+                    },
+                ),
+                (
+                    "modes".into(),
+                    AskUserAnswer {
+                        selected_option_ids: vec!["single".into()],
+                        custom_text: None,
+                    },
+                ),
+            ]),
+        };
+        let workers: Vec<_> = [answered, cancelled_response()]
+            .into_iter()
+            .map(|response| {
+                let pending = pending.clone();
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    let claimed =
+                        take_validated_response(&mut pending.lock().unwrap(), "ask", response);
+                    if let Ok((prompt, response)) = claimed {
+                        prompt.sender.send(response).unwrap();
+                        true
+                    } else {
+                        false
+                    }
+                })
+            })
+            .collect();
+        assert_eq!(
+            workers
+                .into_iter()
+                .filter_map(|worker| worker.join().ok())
+                .filter(|claimed| *claimed)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            receiver.try_recv().unwrap().phase.as_str(),
+            ASK_USER_PHASE_ANSWERED | ASK_USER_PHASE_CANCELLED
+        ));
     }
 
     #[test]

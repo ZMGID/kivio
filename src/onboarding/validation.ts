@@ -1,6 +1,6 @@
 import { providerHasCredentials } from '../api/tauri'
 import type { Settings } from '../api/tauri'
-import { isWebSearchConfigured } from '../settings/webSearch'
+import { isWebSearchConfigured } from '../settings/public/webSearch'
 
 export function providerHasUsableConfig(settings: Settings): boolean {
   return settings.providers.some((provider) =>

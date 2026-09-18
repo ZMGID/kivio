@@ -14,146 +14,13 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncReadExt;
 
 use crate::external_agents::registry::get_agent_def;
+use crate::external_agents::types::{
+    AgentInstallSpec, LatestVersionStrategy, PostInstallStrategy, UpdateStrategy,
+};
 use crate::proc::NoConsoleWindow;
 
-/// 一个 CLI 的官方安装/更新方式。
-struct InstallSpec {
-    /// npm 包名。用来查最新版，也在没有官方平台安装脚本时作为安装回退。
-    npm_package: Option<&'static str>,
-    /// 少数包需要额外安装参数（例如 Pi 官方要求禁用 lifecycle scripts）。
-    npm_install_args: &'static [&'static str],
-    /// PyPI 包名；目前 Hermes 用它查稳定版，安装仍走官方脚本。
-    pypi_package: Option<&'static str>,
-    /// 官方 shell 安装脚本（macOS/Linux）。存在时优先于 npm——这些 CLI 的脚本装法
-    /// 会就地自更新，用 npm 再装一份容易在 PATH 上和脚本装的那份互相遮蔽。
-    script_unix: Option<&'static str>,
-    /// 官方 PowerShell 安装脚本。没有时回落 npm。
-    script_windows: Option<&'static str>,
-    /// 已安装后的自更新参数；始终交给探测到的那个绝对二进制执行。
-    update_args: Option<&'static [&'static str]>,
-    docs: &'static str,
-    /// 配置目录，相对用户 home。
-    config_dir: Option<&'static str>,
-}
-
-fn install_spec(agent_id: &str) -> Option<InstallSpec> {
-    let spec = match agent_id {
-        "antigravity" => InstallSpec {
-            npm_package: None,
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: Some("curl -fsSL https://antigravity.google/cli/install.sh | bash"),
-            script_windows: Some("irm https://antigravity.google/cli/install.ps1 | iex"),
-            update_args: Some(&["update"]),
-            docs: "https://antigravity.google/docs/cli/install/",
-            config_dir: Some(".gemini/antigravity-cli"),
-        },
-        "claude" => InstallSpec {
-            npm_package: Some("@anthropic-ai/claude-code"),
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: Some("curl -fsSL https://claude.ai/install.sh | bash"),
-            script_windows: Some("irm https://claude.ai/install.ps1 | iex"),
-            update_args: Some(&["update"]),
-            docs: "https://code.claude.com/docs/en/setup",
-            config_dir: Some(".claude"),
-        },
-        "codex" => InstallSpec {
-            npm_package: Some("@openai/codex"),
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: None,
-            script_windows: None,
-            update_args: Some(&["update"]),
-            docs: "https://developers.openai.com/codex/cli/",
-            config_dir: Some(".codex"),
-        },
-        "cursor-agent" => InstallSpec {
-            npm_package: None,
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: Some("curl https://cursor.com/install -fsS | bash"),
-            script_windows: Some("irm 'https://cursor.com/install?win32=true' | iex"),
-            update_args: Some(&["update"]),
-            docs: "https://cursor.com/docs/cli",
-            config_dir: Some(".cursor"),
-        },
-        "opencode" => InstallSpec {
-            npm_package: Some("opencode-ai"),
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: Some("curl -fsSL https://opencode.ai/install | bash"),
-            script_windows: None,
-            update_args: Some(&["upgrade"]),
-            docs: "https://opencode.ai/docs/",
-            config_dir: Some(".config/opencode"),
-        },
-        "gemini" => InstallSpec {
-            npm_package: Some("@google/gemini-cli"),
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: None,
-            script_windows: None,
-            // Gemini 尚无稳定的非交互 update 子命令；按 npm/Homebrew 来源单独处理。
-            update_args: None,
-            docs: "https://www.geminicli.com/docs/get-started/installation",
-            config_dir: Some(".gemini"),
-        },
-        "kimi" => InstallSpec {
-            npm_package: Some("@moonshot-ai/kimi-code"),
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: Some("curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"),
-            script_windows: Some("irm https://code.kimi.com/kimi-code/install.ps1 | iex"),
-            // `kimi upgrade` 在无 TTY 时只打印手动命令、不执行；按来源单独处理。
-            update_args: None,
-            docs: "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
-            config_dir: Some(".kimi-code"),
-        },
-        "pi" => InstallSpec {
-            npm_package: Some("@earendil-works/pi-coding-agent"),
-            npm_install_args: &["--ignore-scripts"],
-            pypi_package: None,
-            script_unix: None,
-            script_windows: None,
-            update_args: Some(&["update", "--self"]),
-            docs: "https://github.com/badlogic/pi-mono",
-            config_dir: Some(".pi"),
-        },
-        "grok" => InstallSpec {
-            npm_package: Some("@xai-official/grok"),
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: Some("curl -fsSL https://x.ai/cli/install.sh | bash"),
-            script_windows: Some("irm https://x.ai/cli/install.ps1 | iex"),
-            update_args: Some(&["update"]),
-            docs: "https://docs.x.ai/build/cli",
-            config_dir: Some(".grok"),
-        },
-        "dsh" => InstallSpec {
-            npm_package: Some("@deepseek-ai/dsh"),
-            npm_install_args: &[],
-            pypi_package: None,
-            script_unix: None,
-            script_windows: None,
-            // dsh 没有自更新命令；`update_plan` 按 npm/pnpm/yarn/bun 安装来源更新。
-            update_args: None,
-            docs: "https://github.com/deepseek-ai/deepseek-harness",
-            config_dir: Some(".dsh"),
-        },
-        "hermes" => InstallSpec {
-            npm_package: None,
-            npm_install_args: &[],
-            pypi_package: Some("hermes-agent"),
-            script_unix: Some("curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"),
-            script_windows: Some("iex (irm https://hermes-agent.nousresearch.com/install.ps1)"),
-            update_args: Some(&["update"]),
-            docs: "https://hermes-agent.nousresearch.com/docs/getting-started/installation",
-            config_dir: Some(".hermes"),
-        },
-        _ => return None,
-    };
-    Some(spec)
+fn install_spec(agent_id: &str) -> Option<&'static AgentInstallSpec> {
+    get_agent_def(agent_id).map(|def| &def.install)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -674,16 +541,15 @@ async fn ensure_pnpm(emit: &impl Fn(String)) -> Result<(), String> {
 }
 
 async fn prepare_npm_toolchain(
-    agent_id: &str,
+    spec: &AgentInstallSpec,
     plan: &CommandPlan,
     emit: &impl Fn(String),
 ) -> Result<(), String> {
-    let for_dsh = agent_id == "dsh";
-    if !uses_npm(plan) && !for_dsh {
+    if !uses_npm(plan) && !spec.requires_pnpm {
         return Ok(());
     }
-    ensure_node(for_dsh, emit).await?;
-    if for_dsh {
+    ensure_node(spec.requires_pnpm, emit).await?;
+    if spec.requires_pnpm {
         ensure_pnpm(emit).await?;
     }
     Ok(())
@@ -724,7 +590,7 @@ fn js_global_add_plan(
     CommandPlan::direct(program, &args)
 }
 
-fn install_plan(spec: &InstallSpec, platform: HostPlatform) -> Option<CommandPlan> {
+fn install_plan(spec: &AgentInstallSpec, platform: HostPlatform) -> Option<CommandPlan> {
     match platform {
         HostPlatform::Unix => spec.script_unix.map(CommandPlan::unix_script),
         HostPlatform::Windows => spec.script_windows.map(CommandPlan::powershell),
@@ -789,44 +655,44 @@ fn managed_package_update_plan(
 
 /// 已安装时优先让当前二进制自更新；Kimi/Gemini 没有可用的无交互入口，按安装来源处理。
 fn update_plan(
-    agent_id: &str,
-    spec: &InstallSpec,
+    spec: &AgentInstallSpec,
     resolved_path: &Path,
     platform: HostPlatform,
 ) -> Option<CommandPlan> {
-    if agent_id == "kimi" {
-        let normalized = normalized_resolved_path(resolved_path);
-        if normalized.contains("/.kimi-code/bin/kimi") {
-            return install_plan(spec, platform);
+    match spec.update {
+        UpdateStrategy::None => None,
+        UpdateStrategy::Command(args) => Some(CommandPlan::direct(
+            resolved_path.to_string_lossy().into_owned(),
+            args,
+        )),
+        UpdateStrategy::ManagedPackage {
+            package,
+            brew_formula,
+        } => managed_package_update_plan(
+            resolved_path,
+            package,
+            brew_formula,
+            platform,
+            spec.npm_install_args,
+        ),
+        UpdateStrategy::KimiManaged {
+            package,
+            brew_formula,
+        } => {
+            let normalized = normalized_resolved_path(resolved_path);
+            if normalized.contains("/.kimi-code/bin/kimi") {
+                install_plan(spec, platform)
+            } else {
+                managed_package_update_plan(
+                    resolved_path,
+                    package,
+                    brew_formula,
+                    platform,
+                    spec.npm_install_args,
+                )
+            }
         }
-        return managed_package_update_plan(
-            resolved_path,
-            "@moonshot-ai/kimi-code",
-            "kimi-code",
-            platform,
-            spec.npm_install_args,
-        );
     }
-    if agent_id == "gemini" {
-        return managed_package_update_plan(
-            resolved_path,
-            "@google/gemini-cli",
-            "gemini-cli",
-            platform,
-            spec.npm_install_args,
-        );
-    }
-    if agent_id == "dsh" {
-        return managed_package_update_plan(
-            resolved_path,
-            "@deepseek-ai/dsh",
-            "dsh",
-            platform,
-            spec.npm_install_args,
-        );
-    }
-    spec.update_args
-        .map(|args| CommandPlan::direct(resolved_path.to_string_lossy().into_owned(), args))
 }
 
 #[derive(Serialize)]
@@ -876,7 +742,7 @@ async fn pypi_latest_version(http: &reqwest::Client, package: &str) -> Option<St
         .map(str::to_string)
 }
 
-async fn latest_version(http: &reqwest::Client, spec: &InstallSpec) -> Option<String> {
+async fn latest_version(http: &reqwest::Client, spec: &AgentInstallSpec) -> Option<String> {
     if let Some(package) = spec.npm_package {
         npm_latest_version(http, package).await
     } else if let Some(package) = spec.pypi_package {
@@ -902,10 +768,35 @@ async fn antigravity_latest_version(http: &reqwest::Client) -> Option<String> {
     extract_semver(value.get("tag_name")?.as_str()?)
 }
 
+async fn hermes_latest_version(http: &reqwest::Client) -> Option<String> {
+    let value: serde_json::Value = http
+        .get("https://api.github.com/repos/NousResearch/hermes-agent/releases/latest")
+        .header(reqwest::header::USER_AGENT, "Kivio")
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    hermes_version_from_release(&value)
+}
+
+fn hermes_version_from_release(value: &serde_json::Value) -> Option<String> {
+    // Hermes 的 tag 是日历版本 `v2026.9.14`，CLI 版本 `0.21.3` 在 release name 里。
+    // 只读 name，绝不能把 tag 当成可与本机 semver 比较的版本号。
+    value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .and_then(extract_semver)
+}
+
 /// `--version` 输出里抓语义化版本号：CLI 们的首行格式各不相同
 /// （`2.1.207 (Claude Code)` / `codex-cli 0.146.0` / 裸 `0.53.1` / `0.1.0-rc.7`）。
 /// 保留 prerelease（dsh 目前全是 rc），丢掉 `+build` metadata。
-fn extract_semver(text: &str) -> Option<String> {
+pub(crate) fn extract_semver(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut start = None;
     for (idx, ch) in text.char_indices() {
@@ -1054,12 +945,15 @@ fn version_is_newer(local: &str, latest: &str) -> bool {
     cmp_versions(&local, &latest) == std::cmp::Ordering::Less
 }
 
-fn existing_config_dir(agent_id: &str, spec: &InstallSpec) -> Option<String> {
-    let dir = if agent_id == "dsh" {
-        std::env::var_os("DSH_HOME")
+fn existing_config_dir(spec: &AgentInstallSpec) -> Option<String> {
+    let dir = if let Some(env_key) = spec.config_dir_env {
+        std::env::var_os(env_key)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .or_else(|| directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".dsh")))?
+            .or_else(|| {
+                directories::UserDirs::new()
+                    .and_then(|dirs| spec.config_dir.map(|dir| dirs.home_dir().join(dir)))
+            })?
     } else {
         directories::UserDirs::new()?
             .home_dir()
@@ -1082,20 +976,20 @@ pub async fn chat_external_cli_install_info(
         .and_then(crate::external_agents::spawn::cached_cli_version)
         .as_deref()
         .and_then(extract_semver);
-    let latest_version = if agent_id == "antigravity" {
-        antigravity_latest_version(&state.http).await
-    } else {
-        latest_version(&state.http, &spec).await
+    let latest_version = match spec.latest_version {
+        LatestVersionStrategy::Registry => latest_version(&state.http, spec).await,
+        LatestVersionStrategy::AntigravityRelease => antigravity_latest_version(&state.http).await,
+        LatestVersionStrategy::HermesRelease => hermes_latest_version(&state.http).await,
     };
     let update_available = match (&local_version, &latest_version) {
         (Some(local), Some(latest)) => version_is_newer(local, latest),
         _ => false,
     };
     let command = match resolved_path.as_deref() {
-        Some(path) => update_plan(&agent_id, &spec, path, host_platform()),
-        None => install_plan(&spec, host_platform()),
+        Some(path) => update_plan(spec, path, host_platform()),
+        None => install_plan(spec, host_platform()),
     };
-    let config_dir = existing_config_dir(&agent_id, &spec);
+    let config_dir = existing_config_dir(spec);
 
     Ok(InstallInfo {
         agent_id,
@@ -1203,9 +1097,9 @@ pub async fn chat_external_cli_install(app: AppHandle, agent_id: String) -> Resu
     let spec = install_spec(&agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
     let resolved_path = crate::external_agents::spawn::resolve_binary(def).await;
     let plan = match resolved_path.as_deref() {
-        Some(path) => update_plan(&agent_id, &spec, path, host_platform())
+        Some(path) => update_plan(spec, path, host_platform())
             .ok_or_else(|| "无法安全识别该 CLI 的安装来源，请按官方文档手动更新".to_string())?,
-        None => install_plan(&spec, host_platform())
+        None => install_plan(spec, host_platform())
             .ok_or_else(|| "该 CLI 没有一键安装方式，请按官方文档手动安装".to_string())?,
     };
     let command_line = plan.display.clone();
@@ -1232,7 +1126,7 @@ pub async fn chat_external_cli_install(app: AppHandle, agent_id: String) -> Resu
         );
     };
 
-    if let Err(err) = prepare_npm_toolchain(&agent_id, &plan, &emit).await {
+    if let Err(err) = prepare_npm_toolchain(spec, &plan, &emit).await {
         emit_done(false);
         return Err(err);
     }
@@ -1246,7 +1140,7 @@ pub async fn chat_external_cli_install(app: AppHandle, agent_id: String) -> Resu
         .map_err(|e| {
             emit_done(false);
             if e.kind() == std::io::ErrorKind::NotFound && uses_npm(&plan) {
-                missing_node_message(agent_id == "dsh")
+                missing_node_message(spec.requires_pnpm)
             } else {
                 format!("启动安装命令失败: {e}")
             }
@@ -1260,7 +1154,7 @@ pub async fn chat_external_cli_install(app: AppHandle, agent_id: String) -> Resu
         // npm -g 刚把 shims 写进 %APPDATA%\npm；装之前这个目录可能还不存在，
         // PATH 里也就没有它。不刷新的话紧接着的探测会说「未安装」。
         expose_node_on_path();
-        if agent_id == "dsh" {
+        if matches!(spec.post_install, PostInstallStrategy::DshProfile) {
             if let Err(err) = finish_dsh_install(def, &emit).await {
                 emit(err.clone());
                 emit_done(false);
@@ -1289,8 +1183,7 @@ pub async fn chat_external_cli_install(app: AppHandle, agent_id: String) -> Resu
 #[tauri::command]
 pub fn chat_external_cli_open_config_dir(agent_id: String) -> Result<(), String> {
     let spec = install_spec(&agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
-    let dir =
-        existing_config_dir(&agent_id, &spec).ok_or_else(|| "配置目录还不存在".to_string())?;
+    let dir = existing_config_dir(spec).ok_or_else(|| "配置目录还不存在".to_string())?;
     open_path(Path::new(&dir))
 }
 
@@ -1325,7 +1218,7 @@ mod tests {
             .unwrap()
             .display
             .contains("https://antigravity.google/cli/install.ps1"));
-        assert_eq!(spec.update_args, Some(&["update"][..]));
+        assert_eq!(spec.update, UpdateStrategy::Command(&["update"]));
         assert_eq!(spec.config_dir, Some(".gemini/antigravity-cli"));
     }
 
@@ -1379,7 +1272,7 @@ mod tests {
         for (agent_id, expected_args) in cases {
             let spec = install_spec(agent_id).unwrap();
             let path = PathBuf::from(format!("/custom/bin/{agent_id}"));
-            let plan = update_plan(agent_id, &spec, &path, HostPlatform::Unix).unwrap();
+            let plan = update_plan(spec, &path, HostPlatform::Unix).unwrap();
             assert_eq!(plan.program, path.to_string_lossy());
             assert_eq!(plan.args, *expected_args, "{agent_id}");
         }
@@ -1389,8 +1282,7 @@ mod tests {
     fn kimi_and_gemini_updates_preserve_recognized_install_source() {
         let kimi = install_spec("kimi").unwrap();
         let native = update_plan(
-            "kimi",
-            &kimi,
+            kimi,
             Path::new("/Users/u/.kimi-code/bin/kimi"),
             HostPlatform::Unix,
         )
@@ -1401,8 +1293,7 @@ mod tests {
             .contains("code.kimi.com/kimi-code/install.sh"));
 
         let npm = update_plan(
-            "kimi",
-            &kimi,
+            kimi,
             Path::new("/prefix/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs"),
             HostPlatform::Unix,
         )
@@ -1414,20 +1305,15 @@ mod tests {
 
         let gemini = install_spec("gemini").unwrap();
         let brew = update_plan(
-            "gemini",
-            &gemini,
+            gemini,
             Path::new("/opt/homebrew/Cellar/gemini-cli/1.2.3/bin/gemini"),
             HostPlatform::Unix,
         )
         .unwrap();
         assert_eq!(brew.display, "brew upgrade gemini-cli");
-        assert!(update_plan(
-            "gemini",
-            &gemini,
-            Path::new("/custom/bin/gemini"),
-            HostPlatform::Unix,
-        )
-        .is_none());
+        assert!(
+            update_plan(gemini, Path::new("/custom/bin/gemini"), HostPlatform::Unix,).is_none()
+        );
     }
 
     #[test]
@@ -1459,7 +1345,25 @@ mod tests {
             .unwrap()
             .display
             .contains("hermes-agent.nousresearch.com/install.sh"));
-        assert!(hermes.pypi_package.is_some());
+        assert!(hermes.pypi_package.is_none());
+        assert_eq!(
+            extract_semver("Hermes Agent v0.21.3 (v2026.9.14)").as_deref(),
+            Some("0.21.3")
+        );
+        assert_eq!(
+            hermes_version_from_release(&serde_json::json!({
+                "tag_name": "v2026.9.14",
+                "name": "Hermes Agent v0.21.3 (v2026.9.14)"
+            }))
+            .as_deref(),
+            Some("0.21.3")
+        );
+        assert_eq!(
+            hermes_version_from_release(&serde_json::json!({
+                "tag_name": "v2026.9.14"
+            })),
+            None
+        );
     }
 
     #[test]
@@ -1503,8 +1407,7 @@ mod tests {
         );
 
         let update = update_plan(
-            "dsh",
-            &spec,
+            spec,
             Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"),
             HostPlatform::Windows,
         )

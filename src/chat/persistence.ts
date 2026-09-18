@@ -1,6 +1,14 @@
 import type { Window } from '@tauri-apps/api/window'
 import { api } from '../api/tauri'
 import { isWindows } from './platform'
+import { hashPath } from './browserRoute'
+import {
+  isRememberableChatRoute,
+  pathFromHash,
+} from './routeCodec'
+
+export { hashPath } from './browserRoute'
+export { isChatOnboardingPath, isChatPath, isChatSettingsPath } from './routeCodec'
 
 export const CHAT_DEFAULT_SIZE = { width: 1280, height: 800 }
 /** 侧栏收起时可缩到的最小尺寸 */
@@ -30,22 +38,6 @@ const CHAT_WINDOW_GEOMETRY_KEY = 'kivio-chat-window-geometry'
 const CHAT_WINDOW_SIZE_KEY = 'kivio-chat-window-size'
 const WINDOWS_MINIMIZED_POSITION_SENTINEL = -10000
 const MIN_VISIBLE_GEOMETRY_EDGE = 80
-
-export function hashPath(): string {
-  return window.location.hash.replace('#', '').split('?')[0]
-}
-
-export function isChatPath(path: string): boolean {
-  return path === 'chat' || path.startsWith('chat/')
-}
-
-export function isChatSettingsPath(path: string): boolean {
-  return path === 'chat/settings' || path.startsWith('chat/settings/')
-}
-
-export function isChatOnboardingPath(path: string): boolean {
-  return path === 'chat/onboarding' || path.startsWith('chat/onboarding/')
-}
 
 function getLocalStorageItem(key: string): string | null {
   try {
@@ -79,8 +71,8 @@ function forgetRememberedChatGeometry() {
 export function normalizeStoredChatRoute(value: string | null): string | null {
   if (!value) return null
   const route = value.startsWith('#') ? value : `#${value}`
-  const path = route.replace('#', '').split('?')[0]
-  if (!isChatPath(path) || isChatSettingsPath(path) || isChatOnboardingPath(path) || path === 'chat/popout' || path.startsWith('chat/popout/')) return null
+  const path = pathFromHash(route)
+  if (!isRememberableChatRoute(path)) return null
   return route
 }
 
@@ -101,7 +93,7 @@ let lastRouteCache: string | null = null
 
 export function rememberCurrentChatRoute() {
   const path = hashPath()
-  if (!path.startsWith('chat/') || isChatSettingsPath(path) || isChatOnboardingPath(path) || path === 'chat/popout' || path.startsWith('chat/popout/')) return
+  if (!isRememberableChatRoute(path)) return
   const route = window.location.hash || '#chat'
   lastRouteCache = route
   api.rememberChatLastRoute(route).catch((err) => {

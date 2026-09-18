@@ -13,8 +13,9 @@ use crate::external_agents::session::codex_app_server::{
 };
 use crate::external_agents::session::pi_rpc::parse_pi_models;
 use crate::external_agents::types::{
-    default_model_option, fallback_models_from_pairs, reasoning_options_from_pairs, DetectedAgent,
-    ModelProbeStrategy, ModelSource, NativeProviderSummary, RuntimeAgentDef, RuntimeModelOption,
+    default_model_option, fallback_models_from_pairs, reasoning_options_from_pairs,
+    CurrentConfigStrategy, DetectedAgent, ModelProbeStrategy, ModelSource, NativeProviderStrategy,
+    NativeProviderSummary, RuntimeAgentDef, RuntimeModelOption,
 };
 use crate::proc::NoConsoleWindow;
 
@@ -51,9 +52,9 @@ pub async fn detect_availability_single(def: &RuntimeAgentDef) -> DetectedAgent 
         version,
         models: fallback_models_from_pairs(def.fallback_models),
         reasoning_options: reasoning_options_from_pairs(def.reasoning_options),
-        sandbox_options: sandbox_options_for(def.id),
+        sandbox_options: sandbox_options_for(def),
         auth_status,
-        native_providers: native_provider_summaries(def.id),
+        native_providers: native_provider_summaries(def),
         disabled: false,
         supports_steering: def.supports_steering,
         supports_follow_up: def.supports_follow_up,
@@ -116,39 +117,36 @@ pub async fn detect_agent_models(def: &RuntimeAgentDef, cwd: &Path) -> AgentMode
             let probed_reasoning = probe.reasoning_options;
             let mut reasoning_by_model = probe.reasoning_by_model;
             // codex 的当前模型/推理不来自 model/list，而是读 config.toml 顶层键。
-            if def.id == "codex" {
-                let (cm, cr) = read_codex_current_config();
-                current_model = current_model.or(cm);
-                current_reasoning = current_reasoning.or(cr);
-            } else if def.id == "pi" {
-                // 不传 --thinking 时 pi 用 settings.json 的 defaultThinkingLevel；不读胶囊会恒显示「自动」。
-                let (cm, cr) = read_pi_current_config();
-                current_model = current_model.or(cm);
-                current_reasoning = current_reasoning.or(cr);
-            } else if def.id == "kimi" {
-                // kimi 走 ACP 但 session/new 常不上报 currentModelId → 降级读 config.toml。
-                // ACP 对 always_thinking 模型只给 options=[{on}]（已在 extract 里滤掉）；
-                // 真实 low/high/max 在 config 的 per-model support_efforts 里。
-                let (cm, cr) = read_kimi_current_config();
-                if current_model.is_none() {
-                    current_model = cm;
+            match def.current_config {
+                CurrentConfigStrategy::Codex => {
+                    let (cm, cr) = read_codex_current_config();
+                    current_model = current_model.or(cm);
+                    current_reasoning = current_reasoning.or(cr);
                 }
-                current_reasoning = current_reasoning.or(cr);
-                let efforts_map = read_kimi_model_efforts();
-                for (model_id, (opts, default_effort)) in efforts_map {
-                    if current_reasoning.is_none()
-                        && current_model.as_deref() == Some(model_id.as_str())
-                    {
-                        current_reasoning = default_effort;
+                CurrentConfigStrategy::Pi => {
+                    let (cm, cr) = read_pi_current_config();
+                    current_model = current_model.or(cm);
+                    current_reasoning = current_reasoning.or(cr);
+                }
+                CurrentConfigStrategy::Kimi => {
+                    let (cm, cr) = read_kimi_current_config();
+                    current_model = current_model.or(cm);
+                    current_reasoning = current_reasoning.or(cr);
+                    for (model_id, (opts, default_effort)) in read_kimi_model_efforts() {
+                        if current_reasoning.is_none()
+                            && current_model.as_deref() == Some(model_id.as_str())
+                        {
+                            current_reasoning = default_effort;
+                        }
+                        reasoning_by_model.insert(model_id, opts);
                     }
-                    reasoning_by_model.insert(model_id, opts);
                 }
-            } else if def.id == "claude" {
-                // claude 的 system/init 只报模型、不报推理档位 → 读 settings.json 的
-                // `effortLevel`（或 CLAUDE_EFFORT 环境变量）。此前漏了这条，胶囊上
-                // 恒显示「自动」，哪怕用户明明配了 effortLevel: "high"。
-                current_reasoning = current_reasoning
-                    .or_else(crate::external_agents::session::claude_init::claude_config_effort);
+                CurrentConfigStrategy::Claude => {
+                    current_reasoning = current_reasoning.or_else(
+                        crate::external_agents::session::claude_init::claude_config_effort,
+                    );
+                }
+                CurrentConfigStrategy::None => {}
             }
             // CLI 自报的多档优先；空（或已被滤掉的 On-only）回落 def 静态表。
             let mut reasoning_options = if probed_reasoning.is_empty() {
@@ -158,7 +156,10 @@ pub async fn detect_agent_models(def: &RuntimeAgentDef, cwd: &Path) -> AgentMode
             };
             // kimi / codex：当前模型若有 per-model effort 表，用该表作为全局 reasoning_options
             // （胶囊默认档位列表）。kimi 空列表 = always_thinking；codex 无表则保留探测默认模型档。
-            if matches!(def.id, "kimi" | "codex") {
+            if matches!(
+                def.current_config,
+                CurrentConfigStrategy::Kimi | CurrentConfigStrategy::Codex
+            ) {
                 if let Some(model) = current_model.as_deref() {
                     if let Some(opts) = reasoning_by_model.get(model) {
                         reasoning_options = opts.clone();
@@ -194,7 +195,7 @@ pub async fn detect_agent_models(def: &RuntimeAgentDef, cwd: &Path) -> AgentMode
             eprintln!("[external-agent] {} model probe failed: {err}", def.id);
             let models = fallback_models_from_pairs(def.fallback_models);
             // codex fallback：给每个真实模型挂上静态 effort，前端换模型时仍有档位可选。
-            let reasoning_by_model = if def.id == "codex" {
+            let reasoning_by_model = if matches!(def.current_config, CurrentConfigStrategy::Codex) {
                 models
                     .iter()
                     .filter(|m| m.id != "default")
@@ -315,19 +316,21 @@ const DSH_OFFICIAL_DEFAULT_MODEL_COUNT: usize = 3;
 
 /// 设置页「所有供应商」用的摘要。dsh 的官方 DeepSeek 不在 `llm-pi-ai` 里，
 /// 但官方 UI 会单独列它；缓存命中时也要重读，所以 `pub(crate)`。
-pub(crate) fn native_provider_summaries(agent_id: &str) -> Vec<NativeProviderSummary> {
-    if agent_id != "dsh" {
-        return Vec::new();
+pub(crate) fn native_provider_summaries(def: &RuntimeAgentDef) -> Vec<NativeProviderSummary> {
+    match def.native_providers {
+        NativeProviderStrategy::None => Vec::new(),
+        NativeProviderStrategy::DshSettings => {
+            let text = dsh_settings_path()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .unwrap_or_default();
+            parse_dsh_native_provider_summaries(&text).unwrap_or_else(|_| {
+                vec![official_deepseek_summary(
+                    DSH_OFFICIAL_DEFAULT_MODEL_COUNT,
+                    true,
+                )]
+            })
+        }
     }
-    let text = dsh_settings_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_default();
-    parse_dsh_native_provider_summaries(&text).unwrap_or_else(|_| {
-        vec![official_deepseek_summary(
-            DSH_OFFICIAL_DEFAULT_MODEL_COUNT,
-            true,
-        )]
-    })
 }
 
 fn official_deepseek_summary(model_count: usize, is_default: bool) -> NativeProviderSummary {
@@ -1005,54 +1008,19 @@ pub async fn detect_single_agent(def: &RuntimeAgentDef, cwd: &Path) -> DetectedA
         version,
         models,
         reasoning_options: reasoning_options_from_pairs(def.reasoning_options),
-        sandbox_options: sandbox_options_for(def.id),
+        sandbox_options: sandbox_options_for(def),
         auth_status,
-        native_providers: native_provider_summaries(def.id),
+        native_providers: native_provider_summaries(def),
         disabled: false,
         supports_steering: def.supports_steering,
         supports_follow_up: def.supports_follow_up,
     }
 }
 
-/// Sandbox/permission levels offered per agent. Ids are the agent's native flag values so
-/// `build_args` can pass them straight through (claude `--permission-mode`, codex `--sandbox`).
-/// Agents without a meaningful sandbox flag return an empty list (no capsule shown).
-pub fn sandbox_options_for(agent_id: &str) -> Vec<RuntimeModelOption> {
-    let pairs: &[(&str, &str)] = match agent_id {
-        "grok" => &[("ask", "工具请求时确认"), ("full", "完全放行 (默认)")],
-        "antigravity" => &[
-            ("default", "遵循 CLI 配置"),
-            ("plan", "计划"),
-            ("accept-edits", "接受编辑"),
-            ("sandbox", "沙箱"),
-            ("always-proceed", "完全放行"),
-        ],
-        "claude" => &[
-            ("plan", "计划 (只读)"),
-            // `default` 档 = 写文件 / 跑命令前弹卡片问用户（走 stdio 控制通道的
-            // `can_use_tool`，见 `defs::claude::claude_permission_prompt_args`）。
-            // **不是默认选中项** —— 默认仍是下面的 `bypassPermissions`，否则既有用户的
-            // 对话会突然开始弹卡片。
-            ("default", "每次确认"),
-            ("acceptEdits", "接受编辑"),
-            // 官方 `--permission-mode` 的另外两档。缺了它们，用户只能在「每次都问」和
-            // 「完全放行」之间跳，中间地带整个拿不到：
-            // - `auto`：带分类器的自动模式，连拒 3 次 / 累计 20 次后自动回落到询问。
-            // - `dontAsk`：只放行 permissions.allow 规则与只读命令集，其余一律拒、不打扰。
-            //   官方为 headless 点名推荐的就是这一档。
-            // （`manual` 是 `default` 的别名，不重复列。）
-            ("auto", "自动"),
-            ("dontAsk", "不打扰 (只放行安全操作)"),
-            ("bypassPermissions", "完全 (默认)"),
-        ],
-        "codex" | "dsh" => &[
-            ("read-only", "只读"),
-            ("workspace-write", "工作区写 (默认)"),
-            ("danger-full-access", "完全"),
-        ],
-        _ => &[],
-    };
-    pairs
+/// Materialize the sandbox capability declared by an agent definition for the frontend picker.
+/// Detection deliberately performs no agent-id branching; capability ownership stays with defs.
+pub fn sandbox_options_for(def: &RuntimeAgentDef) -> Vec<RuntimeModelOption> {
+    def.sandbox_options
         .iter()
         .map(|(id, label)| RuntimeModelOption {
             id: (*id).to_string(),
@@ -1140,13 +1108,13 @@ async fn probe_models(
 
     // dsh 的模型目录就在 `$DSH_HOME/settings.yaml`，结构化读文件比 boot 整棵 profile 快几秒，
     // 也不会为打开一个下拉框启动 agent / MCP / watcher。bin 只用于上面的已安装判定。
-    if def.id == "dsh" {
+    if matches!(def.model_probe, Some(ModelProbeStrategy::DshSettings)) {
         return read_dsh_settings_models();
     }
 
     // OpenCode's native command is the source of truth for merged global/project JSONC config.
     // Older versions without `models` fall through to ACP, then the static definition fallback.
-    if def.id == "opencode" {
+    if matches!(def.model_probe, Some(ModelProbeStrategy::OpenCodeThenAcp)) {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
         if let Some(models) = probe_opencode_models(def, bin, cwd, timeout_secs).await {
             return Ok(probe_ok(models, None, None, Vec::new(), HashMap::new()));
@@ -1155,7 +1123,7 @@ async fn probe_models(
 
     // Codex：对齐 desktop-cc-gui curated four；runtime 只 enrich 同 id。
     // list/debug 都失败时仍 Ok(curated)—— 下拉永不空（不再抛误导性 Err）。
-    if def.id == "codex" {
+    if matches!(def.model_probe, Some(ModelProbeStrategy::CodexAppServer)) {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(20);
         let (config_model, _) = read_codex_current_config();
         let runtime = if let Some(probe) = detect_codex_models(bin, cwd, timeout_secs).await {
@@ -1174,7 +1142,10 @@ async fn probe_models(
         ));
     }
 
-    if def.model_probe == Some(ModelProbeStrategy::Acp) {
+    if matches!(
+        def.model_probe,
+        Some(ModelProbeStrategy::Acp | ModelProbeStrategy::OpenCodeThenAcp)
+    ) {
         let args: Vec<&str> = def
             .model_probe_args
             .ok_or_else(|| "缺少 ACP 模型探测参数".to_string())?
@@ -1216,7 +1187,7 @@ async fn probe_models(
         };
     }
 
-    if def.id == "pi" {
+    if matches!(def.model_probe, Some(ModelProbeStrategy::PiRpc)) {
         if let Some(probe) = crate::external_agents::session::pi_rpc::detect_pi_models(
             bin,
             cwd,
@@ -1283,7 +1254,7 @@ async fn probe_models(
         ));
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    parse_models_list(def.id, text.as_ref())
+    parse_models_list(text.as_ref())
         .map(|models| probe_ok(models, None, None, Vec::new(), HashMap::new()))
         .ok_or_else(|| "未从列模型输出解析出模型".to_string())
 }
@@ -1443,61 +1414,31 @@ fn parse_opencode_models(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
     (out.len() > 1).then_some(out)
 }
 
-fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOption>> {
+fn parse_models_list(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() || trimmed.to_lowercase().contains("no models available") {
         return None;
     }
     let mut out = vec![default_model_option()];
-    // 曾是多 CLI 的 match（kimi `provider list --json` 分支随 kimi 迁 ACP 删除）；现在只剩
-    // codex 一家还走文本 list-models 探测。
-    if agent_id == "antigravity" {
-        let mut seen = HashSet::new();
-        for line in trimmed.lines() {
-            let Some((id, label)) = line.split_once('\t') else {
-                continue;
-            };
-            let (id, label) = (id.trim(), label.trim());
-            if id.is_empty()
-                || label.is_empty()
-                || id.chars().any(char::is_whitespace)
-                || !seen.insert(id.to_string())
-            {
-                continue;
-            }
-            out.push(RuntimeModelOption {
-                id: id.into(),
-                label: label.into(),
-                context_window_tokens: None,
-            });
+    // Antigravity's `models` command is a tab-separated catalog preceded by progress lines.
+    let mut seen = HashSet::new();
+    for line in trimmed.lines() {
+        let Some((id, label)) = line.split_once('\t') else {
+            continue;
+        };
+        let (id, label) = (id.trim(), label.trim());
+        if id.is_empty()
+            || label.is_empty()
+            || id.chars().any(char::is_whitespace)
+            || !seen.insert(id.to_string())
+        {
+            continue;
         }
-    }
-    if agent_id == "codex" {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if let Some(models) = value.get("models").and_then(|v| v.as_array()) {
-                for entry in models {
-                    let id = entry
-                        .get("slug")
-                        .or_else(|| entry.get("id"))
-                        .and_then(|v| v.as_str())?;
-                    out.push(RuntimeModelOption {
-                        id: id.to_string(),
-                        label: id.to_string(),
-                        // codex reports the real window per model (e.g. 272000); without
-                        // it the context gauge falls back to the generic 200K estimate.
-                        context_window_tokens: entry
-                            .get("context_window")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as u32),
-                    });
-                }
-            }
-        }
-        // "Default" = codex picks its own default (the first listed model), so give the
-        // synthetic entry that model's window instead of leaving it unknown.
-        if out.len() > 1 {
-            out[0].context_window_tokens = out[1].context_window_tokens;
-        }
+        out.push(RuntimeModelOption {
+            id: id.into(),
+            label: label.into(),
+            context_window_tokens: None,
+        });
     }
     if out.len() > 1 {
         Some(out)
@@ -1509,13 +1450,70 @@ fn parse_models_list(agent_id: &str, stdout: &str) -> Option<Vec<RuntimeModelOpt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_picker_options_are_materialized_from_registered_capabilities() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "claude",
+                &[
+                    "plan",
+                    "default",
+                    "acceptEdits",
+                    "auto",
+                    "dontAsk",
+                    "bypassPermissions",
+                ],
+            ),
+            (
+                "codex",
+                &["read-only", "workspace-write", "danger-full-access"],
+            ),
+            (
+                "dsh",
+                &["read-only", "workspace-write", "danger-full-access"],
+            ),
+            ("grok", &["ask", "strict", "full"]),
+            (
+                "antigravity",
+                &[
+                    "default",
+                    "plan",
+                    "accept-edits",
+                    "sandbox",
+                    "always-proceed",
+                ],
+            ),
+            ("pi", &[]),
+        ];
+
+        for (id, expected_ids) in cases {
+            let def = crate::external_agents::registry::get_agent_def(id).unwrap();
+            let actual = sandbox_options_for(def);
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|option| option.id.as_str())
+                    .collect::<Vec<_>>(),
+                *expected_ids,
+                "sandbox picker options for {id}"
+            );
+            assert!(
+                actual
+                    .iter()
+                    .all(|option| option.context_window_tokens.is_none()),
+                "sandbox options must not acquire model metadata"
+            );
+        }
+    }
+
     #[test]
     fn antigravity_models_parse_tab_separated_catalog_not_log_lines() {
-        let models = parse_models_list("antigravity", "Fetching available models...\nmy-model\tMy Model\nmy-model\tDuplicate\nother\tOther Model\n").unwrap();
+        let models = parse_models_list("Fetching available models...\nmy-model\tMy Model\nmy-model\tDuplicate\nother\tOther Model\n").unwrap();
         assert_eq!(models.len(), 3);
         assert_eq!(models[1].id, "my-model");
         assert_eq!(models[1].label, "My Model");
-        assert!(parse_models_list("antigravity", "Authentication required").is_none());
+        assert!(parse_models_list("Authentication required").is_none());
     }
 
     #[tokio::test]

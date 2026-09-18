@@ -6,15 +6,15 @@ import {
 } from 'lucide-react'
 import { Select, Input, SettingsGroup, FieldBlock, Toggle } from '../components'
 import { Button, IconButton } from '../../components/Button'
-import { ModelIcon } from '../../chat/ModelIcon'
+import { ModelIcon } from '../../chat/public/modelIcons'
 import { PROVIDER_PRESETS } from '../providerPresets'
 import { ProviderRequestPanel } from '../ProviderRequestPanel'
 import { ProviderOAuthPanel } from '../ProviderOAuthPanel'
 import { ProviderUsageCard } from '../ProviderUsageCard'
 import { resolveModelInfo } from '../../data/modelMatching'
-import { api, isOpenCodeFree, normalizeProviderApiFormat, clampedActiveKeyIndex, activeKeyIndexAfterRemove } from '../../api/tauri'
+import { api, isOpenCodeFree, clampedActiveKeyIndex, activeKeyIndexAfterRemove } from '../../api/tauri'
 import type { I18n, Lang } from '../i18n'
-import type { ModelProvider } from '../../api/tauri'
+import type { ModelProvider, ProviderApiFormat } from '../../api/tauri'
 
 /** 右栏：选中供应商的端点/协议/gzip/密钥池/模型列表，以及通往「请求配置」二级页的入口。 */
 export function ProviderDetail({
@@ -84,16 +84,16 @@ export function ProviderDetail({
           <Input
             className="min-w-0 flex-1"
             value={provider.baseUrl}
-            disabled={Boolean(provider.request?.oauth)}
+            disabled={Boolean(provider.request.oauth)}
             onChange={(v) => onUpdateProvider(provider.id, { baseUrl: v })}
             placeholder="https://api.openai.com/v1"
             mono
           />
           <Select
             className="w-[11.5rem] shrink-0"
-            value={normalizeProviderApiFormat(provider.apiFormat)}
-            disabled={Boolean(provider.request?.oauth)}
-            onChange={(apiFormat) => onUpdateProvider(provider.id, { apiFormat })}
+            value={provider.apiFormat}
+            disabled={Boolean(provider.request.oauth)}
+            onChange={(apiFormat) => onUpdateProvider(provider.id, { apiFormat: apiFormat as ProviderApiFormat })}
             options={[
               { value: 'openai_chat', label: 'OpenAI Chat' },
               { value: 'openai_responses', label: 'OpenAI Responses' },
@@ -106,7 +106,7 @@ export function ProviderDetail({
       </FieldBlock>
 
       {isOpenCodeFree(provider) && <p className="text-sm opacity-70">{lang === 'zh' ? '免费模型，无需账号、API Key 或安装 OpenCode。管理模型可刷新当前免费列表。' : 'Free models: no account, API key or OpenCode installation required. Manage models to refresh the free catalog.'}</p>}
-      {!provider.request?.oauth && !isOpenCodeFree(provider) && <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
+      {!provider.request.oauth && !isOpenCodeFree(provider) && <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
         <div className="space-y-1.5">
           {(() => {
             // 命中快速预设 baseUrl 时，给出「获取 API Key」外链引导用户申请。
@@ -240,11 +240,11 @@ export function ProviderDetail({
           <span className="kv-subpage-entry-hint">{t.requestConfigHint}</span>
         </span>
         <span className="kv-subpage-entry-trail">
-          {(provider.request?.customHeaders?.length ?? 0) > 0 && (
+          {provider.request.customHeaders.length > 0 && (
             <span className="kv-tag ok tabular-nums">
               {lang === 'zh'
-                ? `${provider.request?.customHeaders?.length} 个头`
-                : `${provider.request?.customHeaders?.length} headers`}
+                ? `${provider.request.customHeaders.length} 个头`
+                : `${provider.request.customHeaders.length} headers`}
             </span>
           )}
           <span className="kv-subpage-entry-go">

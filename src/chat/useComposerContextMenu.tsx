@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type RefObject } from 'react'
-import { TextEditContextMenu } from '../settings/TextEditContextMenu'
+import { TextEditContextMenu } from '../settings/public/textEditing'
 import { copyToClipboard } from '../utils/clipboard'
 import { api } from '../api/tauri'
 import { isTauriRuntime } from './utils'

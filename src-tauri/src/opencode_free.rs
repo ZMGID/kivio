@@ -13,7 +13,11 @@ mod tests {
     #[test]
     fn opencode_free_is_scoped_to_official_zen_and_free_models() {
         assert!(is_endpoint("https://opencode.ai/zen/v1/"));
-        for url in ["https://opencode.ai/zen/go/v1", "https://opencode.ai.evil/zen/v1", "http://opencode.ai/zen/v1"] {
+        for url in [
+            "https://opencode.ai/zen/go/v1",
+            "https://opencode.ai.evil/zen/v1",
+            "http://opencode.ai/zen/v1",
+        ] {
             assert!(!is_endpoint(url));
         }
         assert!(is_free_model("deepseek-v4-flash-free"));

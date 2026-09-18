@@ -121,7 +121,7 @@ export function AppearanceGroup({
               <button
                 key={option.value}
                 type="button"
-                className={(settings.theme || 'system') === option.value ? 'active' : ''}
+                className={settings.theme === option.value ? 'active' : ''}
                 onClick={() => onUpdateSettings({ theme: option.value as SettingsData['theme'] })}
                 data-tauri-drag-region="false"
               >
@@ -233,13 +233,13 @@ export function BehaviorGroup({
     <SettingsGroup title={lang === 'zh' ? '行为' : 'Behavior'}>
       <SettingRow label={t.launchAtStartup}>
         <Toggle
-          checked={settings.launchAtStartup ?? false}
+          checked={settings.launchAtStartup}
           onChange={(v) => onUpdateSettings({ launchAtStartup: v })}
         />
       </SettingRow>
       <SettingRow label={t.launchMinimizedToTray} description={t.launchMinimizedToTrayDesc}>
         <Toggle
-          checked={settings.launchMinimizedToTray ?? false}
+          checked={settings.launchMinimizedToTray}
           onChange={(v) => onUpdateSettings({ launchMinimizedToTray: v })}
         />
       </SettingRow>
@@ -252,28 +252,28 @@ export function BehaviorGroup({
       </SettingRow>
       <SettingRow label={t.chatCompletionNotifications} description={t.chatCompletionNotificationsDesc}>
         <Toggle
-          checked={settings.chatCompletionNotifications ?? false}
+          checked={settings.chatCompletionNotifications}
           onChange={(v) => onUpdateSettings({ chatCompletionNotifications: v })}
           ariaLabel={t.chatCompletionNotifications}
         />
       </SettingRow>
       <SettingRow label={t.retryEnabled}>
         <Toggle
-          checked={settings.retryEnabled ?? true}
+          checked={settings.retryEnabled}
           onChange={(v) => onUpdateSettings({ retryEnabled: v })}
           ariaLabel={t.retryEnabled}
         />
       </SettingRow>
-      {settings.retryEnabled !== false && (
+      {settings.retryEnabled && (
         <SettingRow label={t.retryAttempts}>
           <Input
             type="number"
             value={retryAttemptsInput}
             onChange={onRetryAttemptsChange}
             onBlur={onRetryAttemptsBlur}
-            placeholder="3"
+            placeholder="5"
             min={1}
-            max={5}
+            max={8}
             className="!w-20 text-center"
           />
         </SettingRow>

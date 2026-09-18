@@ -1,4 +1,4 @@
-import type { I18n } from '../settings/i18n'
+import type { I18n } from '../settings/public/i18n'
 import type { ContextUsageSegment, ConversationContextState } from './types'
 
 /** 与 `chat/agent/compaction.rs` 中 `AUTO_COMPACT_RATIO`（0.90）保持一致 */

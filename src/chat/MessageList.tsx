@@ -51,7 +51,7 @@ import {
   setCachedRowMeasurement,
   shouldAdjustChatItemSizeChange,
 } from './messageListVirtualization'
-import type { Lang } from '../settings/i18n'
+import type { Lang } from '../settings/public/i18n'
 import { measureChatSurface, recordChatPerfSample, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import {
   beginMessageNavigationHydrate,

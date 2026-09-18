@@ -1,0 +1,51 @@
+{
+  "input": {
+    "message": "Configure a local preview",
+    "requestedSchema": {
+      "type": "object",
+      "required": ["retries", "confirm"],
+      "properties": {
+        "retries": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "confirm": { "type": "boolean" },
+        "note": { "type": "string", "maxLength": 30 },
+        "environment": { "type": "string", "enum": ["local", "preview"] }
+      }
+    }
+  },
+  "answers": {
+    "retries": { "selected_option_ids": [], "custom_text": "0" },
+    "confirm": { "selected_option_ids": ["false"], "custom_text": null },
+    "note": { "selected_option_ids": [], "custom_text": "" }
+  },
+  "expectedContent": { "retries": 0, "confirm": false, "note": "" },
+  "expectedQuestions": [
+    {
+      "id": "confirm", "prompt": "confirm\n\n必填",
+      "options": [
+        { "id": "true", "label": "是", "description": null },
+        { "id": "false", "label": "否", "description": null }
+      ],
+      "allowMultiple": false, "allowCustom": false, "required": true,
+      "valueSchema": { "type": "boolean" }
+    },
+    {
+      "id": "environment", "prompt": "environment",
+      "options": [
+        { "id": "0", "label": "local", "description": null },
+        { "id": "1", "label": "preview", "description": null }
+      ],
+      "allowMultiple": false, "allowCustom": false, "required": false,
+      "valueSchema": { "type": "string", "enum": ["local", "preview"] }
+    },
+    {
+      "id": "note", "prompt": "note", "options": [],
+      "allowMultiple": false, "allowCustom": true, "required": false,
+      "valueSchema": { "type": "string", "maxLength": 30 }
+    },
+    {
+      "id": "retries", "prompt": "retries\n\n必填", "options": [],
+      "allowMultiple": false, "allowCustom": true, "required": true,
+      "valueSchema": { "type": "integer", "minimum": 0, "maximum": 5 }
+    }
+  ]
+}

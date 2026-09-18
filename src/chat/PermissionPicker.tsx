@@ -1,6 +1,6 @@
 import { memo, useMemo, useRef, useState } from 'react'
 import { Check } from 'lucide-react'
-import { useT } from '../settings/i18n'
+import { useT } from '../settings/public/i18n'
 import { derivePermissionModes } from './permissionModes'
 import { chatTitlebarIconButtonClass } from './platform'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'

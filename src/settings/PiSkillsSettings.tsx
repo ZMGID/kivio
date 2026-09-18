@@ -9,7 +9,11 @@ import {
   Trash2,
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { chatApi, type PiSkillEntry, type PiSkillInventory } from '../chat/api'
+import {
+  piSkillsSettingsApi,
+  type PiSkillEntry,
+  type PiSkillInventory,
+} from '../chat/public/piSkillsSettings'
 import { Button, IconButton } from '../components/Button'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from './i18n'
@@ -35,7 +39,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
     setLoading(true)
     setError(null)
     try {
-      setInventory(await chatApi.piSkillsInventory())
+      setInventory(await piSkillsSettingsApi.piSkillsInventory())
     } catch (nextError) {
       setError(errorMessage(nextError))
     } finally {
@@ -71,7 +75,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
     if (typeof picked !== 'string') return
     await runAction(
       'add-path',
-      () => chatApi.piSkillAddPath(picked),
+      () => piSkillsSettingsApi.piSkillAddPath(picked),
       t.externalAgentsPiSkillsPathAdded,
     )
   }
@@ -117,7 +121,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
             size="sm"
             label={t.externalAgentsPiSkillsOpenPiDir}
             disabled={busy !== null}
-            onClick={() => void chatApi.piSkillsOpenDir('pi')}
+            onClick={() => void piSkillsSettingsApi.piSkillsOpenDir('pi')}
           >
             <FolderOpen size={13} />
           </IconButton>
@@ -125,7 +129,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
             size="sm"
             label={t.externalAgentsPiSkillsOpenAgentsDir}
             disabled={busy !== null}
-            onClick={() => void chatApi.piSkillsOpenDir('agents')}
+            onClick={() => void piSkillsSettingsApi.piSkillsOpenDir('agents')}
           >
             <BookOpen size={13} />
           </IconButton>
@@ -152,7 +156,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
               checked={inventory?.skillCommandsEnabled ?? true}
               disabled={loading || busy !== null || !inventory}
               onChange={(enabled) =>
-                void runAction('commands', () => chatApi.piSkillCommandsSetEnabled(enabled))
+                void runAction('commands', () => piSkillsSettingsApi.piSkillCommandsSetEnabled(enabled))
               }
             />
           </div>
@@ -187,7 +191,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
                 label={t.externalAgentsPiSkillsRemovePath}
                 disabled={busy !== null}
                 onClick={() =>
-                  void runAction('remove-path', () => chatApi.piSkillRemovePath(entry.path))
+                  void runAction('remove-path', () => piSkillsSettingsApi.piSkillRemovePath(entry.path))
                 }
               >
                 <Trash2 size={12} />
@@ -245,11 +249,11 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
                     lang={lang}
                     busy={busy}
                     onToggle={(enabled) =>
-                      runAction(`toggle:${skill.path}`, () => chatApi.piSkillSetEnabled(skill, enabled))
+                      runAction(`toggle:${skill.path}`, () => piSkillsSettingsApi.piSkillSetEnabled(skill, enabled))
                     }
-                    onOpen={() => chatApi.piSkillOpen(skill)}
+                    onOpen={() => piSkillsSettingsApi.piSkillOpen(skill)}
                     onRemove={() =>
-                      runAction(`remove:${skill.path}`, () => chatApi.piSkillRemove(skill))
+                      runAction(`remove:${skill.path}`, () => piSkillsSettingsApi.piSkillRemove(skill))
                     }
                   />
                 ))}

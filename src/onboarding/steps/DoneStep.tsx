@@ -1,6 +1,6 @@
 import type { Settings } from '../../api/tauri'
-import type { I18n } from '../../settings/i18n'
-import { formatHotkey, getPlatform } from '../../settings/utils'
+import type { I18n } from '../../settings/public/i18n'
+import { formatHotkey, getPlatform } from '../../settings/public/hotkeys'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'
 import { webSearchConfigured } from '../validation'
 
@@ -15,9 +15,9 @@ function resolveModelLabel(settings: Settings, providerId: string, model: string
   return `${provider.name} · ${model || '—'}`
 }
 
-function formatHotkeyLabel(hotkey: string, fallback: string): string {
-  const value = hotkey.trim() || fallback
-  return formatHotkey(value, getPlatform()).join(' + ') || value
+function formatHotkeyLabel(hotkey: string, emptyLabel: string): string {
+  const value = hotkey.trim()
+  return value ? (formatHotkey(value, getPlatform()).join(' + ') || value) : emptyLabel
 }
 
 function SummaryRow({ label, value, multiline = false }: { label: string; value: string; multiline?: boolean }) {
@@ -33,21 +33,21 @@ function SummaryRow({ label, value, multiline = false }: { label: string; value:
 
 export function DoneStep({ t, settings }: DoneStepProps) {
   const modelRows = [
-    { label: t.onboardingDoneQuickTranslateModel, providerId: settings.screenshotTranslation?.providerId || '', model: settings.screenshotTranslation?.model || '' },
-    { label: t.onboardingDoneLensModel, providerId: settings.lens?.providerId || '', model: settings.lens?.model || '' },
+    { label: t.onboardingDoneQuickTranslateModel, providerId: settings.screenshotTranslation.providerId, model: settings.screenshotTranslation.model },
+    { label: t.onboardingDoneLensModel, providerId: settings.lens.providerId || '', model: settings.lens.model || '' },
   ]
 
   const hotkeyRows = [
-    { label: t.onboardingDoneHotkeyTranslator, value: formatHotkeyLabel(settings.hotkey, 'CommandOrControl+Alt+T') },
-    { label: t.onboardingDoneHotkeyScreenshot, value: formatHotkeyLabel(settings.screenshotTranslation?.hotkey || '', 'CommandOrControl+Shift+A') },
-    { label: t.onboardingDoneHotkeySelectedText, value: formatHotkeyLabel(settings.screenshotTranslation?.textHotkey || '', 'CommandOrControl+Shift+T') },
+    { label: t.onboardingDoneHotkeyTranslator, value: formatHotkeyLabel(settings.hotkey, t.onboardingDoneNotConfigured) },
+    { label: t.onboardingDoneHotkeyScreenshot, value: formatHotkeyLabel(settings.screenshotTranslation.hotkey, t.onboardingDoneNotConfigured) },
+    { label: t.onboardingDoneHotkeySelectedText, value: formatHotkeyLabel(settings.screenshotTranslation.textHotkey, t.onboardingDoneNotConfigured) },
     {
       label: t.onboardingDoneHotkeyReplace,
-      value: settings.screenshotTranslation?.replaceEnabled === false
+      value: settings.screenshotTranslation.replaceEnabled === false
         ? t.onboardingDoneNotConfigured
-        : formatHotkeyLabel(settings.screenshotTranslation?.replaceHotkey || '', 'CommandOrControl+Shift+R'),
+        : formatHotkeyLabel(settings.screenshotTranslation.replaceHotkey || '', t.onboardingDoneNotConfigured),
     },
-    { label: t.onboardingDoneHotkeyLens, value: formatHotkeyLabel(settings.lens?.hotkey || '', 'CommandOrControl+Shift+G') },
+    { label: t.onboardingDoneHotkeyLens, value: formatHotkeyLabel(settings.lens.hotkey, t.onboardingDoneNotConfigured) },
   ]
 
   return (
@@ -65,7 +65,7 @@ export function DoneStep({ t, settings }: DoneStepProps) {
             ))}
             <SummaryRow
               label={t.onboardingDoneWebSearch}
-              value={webSearchConfigured(settings) && settings.lens?.webSearch?.enabled
+              value={webSearchConfigured(settings) && settings.lens.webSearch?.enabled
                 ? t.onboardingDoneConfigured
                 : t.onboardingDoneNotConfigured}
             />
