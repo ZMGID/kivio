@@ -4,7 +4,6 @@ import {
   Download, Upload, ArrowLeft,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { applyModelCatalog } from '../data/modelCatalog'
 import {
   api,
   type Settings as SettingsType,
@@ -36,7 +35,7 @@ import {
 } from './NavIcons'
 import { SessionCenter, type SessionCenterProps } from '../chat/public/sessionCenter'
 import { PluginCenter, type PluginCenterSection } from '../chat/public/pluginCenter'
-import { buildHotkey, formatHotkeyError, getPlatform } from './utils'
+import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
 import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
@@ -55,6 +54,10 @@ import { ComputerControlTab } from './tabs/ComputerControlTab'
 import { AppearanceGroup, BehaviorGroup, PermissionsGroup } from './tabs/GeneralTab'
 import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
 import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
+import { useProviderCatalogController } from './useProviderCatalogController'
+import { useSettingsBackupController } from './useSettingsBackupController'
+import { useSettingsHotkeyRecorder, type HotkeyScopeKey } from './useSettingsHotkeyRecorder'
+import { useProviderModalController } from './useProviderModalController'
 import { ModelDetailDrawer } from './ModelDetailDrawer'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
 import { Button } from '../components/Button'
@@ -103,15 +106,7 @@ export interface SettingsShellHandle {
 }
 
 /** 快捷键作用域。原本是组件体内的局部 type，抽 HotkeysTab 后需要跨模块共享，提到模块作用域。 */
-export type HotkeyScopeKey =
-  | 'main'
-  | 'chat'
-  | 'closeChat'
-  | 'screenshotTranslation'
-  | 'screenshotTranslationText'
-  | 'screenshotTranslationReplace'
-  | 'screenshotAnnotate'
-  | 'lens'
+export type { HotkeyScopeKey } from './useSettingsHotkeyRecorder'
 
 function resolveEffectiveChatModel(settings: SettingsData): { provider?: ModelProvider, model: string } {
   const selected = resolvePreferredChatModel({
@@ -188,21 +183,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   useEffect(() => {
     if (initialTab) navigateToSettingsTab(initialTab)
   }, [initialTab, navigateToSettingsTab])
-  const [saveError, setSaveError] = useState('')
   // 热键被占用未能注册的警告（保存已成功，只是提醒，不阻断）。
   const [saveWarning, setSaveWarning] = useState('')
-  const [confirmDeleteProviderId, setConfirmDeleteProviderId] = useState<string | null>(null)
-  const [recordingTarget, setRecordingTarget] = useState<HotkeyScopeKey | null>(null)
+  const hotkeyRecorder = useSettingsHotkeyRecorder((update) => editorController.edit(update))
+  const recordingTarget = hotkeyRecorder.target
   const [defaultPrompts, setDefaultPrompts] = useState<DefaultPromptTemplates | null>(null)
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [uiFontPxInput, setUiFontPxInput] = useState('')
   const [systemFonts, setSystemFonts] = useState<string[]>([])
   const permissions = useSettingsPermissions()
-  const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
-  const [modelPickerProviderId, setModelPickerProviderId] = useState<string | null>(null)
-  const [drawerModel, setDrawerModel] = useState<{ providerId: string; model: string } | null>(null)
-  const [modelTestProviderId, setModelTestProviderId] = useState<string | null>(null)
-  const [selectedProviderId, setSelectedProviderId] = useState('')
+  const providerModals = useProviderModalController(settings?.providers.map((provider) => provider.id) ?? [])
+  const selectedProviderId = providerModals.selectedId
+  const modelPickerProviderId = providerModals.pickerId
+  const confirmDeleteProviderId = providerModals.deleteId
+  const drawerModel = providerModals.drawerModel
+  const modelTestProviderId = providerModals.testId
+  const { closePicker, cancelDelete } = providerModals
   const requestWindowFocus = useWindowInteractionFocus()
   const updates = useSettingsUpdateController(settings ? settings.autoCheckUpdate : null)
   const platform = getPlatform()
@@ -220,13 +216,32 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const lang = settings?.settingsLanguage || 'zh'
   const memoryEditor = useSettingsMemoryEditor(undefined, lang, activeTab === 'memory')
+  const providerCatalog = useProviderCatalogController({
+    fetch: api.fetchModelCatalog,
+    getProvider: (id) => editorController.snapshot.settings?.providers.find((provider) => provider.id === id),
+    apply: (id, updates) => editorController.edit((current) => applyProviderDraftIntent(current, { type: 'update', id, updates })),
+  })
+  const settingsBackup = useSettingsBackupController({
+    pickImport: async () => {
+      const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
+      return typeof selected === 'string' ? selected : null
+    },
+    pickExport: () => save({
+      defaultPath: 'kivio-settings-backup.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    }),
+    import: (path) => editorController.import(path),
+    export: (path) => api.exportSettings(path),
+  }, lang)
   const t = i18n[lang]
   const controllerSaveError = editorView.saveError.startsWith('Settings conflict: ')
     ? `${lang === 'zh' ? '设置冲突：' : 'Settings conflict: '}${editorView.saveError.slice('Settings conflict: '.length)}`
     : editorView.saveError.startsWith('Save failed: ')
       ? `${lang === 'zh' ? '保存失败：' : 'Save failed: '}${formatHotkeyError(editorView.saveError.slice('Save failed: '.length), lang)}`
       : editorView.saveError
-  const visibleSaveError = saveError || controllerSaveError
+  const visibleSaveError = providerCatalog.error
+    ? `${lang === 'zh' ? '获取模型失败：' : 'Could not fetch models: '}${providerCatalog.error}`
+    : controllerSaveError
   const chatTools = settings?.chatTools
   const nativeBuiltinToolsEnabled = chatTools ? hasEnabledNativeBuiltinTool(chatTools.nativeTools) : false
   const skillRuntimeEnabled = chatTools ? hasEnabledSkillRuntime(chatTools.nativeTools) : false
@@ -379,16 +394,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
   }, [])
 
-  useEffect(() => {
-    if (!settings?.providers.length) {
-      setSelectedProviderId('')
-      return
-    }
-    if (!selectedProviderId || !settings.providers.some((provider) => provider.id === selectedProviderId)) {
-      setSelectedProviderId(settings.providers[0].id)
-    }
-  }, [selectedProviderId, settings?.providers])
-
   /**
    * 立即把当前草稿写盘。自动保存与关闭前 flush 共用。
    * 保存中若草稿又变了，收尾后会再跑一轮，避免丢字。
@@ -403,10 +408,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   // 错误 / 热键警告：短暂 toast，几秒后自动消失
   useEffect(() => {
-    if (!saveError && !saveWarning) return
+    if (!saveWarning) return
     if (toastClearTimerRef.current) clearTimeout(toastClearTimerRef.current)
     toastClearTimerRef.current = setTimeout(() => {
-      setSaveError('')
       setSaveWarning('')
       toastClearTimerRef.current = null
     }, 5000)
@@ -416,7 +420,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         toastClearTimerRef.current = null
       }
     }
-  }, [saveError, saveWarning])
+  }, [saveWarning])
 
   /**
    * 关闭设置页：普通关闭等待 flush；切去对话等导航动作立即退场，保存留在后台完成。
@@ -447,7 +451,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         if (e.key === 'Escape') {
           e.preventDefault()
           e.stopPropagation()
-          setModelPickerProviderId(null)
+          closePicker()
         }
         return
       }
@@ -457,7 +461,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         if (e.key === 'Escape') {
           e.preventDefault()
           e.stopPropagation()
-          setConfirmDeleteProviderId(null)
+          cancelDelete()
         }
         return
       }
@@ -476,6 +480,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     recordingTarget,
     confirmDeleteProviderId,
     modelPickerProviderId,
+    closePicker,
+    cancelDelete,
     hasUnsavedChanges,
     persistSettingsNow,
   ])
@@ -519,9 +525,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [setSettings])
 
-  // 设置备份：导出/导入 JSON。导入会覆盖全部设置并立即生效。
-  const [backupStatus, setBackupStatus] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
-
   // 哪些 API Key 输入框处于明文显示（按 `${providerId}-${idx}` 记），默认全部隐藏。
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
   const [gzipInfoOpen, setGzipInfoOpen] = useState<Set<string>>(new Set())
@@ -533,31 +536,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       return next
     })
   }, [])
-
-  const handleExportSettings = useCallback(async () => {
-    try {
-      const path = await save({
-        defaultPath: 'kivio-settings-backup.json',
-        filters: [{ name: 'JSON', extensions: ['json'] }],
-      })
-      if (!path) return
-      await api.exportSettings(path)
-      setBackupStatus({ kind: 'ok', msg: lang === 'zh' ? '设置已导出。' : 'Settings exported.' })
-    } catch (err) {
-      setBackupStatus({ kind: 'err', msg: `${lang === 'zh' ? '导出失败：' : 'Export failed: '}${err}` })
-    }
-  }, [lang])
-
-  const handleImportSettings = useCallback(async () => {
-    try {
-      const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
-      if (!selected || typeof selected !== 'string') return
-      await editorController.import(selected)
-      setBackupStatus({ kind: 'ok', msg: lang === 'zh' ? '设置已导入并生效。' : 'Settings imported and applied.' })
-    } catch (err) {
-      setBackupStatus({ kind: 'err', msg: `${lang === 'zh' ? '导入失败：' : 'Import failed: '}${err}` })
-    }
-  }, [editorController, lang])
 
   const handleRestartOnboarding = useCallback(async () => {
     if (!settings) return
@@ -661,7 +639,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     if (!settings) return
     const newId = `provider-${Date.now()}`
     dispatchProviderIntent({ type: 'add', id: newId })
-    setSelectedProviderId(newId)
+    providerModals.select(newId)
   }
 
   /** 用预设一键添加 provider —— baseUrl 和默认模型已填好，用户只需填 API key */
@@ -669,12 +647,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     if (!settings) return
     const newId = `provider-${Date.now()}`
     dispatchProviderIntent({ type: 'add', id: newId, preset })
-    setSelectedProviderId(newId)
+    providerModals.select(newId)
   }
 
   const deleteProvider = (id: string) => {
     if (!settings) return
-    if (modelPickerProviderId === id) setModelPickerProviderId(null)
+    providerModals.providerDeleted(id)
     dispatchProviderIntent({ type: 'delete', id })
   }
 
@@ -711,41 +689,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     dispatchProviderIntent({ type: 'reset-override', id: providerId, model: modelName })
   }, [dispatchProviderIntent])
 
-  /**
-   * 从提供商 API 获取可用模型列表
-   */
-  const fetchModels = async (providerId: string) => {
-    if (!settings || fetchingProviderId) return
-    setFetchingProviderId(providerId)
-    try {
-      const currentProvider = settings.providers.find(p => p.id === providerId)
-      const catalog = await api.fetchModelCatalog(providerId, currentProvider
-        ? {
-          id: currentProvider.id,
-          baseUrl: currentProvider.baseUrl,
-          apiKeys: currentProvider.apiKeys,
-          activeKeyIndex: currentProvider.activeKeyIndex,
-          apiFormat: currentProvider.apiFormat,
-          // 草稿可能尚未落盘，这里必须带上编辑中的请求配置，
-          // 否则拉列表用的头和真实聊天不一致。
-          request: currentProvider.request,
-        }
-        : undefined)
-      if (currentProvider) {
-        updateProvider(providerId, applyModelCatalog(currentProvider, catalog))
-      }
-    } catch (err) {
-      console.error('Failed to fetch models:', err)
-      setSaveError(`${lang === 'zh' ? '获取模型失败：' : 'Could not fetch models: '}${String(err)}`)
-    } finally {
-      setFetchingProviderId(null)
-    }
-  }
-
   const openModelPicker = (providerId: string) => {
-    if (!settings) return
-    if (!settings.providers.some((p) => p.id === providerId)) return
-    setModelPickerProviderId(providerId)
+    providerModals.openPicker(providerId)
   }
 
   /**
@@ -807,48 +752,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       }
     })
   }, [setSettings])
-
-  /**
-   * 切换快捷键录制状态
-   */
-  const toggleRecording = (target: HotkeyScopeKey) => {
-    setRecordingTarget((current) => (current === target ? null : target))
-  }
-
-  // 快捷键录制监听
-  useEffect(() => {
-    if (!recordingTarget) return
-    const handler = (e: KeyboardEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      if (e.key === 'Escape') {
-        setRecordingTarget(null)
-        return
-      }
-      const hotkey = buildHotkey(e)
-      if (!hotkey) return
-      if (recordingTarget === 'main') {
-        updateSettings({ hotkey })
-      } else if (recordingTarget === 'chat') {
-        updateSettings({ chatHotkey: hotkey })
-      } else if (recordingTarget === 'closeChat') {
-        updateSettings({ closeChatHotkey: hotkey })
-      } else if (recordingTarget === 'screenshotTranslation') {
-        updateScreenshotTranslation({ hotkey })
-      } else if (recordingTarget === 'screenshotTranslationText') {
-        updateScreenshotTranslation({ textHotkey: hotkey })
-      } else if (recordingTarget === 'screenshotTranslationReplace') {
-        updateScreenshotTranslation({ replaceHotkey: hotkey })
-      } else if (recordingTarget === 'screenshotAnnotate') {
-        updateScreenshotAnnotate({ hotkey })
-      } else if (recordingTarget === 'lens') {
-        updateLens({ hotkey })
-      }
-      setRecordingTarget(null)
-    }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
-  }, [recordingTarget, updateLens, updateScreenshotAnnotate, updateScreenshotTranslation, updateSettings])
 
   const loadingShellClass =
     variant === 'embedded'
@@ -1150,7 +1053,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
                         size="sm"
-                        onClick={handleExportSettings}
+                        onClick={settingsBackup.exportBackup}
+                        disabled={settingsBackup.busy}
                         data-tauri-drag-region="false"
                       >
                         <Download size={11} />
@@ -1158,15 +1062,16 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       </Button>
                       <Button
                         size="sm"
-                        onClick={handleImportSettings}
+                        onClick={settingsBackup.importBackup}
+                        disabled={settingsBackup.busy}
                         data-tauri-drag-region="false"
                       >
                         <Upload size={11} />
                         {lang === 'zh' ? '导入设置' : 'Import'}
                       </Button>
-                      {backupStatus && (
-                        <span className={`text-[12px] ${backupStatus.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
-                          {backupStatus.msg}
+                      {settingsBackup.status && (
+                        <span className={`text-[12px] ${settingsBackup.status.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
+                          {settingsBackup.status.msg}
                         </span>
                       )}
                     </div>
@@ -1225,7 +1130,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 settings={settings}
                 t={t}
                 recordingTarget={recordingTarget}
-                onToggleRecording={toggleRecording}
+                onToggleRecording={hotkeyRecorder.toggle}
                 conflictMessageFor={conflictMessageFor}
                 hotkeyConflicts={hotkeyConflicts}
                 onUpdateSettings={updateSettings}
@@ -1420,13 +1325,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 selectedProvider={selectedProvider}
                 revealedKeys={revealedKeys}
                 gzipInfoOpen={gzipInfoOpen}
-                onSelectProvider={setSelectedProviderId}
+                onSelectProvider={providerModals.select}
                 onReorderProviders={reorderProviders}
                 onAddProvider={addProvider}
                 onAddProviderFromPreset={addProviderFromPreset}
                 onUpdateProvider={updateProvider}
                 onSetProviderIcon={setProviderIcon}
-                onRequestDeleteProvider={setConfirmDeleteProviderId}
+                onRequestDeleteProvider={providerModals.requestDelete}
                 onToggleGzipInfo={(id) => setGzipInfoOpen((prev) => {
                   const next = new Set(prev)
                   if (next.has(id)) next.delete(id)
@@ -1435,8 +1340,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 })}
                 onToggleKeyReveal={toggleKeyReveal}
                 onOpenModelPicker={openModelPicker}
-                onOpenModelTest={setModelTestProviderId}
-                onOpenModelDrawer={setDrawerModel}
+                onOpenModelTest={providerModals.openTest}
+                onOpenModelDrawer={providerModals.openDrawer}
                 onRemoveEnabledModel={removeEnabledModel}
               />
             )}
@@ -1505,9 +1410,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             addAllModels: lang === 'zh' ? '添加当前列表中的全部模型' : 'Add all models in the current list',
             close: lang === 'zh' ? '关闭' : 'Close',
           }}
-          fetching={fetchingProviderId === modelPickerProvider.id}
-          onClose={() => setModelPickerProviderId(null)}
-          onFetch={() => void fetchModels(modelPickerProvider.id)}
+          fetching={providerCatalog.fetchingProviderId === modelPickerProvider.id}
+          onClose={providerModals.closePicker}
+          onFetch={() => void providerCatalog.fetchModels(modelPickerProvider.id)}
           onAdd={(model) => addEnabledModel(modelPickerProvider.id, model)}
           onAddAll={(models) => addAllEnabledModels(modelPickerProvider.id, models)}
           onRemove={(model) => removeEnabledModel(modelPickerProvider.id, model)}
@@ -1520,10 +1425,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           provider={settings.providers.find(p => p.id === drawerModel.providerId)}
           overrides={settings.providers.find(p => p.id === drawerModel.providerId)?.modelOverrides}
           lang={lang}
-          onClose={() => setDrawerModel(null)}
+          onClose={providerModals.closeDrawer}
           onSave={(modelName, info) => {
             saveModelOverride(drawerModel.providerId, modelName, info)
-            setDrawerModel(null)
+            providerModals.closeDrawer()
           }}
           onReset={(modelName) => resetModelOverride(drawerModel.providerId, modelName)}
         />
@@ -1541,7 +1446,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             request={p.request}
             models={p.enabledModels}
             lang={lang}
-            onClose={() => setModelTestProviderId(null)}
+            onClose={providerModals.closeTest}
           />
         )
       })()}
@@ -1553,7 +1458,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             <p className="kv-panel-body">{t.confirmDeleteProviderDesc}</p>
             <div className="flex justify-end gap-2 pt-1">
               <Button
-                onClick={() => setConfirmDeleteProviderId(null)}
+                onClick={providerModals.cancelDelete}
                 data-tauri-drag-region="false"
               >
                 {t.cancel}
@@ -1562,7 +1467,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 variant="danger"
                 onClick={() => {
                   if (confirmDeleteProviderId) deleteProvider(confirmDeleteProviderId)
-                  setConfirmDeleteProviderId(null)
+                  providerModals.cancelDelete()
                 }}
                 data-tauri-drag-region="false"
               >
