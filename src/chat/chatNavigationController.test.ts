@@ -84,6 +84,82 @@ describe('chat navigation controller', () => {
     window.location.hash = '#chat'
   })
 
+  it('does not reopen a created conversation after New invalidates its pending creation', async () => {
+    const { controller, shown } = setup()
+    const created = deferred<Conversation>()
+    const permit = controller.beginConversationCreation()
+    const completion = created.promise.then((value) => controller.commitCreatedConversation(permit, value))
+
+    controller.startNewConversation()
+    created.resolve(conversation('late'))
+
+    expect(await completion).toBe(false)
+    expect(shown).toEqual([])
+    expect(window.location.hash).toBe('#chat')
+  })
+
+  it('keeps Settings visible when a pending creation finishes after leaving Chat', async () => {
+    const { controller, shown } = setup()
+    const created = deferred<Conversation>()
+    const permit = controller.beginConversationCreation()
+    const completion = created.promise.then((value) => controller.commitCreatedConversation(permit, value))
+
+    window.location.hash = '#chat/settings'
+    created.resolve(conversation('late'))
+
+    expect(await completion).toBe(false)
+    expect(shown).toEqual([])
+    expect(window.location.hash).toBe('#chat/settings')
+  })
+
+  it('only commits the latest creation started from the same empty route', async () => {
+    const { controller, shown } = setup()
+    const first = deferred<Conversation>()
+    const second = deferred<Conversation>()
+    const firstPermit = controller.beginConversationCreation()
+    const firstCompletion = first.promise.then((value) => controller.commitCreatedConversation(firstPermit, value))
+    const secondPermit = controller.beginConversationCreation()
+    const secondCompletion = second.promise.then((value) => controller.commitCreatedConversation(secondPermit, value))
+
+    second.resolve(conversation('newer'))
+    expect(await secondCompletion).toBe(true)
+    first.resolve(conversation('older'))
+    expect(await firstCompletion).toBe(false)
+    expect(shown).toEqual(['newer'])
+    expect(window.location.hash).toBe('#chat/newer')
+  })
+
+  it('does not apply a terminal reload after its run commit right expires', async () => {
+    const state = setup()
+    state.setCurrent(conversation('a'))
+    let canCommit = true
+    const reloading = state.controller.reloadConversation('a', { force: true, canCommit: () => canCommit })
+    state.ownership.resolve(new Set())
+    expect(await state.readStarted.promise).toBe('a')
+    canCommit = false
+    state.reads.get('a')!.resolve(conversation('a'))
+    await reloading
+
+    expect(state.shown).toEqual([])
+    expect(window.location.hash).toBe('#chat')
+  })
+
+  it('does not discard the conversation when a stale terminal reload fails', async () => {
+    const state = setup()
+    state.setCurrent(conversation('a'))
+    let canCommit = true
+    const reloading = state.controller.reloadConversation('a', { force: true, canCommit: () => canCommit })
+    state.ownership.resolve(new Set())
+    expect(await state.readStarted.promise).toBe('a')
+    canCommit = false
+    state.reads.get('a')!.reject(new Error('old read failed'))
+    await reloading
+
+    expect(state.errors).toEqual([])
+    expect(state.shown).toEqual([])
+    expect(window.location.hash).toBe('#chat')
+  })
+
   it('ignores a late popout ownership result after navigating elsewhere', async () => {
     const { controller, ownership, reads, shown } = setup()
     const selecting = controller.selectConversation('a')

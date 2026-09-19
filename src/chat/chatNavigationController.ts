@@ -1,4 +1,4 @@
-import { conversationHash, getRouteConversationId, setHash } from './chatRoutes'
+import { conversationHash, getRouteConversationId, hashPath, setHash } from './chatRoutes'
 import {
   awaitCurrentConversationNavigation,
   beginConversationTransition,
@@ -44,6 +44,8 @@ interface ReloadOptions {
   force?: boolean
   transitionRequestId?: number
   loadPoppedOut?: boolean
+  /** An execution permit may expire while the read is pending. */
+  canCommit?: () => boolean
 }
 
 function asError(value: unknown, fallback = '对话加载失败，已从列表移除'): Error {
@@ -54,6 +56,32 @@ function asError(value: unknown, fallback = '对话加载失败，已从列表�
 /** Owns navigation commit rights. Backend runs are deliberately not cancelled
  * when a view changes: only an obsolete UI result loses its lease. */
 export function createChatNavigationController(ports: NavigationPorts) {
+  const beginConversationCreation = () => {
+    // A creation is a navigation intent even while its backend request is
+    // pending. Revoking the previous generation also orders two creations
+    // started from the same empty route.
+    invalidateConversationTransition()
+    return {
+      navigation: captureConversationNavigation(),
+      startingConversationId: ports.currentConversationId(),
+      startingPath: hashPath(),
+    }
+  }
+
+  const isConversationCreationCurrent = (permit: ReturnType<typeof beginConversationCreation>) =>
+    isCurrentConversationNavigation(permit.navigation)
+    && ports.currentConversationId() === permit.startingConversationId
+    && hashPath() === permit.startingPath
+
+  const commitCreatedConversation = (
+    permit: ReturnType<typeof beginConversationCreation>, conversation: Conversation,
+  ): boolean => {
+    if (!isConversationCreationCurrent(permit)) return false
+    ports.showConversation(conversation, { renderRequestId: 0, selection: true })
+    syncConversationRoute(conversation.id)
+    return true
+  }
+
   const syncConversationRoute = (conversationId: string | null) => {
     if (!conversationId) invalidateConversationTransition()
     setHash(conversationHash(conversationId))
@@ -123,6 +151,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     const navigationLease = captureConversationNavigation()
     const startingConversationId = ports.currentConversationId()
     const canCommitResult = () => {
+      if (options?.canCommit && !options.canCommit()) return false
       if (transitionRequestId !== undefined) {
         return isCurrentConversationTransition(transitionRequestId, conversationId)
       }
@@ -242,6 +271,9 @@ export function createChatNavigationController(ports: NavigationPorts) {
   }
 
   return {
+    beginConversationCreation,
+    isConversationCreationCurrent,
+    commitCreatedConversation,
     leaveConversation,
     startNewConversation,
     clearCurrentChat,

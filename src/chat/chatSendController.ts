@@ -14,10 +14,17 @@ export type SendResult =
   | { kind: 'persisted_error'; conversation: Conversation; error: Error; composerAccepted: true }
   | { kind: 'not_committed'; error: Error; partialConversation?: Conversation; composerAccepted: false }
 
+/** The view owns route commitment; the send transaction only carries this
+ * capability after it has successfully reserved the send. */
+export interface SendCreationCommit {
+  isCurrent: () => boolean
+  commit: (conversation: Conversation) => boolean
+}
+
 export type SendPresentationEvent =
-  | { kind: 'created'; conversation: Conversation; startingConversationId: string | null }
+  | { kind: 'created'; conversation: Conversation; startingConversationId: string | null; creation: SendCreationCommit | null }
   | { kind: 'updated'; conversation: Conversation }
-  | { kind: 'rejected'; error: Error; conversationId: string | null; startingConversationId: string | null }
+  | { kind: 'rejected'; error: Error; conversationId: string | null; startingConversationId: string | null; creation: SendCreationCommit | null }
   | { kind: 'started'; conversation: Conversation; content: string; attachments: PendingAttachment[]; fanOut: boolean }
   | { kind: 'outcome'; conversationId: string; outcome: PreparedSingleRunOutcome }
   | { kind: 'settled' }
@@ -35,6 +42,7 @@ export interface SendIntent {
 
 interface SendPresentation {
   currentConversationId: () => string | null
+  beginCreation?: () => SendCreationCommit
   present: (event: SendPresentationEvent) => void
 }
 
@@ -74,8 +82,9 @@ export function createChatSendController({
       const content = intent.content.trim()
       const attachments = intent.attachments
       const startingConversationId = presentation.currentConversationId()
+      let creation: SendCreationCommit | null = null
       const reject = (error: Error, conversationId: string | null, partialConversation?: Conversation): SendResult => {
-        presentation.present({ kind: 'rejected', error, conversationId, startingConversationId })
+        presentation.present({ kind: 'rejected', error, conversationId, startingConversationId, creation })
         return partialConversation
           ? { kind: 'not_committed', error, partialConversation, composerAccepted: false }
           : { kind: 'not_committed', error, composerAccepted: false }
@@ -99,12 +108,12 @@ export function createChatSendController({
           if (phase === 'created') {
             if (!executionOwner.bindSend(claim, conversation.id)) return false
             intent.onPartialConversation?.(conversation)
-            presentation.present({ kind: 'created', conversation, startingConversationId })
+            presentation.present({ kind: 'created', conversation, startingConversationId, creation })
           } else {
             intent.onPartialConversation?.(conversation)
             presentation.present({ kind: 'updated', conversation })
           }
-        })
+        }, () => { creation = presentation.beginCreation?.() ?? null })
         if (!prepared.ok) {
           console.error(`Failed to prepare conversation before send (${prepared.stage}):`, prepared.error)
           return reject(prepared.error, prepared.conversation?.id ?? null, prepared.conversation ?? undefined)

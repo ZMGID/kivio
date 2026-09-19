@@ -45,6 +45,94 @@ function harness(
 }
 
 describe('chat send controller', () => {
+  it('a rejected duplicate send cannot invalidate the first pending creation commit', async () => {
+    let resolveCreate!: (value: Conversation) => void
+    const persistence = {
+      createConversation: vi.fn(() => new Promise<Conversation>((resolve) => { resolveCreate = resolve })),
+      updateConversation: vi.fn(), setAgentRuntime: vi.fn(),
+      sendMessage: vi.fn().mockResolvedValue(conversation('created')),
+    }
+    const executionOwner = createChatExecutionOwner(undefined, persistence)
+    const previewOwner = createStreamPreviewOwner()
+    let generation = 0
+    let shown: string | null = null
+    const controller = createChatSendController({
+      executionOwner, previewOwner, persistence,
+      settlementPorts: {
+        completeWithConversation: vi.fn(), completeTerminal: vi.fn().mockResolvedValue(undefined),
+        abandonPreview: vi.fn(), settleQueue: vi.fn(),
+      },
+      presentation: {
+        currentConversationId: () => null,
+        beginCreation: () => {
+          const ownedGeneration = ++generation
+          return {
+            isCurrent: () => generation === ownedGeneration,
+            commit: (value: Conversation) => {
+              if (generation !== ownedGeneration) return false
+              shown = value.id
+              return true
+            },
+          }
+        },
+        present: (event) => {
+          if (event.kind === 'created') event.creation?.commit(event.conversation)
+        },
+      },
+    })
+    const intent = {
+      content: 'hello', attachments: [], preparation: preparation(null),
+      attachmentSkillId: null, disabledReason: '',
+    }
+    const first = controller.send(intent)
+    await vi.waitFor(() => expect(persistence.createConversation).toHaveBeenCalledTimes(1))
+    const duplicate = await controller.send(intent)
+    expect(duplicate.kind).toBe('not_committed')
+
+    resolveCreate(conversation('created'))
+    await first
+    expect(shown).toBe('created')
+    previewOwner.dispose()
+  })
+
+  it('claims a creation commit when an empty conversation is replaced for a changed model', async () => {
+    const original = conversation('old', { model: 'old-model' })
+    const replacement = conversation('replacement')
+    const persistence = {
+      createConversation: vi.fn().mockResolvedValue(replacement),
+      updateConversation: vi.fn(), setAgentRuntime: vi.fn(),
+      sendMessage: vi.fn().mockResolvedValue(replacement),
+    }
+    const executionOwner = createChatExecutionOwner(undefined, persistence)
+    const previewOwner = createStreamPreviewOwner()
+    let shown: string | null = null
+    const controller = createChatSendController({
+      executionOwner, previewOwner, persistence,
+      settlementPorts: {
+        completeWithConversation: vi.fn(), completeTerminal: vi.fn().mockResolvedValue(undefined),
+        abandonPreview: vi.fn(), settleQueue: vi.fn(),
+      },
+      presentation: {
+        currentConversationId: () => 'old',
+        beginCreation: () => ({
+          isCurrent: () => true,
+          commit: (value) => { shown = value.id; return true },
+        }),
+        present: (event) => {
+          if (event.kind === 'created') event.creation?.commit(event.conversation)
+        },
+      },
+    })
+
+    await controller.send({
+      content: 'hello', attachments: [], preparation: preparation(original),
+      attachmentSkillId: null, disabledReason: '',
+    })
+
+    expect(shown).toBe('replacement')
+    previewOwner.dispose()
+  })
+
   it('selects canonical multi-answer arms after prepare and settles the queue after the persisted result', async () => {
     const original = conversation('a', {
       reply_models: [{ provider_id: 'p1', model: 'm1' }, { provider_id: 'p2', model: 'm2' }],

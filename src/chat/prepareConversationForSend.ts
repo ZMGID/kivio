@@ -58,6 +58,7 @@ export async function prepareConversationForSend(
   intent: SendPreparationIntent,
   persistence: Persistence,
   onProgress: OnProgress,
+  onCreating?: () => void,
 ): Promise<SendPreparationResult> {
   let conversation = intent.override ? intent.conversation : intent.forceNew ? null : intent.conversation
   let created = false
@@ -75,6 +76,7 @@ export async function prepareConversationForSend(
 
   if (!conversation) {
     try {
+      onCreating?.()
       conversation = await persistence.createConversation(
         intent.providerId || undefined,
         intent.model || undefined,

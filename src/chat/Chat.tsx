@@ -770,16 +770,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useEffect(() => interactionInbox.subscribe(syncGeneratingConversationIds), [interactionInbox, syncGeneratingConversationIds])
 
-  const markConversationInFlight = useCallback((conversationId: string) => {
-    executionOwner.observe({ kind: 'externalStarted', conversationId })
-    syncGeneratingConversationIds()
-  }, [executionOwner, syncGeneratingConversationIds])
-
-  const clearConversationInFlight = useCallback((conversationId: string) => {
-    executionOwner.observe({ kind: 'externalEnded', conversationId })
-    syncGeneratingConversationIds()
-  }, [executionOwner, syncGeneratingConversationIds])
-
   // These hooks retain the latest callbacks internally, so their commands can be
   // used by earlier lifecycle handlers without a second Chat-level ref bridge.
   const messageQueue = useMessageQueue({
@@ -1731,41 +1721,36 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [patchContextState, refreshSidebar])
 
   const finishStreamingRun = useCallback(
-    async (payload: { reason?: string; conversationId?: string; runId?: string | null }) => {
+    async (payload: { reason?: string; conversationId?: string; runId?: string | null; turnEpoch?: number }) => {
       const conversationId = payload.conversationId ?? currentConversationIdRef.current
-      if (conversationId) {
-        interactionInbox.observe(payload.runId
-          ? { kind: 'runTerminal', conversationId, runId: payload.runId }
-          : { kind: 'drop', conversationId })
-      }
-      const preservedPartial = payload.reason === 'error' && conversationId
-        ? freezeStreamSnapshot(conversationId)
-        : false
+      if (!conversationId) return
+      const terminalEpoch = payload.turnEpoch ?? executionOwner.turnEpoch(conversationId)
+      const canCommit = () => executionOwner.turnEpoch(conversationId) === terminalEpoch
+      if (!canCommit()) return
+      interactionInbox.observe(payload.runId
+        ? { kind: 'runTerminal', conversationId, runId: payload.runId }
+        : { kind: 'drop', conversationId })
+      const preservedPartial = payload.reason === 'error' ? freezeStreamSnapshot(conversationId) : false
       // 兜底：run 结束时压缩必然已终止；防御后端遗漏终止事件把"压缩中"状态卡死。
-      if (conversationId) markConversationCompacting(conversationId, false)
-      if (payload.reason === 'error' && conversationId) {
+      markConversationCompacting(conversationId, false)
+      if (payload.reason === 'error') {
         setStreamErrorForConversation(
           conversationId,
           streamErrorsRef.current[conversationId] || '回复生成失败，请稍后重试。',
         )
       }
-      if (conversationId) {
-        if (currentConversationIdRef.current === conversationId) {
-          await reloadConversation(conversationId, { force: true })
-        }
-        refreshSidebar()
+      if (currentConversationIdRef.current === conversationId) {
+        await reloadConversation(conversationId, { force: true, canCommit })
       }
-      if (conversationId) {
-        // in-flight 也一起清：终局事件是「这一轮结束了」的权威。
-        // 走 send/regenerate 的 run 到这里时它们的 finally 已经清过（这里是幂等的空操作）；
-        // 而**恢复的 run**（restoredFromSnapshot，窗口重载后后端回放正在跑的那轮）没有 invoke
-        // 归属它，只有这条路径能清 —— 漏了它侧栏那颗转圈就永远停不下来。
-        clearConversationInFlight(conversationId)
-        if (!preservedPartial) settleStreamingPreview(conversationId)
-        syncGeneratingConversationIds()
-      }
+      if (!canCommit()) return
+      refreshSidebar()
+      // The invoke owner already retired this local run before invoking the
+      // terminal port. A new run may have started during the read, so never
+      // retire execution again by bare conversation ID.
+      if (!preservedPartial) settleStreamingPreview(conversationId)
+      syncGeneratingConversationIds()
     },
-    [clearConversationInFlight, freezeStreamSnapshot, interactionInbox, markConversationCompacting, refreshSidebar, reloadConversation, setStreamErrorForConversation, settleStreamingPreview, syncGeneratingConversationIds],
+    [executionOwner, freezeStreamSnapshot, interactionInbox, markConversationCompacting, refreshSidebar, reloadConversation, setStreamErrorForConversation, settleStreamingPreview, syncGeneratingConversationIds],
   )
 
   const finishExternalStreamingRun = useCallback((ready: Extract<StreamLifecycleResult, { kind: 'ready' }>) => {
@@ -1861,11 +1846,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useTauriEvent(api.onChatStream, (payload) => {
       const popout = popoutOwner.observeRun(payload)
-      if (popout.effect === 'started') markConversationInFlight(payload.conversationId)
-      if (popout.effect === 'finished') clearConversationInFlight(payload.conversationId)
-      if (popout.suppressMainProjection) return
-      const result = streamLifecycleOwner.receive(payload)
+      // Popout ownership hides main-window display only. Execution identity
+      // still observes every arm, including terminals arriving after close.
+      const result = streamLifecycleOwner.receive(payload, { project: !popout.suppressMainProjection })
       if (result.kind === 'ignored') return
+      if (popout.suppressMainProjection) {
+        syncGeneratingConversationIds()
+        if (result.kind === 'ready') finishExternalStreamingRun(result)
+        return
+      }
       if (isStreamTerminal(payload)) {
         interactionInbox.observe({
           kind: 'runTerminal', conversationId: payload.conversationId, runId: payload.runId,
@@ -1880,7 +1869,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       syncGeneratingConversationIds()
       if (result.kind === 'ready') finishExternalStreamingRun(result)
-  }, [clearConversationInFlight, finishExternalStreamingRun, interactionInbox, markConversationInFlight, popoutOwner, streamLifecycleOwner, syncGeneratingConversationIds])
+  }, [finishExternalStreamingRun, interactionInbox, popoutOwner, streamLifecycleOwner, syncGeneratingConversationIds])
 
   useTauriEvent(api.onChatContext, (payload) => {
     const currentConversationId = currentConversationIdRef.current
@@ -2187,7 +2176,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [navigation])
 
   const handleStartAssistantChat = useCallback(async (assistant: ChatAssistant) => {
-    const startingConversationId = currentConversationIdRef.current
+    const creation = navigation.beginConversationCreation()
     setAssistantStreamStatsByMessageId({})
     try {
       const assistantProviderId = assistant.provider_id ?? assistant.providerId ?? ''
@@ -2201,23 +2190,19 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         selectedSet?.id ?? null,
       )
       refreshSidebar()
-      if (currentConversationIdRef.current === startingConversationId) {
-        currentConversationIdRef.current = conv.id
-        applyConversation(conv)
-        restoreStreamingPreview(conv.id)
-        syncConversationRoute(conv.id)
+      if (navigation.commitCreatedConversation(creation, conv)) {
         setStreamError('')
       }
     } catch (err) {
       console.error('Failed to start assistant conversation:', err)
-      if (currentConversationIdRef.current === startingConversationId) {
+      if (navigation.isConversationCreationCurrent(creation)) {
         setStreamError(typeof err === 'string' ? err : (err as Error).message || '创建助手对话失败')
       }
     }
-  }, [activeModel, activeProviderId, applyConversation, refreshSidebar, restoreStreamingPreview, selectedProject?.id, selectedProject?.name, selectedSet?.id, syncConversationRoute])
+  }, [activeModel, activeProviderId, navigation, refreshSidebar, selectedProject?.id, selectedProject?.name, selectedSet?.id])
 
   const handleStartBuilderChat = useCallback(async () => {
-    const startingConversationId = currentConversationIdRef.current
+    const creation = navigation.beginConversationCreation()
     setAssistantStreamStatsByMessageId({})
     try {
       const conv = await chatApi.createBuilderConversation(
@@ -2226,20 +2211,16 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         selectedProject?.id ?? null,
       )
       refreshSidebar()
-      if (currentConversationIdRef.current === startingConversationId) {
-        currentConversationIdRef.current = conv.id
-        applyConversation(conv)
-        restoreStreamingPreview(conv.id)
-        syncConversationRoute(conv.id)
+      if (navigation.commitCreatedConversation(creation, conv)) {
         setStreamError('')
       }
     } catch (err) {
       console.error('Failed to start builder conversation:', err)
-      if (currentConversationIdRef.current === startingConversationId) {
+      if (navigation.isConversationCreationCurrent(creation)) {
         setStreamError(typeof err === 'string' ? err : (err as Error).message || '创建搭建对话失败')
       }
     }
-  }, [activeModel, activeProviderId, applyConversation, refreshSidebar, restoreStreamingPreview, selectedProject?.id, syncConversationRoute])
+  }, [activeModel, activeProviderId, navigation, refreshSidebar, selectedProject?.id])
 
   const handleApplyAssistant = useCallback(async (assistantId: string | null) => {
     if (!currentConversation) return
@@ -2270,9 +2251,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     else await handleStartAssistantChat(assistant)
   }, [currentConversation, handleApplyAssistant, handleStartAssistantChat])
 
-  const ensureConversationForAgentPlan = useCallback(async () => {
+  const ensureConversationForAgentPlan = useCallback(async (
+    creation: ReturnType<typeof navigation.beginConversationCreation> | null,
+  ) => {
     if (currentConversation) return currentConversation
-    const startingConversationId = currentConversationIdRef.current
+    if (!creation) throw new Error('缺少创建会话的导航意图')
     let conversation = await chatApi.createConversation(
       activeProviderId || undefined,
       activeModel || undefined,
@@ -2285,19 +2268,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       conversation = await chatApi.setAgentRuntime(conversation.id, draftAgentRuntime)
     }
     refreshSidebar()
-    if (currentConversationIdRef.current === startingConversationId) {
-      currentConversationIdRef.current = conversation.id
-      applyConversation(conversation)
-      syncConversationRoute(conversation.id)
-    }
+    navigation.commitCreatedConversation(creation, conversation)
     return conversation
-  }, [activeModel, activeProviderId, applyConversation, currentConversation, draftAgentRuntime, refreshSidebar, selectedProject?.id, selectedProject?.name, selectedSet?.id, syncConversationRoute])
+  }, [activeModel, activeProviderId, currentConversation, draftAgentRuntime, navigation, refreshSidebar, selectedProject?.id, selectedProject?.name, selectedSet?.id])
 
   const handleAgentPlanModeChange = useCallback(async (mode: AgentPlanMode) => {
-    const startingConversationId = currentConversationIdRef.current
+    const creation = currentConversation ? null : navigation.beginConversationCreation()
     let targetConversationId = currentConversation?.id ?? null
     try {
-      const conversation = await ensureConversationForAgentPlan()
+      const conversation = await ensureConversationForAgentPlan(creation)
       targetConversationId = conversation.id
       const updated = await chatApi.setAgentPlanMode(conversation.id, mode)
       applyConversationIfCurrent(conversation.id, updated)
@@ -2310,11 +2289,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           targetConversationId,
           typeof err === 'string' ? err : (err as Error).message || 'Plan 模式切换失败',
         )
-      } else if (currentConversationIdRef.current === startingConversationId) {
+      } else if (creation && navigation.isConversationCreationCurrent(creation)) {
         setStreamError(typeof err === 'string' ? err : (err as Error).message || 'Plan 模式切换失败')
       }
     }
-  }, [applyConversationIfCurrent, currentConversation?.id, ensureConversationForAgentPlan, refreshContextStats, refreshSidebar, setStreamErrorForConversation])
+  }, [applyConversationIfCurrent, currentConversation, ensureConversationForAgentPlan, navigation, refreshContextStats, refreshSidebar, setStreamErrorForConversation])
 
   const handleSelectProject = useCallback((project: ChatProject | null) => {
     setSelectedProject(project)
@@ -2384,11 +2363,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const presentSendEvent = useCallback((event: SendPresentationEvent) => {
     if (event.kind === 'created') {
-      if (currentConversationIdRef.current === event.startingConversationId) {
-        currentConversationIdRef.current = event.conversation.id
-        applyConversation(event.conversation)
-        syncConversationRoute(event.conversation.id)
-      }
+      event.creation?.commit(event.conversation)
       return
     }
     if (event.kind === 'updated') {
@@ -2398,7 +2373,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (event.kind === 'rejected') {
       if (event.conversationId) {
         setStreamErrorForConversation(event.conversationId, event.error.message)
-      } else if (currentConversationIdRef.current === event.startingConversationId) {
+      } else if (event.creation?.isCurrent()
+        || (!event.creation && currentConversationIdRef.current === event.startingConversationId)) {
         setStreamError(event.error.message || '创建对话失败')
       }
       return
@@ -2448,7 +2424,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [
     applyAssistantStreamStats, applyConversation, applyConversationIfCurrent,
     clearStreamSnapshot, freezeStreamSnapshot, refreshSidebar,
-    setStreamErrorForConversation, syncConversationRoute, syncGeneratingConversationIds,
+    setStreamErrorForConversation, syncGeneratingConversationIds,
   ])
 
   const sendController = useMemo(() => createChatSendController({
@@ -2458,9 +2434,16 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     settlementPorts,
     presentation: {
       currentConversationId: () => currentConversationIdRef.current,
+      beginCreation: () => {
+        const permit = navigation.beginConversationCreation()
+        return {
+          isCurrent: () => navigation.isConversationCreationCurrent(permit),
+          commit: (conversation) => navigation.commitCreatedConversation(permit, conversation),
+        }
+      },
       present: presentSendEvent,
     },
-  }), [executionOwner, previewOwner, settlementPorts, presentSendEvent])
+  }), [executionOwner, navigation, previewOwner, settlementPorts, presentSendEvent])
 
   const handleSendMessage = useCallback(async (
     content: string,
@@ -2515,7 +2498,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     messages: { role: string; content: string }[],
     attachmentPaths: string[],
   ): Promise<boolean> => {
-    const startingConversationId = currentConversationIdRef.current
+    const creation = navigation.beginConversationCreation()
     try {
       const conversation = await chatApi.importExternalConversation(
         messages,
@@ -2525,20 +2508,16 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         selectedProject?.id ?? null,
       )
       refreshSidebar()
-      if (currentConversationIdRef.current === startingConversationId) {
-        currentConversationIdRef.current = conversation.id
-        applyConversation(conversation)
-        syncConversationRoute(conversation.id)
-      }
+      navigation.commitCreatedConversation(creation, conversation)
       return true
     } catch (err) {
       console.error('Failed to import external conversation:', err)
-      if (currentConversationIdRef.current === startingConversationId) {
+      if (navigation.isConversationCreationCurrent(creation)) {
         setStreamError(typeof err === 'string' ? err : (err as Error).message || '导入对话失败')
       }
       return false
     }
-  }, [activeModel, activeProviderId, applyConversation, refreshSidebar, selectedProject?.id, syncConversationRoute])
+  }, [activeModel, activeProviderId, navigation, refreshSidebar, selectedProject?.id])
 
   const currentQueuedMessages = currentConversation
     ? messageQueue.queued[currentConversation.id] ?? NO_QUEUED_MESSAGES
@@ -2768,16 +2747,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     async (messageId: string) => {
       const conv = currentConversationRef.current
       if (!conv) return
-      const startingConversationId = conv.id
+      const creation = navigation.beginConversationCreation()
       try {
         const forked = await chatApi.forkConversation(conv.id, messageId)
         refreshSidebar()
-        if (currentConversationIdRef.current === startingConversationId) {
+        if (navigation.isConversationCreationCurrent(creation)) {
           setAssistantStreamStatsByMessageId({})
-          currentConversationIdRef.current = forked.id
-          applyConversation(forked)
-          restoreStreamingPreview(forked.id)
-          syncConversationRoute(forked.id)
+          navigation.commitCreatedConversation(creation, forked)
           setStreamError('')
         }
       } catch (err) {
@@ -2788,7 +2764,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         )
       }
     },
-    [applyConversation, refreshSidebar, restoreStreamingPreview, setStreamErrorForConversation, syncConversationRoute],
+    [navigation, refreshSidebar, setStreamErrorForConversation],
   )
 
   const handleSaveMessageToNote = useCallback(
