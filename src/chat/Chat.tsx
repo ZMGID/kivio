@@ -8,6 +8,7 @@ import { completeSettingsExit, type PendingSettingsAction } from './settingsExit
 import { useChatRouting } from './hooks/useChatRouting'
 import { createChatNavigationController } from './chatNavigationController'
 import { createChatExecutionOwner, type ExecutionLease } from './chatExecutionOwner'
+import { createRunInteractionInbox } from './runInteractionInbox'
 import { createChatSendController, type SendPresentationEvent } from './chatSendController'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import { useExternalSendQueue } from './hooks/useExternalSendQueue'
@@ -15,10 +16,6 @@ import { useMessageQueue } from './hooks/useMessageQueue'
 import type { QueuedMessage } from './hooks/useMessageQueue'
 import { useComposerDraft } from './hooks/useComposerDraft'
 import { useTauriEvent } from './hooks/useTauriEvent'
-import {
-  clearConversationLocalState,
-  type ConversationLocalState,
-} from './conversationLocalState'
 import {
   getRouteConversationId,
   hashPath,
@@ -93,12 +90,9 @@ import {
   api,
   builtinWebSearchSupported,
   resolveProviderWebSearchMode,
-  type ChatSessionConsentPayload,
   type ChatHookPayload,
-  type ChatToolConfirmPayload,
   type ChatToolDefinition,
   type ChatMcpServer,
-  type ChatUserPromptPayload,
 } from '../api/tauri'
 import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCached } from '../api/settingsCache'
 import { setExclusiveConversationIds } from '../api/chatProtocol'
@@ -609,6 +603,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   /** 会话执行身份与乐观用户消息跨导航存活；高频正文仍在专用展示 store。 */
   const executionOwner = useRef(createChatExecutionOwner()).current
   const [previewOwner] = useState(createStreamPreviewOwner)
+  const [interactionInbox] = useState(() => createRunInteractionInbox({
+    confirmTool: api.chatConfirmToolCall,
+    respondConsent: api.chatRespondSessionConsent,
+  }))
+  const interactionSnapshot = useSyncExternalStore(
+    interactionInbox.subscribe,
+    interactionInbox.getSnapshot,
+    interactionInbox.getSnapshot,
+  )
   useSyncExternalStore(
     executionOwner.subscribe,
     executionOwner.getRevision,
@@ -705,15 +708,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [toolsDisabledReason, setToolsDisabledReason] = useState('')
   const [toolsRequested, setToolsRequested] = useState(false)
   const [approvalPolicy, setApprovalPolicy] = useState('readonly_auto_sensitive_confirm')
-  const [pendingToolConfirm, setPendingToolConfirm] = useState<ChatToolConfirmPayload | null>(null)
-  const [toolConfirmSubmittingId, setToolConfirmSubmittingId] = useState<string | null>(null)
-  const [toolConfirmError, setToolConfirmError] = useState('')
   /** 待答的问用户询问：整张可作答的面板吊在**输入框上方**（与审批卡同一个槽位），
    *  消息流里只留一行痕迹。生成这一刻是停在这里等人的，把它放在视线和手都在的地方。 */
-  const [pendingUserPrompt, setPendingUserPrompt] = useState<ChatUserPromptPayload | null>(null)
-  const [pendingSessionConsent, setPendingSessionConsent] = useState<ChatSessionConsentPayload | null>(null)
-  const [sessionConsentSubmittingConversationId, setSessionConsentSubmittingConversationId] = useState<string | null>(null)
-  const [sessionConsentError, setSessionConsentError] = useState('')
+  const pendingToolConfirm = interactionSnapshot.toolConfirm
+  const toolConfirmSubmitting = interactionSnapshot.toolConfirmSubmitting
+  const toolConfirmError = interactionSnapshot.toolConfirmError
+  const pendingUserPrompt = interactionSnapshot.userPrompt
+  const pendingSessionConsent = interactionSnapshot.sessionConsent
+  const sessionConsentSubmitting = interactionSnapshot.sessionConsentSubmitting
+  const sessionConsentError = interactionSnapshot.sessionConsentError
   const [contextState, setContextState] = useState<ConversationContextState | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
   // 压缩状态必须按会话记，不能用全局 boolean：压缩中切会话会把「压缩中」动画留在
@@ -773,12 +776,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [currentConversation?.id])
   const restoredRunIdsRef = useRef<Set<string>>(new Set())
   const streamErrorsRef = useRef<Record<string, string>>({})
-  const pendingToolConfirmsRef = useRef<Record<string, ChatToolConfirmPayload[]>>({})
-  const toolConfirmSubmissionsRef = useRef<Set<string>>(new Set())
-  /** 按会话排队（同审批卡）：切会话回来还在等的那条要还在。 */
-  const pendingUserPromptsRef = useRef<Record<string, ChatUserPromptPayload[]>>({})
-  const pendingSessionConsentsRef = useRef<Record<string, ChatSessionConsentPayload>>({})
-  const sessionConsentSubmissionsRef = useRef<Set<string>>(new Set())
   const settingsRef = useRef<SettingsShellHandle>(null)
   const pendingAfterSettingsCloseRef = useRef<PendingSettingsAction | null>(null)
   // A 合帧（render coalescing）：高频 stream/tool/subagent/userprompt 事件不再每条都同步
@@ -786,25 +783,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useEffect(() => onChatImageViewerOpen(setImageViewerItem), [])
 
-  // 待交互卡片与错误仍按会话保存；流预览由 previewOwner 独占。
-  const localState = useCallback((): ConversationLocalState => ({
-    streamErrors: streamErrorsRef.current,
-    pendingToolConfirms: pendingToolConfirmsRef.current,
-    pendingSessionConsents: pendingSessionConsentsRef.current,
-    pendingUserPrompts: pendingUserPromptsRef.current,
-  }), [])
-
   const generatingConversationIdsRef = useRef<Set<string>>(new Set())
   const syncGeneratingConversationIds = useCallback(() => {
-    const next = new Set([...executionOwner.activeConversationIds(), ...previewOwner.streamingConversationIds()])
-    for (const [conversationId, queue] of Object.entries(pendingToolConfirmsRef.current)) {
-      if (queue.length > 0) next.add(conversationId)
-    }
+    const next = new Set([
+      ...executionOwner.activeConversationIds(),
+      ...previewOwner.streamingConversationIds(),
+      ...interactionInbox.getSnapshot().pendingToolConversationIds,
+    ])
     const previous = generatingConversationIdsRef.current
     if (previous.size === next.size && [...previous].every((id) => next.has(id))) return
     generatingConversationIdsRef.current = next
     setGeneratingConversationIds(next)
-  }, [executionOwner, previewOwner])
+  }, [executionOwner, interactionInbox, previewOwner])
+
+  useEffect(() => interactionInbox.subscribe(syncGeneratingConversationIds), [interactionInbox, syncGeneratingConversationIds])
 
   const markConversationInFlight = useCallback((conversationId: string) => {
     executionOwner.observe({ kind: 'externalStarted', conversationId })
@@ -819,7 +811,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // B：彻底把一个会话从所有本地乐观/in-flight/快照状态中剔除（ghost 清理）。
   // 不触碰 currentConversation/route，由调用方按场景决定。
   const dropConversationLocally = useCallback((conversationId: string) => {
-    clearConversationLocalState(localState(), conversationId, { streamErrors: true })
+    delete streamErrorsRef.current[conversationId]
+    interactionInbox.observe({ kind: 'drop', conversationId })
     previewOwner.drop(conversationId)
     executionOwner.observe({ kind: 'drop', conversationId })
     // 排队消息也一起剔除：会话没了，队列里那几条再没有能落到的地方（`drain` 也拿不到会话对象）。
@@ -827,7 +820,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     messageQueueRef.current.clearConversation(conversationId)
     setOptimisticSidebarConversations((items) => items.filter((item) => item.id !== conversationId))
     syncGeneratingConversationIds()
-  }, [executionOwner, localState, previewOwner, syncGeneratingConversationIds])
+  }, [executionOwner, interactionInbox, previewOwner, syncGeneratingConversationIds])
 
   const setStreamErrorForConversation = useCallback((conversationId: string, error: string) => {
     if (error) {
@@ -955,22 +948,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const restoreStreamingPreview = useCallback((conversationId: string | null) => {
     previewOwner.activate(conversationId)
+    interactionInbox.activate(conversationId)
     if (!conversationId) {
-      setPendingToolConfirm(null)
-      setPendingSessionConsent(null)
-      setPendingUserPrompt(null)
-      setToolConfirmError('')
-      setSessionConsentError('')
       setStreamCoarse({ streamError: '' })
       return
     }
     setStreamCoarse({ streamError: streamErrorsRef.current[conversationId] ?? '' })
-    setPendingToolConfirm(pendingToolConfirmsRef.current[conversationId]?.[0] ?? null)
-    setPendingSessionConsent(pendingSessionConsentsRef.current[conversationId] ?? null)
-    setPendingUserPrompt(pendingUserPromptsRef.current[conversationId]?.[0] ?? null)
-    setToolConfirmError('')
-    setSessionConsentError('')
-  }, [previewOwner])
+  }, [interactionInbox, previewOwner])
 
   useEffect(() => () => {
     previewOwner.dispose()
@@ -979,15 +963,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const clearStreamSnapshot = useCallback((conversationId: string | null) => {
     if (!conversationId) return
-    clearConversationLocalState(localState(), conversationId)
+    interactionInbox.observe({ kind: 'drop', conversationId })
     previewOwner.drop(conversationId)
     syncGeneratingConversationIds()
-    if (currentConversationIdRef.current === conversationId) {
-      setPendingToolConfirm(null)
-      setPendingSessionConsent(null)
-      setPendingUserPrompt(null)
-    }
-  }, [localState, previewOwner, syncGeneratingConversationIds])
+  }, [interactionInbox, previewOwner, syncGeneratingConversationIds])
 
   const freezeCancelledRunLocally = useCallback((conversationId: string) => {
     // 立即停掉"生成中"视觉（撤掉取消按钮 + 停 shimmer），但保留已生成文本：
@@ -995,13 +974,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     // finishStreamingRunWithConversation 无缝替换冻结的预览。
     // 过滤迟到的内容事件，但仍接收终局事件，供没有 send invoke 的恢复运行收尾。
     previewOwner.freezeForCancellation(conversationId)
-    delete pendingToolConfirmsRef.current[conversationId]
-    delete pendingSessionConsentsRef.current[conversationId]
-    delete pendingUserPromptsRef.current[conversationId]
-    setPendingToolConfirm(null)
-    setPendingSessionConsent(null)
-    setPendingUserPrompt(null)
-  }, [previewOwner])
+    interactionInbox.observe({ kind: 'drop', conversationId })
+  }, [interactionInbox, previewOwner])
 
   const activeAgentRuntime = useMemo(
     () => (currentConversation ? normalizeAgentRuntime(currentConversation) : draftAgentRuntime),
@@ -1770,8 +1744,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [patchContextState, refreshSidebar])
 
   const finishStreamingRun = useCallback(
-    async (payload: { reason?: string; conversationId?: string }) => {
+    async (payload: { reason?: string; conversationId?: string; runId?: string | null }) => {
       const conversationId = payload.conversationId ?? currentConversationIdRef.current
+      if (conversationId) {
+        interactionInbox.observe(payload.runId
+          ? { kind: 'runTerminal', conversationId, runId: payload.runId }
+          : { kind: 'drop', conversationId })
+      }
       const preservedPartial = payload.reason === 'error' && conversationId
         ? freezeStreamSnapshot(conversationId)
         : false
@@ -1794,18 +1773,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         // 走 send/regenerate 的 run 到这里时它们的 finally 已经清过（这里是幂等的空操作）；
         // 而**恢复的 run**（restoredFromSnapshot，窗口重载后后端回放正在跑的那轮）没有 invoke
         // 归属它，只有这条路径能清 —— 漏了它侧栏那颗转圈就永远停不下来。
-        clearConversationLocalState(localState(), conversationId)
         clearConversationInFlight(conversationId)
         if (!preservedPartial) settleStreamingPreview(conversationId)
         syncGeneratingConversationIds()
       }
-      if (conversationId && currentConversationRef.current?.id === conversationId) {
-        setPendingToolConfirm(null)
-        setPendingSessionConsent(null)
-        setPendingUserPrompt(null)
-      }
     },
-    [clearConversationInFlight, freezeStreamSnapshot, localState, markConversationCompacting, refreshSidebar, reloadConversation, setStreamErrorForConversation, settleStreamingPreview, syncGeneratingConversationIds],
+    [clearConversationInFlight, freezeStreamSnapshot, interactionInbox, markConversationCompacting, refreshSidebar, reloadConversation, setStreamErrorForConversation, settleStreamingPreview, syncGeneratingConversationIds],
   )
 
   // React 的权威消息提交后才清 live 预览；定时兜底和旧轮失效归 previewOwner。
@@ -1819,14 +1792,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   ) => {
     if (currentConversationIdRef.current === conversationId) {
       applyConversation(conversation)
-      setPendingToolConfirm(null)
-      setPendingSessionConsent(null)
-      setPendingUserPrompt(null)
     }
-    clearConversationLocalState(localState(), conversationId)
+    interactionInbox.observe({ kind: 'drop', conversationId })
     settleStreamingPreview(conversationId)
     syncGeneratingConversationIds()
-  }, [applyConversation, localState, settleStreamingPreview, syncGeneratingConversationIds])
+  }, [applyConversation, interactionInbox, settleStreamingPreview, syncGeneratingConversationIds])
 
   const settlementPorts = useMemo<Parameters<ReturnType<typeof createChatExecutionOwner>['finish']>[2]>(() => ({
       completeWithConversation: finishStreamingRunWithConversation,
@@ -1890,7 +1860,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         runId: payload.runId,
         reason: streamTerminalReason(payload),
       }
+      if (terminal) {
+        interactionInbox.observe({
+          kind: 'runTerminal', conversationId: payload.conversationId, runId: payload.runId,
+        })
+      }
       if (payload.type === 'run_started') {
+        interactionInbox.observe({
+          kind: 'runStarted', conversationId: payload.conversationId, runId: payload.runId,
+        })
         if (payload.restoredFromSnapshot) restoredRunIdsRef.current.add(payload.runId)
         // 不是本窗口发起的 run（后端自起的唤醒轮 / 别的窗口的 run）：此刻会话必然不在
         // in-flight（本窗口的 send/regenerate 在 invoke 前就标了）。这类 run 没有
@@ -1899,24 +1877,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         // 不会返回的 invoke，转圈和停止键永远停不下来（实测：唤醒轮消息落地后卡住）。
         if (!wasInFlight) {
           restoredRunIdsRef.current.add(payload.runId)
-        }
-        const remainingApprovals = (pendingToolConfirmsRef.current[payload.conversationId] ?? [])
-          .filter((item) => item.runId !== payload.runId)
-        if (remainingApprovals.length > 0) {
-          pendingToolConfirmsRef.current[payload.conversationId] = remainingApprovals
-        } else {
-          delete pendingToolConfirmsRef.current[payload.conversationId]
-        }
-        if (currentConversationIdRef.current === payload.conversationId) {
-          setPendingToolConfirm(remainingApprovals[0] ?? null)
-          setToolConfirmError('')
-        }
-        if (pendingSessionConsentsRef.current[payload.conversationId]?.runId === payload.runId) {
-          delete pendingSessionConsentsRef.current[payload.conversationId]
-          if (currentConversationIdRef.current === payload.conversationId) {
-            setPendingSessionConsent(null)
-            setSessionConsentError('')
-          }
         }
         markConversationInFlight(payload.conversationId)
         previewOwner.receive(payload)
@@ -1961,7 +1921,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         }
         void finishStreamingRun(terminalPayload)
       }
-  }, [clearConversationInFlight, executionOwner, finishStreamingRun, markConversationInFlight, previewOwner, syncGeneratingConversationIds])
+  }, [clearConversationInFlight, executionOwner, finishStreamingRun, interactionInbox, markConversationInFlight, previewOwner, syncGeneratingConversationIds])
 
   useTauriEvent(api.onChatContext, (payload) => {
     const currentConversationId = currentConversationIdRef.current
@@ -2114,14 +2074,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
       if (!previewOwner.projectDisplay({ kind: 'userPrompt', payload }).accepted) return
       // 同时排进「输入框上方」那张面板的队列：消息流里的那条只是痕迹，真正作答在面板上。
-      const queue = pendingUserPromptsRef.current[payload.conversationId] ?? []
-      const queued = queue.some((item) => item.toolCallId === payload.toolCallId)
-      pendingUserPromptsRef.current[payload.conversationId] = queued ? queue : [...queue, payload]
-      if (currentConversationIdRef.current === payload.conversationId) {
-        setPendingUserPrompt(pendingUserPromptsRef.current[payload.conversationId][0] ?? null)
-      }
+      interactionInbox.observe({ kind: 'userPromptRequested', payload })
       syncGeneratingConversationIds()
-  }, [executionOwner, previewOwner, syncGeneratingConversationIds])
+  }, [executionOwner, interactionInbox, previewOwner, syncGeneratingConversationIds])
 
   /** 面板用的工具记录：**必须记忆** —— 写在 JSX 里每渲染新建一个对象，会把卡片里
    *  「换了新询问就重置草稿」的 effect 变成每渲染都重置（用户选到一半的答案被清空）。 */
@@ -2132,142 +2087,49 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   /** 面板作答完（或那一轮结束了）就把它收起来。后端没有「已答复」事件 ——
    *  `resolve_user_prompt` 只清重放快照、不发事件，所以收起由前端自己负责。 */
-  const dismissPendingUserPrompt = useCallback((conversationId: string, toolCallId?: string) => {
-    const rest = (pendingUserPromptsRef.current[conversationId] ?? [])
-      .filter((item) => toolCallId == null || item.toolCallId !== toolCallId)
-    if (rest.length > 0) {
-      pendingUserPromptsRef.current[conversationId] = rest
-    } else {
-      delete pendingUserPromptsRef.current[conversationId]
-    }
-    if (currentConversationIdRef.current === conversationId) {
-      setPendingUserPrompt(rest[0] ?? null)
-    }
-  }, [])
+  const dismissPendingUserPrompt = useCallback((conversationId: string, runId: string, toolCallId: string) => {
+    interactionInbox.observe({ kind: 'userAnswered', conversationId, runId, toolCallId })
+  }, [interactionInbox])
 
   useTauriEvent(api.onChatToolConfirm, (payload) => {
     if (popoutConversationIdsRef.current.has(payload.conversationId)) return
+    if (!executionOwner.allowsStreamPayload(payload)) return
+    if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
     // 排队而不是覆盖：一条消息里并行调多个工具时，后端会同时挂着多条询问等答复
     // （按 request_id 路由）。覆盖会让用户没看见的那条静默超时 ⇒ 模型收到「用户拒绝」。
-    const queue = pendingToolConfirmsRef.current[payload.conversationId] ?? []
-    if (!queue.some((item) => item.toolCallId === payload.toolCallId)) {
-      queue.push(payload)
-    }
-    pendingToolConfirmsRef.current[payload.conversationId] = queue
-    syncGeneratingConversationIds()
-    if (currentConversationIdRef.current === payload.conversationId) {
-      setPendingToolConfirm(queue[0] ?? null)
-      setToolConfirmError('')
+    const queued = interactionInbox.observe({ kind: 'toolRequested', payload })
+    if (queued && currentConversationIdRef.current === payload.conversationId) {
       // 计划卡一出现就在右侧栏摊开整份计划 —— 卡片上那块小灰框读不完。
       if (isPlanApproval(payload) && payload.argumentsPreview?.trim()) {
         requestDockMarkdownPreview({ title: '计划', text: payload.argumentsPreview })
       }
     }
-  }, [syncGeneratingConversationIds])
+  }, [executionOwner, interactionInbox])
 
   useTauriEvent(api.onChatToolConfirmWithdraw, (payload) => {
     if (popoutConversationIdsRef.current.has(payload.conversationId)) return
-    const rest = (pendingToolConfirmsRef.current[payload.conversationId] ?? [])
-      .filter((item) => item.toolCallId !== payload.toolCallId)
-    if (rest.length > 0) {
-      pendingToolConfirmsRef.current[payload.conversationId] = rest
-    } else {
-      delete pendingToolConfirmsRef.current[payload.conversationId]
-    }
-    syncGeneratingConversationIds()
-    if (currentConversationIdRef.current === payload.conversationId) {
-      setPendingToolConfirm((current) =>
-        current?.toolCallId === payload.toolCallId ? rest[0] ?? null : current)
-      setToolConfirmError('')
-    }
-  }, [syncGeneratingConversationIds])
+    // 旧适配器只暴露 conversationId + toolCallId，没有 runId；撤销是清理事件，
+    // 取消栅栏不能阻断它，否则已经超时的卡片会留在界面。run 身份由 inbox 的
+    // request_id 队列定位；协议迁移时应补回 runId。
+    interactionInbox.observe({ kind: 'toolWithdrawn', ...payload })
+  }, [interactionInbox])
 
   const resolvePendingToolConfirm = useCallback(async (
     approved: boolean,
     always = false,
     permissionMode: string | null = null,
-  ): Promise<boolean> => {
-    const prompt = pendingToolConfirm
-    if (!prompt || toolConfirmSubmissionsRef.current.has(prompt.toolCallId)) return false
-
-    toolConfirmSubmissionsRef.current.add(prompt.toolCallId)
-    setToolConfirmSubmittingId(prompt.toolCallId)
-    setToolConfirmError('')
-    try {
-      await api.chatConfirmToolCall(prompt.toolCallId, approved, always, permissionMode)
-      const rest = (pendingToolConfirmsRef.current[prompt.conversationId] ?? [])
-        .filter((item) => item.toolCallId !== prompt.toolCallId)
-      if (rest.length > 0) {
-        pendingToolConfirmsRef.current[prompt.conversationId] = rest
-      } else {
-        delete pendingToolConfirmsRef.current[prompt.conversationId]
-      }
-      syncGeneratingConversationIds()
-      if (currentConversationIdRef.current === prompt.conversationId) {
-        setPendingToolConfirm(rest[0] ?? null)
-        setToolConfirmError('')
-      }
-      return true
-    } catch (error) {
-      console.error('Failed to submit tool confirmation:', error)
-      const isStillPending = (pendingToolConfirmsRef.current[prompt.conversationId] ?? [])
-        .some((item) => item.toolCallId === prompt.toolCallId)
-      if (currentConversationIdRef.current === prompt.conversationId && isStillPending) {
-        setToolConfirmError(
-          typeof error === 'string' ? error : (error as Error).message || '提交审批失败，请重试',
-        )
-      }
-      return false
-    } finally {
-      toolConfirmSubmissionsRef.current.delete(prompt.toolCallId)
-      setToolConfirmSubmittingId((current) => current === prompt.toolCallId ? null : current)
-    }
-  }, [pendingToolConfirm, syncGeneratingConversationIds])
+  ): Promise<boolean> => interactionInbox.respondTool({ approved, always, permissionMode }), [interactionInbox])
 
   useTauriEvent(api.onChatSessionConsent, (payload) => {
     if (popoutConversationIdsRef.current.has(payload.conversationId)) return
-    pendingSessionConsentsRef.current[payload.conversationId] = payload
-    if (currentConversationIdRef.current === payload.conversationId) {
-      setPendingSessionConsent(payload)
-      setSessionConsentError('')
-    }
-  }, [])
+    if (!executionOwner.allowsStreamPayload(payload)) return
+    if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
+    interactionInbox.observe({ kind: 'consentRequested', payload })
+  }, [executionOwner, interactionInbox])
 
-  const resolvePendingSessionConsent = useCallback(async (granted: boolean): Promise<boolean> => {
-    const prompt = pendingSessionConsent
-    if (!prompt || sessionConsentSubmissionsRef.current.has(prompt.conversationId)) return false
-
-    sessionConsentSubmissionsRef.current.add(prompt.conversationId)
-    setSessionConsentSubmittingConversationId(prompt.conversationId)
-    setSessionConsentError('')
-    try {
-      await api.chatRespondSessionConsent(prompt.conversationId, granted)
-      if (pendingSessionConsentsRef.current[prompt.conversationId]?.runId === prompt.runId) {
-        delete pendingSessionConsentsRef.current[prompt.conversationId]
-      }
-      if (currentConversationIdRef.current === prompt.conversationId) {
-        setPendingSessionConsent(pendingSessionConsentsRef.current[prompt.conversationId] ?? null)
-        setSessionConsentError('')
-      }
-      return true
-    } catch (error) {
-      console.error('Failed to submit session consent:', error)
-      if (
-        currentConversationIdRef.current === prompt.conversationId
-        && pendingSessionConsentsRef.current[prompt.conversationId]?.runId === prompt.runId
-      ) {
-        setSessionConsentError(
-          typeof error === 'string' ? error : (error as Error).message || '提交会话授权失败，请重试',
-        )
-      }
-      return false
-    } finally {
-      sessionConsentSubmissionsRef.current.delete(prompt.conversationId)
-      setSessionConsentSubmittingConversationId((current) => (
-        current === prompt.conversationId ? null : current
-      ))
-    }
-  }, [pendingSessionConsent])
+  const resolvePendingSessionConsent = useCallback((granted: boolean): Promise<boolean> => (
+    interactionInbox.respondConsent(granted)
+  ), [interactionInbox])
 
   useEffect(() => {
     const conversationId = currentConversation?.id
@@ -4336,6 +4198,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             toolCall={pendingUserPromptRecord}
             onResolved={() => dismissPendingUserPrompt(
               pendingUserPrompt.conversationId,
+              pendingUserPrompt.runId,
               pendingUserPrompt.toolCallId,
             )}
           />
@@ -4350,14 +4213,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               ? [
                 {
                   label: '拒绝 / 让它改',
-                  disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                  disabled: toolConfirmSubmitting,
                   onSelect: () => { void resolvePendingToolConfirm(false) },
                 },
                 ...PLAN_APPROVAL_ACTIONS.map((action, index) => ({
                   label: action.label,
                   primary: index === PLAN_APPROVAL_ACTIONS.length - 1,
                   hint: index === PLAN_APPROVAL_ACTIONS.length - 1 ? 'Ctrl+↵' : undefined,
-                  disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                  disabled: toolConfirmSubmitting,
                   onSelect: () => {
                     void resolvePendingToolConfirm(true, false, action.mode).then((accepted) => {
                       if (accepted) {
@@ -4375,12 +4238,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 ? [
                   {
                     label: '不用，直接做',
-                    disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                    disabled: toolConfirmSubmitting,
                     onSelect: () => { void resolvePendingToolConfirm(false) },
                   },
                   {
                     label: '总是允许',
-                    disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                    disabled: toolConfirmSubmitting,
                     onSelect: () => {
                       void resolvePendingToolConfirm(true, true).then((accepted) => {
                         if (accepted) {
@@ -4397,7 +4260,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                     label: '进入计划模式',
                     primary: true,
                     hint: 'Ctrl+↵',
-                    disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                    disabled: toolConfirmSubmitting,
                     onSelect: () => {
                       void resolvePendingToolConfirm(true).then((accepted) => {
                         if (accepted) {
@@ -4414,19 +4277,19 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 : [
                   {
                     label: '拒绝',
-                    disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                    disabled: toolConfirmSubmitting,
                     onSelect: () => { void resolvePendingToolConfirm(false) },
                   },
                   {
                     label: '总是允许',
-                    disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                    disabled: toolConfirmSubmitting,
                     onSelect: () => { void resolvePendingToolConfirm(true, true) },
                   },
                   {
                     label: '允许一次',
                     primary: true,
                     hint: 'Ctrl+↵',
-                    disabled: toolConfirmSubmittingId === pendingToolConfirm.toolCallId,
+                    disabled: toolConfirmSubmitting,
                     onSelect: () => { void resolvePendingToolConfirm(true) },
                   },
                 ]}
@@ -4440,14 +4303,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             actions={[
               {
                 label: '拒绝',
-                disabled: sessionConsentSubmittingConversationId === pendingSessionConsent.conversationId,
+                disabled: sessionConsentSubmitting,
                 onSelect: () => { void resolvePendingSessionConsent(false) },
               },
               {
                 label: '允许本次会话',
                 primary: true,
                 hint: 'Ctrl+↵',
-                disabled: sessionConsentSubmittingConversationId === pendingSessionConsent.conversationId,
+                disabled: sessionConsentSubmitting,
                 onSelect: () => { void resolvePendingSessionConsent(true) },
               },
             ]}
@@ -4467,9 +4330,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     resolvePendingSessionConsent,
     resolvePendingToolConfirm,
     sessionConsentError,
-    sessionConsentSubmittingConversationId,
+    sessionConsentSubmitting,
     toolConfirmError,
-    toolConfirmSubmittingId,
+    toolConfirmSubmitting,
   ])
 
   return (
