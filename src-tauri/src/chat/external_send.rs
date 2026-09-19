@@ -102,6 +102,14 @@ impl ChatExternalSendMailbox {
             } else if entry
                 .lease
                 .as_ref()
+                .is_some_and(|lease| lease.owner_id == owner_id)
+            {
+                // An invoke reply can be lost after the claim commits. Returning the
+                // same request to its owner lets it retry; the renderer deduplicates IDs.
+                requests.push(entry.request.clone());
+            } else if entry
+                .lease
+                .as_ref()
                 .is_some_and(|lease| lease.owner_id != owner_id)
             {
                 pending_leased = true;
@@ -285,5 +293,29 @@ mod tests {
                 .id,
             "long-run"
         );
+    }
+
+    #[test]
+    fn owner_can_reclaim_after_lost_invoke_reply_without_exposing_to_other_owner() {
+        let mailbox = ChatExternalSendMailbox::default();
+        mailbox.enqueue(request("lost-reply"));
+        let start = Instant::now();
+
+        assert_eq!(
+            mailbox.claim_all_at("owner", start).requests[0].id,
+            "lost-reply"
+        );
+        assert_eq!(
+            mailbox
+                .claim_all_at("owner", start + Duration::from_secs(1))
+                .requests[0]
+                .id,
+            "lost-reply"
+        );
+        assert!(mailbox
+            .claim_all_at("other", start + Duration::from_secs(1))
+            .requests
+            .is_empty());
+        assert!(mailbox.ack("owner", "lost-reply"));
     }
 }
