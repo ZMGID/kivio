@@ -546,6 +546,25 @@ pub(crate) fn register_hotkeys(app: &AppHandle) -> Result<(), String> {
     register_hotkeys_for_settings(app, &settings)
 }
 
+/// Only fields consumed by register_hotkeys_for_settings require unregister_all.
+/// Unrelated saves must not temporarily remove every global shortcut.
+pub(crate) fn hotkey_bindings_changed(previous: &Settings, next: &Settings) -> bool {
+    previous.hotkey != next.hotkey
+        || previous.chat_hotkey != next.chat_hotkey
+        || previous.close_chat_hotkey != next.close_chat_hotkey
+        || previous.screenshot_translation.enabled != next.screenshot_translation.enabled
+        || previous.screenshot_translation.hotkey != next.screenshot_translation.hotkey
+        || previous.screenshot_translation.text_hotkey != next.screenshot_translation.text_hotkey
+        || previous.screenshot_translation.replace_enabled
+            != next.screenshot_translation.replace_enabled
+        || previous.screenshot_translation.replace_hotkey
+            != next.screenshot_translation.replace_hotkey
+        || previous.screenshot_annotate.enabled != next.screenshot_annotate.enabled
+        || previous.screenshot_annotate.hotkey != next.screenshot_annotate.hotkey
+        || previous.lens.enabled != next.lens.enabled
+        || previous.lens.hotkey != next.lens.hotkey
+}
+
 /// Register hotkeys from an explicit candidate. Full settings saves use this before their CAS
 /// commit so they do not have to publish uncommitted settings merely to apply runtime bindings.
 pub(crate) fn register_hotkeys_for_settings(
@@ -1435,4 +1454,36 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
     tray.set_tooltip(Some("Kivio Desktop".to_string()))
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod runtime_settings_tests {
+    use super::hotkey_bindings_changed;
+    use crate::settings::Settings;
+
+    #[test]
+    fn unrelated_settings_do_not_reinstall_global_hotkeys() {
+        let previous = Settings::default();
+        let mut next = previous.clone();
+        next.theme = "dark".into();
+        next.settings_language = Some("en".into());
+        next.screenshot_translation.model = "another-model".into();
+        assert!(!hotkey_bindings_changed(&previous, &next));
+    }
+
+    #[test]
+    fn registration_fields_do_reinstall_global_hotkeys() {
+        let previous = Settings::default();
+        let mut next = previous.clone();
+        next.chat_hotkey = "Control+Shift+Q".into();
+        assert!(hotkey_bindings_changed(&previous, &next));
+
+        let mut next = previous.clone();
+        next.screenshot_translation.replace_enabled = !next.screenshot_translation.replace_enabled;
+        assert!(hotkey_bindings_changed(&previous, &next));
+
+        let mut next = previous.clone();
+        next.lens.enabled = !next.lens.enabled;
+        assert!(hotkey_bindings_changed(&previous, &next));
+    }
 }

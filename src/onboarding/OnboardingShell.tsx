@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react'
 import { type Settings, type SettingsVersion } from '../api/tauri'
-import { getSettingsSnapshotCached, saveSettingsSnapshotCached } from '../api/settingsCache'
+import { getSettingsSnapshotCached, saveSettingsSnapshotCached, updateSettingsCached } from '../api/settingsCache'
 import { i18n, type Lang } from '../components/i18n'
 import { usesNativeTitlebar } from '../utils/windowPlatform'
 import { Button } from '../components/Button'
@@ -45,6 +45,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
   const loadSettings = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
+    setSaveError(null)
     try {
       const snapshot = await getSettingsSnapshotCached()
       const loaded = snapshot.settings
@@ -120,20 +121,17 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
 
   const handleSkipAfterLoadFailure = useCallback(async () => {
     setSaving(true)
+    setSaveError(null)
     try {
-      const loaded = await getSettingsSnapshotCached()
-      const saved = await saveSettingsSnapshotCached(
-        { ...loaded.settings, onboardingStatus: 'skipped' },
-        loaded.version,
-      )
-      settingsVersionRef.current = saved.version
+      await updateSettingsCached((current) => ({ ...current, onboardingStatus: 'skipped' }))
       onSettingsChange?.()
+      onSkip()
     } catch (err) {
       console.error('Failed to skip onboarding after load error:', err)
+      setSaveError(err instanceof Error ? err.message : String(err))
     } finally {
       setSaving(false)
     }
-    onSkip()
   }, [onSettingsChange, onSkip])
 
   const handleFinish = useCallback(async () => {
@@ -175,6 +173,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
           <h2 className="onboarding-title">{errorT.onboardingLoadErrorTitle}</h2>
           <p className="onboarding-subtitle">{errorT.onboardingLoadErrorDesc}</p>
           {loadError ? <p className="onboarding-panel-note">{loadError}</p> : null}
+          {saveError ? <p className="onboarding-panel-note" role="alert">{saveError}</p> : null}
           <div className="onboarding-error-actions">
             <Button
               variant="primary"

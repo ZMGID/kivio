@@ -1,19 +1,13 @@
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use super::history;
-use super::hotkeys::fingerprint as hotkey_fingerprint;
+use super::mutations;
 use super::runner;
 use super::storage;
 use super::types::{
     Automation, AutomationMeta, AutomationRun, AutomationRunStarted, AutomationRunSummary,
     RunOrigin,
 };
-
-pub(crate) fn refresh_hotkeys(app: &AppHandle) {
-    if let Err(err) = crate::shortcuts::register_hotkeys(app) {
-        let _ = app.emit("hotkey-warning", err);
-    }
-}
 
 #[tauri::command]
 pub fn automation_list(app: AppHandle) -> Result<Vec<AutomationMeta>, String> {
@@ -27,24 +21,12 @@ pub fn automation_get(app: AppHandle, id: String) -> Result<Automation, String> 
 
 #[tauri::command]
 pub fn automation_save(app: AppHandle, automation: Automation) -> Result<Automation, String> {
-    let previous = storage::get(&app, &automation.id).ok();
-    let saved = storage::save(&app, automation)?;
-    let changed = previous
-        .as_ref()
-        .map(|old| hotkey_fingerprint(old) != hotkey_fingerprint(&saved))
-        .unwrap_or(saved.enabled);
-    if changed {
-        refresh_hotkeys(&app);
-    }
-    Ok(saved)
+    mutations::save(&app, automation)
 }
 
 #[tauri::command]
 pub fn automation_delete(app: AppHandle, id: String) -> Result<(), String> {
-    runner::cancel(&app, &id)?;
-    storage::delete(&app, &id)?;
-    refresh_hotkeys(&app);
-    Ok(())
+    mutations::delete(&app, &id)
 }
 
 #[tauri::command]
@@ -53,9 +35,7 @@ pub fn automation_set_enabled(
     id: String,
     enabled: bool,
 ) -> Result<Automation, String> {
-    let saved = storage::set_enabled(&app, &id, enabled)?;
-    refresh_hotkeys(&app);
-    Ok(saved)
+    mutations::set_enabled(&app, &id, enabled)
 }
 
 #[tauri::command]

@@ -828,6 +828,9 @@ pub struct ChatRunEventEnvelope {
 )]
 #[ts(tag = "type", rename_all = "snake_case")]
 pub enum ChatConversationEvent {
+    TitleUpdated {
+        title: String,
+    },
     ContextUpdated {
         context_state: ChatContextStatePayload,
     },
@@ -2398,6 +2401,7 @@ mod tests {
         }
 
         let conversation_events = vec![
+            serde_json::json!({"type": "title_updated", "title": "Weather"}),
             serde_json::json!({
                 "type": "context_updated",
                 "contextState": {

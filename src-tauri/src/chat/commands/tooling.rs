@@ -6,6 +6,23 @@ use crate::settings::{SessionModel, Settings};
 use crate::skills;
 use crate::state::AppState;
 
+/// Determine which MCP servers can survive this conversation's tool filters
+/// before opening any transports. None means unrestricted; Some([]) means none.
+pub(super) fn allowed_mcp_server_ids<'a>(
+    conversation: &'a crate::chat::Conversation,
+    settings: &Settings,
+) -> Option<&'a [String]> {
+    if super::catalog::is_builder_conversation(conversation)
+        || (conversation.agent_runtime.is_chat() && !settings.chat.chat_mode.mcp_read_only)
+    {
+        return Some(&[]);
+    }
+    conversation
+        .assistant_snapshot
+        .as_ref()
+        .map(|assistant| assistant.mcp_server_ids.as_slice())
+}
+
 /// Detect a leading `/skill <args>` slash trigger in a user message and, when it
 /// matches an enabled skill, prepare its instructions for the system context.
 /// Returns `(skill_id, instructions)` with argument placeholders substituted.
@@ -155,6 +172,7 @@ pub(crate) async fn list_tools_for_chat(
     state: &AppState,
     settings: &Settings,
     session: Option<SessionModel<'_>>,
+    allowed_mcp_server_ids: Option<&[String]>,
 ) -> ChatToolList {
     if !(settings.chat_tools.enabled
         || crate::settings::chat_native_tools_enabled(&settings.chat_tools)
@@ -164,7 +182,8 @@ pub(crate) async fn list_tools_for_chat(
     {
         return ChatToolList::default();
     }
-    let catalog = mcp::registry::list_enabled_tool_catalog(app, state).await;
+    let catalog =
+        mcp::registry::list_enabled_tool_catalog_for_run(app, state, allowed_mcp_server_ids).await;
     let mut tools = catalog.tools;
     if let Some((provider_id, model)) =
         crate::chat::model_metadata::image_generation_model_for_session(settings, session)
@@ -423,7 +442,8 @@ mod discovery_tests {
                     .unwrap();
             await_chat_tool_discovery(&state, conversation_id, generation, async {
                 let (tools, unavailable_mcp_servers) =
-                    mcp::registry::collect_enabled_mcp_tool_defs(&state, None, &settings).await;
+                    mcp::registry::collect_enabled_mcp_tool_defs(&state, None, &settings, None)
+                        .await;
                 ChatToolList {
                     tools,
                     unavailable_mcp_servers,

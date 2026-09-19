@@ -65,3 +65,15 @@ export function inferSingleAttachmentSkillId(
   if (skillNames.length !== 1) return null
   return findEnabledSkillId(skills, skillNames[0])
 }
+
+/** One send policy for the main view and conversation popouts. */
+export function resolveSendSkillId(
+  attachments: PendingAttachment[],
+  enabledSkills: SkillMeta[],
+  selectedSkillId: string | null,
+  usesChatRuntime: boolean,
+): string | null {
+  if (usesChatRuntime) return null
+  if (selectedSkillId && enabledSkills.some((skill) => skill.id === selectedSkillId)) return selectedSkillId
+  return inferSingleAttachmentSkillId(attachments, enabledSkills)
+}

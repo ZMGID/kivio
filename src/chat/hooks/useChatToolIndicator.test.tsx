@@ -197,13 +197,24 @@ describe('useChatToolIndicator: writes', () => {
     error.mockRestore()
   })
 
-  it('toggles a server via read-fresh-then-merge and refreshes the catalog', async () => {
+  it('toggles from the visible state with one fresh merge and refreshes the catalog', async () => {
     const onSettingsChange = vi.fn()
     const { result } = renderHook(() => useChatToolIndicator({ onSettingsChange }))
     await flush()
+    settings = {
+      ...settings,
+      chatTools: {
+        ...settings.chatTools,
+        servers: settings.chatTools.servers.map((server) => server.id === 'srv'
+          ? { ...server, auth: { kind: 'oauth', accessToken: 'new-token' } }
+          : server),
+      },
+    }
     await act(async () => { await result.current.toggleMcpServer('srv') })
-    expect(mockRefresh).toHaveBeenCalled()
+    expect(mockRefresh).not.toHaveBeenCalled()
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
     expect(settings.chatTools.servers.find((server: { id: string }) => server.id === 'srv')?.enabled).toBe(true)
+    expect(settings.chatTools.servers.find((server: { id: string }) => server.id === 'srv')?.auth).toEqual({ kind: 'oauth', accessToken: 'new-token' })
     expect(result.current.mcpServers.find((server) => server.id === 'srv')?.enabled).toBe(true)
     expect(onSettingsChange).toHaveBeenCalledTimes(1)
   })

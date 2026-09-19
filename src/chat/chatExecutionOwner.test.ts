@@ -231,7 +231,7 @@ describe('chat execution owner', () => {
     }
     effects.completeWithConversation.mockImplementation(() => { order.push('authoritative') })
     effects.settleQueue.mockImplementation(() => { order.push('queue') })
-    const sending = owner.submitPreparedSingleRun({ lease, content: 'hello', attachments: [], attachmentSkillId: null }, effects)
+    const sending = owner.submitPreparedRun({ lease, content: 'hello', attachments: [], attachmentSkillId: null }, effects)
     owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'run-a', started: true })
     owner.observe({ kind: 'deferTerminal', terminal: { conversationId: 'a', runId: 'run-a', reason: 'done' } })
     resolveSend(conversation('a'))
@@ -302,14 +302,14 @@ describe('chat execution owner', () => {
     const first = createChatExecutionOwner(undefined, { sendMessage: vi.fn().mockRejectedValue(failedAfterPersist) })
     const effects = { ...ports(), onOutcome: vi.fn() }
     const lease = first.begin({ conversationId: 'a', kind: 'send', startedAt: 100 })!
-    const result = await first.submitPreparedSingleRun({ lease, content: 'hello', attachments: [], attachmentSkillId: null }, effects)
+    const result = await first.submitPreparedRun({ lease, content: 'hello', attachments: [], attachmentSkillId: null }, effects)
     expect(result).toMatchObject({ kind: 'persisted_error', conversation: kept, error: failedAfterPersist })
     expect(effects.settleQueue).toHaveBeenCalledWith('a')
     expect(first.snapshot('a').inFlight).toBe(false)
 
     const second = createChatExecutionOwner(undefined, { sendMessage: vi.fn().mockRejectedValue(new Error('write failed')) })
     const nextLease = second.begin({ conversationId: 'b', kind: 'send', startedAt: 101 })!
-    const rejected = await second.submitPreparedSingleRun({ lease: nextLease, content: 'hello', attachments: [], attachmentSkillId: null }, portsWithOutcome())
+    const rejected = await second.submitPreparedRun({ lease: nextLease, content: 'hello', attachments: [], attachmentSkillId: null }, portsWithOutcome())
     expect(rejected).toMatchObject({ kind: 'not_committed', error: new Error('write failed') })
     expect(second.snapshot('b').inFlight).toBe(false)
   })
@@ -321,7 +321,7 @@ describe('chat execution owner', () => {
     })
     const lease = owner.begin({ conversationId: 'background', kind: 'send', startedAt: 100 })!
     const unsubscribe = owner.subscribe(vi.fn())
-    const sending = owner.submitPreparedSingleRun({ lease, content: 'x', attachments: [], attachmentSkillId: null }, portsWithOutcome())
+    const sending = owner.submitPreparedRun({ lease, content: 'x', attachments: [], attachmentSkillId: null }, portsWithOutcome())
     unsubscribe()
     resolveSend(conversation('background'))
     expect((await sending).kind).toBe('persisted')
@@ -334,7 +334,7 @@ describe('chat execution owner', () => {
       sendMessage: vi.fn().mockRejectedValue({ message: '上游断开', conversation: kept }),
     })
     const lease = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 100 })!
-    const outcome = await owner.submitPreparedSingleRun({ lease, content: 'x', attachments: [], attachmentSkillId: null }, portsWithOutcome())
+    const outcome = await owner.submitPreparedRun({ lease, content: 'x', attachments: [], attachmentSkillId: null }, portsWithOutcome())
     expect(outcome).toMatchObject({ kind: 'persisted_error', conversation: kept, error: { message: '上游断开' } })
   })
 
@@ -343,7 +343,7 @@ describe('chat execution owner', () => {
     const owner = createChatExecutionOwner(undefined, { sendMessage: vi.fn().mockResolvedValue(conversation('a')) })
     const lease = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 100 })!
     const effects = { ...ports(), onOutcome: vi.fn(() => { throw new Error('view failed') }) }
-    const result = await owner.submitPreparedSingleRun({ lease, content: 'x', attachments: [], attachmentSkillId: null }, effects)
+    const result = await owner.submitPreparedRun({ lease, content: 'x', attachments: [], attachmentSkillId: null }, effects)
     expect(result.kind).toBe('persisted')
     expect(owner.snapshot('a').inFlight).toBe(false)
     expect(effects.settleQueue).toHaveBeenCalledWith('a', conversation('a'))

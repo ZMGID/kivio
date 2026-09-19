@@ -7,7 +7,7 @@ import type { ChatMessage, Conversation, PendingAttachment } from './types'
 
 type Reservation = NonNullable<ReturnType<ReturnType<typeof createChatSendReservations>['claim']>>
 type SettlementPorts = Parameters<ReturnType<typeof createChatRunSettlement>['settleInvoke']>[3]
-type SingleRunPort = Pick<typeof chatApi, 'sendMessage'>
+type SendPort = Pick<typeof chatApi, 'sendMessage'>
 declare const sendClaimBrand: unique symbol
 export type SendClaim = { readonly [sendClaimBrand]: true }
 
@@ -39,12 +39,12 @@ type StreamPayloadIdentity = {
   type?: string
 }
 
-export type PreparedSingleRunOutcome =
+export type PreparedRunOutcome =
   | { kind: 'persisted'; conversation: Conversation }
   | { kind: 'persisted_error'; conversation: Conversation; error: Error }
   | { kind: 'not_committed'; error: Error }
 
-type PreparedSingleRunIntent = {
+type PreparedRunIntent = {
   lease: ExecutionLease
   content: string
   attachments: PendingAttachment[]
@@ -52,8 +52,8 @@ type PreparedSingleRunIntent = {
   planMessageId?: string
 }
 
-type SingleRunEffects = SettlementPorts & {
-  onOutcome: (outcome: PreparedSingleRunOutcome) => void | Promise<void>
+type PreparedRunEffects = SettlementPorts & {
+  onOutcome: (outcome: PreparedRunOutcome) => void | Promise<void>
 }
 
 type BeginIntent = {
@@ -77,7 +77,7 @@ type GroupStore = { begin: typeof beginGroup; end: typeof endGroup }
  * the current route may decide whether an invoke is still active. */
 export function createChatExecutionOwner(
   groups: GroupStore = { begin: beginGroup, end: endGroup },
-  singleRunPort: SingleRunPort = chatApi,
+  sendPort: SendPort = chatApi,
 ) {
   const settlement = createChatRunSettlement()
   const reservations = createChatSendReservations()
@@ -374,21 +374,21 @@ export function createChatExecutionOwner(
       publish()
       await settlement.settleInvoke(id, lease.token, persisted, ports)
     },
-    /** Prepared, single-model only. The caller owns conversation preparation,
+    /** Prepared send, whether single- or multi-answer. The caller owns conversation preparation,
      * canonical fan-out selection and UI projection; this method owns invoke
      * classification and the release-before-queue settlement order. */
-    async submitPreparedSingleRun(
-      intent: PreparedSingleRunIntent,
-      effects: SingleRunEffects,
-    ): Promise<PreparedSingleRunOutcome> {
+    async submitPreparedRun(
+      intent: PreparedRunIntent,
+      effects: PreparedRunEffects,
+    ): Promise<PreparedRunOutcome> {
       if (!active.get(intent.lease.conversationId)
         || active.get(intent.lease.conversationId)?.lease.token !== intent.lease.token) {
         return { kind: 'not_committed', error: new Error('该对话没有活跃发送') }
       }
-      let outcome: PreparedSingleRunOutcome
+      let outcome: PreparedRunOutcome
       let persistedForSettlement: Conversation | null = null
       try {
-        const conversation = await singleRunPort.sendMessage(
+        const conversation = await sendPort.sendMessage(
           intent.lease.conversationId,
           intent.content,
           intent.attachments,
@@ -416,7 +416,7 @@ export function createChatExecutionOwner(
         // The backend commit is authoritative even if a view projection fails.
         // Keep the original three-state result so the composer cannot restore
         // a message that was already persisted; settlement still applies it.
-        console.error('Failed to present single Chat run outcome:', error)
+        console.error('Failed to present Chat run outcome:', error)
       } finally {
         await this.finish(intent.lease, persistedForSettlement, effects)
       }

@@ -2304,7 +2304,8 @@ while True:
             settings.chat_tools.enabled = true;
             settings.chat_tools.servers = vec![server];
             let (tools, unavailable) =
-                crate::mcp::registry::collect_enabled_mcp_tool_defs(&state, None, &settings).await;
+                crate::mcp::registry::collect_enabled_mcp_tool_defs(&state, None, &settings, None)
+                    .await;
             state.mcp_disconnect_all().await;
             let _ = std::fs::remove_file(script);
             assert!(

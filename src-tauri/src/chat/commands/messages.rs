@@ -15,7 +15,7 @@ use super::context::{
     compute_context_state, emit_chat_context_state, try_auto_compress_context_after_update,
 };
 use super::interaction::emit_chat_plan_state;
-use super::title::{generate_title, is_placeholder_title, resolve_conversation_title};
+use super::title::{generate_title, is_auto_title};
 use super::{
     AgentPlanState, ChatMessage, ChatMessageSegment, ChatMessageSegmentKind,
     ChatMessageSegmentPhase, Conversation, ToolCallRecord, ToolCallStatus,
@@ -263,8 +263,7 @@ pub(crate) async fn push_assistant_message(
 
     // 标题还是自动生成的样子吗——占位「新对话」，或者等于第一句用户消息的启发式结果。
     // 用户手动重命名过的标题不会等于启发式结果，所以据此判断不会覆盖用户的命名。
-    let title_looks_auto = is_placeholder_title(&conversation.title)
-        || title_from_first_user.is_some_and(|first| conversation.title == generate_title(first));
+    let title_looks_auto = is_auto_title(&conversation.title, title_from_first_user);
     let is_external =
         conversation.agent_runtime.kind == crate::chat::types::AgentRuntimeKind::External;
 
@@ -279,6 +278,7 @@ pub(crate) async fn push_assistant_message(
         None
     };
 
+    let mut background_title_user = None;
     let generated_title = if external_cli_title.is_some() {
         external_cli_title
     } else if let Some(user_content) = title_from_first_user {
@@ -300,18 +300,9 @@ pub(crate) async fn push_assistant_message(
             if stream_outcome == Some("cancelled") {
                 Some(generate_title(user_content))
             } else {
-                // 外部对话的 `provider_id`/`model` 是空的（ADR-0001），`resolve_mixer_side_model`
-                // 会因此跳过"继承会话模型"，落到设置里的标题模型、再兜到全局 Chat 模型。
-                Some(
-                    resolve_conversation_title(
-                        settings,
-                        state.inner(),
-                        conversation,
-                        user_content,
-                        &stored_content,
-                    )
-                    .await,
-                )
+                // 回复终态不等待标题模型（最长 30s）；持久化完成后另起任务补标题。
+                background_title_user = Some(user_content.to_string());
+                None
             }
         } else {
             None
@@ -328,10 +319,7 @@ pub(crate) async fn push_assistant_message(
         .mutate(app, &conversation_id, |latest| {
             upsert_assistant_message(latest, message);
             if let Some(title) = generated_title {
-                let title_is_still_auto = is_placeholder_title(&latest.title)
-                    || first_user
-                        .as_deref()
-                        .is_some_and(|first| latest.title == generate_title(first));
+                let title_is_still_auto = is_auto_title(&latest.title, first_user.as_deref());
                 if title_is_still_auto {
                     latest.title = title;
                 }
@@ -392,6 +380,15 @@ pub(crate) async fn push_assistant_message(
     }
 
     *conversation = persisted;
+    if let Some(first_user) = background_title_user {
+        super::title::schedule_auto_title_summary(
+            app.clone(),
+            settings.clone(),
+            conversation.clone(),
+            first_user,
+            stored_content,
+        );
+    }
     if let Some(plan) = plan_update {
         emit_chat_plan_state(app, &conversation_id, conversation.revision, &plan);
     }

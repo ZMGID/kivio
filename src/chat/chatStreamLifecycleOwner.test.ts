@@ -35,6 +35,43 @@ describe('chat stream lifecycle owner', () => {
     preview.dispose()
   })
 
+  it('cancels a recovered run once, fences late content, and still accepts its terminal', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    preview.activate('a')
+    owner.receive(packet('run-a', 'run_started'))
+    let resolveCancel: () => void = () => {}
+    const cancel = vi.fn(() => new Promise<void>((resolve) => { resolveCancel = resolve }))
+    const pending = vi.fn()
+    const cancelling = owner.cancelRun('a', cancel, pending)
+
+    expect(pending).toHaveBeenCalledTimes(1)
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(preview.summary('a')?.streaming).toBe(false)
+    expect(owner.receive(packet('run-a', 'text_delta')).kind).toBe('ignored')
+    expect((await owner.cancelRun('a', cancel)).kind).toBe('ignored')
+
+    resolveCancel()
+    expect((await cancelling).kind).toBe('cancelled')
+    expect(owner.receive(packet('run-a', 'run_cancelled')).kind).toBe('ready')
+    preview.dispose()
+  })
+
+  it('reopens the same run after backend cancellation fails', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    preview.activate('a')
+    owner.receive(packet('run-a', 'run_started'))
+    const result = await owner.cancelRun('a', async () => { throw new Error('transport failed') })
+
+    expect(result).toMatchObject({ kind: 'failed', error: new Error('transport failed') })
+    expect(preview.summary('a')?.streaming).toBe(true)
+    expect(execution.allowsStreamPayload(packet('run-a', 'text_delta'))).toBe(true)
+    preview.dispose()
+  })
+
   it('waits for every recovered group arm before allowing one terminal settlement', () => {
     const execution = createChatExecutionOwner()
     const preview = createStreamPreviewOwner()

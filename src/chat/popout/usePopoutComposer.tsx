@@ -26,6 +26,7 @@ import {
   useDshCustomPresets,
 } from '../permissionModes'
 import { SessionUsageStrip } from '../SessionUsageStrip'
+import { resolveSendSkillId } from '../skillSelection'
 import { findUnavailableRecommendedTools } from '../toolAvailability'
 import type {
   AdditionalDirectory,
@@ -36,6 +37,7 @@ import type {
   Conversation,
   ConversationContextState,
   ModelRef,
+  PendingAttachment,
   SkillMeta,
   WebSearchMode,
 } from '../types'
@@ -110,7 +112,11 @@ type UsePopoutComposerArgs = {
   usesChatRuntime: boolean
   usesExternalRuntime: boolean
   runtime: AgentRuntimeConfig
-  onSend: InputBarProps['onSend']
+  onSend: (
+    content: string,
+    attachments: PendingAttachment[],
+    options?: { onAccepted?: () => void; attachmentSkillId?: string | null },
+  ) => ReturnType<InputBarProps['onSend']>
   onCancel: () => void
   cancelVisible: boolean
   cancelling: boolean
@@ -561,6 +567,12 @@ export function usePopoutComposer({
     () => skills.filter((skill) => !disabledSkillIds.includes(skill.id)),
     [disabledSkillIds, skills],
   )
+  const send = useCallback<InputBarProps['onSend']>((content, attachments, options) => onSend(
+    content, attachments, {
+      ...options,
+      attachmentSkillId: resolveSendSkillId(attachments, enabledSkills, storedActiveSkillId, usesChatRuntime),
+    },
+  ), [enabledSkills, onSend, storedActiveSkillId, usesChatRuntime])
   const slashSkills = useMemo(
     () => enabledSkills.map((skill) => ({
       id: skill.id,
@@ -665,7 +677,7 @@ export function usePopoutComposer({
   )
 
   return {
-    onSend,
+    onSend: send,
     disabled,
     onCancel,
     cancelVisible,

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from 'react'
 import type { SettingsShellHandle } from '../../settings/public/shell'
-import { completeSettingsExit, type PendingSettingsAction } from '../settingsExit'
 
 /** 退场下滑动画时长，与 Settings 入场容器的 CSS 对齐。 */
 const SETTINGS_EXIT_MS = 220
@@ -8,6 +7,12 @@ const SETTINGS_EXIT_MS = 220
 type ChatView =
   | 'conversation' | 'settings' | 'assistants' | 'skill'
   | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'onboarding'
+
+interface PendingSettingsAction {
+  action: () => void
+  /** 目标动作会自行写路由时，不先恢复旧会话路由。 */
+  restoreCurrentRoute: boolean
+}
 
 export interface UseSettingsExitOptions {
   chatView: ChatView
@@ -32,31 +37,48 @@ export function useSettingsExit({
 }: UseSettingsExitOptions) {
   const [settingsExiting, setSettingsExiting] = useState(false)
   const pendingAfterSettingsCloseRef = useRef<PendingSettingsAction | null>(null)
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prevChatViewRef = useRef(chatView)
+
+  const finishExit = useCallback(() => {
+    const pending = pendingAfterSettingsCloseRef.current
+    pendingAfterSettingsCloseRef.current = null
+    setSettingsExiting(false)
+    setChatView('conversation')
+    if (!pending || pending.restoreCurrentRoute) {
+      syncConversationRoute(currentConversationIdRef.current)
+    }
+    pending?.action()
+  }, [currentConversationIdRef, setChatView, syncConversationRoute])
 
   const closeSettings = useCallback(() => {
-    // 先播退场下滑动画，动画结束再真正切视图卸载（与 CSS 时长对齐）。
+    if (prevChatViewRef.current !== 'settings' || exitTimerRef.current !== null) return
+    // 保存确认后只启动一次退场；保活页面仅切换可见性。
     setSettingsExiting(true)
-    window.setTimeout(() => {
-      setSettingsExiting(false)
-      setChatView('conversation')
-      const pending = pendingAfterSettingsCloseRef.current
-      pendingAfterSettingsCloseRef.current = null
-      completeSettingsExit(
-        currentConversationIdRef.current,
-        pending,
-        syncConversationRoute,
-      )
-      onReturnedToConversation()
+    exitTimerRef.current = setTimeout(() => {
+      exitTimerRef.current = null
+      finishExit()
     }, SETTINGS_EXIT_MS)
-  }, [currentConversationIdRef, onReturnedToConversation, setChatView, syncConversationRoute])
+  }, [finishExit])
+
+  useEffect(() => () => {
+    if (exitTimerRef.current !== null) clearTimeout(exitTimerRef.current)
+    exitTimerRef.current = null
+    pendingAfterSettingsCloseRef.current = null
+  }, [])
 
   // 中心页（技能/MCP/专家）没有自己的返回按钮，离开靠侧栏选会话/新建等任意路径。
   // 统一在「回到会话视图」这个转变点刷新技能列表与工具指示器，
   // 保证中心页里的启停/增删在回到聊天后立即生效（替代原各页 onClose 的刷新职责）。
-  const prevChatViewRef = useRef(chatView)
   useEffect(() => {
     const prev = prevChatViewRef.current
     prevChatViewRef.current = chatView
+    if (chatView !== 'settings') {
+      if (exitTimerRef.current !== null) clearTimeout(exitTimerRef.current)
+      exitTimerRef.current = null
+      pendingAfterSettingsCloseRef.current = null
+      setSettingsExiting(false)
+    }
     if (chatView !== 'conversation' || prev === chatView) return
     if (prev === 'skill' || prev === 'mcp' || prev === 'assistants' || prev === 'knowledge' || prev === 'settings') {
       onReturnedToConversation()
@@ -71,18 +93,6 @@ export function useSettingsExit({
       action()
       return
     }
-    if (!settingsRef.current) {
-      setChatView('conversation')
-      completeSettingsExit(
-        currentConversationIdRef.current,
-        {
-          action,
-          restoreCurrentRoute: options?.restoreCurrentRoute ?? true,
-        },
-        syncConversationRoute,
-      )
-      return
-    }
     pendingAfterSettingsCloseRef.current = {
       action,
       restoreCurrentRoute: options?.restoreCurrentRoute ?? true,
@@ -90,8 +100,9 @@ export function useSettingsExit({
     // The queued navigation fires only from SettingsShell.onClose after its
     // canonical draft flush succeeds. On failure, keep settings and the action
     // in place so the user can repair/retry instead of losing the draft.
-    settingsRef.current.requestClose()
-  }, [chatView, currentConversationIdRef, setChatView, settingsRef, syncConversationRoute])
+    if (settingsRef.current) settingsRef.current.requestClose()
+    else finishExit()
+  }, [chatView, finishExit, settingsRef])
 
   return { settingsExiting, closeSettings, runAfterLeavingSettings }
 }

@@ -415,6 +415,43 @@
         {
           "additionalProperties": false,
           "properties": {
+            "conversationId": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scope": {
+              "const": "conversation",
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "title_updated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title",
+            "protocolVersion",
+            "scope",
+            "conversationId",
+            "revision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "contextState": {
               "$ref": "#/$defs/ChatContextStatePayload"
             },

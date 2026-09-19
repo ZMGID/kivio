@@ -40,8 +40,8 @@ use super::messages::{
 use super::reply_runtime::{ArmReplyOutcome, ChatReplyGuard, ReplyArm};
 use super::resolve_thinking;
 use super::tooling::{
-    append_agent_ask_user_tools, append_agent_todo_tools, append_goal_tools,
-    apply_agent_plan_tool_filter, apply_chat_mode_tool_filter,
+    allowed_mcp_server_ids, append_agent_ask_user_tools, append_agent_todo_tools,
+    append_goal_tools, apply_agent_plan_tool_filter, apply_chat_mode_tool_filter,
     apply_inline_code_request_tool_filter, apply_web_search_mode_tool_filter,
     await_chat_tool_discovery, list_tools_for_chat, resolve_request_skill,
 };
@@ -512,6 +512,7 @@ pub(super) async fn complete_assistant_reply_inner(
             state.inner(),
             &settings,
             Some(session_model_for_conversation(conversation)),
+            allowed_mcp_server_ids(conversation, &settings),
         ),
     )
     .await;

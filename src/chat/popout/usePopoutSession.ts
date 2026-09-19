@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '../../api/tauri'
 import { withExternalModel } from '../externalModelEffort'
 import { syncChatProtocol } from '../../api/chatProtocol'
@@ -9,37 +9,14 @@ import {
   normalizeAgentRuntime,
   type AgentRuntimeConfig,
 } from '../api'
-import { useStreamRenderFrame } from '../hooks/useStreamRenderFrame'
 import { useTauriEvent } from '../hooks/useTauriEvent'
-import {
-  applyStreamDeltaToSnapshot,
-  applyToolRecordToSnapshot,
-  findSubagentToolIndex,
-  finalizeReasoningDurationOnDone,
-  hasStreamPreview,
-  isStreamTerminal,
-  mergeSubagentProgress,
-  streamPayloadToSegment,
-  streamReasoningDelta,
-  streamTextDelta,
-  toolEventToRecord,
-  userPromptEventToRecord,
-} from '../streamApply'
-import { createEmptyStreamSnapshot, type ConversationStreamSnapshot } from '../conversationRuns'
-import {
-  beginGroup,
-  endGroup,
-  ensureGroupColumn,
-  flushGroups,
-  getActiveGroup,
-  hasActiveGroup,
-  restoreGroupArm,
-  touchGroup,
-} from '../groupStreamingStore'
+import { userPromptEventToRecord } from '../streamApply'
+import { createChatExecutionOwner } from '../chatExecutionOwner'
+import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from '../chatStreamLifecycleOwner'
+import { createStreamPreviewOwner } from '../streamPreviewOwner'
 import {
   reset as resetStreamStore,
   setCoarse as setStreamCoarse,
-  setSnapshot as setStreamSnapshot,
   useStreamCoarse,
 } from '../streamingStore'
 import type { MessageListProps } from '../MessageList'
@@ -57,7 +34,6 @@ import type { Lang } from '../../components/i18n'
 export function usePopoutSession(conversationId: string, lang: Lang) {
   const [conversation, setConversation] = useState<Conversation | null>(null)
   const [loadError, setLoadError] = useState('')
-  const [pendingUserMessage, setPendingUserMessage] = useState<Conversation['messages'][number] | null>(null)
   const [pendingToolConfirm, setPendingToolConfirm] = useState<ChatToolConfirmPayload | null>(null)
   const [pendingSessionConsent, setPendingSessionConsent] = useState<ChatSessionConsentPayload | null>(null)
   const [pendingUserPrompt, setPendingUserPrompt] = useState<ChatUserPromptPayload | null>(null)
@@ -70,54 +46,24 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
 
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
-  // Committed-during-render mirror (same pattern as Chat's currentConversationRef):
-  // after a setConversation this still holds the list React has actually painted.
-  const conversationRef = useRef(conversation)
-  conversationRef.current = conversation
-  const snapshotRef = useRef<ConversationStreamSnapshot | null>(null)
-  // A frozen live answer waiting for its persisted twin to appear in `conversation`.
-  const pendingTwinRef = useRef<{ messageId: string; timeout: ReturnType<typeof setTimeout> } | null>(null)
-  const inFlightRef = useRef(false)
-  const pendingDoneRef = useRef<(() => Promise<void>) | null>(null)
-  const restoredRunIdsRef = useRef(new Set<string>())
+  const viewActiveRef = useRef(false)
+  const [executionOwner] = useState(createChatExecutionOwner)
+  const [previewOwner] = useState(createStreamPreviewOwner)
+  const [streamLifecycleOwner] = useState(() => createChatStreamLifecycleOwner(executionOwner, previewOwner))
+  useSyncExternalStore(executionOwner.subscribe, executionOwner.getRevision)
   const pendingToolConfirmsRef = useRef<ChatToolConfirmPayload[]>([])
   const pendingUserPromptsRef = useRef<ChatUserPromptPayload[]>([])
   const streamCoarse = useStreamCoarse()
-
-  /** Forget a pending twin without touching the visible store (a new run took over). */
-  const cancelPendingTwin = useCallback(() => {
-    const twin = pendingTwinRef.current
-    if (!twin) return
-    clearTimeout(twin.timeout)
-    pendingTwinRef.current = null
+  const acceptPersistedConversation = useCallback((next: Conversation) => {
+    setConversation((current) => current?.id === next.id && current.revision > next.revision
+      ? current
+      : next)
   }, [])
-
-  const applySnapshot = useCallback((snapshot: ConversationStreamSnapshot) => {
-    setStreamSnapshot(snapshot)
-    // A stopped snapshot that still carries content is *frozen*, not gone:
-    // MessageList keeps the live row for `streaming || streamFrozen`. Publishing
-    // the terminal frame as streaming:false/frozen:false would unmount the live
-    // bubble for the whole reload window before the twin exists.
-    setStreamCoarse({
-      streaming: snapshot.streaming,
-      streamFrozen: !snapshot.streaming && hasStreamPreview(snapshot),
-      cancelling: false,
-    })
-  }, [])
-
-  const { showStreamSnapshotIfCurrent, cancelPendingFrame, flushStreamRender } = useStreamRenderFrame({
-    applySnapshot,
-    currentConversationIdRef: conversationIdRef,
-  })
-
-  const reload = useCallback(async () => {
-    const conv = await chatApi.getConversation(conversationId)
-    if (conversationIdRef.current !== conversationId) return
-    setConversation(conv)
-    setLoadError('')
-  }, [conversationId])
 
   useEffect(() => {
+    viewActiveRef.current = true
+    previewOwner.attach()
+    previewOwner.activate(conversationId)
     let cancelled = false
     setLoadError('')
     void chatApi.getConversation(conversationId).then((conv) => {
@@ -135,210 +81,77 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     }).catch(() => {})
     return () => {
       cancelled = true
-      cancelPendingFrame()
-      endGroup(conversationId)
-      cancelPendingTwin()
+      viewActiveRef.current = false
+      executionOwner.observe({ kind: 'drop', conversationId })
+      previewOwner.dispose()
       resetStreamStore()
     }
-  }, [cancelPendingFrame, cancelPendingTwin, conversationId])
+  }, [conversationId, executionOwner, previewOwner])
 
-  const clearPreview = useCallback(() => {
-    cancelPendingTwin()
-    resetStreamStore()
-    setStreamCoarse({ streaming: false, streamFrozen: false, cancelling: false, streamError: '' })
-  }, [cancelPendingTwin])
-
-  /**
-   * Run end: live bubble 鈫?persisted twin must be a pixel-identical swap.
-   *
-   * `resetStreamStore()` publishes through useSyncExternalStore (SyncLane) and lands
-   * one frame *before* the `setConversation` (DefaultLane) that carries the twin,
-   * so clearing here directly paints "live unmounted, twin not yet there" 鈥?the
-   * end-of-run flash. Mirror `streamPreviewOwner.complete`: freeze the live snapshot
-   * in place, and only clear once the committed `conversation` contains the twin
-   * (see the reconcile effect below), with a bounded fallback in case it never does.
-   */
-  const settlePreview = useCallback(() => {
-    flushStreamRender()
-    const snapshot = snapshotRef.current
-    snapshotRef.current = null
-    const messageId = snapshot?.messageId ?? null
-    if (!snapshot || !hasStreamPreview(snapshot) || !messageId
-      || conversationRef.current?.messages.some((message) => message.id === messageId)) {
-      clearPreview()
-      return
-    }
-    cancelPendingTwin()
-    snapshot.streaming = false
-    snapshot.reasoningStreaming = false
-    setStreamSnapshot(snapshot)
-    setStreamCoarse({ streaming: false, streamFrozen: true, cancelling: false, streamError: '' })
-    const twin = {
-      messageId,
-      timeout: setTimeout(() => {
-        if (pendingTwinRef.current === twin) clearPreview()
-      }, 1_500),
-    }
-    pendingTwinRef.current = twin
-  }, [cancelPendingTwin, clearPreview, flushStreamRender])
-
-  // Clear the frozen live answer only after React committed the twin 鈥?never when
-  // the reload promise resolved.
+  // The preview is replaced only after React commits the authoritative twin.
   useEffect(() => {
-    const twin = pendingTwinRef.current
-    if (!twin || !conversation) return
-    if (conversation.messages.some((message) => message.id === twin.messageId)) clearPreview()
-  }, [clearPreview, conversation])
+    if (conversation) previewOwner.reconcile(conversation.id, conversation.messages)
+  }, [conversation, previewOwner])
 
-  const finishRun = useCallback(async () => {
-    try {
-      await reload()
-    } catch (err) {
-      setStreamCoarse({
-        streamError: typeof err === 'string' ? err : (err as Error).message || '同步对话失败',
-      })
-    }
-    settlePreview()
-  }, [reload, settlePreview])
+  const settleExternalRun = useCallback((ready: Extract<StreamLifecycleResult, { kind: 'ready' }>) => {
+    const id = ready.terminal.conversationId
+    void streamLifecycleOwner.settleExternalTerminal(
+      ready.permit,
+      () => chatApi.getConversation(id),
+      (outcome) => {
+        if (conversationIdRef.current !== id) return
+        if (outcome.kind === 'failed') {
+          previewOwner.complete(id, { kind: 'error' })
+          setStreamCoarse({ streamError: `回复已结束，但会话回载失败：${outcome.error.message}` })
+          return
+        }
+        acceptPersistedConversation(outcome.value)
+        if (ready.terminal.reason === 'error') {
+          previewOwner.complete(id, { kind: 'error' })
+          setStreamCoarse({ streamError: '回复生成失败，请稍后重试。' })
+        } else {
+          previewOwner.complete(id, { kind: 'persisted', committedMessages: outcome.value.messages })
+        }
+      },
+    )
+  }, [acceptPersistedConversation, previewOwner, streamLifecycleOwner])
 
   useTauriEvent(api.onChatStream, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
-    const terminal = isStreamTerminal(payload)
-    if (payload.type === 'run_started') {
+    const result = streamLifecycleOwner.receive(payload)
+    if (result.kind === 'started') {
       setHookWarning(null)
-      // A new run supersedes any frozen answer still waiting for its twin; its
-      // fallback timer must not reset the store under the new live snapshot.
-      cancelPendingTwin()
-      if (payload.recovery) {
-        restoreGroupArm(
-          payload.conversationId,
-          payload.recovery.groupId,
-          payload.recovery.groupSize,
-          payload.recovery.armIndex,
-          payload.messageId,
-          payload.recovery.providerId,
-          payload.recovery.model,
-        )
-      }
-      if (!inFlightRef.current) restoredRunIdsRef.current.add(payload.runId)
-      inFlightRef.current = true
       setPendingSessionConsent(null)
-      if (hasActiveGroup(payload.conversationId) && payload.messageId) {
-        const column = ensureGroupColumn(payload.conversationId, payload.messageId)
-        if (column) {
-          Object.assign(column, createEmptyStreamSnapshot(), {
-            runId: payload.runId,
-            messageId: payload.messageId,
-            streaming: true,
-            startedAt: Date.now(),
-          })
-          touchGroup(payload.conversationId)
-        }
-        setStreamCoarse({ streaming: true, streamError: '', cancelling: false })
-        return
-      }
-      const restored = createEmptyStreamSnapshot()
-      restored.runId = payload.runId
-      restored.messageId = payload.messageId
-      restored.streaming = true
-      restored.startedAt = Date.now()
-      snapshotRef.current = restored
       pendingToolConfirmsRef.current = []
       pendingUserPromptsRef.current = []
       setPendingToolConfirm(null)
-      showStreamSnapshotIfCurrent(payload.conversationId, restored)
-      return
+    } else if (result.kind === 'ready') {
+      previewOwner.freeze(payload.conversationId)
+      settleExternalRun(result)
     }
-    if (hasActiveGroup(payload.conversationId) && payload.messageId) {
-      const column = ensureGroupColumn(payload.conversationId, payload.messageId)
-      if (!column) return
-      const segment = streamPayloadToSegment(payload)
-      if (streamTextDelta(payload) || streamReasoningDelta(payload)) column.statusNote = null
-      applyStreamDeltaToSnapshot(column, payload, segment)
-      if (terminal) {
-        finalizeReasoningDurationOnDone(column)
-        column.streaming = false
-        flushGroups(payload.conversationId)
-        restoredRunIdsRef.current.delete(payload.runId)
-        const group = getActiveGroup(payload.conversationId)
-        if (group?.columns.every((item) => !item.streaming)) {
-          endGroup(payload.conversationId)
-          if (restoredRunIdsRef.current.size > 0 || !inFlightRef.current) void finishRun()
-          else pendingDoneRef.current = finishRun
-        }
-      } else {
-        touchGroup(payload.conversationId)
-      }
-      return
-    }
-    if (!snapshotRef.current && !inFlightRef.current) {
-      if (terminal) void finishRun()
-      return
-    }
-    const snapshot = snapshotRef.current ?? createEmptyStreamSnapshot()
-    snapshotRef.current = snapshot
-    if (payload.runId) {
-      if (snapshot.runId && snapshot.runId !== payload.runId) return
-      snapshot.runId = payload.runId
-    }
-    if (payload.messageId) snapshot.messageId = payload.messageId
-    const segment = streamPayloadToSegment(payload)
-    if (streamTextDelta(payload) || streamReasoningDelta(payload)) snapshot.statusNote = null
-    applyStreamDeltaToSnapshot(snapshot, payload, segment)
-    showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
-    if (terminal) {
-      finalizeReasoningDurationOnDone(snapshot)
-      snapshot.streaming = false
-      showStreamSnapshotIfCurrent(payload.conversationId, snapshot, true)
-      if (restoredRunIdsRef.current.delete(payload.runId) || !inFlightRef.current) {
-        void finishRun()
-        return
-      }
-      pendingDoneRef.current = finishRun
-    }
-  }, [cancelPendingTwin, finishRun, showStreamSnapshotIfCurrent])
+  }, [previewOwner, settleExternalRun, streamLifecycleOwner])
 
   useTauriEvent(api.onChatTool, (payload) => {
-    if (payload.conversationId !== conversationIdRef.current) return
-    if (hasActiveGroup(payload.conversationId) && payload.messageId) {
-      const column = ensureGroupColumn(payload.conversationId, payload.messageId)
-      if (!column) return
-      applyToolRecordToSnapshot(column, toolEventToRecord(payload))
-      touchGroup(payload.conversationId)
-      return
-    }
-    const snapshot = snapshotRef.current ?? createEmptyStreamSnapshot()
-    snapshotRef.current = snapshot
-    applyToolRecordToSnapshot(snapshot, toolEventToRecord(payload))
-    showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
-  }, [showStreamSnapshotIfCurrent])
+    if (payload.conversationId !== conversationIdRef.current
+      || !executionOwner.snapshot(payload.conversationId).inFlight
+      || !executionOwner.allowsStreamPayload(payload)) return
+    if (!executionOwner.observe({
+      kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId,
+    })) return
+    previewOwner.projectDisplay({ kind: 'tool', payload })
+  }, [executionOwner, previewOwner])
 
   useTauriEvent(api.onChatSubagent, (payload) => {
-    if (payload.parentConversationId !== conversationIdRef.current) return
-    if (hasActiveGroup(payload.parentConversationId)) {
-      const group = getActiveGroup(payload.parentConversationId)
-      const column = group?.columns.find((item) => (
-        payload.parentRunId ? item.runId === payload.parentRunId : true
-      ))
-      if (!column) return
-      const index = findSubagentToolIndex(column.toolCalls, payload)
-      if (index < 0) return
-      column.toolCalls = column.toolCalls.map((tool, i) => (
-        i === index ? mergeSubagentProgress(tool, payload) : tool
-      ))
-      touchGroup(payload.parentConversationId)
-      return
-    }
-    const snapshot = snapshotRef.current
-    if (!snapshot) return
-    const index = findSubagentToolIndex(snapshot.toolCalls, payload)
-    if (index < 0) return
-    snapshot.toolCalls = snapshot.toolCalls.map((tool, i) => (
-      i === index ? mergeSubagentProgress(tool, payload) : tool
-    ))
-    showStreamSnapshotIfCurrent(payload.parentConversationId, snapshot)
-  }, [showStreamSnapshotIfCurrent])
-
+    if (payload.parentConversationId !== conversationIdRef.current
+      || !executionOwner.snapshot(payload.parentConversationId).inFlight
+      || !executionOwner.allowsStreamPayload({
+        conversationId: payload.parentConversationId, runId: payload.parentRunId,
+      })) return
+    if (!executionOwner.observe({
+      kind: 'runEvent', conversationId: payload.parentConversationId, runId: payload.parentRunId,
+    })) return
+    previewOwner.projectDisplay({ kind: 'subagent', payload })
+  }, [executionOwner, previewOwner])
   useTauriEvent(api.onChatToolConfirm, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
     const queue = pendingToolConfirmsRef.current
@@ -381,21 +194,14 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   }, [])
 
   useTauriEvent(api.onChatStatusNote, (payload) => {
-    if (payload.conversationId !== conversationIdRef.current) return
-    if (hasActiveGroup(payload.conversationId)) {
-      const group = getActiveGroup(payload.conversationId)
-      if (!group) return
-      for (const column of group.columns) {
-        if (column.streaming) column.statusNote = payload.note
-      }
-      touchGroup(payload.conversationId)
-      return
-    }
-    const snapshot = snapshotRef.current
-    if (!snapshot) return
-    snapshot.statusNote = payload.note
-    showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
-  }, [showStreamSnapshotIfCurrent])
+    if (payload.conversationId !== conversationIdRef.current
+      || !executionOwner.snapshot(payload.conversationId).inFlight
+      || !executionOwner.allowsStreamPayload(payload)) return
+    if (!executionOwner.observe({
+      kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId,
+    })) return
+    previewOwner.projectDisplay({ kind: 'status', payload })
+  }, [executionOwner, previewOwner])
 
   useTauriEvent(api.onChatTodo, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
@@ -421,82 +227,108 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       : current)
   }, [])
 
+  useTauriEvent(api.onChatTitle, ({ conversationId: id }) => {
+    if (id !== conversationIdRef.current) return
+    void chatApi.getConversation(id).then((updated) => {
+      if (id === conversationIdRef.current && viewActiveRef.current) acceptPersistedConversation(updated)
+    }).catch((error) => console.error('Failed to refresh generated title:', error))
+  }, [acceptPersistedConversation])
+
+  const settlementPorts = useMemo<Parameters<typeof executionOwner.finish>[2]>(() => ({
+    completeWithConversation: (id, persisted) => {
+      if (conversationIdRef.current !== id) return
+      acceptPersistedConversation(persisted)
+      previewOwner.complete(id, { kind: 'persisted', committedMessages: persisted.messages })
+    },
+    completeTerminal: async (terminal) => {
+      const id = terminal.conversationId
+      try {
+        const persisted = await chatApi.getConversation(id)
+        if (conversationIdRef.current !== id) return
+        acceptPersistedConversation(persisted)
+        if (terminal.reason === 'error') {
+          previewOwner.complete(id, { kind: 'error' })
+          setStreamCoarse({ streamError: '回复生成失败，请稍后重试。' })
+        } else {
+          previewOwner.complete(id, { kind: 'persisted', committedMessages: persisted.messages })
+        }
+      } catch (error) {
+        if (conversationIdRef.current !== id) return
+        previewOwner.complete(id, { kind: 'error' })
+        setStreamCoarse({
+          streamError: `回复已结束，但会话回载失败：${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
+    },
+    abandonPreview: (id) => previewOwner.complete(id, { kind: 'error' }),
+    settleQueue: () => {},
+  }), [acceptPersistedConversation, previewOwner])
+
   const handleSend = useCallback(async (
     content: string,
     attachments: PendingAttachment[] = [],
-    options?: { onAccepted?: () => void },
+    options?: { onAccepted?: () => void; attachmentSkillId?: string | null },
   ) => {
     const trimmed = content.trim()
     if (!trimmed && attachments.length === 0) return false
     const conv = conversation
-    if (!conv) return false
-    inFlightRef.current = true
-    setHookWarning(null)
-    // The previous answer's frozen preview must not linger under the new turn.
-    if (pendingTwinRef.current) clearPreview()
-    const replyArms = conv.reply_models ?? conv.replyModels ?? []
-    const convPlanMode =
-      conv.agent_plan_state?.mode ?? conv.agentPlanState?.mode ?? 'act'
-    if (replyArms.length >= 2 && convPlanMode === 'act') {
-      beginGroup(
-        conversationId,
-        `grp-local-${Date.now()}`,
-        replyArms.map((ref) => ({ providerId: ref.provider_id, model: ref.model })),
-      )
-    }
-    setPendingUserMessage({
-      id: `pending_${Date.now()}`,
-      role: 'user',
-      content: trimmed,
-      attachments: attachments.map((attachment) => ({
-        id: attachment.id,
-        type: attachment.type,
-        name: attachment.name,
-        path: attachment.path,
-      })),
-      timestamp: Math.floor(Date.now() / 1000),
-    })
-    setStreamCoarse({ streaming: true, streamError: '', cancelling: false })
-    options?.onAccepted?.()
-    let persisted: Conversation | null = null
+    if (!conv || executionOwner.snapshot(conversationId).inFlight) return false
+    const claim = executionOwner.claimSend(conversationId)
+    if (!claim) return false
+    let lease: ReturnType<typeof executionOwner.begin> = null
     try {
-      persisted = await chatApi.sendMessage(
-        conversationId,
-        trimmed,
-        attachments,
-        conv.active_skill_id ?? conv.activeSkillId,
-      )
-      setConversation(persisted)
-      setPendingUserMessage(null)
-    } catch (err) {
-      const kept = (err as { conversation?: Conversation })?.conversation
-      setPendingUserMessage(null)
-      if (kept) setConversation(kept)
-      setStreamCoarse({
-        streamError: typeof err === 'string' ? err : (err as Error).message || '发送失败',
+      if (!executionOwner.bindSend(claim, conversationId)) return false
+      const replyArms = conv.reply_models ?? conv.replyModels ?? []
+      const planMode = conv.agent_plan_state?.mode ?? conv.agentPlanState?.mode ?? 'act'
+      const fanOut = replyArms.length >= 2 && planMode === 'act'
+      const startedAt = Date.now()
+      lease = executionOwner.begin({
+        conversationId, kind: 'send', startedAt, claim,
+        optimistic: { content: trimmed, attachments, stored: conv.messages },
+        group: fanOut ? {
+          groupId: `grp-local-${startedAt}`,
+          arms: replyArms.map((ref) => ({ providerId: ref.provider_id, model: ref.model })),
+        } : undefined,
       })
+      if (!lease) return false
+      setHookWarning(null)
+      setStreamCoarse({ streamError: '' })
+      previewOwner.begin(conversationId, startedAt, fanOut ? 'group' : 'single')
+      options?.onAccepted?.()
+      const outcome = await executionOwner.submitPreparedRun({
+        lease, content: trimmed, attachments,
+        attachmentSkillId: options && 'attachmentSkillId' in options
+          ? options.attachmentSkillId ?? null
+          : conv.active_skill_id ?? conv.activeSkillId ?? null,
+      }, {
+        ...settlementPorts,
+        onOutcome: (result) => {
+          if (!viewActiveRef.current || conversationIdRef.current !== conversationId) return
+          if (result.kind !== 'persisted') {
+            if (result.kind === 'persisted_error') acceptPersistedConversation(result.conversation)
+            setStreamCoarse({ streamError: result.error.message })
+          }
+        },
+      })
+      return outcome.kind !== 'not_committed'
     } finally {
-      inFlightRef.current = false
-      endGroup(conversationId)
-      const delayed = pendingDoneRef.current
-      pendingDoneRef.current = null
-      if (persisted) settlePreview()
-      // Send failed before any terminal arrived: there is no twin to wait for.
-      else if (!delayed) clearPreview()
-      else await delayed()
+      if (lease) await executionOwner.finish(lease, null, settlementPorts)
+      executionOwner.abandonSend(claim)
     }
-    return true
-  }, [clearPreview, conversation, conversationId, settlePreview])
-
+  }, [acceptPersistedConversation, conversation, conversationId, executionOwner, previewOwner, settlementPorts])
   const handleCancel = useCallback(async () => {
-    setStreamCoarse({ cancelling: true })
-    try {
-      await chatApi.cancelStream(conversationId)
-    } catch (err) {
-      console.error('Failed to cancel stream:', err)
-      setStreamCoarse({ cancelling: false })
+    if (!executionOwner.snapshot(conversationId).inFlight) return
+    const result = await streamLifecycleOwner.cancelRun(
+      conversationId,
+      () => chatApi.cancelStream(conversationId),
+      () => setStreamCoarse({ cancelling: true }),
+    )
+    if (result.kind === 'failed') {
+      console.error('Failed to cancel stream:', result.error)
+      setStreamCoarse({ streamError: result.error.message })
     }
-  }, [conversationId])
+    if (result.kind !== 'ignored' && result.kind !== 'superseded') setStreamCoarse({ cancelling: false })
+  }, [conversationId, executionOwner, streamLifecycleOwner])
 
   const resolveToolConfirm = useCallback(async (
     approved: boolean,
@@ -592,12 +424,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     }
   }, [conversationId])
 
-  const displayMessages = useMemo(() => {
-    const messages = conversation?.messages ?? []
-    if (!pendingUserMessage) return messages
-    if (messages.some((item) => item.id === pendingUserMessage.id)) return messages
-    return [...messages, pendingUserMessage]
-  }, [conversation?.messages, pendingUserMessage])
+  const displayMessages = executionOwner.overlayMessages(conversation?.id, conversation?.messages ?? [])
 
   const inputBarProps = usePopoutComposer({
     conversation,
@@ -613,7 +440,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     onCancel: handleCancel,
     cancelVisible: streamCoarse.streaming,
     cancelling: streamCoarse.cancelling,
-    disabled: streamCoarse.streaming,
+    disabled: streamCoarse.streaming || executionOwner.snapshot(conversationId).inFlight,
   })
 
   const messageListProps: MessageListProps = {

@@ -162,29 +162,7 @@ pub(crate) async fn chat_compress_context(
         }));
     }
     compress_conversation_context(&state, &mut conversation, "manual").await?;
-    let context_state = compute_context_state(&app, &state, &conversation, None, &[]).await?;
-    conversation.context_state = context_state.clone();
-    conversation = crate::chat::repository::repository(&app)
-        .update_context(
-            &app,
-            &conversation_id,
-            conversation.revision,
-            context_state.clone(),
-        )
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
-    emit_chat_context_state(
-        &app,
-        &conversation.id,
-        conversation.revision,
-        &context_state,
-    );
-    strip_transcripts_for_frontend(&mut conversation);
-    Ok(serde_json::json!({
-        "success": true,
-        "contextState": context_state,
-        "conversation": conversation,
-    }))
+    finalize_local_context_change(&app, &state, &conversation_id, conversation).await
 }
 
 #[tauri::command]
@@ -195,23 +173,28 @@ pub(crate) async fn chat_clear_context(
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
     apply_context_clear(&mut conversation)?;
-    let context_state = compute_context_state(&app, &state, &conversation, None, &[]).await?;
+    finalize_local_context_change(&app, &state, &conversation_id, conversation).await
+}
+
+/// Local context mutations share one compute → persist → event → response path.
+async fn finalize_local_context_change(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    conversation_id: &str,
+    mut conversation: Conversation,
+) -> Result<serde_json::Value, String> {
+    let context_state = compute_context_state(app, state, &conversation, None, &[]).await?;
     conversation.context_state = context_state.clone();
-    conversation = crate::chat::repository::repository(&app)
+    conversation = crate::chat::repository::repository(app)
         .update_context(
-            &app,
-            &conversation_id,
+            app,
+            conversation_id,
             conversation.revision,
             context_state.clone(),
         )
         .await
         .map_err(crate::chat::repository::repository_error)?;
-    emit_chat_context_state(
-        &app,
-        &conversation.id,
-        conversation.revision,
-        &context_state,
-    );
+    emit_chat_context_state(app, &conversation.id, conversation.revision, &context_state);
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,
@@ -795,6 +778,7 @@ pub(super) async fn compute_context_state(
         state.inner(),
         &settings,
         Some(session_model_for_conversation(conversation)),
+        super::tooling::allowed_mcp_server_ids(conversation, &settings),
     )
     .await
     .tools;

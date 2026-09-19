@@ -5,6 +5,7 @@ import {
   findEnabledSkillId,
   inferSingleAttachmentSkillId,
   normalizeSkill,
+  resolveSendSkillId,
   skillRecommendedTools,
 } from './skillSelection'
 
@@ -30,6 +31,22 @@ describe('documentSkillNameForAttachment', () => {
     expect(documentSkillNameForAttachment(file('shot.pdf', 'image'))).toBeNull()
     expect(documentSkillNameForAttachment(file('notes.txt'))).toBeNull()
     expect(documentSkillNameForAttachment(file('noext'))).toBeNull()
+  })
+})
+
+describe('resolveSendSkillId', () => {
+  const skills = [skill('pdf-skill', 'pdf'), skill('xlsx')]
+
+  it('uses an enabled selection before attachment inference', () => {
+    expect(resolveSendSkillId([file('sheet.xlsx')], skills, 'pdf-skill', false)).toBe('pdf-skill')
+  })
+
+  it('ignores disabled selections and infers a single document skill', () => {
+    expect(resolveSendSkillId([file('report.pdf')], skills, 'disabled', false)).toBe('pdf-skill')
+  })
+
+  it('never attaches a skill to the chat runtime', () => {
+    expect(resolveSendSkillId([file('report.pdf')], skills, 'pdf-skill', true)).toBeNull()
   })
 })
 

@@ -96,7 +96,8 @@ pub async fn chat_mcp_list_tools(
     state: State<'_, AppState>,
     cached_only: Option<bool>,
 ) -> Result<McpListToolsResult, String> {
-    let catalog = list_enabled_tool_catalog_inner(&app, &state, cached_only.unwrap_or(false)).await;
+    let catalog =
+        list_enabled_tool_catalog_inner(&app, &state, cached_only.unwrap_or(false), None).await;
     Ok(McpListToolsResult {
         success: true,
         tools: catalog.tools,
@@ -106,13 +107,22 @@ pub async fn chat_mcp_list_tools(
 }
 
 pub async fn list_enabled_tool_catalog(app: &AppHandle, state: &AppState) -> EnabledToolCatalog {
-    list_enabled_tool_catalog_inner(app, state, false).await
+    list_enabled_tool_catalog_inner(app, state, false, None).await
+}
+
+pub async fn list_enabled_tool_catalog_for_run(
+    app: &AppHandle,
+    state: &AppState,
+    allowed_mcp_server_ids: Option<&[String]>,
+) -> EnabledToolCatalog {
+    list_enabled_tool_catalog_inner(app, state, false, allowed_mcp_server_ids).await
 }
 
 async fn list_enabled_tool_catalog_inner(
     app: &AppHandle,
     state: &AppState,
     cached_only: bool,
+    allowed_mcp_server_ids: Option<&[String]>,
 ) -> EnabledToolCatalog {
     let settings = state.settings_read().clone();
     let mut tools = list_native_builtin_tool_defs(
@@ -156,7 +166,9 @@ async fn list_enabled_tool_catalog_inner(
         let (tools, pending) = collect_display_mcp_tool_defs(state, &settings).await;
         (tools, Vec::new(), pending)
     } else {
-        let (tools, unavailable) = collect_enabled_mcp_tool_defs(state, Some(app), &settings).await;
+        let (tools, unavailable) =
+            collect_enabled_mcp_tool_defs(state, Some(app), &settings, allowed_mcp_server_ids)
+                .await;
         (tools, unavailable, false)
     };
     tools.extend(mcp_tools);
@@ -197,8 +209,17 @@ pub(crate) async fn collect_enabled_mcp_tool_defs(
     state: &AppState,
     sink: super::manager::McpEventSink<'_>,
     settings: &crate::settings::Settings,
+    allowed_server_ids: Option<&[String]>,
 ) -> (Vec<ChatToolDefinition>, Vec<String>) {
-    let servers = eligible_mcp_servers(settings);
+    let servers = eligible_mcp_servers(settings)
+        .into_iter()
+        .filter(|server| {
+            allowed_server_ids.is_none_or(|ids| {
+                ids.iter()
+                    .any(|id| crate::computer_control::mcp_server_ids_equivalent(id, &server.id))
+            })
+        })
+        .collect::<Vec<_>>();
     let listings = servers.iter().map(|server| async move {
         let result = list_tools_bounded(state, sink, server).await;
         (*server, result)
@@ -1533,6 +1554,21 @@ mod tests {
         assert!(select_warmup_servers(&settings, None).is_empty());
     }
 
+    #[tokio::test]
+    async fn excluded_cold_server_does_not_delay_tool_collection() {
+        let state = crate::state::test_app_state();
+        let settings = settings_with_servers(vec![enabled_server("excluded")]);
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            collect_enabled_mcp_tool_defs(&state, None, &settings, Some(&[])),
+        )
+        .await
+        .expect("an excluded server must not start its transport");
+        assert!(result.0.is_empty());
+        assert!(result.1.is_empty());
+        let _ = std::fs::remove_dir_all(&state.usage_dir);
+    }
+
     /// 一快一慢（慢 = 永不应答握手）的工具收集：慢 server 不把整轮拖到全局 60s 超时，
     /// 快 server 工具照常返回。unix-gated：依赖 python3 + sleep 起 stdio 假 server。
     #[cfg(unix)]
@@ -1608,7 +1644,8 @@ while True:
             let settings = settings_with_servers(vec![fast_server(&script), hanging_server()]);
 
             let started = std::time::Instant::now();
-            let (tools, unavailable) = collect_enabled_mcp_tool_defs(&state, None, &settings).await;
+            let (tools, unavailable) =
+                collect_enabled_mcp_tool_defs(&state, None, &settings, None).await;
             let elapsed = started.elapsed();
 
             assert!(
@@ -1647,7 +1684,8 @@ while True:
             );
             let settings = settings_with_servers(vec![server]);
 
-            let (tools, unavailable) = collect_enabled_mcp_tool_defs(&state, None, &settings).await;
+            let (tools, unavailable) =
+                collect_enabled_mcp_tool_defs(&state, None, &settings, None).await;
 
             assert!(
                 tools.iter().any(|tool| tool.id == "mcp__hang__cached_tool"),

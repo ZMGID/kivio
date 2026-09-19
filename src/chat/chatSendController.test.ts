@@ -247,6 +247,29 @@ describe('chat send controller', () => {
     previewOwner.dispose()
   })
 
+  it('uses the same uncommitted failure contract for canonical multi-answer sends', async () => {
+    const multi = conversation('a', {
+      reply_models: [{ provider_id: 'p1', model: 'm1' }, { provider_id: 'p2', model: 'm2' }],
+    })
+    const persistence = {
+      createConversation: vi.fn(), updateConversation: vi.fn(), setAgentRuntime: vi.fn(),
+      sendMessage: vi.fn().mockRejectedValue(new Error('write failed')),
+    }
+    const { controller, executionOwner, previewOwner, events, settlementPorts } = harness(persistence)
+    const accepted = vi.fn()
+    const result = await controller.send({
+      content: 'hello', attachments: [], preparation: preparation(multi),
+      attachmentSkillId: null, disabledReason: '', onAccepted: accepted,
+    })
+
+    expect(events.find((event) => event.kind === 'started')).toMatchObject({ kind: 'started', fanOut: true })
+    expect(result).toMatchObject({ kind: 'not_committed', composerAccepted: false })
+    expect(accepted).toHaveBeenCalledTimes(1)
+    expect(executionOwner.snapshot('a').inFlight).toBe(false)
+    expect(settlementPorts.settleQueue).toHaveBeenCalledWith('a')
+    previewOwner.dispose()
+  })
+
   it('settles an early done after a persisted single run even when outcome presentation throws', async () => {
     let resolveSend!: (value: Conversation) => void
     const persisted = conversation('a', {

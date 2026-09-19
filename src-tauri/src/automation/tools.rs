@@ -11,9 +11,8 @@ use crate::mcp::types::McpToolCallResult;
 use crate::native_tools::TOOL_OUTPUT_MAX_BYTES;
 
 use super::application;
-use super::commands;
 use super::history;
-use super::hotkeys::fingerprint as hotkey_fingerprint;
+use super::mutations;
 use super::runner;
 use super::storage;
 use super::types::{
@@ -71,23 +70,12 @@ pub(crate) fn upsert(app: &AppHandle, arguments: &Value) -> Result<McpToolCallRe
             "issues": issues,
         }));
     }
-    let previous = if automation.id.trim().is_empty() {
-        None
-    } else {
-        storage::get(app, &automation.id).ok()
-    };
-    let saved = storage::save(app, automation)?;
-    let hotkey_changed = previous
-        .as_ref()
-        .map(|old| hotkey_fingerprint(old) != hotkey_fingerprint(&saved))
-        .unwrap_or(saved.enabled);
-    if hotkey_changed {
-        commands::refresh_hotkeys(app);
-    }
+    let created = automation.id.trim().is_empty() || storage::get(app, &automation.id).is_err();
+    let saved = mutations::save(app, automation)?;
     ok_json(json!({
         "automation": saved,
         "issues": issues,
-        "created": previous.is_none(),
+        "created": created,
     }))
 }
 
@@ -97,16 +85,13 @@ pub(crate) fn set_enabled(app: &AppHandle, arguments: &Value) -> Result<McpToolC
         .get("enabled")
         .and_then(Value::as_bool)
         .ok_or_else(|| "enabled must be a boolean".to_string())?;
-    let saved = storage::set_enabled(app, &id, enabled)?;
-    commands::refresh_hotkeys(app);
+    let saved = mutations::set_enabled(app, &id, enabled)?;
     ok_json(json!({ "automation": saved.meta() }))
 }
 
 pub(crate) fn delete(app: &AppHandle, arguments: &Value) -> Result<McpToolCallResult, String> {
     let id = required_id(arguments)?;
-    runner::cancel(app, &id)?;
-    storage::delete(app, &id)?;
-    commands::refresh_hotkeys(app);
+    mutations::delete(app, &id)?;
     ok_json(json!({ "deleted": id }))
 }
 

@@ -206,10 +206,12 @@ async fn apply_settings(
         .sub_agents
         .set_concurrency(sanitized.chat_tools.sub_agent_concurrency);
 
-    if let Err(err) = register_hotkeys_for_settings(app, &sanitized) {
-        // 热键被系统/其他应用占用不该阻断保存——能注册的已注册,失败的作为警告推给前端,
-        // 设置照常落盘(否则用户连"删掉这个冲突热键"的改动都存不下)。
-        let _ = tauri::Emitter::emit(app, "hotkey-warning", err);
+    if crate::shortcuts::hotkey_bindings_changed(&previous_settings, &sanitized) {
+        if let Err(err) = register_hotkeys_for_settings(app, &sanitized) {
+            // 热键被系统/其他应用占用不该阻断保存——能注册的已注册,失败的作为警告推给前端,
+            // 设置照常落盘(否则用户连"删掉这个冲突热键"的改动都存不下)。
+            let _ = tauri::Emitter::emit(app, "hotkey-warning", err);
+        }
     }
 
     let old_working_directory = previous_settings
@@ -271,8 +273,12 @@ async fn apply_settings(
         crate::shortcuts::destroy_hidden_chat_window(app);
     }
 
-    if let Err(err) = setup_tray(app) {
-        eprintln!("Failed to update tray: {err}");
+    if previous_settings.settings_language != committed.settings.settings_language
+        || app.tray_by_id("main").is_none()
+    {
+        if let Err(err) = setup_tray(app) {
+            eprintln!("Failed to update tray: {err}");
+        }
     }
 
     Ok(committed)

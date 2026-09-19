@@ -71,7 +71,7 @@ import {
   persistLastChatModelToSettings,
 } from './composerPreferences'
 import {
-  inferSingleAttachmentSkillId,
+  resolveSendSkillId,
   normalizeSkill,
   skillRecommendedTools,
 } from './skillSelection'
@@ -603,7 +603,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         m.apiMessages = undefined
       }
     }
-    setCurrentConversation(conversation)
+    setCurrentConversation((previous) => conversation && previous?.id === conversation.id
+      && conversation.revision < previous.revision ? previous : conversation)
     setContextState(conversation?.context_state ?? conversation?.contextState ?? null)
   }, [setContextState])
 
@@ -686,6 +687,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setStreamCoarse({ streamError: streamErrorsRef.current[conversationId] ?? '' })
   }, [interactionInbox, previewOwner])
 
+  // One view reset for every navigation path that actually leaves a conversation.
+  // Background execution remains owned by executionOwner and is not cancelled here.
+  const clearDisplayedConversation = useCallback(() => {
+    currentConversationIdRef.current = null
+    applyConversation(null)
+    restoreStreamingPreview(null)
+  }, [applyConversation, restoreStreamingPreview])
+
   useEffect(() => {
     previewOwner.attach()
     return () => {
@@ -700,15 +709,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     previewOwner.drop(conversationId)
     syncGeneratingConversationIds()
   }, [interactionInbox, previewOwner, syncGeneratingConversationIds])
-
-  const freezeCancelledRunLocally = useCallback((conversationId: string) => {
-    // 立即停掉"生成中"视觉（撤掉取消按钮 + 停 shimmer），但保留已生成文本：
-    // 切到 frozen 态冻结展示，等 send invoke 返回持久化消息时由
-    // finishStreamingRunWithConversation 无缝替换冻结的预览。
-    // 过滤迟到的内容事件，但仍接收终局事件，供没有 send invoke 的恢复运行收尾。
-    previewOwner.freezeForCancellation(conversationId)
-    interactionInbox.observe({ kind: 'drop', conversationId })
-  }, [interactionInbox, previewOwner])
 
   const activeAgentRuntime = useMemo(
     () => (currentConversation ? normalizeAgentRuntime(currentConversation) : draftAgentRuntime),
@@ -886,11 +886,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         agentRuntime: activeAgentRuntime,
       })
       saveLastAgentRuntime(activeAgentRuntime)
-      currentConversationIdRef.current = null
-      applyConversation(null)
-      restoreStreamingPreview(null)
+      clearDisplayedConversation()
       resetContext()
-      setStreamError('')
     },
     clearEmptyChat: () => {
       setAssistantStreamStatsByMessageId({})
@@ -906,12 +903,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     finalizeDeletedChat: (conversationId, clearCurrentView) => {
       dropConversationLocally(conversationId)
       if (clearCurrentView) {
-        currentConversationIdRef.current = null
         setAssistantStreamStatsByMessageId({})
         resetContext()
-        applyConversation(null)
-        restoreStreamingPreview(null)
-        setStreamError('')
+        clearDisplayedConversation()
       }
       refreshSidebar()
     },
@@ -936,9 +930,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       else setStreamCoarse({ cancelling: false })
     },
     resetConversation: () => {
-      currentConversationIdRef.current = null
-      applyConversation(null)
-      restoreStreamingPreview(null)
+      clearDisplayedConversation()
     },
     discardConversation: (conversationId, error, selection) => {
       console.error('Failed to load conversation:', error)
@@ -947,14 +939,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         currentConversationIdRef.current === conversationId
         || (!selection && currentConversationIdRef.current === null)
       ) {
-        currentConversationIdRef.current = null
-        applyConversation(null)
+        clearDisplayedConversation()
       }
       refreshSidebar()
       setStreamError(error.message)
     },
   }), [
-    activeAgentRuntime, activeModel, activeProviderId, applyConversation,
+    activeAgentRuntime, activeModel, activeProviderId, applyConversation, clearDisplayedConversation,
     dropConversationLocally, executionOwner, occupyConversationInMain, popoutOwner,
     previewOwner, refreshSidebar, resetComposerDraftContext, resetContext, restoreStreamingPreview,
     setStreamErrorForConversation,
@@ -1320,6 +1311,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!currentConversationId || payload.conversationId !== currentConversationId) return
     patchGoalState(payload.goalState)
   }, [patchGoalState])
+
+  useTauriEvent(api.onChatTitle, ({ conversationId }) => {
+    if (currentConversationIdRef.current === conversationId) {
+      void chatApi.getConversation(conversationId).then((updated) => {
+        applyConversationIfCurrent(conversationId, updated)
+      }).catch((error) => console.error('Failed to refresh generated title:', error))
+    }
+    refreshSidebar()
+  }, [applyConversationIfCurrent, refreshSidebar])
 
   useTauriEvent(api.onChatHook, (payload) => {
     const currentConversationId = currentConversationIdRef.current
@@ -1758,11 +1758,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     attachments: PendingAttachment[] = [],
     options: SendMessageOptions = {},
   ) => {
-    const attachmentSkillId = usesChatRuntime
-      ? null
-      : options.forceNewConversation
-        ? inferSingleAttachmentSkillId(attachments, enabledSkills)
-        : effectiveSkillId ?? inferSingleAttachmentSkillId(attachments, enabledSkills)
+    const attachmentSkillId = resolveSendSkillId(
+      attachments, enabledSkills, options.forceNewConversation ? null : effectiveSkillId, usesChatRuntime,
+    )
     const result = await sendController.send({
       content,
       attachments,
@@ -2094,36 +2092,22 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       return
     }
 
-    const permit = executionOwner.requestCancellation(
+    const result = await streamLifecycleOwner.cancelRun(
       conversationId,
-      previewOwner.summary(conversationId)?.runId ?? null,
+      () => chatApi.cancelStream(conversationId),
+      () => {
+        setStreamCoarse({ cancelling: true })
+        interactionInbox.observe({ kind: 'drop', conversationId })
+      },
     )
-    if (!permit) return
-    setStreamCoarse({ cancelling: true })
-    freezeCancelledRunLocally(conversationId)
-    let succeeded = false
-    let failure: unknown
-    try {
-      await chatApi.cancelStream(conversationId)
-      succeeded = true
-    } catch (err) {
-      failure = err
-    } finally {
-      const stillCurrent = executionOwner.completeCancellation(permit, succeeded)
-      if (stillCurrent) {
-        if (!succeeded) {
-          console.error('Failed to cancel chat stream:', failure)
-          previewOwner.resume(conversationId)
-          syncGeneratingConversationIds()
-          setStreamErrorForConversation(
-            conversationId,
-            typeof failure === 'string' ? failure : (failure as Error | null | undefined)?.message || '停止生成失败',
-          )
-        }
-        if (currentConversationIdRef.current === conversationId) setStreamCoarse({ cancelling: false })
-      }
+    if (result.kind === 'failed') {
+      console.error('Failed to cancel chat stream:', result.error)
+      syncGeneratingConversationIds()
+      setStreamErrorForConversation(conversationId, result.error.message)
     }
-  }, [executionOwner, freezeCancelledRunLocally, previewOwner, setStreamErrorForConversation, syncGeneratingConversationIds])
+    if (result.kind !== 'ignored' && result.kind !== 'superseded'
+      && currentConversationIdRef.current === conversationId) setStreamCoarse({ cancelling: false })
+  }, [executionOwner, interactionInbox, previewOwner, setStreamErrorForConversation, streamLifecycleOwner, syncGeneratingConversationIds])
 
   const displayMessages = executionOwner.overlayMessages(
     currentConversation?.id,

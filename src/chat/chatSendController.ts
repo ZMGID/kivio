@@ -1,5 +1,5 @@
 import { chatApi } from './api'
-import { createChatExecutionOwner, type ExecutionLease, type PreparedSingleRunOutcome } from './chatExecutionOwner'
+import { createChatExecutionOwner, type ExecutionLease, type PreparedRunOutcome } from './chatExecutionOwner'
 import { prepareConversationForSend, type SendPreparationIntent } from './prepareConversationForSend'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import type { Conversation, PendingAttachment } from './types'
@@ -26,7 +26,7 @@ export type SendPresentationEvent =
   | { kind: 'updated'; conversation: Conversation }
   | { kind: 'rejected'; error: Error; conversationId: string | null; startingConversationId: string | null; creation: SendCreationCommit | null }
   | { kind: 'started'; conversation: Conversation; content: string; attachments: PendingAttachment[]; fanOut: boolean }
-  | { kind: 'outcome'; conversationId: string; outcome: PreparedSingleRunOutcome }
+  | { kind: 'outcome'; conversationId: string; outcome: PreparedRunOutcome }
   | { kind: 'settled' }
 
 export interface SendIntent {
@@ -55,17 +55,7 @@ interface SendDependencies {
   now?: () => number
 }
 
-function asError(value: unknown): Error {
-  return value instanceof Error
-    ? value
-    : new Error(typeof value === 'string'
-      ? value
-      : typeof (value as { message?: unknown } | null)?.message === 'string'
-        ? (value as { message: string }).message
-        : '发送失败')
-}
-
-function withComposerResult(outcome: PreparedSingleRunOutcome): SendResult {
+function withComposerResult(outcome: PreparedRunOutcome): SendResult {
   return outcome.kind === 'not_committed'
     ? { ...outcome, composerAccepted: false }
     : { ...outcome, composerAccepted: true }
@@ -145,40 +135,14 @@ export function createChatSendController({
         presentation.present({ kind: 'started', conversation, content, attachments, fanOut })
         intent.onAccepted?.()
 
-        if (!fanOut) {
-          const outcome = await executionOwner.submitPreparedSingleRun({
-            lease, content, attachments,
-            attachmentSkillId: intent.attachmentSkillId,
-            planMessageId: intent.planMessageId,
-          }, {
-            ...settlementPorts,
-            onOutcome: (outcome) => presentation.present({ kind: 'outcome', conversationId: conversation.id, outcome }),
-          })
-          return withComposerResult(outcome)
-        }
-
-        let persistedForSettlement: Conversation | null = null
-        let outcome: PreparedSingleRunOutcome
-        try {
-          const persisted = await persistence.sendMessage(
-            conversation.id, content, attachments, intent.attachmentSkillId, intent.planMessageId,
-          )
-          persistedForSettlement = persisted
-          outcome = { kind: 'persisted', conversation: persisted }
-        } catch (value) {
-          const error = asError(value)
-          const kept = (value as { conversation?: Conversation } | null)?.conversation
-          outcome = kept
-            ? { kind: 'persisted_error', conversation: kept, error }
-            : { kind: 'not_committed', error }
-        }
-        try {
-          presentation.present({ kind: 'outcome', conversationId: conversation.id, outcome })
-        } catch (error) {
-          console.error('Failed to present Chat send outcome:', error)
-        } finally {
-          await executionOwner.finish(lease, persistedForSettlement, settlementPorts)
-        }
+        const outcome = await executionOwner.submitPreparedRun({
+          lease, content, attachments,
+          attachmentSkillId: intent.attachmentSkillId,
+          planMessageId: intent.planMessageId,
+        }, {
+          ...settlementPorts,
+          onOutcome: (outcome) => presentation.present({ kind: 'outcome', conversationId: conversation.id, outcome }),
+        })
         return withComposerResult(outcome)
       } finally {
         if (lease) await executionOwner.finish(lease, null, settlementPorts)

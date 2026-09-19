@@ -19,10 +19,14 @@ export type TerminalLoadResult<T> =
   | { kind: 'loaded'; value: T }
   | { kind: 'failed'; error: Error }
 
-function asError(value: unknown): Error {
+export type CancelRunResult =
+  | { kind: 'ignored' | 'cancelled' | 'superseded' }
+  | { kind: 'failed'; error: Error }
+
+function asError(value: unknown, fallback = '会话回载失败，请重试'): Error {
   return value instanceof Error
     ? value
-    : new Error(typeof value === 'string' ? value : '会话回载失败，请重试')
+    : new Error(typeof value === 'string' ? value : fallback)
 }
 
 /** Translates accepted protocol packets into display projection and execution
@@ -36,6 +40,30 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
     return { kind: decision.kind, terminal }
   }
   return {
+    /** One cancellation protocol for the main view and popout. The view only
+     * projects pending/error state; this Module owns the fence and rollback. */
+    async cancelRun(
+      conversationId: string,
+      cancel: () => Promise<void>,
+      onPending?: () => void,
+    ): Promise<CancelRunResult> {
+      const permit = executionOwner.requestCancellation(
+        conversationId, previewOwner.summary(conversationId)?.runId ?? null,
+      )
+      if (!permit) return { kind: 'ignored' }
+      previewOwner.freezeForCancellation(conversationId)
+      try {
+        onPending?.()
+        await cancel()
+        return executionOwner.completeCancellation(permit, true)
+          ? { kind: 'cancelled' }
+          : { kind: 'superseded' }
+      } catch (value) {
+        if (!executionOwner.completeCancellation(permit, false)) return { kind: 'superseded' }
+        previewOwner.resume(conversationId)
+        return { kind: 'failed', error: asError(value, '停止生成失败') }
+      }
+    },
     receive(payload: ChatStreamPayload, options: { project?: boolean } = {}): StreamLifecycleResult {
       const id = payload.conversationId
       const started = payload.type === 'run_started'

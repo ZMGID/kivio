@@ -290,6 +290,16 @@ export function createStreamPreviewOwner() {
     receive(payload: ChatStreamPayload, now = Date.now()): Projection {
       const terminal = isStreamTerminal(payload)
       if (disposed) return { accepted: false, target: 'single', terminal }
+      if (payload.type === 'run_started' && pendingTwin?.conversationId === payload.conversationId) {
+        cancelTwin()
+        if (selectedId === payload.conversationId) clearVisible()
+      }
+      if (payload.type === 'run_started' && !snapshots.has(payload.conversationId)
+        && !groupStarts.has(payload.conversationId) && !payload.recovery) {
+        // A recovered single run did not pass through begin(), but still needs
+        // a generation for its persisted-twin fallback and later run turnover.
+        generations.set(payload.conversationId, (generations.get(payload.conversationId) ?? 0) + 1)
+      }
       if (payload.type === 'run_started' && payload.recovery) {
         if (!groupStarts.has(payload.conversationId)) groupStarts.set(payload.conversationId, now)
         restoreGroupArm(

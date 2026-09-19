@@ -221,6 +221,12 @@ export type ChatGoalPayload = {
   goalState: GoalState | null
 }
 
+export type ChatTitlePayload = {
+  conversationId: string
+  revision: number
+  title: string
+}
+
 export type ChatToolStatus =
   | 'pending'
   | 'running'
@@ -1985,6 +1991,13 @@ export const api = {
     return onChatProtocol((event) => {
       if (event.type !== 'goal_updated' || event.scope !== 'conversation') return
       listener({ conversationId: event.conversationId, goalState: (event.goalState as GoalState | null) ?? null })
+    })
+  },
+  onChatTitle: (listener: (payload: ChatTitlePayload) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return onChatProtocol((event) => {
+      if (event.type !== 'title_updated' || event.scope !== 'conversation') return
+      listener({ conversationId: event.conversationId, revision: event.revision, title: event.title })
     })
   },
   onChatTool: (listener: (payload: ChatToolProgressPayload) => void) => {

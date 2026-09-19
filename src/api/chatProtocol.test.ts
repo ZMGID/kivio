@@ -276,6 +276,24 @@ describe('chat protocol sequencing', () => {
     expect(revisions).toEqual([])
   })
 
+  it('delivers a later background title update but rejects an older one', () => {
+    const titles: string[] = []
+    chatProtocolTesting.subscribe((item) => {
+      if (item.scope === 'conversation' && item.type === 'title_updated') titles.push(item.title)
+    })
+    const titleEvent = (revision: number, title: string) => ({
+      protocolVersion: 1 as const,
+      scope: 'conversation' as const,
+      conversationId: 'conversation',
+      revision,
+      type: 'title_updated' as const,
+      title,
+    })
+    chatProtocolTesting.ingest(titleEvent(3, 'Summary'))
+    chatProtocolTesting.ingest(titleEvent(2, 'Old summary'))
+    expect(titles).toEqual(['Summary'])
+  })
+
   it('rejects a replay whose declared range is not continuous', () => {
     chatProtocolTesting.ingest(event(1))
     expect(chatProtocolTesting.isContinuousReplay('conversation', {

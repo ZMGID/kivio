@@ -31,6 +31,7 @@ vi.mock('../../api/tauri', () => ({
     onChatTodo: listen('todo'),
     onChatPlan: listen('plan'),
     onChatGoal: listen('goal'),
+    onChatTitle: listen('title'),
     chatConfirmToolCall: vi.fn(),
     chatRespondSessionConsent: vi.fn(),
   },
@@ -41,13 +42,17 @@ vi.mock('../../api/settingsCache', () => ({
   updateSettingsCached: vi.fn(),
 }))
 vi.mock('../api', () => ({
-  chatApi: { getConversation: vi.fn() },
+  chatApi: { getConversation: vi.fn(), sendMessage: vi.fn(), cancelStream: vi.fn() },
   agentRuntimesEqual: () => true,
   normalizeAgentRuntime: () => ({ kind: 'builtin' }),
 }))
-vi.mock('./usePopoutComposer', () => ({ usePopoutComposer: () => ({}) }))
+vi.mock('./usePopoutComposer', () => ({
+  usePopoutComposer: ({ onSend, onCancel }: { onSend: unknown; onCancel: unknown }) => ({ onSend, onCancel }),
+}))
 
 const mockGetConversation = vi.mocked(chatApi.getConversation)
+const mockSendMessage = vi.mocked(chatApi.sendMessage)
+const mockCancelStream = vi.mocked(chatApi.cancelStream)
 
 const CONVERSATION_ID = 'c1'
 const TWIN_ID = 'assistant-1'
@@ -97,6 +102,8 @@ describe('usePopoutSession run settle', () => {
     vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle))
     handlers.clear()
     mockGetConversation.mockReset()
+    mockSendMessage.mockReset()
+    mockCancelStream.mockReset()
     resetStreamStore()
   })
 
@@ -140,6 +147,7 @@ describe('usePopoutSession run settle', () => {
     expect(getCoarse()).toMatchObject({ streaming: false, streamFrozen: true })
 
     await act(async () => { await vi.advanceTimersByTimeAsync(1_400) })
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
     expect(getSnapshot().content).toBe('answer')
 
     await act(async () => { await vi.advanceTimersByTimeAsync(200) })
@@ -167,5 +175,120 @@ describe('usePopoutSession run settle', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(2_000) })
     expect(getSnapshot().content).toBe('second')
     expect(getCoarse().streaming).toBe(true)
+  })
+
+  it('returns uncommitted failure to the composer so an accepted draft can be restored', async () => {
+    mockGetConversation.mockResolvedValueOnce(userOnly)
+    mockSendMessage.mockRejectedValueOnce(new Error('disk unavailable'))
+    const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+    await flush()
+    const accepted = vi.fn()
+
+    let sent: boolean | void = undefined
+    await act(async () => {
+      sent = await rendered.result.current.inputBarProps.onSend('hello', [], { onAccepted: accepted })
+    })
+
+    expect(accepted).toHaveBeenCalledTimes(1)
+    expect(sent).toBe(false)
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect(rendered.result.current.messageListProps.messages.map((message) => message.id))
+      .toEqual(['user-1'])
+  })
+
+  it('shows one optimistic send, rejects a duplicate, then replaces it with persisted messages', async () => {
+    mockGetConversation.mockResolvedValueOnce(userOnly)
+    let resolveSend: (conversation: Conversation) => void = () => {}
+    mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve }))
+    const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+    await flush()
+    const accepted = vi.fn()
+    let first: Promise<boolean | void> = Promise.resolve(false)
+    await act(async () => {
+      first = Promise.resolve(rendered.result.current.inputBarProps.onSend(' hello ', [], { onAccepted: accepted }))
+    })
+
+    expect(accepted).toHaveBeenCalledTimes(1)
+    expect(rendered.result.current.messageListProps.messages.map((message) => message.content))
+      .toEqual(['hi', 'hello'])
+    let duplicate: boolean | void = undefined
+    await act(async () => {
+      duplicate = await rendered.result.current.inputBarProps.onSend('again', [], { onAccepted: accepted })
+    })
+    expect(duplicate).toBe(false)
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+
+    const persisted = conversationWith([
+      ...userOnly.messages,
+      { id: 'user-2', role: 'user', content: 'hello', timestamp: 2 },
+      { id: TWIN_ID, role: 'assistant', content: 'answer', timestamp: 3 },
+    ])
+    await act(async () => { resolveSend(persisted); await first })
+    expect(rendered.result.current.messageListProps.messages.map((message) => message.id))
+      .toEqual(['user-1', 'user-2', TWIN_ID])
+    mockSendMessage.mockResolvedValueOnce(persisted)
+    await act(async () => {
+      expect(await rendered.result.current.inputBarProps.onSend('next', [])).toBe(true)
+    })
+    expect(mockSendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps an accepted draft cleared when the send committed before an error', async () => {
+    mockGetConversation.mockResolvedValueOnce(userOnly)
+    const persisted = conversationWith([
+      ...userOnly.messages,
+      { id: 'user-2', role: 'user', content: 'hello', timestamp: 2 },
+    ])
+    mockSendMessage.mockRejectedValueOnce(Object.assign(new Error('generation failed'), {
+      conversation: persisted,
+    }))
+    const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+    await flush()
+    const accepted = vi.fn()
+    let sent: boolean | void = undefined
+    await act(async () => {
+      sent = await rendered.result.current.inputBarProps.onSend('hello', [], { onAccepted: accepted })
+    })
+
+    expect(sent).toBe(true)
+    expect(accepted).toHaveBeenCalledTimes(1)
+    expect(rendered.result.current.messageListProps.messages.map((message) => message.id))
+      .toEqual(['user-1', 'user-2'])
+    expect(rendered.result.current.streamError).toBe('generation failed')
+  })
+
+  it('keeps a later title update when an older send result arrives afterward', async () => {
+    mockGetConversation.mockResolvedValueOnce(userOnly)
+    let resolveSend: (conversation: Conversation) => void = () => {}
+    mockSendMessage.mockImplementationOnce(() => new Promise((resolve) => { resolveSend = resolve }))
+    const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+    await flush()
+    let sending: Promise<boolean | void> = Promise.resolve(false)
+    await act(async () => {
+      sending = Promise.resolve(rendered.result.current.inputBarProps.onSend('hello', []))
+    })
+    const titled = { ...withTwin, revision: 2, title: 'Summary' }
+    mockGetConversation.mockResolvedValueOnce(titled)
+    await act(async () => {
+      handlers.get('title')?.({ conversationId: CONVERSATION_ID, revision: 2, title: 'Summary' })
+    })
+    await flush()
+    await act(async () => { resolveSend(withTwin); await sending })
+    expect(rendered.result.current.conversation?.title).toBe('Summary')
+    expect(rendered.result.current.conversation?.revision).toBe(2)
+    expect(rendered.result.current.conversation?.messages).toHaveLength(2)
+  })
+
+  it('resumes a recovered stream when cancellation fails', async () => {
+    const rendered = await setupStreamedAnswer()
+    mockCancelStream.mockRejectedValueOnce(new Error('cancel unavailable'))
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await act(async () => { await rendered.result.current.inputBarProps.onCancel?.() })
+
+    expect(mockCancelStream).toHaveBeenCalledWith(CONVERSATION_ID)
+    expect(getCoarse()).toMatchObject({ streaming: true, cancelling: false })
+    expect(rendered.result.current.streamError).toBe('cancel unavailable')
+    report.mockRestore()
   })
 })

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::time::timeout;
 
 use crate::chat::agent::{execute::truncate_chars, stop as agent_stop};
@@ -70,6 +70,53 @@ pub(super) async fn resolve_conversation_title(
             generate_title(user_content)
         }
     }
+}
+
+/// The assistant reply owns its terminal path; title summarization is a best-effort
+/// metadata follow-up and must never delay that terminal or overwrite a rename.
+pub(super) fn schedule_auto_title_summary(
+    app: AppHandle,
+    settings: Settings,
+    conversation: Conversation,
+    first_user: String,
+    assistant_content: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        let title = resolve_conversation_title(
+            &settings,
+            app.state::<AppState>().inner(),
+            &conversation,
+            &first_user,
+            &assistant_content,
+        )
+        .await;
+        let previous_auto_title = generate_title(&first_user);
+        if title == previous_auto_title || title.trim().is_empty() {
+            return;
+        }
+        let conversation_id = conversation.id;
+        const STALE_TITLE: &str = "conversation title was changed before summary completed";
+        let updated = crate::chat::repository::repository(&app)
+            .mutate(&app, &conversation_id, |latest| {
+                if !is_auto_title(&latest.title, Some(&first_user)) {
+                    return Err(STALE_TITLE.into());
+                }
+                latest.title = title.clone();
+                Ok(())
+            })
+            .await;
+        match updated {
+            Ok(updated) => crate::chat::protocol::emit_conversation_event(
+                &app,
+                &conversation_id,
+                updated.revision,
+                crate::chat::protocol::ChatConversationEvent::TitleUpdated { title },
+            ),
+            Err(crate::chat::repository::ConversationRepositoryError::Storage(message))
+                if message == STALE_TITLE => {}
+            Err(error) => eprintln!("[title] 后台标题写入失败: {error}"),
+        }
+    });
 }
 
 async fn generate_title_with_model(
@@ -216,6 +263,10 @@ pub(crate) fn is_placeholder_title(title: &str) -> bool {
     base == PLACEHOLDER_CONVERSATION_TITLE
 }
 
+pub(super) fn is_auto_title(title: &str, first_user: Option<&str>) -> bool {
+    is_placeholder_title(title) || first_user.is_some_and(|user| title == generate_title(user))
+}
+
 /// 首轮用户消息 + 第一条非空助手回复，供标题模型使用。
 /// 空对话、或首条用户消息既无正文也无附件时返回 `None`。
 pub(super) fn first_turn_title_inputs(messages: &[ChatMessage]) -> Option<(String, String)> {
@@ -315,6 +366,13 @@ mod tests {
         assert!(is_placeholder_title("新对话（分支）"));
         assert!(!is_placeholder_title("Apex 掉帧"));
         assert!(!is_placeholder_title(""));
+    }
+
+    #[test]
+    fn delayed_title_summary_cannot_replace_a_manual_rename() {
+        assert!(is_auto_title("新对话", Some("天气如何")));
+        assert!(is_auto_title("天气如何", Some("天气如何")));
+        assert!(!is_auto_title("出行计划", Some("天气如何")));
     }
 
     #[test]

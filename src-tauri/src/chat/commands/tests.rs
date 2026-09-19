@@ -2611,6 +2611,23 @@ fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
 }
 
 #[test]
+fn chat_without_read_only_mcp_skips_discovery_before_tool_filtering() {
+    let mut conversation = test_conversation_with_messages(Vec::new());
+    conversation.agent_runtime.kind = crate::chat::AgentRuntimeKind::Chat;
+    let mut settings = Settings::default();
+    settings.chat.chat_mode.mcp_read_only = false;
+    assert!(
+        super::tooling::allowed_mcp_server_ids(&conversation, &settings)
+            .is_some_and(|ids| ids.is_empty())
+    );
+    settings.chat.chat_mode.mcp_read_only = true;
+    assert_eq!(
+        super::tooling::allowed_mcp_server_ids(&conversation, &settings),
+        None,
+    );
+}
+
+#[test]
 fn execute_document_reads_selected_file_and_missing_file_does_not_switch_mode() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("选定 计划.md");

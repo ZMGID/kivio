@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type ChatMcpServer, type ChatToolDefinition } from '../../api/tauri'
-import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCached } from '../../api/settingsCache'
+import { getSettingsCached, subscribeSettings, updateSettingsCached } from '../../api/settingsCache'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../api/chatTools'
 import { isPluginManagedServer, preservePluginManagedServers } from '../../settings/public/connectors'
 import { isTauriRuntime } from '../utils'
@@ -125,16 +125,14 @@ export function useChatToolIndicator({ onSettingsChange }: UseChatToolIndicatorO
 
   const toggleMcpServer = useCallback(async (serverId: string) => {
     try {
-      const settings = await refreshSettings()
-      const prevServers = settings.chatTools?.servers ?? []
-      const current = prevServers.find((server) => server.id === serverId)
+      const current = mcpServers.find((server) => server.id === serverId)
       // 插件托管的 server 只走「扩展 → 插件」开关。
-      if (current && isPluginManagedServer(current)) return
-      const desiredEnabled = !current?.enabled
+      if (!current || isPluginManagedServer(current)) return
+      const desiredEnabled = !current.enabled
       const servers = preservePluginManagedServers(
-        prevServers,
-        prevServers.map((server) =>
-          server.id === serverId ? { ...server, enabled: !server.enabled } : server,
+        mcpServers,
+        mcpServers.map((server) =>
+          server.id === serverId ? { ...server, enabled: desiredEnabled } : server,
         ),
       )
       // 乐观更新本地列表（开关即时反馈），保存后由 refresh 校正。
@@ -157,7 +155,7 @@ export function useChatToolIndicator({ onSettingsChange }: UseChatToolIndicatorO
       console.error('Failed to toggle MCP server:', err)
       void refresh()
     }
-  }, [onSettingsChange, refresh])
+  }, [mcpServers, onSettingsChange, refresh])
 
   useTauriEvent(api.onMcpServerState, (event) => {
     if (event.state.kind !== 'connecting') void refresh()

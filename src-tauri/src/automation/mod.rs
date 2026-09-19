@@ -3,6 +3,7 @@
 //! 分层（不要把跑图塞进存储，也不要把画布 / 执行器塞进 Chat 或 Hooks）：
 //! - [`types`]：schema v1
 //! - [`storage`]：`{app_data}/automations/{id}.json`
+//! - [`mutations`]：保存、启停、删除及热键副作用的单一写入口
 //! - [`runner`]：手动 / 定时 / 热键 / Agent 执行
 //! - [`schedule`]：托盘进程内 tokio 调度
 //! - [`commands`]：Tauri IPC
@@ -17,6 +18,7 @@ mod events;
 mod history;
 mod hotkeys;
 mod interpolate;
+mod mutations;
 pub(crate) mod notify;
 mod runner;
 mod schedule;
