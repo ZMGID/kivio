@@ -295,14 +295,20 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
             onReady={onReady}
             sessionCenter={sessionCenter}
             renderPluginCenter={({ section, onSectionChange, lang, connectors }) => (
-              <PluginCenter
-                section={section}
-                onSectionChange={onSectionChange}
-                lang={lang}
-                connectors={connectors}
-              />
+              <Suspense fallback={null}>
+                <PluginCenter
+                  section={section}
+                  onSectionChange={onSectionChange}
+                  lang={lang}
+                  connectors={connectors}
+                />
+              </Suspense>
             )}
-            renderReleaseNotes={(markdown) => <ChatMarkdown content={markdown} />}
+            renderReleaseNotes={(markdown) => (
+              <Suspense fallback={<p>{markdown}</p>}>
+                <ChatMarkdown content={markdown} />
+              </Suspense>
+            )}
           />
         </Profiler>
       </SettingsEnterPane>
@@ -4275,16 +4281,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onSettingsChange={handleSettingsChange}
             onReady={emitContentReady}
             sessionCenter={
-              <SessionCenter
-                lang={uiLang}
-                embedded
-                currentConversationId={currentConversation?.id}
-                generatingConversationIds={generatingConversationIds}
-                onSelectConversation={handleSidebarSelectConversation}
-                onConversationDeleted={handleSidebarConversationDeleted}
-                onForceDropConversation={handleSidebarForceDropConversation}
-                onConversationsChanged={refreshSidebar}
-              />
+              <Suspense fallback={null}>
+                <SessionCenter
+                  lang={uiLang}
+                  embedded
+                  currentConversationId={currentConversation?.id}
+                  generatingConversationIds={generatingConversationIds}
+                  onSelectConversation={handleSidebarSelectConversation}
+                  onConversationDeleted={handleSidebarConversationDeleted}
+                  onForceDropConversation={handleSidebarForceDropConversation}
+                  onConversationsChanged={refreshSidebar}
+                />
+              </Suspense>
             }
             onRender={onChatPerfProfiler}
           />
