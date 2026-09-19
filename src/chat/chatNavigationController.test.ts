@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createChatNavigationController } from './chatNavigationController'
-import { invalidateConversationTransition } from './conversationTransitionStore'
+import { getConversationTransitionSnapshot, invalidateConversationTransition } from './conversationTransitionStore'
 import type { Conversation } from './types'
+
+vi.mock('./persistence', () => ({ forgetRememberedChatRoute: vi.fn() }))
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -23,12 +25,22 @@ function conversation(id: string): Conversation {
 
 function setup() {
   let current: Conversation | null = null
+  let inFlight = false
   const reads = new Map<string, ReturnType<typeof deferred<Conversation>>>()
   const readStarted = deferred<string>()
   const ownership = deferred<ReadonlySet<string>>()
   const shown: string[] = []
   const errors: string[] = []
   const occupyPopout = vi.fn()
+  const prepareNewConversation = vi.fn()
+  const clearEmptyChat = vi.fn()
+  const requestClearChat = vi.fn((): 'busy' | 'cancelled' | 'confirmed' => 'confirmed')
+  const deleteConversation = vi.fn(() => Promise.resolve())
+  const cancelDeletedRun = vi.fn(() => Promise.resolve())
+  const finalizeDeletedChat = vi.fn((conversationId: string, clearCurrentView: boolean) => {
+    if (clearCurrentView && current?.id === conversationId) current = null
+  })
+  const reportClearError = vi.fn()
   const controller = createChatNavigationController({
     currentConversation: () => current,
     currentConversationId: () => current?.id ?? null,
@@ -39,7 +51,14 @@ function setup() {
       readStarted.resolve(id)
       return pending.promise
     },
-    isConversationInFlight: () => false,
+    isConversationInFlight: () => inFlight,
+    prepareNewConversation,
+    clearEmptyChat,
+    requestClearChat,
+    deleteConversation,
+    cancelDeletedRun,
+    finalizeDeletedChat,
+    reportClearError,
     focusPopout: vi.fn(),
     occupyPopout,
     prepareSelection: vi.fn(),
@@ -50,7 +69,13 @@ function setup() {
     resetConversation: () => { current = null },
     discardConversation: (_id, error) => { errors.push(error.message) },
   })
-  return { controller, ownership, reads, readStarted, shown, errors, occupyPopout, setCurrent: (value: Conversation | null) => { current = value } }
+  return {
+    controller, ownership, reads, readStarted, shown, errors, occupyPopout,
+    prepareNewConversation, clearEmptyChat, requestClearChat, deleteConversation,
+    cancelDeletedRun, finalizeDeletedChat, reportClearError,
+    setCurrent: (value: Conversation | null) => { current = value },
+    setInFlight: (value: boolean) => { inFlight = value },
+  }
 }
 
 describe('chat navigation controller', () => {
@@ -131,5 +156,169 @@ describe('chat navigation controller', () => {
 
     expect(window.location.hash).toBe('#chat/b')
     expect(reads.size).toBe(0)
+  })
+
+  it('starts a new draft and invalidates a pending selection before changing route', async () => {
+    const { controller, ownership, reads, prepareNewConversation } = setup()
+    const selecting = controller.selectConversation('a')
+
+    controller.startNewConversation()
+    ownership.resolve(new Set())
+    await selecting
+
+    expect(prepareNewConversation).toHaveBeenCalledOnce()
+    expect(reads.size).toBe(0)
+    expect(window.location.hash).toBe('#chat')
+    expect(getConversationTransitionSnapshot().loading).toBe(false)
+  })
+
+  it('clears only view feedback when there is no current conversation to delete', async () => {
+    const { controller, clearEmptyChat, requestClearChat, deleteConversation } = setup()
+
+    await controller.clearCurrentChat()
+
+    expect(clearEmptyChat).toHaveBeenCalledOnce()
+    expect(requestClearChat).not.toHaveBeenCalled()
+    expect(deleteConversation).not.toHaveBeenCalled()
+  })
+
+  it('does not invalidate a pending selection when clear is blocked by a busy conversation', async () => {
+    const { controller, ownership, reads, readStarted, shown, setCurrent, requestClearChat, reportClearError } = setup()
+    setCurrent(conversation('a'))
+    requestClearChat.mockReturnValue('busy')
+    const selecting = controller.selectConversation('b')
+    const requestId = getConversationTransitionSnapshot().requestId
+
+    await controller.clearCurrentChat()
+    expect(getConversationTransitionSnapshot().requestId).toBe(requestId)
+    expect(reportClearError).toHaveBeenCalledWith('a', '请先停止当前回复，再清空对话。')
+    ownership.resolve(new Set())
+    expect(await readStarted.promise).toBe('b')
+    reads.get('b')!.resolve(conversation('b'))
+    await selecting
+    expect(shown).toEqual(['b'])
+  })
+
+  it('does not invalidate a pending selection when clear confirmation is declined', async () => {
+    const { controller, ownership, reads, readStarted, shown, setCurrent, requestClearChat, deleteConversation } = setup()
+    setCurrent(conversation('a'))
+    requestClearChat.mockReturnValue('cancelled')
+    const selecting = controller.selectConversation('b')
+    const requestId = getConversationTransitionSnapshot().requestId
+
+    await controller.clearCurrentChat()
+    expect(getConversationTransitionSnapshot().requestId).toBe(requestId)
+    expect(deleteConversation).not.toHaveBeenCalled()
+    ownership.resolve(new Set())
+    expect(await readStarted.promise).toBe('b')
+    reads.get('b')!.resolve(conversation('b'))
+    await selecting
+    expect(shown).toEqual(['b'])
+  })
+
+  it('locally finalizes a late deletion of A without clearing subsequently selected B', async () => {
+    const {
+      controller, ownership, reads, readStarted, setCurrent, deleteConversation,
+      finalizeDeletedChat,
+    } = setup()
+    setCurrent(conversation('a'))
+    window.location.hash = '#chat/a'
+    const deleting = deferred<void>()
+    deleteConversation.mockReturnValue(deleting.promise)
+    const clearing = controller.clearCurrentChat()
+    const selecting = controller.selectConversation('b')
+    ownership.resolve(new Set())
+    expect(await readStarted.promise).toBe('b')
+    reads.get('b')!.resolve(conversation('b'))
+    await selecting
+
+    deleting.resolve()
+    await clearing
+    expect(finalizeDeletedChat).toHaveBeenCalledWith('a', false)
+    expect(window.location.hash).toBe('#chat/b')
+  })
+
+  it('does not cancel B loading when A deletion completes before B has rendered', async () => {
+    const {
+      controller, ownership, reads, readStarted, setCurrent, deleteConversation,
+      finalizeDeletedChat,
+    } = setup()
+    setCurrent(conversation('a'))
+    window.location.hash = '#chat/a'
+    const deleting = deferred<void>()
+    deleteConversation.mockReturnValue(deleting.promise)
+    const clearing = controller.clearCurrentChat()
+    const selecting = controller.selectConversation('b')
+    ownership.resolve(new Set())
+    expect(await readStarted.promise).toBe('b')
+
+    deleting.resolve()
+    await clearing
+    expect(finalizeDeletedChat).toHaveBeenCalledWith('a', false)
+    expect(getConversationTransitionSnapshot().targetConversationId).toBe('b')
+
+    reads.get('b')!.resolve(conversation('b'))
+    await selecting
+    expect(window.location.hash).toBe('#chat/b')
+  })
+
+  it('does not clear A while B was already loading at delete confirmation', async () => {
+    const {
+      controller, ownership, reads, readStarted, setCurrent, deleteConversation,
+      finalizeDeletedChat,
+    } = setup()
+    setCurrent(conversation('a'))
+    window.location.hash = '#chat/a'
+    const selecting = controller.selectConversation('b')
+    ownership.resolve(new Set())
+    expect(await readStarted.promise).toBe('b')
+    const deleting = deferred<void>()
+    deleteConversation.mockReturnValue(deleting.promise)
+    const clearing = controller.clearCurrentChat()
+
+    deleting.resolve()
+    await clearing
+    expect(finalizeDeletedChat).toHaveBeenCalledWith('a', false)
+    expect(getConversationTransitionSnapshot().targetConversationId).toBe('b')
+    reads.get('b')!.resolve(conversation('b'))
+    await selecting
+    expect(window.location.hash).toBe('#chat/b')
+  })
+
+  it('preserves the route and local conversation when deletion fails', async () => {
+    const { controller, setCurrent, deleteConversation, finalizeDeletedChat, reportClearError } = setup()
+    setCurrent(conversation('a'))
+    window.location.hash = '#chat/a'
+    deleteConversation.mockRejectedValue(new Error('disk denied'))
+    const lease = getConversationTransitionSnapshot().requestId
+
+    await controller.clearCurrentChat()
+
+    expect(finalizeDeletedChat).not.toHaveBeenCalled()
+    expect(reportClearError).toHaveBeenCalledWith('a', 'disk denied')
+    expect(getConversationTransitionSnapshot().requestId).toBe(lease)
+    expect(window.location.hash).toBe('#chat/a')
+  })
+
+  it('keeps a successful deletion finalized when post-delete cancellation fails', async () => {
+    const {
+      controller, setCurrent, setInFlight, deleteConversation, cancelDeletedRun,
+      finalizeDeletedChat,
+      reportClearError,
+    } = setup()
+    setCurrent(conversation('a'))
+    window.location.hash = '#chat/a'
+    deleteConversation.mockImplementation(async () => { setInFlight(true) })
+    cancelDeletedRun.mockRejectedValue(new Error('already gone'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    await controller.clearCurrentChat()
+
+    expect(finalizeDeletedChat).toHaveBeenCalledWith('a', true)
+    expect(cancelDeletedRun).toHaveBeenCalledWith('a')
+    expect(reportClearError).not.toHaveBeenCalled()
+    expect(window.location.hash).toBe('#chat')
+    expect(warning).toHaveBeenCalledOnce()
+    warning.mockRestore()
   })
 })

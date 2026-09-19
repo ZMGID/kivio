@@ -62,10 +62,10 @@ describe('chat execution owner', () => {
     await owner.finish(old, null, ports())
     owner.begin({ conversationId: 'a', kind: 'send', startedAt: 2 })
     const newPermit = owner.requestCancellation('a', 'new')!
-    owner.completeCancellation(oldPermit, false)
+    expect(owner.completeCancellation(oldPermit, false)).toBe(false)
     expect(owner.requestCancellation('a', 'new')).toBeNull()
     expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'new', type: 'delta' })).toBe(false)
-    owner.completeCancellation(newPermit, false)
+    expect(owner.completeCancellation(newPermit, false)).toBe(true)
     expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'new', type: 'delta' })).toBe(true)
   })
 

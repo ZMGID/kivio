@@ -138,13 +138,14 @@ export function createChatExecutionOwner(
     },
     /** A failed backend request reopens cancellation and content delivery.
      * A successful request keeps the fence until terminal settlement/new run. */
-    completeCancellation(permit: CancellationPermit, succeeded: boolean): void {
+    completeCancellation(permit: CancellationPermit, succeeded: boolean): boolean {
       const current = cancellations.get(permit.conversationId)
-      if (!current || current.permit !== permit) return
+      if (!current || current.permit !== permit) return false
       if (!succeeded) {
         cancellations.delete(permit.conversationId)
         publish()
       }
+      return true
     },
     /** Terminal events are authoritative even after local cancellation. */
     allowsStreamPayload(payload: StreamPayloadIdentity): boolean {

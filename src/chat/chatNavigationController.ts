@@ -20,6 +20,15 @@ interface NavigationPorts {
   listPopouts: () => Promise<ReadonlySet<string>>
   readConversation: (conversationId: string) => Promise<Conversation>
   isConversationInFlight: (conversationId: string) => boolean
+  prepareNewConversation: () => void
+  clearEmptyChat: () => void
+  /** Check busy state before asking for confirmation; no route mutation here. */
+  requestClearChat: (conversationId: string) => 'busy' | 'cancelled' | 'confirmed'
+  deleteConversation: (conversationId: string) => Promise<void>
+  cancelDeletedRun: (conversationId: string) => Promise<void>
+  /** Synchronously drop local execution state, optionally clear this view, and refresh the list. */
+  finalizeDeletedChat: (conversationId: string, clearCurrentView: boolean) => void
+  reportClearError: (conversationId: string, message: string) => void
   focusPopout: (conversationId: string) => void
   occupyPopout: (conversationId: string) => void
   prepareSelection: (focusMessageId: string | null, fresh: boolean) => void
@@ -37,9 +46,9 @@ interface ReloadOptions {
   loadPoppedOut?: boolean
 }
 
-function asError(value: unknown): Error {
+function asError(value: unknown, fallback = '对话加载失败，已从列表移除'): Error {
   if (value instanceof Error) return value
-  return new Error(typeof value === 'string' ? value : '对话加载失败，已从列表移除')
+  return new Error(typeof value === 'string' ? value : fallback)
 }
 
 /** Owns navigation commit rights. Backend runs are deliberately not cancelled
@@ -55,6 +64,58 @@ export function createChatNavigationController(ports: NavigationPorts) {
   const resetRouteConversation = () => {
     leaveConversation()
     ports.resetConversation()
+  }
+
+  const startNewConversation = () => {
+    // Revoke the old route before any view projection can synchronously notify
+    // subscribers or start a replacement load.
+    leaveConversation()
+    ports.prepareNewConversation()
+    forgetRememberedChatRoute()
+    syncConversationRoute(null)
+  }
+
+  const clearCurrentChat = async () => {
+    const conversationId = ports.currentConversationId()
+    if (!conversationId) {
+      ports.clearEmptyChat()
+      return
+    }
+    // A rejected clear must not revoke a pending navigation's commit right.
+    const decision = ports.requestClearChat(conversationId)
+    if (decision === 'busy') {
+      ports.reportClearError(conversationId, '请先停止当前回复，再清空对话。')
+      return
+    }
+    if (decision !== 'confirmed') return
+
+    const navigationLease = captureConversationNavigation()
+    try {
+      await ports.deleteConversation(conversationId)
+    } catch (value) {
+      ports.reportClearError(conversationId, asError(value, '清空对话失败').message || '清空对话失败')
+      return
+    }
+
+    // Deletion has committed remotely. Local settlement must not depend on the
+    // best-effort cancellation request that follows it.
+    const cancelRun = ports.isConversationInFlight(conversationId)
+    const transition = getConversationTransitionSnapshot()
+    const clearCurrentView = isCurrentConversationNavigation(navigationLease)
+      && (!transition.loading || transition.targetConversationId === conversationId)
+      && ports.currentConversationId() === conversationId
+    ports.finalizeDeletedChat(conversationId, clearCurrentView)
+    if (clearCurrentView) {
+      forgetRememberedChatRoute()
+      syncConversationRoute(null)
+    }
+    if (cancelRun) {
+      try {
+        await ports.cancelDeletedRun(conversationId)
+      } catch (value) {
+        console.warn('Failed to cancel a deleted conversation run:', value)
+      }
+    }
   }
 
   const reloadConversation = async (conversationId: string, options?: ReloadOptions) => {
@@ -182,6 +243,8 @@ export function createChatNavigationController(ports: NavigationPorts) {
 
   return {
     leaveConversation,
+    startNewConversation,
+    clearCurrentChat,
     resetRouteConversation,
     loadRouteConversation,
     openConversation,
