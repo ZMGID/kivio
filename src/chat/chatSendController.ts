@@ -1,0 +1,181 @@
+import { chatApi } from './api'
+import { createChatExecutionOwner, type ExecutionLease, type PreparedSingleRunOutcome } from './chatExecutionOwner'
+import { prepareConversationForSend, type SendPreparationIntent } from './prepareConversationForSend'
+import { createStreamPreviewOwner } from './streamPreviewOwner'
+import type { Conversation, PendingAttachment } from './types'
+
+type ExecutionOwner = ReturnType<typeof createChatExecutionOwner>
+type PreviewOwner = ReturnType<typeof createStreamPreviewOwner>
+type SettlementPorts = Parameters<ExecutionOwner['finish']>[2]
+type Persistence = Pick<typeof chatApi, 'createConversation' | 'setAgentRuntime' | 'updateConversation' | 'sendMessage'>
+
+export type SendResult =
+  | { kind: 'persisted'; conversation: Conversation; composerAccepted: true }
+  | { kind: 'persisted_error'; conversation: Conversation; error: Error; composerAccepted: true }
+  | { kind: 'not_committed'; error: Error; partialConversation?: Conversation; composerAccepted: false }
+
+export type SendPresentationEvent =
+  | { kind: 'created'; conversation: Conversation; startingConversationId: string | null }
+  | { kind: 'updated'; conversation: Conversation }
+  | { kind: 'rejected'; error: Error; conversationId: string | null; startingConversationId: string | null }
+  | { kind: 'started'; conversation: Conversation; content: string; attachments: PendingAttachment[]; fanOut: boolean }
+  | { kind: 'outcome'; conversationId: string; outcome: PreparedSingleRunOutcome }
+  | { kind: 'settled' }
+
+export interface SendIntent {
+  content: string
+  attachments: PendingAttachment[]
+  preparation: SendPreparationIntent
+  attachmentSkillId: string | null
+  disabledReason: string
+  planMessageId?: string
+  onPartialConversation?: (conversation: Conversation) => void
+  onAccepted?: () => void
+}
+
+interface SendPresentation {
+  currentConversationId: () => string | null
+  present: (event: SendPresentationEvent) => void
+}
+
+interface SendDependencies {
+  executionOwner: ExecutionOwner
+  previewOwner: PreviewOwner
+  persistence: Persistence
+  settlementPorts: SettlementPorts
+  presentation: SendPresentation
+  now?: () => number
+}
+
+function asError(value: unknown): Error {
+  return value instanceof Error
+    ? value
+    : new Error(typeof value === 'string'
+      ? value
+      : typeof (value as { message?: unknown } | null)?.message === 'string'
+        ? (value as { message: string }).message
+        : '发送失败')
+}
+
+function withComposerResult(outcome: PreparedSingleRunOutcome): SendResult {
+  return outcome.kind === 'not_committed'
+    ? { ...outcome, composerAccepted: false }
+    : { ...outcome, composerAccepted: true }
+}
+
+/** One send transaction, from reservation through canonical prepare, invoke,
+ * presentation and settlement. The view supplies a snapshot and receives
+ * semantic projections; it cannot settle or release an execution itself. */
+export function createChatSendController({
+  executionOwner, previewOwner, persistence, settlementPorts, presentation, now = Date.now,
+}: SendDependencies) {
+  return {
+    async send(intent: SendIntent): Promise<SendResult> {
+      const content = intent.content.trim()
+      const attachments = intent.attachments
+      const startingConversationId = presentation.currentConversationId()
+      const reject = (error: Error, conversationId: string | null, partialConversation?: Conversation): SendResult => {
+        presentation.present({ kind: 'rejected', error, conversationId, startingConversationId })
+        return partialConversation
+          ? { kind: 'not_committed', error, partialConversation, composerAccepted: false }
+          : { kind: 'not_committed', error, composerAccepted: false }
+      }
+      if (!content && attachments.length === 0) {
+        return { kind: 'not_committed', error: new Error('消息为空'), composerAccepted: false }
+      }
+      const preparation = intent.preparation
+      const sendTarget = preparation.override && preparation.conversation
+        ? preparation.conversation.id
+        : preparation.forceNew ? null : startingConversationId
+      if (!preparation.forceNew && intent.disabledReason) {
+        return reject(new Error(intent.disabledReason), sendTarget)
+      }
+      const claim = executionOwner.claimSend(sendTarget)
+      if (!claim) return reject(new Error('该对话正在发送中，请稍后再试'), sendTarget)
+
+      let lease: ExecutionLease | null = null
+      try {
+        const prepared = await prepareConversationForSend(preparation, persistence, (phase, conversation) => {
+          if (phase === 'created') {
+            if (!executionOwner.bindSend(claim, conversation.id)) return false
+            intent.onPartialConversation?.(conversation)
+            presentation.present({ kind: 'created', conversation, startingConversationId })
+          } else {
+            intent.onPartialConversation?.(conversation)
+            presentation.present({ kind: 'updated', conversation })
+          }
+        })
+        if (!prepared.ok) {
+          console.error(`Failed to prepare conversation before send (${prepared.stage}):`, prepared.error)
+          return reject(prepared.error, prepared.conversation?.id ?? null, prepared.conversation ?? undefined)
+        }
+        const conversation = prepared.conversation
+        if (!executionOwner.bindSend(claim, conversation.id)) {
+          return reject(new Error('该对话正在发送中，请稍后再试'), conversation.id)
+        }
+        if (executionOwner.snapshot(conversation.id).inFlight) {
+          return reject(new Error('该对话正在生成中，请稍后再试'), conversation.id)
+        }
+
+        const replyArms = conversation.reply_models ?? conversation.replyModels ?? []
+        const planMode = conversation.agent_plan_state?.mode ?? conversation.agentPlanState?.mode ?? 'act'
+        const fanOut = replyArms.length >= 2 && planMode === 'act'
+        const startedAt = now()
+        lease = executionOwner.begin({
+          conversationId: conversation.id, kind: 'send', startedAt, claim,
+          optimistic: { content, attachments, stored: conversation.messages },
+          group: fanOut ? {
+            groupId: `grp-local-${startedAt}`,
+            arms: replyArms.map((ref) => ({ providerId: ref.provider_id, model: ref.model })),
+          } : undefined,
+        })
+        if (!lease) return reject(new Error('该对话正在生成中，请稍后再试'), conversation.id)
+
+        if (presentation.currentConversationId() === conversation.id) previewOwner.activate(conversation.id)
+        previewOwner.begin(conversation.id, startedAt, fanOut ? 'group' : 'single')
+        presentation.present({ kind: 'started', conversation, content, attachments, fanOut })
+        intent.onAccepted?.()
+
+        if (!fanOut) {
+          const outcome = await executionOwner.submitPreparedSingleRun({
+            lease, content, attachments,
+            attachmentSkillId: intent.attachmentSkillId,
+            planMessageId: intent.planMessageId,
+          }, {
+            ...settlementPorts,
+            onOutcome: (outcome) => presentation.present({ kind: 'outcome', conversationId: conversation.id, outcome }),
+          })
+          return withComposerResult(outcome)
+        }
+
+        let persistedForSettlement: Conversation | null = null
+        let outcome: PreparedSingleRunOutcome
+        try {
+          const persisted = await persistence.sendMessage(
+            conversation.id, content, attachments, intent.attachmentSkillId, intent.planMessageId,
+          )
+          persistedForSettlement = persisted
+          outcome = { kind: 'persisted', conversation: persisted }
+        } catch (value) {
+          const error = asError(value)
+          const kept = (value as { conversation?: Conversation } | null)?.conversation
+          outcome = kept
+            ? { kind: 'persisted_error', conversation: kept, error }
+            : { kind: 'not_committed', error }
+        }
+        try {
+          presentation.present({ kind: 'outcome', conversationId: conversation.id, outcome })
+        } catch (error) {
+          console.error('Failed to present Chat send outcome:', error)
+        } finally {
+          await executionOwner.finish(lease, persistedForSettlement, settlementPorts)
+        }
+        return withComposerResult(outcome)
+      } finally {
+        if (lease) await executionOwner.finish(lease, null, settlementPorts)
+        executionOwner.abandonSend(claim)
+        presentation.present({ kind: 'settled' })
+      }
+    },
+  }
+}

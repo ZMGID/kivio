@@ -6,6 +6,8 @@ import {
   hasActiveGroup,
   restoreGroupArm,
   touchGroup,
+  type ActiveGroupState,
+  type GroupColumnSnapshot,
 } from './groupStreamingStore'
 import { type ConversationStreamSnapshot } from './conversationRuns'
 import { hasStreamPreview, isStreamTerminal } from './streamApply'
@@ -19,6 +21,20 @@ type Completion =
   | { kind: 'error' | 'cancelled' }
 
 type Projection = { accepted: boolean; target: 'single' | 'group'; terminal: boolean }
+
+type CancellationFreeze =
+  | {
+    kind: 'single'
+    generation: number
+    snapshot: ConversationStreamSnapshot
+    reasoningStreaming: boolean
+    terminal: boolean
+  }
+  | {
+    kind: 'group'
+    group: ActiveGroupState
+    runningArms: Map<GroupColumnSnapshot, boolean>
+  }
 
 function frameInterval(snapshot: ConversationStreamSnapshot): number {
   const contentSize = snapshot.content.length + snapshot.reasoning.length
@@ -50,6 +66,7 @@ export function createStreamPreviewOwner() {
   const snapshots = new Map<string, ConversationStreamSnapshot>()
   const groupStarts = new Map<string, number>()
   const generations = new Map<string, number>()
+  const cancellationFreezes = new Map<string, CancellationFreeze>()
   let selectedId: string | null = null
   let pendingFrame: { conversationId: string; snapshot: ConversationStreamSnapshot } | null = null
   let frameHandle: number | null = null
@@ -134,6 +151,7 @@ export function createStreamPreviewOwner() {
 
   const freeze = (conversationId: string): boolean => {
     if (disposed) return false
+    cancellationFreezes.delete(conversationId)
     const group = getActiveGroup(conversationId)
     if (group) {
       for (const column of group.columns) {
@@ -160,6 +178,44 @@ export function createStreamPreviewOwner() {
       cancelFrame()
       setSnapshot(snapshot)
       setCoarse({ streaming: false, streamFrozen: true })
+    }
+    return true
+  }
+
+  const freezeForCancellation = (conversationId: string): boolean => {
+    if (disposed) return false
+    const group = getActiveGroup(conversationId)
+    if (group) {
+      const runningArms = new Map<GroupColumnSnapshot, boolean>()
+      for (const column of group.columns) {
+        if (column.streaming) runningArms.set(column, column.reasoningStreaming)
+        column.streaming = false
+        column.reasoningStreaming = false
+      }
+      cancellationFreezes.set(conversationId, { kind: 'group', group, runningArms })
+      touchGroup(conversationId)
+      flushGroups(conversationId)
+      if (selectedId === conversationId) {
+        cancelFrame()
+        setCoarse({ streaming: false, streamFrozen: true })
+      }
+      return true
+    }
+    const snapshot = snapshots.get(conversationId)
+    if (!snapshot) return false
+    cancellationFreezes.set(conversationId, {
+      kind: 'single',
+      generation: generations.get(conversationId) ?? 0,
+      snapshot,
+      reasoningStreaming: snapshot.reasoningStreaming,
+      terminal: false,
+    })
+    snapshot.streaming = false
+    snapshot.reasoningStreaming = false
+    if (selectedId === conversationId) {
+      cancelFrame()
+      setSnapshot(snapshot)
+      setCoarse({ streaming: false, streamFrozen: hasStreamPreview(snapshot) })
     }
     return true
   }
@@ -209,6 +265,7 @@ export function createStreamPreviewOwner() {
     /** Begins a single preview. The execution owner separately reserves the run. */
     begin(conversationId: string, startedAt = Date.now(), mode: 'single' | 'group' = 'single'): void {
       if (disposed) return
+      cancellationFreezes.delete(conversationId)
       generations.set(conversationId, (generations.get(conversationId) ?? 0) + 1)
       if (pendingTwin?.conversationId === conversationId) cancelTwin()
       if (mode === 'single') {
@@ -246,8 +303,14 @@ export function createStreamPreviewOwner() {
         else if (!applyConversationStreamEvent(column, payload, now)) {
           return { accepted: false, target: 'group', terminal }
         }
-        if (selectedId === payload.conversationId) setCoarse({ streaming: true, streamFrozen: false, cancelling: false })
+        if (selectedId === payload.conversationId && !cancellationFreezes.has(payload.conversationId)) {
+          setCoarse({ streaming: true, streamFrozen: false, cancelling: false })
+        }
         if (terminal) {
+          const frozen = cancellationFreezes.get(payload.conversationId)
+          if (frozen?.kind === 'group' && frozen.group === getActiveGroup(payload.conversationId)) {
+            frozen.runningArms.delete(column)
+          }
           column.streaming = false
           flushGroups(payload.conversationId)
         } else touchGroup(payload.conversationId)
@@ -260,6 +323,7 @@ export function createStreamPreviewOwner() {
         // run failed and left a frozen partial answer. Only a stopped preview
         // may be replaced here; an active preview keeps rejecting foreign runs.
         generations.set(payload.conversationId, (generations.get(payload.conversationId) ?? 0) + 1)
+        cancellationFreezes.delete(payload.conversationId)
         if (pendingTwin?.conversationId === payload.conversationId) cancelTwin()
         cancelFrame()
         snapshot = restoreRunSnapshot(payload, now)
@@ -275,6 +339,10 @@ export function createStreamPreviewOwner() {
       }
       if (!applyConversationStreamEvent(snapshot, payload, now)) {
         return { accepted: false, target: 'single', terminal }
+      }
+      if (terminal) {
+        const frozen = cancellationFreezes.get(payload.conversationId)
+        if (frozen?.kind === 'single' && frozen.snapshot === snapshot) frozen.terminal = true
       }
       showLater(payload.conversationId, snapshot, terminal || payload.type === 'run_started')
       return { accepted: true, target: 'single', terminal }
@@ -302,15 +370,37 @@ export function createStreamPreviewOwner() {
     },
     /** Immediate local freeze; terminal packets must still reach executionOwner. */
     freeze,
+    /** Preserve which previews were live, so a rejected backend cancel can
+     * reopen only arms that have not terminated in the meantime. */
+    freezeForCancellation,
     /** A rejected cancel request did not stop the backend run. Reopen its live
      * preview so later accepted deltas remain visible and retry is possible. */
     resume(conversationId: string): boolean {
       if (disposed) return false
-      const snapshot = snapshots.get(conversationId)
-      if (!snapshot || snapshot.streaming) return false
-      snapshot.streaming = true
+      const frozen = cancellationFreezes.get(conversationId)
+      if (!frozen) return false
+      cancellationFreezes.delete(conversationId)
+      if (frozen.kind === 'group') {
+        if (getActiveGroup(conversationId) !== frozen.group) return false
+        let restored = 0
+        for (const [column, reasoningStreaming] of frozen.runningArms) {
+          if (!frozen.group.columns.includes(column)) continue
+          column.streaming = true
+          column.reasoningStreaming = reasoningStreaming
+          restored += 1
+        }
+        if (restored === 0) return false
+        touchGroup(conversationId)
+        flushGroups(conversationId)
+      } else {
+        const snapshot = snapshots.get(conversationId)
+        if (frozen.terminal || snapshot !== frozen.snapshot
+          || generations.get(conversationId) !== frozen.generation) return false
+        snapshot.streaming = true
+        snapshot.reasoningStreaming = frozen.reasoningStreaming
+        if (selectedId === conversationId) setSnapshot(snapshot)
+      }
       if (selectedId === conversationId) {
-        setSnapshot(snapshot)
         setCoarse({ streaming: true, streamFrozen: false, cancelling: false })
       }
       return true
@@ -318,6 +408,7 @@ export function createStreamPreviewOwner() {
     /** Release display only; queue and execution settlement belong elsewhere. */
     complete(conversationId: string, completion: Completion): void {
       if (disposed) return
+      cancellationFreezes.delete(conversationId)
       const snapshot = snapshots.get(conversationId)
       groupStarts.delete(conversationId)
       if (completion.kind !== 'persisted') {
@@ -360,6 +451,7 @@ export function createStreamPreviewOwner() {
     },
     drop(conversationId: string): void {
       if (disposed) return
+      cancellationFreezes.delete(conversationId)
       snapshots.delete(conversationId)
       groupStarts.delete(conversationId)
       generations.delete(conversationId)
@@ -375,6 +467,7 @@ export function createStreamPreviewOwner() {
       snapshots.clear()
       groupStarts.clear()
       generations.clear()
+      cancellationFreezes.clear()
     },
   }
 }

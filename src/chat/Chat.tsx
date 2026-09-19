@@ -7,8 +7,8 @@ import { ChatSidebarPane } from './ChatSidebarPane'
 import { completeSettingsExit, type PendingSettingsAction } from './settingsExit'
 import { useChatRouting } from './hooks/useChatRouting'
 import { createChatNavigationController } from './chatNavigationController'
-import { createChatExecutionOwner, type ExecutionLease, type PreparedSingleRunOutcome } from './chatExecutionOwner'
-import { prepareConversationForSend } from './prepareConversationForSend'
+import { createChatExecutionOwner, type ExecutionLease } from './chatExecutionOwner'
+import { createChatSendController, type SendPresentationEvent } from './chatSendController'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import { useExternalSendQueue } from './hooks/useExternalSendQueue'
 import { useMessageQueue } from './hooks/useMessageQueue'
@@ -994,7 +994,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     // 切到 frozen 态冻结展示，等 send invoke 返回持久化消息时由
     // finishStreamingRunWithConversation 无缝替换冻结的预览。
     // 过滤迟到的内容事件，但仍接收终局事件，供没有 send invoke 的恢复运行收尾。
-    previewOwner.freeze(conversationId)
+    previewOwner.freezeForCancellation(conversationId)
     delete pendingToolConfirmsRef.current[conversationId]
     delete pendingSessionConsentsRef.current[conversationId]
     delete pendingUserPromptsRef.current[conversationId]
@@ -2561,270 +2561,134 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }))
   }, [previewOwner])
 
+  const presentSendEvent = useCallback((event: SendPresentationEvent) => {
+    if (event.kind === 'created') {
+      if (currentConversationIdRef.current === event.startingConversationId) {
+        currentConversationIdRef.current = event.conversation.id
+        applyConversation(event.conversation)
+        syncConversationRoute(event.conversation.id)
+      }
+      return
+    }
+    if (event.kind === 'updated') {
+      applyConversationIfCurrent(event.conversation.id, event.conversation)
+      return
+    }
+    if (event.kind === 'rejected') {
+      if (event.conversationId) {
+        setStreamErrorForConversation(event.conversationId, event.error.message)
+      } else if (currentConversationIdRef.current === event.startingConversationId) {
+        setStreamError(event.error.message || '创建对话失败')
+      }
+      return
+    }
+    if (event.kind === 'started') {
+      const { conversation, content, attachments } = event
+      setOptimisticSidebarConversations((items) => [
+        optimisticConversationListItem(
+          conversation, content, attachments.map((attachment) => attachment.name),
+        ),
+        ...items.filter((item) => item.id !== conversation.id),
+      ])
+      syncGeneratingConversationIds()
+      if (currentConversationIdRef.current === conversation.id) {
+        setStreamErrorForConversation(conversation.id, '')
+        setHookWarning(null)
+      }
+      return
+    }
+    if (event.kind === 'settled') {
+      syncGeneratingConversationIds()
+      return
+    }
+    const { conversationId, outcome } = event
+    if (outcome.kind === 'persisted') {
+      if (currentConversationIdRef.current === conversationId) {
+        applyAssistantStreamStats(outcome.conversation)
+        settleOptimisticConversationListItem(
+          setOptimisticSidebarConversations, conversationId, outcome.conversation,
+        )
+        applyConversation(outcome.conversation)
+      }
+      refreshSidebar()
+      return
+    }
+    console.error('Failed to send message:', outcome.error)
+    const keptConversation = outcome.kind === 'persisted_error' ? outcome.conversation : null
+    if (keptConversation && currentConversationIdRef.current === conversationId) {
+      applyConversation(keptConversation)
+    }
+    settleOptimisticConversationListItem(
+      setOptimisticSidebarConversations, conversationId, keptConversation,
+    )
+    if (keptConversation) refreshSidebar()
+    setStreamErrorForConversation(conversationId, outcome.error.message || '发送失败')
+    if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
+  }, [
+    applyAssistantStreamStats, applyConversation, applyConversationIfCurrent,
+    clearStreamSnapshot, freezeStreamSnapshot, refreshSidebar,
+    setStreamErrorForConversation, syncConversationRoute, syncGeneratingConversationIds,
+  ])
+
+  const sendController = useMemo(() => createChatSendController({
+    executionOwner,
+    previewOwner,
+    persistence: chatApi,
+    settlementPorts,
+    presentation: {
+      currentConversationId: () => currentConversationIdRef.current,
+      present: presentSendEvent,
+    },
+  }), [executionOwner, previewOwner, settlementPorts, presentSendEvent])
+
   const handleSendMessage = useCallback(async (
     content: string,
     attachments: PendingAttachment[] = [],
     options: SendMessageOptions = {},
   ) => {
-    const trimmed = content.trim()
-    const startingConversationId = currentConversationIdRef.current
-    if (!trimmed && attachments.length === 0) return false
-    if (!options.forceNewConversation && sendDisabledReason) {
-      const targetId = options.conversationOverride?.id ?? currentConversationIdRef.current
-      if (targetId) {
-        setStreamErrorForConversation(targetId, sendDisabledReason)
-      } else {
-        setStreamError(sendDisabledReason)
-      }
-      return false
-    }
-
-    const sendTarget = options.conversationOverride?.id
-      ?? (options.forceNewConversation ? null : currentConversationIdRef.current)
-    const claim = executionOwner.claimSend(sendTarget)
-    if (!claim) {
-      const message = '该对话正在发送中，请稍后再试'
-      if (sendTarget) setStreamErrorForConversation(sendTarget, message)
-      else setStreamError(message)
-      return false
-    }
-
-    let executionLease: ExecutionLease | null = null
-    try {
-
-    const prepared = await prepareConversationForSend({
-      conversation: options.conversationOverride ?? currentConversation,
-      override: Boolean(options.conversationOverride),
-      forceNew: Boolean(options.forceNewConversation),
-      providerId: activeProviderId,
-      model: activeModel,
-      projectName: selectedProject?.name ?? null,
-      projectId: selectedProject?.id ?? null,
-      setId: selectedSet?.id ?? null,
-      draft: {
-        agentRuntime: draftAgentRuntime,
-        knowledgeBaseIds: draftKnowledgeBaseIds,
-        forceKnowledgeSearch: draftForceKnowledgeSearch,
-        additionalDirectories: draftAdditionalDirectories,
-        thinkingLevel: draftThinkingLevel,
-        webSearchMode: draftWebSearchMode,
-        rememberedWebSearchMode: loadLastWebSearchMode(),
-        replyModels: draftReplyModels,
-      },
-      providerOAuthTypes,
-    }, chatApi, (phase, preparedConversation) => {
-      if (phase === 'created') {
-        if (!executionOwner.bindSend(claim, preparedConversation.id)) return false
-        options.onPartialConversation?.(preparedConversation)
-        if (currentConversationIdRef.current === startingConversationId) {
-          currentConversationIdRef.current = preparedConversation.id
-          applyConversation(preparedConversation)
-          syncConversationRoute(preparedConversation.id)
-        }
-      } else {
-        options.onPartialConversation?.(preparedConversation)
-        applyConversationIfCurrent(preparedConversation.id, preparedConversation)
-      }
-    })
-    if (!prepared.ok) {
-      console.error(`Failed to prepare conversation before send (${prepared.stage}):`, prepared.error)
-      if (prepared.conversation) {
-        setStreamErrorForConversation(prepared.conversation.id, prepared.error.message)
-      } else if (currentConversationIdRef.current === startingConversationId) {
-        setStreamError(prepared.error.message || '创建对话失败')
-      }
-      return false
-    }
-    const conversation = prepared.conversation
-    if (!executionOwner.bindSend(claim, conversation.id)) {
-      setStreamErrorForConversation(conversation.id, '该对话正在发送中，请稍后再试')
-      return false
-    }
-
-    const conversationId = conversation.id
-    if (executionOwner.snapshot(conversationId).inFlight) {
-      setStreamErrorForConversation(conversationId, '该对话正在生成中，请稍后再试')
-      return false
-    }
-    setOptimisticSidebarConversations((items) => [
-      optimisticConversationListItem(
-        conversation,
-        trimmed,
-        attachments.map((attachment) => attachment.name),
-      ),
-      ...items.filter((item) => item.id !== conversationId),
-    ])
-
-    const startedAt = Date.now()
-    const replyArms = conversation.reply_models ?? conversation.replyModels ?? []
-    const convPlanMode = conversation.agent_plan_state?.mode ?? conversation.agentPlanState?.mode ?? 'act'
-    const willFanOut = replyArms.length >= 2 && convPlanMode === 'act'
-    executionLease = executionOwner.begin({
-      conversationId, kind: 'send', startedAt, claim,
-      optimistic: { content: trimmed, attachments, stored: conversation.messages },
-      group: willFanOut ? {
-        groupId: `grp-local-${startedAt}`,
-        arms: replyArms.map((ref) => ({ providerId: ref.provider_id, model: ref.model })),
-      } : undefined,
-    })
-    if (!executionLease) return false
-    // 新建会话的 prepare 回调先更新 currentConversationId；它未必经过导航加载。
-    if (currentConversationIdRef.current === conversationId) previewOwner.activate(conversationId)
-    previewOwner.begin(conversationId, startedAt, willFanOut ? 'group' : 'single')
-    syncGeneratingConversationIds()
-
-    if (currentConversationIdRef.current === conversationId) {
-      setStreamErrorForConversation(conversationId, '')
-      // 上一轮的 Hook 失败警告不该跨轮挂着——它描述的是已经结束的那次运行。
-      setHookWarning(null)
-    }
-
-    options.onAccepted?.()
-    // 多模型一问多答（任务 06-30）：reply_models ≥2 且非 plan/orchestrate 模式时，后端会 fan-out
-    // 出 N 条并发流。前端据此建多答组（占位 N 列），流事件按 messageId 路由到对应列。
-    // 与后端 resolve_reply_arms 的判定保持一致（≤1 个臂 = 单模型路径，零回归）。
     const attachmentSkillId = usesChatRuntime
       ? null
       : options.forceNewConversation
         ? inferSingleAttachmentSkillId(attachments, enabledSkills)
         : effectiveSkillId ?? inferSingleAttachmentSkillId(attachments, enabledSkills)
-
-    if (!willFanOut) {
-      let outcome: PreparedSingleRunOutcome
-      try {
-        outcome = await executionOwner.submitPreparedSingleRun({
-          lease: executionLease,
-          content: trimmed,
-          attachments,
-          attachmentSkillId,
-          planMessageId: options.planMessageId,
-        }, {
-          ...settlementPorts,
-          onOutcome: (result) => {
-            if (result.kind === 'persisted') {
-              if (currentConversationIdRef.current === conversationId) {
-                applyAssistantStreamStats(result.conversation)
-                settleOptimisticConversationListItem(
-                  setOptimisticSidebarConversations,
-                  conversationId,
-                  result.conversation,
-                )
-                applyConversation(result.conversation)
-              }
-              refreshSidebar()
-              return
-            }
-            console.error('Failed to send message:', result.error)
-            const keptConversation = result.kind === 'persisted_error' ? result.conversation : null
-            if (keptConversation && currentConversationIdRef.current === conversationId) {
-              applyConversation(keptConversation)
-            }
-            settleOptimisticConversationListItem(
-              setOptimisticSidebarConversations,
-              conversationId,
-              keptConversation,
-            )
-            if (keptConversation) refreshSidebar()
-            setStreamErrorForConversation(conversationId, result.error.message || '发送失败')
-            if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
-          },
-        })
-      } finally {
-        syncGeneratingConversationIds()
-      }
-      return outcome.kind !== 'not_committed'
-    }
-
-    let persistedConversation: Conversation | null = null
-    let sendAccepted = false
-    try {
-      const updatedConv = await chatApi.sendMessage(
-        conversationId,
-        trimmed,
-        attachments,
-        attachmentSkillId,
-        options.planMessageId,
-      )
-      persistedConversation = updatedConv
-      sendAccepted = true
-      if (currentConversationIdRef.current === conversationId) {
-        applyAssistantStreamStats(updatedConv)
-        // 原地替换而非移除：行不消失，SwapTitle 在标题文字变化时播放替换过渡。
-        settleOptimisticConversationListItem(
-          setOptimisticSidebarConversations,
-          conversationId,
-          updatedConv,
-        )
-        applyConversation(updatedConv)
-        refreshSidebar()
-      } else {
-        refreshSidebar()
-      }
-    } catch (err) {
-      console.error('Failed to send message:', err)
-      // 后端生成失败时保留了用户消息并随错误带回对话——套用它，让问题留在线程里可重试，
-      // 而不是连问题一起消失（旧行为）。
-      const keptConversation = (err as { conversation?: Conversation })?.conversation
-      if (currentConversationIdRef.current === conversationId) {
-        if (keptConversation) {
-          applyConversation(keptConversation)
-        }
-      }
-      // 失败但保留了会话（带用户消息）→ 原地替换保持行存在；彻底失败 → 移除。
-      settleOptimisticConversationListItem(
-        setOptimisticSidebarConversations,
-        conversationId,
-        keptConversation ?? null,
-      )
-      if (keptConversation) refreshSidebar()
-      const message = typeof err === 'string' ? err : (err as Error).message || '发送失败'
-      setStreamErrorForConversation(conversationId, message)
-      if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
-      // 用户消息已落盘 → 草稿清掉是对的；否则 InputBar 必须把原文回填，不能 return true。
-      sendAccepted = Boolean(keptConversation)
-    } finally {
-      await settleRun(executionLease, persistedConversation)
-      syncGeneratingConversationIds()
-    }
-    return sendAccepted
-    } finally {
-      if (executionLease) await settleRun(executionLease, null)
-      executionOwner.abandonSend(claim)
-    }
+    const result = await sendController.send({
+      content,
+      attachments,
+      preparation: {
+        conversation: options.conversationOverride ?? currentConversation,
+        override: Boolean(options.conversationOverride),
+        forceNew: Boolean(options.forceNewConversation),
+        providerId: activeProviderId,
+        model: activeModel,
+        projectName: selectedProject?.name ?? null,
+        projectId: selectedProject?.id ?? null,
+        setId: selectedSet?.id ?? null,
+        draft: {
+          agentRuntime: draftAgentRuntime,
+          knowledgeBaseIds: draftKnowledgeBaseIds,
+          forceKnowledgeSearch: draftForceKnowledgeSearch,
+          additionalDirectories: draftAdditionalDirectories,
+          thinkingLevel: draftThinkingLevel,
+          webSearchMode: draftWebSearchMode,
+          rememberedWebSearchMode: loadLastWebSearchMode(),
+          replyModels: draftReplyModels,
+        },
+        providerOAuthTypes,
+      },
+      attachmentSkillId,
+      disabledReason: sendDisabledReason,
+      planMessageId: options.planMessageId,
+      onPartialConversation: options.onPartialConversation,
+      onAccepted: options.onAccepted,
+    })
+    return result.composerAccepted
   }, [
-    activeModel,
-    activeProviderId,
-    applyAssistantStreamStats,
-    applyConversation,
-    applyConversationIfCurrent,
-    clearStreamSnapshot,
-    currentConversation,
-    draftAgentRuntime,
-    draftKnowledgeBaseIds,
-    draftForceKnowledgeSearch,
-    draftAdditionalDirectories,
-    draftThinkingLevel,
-    draftReplyModels,
-    draftWebSearchMode,
-    providerOAuthTypes,
-    previewOwner,
-    effectiveSkillId,
-    enabledSkills,
-    usesChatRuntime,
-    freezeStreamSnapshot,
-    executionOwner,
-    refreshSidebar,
-    selectedProject?.id,
-    selectedProject?.name,
-    selectedSet?.id,
-    sendDisabledReason,
-    setStreamErrorForConversation,
-    settleRun,
-    settlementPorts,
-    syncConversationRoute,
-    syncGeneratingConversationIds,
+    activeModel, activeProviderId, currentConversation, draftAgentRuntime,
+    draftKnowledgeBaseIds, draftForceKnowledgeSearch, draftAdditionalDirectories,
+    draftThinkingLevel, draftReplyModels, draftWebSearchMode, providerOAuthTypes,
+    effectiveSkillId, enabledSkills, usesChatRuntime, selectedProject?.id,
+    selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
-
   // 用 ref 持有最新 handleSendMessage，使下方的 drainExternalSends 保持稳定身份，
   // 避免其依赖抖动导致订阅 effect 反复 cleanup/重订阅（重订阅缝隙会丢掉外部发送事件）。
   const handleSendMessageRef = useRef(handleSendMessage)
