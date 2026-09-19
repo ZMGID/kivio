@@ -58,6 +58,7 @@ import { useProviderCatalogController } from './useProviderCatalogController'
 import { useSettingsBackupController } from './useSettingsBackupController'
 import { useSettingsHotkeyRecorder, type HotkeyScopeKey } from './useSettingsHotkeyRecorder'
 import { useProviderModalController } from './useProviderModalController'
+import { useSettingsOnboardingController } from './useSettingsOnboardingController'
 import { ModelDetailDrawer } from './ModelDetailDrawer'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
 import { Button } from '../components/Button'
@@ -232,6 +233,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }),
     import: (path) => editorController.import(path),
     export: (path) => api.exportSettings(path),
+  }, lang)
+  const onboarding = useSettingsOnboardingController({
+    flush: () => editorController.flush(),
+    writePending: () => updateSettingsCached((current) => ({ ...current, onboardingStatus: 'pending' })),
+    committed: () => onSettingsChangeRef.current(),
+    navigate: () => { window.location.hash = '#chat/onboarding' },
   }, lang)
   const t = i18n[lang]
   const controllerSaveError = editorView.saveError.startsWith('Settings conflict: ')
@@ -423,7 +430,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [saveWarning])
 
   /**
-   * 关闭设置页：普通关闭等待 flush；切去对话等导航动作立即退场，保存留在后台完成。
+   * 关闭设置页：默认等待 flush 成功；显式 waitForSave=false 才立即退场。
    */
   const handleCloseRequest = useCallback((options?: SettingsCloseOptions) => {
     if (recordingTarget) return
@@ -536,24 +543,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       return next
     })
   }, [])
-
-  const handleRestartOnboarding = useCallback(async () => {
-    if (!settings) return
-    try {
-      await editorController.flush()
-      await updateSettingsCached((current) => ({
-        ...current,
-        onboardingStatus: 'pending',
-      }))
-      const snapshot = peekSettingsSnapshot()
-      if (!snapshot) throw new Error('Settings snapshot is unavailable')
-      editorController.replace(snapshot)
-      onSettingsChange()
-      window.location.hash = '#chat/onboarding'
-    } catch (err) {
-      console.error('Failed to restart onboarding:', err)
-    }
-  }, [editorController, onSettingsChange, settings])
 
   const updateDefaultModel = useCallback((
     key: keyof SettingsData['defaultModels'],
@@ -1035,11 +1024,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   >
                     <Button
                       size="sm"
-                      onClick={() => void handleRestartOnboarding()}
+                      onClick={() => void onboarding.restart()}
+                      disabled={onboarding.busy}
                       data-tauri-drag-region="false"
                     >
                       {t.onboardingRestart}
                     </Button>
+                    {onboarding.error && <span className="text-[12px] text-red-500" role="status">{onboarding.error}</span>}
                   </SettingRow>
                 </SettingsGroup>
 
