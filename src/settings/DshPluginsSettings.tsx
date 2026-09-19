@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ArrowLeft, ChevronDown, FileText, RefreshCw, Search, Terminal, Workflow, Globe } from 'lucide-react'
 import {
-  dshPluginSettingsApi,
+  externalCliSettingsApi as dshPluginSettingsApi,
   type DshPluginEntry,
   type DshPluginSettingsPatch,
   type DshPluginSettingsSnapshot,
-} from '../chat/public/dshPluginSettings'
+} from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
 import { Input } from './components'
 import { dshPluginShortName } from './dshPluginNames'

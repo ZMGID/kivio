@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { chatApi, type DshPluginSettingsSnapshot } from '../chat/api'
+import { externalCliSettingsApi, type DshPluginSettingsSnapshot } from '../api/externalCliSettings'
 import { DshPluginsSettings } from './DshPluginsSettings'
 import { dshPluginShortName } from './dshPluginNames'
 
-vi.mock('../chat/api', () => ({
-  chatApi: {
+vi.mock('../api/externalCliSettings', () => ({
+  externalCliSettingsApi: {
     dshPluginSettingsGet: vi.fn(),
     dshPluginSettingsSave: vi.fn(),
     dshPluginInventory: vi.fn(),
@@ -47,12 +47,12 @@ describe('dshPluginShortName', () => {
 
 describe('DshPluginsSettings', () => {
   beforeEach(() => {
-    vi.mocked(chatApi.dshPluginSettingsGet).mockReset()
-    vi.mocked(chatApi.dshPluginSettingsSave).mockReset()
-    vi.mocked(chatApi.dshPluginInventory).mockReset()
-    vi.mocked(chatApi.dshOpenSettingsFile).mockReset()
-    vi.mocked(chatApi.dshPluginSettingsGet).mockResolvedValue(snapshot)
-    vi.mocked(chatApi.dshPluginInventory).mockResolvedValue([
+    vi.mocked(externalCliSettingsApi.dshPluginSettingsGet).mockReset()
+    vi.mocked(externalCliSettingsApi.dshPluginSettingsSave).mockReset()
+    vi.mocked(externalCliSettingsApi.dshPluginInventory).mockReset()
+    vi.mocked(externalCliSettingsApi.dshOpenSettingsFile).mockReset()
+    vi.mocked(externalCliSettingsApi.dshPluginSettingsGet).mockResolvedValue(snapshot)
+    vi.mocked(externalCliSettingsApi.dshPluginInventory).mockResolvedValue([
       { id: 'timer', moduleName: '@deepseek-ai/dsh-timer', enabled: true },
       { id: 'tool-bash', moduleName: '@deepseek-ai/dsh-tool-bash', enabled: false },
     ])
@@ -60,7 +60,7 @@ describe('DshPluginsSettings', () => {
 
   it('renders official config cards and saves a shell override', async () => {
     const user = userEvent.setup()
-    vi.mocked(chatApi.dshPluginSettingsSave).mockResolvedValue({
+    vi.mocked(externalCliSettingsApi.dshPluginSettingsSave).mockResolvedValue({
       ...snapshot,
       shell: { ...snapshot.shell, timeoutMs: 45000 },
     })
@@ -77,7 +77,7 @@ describe('DshPluginsSettings', () => {
     await waitFor(() => expect(timeout).toHaveValue('45000'))
     await user.click(await screen.findByRole('button', { name: '保存' }))
     await waitFor(() =>
-      expect(chatApi.dshPluginSettingsSave).toHaveBeenCalledWith({
+      expect(externalCliSettingsApi.dshPluginSettingsSave).toHaveBeenCalledWith({
         shell: { timeoutMs: 45000, maxOutputBytes: null },
       }),
     )
@@ -98,7 +98,7 @@ describe('DshPluginsSettings', () => {
   })
 
   it('surfaces the inventory error detail instead of swallowing it', async () => {
-    vi.mocked(chatApi.dshPluginInventory).mockRejectedValue(
+    vi.mocked(externalCliSettingsApi.dshPluginInventory).mockRejectedValue(
       'dsh --dump-config 失败：profile missing',
     )
     render(<DshPluginsSettings lang="zh" />)

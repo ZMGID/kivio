@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { open } from '@tauri-apps/plugin-dialog'
-import { chatApi, type PiSkillInventory } from '../chat/api'
+import { externalCliSettingsApi, type PiSkillInventory } from '../api/externalCliSettings'
 import { PiSkillsSettings } from './PiSkillsSettings'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
-vi.mock('../chat/api', () => ({
-  chatApi: {
+vi.mock('../api/externalCliSettings', () => ({
+  externalCliSettingsApi: {
     piSkillsInventory: vi.fn(),
     piSkillSetEnabled: vi.fn(),
     piSkillCommandsSetEnabled: vi.fn(),
@@ -78,22 +78,22 @@ const inventory: PiSkillInventory = {
 describe('PiSkillsSettings', () => {
   beforeEach(() => {
     vi.mocked(open).mockReset()
-    vi.mocked(chatApi.piSkillsInventory).mockReset()
-    vi.mocked(chatApi.piSkillSetEnabled).mockReset()
-    vi.mocked(chatApi.piSkillCommandsSetEnabled).mockReset()
-    vi.mocked(chatApi.piSkillAddPath).mockReset()
-    vi.mocked(chatApi.piSkillRemovePath).mockReset()
-    vi.mocked(chatApi.piSkillRemove).mockReset()
-    vi.mocked(chatApi.piSkillOpen).mockReset()
-    vi.mocked(chatApi.piSkillsOpenDir).mockReset()
-    vi.mocked(chatApi.piSkillsInventory).mockResolvedValue(inventory)
-    vi.mocked(chatApi.piSkillSetEnabled).mockResolvedValue()
-    vi.mocked(chatApi.piSkillCommandsSetEnabled).mockResolvedValue()
-    vi.mocked(chatApi.piSkillAddPath).mockResolvedValue()
-    vi.mocked(chatApi.piSkillRemovePath).mockResolvedValue()
-    vi.mocked(chatApi.piSkillRemove).mockResolvedValue()
-    vi.mocked(chatApi.piSkillOpen).mockResolvedValue()
-    vi.mocked(chatApi.piSkillsOpenDir).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piSkillsInventory).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillSetEnabled).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillCommandsSetEnabled).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillAddPath).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillRemovePath).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillRemove).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillOpen).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillsOpenDir).mockReset()
+    vi.mocked(externalCliSettingsApi.piSkillsInventory).mockResolvedValue(inventory)
+    vi.mocked(externalCliSettingsApi.piSkillSetEnabled).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piSkillCommandsSetEnabled).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piSkillAddPath).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piSkillRemovePath).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piSkillRemove).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piSkillOpen).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piSkillsOpenDir).mockResolvedValue()
   })
 
   it('groups all Pi global Skill sources and exposes safe actions', async () => {
@@ -120,13 +120,13 @@ describe('PiSkillsSettings', () => {
     fireEvent.click(within(local).getByRole('switch'))
 
     await waitFor(() => {
-      expect(chatApi.piSkillSetEnabled).toHaveBeenCalledWith(inventory.skills[0], false)
+      expect(externalCliSettingsApi.piSkillSetEnabled).toHaveBeenCalledWith(inventory.skills[0], false)
     })
 
     const commandRow = screen.getByText('注册 /skill:name 命令').closest<HTMLElement>('.kv-row')!
     fireEvent.click(within(commandRow).getByRole('switch'))
     await waitFor(() => {
-      expect(chatApi.piSkillCommandsSetEnabled).toHaveBeenCalledWith(false)
+      expect(externalCliSettingsApi.piSkillCommandsSetEnabled).toHaveBeenCalledWith(false)
     })
   })
 
@@ -142,7 +142,7 @@ describe('PiSkillsSettings', () => {
         directory: true,
         defaultPath: inventory.agentDir,
       })
-      expect(chatApi.piSkillAddPath).toHaveBeenCalledWith('C:\\Users\\u\\.claude\\skills')
+      expect(externalCliSettingsApi.piSkillAddPath).toHaveBeenCalledWith('C:\\Users\\u\\.claude\\skills')
     })
 
     const pathRow = screen
@@ -150,7 +150,7 @@ describe('PiSkillsSettings', () => {
       .closest<HTMLElement>('.kv-row')!
     fireEvent.click(within(pathRow).getByRole('button', { name: '移除扫描路径' }))
     await waitFor(() => {
-      expect(chatApi.piSkillRemovePath).toHaveBeenCalledWith('C:\\Users\\u\\.codex\\skills')
+      expect(externalCliSettingsApi.piSkillRemovePath).toHaveBeenCalledWith('C:\\Users\\u\\.codex\\skills')
     })
   })
 })

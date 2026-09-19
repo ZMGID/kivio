@@ -11,11 +11,11 @@ import {
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
-  piExtensionsSettingsApi,
+  externalCliSettingsApi as piExtensionsSettingsApi,
   type PiExtensionInventory,
   type PiExtensionPackage,
   type PiLocalExtension,
-} from '../chat/public/piExtensionsSettings'
+} from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from './i18n'

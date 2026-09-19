@@ -25,7 +25,7 @@ import { AgentIcon } from '../components/AgentIcon'
 import { Input, Label, Select, SuggestInput, TextArea, Toggle } from './components'
 import { Button, IconButton } from '../components/Button'
 import type { SelectOption } from './utils'
-import { externalCliProviderSettingsApi } from '../chat/public/externalCliProviderSettings'
+import { externalCliSettingsApi } from '../api/externalCliSettings'
 import { i18n, type Lang } from './i18n'
 import type { ExternalCliProvider } from '../api/tauri'
 import {
@@ -531,7 +531,7 @@ export function CliProviderModal({
     setFetching(true)
     setFetchNote('')
     try {
-      const models = await externalCliProviderSettingsApi.externalCliFetchRelayModels(url, key)
+      const models = await externalCliSettingsApi.externalCliFetchRelayModels(url, key)
       setFetchedModels(models)
       if (isNative && models.length > 0 && normalizeNativeModels(nativeForm.models).length === 0) {
         setNativeForm((prev) => ({

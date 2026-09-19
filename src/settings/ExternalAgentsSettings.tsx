@@ -18,14 +18,14 @@ import {
 import { open } from '@tauri-apps/plugin-dialog'
 import { AgentIcon } from '../components/AgentIcon'
 import {
-  externalAgentSettingsApi,
+  externalCliSettingsApi as externalAgentSettingsApi,
   type CcSwitchProvider,
   type DetectedExternalAgent,
   type DshOfficialCredential,
   type ExternalCliInstallInfo,
   type NativeProviderSummary,
-} from '../chat/public/externalAgentSettings'
-import { onExternalAgentsUpdated } from '../chat/public/externalAgentEvents'
+  onExternalAgentsUpdated,
+} from '../api/externalCliSettings'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from './i18n'
 import { Button, IconButton } from '../components/Button'

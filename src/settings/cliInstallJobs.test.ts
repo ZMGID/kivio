@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { onExternalCliInstallLog } from '../chat/api'
+import { onExternalCliInstallLog } from '../api/externalCliSettings'
 import {
   getCliInstallJob,
   resetCliInstallJobsForTests,
   startCliInstall,
 } from './cliInstallJobs'
 
-vi.mock('../chat/api', () => ({
+vi.mock('../api/externalCliSettings', () => ({
   onExternalCliInstallLog: vi.fn().mockResolvedValue(() => {}),
 }))
 

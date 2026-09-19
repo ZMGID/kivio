@@ -2,8 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { CliProviderModal } from './CliProviderModal'
 
-vi.mock('../chat/api', () => ({
-  chatApi: {
+vi.mock('../api/externalCliSettings', () => ({
+  externalCliSettingsApi: {
     externalCliFetchRelayModels: vi.fn(),
   },
 }))

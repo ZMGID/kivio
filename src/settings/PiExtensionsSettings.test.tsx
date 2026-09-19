@@ -1,11 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { chatApi, type PiExtensionInventory } from '../chat/api'
+import { externalCliSettingsApi, type PiExtensionInventory } from '../api/externalCliSettings'
 import { PiExtensionsSettings } from './PiExtensionsSettings'
 import { open } from '@tauri-apps/plugin-dialog'
 
-vi.mock('../chat/api', () => ({
-  chatApi: {
+vi.mock('../api/externalCliSettings', () => ({
+  externalCliSettingsApi: {
     piExtensionsInventory: vi.fn(),
     piExtensionSetEnabled: vi.fn(),
     piExtensionInstall: vi.fn(),
@@ -71,19 +71,19 @@ const inventory: PiExtensionInventory = {
 
 describe('PiExtensionsSettings', () => {
   beforeEach(() => {
-    vi.mocked(chatApi.piExtensionsInventory).mockReset()
-    vi.mocked(chatApi.piExtensionSetEnabled).mockReset()
-    vi.mocked(chatApi.piExtensionInstall).mockReset()
-    vi.mocked(chatApi.piExtensionUpdate).mockReset()
-    vi.mocked(chatApi.piExtensionRemove).mockReset()
-    vi.mocked(chatApi.piExtensionOpen).mockReset()
-    vi.mocked(chatApi.piExtensionsOpenDir).mockReset()
+    vi.mocked(externalCliSettingsApi.piExtensionsInventory).mockReset()
+    vi.mocked(externalCliSettingsApi.piExtensionSetEnabled).mockReset()
+    vi.mocked(externalCliSettingsApi.piExtensionInstall).mockReset()
+    vi.mocked(externalCliSettingsApi.piExtensionUpdate).mockReset()
+    vi.mocked(externalCliSettingsApi.piExtensionRemove).mockReset()
+    vi.mocked(externalCliSettingsApi.piExtensionOpen).mockReset()
+    vi.mocked(externalCliSettingsApi.piExtensionsOpenDir).mockReset()
     vi.mocked(open).mockReset()
-    vi.mocked(chatApi.piExtensionsInventory).mockResolvedValue(inventory)
-    vi.mocked(chatApi.piExtensionSetEnabled).mockResolvedValue()
-    vi.mocked(chatApi.piExtensionInstall).mockResolvedValue({ output: 'installed' })
-    vi.mocked(chatApi.piExtensionUpdate).mockResolvedValue({ output: 'updated' })
-    vi.mocked(chatApi.piExtensionRemove).mockResolvedValue({ output: 'removed' })
+    vi.mocked(externalCliSettingsApi.piExtensionsInventory).mockResolvedValue(inventory)
+    vi.mocked(externalCliSettingsApi.piExtensionSetEnabled).mockResolvedValue()
+    vi.mocked(externalCliSettingsApi.piExtensionInstall).mockResolvedValue({ output: 'installed' })
+    vi.mocked(externalCliSettingsApi.piExtensionUpdate).mockResolvedValue({ output: 'updated' })
+    vi.mocked(externalCliSettingsApi.piExtensionRemove).mockResolvedValue({ output: 'removed' })
   })
 
   it('lists packages and local extensions with safe toggle states', async () => {
@@ -111,7 +111,7 @@ describe('PiExtensionsSettings', () => {
     const packageRow = (await screen.findByText('pi-mcp-adapter')).closest<HTMLElement>('.kv-row')!
     fireEvent.click(within(packageRow).getByRole('switch'))
     await waitFor(() => {
-      expect(chatApi.piExtensionSetEnabled).toHaveBeenCalledWith(
+      expect(externalCliSettingsApi.piExtensionSetEnabled).toHaveBeenCalledWith(
         'package',
         'npm:pi-mcp-adapter',
         false,
@@ -122,7 +122,7 @@ describe('PiExtensionsSettings', () => {
     fireEvent.change(source, { target: { value: 'npm:example-extension' } })
     fireEvent.click(screen.getByRole('button', { name: '安装' }))
     await waitFor(() => {
-      expect(chatApi.piExtensionInstall).toHaveBeenCalledWith('npm:example-extension')
+      expect(externalCliSettingsApi.piExtensionInstall).toHaveBeenCalledWith('npm:example-extension')
     })
   })
 

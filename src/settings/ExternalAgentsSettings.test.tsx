@@ -1,12 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
-import { chatApi, onExternalCliInstallLog } from '../chat/api'
+import { externalCliSettingsApi, onExternalCliInstallLog } from '../api/externalCliSettings'
 import { resetCliInstallJobsForTests } from './cliInstallJobs'
 import type { Settings as SettingsData } from '../api/tauri'
 
-vi.mock('../chat/api', () => ({
-  chatApi: {
+vi.mock('../api/externalCliSettings', () => ({
+  externalCliSettingsApi: {
     detectExternalAgents: vi.fn(),
     detectExternalAgentModels: vi.fn().mockResolvedValue({ models: [], reasoningOptions: [] }),
     externalCliInstallInfo: vi.fn().mockResolvedValue({
@@ -64,14 +64,14 @@ vi.mock('../chat/api', () => ({
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 
-const mockDetect = vi.mocked(chatApi.detectExternalAgents)
-const mockInstallInfo = vi.mocked(chatApi.externalCliInstallInfo)
-const mockInstall = vi.mocked(chatApi.externalCliInstall)
+const mockDetect = vi.mocked(externalCliSettingsApi.detectExternalAgents)
+const mockInstallInfo = vi.mocked(externalCliSettingsApi.externalCliInstallInfo)
+const mockInstall = vi.mocked(externalCliSettingsApi.externalCliInstall)
 const mockOnInstallLog = vi.mocked(onExternalCliInstallLog)
-const mockOfficialKeyStatus = vi.mocked(chatApi.dshOfficialCredentialStatus)
-const mockOfficialKeySave = vi.mocked(chatApi.dshOfficialCredentialSave)
-const mockNativeGet = vi.mocked(chatApi.dshNativeProviderGet)
-const mockNativeDelete = vi.mocked(chatApi.dshNativeProviderDelete)
+const mockOfficialKeyStatus = vi.mocked(externalCliSettingsApi.dshOfficialCredentialStatus)
+const mockOfficialKeySave = vi.mocked(externalCliSettingsApi.dshOfficialCredentialSave)
+const mockNativeGet = vi.mocked(externalCliSettingsApi.dshNativeProviderGet)
+const mockNativeDelete = vi.mocked(externalCliSettingsApi.dshNativeProviderDelete)
 
 function renderPanel(
   chat: Partial<NonNullable<SettingsData['chat']>> = {},
