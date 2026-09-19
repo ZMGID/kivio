@@ -7,9 +7,10 @@ import { ChatSidebarPane } from './ChatSidebarPane'
 import { completeSettingsExit, type PendingSettingsAction } from './settingsExit'
 import { useChatRouting } from './hooks/useChatRouting'
 import { createChatNavigationController } from './chatNavigationController'
-import { createChatExecutionOwner, type ExecutionLease } from './chatExecutionOwner'
+import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createRunInteractionInbox } from './runInteractionInbox'
 import { createChatSendController, type SendPresentationEvent } from './chatSendController'
+import { createChatRunCommands, type RunCommandPresentationEvent } from './chatRunCommands'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import { useExternalSendQueue } from './hooks/useExternalSendQueue'
 import { useMessageQueue } from './hooks/useMessageQueue'
@@ -137,7 +138,6 @@ import {
   getActiveGroup,
   resetGroups,
 } from './groupStreamingStore'
-import { assistantTurnSpan } from './messageGroups'
 import { latestCompactionBoundaryId, mergeCompactionContextState } from './compactionBoundary'
 import { latestClearBoundaryId, mergeClearContextState } from './contextClearBoundary'
 import { applyLiveContextUsage } from './contextPanel'
@@ -1807,10 +1807,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       settleQueue: (id, conversation) => messageQueueRef.current.settleAfterRun(id, conversation),
     }), [clearStreamSnapshot, finishStreamingRun, finishStreamingRunWithConversation, freezeStreamSnapshot])
 
-  const settleRun = useCallback((lease: ExecutionLease, persistedConversation: Conversation | null) => (
-    executionOwner.finish(lease, persistedConversation, settlementPorts)
-  ), [executionOwner, settlementPorts])
-
   useTauriEvent(api.onChatProtocolIssue, ({ issue, conversationId }) => {
     if (issue === 'version_mismatch') {
       setProtocolVersionMismatch(true)
@@ -2920,158 +2916,76 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     [applyConversationMeta, setStreamErrorForConversation],
   )
 
-  const handleRegenerateMessage = useCallback(
-    async (messageId: string, newContent?: string) => {
-      const conv = currentConversationRef.current
-      if (!conv) return
-
-      const conversationId = conv.id
-      // Busy 拒绝（AC3）：入口已在 MessageList 按 streaming/frozen 收起，这里是兜底。
-      // 带编辑内容时静默 return 会无声丢掉用户改的文字，必须给出提示（与 handleSend 同文案）。
-      if (executionOwner.snapshot(conversationId).inFlight) {
-        setStreamErrorForConversation(conversationId, '该对话正在生成中，请稍后再试')
-        return
-      }
-
-      const messageIndex = conv.messages.findIndex(
-        (message) => message.id === messageId,
-      )
-      if (messageIndex < 0) return
-
-      // 助手消息：截到它之前重生成。用户消息：保留它（编辑时先替换内容）、只丢其后内容再重试。
-      const keepTarget = conv.messages[messageIndex].role === 'user'
-      const cutFrom = keepTarget ? messageIndex + 1 : messageIndex
-      // 空白-only 的编辑内容按「未编辑」处理（纯重生成）：绝不能把 Some("") 发给后端——
-      // 乐观截断已经执行，后端再报「消息内容不能为空」会留下截断了却没重生成的线程。
-      const trimmedNewContent = newContent?.trim() || undefined
-      const keptMessages = conv.messages.slice(0, cutFrom)
-      if (keepTarget && trimmedNewContent) {
-        keptMessages[messageIndex] = {
-          ...keptMessages[messageIndex],
-          content: trimmedNewContent,
-        }
-      }
-      applyConversation({
-        ...conv,
-        messages: keptMessages,
-      })
-      const removedMessageIds = new Set(
-        conv.messages.slice(cutFrom).map((message) => message.id),
-      )
+  const presentRunCommandEvent = useCallback((event: RunCommandPresentationEvent) => {
+    if (event.kind === 'truncated') {
+      applyConversation(event.conversation)
+      const removed = new Set(event.removedMessageIds)
       setAssistantStreamStatsByMessageId((prev) => Object.fromEntries(
-        Object.entries(prev).filter(([id]) => !removedMessageIds.has(id)),
+        Object.entries(prev).filter(([id]) => !removed.has(id)),
       ))
-      const startedAt = Date.now()
-      const lease = executionOwner.begin({ conversationId, kind: 'regenerate', startedAt })
-      if (!lease) return
-      previewOwner.begin(conversationId, startedAt)
+      return
+    }
+    if (event.kind === 'started') {
       syncGeneratingConversationIds()
+      if (currentConversationIdRef.current === event.conversationId) {
+        setStreamErrorForConversation(event.conversationId, '')
+      }
+      return
+    }
+    if (event.kind === 'persisted') {
+      if (currentConversationIdRef.current === event.conversationId) {
+        applyAssistantStreamStats(event.conversation)
+        applyConversation(event.conversation)
+      }
+      refreshSidebar()
+      return
+    }
+    if (event.kind === 'failed') {
+      setStreamErrorForConversation(event.conversationId, event.error.message)
+      if (event.clearPreview) clearStreamSnapshot(event.conversationId)
+      else syncGeneratingConversationIds()
+      if (currentConversationIdRef.current === event.conversationId) {
+        void reloadConversation(event.conversationId)
+      }
+      return
+    }
+    if (event.kind === 'rejected') {
+      setStreamErrorForConversation(event.conversationId, event.error.message)
+      return
+    }
+    syncGeneratingConversationIds()
+  }, [
+    applyAssistantStreamStats, applyConversation, clearStreamSnapshot,
+    refreshSidebar, reloadConversation, setStreamErrorForConversation,
+    syncGeneratingConversationIds,
+  ])
 
-      if (currentConversationIdRef.current === conversationId) {
-        setStreamErrorForConversation(conversationId, '')
-      }
+  const runCommands = useMemo(() => createChatRunCommands({
+    executionOwner,
+    previewOwner,
+    persistence: chatApi,
+    settlementPorts,
+    presentation: { present: presentRunCommandEvent },
+  }), [executionOwner, previewOwner, settlementPorts, presentRunCommandEvent])
 
-      let persistedConversation: Conversation | null = null
-      try {
-        const updated = await chatApi.regenerateMessage(conversationId, messageId, trimmedNewContent)
-        persistedConversation = updated
-        if (currentConversationIdRef.current === conversationId) {
-          applyAssistantStreamStats(updated)
-          applyConversation(updated)
-          refreshSidebar()
-        } else {
-          refreshSidebar()
-        }
-      } catch (err) {
-        console.error('Failed to regenerate message:', err)
-        setStreamErrorForConversation(
-          conversationId,
-          typeof err === 'string' ? err : (err as Error).message || '重新生成失败',
-        )
-        if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
-        if (currentConversationIdRef.current === conversationId) {
-          void reloadConversation(conversationId)
-        }
-      } finally {
-        await settleRun(lease, persistedConversation)
-        syncGeneratingConversationIds()
-      }
-    },
-    [applyAssistantStreamStats, applyConversation, clearStreamSnapshot, executionOwner, freezeStreamSnapshot, previewOwner, refreshSidebar, reloadConversation, setStreamErrorForConversation, settleRun, syncGeneratingConversationIds],
-  )
+  const handleRegenerateMessage = useCallback(async (messageId: string, newContent?: string) => {
+    await runCommands.regenerate({
+      conversation: currentConversationRef.current,
+      messageId,
+      newContent,
+    })
+  }, [runCommands])
 
-  const handleReplyWithModel = useCallback(
-    async (messageId: string, providerId: string, model: string) => {
-      const conv = currentConversationRef.current
-      if (!conv) return
-      const conversationId = conv.id
-      if (executionOwner.snapshot(conversationId).inFlight) {
-        setStreamErrorForConversation(conversationId, '该对话正在生成中，请稍后再试')
-        return
-      }
-      const span = assistantTurnSpan(conv.messages, messageId)
-      if (!span || span.end !== conv.messages.length - 1) {
-        setStreamErrorForConversation(conversationId, '只能对最后一轮回答换模型')
-        return
-      }
-      const groupId = span.groupId || `grp_${crypto.randomUUID()}`
-      const sessionProvider = conv.provider_id ?? ''
-      const sessionModel = conv.model ?? ''
-      const lease = executionOwner.begin({
-        conversationId, kind: 'replyWithModel', startedAt: Date.now(),
-        group: { groupId, arms: [
-          ...span.siblings.map((message) => ({
-            providerId: message.provider_id ?? message.providerId ?? sessionProvider,
-            model: message.model ?? sessionModel,
-            messageId: message.id,
-            streaming: false,
-            content: message.content,
-            reasoning: message.reasoning,
-            toolCalls: message.tool_calls ?? message.toolCalls ?? [],
-            segments: message.segments ?? [],
-          })),
-          { providerId, model },
-        ] },
-      })
-      if (!lease) return
-      previewOwner.begin(conversationId, Date.now(), 'group')
-      syncGeneratingConversationIds()
-      if (currentConversationIdRef.current === conversationId) {
-        setStreamErrorForConversation(conversationId, '')
-      }
-      let persistedConversation: Conversation | null = null
-      try {
-        const updated = await chatApi.replyWithModel(
-          conversationId,
-          messageId,
-          providerId,
-          model,
-          groupId,
-        )
-        persistedConversation = updated
-        if (currentConversationIdRef.current === conversationId) {
-          applyAssistantStreamStats(updated)
-          applyConversation(updated)
-          refreshSidebar()
-        } else {
-          refreshSidebar()
-        }
-      } catch (err) {
-        console.error('Failed to reply with model:', err)
-        setStreamErrorForConversation(
-          conversationId,
-          typeof err === 'string' ? err : (err as Error).message || '换模型回答失败',
-        )
-        if (currentConversationIdRef.current === conversationId) {
-          void reloadConversation(conversationId)
-        }
-      } finally {
-        await settleRun(lease, persistedConversation)
-        syncGeneratingConversationIds()
-      }
-    },
-    [applyAssistantStreamStats, applyConversation, executionOwner, previewOwner, refreshSidebar, reloadConversation, setStreamErrorForConversation, settleRun, syncGeneratingConversationIds],
-  )
+  const handleReplyWithModel = useCallback(async (
+    messageId: string, providerId: string, model: string,
+  ) => {
+    await runCommands.replyWithModel({
+      conversation: currentConversationRef.current,
+      messageId,
+      providerId,
+      model,
+    })
+  }, [runCommands])
 
   const handleRuntimeChange = useCallback(async (runtime: AgentRuntimeConfig) => {
     setDraftAgentRuntime(runtime)
