@@ -1811,12 +1811,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         if (preservePartial) {
           if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
         } else {
-          previewOwner.complete(conversationId, {
-            kind: 'persisted', committedMessages: canPresent()
-              ? conversation?.messages ?? []
-              : currentConversationRef.current?.id === conversationId
-                ? currentConversationRef.current.messages : [],
-          })
+          // Same settle contract as the built-in path: judge "has the twin landed"
+          // against the messages React has *committed* (`currentConversationRef`),
+          // never against the list `applyConversation` just handed to setState.
+          // The freshly loaded list always contains the twin, so passing it made
+          // `complete` clear the live bubble synchronously (SyncLane) one frame
+          // before the DefaultLane conversation update painted the twin — the
+          // "live unmounted, twin not yet there" blank frame at run end.
+          settleStreamingPreview(conversationId)
         }
         if (loadError && canPresent()) {
           setStreamErrorForConversation(
@@ -1835,8 +1837,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     )
   }, [
     applyConversation, clearStreamSnapshot, freezeStreamSnapshot, markConversationCompacting,
-    popoutOwner, previewOwner, refreshSidebar, setStreamErrorForConversation, streamLifecycleOwner,
-    syncGeneratingConversationIds,
+    popoutOwner, refreshSidebar, setStreamErrorForConversation, settleStreamingPreview,
+    streamLifecycleOwner, syncGeneratingConversationIds,
   ])
 
   // React 的权威消息提交后才清 live 预览；定时兜底和旧轮失效归 previewOwner。

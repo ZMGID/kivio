@@ -16,6 +16,7 @@ import {
   applyToolRecordToSnapshot,
   findSubagentToolIndex,
   finalizeReasoningDurationOnDone,
+  hasStreamPreview,
   isStreamTerminal,
   mergeSubagentProgress,
   streamPayloadToSegment,
@@ -69,7 +70,13 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
 
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
+  // Committed-during-render mirror (same pattern as Chat's currentConversationRef):
+  // after a setConversation this still holds the list React has actually painted.
+  const conversationRef = useRef(conversation)
+  conversationRef.current = conversation
   const snapshotRef = useRef<ConversationStreamSnapshot | null>(null)
+  // A frozen live answer waiting for its persisted twin to appear in `conversation`.
+  const pendingTwinRef = useRef<{ messageId: string; timeout: ReturnType<typeof setTimeout> } | null>(null)
   const inFlightRef = useRef(false)
   const pendingDoneRef = useRef<(() => Promise<void>) | null>(null)
   const restoredRunIdsRef = useRef(new Set<string>())
@@ -77,9 +84,25 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const pendingUserPromptsRef = useRef<ChatUserPromptPayload[]>([])
   const streamCoarse = useStreamCoarse()
 
+  /** Forget a pending twin without touching the visible store (a new run took over). */
+  const cancelPendingTwin = useCallback(() => {
+    const twin = pendingTwinRef.current
+    if (!twin) return
+    clearTimeout(twin.timeout)
+    pendingTwinRef.current = null
+  }, [])
+
   const applySnapshot = useCallback((snapshot: ConversationStreamSnapshot) => {
     setStreamSnapshot(snapshot)
-    setStreamCoarse({ streaming: snapshot.streaming, cancelling: false })
+    // A stopped snapshot that still carries content is *frozen*, not gone:
+    // MessageList keeps the live row for `streaming || streamFrozen`. Publishing
+    // the terminal frame as streaming:false/frozen:false would unmount the live
+    // bubble for the whole reload window before the twin exists.
+    setStreamCoarse({
+      streaming: snapshot.streaming,
+      streamFrozen: !snapshot.streaming && hasStreamPreview(snapshot),
+      cancelling: false,
+    })
   }, [])
 
   const { showStreamSnapshotIfCurrent, cancelPendingFrame, flushStreamRender } = useStreamRenderFrame({
@@ -114,16 +137,58 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       cancelled = true
       cancelPendingFrame()
       endGroup(conversationId)
+      cancelPendingTwin()
       resetStreamStore()
     }
-  }, [cancelPendingFrame, conversationId])
+  }, [cancelPendingFrame, cancelPendingTwin, conversationId])
 
-  const settlePreview = useCallback(() => {
-    flushStreamRender()
-    snapshotRef.current = null
+  const clearPreview = useCallback(() => {
+    cancelPendingTwin()
     resetStreamStore()
     setStreamCoarse({ streaming: false, streamFrozen: false, cancelling: false, streamError: '' })
-  }, [flushStreamRender])
+  }, [cancelPendingTwin])
+
+  /**
+   * Run end: live bubble 鈫?persisted twin must be a pixel-identical swap.
+   *
+   * `resetStreamStore()` publishes through useSyncExternalStore (SyncLane) and lands
+   * one frame *before* the `setConversation` (DefaultLane) that carries the twin,
+   * so clearing here directly paints "live unmounted, twin not yet there" 鈥?the
+   * end-of-run flash. Mirror `streamPreviewOwner.complete`: freeze the live snapshot
+   * in place, and only clear once the committed `conversation` contains the twin
+   * (see the reconcile effect below), with a bounded fallback in case it never does.
+   */
+  const settlePreview = useCallback(() => {
+    flushStreamRender()
+    const snapshot = snapshotRef.current
+    snapshotRef.current = null
+    const messageId = snapshot?.messageId ?? null
+    if (!snapshot || !hasStreamPreview(snapshot) || !messageId
+      || conversationRef.current?.messages.some((message) => message.id === messageId)) {
+      clearPreview()
+      return
+    }
+    cancelPendingTwin()
+    snapshot.streaming = false
+    snapshot.reasoningStreaming = false
+    setStreamSnapshot(snapshot)
+    setStreamCoarse({ streaming: false, streamFrozen: true, cancelling: false, streamError: '' })
+    const twin = {
+      messageId,
+      timeout: setTimeout(() => {
+        if (pendingTwinRef.current === twin) clearPreview()
+      }, 1_500),
+    }
+    pendingTwinRef.current = twin
+  }, [cancelPendingTwin, clearPreview, flushStreamRender])
+
+  // Clear the frozen live answer only after React committed the twin 鈥?never when
+  // the reload promise resolved.
+  useEffect(() => {
+    const twin = pendingTwinRef.current
+    if (!twin || !conversation) return
+    if (conversation.messages.some((message) => message.id === twin.messageId)) clearPreview()
+  }, [clearPreview, conversation])
 
   const finishRun = useCallback(async () => {
     try {
@@ -141,6 +206,9 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     const terminal = isStreamTerminal(payload)
     if (payload.type === 'run_started') {
       setHookWarning(null)
+      // A new run supersedes any frozen answer still waiting for its twin; its
+      // fallback timer must not reset the store under the new live snapshot.
+      cancelPendingTwin()
       if (payload.recovery) {
         restoreGroupArm(
           payload.conversationId,
@@ -228,7 +296,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       }
       pendingDoneRef.current = finishRun
     }
-  }, [finishRun, showStreamSnapshotIfCurrent])
+  }, [cancelPendingTwin, finishRun, showStreamSnapshotIfCurrent])
 
   useTauriEvent(api.onChatTool, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
@@ -364,6 +432,8 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     if (!conv) return false
     inFlightRef.current = true
     setHookWarning(null)
+    // The previous answer's frozen preview must not linger under the new turn.
+    if (pendingTwinRef.current) clearPreview()
     const replyArms = conv.reply_models ?? conv.replyModels ?? []
     const convPlanMode =
       conv.agent_plan_state?.mode ?? conv.agentPlanState?.mode ?? 'act'
@@ -410,11 +480,13 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       endGroup(conversationId)
       const delayed = pendingDoneRef.current
       pendingDoneRef.current = null
-      if (persisted || !delayed) settlePreview()
+      if (persisted) settlePreview()
+      // Send failed before any terminal arrived: there is no twin to wait for.
+      else if (!delayed) clearPreview()
       else await delayed()
     }
     return true
-  }, [conversation, conversationId, settlePreview])
+  }, [clearPreview, conversation, conversationId, settlePreview])
 
   const handleCancel = useCallback(async () => {
     setStreamCoarse({ cancelling: true })

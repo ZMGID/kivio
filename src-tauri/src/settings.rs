@@ -970,7 +970,10 @@ impl Default for ChatConfig {
 }
 
 /// 单个本地 CLI Agent 的用户覆盖（设置页「本地 CLI Agent」）。全字段可缺省 = 保持内置行为。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// `PartialEq`：`persist_settings` 靠比较前后两份 `external_cli_agents` 决定要不要重新物化
+/// 原生 CLI 配置（写用户家目录），不相等才写。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExternalCliAgentConfig {
     /// 停用后不出现在 Chat 的运行时选择器里。已绑定该 CLI 的旧会话不受影响——
@@ -1000,7 +1003,7 @@ pub struct ExternalCliAgentConfig {
 /// - pi：另用 `default_reasoning` 写入 `settings.json.defaultThinkingLevel`
 ///
 /// 扁平结构而不是 tagged enum：settings.json 是用户可手改的文件，enum 的 tag 写错整条读不出来。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExternalCliProvider {
     /// 从 cc-switch 导入时**保留原 id**，这样二次导入走更新而不是新增一条重复的。
@@ -1026,14 +1029,14 @@ pub struct ExternalCliProvider {
     pub default_reasoning: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CliEnvVar {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CliCustomModel {
     pub id: String,
@@ -3159,8 +3162,23 @@ fn persist_then_apply_with_rollback(
     Ok(())
 }
 
-fn apply_external_agent_settings(settings: &Settings) -> Result<(), String> {
+/// 只有外部 CLI 配置本身变了才需要重新落地原生配置。
+///
+/// `materialize_all` 会合并写 `~/.grok/config.toml`、`~/.kimi-code/config.toml`、OpenCode / Pi
+/// 的原生配置和 dsh 的 profile —— 都是用户家目录里的文件。`persist_settings` 是所有设置写盘的
+/// 总出口（收藏模型、热键、主题……），无条件物化等于「改任何设置都重写一遍外部 CLI 的用户配置」，
+/// 与 `provider_profile` 模块头写的「物化时机是保存 / 切换供应商那一次」不符。
+/// `materialize` 读的全部输入都来自 `overrides`（即 `chat.external_cli_agents` 的镜像），
+/// 所以这一个字段不变就没有任何东西需要重写。
+fn external_cli_agents_changed(previous: &Settings, next: &Settings) -> bool {
+    previous.chat.external_cli_agents != next.chat.external_cli_agents
+}
+
+fn apply_external_agent_settings(previous: &Settings, settings: &Settings) -> Result<(), String> {
     crate::external_agents::overrides::sync_from_settings(settings);
+    if !external_cli_agents_changed(previous, settings) {
+        return Ok(());
+    }
     crate::external_agents::provider_profile::materialize_all()
 }
 
@@ -3180,6 +3198,7 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
         serde_json::to_value(&to_persist).map_err(|e| e.to_string())?,
     );
     let previous_cache_value = previous_value.clone();
+    let external_agents_changed = external_cli_agents_changed(&previous_settings, &canonical);
     persist_then_apply_with_rollback(
         || store.save().map_err(|e| e.to_string()),
         || {
@@ -3191,7 +3210,7 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
             }
             Ok(())
         },
-        || apply_external_agent_settings(&canonical),
+        || apply_external_agent_settings(&previous_settings, &canonical),
         || {
             match previous_value {
                 Some(value) => {
@@ -3203,7 +3222,12 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
             }
             let disk_rollback = store.save().map_err(|err| err.to_string());
             crate::external_agents::overrides::sync_from_settings(&previous_settings);
-            let profile_rollback = crate::external_agents::provider_profile::materialize_all();
+            // apply 只在配置变了时才写过原生文件；没写过就没有什么要还原。
+            let profile_rollback = if external_agents_changed {
+                crate::external_agents::provider_profile::materialize_all()
+            } else {
+                Ok(())
+            };
             match (disk_rollback, profile_rollback) {
                 (Ok(()), Ok(())) => Ok(()),
                 (disk, profile) => Err(format!(
@@ -5541,5 +5565,68 @@ mod hooks_disk_compat_tests {
             serde_json::from_value(serde_json::json!({ "enabled": true }))
                 .expect("missing hooks key must parse");
         assert!(config.hooks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod external_cli_materialize_gate_tests {
+    use super::*;
+
+    fn with_provider(current: &str) -> Settings {
+        let mut settings = Settings::default();
+        settings.chat.external_cli_agents.insert(
+            "grok".to_string(),
+            ExternalCliAgentConfig {
+                current_provider: current.to_string(),
+                providers: vec![ExternalCliProvider {
+                    id: "relay".to_string(),
+                    name: "Relay".to_string(),
+                    config_toml: "[models]\nx = 1".to_string(),
+                    ..ExternalCliProvider::default()
+                }],
+                ..ExternalCliAgentConfig::default()
+            },
+        );
+        settings
+    }
+
+    /// 回归：`persist_settings` 是所有设置写盘的总出口。收藏模型 / 热键 / 主题这类
+    /// 与外部 CLI 无关的保存，不得触发 `materialize_all` 重写 `~/.grok/config.toml`
+    /// 之类的用户家目录文件。
+    #[test]
+    fn unrelated_settings_change_does_not_rematerialize() {
+        let previous = with_provider("relay");
+        let mut next = previous.clone();
+        next.favorite_models.push("p:m".to_string());
+        next.hotkey = "Alt+Shift+Z".to_string();
+        assert!(!external_cli_agents_changed(&previous, &next));
+    }
+
+    #[test]
+    fn switching_provider_rematerializes() {
+        let previous = with_provider("relay");
+        let next = with_provider("");
+        assert!(external_cli_agents_changed(&previous, &next));
+    }
+
+    #[test]
+    fn editing_provider_body_rematerializes() {
+        let previous = with_provider("relay");
+        let mut next = previous.clone();
+        next.chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .providers[0]
+            .config_toml = "[models]\nx = 2".to_string();
+        assert!(external_cli_agents_changed(&previous, &next));
+    }
+
+    #[test]
+    fn adding_or_removing_agent_entry_rematerializes() {
+        let previous = Settings::default();
+        let next = with_provider("relay");
+        assert!(external_cli_agents_changed(&previous, &next));
+        assert!(external_cli_agents_changed(&next, &previous));
     }
 }
