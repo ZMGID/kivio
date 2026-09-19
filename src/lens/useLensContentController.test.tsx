@@ -3,11 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLensContentController } from './useLensContentController'
 import type { HistoryItem } from './types'
 
+const ask = vi.fn()
+
 vi.mock('../api/tauri', () => ({ api: {
   lensReadImage: () => new Promise(() => {}),
+  lensAsk: (...args: unknown[]) => ask(...args),
   lensCommitImageToHistory: async () => {},
   lensDeleteHistoryImage: async () => {},
 } }))
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
 
 const saved: HistoryItem = {
   id: 'history-image', imagePreview: 'history-preview', appLabel: 'History app',
@@ -15,7 +24,110 @@ const saved: HistoryItem = {
 }
 
 describe('Lens content transitions', () => {
-  beforeEach(() => localStorage.clear())
+  beforeEach(() => { localStorage.clear(); ask.mockReset() })
+
+  it('keeps the final error after stream done arrives before the ask reply', async () => {
+    const reply = deferred<{ success: boolean; error: string }>()
+    ask.mockReturnValue(reply.promise)
+    const { result } = renderHook(() => useLensContentController({ initialMode: 'chat' }))
+    act(() => {
+      const opening = result.current.beginOpening()
+      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
+      result.current.captureImage('image-1')
+    })
+    let pending!: Promise<void>
+    act(() => { pending = result.current.ask({ question: 'Why?', errorLabel: 'Error', webSearch: false }) })
+    expect(ask).toHaveBeenCalledOnce()
+    act(() => {
+      result.current.receiveChatStream({ imageId: 'image-1', kind: 'answer', delta: 'partial' })
+      result.current.receiveChatStream({ imageId: 'image-1', kind: 'answer', delta: '', done: true })
+    })
+    expect(result.current.conversation.view.streaming).toBe(false)
+    await act(async () => { reply.resolve({ success: false, error: 'failed' }); await pending })
+    expect(result.current.conversation.view.messages).toEqual([
+      { role: 'user', content: 'Why?' },
+      { role: 'assistant', content: 'Error: failed' },
+    ])
+  })
+
+  it('publishes the placeholder before invoking the backend so an immediate stream has a target', async () => {
+    const { result } = renderHook(() => useLensContentController({ initialMode: 'chat' }))
+    act(() => {
+      const opening = result.current.beginOpening()
+      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
+      result.current.captureImage('image-1')
+    })
+    let visibleAtInvoke: unknown
+    ask.mockImplementation(async () => {
+      visibleAtInvoke = result.current.conversation.view.messages
+      return { success: true, response: 'answer' }
+    })
+    let pending!: Promise<void>
+    act(() => { pending = result.current.ask({ question: 'Now?', errorLabel: 'Error', webSearch: false }) })
+    expect(visibleAtInvoke).toEqual([
+      { role: 'user', content: 'Now?' },
+      { role: 'assistant', content: '' },
+    ])
+    await act(async () => { await pending })
+  })
+
+  it.each(['history', 'close-reopen', 'cancel'])('rejects an old ask reply after done and %s', async change => {
+    const reply = deferred<{ success: boolean; response: string }>()
+    ask.mockReturnValue(reply.promise)
+    const cancelRequest = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => useLensContentController({ initialMode: 'chat', cancelRequest }))
+    act(() => {
+      const opening = result.current.beginOpening()
+      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
+      result.current.captureImage('image-1')
+    })
+    let pending!: Promise<void>
+    act(() => { pending = result.current.ask({ question: 'Old?', errorLabel: 'Error', webSearch: false }) })
+    act(() => {
+      result.current.receiveChatStream({ imageId: 'image-1', kind: 'answer', delta: 'partial' })
+      result.current.receiveChatStream({ imageId: 'image-1', kind: 'answer', delta: '', done: true })
+    })
+    if (change === 'history') await act(async () => { await result.current.restoreHistory(saved) })
+    else if (change === 'close-reopen') act(() => {
+      result.current.hide()
+      const opening = result.current.beginOpening()
+      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
+    })
+    else await act(async () => { await result.current.cancelAnswer() })
+
+    await act(async () => { reply.resolve({ success: true, response: 'late answer' }); await pending })
+    expect(result.current.conversation.view.messages).toEqual(change === 'history'
+      ? saved.messages
+      : change === 'close-reopen' ? [] : [
+        { role: 'user', content: 'Old?' },
+        { role: 'assistant', content: 'partial' },
+      ])
+    expect(result.current.conversation.view.streaming).toBe(false)
+    expect(cancelRequest).not.toHaveBeenCalled()
+  })
+
+  it('cancels an active ask once and leaves late content out of the stopped answer', async () => {
+    const reply = deferred<{ success: boolean; response: string }>()
+    ask.mockReturnValue(reply.promise)
+    const cancelRequest = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => useLensContentController({ initialMode: 'chat', cancelRequest }))
+    act(() => {
+      const opening = result.current.beginOpening()
+      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
+      result.current.captureImage('image-1')
+    })
+    let pending!: Promise<void>
+    act(() => { pending = result.current.ask({ question: 'Stop?', errorLabel: 'Error', webSearch: false }) })
+    act(() => { result.current.receiveChatStream({ imageId: 'image-1', kind: 'answer', delta: 'partial' }) })
+    await act(async () => { await result.current.cancelAnswer(); await result.current.cancelAnswer() })
+    act(() => { result.current.receiveChatStream({ imageId: 'image-1', kind: 'answer', delta: 'late' }) })
+    await act(async () => { reply.resolve({ success: true, response: 'late answer' }); await pending })
+    expect(cancelRequest).toHaveBeenCalledOnce()
+    expect(result.current.conversation.view.messages).toEqual([
+      { role: 'user', content: 'Stop?' },
+      { role: 'assistant', content: 'partial' },
+    ])
+  })
 
   it('restores history through one intent, clearing capture, annotation, translation and send preparation', async () => {
     const cancelRequest = vi.fn().mockResolvedValue(undefined)

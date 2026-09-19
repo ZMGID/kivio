@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { flushSync } from 'react-dom'
 import { Loader2, Copy, Check, Square, Image as ImageIcon, ArrowUp, History as HistoryIcon, ChevronDown, MousePointer2, Code, Eye, MessageSquarePlus } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensReplaceStreamPayload, type LensWindowInfo, type ExplainMessage, type LensWebSearchPayload } from './api/tauri'
+import { api, type LensStreamPayload, type LensTranslateStreamPayload, type LensReplaceStreamPayload, type LensWindowInfo, type LensWebSearchPayload } from './api/tauri'
 import { getSettingsCached, setTranslateCardSizeCached } from './api/settingsCache'
 import { ChatMarkdown } from './chat/ChatMarkdown'
 import { Button } from './components/Button'
@@ -136,12 +136,13 @@ export default function Lens() {
     conversation, selection, annotation, mode, imagePreview, history,
     beginOpening, open: openContent, hide: hideContent, restoreHistory: restoreContentHistory,
     captureImage, adoptAnnotatedImage, currentImageId, beginTextTranslation,
-    prepareSend, releaseSendPreparation, isPreparingSend, beginAnswer, finishAnswer: finishAnswering,
+    prepareSend, releaseSendPreparation, isPreparingSend,
+    ask, receiveChatStream, receiveChatWebSearch, cancelAnswer,
   } = content
   const { stage, appLabel, input, selectionText, messages, streaming, copied } = conversation.view
   const {
     showStage, capture: showCapturedConversation, editInput, selectText,
-    applyStream, applyWebSearch, applyFinal, setBusy,
+    setBusy,
     handoffFailed, showCopied,
   } = conversation
   const { windows, hovered, dragStart, dragCurrent, dragging, pendingCapture, capturedFrame, showCaptureHint } = selection.view
@@ -183,7 +184,6 @@ export default function Lens() {
     beginRequest,
     beginSelectionRead,
     canCapture,
-    cancelActiveRequest,
     closeOpening,
     closeAfterFeedback,
     currentToken,
@@ -198,7 +198,6 @@ export default function Lens() {
     isCapturing,
     isInitializationCurrent,
     isRequestCurrent,
-    isRequestLatest,
     isSelectionCurrent,
     isTokenCurrent,
     markCaptureReady,
@@ -308,7 +307,6 @@ export default function Lens() {
   // 快速翻译结果卡宽度（截图翻译 + 选中文本翻译共用，来自设置，默认 480）
   const cardWidthRef = useRef(480)
   const prevStreamingRef = useRef(false)
-  const lastLensStreamEventRef = useRef('')
   // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
   // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
   // selectionText 异步 take 的重入 token：每次 enterSelect / resetBeforeHide / restoreHistory 都 +1，
@@ -666,22 +664,7 @@ export default function Lens() {
     let cancelled = false
     let unlisten: (() => void) | undefined
     api.onLensStream((payload: LensStreamPayload) => {
-      if (!acceptsRequestEvent('chat', payload.imageId)) return
-      if (payload.done) {
-        finishRequestEvent('chat', payload.imageId)
-        lastLensStreamEventRef.current = ''
-        finishAnswering()
-        return
-      }
-      const eventKey = [
-        payload.imageId,
-        payload.kind,
-        payload.delta ?? '',
-        payload.reasoningDelta ?? '',
-      ].join('\u0000')
-      if (eventKey === lastLensStreamEventRef.current) return
-      lastLensStreamEventRef.current = eventKey
-      if (payload.reasoningDelta || payload.delta) applyStream(payload)
+      receiveChatStream(payload)
     }).then((dispose) => {
       if (cancelled) dispose()
       else unlisten = dispose
@@ -690,14 +673,13 @@ export default function Lens() {
       cancelled = true
       unlisten?.()
     }
-  }, [acceptsRequestEvent, applyStream, finishAnswering, finishRequestEvent])
+  }, [receiveChatStream])
 
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
     api.onLensWebSearch((payload: LensWebSearchPayload) => {
-      if (!acceptsRequestEvent('chat', payload.imageId)) return
-      applyWebSearch(payload)
+      receiveChatWebSearch(payload)
     }).then((dispose) => {
       if (cancelled) dispose()
       else unlisten = dispose
@@ -706,7 +688,7 @@ export default function Lens() {
       cancelled = true
       unlisten?.()
     }
-  }, [acceptsRequestEvent, applyWebSearch])
+  }, [receiveChatWebSearch])
 
   // messages 变化时自动滚动：正序滚到底（看新内容），倒序滚到顶（最新在顶）
   useEffect(() => {
@@ -793,16 +775,14 @@ export default function Lens() {
       if (isPreparingSend()) return
       if (drawModeRef.current) return
       if (stageRef.current === 'answering' && streaming) {
-        const cancellation = cancelActiveRequest()
-        finishAnswering()
-        try { await cancellation } catch (err) { console.error(err) }
+        try { await cancelAnswer() } catch (err) { console.error(err) }
         return
       }
       await closeAfterReset()
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [cancelActiveRequest, finishAnswering, isPreparingSend, streaming, closeAfterReset])
+  }, [cancelAnswer, isPreparingSend, streaming, closeAfterReset])
 
   // chat 模式的全局 Esc 兜底联动：后端在打开浮窗时对所有模式注册了全局 Esc（保证 select
   // 全屏阶段即使 webview 没拿到键盘焦点/挂死也能退出）。但 chat 模式截图落定后 Esc 有
@@ -1428,72 +1408,11 @@ export default function Lens() {
       return
     }
 
-    const userMsg: ExplainMessage = { role: 'user', content: userContent }
-    const placeholder: ExplainMessage = { role: 'assistant', content: '' }
-    const sendMessages: ExplainMessage[] = [...messages, userMsg]
-    // 内容 owner 负责截图或纯文本会话的历史身份。
-    flushSync(() => {
-      beginAnswer([...sendMessages, placeholder])
+    await ask({
+      question: userContent,
+      webSearch: mode === 'chat' && webSearchEnabled && webSearchAvailable,
+      errorLabel: t.lensError,
     })
-    lastLensStreamEventRef.current = ''
-    let requestToken = prepareSend('chat')
-
-    // 默认沿用当前 image_id;若有箭头则先合成 + 注册新图,把后续 ask 切到合成版
-    try {
-      let effectiveImageId = currentImageId()
-      if (arrows.length > 0 && imagePreview && capturedFrame) {
-        try {
-          const base64 = await composeAnnotatedImage(
-            imagePreview,
-            arrows,
-            capturedFrame.width,
-            capturedFrame.height,
-          )
-          const result = await api.lensRegisterAnnotatedImage(base64)
-          if (!isRequestCurrent(requestToken)) return
-          if (result.success && result.imageId) {
-            effectiveImageId = result.imageId
-            adoptAnnotatedImage(result.imageId, `data:image/png;base64,${base64}`)
-            finishRequest(requestToken)
-            requestToken = prepareSend('chat')
-            clearSubmittedAnnotations()
-          } else {
-            console.warn('[lens-arrow] register annotated image failed:', result.error)
-          }
-        } catch (err) {
-          console.warn('[lens-arrow] compose failed, fallback to original:', err)
-        }
-      }
-      if (!isRequestCurrent(requestToken)) return
-      releaseSendPreparation(requestToken)
-      const result = await api.lensAsk(effectiveImageId || '', sendMessages, {
-        webSearch: mode === 'chat' && webSearchEnabled && webSearchAvailable,
-      })
-      // A stream `done` event is emitted before the invoke result returns and
-      // clears activeRequest. The final result still belongs to this request
-      // unless cancellation, close/reopen or a newer request advanced its token.
-      if (!isRequestLatest(requestToken)) return
-      if (!result.success) {
-        const errText = `${t.lensError}: ${result.error}`
-        applyFinal({ error: errText })
-      } else if (result.response) {
-        // 非流式:把完整答案塞进占位 assistant;流式情况已在 onLensStream 累积,避免覆盖
-        applyFinal({ response: result.response })
-      }
-      if (result.success && result.webSearchResults?.length) {
-        applyFinal({ results: result.webSearchResults })
-      }
-      finishRequest(requestToken)
-      finishAnswering()
-    } catch (err) {
-      if (!isRequestLatest(requestToken)) return
-      const msg = err instanceof Error ? err.message : String(err)
-      applyFinal({ error: `${t.lensError}: ${msg}` })
-      finishRequest(requestToken)
-      finishAnswering()
-    } finally {
-      releaseSendPreparation(requestToken)
-    }
   }
 
   const handleSend = async () => {
@@ -1504,10 +1423,8 @@ export default function Lens() {
   }
 
   const handleStop = async () => {
-    const cancellation = cancelActiveRequest()
     // 用户主动取消但已经流出部分内容，也持久化 —— 关掉再开历史能接着问
-    finishAnswering()
-    try { await cancellation } catch (err) { console.error(err) }
+    try { await cancelAnswer() } catch (err) { console.error(err) }
   }
 
   const handleCopy = async () => {
