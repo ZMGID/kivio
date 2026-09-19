@@ -11,7 +11,7 @@ vi.mock('../api/tauri', () => ({
   },
 }))
 
-vi.mock('../chat/ModelIcon', () => ({
+vi.mock('../components/ModelIcon', () => ({
   ModelIcon: () => null,
 }))
 

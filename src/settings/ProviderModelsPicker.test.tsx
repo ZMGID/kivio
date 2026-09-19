@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ProviderModelsPicker, type ProviderModelsPickerLabels } from './ProviderModelsPicker'
 import { makeProvider } from './tabs/testFixtures'
 
-vi.mock('../chat/ModelIcon', () => ({
+vi.mock('../components/ModelIcon', () => ({
   ModelIcon: () => null,
 }))
 
