@@ -1,6 +1,6 @@
 # Kivio 架构收口：语义一致性、状态所有权与验收
 
-状态：实施中（R1–R3 代码完成，R4 首批纵切完成但尚未验收，R5 待实施；平台验收未完成）。基线：`dc1eb6cf`。日期：2026-09-19。
+状态：实施中（R1–R3 代码完成，R4 分批纵切进行中但尚未验收，R5 待实施；平台验收未完成）。基线：`dc1eb6cf`。日期：2026-09-19。
 
 发布记录：[GitHub #52](https://github.com/ZMGID/kivio/issues/52)，标签：`ready-for-agent`。
 
@@ -191,3 +191,10 @@
 - 新 owner：Chat navigation/send reservation/run settlement 分别控制导航提交许可、发送占位与跨轮终态顺序；Settings editor controller 负责规范快照、编辑重基、自动保存、冲突和关闭 flush，各设置子生命周期有独立 owner；Lens session、conversation、selection、annotation、bar motion owner 提供原子打开/隐藏与请求隔离。
 - 调用方迁移与删除：Chat 不再用 `reloadConversationRef`/`pendingStreamDoneRef` 拼接顺序；Settings 删除旧 `settingsClose` 辅助路径，导航等待成功保存，失败保留草稿；Lens 打开/隐藏不再由页面逐一重置上述领域字段。设置导入在前置保存失败时拒绝整体替换，权限刷新拒绝迟到旧结果。
 - 失败用例与复验：重复发送、迟到旧 run 终态、保存失败关闭/导入、Lens done 先于回包和关闭重开等行为测试通过；Windows 前端完整 237 文件、1925 项测试与 ESLint 通过，TypeScript 定向检查通过。R4 尚未完成：Chat 的 send transaction 与流式展示更新、Lens 的部分 OS 动画/历史编排、Settings 的快捷键录制及 Provider catalog IO 仍在页面；不得将该纵切视为 R4 验收。
+
+### R4b–R4d 页面所有权续批（仍未关闭 R4）
+
+- Chat：会话准备与七类草稿持久化由可恢复 partial conversation 的 Interface 承担；乐观用户消息按会话与发送 token 所有；单流、多答列以及工具/状态/子代理/提问事件按 run 投影。执行 owner 进一步持有发送占位、in-flight、run 身份、终态结算与多答组执行身份，页面不再访问裸 in-flight Set。高频正文展示 store、完整 send 三态/取消/队列编排仍待收归，不能因这几批辅助 owner 宣称 D4 完成。
+- Settings：Provider 目录、备份、热键录制及 Provider 弹窗各有 owner；引导重启不再忽略失败的 flush 或用 `replace` 丢弃新增草稿；OCR 与更新下载防重复执行、过期结果和卸载后回写。导航/只读展示状态可留页面。
+- Lens：关闭意图、历史恢复与截图复制计时使旧 capture/请求/反馈失效；迟到标注保存和选区失败不关新开场；历史图像提交及最终回包补全由 history owner 持有。内容 owner 原子协调打开、隐藏、恢复历史，页面保留布局、画布与 OS 动画。接口级 open/hide/restore 测试与实际页面时序测试覆盖这些转换。
+- 复验：在上述已提交纵切后，前端全量 250 文件、1981 项测试通过；各纵切的 TypeScript、受影响 ESLint 与定向测试通过。R4 尚需 Chat 执行/发送及展示剩余所有权验收；R5 和 Windows/macOS 平台实机验收仍待进行。
