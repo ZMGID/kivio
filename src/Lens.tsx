@@ -548,7 +548,7 @@ export default function Lens() {
         const win = getCurrentWindow()
         const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()])
         const sf = scale || 1
-        if (motionSeq === motionSeqRef.current) {
+        if (isInitializationCurrent(initializationSeq) && motionSeq === motionSeqRef.current) {
           setWinOrigin({ x: pos.x / sf, y: pos.y / sf })
         }
       } catch (err) { console.error('Failed to read window origin', err) }
@@ -727,6 +727,35 @@ export default function Lens() {
     flushSync(() => setSurfaceDormant(false))
   }, [])
 
+  // A failed native hide may interrupt the cold select initialization before
+  // capture becomes ready. Resume only its geometry/window setup: re-entering
+  // select would erase the user's draft and could replay request side effects.
+  const resumeCaptureInitialization = useCallback(() => {
+    if (stageRef.current !== 'select') return
+    const opening = currentToken().open
+    const initialization = beginInitialization()
+    const isCurrent = () => isInitializationCurrent(initialization) && currentToken().open === opening
+    void (async () => {
+      await waitForFrames(2)
+      if (!isCurrent()) return
+      try {
+        const win = getCurrentWindow()
+        const [pos, scale] = await Promise.all([win.outerPosition(), win.scaleFactor()])
+        if (!isCurrent()) return
+        const sf = scale || 1
+        setWinOrigin({ x: pos.x / sf, y: pos.y / sf })
+      } catch (err) { console.error('Failed to read window origin', err) }
+      if (!isCurrent() || !markCaptureReady(initialization)) return
+      try {
+        const list = await api.lensListWindows()
+        if (isCurrent()) windowsDiscovered(list)
+      } catch (err) {
+        console.error('Failed to list windows', err)
+        if (isCurrent()) windowsDiscovered([])
+      }
+    })().catch((err) => console.error('[lens] failed to resume capture initialization', err))
+  }, [beginInitialization, currentToken, isInitializationCurrent, markCaptureReady, windowsDiscovered])
+
   const releaseFreezeCanvas = useCallback(() => {
     const canvas = freezeCanvasRef.current
     if (!canvas) return
@@ -762,6 +791,7 @@ export default function Lens() {
         prepareHiddenSurface: concealBeforeHide,
         commitHiddenSurface: resetAfterHide,
         rollbackHiddenSurface: revealAfterFailedHide,
+        resumeCaptureInitialization,
         waitForPaint: async () => {
           await waitForFrames(2)
           await waitForVisibleIdle()
@@ -771,7 +801,7 @@ export default function Lens() {
       if (feedback) return await closeAfterFeedback(feedback.token, feedback.delayMs, operations)
       return await closeOpening(operations)
     } catch (err) { console.error(err); return false }
-  }, [closeAfterFeedback, closeOpening, concealBeforeHide, resetAfterHide, revealAfterFailedHide])
+  }, [closeAfterFeedback, closeOpening, concealBeforeHide, resetAfterHide, resumeCaptureInitialization, revealAfterFailedHide])
 
   // 全局 Esc：流式时取消流 / 否则关闭
   useEffect(() => {

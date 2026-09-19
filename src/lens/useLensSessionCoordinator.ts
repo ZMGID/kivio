@@ -20,6 +20,8 @@ export type LensCloseOperations = {
   commitHiddenSurface?: () => void
   /** Reveal retained content when native hide fails for the same opening. */
   rollbackHiddenSurface?: () => void
+  /** Resume an unfinished capture setup with a fresh initialization token. */
+  resumeCaptureInitialization?: () => void
   waitForPaint: () => Promise<void>
   hide: () => Promise<unknown>
 }
@@ -245,6 +247,7 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     const opening = openSequence.current
     if (closing.current?.opening === opening) return closing.current.promise
     if (closedOpening.current === opening) return Promise.resolve(false)
+    const captureWasReady = captureReadyRef.current
     cancelFeedbackClose()
     // Closing owns the context from the intent, not from the eventual cancel reply.
     // A slow backend must not let an old capture/selection repopulate the surface.
@@ -271,6 +274,14 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
             if (operations.rollbackHiddenSurface) operations.rollbackHiddenSurface()
           }
           catch (rollbackError) { console.error('[lens] close rollback failed', rollbackError) }
+          if (openSequence.current === opening) {
+            captureReadyRef.current = captureWasReady
+            setCaptureReady(captureWasReady)
+            if (!captureWasReady) {
+              try { operations.resumeCaptureInitialization?.() }
+              catch (resumeError) { console.error('[lens] capture resume failed', resumeError) }
+            }
+          }
         }
         throw error
       }

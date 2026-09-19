@@ -6,7 +6,9 @@ import type { LensStreamPayload } from './api/tauri'
 const mocks = vi.hoisted(() => ({
   capture: vi.fn(), readImage: vi.fn(), close: vi.fn(), takeSelection: vi.fn(),
   dialog: vi.fn(), saveImage: vi.fn(), ask: vi.fn(), commitImage: vi.fn(),
-  streamListener: vi.fn(), handoff: vi.fn(), sendToChatEnabled: false,
+  streamListener: vi.fn(), handoff: vi.fn(), outerPosition: vi.fn(),
+  resetPayload: JSON.stringify({ frame: { x: 0, y: 0, width: 1280, height: 800 } }),
+  sendToChatEnabled: false,
 }))
 
 vi.mock('./chat/ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <div>{content}</div> }))
@@ -26,7 +28,7 @@ vi.mock('./api/settingsCache', () => ({
 vi.mock('./api/tauri', () => ({
   api: new Proxy({}, {
     get: (_, key) => {
-      if (key === 'lensTakeResetPayload') return async () => JSON.stringify({ frame: { x: 0, y: 0, width: 1280, height: 800 } })
+      if (key === 'lensTakeResetPayload') return async () => mocks.resetPayload
       if (key === 'lensListWindows') return async () => []
       if (key === 'lensCaptureRegion') return mocks.capture
       if (key === 'lensReadImage') return mocks.readImage
@@ -44,7 +46,7 @@ vi.mock('./api/tauri', () => ({
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
     onFocusChanged: async () => () => {},
-    outerPosition: async () => ({ x: 0, y: 0 }),
+    outerPosition: mocks.outerPosition,
     scaleFactor: async () => 1,
   }),
 }))
@@ -79,6 +81,8 @@ describe('Lens content lifecycle', () => {
     mocks.sendToChatEnabled = false
     mocks.commitImage.mockReset().mockResolvedValue(undefined)
     mocks.streamListener.mockReset().mockResolvedValue(() => {})
+    mocks.outerPosition.mockReset().mockResolvedValue({ x: 0, y: 0 })
+    mocks.resetPayload = JSON.stringify({ frame: { x: 0, y: 0, width: 1280, height: 800 } })
   })
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
@@ -99,6 +103,59 @@ describe('Lens content lifecycle', () => {
     await waitFor(() => expect(container.querySelector('img[alt="snap"]')).not.toBeNull())
     expect(container.firstElementChild?.getAttribute('aria-hidden')).not.toBe('true')
     expect(container.querySelector('input')).not.toBeNull()
+  })
+
+  it('recovers a cold selection after native hide fails without losing its draft or accepting stale geometry', async () => {
+    window.location.hash = '#lens?mode=chat'
+    mocks.resetPayload = '{}'
+    const stalePosition = deferred<{ x: number; y: number }>()
+    mocks.outerPosition
+      .mockReturnValueOnce(stalePosition.promise)
+      .mockResolvedValue({ x: 20, y: 30 })
+    mocks.close.mockRejectedValue(new Error('OS hide failed'))
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { container } = render(<Lens />)
+    await waitFor(() => expect(mocks.outerPosition).toHaveBeenCalledOnce())
+
+    const input = container.querySelector('input')!
+    fireEvent.change(input, { target: { value: 'keep this draft' } })
+    await act(async () => { fireEvent.keyDown(window, { key: 'Escape' }) })
+    await waitFor(() => expect(mocks.close).toHaveBeenCalledOnce())
+    expect(container.querySelector('input')?.value).toBe('keep this draft')
+    await waitFor(() => expect(mocks.outerPosition).toHaveBeenCalledTimes(2))
+
+    await act(async () => { stalePosition.resolve({ x: 900, y: 900 }) })
+    await capture(container)
+    await waitFor(() => expect(mocks.capture).toHaveBeenCalledOnce())
+    expect(mocks.capture.mock.calls[0][0]).toMatchObject({ absoluteX: 120, absoluteY: 130 })
+    expect(container.querySelector('input')?.value).toBe('keep this draft')
+    expect(mocks.ask).not.toHaveBeenCalled()
+    expect(mocks.handoff).not.toHaveBeenCalled()
+  })
+
+  it('does not let a failed-close capture resume overwrite a newer opening', async () => {
+    mocks.resetPayload = '{}'
+    const firstPosition = deferred<{ x: number; y: number }>()
+    const resumedPosition = deferred<{ x: number; y: number }>()
+    mocks.outerPosition
+      .mockReturnValueOnce(firstPosition.promise)
+      .mockReturnValueOnce(resumedPosition.promise)
+    mocks.close.mockRejectedValue(new Error('OS hide failed'))
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { container } = render(<Lens />)
+    await waitFor(() => expect(mocks.outerPosition).toHaveBeenCalledOnce())
+    await act(async () => { fireEvent.keyDown(window, { key: 'Escape' }) })
+    await waitFor(() => expect(mocks.outerPosition).toHaveBeenCalledTimes(2))
+
+    mocks.resetPayload = JSON.stringify({ frame: { x: 50, y: 60, width: 1280, height: 800 } })
+    await act(async () => { window.dispatchEvent(new CustomEvent('lens:reset')) })
+    await act(async () => {
+      firstPosition.resolve({ x: 900, y: 900 })
+      resumedPosition.resolve({ x: 800, y: 800 })
+    })
+    await capture(container)
+    await waitFor(() => expect(mocks.capture).toHaveBeenCalledOnce())
+    expect(mocks.capture.mock.calls[0][0]).toMatchObject({ absoluteX: 150, absoluteY: 160 })
   })
 
   it.each(['dialog', 'write'])('does not let an old annotation save %s affect a reopened Lens', async pendingStage => {

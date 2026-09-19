@@ -166,6 +166,45 @@ describe('useLensSessionCoordinator', () => {
     expect(content).toBe('captured image and draft')
   })
 
+  it('can capture again when native hide fails after a ready selection', async () => {
+    const { result } = renderHook(() => useLensSessionCoordinator())
+    act(() => result.current.beginOpening())
+    const initialization = result.current.beginInitialization()
+    act(() => result.current.markCaptureReady(initialization))
+    expect(result.current.canCapture()).toBe(true)
+
+    await expect(result.current.closeOpening({
+      prepareHiddenSurface: () => undefined,
+      rollbackHiddenSurface: () => undefined,
+      waitForPaint: async () => undefined,
+      hide: async () => { throw new Error('OS hide failed') },
+    })).rejects.toThrow('OS hide failed')
+
+    expect(result.current.canCapture()).toBe(true)
+    expect(result.current.isInitializationCurrent(initialization)).toBe(false)
+    expect(result.current.markCaptureReady(initialization)).toBe(false)
+  })
+
+  it('does not restore old capture readiness over an opening started during rollback', async () => {
+    const { result } = renderHook(() => useLensSessionCoordinator())
+    act(() => result.current.beginOpening())
+    const firstInitialization = result.current.beginInitialization()
+    act(() => result.current.markCaptureReady(firstInitialization))
+
+    await expect(result.current.closeOpening({
+      prepareHiddenSurface: () => undefined,
+      rollbackHiddenSurface: () => {
+        result.current.beginOpening()
+        result.current.beginInitialization()
+      },
+      waitForPaint: async () => undefined,
+      hide: async () => { throw new Error('OS hide failed') },
+    })).rejects.toThrow('OS hide failed')
+
+    expect(result.current.canCapture()).toBe(false)
+    expect(result.current.markCaptureReady(firstInitialization)).toBe(false)
+  })
+
   it('never rolls an old close failure back over a newer opening', async () => {
     let rejectHide!: (error: Error) => void
     const hidePending = new Promise<void>((_, reject) => { rejectHide = reject })
