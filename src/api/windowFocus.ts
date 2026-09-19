@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react'
-import { api } from '../api/tauri'
+import { api } from './tauri'
 
 export function useWindowInteractionFocus() {
   const lastFocusRequestAtRef = useRef(0)

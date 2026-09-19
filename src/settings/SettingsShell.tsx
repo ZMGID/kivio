@@ -64,8 +64,8 @@ import { ProviderModelTestModal } from './ProviderModelTestModal'
 import { Button } from '../components/Button'
 import { resolveModelInfo } from '../data/modelMatching'
 import { loadLastModel, resolvePreferredChatModel } from '../chat/public/modelPreference'
-import { useWindowInteractionFocus } from '../utils/windowFocus'
-import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
+import { useWindowInteractionFocus } from '../api/windowFocus'
+import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chatTools'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from './uiFont'
 import {
   SettingRow,

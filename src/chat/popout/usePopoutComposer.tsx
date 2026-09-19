@@ -9,7 +9,7 @@ import {
 import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCached } from '../../api/settingsCache'
 import { isPluginManagedServer, preservePluginManagedServers } from '../../settings/public/connectors'
 import { i18n, type Lang } from '../../settings/public/i18n'
-import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../utils/chatTools'
+import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../api/chatTools'
 import { chatApi, type AgentRuntimeConfig } from '../api'
 import { insertTextIntoComposer } from '../composerInsert'
 import { mergeCompactionContextState } from '../compactionBoundary'

@@ -5,7 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { api, isTauriRuntime } from './api/tauri'
 import { getSettingsCached } from './api/settingsCache'
 import { i18n, type Lang } from './settings/i18n'
-import { useWindowInteractionFocus } from './utils/windowFocus'
+import { useWindowInteractionFocus } from './api/windowFocus'
 import { ChatWindowHost } from './chat/ChatWindowHost'
 import {
   getRememberedChatRoute,

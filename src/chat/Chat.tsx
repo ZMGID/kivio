@@ -129,7 +129,7 @@ import { insertTextIntoComposer } from './composerInsert'
 import { onDockSubAgentRequest, onDockDiffPreviewRequest, onDockMarkdownPreviewRequest, onDockPreviewRequest, requestDockMarkdownPreview } from './dock/dockPreview'
 import { IconButton } from '../components/Button'
 import { isTauriRuntime } from './utils'
-import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
+import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chatTools'
 import { onChatImageViewerOpen, type ChatImageViewerItem } from './imageViewer'
 import { isPlaceholderTitle, optimisticConversationTitle } from './conversationTitle'
 import {

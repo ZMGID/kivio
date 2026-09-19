@@ -1,4 +1,4 @@
-import type { ChatNativeToolsConfig } from '../api/tauri'
+import type { ChatNativeToolsConfig } from './tauri'
 
 const NATIVE_BUILTIN_TOOL_KEYS = [
   'webSearch',
