@@ -14,7 +14,12 @@ export type LensSessionCoordinatorOptions = {
 }
 
 export type LensCloseOperations = {
+  /** Conceal the current DOM before native hide, without discarding content yet. */
   prepareHiddenSurface: () => void
+  /** Discard content only after native hide succeeds for the same opening. */
+  commitHiddenSurface?: () => void
+  /** Reveal retained content when native hide fails for the same opening. */
+  rollbackHiddenSurface?: () => void
   waitForPaint: () => Promise<void>
   hide: () => Promise<unknown>
 }
@@ -253,10 +258,24 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
         console.error('[lens] cancel request failed', error)
       }
       if (openSequence.current !== opening) return false
-      operations.prepareHiddenSurface()
-      await operations.waitForPaint()
+      let prepared = false
+      try {
+        prepared = true
+        operations.prepareHiddenSurface()
+        await operations.waitForPaint()
+        if (openSequence.current !== opening) return false
+        await operations.hide()
+      } catch (error) {
+        if (prepared && openSequence.current === opening) {
+          try {
+            if (operations.rollbackHiddenSurface) operations.rollbackHiddenSurface()
+          }
+          catch (rollbackError) { console.error('[lens] close rollback failed', rollbackError) }
+        }
+        throw error
+      }
       if (openSequence.current !== opening) return false
-      await operations.hide()
+      operations.commitHiddenSurface?.()
       closedOpening.current = opening
       return true
     })()

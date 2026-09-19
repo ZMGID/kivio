@@ -143,6 +143,71 @@ describe('useLensSessionCoordinator', () => {
     expect(hide).not.toHaveBeenCalled()
   })
 
+  it('restores the same opening when native hide fails without discarding its content', async () => {
+    const { result } = renderHook(() => useLensSessionCoordinator())
+    act(() => result.current.beginOpening())
+    let visible = true
+    let content = 'captured image and draft'
+    const steps: string[] = []
+    const hide = vi.fn().mockRejectedValue(new Error('OS hide failed'))
+    const rollback = () => { steps.push('rollback'); visible = true }
+    let closing!: Promise<boolean>
+    act(() => { closing = result.current.closeOpening({
+      prepareHiddenSurface: () => { steps.push('prepare'); visible = false },
+      commitHiddenSurface: () => { content = '' },
+      rollbackHiddenSurface: rollback,
+      waitForPaint: async () => undefined,
+      hide,
+    }) })
+    await expect(closing).rejects.toThrow('OS hide failed')
+    expect(result.current.currentOpening()).toBe(1)
+    expect(steps).toEqual(['prepare', 'rollback'])
+    expect(visible).toBe(true)
+    expect(content).toBe('captured image and draft')
+  })
+
+  it('never rolls an old close failure back over a newer opening', async () => {
+    let rejectHide!: (error: Error) => void
+    const hidePending = new Promise<void>((_, reject) => { rejectHide = reject })
+    const { result } = renderHook(() => useLensSessionCoordinator())
+    act(() => result.current.beginOpening())
+    const steps: string[] = []
+    let closing!: Promise<boolean>
+    act(() => { closing = result.current.closeOpening({
+      prepareHiddenSurface: () => { steps.push('conceal-old') },
+      commitHiddenSurface: () => { steps.push('commit-old') },
+      rollbackHiddenSurface: () => { steps.push('rollback-old') },
+      waitForPaint: async () => undefined,
+      hide: () => hidePending,
+    }) })
+    await act(async () => { await Promise.resolve() })
+    act(() => result.current.beginOpening())
+    rejectHide(new Error('old hide failed'))
+    await expect(closing).rejects.toThrow('old hide failed')
+    expect(steps).toEqual(['conceal-old'])
+  })
+
+  it('discards content only after native hide succeeds for the same opening', async () => {
+    let resolveHide!: () => void
+    const hidePending = new Promise<void>(resolve => { resolveHide = resolve })
+    const { result } = renderHook(() => useLensSessionCoordinator())
+    act(() => result.current.beginOpening())
+    const steps: string[] = []
+    let closing!: Promise<boolean>
+    act(() => { closing = result.current.closeOpening({
+      prepareHiddenSurface: () => { steps.push('conceal') },
+      commitHiddenSurface: () => { steps.push('discard') },
+      rollbackHiddenSurface: () => { steps.push('restore') },
+      waitForPaint: async () => { steps.push('paint') },
+      hide: async () => { steps.push('native-hide'); await hidePending },
+    }) })
+    await act(async () => { await Promise.resolve() })
+    expect(steps).toEqual(['conceal', 'paint', 'native-hide'])
+    resolveHide()
+    expect(await closing).toBe(true)
+    expect(steps).toEqual(['conceal', 'paint', 'native-hide', 'discard'])
+  })
+
   it('invalidates capture and selection immediately while close awaits backend cancellation', async () => {
     let releaseCancel!: () => void
     const cancelRequest = vi.fn(() => new Promise<void>(resolve => { releaseCancel = resolve }))

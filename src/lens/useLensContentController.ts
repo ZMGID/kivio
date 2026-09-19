@@ -222,6 +222,57 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
     }
   }, [adoptAnnotatedImage, beginAnswer, finishAnswer, imagePreview, prepareSend, releaseSendPreparation])
 
+  const handoff = useCallback(async (intent: { question: string; close: () => Promise<boolean | void> }) => {
+    const owner = owners.current
+    if (current.current.preparing || owner.conversation.view.streaming) return
+    const image = current.current.imageId
+    const preview = imagePreview
+    const arrows = owner.annotation.view.arrows
+    const frame = owner.selection.view.capturedFrame
+    owner.conversation.setBusy(true)
+    let token = prepareSend('handoff')
+    try {
+      let effectiveImageId = image
+      if (arrows.length > 0 && preview && frame) {
+        try {
+          const base64 = await composeAnnotatedImage(preview, arrows, frame.width, frame.height)
+          const registered = await api.lensRegisterAnnotatedImage(base64)
+          if (!owner.session.isRequestCurrent(token)) return
+          if (registered.success && registered.imageId) {
+            effectiveImageId = registered.imageId
+            adoptAnnotatedImage(registered.imageId, `data:image/png;base64,${base64}`)
+            owner.session.finishRequest(token)
+            token = prepareSend('handoff')
+            owner.annotation.clearSubmitted()
+          } else {
+            console.warn('[lens-arrow] register annotated image failed:', registered.error)
+          }
+        } catch (error) {
+          console.warn('[lens-arrow] compose failed, fallback to original:', error)
+        }
+      }
+      if (!owner.session.isRequestCurrent(token)) return
+      const reply = await api.lensSendToChat(effectiveImageId || '', intent.question)
+      if (!owner.session.isRequestCurrent(token)) return
+      if (!reply.success) {
+        console.error('[lens-chat] send failed:', reply.error)
+        owner.session.finishRequest(token)
+        owner.conversation.handoffFailed()
+        return
+      }
+      owner.session.finishRequest(token)
+      const closed = await intent.close()
+      if (closed === false && owner.session.isRequestLatest(token)) owner.conversation.handoffFailed()
+    } catch (error) {
+      if (!owner.session.isRequestLatest(token)) return
+      console.error('[lens-chat] handoff failed:', error)
+      owner.session.finishRequest(token)
+      owner.conversation.handoffFailed()
+    } finally {
+      releaseSendPreparation(token)
+    }
+  }, [adoptAnnotatedImage, imagePreview, prepareSend, releaseSendPreparation])
+
   const { stage, streaming, messages, appLabel } = conversation.view
   const { stageChanged } = annotation
   useEffect(() => stageChanged(stage), [stage, stageChanged])
@@ -240,7 +291,7 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
     beginOpening, open, hide, restoreHistory,
     captureImage, adoptAnnotatedImage, currentImageId, beginTextTranslation,
     prepareSend, releaseSendPreparation, isPreparingSend,
-    ask, receiveChatStream, receiveChatWebSearch, cancelAnswer,
+    ask, handoff, receiveChatStream, receiveChatWebSearch, cancelAnswer,
     conversation: conversation as Omit<typeof conversation,
       'open' | 'hide' | 'restoreHistory' | 'beginAnswer' | 'applyStream' | 'applyWebSearch' | 'applyFinal'>,
     selection: selection as Omit<typeof selection, 'open' | 'hide'>,

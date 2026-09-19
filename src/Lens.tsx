@@ -27,7 +27,7 @@ const CARD_SHADOW_MARGIN = 52
 import { estimateTokens, formatTokens } from './utils/tokens'
 import { ThinkingBlock } from './lens/ThinkingBlock'
 import { WebSearchBlock } from './lens/WebSearchBlock'
-import { useWindowInteractionFocus } from './utils/windowFocus'
+import { useWindowInteractionFocus } from './api/windowFocus'
 import { useFreezeFramePreview } from './lens/useFreezeFramePreview'
 import { readDevicePixelRatio, useDevicePixelRatio } from './lens/useDevicePixelRatio'
 import type { LensSessionToken } from './lens/useLensSessionCoordinator'
@@ -109,7 +109,7 @@ const LENS_HIDE_IDLE_TIMEOUT_MS = 120
 // 加载的 freezeFrameImageId/冻结帧清掉（且第一次的异步加载已被 cleanup 的
 // cancelPendingMotion 作废）→ 冻结帧永远出不来。缓存最近一次 take 到的载荷，
 // mount 时 take 到 null 就用组件 ref 缓存重放。StrictMode effect 重放保留 ref，
-// 真正卸载则释放；resetBeforeHide 时也清空，避免跨会话串台。
+// 真正卸载则释放；resetAfterHide 时也清空，避免跨会话串台。
 
 const waitForVisibleIdle = (timeout = LENS_HIDE_IDLE_TIMEOUT_MS) => new Promise<void>((resolve) => {
   const idleWindow = window as Window & {
@@ -137,13 +137,13 @@ export default function Lens() {
     beginOpening, open: openContent, hide: hideContent, restoreHistory: restoreContentHistory,
     captureImage, adoptAnnotatedImage, currentImageId, beginTextTranslation,
     prepareSend, releaseSendPreparation, isPreparingSend,
-    ask, receiveChatStream, receiveChatWebSearch, cancelAnswer,
+    ask, handoff, receiveChatStream, receiveChatWebSearch, cancelAnswer,
   } = content
   const { stage, appLabel, input, selectionText, messages, streaming, copied } = conversation.view
   const {
     showStage, capture: showCapturedConversation, editInput, selectText,
     setBusy,
-    handoffFailed, showCopied,
+    showCopied,
   } = conversation
   const { windows, hovered, dragStart, dragCurrent, dragging, pendingCapture, capturedFrame, showCaptureHint } = selection.view
   const {
@@ -242,7 +242,7 @@ export default function Lens() {
     toggleDraw, exitDraw,
     selectTool: selectAnnotationTool, begin: beginAnnotation, move: moveAnnotation,
     finish: finishAnnotation, cancelDraft: cancelAnnotationDraft, undo: undoAnnotation,
-    clearSubmitted: clearSubmittedAnnotations, setCopied: setAnnotationCopied,
+    setCopied: setAnnotationCopied,
     setSaving: setAnnotationSaving,
   } = annotation
   // 源码/渲染切换：false=渲染模式(ChatMarkdown)，true=源码模式(原始文本)
@@ -309,7 +309,7 @@ export default function Lens() {
   const prevStreamingRef = useRef(false)
   // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
   // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
-  // selectionText 异步 take 的重入 token：每次 enterSelect / resetBeforeHide / restoreHistory 都 +1，
+  // selectionText 异步 take 的重入 token：每次 enterSelect / resetAfterHide / restoreHistory 都 +1，
   // 老请求看到 myReq !== current 直接丢弃，避免 take 完成时已经进入新会话被错误注入。
   const translateCardDragRef = useRef<TranslateCardDrag | null>(null)
   // 翻译卡右下角缩放拖拽。宽 360–720（与设置页一致）持久记忆；高只在本会话内生效。
@@ -595,7 +595,7 @@ export default function Lens() {
       let payload = await takeOnce()
       if (!payload && fromMount) {
         for (let i = 0; i < 12 && !payload && !disposed && isInitializationCurrent(initializationSeq); i++) {
-          // StrictMode 第二次挂载：本会话已缓存（resetBeforeHide 会清空缓存），直接重放
+          // StrictMode 第二次挂载：本会话已缓存（resetAfterHide 会清空缓存），直接重放
           if (lastResetPayloadCacheRef.current) {
             payload = lastResetPayloadCacheRef.current
             break
@@ -719,9 +719,15 @@ export default function Lens() {
     focusLensSurface([0, 60, 180])
   }, [mode, stage, focusLensSurface])
 
-  // 关闭前同步重置 state，让 webview surface 在 hide 之前已经是空 select 态。
-  // 否则下次 show 时 macOS 会先显示上次的 ready 态 surface 一帧，再被 lens:reset 覆盖 → 闪一下上次内容。
-  // barNoTransition：禁用 transition，避免 380ms 动画被 hide 暂停后下次 show 续播。
+  // 先遮蔽旧 DOM，再请求原生 hide；失败时能原样显示内容。
+  // 只有 hide 成功才真正清理状态，避免 macOS 下次 show 时闪出旧 ready surface。
+  const concealBeforeHide = useCallback(() => {
+    flushSync(() => setSurfaceDormant(true))
+  }, [])
+  const revealAfterFailedHide = useCallback(() => {
+    flushSync(() => setSurfaceDormant(false))
+  }, [])
+
   const releaseFreezeCanvas = useCallback(() => {
     const canvas = freezeCanvasRef.current
     if (!canvas) return
@@ -731,7 +737,7 @@ export default function Lens() {
     canvas.height = 0
   }, [])
 
-  const resetBeforeHide = useCallback(() => {
+  const resetAfterHide = useCallback(() => {
     cancelPendingMotion()
     releaseFreezeCanvas()
     // 会话结束：清掉 take-once 载荷缓存，避免下次 StrictMode 重放到旧会话的冻结帧
@@ -754,17 +760,19 @@ export default function Lens() {
   const closeAfterReset = useCallback(async (feedback?: { token: LensSessionToken; delayMs: number }) => {
     try {
       const operations = {
-        prepareHiddenSurface: resetBeforeHide,
+        prepareHiddenSurface: concealBeforeHide,
+        commitHiddenSurface: resetAfterHide,
+        rollbackHiddenSurface: revealAfterFailedHide,
         waitForPaint: async () => {
           await waitForFrames(2)
           await waitForVisibleIdle()
         },
         hide: api.lensClose,
       }
-      if (feedback) await closeAfterFeedback(feedback.token, feedback.delayMs, operations)
-      else await closeOpening(operations)
-    } catch (err) { console.error(err) }
-  }, [closeAfterFeedback, closeOpening, resetBeforeHide])
+      if (feedback) return await closeAfterFeedback(feedback.token, feedback.delayMs, operations)
+      return await closeOpening(operations)
+    } catch (err) { console.error(err); return false }
+  }, [closeAfterFeedback, closeOpening, concealBeforeHide, resetAfterHide, revealAfterFailedHide])
 
   // 全局 Esc：流式时取消流 / 否则关闭
   useEffect(() => {
@@ -1278,7 +1286,7 @@ export default function Lens() {
       captureImage(newId)
       consumeFreezeFrame()
       // 不清 freezeFramePreview：截图后仍把冻结帧作为全屏背景保留，直到按 Esc 关闭 Lens
-      // （enterSelect / resetBeforeHide 会在重开 / 隐藏时清理）。
+      // （enterSelect / resetAfterHide 会在重开 / 隐藏时清理）。
 
       captureFrame({
         x: params.x,
@@ -1358,53 +1366,8 @@ export default function Lens() {
     const transferToChat = mode === 'chat' && sendToChatRef.current !== false
     if (transferToChat) {
       // 发送到 AI 客户端：不要切到 'answering'（那会让窗口高度加上 answer 区 → 浮窗展开）。
-      // 用 streaming 显示忙碌、content 的准备状态守卫 Esc，浮窗保持紧凑直接交接。
-      setBusy(true)
-      let requestToken = prepareSend('handoff')
-      try {
-        let effectiveImageId = currentImageId()
-        if (arrows.length > 0 && imagePreview && capturedFrame) {
-          try {
-            const base64 = await composeAnnotatedImage(
-              imagePreview,
-              arrows,
-              capturedFrame.width,
-              capturedFrame.height,
-            )
-            const result = await api.lensRegisterAnnotatedImage(base64)
-            if (!isRequestCurrent(requestToken)) return
-            if (result.success && result.imageId) {
-              effectiveImageId = result.imageId
-              adoptAnnotatedImage(result.imageId, `data:image/png;base64,${base64}`)
-              finishRequest(requestToken)
-              requestToken = prepareSend('handoff')
-              clearSubmittedAnnotations()
-            } else {
-              console.warn('[lens-arrow] register annotated image failed:', result.error)
-            }
-          } catch (err) {
-            console.warn('[lens-arrow] compose failed, fallback to original:', err)
-          }
-        }
-        if (!isRequestCurrent(requestToken)) return
-        const result = await api.lensSendToChat(effectiveImageId || '', userContent)
-        if (!isRequestCurrent(requestToken)) return
-        if (!result.success) {
-          console.error('[lens-chat] send failed:', result.error)
-          finishRequest(requestToken)
-          handoffFailed()
-          return
-        }
-        finishRequest(requestToken)
-        await closeAfterReset()
-      } catch (err) {
-        if (!isRequestCurrent(requestToken)) return
-        console.error('[lens-chat] handoff failed:', err)
-        finishRequest(requestToken)
-        handoffFailed()
-      } finally {
-        releaseSendPreparation(requestToken)
-      }
+      // 内容 owner 保持浮窗紧凑、处理标注与发送，并在成功后触发窗口关闭。
+      await handoff({ question: userContent, close: closeAfterReset })
       return
     }
 
