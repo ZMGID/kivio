@@ -78,7 +78,7 @@ describe('chat stream lifecycle owner', () => {
     expect(preview.summary('a')).toBeNull()
     const commit = vi.fn()
     expect(await owner.settleExternalTerminal(result.permit, async () => 'loaded', commit)).toBe(true)
-    expect(commit).toHaveBeenCalledWith('loaded')
+    expect(commit).toHaveBeenCalledWith({ kind: 'loaded', value: 'loaded' })
     expect(execution.snapshot('a').inFlight).toBe(false)
     preview.dispose()
   })
@@ -95,6 +95,46 @@ describe('chat stream lifecycle owner', () => {
     })
     expect(committed).toBe(true)
     expect(execution.snapshot('a').inFlight).toBe(true)
+    preview.dispose()
+  })
+
+  it('settles a failed authoritative read with an explicit retryable error outcome', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    owner.receive(packet('old', 'run_started'))
+    const result = owner.receive(packet('old', 'run_completed'))
+    if (result.kind !== 'ready') throw new Error('Expected terminal to settle')
+    const commit = vi.fn()
+    const settled = await owner.settleExternalTerminal(
+      result.permit,
+      async (): Promise<string> => { throw new Error('read failed') },
+      commit,
+    )
+    expect(settled).toBe(true)
+    expect(commit).toHaveBeenCalledWith({ kind: 'failed', error: new Error('read failed') })
+    expect(execution.snapshot('a').inFlight).toBe(false)
+    expect(execution.begin({ conversationId: 'a', kind: 'send', startedAt: 2 })).not.toBeNull()
+    preview.dispose()
+  })
+
+  it('releases a recovered group after a failed read once all arms are terminal', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    owner.receive(packet('one', 'run_started', { groupId: 'group-a', groupSize: 2, armIndex: 0 }))
+    owner.receive(packet('two', 'run_started', { groupId: 'group-a', groupSize: 2, armIndex: 1 }))
+    owner.receive(packet('one', 'run_failed'))
+    const result = owner.receive(packet('two', 'run_completed'))
+    if (result.kind !== 'ready') throw new Error('Expected recovered group to settle')
+    const commit = vi.fn()
+    expect(await owner.settleExternalTerminal(
+      result.permit,
+      async (): Promise<string> => { throw new Error('read failed') },
+      commit,
+    )).toBe(true)
+    expect(commit).toHaveBeenCalledWith({ kind: 'failed', error: new Error('read failed') })
+    expect(execution.snapshot('a').inFlight).toBe(false)
     preview.dispose()
   })
 })

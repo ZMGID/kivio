@@ -8,6 +8,7 @@ import { completeSettingsExit, type PendingSettingsAction } from './settingsExit
 import { useChatRouting } from './hooks/useChatRouting'
 import { createChatNavigationController } from './chatNavigationController'
 import { createChatExecutionOwner } from './chatExecutionOwner'
+import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
 import { createRunInteractionInbox } from './runInteractionInbox'
 import { createChatSendController, type SendPresentationEvent } from './chatSendController'
 import { createChatRunCommands, type RunCommandPresentationEvent } from './chatRunCommands'
@@ -134,8 +135,6 @@ import {
   useStreamCoarse,
 } from './streamingStore'
 import {
-  endGroup,
-  getActiveGroup,
   resetGroups,
 } from './groupStreamingStore'
 import { latestCompactionBoundaryId, mergeCompactionContextState } from './compactionBoundary'
@@ -153,7 +152,6 @@ import {
   isStreamTerminal,
   mergeSubagentProgress,
   messageToolCalls,
-  streamTerminalReason,
   userPromptEventToRecord,
 } from './streamApply'
 import {
@@ -603,6 +601,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   /** 会话执行身份与乐观用户消息跨导航存活；高频正文仍在专用展示 store。 */
   const executionOwner = useRef(createChatExecutionOwner()).current
   const [previewOwner] = useState(createStreamPreviewOwner)
+  const [streamLifecycleOwner] = useState(() => createChatStreamLifecycleOwner(executionOwner, previewOwner))
   const [interactionInbox] = useState(() => createRunInteractionInbox({
     confirmTool: api.chatConfirmToolCall,
     respondConsent: api.chatRespondSessionConsent,
@@ -774,7 +773,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       cancelled = true
     }
   }, [currentConversation?.id])
-  const restoredRunIdsRef = useRef<Set<string>>(new Set())
   const streamErrorsRef = useRef<Record<string, string>>({})
   const settingsRef = useRef<SettingsShellHandle>(null)
   const pendingAfterSettingsCloseRef = useRef<PendingSettingsAction | null>(null)
@@ -1781,6 +1779,54 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     [clearConversationInFlight, freezeStreamSnapshot, interactionInbox, markConversationCompacting, refreshSidebar, reloadConversation, setStreamErrorForConversation, settleStreamingPreview, syncGeneratingConversationIds],
   )
 
+  const finishExternalStreamingRun = useCallback((ready: Extract<StreamLifecycleResult, { kind: 'ready' }>) => {
+    const { conversationId, reason } = ready.terminal
+    void streamLifecycleOwner.settleExternalTerminal(
+      ready.permit,
+      // Reading is side-effect-free. A stale terminal must not call the
+      // navigation helper, which applies its result before the run permit is
+      // checked again.
+      () => currentConversationIdRef.current === conversationId
+        && !popoutConversationIdsRef.current.has(conversationId)
+        ? chatApi.getConversation(conversationId)
+        : Promise.resolve(null),
+      (outcome) => {
+        const conversation = outcome.kind === 'loaded' ? outcome.value : null
+        const loadError = outcome.kind === 'failed' ? outcome.error : null
+        if (conversation && currentConversationIdRef.current === conversationId
+          && !popoutConversationIdsRef.current.has(conversationId)) {
+          applyConversation(conversation)
+        }
+        markConversationCompacting(conversationId, false)
+        const preservePartial = reason === 'error' || Boolean(loadError)
+        if (preservePartial) {
+          if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
+        } else {
+          previewOwner.complete(conversationId, {
+            kind: 'persisted', committedMessages: conversation?.messages ?? [],
+          })
+        }
+        if (loadError) {
+          setStreamErrorForConversation(
+            conversationId,
+            `回复已结束，但会话回载失败；重新打开此会话重试：${loadError.message}`,
+          )
+        } else if (reason === 'error') {
+          setStreamErrorForConversation(
+            conversationId,
+            streamErrorsRef.current[conversationId] || '回复生成失败，请稍后重试。',
+          )
+        }
+        refreshSidebar()
+        syncGeneratingConversationIds()
+      },
+    )
+  }, [
+    applyConversation, clearStreamSnapshot, freezeStreamSnapshot, markConversationCompacting,
+    previewOwner, refreshSidebar, setStreamErrorForConversation, streamLifecycleOwner,
+    syncGeneratingConversationIds,
+  ])
+
   // React 的权威消息提交后才清 live 预览；定时兜底和旧轮失效归 previewOwner。
   useEffect(() => {
     if (currentConversation) previewOwner.reconcile(currentConversation.id, currentConversation.messages)
@@ -1840,84 +1886,23 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         }
         return
       }
-      const wasInFlight = executionOwner.snapshot(payload.conversationId).inFlight
-      // A start packet must establish its run/group identity before the
-      // cancellation fence decides whether it belongs to the cancelled run.
-      if (payload.type !== 'run_started' && !executionOwner.allowsStreamPayload(payload)) return
-      if (!executionOwner.observe({
-        kind: 'runEvent', conversationId: payload.conversationId,
-        runId: payload.runId, started: payload.type === 'run_started',
-        groupId: payload.type === 'run_started' ? payload.recovery?.groupId : undefined,
-      })) return
-      if (payload.type === 'run_started' && !executionOwner.allowsStreamPayload(payload)) return
-      const terminal = isStreamTerminal(payload)
-      const terminalPayload = {
-        conversationId: payload.conversationId,
-        runId: payload.runId,
-        reason: streamTerminalReason(payload),
-      }
-      if (terminal) {
+      const result = streamLifecycleOwner.receive(payload)
+      if (result.kind === 'ignored') return
+      if (isStreamTerminal(payload)) {
         interactionInbox.observe({
           kind: 'runTerminal', conversationId: payload.conversationId, runId: payload.runId,
         })
       }
-      if (payload.type === 'run_started') {
+      if (result.kind === 'started') {
         interactionInbox.observe({
           kind: 'runStarted', conversationId: payload.conversationId, runId: payload.runId,
         })
-        if (payload.restoredFromSnapshot) restoredRunIdsRef.current.add(payload.runId)
-        // 不是本窗口发起的 run（后端自起的唤醒轮 / 别的窗口的 run）：此刻会话必然不在
-        // in-flight（本窗口的 send/regenerate 在 invoke 前就标了）。这类 run 没有
-        // sendMessage 的统一收尾可等，必须走恢复路径在终止帧上立即 finishStreamingRun
-        // ——否则下面的 markConversationInFlight 会让终止分支把收尾推迟给一个永远
-        // 不会返回的 invoke，转圈和停止键永远停不下来（实测：唤醒轮消息落地后卡住）。
-        if (!wasInFlight) {
-          restoredRunIdsRef.current.add(payload.runId)
-        }
-        markConversationInFlight(payload.conversationId)
-        previewOwner.receive(payload)
         syncGeneratingConversationIds()
         return
       }
-      if (!previewOwner.summary(payload.conversationId) && !getActiveGroup(payload.conversationId)) {
-        if (!executionOwner.snapshot(payload.conversationId).inFlight) {
-          if (terminal) {
-            void finishStreamingRun(terminalPayload)
-          }
-          return
-        }
-      }
-      const projection = previewOwner.receive(payload)
-      if (!projection.accepted) return
-      if (projection.target === 'group') {
-        if (terminal) {
-          if (restoredRunIdsRef.current.delete(payload.runId)) {
-            const group = getActiveGroup(payload.conversationId)
-            if (group?.columns.every((item) => !item.streaming)) {
-              endGroup(payload.conversationId)
-              void finishStreamingRun(terminalPayload)
-            }
-          }
-        }
-        // 组的整体「done / 持久化」交给 sendMessage 返回后的统一收尾；这里不触发 finishStreamingRun。
-        return
-      }
       syncGeneratingConversationIds()
-      if (terminal) {
-        if (restoredRunIdsRef.current.delete(payload.runId)) {
-          void finishStreamingRun(terminalPayload)
-          return
-        }
-        // invoke 未完成前不要 reload；交给 executionOwner 延迟终态，避免与 send 写盘竞态。
-        if (executionOwner.snapshot(payload.conversationId).inFlight) {
-          if (!executionOwner.observe({ kind: 'deferTerminal', terminal: terminalPayload })) {
-            void finishStreamingRun(terminalPayload)
-          }
-          return
-        }
-        void finishStreamingRun(terminalPayload)
-      }
-  }, [clearConversationInFlight, executionOwner, finishStreamingRun, interactionInbox, markConversationInFlight, previewOwner, syncGeneratingConversationIds])
+      if (result.kind === 'ready') finishExternalStreamingRun(result)
+  }, [clearConversationInFlight, finishExternalStreamingRun, interactionInbox, markConversationInFlight, streamLifecycleOwner, syncGeneratingConversationIds])
 
   useTauriEvent(api.onChatContext, (payload) => {
     const currentConversationId = currentConversationIdRef.current

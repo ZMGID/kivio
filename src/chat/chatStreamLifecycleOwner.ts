@@ -15,6 +15,16 @@ export type StreamLifecycleResult =
   | { kind: 'pending' | 'deferred'; terminal: ChatRunTerminal }
   | { kind: 'ready'; terminal: ChatRunTerminal; permit: ExternalTerminalPermit }
 
+export type TerminalLoadResult<T> =
+  | { kind: 'loaded'; value: T }
+  | { kind: 'failed'; error: Error }
+
+function asError(value: unknown): Error {
+  return value instanceof Error
+    ? value
+    : new Error(typeof value === 'string' ? value : '会话回载失败，请重试')
+}
+
 /** Translates accepted protocol packets into display projection and execution
  * settlement decisions. Run and group identities remain in executionOwner;
  * this Module keeps no second registry of recovered run IDs. */
@@ -59,13 +69,18 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
     async settleExternalTerminal<T>(
       permit: ExternalTerminalPermit,
       load: () => Promise<T>,
-      commit: (loaded: T) => void,
+      commit: (outcome: TerminalLoadResult<T>) => void,
     ): Promise<boolean> {
       if (!executionOwner.isExternalTerminalCurrent(permit)) return false
-      const loaded = await load()
+      let outcome: TerminalLoadResult<T>
+      try {
+        outcome = { kind: 'loaded', value: await load() }
+      } catch (value) {
+        outcome = { kind: 'failed', error: asError(value) }
+      }
       if (!executionOwner.isExternalTerminalCurrent(permit)) return false
       if (!executionOwner.completeExternalTerminal(permit)) return false
-      commit(loaded)
+      commit(outcome)
       return true
     },
   }
