@@ -1,3 +1,5 @@
+import routeContract from './routeContract.json'
+
 export type ChatRouteKind =
   | 'root'
   | 'conversation'
@@ -14,19 +16,18 @@ export type ChatRouteKind =
   | 'popout'
   | 'other'
 
-const CENTER_SEGMENTS = new Set<Exclude<ChatRouteKind, 'root' | 'conversation' | 'other'>>([
-  'settings',
-  'assistants',
-  'skill',
-  'plugins',
-  'sessions',
-  'automations',
-  'mcp',
-  'knowledge',
-  'notes',
-  'onboarding',
-  'popout',
-])
+type ChatCenterRouteKind = Exclude<ChatRouteKind, 'root' | 'conversation' | 'other'>
+
+/**
+ * Route vocabulary is declared once in routeContract.json and consumed by both this codec and
+ * Rust's persisted-route validator. The cases in that contract are the cross-language fixture.
+ */
+const CENTER_SEGMENTS = new Set<string>(routeContract.centerSegments)
+const REMEMBERABLE_CENTER_SEGMENTS = new Set<string>(routeContract.rememberableCenterSegments)
+
+function isCenterRouteKind(segment: string): segment is ChatCenterRouteKind {
+  return CENTER_SEGMENTS.has(segment)
+}
 
 export function pathFromHash(hash: string): string {
   return hash.replace(/^#/, '').split('?')[0]
@@ -52,9 +53,8 @@ export function chatRouteKind(path: string): ChatRouteKind {
   if (path === 'chat') return 'root'
   if (!path.startsWith('chat/')) return 'other'
   const segment = path.slice('chat/'.length).split('/')[0]
-  return CENTER_SEGMENTS.has(segment as Exclude<ChatRouteKind, 'root' | 'conversation' | 'other'>)
-    ? segment as Exclude<ChatRouteKind, 'root' | 'conversation' | 'other'>
-    : 'conversation'
+  if (isCenterRouteKind(segment)) return segment
+  return decodeChatRouteId('chat/', path) === null ? 'other' : 'conversation'
 }
 
 export function decodeChatRouteId(prefix: string, path: string): string | null {
@@ -81,12 +81,11 @@ export function decodeConversationRouteId(path: string): string | null {
 export function isRememberableChatRoute(path: string): boolean {
   const kind = chatRouteKind(path)
   if (kind === 'conversation') return decodeConversationRouteId(path) !== null
-  return kind === 'assistants'
-    || kind === 'skill'
-    || kind === 'plugins'
-    || kind === 'sessions'
-    || kind === 'automations'
-    || kind === 'mcp'
-    || kind === 'knowledge'
-    || kind === 'notes'
+  return REMEMBERABLE_CENTER_SEGMENTS.has(kind)
+}
+
+/** Persisted/legacy routes additionally allow the chat root used before a conversation exists. */
+export function isRestorableChatRoute(route: string): boolean {
+  const path = pathFromHash(route)
+  return path === 'chat' || isRememberableChatRoute(path)
 }

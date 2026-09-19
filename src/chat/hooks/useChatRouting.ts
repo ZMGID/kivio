@@ -26,6 +26,8 @@ interface UseChatRoutingParams {
   onLoadConversation: (conversationId: string) => void
   /** 路由指向空会话时的重置动作。 */
   onResetConversation: () => void
+  /** 进入非会话目标时立即使旧会话导航代次失效；不取消后台运行。 */
+  onLeaveConversation: () => void
   /** 读当前会话 id，用于跳过「刚 apply 完又被路由重载一遍」的双读。 */
   currentConversationIdRef: React.MutableRefObject<string | null>
   /** 旧 `#chat/plugins` 入口：插件已迁入设置，重定向到设置 → 插件。 */
@@ -46,74 +48,92 @@ export function useChatRouting({
   onViewChange,
   onLoadConversation,
   onResetConversation,
+  onLeaveConversation,
   currentConversationIdRef,
   onOpenPluginsSettings,
   onOpenSessionsSettings,
 }: UseChatRoutingParams) {
   const syncConversationRoute = useCallback((conversationId: string | null) => {
+    if (!conversationId) onLeaveConversation()
     setHash(conversationHash(conversationId))
-  }, [])
+  }, [onLeaveConversation])
 
-  const syncSettingsRoute = useCallback(() => setHash('#chat/settings'), [])
-  const syncOnboardingRoute = useCallback(() => setHash('#chat/onboarding'), [])
-  const syncAssistantCenterRoute = useCallback(() => setHash('#chat/assistants'), [])
-  const syncSkillCenterRoute = useCallback(() => setHash('#chat/skill'), [])
-  const syncMcpCenterRoute = useCallback(() => setHash('#chat/mcp'), [])
-  const syncKnowledgeCenterRoute = useCallback(() => setHash('#chat/knowledge'), [])
-  const syncNotesRoute = useCallback(() => setHash('#chat/notes'), [])
-  const syncAutomationsRoute = useCallback(() => setHash('#chat/automations'), [])
+  const syncNonConversationRoute = useCallback((hash: string) => {
+    onLeaveConversation()
+    setHash(hash)
+  }, [onLeaveConversation])
+  const syncSettingsRoute = useCallback(() => syncNonConversationRoute('#chat/settings'), [syncNonConversationRoute])
+  const syncOnboardingRoute = useCallback(() => syncNonConversationRoute('#chat/onboarding'), [syncNonConversationRoute])
+  const syncAssistantCenterRoute = useCallback(() => syncNonConversationRoute('#chat/assistants'), [syncNonConversationRoute])
+  const syncSkillCenterRoute = useCallback(() => syncNonConversationRoute('#chat/skill'), [syncNonConversationRoute])
+  const syncMcpCenterRoute = useCallback(() => syncNonConversationRoute('#chat/mcp'), [syncNonConversationRoute])
+  const syncKnowledgeCenterRoute = useCallback(() => syncNonConversationRoute('#chat/knowledge'), [syncNonConversationRoute])
+  const syncNotesRoute = useCallback(() => syncNonConversationRoute('#chat/notes'), [syncNonConversationRoute])
+  const syncAutomationsRoute = useCallback(() => syncNonConversationRoute('#chat/automations'), [syncNonConversationRoute])
 
   useEffect(() => {
     const loadFromRoute = () => {
       const path = hashPath()
       if (isChatOnboardingRoute(path)) {
+        onLeaveConversation()
         onViewChange('onboarding')
         return
       }
       if (isChatSettingsPath(path)) {
+        onLeaveConversation()
         onViewChange('settings')
         return
       }
       if (isChatAssistantCenterPath(path)) {
+        onLeaveConversation()
         onViewChange('assistants')
         return
       }
       if (isChatSkillCenterPath(path)) {
+        onLeaveConversation()
         onViewChange('skill')
         return
       }
       if (isChatMcpCenterPath(path)) {
+        onLeaveConversation()
         onViewChange('mcp')
         return
       }
       if (isChatKnowledgeCenterPath(path)) {
+        onLeaveConversation()
         onViewChange('knowledge')
         return
       }
       if (isChatNotesPath(path)) {
+        onLeaveConversation()
         onViewChange('notes')
         return
       }
       if (isChatAutomationsPath(path)) {
+        onLeaveConversation()
         onViewChange('automations')
         return
       }
       // 对话库已迁入设置；旧链接 `#chat/sessions` 重定向
       if (isChatSessionCenterPath(path)) {
+        onLeaveConversation()
         onOpenSessionsSettings?.()
         return
       }
       // 插件已迁入设置；旧链接 `#chat/plugins` 重定向到设置 → 插件
       if (isChatPluginCenterPath(path)) {
+        onLeaveConversation()
         onOpenPluginsSettings?.()
         return
       }
-      onViewChange('conversation')
       const conversationId = getRouteConversationId()
       if (!conversationId) {
+        onLeaveConversation()
+        onViewChange('conversation')
         onResetConversation()
         return
       }
+      onViewChange('conversation')
       // 已是当前会话：说明这次 hash 变化来自点击/创建/分支等「先加载并 apply、再同步路由」的
       // 路径，数据刚落进 state，此处再 force 重载只会让同一对话白读一遍盘（双重 IPC）。
       // 真正的路由导航（前进/后退/启动恢复/外部改 hash）ref 必然不同，照常加载。
@@ -126,6 +146,7 @@ export function useChatRouting({
   }, [
     currentConversationIdRef,
     onLoadConversation,
+    onLeaveConversation,
     onOpenPluginsSettings,
     onOpenSessionsSettings,
     onResetConversation,

@@ -42,10 +42,13 @@ import { findUnavailableRecommendedTools } from './toolAvailability'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import {
   beginConversationTransition,
+  awaitCurrentConversationNavigation,
   cancelConversationTransition,
+  captureConversationNavigation,
   completeConversationTransition,
   getConversationTransitionSnapshot,
   invalidateConversationTransition,
+  isCurrentConversationNavigation,
   isCurrentConversationTransition,
 } from './conversationTransitionStore'
 import type { ConversationLoadHint } from './conversationTransitionStore'
@@ -1497,6 +1500,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onViewChange: setChatView,
     onLoadConversation: handleRouteLoadConversation,
     onResetConversation: handleRouteResetConversation,
+    onLeaveConversation: invalidateConversationTransition,
     currentConversationIdRef,
     onOpenPluginsSettings: openEmbeddedSettingsForPlugins,
     onOpenSessionsSettings: openEmbeddedSettingsForSessions,
@@ -1757,14 +1761,27 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const reloadConversation = useCallback(async (
     conversationId: string,
-    options?: { force?: boolean; transitionRequestId?: number; allowNavigation?: boolean; loadPoppedOut?: boolean },
+    options?: { force?: boolean; transitionRequestId?: number; loadPoppedOut?: boolean },
   ) => {
-    const popped = options?.loadPoppedOut
-      ? new Set<string>()
-      : await ensurePopoutIds()
+    const transitionRequestId = options?.transitionRequestId
+    const navigationLease = captureConversationNavigation()
+    const startingConversationId = currentConversationIdRef.current
+    const canCommitResult = () => {
+      if (transitionRequestId !== undefined) {
+        return isCurrentConversationTransition(transitionRequestId, conversationId)
+      }
+      return isCurrentConversationNavigation(navigationLease)
+        && currentConversationIdRef.current === conversationId
+        && startingConversationId === conversationId
+    }
+    const ownership = await awaitCurrentConversationNavigation(
+      options?.loadPoppedOut ? Promise.resolve(new Set<string>()) : ensurePopoutIds(),
+      canCommitResult,
+    )
+    if (ownership.status === 'stale') return
+    const popped = ownership.value
     if (popped.has(conversationId)) {
       occupyConversationInMain(conversationId, currentConversationRef.current)
-      const transitionRequestId = options?.transitionRequestId
       if (transitionRequestId !== undefined) {
         completeConversationTransition(conversationId, transitionRequestId)
       }
@@ -1773,18 +1790,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isConversationInFlight(inFlightConversationsRef.current, conversationId) && !options?.force) {
       return
     }
-    const transitionRequestId = options?.transitionRequestId
-    const startingConversationId = currentConversationIdRef.current
-    const canCommitResult = () => {
-      if (transitionRequestId !== undefined) {
-        return isCurrentConversationTransition(transitionRequestId, conversationId)
-      }
-      if (options?.allowNavigation) {
-        return currentConversationIdRef.current === startingConversationId
-          || currentConversationIdRef.current === conversationId
-      }
-      return currentConversationIdRef.current === conversationId
-    }
     try {
       const conv = await chatApi.getConversation(conversationId)
       const transition = getConversationTransitionSnapshot()
@@ -1792,7 +1797,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         !canCommitResult()
         || (transition.loading && transition.targetConversationId !== conversationId)
       ) return
-      if (transitionRequestId !== undefined || options?.allowNavigation) {
+      if (transitionRequestId !== undefined) {
         currentConversationIdRef.current = conversationId
       }
       const renderRequestId = transitionRequestId
@@ -2724,7 +2729,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (getRouteConversationId() === payload.conversationId) {
         // hash 不变、不会触发 hashchange，按需显式重载。
         if (payload.reload !== false) {
-          void reloadConversation(payload.conversationId, { force: true, allowNavigation: true })
+          const requestId = beginConversationTransition(payload.conversationId)
+          void reloadConversation(payload.conversationId, { force: true, transitionRequestId: requestId })
         }
       } else {
         // hash 变化统一走 loadFromRoute 加载；这里再显式 reload 会让同一对话读两遍。
@@ -2746,12 +2752,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationId: string,
     conversationHint?: ConversationLoadHint,
   ) => {
-    const popped = await ensurePopoutIds()
-    if (popped.has(conversationId)) {
-      void chatApi.focusConversationPopout(conversationId)
-      occupyConversationInMain(conversationId, currentConversationRef.current)
-      return
-    }
     // 重复点击已打开的会话：不重载。原因是全量走一遍会 beginConversationTransition
     // （>12 条消息还会铺 Logo 加载态）→ IPC 读盘 → applyConversation 换一个新的
     // conversation 对象；而 applyConversation 的 revision 守卫只挡「回退」
@@ -2770,12 +2770,34 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (inFlight.loading && inFlight.targetConversationId !== conversationId) {
         invalidateConversationTransition()
       }
+      const navigationLease = captureConversationNavigation()
+      const ownership = await awaitCurrentConversationNavigation(
+        ensurePopoutIds(),
+        () => isCurrentConversationNavigation(navigationLease),
+      )
+      if (ownership.status === 'stale') return
+      if (ownership.value.has(conversationId)) {
+        void chatApi.focusConversationPopout(conversationId)
+        occupyConversationInMain(conversationId, currentConversationRef.current)
+        return
+      }
       setFocusMessageId(conversationHint?.focusMessageId ?? null)
       // 路由可能因为停留在中心页（技能/MCP/设置…）而偏离当前会话，补一次对齐。
       syncConversationRoute(conversationId)
       return
     }
     const requestId = beginConversationTransition(conversationId, conversationHint)
+    const ownership = await awaitCurrentConversationNavigation(
+      ensurePopoutIds(),
+      () => isCurrentConversationTransition(requestId, conversationId),
+    )
+    if (ownership.status === 'stale') return
+    const popped = ownership.value
+    if (popped.has(conversationId)) {
+      void chatApi.focusConversationPopout(conversationId)
+      occupyConversationInMain(conversationId, currentConversationRef.current)
+      return
+    }
     setAssistantStreamStatsByMessageId({})
     setHookWarning(null)
     setFocusMessageId(conversationHint?.focusMessageId ?? null)

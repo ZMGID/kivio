@@ -1914,11 +1914,7 @@ export const api = {
 
   /** 把聊天窗口上次停留的路由交给 Rust 持久化（null = 清除）。 */
   rememberChatLastRoute: async (route: string | null): Promise<void> => {
-    try {
-      await invoke('chat_remember_last_route', { route })
-    } catch {
-      // 路由持久化是尽力而为：失败只影响「重开回到哪条对话」，绝不打断交互。
-    }
+    await invoke('chat_remember_last_route', { route })
   },
 
   // 事件监听

@@ -1,6 +1,6 @@
 # Kivio architecture
 
-This document describes the implemented ownership structure and its intended rules. It is not a completion declaration: cross-language routing, navigation races, remaining AppState ownership, page controllers, and logical-module dependency checks still need work. The remaining acceptance contract and batch status are in the [architecture convergence spec](./prd/architecture-convergence-spec.md). Product terminology and invariants remain defined by [`CONTEXT.md`](../CONTEXT.md) and the ADRs in [`docs/adr`](./adr).
+This document describes the implemented ownership structure and its intended rules. It is not a completion declaration: remaining AppState ownership, page controllers, logical-module dependency checks, and platform acceptance still need work. The remaining acceptance contract and batch status are in the [architecture convergence spec](./prd/architecture-convergence-spec.md). Product terminology and invariants remain defined by [`CONTEXT.md`](../CONTEXT.md) and the ADRs in [`docs/adr`](./adr).
 
 ## Composition and dependency direction
 
@@ -26,7 +26,7 @@ AppState (partially migrated composition root)
 
 ## Frontend owners
 
-- `src/chat/routeCodec.ts` centralizes frontend Chat route recognition, decoding and rememberability. `browserRoute.ts` reads the DOM; `persistence.ts` owns storage policy. Rust window restoration still has an independent validator with different acceptance rules; unifying the contract is pending.
+- `src/chat/routeContract.json` is the shared Chat route vocabulary and conformance corpus. `routeCodec.ts` consumes it at runtime; Rust embeds the same declaration for persisted-window restoration. `browserRoute.ts` reads the DOM, `persistence.ts` owns ordered/retryable storage migration, and `conversationTransitionStore.ts` owns the navigation generation that gates asynchronous UI commits without cancelling background execution.
 - `src/chat/hooks/useComposerDraft.ts` owns the complete draft used before a conversation exists. `Chat.tsx` coordinates the owner with persistence and conversation APIs.
 - `src/lens/useLensHistory.ts` owns Lens history ordering, de-duplication, persistence and image eviction.
 - `src/lens/useLensSessionCoordinator.ts` owns Lens capture readiness, opening and request generations, cancellation and stale-response isolation. `useLensTranslationSession.ts` owns translation stages, results, errors and terminal cleanup.

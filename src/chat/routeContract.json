@@ -1,0 +1,217 @@
+{
+  "version": 1,
+  "centerSegments": [
+    "settings",
+    "assistants",
+    "skill",
+    "plugins",
+    "sessions",
+    "automations",
+    "mcp",
+    "knowledge",
+    "notes",
+    "onboarding",
+    "popout"
+  ],
+  "rememberableCenterSegments": [
+    "assistants",
+    "skill",
+    "plugins",
+    "sessions",
+    "automations",
+    "mcp",
+    "knowledge",
+    "notes"
+  ],
+  "cases": [
+    {
+      "name": "root",
+      "raw": "chat",
+      "path": "chat",
+      "kind": "root",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": true
+    },
+    {
+      "name": "root hash with query",
+      "raw": "#chat?source=legacy",
+      "path": "chat",
+      "kind": "root",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": true
+    },
+    {
+      "name": "plain conversation",
+      "raw": "chat/conv_abc123",
+      "path": "chat/conv_abc123",
+      "kind": "conversation",
+      "decodedConversationId": "conv_abc123",
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "legacy hash conversation with query",
+      "raw": "#chat/conv_abc123?panel=files",
+      "path": "chat/conv_abc123",
+      "kind": "conversation",
+      "decodedConversationId": "conv_abc123",
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "encoded slash conversation id",
+      "raw": "#chat/project%2Fconversation?legacy=1",
+      "path": "chat/project%2Fconversation",
+      "kind": "conversation",
+      "decodedConversationId": "project/conversation",
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "encoded unicode conversation id",
+      "raw": "chat/%E4%BC%9A%E8%AF%9D",
+      "path": "chat/%E4%BC%9A%E8%AF%9D",
+      "kind": "conversation",
+      "decodedConversationId": "会话",
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "rememberable center root",
+      "raw": "#chat/assistants",
+      "path": "chat/assistants",
+      "kind": "assistants",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "rememberable center detail with query",
+      "raw": "chat/skill/item-1?tab=files",
+      "path": "chat/skill/item-1",
+      "kind": "skill",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "plugins center",
+      "raw": "chat/plugins",
+      "path": "chat/plugins",
+      "kind": "plugins",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "sessions center detail",
+      "raw": "#chat/sessions/session-1",
+      "path": "chat/sessions/session-1",
+      "kind": "sessions",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "automations center detail",
+      "raw": "chat/automations/automation-1",
+      "path": "chat/automations/automation-1",
+      "kind": "automations",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "mcp center",
+      "raw": "chat/mcp",
+      "path": "chat/mcp",
+      "kind": "mcp",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "knowledge center detail",
+      "raw": "#chat/knowledge/library-1?tab=files",
+      "path": "chat/knowledge/library-1",
+      "kind": "knowledge",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "notes center detail",
+      "raw": "chat/notes/note-1",
+      "path": "chat/notes/note-1",
+      "kind": "notes",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
+    {
+      "name": "settings is transient",
+      "raw": "#chat/settings?tab=general",
+      "path": "chat/settings",
+      "kind": "settings",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": false
+    },
+    {
+      "name": "onboarding detail is transient",
+      "raw": "chat/onboarding/step-2",
+      "path": "chat/onboarding/step-2",
+      "kind": "onboarding",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": false
+    },
+    {
+      "name": "popout detail is transient",
+      "raw": "#chat/popout/conv_abc123",
+      "path": "chat/popout/conv_abc123",
+      "kind": "popout",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": false
+    },
+    {
+      "name": "empty conversation id",
+      "raw": "chat/",
+      "path": "chat/",
+      "kind": "other",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": false
+    },
+    {
+      "name": "unknown multi segment path",
+      "raw": "#chat/a/b?legacy=1",
+      "path": "chat/a/b",
+      "kind": "other",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": false
+    },
+    {
+      "name": "malformed percent encoding",
+      "raw": "chat/%E0%A4%A",
+      "path": "chat/%E0%A4%A",
+      "kind": "other",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": false
+    },
+    {
+      "name": "non chat route",
+      "raw": "#lens?mode=chat",
+      "path": "lens",
+      "kind": "other",
+      "decodedConversationId": null,
+      "rememberable": false,
+      "restorable": false
+    }
+  ]
+}

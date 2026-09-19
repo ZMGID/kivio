@@ -28,6 +28,7 @@ pub mod probe;
 pub mod protocol;
 pub mod repository;
 pub mod request_debug;
+pub(crate) mod route_contract;
 pub mod storage;
 pub mod sub_agent;
 pub mod todo;

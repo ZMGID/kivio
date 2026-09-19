@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import routeContract from './routeContract.json'
 import {
   chatRouteKind,
   decodeChatRouteId,
+  decodeConversationRouteId,
   encodeChatRouteId,
   isChatOnboardingPath,
   isChatPath,
   isRememberableChatRoute,
+  isRestorableChatRoute,
   isChatSettingsPath,
   pathFromHash,
 } from './routeCodec'
@@ -23,6 +26,15 @@ import {
 } from './chatRoutes'
 
 describe('chat route codec', () => {
+  it.each(routeContract.cases)('matches the shared route contract: $name', (fixture) => {
+    const path = pathFromHash(fixture.raw)
+    expect(path).toBe(fixture.path)
+    expect(chatRouteKind(path)).toBe(fixture.kind)
+    expect(decodeConversationRouteId(path)).toBe(fixture.decodedConversationId)
+    expect(isRememberableChatRoute(path)).toBe(fixture.rememberable)
+    expect(isRestorableChatRoute(fixture.raw)).toBe(fixture.restorable)
+  })
+
   it('normalizes hashes and classifies center routes in one place', () => {
     expect(pathFromHash('#chat/settings?tab=general')).toBe('chat/settings')
     expect(isChatPath('chat/conversation-1')).toBe(true)
@@ -37,6 +49,14 @@ describe('chat route codec', () => {
     expect(decodeChatRouteId('chat/', 'chat/a%2Fb')).toBe('a/b')
     expect(decodeChatRouteId('chat/', 'chat/a/b')).toBeNull()
     expect(decodeChatRouteId('chat/', 'chat/%E0%A4%A')).toBeNull()
+  })
+
+  it.each([
+    ['chat/', 'other'],
+    ['chat/a/b', 'other'],
+    ['chat/%E0%A4%A', 'other'],
+  ] as const)('does not classify invalid conversation path %s as a conversation', (path, kind) => {
+    expect(chatRouteKind(path)).toBe(kind)
   })
 
   it('preserves rememberable center routes while rejecting transient and corrupt routes', () => {

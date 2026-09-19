@@ -321,27 +321,10 @@ pub fn get_chat_window(app: &AppHandle) -> Option<WebviewWindow> {
 /// 相对 app_data 目录的路由持久化文件名。
 const CHAT_LAST_ROUTE_FILE: &str = "chat-last-route.json";
 
-/// 路由校验与前端 `normalizeStoredChatRoute` 保持一致：
-/// 必须是 chat 路由；settings / onboarding 不算「上次对话」。
+/// Persisted route semantics come from the shared `src/chat/routeContract.json` declaration.
+/// `windows.rs` deliberately owns no route allowlist of its own.
 fn is_valid_chat_last_route(route: &str) -> bool {
-    let path = route
-        .trim_start_matches('#')
-        .split('?')
-        .next()
-        .unwrap_or("");
-    if path != "chat" && !path.starts_with("chat/") {
-        return false;
-    }
-    if path == "chat/settings" || path.starts_with("chat/settings/") {
-        return false;
-    }
-    if path == "chat/onboarding" || path.starts_with("chat/onboarding/") {
-        return false;
-    }
-    if path == "chat/popout" || path.starts_with("chat/popout/") {
-        return false;
-    }
-    true
+    crate::chat::route_contract::is_restorable_chat_route(route)
 }
 
 fn chat_last_route_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1163,5 +1146,8 @@ mod tests {
         assert!(!is_valid_chat_last_route("#chat/popout/conv_abc"));
         assert!(!is_valid_chat_last_route("lens"));
         assert!(!is_valid_chat_last_route(""));
+        assert!(!is_valid_chat_last_route("chat/"));
+        assert!(!is_valid_chat_last_route("chat/a/b"));
+        assert!(!is_valid_chat_last_route("chat/%E0%A4%A"));
     }
 }

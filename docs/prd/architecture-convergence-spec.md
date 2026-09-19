@@ -1,6 +1,6 @@
 # Kivio 架构收口：语义一致性、状态所有权与验收
 
-状态：实施中（R1 代码完成，R2–R5 待实施）。基线：`dc1eb6cf`。日期：2026-09-19。
+状态：实施中（R1–R2 代码完成，R3–R5 待实施）。基线：`dc1eb6cf`。日期：2026-09-19。
 
 发布记录：[GitHub #52](https://github.com/ZMGID/kivio/issues/52)，标签：`ready-for-agent`。
 
@@ -166,3 +166,12 @@
 - 删除的重复规则：移除 `resolveSettingsSaveEcho` 的伪保存基线，以及旧 `rebaseSettingsDraft` / `rebaseDraftAgainstCache` 数组整段合并路径；自配置不再单独维护旧通知事件。
 - 失败用例：连续收藏快照、canonical 修正与占位输入、保存期间继续编辑、provider 实体/字段/删除冲突、插件托管 MCP、迟到读写/跨 epoch、客户端版本冲突、通知 payload 和持久化失败。
 - 复验：前端 R1 定向 36 项通过，TypeScript 类型检查与受影响文件 ESLint 通过；Rust `cargo test --no-run`、`cargo check`、`cargo fmt --check` 通过。Windows 本机实际启动 Rust test harness 在任何用例执行前被 `0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND` 阻断；默认 target 的补跑另受正在运行的 `kivio.exe` 占用，不能将 Rust 断言记为已执行通过。
+
+### R2 路由语义与竞态
+
+- 旧入口：TypeScript `routeCodec` 与 Rust `windows.rs` 各自维护路由集合；中心页只切 view；弹出归属查询与会话读取可在导航变化后继续提交；legacy 路由在新存储确认前删除且传输层吞错。
+- 新 owner：`src/chat/routeContract.json` 是跨端路由词汇与验收语料的单一声明，TS 运行时导入、Rust 编译时嵌入；conversation transition store 拥有导航代次和 UI commit lease；persistence adapter 串行化路由写入并保护迁移版本。
+- 调用方迁移：所有中心页、根页和 legacy redirect 在副作用前失效旧导航；`reloadConversation`、会话选择和 popout ownership 等待后复验 lease；旧迁移只在 Rust 确认成功后清源，失败释放缓存供重试，较新的记忆/清除不会被迟到迁移覆盖。
+- 删除的重复规则：`windows.rs` 移除独立路由 allowlist；`rememberChatLastRoute` 不再吞掉需要迁移层处理的错误；旧的宽松 `allowNavigation` 提交路径删除。
+- 失败用例：跨端 15 组根页/中心页/query/encoded ID/坏编码语料；中心页与 redirect 后迟到成功/失败；popout 查询期间切换目标；迁移成功、失败、重试以及与新记忆/清除的竞争。
+- 复验：R2 前端 5 个定向文件 99 项通过，TypeScript 类型检查、受影响文件 ESLint、Rust `cargo check`、Rust 路由测试 `--no-run`、`cargo fmt --check` 与 diff 检查通过。Rust test harness 的实际执行仍受同一 Windows `0xc0000139` 环境问题阻断，未冒充为已执行通过。

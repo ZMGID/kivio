@@ -19,6 +19,11 @@ export interface ConversationLoadHint {
   focusMessageId?: string
 }
 
+export interface ConversationNavigationLease {
+  requestId: number
+  targetConversationId: string | null
+}
+
 let requestSequence = 0
 let snapshot: ConversationTransitionSnapshot = {
   requestId: 0,
@@ -69,6 +74,36 @@ export function invalidateConversationTransition() {
 
 export function isCurrentConversationTransition(requestId: number, conversationId: string): boolean {
   return snapshot.requestId === requestId && snapshot.targetConversationId === conversationId
+}
+
+/** Capture the current navigation generation for background refreshes that do
+ * not start a new transition. Leaving the current route invalidates the lease
+ * without cancelling the conversation's backend execution. */
+export function captureConversationNavigation(): ConversationNavigationLease {
+  return {
+    requestId: snapshot.requestId,
+    targetConversationId: snapshot.targetConversationId,
+  }
+}
+
+export function isCurrentConversationNavigation(lease: ConversationNavigationLease): boolean {
+  return snapshot.requestId === lease.requestId
+    && snapshot.targetConversationId === lease.targetConversationId
+}
+
+export type ConversationNavigationResult<T> =
+  | { status: 'current'; value: T }
+  | { status: 'stale' }
+
+/** Await an asynchronous navigation prerequisite and validate ownership again
+ * after it settles. The work itself is not cancelled; only its UI commit right
+ * expires when navigation moves elsewhere. */
+export async function awaitCurrentConversationNavigation<T>(
+  pending: Promise<T>,
+  isCurrent: () => boolean,
+): Promise<ConversationNavigationResult<T>> {
+  const value = await pending
+  return isCurrent() ? { status: 'current', value } : { status: 'stale' }
 }
 
 export function getConversationTransitionSnapshot(): ConversationTransitionSnapshot {
