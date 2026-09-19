@@ -229,7 +229,7 @@ npm run protocol:check
 - Provider adapters: OpenAI Chat, Anthropic Messages, Gemini, OpenAI Responses (including xAI Grok)
 - Settings in `settings.json` (including API keys); conversations under `conversations/`; crash drafts in a JSONL journal
 
-Module map: [CLAUDE.md](CLAUDE.md).
+Development conventions: [Engineering standards](docs/engineering-standards.md).
 
 </details>
 
