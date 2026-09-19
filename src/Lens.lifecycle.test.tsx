@@ -6,7 +6,7 @@ import type { LensStreamPayload } from './api/tauri'
 const mocks = vi.hoisted(() => ({
   capture: vi.fn(), readImage: vi.fn(), close: vi.fn(), takeSelection: vi.fn(),
   dialog: vi.fn(), saveImage: vi.fn(), ask: vi.fn(), commitImage: vi.fn(),
-  streamListener: vi.fn(),
+  streamListener: vi.fn(), handoff: vi.fn(), sendToChatEnabled: false,
 }))
 
 vi.mock('./chat/ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <div>{content}</div> }))
@@ -20,7 +20,7 @@ vi.mock('./lens/history', async importOriginal => ({
 }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ save: mocks.dialog }))
 vi.mock('./api/settingsCache', () => ({
-  getSettingsCached: async () => ({ settingsLanguage: 'zh', lens: { sendToChat: false }, screenshotTranslation: {} }),
+  getSettingsCached: async () => ({ settingsLanguage: 'zh', lens: { sendToChat: mocks.sendToChatEnabled }, screenshotTranslation: {} }),
   setTranslateCardSizeCached: vi.fn(),
 }))
 vi.mock('./api/tauri', () => ({
@@ -34,6 +34,7 @@ vi.mock('./api/tauri', () => ({
       if (key === 'takeLensSelection') return mocks.takeSelection
       if (key === 'lensSaveAnnotatedPng') return mocks.saveImage
       if (key === 'lensAsk') return mocks.ask
+      if (key === 'lensSendToChat') return mocks.handoff
       if (key === 'lensCommitImageToHistory') return mocks.commitImage
       if (key === 'onLensStream') return mocks.streamListener
       return async () => () => {}
@@ -74,10 +75,31 @@ describe('Lens content lifecycle', () => {
     mocks.dialog.mockReset().mockResolvedValue('screenshot.png')
     mocks.saveImage.mockReset().mockResolvedValue({ success: true })
     mocks.ask.mockReset()
+    mocks.handoff.mockReset()
+    mocks.sendToChatEnabled = false
     mocks.commitImage.mockReset().mockResolvedValue(undefined)
     mocks.streamListener.mockReset().mockResolvedValue(() => {})
   })
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('keeps the captured surface usable when handoff succeeds but native close rejects', async () => {
+    window.location.hash = '#lens?mode=chat'
+    mocks.sendToChatEnabled = true
+    mocks.handoff.mockResolvedValue({ success: true })
+    mocks.close.mockRejectedValue(new Error('OS hide failed'))
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { container } = render(<Lens />)
+    await act(async () => {})
+    await capture(container)
+    await waitFor(() => expect(container.querySelector('img[alt="snap"]')).not.toBeNull())
+    fireEvent.change(container.querySelector('input')!, { target: { value: 'question' } })
+    await act(async () => { fireEvent.keyDown(container.querySelector('input')!, { key: 'Enter' }) })
+    await waitFor(() => expect(mocks.handoff).toHaveBeenCalledWith('cropped', 'question'))
+    await waitFor(() => expect(mocks.close).toHaveBeenCalledOnce())
+    await waitFor(() => expect(container.querySelector('img[alt="snap"]')).not.toBeNull())
+    expect(container.firstElementChild?.getAttribute('aria-hidden')).not.toBe('true')
+    expect(container.querySelector('input')).not.toBeNull()
+  })
 
   it.each(['dialog', 'write'])('does not let an old annotation save %s affect a reopened Lens', async pendingStage => {
     const dialog = deferred<string>()

@@ -172,7 +172,7 @@ describe('Lens selection during cold initialization', () => {
     await act(async () => { fireEvent.mouseUp(root, { clientX: 200, clientY: 180 }) })
     expect(revoke).not.toHaveBeenCalled()
     await act(async () => { fireEvent.keyDown(window, { key: 'Escape' }) })
-    expect(revoke).toHaveBeenCalledWith('blob:cropped')
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:cropped'))
   })
 
   it('finishes a queued screenshot after initialization instead of discarding it', async () => {
