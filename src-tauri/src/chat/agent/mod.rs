@@ -8,6 +8,7 @@ pub mod host;
 pub mod loop_;
 pub(crate) mod planning;
 pub mod prepare;
+pub(crate) mod provider_runtime;
 pub(crate) mod recovery;
 pub(crate) mod rounds;
 pub mod steering;

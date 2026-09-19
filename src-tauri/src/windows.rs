@@ -1055,12 +1055,10 @@ unsafe fn macos_activate_app(pid: i32) {
 /// 交还，而"Chat 在前"的情况由 RunEvent::Reopen 的 has_visible_windows=true 分支正确处理。
 /// `slot`：lens 与输入翻译各用一个独立槽，避免两个浮窗同时存在时相互覆盖。
 #[cfg(target_os = "macos")]
-pub fn remember_frontmost_app(slot: &std::sync::atomic::AtomicI32) {
-    use std::sync::atomic::Ordering;
+pub(crate) fn remember_frontmost_app(slot: &crate::window_focus::FocusReturnSlot) {
     let pid = macos_frontmost_app_pid();
     let self_pid = std::process::id() as i32;
-    let to_store = if pid > 0 && pid != self_pid { pid } else { 0 };
-    slot.store(to_store, Ordering::SeqCst);
+    slot.remember(pid, self_pid);
 }
 
 /// 冷创建隐藏 WebView 可能在它被重分类成非激活 NSPanel 之前短暂激活 Kivio，连带把普通 Chat
@@ -1068,9 +1066,11 @@ pub fn remember_frontmost_app(slot: &std::sync::atomic::AtomicI32) {
 /// 立刻把它重新激活，但不清空快照（关闭浮窗时仍可再次交还）。前台原本就是 Kivio 时槽为 0，
 /// 因而不会隐藏、显示、聚焦或改变 Chat 窗口本身。
 #[cfg(target_os = "macos")]
-pub fn reassert_previous_frontmost_app(app: &AppHandle, slot: &std::sync::atomic::AtomicI32) {
-    use std::sync::atomic::Ordering;
-    let pid = slot.load(Ordering::SeqCst);
+pub(crate) fn reassert_previous_frontmost_app(
+    app: &AppHandle,
+    slot: &crate::window_focus::FocusReturnSlot,
+) {
+    let pid = slot.previous();
     if pid <= 0 {
         return;
     }
@@ -1103,16 +1103,17 @@ pub fn reassert_previous_frontmost_app(app: &AppHandle, slot: &std::sync::atomic
 /// 故意打开 Chat 的路径（open_chat_window / open_chat_settings_window）调用：清掉快照槽，避免
 /// 随后的浮窗关闭把前台从刚打开的 Chat 又交还回旧 App。
 #[cfg(target_os = "macos")]
-pub fn forget_frontmost_app(slot: &std::sync::atomic::AtomicI32) {
-    use std::sync::atomic::Ordering;
-    slot.store(0, Ordering::SeqCst);
+pub(crate) fn forget_frontmost_app(slot: &crate::window_focus::FocusReturnSlot) {
+    slot.forget();
 }
 
 /// 关闭浮窗后调用：把前台交还给该槽里记的 App（取出即清零，幂等）。0 = 无需交还。
 #[cfg(target_os = "macos")]
-pub fn restore_previous_frontmost_app(app: &AppHandle, slot: &std::sync::atomic::AtomicI32) {
-    use std::sync::atomic::Ordering;
-    let pid = slot.swap(0, Ordering::SeqCst);
+pub(crate) fn restore_previous_frontmost_app(
+    app: &AppHandle,
+    slot: &crate::window_focus::FocusReturnSlot,
+) {
+    let pid = slot.take_previous();
     if pid <= 0 {
         return;
     }

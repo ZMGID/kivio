@@ -3,8 +3,8 @@
 //! When `settings.chat_tools.request_debug_enabled` is on, each model adapter
 //! (`openai` / `anthropic` / `responses`) records the full request (url + sanitized
 //! headers + body) and the aggregated response (text / tool_calls / finish_reason /
-//! usage / error) into a bounded in-memory ring buffer on `AppState`. Nothing is
-//! written to disk and the buffer is cleared on process exit.
+//! usage / error) into a bounded ring buffer. The existing disk mirror remains
+//! best-effort; memory is process-local and clear removes both representations.
 //!
 //! **Zero overhead when disabled**: adapters must check `state.request_debug_enabled()`
 //! BEFORE constructing any body/headers/record — this module never runs otherwise.
@@ -12,9 +12,10 @@
 //! **No secret leak**: [`sanitize_headers`] masks `Authorization` / `x-api-key` style
 //! headers to a short preview (`Bearer sk-x…`); the request body never carries the key.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +28,56 @@ use crate::usage::{chat_usage_source_for_label, operation_from_label};
 
 /// Max records kept in the ring buffer. Oldest are evicted first.
 pub const REQUEST_DEBUG_CAPACITY: usize = 50;
+
+/// Owns memory and the existing best-effort disk mirror. Mutation ordering is
+/// mirror gate -> buffer; release buffer before disk I/O. No await is performed.
+pub(crate) struct RequestDebugState {
+    buffer: Mutex<VecDeque<RequestDebugRecord>>,
+    mirror_gate: Mutex<()>,
+    path: PathBuf,
+}
+
+impl RequestDebugState {
+    pub(crate) fn new(usage_dir: &Path) -> Self {
+        let root = usage_dir.parent().unwrap_or(usage_dir);
+        Self {
+            buffer: Mutex::new(VecDeque::new()),
+            mirror_gate: Mutex::new(()),
+            path: root.join("request_debug").join("records.jsonl"),
+        }
+    }
+
+    fn record(&self, record: RequestDebugRecord) {
+        let _mirror = self.mirror_gate.lock().unwrap_or_else(|e| e.into_inner());
+        let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        while buffer.len() >= REQUEST_DEBUG_CAPACITY {
+            buffer.pop_front();
+        }
+        buffer.push_back(record);
+        let disk_view: Vec<_> = buffer.iter().rev().cloned().collect();
+        drop(buffer);
+        persist_to_disk(&self.path, &disk_view);
+    }
+
+    fn snapshot(&self) -> Vec<RequestDebugRecord> {
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .rev()
+            .cloned()
+            .collect()
+    }
+
+    fn clear(&self) {
+        let _mirror = self.mirror_gate.lock().unwrap_or_else(|e| e.into_inner());
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 /// Cap on the recorded response text (chars) so a long answer can't blow up memory.
 const MAX_RESPONSE_TEXT_CHARS: usize = 4000;
@@ -210,34 +261,19 @@ fn redact_video_payloads(value: &mut Value) {
 /// out-of-band. ponytail: full-buffer rewrite per call (≤50 capped records) —
 /// switch to append+rotate only if this ever shows up in a profile.
 pub fn record(state: &AppState, record: RequestDebugRecord) {
-    let mut buffer = state
-        .request_debug
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    while buffer.len() >= REQUEST_DEBUG_CAPACITY {
-        buffer.pop_front();
-    }
-    buffer.push_back(record);
-    let disk_view: Vec<RequestDebugRecord> = buffer.iter().rev().cloned().collect();
-    drop(buffer);
-    persist_to_disk(state, &disk_view);
+    state.request_debug().record(record);
 }
 
 /// Path of the on-disk mirror: `<app_data>/request_debug/records.jsonl`.
+#[cfg(test)]
 fn debug_log_path(state: &AppState) -> PathBuf {
-    let root = state
-        .usage_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| state.usage_dir.clone());
-    root.join("request_debug").join("records.jsonl")
+    state.request_debug().path.clone()
 }
 
 /// Rewrite the on-disk mirror with `records` (newest-first, one JSON per line).
 /// Best-effort: a debug convenience must never break the request path, so all
 /// IO errors are swallowed.
-fn persist_to_disk(state: &AppState, records: &[RequestDebugRecord]) {
-    let path = debug_log_path(state);
+fn persist_to_disk(path: &Path, records: &[RequestDebugRecord]) {
     if let Some(dir) = path.parent() {
         if fs::create_dir_all(dir).is_err() {
             return;
@@ -250,26 +286,17 @@ fn persist_to_disk(state: &AppState, records: &[RequestDebugRecord]) {
             out.push('\n');
         }
     }
-    let _ = fs::write(&path, out);
+    let _ = fs::write(path, out);
 }
 
 /// Snapshot the buffer, newest first.
 pub fn snapshot(state: &AppState) -> Vec<RequestDebugRecord> {
-    let buffer = state
-        .request_debug
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    buffer.iter().rev().cloned().collect()
+    state.request_debug().snapshot()
 }
 
 /// Empty the buffer and remove the on-disk mirror.
 pub fn clear(state: &AppState) {
-    state
-        .request_debug
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
-    let _ = fs::remove_file(debug_log_path(state));
+    state.request_debug().clear();
 }
 
 /// Return a copy of `headers` with credential values masked. Non-sensitive headers pass
@@ -386,6 +413,33 @@ mod tests {
         // The very first record (id = 0) was evicted; oldest kept is id = 1.
         assert_eq!(snap.last().unwrap().id, "dbg_1");
         assert!(snap.iter().all(|r| r.id != "dbg_0"));
+    }
+
+    #[test]
+    fn concurrent_records_keep_disk_order_in_sync_with_memory() {
+        let base = std::env::temp_dir().join(format!("kivio-dbg-owner-{}", Uuid::new_v4()));
+        let owner = std::sync::Arc::new(RequestDebugState::new(&base.join("usage")));
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let owner = owner.clone();
+                std::thread::spawn(move || owner.record(sample_record(&i.to_string())))
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let disk: Vec<String> = fs::read_to_string(&owner.path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<RequestDebugRecord>(line).unwrap().id)
+            .collect();
+        let memory: Vec<_> = owner.snapshot().into_iter().map(|r| r.id).collect();
+        assert_eq!(disk, memory);
+        assert_eq!(memory.len(), 8);
+        owner.clear();
+        assert!(owner.snapshot().is_empty());
+        assert!(!owner.path.exists());
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

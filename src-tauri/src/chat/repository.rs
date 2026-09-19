@@ -448,7 +448,7 @@ impl ConversationRepository {
     }
 
     /// 只读探查，不写。"同一个空对话被两个新建请求同时复用"这条不变式由调用方的
-    /// `AppState::chat_create_conversation_lock` 保证（独占 barrier 从来也保证不了它：
+    /// `ChatRuntimeState::lock_conversation_creation` 保证（独占 barrier 从来也保证不了它：
     /// 复用一个空对话不会改动它，串行化两次探查照样都会命中同一条）。
     #[allow(clippy::too_many_arguments)]
     pub async fn find_reusable_blank(

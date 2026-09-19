@@ -16,13 +16,7 @@ use super::catalog::strip_transcripts_for_frontend;
 pub(crate) fn chat_take_external_sends(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let requests = {
-        let mut pending = state
-            .pending_chat_external_sends
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *pending)
-    };
+    let requests = state.take_chat_external_sends();
 
     Ok(serde_json::json!({
         "success": true,
@@ -188,12 +182,7 @@ pub(crate) fn chat_list_background_tasks(
     let mut out: Vec<(std::time::SystemTime, serde_json::Value)> = Vec::new();
 
     {
-        let map = state.background_commands_handle();
-        let map = map.lock().unwrap_or_else(|e| e.into_inner());
-        for j in map.values() {
-            if wanted.is_some() && j.conversation_id.as_deref() != wanted {
-                continue;
-            }
+        for j in state.background_commands_handle().snapshots(wanted, false) {
             use crate::native_tools::BackgroundCommandStatus as S;
             let (status, exit_code) = match &j.status {
                 S::Running => ("running", None),
@@ -219,22 +208,12 @@ pub(crate) fn chat_list_background_tasks(
     }
 
     {
-        let mut map = state
-            .external_background_tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        for t in map.values_mut() {
-            if wanted.is_some() && Some(t.conversation_id.as_str()) != wanted {
-                continue;
-            }
-            if t.status == "running"
-                && state
-                    .external_live_session_control_any(&t.conversation_id)
-                    .is_none()
-            {
-                t.status = "stopped".to_string();
-                t.ended_at = Some(std::time::SystemTime::now());
-            }
+        for t in state
+            .external_background_tasks()
+            .snapshot_reconciled(wanted, |id| {
+                state.external_live_session_control_any(id).is_some()
+            })
+        {
             let value = serde_json::json!({
                 "id": t.task_id,
                 "source": "external",
@@ -269,24 +248,8 @@ pub(crate) fn chat_clear_finished_background_tasks(
     conversation_id: Option<String>,
 ) {
     let wanted = conversation_id.as_deref();
-    {
-        let map = state.background_commands_handle();
-        let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
-        map.retain(|_, j| {
-            matches!(
-                j.status,
-                crate::native_tools::BackgroundCommandStatus::Running
-            ) || (wanted.is_some() && j.conversation_id.as_deref() != wanted)
-        });
-    }
-    state
-        .external_background_tasks
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain(|_, t| {
-            t.status == "running"
-                || (wanted.is_some() && Some(t.conversation_id.as_str()) != wanted)
-        });
+    state.background_commands_handle().clear_finished(wanted);
+    state.external_background_tasks().clear_finished(wanted);
 }
 
 /// 面板停止一条外部 CLI 后台任务：往常驻会话 actor 送 `StopTask`（claude 写

@@ -72,7 +72,10 @@ pub async fn chat_detect_external_agents(
     }
 
     // single-flight：并发调用只实跑一次；后到者持锁后复查缓存即命中。
-    let _guard = state.availability_probe_lock.lock().await;
+    let _guard = state
+        .external_discovery()
+        .acquire_availability_probe()
+        .await;
     if !force {
         if let Some(agents) =
             state.get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
@@ -99,7 +102,7 @@ pub async fn chat_detect_external_agents(
 fn spawn_availability_refresh(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let Ok(_guard) = state.availability_probe_lock.try_lock() else {
+        let Some(_guard) = state.external_discovery().try_acquire_availability_probe() else {
             return;
         };
         let agents = detect_availability_all().await;
@@ -222,8 +225,7 @@ pub async fn chat_detect_external_agent_models(
         }
     }
 
-    let lock = state.model_probe_lock_for(&key);
-    let _guard = lock.lock().await;
+    let _guard = state.acquire_model_probe(&key).await;
     if !force {
         if let Some(cached) = state.get_cached_external_agent_models(
             &key,

@@ -1215,7 +1215,7 @@ pub(crate) fn decay_warning_for(compression_count: usize) -> Option<String> {
     }
 }
 
-async fn summarize_history(
+pub(crate) async fn summarize_history(
     state: &crate::state::AppState,
     provider: &crate::settings::ModelProvider,
     model: &str,
@@ -1337,7 +1337,7 @@ async fn summarize_history(
 }
 
 /// `summarize_history` 的三态返回：成功（压缩后视图 + 摘要正文）/ 取消 / 失败。
-enum CompactOutcome {
+pub(crate) enum CompactOutcome {
     Compacted(Vec<Value>, String),
     Cancelled,
     Failed,
@@ -1508,24 +1508,26 @@ pub(crate) async fn maybe_compact_send_view(env: &LoopEnv<'_>, state: &mut RunSt
         .host
         .wait_for_generation_inactive(&config.conversation_id, config.generation);
     let runtime_before_compact = state.runtime_messages.clone();
-    let compacted = summarize_history(
-        config.state,
-        &config.provider,
-        &config.model,
-        &state.runtime_messages,
-        keep_tokens,
-        window,
-        // 用模型真实 max output（而非 run 的 config.max_output_tokens），与持久化路径
-        // compact_conversation 口径统一——否则 run 配的小输出会把摘要卡短、9 段产出被截。
-        chat_max_output_tokens_for_model(Some(&config.provider), &config.model)
+    let compacted = config
+        .provider_runtime
+        .summarize(super::provider_runtime::SummaryRequest {
+            provider: &config.provider,
+            model: &config.model,
+            messages: &state.runtime_messages,
+            keep_tokens,
+            window,
+            // Keep the model's real output budget, not the run's shorter answer budget.
+            max_output_tokens: chat_max_output_tokens_for_model(
+                Some(&config.provider),
+                &config.model,
+            )
             .unwrap_or(SUMMARY_OUTPUT_TOKENS),
-        config.retry_attempts,
-        &config.conversation_id,
-        &config.message_id,
-        None,
-        Some(cancel),
-    )
-    .await;
+            retry_attempts: config.retry_attempts,
+            conversation_id: &config.conversation_id,
+            message_id: &config.message_id,
+            cancel: Some(cancel),
+        })
+        .await;
 
     match compacted {
         CompactOutcome::Compacted(compacted, summary_text) => {

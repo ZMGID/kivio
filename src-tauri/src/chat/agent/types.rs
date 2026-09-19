@@ -1,11 +1,11 @@
 use serde_json::Value;
 
+use super::provider_runtime::ProviderRuntime;
 use crate::chat::types::{
     ChatAssistantSnapshot, ChatMessageSegment, CompactionBoundaryRecord, ToolCallRecord,
 };
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
-use crate::state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRunEntry {
@@ -29,7 +29,7 @@ pub enum AgentStreamPolicy {
 
 #[derive(Clone)]
 pub struct AgentRunConfig<'a> {
-    pub state: &'a AppState,
+    pub(crate) provider_runtime: &'a dyn ProviderRuntime,
     pub conversation_id: String,
     /// Conversation that conversation-scoped tools (todo / native workspace)
     /// target. Equals `conversation_id` for a normal chat run; for a sub-agent

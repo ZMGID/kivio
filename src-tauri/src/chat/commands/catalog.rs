@@ -390,7 +390,7 @@ pub(crate) async fn create_chat_conversation_internal(
         .map(|assistant| assistant.id.clone());
 
     let conversation = {
-        let _create_guard = state.chat_create_conversation_lock.lock().await;
+        let _create_guard = state.chat_runtime().lock_conversation_creation().await;
         if let Some(conversation) = crate::chat::repository::repository(app)
             .find_reusable_blank(
                 app,

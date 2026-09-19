@@ -441,23 +441,13 @@ impl ProbeLiveSession {
 /// 读一次常驻会话注册表。**只读**：不改任何条目（`last_activity` 不动，否则自省本身就会
 /// 把空闲回收的时钟拨回去），也**不跨 await 持锁**（本函数是同步的，state.rs 的既有约定）。
 fn live_session_snapshot(state: &AppState, conversation_id: &str) -> ProbeLiveSession {
-    let map = state
-        .external_live_sessions
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let registry_size = map.len();
-    match map.get(conversation_id) {
-        Some(session) => ProbeLiveSession {
-            registered: true,
-            alive: !session.control.is_closed(),
-            child_pid: session.child_pid,
-            turns_served: Some(session.turns_served),
-            registry_size,
-        },
-        None => ProbeLiveSession {
-            registry_size,
-            ..ProbeLiveSession::default_empty()
-        },
+    let snapshot = state.external_live_session_diagnostic(conversation_id);
+    ProbeLiveSession {
+        registered: snapshot.registered,
+        alive: snapshot.alive,
+        child_pid: snapshot.child_pid,
+        turns_served: snapshot.turns_served,
+        registry_size: snapshot.registry_size,
     }
 }
 

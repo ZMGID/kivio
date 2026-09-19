@@ -8,6 +8,42 @@ const SETTINGS_STORE: &str = "settings.json";
 const LEGACY_APPLE_INTELLIGENCE_BASE_URL: &str = "applefoundation://local";
 pub(crate) const SETTINGS_CHANGED_EVENT: &str = "kivio-settings-changed";
 
+/// Serializes full saves and their asynchronous workspace migrations. Lightweight
+/// writers intentionally do not acquire this gate; revision CAS detects them.
+#[derive(Default)]
+pub(crate) struct SettingsPersistenceGate {
+    full_save: tokio::sync::Mutex<()>,
+}
+
+impl SettingsPersistenceGate {
+    pub(crate) async fn begin_full_save(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.full_save.lock().await
+    }
+}
+
+#[cfg(test)]
+mod persistence_gate_tests {
+    use super::*;
+    #[tokio::test]
+    async fn full_saves_are_serialized_and_cancellation_releases_the_gate() {
+        let gate = std::sync::Arc::new(SettingsPersistenceGate::default());
+        let first = gate.begin_full_save().await;
+        let next_gate = gate.clone();
+        let next = tokio::spawn(async move {
+            let _guard = next_gate.begin_full_save().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!next.is_finished());
+        next.abort();
+        assert!(next.await.unwrap_err().is_cancelled());
+        drop(first);
+        let _guard =
+            tokio::time::timeout(std::time::Duration::from_secs(1), gate.begin_full_save())
+                .await
+                .unwrap();
+    }
+}
+
 /// Opaque identity of one canonical settings value. `epoch` changes on every backend process
 /// start; `revision` advances for every successful in-memory/durable settings transaction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -258,14 +258,9 @@ fn schedule_probe_cancel(app: &AppHandle, conversation_id: &str, delay: Duration
     tauri::async_runtime::spawn(async move {
         let armed = tokio::time::timeout(ARM_TIMEOUT, async {
             loop {
-                let active = {
-                    let state = app.state::<AppState>();
-                    let map = state
-                        .chat_active_generations
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    map.get(&conversation_id).is_some_and(|set| !set.is_empty())
-                };
+                let active = app
+                    .state::<AppState>()
+                    .has_chat_active_generation(&conversation_id);
                 if active {
                     return;
                 }

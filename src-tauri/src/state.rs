@@ -1,15 +1,14 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::HashSet,
     path::PathBuf,
     sync::{
-        atomic::{AtomicI32, AtomicU64, Ordering},
-        Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
+        Arc, RwLock,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use reqwest::Client;
-use serde::Serialize;
 
 #[cfg(target_os = "macos")]
 use crate::macos_ocr::MacOcrClient;
@@ -17,41 +16,6 @@ use crate::mcp::types::McpTool;
 use crate::offline_models::OfflineModelManager;
 use crate::rapidocr::RapidOcrClient;
 use crate::settings::{Settings, SettingsError, SettingsSnapshot, SettingsVersion};
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingChatExternalAttachment {
-    pub id: String,
-    pub r#type: String,
-    pub name: String,
-    pub path: String,
-}
-
-#[derive(Debug)]
-pub struct TimedCacheEntry<V> {
-    created_at: Instant,
-    last_accessed: Instant,
-    value: V,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingChatExternalMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingChatExternalSend {
-    pub id: String,
-    pub content: String,
-    pub attachments: Vec<PendingChatExternalAttachment>,
-    /// 可选的多轮历史。为空 → 旧的「单条消息」交接路径；非空 → 用历史预置一个新会话，
-    /// 不触发回复（截图作为首个 user 轮的附件，见 attachments）。
-    #[serde(default)]
-    pub messages: Vec<PendingChatExternalMessage>,
-}
 
 /// 应用全局状态
 /// 使用 RwLock 保护 settings，允许多读单写；
@@ -69,107 +33,29 @@ pub struct AppState {
     /// Serializes full async saves (including workspace migration) without blocking lightweight
     /// writers. Lightweight writers advance `settings_revision`, so the full save still detects
     /// them at its final CAS commit.
-    pub(crate) settings_save_lock: tokio::sync::Mutex<()>,
+    settings_persistence: crate::settings::SettingsPersistenceGate,
     lens_runtime: crate::lens::LensRuntimeState,
     /// macOS：打开浮窗前记下的前台 App PID（0 = 无 / 前台就是 Kivio 自己），关闭浮窗时据此把
     /// 前台交还给原来的 App，避免 Kivio 变成"前台却无窗口"而触发 RunEvent::Reopen 误开 Chat。
     /// lens（含截图/选词翻译）与输入翻译是各自独立、可同时存在的浮窗，各占一个槽，避免相互覆盖。
     /// 详见 spec/backend/window-lifecycle.md。
-    pub prev_frontmost_pid_lens: AtomicI32,
-    pub prev_frontmost_pid_main: AtomicI32,
-    /// Chat 流式取消代号分配器。仅作**单调递增的 generation 号分配器**（never 重用）：
-    /// 每条 run 取一个全局唯一号，不表达「活跃」语义。会话内唯一即够用（号只用于集合成员
-    /// 判定），故用一个进程级 `AtomicU64` 计数器即可，无需按 conversation_id 分桶。
-    /// 「哪些 generation 当前有效」由 `chat_active_generations` 表达——这样同一会话可同时
-    /// 有多条并发 run（多模型一问多答），开新 run 不再作废兄弟 run。
-    pub chat_stream_generation: AtomicU64,
-    /// 每个 conversation_id 当前**活跃**的 generation 集合。`next_chat_generation` 往里加，
-    /// run 结束 `end_chat_generation` 移除，`cancel_chat_generation` 整会话清空（取消全部在跑 run）。
-    /// 单 run 时集合恒为单元素，语义与旧「单 u64」等价。
-    pub chat_active_generations: Mutex<HashMap<String, HashSet<u64>>>,
-    /// 正在进行 assistant 回复生成的 (conversation_id → run_id 集合)，防止同对话同一 run 重复，
-    /// 但允许同一会话多条 run 并存（多模型一问多答）。
-    pub chat_active_replies: Mutex<HashMap<String, HashSet<String>>>,
-    /// Sequenced, replayable realtime chat protocol state keyed by run id.
-    pub chat_protocol: Mutex<crate::chat::protocol::ChatProtocolHub>,
-    /// 协议直连通道：按窗口 label 分槽。主聊天窗 filter=All，弹出窗只订一条对话。
-    /// 同 label 再订阅替换旧槽；send 失败且窗口已销毁时从 map 摘掉；窗口还在则发
-    /// `chat-protocol-channel-reset` 让前端重建通道。
-    pub chat_protocol_subscribers:
-        Mutex<HashMap<String, crate::chat::protocol::ChatProtocolSubscriber>>,
-    /// 当前已拉出独立窗口的对话 id，供 `chat-popouts-changed` 与主窗占位同步。
-    /// 高频事件是否跳过主窗 All，看的是活着的 `Conversation` 订阅者，不用这个集合
-    /// （窗口已建但通道订成 All / 已死时按窗口集合跳过会把 token 投进黑洞）。
-    pub chat_popout_conversations: Mutex<HashSet<String>>,
-    /// 串行化弹出窗创建，避免两个 async open 都看到 < MAX 再各建一个。
-    pub chat_popout_create_lock: tokio::sync::Mutex<()>,
+    #[cfg(target_os = "macos")]
+    frontmost_apps: crate::window_focus::FrontmostAppState,
+    /// Chat 运行、输入信箱与创建协调；索引由 chat 领域私有持有。
+    chat_runtime: crate::chat::runtime_state::ChatRuntimeState,
+    /// Sequenced replay hub and live IPC subscribers share one protocol owner.
+    chat_protocol: crate::chat::protocol::ChatProtocolState,
     /// Chat 审批、会话授权与 ask-user 的瞬态状态。领域句柄私有持有所有 map/lock，
     /// 组合根只负责生命周期，调用方只能走原子行为方法。
     chat_interactions: crate::chat::interaction_state::ChatInteractionState,
-    /// 保护 Chat 空白会话复用的短临界区，避免快速多次新建时并发创建多个空白对话。
-    pub chat_create_conversation_lock: tokio::sync::Mutex<()>,
-    /// 外部 CLI 斜杠命令探测缓存（agent_id:cwd → 命令列表）。
-    pub external_slash_commands_cache: Mutex<
-        HashMap<
-            String,
-            TimedCacheEntry<Vec<crate::external_agents::types::ExternalCliSlashCommand>>,
-        >,
-    >,
-    /// 外部 CLI 模型列表探测缓存（agent_id:cwd → 模型选项 + 来源）。probed 结果长 TTL，
-    /// fallback（探测失败降级）短 TTL 负缓存，防止连续失败风暴。
-    pub external_agent_models_cache:
-        Mutex<HashMap<String, TimedCacheEntry<crate::external_agents::types::CachedAgentModels>>>,
-    /// 外部 CLI 全量检测结果缓存（cwd → available/version/auth/models）。避免 RuntimePicker /
-    /// 设置页每次打开都重探全部 CLI，同时隔离项目级模型配置。force_refresh 时跳过当前 cwd。
-    pub external_detected_agents_cache:
-        Mutex<HashMap<String, TimedCacheEntry<Vec<crate::external_agents::types::DetectedAgent>>>>,
-    /// single-flight：可用性探测的全局串行锁——并发调用只实跑一次，后到者持锁后复查缓存即命中。
-    pub availability_probe_lock: tokio::sync::Mutex<()>,
-    /// single-flight：按 (agent:cwd) key 的模型探测锁，避免同一目标并发重探。
-    // ponytail: 无上限增长，每 (agent, cwd) 一项（会话×agent 级，量很小）；若日后 key 基数变大，
-    // 改成带容量上限的 LRU 或探测完即移除空闲锁。
-    pub model_probe_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    external_discovery: crate::external_agents::discovery_state::ExternalDiscoveryState,
     /// Phase 2 持久会话注册表：conversation_id → 活会话（仅持有控制通道，不持有 Child）。
     /// 仅在 get/insert/remove 时短暂持锁，绝不跨 turn await 持锁。
-    pub external_live_sessions:
-        Mutex<HashMap<String, crate::external_agents::session::live::LiveSession>>,
+    external_live_sessions: crate::external_agents::session::live::LiveSessionRegistry,
     /// 外部入口（例如 Lens）交给 Chat 前端发送的待处理消息。
     /// 后端只负责保存请求和打开窗口，实际发送必须走 Chat 前端的手动发送状态机。
-    pub pending_chat_external_sends: Mutex<Vec<PendingChatExternalSend>>,
-    /// 运行中用户插话（steering）的信箱：conversation_id → 待注入的用户消息。
-    /// `run_agent_loop` 在每个轮次开头 take 一次（取一次清一次），注入进本轮模型历史。
-    /// 仅内存、不持久化：它描述的是「某条正在跑的 run」，进程活着才有意义。
-    ///
-    /// ponytail: 按 conversation_id 而不是 run_id 建键 —— 同会话多条并发 run（多模型一问多答）时
-    /// 无法定向到具体某条臂，所以前端在 `reply_models ≥ 2` 时不给「立刻引导」入口。要支持就把键
-    /// 换成 run_id，并让前端把当前 run_id 传进来。
-    pub pending_chat_steering: Mutex<HashMap<String, Vec<crate::chat::agent::SteeringMessage>>>,
-    /// 运行中原生 follow-up 信箱：conversation_id → 待在终答后续跑的用户消息。
-    /// 不在轮首注入（那是 `pending_chat_steering`）。仅内存、不持久化。
-    /// 同样按 conversation_id 建键，前端在 `reply_models ≥ 2` 时不给自动 follow-up。
-    pub pending_chat_follow_up: Mutex<HashMap<String, Vec<crate::chat::agent::SteeringMessage>>>,
-    /// Frontend-only queued user input marker. Goal continuation yields at a run boundary so the
-    /// normal queue drain can persist and execute the user's message first.
-    pub pending_goal_user_queue: Mutex<HashSet<String>>,
-    /// API Key 多 key failover 状态：(provider_id, key_idx) → 冷却到期时间。
-    /// 某个 key 触发 quota/rate-limit/auth 失败时进入冷却，KEY_COOLDOWN 秒内不再选用。
-    pub key_cooldowns: Mutex<HashMap<(String, usize), Instant>>,
-    /// 每个 provider 当前活跃 key idx：上一次成功的 key 优先继续用。
-    pub active_key_idx: Mutex<HashMap<String, usize>>,
-    /// 运行时学习到的"该端点拒绝 `prompt_cache_key`"集合（按 base_url）。
-    /// 某端点首次因该字段 400 后记入，本会话后续请求不再发，避免重复触发 + 无谓重试。
-    pub prompt_cache_key_unsupported: Mutex<HashSet<String>>,
-    /// 运行时学习到的"该端点拒绝 `prompt_cache_retention`"集合（按 base_url）。
-    /// long 档 24h 被拒时记入，后续只发 key 不发 24h。
-    pub prompt_cache_retention_unsupported: Mutex<HashSet<String>>,
-    /// 运行时学习到的"该端点拒绝 Responses reasoning item 回放"集合（按 base_url）。
-    /// 带回放的请求首次 4xx 后记入，后续不再回放（降级 = 修复前行为，对话不 brick）。
-    pub reasoning_replay_unsupported: Mutex<HashSet<String>>,
-    /// 出图端点自愈缓存：(provider_id, normalized_model) → 上次成功的 [`ImageRoute`]。
-    /// 首选端点被 provider 判为端点错配后，换端点成功即记入，下次同模型直达正确端点。
-    /// 仅内存、不落盘（`ImageRoute` 是运行时枚举，非配置）。
-    pub image_route_cache:
-        Mutex<HashMap<(String, String), crate::chat::image_generation::ImageRoute>>,
+    pending_chat_external_sends: crate::chat::external_send::ChatExternalSendMailbox,
+    provider_runtime: crate::chat::provider_runtime::ProviderRuntimeState,
     /// MCP 会话池与持久化工具 schema 快照的领域句柄；内部索引只由 mcp 模块拥有。
     mcp_runtime: crate::mcp::McpRuntimeState,
     /// Token usage ledger directory under app data. Model providers can append records
@@ -193,92 +79,80 @@ pub struct AppState {
     /// 与后台 subagent 不同：这些命令**跨 turn 存活**，只由显式 `kill_background`
     /// 或 app 退出 sweep 清理（对齐 Claude Code background bash，dev-server 友好），
     /// 不随发起的 run 取消。仅在 insert/lookup/sweep 时短暂持锁。
-    pub background_commands: Arc<Mutex<HashMap<String, crate::native_tools::BackgroundCommand>>>,
+    background_commands: Arc<crate::native_tools::background_registry::BackgroundCommandRegistry>,
     /// 外部 CLI 自报的后台任务注册表（目前只有 claude：后台 Bash / 后台子代理，
     /// task_id → 条目）。由 `run.rs` 消费 `UnifiedAgentEvent::BackgroundTask` 时 upsert，
     /// Background tasks 面板轮询读取。仅内存：任务活在 CLI 进程里，Kivio 重启即失效。
-    pub external_background_tasks: Mutex<HashMap<String, ExternalBackgroundTask>>,
+    external_background_tasks: crate::external_agents::background_tasks::ExternalBackgroundTasks,
     /// 开发者「请求调试」内存环形缓冲：最近 [`REQUEST_DEBUG_CAPACITY`] 条 provider 调用的
     /// 请求（脱敏 headers + body）+ 响应摘要。默认关闭（`chat_tools.request_debug_enabled`），
-    /// 关闭时 adapter 短路、不构造记录。仅内存、不落盘，进程退出即清。
-    pub request_debug: Mutex<VecDeque<crate::chat::request_debug::RequestDebugRecord>>,
+    /// 关闭时 adapter 短路、不构造记录。领域 owner 管理环形缓冲及既有磁盘镜像。
+    request_debug: crate::chat::request_debug::RequestDebugState,
     /// 自动化运行生命周期的领域句柄；内部索引与转换只由 automation 模块拥有。
     pub(crate) automation_runs: crate::automation::AutomationRunState,
 }
 
-/// 一条外部 CLI 后台任务（claude 的 `system/task_started` / `task_notification`）。
-/// 任务本体活在 CLI 进程里，Kivio 只有观测与 `stop_task`，没有 pid、没有日志文件。
-#[derive(Debug, Clone)]
-pub struct ExternalBackgroundTask {
-    pub task_id: String,
-    pub conversation_id: String,
-    /// claude 的 `task_type`：`local_bash` / `local_agent` / `remote_agent` / `local_workflow`。
-    pub kind: String,
-    pub description: String,
-    /// `running` | `completed` | `failed` | `stopped`。
-    pub status: String,
-    /// 终态摘要（退出码文案 / 子代理最终回复）。
-    pub summary: Option<String>,
-    pub started_at: std::time::SystemTime,
-    pub ended_at: Option<std::time::SystemTime>,
-}
-
-/// 单个 key 触发 failover 后的冷却时长。
-pub const KEY_COOLDOWN: Duration = Duration::from_secs(60);
-const EXTERNAL_DISCOVERY_CACHE_CAPACITY: usize = 64;
-const EXTERNAL_DISCOVERY_CACHE_RETENTION: Duration = Duration::from_secs(300);
-
-/// 共享的 TTL 缓存读取：每次访问全表清理过期项，命中时刷新 LRU 时间。
-fn get_cached<V: Clone>(
-    cache: &Mutex<HashMap<String, TimedCacheEntry<V>>>,
-    key: &str,
-    ttl: Duration,
-) -> Option<V> {
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-    cache.retain(|_, entry| entry.created_at.elapsed() <= ttl);
-    let entry = cache.get_mut(key)?;
-    entry.last_accessed = Instant::now();
-    Some(entry.value.clone())
-}
-
-/// 共享的有界缓存写入：先清理历史项，再按 LRU 淘汰到容量以内。
-fn set_cached<V>(
-    cache: &Mutex<HashMap<String, TimedCacheEntry<V>>>,
-    key: String,
-    value: V,
-    retention: Duration,
-    capacity: usize,
-) {
-    let now = Instant::now();
-    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-    cache.retain(|_, entry| entry.created_at.elapsed() <= retention);
-    cache.insert(
-        key,
-        TimedCacheEntry {
-            created_at: now,
-            last_accessed: now,
-            value,
-        },
-    );
-    while cache.len() > capacity.max(1) {
-        let Some(oldest_key) = cache
-            .iter()
-            .min_by(|(key_a, entry_a), (key_b, entry_b)| {
-                entry_a
-                    .last_accessed
-                    .cmp(&entry_b.last_accessed)
-                    .then_with(|| entry_a.created_at.cmp(&entry_b.created_at))
-                    .then_with(|| key_a.cmp(key_b))
-            })
-            .map(|(key, _)| key.clone())
-        else {
-            break;
-        };
-        cache.remove(&oldest_key);
-    }
-}
-
 impl AppState {
+    pub(crate) async fn begin_settings_save(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.settings_persistence.begin_full_save().await
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn frontmost_apps(&self) -> &crate::window_focus::FrontmostAppState {
+        &self.frontmost_apps
+    }
+    pub(crate) fn external_background_tasks(
+        &self,
+    ) -> &crate::external_agents::background_tasks::ExternalBackgroundTasks {
+        &self.external_background_tasks
+    }
+    pub(crate) fn request_debug(&self) -> &crate::chat::request_debug::RequestDebugState {
+        &self.request_debug
+    }
+    /// External entrypoint -> Chat renderer handoff. Request ownership remains
+    /// in the mailbox until the renderer atomically takes it or startup fails.
+    pub(crate) fn enqueue_chat_external_send(
+        &self,
+        request: crate::chat::external_send::PendingChatExternalSend,
+    ) {
+        self.pending_chat_external_sends.enqueue(request);
+    }
+
+    pub(crate) fn rollback_chat_external_send(&self, request_id: &str) -> bool {
+        self.pending_chat_external_sends.rollback(request_id)
+    }
+
+    pub(crate) fn take_chat_external_sends(
+        &self,
+    ) -> Vec<crate::chat::external_send::PendingChatExternalSend> {
+        self.pending_chat_external_sends.take_all()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn external_live_session_diagnostic(
+        &self,
+        conversation_id: &str,
+    ) -> crate::external_agents::session::live::LiveSessionDiagnostic {
+        self.external_live_sessions.diagnostic(conversation_id)
+    }
+
+    pub(crate) fn provider_runtime(&self) -> &crate::chat::provider_runtime::ProviderRuntimeState {
+        &self.provider_runtime
+    }
+
+    pub(crate) fn external_discovery(
+        &self,
+    ) -> &crate::external_agents::discovery_state::ExternalDiscoveryState {
+        &self.external_discovery
+    }
+
+    pub(crate) fn chat_runtime(&self) -> &crate::chat::runtime_state::ChatRuntimeState {
+        &self.chat_runtime
+    }
+
+    pub(crate) fn chat_protocol(&self) -> &crate::chat::protocol::ChatProtocolState {
+        &self.chat_protocol
+    }
+
     pub(crate) fn chat_interactions(
         &self,
     ) -> &crate::chat::interaction_state::ChatInteractionState {
@@ -297,44 +171,26 @@ impl AppState {
         rapidocr: std::sync::Arc<RapidOcrClient>,
     ) -> Self {
         let mcp_runtime = crate::mcp::McpRuntimeState::load(&usage_dir);
-        let active_key_idx = settings
-            .providers
-            .iter()
-            .map(|p| (p.id.clone(), p.clamped_active_key_index()))
-            .collect();
+        let request_debug = crate::chat::request_debug::RequestDebugState::new(&usage_dir);
+        let provider_runtime = crate::chat::provider_runtime::ProviderRuntimeState::new(&settings);
         AppState {
             settings: RwLock::new(settings),
             settings_epoch: uuid::Uuid::new_v4().to_string(),
             settings_revision: AtomicU64::new(0),
-            settings_save_lock: tokio::sync::Mutex::new(()),
+            settings_persistence: crate::settings::SettingsPersistenceGate::default(),
             lens_runtime: crate::lens::LensRuntimeState::default(),
-            prev_frontmost_pid_lens: AtomicI32::new(0),
-            prev_frontmost_pid_main: AtomicI32::new(0),
-            chat_stream_generation: AtomicU64::new(0),
-            chat_active_generations: Mutex::new(HashMap::new()),
-            chat_active_replies: Mutex::new(HashMap::new()),
-            chat_protocol: Mutex::new(crate::chat::protocol::ChatProtocolHub::default()),
-            chat_protocol_subscribers: Mutex::new(HashMap::new()),
-            chat_popout_conversations: Mutex::new(HashSet::new()),
-            chat_popout_create_lock: tokio::sync::Mutex::new(()),
+            #[cfg(target_os = "macos")]
+            frontmost_apps: crate::window_focus::FrontmostAppState::default(),
+            chat_runtime: crate::chat::runtime_state::ChatRuntimeState::default(),
+            chat_protocol: crate::chat::protocol::ChatProtocolState::default(),
             chat_interactions: crate::chat::interaction_state::ChatInteractionState::default(),
-            chat_create_conversation_lock: tokio::sync::Mutex::new(()),
-            external_slash_commands_cache: Mutex::new(HashMap::new()),
-            external_agent_models_cache: Mutex::new(HashMap::new()),
-            external_detected_agents_cache: Mutex::new(HashMap::new()),
-            availability_probe_lock: tokio::sync::Mutex::new(()),
-            model_probe_locks: Mutex::new(HashMap::new()),
-            external_live_sessions: Mutex::new(HashMap::new()),
-            pending_chat_external_sends: Mutex::new(Vec::new()),
-            pending_chat_steering: Mutex::new(HashMap::new()),
-            pending_chat_follow_up: Mutex::new(HashMap::new()),
-            pending_goal_user_queue: Mutex::new(HashSet::new()),
-            key_cooldowns: Mutex::new(HashMap::new()),
-            active_key_idx: Mutex::new(active_key_idx),
-            prompt_cache_key_unsupported: Mutex::new(HashSet::new()),
-            prompt_cache_retention_unsupported: Mutex::new(HashSet::new()),
-            reasoning_replay_unsupported: Mutex::new(HashSet::new()),
-            image_route_cache: Mutex::new(HashMap::new()),
+            external_discovery:
+                crate::external_agents::discovery_state::ExternalDiscoveryState::default(),
+            external_live_sessions:
+                crate::external_agents::session::live::LiveSessionRegistry::default(),
+            pending_chat_external_sends:
+                crate::chat::external_send::ChatExternalSendMailbox::default(),
+            provider_runtime,
             mcp_runtime,
             usage_dir,
             http,
@@ -344,9 +200,12 @@ impl AppState {
             offline_models,
             rapidocr,
             sub_agents: crate::chat::sub_agent::SubAgentManager::default(),
-            background_commands: Arc::new(Mutex::new(HashMap::new())),
-            external_background_tasks: Mutex::new(HashMap::new()),
-            request_debug: Mutex::new(VecDeque::new()),
+            background_commands: Arc::new(
+                crate::native_tools::background_registry::BackgroundCommandRegistry::default(),
+            ),
+            external_background_tasks:
+                crate::external_agents::background_tasks::ExternalBackgroundTasks::default(),
+            request_debug,
             automation_runs: crate::automation::AutomationRunState::default(),
         }
     }
@@ -462,60 +321,15 @@ impl AppState {
         total: usize,
         tried: &HashSet<usize>,
     ) -> Option<usize> {
-        if total == 0 {
-            return None;
-        }
-        let now = Instant::now();
-        let cooldowns = self.key_cooldowns.lock().unwrap_or_else(|e| e.into_inner());
-        let active = self
-            .active_key_idx
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(provider_id)
-            .copied()
-            .unwrap_or(0)
-            .min(total.saturating_sub(1));
-
-        let in_cooldown = |idx: usize| {
-            cooldowns
-                .get(&(provider_id.to_string(), idx))
-                .map(|until| *until > now)
-                .unwrap_or(false)
-        };
-
-        // 1) 优先 active idx（未试过 + 未冷却）
-        if !tried.contains(&active) && !in_cooldown(active) {
-            return Some(active);
-        }
-        // 2) 从 active+1 开始环绕扫描
-        for offset in 1..total {
-            let idx = (active + offset) % total;
-            if !tried.contains(&idx) && !in_cooldown(idx) {
-                return Some(idx);
-            }
-        }
-        // 3) 全部冷却 → 兜底找一个未试过的（无视冷却，避免完全无 key 可用）
-        for offset in 0..total {
-            let idx = (active + offset) % total;
-            if !tried.contains(&idx) {
-                return Some(idx);
-            }
-        }
-        None
+        self.provider_runtime
+            .pick_active_key(provider_id, total, tried)
     }
 
     /// 为某个 Chat conversation 开启一轮新的可取消运行，返回本轮 generation。
     /// 分配一个进程内从未用过的 generation 号（全局单调递增），并登记到活跃集合。
     /// **不**作废同会话其它在跑 run —— 多模型一问多答时 N 条 run 各持自己的 generation 并存。
     pub fn next_chat_generation(&self, conversation_id: &str) -> u64 {
-        let next = self.chat_stream_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        self.chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(conversation_id.to_string())
-            .or_default()
-            .insert(next);
-        next
+        self.chat_runtime.begin_generation(conversation_id)
     }
 
     /// 取消指定 conversation 的**所有**当前 Chat 运行：清空其活跃 generation 集合，
@@ -524,26 +338,15 @@ impl AppState {
     /// spawn 用一次性合成 conversation_id，留空集合会无界累积。
     pub fn cancel_chat_generation(&self, conversation_id: &str) {
         self.sub_agents.stop_conversation(conversation_id);
-        self.chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id);
+        self.chat_runtime.cancel_conversation(conversation_id);
     }
 
     /// 单条 run 自然结束时退役其 generation（不影响同会话其它在跑 run）。
     /// 单模型路径下集合恒只含本 run 的一个号，移除后即变空，与旧「cancel 推代号」等价。
     /// 集合变空时移除键，防止一次性 conversation_id（sub-agent 合成会话）留下空条目。
     pub fn end_chat_generation(&self, conversation_id: &str, generation: u64) {
-        let mut map = self
-            .chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(active) = map.get_mut(conversation_id) {
-            active.remove(&generation);
-            if active.is_empty() {
-                map.remove(conversation_id);
-            }
-        }
+        self.chat_runtime
+            .end_generation(conversation_id, generation);
     }
 
     /// 该会话是否已授予文件/命令工具的会话级授权。
@@ -572,12 +375,8 @@ impl AppState {
 
     /// 判断指定 conversation 的某条 Chat 运行是否仍然有效（其 generation 仍在活跃集合内）。
     pub fn is_chat_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .map(|active| active.contains(&generation))
-            .unwrap_or(false)
+        self.chat_runtime
+            .is_generation_active(conversation_id, generation)
     }
 
     /// 用户在运行中插话：把消息放进该会话的 steering 信箱，等 `run_agent_loop` 轮首来取。
@@ -587,23 +386,7 @@ impl AppState {
         conversation_id: &str,
         message: crate::chat::agent::SteeringMessage,
     ) -> bool {
-        if self
-            .chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .map(|active| active.is_empty())
-            .unwrap_or(true)
-        {
-            return false;
-        }
-        self.pending_chat_steering
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(conversation_id.to_string())
-            .or_default()
-            .push(message);
-        true
+        self.chat_runtime.push_steering(conversation_id, message)
     }
 
     /// 取走该会话待注入的插话（取一次清一次）。空集合时移除键，避免无界累积。
@@ -611,42 +394,15 @@ impl AppState {
         &self,
         conversation_id: &str,
     ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.pending_chat_steering
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id)
-            .unwrap_or_default()
+        self.chat_runtime.take_steering(conversation_id)
     }
 
     pub fn has_chat_pending_input(&self, conversation_id: &str) -> bool {
-        self.pending_chat_steering
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .is_some_and(|messages| !messages.is_empty())
-            || self
-                .pending_chat_follow_up
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(conversation_id)
-                .is_some_and(|messages| !messages.is_empty())
+        self.chat_runtime.has_pending_input(conversation_id)
     }
 
     pub fn has_chat_active_generation(&self, conversation_id: &str) -> bool {
-        self.chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .is_some_and(|active| !active.is_empty())
-    }
-
-    /// run 结束时丢掉没来得及消费的插话——否则它会漏进**下一条** run 的第一轮。
-    /// 不丢消息：前端队列里那条要等卡片事件才出队，收不到就按普通消息重发。
-    pub fn clear_chat_steering(&self, conversation_id: &str) {
-        self.pending_chat_steering
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id);
+        self.chat_runtime.has_active_generation(conversation_id)
     }
 
     /// 用户在运行中排 follow-up：放进终答后续跑的信箱。没有活跃 run 则 false。
@@ -655,60 +411,24 @@ impl AppState {
         conversation_id: &str,
         message: crate::chat::agent::SteeringMessage,
     ) -> bool {
-        if self
-            .chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .map(|active| active.is_empty())
-            .unwrap_or(true)
-        {
-            return false;
-        }
-        self.pending_chat_follow_up
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(conversation_id.to_string())
-            .or_default()
-            .push(message);
-        true
+        self.chat_runtime.push_follow_up(conversation_id, message)
     }
 
     pub fn take_chat_follow_up(
         &self,
         conversation_id: &str,
     ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.pending_chat_follow_up
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id)
-            .unwrap_or_default()
-    }
-
-    pub fn clear_chat_follow_up(&self, conversation_id: &str) {
-        self.pending_chat_follow_up
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id);
+        self.chat_runtime.take_follow_up(conversation_id)
     }
 
     pub fn set_goal_user_queue_pending(&self, conversation_id: &str, pending: bool) {
-        let mut queued = self
-            .pending_goal_user_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if pending {
-            queued.insert(conversation_id.to_string());
-        } else {
-            queued.remove(conversation_id);
-        }
+        self.chat_runtime
+            .set_goal_user_queue_pending(conversation_id, pending);
     }
 
     pub fn has_goal_user_queue_pending(&self, conversation_id: &str) -> bool {
-        self.pending_goal_user_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(conversation_id)
+        self.chat_runtime
+            .has_goal_user_queue_pending(conversation_id)
     }
 
     /// 对话被删除时清理其按 conversation_id 累积的运行态痕迹：活跃 generation 集合、
@@ -716,29 +436,14 @@ impl AppState {
     /// 引用，是最无歧义的有界清理点（不影响其它活跃对话）。generation 号本身来自进程级
     /// 全局计数器（不分桶），无需在此清理。
     pub fn forget_chat_conversation_runtime(&self, conversation_id: &str) {
-        self.chat_active_generations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id);
+        self.chat_runtime.forget_conversation(conversation_id);
         self.chat_interactions.forget_conversation(conversation_id);
-        self.clear_chat_steering(conversation_id);
-        self.clear_chat_follow_up(conversation_id);
-        self.set_goal_user_queue_pending(conversation_id, false);
     }
 
     /// 尝试占用某个对话的某条 run 回复槽位。同会话允许多条 run 并存（多模型一问多答）；
     /// 仅当同一 (conversation_id, run_id) 已在进行中时返回 false（防同一 run 重复进入）。
     pub fn try_begin_chat_reply(&self, conversation_id: &str, run_id: &str) -> bool {
-        let mut active = self
-            .chat_active_replies
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let runs = active.entry(conversation_id.to_string()).or_default();
-        if runs.contains(run_id) {
-            return false;
-        }
-        runs.insert(run_id.to_string());
-        true
+        self.chat_runtime.try_begin_reply(conversation_id, run_id)
     }
 
     /// 原子地「检查 busy + 占用一个哨兵槽位」：在同一把锁内，若该会话已有任意 run 在跑则返回
@@ -747,40 +452,27 @@ impl AppState {
     /// 检查）。哨兵只占 `chat_active_replies`，不碰 `chat_active_generations`（不参与取消），
     /// 由命令退出时 `end_chat_reply` 释放。
     pub fn try_reserve_chat_send(&self, conversation_id: &str, run_id: &str) -> bool {
-        let mut active = self
-            .chat_active_replies
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let runs = active.entry(conversation_id.to_string()).or_default();
-        if !runs.is_empty() {
-            return false;
-        }
-        runs.insert(run_id.to_string());
-        true
+        self.chat_runtime.try_reserve_send(conversation_id, run_id)
     }
 
     /// 该会话当前是否有任意一条 run 正在回复（用于「生成中拒绝新发送」的 busy 判定）。
     pub fn conversation_has_active_reply(&self, conversation_id: &str) -> bool {
-        self.chat_active_replies
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .map(|runs| !runs.is_empty())
-            .unwrap_or(false)
+        self.chat_runtime.has_active_reply(conversation_id)
     }
 
     /// 释放某个对话某条 run 的回复槽位（run 集合空了则移除该会话条目）。
     pub fn end_chat_reply(&self, conversation_id: &str, run_id: &str) {
-        let mut active = self
-            .chat_active_replies
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(runs) = active.get_mut(conversation_id) {
-            runs.remove(run_id);
-            if runs.is_empty() {
-                active.remove(conversation_id);
-            }
-        }
+        self.chat_runtime.end_reply(conversation_id, run_id);
+    }
+
+    pub(crate) fn finish_chat_reply_generation(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        generation: u64,
+    ) {
+        self.chat_runtime
+            .finish_reply_generation(conversation_id, run_id, generation);
     }
 
     fn mcp_manager(&self) -> crate::mcp::McpManager<'_> {
@@ -940,23 +632,8 @@ impl AppState {
         full_ttl: Duration,
         empty_ttl: Duration,
     ) -> Option<Vec<crate::external_agents::types::ExternalCliSlashCommand>> {
-        let mut cache = self
-            .external_slash_commands_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let max_ttl = full_ttl.max(empty_ttl);
-        cache.retain(|_, entry| entry.created_at.elapsed() <= max_ttl);
-        let entry = cache.get_mut(cache_key)?;
-        let ttl = if entry.value.is_empty() {
-            empty_ttl
-        } else {
-            full_ttl
-        };
-        if entry.created_at.elapsed() > ttl {
-            return None;
-        }
-        entry.last_accessed = Instant::now();
-        Some(entry.value.clone())
+        self.external_discovery
+            .get_cached_external_slash_commands(cache_key, full_ttl, empty_ttl)
     }
 
     pub fn set_cached_external_slash_commands(
@@ -964,13 +641,8 @@ impl AppState {
         cache_key: String,
         commands: Vec<crate::external_agents::types::ExternalCliSlashCommand>,
     ) {
-        set_cached(
-            &self.external_slash_commands_cache,
-            cache_key,
-            commands,
-            EXTERNAL_DISCOVERY_CACHE_RETENTION,
-            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
-        );
+        self.external_discovery
+            .set_cached_external_slash_commands(cache_key, commands)
     }
 
     /// 读模型探测缓存：按条目来源应用不同 TTL——probed 用 `probed_ttl`，fallback 用
@@ -981,23 +653,11 @@ impl AppState {
         probed_ttl: Duration,
         fallback_ttl: Duration,
     ) -> Option<crate::external_agents::types::CachedAgentModels> {
-        use crate::external_agents::types::ModelSource;
-        let mut cache = self
-            .external_agent_models_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let max_ttl = probed_ttl.max(fallback_ttl);
-        cache.retain(|_, entry| entry.created_at.elapsed() <= max_ttl);
-        let entry = cache.get_mut(cache_key)?;
-        let ttl = match entry.value.source {
-            ModelSource::Probed => probed_ttl,
-            ModelSource::Fallback => fallback_ttl,
-        };
-        if entry.created_at.elapsed() > ttl {
-            return None;
-        }
-        entry.last_accessed = Instant::now();
-        Some(entry.value.clone())
+        self.external_discovery.get_cached_external_agent_models(
+            cache_key,
+            probed_ttl,
+            fallback_ttl,
+        )
     }
 
     pub fn set_cached_external_agent_models(
@@ -1005,39 +665,26 @@ impl AppState {
         cache_key: String,
         models: crate::external_agents::types::CachedAgentModels,
     ) {
-        set_cached(
-            &self.external_agent_models_cache,
-            cache_key,
-            models,
-            EXTERNAL_DISCOVERY_CACHE_RETENTION,
-            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
-        );
+        self.external_discovery
+            .set_cached_external_agent_models(cache_key, models)
     }
 
     /// 切换第三方供应商后作废该 agent 的模型探测缓存。key 形如 `agent:cwd`，
     /// 同一个 agent 在不同工作目录下各有一条，全部要清。
     pub fn clear_external_agent_models_cache(&self, agent_id: &str) {
-        let prefix = format!("{agent_id}:");
-        self.external_agent_models_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|key, _| !key.starts_with(&prefix));
+        self.external_discovery
+            .clear_external_agent_models_cache(agent_id)
     }
 
     /// 保存设置后整表作废（供应商可能变了，而设置保存不频繁，不值得逐 agent 比对）。
     pub fn clear_all_external_agent_models_cache(&self) {
-        self.external_agent_models_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.external_discovery
+            .clear_all_external_agent_models_cache()
     }
 
     /// 作废可用性缓存（含落盘快照之外的内存副本）。切供应商后版本/认证状态都可能变了。
     pub fn clear_detected_agents_cache(&self) {
-        self.external_detected_agents_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        self.external_discovery.clear_detected_agents_cache()
     }
 
     pub fn get_cached_detected_agents(
@@ -1045,7 +692,8 @@ impl AppState {
         cache_key: &str,
         ttl: Duration,
     ) -> Option<Vec<crate::external_agents::types::DetectedAgent>> {
-        get_cached(&self.external_detected_agents_cache, cache_key, ttl)
+        self.external_discovery
+            .get_cached_detected_agents(cache_key, ttl)
     }
 
     pub fn set_cached_detected_agents(
@@ -1053,26 +701,14 @@ impl AppState {
         cache_key: String,
         agents: Vec<crate::external_agents::types::DetectedAgent>,
     ) {
-        set_cached(
-            &self.external_detected_agents_cache,
-            cache_key,
-            agents,
-            EXTERNAL_DISCOVERY_CACHE_RETENTION,
-            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
-        );
+        self.external_discovery
+            .set_cached_detected_agents(cache_key, agents)
     }
 
     /// single-flight：取（或创建）某 (agent:cwd) key 的模型探测锁。持锁期间探测，
     /// 释放后并发者复查缓存即命中，避免同一目标并发重探。
-    pub fn model_probe_lock_for(&self, key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-        let mut locks = self
-            .model_probe_locks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        locks
-            .entry(key.to_string())
-            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
+    pub(crate) async fn acquire_model_probe(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        self.external_discovery.acquire_model_probe(key).await
     }
 
     /// Phase 2: return the control channel of a reusable live session for this conversation
@@ -1090,20 +726,8 @@ impl AppState {
         launch_config: &crate::external_agents::session::live::LaunchConfig,
     ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
     {
-        let mut map = self
-            .external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(session) = map.get_mut(conversation_id) {
-            if session.is_reusable(agent_id, cwd, launch_config) {
-                session.last_activity = Instant::now();
-                session.turns_served = session.turns_served.saturating_add(1);
-                return Some(session.control.clone());
-            }
-        }
-        // Dropping the removed entry closes its control channel → the actor shuts the child down.
-        map.remove(conversation_id);
-        None
+        self.external_live_sessions
+            .reusable_control(conversation_id, agent_id, cwd, launch_config)
     }
 
     /// 把这条会话标成「有在飞轮次」，返回的 guard 落地时自动清掉。    ///
@@ -1113,13 +737,7 @@ impl AppState {
         &self,
         conversation_id: &str,
     ) -> Option<crate::external_agents::session::live::TurnBusyGuard> {
-        let map = self
-            .external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        map.get(conversation_id).map(|session| {
-            crate::external_agents::session::live::TurnBusyGuard::new(session.busy.clone())
-        })
+        self.external_live_sessions.mark_busy(conversation_id)
     }
 
     /// 控制面操作只在会话空闲时独占 busy 标志；不能覆盖正在生成的 guard。
@@ -1127,15 +745,7 @@ impl AppState {
         &self,
         conversation_id: &str,
     ) -> Result<crate::external_agents::session::live::TurnBusyGuard, String> {
-        let map = self
-            .external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let session = map
-            .get(conversation_id)
-            .ok_or_else(|| "external live session is unavailable".to_string())?;
-        crate::external_agents::session::live::TurnBusyGuard::try_new(session.busy.clone())
-            .ok_or_else(|| "Pi session is busy; wait for the current run to finish".to_string())
+        self.external_live_sessions.try_mark_busy(conversation_id)
     }
     /// 取出该会话常驻 CLI 的控制通道（若有）。给「运行中插话」用：外部 CLI 那条路不走
     /// `pending_chat_steering` 信箱（那是内置 agent 循环的轮首注入），而是把命令直接送进
@@ -1145,11 +755,7 @@ impl AppState {
         conversation_id: &str,
     ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
     {
-        self.external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .map(|session| session.control.clone())
+        self.external_live_sessions.control_any(conversation_id)
     }
 
     /// 取出宣称 follow-up 能力的常驻会话控制通道，以及该 CLI 的图片 MIME 白名单。
@@ -1161,16 +767,8 @@ impl AppState {
         tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
         &'static [&'static str],
     )> {
-        let map = self
-            .external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let session = map.get(conversation_id)?;
-        let def = crate::external_agents::registry::get_agent_def(&session.agent_id)?;
-        if !def.supports_follow_up {
-            return None;
-        }
-        Some((session.control.clone(), def.image_mime_whitelist))
+        self.external_live_sessions
+            .follow_up_control(conversation_id)
     }
 
     /// 取出 Pi 常驻会话控制通道（session tree / fork / switch）。
@@ -1179,12 +777,7 @@ impl AppState {
         conversation_id: &str,
     ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
     {
-        self.external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(conversation_id)
-            .filter(|session| session.agent_id == "pi")
-            .map(|session| session.control.clone())
+        self.external_live_sessions.pi_control(conversation_id)
     }
 
     pub fn register_external_live_session(
@@ -1192,35 +785,12 @@ impl AppState {
         conversation_id: String,
         session: crate::external_agents::session::live::LiveSession,
     ) {
-        const MAX_LIVE_SESSIONS: usize = 6;
-        let mut map = self
-            .external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Reclaim idle sessions (dropping each entry closes its actor + child) and any whose
-        // actor already exited. 有在飞轮次的会话不参与回收（见 `LiveSession::busy`）。
-        map.retain(|_, s| !s.is_idle(crate::external_agents::session::live::LIVE_SESSION_IDLE_TTL));
-        // Bound concurrent live processes: evict least-recently-used until under the cap.
-        // 同样跳过在飞的 —— 正在跑长轮次的那条恰好 `last_activity` 最旧，不排除就一定被它选中。
-        while map.len() >= MAX_LIVE_SESSIONS {
-            let Some(oldest) = map
-                .iter()
-                .filter(|(_, s)| !s.busy.load(std::sync::atomic::Ordering::Acquire))
-                .min_by_key(|(_, s)| s.last_activity)
-                .map(|(k, _)| k.clone())
-            else {
-                break;
-            };
-            map.remove(&oldest);
-        }
-        map.insert(conversation_id, session);
+        self.external_live_sessions
+            .register(conversation_id, session);
     }
 
     pub fn remove_external_live_session(&self, conversation_id: &str) {
-        self.external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(conversation_id);
+        self.external_live_sessions.remove(conversation_id);
     }
 
     pub fn move_external_live_session(
@@ -1228,30 +798,13 @@ impl AppState {
         source_conversation_id: &str,
         destination_conversation_id: &str,
     ) -> Result<(), String> {
-        let mut map = self
-            .external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if map.contains_key(destination_conversation_id) {
-            return Err("destination conversation already has a live session".to_string());
-        }
-        let mut session = map
-            .remove(source_conversation_id)
-            .ok_or_else(|| "source live session disappeared".to_string())?;
-        session.last_activity = Instant::now();
-        map.insert(destination_conversation_id.to_string(), session);
-        Ok(())
+        self.external_live_sessions
+            .move_session(source_conversation_id, destination_conversation_id)
     }
     /// Reclaim every idle/dead live session (e.g. from a periodic sweeper). Returns how many
     /// were dropped. Dropping each entry closes its actor + child process.
     pub fn sweep_idle_external_live_sessions(&self, idle_ttl: Duration) -> usize {
-        let mut map = self
-            .external_live_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let before = map.len();
-        map.retain(|_, s| !s.is_idle(idle_ttl));
-        before - map.len()
+        self.external_live_sessions.sweep_idle(idle_ttl)
     }
 
     /// 关停所有活的外部 CLI 会话（退出钩子用），**等它们真的退出**。
@@ -1266,37 +819,15 @@ impl AppState {
     /// `LiveSession::child_pid` 那条「绝不按 pid 杀」规则的**唯一例外** —— 那条规则防的是
     /// 把进程从一个还活着的 actor 底下抽走，而进程退出时这个顾虑已经不存在了。
     pub async fn close_all_external_live_sessions(&self) {
-        const PER_SESSION_CLOSE_TIMEOUT: Duration = Duration::from_millis(1_500);
-        let sessions: Vec<crate::external_agents::session::live::LiveSession> = {
-            let mut map = self
-                .external_live_sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            map.drain().map(|(_, session)| session).collect()
-        };
-        futures::future::join_all(sessions.into_iter().map(|session| async move {
-            let _ = session
-                .control
-                .send(crate::external_agents::session::live::SessionCommand::Close)
-                .await;
-            if tokio::time::timeout(PER_SESSION_CLOSE_TIMEOUT, session.control.closed())
-                .await
-                .is_err()
-            {
-                if let Some(pid) = session.child_pid {
-                    crate::native_tools::kill_process_group(pid);
-                }
-            }
-        }))
-        .await;
+        self.external_live_sessions.close_all().await;
     }
 
     /// Shared handle to the background-command registry. Returned as a cloned
     /// `Arc` so a detached waiter task can update job status after the spawning
     /// stack frame is gone (background commands survive across turns).
-    pub fn background_commands_handle(
+    pub(crate) fn background_commands_handle(
         &self,
-    ) -> Arc<Mutex<HashMap<String, crate::native_tools::BackgroundCommand>>> {
+    ) -> Arc<crate::native_tools::background_registry::BackgroundCommandRegistry> {
         Arc::clone(&self.background_commands)
     }
 
@@ -1311,54 +842,15 @@ impl AppState {
         description: Option<&str>,
         summary: Option<&str>,
     ) {
-        const MAX_TRACKED_EXTERNAL_TASKS: usize = 64;
-        let terminal = status != "running";
-        let mut map = self
-            .external_background_tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = map.get_mut(task_id) {
-            entry.status = status.to_string();
-            if let Some(kind) = kind {
-                entry.kind = kind.to_string();
-            }
-            if let Some(description) = description {
-                entry.description = description.to_string();
-            }
-            if summary.is_some() {
-                entry.summary = summary.map(str::to_string);
-            }
-            if terminal && entry.ended_at.is_none() {
-                entry.ended_at = Some(std::time::SystemTime::now());
-            }
-            return;
-        }
-        while map.len() >= MAX_TRACKED_EXTERNAL_TASKS {
-            let oldest_terminal = map
-                .iter()
-                .filter(|(_, t)| t.status != "running")
-                .min_by_key(|(_, t)| t.started_at)
-                .map(|(id, _)| id.clone());
-            match oldest_terminal {
-                Some(id) => map.remove(&id),
-                // 全在跑（几乎不可能）：不淘汰运行中的，接受超额。
-                None => break,
-            };
-        }
-        let now = std::time::SystemTime::now();
-        map.insert(
-            task_id.to_string(),
-            ExternalBackgroundTask {
-                task_id: task_id.to_string(),
-                conversation_id: conversation_id.to_string(),
-                kind: kind.unwrap_or("local_bash").to_string(),
-                description: description.unwrap_or_default().to_string(),
-                status: status.to_string(),
-                summary: summary.map(str::to_string),
-                started_at: now,
-                ended_at: terminal.then_some(now),
-            },
-        );
+        self.external_background_tasks
+            .upsert_external_background_task(
+                conversation_id,
+                task_id,
+                status,
+                kind,
+                description,
+                summary,
+            );
     }
 
     /// Register a tracked background command. Reaps already-terminated entries
@@ -1366,38 +858,7 @@ impl AppState {
     /// session, but keeps the most recent terminal jobs so `bash_output` can
     /// still return their final output + exit code right after they finish.
     pub fn register_background_command(&self, job: crate::native_tools::BackgroundCommand) {
-        const MAX_TRACKED_BACKGROUND_COMMANDS: usize = 64;
-        let mut map = self
-            .background_commands
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Evict oldest terminal jobs first if we are over the cap; never evict a
-        // still-running job (it owns a live process group).
-        while map.len() >= MAX_TRACKED_BACKGROUND_COMMANDS {
-            let oldest_terminal = map
-                .values()
-                .filter(|j| {
-                    !matches!(
-                        j.status,
-                        crate::native_tools::BackgroundCommandStatus::Running
-                    )
-                })
-                .min_by_key(|j| j.started_at)
-                .map(|j| j.job_id.clone());
-            match oldest_terminal {
-                Some(id) => {
-                    // Remove the evicted job's per-job log too, otherwise long
-                    // sessions that churn >64 short-lived background commands
-                    // leak one small (now-unreachable) log file per eviction.
-                    if let Some(job) = map.remove(&id) {
-                        let _ = std::fs::remove_file(&job.log_path);
-                    }
-                }
-                // All remaining jobs are still running; stop evicting.
-                None => break,
-            }
-        }
-        map.insert(job.job_id.clone(), job);
+        self.background_commands.register(job)
     }
 
     /// Kill all tracked background command process groups and clear the registry
@@ -1405,38 +866,7 @@ impl AppState {
     /// taskkill'd; their log files are best-effort removed. Returns how many
     /// process groups were killed.
     pub fn kill_all_background_commands(&self) -> usize {
-        let mut map = self
-            .background_commands
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut killed = 0;
-        for job in map.values_mut() {
-            if matches!(
-                job.status,
-                crate::native_tools::BackgroundCommandStatus::Running
-            ) {
-                // Prefer signaling the owning waiter task (which still holds the
-                // live Child) so the kill targets the live process group and
-                // never a reaped/reused pid (TOCTOU). Fall back to a direct
-                // process-group kill only when there is no waiter (seeded test
-                // jobs).
-                match job.kill_tx.take() {
-                    Some(kill_tx) => {
-                        let _ = kill_tx.send(());
-                        killed += 1;
-                    }
-                    None => {
-                        if let Some(pid) = job.pid {
-                            crate::native_tools::kill_process_group(pid);
-                            killed += 1;
-                        }
-                    }
-                }
-            }
-            let _ = std::fs::remove_file(&job.log_path);
-        }
-        map.clear();
-        killed
+        self.background_commands.kill_all()
     }
 
     /// Kill the background jobs a single conversation started, and drop them from
@@ -1448,156 +878,63 @@ impl AppState {
     /// Jobs with no `conversation_id` (test seeds / non-agent paths) are left
     /// alone: unowned is not the same as owned-by-this-conversation.
     pub fn kill_background_commands_for_conversation(&self, conversation_id: &str) -> usize {
-        let mut map = self
-            .background_commands
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let owned: Vec<String> = map
-            .values()
-            .filter(|job| job.conversation_id.as_deref() == Some(conversation_id))
-            .map(|job| job.job_id.clone())
-            .collect();
-        let mut killed = 0;
-        for job_id in &owned {
-            let Some(job) = map.get_mut(job_id) else {
-                continue;
-            };
-            if matches!(
-                job.status,
-                crate::native_tools::BackgroundCommandStatus::Running
-            ) {
-                // 同 kill_all：优先叫醒持有 Child 的 waiter，避免直接按已回收的 pid 杀
-                // （pid 复用 TOCTOU）；没有 waiter 才回落到进程组直杀。
-                match job.kill_tx.take() {
-                    Some(kill_tx) => {
-                        let _ = kill_tx.send(());
-                        killed += 1;
-                    }
-                    None => {
-                        if let Some(pid) = job.pid {
-                            crate::native_tools::kill_process_group(pid);
-                            killed += 1;
-                        }
-                    }
-                }
-            }
-            let _ = std::fs::remove_file(&job.log_path);
-            map.remove(job_id);
-        }
-        killed
+        self.background_commands
+            .kill_for_conversation(conversation_id)
     }
 
     /// 该 base_url 是否已被学习为"拒绝 prompt_cache_key"。
     pub fn prompt_cache_key_unsupported(&self, base_url: &str) -> bool {
-        self.prompt_cache_key_unsupported
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(base_url)
+        self.provider_runtime.prompt_cache_key_unsupported(base_url)
     }
 
     /// 记住该 base_url 拒绝 prompt_cache_key（首次 400 后调用）。
     pub fn mark_prompt_cache_key_unsupported(&self, base_url: &str) {
-        self.prompt_cache_key_unsupported
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(base_url.to_string());
+        self.provider_runtime
+            .mark_prompt_cache_key_unsupported(base_url)
     }
 
     /// 该 base_url 是否已被学习为"拒绝 Responses reasoning item 回放"。
     pub fn reasoning_replay_unsupported(&self, base_url: &str) -> bool {
-        self.reasoning_replay_unsupported
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(base_url)
+        self.provider_runtime.reasoning_replay_unsupported(base_url)
     }
 
     /// 记住该 base_url 拒绝 reasoning item 回放（带回放的请求首次 4xx 后调用）。
     pub fn mark_reasoning_replay_unsupported(&self, base_url: &str) {
-        self.reasoning_replay_unsupported
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(base_url.to_string());
+        self.provider_runtime
+            .mark_reasoning_replay_unsupported(base_url)
     }
 
     /// 该 base_url 是否已被学习为"拒绝 prompt_cache_retention"。
     pub fn prompt_cache_retention_unsupported(&self, base_url: &str) -> bool {
-        self.prompt_cache_retention_unsupported
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(base_url)
+        self.provider_runtime
+            .prompt_cache_retention_unsupported(base_url)
     }
 
     /// 记住该 base_url 拒绝 prompt_cache_retention（首次 400 后调用）。
     pub fn mark_prompt_cache_retention_unsupported(&self, base_url: &str) {
-        self.prompt_cache_retention_unsupported
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(base_url.to_string());
+        self.provider_runtime
+            .mark_prompt_cache_retention_unsupported(base_url)
     }
 
     /// 标记某个 key 失败：进入冷却 + 不变更 active_key_idx
     pub fn mark_key_failed(&self, provider_id: &str, idx: usize) {
-        let mut cooldowns = self.key_cooldowns.lock().unwrap_or_else(|e| e.into_inner());
-        cooldowns.insert(
-            (provider_id.to_string(), idx),
-            Instant::now() + KEY_COOLDOWN,
-        );
+        self.provider_runtime.mark_key_failed(provider_id, idx)
     }
 
     /// 标记某个 key 成功：清除该 idx 的冷却 + 设为 active
     pub fn mark_key_ok(&self, provider_id: &str, idx: usize) {
-        let mut cooldowns = self.key_cooldowns.lock().unwrap_or_else(|e| e.into_inner());
-        cooldowns.remove(&(provider_id.to_string(), idx));
-        drop(cooldowns);
-        let mut active = self
-            .active_key_idx
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        active.insert(provider_id.to_string(), idx);
+        self.provider_runtime.mark_key_ok(provider_id, idx)
     }
 
     /// 用户点选当前 Key：立刻切过去，并清掉该供应商全部冷却，避免刚选中的槽还在 401 冷却里被跳过。
     pub fn prefer_key(&self, provider_id: &str, idx: usize) {
-        let mut cooldowns = self.key_cooldowns.lock().unwrap_or_else(|e| e.into_inner());
-        cooldowns.retain(|(id, _), _| id != provider_id);
-        drop(cooldowns);
-        let mut active = self
-            .active_key_idx
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        active.insert(provider_id.to_string(), idx);
+        self.provider_runtime.prefer_key(provider_id, idx)
     }
 
     /// 设置保存后：密钥池或点选下标变了才覆盖进程内 failover 指针；其它设置改动不打断正在用的备用 Key。
     pub fn sync_preferred_api_keys(&self, previous: &Settings, next: &Settings) {
-        let next_ids: std::collections::HashSet<&str> =
-            next.providers.iter().map(|p| p.id.as_str()).collect();
-        {
-            let mut active = self
-                .active_key_idx
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            active.retain(|id, _| next_ids.contains(id.as_str()));
-        }
-        {
-            let mut cooldowns = self.key_cooldowns.lock().unwrap_or_else(|e| e.into_inner());
-            cooldowns.retain(|(id, _), _| next_ids.contains(id.as_str()));
-        }
-        for provider in &next.providers {
-            let preferred = provider.clamped_active_key_index();
-            let changed = previous
-                .providers
-                .iter()
-                .find(|old| old.id == provider.id)
-                .map(|old| {
-                    old.api_keys != provider.api_keys
-                        || old.active_key_index != provider.active_key_index
-                })
-                .unwrap_or(true);
-            if changed {
-                self.prefer_key(&provider.id, preferred);
-            }
-        }
+        self.provider_runtime
+            .sync_preferred_api_keys(previous, next)
     }
 }
 
@@ -1673,15 +1010,29 @@ mod tests {
             .is_none());
     }
 
-    #[test]
-    fn model_probe_lock_is_shared_per_key_and_distinct_across_keys() {
+    #[tokio::test]
+    async fn model_probe_lock_is_shared_per_key_and_distinct_across_keys() {
         let st = test_state();
-        let a1 = st.model_probe_lock_for("claude:/proj");
-        let a2 = st.model_probe_lock_for("claude:/proj");
-        let b = st.model_probe_lock_for("codex:/proj");
-        // 同 key 复用同一把锁（single-flight 生效），不同 key 各自独立。
-        assert!(std::sync::Arc::ptr_eq(&a1, &a2));
-        assert!(!std::sync::Arc::ptr_eq(&a1, &b));
+        let a = st.acquire_model_probe("claude:/proj").await;
+        let _b = tokio::time::timeout(
+            Duration::from_secs(1),
+            st.acquire_model_probe("codex:/proj"),
+        )
+        .await
+        .unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(1),
+            st.acquire_model_probe("claude:/proj")
+        )
+        .await
+        .is_err());
+        drop(a);
+        let _retry = tokio::time::timeout(
+            Duration::from_secs(1),
+            st.acquire_model_probe("claude:/proj"),
+        )
+        .await
+        .unwrap();
     }
 
     #[test]
@@ -1774,89 +1125,6 @@ mod tests {
             Duration::from_secs(30),
         );
         assert!(matches!(hit, Some(ref v) if v.is_empty()));
-    }
-
-    #[test]
-    fn bounded_cache_sweeps_all_expired_entries_on_read() {
-        let cache = Mutex::new(HashMap::from([
-            (
-                "expired".to_string(),
-                TimedCacheEntry {
-                    created_at: Instant::now() - Duration::from_secs(10),
-                    last_accessed: Instant::now() - Duration::from_secs(10),
-                    value: 1u32,
-                },
-            ),
-            (
-                "fresh".to_string(),
-                TimedCacheEntry {
-                    created_at: Instant::now(),
-                    last_accessed: Instant::now() - Duration::from_secs(1),
-                    value: 2u32,
-                },
-            ),
-        ]));
-
-        assert_eq!(get_cached(&cache, "fresh", Duration::from_secs(5)), Some(2));
-        let guard = cache.lock().unwrap();
-        assert_eq!(guard.len(), 1);
-        assert!(!guard.contains_key("expired"));
-    }
-
-    #[test]
-    fn bounded_cache_evicts_least_recently_used_entry() {
-        let cache = Mutex::new(HashMap::new());
-        set_cached(&cache, "a".into(), 1u32, Duration::from_secs(60), 2);
-        set_cached(&cache, "b".into(), 2u32, Duration::from_secs(60), 2);
-        assert_eq!(get_cached(&cache, "a", Duration::from_secs(60)), Some(1));
-        set_cached(&cache, "c".into(), 3u32, Duration::from_secs(60), 2);
-
-        let guard = cache.lock().unwrap();
-        assert!(guard.contains_key("a"));
-        assert!(guard.contains_key("c"));
-        assert!(!guard.contains_key("b"));
-    }
-
-    #[test]
-    fn bounded_cache_update_replaces_value_and_refreshes_ttl() {
-        let cache = Mutex::new(HashMap::new());
-        set_cached(&cache, "same".into(), 1u32, Duration::from_secs(60), 2);
-        {
-            let mut guard = cache.lock().unwrap();
-            let entry = guard.get_mut("same").unwrap();
-            entry.created_at = Instant::now() - Duration::from_secs(10);
-            entry.last_accessed = entry.created_at;
-        }
-
-        set_cached(&cache, "same".into(), 2u32, Duration::from_secs(5), 2);
-
-        assert_eq!(get_cached(&cache, "same", Duration::from_secs(5)), Some(2));
-        assert_eq!(cache.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn bounded_cache_remains_within_capacity_under_concurrent_writes() {
-        let cache = Arc::new(Mutex::new(HashMap::new()));
-        let threads: Vec<_> = (0..8)
-            .map(|worker| {
-                let cache = Arc::clone(&cache);
-                std::thread::spawn(move || {
-                    for item in 0..32 {
-                        set_cached(
-                            &cache,
-                            format!("{worker}:{item}"),
-                            item,
-                            Duration::from_secs(60),
-                            16,
-                        );
-                    }
-                })
-            })
-            .collect();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        assert!(cache.lock().unwrap().len() <= 16);
     }
 
     fn sample_mcp_tool(name: &str) -> McpTool {
@@ -1955,6 +1223,21 @@ mod tests {
     fn pick_active_key_starts_at_idx_zero_when_no_active_recorded() {
         let st = test_state();
         assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(0));
+    }
+
+    #[test]
+    fn learned_provider_capabilities_are_endpoint_scoped_and_independent() {
+        let st = test_state();
+        st.mark_prompt_cache_key_unsupported("endpoint-a");
+        assert!(st.prompt_cache_key_unsupported("endpoint-a"));
+        assert!(!st.prompt_cache_retention_unsupported("endpoint-a"));
+        assert!(!st.reasoning_replay_unsupported("endpoint-a"));
+        assert!(!st.prompt_cache_key_unsupported("endpoint-b"));
+        st.mark_prompt_cache_retention_unsupported("endpoint-a");
+        st.mark_reasoning_replay_unsupported("endpoint-b");
+        assert!(st.prompt_cache_retention_unsupported("endpoint-a"));
+        assert!(st.reasoning_replay_unsupported("endpoint-b"));
+        assert!(!st.reasoning_replay_unsupported("endpoint-a"));
     }
 
     #[test]

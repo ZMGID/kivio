@@ -183,7 +183,7 @@ async fn apply_settings(
 ) -> Result<SettingsSnapshot, SettingsError> {
     // Only one full save may own workspace migration at a time. This async lock deliberately does
     // not cover lightweight writers; their revision bump makes this save fail its final CAS.
-    let _full_save = state.settings_save_lock.lock().await;
+    let _full_save = state.begin_settings_save().await;
     let snapshot = settings_snapshot(state);
     if snapshot.version != expected_version {
         return Err(SettingsError::version_conflict(
@@ -327,7 +327,7 @@ pub(crate) fn close_translator_window(app: AppHandle, _state: State<'_, AppState
         #[cfg(target_os = "macos")]
         {
             crate::windows::destroy_overlay_window(&window);
-            crate::windows::restore_previous_frontmost_app(&app, &_state.prev_frontmost_pid_main);
+            crate::windows::restore_previous_frontmost_app(&app, _state.frontmost_apps().main());
         }
         #[cfg(not(target_os = "macos"))]
         let _ = window.close();
@@ -397,7 +397,7 @@ pub(crate) async fn commit_translation(
     // commit 用下面的 [NSApp hide:] 把前台让回原 App（成熟路径）。先清掉翻译窗的前台快照，
     // 避免后续窗口事件再次驱动焦点交还。
     #[cfg(target_os = "macos")]
-    crate::windows::forget_frontmost_app(&state.prev_frontmost_pid_main);
+    crate::windows::forget_frontmost_app(state.frontmost_apps().main());
 
     // macOS 输入翻译窗口被重分类为 KivioOverlayPanel；必须先换回 TaoWindow 再 destroy，
     // 否则 WebKit 清理 contentLayoutRect KVO observer 时会抛 ObjC 异常并让 Rust abort。

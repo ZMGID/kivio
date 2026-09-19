@@ -255,12 +255,10 @@ pub fn handle_conversation_tool_call<'a>(
         }
         let conversation_id = &ctx.conversation_id;
         let state = app.state::<AppState>();
-        let live = state
-            .chat_protocol
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .running_snapshot(conversation_id, &ctx.run_id, &ctx.message_id)
-            .cloned();
+        let live =
+            state
+                .chat_protocol()
+                .running_snapshot(conversation_id, &ctx.run_id, &ctx.message_id);
         let mut validation_errors = Vec::new();
         let persisted = crate::chat::repository::repository(app)
             .mutate(app, conversation_id, |conversation| {

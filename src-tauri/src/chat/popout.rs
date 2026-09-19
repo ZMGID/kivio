@@ -65,17 +65,7 @@ pub fn first_visible_popout(app: &AppHandle) -> Option<WebviewWindow> {
         })
 }
 
-fn sync_registered_popouts(app: &AppHandle) {
-    let ids: std::collections::HashSet<String> =
-        list_popout_conversation_ids(app).into_iter().collect();
-    *app.state::<AppState>()
-        .chat_popout_conversations
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = ids;
-}
-
 fn emit_popouts_changed(app: &AppHandle) {
-    sync_registered_popouts(app);
     let conversation_ids = list_popout_conversation_ids(app);
     let _ = app.emit(
         POPOUTS_CHANGED_EVENT,
@@ -153,7 +143,7 @@ pub async fn chat_open_conversation_popout(
         return Err(format!("Invalid conversation id: {conversation_id}"));
     }
     let state = app.state::<AppState>();
-    let _create_guard = state.chat_popout_create_lock.lock().await;
+    let _create_guard = state.chat_runtime().lock_popout_creation().await;
     let label = popout_label(&conversation_id);
     if let Some(window) = app.get_webview_window(&label) {
         reveal_popout(&app, &window);
@@ -164,7 +154,6 @@ pub async fn chat_open_conversation_popout(
         return Err(format!("最多同时打开 {MAX_POPOUT_WINDOWS} 个独立对话窗口"));
     }
     let window = windows::ensure_chat_popout_window(&app, &label, &conversation_id)?;
-    sync_registered_popouts(&app);
     emit_popouts_changed(&app);
     crate::windows::apply_chat_window_chrome(&window);
     crate::windows::normalize_chat_window_behavior(&window);

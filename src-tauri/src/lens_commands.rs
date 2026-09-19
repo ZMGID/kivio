@@ -23,6 +23,9 @@ use crate::api::{
 use crate::capture_geometry::{
     monitor_for_physical_frame, windows_window_region, CaptureMonitor, CaptureRect,
 };
+use crate::chat::external_send::{
+    PendingChatExternalAttachment, PendingChatExternalMessage, PendingChatExternalSend,
+};
 use crate::chat::model::{ModelMessage, ModelRole};
 use crate::lens;
 use crate::prompts::{
@@ -38,9 +41,7 @@ use crate::replace_translation::mask::{blocks_from_groups, plate_fill};
 use crate::screenshot::cleanup_temp_file;
 use crate::settings::{self, default_question_prompt, ExplainMessage, OcrMode};
 use crate::shortcuts::{capture_active_selection, get_mouse_position, open_chat_window};
-use crate::state::{
-    AppState, PendingChatExternalAttachment, PendingChatExternalMessage, PendingChatExternalSend,
-};
+use crate::state::AppState;
 use crate::utils::{language_name, resolve_target_lang};
 use crate::web_search::{format_web_context, search_web, WebSearchResult};
 use crate::windows;
@@ -553,7 +554,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
     // 必须在 ensure_* 创建隐藏 WebView 之前记录。macOS 冷创建普通 NSWindow 可能短暂激活
     // Kivio；若等创建后才记录，就会把被抢来的 Kivio 误认成原前台 App，Chat 随之被排到最前。
     #[cfg(target_os = "macos")]
-    windows::remember_frontmost_app(&state.prev_frontmost_pid_lens);
+    windows::remember_frontmost_app(state.frontmost_apps().lens());
 
     // 按 mode 选目标窗口：chat → lens 问答窗口；translate / translateText → 独立快速翻译窗口。
     // 两者互斥（同一时刻只一个浮窗可见，由 lens_is_active 泛化 + 热键 toggle 保证）。
@@ -577,7 +578,7 @@ pub(crate) fn lens_request_internal(app: &AppHandle, mode: &str) -> Result<(), S
             Err(e) => {
                 state.lens().release_session();
                 #[cfg(target_os = "macos")]
-                windows::restore_previous_frontmost_app(app, &state.prev_frontmost_pid_lens);
+                windows::restore_previous_frontmost_app(app, state.frontmost_apps().lens());
                 return Err(e);
             }
         }
@@ -1176,20 +1177,10 @@ pub(crate) async fn lens_send_to_chat(
         attachments,
         messages: Vec::new(),
     };
-    {
-        let mut pending = state
-            .pending_chat_external_sends
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.push(request);
-    }
+    state.enqueue_chat_external_send(request);
 
     if let Err(err) = open_chat_window(&app) {
-        let mut pending = state
-            .pending_chat_external_sends
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.retain(|item| item.id != request_id);
+        state.rollback_chat_external_send(&request_id);
         for path in handoff_temp_paths {
             cleanup_temp_file(&path);
         }
@@ -1254,20 +1245,10 @@ pub(crate) async fn lens_send_history_to_chat(
         attachments,
         messages: history,
     };
-    {
-        let mut pending = state
-            .pending_chat_external_sends
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.push(request);
-    }
+    state.enqueue_chat_external_send(request);
 
     if let Err(err) = open_chat_window(&app) {
-        let mut pending = state
-            .pending_chat_external_sends
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.retain(|item| item.id != request_id);
+        state.rollback_chat_external_send(&request_id);
         for path in handoff_temp_paths {
             cleanup_temp_file(&path);
         }
@@ -2312,7 +2293,7 @@ pub(crate) fn lens_close(app: AppHandle) -> Result<(), String> {
         }
     }
     #[cfg(target_os = "macos")]
-    windows::restore_previous_frontmost_app(&app, &state.prev_frontmost_pid_lens);
+    windows::restore_previous_frontmost_app(&app, state.frontmost_apps().lens());
     Ok(())
 }
 

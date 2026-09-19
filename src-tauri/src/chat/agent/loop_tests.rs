@@ -601,7 +601,7 @@ fn test_provider(base_url: &str) -> ModelProvider {
 
 fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a> {
     AgentRunConfig {
-        state,
+        provider_runtime: state,
         conversation_id: "conversation".to_string(),
         tool_conversation_id: "conversation".to_string(),
         depth: 0,

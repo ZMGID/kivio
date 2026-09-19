@@ -7,9 +7,6 @@ use super::finalize::{
     synthesis_failed_fallback_response, RunResultBuilder,
 };
 use super::loop_::{LoopEnv, RunState};
-use super::planning::{
-    call_chat_completion_message_with_usage, stream_scoped_chat_completion_inner,
-};
 use super::recovery::{self, RecoveryAction};
 use super::stop::{
     empty_assistant_response_error, final_assistant_api_message, merge_reasoning,
@@ -80,31 +77,32 @@ pub(crate) async fn synthesis_step(
         None
     };
 
-    let stream = stream_scoped_chat_completion_inner(
-        config.state,
-        host,
-        &config.provider,
-        &config.model,
-        send_messages,
-        None,
-        config.retry_attempts,
-        config.thinking_enabled,
-        config.thinking_level.clone(),
-        config.builtin_web_search_active(),
-        config.max_output_tokens,
-        &config.conversation_id,
-        &config.run_id,
-        &config.message_id,
-        config.generation,
-        "Chat stream",
-        synthesis_stream_policy,
-        Some(response_segment.clone()),
-        Some(response_reasoning_segment.clone()),
-        None,
-        synth_web_search_tracker.clone(),
-    )
-    .await
-    .map_err(|err| err.to_string());
+    let stream = config
+        .provider_runtime
+        .stream(super::provider_runtime::StreamRequest {
+            host,
+            provider: &config.provider,
+            model: &config.model,
+            messages: send_messages,
+            tools: None,
+            retry_attempts: config.retry_attempts,
+            thinking_enabled: config.thinking_enabled,
+            thinking_level: config.thinking_level.clone(),
+            builtin_web_search: config.builtin_web_search_active(),
+            max_output_tokens: config.max_output_tokens,
+            conversation_id: &config.conversation_id,
+            run_id: &config.run_id,
+            message_id: &config.message_id,
+            generation: config.generation,
+            label: "Chat stream",
+            policy: synthesis_stream_policy,
+            text_segment: Some(response_segment.clone()),
+            reasoning_segment: Some(response_reasoning_segment.clone()),
+            tool_draft_tracker: None,
+            web_search_tracker: synth_web_search_tracker.clone(),
+        })
+        .await
+        .map_err(|err| err.to_string());
     let mut stream = match stream {
         Ok(stream) => stream,
         Err(err) if !state.tool_records.is_empty() => {
@@ -351,21 +349,19 @@ async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunSt
     let compacted = super::compaction::maybe_compact_send_view(env, state).await;
     // 恢复重试内部有 send_with_retry 多次退避——必须接取消，否则用户点停止后卡到重试耗尽。
     let result = tokio::select! {
-        result = call_chat_completion_message_with_usage(
-            config.state,
-            &config.provider,
-            &config.model,
-            compacted,
-            None,
-            config.retry_attempts,
-            config.thinking_enabled,
-            config.thinking_level.clone(),
-            config.builtin_web_search_active(),
-            config.max_output_tokens,
-            &config.conversation_id,
-            &config.message_id,
-            "Chat synthesis overflow recovery",
-        ) => result,
+        result = config.provider_runtime.message(super::provider_runtime::MessageRequest {
+            provider: &config.provider,
+            model: &config.model,
+            messages: compacted,
+            retry_attempts: config.retry_attempts,
+            thinking_enabled: config.thinking_enabled,
+            thinking_level: config.thinking_level.clone(),
+            builtin_web_search: config.builtin_web_search_active(),
+            max_output_tokens: config.max_output_tokens,
+            conversation_id: &config.conversation_id,
+            message_id: &config.message_id,
+            label: "Chat synthesis overflow recovery",
+        }) => result,
         _ = env.host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
             Err("cancelled".to_string())
         }
@@ -419,21 +415,19 @@ async fn recover_remediate(
     let reduced = build_neutral_reduced_messages(state);
     // 同 recover_overflow_compact_and_retry：恢复重试必须接取消。
     let result = tokio::select! {
-        result = call_chat_completion_message_with_usage(
-            config.state,
-            &config.provider,
-            &config.model,
-            reduced,
-            None,
-            config.retry_attempts,
-            config.thinking_enabled,
-            config.thinking_level.clone(),
-            config.builtin_web_search_active(),
-            config.max_output_tokens,
-            &config.conversation_id,
-            &config.message_id,
-            "Chat synthesis recovery",
-        ) => result,
+        result = config.provider_runtime.message(super::provider_runtime::MessageRequest {
+            provider: &config.provider,
+            model: &config.model,
+            messages: reduced,
+            retry_attempts: config.retry_attempts,
+            thinking_enabled: config.thinking_enabled,
+            thinking_level: config.thinking_level.clone(),
+            builtin_web_search: config.builtin_web_search_active(),
+            max_output_tokens: config.max_output_tokens,
+            conversation_id: &config.conversation_id,
+            message_id: &config.message_id,
+            label: "Chat synthesis recovery",
+        }) => result,
         _ = env.host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
             Err("cancelled".to_string())
         }

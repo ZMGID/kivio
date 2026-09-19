@@ -815,7 +815,7 @@ pub(super) async fn complete_assistant_reply_inner(
         resolve_usage_anchor(conversation, Some(&provider));
     let result = crate::chat::agent::run_agent_loop(
         crate::chat::agent::AgentRunConfig {
-            state: state.inner(),
+            provider_runtime: state.inner(),
             conversation_id: conversation.id.clone(),
             tool_conversation_id: conversation.id.clone(),
             depth: 0,

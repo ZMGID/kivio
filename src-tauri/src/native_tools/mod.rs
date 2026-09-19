@@ -1,3 +1,4 @@
+pub(crate) mod background_registry;
 mod fetch;
 mod files;
 mod sandbox_exports;

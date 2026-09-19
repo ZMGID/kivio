@@ -888,7 +888,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
             {
                 crate::windows::destroy_overlay_window(&window);
                 let st = app.state::<AppState>();
-                restore_previous_frontmost_app(app, &st.prev_frontmost_pid_main);
+                restore_previous_frontmost_app(app, st.frontmost_apps().main());
             }
             #[cfg(not(target_os = "macos"))]
             let _ = window.close();
@@ -899,7 +899,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let st = app.state::<AppState>();
-        remember_frontmost_app(&st.prev_frontmost_pid_main);
+        remember_frontmost_app(st.frontmost_apps().main());
     }
 
     let window = match ensure_main_window(app) {
@@ -908,7 +908,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
             #[cfg(target_os = "macos")]
             {
                 let st = app.state::<AppState>();
-                restore_previous_frontmost_app(app, &st.prev_frontmost_pid_main);
+                restore_previous_frontmost_app(app, st.frontmost_apps().main());
             }
             eprintln!("Failed to ensure main window: {}", err);
             return;
@@ -923,7 +923,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
         // ensure_main_window 的冷创建若短暂激活了 Kivio，在显示非激活 Panel 前立刻纠正；
         // 不触碰 Chat 窗口本身。
         let st = app.state::<AppState>();
-        reassert_previous_frontmost_app(app, &st.prev_frontmost_pid_main);
+        reassert_previous_frontmost_app(app, st.frontmost_apps().main());
     }
 
     // 重置 hash 为翻译模式；main 现在只承载输入翻译。
@@ -952,7 +952,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
             // 某些 macOS/tao 组合即便已带 NonactivatingPanel tag，冷创建后的首次
             // makeKeyWindow 仍会激活宿主 App；显示后再校正一次，确保普通 Chat 不被带到前面。
             let st = app_for_task.state::<AppState>();
-            reassert_previous_frontmost_app(&app_for_task, &st.prev_frontmost_pid_main);
+            reassert_previous_frontmost_app(&app_for_task, st.frontmost_apps().main());
             refocus_overlay_after_frontmost_reassert(&window_for_task);
         });
         return;
@@ -1167,8 +1167,8 @@ pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let st = app.state::<AppState>();
-        forget_frontmost_app(&st.prev_frontmost_pid_lens);
-        forget_frontmost_app(&st.prev_frontmost_pid_main);
+        forget_frontmost_app(st.frontmost_apps().lens());
+        forget_frontmost_app(st.frontmost_apps().main());
     }
     let existing_window = app.get_webview_window("chat");
     let window = ensure_chat_window(app)?;
@@ -1206,8 +1206,8 @@ pub(crate) fn open_chat_settings_window(app: &AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let st = app.state::<AppState>();
-        forget_frontmost_app(&st.prev_frontmost_pid_lens);
-        forget_frontmost_app(&st.prev_frontmost_pid_main);
+        forget_frontmost_app(st.frontmost_apps().lens());
+        forget_frontmost_app(st.frontmost_apps().main());
     }
     let existing_window = app.get_webview_window("chat");
     let window = ensure_chat_window_with_hash(app, "chat/settings")?;
@@ -1383,7 +1383,7 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                     #[cfg(target_os = "macos")]
                     {
                         let st = app.state::<AppState>();
-                        remember_frontmost_app(&st.prev_frontmost_pid_main);
+                        remember_frontmost_app(st.frontmost_apps().main());
                         ensure_overlay_panel(&window);
                     }
                     let _ = window.eval(

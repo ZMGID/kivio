@@ -122,11 +122,7 @@ pub(crate) async fn generate_image_with_provider(
     // 端点选择：先查会话缓存（自愈学到的纠正结果），否则用单一解析器。
     let normalized_model = normalize_model_name(model);
     let cache_key = (provider.id.clone(), normalized_model);
-    let cached_route = state
-        .image_route_cache
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&cache_key).copied());
+    let cached_route = state.provider_runtime().image_route(&cache_key);
     let route = cached_route.unwrap_or_else(|| resolve_image_route(provider, model));
 
     // fallback_text: 模型有时返回纯文字（澄清/拒绝）而不出图——把这段文字透出，
@@ -158,9 +154,9 @@ pub(crate) async fn generate_image_with_provider(
                 alt,
             )
             .await?;
-            if let Ok(mut cache) = state.image_route_cache.lock() {
-                cache.insert(cache_key, alt);
-            }
+            state
+                .provider_runtime()
+                .remember_image_route(cache_key, alt);
             result
         }
         Err(err) => return Err(err),

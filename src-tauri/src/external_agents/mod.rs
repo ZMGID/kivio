@@ -1,6 +1,7 @@
 pub mod antigravity_slash;
 pub mod ask_user;
 pub mod attachments;
+pub(crate) mod background_tasks;
 pub mod cc_switch;
 pub mod claude_todo;
 pub mod commands;
@@ -8,6 +9,7 @@ pub mod compact;
 pub mod context;
 pub mod defs;
 pub mod detection;
+pub(crate) mod discovery_state;
 pub mod dsh_plugins;
 pub mod dsh_profile;
 pub mod errors;

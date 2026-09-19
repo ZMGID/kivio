@@ -1,6 +1,6 @@
 # Kivio 架构收口：语义一致性、状态所有权与验收
 
-状态：实施中（R1–R2 代码完成，R3–R5 待实施）。基线：`dc1eb6cf`。日期：2026-09-19。
+状态：实施中（R1–R3 代码完成，R4–R5 待实施；平台验收未完成）。基线：`dc1eb6cf`。日期：2026-09-19。
 
 发布记录：[GitHub #52](https://github.com/ZMGID/kivio/issues/52)，标签：`ready-for-agent`。
 
@@ -175,3 +175,12 @@
 - 删除的重复规则：`windows.rs` 移除独立路由 allowlist；`rememberChatLastRoute` 不再吞掉需要迁移层处理的错误；旧的宽松 `allowNavigation` 提交路径删除。
 - 失败用例：跨端 15 组根页/中心页/query/encoded ID/坏编码语料；中心页与 redirect 后迟到成功/失败；popout 查询期间切换目标；迁移成功、失败、重试以及与新记忆/清除的竞争。
 - 复验：R2 前端 5 个定向文件 99 项通过，TypeScript 类型检查、受影响文件 ESLint、Rust `cargo check`、Rust 路由测试 `--no-run`、`cargo fmt --check` 与 diff 检查通过。Rust test harness 的实际执行仍受同一 Windows `0xc0000139` 环境问题阻断，未冒充为已执行通过。
+
+### R3 后端状态所有权
+
+- 旧入口：`AppState` 公开的 Chat generation/reply/protocol、外部 CLI 会话与待输入、缓存/探测、provider 能力、后台任务、调试记录及前台 PID/完整保存锁；`AgentRunConfig` 携带整个 `AppState`。
+- 新 owner：Chat runtime/protocol、外部会话与一次性发送信箱、discovery/provider runtime、原生与外部后台作业、Request Debug、窗口焦点和 Settings 持久化许可分别持有私有状态。[逐字段迁移清单](../architecture-state-ownership.md)记录调用方、失效/回收及锁顺序。
+- 调用方迁移：Chat 发送检查与占位、generation 与 mailbox 退役在同一临界区；agent loop 只接受 stream/message/summarize 模型端口；CLI session 生命周期及 Lens→Chat 交接走行为接口。后台进程终止、日志删除和异步探测不持同步 map 锁。
+- 删除的重复规则：移除未被读取的 popout 对话镜像集合、跨 run 的 reply guard 清信箱、公开 map/lock/atomic 字段；窗口卸载仍只移除协议订阅，不取消后台 run。
+- 失败用例：并行 run/兄弟 run 完成、重复发送占位、取消后的旧输入、新 run 交错、会话复用/忙碌淘汰与 shutdown（含满控制队列的有界关闭和 PID 兜底）、失败交接精确回滚、single-flight、后台终态迟到、调试磁盘镜像顺序、焦点单次消费及保存许可取消。
+- 复验：Windows `cargo check` 与最终 `cargo test --lib --no-run` 通过；上述 owner 定向 Rust 测试实际执行通过。此前的 `0xc0000139` 在本次最终测试可执行文件中未复现。完整回归、macOS 实机生命周期及 R4–R5 验收仍待完成。

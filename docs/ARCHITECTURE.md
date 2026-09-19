@@ -1,6 +1,6 @@
 # Kivio architecture
 
-This document describes the implemented ownership structure and its intended rules. It is not a completion declaration: remaining AppState ownership, page controllers, logical-module dependency checks, and platform acceptance still need work. The remaining acceptance contract and batch status are in the [architecture convergence spec](./prd/architecture-convergence-spec.md). Product terminology and invariants remain defined by [`CONTEXT.md`](../CONTEXT.md) and the ADRs in [`docs/adr`](./adr).
+This document describes the implemented ownership structure and its intended rules. It is not a completion declaration: page controllers, logical-module dependency checks, and platform acceptance still need work. The remaining acceptance contract and batch status are in the [architecture convergence spec](./prd/architecture-convergence-spec.md). Product terminology and invariants remain defined by [`CONTEXT.md`](../CONTEXT.md) and the ADRs in [`docs/adr`](./adr).
 
 ## Composition and dependency direction
 
@@ -14,12 +14,14 @@ React entry / Tauri commands
   ├─ Automation                   → definition/run owners
   └─ shared UI + platform adapters
 
-AppState (partially migrated composition root)
-  ├─ ChatInteractionState
+AppState (composition root)
+  ├─ ChatRuntimeState + ChatProtocolState + ChatInteractionState
+  ├─ ExternalDiscoveryState + LiveSessionRegistry
+  ├─ ProviderRuntimeState + background registries
   ├─ LensRuntimeState
   ├─ AutomationRunState
   ├─ MCP runtime state
-  └─ remaining public mutable domain state (migration pending)
+  └─ Settings persistence gate + platform focus owner
 ```
 
 `npm run architecture:check` parses static, type-only, re-exported and literal dynamic TypeScript imports into a file dependency graph. It rejects selected direction violations and file-level strongly connected components spanning multiple features. It does not yet check cycles in an aggregated logical-module graph; reciprocal Chat/Settings dependencies can therefore pass. Cross-feature edges must target a `public/*` module, except at the explicit composition roots (`App.tsx`, `Lens.tsx`, and `main.tsx`). The current temporary violation baseline is empty, which proves compliance with these rules, not complete ownership convergence.
@@ -43,14 +45,18 @@ Settings UI state separates the backend canonical snapshot, the acknowledged edi
 
 ## Backend state owners
 
-`AppState` remains the Tauri composition root. The following migrated state has private owners; Chat execution/protocol state, external sessions and input mailboxes still include public mutable fields and wider AppState dependencies:
+`AppState` remains the Tauri composition root, with no public mutable lock or atomic fields. The [state ownership inventory](./architecture-state-ownership.md) records each migrated field, its callers, lifecycle and lock order. Its private owners include:
 
+- Chat runtime owns parallel generations, reply reservations, steering/follow-up input and creation coordination. Run completion retires only its own generation; the last run or explicit conversation cancellation clears pending input. Chat protocol owns replay and live subscribers. The agent loop receives a narrow model-execution port rather than the whole `AppState`.
 - Chat interactions own pending approvals, session consent, user prompts and answered structured content. Validation and one-shot removal happen atomically.
+- External-agent discovery owns bounded caches and single-flight probes; live sessions own reuse, idle eviction and shutdown. The Lens-to-Chat send mailbox atomically drains or rolls back the matching failed handoff.
+- Provider runtime owns key failover and learned endpoint capabilities. Native background commands and external CLI background tasks have separate registries with explicit completion, cancellation and exit behavior. Request Debug owns its bounded memory buffer and existing disk mirror.
 - Lens owns busy acquisition/recovery, open sequence and grace period, selection, reset payload, freeze-frame identity, captured images and request-generation validity. Image registration carries the session sequence captured before the slow OS operation, so closing and immediately reopening cannot admit a late image from the previous session.
 - Automation owns active/cancelled run indexes. Starting a run atomically enforces duplicate and concurrency limits; stale cleanup cannot remove a newer run. Cross-domain Chat/agent coordination lives in `automation::application` and reaches Chat cancellation/activity only through narrow ports; neither the runner nor the tool adapter receives `AppState`.
 - MCP owns the session pool and persisted tool snapshots. `McpManager` receives a narrow immutable configuration and persistence interface rather than `AppState`; the outer pool lock is never held across transport handshake work.
+- Settings persistence owns the full-save permit; platform focus owns the two macOS foreground-return slots. Immutable resources and encapsulated domain handles remain in the composition root.
 
-For migrated owners, callers use narrow operations instead of locking domain maps directly. Extending this rule to remaining mutable domains is part of convergence. A state owner must document create, cancel, completion and error cleanup before adding an asynchronous resource.
+Callers use narrow operations instead of locking domain maps directly. A state owner must document create, cancel, completion and error cleanup before adding an asynchronous resource. Application-level orchestration still uses `AppState` at command boundaries; R4 and R5 will address frontend page controllers and logical dependency direction.
 
 ## External agents
 

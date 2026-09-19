@@ -5,9 +5,10 @@
 //! reachable only through an `mpsc::Sender<SessionCommand>` — the registry never holds the
 //! `Child` or any lock across a turn await, only the cheap clonable control sender.
 
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 
@@ -262,6 +263,218 @@ impl LiveSession {
     }
 }
 
+/// Owns every reusable external CLI process handle. The map lock is held only
+/// while cloning/removing control handles; command sends and shutdown waits
+/// always happen after the guard has been dropped.
+#[derive(Default)]
+pub(crate) struct LiveSessionRegistry {
+    sessions: Mutex<HashMap<String, LiveSession>>,
+}
+
+#[cfg(debug_assertions)]
+pub(crate) struct LiveSessionDiagnostic {
+    pub(crate) registered: bool,
+    pub(crate) alive: bool,
+    pub(crate) child_pid: Option<u32>,
+    pub(crate) turns_served: Option<u32>,
+    pub(crate) registry_size: usize,
+}
+
+impl LiveSessionRegistry {
+    #[cfg(debug_assertions)]
+    pub(crate) fn diagnostic(&self, conversation_id: &str) -> LiveSessionDiagnostic {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let registry_size = sessions.len();
+        match sessions.get(conversation_id) {
+            Some(session) => LiveSessionDiagnostic {
+                registered: true,
+                alive: !session.control.is_closed(),
+                child_pid: session.child_pid,
+                turns_served: Some(session.turns_served),
+                registry_size,
+            },
+            None => LiveSessionDiagnostic {
+                registered: false,
+                alive: false,
+                child_pid: None,
+                turns_served: None,
+                registry_size,
+            },
+        }
+    }
+
+    pub(crate) fn reusable_control(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+        cwd: &str,
+        launch_config: &LaunchConfig,
+    ) -> Option<mpsc::Sender<SessionCommand>> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(session) = sessions.get_mut(conversation_id) {
+            if session.is_reusable(agent_id, cwd, launch_config) {
+                session.last_activity = Instant::now();
+                session.turns_served = session.turns_served.saturating_add(1);
+                return Some(session.control.clone());
+            }
+        }
+        sessions.remove(conversation_id);
+        None
+    }
+
+    pub(crate) fn mark_busy(&self, conversation_id: &str) -> Option<TurnBusyGuard> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        sessions
+            .get(conversation_id)
+            .map(|session| TurnBusyGuard::new(session.busy.clone()))
+    }
+
+    pub(crate) fn try_mark_busy(&self, conversation_id: &str) -> Result<TurnBusyGuard, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let session = sessions
+            .get(conversation_id)
+            .ok_or_else(|| "external live session is unavailable".to_string())?;
+        TurnBusyGuard::try_new(session.busy.clone())
+            .ok_or_else(|| "Pi session is busy; wait for the current run to finish".to_string())
+    }
+
+    pub(crate) fn control_any(
+        &self,
+        conversation_id: &str,
+    ) -> Option<mpsc::Sender<SessionCommand>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(conversation_id)
+            .map(|session| session.control.clone())
+    }
+
+    pub(crate) fn follow_up_control(
+        &self,
+        conversation_id: &str,
+    ) -> Option<(mpsc::Sender<SessionCommand>, &'static [&'static str])> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let session = sessions.get(conversation_id)?;
+        let definition = crate::external_agents::registry::get_agent_def(&session.agent_id)?;
+        definition
+            .supports_follow_up
+            .then(|| (session.control.clone(), definition.image_mime_whitelist))
+    }
+
+    pub(crate) fn pi_control(&self, conversation_id: &str) -> Option<mpsc::Sender<SessionCommand>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(conversation_id)
+            .filter(|session| session.agent_id == "pi")
+            .map(|session| session.control.clone())
+    }
+
+    pub(crate) fn register(&self, conversation_id: String, session: LiveSession) {
+        const MAX_LIVE_SESSIONS: usize = 6;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        sessions.retain(|_, existing| !existing.is_idle(LIVE_SESSION_IDLE_TTL));
+        while sessions.len() >= MAX_LIVE_SESSIONS {
+            let Some(oldest) = sessions
+                .iter()
+                .filter(|(_, existing)| !existing.busy.load(Ordering::Acquire))
+                .min_by_key(|(_, existing)| existing.last_activity)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            sessions.remove(&oldest);
+        }
+        sessions.insert(conversation_id, session);
+    }
+
+    pub(crate) fn remove(&self, conversation_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(conversation_id)
+            .is_some()
+    }
+
+    pub(crate) fn move_session(
+        &self,
+        source_conversation_id: &str,
+        destination_conversation_id: &str,
+    ) -> Result<(), String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if sessions.contains_key(destination_conversation_id) {
+            return Err("destination conversation already has a live session".to_string());
+        }
+        let mut session = sessions
+            .remove(source_conversation_id)
+            .ok_or_else(|| "source live session disappeared".to_string())?;
+        session.last_activity = Instant::now();
+        sessions.insert(destination_conversation_id.to_string(), session);
+        Ok(())
+    }
+
+    pub(crate) fn sweep_idle(&self, idle_ttl: Duration) -> usize {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let before = sessions.len();
+        sessions.retain(|_, session| !session.is_idle(idle_ttl));
+        before - sessions.len()
+    }
+
+    /// Drain under the lock, then await actor shutdown without holding it.
+    pub(crate) async fn close_all(&self) {
+        const PER_SESSION_CLOSE_TIMEOUT: Duration = Duration::from_millis(1_500);
+        let sessions: Vec<LiveSession> = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            sessions.drain().map(|(_, session)| session).collect()
+        };
+        futures::future::join_all(sessions.into_iter().map(|session| async move {
+            // A full control queue can block send itself when the actor is stuck.
+            // Keep the PID until both the send and actor shutdown have either
+            // completed or exhausted the same bounded grace period.
+            let graceful = async {
+                let _ = session.control.send(SessionCommand::Close).await;
+                session.control.closed().await;
+            };
+            if tokio::time::timeout(PER_SESSION_CLOSE_TIMEOUT, graceful)
+                .await
+                .is_err()
+            {
+                if let Some(pid) = session.child_pid {
+                    crate::native_tools::kill_process_group(pid);
+                }
+            }
+        }))
+        .await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +622,85 @@ mod tests {
         assert!(session.busy.load(Ordering::Acquire));
         drop(control_guard);
         assert!(!session.busy.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn registry_reuse_rejects_changed_configuration_and_releases_old_actor() {
+        let registry = LiveSessionRegistry::default();
+        let (session, receiver) = make("codex", "/project");
+        registry.register("conversation".to_string(), session);
+        assert!(registry
+            .reusable_control(
+                "conversation",
+                "codex",
+                "/project",
+                &LaunchConfig::default()
+            )
+            .is_some());
+        assert!(registry
+            .reusable_control("conversation", "codex", "/other", &LaunchConfig::default())
+            .is_none());
+        assert!(registry.control_any("conversation").is_none());
+        assert!(receiver.is_closed());
+    }
+
+    #[test]
+    fn registry_move_rejects_destination_collision_without_losing_source() {
+        let registry = LiveSessionRegistry::default();
+        let (source, _source_receiver) = make("codex", "/project");
+        let (destination, _destination_receiver) = make("pi", "/project");
+        registry.register("source".to_string(), source);
+        registry.register("destination".to_string(), destination);
+        assert!(registry.move_session("source", "destination").is_err());
+        assert!(registry.control_any("source").is_some());
+        assert!(registry.control_any("destination").is_some());
+    }
+
+    #[test]
+    fn registry_busy_session_survives_lru_and_idle_sweep() {
+        let registry = LiveSessionRegistry::default();
+        let (busy, _busy_receiver) = make("codex", "/project");
+        registry.register("busy".to_string(), busy);
+        let guard = registry.mark_busy("busy").expect("registered session");
+        assert_eq!(registry.sweep_idle(Duration::ZERO), 0);
+        for index in 0..7 {
+            let (session, _receiver) = make("pi", "/project");
+            registry.register(format!("idle-{index}"), session);
+        }
+        assert!(registry.control_any("busy").is_some());
+        drop(guard);
+        assert!(registry.sweep_idle(Duration::ZERO) >= 1);
+        assert!(registry.control_any("busy").is_none());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_before_awaiting_actor_close() {
+        let registry = Arc::new(LiveSessionRegistry::default());
+        let (session, mut receiver) = make("codex", "/project");
+        registry.register("one".to_string(), session);
+        let actor = tokio::spawn(async move {
+            assert!(matches!(receiver.recv().await, Some(SessionCommand::Close)));
+        });
+        registry.close_all().await;
+        actor.await.expect("actor exits");
+        assert!(registry.control_any("one").is_none());
+    }
+
+    #[tokio::test]
+    async fn shutdown_bounds_a_full_control_channel_even_when_actor_is_stuck() {
+        let registry = LiveSessionRegistry::default();
+        let (session, _receiver) = make("codex", "/project");
+        session
+            .control
+            .send(SessionCommand::Close)
+            .await
+            .expect("fill the one-slot control channel");
+        registry.register("stuck".to_string(), session);
+
+        tokio::time::timeout(Duration::from_secs(2), registry.close_all())
+            .await
+            .expect("the per-session timeout must cover sending Close too");
+        assert!(registry.control_any("stuck").is_none());
     }
 
     #[test]

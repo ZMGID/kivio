@@ -798,14 +798,7 @@ async fn run_shell_command_background(
                 BackgroundCommandStatus::Killed
             }
         };
-        let mut map = waiter_state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(job) = map.get_mut(&waiter_job) {
-            // Do not clobber a Killed status set by kill_background; the kill
-            // path is the authority on a killed job's terminal status.
-            if !matches!(job.status, BackgroundCommandStatus::Killed) {
-                job.status = status;
-            }
-        }
+        waiter_state.complete(&waiter_job, status);
     });
 
     Ok(format!(
@@ -822,13 +815,6 @@ const BASH_OUTPUT_POLL_INTERVAL_MS: u64 = 200;
 
 /// 该作业是否属于调用方会话。调用方无会话上下文（`None`）时不设限（headless /
 /// 测试路径）；作业本身无会话归属时同样放行（旧作业 / 测试种入）。
-fn job_visible_to(job: &BackgroundCommand, caller: Option<&str>) -> bool {
-    match (caller, job.conversation_id.as_deref()) {
-        (Some(caller), Some(owner)) => caller == owner,
-        _ => true,
-    }
-}
-
 fn bash_output_wait_ms(arguments: &Value) -> u64 {
     arguments
         .get("wait_ms")
@@ -844,11 +830,9 @@ fn snapshot_bash_output(
     conversation_id: Option<&str>,
 ) -> Result<(BackgroundCommandStatus, String, u64, String), String> {
     let (status, log_path, command) = {
-        let map = state.background_commands_handle();
-        let map = map.lock().unwrap_or_else(|e| e.into_inner());
-        let job = map
-            .get(job_id)
-            .filter(|job| job_visible_to(job, conversation_id))
+        let job = state
+            .background_commands_handle()
+            .snapshot(job_id, conversation_id)
             .ok_or_else(|| format!("No background job with job_id {job_id}"))?;
         (
             job.status.clone(),
@@ -947,12 +931,9 @@ pub fn list_background(
     _arguments: &Value,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
-    let map = state.background_commands_handle();
-    let map = map.lock().unwrap_or_else(|e| e.into_inner());
-    let mut jobs: Vec<&BackgroundCommand> = map
-        .values()
-        .filter(|job| job_visible_to(job, conversation_id))
-        .collect();
+    let mut jobs = state
+        .background_commands_handle()
+        .snapshots(conversation_id, true);
     if jobs.is_empty() {
         return Ok("(no background jobs)".to_string());
     }
@@ -991,32 +972,13 @@ pub fn kill_background(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "kill_background requires job_id".to_string())?;
 
-    let map = state.background_commands_handle();
-    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
-    let job = map
-        .get_mut(job_id)
-        .filter(|job| job_visible_to(job, conversation_id))
-        .ok_or_else(|| format!("No background job with job_id {job_id}"))?;
-    if job.status.is_terminal() {
+    if !state
+        .background_commands_handle()
+        .kill(job_id, conversation_id)?
+    {
         return Ok(format!(
             "job_id: {job_id} already finished (status unchanged); nothing to kill."
         ));
-    }
-    // Mark Killed under the lock, then signal the waiter to kill+reap. The
-    // waiter still owns the live Child, so it kills the live process group
-    // rather than a pid this lock holder might read after a reap (TOCTOU). If
-    // there is no waiter (e.g. a seeded test job), fall back to a direct
-    // process-group kill of the recorded pid.
-    job.status = BackgroundCommandStatus::Killed;
-    match job.kill_tx.take() {
-        Some(kill_tx) => {
-            let _ = kill_tx.send(());
-        }
-        None => {
-            if let Some(pid) = job.pid {
-                kill_process_group(pid);
-            }
-        }
     }
     Ok(format!("job_id: {job_id} killed."))
 }
@@ -1677,10 +1639,10 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
             let _ = std::fs::write(&write_path, b"hello-later");
-            let mut map = waiter_state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(job) = map.get_mut(&waiter_job) {
-                job.status = BackgroundCommandStatus::Exited { code: Some(0) };
-            }
+            waiter_state.complete(
+                &waiter_job,
+                BackgroundCommandStatus::Exited { code: Some(0) },
+            );
         });
         let started = std::time::Instant::now();
         let out = bash_output(

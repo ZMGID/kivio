@@ -174,30 +174,31 @@ pub(crate) async fn planning_step(
     // 内置搜索由实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
     let mut interrupt_attempt = 0u32;
     let planning_result = loop {
-        match stream_scoped_chat_completion_inner(
-            config.state,
-            host,
-            &config.provider,
-            &config.model,
-            send_messages.clone(),
-            Some(&active_tools),
-            config.retry_attempts,
-            config.thinking_enabled,
-            config.thinking_level.clone(),
-            config.builtin_web_search_active(),
-            config.max_output_tokens,
-            &config.conversation_id,
-            &config.run_id,
-            &config.message_id,
-            config.generation,
-            "Chat tools planning",
-            stream_policy,
-            Some(planning_text_segment.clone()),
-            Some(planning_reasoning_segment.clone()),
-            Some(planning_tool_drafts.clone()),
-            planning_web_search_tracker.clone(),
-        )
-        .await
+        match config
+            .provider_runtime
+            .stream(super::provider_runtime::StreamRequest {
+                host,
+                provider: &config.provider,
+                model: &config.model,
+                messages: send_messages.clone(),
+                tools: Some(&active_tools),
+                retry_attempts: config.retry_attempts,
+                thinking_enabled: config.thinking_enabled,
+                thinking_level: config.thinking_level.clone(),
+                builtin_web_search: config.builtin_web_search_active(),
+                max_output_tokens: config.max_output_tokens,
+                conversation_id: &config.conversation_id,
+                run_id: &config.run_id,
+                message_id: &config.message_id,
+                generation: config.generation,
+                label: "Chat tools planning",
+                policy: stream_policy,
+                text_segment: Some(planning_text_segment.clone()),
+                reasoning_segment: Some(planning_reasoning_segment.clone()),
+                tool_draft_tracker: Some(planning_tool_drafts.clone()),
+                web_search_tracker: planning_web_search_tracker.clone(),
+            })
+            .await
         {
             Ok(mut stream) => {
                 if stream.cancelled {

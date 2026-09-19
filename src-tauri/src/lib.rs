@@ -43,6 +43,8 @@ pub mod updates;
 pub mod usage;
 pub mod utils;
 pub mod web_search;
+#[cfg(any(test, target_os = "macos"))]
+pub(crate) mod window_focus;
 pub mod windows;
 #[cfg(target_os = "windows")]
 pub mod windows_ocr;
@@ -201,7 +203,7 @@ pub fn run() {
                     api.prevent_close();
                     let handle = window.app_handle();
                     let st = handle.state::<AppState>();
-                    restore_previous_frontmost_app(handle, &st.prev_frontmost_pid_main);
+                    restore_previous_frontmost_app(handle, st.frontmost_apps().main());
                     if let Some(webview_window) = handle.get_webview_window("main") {
                         windows::destroy_overlay_window(&webview_window);
                     }
