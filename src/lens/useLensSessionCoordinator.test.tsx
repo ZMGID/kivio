@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { useLensSessionCoordinator } from './useLensSessionCoordinator'
 
 describe('useLensSessionCoordinator', () => {
+  it('rejects an in-flight capture when history replaces the current content', async () => {
+    const { result } = renderHook(() => useLensSessionCoordinator())
+    act(() => result.current.beginOpening())
+    const initialization = result.current.beginInitialization()
+    act(() => result.current.markCaptureReady(initialization))
+    const capture = result.current.beginCapture()!
+    let visibleImage = 'old capture'
+
+    await act(async () => result.current.restoreSession(() => { visibleImage = 'history image' }))
+    if (result.current.isTokenCurrent(capture)) visibleImage = 'late capture'
+
+    expect(visibleImage).toBe('history image')
+    expect(result.current.finishCapture(capture)).toBe(false)
+  })
+
   it('rejects late initialization, selection and capture completions after reset', () => {
     const { result } = renderHook(() => useLensSessionCoordinator())
     const initialization = result.current.beginInitialization()
@@ -126,6 +141,33 @@ describe('useLensSessionCoordinator', () => {
     releasePaint()
     await act(async () => { expect(await closing).toBe(false) })
     expect(hide).not.toHaveBeenCalled()
+  })
+
+  it('invalidates capture and selection immediately while close awaits backend cancellation', async () => {
+    let releaseCancel!: () => void
+    const cancelRequest = vi.fn(() => new Promise<void>(resolve => { releaseCancel = resolve }))
+    const { result } = renderHook(() => useLensSessionCoordinator({ cancelRequest }))
+    act(() => result.current.beginOpening())
+    const initialization = result.current.beginInitialization()
+    act(() => result.current.markCaptureReady(initialization))
+    const capture = result.current.beginCapture()!
+    const selection = result.current.beginSelectionRead()
+    result.current.beginRequest('chat', 'old')
+    const hide = vi.fn().mockResolvedValue(undefined)
+
+    let closing!: Promise<boolean>
+    act(() => { closing = result.current.closeOpening({
+      prepareHiddenSurface: () => result.current.resetForHide(),
+      waitForPaint: async () => undefined,
+      hide,
+    }) })
+    expect(result.current.isTokenCurrent(capture)).toBe(false)
+    expect(result.current.isSelectionCurrent(selection)).toBe(false)
+    expect(hide).not.toHaveBeenCalled()
+    releaseCancel()
+    await act(async () => { expect(await closing).toBe(true) })
+    expect(cancelRequest).toHaveBeenCalledOnce()
+    expect(hide).toHaveBeenCalledOnce()
   })
 
   it('closes once after a terminal event without re-cancelling a completed request', async () => {

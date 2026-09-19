@@ -37,6 +37,7 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
   const requestSequence = useRef(0)
   const activeRequest = useRef<LensRequestToken | null>(null)
   const closing = useRef<{ opening: number; promise: Promise<boolean> } | null>(null)
+  const feedbackClose = useRef<{ timer: ReturnType<typeof setTimeout>; resolve: (closed: boolean) => void } | null>(null)
   const closedOpening = useRef<number | null>(null)
   const cancelRequest = useRef(options.cancelRequest)
   cancelRequest.current = options.cancelRequest
@@ -82,7 +83,16 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     }
   }, [])
 
+  const cancelFeedbackClose = useCallback(() => {
+    const pending = feedbackClose.current
+    if (!pending) return
+    feedbackClose.current = null
+    clearTimeout(pending.timer)
+    pending.resolve(false)
+  }, [])
+
   const beginOpening = useCallback(() => {
+    cancelFeedbackClose()
     const first = openSequence.current === 0
     if (invalidateActiveRequest()) invokeCancelBoundary()
     openSequence.current += 1
@@ -90,7 +100,7 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     setCaptureReady(false)
     capturing.current = false
     return { first, sequence: openSequence.current }
-  }, [invalidateActiveRequest, invokeCancelBoundary])
+  }, [cancelFeedbackClose, invalidateActiveRequest, invokeCancelBoundary])
 
   const beginRequest = useCallback((kind: LensRequestKind, resourceId: string): LensRequestToken => {
     if (activeRequest.current !== null) {
@@ -198,6 +208,7 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
   )
 
   const resetForHide = useCallback(() => {
+    cancelFeedbackClose()
     invalidateActiveRequest()
     initializationSequence.current += 1
     selectionSequence.current += 1
@@ -206,11 +217,14 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     capturing.current = false
     setFreezeFrameImageId('')
     setFreezeFramePreviewId('')
-  }, [invalidateActiveRequest])
+  }, [cancelFeedbackClose, invalidateActiveRequest])
 
   /** An old selection read or late invoke result cannot publish over restored history. */
   const restoreSession = useCallback((applySnapshot: () => void): Promise<void> => {
+    cancelFeedbackClose()
     const cancellation = cancelActiveRequest()
+    invalidateInitialization()
+    capturing.current = false
     beginSelectionRead()
     try {
       applySnapshot()
@@ -219,13 +233,19 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
       return Promise.reject(error)
     }
     return cancellation.then(() => undefined)
-  }, [beginSelectionRead, cancelActiveRequest])
+  }, [beginSelectionRead, cancelActiveRequest, cancelFeedbackClose, invalidateInitialization])
 
   /** Reset the visible surface before native hide, and refuse to hide a newer opening. */
   const closeOpening = useCallback((operations: LensCloseOperations): Promise<boolean> => {
     const opening = openSequence.current
     if (closing.current?.opening === opening) return closing.current.promise
     if (closedOpening.current === opening) return Promise.resolve(false)
+    cancelFeedbackClose()
+    // Closing owns the context from the intent, not from the eventual cancel reply.
+    // A slow backend must not let an old capture/selection repopulate the surface.
+    invalidateInitialization()
+    beginSelectionRead()
+    capturing.current = false
     const promise = (async () => {
       try {
         await cancelActiveRequest()
@@ -245,15 +265,34 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
       if (closing.current?.promise === promise) closing.current = null
     }).catch(() => undefined)
     return promise
-  }, [cancelActiveRequest])
+  }, [beginSelectionRead, cancelActiveRequest, cancelFeedbackClose, invalidateInitialization])
+
+  /** Copy feedback belongs to the content that produced it, never the next opening/history. */
+  const closeAfterFeedback = useCallback((
+    token: LensSessionToken,
+    delayMs: number,
+    operations: LensCloseOperations,
+  ): Promise<boolean> => {
+    if (!isTokenCurrent(token)) return Promise.resolve(false)
+    cancelFeedbackClose()
+    return new Promise<boolean>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        feedbackClose.current = null
+        if (!isTokenCurrent(token)) { resolve(false); return }
+        void closeOpening(operations).then(resolve, reject)
+      }, delayMs)
+      feedbackClose.current = { timer, resolve }
+    })
+  }, [cancelFeedbackClose, closeOpening, isTokenCurrent])
 
   useEffect(() => () => {
+    cancelFeedbackClose()
     if (invalidateActiveRequest()) invokeCancelBoundary()
     initializationSequence.current += 1
     selectionSequence.current += 1
     captureReadyRef.current = false
     capturing.current = false
-  }, [invalidateActiveRequest, invokeCancelBoundary])
+  }, [cancelFeedbackClose, invalidateActiveRequest, invokeCancelBoundary])
 
   const replaceFreezeFrame = useCallback((imageId: string) => {
     setFreezeFrameImageId(imageId)
@@ -272,6 +311,7 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     canCapture,
     cancelActiveRequest,
     closeOpening,
+    closeAfterFeedback,
     captureReady,
     consumeFreezeFrame,
     currentOpening,

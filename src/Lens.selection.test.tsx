@@ -9,8 +9,15 @@ const mocks = vi.hoisted(() => ({
   readImage: vi.fn(),
   readBase64: vi.fn(),
   capture: vi.fn(),
+  compose: vi.fn(),
+  copyImage: vi.fn(),
+  close: vi.fn(),
 }))
 
+vi.mock('./lens/annotation', async importOriginal => ({
+  ...await importOriginal<typeof import('./lens/annotation')>(),
+  composeAnnotatedImage: mocks.compose,
+}))
 vi.mock('./chat/ChatMarkdown', () => ({ ChatMarkdown: () => null }))
 vi.mock('./api/settingsCache', () => ({
   getSettingsCached: async () => ({ settingsLanguage: 'zh', lens: {}, screenshotTranslation: {} }),
@@ -24,6 +31,8 @@ vi.mock('./api/tauri', () => ({
       if (key === 'lensReadImage') return mocks.readImage
       if (key === 'explainReadImage') return mocks.readBase64
       if (key === 'lensCaptureRegion') return mocks.capture
+      if (key === 'lensCopyImageToClipboard') return mocks.copyImage
+      if (key === 'lensClose') return mocks.close
       if (key === 'lensListWindows') return async () => []
       if (key === 'takeLensSelection') return async () => ''
       return async () => () => {}
@@ -46,8 +55,47 @@ describe('Lens selection during cold initialization', () => {
     mocks.readImage.mockReset().mockReturnValue(new Promise(() => {}))
     mocks.readBase64.mockReset()
     mocks.capture.mockReset()
+    mocks.compose.mockReset().mockResolvedValue('png')
+    mocks.copyImage.mockReset().mockResolvedValue({ success: true })
+    mocks.close.mockReset().mockResolvedValue(undefined)
   })
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+  afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it.each(['feedback-reopen', 'copy-reopen', 'same-opening'])('keeps screenshot copy completion owned by its opening (%s)', async scenario => {
+    vi.stubGlobal('URL', { createObjectURL: () => 'blob:cropped', revokeObjectURL: vi.fn() })
+    const payload = JSON.stringify({ frame: { x: 0, y: 0, width: 1280, height: 800 } })
+    mocks.takeReset.mockResolvedValue(payload)
+    mocks.capture.mockResolvedValue({ success: true, imageId: 'cropped' })
+    mocks.readImage.mockResolvedValue(new ArrayBuffer(4))
+    let releaseCopy!: (value: { success: boolean }) => void
+    if (scenario === 'copy-reopen') {
+      mocks.copyImage.mockReturnValue(new Promise(resolve => { releaseCopy = resolve }))
+    }
+    const { container } = render(<Lens />)
+    await act(async () => {})
+    const root = container.firstElementChild!
+    fireEvent.mouseDown(root, { clientX: 100, clientY: 100 })
+    fireEvent.mouseMove(root, { clientX: 200, clientY: 180 })
+    await act(async () => { fireEvent.mouseUp(root, { clientX: 200, clientY: 180 }) })
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 16))
+    await act(async () => { fireEvent.click(container.querySelector('button[title="复制"]')!) })
+    expect(mocks.copyImage).toHaveBeenCalledOnce()
+    if (scenario !== 'same-opening') {
+      await act(async () => { window.dispatchEvent(new CustomEvent('lens:reset')) })
+    }
+    if (scenario === 'copy-reopen') await act(async () => { releaseCopy({ success: true }) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(449) })
+    expect(mocks.close).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    if (scenario === 'same-opening') {
+      expect(mocks.close).toHaveBeenCalledOnce()
+      expect(container.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
+    } else {
+      expect(mocks.close).not.toHaveBeenCalled()
+      expect(container.firstElementChild?.getAttribute('aria-hidden')).not.toBe('true')
+    }
+  })
 
   const displayCases = [
     [1366, 768], [1920, 1080], [2560, 1440], [2560, 1600],

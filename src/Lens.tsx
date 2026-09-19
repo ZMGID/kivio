@@ -33,7 +33,7 @@ import { useFreezeFramePreview } from './lens/useFreezeFramePreview'
 import { useImageObjectUrl } from './lens/useImageObjectUrl'
 import { readDevicePixelRatio, useDevicePixelRatio } from './lens/useDevicePixelRatio'
 import { useLensHistory } from './lens/useLensHistory'
-import { useLensSessionCoordinator } from './lens/useLensSessionCoordinator'
+import { useLensSessionCoordinator, type LensSessionToken } from './lens/useLensSessionCoordinator'
 import { useLensConversationController } from './lens/useLensConversationController'
 import { useLensSelectionController } from './lens/useLensSelectionController'
 import { useLensAnnotationController } from './lens/useLensAnnotationController'
@@ -196,6 +196,8 @@ export default function Lens() {
     canCapture,
     cancelActiveRequest,
     closeOpening,
+    closeAfterFeedback,
+    currentToken,
     captureReady,
     consumeFreezeFrame,
     finishCapture,
@@ -870,18 +872,20 @@ export default function Lens() {
     focusReqIdRef.current++
   }, [beginSelectionRead, cancelPendingMotion, hideAnnotation, hideBarMotion, hideConversationView, hideSelectionView, releaseFreezeCanvas, resetSessionForHide, resetTranslationSession, viewport, metrics, setImagePreview])
 
-  const closeAfterReset = useCallback(async () => {
+  const closeAfterReset = useCallback(async (feedback?: { token: LensSessionToken; delayMs: number }) => {
     try {
-      await closeOpening({
+      const operations = {
         prepareHiddenSurface: resetBeforeHide,
         waitForPaint: async () => {
           await waitForFrames(2)
           await waitForVisibleIdle()
         },
         hide: api.lensClose,
-      })
+      }
+      if (feedback) await closeAfterFeedback(feedback.token, feedback.delayMs, operations)
+      else await closeOpening(operations)
     } catch (err) { console.error(err) }
-  }, [closeOpening, resetBeforeHide])
+  }, [closeAfterFeedback, closeOpening, resetBeforeHide])
 
   // 全局 Esc：流式时取消流 / 否则关闭
   useEffect(() => {
@@ -1701,17 +1705,19 @@ export default function Lens() {
 
   const handleAnnotateCopy = async () => {
     if (annotateSaving) return
+    const token = currentToken()
     const base64 = await composeCurrentAnnotated()
-    if (!base64) return
+    if (!base64 || !isTokenCurrent(token)) return
     try {
       const result = await api.lensCopyImageToClipboard(base64)
+      if (!isTokenCurrent(token)) return
       if (!result.success) {
         console.error('[lens-annotate] copy failed:', result.error)
         return
       }
       setAnnotationCopied(true)
       // 短暂展示"已复制"反馈再关闭
-      window.setTimeout(() => { void closeAfterReset() }, 450)
+      void closeAfterReset({ token, delayMs: 450 })
     } catch (err) {
       console.error('[lens-annotate] copy failed:', err)
     }
