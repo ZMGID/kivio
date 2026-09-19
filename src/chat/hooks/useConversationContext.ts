@@ -19,8 +19,9 @@ const BOUNDARY_ANIMATION_MS = 1800
 const COMPRESS_SETTLE_MS = 360
 
 export interface UseConversationContextOptions {
+  currentConversation: Conversation | null
   currentConversationIdRef: MutableRefObject<string | null>
-  /** context_state 同时镜像进会话对象：消息列表按会话字段渲染分段与边界。 */
+  /** 会话对象是上下文的唯一状态源，面板与消息边界读取同一份快照。 */
   setCurrentConversation: Dispatch<SetStateAction<Conversation | null>>
   /** 压缩 / 清空会改侧栏 preview，落地后让侧栏 refetch。 */
   refreshSidebar: () => void
@@ -39,11 +40,21 @@ function errorMessage(err: unknown, fallback: string): string {
  * 会话的 completed 会被丢掉，标志永远清不掉）。手动与自动压缩共用这一个集合。
  */
 export function useConversationContext({
+  currentConversation,
   currentConversationIdRef,
   setCurrentConversation,
   refreshSidebar,
 }: UseConversationContextOptions) {
-  const [contextState, setContextState] = useState<ConversationContextState | null>(null)
+  const contextState = currentConversation?.context_state ?? currentConversation?.contextState ?? null
+  const setContextState = useCallback((update: SetStateAction<ConversationContextState | null>) => {
+    setCurrentConversation((conversation) => {
+      if (!conversation) return conversation
+      const previous = conversation.context_state ?? conversation.contextState ?? null
+      const next = typeof update === 'function' ? update(previous) : update
+      if (next === previous) return conversation
+      return { ...conversation, context_state: next ?? undefined, contextState: next ?? undefined }
+    })
+  }, [setCurrentConversation])
   const [contextLoading, setContextLoading] = useState(false)
   const [contextError, setContextError] = useState('')
   const [compactingConversationIds, setCompactingConversationIds] = useState<ReadonlySet<string>>(
@@ -81,18 +92,12 @@ export function useConversationContext({
     setContextState(null)
     setContextError('')
     setContextLoading(false)
-  }, [])
+  }, [setContextState])
 
   /** 合并一份完整的权威上下文快照（保留本地已知的压缩 / 清空边界）。 */
   const patchContextState = useCallback((nextState: ConversationContextState) => {
-    setContextState((prev) => {
-      const merged = mergeClearContextState(prev, mergeCompactionContextState(prev, nextState))
-      setCurrentConversation((conversation) => conversation
-        ? { ...conversation, context_state: merged, contextState: merged }
-        : conversation)
-      return merged
-    })
-  }, [setCurrentConversation])
+    setContextState((prev) => mergeClearContextState(prev, mergeCompactionContextState(prev, nextState)))
+  }, [setContextState])
 
   const refreshContextStats = useCallback(async (conversationId?: string) => {
     const targetConversationId = conversationId ?? currentConversationIdRef.current
@@ -117,7 +122,7 @@ export function useConversationContext({
         setContextLoading(false)
       }
     }
-  }, [currentConversationIdRef, patchContextState])
+  }, [currentConversationIdRef, patchContextState, setContextState])
 
   const refreshCurrent = useCallback(() => {
     const conversationId = currentConversationIdRef.current
@@ -181,20 +186,13 @@ export function useConversationContext({
     // 轮末的权威快照）。不能走 patchContextState —— 那条要求一份完整的上下文状态对象。
     if (payload.live) {
       const live = payload.live
-      setContextState((prev) => {
-        const next = applyLiveContextUsage(prev, live)
-        if (!next || next === prev) return prev
-        setCurrentConversation((conversation) => conversation
-          ? { ...conversation, context_state: next, contextState: next }
-          : conversation)
-        return next
-      })
+      setContextState((prev) => applyLiveContextUsage(prev, live) ?? prev)
       return
     }
     if (!payload.contextState) return
     patchContextState(payload.contextState)
     setContextError('')
-  }, [patchContextState, setCurrentConversation])
+  }, [patchContextState, setContextState])
 
   useTauriEvent(api.onChatCompaction, (payload) => {
     const conversationId = payload.conversationId
@@ -221,7 +219,6 @@ export function useConversationContext({
           compaction_boundaries: nextBoundaries,
           compactionBoundaries: nextBoundaries,
         }
-        setContextState(nextState)
         return { ...conversation, context_state: nextState, contextState: nextState }
       })
     }
@@ -229,7 +226,6 @@ export function useConversationContext({
 
   return {
     contextState,
-    setContextState,
     contextLoading,
     setContextLoading,
     contextError,

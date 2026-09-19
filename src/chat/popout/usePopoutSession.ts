@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '../../api/tauri'
 import { withExternalModel } from '../externalModelEffort'
 import { syncChatProtocol } from '../../api/chatProtocol'
@@ -31,8 +31,13 @@ import type {
 } from '../../api/tauri'
 import type { Lang } from '../../components/i18n'
 
+const EMPTY_MESSAGES: Conversation['messages'] = []
+
 export function usePopoutSession(conversationId: string, lang: Lang) {
   const [conversation, setConversation] = useState<Conversation | null>(null)
+  // A queued React update is not yet a visible replacement for the live preview.
+  const committedConversationRef = useRef(conversation)
+  useLayoutEffect(() => { committedConversationRef.current = conversation }, [conversation])
   const [loadError, setLoadError] = useState('')
   const [pendingToolConfirm, setPendingToolConfirm] = useState<ChatToolConfirmPayload | null>(null)
   const [pendingSessionConsent, setPendingSessionConsent] = useState<ChatSessionConsentPayload | null>(null)
@@ -110,7 +115,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
           previewOwner.complete(id, { kind: 'error' })
           setStreamCoarse({ streamError: '回复生成失败，请稍后重试。' })
         } else {
-          previewOwner.complete(id, { kind: 'persisted', committedMessages: outcome.value.messages })
+          previewOwner.complete(id, { kind: 'persisted', committedMessages: committedConversationRef.current?.messages ?? EMPTY_MESSAGES })
         }
       },
     )
@@ -238,7 +243,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     completeWithConversation: (id, persisted) => {
       if (conversationIdRef.current !== id) return
       acceptPersistedConversation(persisted)
-      previewOwner.complete(id, { kind: 'persisted', committedMessages: persisted.messages })
+      previewOwner.complete(id, { kind: 'persisted', committedMessages: committedConversationRef.current?.messages ?? EMPTY_MESSAGES })
     },
     completeTerminal: async (terminal) => {
       const id = terminal.conversationId
@@ -250,7 +255,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
           previewOwner.complete(id, { kind: 'error' })
           setStreamCoarse({ streamError: '回复生成失败，请稍后重试。' })
         } else {
-          previewOwner.complete(id, { kind: 'persisted', committedMessages: persisted.messages })
+          previewOwner.complete(id, { kind: 'persisted', committedMessages: committedConversationRef.current?.messages ?? EMPTY_MESSAGES })
         }
       } catch (error) {
         if (conversationIdRef.current !== id) return

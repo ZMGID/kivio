@@ -1,8 +1,9 @@
 import { act, renderHook } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatStreamPayload } from '../../api/tauri'
 import { chatApi } from '../api'
-import { getCoarse, getSnapshot, reset as resetStreamStore } from '../streamingStore'
+import { getCoarse, getSnapshot, reset as resetStreamStore, subscribeSnapshot } from '../streamingStore'
 import type { Conversation } from '../types'
 import { usePopoutSession } from './usePopoutSession'
 
@@ -81,7 +82,12 @@ const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
 
 async function setupStreamedAnswer() {
   mockGetConversation.mockResolvedValueOnce(userOnly)
-  const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+  let committedMessages: Conversation['messages'] = []
+  const rendered = renderHook(() => {
+    const session = usePopoutSession(CONVERSATION_ID, 'zh')
+    useLayoutEffect(() => { committedMessages = session.conversation?.messages ?? [] }, [session.conversation])
+    return session
+  })
   await flush()
   expect(rendered.result.current.conversation?.messages).toHaveLength(1)
   await act(async () => {
@@ -91,7 +97,7 @@ async function setupStreamedAnswer() {
   await flush()
   expect(getSnapshot().content).toBe('answer')
   expect(getCoarse()).toMatchObject({ streaming: true, streamFrozen: false })
-  return rendered
+  return { ...rendered, getCommittedMessages: () => committedMessages }
 }
 
 describe('usePopoutSession run settle', () => {
@@ -126,8 +132,18 @@ describe('usePopoutSession run settle', () => {
     expect(getCoarse()).toMatchObject({ streaming: false, streamFrozen: true })
     expect(mockGetConversation).toHaveBeenCalledTimes(2)
 
+    // Observe the synchronous store notification, not just act's final render:
+    // clearing here before React commits leaves neither answer visible.
+    const clearedBeforeCommit: boolean[] = []
+    const unsubscribe = subscribeSnapshot(() => {
+      if (!getSnapshot().content) {
+        clearedBeforeCommit.push(!rendered.getCommittedMessages().some((m) => m.id === TWIN_ID))
+      }
+    })
     await act(async () => { resolveReload(withTwin) })
     await flush()
+    unsubscribe()
+    expect(clearedBeforeCommit).toEqual([false])
 
     // React committed the twin → the frozen preview is released in the same pass.
     expect(rendered.result.current.messageListProps.messages.map((m) => m.id)).toContain(TWIN_ID)
@@ -153,6 +169,50 @@ describe('usePopoutSession run settle', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(200) })
     expect(getSnapshot().content).toBe('')
     expect(getCoarse().streamFrozen).toBe(false)
+  })
+
+  it.each(['invoke result', 'terminal reload'] as const)('waits for the committed twin after a local send: %s', async (resultPath) => {
+    mockGetConversation.mockResolvedValueOnce(userOnly)
+    let resolveSend: (conversation: Conversation) => void = () => {}
+    let rejectSend: (error: Error) => void = () => {}
+    mockSendMessage.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      resolveSend = resolve
+      rejectSend = reject
+    }))
+    let committedMessages: Conversation['messages'] = []
+    const rendered = renderHook(() => {
+      const session = usePopoutSession(CONVERSATION_ID, 'zh')
+      useLayoutEffect(() => { committedMessages = session.conversation?.messages ?? [] }, [session.conversation])
+      return session
+    })
+    await flush()
+    let sending: Promise<boolean | void> = Promise.resolve(false)
+    await act(async () => {
+      sending = Promise.resolve(rendered.result.current.inputBarProps.onSend('hello', []))
+      emitStream(packet('run_started', 'run-1'))
+      emitStream(packet('text_delta', 'run-1', 'answer'))
+    })
+    await flush()
+    expect(getSnapshot().content).toBe('answer')
+    const clearedBeforeCommit: boolean[] = []
+    const unsubscribe = subscribeSnapshot(() => {
+      if (!getSnapshot().content) clearedBeforeCommit.push(!committedMessages.some((m) => m.id === TWIN_ID))
+    })
+    await act(async () => {
+      if (resultPath === 'terminal reload') {
+        mockGetConversation.mockResolvedValueOnce(withTwin)
+        emitStream(packet('run_completed', 'run-1'))
+        rejectSend(new Error('invoke response unavailable'))
+      } else {
+        resolveSend(withTwin)
+      }
+      await sending
+    })
+    await flush()
+    unsubscribe()
+    expect(clearedBeforeCommit).toEqual([false])
+    expect(rendered.result.current.conversation?.messages).toEqual(withTwin.messages)
+    expect(getCoarse()).toMatchObject({ streaming: false, streamFrozen: false })
   })
 
   it('a new run supersedes a pending twin without its fallback timer resetting the new live answer', async () => {

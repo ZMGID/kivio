@@ -47,11 +47,12 @@ function setup(initialConversation: Conversation | null = conversation()) {
   const rendered = renderHook(() => {
     const [current, setCurrent] = useState<Conversation | null>(initialConversation)
     const ctx = useConversationContext({
+      currentConversation: current,
       currentConversationIdRef,
       setCurrentConversation: setCurrent,
       refreshSidebar,
     })
-    return { ctx, current }
+    return { ctx, current, setCurrent }
   })
   return { ...rendered, currentConversationIdRef, refreshSidebar }
 }
@@ -76,6 +77,30 @@ beforeEach(() => {
 })
 
 describe('useConversationContext: stats', () => {
+  it('reads context from the accepted conversation when newer and older snapshots arrive in one batch', () => {
+    const { result } = setup()
+    const newer = { ...conversation(), revision: 3, context_state: state({ estimated_input_tokens: 300 }) }
+    const older = { ...conversation(), revision: 2, context_state: state({ estimated_input_tokens: 200 }) }
+    act(() => {
+      for (const snapshot of [newer, older]) {
+        result.current.setCurrent((previous) => previous?.id === snapshot.id && previous.revision > snapshot.revision
+          ? previous : snapshot)
+      }
+    })
+    expect(result.current.current?.revision).toBe(3)
+    expect(result.current.ctx.contextState).toBe(result.current.current?.context_state)
+    expect(result.current.ctx.contextState?.estimated_input_tokens).toBe(300)
+  })
+
+  it('replaces context on navigation and clears it when the conversation is removed', () => {
+    const { result } = setup({ ...conversation(), context_state: state() })
+    expect(result.current.ctx.contextState?.estimated_input_tokens).toBe(100)
+    act(() => { result.current.setCurrent({ ...conversation('c2'), contextState: state({ estimated_input_tokens: 20 }) }) })
+    expect(result.current.ctx.contextState?.estimated_input_tokens).toBe(20)
+    act(() => { result.current.setCurrent(null) })
+    expect(result.current.ctx.contextState).toBeNull()
+  })
+
   it('loads stats for the current conversation and mirrors them into the conversation object', async () => {
     mockStats.mockResolvedValue({ contextState: state({ estimated_input_tokens: 42 }), conversation: conversation() })
     const { result } = setup()

@@ -469,7 +469,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const {
     contextState,
-    setContextState,
     setContextLoading,
     contextLoading,
     contextError,
@@ -482,7 +481,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     refreshCurrent: handleRefreshContext,
     compressCurrent: handleCompressContext,
     clearCurrent: handleClearContext,
-  } = useConversationContext({ currentConversationIdRef, setCurrentConversation, refreshSidebar })
+  } = useConversationContext({ currentConversation, currentConversationIdRef, setCurrentConversation, refreshSidebar })
   const contextCompressing = currentConversation
     ? compactingConversationIds.has(currentConversation.id)
     : false
@@ -605,8 +604,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
     setCurrentConversation((previous) => conversation && previous?.id === conversation.id
       && conversation.revision < previous.revision ? previous : conversation)
-    setContextState(conversation?.context_state ?? conversation?.contextState ?? null)
-  }, [setContextState])
+  }, [])
 
   const occupyConversationInMain = useCallback((
     conversationId: string,

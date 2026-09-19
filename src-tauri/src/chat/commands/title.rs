@@ -94,15 +94,16 @@ pub(super) fn schedule_auto_title_summary(
         if title == previous_auto_title || title.trim().is_empty() {
             return;
         }
-        let conversation_id = conversation.id;
-        const STALE_TITLE: &str = "conversation title was changed before summary completed";
+        let conversation_id = conversation.id.clone();
         let updated = crate::chat::repository::repository(&app)
             .mutate(&app, &conversation_id, |latest| {
-                if !is_auto_title(&latest.title, Some(&first_user)) {
-                    return Err(STALE_TITLE.into());
-                }
-                latest.title = title.clone();
-                Ok(())
+                apply_auto_title(
+                    latest,
+                    &conversation,
+                    &first_user,
+                    &assistant_content,
+                    &title,
+                )
             })
             .await;
         match updated {
@@ -113,10 +114,60 @@ pub(super) fn schedule_auto_title_summary(
                 crate::chat::protocol::ChatConversationEvent::TitleUpdated { title },
             ),
             Err(crate::chat::repository::ConversationRepositoryError::Storage(message))
-                if message == STALE_TITLE => {}
+                if message == STALE_AUTO_TITLE => {}
             Err(error) => eprintln!("[title] 后台标题写入失败: {error}"),
         }
     });
+}
+
+const STALE_AUTO_TITLE: &str = "conversation title or source changed before summary completed";
+
+/// Called inside the repository mutation lock, against the latest stored conversation.
+fn apply_auto_title(
+    latest: &mut Conversation,
+    source: &Conversation,
+    first_user: &str,
+    assistant_content: &str,
+    title: &str,
+) -> Result<(), String> {
+    let source_user = source
+        .messages
+        .iter()
+        .find(|message| message.role == "user");
+    let latest_user = latest
+        .messages
+        .iter()
+        .find(|message| message.role == "user");
+    let user_unchanged = source_user.zip(latest_user).is_some_and(|(before, now)| {
+        before.id == now.id
+            && title_source_for_user_message(&before.content, &before.attachments) == first_user
+            && title_source_for_user_message(&now.content, &now.attachments) == first_user
+    });
+    // A tool-using first turn may contain several assistant messages. Pin the actual
+    // final answer used by this task, not simply the first assistant in the history.
+    let source_answer = source
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant" && message.content == assistant_content);
+    let answer_unchanged = source_answer.is_some_and(|answer| {
+        latest.messages.iter().any(|message| {
+            message.id == answer.id
+                && message.role == "assistant"
+                && message.content == assistant_content
+        })
+    });
+    // Do not compare the whole revision: later turns and unrelated metadata edits
+    // are allowed. Edits/rewinds of either source message invalidate this result.
+    if latest.id != source.id
+        || !user_unchanged
+        || !answer_unchanged
+        || !is_auto_title(&latest.title, Some(first_user))
+    {
+        return Err(STALE_AUTO_TITLE.into());
+    }
+    latest.title = title.to_string();
+    Ok(())
 }
 
 async fn generate_title_with_model(
@@ -369,10 +420,81 @@ mod tests {
     }
 
     #[test]
-    fn delayed_title_summary_cannot_replace_a_manual_rename() {
+    fn auto_title_recognizes_only_placeholder_or_local_fallback() {
         assert!(is_auto_title("新对话", Some("天气如何")));
         assert!(is_auto_title("天气如何", Some("天气如何")));
         assert!(!is_auto_title("出行计划", Some("天气如何")));
+    }
+
+    fn title_conversation() -> Conversation {
+        serde_json::from_value(serde_json::json!({
+            "id": "title-test", "revision": 10, "title": "天气如何",
+            "provider_id": "p", "model": "m", "created_at": 1, "updated_at": 1,
+            "messages": [test_chat_message("user", "天气如何"), test_chat_message("assistant", "今天晴天")]
+        })).unwrap()
+    }
+
+    // Pause at the model I/O boundary, change the stored snapshot, then exercise the
+    // same mutation used by schedule_auto_title_summary. No desktop runtime needed.
+    async fn delayed_summary_after_change(
+        change: impl FnOnce(&mut Conversation),
+    ) -> (Result<(), String>, Conversation, Conversation) {
+        let source = title_conversation();
+        let stored = Arc::new(tokio::sync::Mutex::new(source.clone()));
+        let task_stored = Arc::clone(&stored);
+        let (send_title, title_ready) = tokio::sync::oneshot::channel::<String>();
+        let task = tokio::spawn(async move {
+            let title = title_ready.await.unwrap();
+            let mut latest = task_stored.lock().await;
+            apply_auto_title(&mut latest, &source, "天气如何", "今天晴天", &title)
+        });
+        let before = {
+            let mut latest = stored.lock().await;
+            change(&mut latest);
+            latest.revision += 1;
+            latest.clone()
+        };
+        send_title.send("天气查询".into()).unwrap();
+        let outcome = task.await.unwrap();
+        let after = stored.lock().await.clone();
+        (outcome, before, after)
+    }
+
+    #[tokio::test]
+    async fn delayed_summary_rejects_changed_or_removed_source_without_mutating_snapshot() {
+        for change in [
+            (|c: &mut Conversation| c.title = "出行计划".into()) as fn(&mut Conversation),
+            |c| c.messages[0].content = "怎么修电脑".into(),
+            |c| c.messages[0].id = "replacement-user".into(),
+            |c| c.messages[1].content = "明天暴雨".into(),
+            |c| c.messages[1].id = "regenerated-assistant".into(),
+            |c| c.messages.truncate(1),
+            |c| c.messages.clear(),
+        ] {
+            let (outcome, before, after) = delayed_summary_after_change(change).await;
+            assert_eq!(outcome, Err(STALE_AUTO_TITLE.into()));
+            assert_eq!(
+                serde_json::to_value(after).unwrap(),
+                serde_json::to_value(before).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delayed_summary_allows_unrelated_later_turn_and_preserves_it() {
+        let (outcome, mut expected, after) = delayed_summary_after_change(|c| {
+            let mut next = test_chat_message("user", "那明天呢");
+            next.id = "next-user".into();
+            c.messages.push(next);
+            c.model = "another-model".into();
+        })
+        .await;
+        assert!(outcome.is_ok());
+        expected.title = "天气查询".into();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
     }
 
     #[test]
