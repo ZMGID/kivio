@@ -774,7 +774,7 @@ async fn set_enabled(
     });
     if let Err(error) = settings_result {
         let _ = write_json(&package_dir(&id)?.join("record.json"), &old_package);
-        return Err(error);
+        return Err(error.into());
     }
     // IDs are deterministic; disconnect both enabled and disabled snapshots.
     for server in disconnect.into_inner() {

@@ -1206,6 +1206,36 @@ export type Settings = {
   favoriteModels: string[]
 }
 
+/** Monotonic identity for one canonical settings snapshot.
+ * `epoch` changes whenever the backend process restarts; `revision` is only
+ * ordered within one epoch. */
+export type SettingsVersion = {
+  epoch: string
+  revision: number
+}
+
+/** Canonical settings and the exact backend version they came from. */
+export type SettingsSnapshot = {
+  settings: Settings
+  version: SettingsVersion
+}
+
+export type SettingsChangedEvent = {
+  version: SettingsVersion
+}
+
+export type SettingsCommandError =
+  | {
+      code: 'versionConflict'
+      message: string
+      expectedVersion: SettingsVersion
+      actualVersion: SettingsVersion
+    }
+  | {
+      code: 'operationFailed'
+      message: string
+    }
+
 /** 能力插件（领域 CLI 等）状态 —— 设置 → 插件 */
 export type PluginStatus = {
   id: string
@@ -1576,6 +1606,40 @@ export function normalizeSettings(settings: Settings): Settings {
   return settings
 }
 
+function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
+  return {
+    settings: normalizeSettings(snapshot.settings),
+    version: snapshot.version,
+  }
+}
+
+function settingsCommandErrorPayload(error: unknown): unknown {
+  if (typeof error === 'string') {
+    try {
+      return JSON.parse(error) as unknown
+    } catch {
+      return null
+    }
+  }
+  if (error instanceof Error) {
+    try {
+      return JSON.parse(error.message) as unknown
+    } catch {
+      return null
+    }
+  }
+  return error
+}
+
+/** Tauri rejects commands with the serialized Rust error payload. Keep this
+ * guard at the transport boundary so cache/controllers do not parse strings. */
+export function isSettingsVersionConflict(error: unknown): error is Extract<SettingsCommandError, { code: 'versionConflict' }> {
+  const payload = settingsCommandErrorPayload(error)
+  return typeof payload === 'object'
+    && payload !== null
+    && (payload as { code?: unknown }).code === 'versionConflict'
+}
+
 // 默认提示词模板
 export type DefaultPromptTemplates = {
   translationTemplate: string
@@ -1673,24 +1737,25 @@ export const api = {
   providerOAuthUsage: (provider: ModelProvider) => invoke<ProviderOAuthUsage>('provider_oauth_usage', { provider }),
   providerOAuthDisconnect: (credentialId: string) => invoke<void>('provider_oauth_disconnect', { credentialId }),
   // 设置相关
-  getSettings: async () => normalizeSettings(await invoke<Settings>('get_settings')),
-  onKivioConfigurationChanged: (listener: () => void) => on('kivio-configuration-changed', () => listener()),
+  getSettings: async () => normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('get_settings')),
+  onKivioSettingsChanged: (listener: (event: SettingsChangedEvent) => void) =>
+    on<SettingsChangedEvent>('kivio-settings-changed', listener),
   // 某模型可选的思考等级列表（用户覆盖 modelOverrides → 模型库 reasoningEfforts → 家族兜底）。
   reasoningEffortsForModel: (model: string, providerId?: string) =>
     invoke<string[]>('chat_reasoning_efforts_for_model', { model, providerId }),
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   listSystemFonts: () => invoke<string[]>('list_system_fonts').catch(() => [] as string[]),
-  saveSettings: async (settings: Settings) =>
-    normalizeSettings(await invoke<Settings>('save_settings', { settings })),
+  saveSettings: async (settings: Settings, expectedVersion: SettingsVersion) =>
+    normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('save_settings', { settings, expectedVersion })),
   /** 轻量持久化收藏模型；后端返回最终 canonical Settings 供缓存原样采用。 */
   setFavoriteModels: (models: string[]) =>
-    invoke<Settings>('set_favorite_models', { models }),
+    invoke<SettingsSnapshot>('set_favorite_models', { models }).then(normalizeSettingsSnapshot),
   /** 轻量持久化快速翻译卡宽度（拖拽缩放记忆；高度始终自动）。 */
   setTranslateCardSize: (width: number) =>
-    invoke<Settings>('set_translate_card_size', { width }),
+    invoke<SettingsSnapshot>('set_translate_card_size', { width }).then(normalizeSettingsSnapshot),
   exportSettings: (path: string) => invoke<void>('export_settings', { path }),
-  importSettings: async (path: string) =>
-    normalizeSettings(await invoke<Settings>('import_settings', { path })),
+  importSettings: async (path: string, expectedVersion: SettingsVersion) =>
+    normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion })),
   usageGetStats: (query?: UsageStatsQuery) =>
     invoke<UsageStatsResponse>('usage_get_stats', { query }),
   usageClear: () => invoke<void>('usage_clear'),

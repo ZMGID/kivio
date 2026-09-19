@@ -25,7 +25,7 @@ import {
   type ModelProvider,
   type Settings,
 } from '../api/tauri'
-import { getSettingsCached, refreshSettings, saveSettingsCached } from '../api/settingsCache'
+import { getSettingsCached, updateSettingsCached } from '../api/settingsCache'
 import { Button, IconButton } from '../components/Button'
 import { Input, Select } from '../settings/public/controls'
 import { KnowledgeIcon } from '../settings/public/icons'
@@ -282,8 +282,7 @@ export function KnowledgeCenter() {
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev))
     void (async () => {
       try {
-        const fresh = await refreshSettings()
-        const saved = await saveSettingsCached({ ...fresh, ...patch })
+        const saved = await updateSettingsCached((fresh) => ({ ...fresh, ...patch }))
         setSettings(saved)
       } catch (e) {
         setError(String(e))
@@ -295,13 +294,13 @@ export function KnowledgeCenter() {
   const toggleRag = useCallback((v: boolean) => {
     void (async () => {
       try {
-        const fresh = await refreshSettings()
-        const chatTools = fresh.chatTools
-        if (!chatTools) return
-        const saved = await saveSettingsCached({
+        const saved = await updateSettingsCached((fresh) => ({
           ...fresh,
-          chatTools: { ...chatTools, nativeTools: { ...chatTools.nativeTools, knowledgeSearch: v } },
-        })
+          chatTools: {
+            ...fresh.chatTools,
+            nativeTools: { ...fresh.chatTools.nativeTools, knowledgeSearch: v },
+          },
+        }))
         setSettings(saved)
       } catch (e) {
         setError(String(e))

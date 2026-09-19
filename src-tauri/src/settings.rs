@@ -1,11 +1,100 @@
 use chrono::{Datelike, Local};
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreBuilder;
 
 // 设置存储文件名
 const SETTINGS_STORE: &str = "settings.json";
 const LEGACY_APPLE_INTELLIGENCE_BASE_URL: &str = "applefoundation://local";
+pub(crate) const SETTINGS_CHANGED_EVENT: &str = "kivio-settings-changed";
+
+/// Opaque identity of one canonical settings value. `epoch` changes on every backend process
+/// start; `revision` advances for every successful in-memory/durable settings transaction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsVersion {
+    pub epoch: String,
+    pub revision: u64,
+}
+
+/// Settings and the exact version that owns them. Keeping these together prevents callers from
+/// accidentally pairing an old full object with a revision fetched after it was edited.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSnapshot {
+    pub settings: Settings,
+    pub version: SettingsVersion,
+}
+
+/// Structured IPC error used by settings writes. Frontends must branch on `code`, never parse the
+/// human-readable message.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "code", rename_all = "camelCase")]
+pub enum SettingsError {
+    VersionConflict {
+        message: String,
+        #[serde(rename = "expectedVersion")]
+        expected_version: SettingsVersion,
+        #[serde(rename = "actualVersion")]
+        actual_version: SettingsVersion,
+    },
+    OperationFailed {
+        message: String,
+    },
+}
+
+impl SettingsError {
+    pub(crate) fn version_conflict(
+        expected_version: SettingsVersion,
+        actual_version: SettingsVersion,
+    ) -> Self {
+        Self::VersionConflict {
+            message: format!(
+                "settings changed since this edit began (expected {}:{}, actual {}:{}); refresh and retry",
+                expected_version.epoch,
+                expected_version.revision,
+                actual_version.epoch,
+                actual_version.revision
+            ),
+            expected_version,
+            actual_version,
+        }
+    }
+}
+
+impl std::fmt::Display for SettingsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VersionConflict { message, .. } | Self::OperationFailed { message } => {
+                formatter.write_str(message)
+            }
+        }
+    }
+}
+
+impl From<String> for SettingsError {
+    fn from(message: String) -> Self {
+        Self::OperationFailed { message }
+    }
+}
+
+impl From<&str> for SettingsError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_string())
+    }
+}
+
+impl From<SettingsError> for String {
+    fn from(error: SettingsError) -> Self {
+        error.to_string()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsChangedEvent {
+    version: SettingsVersion,
+}
 
 // ========== 数据结构定义 ==========
 
@@ -2922,32 +3011,25 @@ fn settings_for_persistence(settings: &Settings) -> (Settings, Settings) {
     (canonical, to_persist)
 }
 
-/// A coherent settings value + generation captured before an operation that may await.
-/// The generation is deliberately opaque to callers; it is only accepted again by
-/// [`commit_settings`] for compare-and-swap publication.
-pub(crate) struct SettingsSnapshot {
-    pub settings: Settings,
-    pub revision: u64,
-}
-
 pub(crate) fn settings_snapshot(state: &crate::state::AppState) -> SettingsSnapshot {
     // Writers advance the generation while holding this same write lock, so reading the value
     // and generation under a read guard produces one coherent snapshot.
     let settings = state.settings_read();
+    let revision = state.settings_revision();
     SettingsSnapshot {
         settings: settings.clone(),
-        revision: state.settings_revision(),
+        version: state.settings_version_at(revision),
     }
 }
 
 fn commit_settings_with(
     state: &crate::state::AppState,
-    expected_revision: u64,
+    expected_version: SettingsVersion,
     next: Settings,
     persist: impl FnOnce(&Settings) -> Result<(), String>,
-) -> Result<Settings, String> {
+) -> Result<SettingsSnapshot, SettingsError> {
     state.publish_settings_transaction(
-        Some(expected_revision),
+        Some(expected_version),
         |_| Ok(sanitize_settings(next)),
         persist,
     )
@@ -2957,7 +3039,7 @@ fn update_settings_with(
     state: &crate::state::AppState,
     update: impl FnOnce(&mut Settings) -> Result<(), String>,
     persist: impl FnOnce(&Settings) -> Result<(), String>,
-) -> Result<Settings, String> {
+) -> Result<SettingsSnapshot, SettingsError> {
     state.publish_settings_transaction(
         None,
         |current| {
@@ -2974,8 +3056,20 @@ fn update_settings_with(
 pub(crate) fn update_settings_in_memory(
     state: &crate::state::AppState,
     update: impl FnOnce(&mut Settings) -> Result<(), String>,
-) -> Result<Settings, String> {
+) -> Result<SettingsSnapshot, SettingsError> {
     update_settings_with(state, update, |_| Ok(()))
+}
+
+fn emit_settings_changed(app: &AppHandle, version: &SettingsVersion) {
+    // Notification failure must not roll back a durable commit. Consumers recover by fetching the
+    // latest snapshot when their webview is activated; the event intentionally carries no values
+    // or credentials.
+    let _ = app.emit(
+        SETTINGS_CHANGED_EVENT,
+        SettingsChangedEvent {
+            version: version.clone(),
+        },
+    );
 }
 
 /// Atomically canonicalize, persist, and publish a settings mutation. Every writer that both
@@ -2985,22 +3079,27 @@ pub(crate) fn update_settings(
     app: &AppHandle,
     state: &crate::state::AppState,
     update: impl FnOnce(&mut Settings) -> Result<(), String>,
-) -> Result<Settings, String> {
-    update_settings_with(state, update, |canonical| persist_settings(app, canonical))
+) -> Result<SettingsSnapshot, SettingsError> {
+    let snapshot =
+        update_settings_with(state, update, |canonical| persist_settings(app, canonical))?;
+    emit_settings_changed(app, &snapshot.version);
+    Ok(snapshot)
 }
 
-/// Publish a full settings snapshot only if no side writer committed since it was captured.
-/// Callers may safely do asynchronous preparation between [`settings_snapshot`] and this call;
-/// no synchronous lock is held across that await.
+/// Publish a full settings snapshot only if no side writer committed since the client's original
+/// read. Callers may safely do asynchronous preparation between [`settings_snapshot`] and this
+/// call; the process epoch plus revision rejects both concurrent writes and pre-restart tokens.
 pub(crate) fn commit_settings(
     app: &AppHandle,
     state: &crate::state::AppState,
-    expected_revision: u64,
+    expected_version: SettingsVersion,
     next: Settings,
-) -> Result<Settings, String> {
-    commit_settings_with(state, expected_revision, next, |canonical| {
+) -> Result<SettingsSnapshot, SettingsError> {
+    let snapshot = commit_settings_with(state, expected_version, next, |canonical| {
         persist_settings(app, canonical)
-    })
+    })?;
+    emit_settings_changed(app, &snapshot.version);
+    Ok(snapshot)
 }
 
 fn persist_then_apply_with_rollback(
@@ -3489,11 +3588,74 @@ mod tests {
 
         let in_memory = state.settings_read().clone();
         let persisted = persisted.into_inner().expect("persist called");
-        assert_eq!(committed.chat_tools.servers[0].id, "spaced");
-        assert_eq!(committed.chat_tools.servers[0].command, "npx");
-        assert_eq!(committed.chat_tools.servers[0].args, ["package-name"]);
+        assert_eq!(committed.settings.chat_tools.servers[0].id, "spaced");
+        assert_eq!(committed.settings.chat_tools.servers[0].command, "npx");
+        assert_eq!(
+            committed.settings.chat_tools.servers[0].args,
+            ["package-name"]
+        );
         assert_eq!(in_memory.chat_tools.servers[0].id, "spaced");
         assert_eq!(persisted.chat_tools.servers[0].id, "spaced");
+    }
+
+    #[test]
+    fn failed_settings_persist_does_not_publish_or_advance_the_version() {
+        let state = test_app_state();
+        let before = settings_snapshot(&state);
+
+        let error = update_settings_with(
+            &state,
+            |settings| {
+                settings.theme = "light".into();
+                Ok(())
+            },
+            |_| Err("disk full".into()),
+        )
+        .expect_err("a failed durable action must abort the transaction");
+
+        assert!(matches!(error, SettingsError::OperationFailed { .. }));
+        let after = settings_snapshot(&state);
+        assert_eq!(after.version, before.version);
+        assert_eq!(after.settings.theme, before.settings.theme);
+    }
+
+    #[test]
+    fn settings_change_event_contains_only_the_version() {
+        let version = SettingsVersion {
+            epoch: "process-epoch".into(),
+            revision: 7,
+        };
+        let payload = serde_json::to_value(SettingsChangedEvent {
+            version: version.clone(),
+        })
+        .expect("event payload should serialize");
+
+        assert_eq!(payload, serde_json::json!({ "version": version }));
+        assert!(payload.get("settings").is_none());
+    }
+
+    #[test]
+    fn settings_conflict_error_has_a_stable_tagged_wire_shape() {
+        let expected = SettingsVersion {
+            epoch: "old-process".into(),
+            revision: 3,
+        };
+        let actual = SettingsVersion {
+            epoch: "new-process".into(),
+            revision: 1,
+        };
+        let payload = serde_json::to_value(SettingsError::version_conflict(
+            expected.clone(),
+            actual.clone(),
+        ))
+        .expect("settings errors should serialize");
+
+        assert_eq!(payload["code"], "versionConflict");
+        assert_eq!(payload["expectedVersion"], serde_json::json!(expected));
+        assert_eq!(payload["actualVersion"], serde_json::json!(actual));
+        assert!(payload["message"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()));
     }
 
     #[test]
@@ -3517,13 +3679,13 @@ mod tests {
 
         let mut stale = full_save.settings;
         stale.theme = "light".into();
-        let error = commit_settings_with(&state, full_save.revision, stale, |canonical| {
+        let error = commit_settings_with(&state, full_save.version, stale, |canonical| {
             *persisted.borrow_mut() = canonical.clone();
             Ok(())
         })
         .expect_err("stale full save must report a conflict");
 
-        assert!(error.contains("settings changed"), "{error}");
+        assert!(matches!(error, SettingsError::VersionConflict { .. }));
         assert_eq!(
             state.settings_read().favorite_models,
             ["provider:newer"],
@@ -3534,6 +3696,62 @@ mod tests {
             ["provider:newer"],
             "the newer persisted side write must survive"
         );
+    }
+
+    #[test]
+    fn two_full_saves_from_the_same_client_version_cannot_both_commit() {
+        let state = test_app_state();
+        let first = settings_snapshot(&state);
+        let second = first.clone();
+
+        let mut first_settings = first.settings;
+        first_settings.theme = "light".into();
+        let committed = commit_settings_with(&state, first.version, first_settings, |_| Ok(()))
+            .expect("the first full save should commit");
+
+        let mut second_settings = second.settings;
+        second_settings.target_lang = "ja".into();
+        let error =
+            commit_settings_with(&state, second.version.clone(), second_settings, |_| Ok(()))
+                .expect_err("the queued stale full save must conflict");
+
+        assert!(matches!(
+            error,
+            SettingsError::VersionConflict {
+                expected_version,
+                actual_version,
+                ..
+            } if expected_version == second.version && actual_version == committed.version
+        ));
+        assert_eq!(state.settings_read().theme, "light");
+        assert_ne!(state.settings_read().target_lang, "ja");
+    }
+
+    #[test]
+    fn settings_version_rejects_a_snapshot_from_another_process_epoch() {
+        let previous_process = test_app_state();
+        let restarted_process = test_app_state();
+        let foreign = settings_snapshot(&previous_process);
+        let current = settings_snapshot(&restarted_process);
+        assert_eq!(foreign.version.revision, current.version.revision);
+        assert_ne!(foreign.version.epoch, current.version.epoch);
+
+        let error = commit_settings_with(
+            &restarted_process,
+            foreign.version.clone(),
+            foreign.settings,
+            |_| Ok(()),
+        )
+        .expect_err("a previous process snapshot must not be accepted");
+
+        assert!(matches!(
+            error,
+            SettingsError::VersionConflict {
+                expected_version,
+                actual_version,
+                ..
+            } if expected_version == foreign.version && actual_version == current.version
+        ));
     }
 
     use super::*;

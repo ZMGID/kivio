@@ -18,16 +18,25 @@ import {
   type ChatMemoryConfig,
   type ReplaceTranslationPackStatus,
   type RapidOcrTier,
+  type SettingsVersion,
+  isSettingsVersionConflict,
 } from '../api/tauri'
 import {
-  getSettingsCached,
-  importSettingsCached,
-  peekSettings,
-  refreshSettings,
-  saveSettingsCached,
-  subscribeSettings,
+  getSettingsSnapshotCached,
+  importSettingsSnapshotCached,
+  peekSettingsSnapshot,
+  refreshSettingsSnapshot,
+  saveSettingsSnapshotCached,
+  subscribeSettingsSnapshot,
+  updateSettingsCached,
 } from '../api/settingsCache'
-import { rebaseDraftAgainstCache } from './rebaseSettingsDraft'
+import {
+  acceptSettingsSave,
+  createSettingsEditorState,
+  receiveSettingsSnapshot,
+  type SettingsEditorState,
+  updateSettingsEditorDraft,
+} from './rebaseSettingsDraft'
 import { i18n } from './i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
@@ -35,7 +44,7 @@ import {
 } from './NavIcons'
 import { SessionCenter, type SessionCenterProps } from '../chat/public/sessionCenter'
 import { PluginCenter, type PluginCenterSection } from '../chat/public/pluginCenter'
-import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, resolveSettingsSaveEcho, stableStringify } from './utils'
+import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, stableStringify } from './utils'
 import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
 import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
@@ -288,9 +297,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [loadError, setLoadError] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const readyEmittedRef = useRef(false)
-  // 镜像当前草稿的序列化快照，供后台 SWR 校准回调判断“用户是否已改动”而无需闭包捕获最新 state。
-  const currentSettingsSnapshotRef = useRef('')
-  const initialSettingsSnapshotRef = useRef('')
+  const editorStateRef = useRef<SettingsEditorState | null>(null)
+  const canonicalVersionRef = useRef<SettingsVersion | null>(null)
   // 自动保存：最新草稿 + 防抖定时器 + 在飞请求（避免并发写互相覆盖）
   const settingsRef = useRef<SettingsData | null>(null)
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -307,27 +315,38 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const hasUnsavedChanges = settings ? stableStringify(settings) !== initialSettingsSnapshot : false
   // 同步当前草稿快照到 ref（SWR 校准回调据此判断草稿是否 pristine）。
   useEffect(() => {
-    const snapshot = settings ? stableStringify(settings) : ''
-    currentSettingsSnapshotRef.current = snapshot
     settingsRef.current = settings
+    if (settings && editorStateRef.current) {
+      editorStateRef.current = updateSettingsEditorDraft(editorStateRef.current, settings)
+    }
   }, [settings])
 
-  useEffect(() => {
-    initialSettingsSnapshotRef.current = initialSettingsSnapshot
-  }, [initialSettingsSnapshot])
+  const applyEditorState = useCallback((next: SettingsEditorState) => {
+    editorStateRef.current = next
+    settingsRef.current = next.draft
+    const acknowledgedSnapshot = stableStringify(next.acknowledgedDraft)
+    setSettings(next.draft)
+    setInitialSettingsSnapshot(acknowledgedSnapshot)
+  }, [])
 
   // 设置页 keep-alive：其它页面（工具开关、MCP、收藏、语言、聊天模型）会写 settings，
   // 草稿必须按字段跟缓存对齐，否则整份自动保存会把那些改动盖回去。
   useEffect(() => {
-    return subscribeSettings((fresh) => {
-      setSettings((prev) => {
-        if (!prev) return prev
-        const next = rebaseDraftAgainstCache(initialSettingsSnapshotRef.current, prev, fresh)
-        if (next === prev || stableStringify(next) === stableStringify(prev)) return prev
-        return next
-      })
+    return subscribeSettingsSnapshot((fresh) => {
+      const current = editorStateRef.current
+      if (!current) return
+      canonicalVersionRef.current = fresh.version
+      const next = receiveSettingsSnapshot({
+        ...current,
+        draft: settingsRef.current ?? current.draft,
+      }, fresh.settings)
+      applyEditorState(next)
+      if (next.conflicts.length > 0) {
+        const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
+        setSaveError(`${prefix}${next.conflicts.map((conflict) => conflict.path).join(', ')}`)
+      }
     })
-  }, [])
+  }, [applyEditorState, lang])
 
   // 客户端热键冲突检测:在保存前发现"两个启用功能用了同一个组合"。
   // OS 层面的冲突(Spotlight 占用 Cmd+Space 等)仍需保存后从后端拿到结果。
@@ -404,34 +423,43 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     readyEmittedRef.current = false
     setLoadError('')
 
-    // stale-while-revalidate：有缓存则首帧直接渲染缓存数据（不显示 loading 转圈），
-    // 再后台校准；仅当用户尚未改动草稿时才应用校准后的新值，避免覆盖正在编辑的内容。
-    const cached = peekSettings()
+    // stale-while-revalidate：有缓存则首帧直接渲染，再把权威快照三方重基到当前草稿。
+    const cachedSnapshotValue = peekSettingsSnapshot()
+    const cached = cachedSnapshotValue?.settings ?? null
     if (cached) {
       const cachedSnapshot = stableStringify(cached)
       // 立即种入草稿快照 ref，避免后台校准回调在 sync effect 提交前读到初始空值而误判“已改动”。
-      currentSettingsSnapshotRef.current = cachedSnapshot
+      canonicalVersionRef.current = cachedSnapshotValue?.version ?? null
+      editorStateRef.current = createSettingsEditorState(cached)
       setSettings(cached)
       setInitialSettingsSnapshot(cachedSnapshot)
       setLoading(false)
-      void refreshSettings()
-        .then((fresh) => {
+      void refreshSettingsSnapshot()
+        .then((freshSnapshotValue) => {
           if (!active) return
-          const freshSnapshot = stableStringify(fresh)
-          if (freshSnapshot === cachedSnapshot) return // 磁盘无变化
-          // 用户已改动草稿（当前快照 ≠ 加载时的缓存快照）→ 保留草稿，不覆盖
-          if (currentSettingsSnapshotRef.current !== cachedSnapshot) return
-          setSettings(fresh)
-          setInitialSettingsSnapshot(freshSnapshot)
+          const fresh = freshSnapshotValue.settings
+          const freshSerialized = stableStringify(fresh)
+          canonicalVersionRef.current = freshSnapshotValue.version
+          if (freshSerialized === cachedSnapshot) return // 磁盘无变化
+          applyEditorState(receiveSettingsSnapshot(
+            {
+              ...(editorStateRef.current ?? createSettingsEditorState(cached)),
+              draft: settingsRef.current ?? cached,
+            },
+            fresh,
+          ))
         })
         .catch(() => {
           // 校准失败静默：保留已渲染的缓存数据
         })
     } else {
       setLoading(true)
-      getSettingsCached()
-        .then((data: SettingsData) => {
+      getSettingsSnapshotCached()
+        .then((snapshot) => {
           if (!active) return
+          const data = snapshot.settings
+          canonicalVersionRef.current = snapshot.version
+          editorStateRef.current = createSettingsEditorState(data)
           setSettings(data)
           setInitialSettingsSnapshot(stableStringify(data))
           setLoading(false)
@@ -464,7 +492,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     return () => {
       active = false
     }
-  }, [reloadKey])
+  }, [applyEditorState, reloadKey])
 
   // 首屏内容就绪信号：settings 数据就绪或错误态就绪时触发一次。用于让宿主（Chat→App）
   // 把窗口 show 推迟到设置页可渲染之后，避免“窗口已弹出但在转圈”。传了 onReady 就触发，
@@ -756,11 +784,15 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
    */
   const persistSettingsNow = useCallback(async () => {
     const draft = settingsRef.current
-    if (!draft) return false
-    const toSave = rebaseDraftAgainstCache(initialSettingsSnapshot, draft, peekSettings())
-    if (toSave !== draft) {
-      settingsRef.current = toSave
+    const editor = editorStateRef.current
+    const expectedVersion = canonicalVersionRef.current
+    if (!draft || !editor || !expectedVersion) return false
+    if (editor.conflicts.length > 0) {
+      const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
+      setSaveError(`${prefix}${editor.conflicts.map((conflict) => conflict.path).join(', ')}`)
+      return false
     }
+    const toSave = draft
     const draftSnapshot = stableStringify(toSave)
     if (draftSnapshot === initialSettingsSnapshot) return true
 
@@ -774,22 +806,41 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     try {
       setSaveError('')
       // 不主动清 saveWarning：热键警告来自独立事件，成功保存后可能紧接着到达
-      const savedSettings = await saveSettingsCached(toSave)
-      const savedSnapshot = stableStringify(savedSettings)
-      const latestSnapshot = settingsRef.current ? stableStringify(settingsRef.current) : ''
-      const echo = resolveSettingsSaveEcho(draftSnapshot, savedSnapshot, latestSnapshot)
-      // sanitize 可能丢掉尚未填完的占位行。回包与草稿不同时保留屏幕上的草稿，
-      // 否则「添加 Key / 请求头 / CLI 模型」刚出现的输入框会被盖没。
-      if (echo.applySaved) {
-        setSettings(savedSettings)
-        settingsRef.current = savedSettings
-        currentSettingsSnapshotRef.current = savedSnapshot
+      const savedSnapshot = await saveSettingsSnapshotCached(toSave, expectedVersion)
+      const savedSettings = savedSnapshot.settings
+      canonicalVersionRef.current = savedSnapshot.version
+      const latest = settingsRef.current ?? toSave
+      const next = acceptSettingsSave(toSave, savedSettings, latest)
+      applyEditorState(next)
+      if (next.conflicts.length > 0) {
+        const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
+        setSaveError(`${prefix}${next.conflicts.map((conflict) => conflict.path).join(', ')}`)
       }
-      setInitialSettingsSnapshot(echo.baselineSnapshot)
       onSettingsChange()
       return true
     } catch (err) {
       console.error('Failed to save settings:', err)
+      if (isSettingsVersionConflict(err)) {
+        try {
+          const fresh = await refreshSettingsSnapshot()
+          canonicalVersionRef.current = fresh.version
+          const current = editorStateRef.current ?? editor
+          const rebased = receiveSettingsSnapshot({
+            ...current,
+            draft: settingsRef.current ?? current.draft,
+          }, fresh.settings)
+          applyEditorState(rebased)
+          if (rebased.conflicts.length === 0) {
+            saveAgainRef.current = true
+            return false
+          }
+          const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
+          setSaveError(`${prefix}${rebased.conflicts.map((conflict) => conflict.path).join(', ')}`)
+          return false
+        } catch (refreshError) {
+          console.error('Failed to refresh settings after conflict:', refreshError)
+        }
+      }
       const message = err instanceof Error ? err.message : String(err)
       const translated = formatHotkeyError(message, lang)
       const prefix = lang === 'zh' ? '保存失败:' : 'Save failed: '
@@ -802,11 +853,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         void persistSettingsNow()
       }
     }
-  }, [initialSettingsSnapshot, lang, onSettingsChange])
+  }, [applyEditorState, initialSettingsSnapshot, lang, onSettingsChange])
 
   // 草稿相对已落盘基线有 diff → 防抖自动保存（开关/输入共用，避免每个按键打盘）
-  // 占位空行会照常送去保存；sanitize 丢掉它们之后由 resolveSettingsSaveEcho 决定
-  // 不把回包盖回草稿，所以这里不再按字段拦自动保存。
+  // 占位空行会照常送去保存；canonical 回包与编辑缓冲分别推进，避免把占位伪装成持久值。
   useEffect(() => {
     if (!hasUnsavedChanges) return
     if (autosaveTimerRef.current) {
@@ -1002,33 +1052,36 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const handleImportSettings = useCallback(async () => {
     try {
+      const expectedVersion = canonicalVersionRef.current
+      if (!expectedVersion) throw new Error('Settings version is unavailable')
       const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
       if (!selected || typeof selected !== 'string') return
-      const imported = await importSettingsCached(selected)
-      setSettings(imported)
-      setInitialSettingsSnapshot(stableStringify(imported))
+      const imported = await importSettingsSnapshotCached(selected, expectedVersion)
+      canonicalVersionRef.current = imported.version
+      applyEditorState(createSettingsEditorState(imported.settings))
       onSettingsChange()
       setBackupStatus({ kind: 'ok', msg: lang === 'zh' ? '设置已导入并生效。' : 'Settings imported and applied.' })
     } catch (err) {
       setBackupStatus({ kind: 'err', msg: `${lang === 'zh' ? '导入失败：' : 'Import failed: '}${err}` })
     }
-  }, [lang, onSettingsChange])
+  }, [applyEditorState, lang, onSettingsChange])
 
   const handleRestartOnboarding = useCallback(async () => {
     if (!settings) return
     try {
-      const saved = await saveSettingsCached({
-        ...settings,
+      const saved = await updateSettingsCached((current) => ({
+        ...current,
         onboardingStatus: 'pending',
-      })
-      setSettings(saved)
-      setInitialSettingsSnapshot(stableStringify(saved))
+      }))
+      const snapshot = peekSettingsSnapshot()
+      if (snapshot) canonicalVersionRef.current = snapshot.version
+      applyEditorState(createSettingsEditorState(saved))
       onSettingsChange()
       window.location.hash = '#chat/onboarding'
     } catch (err) {
       console.error('Failed to restart onboarding:', err)
     }
-  }, [onSettingsChange, settings])
+  }, [applyEditorState, onSettingsChange, settings])
 
   const updateDefaultModel = useCallback((
     key: keyof SettingsData['defaultModels'],

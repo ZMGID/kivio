@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMcpServer, Settings } from '../api/tauri'
-import { rebaseDraftAgainstCache, rebaseSettingsDraft } from './rebaseSettingsDraft'
-import { stableStringify } from './utils'
+import {
+  acceptSettingsSave,
+  createSettingsEditorState,
+  updateSettingsEditorDraft,
+  receiveSettingsSnapshot,
+} from './rebaseSettingsDraft'
 
 function settings(partial: Record<string, unknown>): Settings {
   return {
@@ -52,106 +56,156 @@ function server(partial: Partial<ChatMcpServer> & Pick<ChatMcpServer, 'id'>): Ch
   }
 }
 
-describe('rebaseSettingsDraft', () => {
-  it('returns fresh when the settings draft was not edited', () => {
-    const snapshot = settings({})
-    const fresh = settings({ theme: 'dark' })
-    expect(rebaseSettingsDraft(snapshot, snapshot, fresh)).toBe(fresh)
+describe('settings editor canonical state', () => {
+  it('advances the canonical baseline across consecutive external snapshots', () => {
+    const initial = settings({ favoriteModels: [] })
+    const first = settings({ favoriteModels: ['one'] })
+    const second = settings({ favoriteModels: ['one', 'two'] })
+
+    const afterFirst = receiveSettingsSnapshot(createSettingsEditorState(initial), first)
+    const afterSecond = receiveSettingsSnapshot(afterFirst, second)
+
+    expect(afterSecond.canonical.favoriteModels).toEqual(['one', 'two'])
+    expect(afterSecond.acknowledgedDraft.favoriteModels).toEqual(['one', 'two'])
+    expect(afterSecond.draft.favoriteModels).toEqual(['one', 'two'])
+    expect(afterSecond.conflicts).toEqual([])
   })
 
-  it('keeps a theme edit and still takes a plugin MCP disable from fresh', () => {
-    const pluginOn = server({
-      id: 'plugin-cua-driver',
-      connectorId: 'plugin:cua-driver',
-      enabled: true,
+  it('accepts canonical corrections while retaining acknowledged placeholder input', () => {
+    const submitted = settings({
+      retryAttempts: 999,
+      providers: [{ id: 'draft-provider', apiKeys: [''] }],
     })
-    const snapshot = settings({ chatTools: { ...settings({}).chatTools, servers: [pluginOn] } })
-    const draft = settings({
-      theme: 'dark',
-      chatTools: { ...snapshot.chatTools, servers: [pluginOn] },
+    const canonical = settings({ retryAttempts: 10, providers: [] })
+
+    const next = acceptSettingsSave(
+      submitted,
+      canonical,
+      submitted,
+    )
+
+    expect(next.canonical.retryAttempts).toBe(10)
+    expect(next.draft.retryAttempts).toBe(10)
+    expect(next.draft.providers).toEqual([{ id: 'draft-provider', apiKeys: [''] }])
+    expect(next.acknowledgedDraft).toEqual(next.draft)
+  })
+
+  it('merges different provider entities and reports a same-field conflict', () => {
+    const initial = settings({
+      providers: [
+        { id: 'one', name: 'One', apiKeys: ['a'] },
+        { id: 'two', name: 'Two', apiKeys: ['b'] },
+      ],
     })
-    const fresh = settings({
+    const local = settings({
+      providers: [
+        { id: 'one', name: 'Local One', apiKeys: ['a'] },
+        { id: 'two', name: 'Two', apiKeys: ['b'] },
+      ],
+    })
+    const remoteDifferentEntity = settings({
+      providers: [
+        { id: 'one', name: 'One', apiKeys: ['a'] },
+        { id: 'two', name: 'Remote Two', apiKeys: ['b'] },
+      ],
+    })
+
+    const merged = receiveSettingsSnapshot(
+      createSettingsEditorState(initial, local),
+      remoteDifferentEntity,
+    )
+    expect(merged.draft.providers.find((provider) => provider.id === 'one')?.name).toBe('Local One')
+    expect(merged.draft.providers.find((provider) => provider.id === 'two')?.name).toBe('Remote Two')
+    expect(merged.conflicts).toEqual([])
+
+    const remoteSameField = settings({
+      providers: [
+        { id: 'one', name: 'Remote One', apiKeys: ['a'] },
+        { id: 'two', name: 'Two', apiKeys: ['b'] },
+      ],
+    })
+    const conflicted = receiveSettingsSnapshot(
+      createSettingsEditorState(initial, local),
+      remoteSameField,
+    )
+    expect(conflicted.draft.providers.find((provider) => provider.id === 'one')?.name).toBe('Local One')
+    expect(conflicted.conflicts.map((conflict) => conflict.path)).toContain('providers.one.name')
+  })
+
+  it('merges different fields of the same provider without replacing the entity', () => {
+    const initial = settings({
+      providers: [{ id: 'one', name: 'One', apiKeys: ['old'], enabledModels: ['m1'] }],
+    })
+    const local = settings({
+      providers: [{ id: 'one', name: 'Local', apiKeys: ['old'], enabledModels: ['m1'] }],
+    })
+    const remote = settings({
+      providers: [{ id: 'one', name: 'One', apiKeys: ['new'], enabledModels: ['m1'] }],
+    })
+
+    const next = receiveSettingsSnapshot(createSettingsEditorState(initial, local), remote)
+    expect(next.draft.providers).toEqual([
+      { id: 'one', name: 'Local', apiKeys: ['new'], enabledModels: ['m1'] },
+    ])
+    expect(next.conflicts).toEqual([])
+  })
+
+  it('keeps a locally edited entity and surfaces a concurrent remote deletion', () => {
+    const initial = settings({ providers: [{ id: 'one', name: 'One', apiKeys: ['old'] }] })
+    const local = settings({ providers: [{ id: 'one', name: 'Local', apiKeys: ['old'] }] })
+    const remote = settings({ providers: [] })
+
+    const next = receiveSettingsSnapshot(createSettingsEditorState(initial, local), remote)
+    expect(next.draft.providers).toEqual([{ id: 'one', name: 'Local', apiKeys: ['old'] }])
+    expect(next.conflicts.map((conflict) => conflict.path)).toContain('providers.one')
+  })
+
+  it('replays edits made while a save is in flight onto the canonical response', () => {
+    const submitted = settings({ theme: 'dark', retryAttempts: 2 })
+    const latest = settings({ theme: 'dark', retryAttempts: 5 })
+    const saved = settings({ theme: 'dark', retryAttempts: 2 })
+
+    const next = acceptSettingsSave(
+      submitted,
+      saved,
+      latest,
+    )
+    expect(next.canonical).toEqual(saved)
+    expect(next.acknowledgedDraft).toEqual(submitted)
+    expect(next.draft.retryAttempts).toBe(5)
+    expect(next.conflicts).toEqual([])
+  })
+
+  it('keeps a conflict until the user changes the conflicting value', () => {
+    const initial = settings({ theme: 'light' })
+    const local = settings({ theme: 'dark' })
+    const conflicted = receiveSettingsSnapshot(
+      createSettingsEditorState(initial, local),
+      settings({ theme: 'system' }),
+    )
+    expect(updateSettingsEditorDraft(conflicted, local).conflicts).toHaveLength(1)
+    expect(updateSettingsEditorDraft(conflicted, settings({ theme: 'system' })).conflicts).toEqual([])
+  })
+
+  it('always adopts plugin-managed MCP state from the canonical snapshot', () => {
+    const plugin = server({ id: 'plugin-cua-driver', connectorId: 'plugin:cua-driver', enabled: true })
+    const user = server({ id: 'mine', enabled: true })
+    const initial = settings({ chatTools: { ...settings({}).chatTools, servers: [plugin, user] } })
+    const local = settings({
       chatTools: {
-        ...snapshot.chatTools,
-        servers: [{ ...pluginOn, enabled: false }],
+        ...initial.chatTools,
+        servers: [plugin, { ...user, enabled: false }],
       },
     })
-    const next = rebaseSettingsDraft(snapshot, draft, fresh)
-    expect(next.theme).toBe('dark')
-    expect(next.chatTools.servers[0]?.enabled).toBe(false)
-  })
-
-  it('keeps a user MCP edit in the draft and still adopts plugin enabled from fresh', () => {
-    const plugin = server({ id: 'plugin-cua-driver', connectorId: 'plugin:cua-driver', enabled: true })
-    const user = server({ id: 'mine', enabled: true, command: 'npx' })
-    const snapshot = settings({ chatTools: { ...settings({}).chatTools, servers: [plugin, user] } })
-    const draftUser = { ...user, enabled: false }
-    const draft = settings({
-      chatTools: { ...snapshot.chatTools, servers: [plugin, draftUser] },
-    })
     const fresh = settings({
       chatTools: {
-        ...snapshot.chatTools,
+        ...initial.chatTools,
         servers: [{ ...plugin, enabled: false }, user],
       },
     })
-    const next = rebaseSettingsDraft(snapshot, draft, fresh)
-    expect(next.chatTools.servers.find((row) => row.id === 'mine')?.enabled).toBe(false)
-    expect(next.chatTools.servers.find((row) => row.id === 'plugin-cua-driver')?.enabled).toBe(false)
-  })
-
-  it('takes favorites, language, chat default, card width, and plugin native flags from fresh when those slices were not edited', () => {
-    const snapshot = settings({})
-    const draft = settings({ theme: 'dark' })
-    const fresh = settings({
-      theme: 'light',
-      favoriteModels: ['p:m'],
-      settingsLanguage: 'en',
-      chatProviderId: 'p2',
-      chatModel: 'm2',
-      defaultModels: {
-        ...snapshot.defaultModels,
-        chat: { providerId: 'p2', model: 'm2' },
-      },
-      screenshotTranslation: { cardWidth: 520 },
-      chatTools: {
-        ...snapshot.chatTools,
-        enabled: true,
-        nativeTools: { skillRuntime: true, runCommand: true, webSearch: false },
-      },
-    })
-    const next = rebaseSettingsDraft(snapshot, draft, fresh)
-    expect(next.theme).toBe('dark')
-    expect(next.favoriteModels).toEqual(['p:m'])
-    expect(next.settingsLanguage).toBe('en')
-    expect(next.defaultModels.chat).toEqual({ providerId: 'p2', model: 'm2' })
-    expect(next.screenshotTranslation?.cardWidth).toBe(520)
-    expect(next.chatTools.enabled).toBe(true)
-    expect(next.chatTools.nativeTools.skillRuntime).toBe(true)
-    expect(next.chatTools.nativeTools.runCommand).toBe(true)
-  })
-
-  it('keeps in-progress provider placeholder rows instead of taking sanitized fresh providers', () => {
-    const snapshot = settings({ providers: [{ id: 'p1', apiKeys: ['sk'] }] })
-    const draft = settings({
-      providers: [
-        { id: 'p1', apiKeys: ['sk'] },
-        { id: 'p2', apiKeys: [''] },
-      ],
-    })
-    const fresh = settings({ providers: [{ id: 'p1', apiKeys: ['sk'] }] })
-    const next = rebaseSettingsDraft(snapshot, draft, fresh)
-    expect(next.providers).toHaveLength(2)
-  })
-})
-
-describe('rebaseDraftAgainstCache', () => {
-  it('parses the snapshot string used by SettingsShell', () => {
-    const snapshot = settings({})
-    const draft = settings({ theme: 'dark' })
-    const fresh = settings({ favoriteModels: ['a:b'] })
-    const next = rebaseDraftAgainstCache(stableStringify(snapshot), draft, fresh)
-    expect(next.theme).toBe('dark')
-    expect(next.favoriteModels).toEqual(['a:b'])
+    const next = receiveSettingsSnapshot(createSettingsEditorState(initial, local), fresh)
+    expect(next.draft.chatTools.servers.find((row) => row.id === 'plugin-cua-driver')?.enabled).toBe(false)
+    expect(next.draft.chatTools.servers.find((row) => row.id === 'mine')?.enabled).toBe(false)
+    expect(next.conflicts).toEqual([])
   })
 })

@@ -104,7 +104,7 @@ import {
   type ChatMcpServer,
   type ChatUserPromptPayload,
 } from '../api/tauri'
-import { getSettingsCached, refreshSettings, saveSettingsCached, subscribeSettings } from '../api/settingsCache'
+import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCached } from '../api/settingsCache'
 import { setExclusiveConversationIds } from '../api/chatProtocol'
 import { isPluginManagedServer, preservePluginManagedServers } from '../settings/public/connectors'
 import { OnboardingShell } from '../onboarding/public/shell'
@@ -390,17 +390,18 @@ function saveLastThinkingLevel(level: ThinkingLevel | null): void {
 async function persistLastChatModelToSettings(providerId: string, model: string): Promise<void> {
   if (!providerId.trim()) return
   try {
-    const settings = await refreshSettings()
-    const current = settings.defaultModels?.chat
-    if (current?.providerId === providerId && current?.model === model) return
-    await saveSettingsCached({
-      ...settings,
-      defaultModels: {
-        ...settings.defaultModels,
-        chat: { providerId, model },
-      },
-      chatProviderId: providerId,
-      chatModel: model,
+    await updateSettingsCached((settings) => {
+      const current = settings.defaultModels?.chat
+      if (current?.providerId === providerId && current?.model === model) return settings
+      return {
+        ...settings,
+        defaultModels: {
+          ...settings.defaultModels,
+          chat: { providerId, model },
+        },
+        chatProviderId: providerId,
+        chatModel: model,
+      }
     })
   } catch (err) {
     console.error('Failed to persist last chat model:', err)
@@ -1374,14 +1375,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       // 读-改-写：必须现读后端最新态（refreshSettings），不能用缓存快照。否则若后端 OAuth
       // 令牌刷新（mcp/manager.rs persist_refreshed_server）已改写 servers[].auth 而缓存未失效，
       // 这次整体保存会把刷新后的 token 覆盖回旧值。
-      const settings = await refreshSettings()
-      await saveSettingsCached({
+      await updateSettingsCached((settings) => ({
         ...settings,
         chatTools: {
           ...settings.chatTools,
           approvalPolicy: nextApprovalPolicy,
         },
-      })
+      }))
       onSettingsChange()
     } catch (err) {
       console.error('Failed to update approval policy:', err)
@@ -1401,6 +1401,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       const prevServers = settings.chatTools?.servers ?? []
       const current = prevServers.find((server) => server.id === serverId)
       if (current && isPluginManagedServer(current)) return
+      const desiredEnabled = !current?.enabled
       const servers = preservePluginManagedServers(
         prevServers,
         prevServers.map((server) =>
@@ -1409,9 +1410,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       )
       // 乐观更新本地列表（开关即时反馈），保存后由 refreshToolIndicator 校正。
       setMcpServers(servers)
-      await saveSettingsCached({
-        ...settings,
-        chatTools: { ...settings.chatTools, servers },
+      await updateSettingsCached((fresh) => {
+        const currentServers = fresh.chatTools?.servers ?? []
+        const currentServer = currentServers.find((server) => server.id === serverId)
+        if (!currentServer || isPluginManagedServer(currentServer)) return fresh
+        const nextServers = preservePluginManagedServers(
+          currentServers,
+          currentServers.map((server) => (
+            server.id === serverId ? { ...server, enabled: desiredEnabled } : server
+          )),
+        )
+        return { ...fresh, chatTools: { ...fresh.chatTools, servers: nextServers } }
       })
       onSettingsChange()
       await refreshToolIndicator()
@@ -4766,8 +4775,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setUiLang(next)
     void (async () => {
       try {
-        const settings = await refreshSettings()
-        await saveSettingsCached({ ...settings, settingsLanguage: next })
+        await updateSettingsCached((settings) => ({ ...settings, settingsLanguage: next }))
       } catch (err) {
         console.error('Failed to save UI language:', err)
       }

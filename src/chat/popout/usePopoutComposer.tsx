@@ -6,7 +6,7 @@ import {
   type ChatMcpServer,
   type ChatToolDefinition,
 } from '../../api/tauri'
-import { getSettingsCached, refreshSettings, saveSettingsCached, subscribeSettings } from '../../api/settingsCache'
+import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCached } from '../../api/settingsCache'
 import { isPluginManagedServer, preservePluginManagedServers } from '../../settings/public/connectors'
 import { i18n, type Lang } from '../../settings/public/i18n'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../utils/chatTools'
@@ -494,6 +494,7 @@ export function usePopoutComposer({
       const prevServers = settings.chatTools?.servers ?? []
       const current = prevServers.find((server) => server.id === serverId)
       if (current && isPluginManagedServer(current)) return
+      const desiredEnabled = !current?.enabled
       const servers = preservePluginManagedServers(
         prevServers,
         prevServers.map((server) =>
@@ -501,9 +502,17 @@ export function usePopoutComposer({
         ),
       )
       setMcpServers(servers)
-      await saveSettingsCached({
-        ...settings,
-        chatTools: { ...settings.chatTools, servers },
+      await updateSettingsCached((fresh) => {
+        const currentServers = fresh.chatTools?.servers ?? []
+        const currentServer = currentServers.find((server) => server.id === serverId)
+        if (!currentServer || isPluginManagedServer(currentServer)) return fresh
+        const nextServers = preservePluginManagedServers(
+          currentServers,
+          currentServers.map((server) => (
+            server.id === serverId ? { ...server, enabled: desiredEnabled } : server
+          )),
+        )
+        return { ...fresh, chatTools: { ...fresh.chatTools, servers: nextServers } }
       })
       await refreshToolIndicator()
     } catch (err) {

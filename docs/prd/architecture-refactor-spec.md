@@ -1,6 +1,8 @@
 # Kivio 全项目架构整理规格
 
-状态：已实施，等待跨平台实机补验。日期：2026-09-19。
+状态：第一阶段结构整理已实施；语义一致性、状态所有权与平台验收尚未闭环。日期：2026-09-19。
+
+后续实施与完成条件以 [架构收口规格](./architecture-convergence-spec.md) 为准。复核确认设置保存/合并/跨窗口并发、跨端路由契约、导航竞态和迁移失败处理仍有缺口，AppState 与页面 controller 也仅部分收口；不能将“质量门通过”或“8/8 覆盖”解释为整体架构已经完成。
 
 本规格将全项目架构审查转为可以分批实施、独立验收的工作。实施基线为 `44c60d28097422add2451b7b1a8131471c586292`；实施前已有的本地未提交变更已单独记录并在提交时保留。本文后附本轮实施记录与仍需实机验证的范围。
 
@@ -198,18 +200,20 @@ Windows 与 macOS 均执行对应平台冒烟；只在一个平台完成时，�
 
 完成需要同时满足：E1–E9 对应工作闭环、V1 有验证结论、C1–C5 及端到端矩阵通过、临时依赖例外清空、重复权威删除、既有数据可读且可继续使用。允许保留职责清晰的大文件；不允许用文件搬迁替代行为归属迁移。
 
-### 9.1 本轮实施记录
+### 9.1 第一阶段实施记录（已复核更正）
 
 | 批次 | 已落地结果 |
 |---|---|
 | B0 | Ask User 的 required、类型和受支持 schema 约束贯穿 parser、生成契约、UI 与 encoder；失败不消费 pending，重复提交/取消竞争只完成一次。真实 ACP 握手测试证明握手期 elicitation 明确拒绝、运行期交由宿主处理，未发现此前猜测的可达故障。 |
-| B1 | Rust 设置模块成为持久设置规范化权威，完整保存与轻量写入经统一 canonicalize→persist→commit 边界和 revision/CAS 协调；`AppState` 不再暴露原始设置写锁；先持久化 canonical value，再物化外部 CLI 配置，保存失败会恢复 store 内存缓存，外部物化失败会回滚 store 与旧配置。前端直接消费 canonical required 字段，不再迁移 API format、prompt cache 或主题默认值；仅显式“新建供应商草稿”构造一次 UI 初值。建立唯一 route codec 和独立浏览器/持久化 adapter，拒绝损坏编码及多段 conversation 路由进入记忆；新增解析完整 import 图、依赖方向与跨模块 SCC 的架构门并接入 CI。 |
-| B2 | Chat 与 Settings 的跨领域依赖全部改走 `public/*`；Chat 草稿、Lens 历史、捕获/请求 generation 及翻译终态分别由独立 owner 管理，取消、重开、卸载和晚到响应不能覆盖新会话；Lens 捕获登记校验启动时的会话序号，关闭后立即重开也不会接纳旧捕获，壳组件只组合公开操作与视图状态。 |
+| B1 | Rust 已统一持久设置规范化与事务写入，私有设置写锁、store 缓存与外部 CLI 配置失败回滚已落地；前端已移除部分重复业务默认值。后续 R1 已补齐编辑缓冲/规范基线、连续外部更新、客户端版本与跨窗口通知。前端 route codec 已集中，但 Rust 恢复规则仍独立且存在差异。现有门禁约束文件图，尚不覆盖聚合后的领域依赖环。 |
+| B2 | Chat/Settings 跨领域导入已改走公开入口；Chat 草稿、Lens 历史、捕获/请求 generation 和翻译状态已有独立 owner，Lens 捕获登记校验会话序号。**未闭环**：三个页面仍承担领域协调和清理顺序；Chat 部分导航异步分支尚未隔离迟到响应，不能认定壳组件只负责组合。 |
 | B3 | Chat interaction、Lens、MCP、Automation 的运行状态分别收回领域私有句柄；Lens 的图片、当前图片与请求 generation 由同一 owner 原子转换；`McpManager` 只接收窄配置和持久化接口，不持有 `AppState`；Automation 的跨域协调进入 application coordinator，并通过窄 Chat cancellation/activity port 工作，runner 与 tools 均不再依赖 `AppState`。 |
 | B4 | 外部 CLI 代理的安装、版本、配置探测、模型探测、provider profile、context/usage fallback、错误恢复、launch/home、sandbox、导入与运行策略归入 `RuntimeAgentDef`，顶层不再按品牌分支；无定义的二进制调用只留在明确的 compatibility adapter。会话、索引、项目、集、助手、迁移和搜索拆入 storage 私有子模块且保持 facade、锁、revision/CAS 和磁盘格式不变，并增加原子替换失败保旧与 fresh owner 重读测试；原 CSS 按归属拆为有序样式入口，规则和值未改。 |
-| B5 | 临时依赖例外清零；新增 `docs/ARCHITECTURE.md` 并更新 Chat 架构说明；移除本轮涉及的重复权威和无主状态入口。 |
+| B5 | 当前文件级门禁的临时例外为零，架构说明已建立。**未完成**：领域级依赖与公共能力归属、剩余状态入口、上述语义缺口及跨平台实机验收；后续以架构收口规格逐项关闭。 |
 
 ### 9.2 自动验证与未验证范围
+
+以下为第一阶段历史验证记录，不是后续收口规格的验收结果。测试数量和零临时例外不替代行为契约与生命周期验收。
 
 - 前端 lint、类型检查、协议生成一致性、生产构建、架构门（9/9，0 临时例外）和完整 Vitest 套件（225 files）通过。
 - Rust 完整 library 测试通过（2535 total：2488 passed / 47 ignored）；默认 `cargo test` 的二进制链接在 Windows 上被正在运行的 Kivio 开发进程占用时无法覆盖 `kivio.exe`，需在停止该进程后补跑二进制目标。

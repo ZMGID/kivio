@@ -15,7 +15,7 @@ import {
   type McpServerState,
   type Settings,
 } from '../api/tauri'
-import { peekSettings, refreshSettings, saveSettingsCached, subscribeSettings } from '../api/settingsCache'
+import { peekSettings, refreshSettings, subscribeSettings, updateSettingsCached } from '../api/settingsCache'
 import { Toggle, Select, Input } from '../settings/public/controls'
 import { Button, IconButton } from '../components/Button'
 import { McpRegistryBrowser } from './McpRegistryBrowser'
@@ -179,12 +179,10 @@ export function McpCenter() {
     })
     void (async () => {
       try {
-        const fresh = await refreshSettings()
-        const merged: Settings = {
+        const saved = await updateSettingsCached((fresh) => ({
           ...fresh,
           chatTools: { ...fresh.chatTools, ...updates },
-        }
-        const saved = await saveSettingsCached(merged)
+        }))
         settingsRef.current = saved
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -201,14 +199,11 @@ export function McpCenter() {
   // 变更服务器：先读后端 fresh（保住后端 OAuth 刷新过的 token），再按 id 施加改动后整存。
   const mutateServers = useCallback(async (fn: (servers: ChatMcpServer[]) => ChatMcpServer[]) => {
     try {
-      const fresh = await refreshSettings()
-      const prevServers = fresh.chatTools.servers
-      const nextServers = preservePluginManagedServers(prevServers, fn(prevServers))
-      const merged: Settings = {
-        ...fresh,
-        chatTools: { ...fresh.chatTools, servers: nextServers },
-      }
-      const saved = await saveSettingsCached(merged)
+      const saved = await updateSettingsCached((fresh) => {
+        const prevServers = fresh.chatTools.servers
+        const nextServers = preservePluginManagedServers(prevServers, fn(prevServers))
+        return { ...fresh, chatTools: { ...fresh.chatTools, servers: nextServers } }
+      })
       settingsRef.current = saved
       setSettings(saved)
     } catch (err) {
@@ -322,20 +317,20 @@ export function McpCenter() {
       const authorization = authed.headers?.Authorization
       const nextHeaders = authorization ? { ...(server.headers || {}), Authorization: authorization } : (server.headers || {})
       if (entry.kind === 'websearch' && server.id === TINYFISH_MCP_ID) {
-        const fresh = await refreshSettings()
-        const currentWebSearch = fresh.lens?.webSearch
-        if (!currentWebSearch) throw new Error(t.chatMcpTestFailed)
-        const merged: Settings = {
-          ...fresh,
-          lens: {
-            ...fresh.lens,
-            webSearch: {
-              ...currentWebSearch,
-              tinyfishMcpAuth: authed.auth ?? null,
+        const saved = await updateSettingsCached((fresh) => {
+          const currentWebSearch = fresh.lens?.webSearch
+          if (!currentWebSearch) throw new Error(t.chatMcpTestFailed)
+          return {
+            ...fresh,
+            lens: {
+              ...fresh.lens,
+              webSearch: {
+                ...currentWebSearch,
+                tinyfishMcpAuth: authed.auth ?? null,
+              },
             },
-          },
-        }
-        const saved = await saveSettingsCached(merged)
+          }
+        })
         settingsRef.current = saved
         setSettings(saved)
       } else {

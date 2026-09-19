@@ -24,7 +24,7 @@ import {
   type SkillDetail,
   type SkillMeta,
 } from '../api/tauri'
-import { getSettingsCached, refreshSettings, saveSettingsCached } from '../api/settingsCache'
+import { getSettingsCached, updateSettingsCached } from '../api/settingsCache'
 import { Select, Toggle } from '../settings/public/controls'
 import { useT, type I18n } from '../settings/public/i18n'
 import { Button, IconButton } from '../components/Button'
@@ -396,20 +396,17 @@ export function SkillCenter({ onSkillsChanged, projectCwd }: SkillCenterProps) {
   const flushSave = useCallback(async (next: Settings) => {
     try {
       // 只把技能页改过的字段盖到 fresh 上，避免把 MCP / 收藏 / 插件开关盖回旧值。
-      const fresh = await refreshSettings()
       const nextTools = next.chatTools
-      const freshTools = fresh.chatTools
-      const merged: Settings = {
+      const saved = await updateSettingsCached((fresh) => ({
         ...fresh,
         chatTools: {
-          ...freshTools,
+          ...fresh.chatTools,
           disabledSkillIds: nextTools.disabledSkillIds,
           skillScanPaths: nextTools.skillScanPaths,
           skillAutoMatch: nextTools.skillAutoMatch,
           skillFallbackMode: nextTools.skillFallbackMode,
         },
-      }
-      const saved = await saveSettingsCached(merged)
+      }))
       settingsRef.current = saved
       onSkillsChanged?.()
     } catch (err) {

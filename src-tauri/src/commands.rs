@@ -21,7 +21,7 @@ use crate::rapidocr;
 use crate::settings::{
     commit_settings, default_chat_system_prompt, default_lens_system_prompt,
     default_question_prompt, persist_settings, sanitize_settings, settings_snapshot,
-    update_settings, ProviderApiFormat, Settings,
+    update_settings, ProviderApiFormat, Settings, SettingsError, SettingsSnapshot, SettingsVersion,
 };
 #[cfg(target_os = "macos")]
 use crate::shortcuts::{check_accessibility, check_screen_recording_permission};
@@ -70,9 +70,11 @@ pub(crate) fn initialize_launch_at_startup(
 
 /// 获取当前应用设置
 #[tauri::command]
-pub(crate) fn get_settings(app: AppHandle, state: State<AppState>) -> Settings {
+pub(crate) fn get_settings(app: AppHandle, state: State<AppState>) -> SettingsSnapshot {
     crate::plugins::heal_and_persist_disabled_plugin_mcp(&app, &state);
-    sanitize_settings(state.settings_read().clone())
+    let mut snapshot = settings_snapshot(&state);
+    snapshot.settings = sanitize_settings(snapshot.settings);
+    snapshot
 }
 
 /// 获取默认提示词模板
@@ -115,8 +117,9 @@ pub(crate) async fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
     settings: Settings,
-) -> Result<Settings, String> {
-    apply_settings(&app, &state, settings, true).await
+    expected_version: SettingsVersion,
+) -> Result<SettingsSnapshot, SettingsError> {
+    apply_settings(&app, &state, settings, expected_version, true).await
 }
 
 /// trim + 去空 + 去重（保序）。
@@ -143,7 +146,7 @@ pub(crate) fn set_favorite_models(
     app: AppHandle,
     state: State<AppState>,
     models: Vec<String>,
-) -> Result<Settings, String> {
+) -> Result<SettingsSnapshot, SettingsError> {
     let cleaned = dedup_preserve_order(models);
     update_settings(&app, &state, move |settings| {
         settings.favorite_models = cleaned;
@@ -159,7 +162,7 @@ pub(crate) fn set_translate_card_size(
     app: AppHandle,
     state: State<AppState>,
     width: u32,
-) -> Result<Settings, String> {
+) -> Result<SettingsSnapshot, SettingsError> {
     let clamped = width.clamp(360, 720);
     let canonical = update_settings(&app, &state, |settings| {
         settings.screenshot_translation.card_width = clamped;
@@ -175,12 +178,19 @@ async fn apply_settings(
     app: &AppHandle,
     state: &State<'_, AppState>,
     settings: Settings,
+    expected_version: SettingsVersion,
     preserve_oauth: bool,
-) -> Result<Settings, String> {
+) -> Result<SettingsSnapshot, SettingsError> {
     // Only one full save may own workspace migration at a time. This async lock deliberately does
     // not cover lightweight writers; their revision bump makes this save fail its final CAS.
     let _full_save = state.settings_save_lock.lock().await;
     let snapshot = settings_snapshot(state);
+    if snapshot.version != expected_version {
+        return Err(SettingsError::version_conflict(
+            expected_version,
+            snapshot.version,
+        ));
+    }
     let previous_settings = snapshot.settings.clone();
     let mut sanitized = sanitize_settings(settings);
     if preserve_oauth {
@@ -218,11 +228,11 @@ async fn apply_settings(
         .await
         {
             restore_runtime_settings(app, state);
-            return Err(format!("Failed to migrate conversation workspaces: {err}"));
+            return Err(format!("Failed to migrate conversation workspaces: {err}").into());
         }
     }
 
-    let sanitized = match commit_settings(app, state, snapshot.revision, sanitized) {
+    let committed = match commit_settings(app, state, snapshot.version, sanitized) {
         Ok(committed) => committed,
         Err(err) => {
             eprintln!("Failed to save settings: {err}");
@@ -253,9 +263,9 @@ async fn apply_settings(
         }
     };
 
-    state.sync_preferred_api_keys(&previous_settings, &sanitized);
+    state.sync_preferred_api_keys(&previous_settings, &committed.settings);
 
-    if previous_settings.keep_chat_window_alive && !sanitized.keep_chat_window_alive {
+    if previous_settings.keep_chat_window_alive && !committed.settings.keep_chat_window_alive {
         crate::shortcuts::destroy_hidden_chat_window(app);
     }
 
@@ -263,7 +273,7 @@ async fn apply_settings(
         eprintln!("Failed to update tray: {err}");
     }
 
-    Ok(sanitized)
+    Ok(committed)
 }
 
 /// 设置备份文件格式版本。结构变化不兼容时递增。
@@ -290,19 +300,20 @@ pub(crate) async fn import_settings(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
-) -> Result<Settings, String> {
+    expected_version: SettingsVersion,
+) -> Result<SettingsSnapshot, SettingsError> {
     let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
     let value: serde_json::Value =
         serde_json::from_str(&raw).map_err(|_| "文件不是有效的 JSON".to_string())?;
     if value.get("type").and_then(|v| v.as_str()) != Some("settings-backup") {
-        return Err("这不是 Kivio 设置备份文件".to_string());
+        return Err("这不是 Kivio 设置备份文件".into());
     }
     let settings_value = value
         .get("settings")
         .ok_or_else(|| "备份文件缺少 settings 字段".to_string())?;
     let settings: Settings = serde_json::from_value(settings_value.clone())
         .map_err(|e| format!("备份内容无法解析: {e}"))?;
-    apply_settings(&app, &state, settings, false).await
+    apply_settings(&app, &state, settings, expected_version, false).await
 }
 
 #[tauri::command]

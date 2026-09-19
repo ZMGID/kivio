@@ -16,7 +16,7 @@ use crate::macos_ocr::MacOcrClient;
 use crate::mcp::types::McpTool;
 use crate::offline_models::OfflineModelManager;
 use crate::rapidocr::RapidOcrClient;
-use crate::settings::Settings;
+use crate::settings::{Settings, SettingsError, SettingsSnapshot, SettingsVersion};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,9 +59,12 @@ pub struct PendingChatExternalSend {
 /// 组合根只保存领域句柄。
 pub struct AppState {
     settings: RwLock<Settings>,
-    /// Monotonic generation for persisted settings commits. Full settings saves snapshot this
-    /// value before doing async workspace migration and compare it again at commit time, so a
-    /// newer lightweight/plugin/self-config write cannot be overwritten by a stale snapshot.
+    /// Per-process namespace for settings revisions. A renderer carrying a snapshot from a
+    /// previous backend process must never match a new process that happens to reuse revision 0.
+    settings_epoch: String,
+    /// Monotonic generation within `settings_epoch`. Full settings saves carry the version from
+    /// the client's original read, validate it before runtime work, and compare it again after
+    /// async workspace migration so no newer write can be overwritten by a stale full object.
     settings_revision: AtomicU64,
     /// Serializes full async saves (including workspace migration) without blocking lightweight
     /// writers. Lightweight writers advance `settings_revision`, so the full save still detects
@@ -301,6 +304,7 @@ impl AppState {
             .collect();
         AppState {
             settings: RwLock::new(settings),
+            settings_epoch: uuid::Uuid::new_v4().to_string(),
             settings_revision: AtomicU64::new(0),
             settings_save_lock: tokio::sync::Mutex::new(()),
             lens_runtime: crate::lens::LensRuntimeState::default(),
@@ -397,25 +401,30 @@ impl AppState {
     /// modules cannot obtain a raw write guard and silently bypass the settings transaction.
     pub(crate) fn publish_settings_transaction(
         &self,
-        expected_revision: Option<u64>,
+        expected_version: Option<SettingsVersion>,
         build_canonical: impl FnOnce(&Settings) -> Result<Settings, String>,
         persist: impl FnOnce(&Settings) -> Result<(), String>,
-    ) -> Result<Settings, String> {
+    ) -> Result<SettingsSnapshot, SettingsError> {
         let mut current = self.settings.write().unwrap_or_else(|e| e.into_inner());
         let actual_revision = self.settings_revision();
-        if let Some(expected_revision) = expected_revision {
-            if actual_revision != expected_revision {
-                return Err(format!(
-                    "settings changed while the save was in progress (expected revision {expected_revision}, actual {actual_revision}); please retry"
+        let actual_version = self.settings_version_at(actual_revision);
+        if let Some(expected_version) = expected_version {
+            if actual_version != expected_version {
+                return Err(SettingsError::version_conflict(
+                    expected_version,
+                    actual_version,
                 ));
             }
         }
 
-        let canonical = build_canonical(&current)?;
-        persist(&canonical)?;
+        let canonical = build_canonical(&current).map_err(SettingsError::from)?;
+        persist(&canonical).map_err(SettingsError::from)?;
         *current = canonical.clone();
-        self.advance_settings_revision();
-        Ok(canonical)
+        let revision = self.advance_settings_revision();
+        Ok(SettingsSnapshot {
+            settings: canonical,
+            version: self.settings_version_at(revision),
+        })
     }
     #[cfg(test)]
     pub(crate) fn update_settings_for_test(&self, update: impl FnOnce(&mut Settings)) {
@@ -428,6 +437,12 @@ impl AppState {
     }
     pub(crate) fn advance_settings_revision(&self) -> u64 {
         self.settings_revision.fetch_add(1, Ordering::Release) + 1
+    }
+    pub(crate) fn settings_version_at(&self, revision: u64) -> SettingsVersion {
+        SettingsVersion {
+            epoch: self.settings_epoch.clone(),
+            revision,
+        }
     }
     /// 开发者「请求调试」开关。关时 adapter 短路，不构造任何记录（零开销）。
     pub fn request_debug_enabled(&self) -> bool {

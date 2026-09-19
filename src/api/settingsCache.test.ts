@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Settings } from './tauri'
+import type { Settings, SettingsSnapshot, SettingsVersion } from './tauri'
 
 const getSettingsMock = vi.fn()
 const saveSettingsMock = vi.fn()
 const importSettingsMock = vi.fn()
 const setFavoriteModelsMock = vi.fn()
 const setTranslateCardSizeMock = vi.fn()
-const onKivioConfigurationChangedMock = vi.fn()
+const onKivioSettingsChangedMock = vi.fn()
 
 vi.mock('./tauri', () => ({
   api: {
@@ -15,25 +15,40 @@ vi.mock('./tauri', () => ({
     importSettings: (...args: unknown[]) => importSettingsMock(...args),
     setFavoriteModels: (...args: unknown[]) => setFavoriteModelsMock(...args),
     setTranslateCardSize: (...args: unknown[]) => setTranslateCardSizeMock(...args),
-    onKivioConfigurationChanged: (...args: unknown[]) => onKivioConfigurationChangedMock(...args),
+    onKivioSettingsChanged: (...args: unknown[]) => onKivioSettingsChangedMock(...args),
   },
+  isSettingsVersionConflict: (error: unknown) => (
+    typeof error === 'object'
+    && error !== null
+    && (error as { code?: unknown }).code === 'versionConflict'
+  ),
 }))
 
 import {
   __resetSettingsCacheForTest,
   getSettingsCached,
+  getSettingsSnapshotCached,
   importSettingsCached,
   peekSettings,
+  peekSettingsSnapshot,
   refreshSettings,
+  refreshSettingsSnapshot,
   saveSettingsCached,
   setFavoriteModelsCached,
   setTranslateCardSizeCached,
   startBackendSettingsSync,
   subscribeSettings,
+  subscribeSettingsSnapshot,
+  updateSettingsCached,
 } from './settingsCache'
 
 const settingsA = { theme: 'dark', providers: [], favoriteModels: [] } as unknown as Settings
 const settingsB = { theme: 'light', providers: [], favoriteModels: [] } as unknown as Settings
+const version = (revision: number, epoch = 'epoch-a'): SettingsVersion => ({ epoch, revision })
+const snapshot = (settings: Settings, revision: number, epoch = 'epoch-a'): SettingsSnapshot => ({
+  settings,
+  version: version(revision, epoch),
+})
 
 beforeEach(() => {
   __resetSettingsCacheForTest()
@@ -42,129 +57,179 @@ beforeEach(() => {
   importSettingsMock.mockReset()
   setFavoriteModelsMock.mockReset()
   setTranslateCardSizeMock.mockReset()
-  onKivioConfigurationChangedMock.mockReset()
+  onKivioSettingsChangedMock.mockReset()
 })
 
-describe('settingsCache', () => {
-  it('backend changes refresh subscribers and late initial reads cannot restore old settings', async () => {
-    let emit: (() => void) | undefined
-    const unlisten = vi.fn()
-    onKivioConfigurationChangedMock.mockImplementation(async (listener: () => void) => { emit = listener; return unlisten })
-    let finishInitial: ((settings: Settings) => void) | undefined
-    getSettingsMock.mockImplementationOnce(() => new Promise<Settings>((resolve) => { finishInitial = resolve }))
-    const initial = getSettingsCached()
-    const subscriber = vi.fn()
-    subscribeSettings(subscriber)
-    const stop = await startBackendSettingsSync()
-    getSettingsMock.mockResolvedValueOnce(settingsB)
-    emit?.()
-    await vi.waitFor(() => expect(subscriber).toHaveBeenCalledWith(settingsB))
-    finishInitial?.(settingsA)
-    await expect(initial).resolves.toBe(settingsB)
-    expect(peekSettings()).toBe(settingsB)
-    stop()
-    emit?.()
-    expect(getSettingsMock).toHaveBeenCalledTimes(2)
-    expect(unlisten).toHaveBeenCalledOnce()
-  })
-  it('并发首读只发一次 invoke，之后命中缓存不再发', async () => {
-    getSettingsMock.mockResolvedValue(settingsA)
-    const [first, second] = await Promise.all([getSettingsCached(), getSettingsCached()])
+describe('settingsCache versioned snapshots', () => {
+  it('deduplicates the initial read and exposes Settings-only compatibility views', async () => {
+    getSettingsMock.mockResolvedValue(snapshot(settingsA, 1))
+    const [first, second] = await Promise.all([getSettingsCached(), getSettingsSnapshotCached()])
     expect(first).toBe(settingsA)
-    expect(second).toBe(settingsA)
-    expect(getSettingsMock).toHaveBeenCalledTimes(1)
-
-    await getSettingsCached()
-    expect(getSettingsMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('首读失败不写缓存，下次调用重试', async () => {
-    getSettingsMock.mockRejectedValueOnce(new Error('ipc down'))
-    await expect(getSettingsCached()).rejects.toThrow('ipc down')
-    expect(peekSettings()).toBeNull()
-
-    getSettingsMock.mockResolvedValue(settingsA)
-    await expect(getSettingsCached()).resolves.toBe(settingsA)
-    expect(getSettingsMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('peekSettings 未加载时为 null，加载后同步返回缓存', async () => {
-    expect(peekSettings()).toBeNull()
-    getSettingsMock.mockResolvedValue(settingsA)
-    await getSettingsCached()
+    expect(second).toEqual(snapshot(settingsA, 1))
     expect(peekSettings()).toBe(settingsA)
+    expect(peekSettingsSnapshot()).toEqual(snapshot(settingsA, 1))
+    expect(getSettingsMock).toHaveBeenCalledTimes(1)
   })
 
-  it('refreshSettings 强制 refetch 并更新缓存；失败保留旧缓存', async () => {
-    getSettingsMock.mockResolvedValueOnce(settingsA)
-    await getSettingsCached()
-
-    getSettingsMock.mockResolvedValueOnce(settingsB)
-    await expect(refreshSettings()).resolves.toBe(settingsB)
-    expect(peekSettings()).toBe(settingsB)
-
-    getSettingsMock.mockRejectedValueOnce(new Error('ipc down'))
-    await expect(refreshSettings()).rejects.toThrow('ipc down')
-    expect(peekSettings()).toBe(settingsB)
+  it('does not let a late older read roll the cache back within one epoch', async () => {
+    let finishOld: ((value: SettingsSnapshot) => void) | undefined
+    getSettingsMock
+      .mockImplementationOnce(() => new Promise<SettingsSnapshot>((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce(snapshot(settingsB, 2))
+    const oldRead = getSettingsSnapshotCached()
+    await expect(refreshSettingsSnapshot()).resolves.toEqual(snapshot(settingsB, 2))
+    finishOld?.(snapshot(settingsA, 1))
+    await expect(oldRead).resolves.toEqual(snapshot(settingsB, 2))
+    expect(peekSettingsSnapshot()).toEqual(snapshot(settingsB, 2))
   })
 
-  it('refreshSettings 在无缓存时也能拉取并填充缓存（读-改-写冷态路径）', async () => {
-    getSettingsMock.mockResolvedValue(settingsA)
-    await expect(refreshSettings()).resolves.toBe(settingsA)
+  it('does not let a late save response roll back a newer canonical snapshot', async () => {
+    getSettingsMock
+      .mockResolvedValueOnce(snapshot(settingsA, 1))
+      .mockResolvedValueOnce(snapshot(settingsB, 3))
+    await getSettingsSnapshotCached()
+    let finishSave: ((value: SettingsSnapshot) => void) | undefined
+    saveSettingsMock.mockImplementationOnce(() => new Promise<SettingsSnapshot>((resolve) => { finishSave = resolve }))
+
+    const saving = saveSettingsCached(settingsB, version(1))
+    await refreshSettingsSnapshot()
+    finishSave?.(snapshot(settingsA, 2))
+
+    await expect(saving).resolves.toBe(settingsB)
+    expect(peekSettingsSnapshot()).toEqual(snapshot(settingsB, 3))
+  })
+
+  it('uses request order to reject a late response from an earlier backend epoch', async () => {
+    let finishOldEpoch: ((value: SettingsSnapshot) => void) | undefined
+    getSettingsMock
+      .mockImplementationOnce(() => new Promise<SettingsSnapshot>((resolve) => { finishOldEpoch = resolve }))
+      .mockResolvedValueOnce(snapshot(settingsB, 1, 'epoch-b'))
+    const oldRead = getSettingsSnapshotCached()
+    await refreshSettingsSnapshot()
+    finishOldEpoch?.(snapshot(settingsA, 99, 'epoch-a'))
+    await expect(oldRead).resolves.toEqual(snapshot(settingsB, 1, 'epoch-b'))
+    expect(peekSettingsSnapshot()?.version.epoch).toBe('epoch-b')
+  })
+
+  it('notifies both snapshot subscribers and Settings-only compatibility subscribers', async () => {
+    getSettingsMock.mockResolvedValue(snapshot(settingsB, 2))
+    const settingsListener = vi.fn()
+    const snapshotListener = vi.fn()
+    subscribeSettings(settingsListener)
+    subscribeSettingsSnapshot(snapshotListener)
+    await refreshSettingsSnapshot()
+    expect(settingsListener).toHaveBeenCalledWith(settingsB)
+    expect(snapshotListener).toHaveBeenCalledWith(snapshot(settingsB, 2))
+  })
+
+  it('passes the caller-provided version to full save and import instead of borrowing cache state', async () => {
+    getSettingsMock.mockResolvedValue(snapshot(settingsA, 3))
+    await getSettingsSnapshotCached()
+    saveSettingsMock.mockResolvedValue(snapshot(settingsB, 4))
+    importSettingsMock.mockResolvedValue(snapshot(settingsA, 5))
+    const editedFrom = version(2)
+    await expect(saveSettingsCached(settingsB, editedFrom)).resolves.toBe(settingsB)
+    expect(saveSettingsMock).toHaveBeenCalledWith(settingsB, editedFrom)
+    await expect(importSettingsCached('/tmp/x.json', version(4))).resolves.toBe(settingsA)
+    expect(importSettingsMock).toHaveBeenCalledWith('/tmp/x.json', version(4))
+  })
+
+  it('does not mutate or notify the cache when a full save fails', async () => {
+    getSettingsMock.mockResolvedValue(snapshot(settingsA, 1))
+    await getSettingsSnapshotCached()
+    const snapshotListener = vi.fn()
+    subscribeSettingsSnapshot(snapshotListener)
+    saveSettingsMock.mockRejectedValue(new Error('disk full'))
+    await expect(saveSettingsCached(settingsB, version(1))).rejects.toThrow('disk full')
     expect(peekSettings()).toBe(settingsA)
+    expect(snapshotListener).not.toHaveBeenCalled()
   })
 
-  it('saveSettingsCached 成功写通缓存；失败不动缓存', async () => {
-    getSettingsMock.mockResolvedValue(settingsA)
-    await getSettingsCached()
+  it('retries a pure mutation once from a fresh snapshot after a version conflict', async () => {
+    const conflict = {
+      code: 'versionConflict', message: 'stale', expectedVersion: version(1), actualVersion: version(2),
+    }
+    getSettingsMock
+      .mockResolvedValueOnce(snapshot(settingsA, 1))
+      .mockResolvedValueOnce(snapshot(settingsB, 2))
+    saveSettingsMock
+      .mockRejectedValueOnce(conflict)
+      .mockResolvedValueOnce(snapshot({ ...settingsB, theme: 'dark' } as Settings, 3))
+    const mutate = vi.fn((current: Settings) => ({ ...current, theme: 'dark' }) as Settings)
+    const saved = await updateSettingsCached(mutate)
+    expect(saved.theme).toBe('dark')
+    expect(mutate).toHaveBeenCalledTimes(2)
+    expect(saveSettingsMock).toHaveBeenNthCalledWith(1, { ...settingsA, theme: 'dark' }, version(1))
+    expect(saveSettingsMock).toHaveBeenNthCalledWith(2, { ...settingsB, theme: 'dark' }, version(2))
+  })
 
-    saveSettingsMock.mockResolvedValueOnce(settingsB)
-    await expect(saveSettingsCached(settingsB)).resolves.toBe(settingsB)
-    expect(peekSettings()).toBe(settingsB)
-
-    saveSettingsMock.mockRejectedValueOnce(new Error('save failed'))
-    await expect(saveSettingsCached(settingsA)).rejects.toThrow('save failed')
+  it('bounds conflict retries and preserves the latest authoritative cache', async () => {
+    const conflict = { code: 'versionConflict', message: 'stale' }
+    getSettingsMock
+      .mockResolvedValueOnce(snapshot(settingsA, 1))
+      .mockResolvedValueOnce(snapshot(settingsB, 2))
+    saveSettingsMock.mockRejectedValue(conflict)
+    await expect(updateSettingsCached((current) => ({ ...current, theme: 'dark' }), { maxConflictRetries: 1 }))
+      .rejects.toBe(conflict)
+    expect(saveSettingsMock).toHaveBeenCalledTimes(2)
     expect(peekSettings()).toBe(settingsB)
   })
 
-  it('importSettingsCached 成功用导入结果替换缓存', async () => {
-    getSettingsMock.mockResolvedValue(settingsA)
-    await getSettingsCached()
-
-    importSettingsMock.mockResolvedValueOnce(settingsB)
-    await expect(importSettingsCached('/tmp/x.json')).resolves.toBe(settingsB)
-    expect(peekSettings()).toBe(settingsB)
-  })
-
-  it('setFavoriteModelsCached 采用后端 canonical 回包，不在前端复制 trim/去空/去重', async () => {
-    getSettingsMock.mockResolvedValue(settingsA)
-    await getSettingsCached()
-
-    const canonical = { ...settingsB, favoriteModels: ['p:m', 'p:n'] }
-    setFavoriteModelsMock.mockResolvedValueOnce(canonical)
+  it('accepts canonical snapshots returned by lightweight writes', async () => {
+    getSettingsMock.mockResolvedValue(snapshot(settingsA, 1))
+    await getSettingsSnapshotCached()
+    const favoriteCanonical = { ...settingsB, favoriteModels: ['p:m', 'p:n'] } as Settings
+    setFavoriteModelsMock.mockResolvedValue(snapshot(favoriteCanonical, 2))
+    setTranslateCardSizeMock.mockResolvedValue(snapshot(settingsB, 3))
     await setFavoriteModelsCached([' p:m ', '', 'p:m', 'p:n'])
     expect(setFavoriteModelsMock).toHaveBeenCalledWith([' p:m ', '', 'p:m', 'p:n'])
-    expect(peekSettings()).toBe(canonical)
-
-    setFavoriteModelsMock.mockRejectedValueOnce(new Error('nope'))
-    await expect(setFavoriteModelsCached(['p:other'])).rejects.toThrow('nope')
-    expect(peekSettings()).toBe(canonical)
+    expect(peekSettings()).toBe(favoriteCanonical)
+    await setTranslateCardSizeCached(999)
+    expect(peekSettings()).toBe(settingsB)
+    expect(peekSettingsSnapshot()?.version).toEqual(version(3))
   })
 
-  it('setTranslateCardSizeCached 原样采用后端 canonical 回包', async () => {
-    getSettingsMock.mockResolvedValue(settingsA)
-    await getSettingsCached()
+  it('leaves the cache unchanged when a lightweight write fails', async () => {
+    getSettingsMock.mockResolvedValue(snapshot(settingsA, 1))
+    await getSettingsSnapshotCached()
+    setFavoriteModelsMock.mockRejectedValue(new Error('disk full'))
+    await expect(setFavoriteModelsCached(['p:m'])).rejects.toThrow('disk full')
+    expect(peekSettingsSnapshot()).toEqual(snapshot(settingsA, 1))
+  })
 
-    const canonical = {
-      ...settingsB,
-      retryAttempts: 5,
-      screenshotTranslation: { enabled: true, cardWidth: 512 },
-    } as unknown as Settings
-    setTranslateCardSizeMock.mockResolvedValueOnce(canonical)
+  it('refreshes only for an ahead settings event and ignores an older event', async () => {
+    let emit: ((event: { version: SettingsVersion }) => void) | undefined
+    const unlisten = vi.fn()
+    onKivioSettingsChangedMock.mockImplementation(async (listener) => { emit = listener; return unlisten })
+    getSettingsMock.mockResolvedValueOnce(snapshot(settingsA, 2))
+    await getSettingsSnapshotCached()
+    const stop = await startBackendSettingsSync()
+    emit?.({ version: version(1) })
+    await Promise.resolve()
+    expect(getSettingsMock).toHaveBeenCalledTimes(1)
+    getSettingsMock.mockResolvedValueOnce(snapshot(settingsB, 3))
+    emit?.({ version: version(3) })
+    await vi.waitFor(() => expect(peekSettings()).toBe(settingsB))
+    stop()
+    expect(unlisten).toHaveBeenCalledOnce()
+  })
 
-    await setTranslateCardSizeCached(999)
+  it('keeps the previous snapshot when a refresh fails and retries on the next call', async () => {
+    getSettingsMock.mockResolvedValueOnce(snapshot(settingsA, 1))
+    await getSettingsSnapshotCached()
+    getSettingsMock.mockRejectedValueOnce(new Error('ipc down'))
+    await expect(refreshSettings()).rejects.toThrow('ipc down')
+    expect(peekSettings()).toBe(settingsA)
+    getSettingsMock.mockResolvedValueOnce(snapshot(settingsB, 2))
+    await expect(refreshSettings()).resolves.toBe(settingsB)
+  })
 
-    expect(setTranslateCardSizeMock).toHaveBeenCalledWith(999)
-    expect(peekSettings()).toBe(canonical)
+  it('clears a failed cold-read flight so the next cached read can retry', async () => {
+    getSettingsMock.mockRejectedValueOnce(new Error('ipc down'))
+    await expect(getSettingsSnapshotCached()).rejects.toThrow('ipc down')
+    expect(peekSettingsSnapshot()).toBeNull()
+    getSettingsMock.mockResolvedValueOnce(snapshot(settingsA, 1))
+    await expect(getSettingsCached()).resolves.toBe(settingsA)
+    expect(getSettingsMock).toHaveBeenCalledTimes(2)
   })
 })

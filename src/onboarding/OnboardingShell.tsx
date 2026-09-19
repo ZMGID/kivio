@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react'
-import { type Settings } from '../api/tauri'
-import { getSettingsCached, saveSettingsCached } from '../api/settingsCache'
+import { type Settings, type SettingsVersion } from '../api/tauri'
+import { getSettingsSnapshotCached, saveSettingsSnapshotCached } from '../api/settingsCache'
 import { i18n, type Lang } from '../settings/public/i18n'
 import { usesNativeTitlebar } from '../chat/public/platform'
 import { Button } from '../components/Button'
@@ -36,6 +36,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
   const [stepIndex, setStepIndex] = useState(0)
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false)
   const [providerBypass, setProviderBypass] = useState(false)
+  const settingsVersionRef = useRef<SettingsVersion | null>(null)
 
   const stepId = ONBOARDING_STEPS[stepIndex] ?? 'welcome'
   const lang = (settings?.settingsLanguage || 'zh') as Lang
@@ -45,7 +46,9 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
     setLoading(true)
     setLoadError(null)
     try {
-      const loaded = await getSettingsCached()
+      const snapshot = await getSettingsSnapshotCached()
+      const loaded = snapshot.settings
+      settingsVersionRef.current = snapshot.version
       // 首次运行按系统语言自动设定界面语言（欢迎页起即本地化）；但若用户此前已选过语言
       // （如重跑引导的老用户），沿用其选择，不要用系统 locale 覆盖。
       setSettings({
@@ -89,11 +92,14 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
     setSaving(true)
     setSaveError(null)
     try {
-      const saved = await saveSettingsCached({
+      const expectedVersion = settingsVersionRef.current
+      if (!expectedVersion) throw new Error('Settings version is unavailable')
+      const saved = await saveSettingsSnapshotCached({
         ...settings,
         onboardingStatus: status,
-      })
-      setSettings(saved)
+      }, expectedVersion)
+      settingsVersionRef.current = saved.version
+      setSettings(saved.settings)
       onSettingsChange?.()
       return true
     } catch (err) {
@@ -115,8 +121,12 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
   const handleSkipAfterLoadFailure = useCallback(async () => {
     setSaving(true)
     try {
-      const loaded = await getSettingsCached()
-      await saveSettingsCached({ ...loaded, onboardingStatus: 'skipped' })
+      const loaded = await getSettingsSnapshotCached()
+      const saved = await saveSettingsSnapshotCached(
+        { ...loaded.settings, onboardingStatus: 'skipped' },
+        loaded.version,
+      )
+      settingsVersionRef.current = saved.version
       onSettingsChange?.()
     } catch (err) {
       console.error('Failed to skip onboarding after load error:', err)

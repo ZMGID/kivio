@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../api/tauri'
 import { withExternalModel } from '../externalModelEffort'
 import { syncChatProtocol } from '../../api/chatProtocol'
-import { getSettingsCached, refreshSettings, saveSettingsCached } from '../../api/settingsCache'
+import { getSettingsCached, updateSettingsCached } from '../../api/settingsCache'
 import {
   agentRuntimesEqual,
   chatApi,
@@ -489,14 +489,13 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const handleApprovalPolicyChange = useCallback(async (nextApprovalPolicy: string) => {
     setApprovalPolicy(nextApprovalPolicy)
     try {
-      const settings = await refreshSettings()
-      await saveSettingsCached({
+      await updateSettingsCached((settings) => ({
         ...settings,
         chatTools: {
           ...settings.chatTools,
           approvalPolicy: nextApprovalPolicy,
         },
-      })
+      }))
     } catch (err) {
       console.error('Failed to update approval policy:', err)
     }

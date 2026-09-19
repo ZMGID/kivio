@@ -1,146 +1,255 @@
-import { api, type Settings } from './tauri'
+import {
+  api,
+  isSettingsVersionConflict,
+  type Settings,
+  type SettingsChangedEvent,
+  type SettingsSnapshot,
+  type SettingsVersion,
+} from './tauri'
 
 /**
- * Settings 前端内存缓存（per-webview 模块级单例）。
+ * Per-webview cache of the backend-owned canonical settings snapshot.
  *
- * 动机：后端 get_settings 是纯内存读，但每次 invoke 都要完整 clone + IPC 序列化 +
- * IPC 序列化；一次 chat 冷启动会独立发起 5-6 次。缓存后首读之外全部即时返回，
- * SettingsShell 还能用 peekSettings 做 stale-while-revalidate 首帧渲染。
- *
- * 自配置工具成功后广播 kivio-configuration-changed，各 webview 强制读取并通知
- * 订阅者。广播不携带设置或凭据。其它未广播的写入仍使用下面的现读策略。
- *
- * 已知局限（后端旁路写）：后端会直接改 settings 并落盘、不经前端 saveSettings——
- * OAuth 令牌刷新（mcp/manager.rs persist_refreshed_server）改 servers[].auth/headers；
- * 插件启用/停用（plugins::set_plugin_enabled）改 plugin-* MCP 的 enabled。
- * 本缓存无对应失效。因此“读-改-写整个 Settings”的调用方必须用 refreshSettings()（现读）
- * 而非缓存快照，否则可能把刚刷新的 token / 插件开关覆盖回旧值——Chat 的审批策略/ MCP 开关、
- * SkillCenter 保存均已如此处理。SettingsShell 可编辑 servers，其长驻草稿必须在
- * refreshSettings 后采用后端的 plugin MCP 行，否则 keep-alive 整份保存会把插件开关盖回去。
- *
- * 失败语义：读失败不写缓存（下次重试）、保存失败不动缓存——与 SettingsShell
- * “加载失败不合成默认值，避免错误状态下自动保存覆盖磁盘真实数据”的既有约定一致。
+ * Settings and their version are deliberately inseparable here. Full writes
+ * must provide the version the edited value was read from; this module never
+ * borrows a newer cache version to endorse an older full Settings object.
  */
+let cached: SettingsSnapshot | null = null
+let inflight: Promise<SettingsSnapshot> | null = null
+let nextRequestSequence = 0
+let lastAcceptedRequestSequence = 0
 
-let cached: Settings | null = null
-let inflight: Promise<Settings> | null = null
-let readGeneration = 0
-
-/** 缓存更新订阅者。saveSettingsCached / refreshSettings / importSettingsCached 等
- *  任何写缓存的路径都会广播新 Settings，让"挂载时读一次"的消费方（如 ModelSelector）
- *  在设置自动保存后立即拿到新值——设置页没有保存按钮，落盘与返回聊天视图是并发的，
- *  只靠挂载时读缓存会读到保存回包前的旧快照。 */
 type SettingsListener = (settings: Settings) => void
+type SettingsSnapshotListener = (snapshot: SettingsSnapshot) => void
 const listeners = new Set<SettingsListener>()
+const snapshotListeners = new Set<SettingsSnapshotListener>()
 
-function notifySettingsUpdated(settings: Settings): void {
+function sameVersion(a: SettingsVersion, b: SettingsVersion): boolean {
+  return a.epoch === b.epoch && a.revision === b.revision
+}
+
+function isEventAhead(event: SettingsChangedEvent): boolean {
+  if (!cached) return true
+  if (event.version.epoch !== cached.version.epoch) return true
+  return event.version.revision > cached.version.revision
+}
+
+function notifySettingsUpdated(snapshot: SettingsSnapshot): void {
+  for (const listener of [...snapshotListeners]) {
+    try {
+      listener(snapshot)
+    } catch (error) {
+      console.error('[settingsCache] snapshot listener failed', error)
+    }
+  }
   for (const listener of [...listeners]) {
     try {
-      listener(settings)
-    } catch (err) {
-      console.error('[settingsCache] listener failed', err)
+      listener(snapshot.settings)
+    } catch (error) {
+      console.error('[settingsCache] listener failed', error)
     }
   }
 }
 
-/** 订阅缓存更新；返回取消订阅函数。回调拿到的对象为共享缓存引用，视为只读。 */
-export function subscribeSettings(listener: SettingsListener): () => void {
-  listeners.add(listener)
-  return () => {
-    listeners.delete(listener)
+/**
+ * Accept only monotonic snapshots. Revisions are comparable within an epoch.
+ * Across backend restarts, request order prevents an old in-flight response
+ * from replacing a snapshot fetched from the new process.
+ */
+function acceptSnapshot(
+  incoming: SettingsSnapshot,
+  requestSequence: number,
+  notify: boolean,
+): SettingsSnapshot {
+  const current = cached
+  let accept = current === null
+  if (current) {
+    if (incoming.version.epoch === current.version.epoch) {
+      accept = incoming.version.revision > current.version.revision
+    } else {
+      accept = requestSequence >= lastAcceptedRequestSequence
+    }
   }
+
+  if (accept) {
+    cached = incoming
+    lastAcceptedRequestSequence = Math.max(lastAcceptedRequestSequence, requestSequence)
+    if (notify) notifySettingsUpdated(incoming)
+  } else if (current && sameVersion(incoming.version, current.version)) {
+    // A later request confirming the same version still supersedes older
+    // cross-epoch requests, even though it does not need to notify consumers.
+    lastAcceptedRequestSequence = Math.max(lastAcceptedRequestSequence, requestSequence)
+  }
+  return cached ?? incoming
 }
 
-/** 同步读缓存；未加载过返回 null。供 SWR 首帧使用。 */
-export function peekSettings(): Settings | null {
+function beginRequest(): number {
+  nextRequestSequence += 1
+  return nextRequestSequence
+}
+
+/** Subscribe to Settings-only compatibility updates. */
+export function subscribeSettings(listener: SettingsListener): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+/** Subscribe to canonical values together with their exact backend version. */
+export function subscribeSettingsSnapshot(listener: SettingsSnapshotListener): () => void {
+  snapshotListeners.add(listener)
+  return () => { snapshotListeners.delete(listener) }
+}
+
+export function peekSettingsSnapshot(): SettingsSnapshot | null {
   return cached
 }
 
-/** 有缓存立即 resolve；否则发起（或复用进行中的）一次 invoke。并发首读只发一次请求。
- *  返回值视为只读，勿原地 mutate（是共享缓存引用；调用方修改请用展开生成新对象）。 */
-export function getSettingsCached(): Promise<Settings> {
+/** Settings-only compatibility view. Treat the returned object as read-only. */
+export function peekSettings(): Settings | null {
+  return cached?.settings ?? null
+}
+
+/** Cached snapshot read; concurrent cold reads share one IPC request. */
+export function getSettingsSnapshotCached(): Promise<SettingsSnapshot> {
   if (cached) return Promise.resolve(cached)
   if (inflight) return inflight
-  const generation = ++readGeneration
-  inflight = api.getSettings()
-    .then((settings) => {
-      if (generation === readGeneration) cached = settings
-      return cached ?? settings
-    })
+  const requestSequence = beginRequest()
+  const request = api.getSettings()
+    .then((snapshot) => acceptSnapshot(snapshot, requestSequence, false))
     .finally(() => {
-      inflight = null
+      if (inflight === request) inflight = null
     })
-  return inflight
+  inflight = request
+  return request
 }
 
-/** 强制 refetch 并更新缓存（后台校准用）。失败时保留旧缓存。 */
-export function refreshSettings(): Promise<Settings> {
-  const generation = ++readGeneration
-  return api.getSettings().then((settings) => {
-    if (generation === readGeneration) {
-      cached = settings
-      notifySettingsUpdated(settings)
-    }
-    return cached ?? settings
-  })
+export async function getSettingsCached(): Promise<Settings> {
+  return (await getSettingsSnapshotCached()).settings
 }
 
-/** Backend agent operations update live settings outside saveSettingsCached.
- * Subscribe once per webview so existing consumers can rebase their drafts.
- * The event has no secrets; a failed refetch never synthesizes defaults. */
+/** Force an authoritative read. Failure leaves the previous cache intact. */
+export function refreshSettingsSnapshot(): Promise<SettingsSnapshot> {
+  const requestSequence = beginRequest()
+  return api.getSettings().then((snapshot) => acceptSnapshot(snapshot, requestSequence, true))
+}
+
+export async function refreshSettings(): Promise<Settings> {
+  return (await refreshSettingsSnapshot()).settings
+}
+
+/**
+ * Subscribe once per webview. Versioned events carry no settings or secrets;
+ * an ahead event triggers an authoritative read. Focus/visibility refreshes
+ * recover from a notification missed while a window was suspended.
+ */
 export async function startBackendSettingsSync(): Promise<() => void> {
   let stopped = false
-  const unlisten = await api.onKivioConfigurationChanged(() => {
+  const refresh = () => {
     if (stopped) return
-    void refreshSettings().catch((error) => console.error('[settingsCache] backend refresh failed', error))
+    void refreshSettingsSnapshot().catch((error) => {
+      console.error('[settingsCache] backend refresh failed', error)
+    })
+  }
+  const unlisten = await api.onKivioSettingsChanged((event) => {
+    if (!stopped && isEventAhead(event)) refresh()
   })
-  return () => { stopped = true; unlisten() }
+  const onFocus = () => refresh()
+  const onVisibilityChange = () => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') refresh()
+  }
+  if (typeof window !== 'undefined') window.addEventListener('focus', onFocus)
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange)
+  return () => {
+    stopped = true
+    unlisten()
+    if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus)
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
+  }
 }
 
-/** saveSettings + 成功写通缓存并广播；失败原样抛出且不动缓存。 */
-export async function saveSettingsCached(settings: Settings): Promise<Settings> {
-  const saved = await api.saveSettings(settings)
-  ++readGeneration
-  cached = saved
-  notifySettingsUpdated(saved)
-  return saved
+/** Commit a full object against the exact version from which it was edited. */
+export async function saveSettingsSnapshotCached(
+  settings: Settings,
+  expectedVersion: SettingsVersion,
+): Promise<SettingsSnapshot> {
+  const requestSequence = beginRequest()
+  const saved = await api.saveSettings(settings, expectedVersion)
+  return acceptSnapshot(saved, requestSequence, true)
+}
+
+/** Settings-only compatibility result; expectedVersion remains mandatory. */
+export async function saveSettingsCached(
+  settings: Settings,
+  expectedVersion: SettingsVersion,
+): Promise<Settings> {
+  return (await saveSettingsSnapshotCached(settings, expectedVersion)).settings
+}
+
+/** Import is a full replacement and therefore validates the version captured
+ * before the file-picking/import operation started. */
+export async function importSettingsSnapshotCached(
+  path: string,
+  expectedVersion: SettingsVersion,
+): Promise<SettingsSnapshot> {
+  const requestSequence = beginRequest()
+  const imported = await api.importSettings(path, expectedVersion)
+  return acceptSnapshot(imported, requestSequence, true)
+}
+
+export async function importSettingsCached(
+  path: string,
+  expectedVersion: SettingsVersion,
+): Promise<Settings> {
+  return (await importSettingsSnapshotCached(path, expectedVersion)).settings
+}
+
+export type UpdateSettingsCachedOptions = {
+  /** Number of fresh-read/reapply attempts after the initial CAS conflict. */
+  maxConflictRetries?: number
 }
 
 /**
- * importSettings + 成功写通缓存。import 会用文件内容整体覆盖磁盘 settings，
- * 返回归一化后的新 Settings，直接替换缓存。
+ * Safely perform a narrow read-modify-write operation. `mutate` must be pure:
+ * on a version conflict it is re-run against one fresh canonical snapshot.
+ * Long-lived editors must use their own three-way merge controller instead.
  */
-export async function importSettingsCached(path: string): Promise<Settings> {
-  const imported = await api.importSettings(path)
-  ++readGeneration
-  cached = imported
-  notifySettingsUpdated(imported)
-  return imported
+export async function updateSettingsCached(
+  mutate: (current: Settings) => Settings,
+  options: UpdateSettingsCachedOptions = {},
+): Promise<Settings> {
+  const maxConflictRetries = Math.max(0, options.maxConflictRetries ?? 1)
+  let base = await refreshSettingsSnapshot()
+  for (let conflicts = 0; conflicts <= maxConflictRetries; conflicts += 1) {
+    const next = mutate(base.settings)
+    try {
+      return await saveSettingsCached(next, base.version)
+    } catch (error) {
+      if (!isSettingsVersionConflict(error) || conflicts >= maxConflictRetries) throw error
+      base = await refreshSettingsSnapshot()
+    }
+  }
+  throw new Error('unreachable settings update state')
 }
 
-/**
- * setFavoriteModels 的回包是后端最终 canonical Settings。缓存必须原样采用该回包，
- * 不在前端复制 trim、去空、去重等持久化规则。失败原样抛出且不动缓存。
- */
+/** Lightweight backend mutations return the new canonical snapshot/version. */
 export async function setFavoriteModelsCached(models: string[]): Promise<void> {
+  const requestSequence = beginRequest()
   const saved = await api.setFavoriteModels(models)
-  ++readGeneration
-  cached = saved
-  notifySettingsUpdated(saved)
+  acceptSnapshot(saved, requestSequence, true)
 }
 
-/** setTranslateCardSize 返回后端最终 canonical Settings，前端不复制 clamp 规则。 */
 export async function setTranslateCardSizeCached(width: number): Promise<void> {
+  const requestSequence = beginRequest()
   const saved = await api.setTranslateCardSize(width)
-  ++readGeneration
-  cached = saved
-  notifySettingsUpdated(saved)
+  acceptSnapshot(saved, requestSequence, true)
 }
 
-/** 仅测试用：重置模块状态。 */
+/** Test-only reset. */
 export function __resetSettingsCacheForTest(): void {
   cached = null
   inflight = null
-  readGeneration = 0
+  nextRequestSequence = 0
+  lastAcceptedRequestSequence = 0
   listeners.clear()
+  snapshotListeners.clear()
 }
