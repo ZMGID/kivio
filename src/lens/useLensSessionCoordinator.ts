@@ -13,6 +13,12 @@ export type LensSessionCoordinatorOptions = {
   cancelRequest?: () => Promise<unknown> | unknown
 }
 
+export type LensCloseOperations = {
+  prepareHiddenSurface: () => void
+  waitForPaint: () => Promise<void>
+  hide: () => Promise<unknown>
+}
+
 /**
  * Owns the identity and disposable capture resources of one Lens opening.
  *
@@ -30,6 +36,8 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
   const selectionSequence = useRef(0)
   const requestSequence = useRef(0)
   const activeRequest = useRef<LensRequestToken | null>(null)
+  const closing = useRef<{ opening: number; promise: Promise<boolean> } | null>(null)
+  const closedOpening = useRef<number | null>(null)
   const cancelRequest = useRef(options.cancelRequest)
   cancelRequest.current = options.cancelRequest
   const captureReadyRef = useRef(false)
@@ -200,6 +208,45 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     setFreezeFramePreviewId('')
   }, [invalidateActiveRequest])
 
+  /** An old selection read or late invoke result cannot publish over restored history. */
+  const restoreSession = useCallback((applySnapshot: () => void): Promise<void> => {
+    const cancellation = cancelActiveRequest()
+    beginSelectionRead()
+    try {
+      applySnapshot()
+    } catch (error) {
+      void cancellation.catch(() => undefined)
+      return Promise.reject(error)
+    }
+    return cancellation.then(() => undefined)
+  }, [beginSelectionRead, cancelActiveRequest])
+
+  /** Reset the visible surface before native hide, and refuse to hide a newer opening. */
+  const closeOpening = useCallback((operations: LensCloseOperations): Promise<boolean> => {
+    const opening = openSequence.current
+    if (closing.current?.opening === opening) return closing.current.promise
+    if (closedOpening.current === opening) return Promise.resolve(false)
+    const promise = (async () => {
+      try {
+        await cancelActiveRequest()
+      } catch (error) {
+        console.error('[lens] cancel request failed', error)
+      }
+      if (openSequence.current !== opening) return false
+      operations.prepareHiddenSurface()
+      await operations.waitForPaint()
+      if (openSequence.current !== opening) return false
+      await operations.hide()
+      closedOpening.current = opening
+      return true
+    })()
+    closing.current = { opening, promise }
+    void promise.finally(() => {
+      if (closing.current?.promise === promise) closing.current = null
+    }).catch(() => undefined)
+    return promise
+  }, [cancelActiveRequest])
+
   useEffect(() => () => {
     if (invalidateActiveRequest()) invokeCancelBoundary()
     initializationSequence.current += 1
@@ -224,6 +271,7 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     beginSelectionRead,
     canCapture,
     cancelActiveRequest,
+    closeOpening,
     captureReady,
     consumeFreezeFrame,
     currentOpening,
@@ -244,5 +292,6 @@ export function useLensSessionCoordinator(options: LensSessionCoordinatorOptions
     markCaptureReady,
     replaceFreezeFrame,
     resetForHide,
+    restoreSession,
   }
 }

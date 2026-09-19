@@ -10,14 +10,14 @@ import { i18n, type Lang } from './settings/i18n'
 import { isWebSearchConfigured } from './settings/webSearch'
 import { copyToClipboard } from './utils/clipboard'
 
-import type { Annotation, AnnotationKind, BarRect, CapturedFrame, HistoryItem, Metrics, Mode, Point, Stage, TranslateCardDrag } from './lens/types'
+import type { AnnotationKind, BarRect, HistoryItem, Metrics, Mode, Point, Stage, TranslateCardDrag } from './lens/types'
 import { ArrowSvg } from './lens/ArrowSvg'
 import { AnnotateToolbar } from './lens/AnnotateToolbar'
 import { MosaicPreview } from './lens/MosaicPreview'
 import { ReplaceTranslateOverlay } from './lens/ReplaceTranslateOverlay'
-import { ARROW_MIN_DRAG_PX, composeAnnotatedImage } from './lens/annotation'
+import { composeAnnotatedImage } from './lens/annotation'
 import { HISTORY_THUMB_SIZE, makeThumbnail } from './lens/history'
-import { ANCHOR_GAP, DRAG_THRESHOLD, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
+import { ANCHOR_GAP, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
 
 // 翻译卡缩放后内容区高度固定，此值预留 header+footer+padding，
 // 保证「卡整体高 = chrome + 内容」不被 overflow-hidden 裁掉底部复制栏。
@@ -34,6 +34,10 @@ import { useImageObjectUrl } from './lens/useImageObjectUrl'
 import { readDevicePixelRatio, useDevicePixelRatio } from './lens/useDevicePixelRatio'
 import { useLensHistory } from './lens/useLensHistory'
 import { useLensSessionCoordinator } from './lens/useLensSessionCoordinator'
+import { useLensConversationController } from './lens/useLensConversationController'
+import { useLensSelectionController } from './lens/useLensSelectionController'
+import { useLensAnnotationController } from './lens/useLensAnnotationController'
+import { useLensBarMotionController } from './lens/useLensBarMotionController'
 import { useLensTranslationSession } from './lens/useLensTranslationSession'
 
 /** 解析 webview hash query：'#lens?mode=translate' → 'translate' */
@@ -133,31 +137,34 @@ const waitForVisibleIdle = (timeout = LENS_HIDE_IDLE_TIMEOUT_MS) => new Promise<
  * 关键：webview 始终全屏，整个过渡靠 CSS。后端 lens_resolve_anchor 仅算目标坐标，不缩窗口。
  */
 export default function Lens() {
-  const [stage, setStage] = useState<Stage>('select')
-  const [windows, setWindows] = useState<LensWindowInfo[]>([])
-  const [hovered, setHovered] = useState<LensWindowInfo | null>(null)
+  const conversation = useLensConversationController()
+  const { stage, appLabel, input, selectionText, messages, streaming, copied } = conversation.view
+  const {
+    open: openConversationView,
+    hide: hideConversationView,
+    restoreHistory: restoreConversationHistory,
+    showStage, capture: showCapturedConversation, editInput, selectText,
+    beginAnswer, applyStream, applyWebSearch, applyFinal, setBusy,
+    handoffFailed, showCopied,
+  } = conversation
+  const selection = useLensSelectionController()
+  const { windows, hovered, dragStart, dragCurrent, dragging, pendingCapture, capturedFrame, showCaptureHint } = selection.view
+  const {
+    open: openSelectionView, hide: hideSelectionView, windowsDiscovered, hoverWindow,
+    startDrag, moveDrag, recoverDrag, clearDrag, queueCapture, captureFrame, showHint,
+  } = selection
   const [winOrigin, setWinOrigin] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [dragStart, setDragStart] = useState<Point | null>(null)
-  const [dragCurrent, setDragCurrent] = useState<Point | null>(null)
-  const [dragging, setDragging] = useState(false)
   const [previewSource, setPreviewSource] = useState<{ imageId: string; url: string }>({ imageId: '', url: '' })
   const capturedPreview = useImageObjectUrl(previewSource.imageId, api.lensReadImage)
   const imagePreview = previewSource.url || capturedPreview
   const setImagePreview = useCallback((url: string) => setPreviewSource({ imageId: '', url }), [])
-  const [appLabel, setAppLabel] = useState('')
-  const [input, setInput] = useState('')
   // Lens 启动前 Rust 端抓到的选中文本：作为本次会话的上下文前缀
   // 仅在首轮 chat 消息发送时拼接进 prompt；徽章静态显示行数；次轮不再注入。
-  const [selectionText, setSelectionText] = useState('')
-  const [messages, setMessages] = useState<ExplainMessage[]>([])
-  const [streaming, setStreaming] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [lang, setLang] = useState<Lang>('zh')
   const [messageOrder, setMessageOrder] = useState<'asc' | 'desc'>('asc')
   const [webSearchAvailable, setWebSearchAvailable] = useState(false)
   const [webSearchEnabled, setWebSearchEnabled] = useState(false)
   const [keepFullscreen, setKeepFullscreen] = useState(() => readModeFromHash() !== 'translateText')
-  const [floatingRebased, setFloatingRebased] = useState(false)
   const [mode, setMode] = useState<Mode>(() => readModeFromHash())
   const [surfaceDormant, setSurfaceDormant] = useState(false)
   const {
@@ -178,7 +185,7 @@ export default function Lens() {
     translateError,
     translateOriginal,
     translateText,
-  } = useLensTranslationSession({ onFinished: () => setStage('translated') })
+  } = useLensTranslationSession({ onFinished: () => showStage('translated') })
   const {
     acceptsRequestEvent,
     beginCapture,
@@ -188,9 +195,9 @@ export default function Lens() {
     beginSelectionRead,
     canCapture,
     cancelActiveRequest,
+    closeOpening,
     captureReady,
     consumeFreezeFrame,
-    currentOpening,
     finishCapture,
     finishRequest,
     finishRequestEvent,
@@ -199,7 +206,6 @@ export default function Lens() {
     invalidateInitialization,
     isCapturing,
     isInitializationCurrent,
-    isOpeningCurrent,
     isRequestCurrent,
     isRequestLatest,
     isSelectionCurrent,
@@ -207,6 +213,7 @@ export default function Lens() {
     markCaptureReady,
     replaceFreezeFrame,
     resetForHide: resetSessionForHide,
+    restoreSession,
   } = useLensSessionCoordinator({ cancelRequest: api.lensCancelStream })
   // Cropping consumes the backend frame ID, but the rendered background must
   // stay alive through annotation/translation until the entire session closes.
@@ -221,50 +228,40 @@ export default function Lens() {
     h: typeof window !== 'undefined' ? window.innerHeight : 800,
   }))
   const metrics = useMemo(() => computeMetrics(viewport.w, viewport.h), [viewport])
-  const [barRect, setBarRect] = useState<BarRect>(() => {
-    const w = typeof window !== 'undefined' ? window.innerWidth : 1280
-    const h = typeof window !== 'undefined' ? window.innerHeight : 800
-    return computeSelectBar(w, h, computeMetrics(w, h))
-  })
-  // barIntro：select 态首次显示时给对话栏加一次 scale-up 进入动画；之后切换都靠 transition
-  const [barIntro, setBarIntro] = useState(false)
-  // barNoTransition：reset/drag/窗口裁剪切换时临时禁用 transition，避免上次动画在 hide 后续播。
-  const [barNoTransition, setBarNoTransition] = useState(true)
-  // flyDelta：全屏覆盖模式下 fly 动画用 transform translate 取代 left/top 过渡。
+  const barMotion = useLensBarMotionController(computeSelectBar(viewport.w, viewport.h, metrics))
+  const {
+    rect: barRect, intro: barIntro, noTransition: barNoTransition,
+    delta: flyDelta, floatingRebased, cardDragging: translateCardDragging,
+    cardResizing: translateCardResizing, cardHeight: cardSessionHeight,
+  } = barMotion.view
+  const {
+    open: openBarMotion, hide: hideBarMotion, snap: snapBarRect,
+    flyTo: flyBarMotion, settleFly: settleBarMotion, reveal: revealBarMotion,
+    floatMac: floatMacBarMotion, floatWindows: floatWindowsBarMotion,
+    markFloatingRebased, abortFloatingRebase, showIntro: showBarIntro, suppressTransition,
+    beginCardDrag, moveCard, endCardDrag, beginCardResize, resizeCard, endCardResize,
+  } = barMotion
+  // 全屏覆盖模式下 fly 动画用 transform translate 取代 left/top 过渡。
   // left/top 不是 GPU 合成属性，每帧都要走 layout/reflow；Windows 上 webview hide→show 后
   // 合成器刚被唤醒、首个大幅 left/top 过渡极易卡顿（"乱跳"）。改为：left/top 立即 snap 到
   // 最终位置，用 transform: translate(dx, dy) 把视觉位置拉回起点，下一帧再把 delta 过渡到 (0,0)。
   // transform 走合成层，不阻塞主线程，多窗口会话间稳定。
-  const [flyDelta, setFlyDelta] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [translateCardDragging, setTranslateCardDragging] = useState(false)
-  const [translateCardResizing, setTranslateCardResizing] = useState(false)
-  // 本次会话内拖出的卡片高度（px）。0=自动。刻意不持久化：下次打开回到自动高度。
-  const [cardSessionHeight, setCardSessionHeight] = useState(0)
   // capturedFrame：保留最后一次截图选区/窗口的高亮框，作为"已截图"视觉标记，ready/answering 态继续显示
-  const [capturedFrame, setCapturedFrame] = useState<CapturedFrame | null>(null)
-  const [showCaptureHint, setShowCaptureHint] = useState(false)
   // 标注（箭头/矩形/马赛克）:chat 模式在 stage==='ready' 的 drawMode 子模式（仅箭头）；
   // screenshot 模式在 ready 态常开（工具可切换）。
   // annotations / draftAnnotation 坐标系 = capturedFrame 逻辑像素 (左上角为原点)
-  const [drawMode, setDrawMode] = useState(false)
-  const [arrows, setArrows] = useState<Annotation[]>([])
-  // screenshot 模式当前工具
-  const [annotateTool, setAnnotateTool] = useState<AnnotationKind>('arrow')
-  const [annotateCopied, setAnnotateCopied] = useState(false)
-  const [annotateSaving, setAnnotateSaving] = useState(false)
+  const annotation = useLensAnnotationController()
+  const { drawMode, arrows, draft: draftArrow, tool: annotateTool, copied: annotateCopied, saving: annotateSaving } = annotation.view
+  const {
+    hide: hideAnnotation, stageChanged: annotationStageChanged, toggleDraw, exitDraw,
+    selectTool: selectAnnotationTool, begin: beginAnnotation, move: moveAnnotation,
+    finish: finishAnnotation, cancelDraft: cancelAnnotationDraft, undo: undoAnnotation,
+    clearSubmitted: clearSubmittedAnnotations, setCopied: setAnnotationCopied,
+    setSaving: setAnnotationSaving,
+  } = annotation
   // 源码/渲染切换：false=渲染模式(ChatMarkdown)，true=源码模式(原始文本)
   const [sourceMode, setSourceMode] = useState(false)
-  const [draftArrow, setDraftArrow] = useState<Annotation | null>(null)
-  // 任何 stage 切换时强制清掉 draw 子模式 + 已落标注
-  useEffect(() => {
-    if (stage !== 'ready') {
-      setDrawMode(false)
-      setArrows([])
-      setDraftArrow(null)
-      setAnnotateCopied(false)
-      setAnnotateSaving(false)
-    }
-  }, [stage])
+  useEffect(() => annotationStageChanged(stage), [annotationStageChanged, stage])
   // 冻结帧绘制：把 Blob URL 画进 canvas，backing store = 图片原生像素，CSS 铺满 viewport，
   // 使全屏冻结帧按设备像素 1:1 显示，与实时桌面同等清晰（避免 <img> 被重采样发虚）。
   // 全屏态（select 及 keepFullscreen 的 ready/answering）整段会话都保留作背景，直到关闭 Lens。
@@ -318,10 +315,8 @@ export default function Lens() {
   const focusReqIdRef = useRef(0)
   const motionSeqRef = useRef(0)
   // 只在真正"打开/重入 Lens 会话"（enterSelect）时自增，与动画用的 motionSeqRef 区分开。
-  // closeAfterReset 用它判断"等待隐藏期间是否有新会话开启"，避免被关闭自身的
-  // setStage('select') 副作用（会再次 bump motionSeqRef）误判而跳过 lensClose。
+  // The session coordinator owns the opening identity used by close/reopen.
   const lastResetPayloadCacheRef = useRef<LensResetPayload | null>(null)
-  const [pendingCapture, setPendingCapture] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
   const lastSelectPointerRef = useRef<Point | null>(null)
   const recoverInitialDragRef = useRef(true)
   const selectRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -363,10 +358,10 @@ export default function Lens() {
   const finishAnswering = useCallback(() => {
     if (answerFinishedRef.current) return
     answerFinishedRef.current = true
-    // 必须在 setStreaming(false) 前置 true：历史持久化 effect 依赖 streaming 变化触发。
+    // 必须在关闭 streaming 前置 true：历史持久化 effect 依赖 streaming 变化触发。
     justFinishedStreamRef.current = true
-    setStreaming(false)
-  }, [])
+    setBusy(false)
+  }, [setBusy])
 
   const cancelPendingMotion = useCallback(() => {
     motionSeqRef.current++
@@ -465,15 +460,20 @@ export default function Lens() {
     if (!isInitializationCurrent(initializationSeq)) return
     const resetFrame = resetPayload.frame
     const resetFreezeFrameImageId = resetPayload.freezeFrameImageId ?? ''
+    const openingWidth = resetFrame?.width ?? window.innerWidth
+    const openingHeight = resetFrame?.height ?? window.innerHeight
+    const openingMetrics = computeMetrics(openingWidth, openingHeight)
+    const openingBarRect = curMode === 'translateText'
+      ? { x: FLOATING_PADDING, y: FLOATING_PADDING, width: Math.min(cardWidthRef.current, openingWidth) }
+      : computeSelectBar(openingWidth, openingHeight, openingMetrics)
     cancelPendingMotion()
     if (!firstEntry) {
-      setPendingCapture(null)
       lastSelectPointerRef.current = null
       recoverInitialDragRef.current = true
     }
     const motionSeq = motionSeqRef.current
     fullscreenMetricsRef.current = null
-    // 防御：reset 流程会 setMessages([]) + setStreaming(false)，理论上 messages.length===0 effect 不会进
+    // 防御：会话打开会清消息和 streaming；历史持久化只接受真实终态。
     // 持久化分支，但显式清零更稳
     justFinishedStreamRef.current = false
     preparingSendRef.current = false
@@ -481,41 +481,18 @@ export default function Lens() {
     // 否则 Rust 的 show() 会先把旧 frame 露出来。
     // barNoTransition 同 frame 一起置 true → bar 从老坐标 snap 到 select 坐标，不回放动画。
     flushSync(() => {
-      setBarNoTransition(true)
+      openBarMotion(openingBarRect)
       setSurfaceDormant(false)
-      setStage(curMode === 'translateText' ? 'translating' : 'select')
+      openConversationView(curMode)
       setMode(curMode)
       setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
-      setFloatingRebased(false)
-      setHovered(null)
-      // The native window can receive mouse input before its cold-start payload
-      // arrives. Preserve that first drag; subsequent sessions still reset it.
-      if (!firstEntry) {
-        setDragStart(null)
-        setDragCurrent(null)
-        setDragging(false)
-      }
-      setTranslateCardDragging(false)
+      // The cold-start drag may precede the reset payload; later openings clear it.
+      openSelectionView(firstEntry)
+      hideAnnotation()
       setImagePreview('')
-      setAppLabel('')
-      setInput('')
-      setSelectionText('')
-      setMessages([])
-      setStreaming(false)
       resetTranslationSession()
       replaceFreezeFrame(resetFreezeFrameImageId)
-      const w = resetFrame?.width ?? window.innerWidth
-      const h = resetFrame?.height ?? window.innerHeight
-      setViewport({ w, h })
-      const m = computeMetrics(w, h)
-      setBarRect(curMode === 'translateText'
-        ? { x: FLOATING_PADDING, y: FLOATING_PADDING, width: Math.min(cardWidthRef.current, w) }
-        : computeSelectBar(w, h, m))
-      setFlyDelta({ x: 0, y: 0 })
-      setCapturedFrame(null)
-      // 重置 intro：先关再开，下一帧让 transition 从 scale-90 到 scale-100
-      setBarIntro(false)
-      setShowCaptureHint(false)
+      setViewport({ w: openingWidth, h: openingHeight })
       if (resetFrame) setWinOrigin({ x: resetFrame.x, y: resetFrame.y })
     })
     selectRevealedRef.current = false
@@ -523,8 +500,6 @@ export default function Lens() {
     historyKeyRef.current = ''
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
-    setCardSessionHeight(0)
-    setTranslateCardResizing(false)
     focusLensSurface([0, 40, 120])
     // 重新加载设置：用户在设置面板修改后关闭再打开 Lens，需要读到最新值。
     // 必须放在 reset DOM 之后，避免 await 期间 Rust 已 show 导致旧 ready/answering surface 露出首帧。
@@ -537,7 +512,7 @@ export default function Lens() {
         setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
         captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
         if (stageRef.current === 'select' && selectRevealedRef.current) {
-          setShowCaptureHint(captureHintEnabledRef.current)
+          showHint(captureHintEnabledRef.current)
         }
       } catch (err) { console.error('Failed to reload settings', err) }
     })()
@@ -558,15 +533,14 @@ export default function Lens() {
           const requestId = makeTextRequestId()
           imageIdRef.current = requestId
           const requestToken = beginRequest('translate_text', requestId)
-          setSelectionText(text)
+          selectText(text)
           if (motionSeq === motionSeqRef.current) {
             requestAnimationFrame(() => {
               requestAnimationFrame(() => {
                 if (motionSeq !== motionSeqRef.current) return
                 selectRevealedRef.current = true
-                setShowCaptureHint(false)
-                setBarIntro(true)
-                setBarNoTransition(false)
+                showHint(false)
+                revealBarMotion()
               })
             })
           }
@@ -598,7 +572,7 @@ export default function Lens() {
           if (!isSelectionCurrent(myReq) || motionSeq !== motionSeqRef.current) return
           if (text.length > 200_000) return
           if (text.trim()) {
-            setSelectionText(text)
+            selectText(text)
             focusLensSurface([0, 60, 180])
           }
         } catch (err) {
@@ -614,9 +588,8 @@ export default function Lens() {
           // 第二个 raf 同时恢复 transitions 并触发 intro：现在 bar 已经在 select 位置，
           // 只对 transform/opacity 做缩放进入动画，不会回放历史 left/top 过渡。
           selectRevealedRef.current = true
-          setShowCaptureHint(captureHintEnabledRef.current)
-          setBarIntro(true)
-          setBarNoTransition(false)
+          showHint(captureHintEnabledRef.current)
+          revealBarMotion()
         })
       })
     }, SELECT_REVEAL_DELAY_MS)
@@ -634,13 +607,13 @@ export default function Lens() {
     if (!markCaptureReady(initializationSeq)) return
     try {
       const list = await api.lensListWindows()
-      if (motionSeq === motionSeqRef.current) setWindows(list)
+      if (motionSeq === motionSeqRef.current) windowsDiscovered(list)
     } catch (err) {
       console.error('Failed to list windows', err)
-      if (motionSeq === motionSeqRef.current) setWindows([])
+      if (motionSeq === motionSeqRef.current) windowsDiscovered([])
     }
     focusLensSurface()
-  }, [beginInitialization, beginOpening, beginRequest, beginSelectionRead, beginTranslation, cancelPendingMotion, failTranslation, finishRequest, focusLensSurface, isInitializationCurrent, isRequestCurrent, isSelectionCurrent, loadLensSettings, markCaptureReady, replaceFreezeFrame, resetTranslationSession, setImagePreview])
+  }, [beginInitialization, beginOpening, beginRequest, beginSelectionRead, beginTranslation, cancelPendingMotion, failTranslation, finishRequest, focusLensSurface, hideAnnotation, isInitializationCurrent, isRequestCurrent, isSelectionCurrent, loadLensSettings, markCaptureReady, openBarMotion, openConversationView, openSelectionView, replaceFreezeFrame, resetTranslationSession, revealBarMotion, selectText, setImagePreview, showHint, windowsDiscovered])
 
   useEffect(() => {
     // 冷挂载 与 复用收到 lens:reset 走同一路径：主动 take 后端暂存的复位载荷（frame +
@@ -668,7 +641,7 @@ export default function Lens() {
     const consumeAndEnter = async (fromMount: boolean) => {
       const initializationSeq = beginInitialization()
       const opening = fromMount ? undefined : beginOpening()
-      if (!fromMount) setPendingCapture(null)
+      if (!fromMount) queueCapture(null)
       let payload = await takeOnce()
       if (!payload && fromMount) {
         for (let i = 0; i < 12 && !payload && !disposed && isInitializationCurrent(initializationSeq); i++) {
@@ -696,7 +669,7 @@ export default function Lens() {
       window.removeEventListener('lens:reset', handleReset)
       cancelPendingMotion()
     }
-  }, [beginInitialization, beginOpening, enterSelect, cancelPendingMotion, invalidateInitialization, isInitializationCurrent])
+  }, [beginInitialization, beginOpening, enterSelect, cancelPendingMotion, invalidateInitialization, isInitializationCurrent, queueCapture])
 
   useEffect(() => {
     let cancelled = false
@@ -727,12 +700,12 @@ export default function Lens() {
   // viewport 或 metrics 变化时，select 态重算底部 bar 位置（ready/answering 态保持当前飞入位置不动，避免对话中闪跳）
   useEffect(() => {
     if (stageRef.current === 'select') {
-      setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
+      snapBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
     } else if (modeRef.current === 'translateText' && stageRef.current === 'translating') {
       const w = Math.min(cardWidthRef.current, viewport.w)
-      setBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: w })
+      snapBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: w })
     }
-  }, [viewport, metrics])
+  }, [viewport, metrics, snapBarRect])
 
   // 流式结束（streaming → false 且有任意 assistant 回答）时把当前会话推入历史。
   // 按 imageId 去重：同一张截图多轮对话作为单条历史持续更新到最前。
@@ -797,20 +770,7 @@ export default function Lens() {
       ].join('\u0000')
       if (eventKey === lastLensStreamEventRef.current) return
       lastLensStreamEventRef.current = eventKey
-      if (payload.reasoningDelta) {
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (!last || last.role !== 'assistant') return prev
-          return [...prev.slice(0, -1), { ...last, reasoning: (last.reasoning ?? '') + payload.reasoningDelta }]
-        })
-      }
-      if (payload.delta) {
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (!last || last.role !== 'assistant') return prev
-          return [...prev.slice(0, -1), { ...last, content: last.content + payload.delta }]
-        })
-      }
+      if (payload.reasoningDelta || payload.delta) applyStream(payload)
     }).then((dispose) => {
       if (cancelled) dispose()
       else unlisten = dispose
@@ -819,30 +779,14 @@ export default function Lens() {
       cancelled = true
       unlisten?.()
     }
-  }, [acceptsRequestEvent, finishAnswering, finishRequestEvent])
+  }, [acceptsRequestEvent, applyStream, finishAnswering, finishRequestEvent])
 
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
     api.onLensWebSearch((payload: LensWebSearchPayload) => {
       if (!acceptsRequestEvent('chat', payload.imageId)) return
-      setMessages(prev => {
-        const last = prev[prev.length - 1]
-        if (!last || last.role !== 'assistant') return prev
-        return [
-          ...prev.slice(0, -1),
-          {
-            ...last,
-            webSearch: {
-              status: payload.status,
-              query: payload.query,
-              reason: payload.reason,
-              results: payload.results,
-              error: payload.error,
-            },
-          },
-        ]
-      })
+      applyWebSearch(payload)
     }).then((dispose) => {
       if (cancelled) dispose()
       else unlisten = dispose
@@ -851,7 +795,7 @@ export default function Lens() {
       cancelled = true
       unlisten?.()
     }
-  }, [acceptsRequestEvent])
+  }, [acceptsRequestEvent, applyWebSearch])
 
   // messages 变化时自动滚动：正序滚到底（看新内容），倒序滚到顶（最新在顶）
   useEffect(() => {
@@ -896,7 +840,6 @@ export default function Lens() {
 
   const resetBeforeHide = useCallback(() => {
     resetSessionForHide()
-    setPendingCapture(null)
     cancelPendingMotion()
     releaseFreezeCanvas()
     // 会话结束：清掉 take-once 载荷缓存，避免下次 StrictMode 重放到旧会话的冻结帧
@@ -906,61 +849,39 @@ export default function Lens() {
     justFinishedStreamRef.current = false
     preparingSendRef.current = false
     flushSync(() => {
-      setBarNoTransition(true)
+      hideBarMotion(computeSelectBar(viewport.w, viewport.h, metrics))
       setSurfaceDormant(true)
-      setStage('select')
-      setWindows([])
-      setFloatingRebased(false)
-      setHovered(null)
-      setDragStart(null)
-      setDragCurrent(null)
-      setDragging(false)
-      setTranslateCardDragging(false)
+      hideConversationView()
+      hideSelectionView()
       setImagePreview('')
-      setAppLabel('')
-      setInput('')
-      setSelectionText('')
-      setMessages([])
-      setStreaming(false)
-      setCopied(false)
       resetTranslationSession()
-      setBarRect(computeSelectBar(viewport.w, viewport.h, metrics))
-      setFlyDelta({ x: 0, y: 0 })
-      setCapturedFrame(null)
-      setDrawMode(false)
-      setArrows([])
-      setDraftArrow(null)
+      hideAnnotation()
       setSourceMode(false)
       setHistoryOpen(false)
       setHistoryPanelH(0)
-      setBarIntro(false)
-      setShowCaptureHint(false)
     })
     selectRevealedRef.current = false
     imageIdRef.current = ''
     historyKeyRef.current = ''
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
-    setCardSessionHeight(0)
-    setTranslateCardResizing(false)
     // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
     beginSelectionRead()
     focusReqIdRef.current++
-  }, [beginSelectionRead, cancelPendingMotion, releaseFreezeCanvas, resetSessionForHide, resetTranslationSession, viewport, metrics, setImagePreview])
+  }, [beginSelectionRead, cancelPendingMotion, hideAnnotation, hideBarMotion, hideConversationView, hideSelectionView, releaseFreezeCanvas, resetSessionForHide, resetTranslationSession, viewport, metrics, setImagePreview])
 
   const closeAfterReset = useCallback(async () => {
-    // 记下关闭开始时的"会话代次"。resetBeforeHide 会 setStage('select') 进而触发动画
-    // effect 再次 bump motionSeqRef，所以不能用 motionSeqRef 当守卫（会被自身副作用误判）。
-    // 只有 enterSelect（真正的新会话开启/重入）才会改变 opening sequence。
-    const closeOpenSeq = currentOpening()
-    try { await cancelActiveRequest() } catch (err) { console.error(err) }
-    if (!isOpeningCurrent(closeOpenSeq)) return
-    resetBeforeHide()
-    await waitForFrames(2)
-    await waitForVisibleIdle()
-    if (!isOpeningCurrent(closeOpenSeq)) return
-    try { await api.lensClose() } catch (err) { console.error(err) }
-  }, [cancelActiveRequest, currentOpening, isOpeningCurrent, resetBeforeHide])
+    try {
+      await closeOpening({
+        prepareHiddenSurface: resetBeforeHide,
+        waitForPaint: async () => {
+          await waitForFrames(2)
+          await waitForVisibleIdle()
+        },
+        hide: api.lensClose,
+      })
+    } catch (err) { console.error(err) }
+  }, [closeOpening, resetBeforeHide])
 
   // 全局 Esc：流式时取消流 / 否则关闭
   useEffect(() => {
@@ -1022,19 +943,18 @@ export default function Lens() {
         e.preventDefault()
         e.stopPropagation()
         e.stopImmediatePropagation()
-        setDrawMode(false)
-        setDraftArrow(null)
+        exitDraw()
         return
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !isInput) {
         e.preventDefault()
         e.stopPropagation()
-        setArrows(prev => prev.slice(0, -1))
+        undoAnnotation()
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [drawMode])
+  }, [drawMode, exitDraw, undoAnnotation])
 
   // screenshot 标注模式键盘:Cmd+Z 撤销最后一个标注（Esc 走全局 handler 直接关闭）
   useEffect(() => {
@@ -1043,13 +963,12 @@ export default function Lens() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault()
         e.stopPropagation()
-        setArrows(prev => prev.slice(0, -1))
-        setDraftArrow(null)
+        undoAnnotation()
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [mode, stage])
+  }, [mode, stage, undoAnnotation])
 
   // select 态切到其他应用 → 自动收起灰幕。
   // 注意：截图过程中 screencapture 可能让 lens 短暂失焦 → 会话协调器防止误关。
@@ -1120,9 +1039,7 @@ export default function Lens() {
       return
     }
     const p: Point = { x: e.clientX, y: e.clientY }
-    setDragStart(p)
-    setDragCurrent(p)
-    setDragging(false)
+    startDrag(p)
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -1131,18 +1048,12 @@ export default function Lens() {
     const previousPoint = lastSelectPointerRef.current
     lastSelectPointerRef.current = p
     if (dragStart) {
-      setDragCurrent(p)
-      const dx = Math.abs(p.x - dragStart.x)
-      const dy = Math.abs(p.y - dragStart.y)
-      if (!dragging && (dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD)) {
-        setDragging(true)
-        setHovered(null)
-      }
+      moveDrag(p)
       return
     }
     // 鼠标在对话栏（含历史面板）上方时清除 hover，避免高亮/误截图背后窗口
     if (barRef.current?.contains(e.target as Node)) {
-      setHovered(null)
+      hoverWindow(null)
       return
     }
     // A newly shown WebView2 can miss the initial down while already delivering
@@ -1151,14 +1062,11 @@ export default function Lens() {
     if (recoverInitialDragRef.current && (e.buttons & 1) !== 0 && !historyOpenRef.current) {
       recoverInitialDragRef.current = false
       const start = previousPoint ?? p
-      setDragStart(start)
-      setDragCurrent(p)
-      setDragging(Math.abs(p.x - start.x) > DRAG_THRESHOLD || Math.abs(p.y - start.y) > DRAG_THRESHOLD)
-      setHovered(null)
+      recoverDrag(start, p)
       return
     }
     const gp = clientToGlobal(p)
-    setHovered(hitTest(gp))
+    hoverWindow(hitTest(gp))
   }
 
   const animateFullscreenBarToAnchor = useCallback((
@@ -1167,16 +1075,9 @@ export default function Lens() {
     label: string,
     motionSeq: number,
   ) => {
-    const startX = barRect.x
-    const startY = barRect.y
-
     flushSync(() => {
-      setAppLabel(label)
-      setBarNoTransition(true)
-      setBarRect(targetRect)
-      setFlyDelta({ x: startX - targetRect.x, y: startY - targetRect.y })
-      setBarIntro(true)
-      setStage(targetStage)
+      showCapturedConversation(label, targetStage)
+      flyBarMotion(targetRect)
     })
 
     // Commit the snap+offset first, then allow only transform/opacity to transition.
@@ -1184,11 +1085,10 @@ export default function Lens() {
       requestAnimationFrame(() => {
         if (motionSeq !== motionSeqRef.current) return
         if (stageRef.current === 'select') return
-        setBarNoTransition(false)
-        setFlyDelta({ x: 0, y: 0 })
+        settleBarMotion()
       })
     })
-  }, [barRect])
+  }, [flyBarMotion, settleBarMotion, showCapturedConversation])
 
   /** 截图后在前端直接算 bar 位置，让对话栏飞到选区左/右侧。
    *  优先右侧，右侧空间不够再放左侧；都不够时贴大空间一侧。 */
@@ -1238,8 +1138,6 @@ export default function Lens() {
       fullscreenMetricsRef.current = metrics
       const finalX = Math.round(targetX)
       const finalY = Math.round(targetY)
-      const startX = barRect.x
-      const startY = barRect.y
       const floatW = barW + FLOATING_PADDING * 2
       const floatH = targetStage === 'ready'
         ? READY_BAR_H + FLOATING_PADDING * 2
@@ -1255,24 +1153,14 @@ export default function Lens() {
         const floatY = winOrigin.y + finalY - FLOATING_PADDING
 
         flushSync(() => {
-          setAppLabel(label)
-          setFloatingRebased(false)
-          setBarRect({ x: FLOATING_PADDING, y: FLOATING_PADDING, width: barW })
-          setFlyDelta({ x: 0, y: 0 })
-          setStage(targetStage)
-          if (isTranslateMode) {
-            // translate 卡片截图前不渲染 → 没"起点位置",禁 transition 避免 (selectX,selectY) → (0,0) 瞬时跳动触发动画
-            setBarIntro(false)
-            setBarNoTransition(true)
-          } else {
-            setBarIntro(true)
-            setBarNoTransition(false)
-          }
+          showCapturedConversation(label, targetStage)
+          // translate 卡片截图前不渲染，无可飞行的起点。
+          floatMacBarMotion(barW, isTranslateMode)
         })
         if (isTranslateMode) {
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
-              if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
+              if (motionSeq === motionSeqRef.current) suppressTransition(false)
             })
           })
         }
@@ -1292,28 +1180,22 @@ export default function Lens() {
           floatingRebaseTimerRef.current = null
           if (motionSeq !== motionSeqRef.current) return
           if (stageRef.current === 'select') return
-          setFloatingRebased(true)
-          if (isTranslateMode) setBarIntro(true)
+          markFloatingRebased(true)
+          if (isTranslateMode) showBarIntro(true)
         }, TRANSITION_MS + 40)
       } else {
         // Windows: WebView 始终保持全屏,Rust 用 SetWindowRgn 把窗口可见区域裁剪到 bar 矩形。
         // 不走 macOS 的逐帧实搬窗口路线是因为多次 lens 会话后 WebView2 内部状态会退化导致累积型 jitter。
         flushSync(() => {
-          setAppLabel(label)
-          setFloatingRebased(false)
-          setBarNoTransition(true)
-          setBarRect({ x: finalX, y: finalY, width: barW })
-          setFlyDelta({ x: startX - finalX, y: startY - finalY })
-          setStage(targetStage)
-          setBarIntro(!isTranslateMode)
+          showCapturedConversation(label, targetStage)
+          floatWindowsBarMotion({ x: finalX, y: finalY, width: barW }, isTranslateMode)
         })
 
         if (floatingRebaseTimerRef.current) clearTimeout(floatingRebaseTimerRef.current)
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             if (motionSeq !== motionSeqRef.current) return
-            setBarNoTransition(false)
-            setFlyDelta({ x: 0, y: 0 })
+            settleBarMotion()
 
             floatingRebaseTimerRef.current = window.setTimeout(() => {
               floatingRebaseTimerRef.current = null
@@ -1323,24 +1205,21 @@ export default function Lens() {
                 .then(() => {
                   if (motionSeq !== motionSeqRef.current || stageRef.current === 'select') return
                   flushSync(() => {
-                    setFloatingRebased(true)
-                    setBarIntro(true)
+                    markFloatingRebased(true)
+                    showBarIntro(true)
                   })
                   requestAnimationFrame(() => {
-                    if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
+                    if (motionSeq === motionSeqRef.current) suppressTransition(false)
                   })
                 })
                 .catch((err: unknown) => {
                   console.error('[lens] lensSetFloating rebase failed:', err)
                   if (motionSeq !== motionSeqRef.current) return
                   flushSync(() => {
-                    setFloatingRebased(false)
-                    setBarNoTransition(true)
-                    setBarRect({ x: finalX, y: finalY, width: barW })
-                    setBarIntro(true)
+                    abortFloatingRebase({ x: finalX, y: finalY, width: barW })
                   })
                   requestAnimationFrame(() => {
-                    if (motionSeq === motionSeqRef.current) setBarNoTransition(false)
+                    if (motionSeq === motionSeqRef.current) suppressTransition(false)
                   })
                 })
             }, isTranslateMode ? 0 : TRANSITION_MS + 40)
@@ -1459,7 +1338,7 @@ export default function Lens() {
       imageIdRef.current = newId
 
       // 记录截图框（webview 内坐标）作为已截视觉标记，截完保留显示
-      setCapturedFrame({
+      captureFrame({
         x: info.x - winOrigin.x,
         y: info.y - winOrigin.y,
         width: info.width,
@@ -1469,7 +1348,7 @@ export default function Lens() {
       setPreviewSource({ imageId: newId, url: '' })
       if (mode === 'screenshot') {
         // 截图标注：无对话栏可飞，直接进 ready（工具栏对着 capturedFrame 渲染）
-        flushSync(() => { setStage('ready') })
+        flushSync(() => { showStage('ready') })
         focusLensSurface([0, 80, 200])
         return
       }
@@ -1490,12 +1369,10 @@ export default function Lens() {
     if (!canCapture()) {
       // Keep the completed rectangle visible until its monitor origin and frozen
       // frame arrive. Never fall back to a live capture with default coordinates.
-      setPendingCapture(rect)
+      queueCapture(rect)
       return
     }
-    setDragStart(null)
-    setDragCurrent(null)
-    setDragging(false)
+    clearDrag()
     const captureToken = beginCapture()
     if (!captureToken) return
     const gp = clientToGlobal({ x: rect.x, y: rect.y })
@@ -1523,7 +1400,7 @@ export default function Lens() {
       // 不清 freezeFramePreview：截图后仍把冻结帧作为全屏背景保留，直到按 Esc 关闭 Lens
       // （enterSelect / resetBeforeHide 会在重开 / 隐藏时清理）。
 
-      setCapturedFrame({
+      captureFrame({
         x: params.x,
         y: params.y,
         width: params.width,
@@ -1532,7 +1409,7 @@ export default function Lens() {
       })
       setPreviewSource({ imageId: newId, url: '' })
       if (mode === 'screenshot') {
-        flushSync(() => { setStage('ready') })
+        flushSync(() => { showStage('ready') })
         focusLensSurface([0, 80, 200])
         return
       }
@@ -1555,9 +1432,7 @@ export default function Lens() {
       const w = Math.abs(releasedAt.x - dragStart.x)
       const h = Math.abs(releasedAt.y - dragStart.y)
       if (w < 10 || h < 10) {
-        setDragStart(null)
-        setDragCurrent(null)
-        setDragging(false)
+        clearDrag()
         return
       }
       await handleCaptureRegion({ x, y, width: w, height: h })
@@ -1566,15 +1441,11 @@ export default function Lens() {
 
     // 在对话栏区域松开时不触发截图（避免点击历史按钮/条目时误截图）
     if (barRef.current?.contains(e.target as Node)) {
-      setDragStart(null)
-      setDragCurrent(null)
-      setDragging(false)
+      clearDrag()
       return
     }
 
-    setDragStart(null)
-    setDragCurrent(null)
-    setDragging(false)
+    clearDrag()
     if (hovered) {
       await handleCaptureWindow(hovered)
     }
@@ -1586,9 +1457,9 @@ export default function Lens() {
   useLayoutEffect(() => { captureRegionHandlerRef.current = handleCaptureRegion })
   useEffect(() => {
     if (!captureReady || !pendingCapture) return
-    setPendingCapture(null)
+    queueCapture(null)
     void captureRegionHandlerRef.current(pendingCapture)
-  }, [captureReady, pendingCapture])
+  }, [captureReady, pendingCapture, queueCapture])
 
   const doSend = async (question: string) => {
     if (streaming) return
@@ -1610,7 +1481,7 @@ export default function Lens() {
     if (transferToChat) {
       // 发送到 AI 客户端：不要切到 'answering'（那会让窗口高度加上 answer 区 → 浮窗展开）。
       // 用 streaming 显示忙碌、preparingSendRef 守卫 Esc（见 Esc 处理），浮窗保持紧凑直接交接。
-      setStreaming(true)
+      setBusy(true)
       preparingSendRef.current = true
       let requestToken = beginRequest('handoff', imageIdRef.current || '')
       try {
@@ -1631,9 +1502,7 @@ export default function Lens() {
               finishRequest(requestToken)
               requestToken = beginRequest('handoff', result.imageId)
               setImagePreview(`data:image/png;base64,${base64}`)
-              setArrows([])
-              setDraftArrow(null)
-              setDrawMode(false)
+              clearSubmittedAnnotations()
             } else {
               console.warn('[lens-arrow] register annotated image failed:', result.error)
             }
@@ -1647,8 +1516,7 @@ export default function Lens() {
         if (!result.success) {
           console.error('[lens-chat] send failed:', result.error)
           finishRequest(requestToken)
-          setStreaming(false)
-          setStage('ready')
+          handoffFailed()
           return
         }
         finishRequest(requestToken)
@@ -1657,8 +1525,7 @@ export default function Lens() {
         if (!isRequestCurrent(requestToken)) return
         console.error('[lens-chat] handoff failed:', err)
         finishRequest(requestToken)
-        setStreaming(false)
-        setStage('ready')
+        handoffFailed()
       } finally {
         if (isRequestLatest(requestToken)) preparingSendRef.current = false
       }
@@ -1671,9 +1538,7 @@ export default function Lens() {
     // 历史 key：有截图用 imageId；纯文本会话首轮生成一个合成 key（后续追问沿用）。
     historyKeyRef.current = imageIdRef.current || historyKeyRef.current || makeTextRequestId()
     flushSync(() => {
-      setMessages([...sendMessages, placeholder])
-      setStage('answering')
-      setStreaming(true)
+      beginAnswer([...sendMessages, placeholder])
     })
     lastLensStreamEventRef.current = ''
     preparingSendRef.current = true
@@ -1698,9 +1563,7 @@ export default function Lens() {
             finishRequest(requestToken)
             requestToken = beginRequest('chat', result.imageId)
             setImagePreview(`data:image/png;base64,${base64}`)
-            setArrows([])
-            setDraftArrow(null)
-            setDrawMode(false)
+            clearSubmittedAnnotations()
           } else {
             console.warn('[lens-arrow] register annotated image failed:', result.error)
           }
@@ -1719,47 +1582,20 @@ export default function Lens() {
       if (!isRequestLatest(requestToken)) return
       if (!result.success) {
         const errText = `${t.lensError}: ${result.error}`
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (!last || last.role !== 'assistant') return prev
-          return [...prev.slice(0, -1), { role: 'assistant', content: errText }]
-        })
+        applyFinal({ error: errText })
       } else if (result.response) {
         // 非流式:把完整答案塞进占位 assistant;流式情况已在 onLensStream 累积,避免覆盖
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (!last || last.role !== 'assistant') return prev
-          if (last.content.length > 0) return prev
-          return [...prev.slice(0, -1), { ...last, content: result.response! }]
-        })
+        applyFinal({ response: result.response })
       }
       if (result.success && result.webSearchResults?.length) {
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (!last || last.role !== 'assistant') return prev
-          if (last.webSearch?.results?.length) return prev
-          return [
-            ...prev.slice(0, -1),
-            {
-              ...last,
-              webSearch: {
-                status: 'done',
-                results: result.webSearchResults,
-              },
-            },
-          ]
-        })
+        applyFinal({ results: result.webSearchResults })
       }
       finishRequest(requestToken)
       finishAnswering()
     } catch (err) {
       if (!isRequestLatest(requestToken)) return
       const msg = err instanceof Error ? err.message : String(err)
-      setMessages(prev => {
-        const last = prev[prev.length - 1]
-        if (!last || last.role !== 'assistant') return prev
-        return [...prev.slice(0, -1), { ...last, content: `${t.lensError}: ${msg}` }]
-      })
+      applyFinal({ error: `${t.lensError}: ${msg}` })
       finishRequest(requestToken)
       finishAnswering()
     } finally {
@@ -1770,7 +1606,7 @@ export default function Lens() {
   const handleSend = async () => {
     if (streaming) return
     const question = input.trim()
-    setInput('')
+    editInput('')
     await doSend(question)
   }
 
@@ -1787,9 +1623,9 @@ export default function Lens() {
     if (!lastAssistant) return
     const ok = await copyToClipboard(lastAssistant.content)
     if (!ok) return
-    setCopied(true)
+    showCopied(true)
     if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
-    copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
+    copyTimeoutRef.current = setTimeout(() => showCopied(false), 2000)
   }
 
   // 「在 AI 客户端继续」：把 Lens 浮窗内的完整多轮历史 + 截图同步到客户端成为一个新会话，然后关闭 Lens。
@@ -1801,7 +1637,7 @@ export default function Lens() {
       .filter(m => m.content.trim().length > 0)
       .map(m => ({ role: m.role, content: m.content }))
     if (history.length === 0) return
-    setStreaming(true)
+    setBusy(true)
     preparingSendRef.current = true
     let requestToken = beginRequest('handoff', imageIdRef.current || '')
     try {
@@ -1832,7 +1668,7 @@ export default function Lens() {
       if (!result.success) {
         console.error('[lens-chat] continue-in-chat failed:', result.error)
         finishRequest(requestToken)
-        setStreaming(false)
+        setBusy(false)
         return
       }
       finishRequest(requestToken)
@@ -1841,7 +1677,7 @@ export default function Lens() {
       if (!isRequestCurrent(requestToken)) return
       console.error('[lens-chat] continue-in-chat handoff failed:', err)
       finishRequest(requestToken)
-      setStreaming(false)
+      setBusy(false)
     } finally {
       if (isRequestLatest(requestToken)) preparingSendRef.current = false
     }
@@ -1873,7 +1709,7 @@ export default function Lens() {
         console.error('[lens-annotate] copy failed:', result.error)
         return
       }
-      setAnnotateCopied(true)
+      setAnnotationCopied(true)
       // 短暂展示"已复制"反馈再关闭
       window.setTimeout(() => { void closeAfterReset() }, 450)
     } catch (err) {
@@ -1883,7 +1719,7 @@ export default function Lens() {
 
   const handleAnnotateSave = async () => {
     if (annotateSaving) return
-    setAnnotateSaving(true)
+    setAnnotationSaving(true)
     try {
       const base64 = await composeCurrentAnnotated()
       if (!base64) return
@@ -1905,7 +1741,7 @@ export default function Lens() {
     } catch (err) {
       console.error('[lens-annotate] save failed:', err)
     } finally {
-      setAnnotateSaving(false)
+      setAnnotationSaving(false)
     }
   }
 
@@ -1913,29 +1749,19 @@ export default function Lens() {
   // 取消任何正在跑的流，避免后端继续 emit delta 灌入新恢复的 messages（如果新旧 imageId 巧合相同会污染）
   const restoreHistory = (item: HistoryItem) => {
     setHistoryOpen(false)
-    // Invalidate even after a stream `done` event cleared activeRequest: the
-    // invoke result may still be in flight and must not overwrite restored history.
-    void cancelActiveRequest().catch(err => console.error(err))
-    // 截图会话：item.id 是可解析的图片句柄。纯文本会话（无缩略图）后端 image_id 必须留空，
-    // 否则 lens-stream 事件 imageId 对不上、追问又会被当成有图去读图报错。
-    const isTextOnly = !item.imagePreview
-    imageIdRef.current = isTextOnly ? '' : item.id
-    historyKeyRef.current = item.id
-    // 防御：恢复历史 setMessages 会触发持久化 effect，但本路径不是"流刚结束"，不该 push 重复条目
-    justFinishedStreamRef.current = false
-    preparingSendRef.current = false
-    flushSync(() => {
-      setImagePreview(item.imagePreview)
-      setAppLabel(item.appLabel)
-      setInput('')
-      setSelectionText('')
-      setMessages(item.messages)
-      setCapturedFrame(null)
-      setStreaming(false)
-      setStage('answering')
-    })
-    // 老 takeLensSelection promise 失效，避免恢复历史后被新 take 文本污染
-    beginSelectionRead()
+    void restoreSession(() => {
+      // 纯文本会话的后端 image_id 必须留空；历史 key 只用于去重。
+      const isTextOnly = !item.imagePreview
+      imageIdRef.current = isTextOnly ? '' : item.id
+      historyKeyRef.current = item.id
+      justFinishedStreamRef.current = false
+      preparingSendRef.current = false
+      flushSync(() => {
+        setImagePreview(item.imagePreview)
+        restoreConversationHistory(item.appLabel, item.messages)
+        captureFrame(null)
+      })
+    }).catch(err => console.error(err))
     focusLensSurface([50, 140, 260])
   }
 
@@ -2054,10 +1880,9 @@ export default function Lens() {
       startY: e.clientY,
       startRect: barRect,
     }
-    setTranslateCardDragging(true)
-    setBarNoTransition(true)
+    beginCardDrag()
     e.currentTarget.setPointerCapture(e.pointerId)
-  }, [barRect, isFloatingLayout])
+  }, [barRect, beginCardDrag, isFloatingLayout])
 
   const handleTranslateCardDragMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     const drag = translateCardDragRef.current
@@ -2070,12 +1895,12 @@ export default function Lens() {
     const maxX = Math.max(8, viewport.w - drag.startRect.width - 8)
     const maxY = Math.max(8, viewport.h - translateCardMaxHeight - 8)
 
-    setBarRect({
+    moveCard({
       x: Math.round(clamp(nextX, 8, maxX)),
       y: Math.round(clamp(nextY, 8, maxY)),
       width: drag.startRect.width,
     })
-  }, [translateCardMaxHeight, viewport.h, viewport.w])
+  }, [moveCard, translateCardMaxHeight, viewport.h, viewport.w])
 
   const handleTranslateCardDragEnd = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     const drag = translateCardDragRef.current
@@ -2084,22 +1909,20 @@ export default function Lens() {
     e.stopPropagation()
 
     translateCardDragRef.current = null
-    setTranslateCardDragging(false)
-    setBarNoTransition(false)
+    endCardDrag()
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
     } catch {
       // Pointer capture may already be released by the platform.
     }
-  }, [])
+  }, [endCardDrag])
 
   const handleTranslateCardLostCapture = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     const drag = translateCardDragRef.current
     if (!drag || drag.pointerId !== e.pointerId) return
     translateCardDragRef.current = null
-    setTranslateCardDragging(false)
-    setBarNoTransition(false)
-  }, [])
+    endCardDrag()
+  }, [endCardDrag])
 
   // 右下角缩放：宽高都可拖。宽 360–720（与设置页"翻译卡宽度"同域）松手持久记忆；
   // 高只在本会话内生效（下次打开回自动）。
@@ -2116,9 +1939,9 @@ export default function Lens() {
       // stableAnswerHeight 上限——拿上限当起点会导致一动就跳大。
       startH: translateContentRef.current?.getBoundingClientRect().height ?? stableAnswerHeight,
     }
-    setTranslateCardResizing(true)
+    beginCardResize()
     e.currentTarget.setPointerCapture(e.pointerId)
-  }, [barRect.width, stableAnswerHeight])
+  }, [barRect.width, beginCardResize, stableAnswerHeight])
 
   const handleTranslateCardResizeMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     const resize = translateCardResizeRef.current
@@ -2133,21 +1956,19 @@ export default function Lens() {
     const nextW = Math.round(clamp(resize.startW + e.clientX - resize.startX, 360, maxW))
     const nextH = Math.round(clamp(resize.startH + e.clientY - resize.startY, 80, maxH))
     cardWidthRef.current = nextW
-    setCardSessionHeight(nextH)
-    // 纯竖向拖 / 触到 clamp 边界时宽度不变，跳过 setBarRect 避免多余重渲染与浮动模式的空 IPC 调窗。
-    setBarRect(prev => (prev.width === nextW ? prev : { ...prev, width: nextW }))
-  }, [isFloatingLayout, viewport.h, viewport.w, barRect.x, barRect.y])
+    resizeCard(nextW, nextH)
+  }, [isFloatingLayout, resizeCard, viewport.h, viewport.w, barRect.x, barRect.y])
 
   const endTranslateCardResize = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     const resize = translateCardResizeRef.current
     if (!resize || resize.pointerId !== e.pointerId) {
       // capture 已被系统抢走等边缘情形：ref 可能先被 reset 清空，这里兜底复位标志，
       // 否则 translateCardResizing 卡 true 会让下次会话的卡片失去所有过渡动画。
-      setTranslateCardResizing(false)
+      endCardResize()
       return
     }
     translateCardResizeRef.current = null
-    setTranslateCardResizing(false)
+    endCardResize()
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
     } catch {
@@ -2156,7 +1977,7 @@ export default function Lens() {
     // 写回设置记忆：走 settingsCache 写通，避免同窗复用时 getSettingsCached 读到旧宽度把卡弹回默认。
     void setTranslateCardSizeCached(cardWidthRef.current)
       .catch((err: unknown) => console.error('[lens-card-resize] persist failed:', err))
-  }, [])
+  }, [endCardResize])
 
   // 答案区展开方向 + 高度自适应：
   // 1) 下方空间够 ANSWER_H → 向下，目标高
@@ -2360,7 +2181,7 @@ export default function Lens() {
             const x = e.clientX - rect.left
             const y = e.clientY - rect.top
             const kind: AnnotationKind = mode === 'screenshot' ? annotateTool : 'arrow'
-            setDraftArrow({ kind, x1: x, y1: y, x2: x, y2: y })
+            beginAnnotation(kind, x, y)
           }}
           onPointerMove={(e) => {
             if (!draftArrow) return
@@ -2368,23 +2189,18 @@ export default function Lens() {
             const rect = e.currentTarget.getBoundingClientRect()
             const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
             const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top))
-            setDraftArrow(d => (d ? { ...d, x2: x, y2: y } : d))
+            moveAnnotation(x, y)
           }}
           onPointerUp={(e) => {
             e.stopPropagation()
             if (!draftArrow) return
-            const dx = draftArrow.x2 - draftArrow.x1
-            const dy = draftArrow.y2 - draftArrow.y1
-            if (Math.hypot(dx, dy) >= ARROW_MIN_DRAG_PX) {
-              setArrows(prev => [...prev, draftArrow])
-            }
-            setDraftArrow(null)
+            finishAnnotation()
             ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
           }}
           onPointerCancel={(e) => {
             // 浏览器主动释放捕获(例如系统对话框打断),清掉 draft
             e.stopPropagation()
-            setDraftArrow(null)
+            cancelAnnotationDraft()
             try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId) } catch { /* 已被释放,忽略 */ }
           }}
         >
@@ -2423,9 +2239,9 @@ export default function Lens() {
             y={tbY}
             placeAbove={placeAbove}
             tool={annotateTool}
-            onToolChange={setAnnotateTool}
+            onToolChange={selectAnnotationTool}
             canUndo={arrows.length > 0}
-            onUndo={() => { setArrows(prev => prev.slice(0, -1)); setDraftArrow(null) }}
+            onUndo={undoAnnotation}
             onCopy={() => { void handleAnnotateCopy() }}
             onSave={() => { void handleAnnotateSave() }}
             copied={annotateCopied}
@@ -2545,7 +2361,7 @@ export default function Lens() {
               {stage === 'ready' && keepFullscreen && (
                 <button
                   type="button"
-                  onClick={() => setDrawMode(m => !m)}
+                  onClick={toggleDraw}
                   disabled={!imagePreview}
                   title={imagePreview
                     ? (drawMode ? t.lensArrowToggleOff : t.lensArrowToggle)
@@ -2568,7 +2384,7 @@ export default function Lens() {
               autoComplete="off"
               spellCheck={false}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => editInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter' || e.shiftKey) return
                 // IME 合成中（中/日/韩选词按回车）跳过 — isComposing 官方信号 + keyCode 229 兜底
@@ -2919,9 +2735,9 @@ export default function Lens() {
                 size="sm"
                 onClick={async () => {
                   if (await copyToClipboard(translateText)) {
-                    setCopied(true)
+                    showCopied(true)
                     if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
-                    copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
+                    copyTimeoutRef.current = setTimeout(() => showCopied(false), 2000)
                   }
                 }}
               >

@@ -17,6 +17,18 @@ export interface ConversationStreamSnapshot {
   statusNote: string | null
 }
 
+/** Bind a display snapshot to its first identified run. Events from an older
+ * run may arrive after a new turn starts; they must not mutate this preview. */
+export function acceptStreamRun(
+  snapshot: ConversationStreamSnapshot,
+  incomingRunId: string | null | undefined,
+): boolean {
+  if (!incomingRunId) return true
+  if (snapshot.runId && snapshot.runId !== incomingRunId) return false
+  snapshot.runId = incomingRunId
+  return true
+}
+
 /** 后到的 tool record 覆盖已有的，但**不许用「没有」覆盖「有」**（目前只针对
  *  `structured_content`：那是各类专属卡片的载荷）。
  *

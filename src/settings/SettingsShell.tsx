@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react'
+import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type SetStateAction } from 'react'
 import {
   X, RefreshCw, Monitor,
   Download, Upload, ArrowLeft,
@@ -11,15 +11,9 @@ import {
   type ModelProvider,
   type ModelInfo,
   type DefaultPromptTemplates,
-  type PermissionStatus,
-  type UpdateInfo,
   type ChatToolsConfig,
   type ChatNativeToolsConfig,
   type ChatMemoryConfig,
-  type ReplaceTranslationPackStatus,
-  type RapidOcrTier,
-  type SettingsVersion,
-  isSettingsVersionConflict,
 } from '../api/tauri'
 import {
   getSettingsSnapshotCached,
@@ -30,13 +24,11 @@ import {
   subscribeSettingsSnapshot,
   updateSettingsCached,
 } from '../api/settingsCache'
-import {
-  acceptSettingsSave,
-  createSettingsEditorState,
-  receiveSettingsSnapshot,
-  type SettingsEditorState,
-  updateSettingsEditorDraft,
-} from './rebaseSettingsDraft'
+import { SettingsEditorController, type SettingsCloseOptions } from './SettingsEditorController'
+import { useSettingsUpdateController } from './useSettingsUpdateController'
+import { useSettingsOcrDownloads } from './useSettingsOcrDownloads'
+import { useSettingsPermissions } from './useSettingsPermissions'
+import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDraftIntents'
 import { i18n } from './i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
@@ -44,14 +36,12 @@ import {
 } from './NavIcons'
 import { SessionCenter, type SessionCenterProps } from '../chat/public/sessionCenter'
 import { PluginCenter, type PluginCenterSection } from '../chat/public/pluginCenter'
-import { buildHotkey, formatHotkeyError, getPlatform, isProviderEnabled, stableStringify } from './utils'
+import { buildHotkey, formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
 import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
-import { initialReplacePackProgressState, reduceReplacePackProgress } from './replacePackProgress'
 import { UsageStatsPanel } from './UsageStatsPanel'
 import { RequestDebugPanel } from './RequestDebugPanel'
-import { createProviderRequestDraft } from './public/providerDraft'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { HotkeysTab } from './tabs/HotkeysTab'
 import { LensTab } from './tabs/LensTab'
@@ -64,7 +54,7 @@ import { HooksTab } from './tabs/HooksTab'
 import { ComputerControlTab } from './tabs/ComputerControlTab'
 import { AppearanceGroup, BehaviorGroup, PermissionsGroup } from './tabs/GeneralTab'
 import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
-import { MEMORY_L1_MAX_BYTES, utf8ByteLength, type MemoryLayerKey } from './memoryLayers'
+import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
 import { ModelDetailDrawer } from './ModelDetailDrawer'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
 import { Button } from '../components/Button'
@@ -79,7 +69,6 @@ import {
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
-import { persistThenClose, type SettingsCloseOptions } from './settingsClose'
 
 export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'plugins' | 'sessions' | 'usage' | 'providers' | 'about'
 
@@ -154,70 +143,6 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
   return { maxOutput, source, model, provider }
 }
 
-function clearDefaultModelProvider(
-  defaultModels: SettingsData['defaultModels'],
-  providerId: string,
-): SettingsData['defaultModels'] {
-  return {
-    chat: defaultModels.chat.providerId === providerId ? { providerId: '', model: '' } : defaultModels.chat,
-    vision: defaultModels.vision.providerId === providerId
-      ? { providerId: '', model: '' }
-      : defaultModels.vision,
-    videoAnalysis: defaultModels.videoAnalysis.providerId === providerId
-      ? { providerId: '', model: '' }
-      : defaultModels.videoAnalysis,
-    titleSummary: defaultModels.titleSummary.providerId === providerId
-      ? { providerId: '', model: '' }
-      : defaultModels.titleSummary,
-    compression: defaultModels.compression.providerId === providerId
-      ? { providerId: '', model: '' }
-      : defaultModels.compression,
-    imageGeneration: defaultModels.imageGeneration.providerId === providerId
-      ? { providerId: '', model: '' }
-      : defaultModels.imageGeneration,
-    promptOptimize: defaultModels.promptOptimize.providerId === providerId
-      ? { providerId: '', model: '' }
-      : defaultModels.promptOptimize,
-    advisor: defaultModels.advisor.providerId === providerId
-      ? { providerId: '', model: '' }
-      : defaultModels.advisor,
-  }
-}
-
-function resolveDefaultModelsAfterModelRemoval(
-  defaultModels: SettingsData['defaultModels'],
-  providerId: string,
-  resolveAfterRemoval: (currentModel: string) => string,
-): SettingsData['defaultModels'] {
-  return {
-    chat: defaultModels.chat.providerId === providerId
-      ? { ...defaultModels.chat, model: resolveAfterRemoval(defaultModels.chat.model) }
-      : defaultModels.chat,
-    vision: defaultModels.vision.providerId === providerId
-      ? { ...defaultModels.vision, model: resolveAfterRemoval(defaultModels.vision.model) }
-      : defaultModels.vision,
-    videoAnalysis: defaultModels.videoAnalysis.providerId === providerId
-      ? { ...defaultModels.videoAnalysis, model: resolveAfterRemoval(defaultModels.videoAnalysis.model) }
-      : defaultModels.videoAnalysis,
-    titleSummary: defaultModels.titleSummary.providerId === providerId
-      ? { ...defaultModels.titleSummary, model: resolveAfterRemoval(defaultModels.titleSummary.model) }
-      : defaultModels.titleSummary,
-    compression: defaultModels.compression.providerId === providerId
-      ? { ...defaultModels.compression, model: resolveAfterRemoval(defaultModels.compression.model) }
-      : defaultModels.compression,
-    imageGeneration: defaultModels.imageGeneration.providerId === providerId
-      ? { ...defaultModels.imageGeneration, model: resolveAfterRemoval(defaultModels.imageGeneration.model) }
-      : defaultModels.imageGeneration,
-    promptOptimize: defaultModels.promptOptimize.providerId === providerId
-      ? { ...defaultModels.promptOptimize, model: resolveAfterRemoval(defaultModels.promptOptimize.model) }
-      : defaultModels.promptOptimize,
-    advisor: defaultModels.advisor.providerId === providerId
-      ? { ...defaultModels.advisor, model: resolveAfterRemoval(defaultModels.advisor.model) }
-      : defaultModels.advisor,
-  }
-}
-
-
 /**
  * 设置面板主组件（standalone / embedded 双宿主）
  */
@@ -225,9 +150,28 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, sessionLibrary },
   ref,
 ) {
-  const [settings, setSettings] = useState<SettingsData | null>(null)
-  const [initialSettingsSnapshot, setInitialSettingsSnapshot] = useState('')
-  const [loading, setLoading] = useState(true)
+  const onSettingsChangeRef = useRef(onSettingsChange)
+  onSettingsChangeRef.current = onSettingsChange
+  const editorControllerRef = useRef<SettingsEditorController | null>(null)
+  if (!editorControllerRef.current) {
+    editorControllerRef.current = new SettingsEditorController({
+      peek: peekSettingsSnapshot,
+      load: getSettingsSnapshotCached,
+      refresh: refreshSettingsSnapshot,
+      save: saveSettingsSnapshotCached,
+      subscribe: subscribeSettingsSnapshot,
+      import: importSettingsSnapshotCached,
+    }, () => onSettingsChangeRef.current())
+  }
+  const editorController = editorControllerRef.current
+  const editorView = useSyncExternalStore(editorController.subscribe, () => editorController.snapshot)
+  const { settings, loading, loadError, hasUnsavedChanges } = editorView
+  const setSettings = useCallback((update: SetStateAction<SettingsData | null>) => {
+    editorController.edit((current) => {
+      const next = typeof update === 'function' ? update(current) : update
+      return next ?? current
+    })
+  }, [editorController])
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<Exclude<SettingsTab, 'connectors'>>(initialTab === 'connectors' ? 'plugins' : initialTab ?? 'general')
   const [pluginSection, setPluginSection] = useState<PluginCenterSection>(initialTab === 'connectors' ? 'connectors' : 'plugins')
@@ -253,100 +197,39 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [retryAttemptsInput, setRetryAttemptsInput] = useState('')
   const [uiFontPxInput, setUiFontPxInput] = useState('')
   const [systemFonts, setSystemFonts] = useState<string[]>([])
-  const [permissionStatus, setPermissionStatus] = useState<PermissionStatus | null>(null)
-  const [permissionsLoading, setPermissionsLoading] = useState(false)
+  const permissions = useSettingsPermissions()
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null)
   const [modelPickerProviderId, setModelPickerProviderId] = useState<string | null>(null)
   const [drawerModel, setDrawerModel] = useState<{ providerId: string; model: string } | null>(null)
   const [modelTestProviderId, setModelTestProviderId] = useState<string | null>(null)
   const [selectedProviderId, setSelectedProviderId] = useState('')
-  const [memoryDrafts, setMemoryDrafts] = useState<Record<MemoryLayerKey, string>>({ l1: '', l2: '' })
-  const [memorySnapshots, setMemorySnapshots] = useState<Record<MemoryLayerKey, string>>({ l1: '', l2: '' })
-  const [memoryDir, setMemoryDir] = useState('')
-  const [memoryLoading, setMemoryLoading] = useState(false)
-  const [memorySavingLayer, setMemorySavingLayer] = useState<MemoryLayerKey | null>(null)
-  const [memoryError, setMemoryError] = useState('')
-  const [memorySuccess, setMemorySuccess] = useState('')
-  // 更新检查状态：'idle' / 'checking' / 'up-to-date' / 'available' / 'check-failed'
-  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'up-to-date' | 'available' | 'check-failed'>('idle')
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
-  // 下载后立刻静默安装:idle → downloading → (downloaded 一闪) → installer 拉起并退出
-  // 安装失败才停在 downloaded / failed，让用户点「安装并重启」或重试。
-  // failed 时显示错误 + 重试 + 跳 GitHub 兜底
-  const [downloadState, setDownloadState] = useState<'idle' | 'downloading' | 'downloaded' | 'failed'>('idle')
-  const [downloadPercent, setDownloadPercent] = useState(0)
   const requestWindowFocus = useWindowInteractionFocus()
-  const [downloadedPath, setDownloadedPath] = useState('')
-  const [downloadError, setDownloadError] = useState('')
-  // RapidOCR 离线 OCR 状态:检查 app data 目录里 dylib + 模型 4 个文件齐不齐。
-  const [rapidOcrStatus, setRapidOcrStatus] = useState<import('../api/tauri').RapidOcrStatus | null>(null)
-  // 下载临时状态:'idle' / 'downloading' / 'failed'(success 后自动 refresh status 到已就绪,
-  // 没有专门的 success 终态)
-  const [rapidOcrDownloadState, setRapidOcrDownloadState] = useState<'idle' | 'downloading' | 'failed'>('idle')
-  const [rapidOcrDownloadError, setRapidOcrDownloadError] = useState('')
-  const [replacePackStatus, setReplacePackStatus] = useState<ReplaceTranslationPackStatus | null>(null)
-  const [replacePackDownload, dispatchReplacePackDownload] = useReducer(
-    reduceReplacePackProgress,
-    initialReplacePackProgressState,
-  )
+  const updates = useSettingsUpdateController(settings ? settings.autoCheckUpdate : null)
   const platform = getPlatform()
   const isMac = platform === 'macos'
   const hasSystemOcr = isMac || platform === 'windows'
+  const ocrDownloads = useSettingsOcrDownloads(
+    hasSystemOcr,
+    settings?.screenshotTranslation?.rapidOcrTier ?? 'standard',
+  )
   // 加载失败时的错误信息；非空则渲染错误 UI 而不是用合成默认值进入正常视图
   // （否则用户可能没察觉就自动保存把磁盘真实数据覆盖掉）
-  const [loadError, setLoadError] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const readyEmittedRef = useRef(false)
-  const editorStateRef = useRef<SettingsEditorState | null>(null)
-  const canonicalVersionRef = useRef<SettingsVersion | null>(null)
-  // 自动保存：最新草稿 + 防抖定时器 + 在飞请求（避免并发写互相覆盖）
-  const settingsRef = useRef<SettingsData | null>(null)
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const saveInFlightRef = useRef(false)
-  const saveAgainRef = useRef(false)
   const toastClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const lang = settings?.settingsLanguage || 'zh'
+  const memoryEditor = useSettingsMemoryEditor(undefined, lang, activeTab === 'memory')
   const t = i18n[lang]
+  const controllerSaveError = editorView.saveError.startsWith('Settings conflict: ')
+    ? `${lang === 'zh' ? '设置冲突：' : 'Settings conflict: '}${editorView.saveError.slice('Settings conflict: '.length)}`
+    : editorView.saveError.startsWith('Save failed: ')
+      ? `${lang === 'zh' ? '保存失败：' : 'Save failed: '}${formatHotkeyError(editorView.saveError.slice('Save failed: '.length), lang)}`
+      : editorView.saveError
+  const visibleSaveError = saveError || controllerSaveError
   const chatTools = settings?.chatTools
   const nativeBuiltinToolsEnabled = chatTools ? hasEnabledNativeBuiltinTool(chatTools.nativeTools) : false
   const skillRuntimeEnabled = chatTools ? hasEnabledSkillRuntime(chatTools.nativeTools) : false
-  // 判断是否有未保存的更改（自动保存会在防抖后清掉）
-  const hasUnsavedChanges = settings ? stableStringify(settings) !== initialSettingsSnapshot : false
-  // 同步当前草稿快照到 ref（SWR 校准回调据此判断草稿是否 pristine）。
-  useEffect(() => {
-    settingsRef.current = settings
-    if (settings && editorStateRef.current) {
-      editorStateRef.current = updateSettingsEditorDraft(editorStateRef.current, settings)
-    }
-  }, [settings])
-
-  const applyEditorState = useCallback((next: SettingsEditorState) => {
-    editorStateRef.current = next
-    settingsRef.current = next.draft
-    const acknowledgedSnapshot = stableStringify(next.acknowledgedDraft)
-    setSettings(next.draft)
-    setInitialSettingsSnapshot(acknowledgedSnapshot)
-  }, [])
-
-  // 设置页 keep-alive：其它页面（工具开关、MCP、收藏、语言、聊天模型）会写 settings，
-  // 草稿必须按字段跟缓存对齐，否则整份自动保存会把那些改动盖回去。
-  useEffect(() => {
-    return subscribeSettingsSnapshot((fresh) => {
-      const current = editorStateRef.current
-      if (!current) return
-      canonicalVersionRef.current = fresh.version
-      const next = receiveSettingsSnapshot({
-        ...current,
-        draft: settingsRef.current ?? current.draft,
-      }, fresh.settings)
-      applyEditorState(next)
-      if (next.conflicts.length > 0) {
-        const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
-        setSaveError(`${prefix}${next.conflicts.map((conflict) => conflict.path).join(', ')}`)
-      }
-    })
-  }, [applyEditorState, lang])
 
   // 客户端热键冲突检测:在保存前发现"两个启用功能用了同一个组合"。
   // OS 层面的冲突(Spotlight 占用 Cmd+Space 等)仍需保存后从后端拿到结果。
@@ -421,59 +304,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   useEffect(() => {
     let active = true
     readyEmittedRef.current = false
-    setLoadError('')
-
-    // stale-while-revalidate：有缓存则首帧直接渲染，再把权威快照三方重基到当前草稿。
-    const cachedSnapshotValue = peekSettingsSnapshot()
-    const cached = cachedSnapshotValue?.settings ?? null
-    if (cached) {
-      const cachedSnapshot = stableStringify(cached)
-      // 立即种入草稿快照 ref，避免后台校准回调在 sync effect 提交前读到初始空值而误判“已改动”。
-      canonicalVersionRef.current = cachedSnapshotValue?.version ?? null
-      editorStateRef.current = createSettingsEditorState(cached)
-      setSettings(cached)
-      setInitialSettingsSnapshot(cachedSnapshot)
-      setLoading(false)
-      void refreshSettingsSnapshot()
-        .then((freshSnapshotValue) => {
-          if (!active) return
-          const fresh = freshSnapshotValue.settings
-          const freshSerialized = stableStringify(fresh)
-          canonicalVersionRef.current = freshSnapshotValue.version
-          if (freshSerialized === cachedSnapshot) return // 磁盘无变化
-          applyEditorState(receiveSettingsSnapshot(
-            {
-              ...(editorStateRef.current ?? createSettingsEditorState(cached)),
-              draft: settingsRef.current ?? cached,
-            },
-            fresh,
-          ))
-        })
-        .catch(() => {
-          // 校准失败静默：保留已渲染的缓存数据
-        })
-    } else {
-      setLoading(true)
-      getSettingsSnapshotCached()
-        .then((snapshot) => {
-          if (!active) return
-          const data = snapshot.settings
-          canonicalVersionRef.current = snapshot.version
-          editorStateRef.current = createSettingsEditorState(data)
-          setSettings(data)
-          setInitialSettingsSnapshot(stableStringify(data))
-          setLoading(false)
-        })
-        .catch((err) => {
-          if (!active) return
-          console.error('Failed to load settings:', err)
-          // 不合成默认值：避免用户在错误状态下 Save 把磁盘真实数据覆盖掉
-          // 渲染分支会根据 loadError 显示重试 UI
-          const message = err instanceof Error ? err.message : String(err)
-          setLoadError(message || 'Unknown error')
-          setLoading(false)
-        })
-    }
+    editorController.start()
     api.getAppVersion()
       .then((ver: string) => {
         if (active) setAppVersion(ver)
@@ -492,7 +323,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     return () => {
       active = false
     }
-  }, [applyEditorState, reloadKey])
+  }, [editorController, reloadKey])
+
+  useEffect(() => () => editorController.dispose(), [editorController])
 
   // 首屏内容就绪信号：settings 数据就绪或错误态就绪时触发一次。用于让宿主（Chat→App）
   // 把窗口 show 推迟到设置页可渲染之后，避免“窗口已弹出但在转圈”。传了 onReady 就触发，
@@ -504,228 +337,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       onReady()
     }
   }, [loadError, loading, onReady, settings])
-
-  /**
-   * 刷新权限状态（macOS）
-   */
-  const refreshPermissions = useCallback(async () => {
-    setPermissionsLoading(true)
-    try {
-      const status = await api.getPermissionStatus()
-      setPermissionStatus(status)
-    } catch (err) {
-      console.error('Failed to get permission status:', err)
-    } finally {
-      setPermissionsLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    refreshPermissions()
-  }, [refreshPermissions])
-
-  // 监听后端启动时的 update-available 事件，发现新版立即在 About 区块展开提示
-  useEffect(() => {
-    let cancelled = false
-    let unlisten: (() => void) | undefined
-    api.onUpdateAvailable((info) => {
-      if (cancelled) return
-      setUpdateInfo(info)
-      setUpdateStatus('available')
-    }).then((u) => {
-      if (cancelled) u()
-      else unlisten = u
-    })
-    return () => {
-      cancelled = true
-      unlisten?.()
-    }
-  }, [])
-
-  // Settings 打开时静默 check 一次（覆盖启动事件用户当时没开 Settings 的场景）
-  useEffect(() => {
-    if (!settings) return
-    if (settings.autoCheckUpdate === false) return
-    if (updateStatus === 'available' || updateStatus === 'checking') return
-    let cancelled = false
-    api.checkUpdate().then((info) => {
-      if (cancelled) return
-      if (info.available) {
-        setUpdateInfo(info)
-        setUpdateStatus('available')
-      }
-    }).catch(() => {})
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings?.autoCheckUpdate, !!settings])
-
-  /** 用户点 "检查更新" 按钮 */
-  const handleCheckUpdate = useCallback(async () => {
-    setUpdateStatus('checking')
-    try {
-      const info = await api.checkUpdate()
-      if (info.checkFailed) {
-        // 检查本身失败（网络 / api.github.com 受限）——明确提示，不伪装成"已是最新"。
-        setUpdateStatus('check-failed')
-      } else if (info.available) {
-        setUpdateInfo(info)
-        setUpdateStatus('available')
-      } else {
-        setUpdateStatus('up-to-date')
-        // 5s 后自动复位回 idle，避免"已是最新"标签长期占位
-        setTimeout(() => setUpdateStatus((s) => (s === 'up-to-date' ? 'idle' : s)), 5000)
-      }
-    } catch (err) {
-      console.error('Check update failed:', err)
-      setUpdateStatus('check-failed')
-    }
-  }, [])
-
-  /** 检查失败兜底：打开 GitHub releases 页（github.com 主体，通常可访问） */
-  const handleOpenGithubReleases = useCallback(async () => {
-    try {
-      await api.openExternal('https://github.com/ZMGID/kivio/releases')
-    } catch (err) {
-      console.error('Open GitHub releases failed:', err)
-    }
-  }, [])
-
-  const handleOpenReleasePage = useCallback(async () => {
-    if (!updateInfo?.htmlUrl) return
-    try {
-      await api.openExternal(updateInfo.htmlUrl)
-    } catch (err) {
-      console.error('Open release page failed:', err)
-    }
-  }, [updateInfo])
-
-  /** 下载安装包后立刻静默安装并退出。Windows 走 NSIS `/S /UPDATE /R`，装完会自己拉起。 */
-  const handleDownloadAndInstall = useCallback(async () => {
-    if (!updateInfo?.version) return
-    setDownloadState('downloading')
-    setDownloadPercent(0)
-    setDownloadError('')
-    let unlisten: (() => void) | undefined
-    try {
-      unlisten = await api.onUpdateDownloadProgress((p) => {
-        setDownloadPercent(Math.max(0, Math.min(100, Math.round(p.percent))))
-      })
-      const path = await api.downloadUpdate(updateInfo.version)
-      setDownloadedPath(path)
-      setDownloadState('downloaded')
-      await api.installUpdate(path)
-    } catch (err) {
-      console.error('Download or install update failed:', err)
-      setDownloadError(typeof err === 'string' ? err : (err instanceof Error ? err.message : String(err)))
-      setDownloadState('failed')
-    } finally {
-      unlisten?.()
-    }
-  }, [updateInfo])
-
-  /** 已下载的安装包再装一次（下载成功但拉起 installer 失败时用）。 */
-  const handleInstall = useCallback(async () => {
-    if (!downloadedPath) return
-    try {
-      await api.installUpdate(downloadedPath)
-    } catch (err) {
-      console.error('Install update failed:', err)
-      setDownloadError(typeof err === 'string' ? err : (err instanceof Error ? err.message : String(err)))
-      setDownloadState('failed')
-    }
-  }, [downloadedPath])
-
-  /** 拉一次 RapidOCR 状态(app data 里 dylib + 模型 4 个文件齐不齐)。
-   *  挂载时 + 切换到 RapidOCR 引擎时调一下。 */
-  const refreshRapidOcrStatus = useCallback(async () => {
-    if (!hasSystemOcr) return
-    try {
-      const status = await api.rapidOcrStatus()
-      setRapidOcrStatus(status)
-    } catch (err) {
-      console.error('rapidOcrStatus failed:', err)
-    }
-  }, [hasSystemOcr])
-
-  /** 下载指定档位的 RapidOCR 包(dylib 共享 + 该档模型):阻塞若干秒,完成后 refresh status。 */
-  const handleDownloadRapidOcr = useCallback(async (tier: import('../api/tauri').RapidOcrTier) => {
-    setRapidOcrDownloadState('downloading')
-    setRapidOcrDownloadError('')
-    try {
-      const result = await api.rapidOcrInstall(tier)
-      if (result.success) {
-        setRapidOcrDownloadState('idle')
-        await refreshRapidOcrStatus()
-      } else {
-        setRapidOcrDownloadError(result.message)
-        setRapidOcrDownloadState('failed')
-      }
-    } catch (err) {
-      const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err)
-      setRapidOcrDownloadError(msg)
-      setRapidOcrDownloadState('failed')
-    }
-  }, [refreshRapidOcrStatus])
-
-  const refreshReplacePackStatus = useCallback(async (tier: RapidOcrTier) => {
-    if (!hasSystemOcr) return
-    try {
-      setReplacePackStatus(await api.replaceTranslationPackStatus(tier))
-    } catch (err) {
-      console.error('replaceTranslationPackStatus failed:', err)
-    }
-  }, [hasSystemOcr])
-
-  const handleDownloadReplacePack = useCallback(async (tier: RapidOcrTier) => {
-    dispatchReplacePackDownload({ type: 'start' })
-    try {
-      const result = await api.replaceTranslationPackInstall(tier)
-      if (result.success) {
-        dispatchReplacePackDownload({ type: 'success' })
-        await Promise.all([refreshReplacePackStatus(tier), refreshRapidOcrStatus()])
-      } else {
-        dispatchReplacePackDownload({ type: 'failure', error: result.message })
-      }
-    } catch (err) {
-      const message = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err)
-      dispatchReplacePackDownload({ type: 'failure', error: message })
-    }
-  }, [refreshRapidOcrStatus, refreshReplacePackStatus])
-
-  useEffect(() => {
-    let cancelled = false
-    let unlisten: (() => void) | undefined
-    const tier = settings?.screenshotTranslation?.rapidOcrTier ?? 'standard'
-    api.onReplaceTranslationPackProgress(progress => {
-      if (cancelled) return
-      // 两个安装包共用同一事件名；只消费替换翻译离线包事件，
-      // 避免知识库 RapidOCR 安装把本面板驱动进“下载中”。
-      if (progress.pack !== 'replace_translation') return
-      dispatchReplacePackDownload({ type: 'progress', progress })
-      // 终态（最后一个文件 completed）时刷新就绪状态，
-      // 与 handleDownloadReplacePack 成功路径一致；即使 install promise 丢失也不会卡住。
-      if (progress.state === 'completed' && progress.overallDownloadedBytes >= progress.overallTotalBytes) {
-        void refreshReplacePackStatus(tier)
-      }
-    }).then(dispose => {
-      if (cancelled) dispose()
-      else unlisten = dispose
-    }).catch(err => console.error('replace translation pack progress listener failed:', err))
-    return () => {
-      cancelled = true
-      unlisten?.()
-    }
-  }, [refreshReplacePackStatus, settings?.screenshotTranslation?.rapidOcrTier])
-
-  // 挂载时拉一次状态
-  useEffect(() => {
-    refreshRapidOcrStatus()
-  }, [refreshRapidOcrStatus])
-
-  useEffect(() => {
-    const tier = settings?.screenshotTranslation?.rapidOcrTier ?? 'standard'
-    void refreshReplacePackStatus(tier)
-  }, [refreshReplacePackStatus, settings?.screenshotTranslation?.rapidOcrTier])
 
   const retryAttempts = settings?.retryAttempts
 
@@ -782,102 +393,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
    * 立即把当前草稿写盘。自动保存与关闭前 flush 共用。
    * 保存中若草稿又变了，收尾后会再跑一轮，避免丢字。
    */
-  const persistSettingsNow = useCallback(async () => {
-    const draft = settingsRef.current
-    const editor = editorStateRef.current
-    const expectedVersion = canonicalVersionRef.current
-    if (!draft || !editor || !expectedVersion) return false
-    if (editor.conflicts.length > 0) {
-      const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
-      setSaveError(`${prefix}${editor.conflicts.map((conflict) => conflict.path).join(', ')}`)
-      return false
-    }
-    const toSave = draft
-    const draftSnapshot = stableStringify(toSave)
-    if (draftSnapshot === initialSettingsSnapshot) return true
-
-    if (saveInFlightRef.current) {
-      saveAgainRef.current = true
-      return false
-    }
-
-    saveInFlightRef.current = true
-    saveAgainRef.current = false
-    try {
-      setSaveError('')
-      // 不主动清 saveWarning：热键警告来自独立事件，成功保存后可能紧接着到达
-      const savedSnapshot = await saveSettingsSnapshotCached(toSave, expectedVersion)
-      const savedSettings = savedSnapshot.settings
-      canonicalVersionRef.current = savedSnapshot.version
-      const latest = settingsRef.current ?? toSave
-      const next = acceptSettingsSave(toSave, savedSettings, latest)
-      applyEditorState(next)
-      if (next.conflicts.length > 0) {
-        const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
-        setSaveError(`${prefix}${next.conflicts.map((conflict) => conflict.path).join(', ')}`)
-      }
-      onSettingsChange()
-      return true
-    } catch (err) {
-      console.error('Failed to save settings:', err)
-      if (isSettingsVersionConflict(err)) {
-        try {
-          const fresh = await refreshSettingsSnapshot()
-          canonicalVersionRef.current = fresh.version
-          const current = editorStateRef.current ?? editor
-          const rebased = receiveSettingsSnapshot({
-            ...current,
-            draft: settingsRef.current ?? current.draft,
-          }, fresh.settings)
-          applyEditorState(rebased)
-          if (rebased.conflicts.length === 0) {
-            saveAgainRef.current = true
-            return false
-          }
-          const prefix = lang === 'zh' ? '设置冲突：' : 'Settings conflict: '
-          setSaveError(`${prefix}${rebased.conflicts.map((conflict) => conflict.path).join(', ')}`)
-          return false
-        } catch (refreshError) {
-          console.error('Failed to refresh settings after conflict:', refreshError)
-        }
-      }
-      const message = err instanceof Error ? err.message : String(err)
-      const translated = formatHotkeyError(message, lang)
-      const prefix = lang === 'zh' ? '保存失败:' : 'Save failed: '
-      setSaveError(`${prefix}${translated.replace(/\n/g, ' / ')}`)
-      return false
-    } finally {
-      saveInFlightRef.current = false
-      if (saveAgainRef.current) {
-        saveAgainRef.current = false
-        void persistSettingsNow()
-      }
-    }
-  }, [applyEditorState, initialSettingsSnapshot, lang, onSettingsChange])
-
-  // 草稿相对已落盘基线有 diff → 防抖自动保存（开关/输入共用，避免每个按键打盘）
-  // 占位空行会照常送去保存；canonical 回包与编辑缓冲分别推进，避免把占位伪装成持久值。
-  useEffect(() => {
-    if (!hasUnsavedChanges) return
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current)
-      autosaveTimerRef.current = null
-    }
-    autosaveTimerRef.current = setTimeout(() => {
-      autosaveTimerRef.current = null
-      void persistSettingsNow()
-    }, 400)
-    return () => {
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current)
-        autosaveTimerRef.current = null
-      }
-    }
-  }, [hasUnsavedChanges, settings, persistSettingsNow])
+  const persistSettingsNow = useCallback(() => editorController.flush(), [editorController])
 
   useEffect(() => {
     return () => {
-      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current)
       if (toastClearTimerRef.current) clearTimeout(toastClearTimerRef.current)
     }
   }, [])
@@ -904,14 +423,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
    */
   const handleCloseRequest = useCallback((options?: SettingsCloseOptions) => {
     if (recordingTarget) return
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current)
-      autosaveTimerRef.current = null
-    }
-    // 即使草稿看起来 pristine，也要走 persist：工具开关可能已写进缓存，
-    // persist 会采用那份 plugin MCP，避免把关闭盖回去。
-    persistThenClose(persistSettingsNow, onClose, options)
-  }, [onClose, persistSettingsNow, recordingTarget])
+    void editorController.requestClose(onClose, options)
+  }, [editorController, onClose, recordingTarget])
 
   useImperativeHandle(ref, () => ({ requestClose: handleCloseRequest }), [handleCloseRequest])
 
@@ -953,10 +466,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         handleCloseRequest()
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        if (autosaveTimerRef.current) {
-          clearTimeout(autosaveTimerRef.current)
-          autosaveTimerRef.current = null
-        }
         if (hasUnsavedChanges) void persistSettingsNow()
       }
     }
@@ -970,17 +479,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     hasUnsavedChanges,
     persistSettingsNow,
   ])
-
-  /**
-   * 打开 macOS 系统权限设置
-   */
-  const handleOpenPermissionSettings = async (kind: 'accessibility' | 'screen-recording') => {
-    try {
-      await api.openPermissionSettings(kind)
-    } catch (err) {
-      console.error('Failed to open permission settings:', err)
-    }
-  }
 
   // 重试次数输入处理
   const handleRetryAttemptsChange = (value: string) => {
@@ -1019,7 +517,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       if (!prev) return prev
       return { ...prev, ...updates }
     })
-  }, [])
+  }, [setSettings])
 
   // 设置备份：导出/导入 JSON。导入会覆盖全部设置并立即生效。
   const [backupStatus, setBackupStatus] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
@@ -1052,36 +550,32 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const handleImportSettings = useCallback(async () => {
     try {
-      const expectedVersion = canonicalVersionRef.current
-      if (!expectedVersion) throw new Error('Settings version is unavailable')
       const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
       if (!selected || typeof selected !== 'string') return
-      const imported = await importSettingsSnapshotCached(selected, expectedVersion)
-      canonicalVersionRef.current = imported.version
-      applyEditorState(createSettingsEditorState(imported.settings))
-      onSettingsChange()
+      await editorController.import(selected)
       setBackupStatus({ kind: 'ok', msg: lang === 'zh' ? '设置已导入并生效。' : 'Settings imported and applied.' })
     } catch (err) {
       setBackupStatus({ kind: 'err', msg: `${lang === 'zh' ? '导入失败：' : 'Import failed: '}${err}` })
     }
-  }, [applyEditorState, lang, onSettingsChange])
+  }, [editorController, lang])
 
   const handleRestartOnboarding = useCallback(async () => {
     if (!settings) return
     try {
-      const saved = await updateSettingsCached((current) => ({
+      await editorController.flush()
+      await updateSettingsCached((current) => ({
         ...current,
         onboardingStatus: 'pending',
       }))
       const snapshot = peekSettingsSnapshot()
-      if (snapshot) canonicalVersionRef.current = snapshot.version
-      applyEditorState(createSettingsEditorState(saved))
+      if (!snapshot) throw new Error('Settings snapshot is unavailable')
+      editorController.replace(snapshot)
       onSettingsChange()
       window.location.hash = '#chat/onboarding'
     } catch (err) {
       console.error('Failed to restart onboarding:', err)
     }
-  }, [applyEditorState, onSettingsChange, settings])
+  }, [editorController, onSettingsChange, settings])
 
   const updateDefaultModel = useCallback((
     key: keyof SettingsData['defaultModels'],
@@ -1100,14 +594,14 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         ...(key === 'chat' ? { chatProviderId: providerId, chatModel: model } : {}),
       }
     })
-  }, [])
+  }, [setSettings])
 
   const updateChatTools = useCallback((updates: Partial<ChatToolsConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
       return { ...prev, chatTools: { ...prev.chatTools, ...updates } }
     })
-  }, [])
+  }, [setSettings])
 
   const updateNativeTools = useCallback((updates: Partial<ChatNativeToolsConfig>) => {
     setSettings((prev) => {
@@ -1124,7 +618,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         },
       }
     })
-  }, [])
+  }, [setSettings])
 
   // 保存后若有热键被系统/其他应用占用未注册，后端推 hotkey-warning——提示但不视为保存失败。
   useEffect(() => {
@@ -1144,43 +638,21 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     }
   }, [lang])
 
-  /**
-   * 更新指定提供商配置
-   */
+  const dispatchProviderIntent = useCallback((intent: ProviderDraftIntent) => {
+    setSettings((current) => current ? applyProviderDraftIntent(current, intent) : current)
+  }, [setSettings])
+
   const updateProvider = useCallback((id: string, updates: Partial<ModelProvider>) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      return {
-        ...prev,
-        providers: prev.providers.map(p => p.id === id ? { ...p, ...updates } : p)
-      }
-    })
-  }, [])
+    dispatchProviderIntent({ type: 'update', id, updates })
+  }, [dispatchProviderIntent])
 
   const setProviderIcon = useCallback((id: string, iconKey: string) => {
-    setSettings((prev) => {
-      if (!prev) return prev
-      const next = { ...(prev.providerIcons ?? {}) }
-      // 空串 = 恢复「自动匹配」，删掉这条而不是存空值。
-      if (iconKey) next[id] = iconKey
-      else delete next[id]
-      return { ...prev, providerIcons: next }
-    })
-  }, [])
+    dispatchProviderIntent({ type: 'icon', id, iconKey })
+  }, [dispatchProviderIntent])
 
   const reorderProviders = useCallback((fromId: string, toId: string) => {
-    if (fromId === toId) return
-    setSettings((prev) => {
-      if (!prev) return prev
-      const fromIndex = prev.providers.findIndex((p) => p.id === fromId)
-      const toIndex = prev.providers.findIndex((p) => p.id === toId)
-      if (fromIndex < 0 || toIndex < 0) return prev
-      const nextProviders = [...prev.providers]
-      const [moved] = nextProviders.splice(fromIndex, 1)
-      nextProviders.splice(toIndex, 0, moved)
-      return { ...prev, providers: nextProviders }
-    })
-  }, [])
+    dispatchProviderIntent({ type: 'reorder', fromId, toId })
+  }, [dispatchProviderIntent])
 
   /**
    * 添加新提供商
@@ -1188,21 +660,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const addProvider = () => {
     if (!settings) return
     const newId = `provider-${Date.now()}`
-    const newProvider: ModelProvider = {
-      id: newId,
-      name: 'New Provider',
-      apiKeys: [],
-      baseUrl: 'https://api.openai.com/v1',
-      availableModels: [],
-      enabledModels: [],
-      enabled: true,
-      apiFormat: 'openai_chat',
-      request: createProviderRequestDraft(),
-    }
-    setSettings({
-      ...settings,
-      providers: [...settings.providers, newProvider]
-    })
+    dispatchProviderIntent({ type: 'add', id: newId })
     setSelectedProviderId(newId)
   }
 
@@ -1210,123 +668,25 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const addProviderFromPreset = (preset: ProviderPreset) => {
     if (!settings) return
     const newId = `provider-${Date.now()}`
-    const newProvider: ModelProvider = {
-      id: newId,
-      name: preset.name,
-      apiKeys: [],
-      baseUrl: preset.baseUrl,
-      availableModels: [],
-      enabledModels: [],
-      enabled: true,
-      apiFormat: preset.apiFormat ?? 'openai_chat',
-      request: createProviderRequestDraft(preset.oauth),
-    }
-    setSettings({
-      ...settings,
-      providers: [...settings.providers, newProvider]
-    })
+    dispatchProviderIntent({ type: 'add', id: newId, preset })
     setSelectedProviderId(newId)
   }
 
-  /**
-   * 根据 ID 查找已启用的提供商（找不到或已禁用时返回第一个已启用的）
-   */
-  const resolveProvider = (providers: ModelProvider[], providerId: string) => {
-    const matched = providers.find(p => p.id === providerId)
-    if (matched && isProviderEnabled(matched)) return matched
-    return providers.find(p => isProviderEnabled(p)) ?? providers[0]
-  }
-
-  /**
-   * 确保当前模型在已启用模型列表中
-   */
-  const resolveModel = (provider: ModelProvider | undefined, currentModel: string) => {
-    if (!provider) return currentModel
-    if (provider.enabledModels.includes(currentModel)) return currentModel
-    return provider.enabledModels[0] || currentModel
-  }
-
-  /**
-   * 删除提供商
-   * 删除后会自动将使用该提供商的功能切换到第一个可用提供商
-   */
   const deleteProvider = (id: string) => {
     if (!settings) return
     if (modelPickerProviderId === id) setModelPickerProviderId(null)
-    const nextProviders = settings.providers.filter(p => p.id !== id)
-    const translatorProvider = resolveProvider(nextProviders, settings.translatorProviderId)
-    const screenshotProvider = resolveProvider(nextProviders, settings.screenshotTranslation?.providerId || '')
-    // lens providerId 为空表示 fallback 到 translator，删除时若已设置自身 provider 才需要级联
-    const lensHadOwnProvider = !!settings.lens?.providerId
-    const lensProvider = lensHadOwnProvider
-      ? resolveProvider(nextProviders, settings.lens?.providerId || '')
-      : undefined
-    const deletedProviderWasChatModel =
-      settings.defaultModels.chat.providerId === id || settings.chatProviderId === id
-
-    const defaultModels = clearDefaultModelProvider(settings.defaultModels, id)
-    const providerIcons = { ...(settings.providerIcons ?? {}) }
-    delete providerIcons[id]
-    const nextSettings: SettingsData = {
-      ...settings,
-      providers: nextProviders,
-      providerIcons,
-      translatorProviderId: translatorProvider ? translatorProvider.id : '',
-      translatorModel: resolveModel(translatorProvider, settings.translatorModel),
-      defaultModels,
-      screenshotTranslation: {
-        ...settings.screenshotTranslation,
-        providerId: screenshotProvider ? screenshotProvider.id : '',
-        model: resolveModel(screenshotProvider, settings.screenshotTranslation?.model || '')
-      },
-      ...(lensHadOwnProvider ? {
-        lens: {
-          ...settings.lens,
-          providerId: lensProvider ? lensProvider.id : '',
-          model: resolveModel(lensProvider, settings.lens?.model || '')
-        }
-      } : {})
-    }
-    setSettings({
-      ...nextSettings,
-      chatProviderId: deletedProviderWasChatModel ? '' : settings.chatProviderId,
-      chatModel: deletedProviderWasChatModel ? '' : settings.chatModel,
-    })
+    dispatchProviderIntent({ type: 'delete', id })
   }
 
   /**
    * 添加已启用模型
    */
   const addEnabledModel = (providerId: string, model: string) => {
-    if (!settings || !model.trim()) return
-    const provider = settings.providers.find(p => p.id === providerId)
-    if (!provider || provider.enabledModels.includes(model)) return
-    updateProvider(providerId, {
-      enabledModels: [...provider.enabledModels, model.trim()]
-    })
+    dispatchProviderIntent({ type: 'add-model', id: providerId, model })
   }
 
   const addAllEnabledModels = (providerId: string, models: string[]) => {
-    if (!settings || models.length === 0) return
-    const provider = settings.providers.find((p) => p.id === providerId)
-    if (!provider) return
-
-    const enabledKeys = new Set(provider.enabledModels.map((model) => model.toLowerCase()))
-    const nextModels: string[] = []
-    const seen = new Set<string>()
-    for (const model of models) {
-      const trimmed = model.trim()
-      if (!trimmed) continue
-      const key = trimmed.toLowerCase()
-      if (enabledKeys.has(key) || seen.has(key)) continue
-      seen.add(key)
-      nextModels.push(trimmed)
-    }
-    if (nextModels.length === 0) return
-
-    updateProvider(providerId, {
-      enabledModels: [...provider.enabledModels, ...nextModels],
-    })
+    dispatchProviderIntent({ type: 'add-models', id: providerId, models })
   }
 
   /**
@@ -1334,84 +694,22 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
    * 移除后会自动更新使用该模型的功能到新的默认模型
    */
   const removeEnabledModel = (providerId: string, model: string) => {
-    if (!settings) return
-    const provider = settings.providers.find((p) => p.id === providerId)
-    if (!provider) return
-
-    const nextEnabledModels = provider.enabledModels.filter((m) => m !== model)
-    const resolveAfterRemoval = (currentModel: string) => {
-      if (currentModel !== model) return currentModel
-      return nextEnabledModels[0] || ''
-    }
-
-    setSettings((prev) => {
-      if (!prev) return prev
-
-      const nextProviders = prev.providers.map((p) =>
-        p.id === providerId ? { ...p, enabledModels: nextEnabledModels } : p,
-      )
-
-      const next = {
-        ...prev,
-        providers: nextProviders,
-      }
-      const defaultModels = resolveDefaultModelsAfterModelRemoval(
-        prev.defaultModels,
-        providerId,
-        resolveAfterRemoval,
-      )
-
-      if (prev.translatorProviderId === providerId) {
-        next.translatorModel = resolveAfterRemoval(prev.translatorModel)
-      }
-      next.defaultModels = defaultModels
-      next.chatProviderId = defaultModels.chat.providerId
-      next.chatModel = defaultModels.chat.model
-
-      if (prev.screenshotTranslation.providerId === providerId) {
-        next.screenshotTranslation = {
-          ...prev.screenshotTranslation,
-          model: resolveAfterRemoval(prev.screenshotTranslation.model),
-        }
-      }
-
-      if (prev.lens?.providerId === providerId) {
-        next.lens = {
-          ...prev.lens,
-          model: resolveAfterRemoval(prev.lens.model || ''),
-        }
-      }
-
-      return next
-    })
+    dispatchProviderIntent({ type: 'remove-model', id: providerId, model })
   }
 
   /**
    * 保存模型自定义参数
    */
   const saveModelOverride = useCallback((providerId: string, modelName: string, info: ModelInfo) => {
-    if (!settings) return
-    const provider = settings.providers.find(p => p.id === providerId)
-    if (!provider) return
-    updateProvider(providerId, {
-      modelOverrides: {
-        ...provider.modelOverrides,
-        [modelName]: info,
-      },
-    })
-  }, [settings, updateProvider])
+    dispatchProviderIntent({ type: 'save-override', id: providerId, model: modelName, info })
+  }, [dispatchProviderIntent])
 
   /**
    * 重置模型参数为数据库默认值
    */
   const resetModelOverride = useCallback((providerId: string, modelName: string) => {
-    if (!settings) return
-    const provider = settings.providers.find(p => p.id === providerId)
-    if (!provider?.modelOverrides?.[modelName]) return
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { [modelName]: _removed, ...rest } = provider.modelOverrides
-    updateProvider(providerId, { modelOverrides: rest })
-  }, [settings, updateProvider])
+    dispatchProviderIntent({ type: 'reset-override', id: providerId, model: modelName })
+  }, [dispatchProviderIntent])
 
   /**
    * 从提供商 API 获取可用模型列表
@@ -1458,7 +756,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       if (!prev) return prev
       return { ...prev, screenshotTranslation: { ...prev.screenshotTranslation, ...updates } }
     })
-  }, [])
+  }, [setSettings])
 
   /**
    * 更新截图标注配置
@@ -1468,7 +766,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       if (!prev) return prev
       return { ...prev, screenshotAnnotate: { ...prev.screenshotAnnotate, ...updates } }
     })
-  }, [])
+  }, [setSettings])
 
   /**
    * 更新 Lens 配置
@@ -1478,21 +776,21 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       if (!prev) return prev
       return { ...prev, lens: { ...prev.lens, ...updates } }
     })
-  }, [])
+  }, [setSettings])
 
   const updateChat = useCallback((updates: Partial<NonNullable<SettingsData['chat']>>) => {
     setSettings((prev) => {
       if (!prev) return prev
       return { ...prev, chat: { ...prev.chat, ...updates } }
     })
-  }, [])
+  }, [setSettings])
 
   const updateChatMemory = useCallback((updates: Partial<ChatMemoryConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
       return { ...prev, chatMemory: { ...prev.chatMemory, ...updates } }
     })
-  }, [])
+  }, [setSettings])
 
   const updateLensWebSearch = useCallback((updates: Partial<NonNullable<SettingsData['lens']['webSearch']>>) => {
     setSettings((prev) => {
@@ -1508,72 +806,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         },
       }
     })
-  }, [])
-
-  const refreshChatMemory = useCallback(async () => {
-    setMemoryLoading(true)
-    setMemoryError('')
-    try {
-      const result = await api.chatMemoryGet()
-      const next = {
-        l1: result.l1.content,
-        l2: result.l2.content,
-      }
-      setMemoryDrafts(next)
-      setMemorySnapshots(next)
-      setMemoryDir(result.dir)
-      setMemorySuccess('')
-    } catch (err) {
-      setMemoryError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setMemoryLoading(false)
-    }
-  }, [])
-
-  const handleSaveMemoryLayer = useCallback(async (layer: MemoryLayerKey) => {
-    const content = memoryDrafts[layer]
-    if (layer === 'l1' && utf8ByteLength(content) > MEMORY_L1_MAX_BYTES) {
-      setMemoryError(lang === 'zh'
-        ? `L1 超过 ${MEMORY_L1_MAX_BYTES} 字节，请先精简或归档到 L2。`
-        : `L1 exceeds ${MEMORY_L1_MAX_BYTES} bytes. Shorten it or archive details into L2.`)
-      return
-    }
-    setMemorySavingLayer(layer)
-    setMemoryError('')
-    setMemorySuccess('')
-    try {
-      const saved = await api.chatMemorySave(layer, content)
-      setMemoryDrafts((prev) => ({ ...prev, [layer]: saved.content }))
-      setMemorySnapshots((prev) => ({ ...prev, [layer]: saved.content }))
-      setMemorySuccess(lang === 'zh'
-        ? `${layer.toUpperCase()} 已保存`
-        : `${layer.toUpperCase()} saved`)
-    } catch (err) {
-      setMemoryError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setMemorySavingLayer(null)
-    }
-  }, [lang, memoryDrafts])
-
-  const handleOpenMemoryFolder = useCallback(async () => {
-    setMemoryError('')
-    try {
-      const result = await api.chatMemoryOpenFolder()
-      if (!result.success) {
-        setMemoryError(result.error || (lang === 'zh' ? '打开记忆文件夹失败' : 'Failed to open memory folder'))
-      } else if (result.path) {
-        setMemoryDir(result.path)
-      }
-    } catch (err) {
-      setMemoryError(err instanceof Error ? err.message : String(err))
-    }
-  }, [lang])
-
-  useEffect(() => {
-    if (activeTab === 'memory') {
-      void refreshChatMemory()
-    }
-  }, [activeTab, refreshChatMemory])
+  }, [setSettings])
 
   /**
    * 切换快捷键录制状态
@@ -1940,13 +1173,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </FieldBlock>
                 </SettingsGroup>
 
-                {permissionStatus?.platform === 'macos' && (
+                {permissions.status?.platform === 'macos' && (
                   <PermissionsGroup
                     t={t}
-                    permissionStatus={permissionStatus}
-                    permissionsLoading={permissionsLoading}
-                    onOpenPermissionSettings={handleOpenPermissionSettings}
-                    onRefreshPermissions={refreshPermissions}
+                    permissionStatus={permissions.status}
+                    permissionsLoading={permissions.loading}
+                    onOpenPermissionSettings={permissions.open}
+                    onRefreshPermissions={permissions.refresh}
                   />
                 )}
               </>
@@ -1969,19 +1202,19 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   isMac={isMac}
                   hasSystemOcr={hasSystemOcr}
                   defaultPrompts={defaultPrompts}
-                  rapidOcrStatus={rapidOcrStatus}
-                  rapidOcrDownloadState={rapidOcrDownloadState}
-                  rapidOcrDownloadError={rapidOcrDownloadError}
-                  replacePackStatus={replacePackStatus}
-                  replacePackDownloadState={replacePackDownload.downloadState}
-                  replacePackDownloadError={replacePackDownload.error}
-                  replacePackProgress={replacePackDownload.progress}
+                  rapidOcrStatus={ocrDownloads.rapidStatus}
+                  rapidOcrDownloadState={ocrDownloads.rapidDownloadState}
+                  rapidOcrDownloadError={ocrDownloads.rapidDownloadError}
+                  replacePackStatus={ocrDownloads.replaceStatus}
+                  replacePackDownloadState={ocrDownloads.replaceDownload.downloadState}
+                  replacePackDownloadError={ocrDownloads.replaceDownload.error}
+                  replacePackProgress={ocrDownloads.replaceDownload.progress}
                   t={t}
                   onUpdate={updateScreenshotTranslation}
-                  onRefreshRapidOcrStatus={refreshRapidOcrStatus}
-                  onDownloadRapidOcr={handleDownloadRapidOcr}
-                  onRefreshReplacePack={refreshReplacePackStatus}
-                  onDownloadReplacePack={handleDownloadReplacePack}
+                  onRefreshRapidOcrStatus={ocrDownloads.refreshRapid}
+                  onDownloadRapidOcr={ocrDownloads.downloadRapid}
+                  onRefreshReplacePack={ocrDownloads.refreshReplace}
+                  onDownloadReplacePack={ocrDownloads.downloadReplace}
                 />
               </>
             )}
@@ -2041,21 +1274,18 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               <MemoryTab
                 lang={lang}
                 chatMemory={chatMemory}
-                memoryDir={memoryDir}
-                memoryError={memoryError}
-                memorySuccess={memorySuccess}
-                memoryLoading={memoryLoading}
-                memorySavingLayer={memorySavingLayer}
-                memoryDrafts={memoryDrafts}
-                memorySnapshots={memorySnapshots}
+                memoryDir={memoryEditor.view.dir}
+                memoryError={memoryEditor.view.error}
+                memorySuccess={memoryEditor.view.success}
+                memoryLoading={memoryEditor.view.loading}
+                memorySavingLayer={memoryEditor.view.savingLayer}
+                memoryDrafts={memoryEditor.view.drafts}
+                memorySnapshots={memoryEditor.view.snapshots}
                 onUpdateChatMemory={updateChatMemory}
-                onRefresh={() => void refreshChatMemory()}
-                onOpenFolder={() => void handleOpenMemoryFolder()}
-                onDraftChange={(layer, value) => {
-                  setMemoryDrafts((prev) => ({ ...prev, [layer]: value }))
-                  setMemorySuccess('')
-                }}
-                onSaveLayer={(layer) => void handleSaveMemoryLayer(layer)}
+                onRefresh={() => void memoryEditor.refresh()}
+                onOpenFolder={() => void memoryEditor.openFolder()}
+                onDraftChange={memoryEditor.edit}
+                onSaveLayer={(layer) => void memoryEditor.save(layer)}
               />
             )}
 
@@ -2220,37 +1450,32 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   settings={settings}
                   t={t}
                   update={{
-                    status: updateStatus,
-                    info: updateInfo,
-                    downloadState,
-                    downloadPercent,
-                    downloadError,
+                    status: updates.status,
+                    info: updates.info,
+                    downloadState: updates.downloadState,
+                    downloadPercent: updates.downloadPercent,
+                    downloadError: updates.downloadError,
                   }}
                   onUpdateSettings={updateSettings}
-                  onCheck={handleCheckUpdate}
-                  onDownloadAndInstall={handleDownloadAndInstall}
-                  onInstall={handleInstall}
-                  onOpenReleasePage={handleOpenReleasePage}
-                  onOpenGithubReleases={handleOpenGithubReleases}
-                  onDismiss={() => {
-                    setUpdateStatus('idle')
-                    setDownloadState('idle')
-                    setDownloadPercent(0)
-                    setDownloadError('')
-                  }}
+                  onCheck={updates.check}
+                  onDownloadAndInstall={updates.downloadAndInstall}
+                  onInstall={updates.install}
+                  onOpenReleasePage={updates.openReleasePage}
+                  onOpenGithubReleases={updates.openGithubReleases}
+                  onDismiss={updates.dismiss}
                 />
               </>
             )}
           </div>
 
-          {(saveError || saveWarning) && (
+          {(visibleSaveError || saveWarning) && (
             <div
-              className={`settings-autosave-toast ${saveError ? 'error' : 'warn'}`}
+              className={`settings-autosave-toast ${visibleSaveError ? 'error' : 'warn'}`}
               role="status"
-              title={saveError || saveWarning}
+              title={visibleSaveError || saveWarning}
               data-tauri-drag-region="false"
             >
-              {saveError || saveWarning}
+              {visibleSaveError || saveWarning}
             </div>
           )}
         </main>

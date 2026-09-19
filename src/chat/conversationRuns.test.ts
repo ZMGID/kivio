@@ -5,6 +5,7 @@ import {
   isConversationBusy,
   isConversationInFlight,
   mergeToolRecord,
+  acceptStreamRun,
 } from './conversationRuns'
 
 describe('isConversationInFlight', () => {
@@ -62,6 +63,24 @@ describe('createEmptyStreamSnapshot', () => {
     expect(snapshot.startedAt).toBeTypeOf('number')
     expect(snapshot.reasoningStartedAtBySegmentId).toEqual({})
     expect(snapshot.reasoningDurationMsBySegmentId).toEqual({})
+  })
+})
+
+describe('stream run ownership', () => {
+  it('binds a placeholder to its first run and rejects a late event from another run', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    expect(acceptStreamRun(snapshot, 'run-a')).toBe(true)
+    expect(snapshot.runId).toBe('run-a')
+    expect(acceptStreamRun(snapshot, 'run-a')).toBe(true)
+    expect(acceptStreamRun(snapshot, 'run-old')).toBe(false)
+    expect(snapshot.runId).toBe('run-a')
+  })
+
+  it('preserves the current protocol behavior for events without a run id', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    snapshot.runId = 'run-a'
+    expect(acceptStreamRun(snapshot, null)).toBe(true)
+    expect(snapshot.runId).toBe('run-a')
   })
 })
 
@@ -126,4 +145,3 @@ describe('busy conversation gate (smoke)', () => {
     expect(Array.from(generating).sort()).toEqual(['c-confirm', 'c-flight', 'c-stream'])
   })
 })
-

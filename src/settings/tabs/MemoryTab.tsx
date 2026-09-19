@@ -115,7 +115,7 @@ interface MemoryTabProps {
   onSaveLayer: (layer: MemoryLayerKey) => void
 }
 
-/** 记忆标签页。纯展示：加载 / 保存 / 草稿状态都留在 SettingsShell。 */
+/** 记忆标签页。纯展示；加载、保存与草稿由记忆编辑 owner 管理。 */
 export function MemoryTab({
   lang,
   chatMemory,

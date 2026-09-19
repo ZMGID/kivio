@@ -104,4 +104,81 @@ describe('useLensSessionCoordinator', () => {
     expect(result.current.isRequestCurrent(request)).toBe(false)
     expect(cancelRequest).toHaveBeenCalledOnce()
   })
+
+  it('waits for a hidden surface before closing, but never hides a reopened session', async () => {
+    let releasePaint!: () => void
+    const paint = new Promise<void>((resolve) => { releasePaint = resolve })
+    const cancelRequest = vi.fn().mockResolvedValue(undefined)
+    const prepareHiddenSurface = vi.fn()
+    const hide = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => useLensSessionCoordinator({ cancelRequest }))
+    act(() => result.current.beginOpening())
+    const old = result.current.beginRequest('chat', 'old')
+
+    const closing = result.current.closeOpening({ prepareHiddenSurface, waitForPaint: () => paint, hide })
+    await act(async () => { await Promise.resolve() })
+    expect(cancelRequest).toHaveBeenCalledOnce()
+    expect(prepareHiddenSurface).toHaveBeenCalledOnce()
+    expect(hide).not.toHaveBeenCalled()
+
+    act(() => result.current.beginOpening())
+    expect(result.current.isRequestLatest(old)).toBe(false)
+    releasePaint()
+    await act(async () => { expect(await closing).toBe(false) })
+    expect(hide).not.toHaveBeenCalled()
+  })
+
+  it('closes once after a terminal event without re-cancelling a completed request', async () => {
+    const cancelRequest = vi.fn().mockResolvedValue(undefined)
+    const steps: string[] = []
+    const { result } = renderHook(() => useLensSessionCoordinator({ cancelRequest }))
+    act(() => result.current.beginOpening())
+    const completed = result.current.beginRequest('chat', 'image-1')
+    expect(result.current.finishRequestEvent('chat', 'image-1')).toBe(true)
+    expect(result.current.isRequestLatest(completed)).toBe(true)
+
+    const closed = await act(async () => result.current.closeOpening({
+      prepareHiddenSurface: () => { steps.push('reset'); result.current.resetForHide() },
+      waitForPaint: async () => { steps.push('paint') },
+      hide: async () => { steps.push('hide') },
+    }))
+    expect(closed).toBe(true)
+    expect(steps).toEqual(['reset', 'paint', 'hide'])
+    expect(cancelRequest).not.toHaveBeenCalled()
+    expect(result.current.isRequestLatest(completed)).toBe(false)
+  })
+
+  it('coalesces repeated close intents for the same opening', async () => {
+    const hide = vi.fn().mockResolvedValue(undefined)
+    const prepareHiddenSurface = vi.fn()
+    const { result } = renderHook(() => useLensSessionCoordinator())
+    act(() => result.current.beginOpening())
+    const operations = { prepareHiddenSurface, waitForPaint: async () => undefined, hide }
+
+    const first = result.current.closeOpening(operations)
+    const second = result.current.closeOpening(operations)
+    expect(second).toBe(first)
+    expect(await first).toBe(true)
+    expect(await result.current.closeOpening(operations)).toBe(false)
+    expect(prepareHiddenSurface).toHaveBeenCalledOnce()
+    expect(hide).toHaveBeenCalledOnce()
+  })
+
+  it('restores history after invalidating a done event and a pending selection read', async () => {
+    const cancelRequest = vi.fn().mockResolvedValue(undefined)
+    const apply = vi.fn()
+    const { result } = renderHook(() => useLensSessionCoordinator({ cancelRequest }))
+    act(() => result.current.beginOpening())
+    const selection = result.current.beginSelectionRead()
+    const request = result.current.beginRequest('chat', 'same-image')
+    expect(result.current.finishRequestEvent('chat', 'same-image')).toBe(true)
+
+    await act(async () => result.current.restoreSession(apply))
+
+    expect(apply).toHaveBeenCalledOnce()
+    expect(result.current.isSelectionCurrent(selection)).toBe(false)
+    expect(result.current.isRequestLatest(request)).toBe(false)
+    expect(result.current.acceptsRequestEvent('chat', 'same-image')).toBe(false)
+    expect(cancelRequest).not.toHaveBeenCalled()
+  })
 })

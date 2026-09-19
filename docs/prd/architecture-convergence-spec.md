@@ -1,6 +1,6 @@
 # Kivio 架构收口：语义一致性、状态所有权与验收
 
-状态：实施中（R1–R3 代码完成，R4–R5 待实施；平台验收未完成）。基线：`dc1eb6cf`。日期：2026-09-19。
+状态：实施中（R1–R3 代码完成，R4 首批纵切完成但尚未验收，R5 待实施；平台验收未完成）。基线：`dc1eb6cf`。日期：2026-09-19。
 
 发布记录：[GitHub #52](https://github.com/ZMGID/kivio/issues/52)，标签：`ready-for-agent`。
 
@@ -184,3 +184,10 @@
 - 删除的重复规则：移除未被读取的 popout 对话镜像集合、跨 run 的 reply guard 清信箱、公开 map/lock/atomic 字段；窗口卸载仍只移除协议订阅，不取消后台 run。
 - 失败用例：并行 run/兄弟 run 完成、重复发送占位、取消后的旧输入、新 run 交错、会话复用/忙碌淘汰与 shutdown（含满控制队列的有界关闭和 PID 兜底）、失败交接精确回滚、single-flight、后台终态迟到、调试磁盘镜像顺序、焦点单次消费及保存许可取消。
 - 复验：Windows `cargo check` 与最终 `cargo test --lib --no-run` 通过；上述 owner 定向 Rust 测试实际执行通过。此前的 `0xc0000139` 在本次最终测试可执行文件中未复现。完整回归、macOS 实机生命周期及 R4–R5 验收仍待完成。
+
+### R4a 页面生命周期纵切（未关闭 R4）
+
+- 旧入口：Chat 页面内联串接路由加载、弹出归属、同步发送占位、迟到终态与队列收尾；SettingsShell 自行合并/保存/关闭，并管理 OCR、更新、权限及记忆编辑；Lens 页面用跨状态 setter 清单重置选择、对话、标注和窗口动画。
+- 新 owner：Chat navigation/send reservation/run settlement 分别控制导航提交许可、发送占位与跨轮终态顺序；Settings editor controller 负责规范快照、编辑重基、自动保存、冲突和关闭 flush，各设置子生命周期有独立 owner；Lens session、conversation、selection、annotation、bar motion owner 提供原子打开/隐藏与请求隔离。
+- 调用方迁移与删除：Chat 不再用 `reloadConversationRef`/`pendingStreamDoneRef` 拼接顺序；Settings 删除旧 `settingsClose` 辅助路径，导航等待成功保存，失败保留草稿；Lens 打开/隐藏不再由页面逐一重置上述领域字段。设置导入在前置保存失败时拒绝整体替换，权限刷新拒绝迟到旧结果。
+- 失败用例与复验：重复发送、迟到旧 run 终态、保存失败关闭/导入、Lens done 先于回包和关闭重开等行为测试通过；Windows 前端完整 237 文件、1925 项测试与 ESLint 通过，TypeScript 定向检查通过。R4 尚未完成：Chat 的 send transaction 与流式展示更新、Lens 的部分 OS 动画/历史编排、Settings 的快捷键录制及 Provider catalog IO 仍在页面；不得将该纵切视为 R4 验收。

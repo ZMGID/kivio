@@ -1,6 +1,6 @@
 # Kivio architecture
 
-This document describes the implemented ownership structure and its intended rules. It is not a completion declaration: page controllers, logical-module dependency checks, and platform acceptance still need work. The remaining acceptance contract and batch status are in the [architecture convergence spec](./prd/architecture-convergence-spec.md). Product terminology and invariants remain defined by [`CONTEXT.md`](../CONTEXT.md) and the ADRs in [`docs/adr`](./adr).
+This document describes the implemented ownership structure and its intended rules. It is not a completion declaration: the remaining page-controller responsibilities, logical-module dependency checks, and platform acceptance still need work. The remaining acceptance contract and batch status are in the [architecture convergence spec](./prd/architecture-convergence-spec.md). Product terminology and invariants remain defined by [`CONTEXT.md`](../CONTEXT.md) and the ADRs in [`docs/adr`](./adr).
 
 ## Composition and dependency direction
 
@@ -29,9 +29,9 @@ AppState (composition root)
 ## Frontend owners
 
 - `src/chat/routeContract.json` is the shared Chat route vocabulary and conformance corpus. `routeCodec.ts` consumes it at runtime; Rust embeds the same declaration for persisted-window restoration. `browserRoute.ts` reads the DOM, `persistence.ts` owns ordered/retryable storage migration, and `conversationTransitionStore.ts` owns the navigation generation that gates asynchronous UI commits without cancelling background execution.
-- `src/chat/hooks/useComposerDraft.ts` owns the complete draft used before a conversation exists. `Chat.tsx` coordinates the owner with persistence and conversation APIs.
+- `src/chat/hooks/useComposerDraft.ts` owns the complete draft used before a conversation exists. The Chat navigation controller controls route-load and popout commit rights; send reservations claim a target before asynchronous preparation, and run settlement orders terminal frames, invoke results and queued follow-ups. `Chat.tsx` still coordinates draft persistence, optimistic presentation and stream-display updates; R4 is not yet complete.
 - `src/lens/useLensHistory.ts` owns Lens history ordering, de-duplication, persistence and image eviction.
-- `src/lens/useLensSessionCoordinator.ts` owns Lens capture readiness, opening and request generations, cancellation and stale-response isolation. `useLensTranslationSession.ts` owns translation stages, results, errors and terminal cleanup.
+- `src/lens/useLensSessionCoordinator.ts` owns Lens capture readiness, opening and request generations, cancellation and stale-response isolation. Conversation, selection, annotation and bar-motion controllers own their corresponding visible transitions and atomic open/hide resets. `useLensTranslationSession.ts` owns translation stages, results, errors and terminal cleanup. OS window animation timing and some history/preview orchestration remain in the Lens page.
 - `src/chat/public/*` and `src/settings/public/*` are deliberately small contracts. They are not general barrels.
 - `src/styles/app.css` is the ordered stylesheet composition root. Global tokens stay in `index.css`; Chat, Settings, Notes and shared window surfaces own separate files. Their import order preserves the previous cascade.
 
@@ -42,6 +42,8 @@ Large shell components may remain large when they are composition code. New stat
 Rust owns persisted settings defaults, migration, canonicalization and the process-scoped `{ epoch, revision }` sequence. Reads and every successful write return a canonical snapshot; full saves and imports must submit the version on which the edit began, are checked before runtime side effects, and use the same version again for the final CAS. Lightweight mutations remain narrow operations and return the advanced snapshot. All durable settings writes emit the version-only `kivio-settings-changed` event; per-webview caches accept snapshots monotonically and revalidate on window activation. A settings transaction durably persists the canonical value before materializing external CLI configuration. A durable-save failure restores the store's in-memory cache, while a later materialization failure restores both the durable store and external configuration.
 
 Settings UI state separates the backend canonical snapshot, the acknowledged editing buffer, the current draft and visible merge conflicts. Provider and MCP collections merge by entity identity; plugin-managed MCP rows always follow the backend snapshot. Backend normalization advances the canonical baseline while UI-only placeholder rows remain in the editing buffer. Same-field or delete/edit conflicts retain the draft and block automatic overwrite until the user changes the conflicting value. UI code may validate presentation concerns immediately, but it does not define persisted fallback models, onboarding migration, OCR privacy defaults, provider API-format normalization or prompt-cache migration.
+
+`SettingsEditorController` owns the editable snapshot lifecycle, autosave queue, conflict handling and close-before-flush contract. Import stops if a preceding draft save fails; navigation out of Settings waits for a successful flush. OCR/update downloads, permissions and memory editing have separate owners. Shortcut recording and some provider-catalog/modal orchestration still remain in the page.
 
 ## Backend state owners
 

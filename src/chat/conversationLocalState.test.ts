@@ -13,7 +13,6 @@ import {
 function makeState(): ConversationLocalState {
   return {
     inFlight: new Set(['c1', 'c2']),
-    pendingStreamDone: { c1: async () => {}, c2: async () => {} },
     streamSnapshots: { c1: { content: 'a' } as never, c2: { content: 'b' } as never },
     streamErrors: { c1: 'err1', c2: 'err2' },
     pendingToolConfirms: { c1: { conversationId: 'c1' } as never, c2: {} as never },
@@ -31,23 +30,22 @@ describe('clearConversationLocalState 无条件清理', () => {
     expect(s.pendingSessionConsents.c1).toBeUndefined()
   })
 
-  it('默认不动 inFlight / pendingStreamDone / streamErrors', () => {
+  it('默认不动 inFlight / streamErrors', () => {
     const s = makeState()
     clearConversationLocalState(s, 'c1')
-    // 正常一轮结束：错误要留着展示，延后的 done 要留着 flush，in-flight 由别处收
+    // 正常一轮结束：错误要留着展示，in-flight 由别处收。
+    // 延后的 done 现在由 chatRunSettlement 独占。
     expect(s.inFlight.has('c1')).toBe(true)
-    expect(s.pendingStreamDone.c1).toBeDefined()
     expect(s.streamErrors.c1).toBe('err1')
   })
 
   it('只影响目标会话，不碰其他会话', () => {
     const s = makeState()
-    clearConversationLocalState(s, 'c1', { inFlight: true, pendingStreamDone: true, streamErrors: true })
+    clearConversationLocalState(s, 'c1', { inFlight: true, streamErrors: true })
     expect(s.streamSnapshots.c2).toBeDefined()
     expect(s.pendingToolConfirms.c2).toBeDefined()
     expect(s.pendingSessionConsents.c2).toBeDefined()
     expect(s.inFlight.has('c2')).toBe(true)
-    expect(s.pendingStreamDone.c2).toBeDefined()
     expect(s.streamErrors.c2).toBe('err2')
   })
 })
@@ -59,12 +57,6 @@ describe('clearConversationLocalState scope', () => {
     expect(s.inFlight.has('c1')).toBe(false)
   })
 
-  it('pendingStreamDone=true 时丢弃延后的 done', () => {
-    const s = makeState()
-    clearConversationLocalState(s, 'c1', { pendingStreamDone: true })
-    expect(s.pendingStreamDone.c1).toBeUndefined()
-  })
-
   it('streamErrors=true 时清错误', () => {
     const s = makeState()
     clearConversationLocalState(s, 'c1', { streamErrors: true })
@@ -74,10 +66,9 @@ describe('clearConversationLocalState scope', () => {
   it('全开等价于彻底剔除该会话（dropConversationLocally 的语义）', () => {
     const s = makeState()
     clearConversationLocalState(s, 'c1', {
-      inFlight: true, pendingStreamDone: true, streamErrors: true,
+      inFlight: true, streamErrors: true,
     })
     expect(s.inFlight.has('c1')).toBe(false)
-    expect(s.pendingStreamDone.c1).toBeUndefined()
     expect(s.streamSnapshots.c1).toBeUndefined()
     expect(s.streamErrors.c1).toBeUndefined()
     expect(s.pendingToolConfirms.c1).toBeUndefined()
