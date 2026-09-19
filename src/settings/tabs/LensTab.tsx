@@ -3,7 +3,7 @@ import { Toggle, Select, Input, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
 import { ModelPairSelect } from '../ModelPairSelect'
 import { PromptField } from '../ScreenshotTranslationSettings'
-import type { I18n, Lang } from '../i18n'
+import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData } from '../../api/tauri'
 
 interface LensTabProps {

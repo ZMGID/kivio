@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { useLang } from '../../settings/public/i18n'
+import { useLang } from '../../components/i18n'
 import { Button } from '../../components/Button'
 import { Select } from '../../settings/public/controls'
 import { dataFields, insertReference, templateFields, upstreamNodes } from './workflowData'

@@ -8,7 +8,7 @@ import type { ChatMcpServer } from '../api/tauri'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { Input } from '../settings/public/controls'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import {
   applyMcpRegistryInstallConfig,
   MCP_REGISTRY_SOURCE_OPTIONS,

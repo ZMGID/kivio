@@ -3,7 +3,7 @@ import { Button } from '../../components/Button'
 import { ModelPairSelect } from '../ModelPairSelect'
 import { PromptField } from '../ScreenshotTranslationSettings'
 import { resolveModelInfo } from '../../data/modelMatching'
-import type { I18n, Lang } from '../i18n'
+import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData, ChatToolsConfig } from '../../api/tauri'
 
 interface MixerTabProps {

@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { HooksTab } from './HooksTab'
-import { i18n } from '../i18n'
+import { i18n } from '../../components/i18n'
 import type { HookDef } from '../../api/tauri'
 
 function hook(overrides: Partial<HookDef> = {}): HookDef {

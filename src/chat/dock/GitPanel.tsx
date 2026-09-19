@@ -13,7 +13,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { i18n, type Lang } from '../../settings/public/i18n'
+import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
 import { dockApi } from './api'
 import { ConfirmDialog } from './ConfirmDialog'

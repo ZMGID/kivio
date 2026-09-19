@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, type ModelProvider, type ProviderOAuthLogin } from '../api/tauri'
 import { Button } from '../components/Button'
 import { FieldBlock, Select } from './components'
-import type { Lang } from './i18n'
+import type { Lang } from '../components/i18n'
 import { ProviderAccountIdentity } from './ProviderAccountIdentity'
 
 export function ProviderOAuthPanel({ provider, lang, onUpdateProvider }: {

@@ -6,7 +6,7 @@ import {
   type CcSwitchProvider,
 } from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 
 /**
  * 从 cc-switch 导入供应商。后端只读打开它的库，这里只负责勾选和落库。

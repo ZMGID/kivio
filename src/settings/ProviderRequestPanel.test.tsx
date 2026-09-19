@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ProviderRequestPanel } from './ProviderRequestPanel'
 import { makeProvider } from './tabs/testFixtures'
-import { i18n } from './i18n'
+import { i18n } from '../components/i18n'
 
 const t = i18n.zh
 

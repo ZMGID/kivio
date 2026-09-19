@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { api, type ModelProvider, type ProviderOAuthUsage } from '../api/tauri'
 import { Button } from '../components/Button'
-import type { Lang } from './i18n'
+import type { Lang } from '../components/i18n'
 
 export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider; lang: Lang }) {
   const auth = provider.request.oauth

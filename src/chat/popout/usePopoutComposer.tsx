@@ -8,7 +8,7 @@ import {
 } from '../../api/tauri'
 import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCached } from '../../api/settingsCache'
 import { isPluginManagedServer, preservePluginManagedServers } from '../../settings/public/connectors'
-import { i18n, type Lang } from '../../settings/public/i18n'
+import { i18n, type Lang } from '../../components/i18n'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../api/chatTools'
 import { chatApi, type AgentRuntimeConfig } from '../api'
 import { insertTextIntoComposer } from '../composerInsert'

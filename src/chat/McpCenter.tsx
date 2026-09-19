@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ChevronDown, FolderOpen, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { McpIcon } from '../settings/public/icons'
-import { useLang, useT } from '../settings/public/i18n'
+import { useLang, useT } from '../components/i18n'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   api,

@@ -1,6 +1,6 @@
 import { ChatTitlebarActions } from '../ChatTitlebarActions'
 import { Button } from '../../components/Button'
-import { i18n, type Lang } from '../../settings/public/i18n'
+import { i18n, type Lang } from '../../components/i18n'
 import { chatTitlebarMacInsetClass, chatTitlebarRowClass, usesNativeTitlebar } from '../platform'
 import type { ReactNode } from 'react'
 

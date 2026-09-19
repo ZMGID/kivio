@@ -1,5 +1,5 @@
 import { useLayoutEffect, useState } from 'react'
-import { i18n, type Lang } from '../settings/public/i18n'
+import { i18n, type Lang } from '../components/i18n'
 import type { ContextClearBoundaryView } from './contextClearBoundary'
 
 interface ContextClearDividerProps {

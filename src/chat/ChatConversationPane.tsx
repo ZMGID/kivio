@@ -14,8 +14,8 @@ import type { QueuedMessage } from './hooks/useMessageQueue'
 import type { MessageListProps } from './MessageList'
 import type { ChatImageViewerItem } from './imageViewer'
 import type { ChatHookPayload } from '../api/tauri'
-import type { Lang } from '../settings/public/i18n'
-import { i18n } from '../settings/public/i18n'
+import type { Lang } from '../components/i18n'
+import { i18n } from '../components/i18n'
 
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,

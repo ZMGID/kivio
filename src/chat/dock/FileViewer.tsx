@@ -3,7 +3,7 @@
 import { memo, useEffect, useState } from 'react'
 import { VList } from 'virtua'
 import { ExternalLink, Loader2, Pencil, X } from 'lucide-react'
-import { i18n, type Lang } from '../../settings/public/i18n'
+import { i18n, type Lang } from '../../components/i18n'
 import { Button, IconButton } from '../../components/Button'
 import { highlightCode } from '../ChatMarkdown'
 import { dockApi } from './api'

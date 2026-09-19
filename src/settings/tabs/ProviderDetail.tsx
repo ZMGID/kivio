@@ -13,7 +13,7 @@ import { ProviderOAuthPanel } from '../ProviderOAuthPanel'
 import { ProviderUsageCard } from '../ProviderUsageCard'
 import { resolveModelInfo } from '../../data/modelMatching'
 import { api, isOpenCodeFree, clampedActiveKeyIndex, activeKeyIndexAfterRemove } from '../../api/tauri'
-import type { I18n, Lang } from '../i18n'
+import type { I18n, Lang } from '../../components/i18n'
 import type { ModelProvider, ProviderApiFormat } from '../../api/tauri'
 
 /** 右栏：选中供应商的端点/协议/gzip/密钥池/模型列表，以及通往「请求配置」二级页的入口。 */

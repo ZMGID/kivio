@@ -104,7 +104,7 @@ import { setExclusiveConversationIds } from '../api/chatProtocol'
 import { isPluginManagedServer, preservePluginManagedServers } from '../settings/public/connectors'
 import { OnboardingShell } from '../onboarding/public/shell'
 import type { SettingsShellHandle, SettingsTab } from '../settings/public/shell'
-import { i18n, LangContext, type Lang } from '../settings/public/i18n'
+import { i18n, LangContext, type Lang } from '../components/i18n'
 import { estimateTokens } from '../utils/tokens'
 import {
   CHAT_MIN_SIZE_COLLAPSED,
@@ -263,7 +263,7 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onClose,
   onSettingsChange,
   onReady,
-  sessionCenter,
+  renderSessionCenter,
   onRender,
 }: {
   settingsRef: Ref<SettingsShellHandle>
@@ -274,7 +274,7 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onClose: () => void
   onSettingsChange: () => void
   onReady: () => void
-  sessionCenter: ReactNode
+  renderSessionCenter: (lang: Lang) => ReactNode
   onRender: ProfilerOnRenderCallback
 }) {
   return (
@@ -293,7 +293,7 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
             onClose={onClose}
             onSettingsChange={onSettingsChange}
             onReady={onReady}
-            sessionCenter={sessionCenter}
+            renderSessionCenter={renderSessionCenter}
             renderPluginCenter={({ section, onSectionChange, lang, connectors }) => (
               <Suspense fallback={null}>
                 <PluginCenter
@@ -4280,10 +4280,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onClose={handleSettingsClose}
             onSettingsChange={handleSettingsChange}
             onReady={emitContentReady}
-            sessionCenter={
+            renderSessionCenter={(lang) => (
               <Suspense fallback={null}>
                 <SessionCenter
-                  lang={uiLang}
+                  lang={lang}
                   embedded
                   currentConversationId={currentConversation?.id}
                   generatingConversationIds={generatingConversationIds}
@@ -4293,7 +4293,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   onConversationsChanged={refreshSidebar}
                 />
               </Suspense>
-            }
+            )}
             onRender={onChatPerfProfiler}
           />
         ) : chatView === 'assistants' ? (

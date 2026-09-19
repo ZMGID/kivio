@@ -3922,7 +3922,7 @@ export const i18n = {
 export type I18n = typeof i18n[Lang]
 
 /**
- * 聊天窗口的界面语言。Chat.tsx 拿着 `uiLang` state，在它下面包一层 Provider，
+ * 应用界面语言。Chat.tsx 拿着 `uiLang` state，在它下面包一层 Provider，
  * 外壳里那二十来个组件（侧栏 / 输入栏 / 顶栏选择器 / 各类右键菜单）就用 useT() 直接取文案。
  * ponytail: 用 Context 而不是给每个组件加 `lang` prop —— 语言是全窗口一份的常量级状态，
  * 一路 prop-drill 下去要改十几处调用点且每加一个组件再改一次。默认 'zh' 兼容未包 Provider

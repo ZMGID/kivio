@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, Copy, X } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 
 type PastedTextEditorModalProps = {
   name: string

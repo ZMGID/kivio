@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, Search, Trash2, UserRound, X } from 'lucide-react'
 import { api, type ChatMcpServer } from '../api/tauri'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 import { Input } from './components'
 import { Button, IconButton } from '../components/Button'
 import type { ConnectorCatalogEntry } from './connectorCatalog'

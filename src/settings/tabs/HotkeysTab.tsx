@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { SettingRow, HotkeyInput, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
-import type { I18n } from '../i18n'
+import type { I18n } from '../../components/i18n'
 import type { HotkeyScopeKey } from '../SettingsShell'
 import type { Settings as SettingsData } from '../../api/tauri'
 import { DEFAULT_HOTKEYS } from '../hotkeyDefaults'

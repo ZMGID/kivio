@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ClipboardPaste, Copy, Redo2, Scissors, TextSelect, Undo2 } from 'lucide-react'
-import { useT } from './i18n'
+import { useT } from '../components/i18n'
 
 export type TextEditAnchor = {
   left: number

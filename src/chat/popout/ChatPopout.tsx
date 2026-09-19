@@ -10,7 +10,7 @@ import { composerGoal } from '../goalPresentation'
 import { ChatTitlebar } from '../ChatTitlebar'
 import { usesNativeTitlebar } from '../platform'
 import { IconButton } from '../../components/Button'
-import { i18n, LangContext, type Lang } from '../../settings/public/i18n'
+import { i18n, LangContext, type Lang } from '../../components/i18n'
 import {
   isClaudePlanApproval,
   isCursorPlanApproval,

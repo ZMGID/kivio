@@ -3,7 +3,7 @@
  */
 import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { LangContext } from '../settings/public/i18n'
+import { LangContext } from '../components/i18n'
 import { ChatTitlebar } from './ChatTitlebar'
 
 describe('ChatTitlebar', () => {

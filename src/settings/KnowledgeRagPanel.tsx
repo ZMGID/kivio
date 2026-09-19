@@ -6,7 +6,7 @@ import {
   type DocumentProcessingConfig,
   type KnowledgeBaseConfig,
 } from '../api/tauri'
-import { type Lang } from './i18n'
+import { type Lang } from '../components/i18n'
 import { Toggle, SettingsGroup, SliderField } from './components'
 import { DocumentProcessingPanel } from './DocumentProcessingPanel'
 import { RetrievalPanel } from './RetrievalPanel'

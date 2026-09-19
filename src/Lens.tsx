@@ -6,7 +6,7 @@ import { api, type LensStreamPayload, type LensTranslateStreamPayload, type Lens
 import { getSettingsCached, setTranslateCardSizeCached } from './api/settingsCache'
 import { ChatMarkdown } from './chat/ChatMarkdown'
 import { Button } from './components/Button'
-import { i18n, type Lang } from './settings/i18n'
+import { i18n, type Lang } from './components/i18n'
 import { isWebSearchConfigured } from './settings/webSearch'
 import { copyToClipboard } from './utils/clipboard'
 

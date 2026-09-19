@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Lang } from './i18n'
+import type { Lang } from '../components/i18n'
 
 export interface SettingsOnboardingPort {
   flush(): Promise<boolean>

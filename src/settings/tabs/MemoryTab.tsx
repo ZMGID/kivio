@@ -6,7 +6,7 @@ import {
   utf8ByteLength,
   type MemoryLayerKey,
 } from '../memoryLayers'
-import type { Lang } from '../i18n'
+import type { Lang } from '../../components/i18n'
 import type { ChatMemoryConfig } from '../../api/tauri'
 
 /**

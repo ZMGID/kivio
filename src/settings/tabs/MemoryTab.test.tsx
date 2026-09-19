@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryTab } from './MemoryTab'
-import { i18n } from '../i18n'
+import { i18n } from '../../components/i18n'
 
 const t = i18n.zh
 void t

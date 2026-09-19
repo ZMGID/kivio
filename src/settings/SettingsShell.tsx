@@ -28,7 +28,7 @@ import { useSettingsUpdateController } from './useSettingsUpdateController'
 import { useSettingsOcrDownloads } from './useSettingsOcrDownloads'
 import { useSettingsPermissions } from './useSettingsPermissions'
 import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDraftIntents'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
   AgentIcon, WebSearchIcon, PluginsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
@@ -90,7 +90,7 @@ export interface SettingsShellProps {
   /** embedded 单页模式：隐藏左侧设置导航，只显示 initialTab 对应页（如从扩展点「知识库」进入） */
   hideNav?: boolean
   /** Chat 宿主提供的领域视图；设置只决定它们出现的位置。 */
-  sessionCenter?: ReactNode
+  renderSessionCenter?: (lang: Lang) => ReactNode
   renderPluginCenter: (input: {
     section: 'plugins' | 'connectors'
     onSectionChange: (section: 'plugins' | 'connectors') => void
@@ -141,7 +141,7 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
  * 设置面板主组件（standalone / embedded 双宿主）
  */
 export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>(function SettingsShell(
-  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, sessionCenter, renderPluginCenter, renderReleaseNotes },
+  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, renderSessionCenter, renderPluginCenter, renderReleaseNotes },
   ref,
 ) {
   const onSettingsChangeRef = useRef(onSettingsChange)
@@ -1248,7 +1248,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               })
             )}
 
-            {activeTab === 'sessions' && sessionCenter}
+            {activeTab === 'sessions' && renderSessionCenter?.(lang)}
 
             {/* ===== 网络搜索标签页 ===== */}
             {activeTab === 'webSearch' && (

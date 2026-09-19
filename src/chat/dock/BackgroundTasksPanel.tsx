@@ -3,7 +3,7 @@
 import { useRef } from 'react'
 import { Bot, Square, TerminalSquare } from 'lucide-react'
 import { api, type BackgroundTaskInfo } from '../../api/tauri'
-import { i18n, type Lang } from '../../settings/public/i18n'
+import { i18n, type Lang } from '../../components/i18n'
 import { partitionTasks } from '../backgroundTasks'
 import { updateBackgroundTasks, useBackgroundTasks } from '../useBackgroundTasks'
 

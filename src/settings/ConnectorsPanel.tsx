@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Check, FolderOpen, Loader2, Trash2, X, Plus } from 'lucide-react'
 import { api, type ChatMcpServer, type ChatToolsConfig } from '../api/tauri'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 import { SettingsGroup, Input, Select } from './components'
 import { CONNECTOR_CATALOG, isPluginManagedServer, type ConnectorCatalogEntry } from './connectorCatalog'
 import {

@@ -1,5 +1,5 @@
 import type { Settings } from '../../api/tauri'
-import type { I18n } from '../../settings/public/i18n'
+import type { I18n } from '../../components/i18n'
 import { formatHotkey, getPlatform } from '../../settings/public/hotkeys'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'
 import { webSearchConfigured } from '../validation'

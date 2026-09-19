@@ -26,7 +26,7 @@ import { Input, Label, Select, SuggestInput, TextArea, Toggle } from './componen
 import { Button, IconButton } from '../components/Button'
 import type { SelectOption } from './utils'
 import { externalCliSettingsApi } from '../api/externalCliSettings'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 import type { ExternalCliProvider } from '../api/tauri'
 import {
   applyClaudePreset,

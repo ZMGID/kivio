@@ -9,7 +9,7 @@ import {
   contextSegmentGroupId,
   fullnessLabel,
 } from './contextPanel'
-import { i18n } from '../settings/public/i18n'
+import { i18n } from '../components/i18n'
 import type { ConversationContextState } from './types'
 
 describe('contextSegmentGroupId', () => {

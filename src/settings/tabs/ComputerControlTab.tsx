@@ -4,7 +4,7 @@ import { api, type ChatMcpServer, type ChatToolsConfig, type ControlToolStatus, 
 import { refreshSettings } from '../../api/settingsCache'
 import { Button } from '../../components/Button'
 import { Toggle } from '../components'
-import type { Lang } from '../i18n'
+import type { Lang } from '../../components/i18n'
 
 type NativeTool = 'cua' | 'playwright'
 type Tool = NativeTool | 'ego-lite' | 'officecli'

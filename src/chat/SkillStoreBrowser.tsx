@@ -6,7 +6,7 @@ import { Check, Download, ExternalLink, Loader2, Search, Star } from 'lucide-rea
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { Select } from '../settings/public/controls'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import {
   buildClawHubDownloadUrl,
   CLAWHUB_SORT_OPTIONS,

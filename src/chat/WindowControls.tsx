@@ -1,7 +1,7 @@
 import { useCallback, useContext } from 'react'
 import { Copy, Minus, Square, X } from 'lucide-react'
 import { api } from '../api/tauri'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import { isMac } from './platform'
 import { WindowMaximizedContext } from './windowMaximizedContext'
 

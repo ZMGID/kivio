@@ -27,7 +27,7 @@ import {
   onExternalAgentsUpdated,
 } from '../api/externalCliSettings'
 import { Input, Toggle } from './components'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 import { Button, IconButton } from '../components/Button'
 import { dshNativeDetailToProvider } from './cliNativeProviderConfigs'
 import { CliProviderModal } from './CliProviderModal'

@@ -3,7 +3,7 @@ import { api, isTauriRuntime, type ChatToolDefinition, type ModelProvider } from
 import { getSettingsCached } from '../../api/settingsCache'
 import { FieldBlock, Select } from '../../settings/public/controls'
 import { isProviderEnabled, type SelectOption } from '../../settings/public/providers'
-import { useT } from '../../settings/public/i18n'
+import { useT } from '../../components/i18n'
 import { chatApi, type DetectedExternalAgent } from '../api'
 import { AgentIcon } from '../../components/AgentIcon'
 import { normalizeAgent, toAgentData, withRuntimeKind, type NormalizedAgent } from './agentModel'

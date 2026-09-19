@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/path', () => ({
 }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 import { makeSettings, makeProvider } from './testFixtures'
-import { i18n } from '../i18n'
+import { i18n } from '../../components/i18n'
 
 const t = i18n.zh
 

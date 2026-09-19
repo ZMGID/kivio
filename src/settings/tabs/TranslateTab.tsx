@@ -1,7 +1,7 @@
 import { Select, SettingRow, SettingsGroup } from '../components'
 import { ModelPairSelect } from '../ModelPairSelect'
 import { PromptField } from '../ScreenshotTranslationSettings'
-import type { I18n, Lang } from '../i18n'
+import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData, DefaultPromptTemplates } from '../../api/tauri'
 
 interface TranslateTabProps {

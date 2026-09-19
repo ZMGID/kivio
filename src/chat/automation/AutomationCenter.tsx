@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { api, isTauriRuntime } from '../../api/tauri'
-import { useT } from '../../settings/public/i18n'
+import { useT } from '../../components/i18n'
 import { automationHash, getRouteAutomationId, setHash } from '../chatRoutes'
 import { automationApi } from './api'
 import { AutomationEditor } from './AutomationEditor'

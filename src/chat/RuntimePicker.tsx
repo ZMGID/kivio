@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Check, Brain, RefreshCw } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import { chatApi, type DetectedExternalAgent } from './api'
 import { chatTitlebarPillButtonClass } from './platform'
 import { IconButton } from '../components/Button'

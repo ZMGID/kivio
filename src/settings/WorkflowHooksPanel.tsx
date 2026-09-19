@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { packageApi } from '../api/pluginPackages'
 import { Button } from '../components/Button'
-import type { Lang } from './i18n'
+import type { Lang } from '../components/i18n'
 
 export function WorkflowHooksPanel({ lang }: { lang: Lang }) {
   const zh = lang === 'zh'

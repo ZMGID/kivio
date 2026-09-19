@@ -16,7 +16,7 @@ import {
 } from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
 import { Input, Toggle } from './components'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message

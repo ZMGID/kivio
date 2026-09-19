@@ -2,7 +2,7 @@ import { RefreshCw, Download, ExternalLink } from 'lucide-react'
 import { Toggle, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
 import type { ReactNode } from 'react'
-import type { I18n, Lang } from '../i18n'
+import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData, UpdateInfo } from '../../api/tauri'
 
 /** 应用信息：图标 / 名称 / 版本 / 开发者。 */

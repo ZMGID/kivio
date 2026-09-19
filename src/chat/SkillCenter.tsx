@@ -26,7 +26,7 @@ import {
 } from '../api/tauri'
 import { getSettingsCached, updateSettingsCached } from '../api/settingsCache'
 import { Select, Toggle } from '../settings/public/controls'
-import { useT, type I18n } from '../settings/public/i18n'
+import { useT, type I18n } from '../components/i18n'
 import { Button, IconButton } from '../components/Button'
 import { SkillStoreBrowser } from './SkillStoreBrowser'
 import { SkillIcon } from '../settings/public/icons'

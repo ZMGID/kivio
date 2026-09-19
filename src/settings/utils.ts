@@ -1,5 +1,5 @@
 import { type ModelProvider } from '../api/tauri'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 
 export type Platform = 'macos' | 'windows' | 'linux'
 

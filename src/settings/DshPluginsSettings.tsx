@@ -9,7 +9,7 @@ import {
 import { Button, IconButton } from '../components/Button'
 import { Input } from './components'
 import { dshPluginShortName } from './dshPluginNames'
-import { i18n, type Lang } from './i18n'
+import { i18n, type Lang } from '../components/i18n'
 
 type TabId = 'config' | 'list'
 

@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Brain, Check, ChevronDown } from 'lucide-react'
 import { api } from '../api/tauri'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import { chatTitlebarPillButtonClass } from './platform'
 import type { ThinkingLevel } from './types'
 

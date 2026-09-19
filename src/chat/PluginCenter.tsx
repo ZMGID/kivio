@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { i18n, LangContext, type Lang } from '../settings/public/i18n'
+import { i18n, LangContext, type Lang } from '../components/i18n'
 import { PluginPackages } from './PluginPackages'
 
 export type PluginCenterSection = 'plugins' | 'connectors'

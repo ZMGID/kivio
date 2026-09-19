@@ -1,6 +1,6 @@
 // 状态条右端的 diff 徽标：绿 +adds / 红 −dels，无改动时不渲染，点击进 Git 面板。
 // 与工具栏的 GitStatusPill 共享按工作目录缓存的快照。
-import { i18n, type Lang } from '../../settings/public/i18n'
+import { i18n, type Lang } from '../../components/i18n'
 import { useGitBadge } from './useGitBadge'
 
 type GitDiffChipProps = {

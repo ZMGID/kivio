@@ -1,5 +1,5 @@
 import { TerminalSquare } from 'lucide-react'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import { chatTitlebarIconButtonClass } from './platform'
 import { partitionTasks } from './backgroundTasks'
 import { useBackgroundTasks } from './useBackgroundTasks'

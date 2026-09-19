@@ -1,5 +1,5 @@
 import { PanelLeftClose, PanelLeftOpen, SquarePen } from 'lucide-react'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import { chatTitlebarPillIconClass } from './platform'
 
 type ChatTitlebarActionsProps = {

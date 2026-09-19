@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type ChatMemoryLayerContent, type ChatMemoryState } from '../api/tauri'
 import { MEMORY_L1_MAX_BYTES, utf8ByteLength, type MemoryLayerKey } from './memoryLayers'
-import type { Lang } from './i18n'
+import type { Lang } from '../components/i18n'
 
 export interface SettingsMemoryPort {
   get(): Promise<ChatMemoryState>

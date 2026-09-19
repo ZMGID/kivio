@@ -11,7 +11,7 @@ import {
   type RapidOcrStatus,
   type RapidOcrTier,
 } from '../api/tauri'
-import { type Lang } from './i18n'
+import { type Lang } from '../components/i18n'
 import { SettingsGroup, Select, SettingRow, Toggle, Input } from './components'
 import { Button, IconButton } from '../components/Button'
 

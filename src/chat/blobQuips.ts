@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Lang } from '../settings/public/i18n'
+import type { Lang } from '../components/i18n'
 import type { BlobMood } from './kivioBlobSim'
 
 /**

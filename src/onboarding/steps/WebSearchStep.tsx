@@ -1,6 +1,6 @@
 import type { Settings, WebSearchProviderId } from '../../api/tauri'
 import { Input, Select, Toggle } from '../../settings/public/controls'
-import type { I18n } from '../../settings/public/i18n'
+import type { I18n } from '../../components/i18n'
 import { isWebSearchConfigured, webSearchKeyField } from '../../settings/public/webSearch'
 import { OnboardingFormRow } from '../OnboardingFormRow'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'

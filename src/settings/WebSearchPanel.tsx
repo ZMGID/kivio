@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Info, Loader2, Play, SlidersHorizontal } from 'lucide-react'
 import { api, type Settings, type WebSearchMcpAuth, type WebSearchProviderId } from '../api/tauri'
-import type { I18n, Lang } from './i18n'
+import type { I18n, Lang } from '../components/i18n'
 import { Input, Select, SettingRow, SettingsGroup, TextArea, Toggle } from './components'
 import { Button } from '../components/Button'
 import { isProviderConfigured, providerSupportsFetch, resolvedFetchProvider } from './webSearch'

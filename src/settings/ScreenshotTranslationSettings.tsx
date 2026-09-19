@@ -13,7 +13,7 @@ import {
   TextArea,
   Toggle,
 } from './components'
-import { type I18n } from './i18n'
+import { type I18n } from '../components/i18n'
 
 type ScreenshotTranslation = Settings['screenshotTranslation']
 type RapidOcrDownloadState = 'idle' | 'downloading' | 'failed'

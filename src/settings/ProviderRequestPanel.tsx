@@ -15,7 +15,7 @@ import {
   type ProviderCustomHeader,
 } from './providerRequest'
 import { promptCachingSupported, type PromptCacheRetention } from '../api/tauri'
-import type { I18n, Lang } from './i18n'
+import type { I18n, Lang } from '../components/i18n'
 import type { ModelProvider, ProviderRequestConfig } from '../api/tauri'
 
 const RETENTION_OPTIONS: PromptCacheRetention[] = ['none', 'short', 'long']

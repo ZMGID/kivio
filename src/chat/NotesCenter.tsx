@@ -20,7 +20,7 @@ import '@milkdown/crepe/theme/frame.css'
 import { api, isTauriRuntime, type Note, type NoteMeta } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { workspaceActivity } from './dock/workspaceActivity'
-import { useLang, useT } from '../settings/public/i18n'
+import { useLang, useT } from '../components/i18n'
 
 const SAVE_DEBOUNCE_MS = 800
 

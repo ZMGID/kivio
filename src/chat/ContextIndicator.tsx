@@ -10,7 +10,7 @@ import {
   fullnessLabel,
   segmentTokens,
 } from './contextPanel'
-import { i18n, type I18n, type Lang } from '../settings/public/i18n'
+import { i18n, type I18n, type Lang } from '../components/i18n'
 import { formatTokensK } from '../utils/tokens'
 import type { ConversationContextState } from './types'
 

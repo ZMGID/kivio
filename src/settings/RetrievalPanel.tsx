@@ -1,7 +1,7 @@
 // 知识库「检索」设置：检索模式（混合/纯向量）+ 权重 + 上下文 TopK + 重排 +
 // 折叠的「高级」（候选池 / 送重排数 / 相关性阈值）。统一用 SettingsGroup idiom。
 import { type ModelProvider, type KnowledgeBaseConfig } from '../api/tauri'
-import { type Lang } from './i18n'
+import { type Lang } from '../components/i18n'
 import { SettingsGroup, Input, Select, SettingRow, SliderField } from './components'
 
 const DEFAULT: KnowledgeBaseConfig = {

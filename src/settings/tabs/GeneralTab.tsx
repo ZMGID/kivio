@@ -4,7 +4,7 @@ import { Toggle, Select, Input, SettingRow, SettingsGroup, PermissionItem } from
 import { Button } from '../../components/Button'
 import { THEME_COLOR_PRESETS } from '../../themeColors'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from '../uiFont'
-import type { I18n, Lang } from '../i18n'
+import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData, PermissionStatus } from '../../api/tauri'
 
 /**

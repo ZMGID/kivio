@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { IconButton } from '../../components/Button'
-import { useT } from '../../settings/public/i18n'
+import { useT } from '../../components/i18n'
 import { catalogGroups, type NodeCatalogEntry } from './nodeCatalog'
 
 export function AddNodePicker({

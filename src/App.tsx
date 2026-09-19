@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { api, isTauriRuntime } from './api/tauri'
 import { getSettingsCached } from './api/settingsCache'
-import { i18n, type Lang } from './settings/i18n'
+import { i18n, type Lang } from './components/i18n'
 import { useWindowInteractionFocus } from './api/windowFocus'
 import { ChatWindowHost } from './chat/ChatWindowHost'
 import {

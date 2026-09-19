@@ -1,5 +1,5 @@
 import type { ChatProject, ChatSet, ConversationLibrarySort, ConversationListItem } from '../types'
-import type { I18n } from '../../settings/public/i18n'
+import type { I18n } from '../../components/i18n'
 
 /** Unix seconds → 侧栏行尾短龄（`2m` / `13h` / `3d` / `3/12`），中英共用。 */
 export function formatCompactAge(sec: number, nowSec = Math.floor(Date.now() / 1000)): string {

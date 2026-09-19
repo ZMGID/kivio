@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { BarChart3, Globe } from 'lucide-react'
 import { useCloseAnimation } from './useCloseAnimation'
-import { i18n, type Lang } from '../settings/public/i18n'
+import { i18n, type Lang } from '../components/i18n'
 import { api } from '../api/tauri'
 import { formatTokensCompact } from '../utils/tokens'
 

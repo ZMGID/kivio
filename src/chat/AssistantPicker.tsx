@@ -3,7 +3,7 @@
 // 弹层贴按钮、紧凑宽度，不再铺满输入框。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Award, Check, CircleOff, Settings2 } from 'lucide-react'
-import { useT } from '../settings/public/i18n'
+import { useT } from '../components/i18n'
 import { chatApi } from './api'
 import { api } from '../api/tauri'
 import { builtinAssistantGlyph } from './assistantIcons'

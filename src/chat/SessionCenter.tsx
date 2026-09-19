@@ -40,7 +40,7 @@ import type {
 import { conversationMarkdownFilename } from './conversationExport'
 import { IconButton, Button } from '../components/Button'
 import { Select, Toggle } from '../settings/public/controls'
-import { useT, type Lang } from '../settings/public/i18n'
+import { useT, type Lang } from '../components/i18n'
 import {
   conversationOwnerLabel,
   dayBucket,

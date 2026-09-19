@@ -31,7 +31,7 @@ import { Input, Select } from '../settings/public/controls'
 import { KnowledgeIcon } from '../settings/public/icons'
 import { resolveModelInfo } from '../data/modelMatching'
 import { KnowledgeRagPanel } from '../settings/public/knowledge'
-import { useLang, useT } from '../settings/public/i18n'
+import { useLang, useT } from '../components/i18n'
 import { RetrievalTestPanel } from './RetrievalTestPanel'
 import {
   kbCreateLibrary,
