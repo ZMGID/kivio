@@ -5,6 +5,7 @@ import type { HistoryItem } from './types'
 
 const ask = vi.fn()
 const sendToChat = vi.fn()
+const sendHistoryToChat = vi.fn()
 const registerAnnotatedImage = vi.fn()
 const composeAnnotatedImage = vi.fn()
 
@@ -17,6 +18,7 @@ vi.mock('../api/tauri', () => ({ api: {
   lensReadImage: () => new Promise(() => {}),
   lensAsk: (...args: unknown[]) => ask(...args),
   lensSendToChat: (...args: unknown[]) => sendToChat(...args),
+  lensSendHistoryToChat: (...args: unknown[]) => sendHistoryToChat(...args),
   lensRegisterAnnotatedImage: (...args: unknown[]) => registerAnnotatedImage(...args),
   lensCommitImageToHistory: async () => {},
   lensDeleteHistoryImage: async () => {},
@@ -38,6 +40,7 @@ describe('Lens content transitions', () => {
     localStorage.clear()
     ask.mockReset()
     sendToChat.mockReset()
+    sendHistoryToChat.mockReset()
     registerAnnotatedImage.mockReset()
     composeAnnotatedImage.mockReset()
   })
@@ -90,6 +93,41 @@ describe('Lens content transitions', () => {
     await act(async () => { await result.current.handoff({ question: 'Send me', close }) })
     expect(result.current.conversation.view).toMatchObject({ stage: 'ready', streaming: false })
     expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('retries only native close after an accepted history handoff', async () => {
+    sendHistoryToChat.mockResolvedValue({ success: true })
+    const close = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const { result } = renderHook(() => useLensContentController({ initialMode: 'chat' }))
+    act(() => {
+      const opening = result.current.beginOpening()
+      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
+      result.current.captureImage('image-1')
+      result.current.conversation.showStage('ready')
+    })
+    const history = [{ role: 'user' as const, content: 'Question' }, { role: 'assistant' as const, content: 'Answer' }]
+    await act(async () => { await result.current.handoff({ history, close }) })
+    expect(result.current.conversation.view).toMatchObject({ stage: 'ready', streaming: false })
+    await act(async () => { await result.current.handoff({ history, close }) })
+    expect(sendHistoryToChat).toHaveBeenCalledOnce()
+    expect(sendHistoryToChat).toHaveBeenCalledWith('image-1', history)
+    expect(close).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not resend a single accepted handoff when closing is retried', async () => {
+    sendToChat.mockResolvedValue({ success: true })
+    const close = vi.fn().mockResolvedValue(false)
+    const { result } = renderHook(() => useLensContentController({ initialMode: 'chat' }))
+    act(() => {
+      const opening = result.current.beginOpening()
+      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
+      result.current.conversation.showStage('ready')
+    })
+    await act(async () => { await result.current.handoff({ question: 'Send me', close }) })
+    await act(async () => { await result.current.handoff({ question: 'Send me', close }) })
+    expect(sendToChat).toHaveBeenCalledOnce()
+    expect(close).toHaveBeenCalledTimes(2)
+    expect(result.current.conversation.view).toMatchObject({ stage: 'ready', streaming: false })
   })
 
   it('does not roll back a newer opening if old native close fails late', async () => {

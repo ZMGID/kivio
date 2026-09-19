@@ -35,6 +35,8 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
   const history = useLensHistory()
   const [identity, setIdentity] = useState(() => emptyContent(options.initialMode))
   const current = useRef(identity)
+  const deliveredHandoffOpening = useRef<number | null>(null)
+  const retryingHandoffClose = useRef(false)
   const lastChatStreamEvent = useRef('')
   const owners = useRef({ conversation, selection, annotation, translation, session })
   owners.current = { conversation, selection, annotation, translation, session }
@@ -47,6 +49,8 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
   const imagePreview = identity.preview.url || capturedPreview
 
   const beginOpening = useCallback(() => {
+    deliveredHandoffOpening.current = null
+    retryingHandoffClose.current = false
     publish(previous => ({ ...previous, preparing: false, completed: false }))
     return owners.current.session.beginOpening()
   }, [publish])
@@ -68,6 +72,8 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
   }, [publish])
 
   const hide = useCallback(() => {
+    deliveredHandoffOpening.current = null
+    retryingHandoffClose.current = false
     const owner = owners.current
     owner.session.resetForHide()
     publish(previous => emptyContent(previous.mode))
@@ -78,6 +84,8 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
   }, [publish])
 
   const restoreHistory = useCallback((item: HistoryItem) => {
+    deliveredHandoffOpening.current = null
+    retryingHandoffClose.current = false
     const owner = owners.current
     return owner.session.restoreSession(() => {
       publish(previous => ({
@@ -222,9 +230,32 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
     }
   }, [adoptAnnotatedImage, beginAnswer, finishAnswer, imagePreview, prepareSend, releaseSendPreparation])
 
-  const handoff = useCallback(async (intent: { question: string; close: () => Promise<boolean | void> }) => {
+  const handoff = useCallback(async (intent: (
+    | { question: string; history?: never }
+    | { history: Pick<ExplainMessage, 'role' | 'content'>[]; question?: never }
+  ) & { close: () => Promise<boolean | void> }) => {
     const owner = owners.current
     if (current.current.preparing || owner.conversation.view.streaming) return
+    const opening = owner.session.currentOpening()
+    if (deliveredHandoffOpening.current === opening) {
+      // The backend accepted this handoff, but native hide failed. A second click
+      // retries only the close; sending again would enqueue duplicate content.
+      if (retryingHandoffClose.current) return
+      retryingHandoffClose.current = true
+      owner.conversation.setBusy(true)
+      try {
+        const closed = await intent.close()
+        if (closed === false && owner.session.isOpeningCurrent(opening)) owner.conversation.handoffFailed()
+      } catch (error) {
+        if (owner.session.isOpeningCurrent(opening)) {
+          console.error('[lens-chat] close after accepted handoff failed:', error)
+          owner.conversation.handoffFailed()
+        }
+      } finally {
+        retryingHandoffClose.current = false
+      }
+      return
+    }
     const image = current.current.imageId
     const preview = imagePreview
     const arrows = owner.annotation.view.arrows
@@ -243,7 +274,7 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
             adoptAnnotatedImage(registered.imageId, `data:image/png;base64,${base64}`)
             owner.session.finishRequest(token)
             token = prepareSend('handoff')
-            owner.annotation.clearSubmitted()
+            if (intent.question !== undefined) owner.annotation.clearSubmitted()
           } else {
             console.warn('[lens-arrow] register annotated image failed:', registered.error)
           }
@@ -252,7 +283,9 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
         }
       }
       if (!owner.session.isRequestCurrent(token)) return
-      const reply = await api.lensSendToChat(effectiveImageId || '', intent.question)
+      const reply = intent.question !== undefined
+        ? await api.lensSendToChat(effectiveImageId || '', intent.question)
+        : await api.lensSendHistoryToChat(effectiveImageId || '', intent.history)
       if (!owner.session.isRequestCurrent(token)) return
       if (!reply.success) {
         console.error('[lens-chat] send failed:', reply.error)
@@ -261,6 +294,7 @@ export function useLensContentController(options: LensSessionCoordinatorOptions 
         return
       }
       owner.session.finishRequest(token)
+      deliveredHandoffOpening.current = token.open
       const closed = await intent.close()
       if (closed === false && owner.session.isRequestLatest(token)) owner.conversation.handoffFailed()
     } catch (error) {

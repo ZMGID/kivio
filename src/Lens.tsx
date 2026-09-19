@@ -135,14 +135,13 @@ export default function Lens() {
   const {
     conversation, selection, annotation, mode, imagePreview, history,
     beginOpening, open: openContent, hide: hideContent, restoreHistory: restoreContentHistory,
-    captureImage, adoptAnnotatedImage, currentImageId, beginTextTranslation,
-    prepareSend, releaseSendPreparation, isPreparingSend,
+    captureImage, currentImageId, beginTextTranslation,
+    isPreparingSend,
     ask, handoff, receiveChatStream, receiveChatWebSearch, cancelAnswer,
   } = content
   const { stage, appLabel, input, selectionText, messages, streaming, copied } = conversation.view
   const {
     showStage, capture: showCapturedConversation, editInput, selectText,
-    setBusy,
     showCopied,
   } = conversation
   const { windows, hovered, dragStart, dragCurrent, dragging, pendingCapture, capturedFrame, showCaptureHint } = selection.view
@@ -1410,49 +1409,7 @@ export default function Lens() {
       .filter(m => m.content.trim().length > 0)
       .map(m => ({ role: m.role, content: m.content }))
     if (history.length === 0) return
-    setBusy(true)
-    let requestToken = prepareSend('handoff')
-    try {
-      let effectiveImageId = currentImageId()
-      if (arrows.length > 0 && imagePreview && capturedFrame) {
-        try {
-          const base64 = await composeAnnotatedImage(
-            imagePreview,
-            arrows,
-            capturedFrame.width,
-            capturedFrame.height,
-          )
-          const result = await api.lensRegisterAnnotatedImage(base64)
-          if (!isRequestCurrent(requestToken)) return
-          if (result.success && result.imageId) {
-            effectiveImageId = result.imageId
-            adoptAnnotatedImage(result.imageId)
-            finishRequest(requestToken)
-            requestToken = prepareSend('handoff')
-          }
-        } catch (err) {
-          console.warn('[lens-chat] compose annotated image failed, fallback to original:', err)
-        }
-      }
-      if (!isRequestCurrent(requestToken)) return
-      const result = await api.lensSendHistoryToChat(effectiveImageId || '', history)
-      if (!isRequestCurrent(requestToken)) return
-      if (!result.success) {
-        console.error('[lens-chat] continue-in-chat failed:', result.error)
-        finishRequest(requestToken)
-        setBusy(false)
-        return
-      }
-      finishRequest(requestToken)
-      await closeAfterReset()
-    } catch (err) {
-      if (!isRequestCurrent(requestToken)) return
-      console.error('[lens-chat] continue-in-chat handoff failed:', err)
-      finishRequest(requestToken)
-      setBusy(false)
-    } finally {
-      releaseSendPreparation(requestToken)
-    }
+    await handoff({ history, close: closeAfterReset })
   }
 
   // ====== screenshot 标注模式：合成 + 复制 / 保存 ======
