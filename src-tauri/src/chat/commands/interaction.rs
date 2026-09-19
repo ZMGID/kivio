@@ -11,17 +11,50 @@ use crate::state::AppState;
 
 use super::catalog::strip_transcripts_for_frontend;
 
-/// 取走外部入口排队给 Chat 前端发送的消息。
+/// 认领外部入口排队给 Chat 前端发送的消息；成功处理后必须逐条 ack。
 #[tauri::command]
 pub(crate) fn chat_take_external_sends(
     state: State<'_, AppState>,
+    owner_id: String,
 ) -> Result<serde_json::Value, String> {
-    let requests = state.take_chat_external_sends();
+    let batch = state.chat_external_send_mailbox().claim_all(&owner_id);
 
     Ok(serde_json::json!({
         "success": true,
-        "requests": requests,
+        "requests": batch.requests,
+        "pendingLeased": batch.pending_leased,
     }))
+}
+
+#[tauri::command]
+pub(crate) fn chat_ack_external_send(
+    state: State<'_, AppState>,
+    owner_id: String,
+    request_id: String,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "success": state.chat_external_send_mailbox().ack(&owner_id, &request_id),
+    }))
+}
+
+#[tauri::command]
+pub(crate) fn chat_renew_external_sends(
+    state: State<'_, AppState>,
+    owner_id: String,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "success": true,
+        "renewed": state.chat_external_send_mailbox().renew(&owner_id),
+    }))
+}
+
+#[tauri::command]
+pub(crate) fn chat_release_external_sends(
+    state: State<'_, AppState>,
+    owner_id: String,
+) -> Result<serde_json::Value, String> {
+    state.chat_external_send_mailbox().release(&owner_id);
+    Ok(serde_json::json!({ "success": true }))
 }
 
 #[tauri::command]

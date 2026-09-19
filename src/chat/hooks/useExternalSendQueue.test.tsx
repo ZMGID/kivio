@@ -1,14 +1,23 @@
 import { renderHook, act } from '@testing-library/react'
+import { StrictMode, useEffect } from 'react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { useExternalSendQueue } from './useExternalSendQueue'
 import { api } from '../../api/tauri'
 import type { Conversation } from '../types'
 
 vi.mock('../../api/tauri', () => ({
-  api: { chatTakeExternalSends: vi.fn() },
+  api: {
+    chatTakeExternalSends: vi.fn(),
+    chatAckExternalSend: vi.fn(),
+    chatReleaseExternalSends: vi.fn(),
+    chatRenewExternalSends: vi.fn(),
+  },
 }))
 
 const mockTake = vi.mocked(api.chatTakeExternalSends)
+const mockAck = vi.mocked(api.chatAckExternalSend)
+const mockRelease = vi.mocked(api.chatReleaseExternalSends)
+const mockRenew = vi.mocked(api.chatRenewExternalSends)
 
 /**
  * 回归重点：
@@ -36,6 +45,12 @@ const partialConversation = {
 beforeEach(() => {
   mockTake.mockReset()
   mockTake.mockResolvedValue({ success: true, requests: [] } as never)
+  mockAck.mockReset()
+  mockAck.mockResolvedValue({ success: true })
+  mockRelease.mockReset()
+  mockRelease.mockResolvedValue({ success: true })
+  mockRenew.mockReset()
+  mockRenew.mockResolvedValue({ success: true, renewed: 1 })
 })
 
 afterEach(() => { vi.useRealTimers() })
@@ -57,6 +72,7 @@ describe('useExternalSendQueue 基本流转', () => {
     await act(async () => { await result.current.drainExternalSends() })
     expect(onEnterConversationView).toHaveBeenCalled()
     expect(onSendMessage).toHaveBeenCalledWith('你好', [], expect.objectContaining({ forceNewConversation: true }))
+    expect(mockAck).toHaveBeenCalledWith(expect.any(String), 'r1')
   })
 
   it('带 messages 的请求走 import 而非 send', async () => {
@@ -86,8 +102,10 @@ describe('useExternalSendQueue 基本流转', () => {
 
     await act(async () => { await result.current.drainExternalSends() })
     expect(onImportConversation).toHaveBeenCalledTimes(1)
+    expect(mockAck).not.toHaveBeenCalled()
     await act(async () => { await result.current.wakeAfterRun() })
     expect(onImportConversation).toHaveBeenCalledTimes(2)
+    expect(mockAck).toHaveBeenCalledWith(expect.any(String), 'history-retry')
   })
 
   it('附件映射：无 path 的被过滤，name/type 有兜底', async () => {
@@ -113,6 +131,143 @@ describe('useExternalSendQueue 基本流转', () => {
 })
 
 describe('useExternalSendQueue 单飞与重排', () => {
+  it('StrictMode 旧 cleanup 的延迟 release 不会释放新 setup 的认领', async () => {
+    let finishRelease!: () => void
+    mockRelease.mockImplementationOnce(() => new Promise((resolve) => {
+      finishRelease = () => resolve({ success: true })
+    }))
+    const onEnterConversationView = vi.fn()
+    const onImportConversation = vi.fn().mockResolvedValue(true)
+    const onSendMessage = vi.fn().mockResolvedValue(true)
+    const onError = vi.fn()
+    const { result, rerender, unmount } = renderHook(() => useExternalSendQueue({
+      onEnterConversationView, onImportConversation, onSendMessage, onError,
+    }), { wrapper: StrictMode })
+
+    expect(mockRelease).toHaveBeenCalledTimes(1)
+    const drain = result.current.drainExternalSends
+    const wake = result.current.wakeAfterRun
+    rerender()
+    expect(result.current.drainExternalSends).toBe(drain)
+    expect(result.current.wakeAfterRun).toBe(wake)
+    await act(async () => { await result.current.drainExternalSends() })
+    expect(mockTake.mock.calls[0][0]).not.toBe(mockRelease.mock.calls[0][0])
+    finishRelease()
+    unmount()
+  })
+
+  it('StrictMode 首次 setup 的迟到 take 不进入第二次 setup 的发送', async () => {
+    let finishTake!: (value: unknown) => void
+    mockTake
+      .mockImplementationOnce(() => new Promise((resolve) => { finishTake = resolve }) as never)
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'new-owner', content: 'new' }] } as never)
+      .mockResolvedValue({ success: true, requests: [] } as never)
+    const onEnterConversationView = vi.fn()
+    const onImportConversation = vi.fn().mockResolvedValue(true)
+    const onSendMessage = vi.fn().mockResolvedValue(true)
+    const onError = vi.fn()
+    let started = false
+    let firstDrain!: Promise<void>
+    const { result, unmount } = renderHook(() => {
+      const queue = useExternalSendQueue({ onEnterConversationView, onImportConversation, onSendMessage, onError })
+      const { drainExternalSends } = queue
+      useEffect(() => {
+        if (!started) {
+          started = true
+          firstDrain = drainExternalSends()
+        }
+      }, [drainExternalSends])
+      return queue
+    }, { wrapper: StrictMode })
+
+    finishTake({ success: true, requests: [{ id: 'old-owner', content: 'old' }] })
+    await act(async () => { await firstDrain })
+    expect(onSendMessage).not.toHaveBeenCalled()
+    await act(async () => { await result.current.drainExternalSends() })
+    expect(onSendMessage.mock.calls.map((call) => call[0])).toEqual(['new'])
+    unmount()
+  })
+
+  it('窗口卸载后未确认的请求由新窗口重新认领，旧窗口不确认', async () => {
+    mockTake
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'handoff', content: 'X' }] } as never)
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'handoff', content: 'X' }] } as never)
+      .mockResolvedValue({ success: true, requests: [] } as never)
+    let finishOld!: (accepted: boolean) => void
+    const old = setup()
+    old.onSendMessage.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+
+    const pending = old.result.current.drainExternalSends()
+    await Promise.resolve()
+    expect(old.onSendMessage).toHaveBeenCalledTimes(1)
+    old.unmount()
+    expect(mockRelease).toHaveBeenCalledTimes(1)
+    finishOld(false)
+    await pending
+    expect(mockAck).not.toHaveBeenCalled()
+
+    const reopened = setup()
+    await act(async () => { await reopened.result.current.drainExternalSends() })
+    expect(reopened.onSendMessage).toHaveBeenCalledTimes(1)
+    expect(mockAck).toHaveBeenCalledWith(expect.any(String), 'handoff')
+    expect(mockAck.mock.calls[0][0]).not.toBe(mockRelease.mock.calls[0][0])
+    reopened.unmount()
+  })
+
+  it('发送已成功而确认暂时失败时只重试确认，不再次发送', async () => {
+    mockTake
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'ack-retry', content: 'X' }] } as never)
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'ack-retry', content: 'X' }] } as never)
+      .mockResolvedValue({ success: true, requests: [] } as never)
+    mockAck.mockRejectedValueOnce(new Error('ack unavailable'))
+    const { result, onSendMessage, onError, unmount } = setup()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await act(async () => { await result.current.drainExternalSends() })
+    expect(onError).toHaveBeenCalledWith('ack unavailable')
+    await act(async () => { await result.current.wakeAfterRun() })
+    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    expect(mockAck).toHaveBeenCalledTimes(2)
+    error.mockRestore()
+    unmount()
+  })
+
+  it('长时间发送期间续租，卸载后停止续租', async () => {
+    vi.useFakeTimers()
+    mockTake.mockResolvedValueOnce({ success: true, requests: [{ id: 'long-run', content: 'X' }] } as never)
+    let finish!: (accepted: boolean) => void
+    const { result, onSendMessage, unmount } = setup()
+    onSendMessage.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+
+    const pending = result.current.drainExternalSends()
+    await Promise.resolve()
+    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(mockRenew).toHaveBeenCalledWith(expect.any(String))
+    const renewals = mockRenew.mock.calls.length
+    unmount()
+    finish(false)
+    await pending
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(mockRenew).toHaveBeenCalledTimes(renewals)
+  })
+
+  it('旧窗口释放未到达时，新窗口持续重试租约后可取到原请求', async () => {
+    vi.useFakeTimers()
+    mockTake
+      .mockResolvedValueOnce({ success: true, requests: [], pendingLeased: true } as never)
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'leased', content: 'X' }], pendingLeased: false } as never)
+      .mockResolvedValue({ success: true, requests: [], pendingLeased: false } as never)
+    const { result, onSendMessage, unmount } = setup()
+
+    await act(async () => { await result.current.drainExternalSends() })
+    expect(onSendMessage).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    expect(mockAck).toHaveBeenCalledWith(expect.any(String), 'leased')
+    unmount()
+  })
+
   it('卸载期间 take 才失败，不会在 finally 重新挂定时器', async () => {
     vi.useFakeTimers()
     let rejectTake!: (error: Error) => void
@@ -211,6 +366,7 @@ describe('useExternalSendQueue 单飞与重排', () => {
 
   it('发送被拒时请求留在队首，下次重试', async () => {
     mockTake
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'r4', content: 'X', attachments: [] }] } as never)
       .mockResolvedValueOnce({ success: true, requests: [{ id: 'r4', content: 'X', attachments: [] }] } as never)
       .mockResolvedValue({ success: true, requests: [] } as never)
     const { result, onSendMessage } = setup()

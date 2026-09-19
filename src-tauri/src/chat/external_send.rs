@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -28,12 +29,28 @@ pub struct PendingChatExternalSend {
     pub messages: Vec<PendingChatExternalMessage>,
 }
 
-/// One-shot handoff mailbox from external entry points to the Chat renderer.
-/// Enqueue happens before opening the window; a failed open rolls back only the
-/// matching request. Taking atomically drains the mailbox exactly once.
+const LEASE_DURATION: Duration = Duration::from_secs(30);
+
+struct Lease {
+    owner_id: String,
+    expires_at: Instant,
+}
+
+struct MailboxEntry {
+    request: PendingChatExternalSend,
+    lease: Option<Lease>,
+}
+
+pub(crate) struct ClaimBatch {
+    pub(crate) requests: Vec<PendingChatExternalSend>,
+    pub(crate) pending_leased: bool,
+}
+
+/// In-process handoff mailbox. Requests stay here until the renderer acknowledges
+/// delivery. A renderer release or an expired lease makes unfinished work claimable.
 #[derive(Default)]
 pub(crate) struct ChatExternalSendMailbox {
-    pending: Mutex<Vec<PendingChatExternalSend>>,
+    pending: Mutex<Vec<MailboxEntry>>,
 }
 
 impl ChatExternalSendMailbox {
@@ -41,7 +58,10 @@ impl ChatExternalSendMailbox {
         self.pending
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .push(request);
+            .push(MailboxEntry {
+                request,
+                lease: None,
+            });
     }
 
     pub(crate) fn rollback(&self, request_id: &str) -> bool {
@@ -50,16 +70,102 @@ impl ChatExternalSendMailbox {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let before = pending.len();
-        pending.retain(|request| request.id != request_id);
+        pending.retain(|entry| entry.request.id != request_id);
         pending.len() != before
     }
 
-    pub(crate) fn take_all(&self) -> Vec<PendingChatExternalSend> {
+    pub(crate) fn claim_all(&self, owner_id: &str) -> ClaimBatch {
+        self.claim_all_at(owner_id, Instant::now())
+    }
+
+    fn claim_all_at(&self, owner_id: &str, now: Instant) -> ClaimBatch {
         let mut pending = self
             .pending
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        std::mem::take(&mut *pending)
+        let mut requests = Vec::new();
+        let mut pending_leased = false;
+        for entry in pending.iter_mut() {
+            if entry
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.expires_at <= now)
+            {
+                entry.lease = None;
+            }
+            if entry.lease.is_none() {
+                entry.lease = Some(Lease {
+                    owner_id: owner_id.to_owned(),
+                    expires_at: now + LEASE_DURATION,
+                });
+                requests.push(entry.request.clone());
+            } else if entry
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.owner_id != owner_id)
+            {
+                pending_leased = true;
+            }
+        }
+        ClaimBatch {
+            requests,
+            pending_leased,
+        }
+    }
+
+    pub(crate) fn ack(&self, owner_id: &str, request_id: &str) -> bool {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let before = pending.len();
+        pending.retain(|entry| {
+            entry.request.id != request_id
+                || entry
+                    .lease
+                    .as_ref()
+                    .is_none_or(|lease| lease.owner_id != owner_id)
+        });
+        pending.len() != before
+    }
+
+    pub(crate) fn renew(&self, owner_id: &str) -> usize {
+        self.renew_at(owner_id, Instant::now())
+    }
+
+    fn renew_at(&self, owner_id: &str, now: Instant) -> usize {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut renewed = 0;
+        for entry in pending.iter_mut() {
+            if let Some(lease) = entry
+                .lease
+                .as_mut()
+                .filter(|lease| lease.owner_id == owner_id)
+            {
+                lease.expires_at = now + LEASE_DURATION;
+                renewed += 1;
+            }
+        }
+        renewed
+    }
+
+    pub(crate) fn release(&self, owner_id: &str) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for entry in pending.iter_mut() {
+            if entry
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.owner_id == owner_id)
+            {
+                entry.lease = None;
+            }
+        }
     }
 }
 
@@ -77,12 +183,12 @@ mod tests {
     }
 
     #[test]
-    fn take_is_atomic_and_one_shot() {
+    fn claims_are_exclusive_until_acknowledged() {
         let mailbox = ChatExternalSendMailbox::default();
         mailbox.enqueue(request("a"));
         mailbox.enqueue(request("b"));
 
-        let taken = mailbox.take_all();
+        let taken = mailbox.claim_all("renderer").requests;
         assert_eq!(
             taken
                 .iter()
@@ -90,7 +196,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a", "b"]
         );
-        assert!(mailbox.take_all().is_empty());
+        assert!(mailbox.claim_all("other").requests.is_empty());
+        assert!(mailbox.ack("renderer", "a"));
+        assert!(mailbox.ack("renderer", "b"));
+        assert!(mailbox.claim_all("other").requests.is_empty());
     }
 
     #[test]
@@ -101,6 +210,80 @@ mod tests {
 
         assert!(mailbox.rollback("failed"));
         assert!(!mailbox.rollback("missing"));
-        assert_eq!(mailbox.take_all()[0].id, "keep");
+        assert_eq!(mailbox.claim_all("renderer").requests[0].id, "keep");
+    }
+
+    #[test]
+    fn unfinished_claim_survives_renderer_release_and_new_renderer_can_ack_it() {
+        let mailbox = ChatExternalSendMailbox::default();
+        mailbox.enqueue(request("handoff"));
+
+        assert_eq!(mailbox.claim_all("old").requests[0].id, "handoff");
+        assert!(mailbox.claim_all("new").requests.is_empty());
+        mailbox.release("old");
+        assert_eq!(mailbox.claim_all("new").requests[0].id, "handoff");
+        assert!(!mailbox.ack("old", "handoff"));
+        assert!(mailbox.ack("new", "handoff"));
+        assert!(mailbox.claim_all("third").requests.is_empty());
+    }
+
+    #[test]
+    fn late_release_from_old_renderer_does_not_clear_new_renderer_lease() {
+        let mailbox = ChatExternalSendMailbox::default();
+        mailbox.enqueue(request("handoff"));
+
+        assert_eq!(mailbox.claim_all("old").requests.len(), 1);
+        mailbox.release("old");
+        assert_eq!(mailbox.claim_all("new").requests.len(), 1);
+        mailbox.release("old");
+        assert!(mailbox.claim_all("third").requests.is_empty());
+        assert!(mailbox.ack("new", "handoff"));
+    }
+
+    #[test]
+    fn abandoned_claim_recovers_when_release_cannot_be_delivered() {
+        let mailbox = ChatExternalSendMailbox::default();
+        mailbox.enqueue(request("handoff"));
+        let start = Instant::now();
+
+        assert_eq!(mailbox.claim_all_at("closed", start).requests.len(), 1);
+        assert!(mailbox
+            .claim_all_at(
+                "reopened",
+                start + LEASE_DURATION - Duration::from_millis(1)
+            )
+            .requests
+            .is_empty());
+        assert_eq!(
+            mailbox
+                .claim_all_at("reopened", start + LEASE_DURATION)
+                .requests[0]
+                .id,
+            "handoff"
+        );
+    }
+
+    #[test]
+    fn active_renderer_renews_lease_during_a_long_send() {
+        let mailbox = ChatExternalSendMailbox::default();
+        mailbox.enqueue(request("long-run"));
+        let start = Instant::now();
+
+        assert_eq!(mailbox.claim_all_at("active", start).requests.len(), 1);
+        assert_eq!(
+            mailbox.renew_at("active", start + Duration::from_secs(20)),
+            1
+        );
+        assert!(mailbox
+            .claim_all_at("other", start + Duration::from_secs(31))
+            .requests
+            .is_empty());
+        assert_eq!(
+            mailbox
+                .claim_all_at("other", start + Duration::from_secs(50))
+                .requests[0]
+                .id,
+            "long-run"
+        );
     }
 }

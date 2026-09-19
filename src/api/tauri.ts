@@ -2150,12 +2150,24 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<string>('hotkey-warning', (payload) => listener(payload))
   },
-  chatTakeExternalSends: () => {
+  chatTakeExternalSends: (ownerId: string) => {
     if (!isTauriRuntime()) {
-      return Promise.resolve({ success: true, requests: [] as ChatExternalSendRequest[] })
+      return Promise.resolve({ success: true, requests: [] as ChatExternalSendRequest[], pendingLeased: false })
     }
-    return invoke<{ success: boolean; requests: ChatExternalSendRequest[]; error?: string | null }>('chat_take_external_sends')
+    return invoke<{ success: boolean; requests: ChatExternalSendRequest[]; pendingLeased: boolean; error?: string | null }>('chat_take_external_sends', { ownerId })
   },
+  chatAckExternalSend: (ownerId: string, requestId: string) =>
+    isTauriRuntime()
+      ? invoke<{ success: boolean }>('chat_ack_external_send', { ownerId, requestId })
+      : Promise.resolve({ success: true }),
+  chatRenewExternalSends: (ownerId: string) =>
+    isTauriRuntime()
+      ? invoke<{ success: boolean; renewed: number }>('chat_renew_external_sends', { ownerId })
+      : Promise.resolve({ success: true, renewed: 0 }),
+  chatReleaseExternalSends: (ownerId: string) =>
+    isTauriRuntime()
+      ? invoke<{ success: boolean }>('chat_release_external_sends', { ownerId })
+      : Promise.resolve({ success: true }),
   chatMcpListTools: (cachedOnly = false) =>
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null; discoveryPending?: boolean }>('chat_mcp_list_tools', { cachedOnly }),
   computerControlCheck: (tool: 'cua' | 'playwright') =>

@@ -109,7 +109,7 @@ impl AppState {
         &self.request_debug
     }
     /// External entrypoint -> Chat renderer handoff. Request ownership remains
-    /// in the mailbox until the renderer atomically takes it or startup fails.
+    /// in the mailbox until the renderer acknowledges it or startup fails.
     pub(crate) fn enqueue_chat_external_send(
         &self,
         request: crate::chat::external_send::PendingChatExternalSend,
@@ -121,10 +121,10 @@ impl AppState {
         self.pending_chat_external_sends.rollback(request_id)
     }
 
-    pub(crate) fn take_chat_external_sends(
+    pub(crate) fn chat_external_send_mailbox(
         &self,
-    ) -> Vec<crate::chat::external_send::PendingChatExternalSend> {
-        self.pending_chat_external_sends.take_all()
+    ) -> &crate::chat::external_send::ChatExternalSendMailbox {
+        &self.pending_chat_external_sends
     }
 
     #[cfg(debug_assertions)]

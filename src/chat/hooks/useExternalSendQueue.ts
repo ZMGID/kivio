@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef } from 'react'
 import { api, type ChatExternalSendRequest } from '../../api/tauri'
 import type { Conversation, PendingAttachment } from '../types'
 
+let ownerSequence = 0
+function nextOwnerId(): string {
+  ownerSequence += 1
+  return `chat-external-${Date.now()}-${ownerSequence}-${Math.random().toString(36).slice(2)}`
+}
+
 interface UseExternalSendQueueParams {
   /** 取到消息后先切回会话视图。 */
   onEnterConversationView: () => void
@@ -41,10 +47,15 @@ export function useExternalSendQueue({
   onError,
 }: UseExternalSendQueueParams) {
   const queueRef = useRef<ChatExternalSendRequest[]>([])
+  const ownerIdRef = useRef<string | null>(null)
+  if (ownerIdRef.current === null) ownerIdRef.current = nextOwnerId()
+  const mountEpochRef = useRef(0)
+  const deliveredRef = useRef<Set<string>>(new Set())
   const processingRef = useRef(false)
   const requestedRef = useRef(false)
   const partialByRequestRef = useRef(new Map<string, Conversation>())
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const retryDelayRef = useRef(100)
   const disposedRef = useRef(false)
 
@@ -53,7 +64,10 @@ export function useExternalSendQueue({
   callbacksRef.current = { onEnterConversationView, onImportConversation, onSendMessage, onError }
 
   const drainExternalSends = useCallback(async () => {
-    if (disposedRef.current) return
+    const ownerId = ownerIdRef.current
+    const mountEpoch = mountEpochRef.current
+    const stale = () => disposedRef.current || mountEpochRef.current !== mountEpoch
+    if (!ownerId || stale()) return
     if (retryTimerRef.current !== null) {
       window.clearTimeout(retryTimerRef.current)
       retryTimerRef.current = null
@@ -68,8 +82,8 @@ export function useExternalSendQueue({
       do {
         requestedRef.current = false
 
-        const result = await api.chatTakeExternalSends()
-        if (disposedRef.current) return
+        const result = await api.chatTakeExternalSends(ownerId)
+        if (stale()) return
         if (!result.success) {
           const error = 'error' in result && typeof result.error === 'string'
             ? result.error
@@ -78,11 +92,42 @@ export function useExternalSendQueue({
         }
         const requests = result.requests ?? []
         if (requests.length > 0) {
-          queueRef.current.push(...requests)
+          const knownIds = new Set(queueRef.current.map((request) => request.id))
+          queueRef.current.push(...requests.filter((request) => !knownIds.has(request.id)))
+          if (queueRef.current.length > 0 && heartbeatRef.current === null) {
+            heartbeatRef.current = window.setInterval(() => {
+              if (stale()) return
+              void api.chatRenewExternalSends(ownerId).catch((error) => {
+                if (!stale()) console.error('Failed to renew external Chat messages:', error)
+              })
+            }, 10_000)
+          }
         }
 
         const request = queueRef.current[0]
-        if (!request) continue
+        if (!request) {
+          if (result.pendingLeased) {
+            requestedRef.current = true
+            break
+          }
+          continue
+        }
+        if (deliveredRef.current.has(request.id)) {
+          const acknowledged = await api.chatAckExternalSend(ownerId, request.id)
+          if (stale()) return
+          if (!acknowledged.success) {
+            // A later owner already claimed it, or it was acknowledged elsewhere.
+            queueRef.current.shift()
+            deliveredRef.current.delete(request.id)
+            partialByRequestRef.current.delete(request.id)
+            continue
+          }
+          queueRef.current.shift()
+          deliveredRef.current.delete(request.id)
+          partialByRequestRef.current.delete(request.id)
+          retryDelayRef.current = 100
+          continue
+        }
         callbacksRef.current.onEnterConversationView()
         const attachmentPaths = (request.attachments ?? [])
           .map((attachment) => attachment.path)
@@ -91,13 +136,12 @@ export function useExternalSendQueue({
         // 历史预置分支：把 Lens 完整多轮历史 + 截图搬成一个新会话（不发消息、不触发回复），落地末尾可续聊。
         if (request.messages && request.messages.length > 0) {
           const imported = await callbacksRef.current.onImportConversation(request.messages, attachmentPaths)
-          if (disposedRef.current) return
+          if (stale()) return
           if (!imported) {
             requestedRef.current = true
             break
           }
-          queueRef.current.shift()
-          retryDelayRef.current = 100
+          deliveredRef.current.add(request.id)
           continue
         }
 
@@ -116,36 +160,40 @@ export function useExternalSendQueue({
             forceNewConversation: true,
             conversationOverride: partialByRequestRef.current.get(request.id),
             onPartialConversation: (conversation) => {
-              partialByRequestRef.current.set(request.id, conversation)
+              if (!stale()) partialByRequestRef.current.set(request.id, conversation)
             },
           },
         )
-        if (disposedRef.current) return
+        if (stale()) return
         if (accepted) {
-          partialByRequestRef.current.delete(request.id)
-          queueRef.current.shift()
-          retryDelayRef.current = 100
+          deliveredRef.current.add(request.id)
         } else {
           requestedRef.current = true
           break
         }
       } while (requestedRef.current || queueRef.current.length > 0)
     } catch (err) {
-      if (disposedRef.current) return
+      if (stale()) return
       console.error('Failed to process external Chat message:', err)
       requestedRef.current = true
       callbacksRef.current.onError(
         typeof err === 'string' ? err : (err as Error).message || '外部消息发送失败',
       )
     } finally {
-      processingRef.current = false
-      if (!disposedRef.current && requestedRef.current) {
-        const delay = retryDelayRef.current
-        retryDelayRef.current = Math.min(delay * 2, 5000)
-        retryTimerRef.current = window.setTimeout(() => {
-          retryTimerRef.current = null
-          void drainExternalSends()
-        }, delay)
+      if (!stale()) {
+        processingRef.current = false
+        if (queueRef.current.length === 0 && heartbeatRef.current !== null) {
+          window.clearInterval(heartbeatRef.current)
+          heartbeatRef.current = null
+        }
+        if (requestedRef.current) {
+          const delay = retryDelayRef.current
+          retryDelayRef.current = Math.min(delay * 2, 5000)
+          retryTimerRef.current = window.setTimeout(() => {
+            retryTimerRef.current = null
+            void drainExternalSends()
+          }, delay)
+        }
       }
     }
   }, [])
@@ -158,13 +206,33 @@ export function useExternalSendQueue({
   }, [drainExternalSends])
 
   useEffect(() => {
+    if (ownerIdRef.current === null) ownerIdRef.current = nextOwnerId()
+    const ownerId = ownerIdRef.current
+    const delivered = deliveredRef.current
+    const partial = partialByRequestRef.current
+    mountEpochRef.current += 1
     disposedRef.current = false
     return () => {
+      mountEpochRef.current += 1
       disposedRef.current = true
+      ownerIdRef.current = null
+      queueRef.current = []
+      delivered.clear()
+      partial.clear()
+      processingRef.current = false
+      requestedRef.current = false
+      retryDelayRef.current = 100
       if (retryTimerRef.current !== null) {
         window.clearTimeout(retryTimerRef.current)
         retryTimerRef.current = null
       }
+      if (heartbeatRef.current !== null) {
+        window.clearInterval(heartbeatRef.current)
+        heartbeatRef.current = null
+      }
+      void api.chatReleaseExternalSends(ownerId).catch((error) => {
+        console.error('Failed to release external Chat messages:', error)
+      })
     }
   }, [])
 
