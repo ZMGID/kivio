@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type {
   AdditionalDirectory,
   AgentRuntimeConfig,
@@ -57,30 +57,22 @@ export function useComposerDraft(initial: ComposerDraftInitial) {
     }))
   }, [])
 
-  return {
-    value,
+  // 一包稳定的 setter：整体传给下游 hook 时不必逐个列依赖，身份也不随 value 变。
+  const setters = useMemo(() => ({
     setProviderModel,
     resetConversationContext,
-    setProviderId: useCallback((next: string) => update('providerId', next), [update]),
-    setModel: useCallback((next: string) => update('model', next), [update]),
-    setKnowledgeBaseIds: useCallback((next: string[]) => update('knowledgeBaseIds', next), [update]),
-    setForceKnowledgeSearch: useCallback((next: boolean) => update('forceKnowledgeSearch', next), [update]),
-    setAdditionalDirectories: useCallback(
-      (next: AdditionalDirectory[]) => update('additionalDirectories', next),
-      [update],
-    ),
-    setThinkingLevel: useCallback(
-      (next: ThinkingLevel | null) => update('thinkingLevel', next),
-      [update],
-    ),
-    setWebSearchMode: useCallback(
-      (next: WebSearchMode | undefined) => update('webSearchMode', next),
-      [update],
-    ),
-    setReplyModels: useCallback((next: ModelRef[]) => update('replyModels', next), [update]),
-    setAgentRuntime: useCallback(
-      (next: AgentRuntimeConfig) => update('agentRuntime', next),
-      [update],
-    ),
-  }
+    setProviderId: (next: string) => update('providerId', next),
+    setModel: (next: string) => update('model', next),
+    setKnowledgeBaseIds: (next: string[]) => update('knowledgeBaseIds', next),
+    setForceKnowledgeSearch: (next: boolean) => update('forceKnowledgeSearch', next),
+    setAdditionalDirectories: (next: AdditionalDirectory[]) => update('additionalDirectories', next),
+    setThinkingLevel: (next: ThinkingLevel | null) => update('thinkingLevel', next),
+    setWebSearchMode: (next: WebSearchMode | undefined) => update('webSearchMode', next),
+    setReplyModels: (next: ModelRef[]) => update('replyModels', next),
+    setAgentRuntime: (next: AgentRuntimeConfig) => update('agentRuntime', next),
+  }), [resetConversationContext, setProviderModel, update])
+
+  return { value, setters, ...setters }
 }
+
+export type ComposerDraftSetters = ReturnType<typeof useComposerDraft>['setters']

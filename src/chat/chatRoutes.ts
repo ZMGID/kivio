@@ -79,6 +79,19 @@ export function setHash(next: string): void {
   }
 }
 
+/** 扩展中心页导航高亮：只跟当前 view 走，设置页不算。 */
+export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations'
+
+export function extensionsNavItemForView(chatView: string): ChatExtensionsNavItem | null {
+  if (chatView === 'assistants') return 'assistants'
+  if (chatView === 'skill') return 'skill'
+  if (chatView === 'mcp') return 'mcp'
+  if (chatView === 'knowledge') return 'knowledge'
+  if (chatView === 'notes') return 'notes'
+  if (chatView === 'automations') return 'automations'
+  return null
+}
+
 export function conversationHash(conversationId: string | null): string {
   return conversationId ? `#${encodeChatRouteId('chat/', conversationId)}` : '#chat'
 }

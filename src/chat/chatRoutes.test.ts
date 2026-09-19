@@ -7,6 +7,7 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import {
   conversationHash,
+  extensionsNavItemForView,
   getRouteAutomationId,
   getRouteConversationId,
   hashPath,
@@ -168,5 +169,19 @@ describe('setHash / conversationHash', () => {
     setHash('#chat')
     window.removeEventListener('hashchange', onChange)
     expect(fired).toBe(0)
+  })
+})
+
+describe('extensionsNavItemForView', () => {
+  it('maps center views to the extensions nav item and ignores the rest', () => {
+    expect(extensionsNavItemForView('assistants')).toBe('assistants')
+    expect(extensionsNavItemForView('skill')).toBe('skill')
+    expect(extensionsNavItemForView('mcp')).toBe('mcp')
+    expect(extensionsNavItemForView('knowledge')).toBe('knowledge')
+    expect(extensionsNavItemForView('notes')).toBe('notes')
+    expect(extensionsNavItemForView('automations')).toBe('automations')
+    expect(extensionsNavItemForView('settings')).toBeNull()
+    expect(extensionsNavItemForView('conversation')).toBeNull()
+    expect(extensionsNavItemForView('onboarding')).toBeNull()
   })
 })

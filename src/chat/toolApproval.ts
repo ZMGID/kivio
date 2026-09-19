@@ -1,4 +1,5 @@
 import type { ChatToolConfirmPayload } from '../api/tauri'
+import type { ApprovalAction } from './ApprovalCard'
 
 /** 工具名 → 自然语言动词。`path` 表示操作对象是文件路径（标题里只显示文件名）。 */
 const TOOL_APPROVAL_VERBS: Record<string, { verb: string; path?: boolean }> = {
@@ -56,3 +57,64 @@ export const PLAN_APPROVAL_ACTIONS: { label: string; mode: string }[] = [
   { label: '批准，逐步确认', mode: 'default' },
   { label: '批准并自动放行', mode: 'bypassPermissions' },
 ]
+
+export interface ToolApprovalActionPorts {
+  /** 回答后端；resolve 为 true 表示答复已被接受（不是被撤销 / 过期）。 */
+  resolve: (approved: boolean, always?: boolean, permissionMode?: string | null) => Promise<boolean>
+  /** 计划类批准附带一个沙盒档位：答复被接受后把它写进会话运行时。 */
+  persistSandbox: (mode: string) => Promise<void> | void
+}
+
+const PRIMARY_HINT = 'Ctrl+↵'
+
+/**
+ * 审批卡按钮组。三种形态：
+ * - 计划批准（exitplanmode / create_plan）：拒绝 + 每个放行档位一个按钮，批准后落沙盒档位；
+ * - 进入计划模式（enterplanmode）：不用 / 总是允许 / 进入，批准后落 `plan`；
+ * - 普通工具：拒绝 / 总是允许 / 允许一次。
+ * 最后一个按钮永远是 primary + Ctrl+↵。
+ */
+export function buildToolApprovalActions(
+  payload: ChatToolConfirmPayload,
+  submitting: boolean,
+  ports: ToolApprovalActionPorts,
+): ApprovalAction[] {
+  const approveThenPersist = (mode: string, always = false, permissionMode: string | null = null) => {
+    void ports.resolve(true, always, permissionMode).then((accepted) => {
+      if (accepted) return ports.persistSandbox(mode)
+    })
+  }
+  if (isPlanApproval(payload)) {
+    return [
+      { label: '拒绝 / 让它改', disabled: submitting, onSelect: () => { void ports.resolve(false) } },
+      ...PLAN_APPROVAL_ACTIONS.map((action, index) => {
+        const last = index === PLAN_APPROVAL_ACTIONS.length - 1
+        return {
+          label: action.label,
+          primary: last,
+          hint: last ? PRIMARY_HINT : undefined,
+          disabled: submitting,
+          onSelect: () => approveThenPersist(action.mode, false, action.mode),
+        }
+      }),
+    ]
+  }
+  if (isEnterPlanApproval(payload)) {
+    return [
+      { label: '不用，直接做', disabled: submitting, onSelect: () => { void ports.resolve(false) } },
+      { label: '总是允许', disabled: submitting, onSelect: () => approveThenPersist('plan', true) },
+      {
+        label: '进入计划模式',
+        primary: true,
+        hint: PRIMARY_HINT,
+        disabled: submitting,
+        onSelect: () => approveThenPersist('plan'),
+      },
+    ]
+  }
+  return [
+    { label: '拒绝', disabled: submitting, onSelect: () => { void ports.resolve(false) } },
+    { label: '总是允许', disabled: submitting, onSelect: () => { void ports.resolve(true, true) } },
+    { label: '允许一次', primary: true, hint: PRIMARY_HINT, disabled: submitting, onSelect: () => { void ports.resolve(true) } },
+  ]
+}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, type Dispatch, type SetStateAction } from 'react'
 import {
   conversationHash,
   getRouteConversationId,
@@ -14,6 +14,7 @@ import {
   isChatSettingsPath,
   isChatSkillCenterPath,
   setHash,
+  type ChatExtensionsNavItem,
 } from '../chatRoutes'
 
 type ChatView =
@@ -34,13 +35,19 @@ interface UseChatRoutingParams {
   onOpenPluginsSettings?: () => void
   /** 旧 `#chat/sessions` 入口：对话库已迁入设置，重定向到设置 → 对话库。 */
   onOpenSessionsSettings?: () => void
+  /** 设置页初始 tab；openEmbeddedSettings 写入。 */
+  setSettingsInitialTab: (tab: SettingsOpenTab) => void
+  /** 扩展 nav 选中项；openExtensionsItem 写入。 */
+  setExtensionsNavItem: Dispatch<SetStateAction<ChatExtensionsNavItem | null>>
 }
+
+type SettingsOpenTab = 'chat' | 'plugins' | 'sessions' | 'usage'
 
 /**
  * 聊天窗口的 hash 路由。
  *
- * 对外只写 view 与会话加载两件事，不持有任何自己的状态 —— 这是 Chat.tsx 里
- * 边界最干净的一簇，故作为抽 hook 的第一步。
+ * 对外写 view / 会话加载，以及中心页 opener（setView + syncXxxRoute）。
+ * 不持有自己的 state；settings tab 与扩展 nav 的 setter 由页面注入。
  *
  * 时序保持与搬迁前一致：挂载时立刻 loadFromRoute() 一次，再订阅 hashchange。
  */
@@ -52,6 +59,8 @@ export function useChatRouting({
   currentConversationIdRef,
   onOpenPluginsSettings,
   onOpenSessionsSettings,
+  setSettingsInitialTab,
+  setExtensionsNavItem,
 }: UseChatRoutingParams) {
   const syncConversationRoute = useCallback((conversationId: string | null) => {
     if (!conversationId) onLeaveConversation()
@@ -153,6 +162,77 @@ export function useChatRouting({
     onViewChange,
   ])
 
+  const openEmbeddedSettings = useCallback((tab: SettingsOpenTab = 'chat') => {
+    setSettingsInitialTab(tab)
+    onViewChange('settings')
+    syncSettingsRoute()
+  }, [onViewChange, setSettingsInitialTab, syncSettingsRoute])
+
+  const openChatSettings = useCallback(() => {
+    openEmbeddedSettings('chat')
+  }, [openEmbeddedSettings])
+
+  const openAssistantCenter = useCallback(() => {
+    onViewChange('assistants')
+    syncAssistantCenterRoute()
+  }, [onViewChange, syncAssistantCenterRoute])
+
+  const openSkillCenter = useCallback(() => {
+    onViewChange('skill')
+    syncSkillCenterRoute()
+  }, [onViewChange, syncSkillCenterRoute])
+
+  const openMcpCenter = useCallback(() => {
+    onViewChange('mcp')
+    syncMcpCenterRoute()
+  }, [onViewChange, syncMcpCenterRoute])
+
+  const openKnowledgeCenter = useCallback(() => {
+    onViewChange('knowledge')
+    syncKnowledgeCenterRoute()
+  }, [onViewChange, syncKnowledgeCenterRoute])
+
+  const openNotesCenter = useCallback(() => {
+    onViewChange('notes')
+    syncNotesRoute()
+  }, [onViewChange, syncNotesRoute])
+
+  const openAutomationsCenter = useCallback(() => {
+    onViewChange('automations')
+    syncAutomationsRoute()
+  }, [onViewChange, syncAutomationsRoute])
+
+  const openExtensionsItem = useCallback((item: ChatExtensionsNavItem) => {
+    setExtensionsNavItem(item)
+    if (item === 'assistants') {
+      openAssistantCenter()
+      return
+    }
+    if (item === 'skill') {
+      openSkillCenter()
+      return
+    }
+    if (item === 'mcp') {
+      openMcpCenter()
+      return
+    }
+    if (item === 'knowledge') {
+      openKnowledgeCenter()
+      return
+    }
+    if (item === 'notes') {
+      openNotesCenter()
+      return
+    }
+    if (item === 'automations') {
+      openAutomationsCenter()
+      return
+    }
+  }, [
+    openAssistantCenter, openSkillCenter, openMcpCenter, openKnowledgeCenter,
+    openNotesCenter, openAutomationsCenter, setExtensionsNavItem,
+  ])
+
   return {
     syncConversationRoute,
     syncSettingsRoute,
@@ -163,5 +243,14 @@ export function useChatRouting({
     syncKnowledgeCenterRoute,
     syncNotesRoute,
     syncAutomationsRoute,
+    openEmbeddedSettings,
+    openChatSettings,
+    openAssistantCenter,
+    openSkillCenter,
+    openMcpCenter,
+    openKnowledgeCenter,
+    openNotesCenter,
+    openAutomationsCenter,
+    openExtensionsItem,
   }
 }

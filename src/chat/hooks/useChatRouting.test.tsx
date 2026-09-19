@@ -27,6 +27,8 @@ function setup(initialHash = '#chat', opts?: {
   const onLeaveConversation = vi.fn(opts?.onLeaveConversation)
   const onOpenPluginsSettings = opts?.onOpenPluginsSettings ?? vi.fn()
   const onOpenSessionsSettings = opts?.onOpenSessionsSettings ?? vi.fn()
+  const setSettingsInitialTab = vi.fn()
+  const setExtensionsNavItem = vi.fn()
 
   const rendered = renderHook(() => {
     const currentConversationIdRef = useRef<string | null>(null)
@@ -38,6 +40,8 @@ function setup(initialHash = '#chat', opts?: {
       onOpenPluginsSettings,
       onOpenSessionsSettings,
       onLeaveConversation,
+      setSettingsInitialTab,
+      setExtensionsNavItem,
     })
     return { routing, currentConversationIdRef }
   })
@@ -50,6 +54,8 @@ function setup(initialHash = '#chat', opts?: {
     onOpenPluginsSettings,
     onOpenSessionsSettings,
     onLeaveConversation,
+    setSettingsInitialTab,
+    setExtensionsNavItem,
   }
 }
 
@@ -253,5 +259,34 @@ describe('useChatRouting sync*Route', () => {
     expect(window.location.hash).toBe('#chat/conv-2')
     act(() => { r.syncConversationRoute(null) })
     expect(window.location.hash).toBe('#chat')
+  })
+})
+
+describe('useChatRouting center openers', () => {
+  beforeEach(() => {
+    window.location.hash = '#chat'
+  })
+
+  it('openEmbeddedSettings writes the tab, view, and settings hash', () => {
+    const { result, onViewChange, setSettingsInitialTab } = setup('#chat')
+    act(() => { result.current.routing.openEmbeddedSettings('usage') })
+    expect(setSettingsInitialTab).toHaveBeenCalledWith('usage')
+    expect(onViewChange).toHaveBeenCalledWith('settings')
+    expect(window.location.hash).toBe('#chat/settings')
+  })
+
+  it('openChatSettings is openEmbeddedSettings(chat)', () => {
+    const { result, setSettingsInitialTab } = setup('#chat')
+    act(() => { result.current.routing.openChatSettings() })
+    expect(setSettingsInitialTab).toHaveBeenCalledWith('chat')
+    expect(window.location.hash).toBe('#chat/settings')
+  })
+
+  it('openExtensionsItem records the nav item and opens that center', () => {
+    const { result, onViewChange, setExtensionsNavItem } = setup('#chat')
+    act(() => { result.current.routing.openExtensionsItem('mcp') })
+    expect(setExtensionsNavItem).toHaveBeenCalledWith('mcp')
+    expect(onViewChange).toHaveBeenCalledWith('mcp')
+    expect(window.location.hash).toBe('#chat/mcp')
   })
 })
