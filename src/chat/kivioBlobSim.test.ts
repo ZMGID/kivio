@@ -293,8 +293,8 @@ describe('kivioBlobSim', () => {
     sim.setMood('idle', 0)
     for (let t = 0; t <= 30000; t += 50) sim.sample(t)
     expect(seen.length).toBeGreaterThan(0)
-    expect(seen.every((k) => k === 'egg' || k === 'hop')).toBe(true)
-    expect(seen).toContain('egg')
+    expect(seen.every((k) => k === 'bean' || k === 'hop')).toBe(true)
+    expect(seen).toContain('bean')
   })
 
   it('reduced motion 下身体永远是圆、脸不变形', () => {

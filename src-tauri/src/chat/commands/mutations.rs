@@ -914,12 +914,14 @@ pub(crate) async fn chat_delete_conversation(
         "Sub-agent cleanup is still pending; retry deletion after it ends".to_string()
     })??;
     // 删对话即终止其持久外部 CLI 会话（actor 关闭子进程）并清掉跨重启 resume 句柄。
-    state.remove_external_live_session(&conversation_id);
+    state.external_live_sessions().remove(&conversation_id);
     crate::external_agents::session::clear_live_handle(&app, &conversation_id);
     // 该对话起的后台命令也一并收掉。它们本来只在退出应用时统一清（跨轮存活是有意的），
     // 但一个还在跑的 dev server 会把 cwd 钉在对话工作区里，Windows 上直接导致工作区
     // 删不掉。删对话时这些进程已经没有归属，先杀掉再清目录。
-    let killed = state.kill_background_commands_for_conversation(&conversation_id);
+    let killed = state
+        .background_commands_handle()
+        .kill_for_conversation(&conversation_id);
     if killed > 0 {
         eprintln!("Deleted conversation {conversation_id}: killed {killed} background command(s)");
     }
@@ -1272,9 +1274,11 @@ pub(crate) async fn chat_bulk_delete_conversations(
         }
         // 与单条删除一致：外部 CLI 会话 / 后台命令 / 运行态小 map 都先清，
         // 否则工作区被占着时副产物清理会失败，用户体感「删不掉」。
-        state.remove_external_live_session(&conversation_id);
+        state.external_live_sessions().remove(&conversation_id);
         crate::external_agents::session::clear_live_handle(&app, &conversation_id);
-        let killed = state.kill_background_commands_for_conversation(&conversation_id);
+        let killed = state
+            .background_commands_handle()
+            .kill_for_conversation(&conversation_id);
         if killed > 0 {
             eprintln!(
                 "Bulk-deleted conversation {conversation_id}: killed {killed} background command(s)"

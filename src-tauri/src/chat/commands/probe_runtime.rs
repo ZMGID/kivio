@@ -260,7 +260,8 @@ fn schedule_probe_cancel(app: &AppHandle, conversation_id: &str, delay: Duration
             loop {
                 let active = app
                     .state::<AppState>()
-                    .has_chat_active_generation(&conversation_id);
+                    .chat_runtime()
+                    .has_active_generation(&conversation_id);
                 if active {
                     return;
                 }

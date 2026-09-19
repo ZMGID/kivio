@@ -58,7 +58,10 @@ impl<'a> ChatSendReservation<'a> {
     /// 尝试预留某会话的发送哨兵。返回 None 表示该会话已有 run 在跑（busy）。
     pub(super) fn try_acquire(state: &'a AppState, conversation_id: &str) -> Option<Self> {
         let run_id = format!("chat-send-reservation-{}", Uuid::new_v4());
-        if !state.try_reserve_chat_send(conversation_id, &run_id) {
+        if !state
+            .chat_runtime()
+            .try_reserve_send(conversation_id, &run_id)
+        {
             return None;
         }
         Some(Self {
@@ -72,7 +75,8 @@ impl<'a> ChatSendReservation<'a> {
 impl Drop for ChatSendReservation<'_> {
     fn drop(&mut self) {
         self.state
-            .end_chat_reply(&self.conversation_id, &self.run_id);
+            .chat_runtime()
+            .end_reply(&self.conversation_id, &self.run_id);
     }
 }
 
@@ -94,7 +98,10 @@ impl<'a> ChatReplyGuard<'a> {
         run_id: &str,
         generation: u64,
     ) -> Option<Self> {
-        if !state.try_begin_chat_reply(conversation_id, run_id) {
+        if !state
+            .chat_runtime()
+            .try_begin_reply(conversation_id, run_id)
+        {
             return None;
         }
         Some(Self {
@@ -108,7 +115,7 @@ impl<'a> ChatReplyGuard<'a> {
 
 impl Drop for ChatReplyGuard<'_> {
     fn drop(&mut self) {
-        self.state.finish_chat_reply_generation(
+        self.state.chat_runtime().finish_reply_generation(
             &self.conversation_id,
             &self.run_id,
             self.generation,

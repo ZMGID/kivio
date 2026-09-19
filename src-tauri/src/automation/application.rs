@@ -74,7 +74,8 @@ trait AutomationActivityPort {
 
 impl AutomationActivityPort for AppState {
     fn chat_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.is_chat_generation_active(conversation_id, generation)
+        self.chat_runtime()
+            .is_generation_active(conversation_id, generation)
     }
 
     fn automation_run_active(&self, automation_id: &str, run_id: &str) -> bool {
@@ -235,7 +236,8 @@ impl AgentHost for WorkflowAgentHost {
     fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
         self.app
             .state::<AppState>()
-            .is_chat_generation_active(conversation_id, generation)
+            .chat_runtime()
+            .is_generation_active(conversation_id, generation)
     }
 
     fn wait_for_generation_inactive<'a>(
@@ -397,8 +399,10 @@ async fn run_builtin_agent_node(
         })?;
 
     let conversation_id = workspace::conversation_id(automation_id);
-    state.grant_chat_consent(&conversation_id);
-    let generation = state.next_chat_generation(&conversation_id);
+    state
+        .chat_interactions()
+        .grant_session_consent(&conversation_id);
+    let generation = state.chat_runtime().begin_generation(&conversation_id);
     let message_id = format!("auto-msg-{run_id}");
 
     let catalog = crate::mcp::registry::list_enabled_tool_catalog(app, state).await;
@@ -532,7 +536,9 @@ async fn run_builtin_agent_node(
     };
 
     let outcome = run_agent_loop(config, &host, &executor).await;
-    state.end_chat_generation(&conversation_id, generation);
+    state
+        .chat_runtime()
+        .end_generation(&conversation_id, generation);
     match outcome {
         Ok(result) => {
             let text = if result.content.trim().is_empty() {

@@ -714,7 +714,7 @@ pub(super) async fn compute_context_state(
                         })
                 });
         let cached_models = model_cache_key.as_deref().and_then(|cache_key| {
-            state.get_cached_external_agent_models(
+            state.external_discovery().get_cached_external_agent_models(
                 cache_key,
                 EXTERNAL_AGENT_MODELS_CACHE_TTL,
                 EXTERNAL_AGENT_MODELS_FALLBACK_TTL,

@@ -472,7 +472,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       }
 
       if (e.key === 'Escape') {
-        handleCloseRequest()
+        handleCloseRequest({ waitForSave: false })
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
         if (hasUnsavedChanges) void persistSettingsNow()
@@ -937,7 +937,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         <nav className="settings-embedded-nav-list settings-embedded-nav-list--footer">
           <button
             type="button"
-            onClick={() => handleCloseRequest()}
+            onClick={() => handleCloseRequest({ waitForSave: false })}
             className="settings-embedded-back"
             title={lang === 'zh' ? '返回对话' : 'Back to chat'}
             data-tauri-drag-region="false"

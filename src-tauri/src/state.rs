@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -159,6 +158,12 @@ impl AppState {
         &self.chat_interactions
     }
 
+    pub(crate) fn external_live_sessions(
+        &self,
+    ) -> &crate::external_agents::session::live::LiveSessionRegistry {
+        &self.external_live_sessions
+    }
+
     /// 集中构造点：`lib.rs::run` 的 `app.manage`、`new_headless`、以及测试用 `test_app_state`
     /// 三处唯一的差异只有 `settings` / `usage_dir` / `http` 与两个 OCR 客户端；其余字段全是
     /// 同样的空默认值。这里统一构造，三处只提供差异字段，避免同一份 ~40 行字面量重复三次。
@@ -312,167 +317,18 @@ impl AppState {
         &self.lens_runtime
     }
 
-    /// 选择一个可用的 API Key 索引：
-    /// 优先返回 active_key_idx 记录的 idx；若它在冷却中或已被试过，退回到下一个非冷却 idx；
-    /// 全部冷却或 tried 已穷举时返回 None（调用方决定是否报错）。
-    pub fn pick_active_key(
-        &self,
-        provider_id: &str,
-        total: usize,
-        tried: &HashSet<usize>,
-    ) -> Option<usize> {
-        self.provider_runtime
-            .pick_active_key(provider_id, total, tried)
-    }
-
-    /// 为某个 Chat conversation 开启一轮新的可取消运行，返回本轮 generation。
-    /// 分配一个进程内从未用过的 generation 号（全局单调递增），并登记到活跃集合。
-    /// **不**作废同会话其它在跑 run —— 多模型一问多答时 N 条 run 各持自己的 generation 并存。
-    pub fn next_chat_generation(&self, conversation_id: &str) -> u64 {
-        self.chat_runtime.begin_generation(conversation_id)
-    }
-
-    /// 取消指定 conversation 的**所有**当前 Chat 运行：清空其活跃 generation 集合，
-    /// 使任何持旧 generation 的 run（含同会话并发的多模型 run）在下一个检查点判失效。
-    /// 直接移除键：空集合与无键语义等价（is_active 都判 false），且 sub-agent 每次
-    /// spawn 用一次性合成 conversation_id，留空集合会无界累积。
+    /// 取消指定 conversation 的**所有**当前 Chat 运行，并级联停止其子 agent。
+    /// 跨域编排留在组合根：generation 归 Chat runtime，子 agent 表归 SubAgentManager。
     pub fn cancel_chat_generation(&self, conversation_id: &str) {
         self.sub_agents.stop_conversation(conversation_id);
         self.chat_runtime.cancel_conversation(conversation_id);
     }
 
-    /// 单条 run 自然结束时退役其 generation（不影响同会话其它在跑 run）。
-    /// 单模型路径下集合恒只含本 run 的一个号，移除后即变空，与旧「cancel 推代号」等价。
-    /// 集合变空时移除键，防止一次性 conversation_id（sub-agent 合成会话）留下空条目。
-    pub fn end_chat_generation(&self, conversation_id: &str, generation: u64) {
-        self.chat_runtime
-            .end_generation(conversation_id, generation);
-    }
-
-    /// 该会话是否已授予文件/命令工具的会话级授权。
-    pub fn has_chat_consent(&self, conversation_id: &str) -> bool {
-        self.chat_interactions.has_session_consent(conversation_id)
-    }
-
-    /// 记录该会话已授予文件/命令工具的会话级授权(本进程内有效)。
-    pub fn grant_chat_consent(&self, conversation_id: &str) {
-        self.chat_interactions
-            .grant_session_consent(conversation_id);
-    }
-
-    /// 该对话是否已对某个工具按下过「总是允许」。工具名统一小写后比较：内置 agent 报的是
-    /// `write`，外部 CLI 报的是自己的原名（claude 的 `Write`），不归一化两边对不上。
-    pub fn has_tool_always_allow(&self, conversation_id: &str, tool_name: &str) -> bool {
-        self.chat_interactions
-            .has_tool_always_allow(conversation_id, tool_name)
-    }
-
-    /// 记录「本对话内该工具不再询问」(本进程内有效)。
-    pub fn grant_tool_always_allow(&self, conversation_id: &str, tool_name: &str) {
-        self.chat_interactions
-            .grant_tool_always_allow(conversation_id, tool_name);
-    }
-
-    /// 判断指定 conversation 的某条 Chat 运行是否仍然有效（其 generation 仍在活跃集合内）。
-    pub fn is_chat_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.chat_runtime
-            .is_generation_active(conversation_id, generation)
-    }
-
-    /// 用户在运行中插话：把消息放进该会话的 steering 信箱，等 `run_agent_loop` 轮首来取。
-    /// 返回 false = 该会话当前没有活跃 run，调用方应改走普通发送（前端队列）。
-    pub fn push_chat_steering(
-        &self,
-        conversation_id: &str,
-        message: crate::chat::agent::SteeringMessage,
-    ) -> bool {
-        self.chat_runtime.push_steering(conversation_id, message)
-    }
-
-    /// 取走该会话待注入的插话（取一次清一次）。空集合时移除键，避免无界累积。
-    pub fn take_chat_steering(
-        &self,
-        conversation_id: &str,
-    ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.chat_runtime.take_steering(conversation_id)
-    }
-
-    pub fn has_chat_pending_input(&self, conversation_id: &str) -> bool {
-        self.chat_runtime.has_pending_input(conversation_id)
-    }
-
-    pub fn has_chat_active_generation(&self, conversation_id: &str) -> bool {
-        self.chat_runtime.has_active_generation(conversation_id)
-    }
-
-    /// 用户在运行中排 follow-up：放进终答后续跑的信箱。没有活跃 run 则 false。
-    pub fn push_chat_follow_up(
-        &self,
-        conversation_id: &str,
-        message: crate::chat::agent::SteeringMessage,
-    ) -> bool {
-        self.chat_runtime.push_follow_up(conversation_id, message)
-    }
-
-    pub fn take_chat_follow_up(
-        &self,
-        conversation_id: &str,
-    ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.chat_runtime.take_follow_up(conversation_id)
-    }
-
-    pub fn set_goal_user_queue_pending(&self, conversation_id: &str, pending: bool) {
-        self.chat_runtime
-            .set_goal_user_queue_pending(conversation_id, pending);
-    }
-
-    pub fn has_goal_user_queue_pending(&self, conversation_id: &str) -> bool {
-        self.chat_runtime
-            .has_goal_user_queue_pending(conversation_id)
-    }
-
     /// 对话被删除时清理其按 conversation_id 累积的运行态痕迹：活跃 generation 集合、
-    /// 会话级工具同意标记、按工具名的「总是允许」集合。三者都严格按 conversation_id 取键，对话删除后再不会被
-    /// 引用，是最无歧义的有界清理点（不影响其它活跃对话）。generation 号本身来自进程级
-    /// 全局计数器（不分桶），无需在此清理。
+    /// 会话级工具同意标记、按工具名的「总是允许」集合。
     pub fn forget_chat_conversation_runtime(&self, conversation_id: &str) {
         self.chat_runtime.forget_conversation(conversation_id);
         self.chat_interactions.forget_conversation(conversation_id);
-    }
-
-    /// 尝试占用某个对话的某条 run 回复槽位。同会话允许多条 run 并存（多模型一问多答）；
-    /// 仅当同一 (conversation_id, run_id) 已在进行中时返回 false（防同一 run 重复进入）。
-    pub fn try_begin_chat_reply(&self, conversation_id: &str, run_id: &str) -> bool {
-        self.chat_runtime.try_begin_reply(conversation_id, run_id)
-    }
-
-    /// 原子地「检查 busy + 占用一个哨兵槽位」：在同一把锁内，若该会话已有任意 run 在跑则返回
-    /// false，否则注册 `run_id` 哨兵槽位并返回 true。命令入口用它替代「先 check 后 register」
-    /// 的两步，关闭 busy 判定与槽位注册之间的 TOCTOU 窗口（防止同会话并发发送同时通过 busy
-    /// 检查）。哨兵只占 `chat_active_replies`，不碰 `chat_active_generations`（不参与取消），
-    /// 由命令退出时 `end_chat_reply` 释放。
-    pub fn try_reserve_chat_send(&self, conversation_id: &str, run_id: &str) -> bool {
-        self.chat_runtime.try_reserve_send(conversation_id, run_id)
-    }
-
-    /// 该会话当前是否有任意一条 run 正在回复（用于「生成中拒绝新发送」的 busy 判定）。
-    pub fn conversation_has_active_reply(&self, conversation_id: &str) -> bool {
-        self.chat_runtime.has_active_reply(conversation_id)
-    }
-
-    /// 释放某个对话某条 run 的回复槽位（run 集合空了则移除该会话条目）。
-    pub fn end_chat_reply(&self, conversation_id: &str, run_id: &str) {
-        self.chat_runtime.end_reply(conversation_id, run_id);
-    }
-
-    pub(crate) fn finish_chat_reply_generation(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        generation: u64,
-    ) {
-        self.chat_runtime
-            .finish_reply_generation(conversation_id, run_id, generation);
     }
 
     fn mcp_manager(&self) -> crate::mcp::McpManager<'_> {
@@ -623,205 +479,6 @@ impl AppState {
             .set_tool_snapshot(server_id, config_fingerprint, tools);
     }
 
-    /// 斜杠命令缓存读取，TTL 随结果空/非空区分：非空命令列表用长 TTL（`full_ttl`），
-    /// 空列表（CLI 不上报任何斜杠命令 / 探测超时降级为空）用短 TTL（`empty_ttl`）做**负缓存**，
-    /// 避免切会话/切 agent 每次 useEffect 都重探（kimi 侧每探测一次即落一个空壳会话）。
-    pub fn get_cached_external_slash_commands(
-        &self,
-        cache_key: &str,
-        full_ttl: Duration,
-        empty_ttl: Duration,
-    ) -> Option<Vec<crate::external_agents::types::ExternalCliSlashCommand>> {
-        self.external_discovery
-            .get_cached_external_slash_commands(cache_key, full_ttl, empty_ttl)
-    }
-
-    pub fn set_cached_external_slash_commands(
-        &self,
-        cache_key: String,
-        commands: Vec<crate::external_agents::types::ExternalCliSlashCommand>,
-    ) {
-        self.external_discovery
-            .set_cached_external_slash_commands(cache_key, commands)
-    }
-
-    /// 读模型探测缓存：按条目来源应用不同 TTL——probed 用 `probed_ttl`，fallback 用
-    /// `fallback_ttl`（短负缓存）。任一超时视为未命中。
-    pub fn get_cached_external_agent_models(
-        &self,
-        cache_key: &str,
-        probed_ttl: Duration,
-        fallback_ttl: Duration,
-    ) -> Option<crate::external_agents::types::CachedAgentModels> {
-        self.external_discovery.get_cached_external_agent_models(
-            cache_key,
-            probed_ttl,
-            fallback_ttl,
-        )
-    }
-
-    pub fn set_cached_external_agent_models(
-        &self,
-        cache_key: String,
-        models: crate::external_agents::types::CachedAgentModels,
-    ) {
-        self.external_discovery
-            .set_cached_external_agent_models(cache_key, models)
-    }
-
-    /// 切换第三方供应商后作废该 agent 的模型探测缓存。key 形如 `agent:cwd`，
-    /// 同一个 agent 在不同工作目录下各有一条，全部要清。
-    pub fn clear_external_agent_models_cache(&self, agent_id: &str) {
-        self.external_discovery
-            .clear_external_agent_models_cache(agent_id)
-    }
-
-    /// 保存设置后整表作废（供应商可能变了，而设置保存不频繁，不值得逐 agent 比对）。
-    pub fn clear_all_external_agent_models_cache(&self) {
-        self.external_discovery
-            .clear_all_external_agent_models_cache()
-    }
-
-    /// 作废可用性缓存（含落盘快照之外的内存副本）。切供应商后版本/认证状态都可能变了。
-    pub fn clear_detected_agents_cache(&self) {
-        self.external_discovery.clear_detected_agents_cache()
-    }
-
-    pub fn get_cached_detected_agents(
-        &self,
-        cache_key: &str,
-        ttl: Duration,
-    ) -> Option<Vec<crate::external_agents::types::DetectedAgent>> {
-        self.external_discovery
-            .get_cached_detected_agents(cache_key, ttl)
-    }
-
-    pub fn set_cached_detected_agents(
-        &self,
-        cache_key: String,
-        agents: Vec<crate::external_agents::types::DetectedAgent>,
-    ) {
-        self.external_discovery
-            .set_cached_detected_agents(cache_key, agents)
-    }
-
-    /// single-flight：取（或创建）某 (agent:cwd) key 的模型探测锁。持锁期间探测，
-    /// 释放后并发者复查缓存即命中，避免同一目标并发重探。
-    pub(crate) async fn acquire_model_probe(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        self.external_discovery.acquire_model_probe(key).await
-    }
-
-    /// Phase 2: return the control channel of a reusable live session for this conversation
-    /// (same agent + cwd + launch configuration, actor still alive). Removes a stale/mismatched
-    /// entry as a side effect.
-    ///
-    /// `launch_config` 让「配置变了 ⇒ 换进程」不需要额外的控制通道：不匹配就当成不可复用，
-    /// 丢弃条目（actor 收到通道关闭后自行关停子进程），调用方走连接分支并原生 resume
-    /// ⇒ 新 flag 生效且上下文不丢（spec 第 8 条）。
-    pub fn external_live_session_control(
-        &self,
-        conversation_id: &str,
-        agent_id: &str,
-        cwd: &str,
-        launch_config: &crate::external_agents::session::live::LaunchConfig,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
-    {
-        self.external_live_sessions
-            .reusable_control(conversation_id, agent_id, cwd, launch_config)
-    }
-
-    /// 把这条会话标成「有在飞轮次」，返回的 guard 落地时自动清掉。    ///
-    /// 轮次开始后调一次即可（复用与新建两条路都走得到），清扫器与 LRU 在此期间会跳过它。
-    /// 不存在（刚被回收）时返回 `None` —— 那种情况下这一轮自己持着 `control`，照样跑完。
-    pub fn mark_external_live_session_busy(
-        &self,
-        conversation_id: &str,
-    ) -> Option<crate::external_agents::session::live::TurnBusyGuard> {
-        self.external_live_sessions.mark_busy(conversation_id)
-    }
-
-    /// 控制面操作只在会话空闲时独占 busy 标志；不能覆盖正在生成的 guard。
-    pub fn try_mark_external_live_session_busy(
-        &self,
-        conversation_id: &str,
-    ) -> Result<crate::external_agents::session::live::TurnBusyGuard, String> {
-        self.external_live_sessions.try_mark_busy(conversation_id)
-    }
-    /// 取出该会话常驻 CLI 的控制通道（若有）。给「运行中插话」用：外部 CLI 那条路不走
-    /// `pending_chat_steering` 信箱（那是内置 agent 循环的轮首注入），而是把命令直接送进
-    /// 会话 actor，由各协议自己决定能不能注入。不存在常驻会话 = 这条对话没在跑 CLI。
-    pub fn external_live_session_control_any(
-        &self,
-        conversation_id: &str,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
-    {
-        self.external_live_sessions.control_any(conversation_id)
-    }
-
-    /// 取出宣称 follow-up 能力的常驻会话控制通道，以及该 CLI 的图片 MIME 白名单。
-    /// 没有常驻会话、或该协议不支持 follow-up，都回 `None`（前端按普通轮末发送）。
-    pub fn external_follow_up_live_session(
-        &self,
-        conversation_id: &str,
-    ) -> Option<(
-        tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
-        &'static [&'static str],
-    )> {
-        self.external_live_sessions
-            .follow_up_control(conversation_id)
-    }
-
-    /// 取出 Pi 常驻会话控制通道（session tree / fork / switch）。
-    pub fn external_pi_live_session_control(
-        &self,
-        conversation_id: &str,
-    ) -> Option<tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>>
-    {
-        self.external_live_sessions.pi_control(conversation_id)
-    }
-
-    pub fn register_external_live_session(
-        &self,
-        conversation_id: String,
-        session: crate::external_agents::session::live::LiveSession,
-    ) {
-        self.external_live_sessions
-            .register(conversation_id, session);
-    }
-
-    pub fn remove_external_live_session(&self, conversation_id: &str) {
-        self.external_live_sessions.remove(conversation_id);
-    }
-
-    pub fn move_external_live_session(
-        &self,
-        source_conversation_id: &str,
-        destination_conversation_id: &str,
-    ) -> Result<(), String> {
-        self.external_live_sessions
-            .move_session(source_conversation_id, destination_conversation_id)
-    }
-    /// Reclaim every idle/dead live session (e.g. from a periodic sweeper). Returns how many
-    /// were dropped. Dropping each entry closes its actor + child process.
-    pub fn sweep_idle_external_live_sessions(&self, idle_ttl: Duration) -> usize {
-        self.external_live_sessions.sweep_idle(idle_ttl)
-    }
-
-    /// 关停所有活的外部 CLI 会话（退出钩子用），**等它们真的退出**。
-    ///
-    /// 只 `clear()` 掉 sender 是不够的：那只是让 actor 在**下一次被 poll 时**才走
-    /// `close()`，而退出钩子后面运行时就随进程走了，actor 永远等不到那一次 poll。
-    /// `kill_on_drop(true)` 同理不触发 —— `Child` 就在那个永不 drop 的 actor 栈帧里。
-    /// 结果是每次退出留下最多 `MAX_LIVE_SESSIONS` 个 CLI 进程，各自还挂着自己拉起的
-    /// MCP stdio 子进程（`kill_on_drop` 也只杀直接子进程，够不到孙子）。
-    ///
-    /// 所以这里显式发 `Close` 并等通道关闭；超时没退的按 pid 杀进程树。按 pid 杀是
-    /// `LiveSession::child_pid` 那条「绝不按 pid 杀」规则的**唯一例外** —— 那条规则防的是
-    /// 把进程从一个还活着的 actor 底下抽走，而进程退出时这个顾虑已经不存在了。
-    pub async fn close_all_external_live_sessions(&self) {
-        self.external_live_sessions.close_all().await;
-    }
-
     /// Shared handle to the background-command registry. Returned as a cloned
     /// `Arc` so a detached waiter task can update job status after the spawning
     /// stack frame is gone (background commands survive across turns).
@@ -829,112 +486,6 @@ impl AppState {
         &self,
     ) -> Arc<crate::native_tools::background_registry::BackgroundCommandRegistry> {
         Arc::clone(&self.background_commands)
-    }
-
-    /// upsert 一条外部 CLI 后台任务。started 帧建条目；终态帧只补 status/summary/ended_at，
-    /// 不覆盖已知的 kind/description（notification 帧不带它们）。超额时先清最老的终态条目。
-    pub fn upsert_external_background_task(
-        &self,
-        conversation_id: &str,
-        task_id: &str,
-        status: &str,
-        kind: Option<&str>,
-        description: Option<&str>,
-        summary: Option<&str>,
-    ) {
-        self.external_background_tasks
-            .upsert_external_background_task(
-                conversation_id,
-                task_id,
-                status,
-                kind,
-                description,
-                summary,
-            );
-    }
-
-    /// Register a tracked background command. Reaps already-terminated entries
-    /// opportunistically so the map does not grow unbounded across a long
-    /// session, but keeps the most recent terminal jobs so `bash_output` can
-    /// still return their final output + exit code right after they finish.
-    pub fn register_background_command(&self, job: crate::native_tools::BackgroundCommand) {
-        self.background_commands.register(job)
-    }
-
-    /// Kill all tracked background command process groups and clear the registry
-    /// (e.g. on app shutdown). Each running job's process group is SIGKILLed /
-    /// taskkill'd; their log files are best-effort removed. Returns how many
-    /// process groups were killed.
-    pub fn kill_all_background_commands(&self) -> usize {
-        self.background_commands.kill_all()
-    }
-
-    /// Kill the background jobs a single conversation started, and drop them from
-    /// the registry. Used when deleting a conversation: a still-running dev server
-    /// keeps its cwd inside `chat-workspaces/<id>`, and on Windows an in-use
-    /// directory refuses to be removed — which used to abort the whole delete.
-    /// Returns how many process groups were killed.
-    ///
-    /// Jobs with no `conversation_id` (test seeds / non-agent paths) are left
-    /// alone: unowned is not the same as owned-by-this-conversation.
-    pub fn kill_background_commands_for_conversation(&self, conversation_id: &str) -> usize {
-        self.background_commands
-            .kill_for_conversation(conversation_id)
-    }
-
-    /// 该 base_url 是否已被学习为"拒绝 prompt_cache_key"。
-    pub fn prompt_cache_key_unsupported(&self, base_url: &str) -> bool {
-        self.provider_runtime.prompt_cache_key_unsupported(base_url)
-    }
-
-    /// 记住该 base_url 拒绝 prompt_cache_key（首次 400 后调用）。
-    pub fn mark_prompt_cache_key_unsupported(&self, base_url: &str) {
-        self.provider_runtime
-            .mark_prompt_cache_key_unsupported(base_url)
-    }
-
-    /// 该 base_url 是否已被学习为"拒绝 Responses reasoning item 回放"。
-    pub fn reasoning_replay_unsupported(&self, base_url: &str) -> bool {
-        self.provider_runtime.reasoning_replay_unsupported(base_url)
-    }
-
-    /// 记住该 base_url 拒绝 reasoning item 回放（带回放的请求首次 4xx 后调用）。
-    pub fn mark_reasoning_replay_unsupported(&self, base_url: &str) {
-        self.provider_runtime
-            .mark_reasoning_replay_unsupported(base_url)
-    }
-
-    /// 该 base_url 是否已被学习为"拒绝 prompt_cache_retention"。
-    pub fn prompt_cache_retention_unsupported(&self, base_url: &str) -> bool {
-        self.provider_runtime
-            .prompt_cache_retention_unsupported(base_url)
-    }
-
-    /// 记住该 base_url 拒绝 prompt_cache_retention（首次 400 后调用）。
-    pub fn mark_prompt_cache_retention_unsupported(&self, base_url: &str) {
-        self.provider_runtime
-            .mark_prompt_cache_retention_unsupported(base_url)
-    }
-
-    /// 标记某个 key 失败：进入冷却 + 不变更 active_key_idx
-    pub fn mark_key_failed(&self, provider_id: &str, idx: usize) {
-        self.provider_runtime.mark_key_failed(provider_id, idx)
-    }
-
-    /// 标记某个 key 成功：清除该 idx 的冷却 + 设为 active
-    pub fn mark_key_ok(&self, provider_id: &str, idx: usize) {
-        self.provider_runtime.mark_key_ok(provider_id, idx)
-    }
-
-    /// 用户点选当前 Key：立刻切过去，并清掉该供应商全部冷却，避免刚选中的槽还在 401 冷却里被跳过。
-    pub fn prefer_key(&self, provider_id: &str, idx: usize) {
-        self.provider_runtime.prefer_key(provider_id, idx)
-    }
-
-    /// 设置保存后：密钥池或点选下标变了才覆盖进程内 failover 指针；其它设置改动不打断正在用的备用 Key。
-    pub fn sync_preferred_api_keys(&self, previous: &Settings, next: &Settings) {
-        self.provider_runtime
-            .sync_preferred_api_keys(previous, next)
     }
 }
 
@@ -986,6 +537,7 @@ pub(crate) fn test_app_state() -> AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn test_state() -> AppState {
         test_app_state()
@@ -994,18 +546,25 @@ mod tests {
     #[test]
     fn pick_active_key_returns_none_when_total_zero() {
         let st = test_state();
-        assert_eq!(st.pick_active_key("p", 0, &HashSet::new()), None);
+        assert_eq!(
+            st.provider_runtime()
+                .pick_active_key("p", 0, &HashSet::new()),
+            None
+        );
     }
 
     #[test]
     fn external_agent_detection_cache_is_scoped_by_cwd() {
         let st = test_state();
-        st.set_cached_detected_agents("/project-a".to_string(), Vec::new());
+        st.external_discovery()
+            .set_cached_detected_agents("/project-a".to_string(), Vec::new());
 
         assert!(st
+            .external_discovery()
             .get_cached_detected_agents("/project-a", Duration::from_secs(60))
             .is_some());
         assert!(st
+            .external_discovery()
             .get_cached_detected_agents("/project-b", Duration::from_secs(60))
             .is_none());
     }
@@ -1013,23 +572,26 @@ mod tests {
     #[tokio::test]
     async fn model_probe_lock_is_shared_per_key_and_distinct_across_keys() {
         let st = test_state();
-        let a = st.acquire_model_probe("claude:/proj").await;
+        let a = st
+            .external_discovery()
+            .acquire_model_probe("claude:/proj")
+            .await;
         let _b = tokio::time::timeout(
             Duration::from_secs(1),
-            st.acquire_model_probe("codex:/proj"),
+            st.external_discovery().acquire_model_probe("codex:/proj"),
         )
         .await
         .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(1),
-            st.acquire_model_probe("claude:/proj")
+            st.external_discovery().acquire_model_probe("claude:/proj")
         )
         .await
         .is_err());
         drop(a);
         let _retry = tokio::time::timeout(
             Duration::from_secs(1),
-            st.acquire_model_probe("claude:/proj"),
+            st.external_discovery().acquire_model_probe("claude:/proj"),
         )
         .await
         .unwrap();
@@ -1046,7 +608,7 @@ mod tests {
         };
 
         // probed 条目在长 TTL 内命中，短 fallback TTL 不影响它。
-        st.set_cached_external_agent_models(
+        st.external_discovery().set_cached_external_agent_models(
             "claude:/p".to_string(),
             CachedAgentModels {
                 models: vec![one("gpt-5")],
@@ -1058,11 +620,12 @@ mod tests {
             },
         );
         assert!(st
+            .external_discovery()
             .get_cached_external_agent_models("claude:/p", Duration::from_secs(300), Duration::ZERO)
             .is_some());
 
         // fallback 条目按短 TTL 裁定：TTL=0 立即视为过期（负缓存到点即重探）。
-        st.set_cached_external_agent_models(
+        st.external_discovery().set_cached_external_agent_models(
             "codex:/p".to_string(),
             CachedAgentModels {
                 models: vec![one("default")],
@@ -1074,10 +637,11 @@ mod tests {
             },
         );
         assert!(st
+            .external_discovery()
             .get_cached_external_agent_models("codex:/p", Duration::from_secs(300), Duration::ZERO)
             .is_none());
         // 同一 fallback 条目在足够长的 fallback TTL 内仍命中。
-        st.set_cached_external_agent_models(
+        st.external_discovery().set_cached_external_agent_models(
             "codex:/p".to_string(),
             CachedAgentModels {
                 models: vec![one("default")],
@@ -1088,7 +652,7 @@ mod tests {
                 current_reasoning: None,
             },
         );
-        let hit = st.get_cached_external_agent_models(
+        let hit = st.external_discovery().get_cached_external_agent_models(
             "codex:/p",
             Duration::from_secs(300),
             Duration::from_secs(30),
@@ -1108,18 +672,22 @@ mod tests {
         };
 
         // 非空命令列表走长 TTL：短(empty) TTL=0 不影响它，仍命中。
-        st.set_cached_external_slash_commands("kimi:/g".to_string(), vec![cmd("compact")]);
+        st.external_discovery()
+            .set_cached_external_slash_commands("kimi:/g".to_string(), vec![cmd("compact")]);
         assert!(st
+            .external_discovery()
             .get_cached_external_slash_commands("kimi:/g", Duration::from_secs(300), Duration::ZERO)
             .is_some());
 
         // 空列表（负缓存）按短 TTL 裁定：empty TTL=0 立即过期 → 到点重探。
-        st.set_cached_external_slash_commands("grok:/g".to_string(), Vec::new());
+        st.external_discovery()
+            .set_cached_external_slash_commands("grok:/g".to_string(), Vec::new());
         assert!(st
+            .external_discovery()
             .get_cached_external_slash_commands("grok:/g", Duration::from_secs(300), Duration::ZERO)
             .is_none());
         // 但空列表在足够长的 empty TTL 内仍命中（TTL 内不重探）。
-        let hit = st.get_cached_external_slash_commands(
+        let hit = st.external_discovery().get_cached_external_slash_commands(
             "grok:/g",
             Duration::from_secs(300),
             Duration::from_secs(30),
@@ -1222,37 +790,66 @@ mod tests {
     #[test]
     fn pick_active_key_starts_at_idx_zero_when_no_active_recorded() {
         let st = test_state();
-        assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(0));
+        assert_eq!(
+            st.provider_runtime()
+                .pick_active_key("p", 3, &HashSet::new()),
+            Some(0)
+        );
     }
 
     #[test]
     fn learned_provider_capabilities_are_endpoint_scoped_and_independent() {
         let st = test_state();
-        st.mark_prompt_cache_key_unsupported("endpoint-a");
-        assert!(st.prompt_cache_key_unsupported("endpoint-a"));
-        assert!(!st.prompt_cache_retention_unsupported("endpoint-a"));
-        assert!(!st.reasoning_replay_unsupported("endpoint-a"));
-        assert!(!st.prompt_cache_key_unsupported("endpoint-b"));
-        st.mark_prompt_cache_retention_unsupported("endpoint-a");
-        st.mark_reasoning_replay_unsupported("endpoint-b");
-        assert!(st.prompt_cache_retention_unsupported("endpoint-a"));
-        assert!(st.reasoning_replay_unsupported("endpoint-b"));
-        assert!(!st.reasoning_replay_unsupported("endpoint-a"));
+        st.provider_runtime()
+            .mark_prompt_cache_key_unsupported("endpoint-a");
+        assert!(st
+            .provider_runtime()
+            .prompt_cache_key_unsupported("endpoint-a"));
+        assert!(!st
+            .provider_runtime()
+            .prompt_cache_retention_unsupported("endpoint-a"));
+        assert!(!st
+            .provider_runtime()
+            .reasoning_replay_unsupported("endpoint-a"));
+        assert!(!st
+            .provider_runtime()
+            .prompt_cache_key_unsupported("endpoint-b"));
+        st.provider_runtime()
+            .mark_prompt_cache_retention_unsupported("endpoint-a");
+        st.provider_runtime()
+            .mark_reasoning_replay_unsupported("endpoint-b");
+        assert!(st
+            .provider_runtime()
+            .prompt_cache_retention_unsupported("endpoint-a"));
+        assert!(st
+            .provider_runtime()
+            .reasoning_replay_unsupported("endpoint-b"));
+        assert!(!st
+            .provider_runtime()
+            .reasoning_replay_unsupported("endpoint-a"));
     }
 
     #[test]
     fn pick_active_key_prefers_last_known_good_idx() {
         let st = test_state();
-        st.mark_key_ok("p", 2);
-        assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(2));
+        st.provider_runtime().mark_key_ok("p", 2);
+        assert_eq!(
+            st.provider_runtime()
+                .pick_active_key("p", 3, &HashSet::new()),
+            Some(2)
+        );
     }
 
     #[test]
     fn prefer_key_sets_active_and_clears_cooldowns() {
         let st = test_state();
-        st.mark_key_failed("p", 1);
-        st.prefer_key("p", 1);
-        assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(1));
+        st.provider_runtime().mark_key_failed("p", 1);
+        st.provider_runtime().prefer_key("p", 1);
+        assert_eq!(
+            st.provider_runtime()
+                .pick_active_key("p", 3, &HashSet::new()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1261,26 +858,36 @@ mod tests {
         let mut tried = HashSet::new();
         tried.insert(0);
         // active 是 0（没记录过 ok），但 0 已 tried → 应返回 1（环绕扫描下一个）
-        assert_eq!(st.pick_active_key("p", 3, &tried), Some(1));
+        assert_eq!(
+            st.provider_runtime().pick_active_key("p", 3, &tried),
+            Some(1)
+        );
     }
 
     #[test]
     fn pick_active_key_skips_cooled_down_indices() {
         let st = test_state();
-        st.mark_key_failed("p", 0); // 0 进入冷却
-                                    // active 默认 0；0 在冷却 → 应跳到 1
-        assert_eq!(st.pick_active_key("p", 3, &HashSet::new()), Some(1));
+        st.provider_runtime().mark_key_failed("p", 0); // 0 进入冷却
+                                                       // active 默认 0；0 在冷却 → 应跳到 1
+        assert_eq!(
+            st.provider_runtime()
+                .pick_active_key("p", 3, &HashSet::new()),
+            Some(1)
+        );
     }
 
     #[test]
     fn pick_active_key_falls_back_to_cooled_when_all_cooled_but_untried() {
         let st = test_state();
         // 三个 key 全部冷却
-        st.mark_key_failed("p", 0);
-        st.mark_key_failed("p", 1);
-        st.mark_key_failed("p", 2);
+        st.provider_runtime().mark_key_failed("p", 0);
+        st.provider_runtime().mark_key_failed("p", 1);
+        st.provider_runtime().mark_key_failed("p", 2);
         // 但都没试过 → 兜底返回某个 idx（不是 None），让用户至少有 key 用
-        assert!(st.pick_active_key("p", 3, &HashSet::new()).is_some());
+        assert!(st
+            .provider_runtime()
+            .pick_active_key("p", 3, &HashSet::new())
+            .is_some());
     }
 
     #[test]
@@ -1290,26 +897,38 @@ mod tests {
         tried.insert(0);
         tried.insert(1);
         tried.insert(2);
-        assert_eq!(st.pick_active_key("p", 3, &tried), None);
+        assert_eq!(st.provider_runtime().pick_active_key("p", 3, &tried), None);
     }
 
     #[test]
     fn mark_key_ok_clears_cooldown() {
         let st = test_state();
-        st.mark_key_failed("p", 0);
+        st.provider_runtime().mark_key_failed("p", 0);
         // 此时 0 在冷却
-        assert_ne!(st.pick_active_key("p", 2, &HashSet::new()), Some(0));
+        assert_ne!(
+            st.provider_runtime()
+                .pick_active_key("p", 2, &HashSet::new()),
+            Some(0)
+        );
         // 标记成功后冷却被清除 + active 设为 0
-        st.mark_key_ok("p", 0);
-        assert_eq!(st.pick_active_key("p", 2, &HashSet::new()), Some(0));
+        st.provider_runtime().mark_key_ok("p", 0);
+        assert_eq!(
+            st.provider_runtime()
+                .pick_active_key("p", 2, &HashSet::new()),
+            Some(0)
+        );
     }
 
     #[test]
     fn cooldowns_are_per_provider() {
         let st = test_state();
-        st.mark_key_failed("p1", 0);
+        st.provider_runtime().mark_key_failed("p1", 0);
         // p1 idx 0 冷却不影响 p2 idx 0
-        assert_eq!(st.pick_active_key("p2", 2, &HashSet::new()), Some(0));
+        assert_eq!(
+            st.provider_runtime()
+                .pick_active_key("p2", 2, &HashSet::new()),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1317,8 +936,10 @@ mod tests {
         // 用户原来有 5 个 key，active=4；删了 3 个，现在 total=2
         // pick_active_key 应该 clamp 到 total-1，不 panic
         let st = test_state();
-        st.mark_key_ok("p", 4);
-        let result = st.pick_active_key("p", 2, &HashSet::new());
+        st.provider_runtime().mark_key_ok("p", 4);
+        let result = st
+            .provider_runtime()
+            .pick_active_key("p", 2, &HashSet::new());
         assert!(result.is_some());
         assert!(result.unwrap() < 2);
     }
@@ -1326,27 +947,40 @@ mod tests {
     #[test]
     fn chat_session_consent_is_per_conversation() {
         let st = test_state();
-        assert!(!st.has_chat_consent("conv-1"));
-        st.grant_chat_consent("conv-1");
-        assert!(st.has_chat_consent("conv-1"));
+        assert!(!st.chat_interactions().has_session_consent("conv-1"));
+        st.chat_interactions().grant_session_consent("conv-1");
+        assert!(st.chat_interactions().has_session_consent("conv-1"));
         // Consent is scoped to a single conversation, not global.
-        assert!(!st.has_chat_consent("conv-2"));
+        assert!(!st.chat_interactions().has_session_consent("conv-2"));
     }
 
     #[test]
     fn chat_tool_always_allow_is_per_conversation_and_tool() {
         let st = test_state();
-        assert!(!st.has_tool_always_allow("conv-1", "write"));
-        st.grant_tool_always_allow("conv-1", "write");
-        assert!(st.has_tool_always_allow("conv-1", "write"));
+        assert!(!st
+            .chat_interactions()
+            .has_tool_always_allow("conv-1", "write"));
+        st.chat_interactions()
+            .grant_tool_always_allow("conv-1", "write");
+        assert!(st
+            .chat_interactions()
+            .has_tool_always_allow("conv-1", "write"));
         // 外部 CLI 报 PascalCase，必须命中同一条。
-        assert!(st.has_tool_always_allow("conv-1", "Write"));
+        assert!(st
+            .chat_interactions()
+            .has_tool_always_allow("conv-1", "Write"));
         // 只放行按下的那个工具，不是整会话放行。
-        assert!(!st.has_tool_always_allow("conv-1", "read"));
+        assert!(!st
+            .chat_interactions()
+            .has_tool_always_allow("conv-1", "read"));
         // 不跨对话。
-        assert!(!st.has_tool_always_allow("conv-2", "write"));
+        assert!(!st
+            .chat_interactions()
+            .has_tool_always_allow("conv-2", "write"));
         st.forget_chat_conversation_runtime("conv-1");
-        assert!(!st.has_tool_always_allow("conv-1", "write"));
+        assert!(!st
+            .chat_interactions()
+            .has_tool_always_allow("conv-1", "write"));
     }
 
     // --- 多模型一问多答：并发护栏 per-run 化（任务 06-30 步骤 1） ---
@@ -1355,120 +989,174 @@ mod tests {
     fn single_run_generation_equivalence() {
         // 单 run（单模型）行为必须与改前等价：分配 → 活跃 → 取消 → 失活。
         let st = test_state();
-        let gen = st.next_chat_generation("conv");
-        assert!(st.is_chat_generation_active("conv", gen));
+        let gen = st.chat_runtime().begin_generation("conv");
+        assert!(st.chat_runtime().is_generation_active("conv", gen));
         st.cancel_chat_generation("conv");
-        assert!(!st.is_chat_generation_active("conv", gen));
+        assert!(!st.chat_runtime().is_generation_active("conv", gen));
     }
 
     #[test]
     fn single_run_end_generation_retires_only_self() {
         let st = test_state();
-        let gen = st.next_chat_generation("conv");
-        assert!(st.is_chat_generation_active("conv", gen));
-        st.end_chat_generation("conv", gen);
-        assert!(!st.is_chat_generation_active("conv", gen));
+        let gen = st.chat_runtime().begin_generation("conv");
+        assert!(st.chat_runtime().is_generation_active("conv", gen));
+        st.chat_runtime().end_generation("conv", gen);
+        assert!(!st.chat_runtime().is_generation_active("conv", gen));
     }
 
     #[test]
     fn new_run_does_not_invalidate_sibling_run() {
         // 同会话开第二条 run（多模型并发）不得作废第一条。
         let st = test_state();
-        let gen_a = st.next_chat_generation("conv");
-        let gen_b = st.next_chat_generation("conv");
+        let gen_a = st.chat_runtime().begin_generation("conv");
+        let gen_b = st.chat_runtime().begin_generation("conv");
         assert_ne!(gen_a, gen_b);
-        assert!(st.is_chat_generation_active("conv", gen_a));
-        assert!(st.is_chat_generation_active("conv", gen_b));
+        assert!(st.chat_runtime().is_generation_active("conv", gen_a));
+        assert!(st.chat_runtime().is_generation_active("conv", gen_b));
     }
 
     #[test]
     fn cancel_kills_all_runs_in_conversation() {
         // R4：cancel 一刀切该会话所有在跑 run。
         let st = test_state();
-        let gen_a = st.next_chat_generation("conv");
-        let gen_b = st.next_chat_generation("conv");
-        let gen_c = st.next_chat_generation("conv");
+        let gen_a = st.chat_runtime().begin_generation("conv");
+        let gen_b = st.chat_runtime().begin_generation("conv");
+        let gen_c = st.chat_runtime().begin_generation("conv");
         st.cancel_chat_generation("conv");
-        assert!(!st.is_chat_generation_active("conv", gen_a));
-        assert!(!st.is_chat_generation_active("conv", gen_b));
-        assert!(!st.is_chat_generation_active("conv", gen_c));
+        assert!(!st.chat_runtime().is_generation_active("conv", gen_a));
+        assert!(!st.chat_runtime().is_generation_active("conv", gen_b));
+        assert!(!st.chat_runtime().is_generation_active("conv", gen_c));
     }
 
     #[test]
     fn cancel_is_per_conversation() {
         // 取消 conv-1 不影响 conv-2（含 sub-agent 用独立合成 conversation_id 的级联语义）。
         let st = test_state();
-        let gen1 = st.next_chat_generation("conv-1");
-        let gen2 = st.next_chat_generation("conv-2");
+        let gen1 = st.chat_runtime().begin_generation("conv-1");
+        let gen2 = st.chat_runtime().begin_generation("conv-2");
         st.cancel_chat_generation("conv-1");
-        assert!(!st.is_chat_generation_active("conv-1", gen1));
-        assert!(st.is_chat_generation_active("conv-2", gen2));
+        assert!(!st.chat_runtime().is_generation_active("conv-1", gen1));
+        assert!(st.chat_runtime().is_generation_active("conv-2", gen2));
     }
 
     #[test]
     fn end_one_run_keeps_sibling_active() {
         let st = test_state();
-        let gen_a = st.next_chat_generation("conv");
-        let gen_b = st.next_chat_generation("conv");
-        st.end_chat_generation("conv", gen_a);
-        assert!(!st.is_chat_generation_active("conv", gen_a));
-        assert!(st.is_chat_generation_active("conv", gen_b));
+        let gen_a = st.chat_runtime().begin_generation("conv");
+        let gen_b = st.chat_runtime().begin_generation("conv");
+        st.chat_runtime().end_generation("conv", gen_a);
+        assert!(!st.chat_runtime().is_generation_active("conv", gen_a));
+        assert!(st.chat_runtime().is_generation_active("conv", gen_b));
     }
 
     #[test]
     fn reply_slot_allows_multiple_runs_same_conversation() {
         // 同会话允许多条 run 并存；同一 (conv, run) 重复进入才拒绝。
         let st = test_state();
-        assert!(!st.conversation_has_active_reply("conv"));
-        assert!(st.try_begin_chat_reply("conv", "run-1"));
-        assert!(st.try_begin_chat_reply("conv", "run-2"));
+        assert!(!st.chat_runtime().has_active_reply("conv"));
+        assert!(st.chat_runtime().try_begin_reply("conv", "run-1"));
+        assert!(st.chat_runtime().try_begin_reply("conv", "run-2"));
         // 同一 run 重复注册被拒。
-        assert!(!st.try_begin_chat_reply("conv", "run-1"));
-        assert!(st.conversation_has_active_reply("conv"));
+        assert!(!st.chat_runtime().try_begin_reply("conv", "run-1"));
+        assert!(st.chat_runtime().has_active_reply("conv"));
     }
 
     #[test]
     fn reply_slot_release_is_per_run() {
         let st = test_state();
-        st.try_begin_chat_reply("conv", "run-1");
-        st.try_begin_chat_reply("conv", "run-2");
-        st.end_chat_reply("conv", "run-1");
+        st.chat_runtime().try_begin_reply("conv", "run-1");
+        st.chat_runtime().try_begin_reply("conv", "run-2");
+        st.chat_runtime().end_reply("conv", "run-1");
         // 仍有 run-2 在跑 → 会话仍 busy。
-        assert!(st.conversation_has_active_reply("conv"));
-        st.end_chat_reply("conv", "run-2");
+        assert!(st.chat_runtime().has_active_reply("conv"));
+        st.chat_runtime().end_reply("conv", "run-2");
         // 全部释放 → 会话不再 busy，且可重新注册同名 run。
-        assert!(!st.conversation_has_active_reply("conv"));
-        assert!(st.try_begin_chat_reply("conv", "run-1"));
+        assert!(!st.chat_runtime().has_active_reply("conv"));
+        assert!(st.chat_runtime().try_begin_reply("conv", "run-1"));
     }
 
     #[test]
     fn forget_conversation_clears_active_generations() {
         let st = test_state();
-        let gen = st.next_chat_generation("conv");
-        assert!(st.is_chat_generation_active("conv", gen));
+        let gen = st.chat_runtime().begin_generation("conv");
+        assert!(st.chat_runtime().is_generation_active("conv", gen));
         st.forget_chat_conversation_runtime("conv");
-        assert!(!st.is_chat_generation_active("conv", gen));
+        assert!(!st.chat_runtime().is_generation_active("conv", gen));
     }
 
     #[test]
     fn reserve_send_is_atomic_busy_check_and_reserve() {
         // 命令入口哨兵：首个预留成功并占槽；同会话第二个预留（哨兵或真实 run 在跑）被拒。
         let st = test_state();
-        assert!(st.try_reserve_chat_send("conv", "send-1"));
-        assert!(st.conversation_has_active_reply("conv"));
+        assert!(st.chat_runtime().try_reserve_send("conv", "send-1"));
+        assert!(st.chat_runtime().has_active_reply("conv"));
         // 任意第二个预留在哨兵存活期间被拒（关闭并发发送的 TOCTOU）。
-        assert!(!st.try_reserve_chat_send("conv", "send-2"));
+        assert!(!st.chat_runtime().try_reserve_send("conv", "send-2"));
         // 哨兵存活期间，真实 per-run 槽位仍可与之共存（fan-out 各臂注册自己的 run）。
-        assert!(st.try_begin_chat_reply("conv", "run-arm-1"));
-        assert!(st.try_begin_chat_reply("conv", "run-arm-2"));
+        assert!(st.chat_runtime().try_begin_reply("conv", "run-arm-1"));
+        assert!(st.chat_runtime().try_begin_reply("conv", "run-arm-2"));
         // 释放哨兵后仍有 run 在跑 → 仍 busy；新预留仍被拒。
-        st.end_chat_reply("conv", "send-1");
-        assert!(st.conversation_has_active_reply("conv"));
-        assert!(!st.try_reserve_chat_send("conv", "send-3"));
+        st.chat_runtime().end_reply("conv", "send-1");
+        assert!(st.chat_runtime().has_active_reply("conv"));
+        assert!(!st.chat_runtime().try_reserve_send("conv", "send-3"));
         // 全部 run 释放后才能再次预留。
-        st.end_chat_reply("conv", "run-arm-1");
-        st.end_chat_reply("conv", "run-arm-2");
-        assert!(!st.conversation_has_active_reply("conv"));
-        assert!(st.try_reserve_chat_send("conv", "send-4"));
+        st.chat_runtime().end_reply("conv", "run-arm-1");
+        st.chat_runtime().end_reply("conv", "run-arm-2");
+        assert!(!st.chat_runtime().has_active_reply("conv"));
+        assert!(st.chat_runtime().try_reserve_send("conv", "send-4"));
+    }
+
+    #[test]
+    fn app_state_does_not_reintroduce_domain_forwarding() {
+        let source = include_str!("state.rs");
+        let impl_end = source
+            .find("impl crate::mcp::McpSettingsPersistence for AppState")
+            .expect("AppState impl precedes the persistence adapter");
+        let impl_source = &source[..impl_end];
+        for method in [
+            "fn next_chat_generation(",
+            "fn end_chat_generation(",
+            "fn is_chat_generation_active(",
+            "fn has_chat_consent(",
+            "fn grant_chat_consent(",
+            "fn has_tool_always_allow(",
+            "fn grant_tool_always_allow(",
+            "fn push_chat_steering(",
+            "fn take_chat_steering(",
+            "fn push_chat_follow_up(",
+            "fn take_chat_follow_up(",
+            "fn try_begin_chat_reply(",
+            "fn try_reserve_chat_send(",
+            "fn conversation_has_active_reply(",
+            "fn end_chat_reply(",
+            "fn finish_chat_reply_generation(",
+            "fn pick_active_key(",
+            "fn mark_key_failed(",
+            "fn mark_key_ok(",
+            "fn prefer_key(",
+            "fn sync_preferred_api_keys(",
+            "fn prompt_cache_key_unsupported(",
+            "fn get_cached_external_slash_commands(",
+            "fn get_cached_detected_agents(",
+            "fn acquire_model_probe(",
+            "fn external_live_session_control(",
+            "fn register_external_live_session(",
+            "fn upsert_external_background_task(",
+            "fn register_background_command(",
+            "fn kill_all_background_commands(",
+        ] {
+            assert!(
+                !impl_source.contains(method),
+                "AppState must not grow domain forwarding again: {method}"
+            );
+        }
+        assert!(
+            impl_source.contains("fn cancel_chat_generation("),
+            "cross-domain cancel stays on the composition root"
+        );
+        assert!(
+            impl_source.contains("fn forget_chat_conversation_runtime("),
+            "cross-domain conversation cleanup stays on the composition root"
+        );
     }
 }

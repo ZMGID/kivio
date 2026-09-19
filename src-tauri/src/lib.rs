@@ -76,7 +76,7 @@ use windows::{ensure_overlay_panel, restore_previous_frontmost_app};
 const AUTOSTART_ARG: &str = "--from-autostart";
 
 #[cfg(target_os = "macos")]
-const USER_WINDOW_LABELS: &[&str] = &["chat", "main"];
+const USER_WINDOW_LABELS: &[&str] = &["chat", "translator"];
 
 #[cfg(target_os = "macos")]
 fn first_visible_user_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
@@ -196,15 +196,15 @@ pub fn run() {
                     }
                     return;
                 }
-                // 翻译窗（main）若仍收到默认 CloseRequested，必须拦截并走安全销毁：先恢复
+                // 翻译浮层若仍收到默认 CloseRequested，必须拦截并走安全销毁：先恢复
                 // TaoWindow 原类，再 destroy WebView/NSPanel，同时把前台交还给打开它之前的 App。
                 #[cfg(target_os = "macos")]
-                if window.label() == "main" {
+                if window.label() == windows::TRANSLATOR_WINDOW_LABEL {
                     api.prevent_close();
                     let handle = window.app_handle();
                     let st = handle.state::<AppState>();
-                    restore_previous_frontmost_app(handle, st.frontmost_apps().main());
-                    if let Some(webview_window) = handle.get_webview_window("main") {
+                    restore_previous_frontmost_app(handle, st.frontmost_apps().translator());
+                    if let Some(webview_window) = handle.get_webview_window(windows::TRANSLATOR_WINDOW_LABEL) {
                         windows::destroy_overlay_window(&webview_window);
                     }
                     return;
@@ -281,7 +281,7 @@ pub fn run() {
                         let Some(state) = sweeper.try_state::<AppState>() else {
                             continue;
                         };
-                        state.sweep_idle_external_live_sessions(
+                        state.external_live_sessions().sweep_idle(
                             crate::external_agents::session::live::LIVE_SESSION_IDLE_TTL,
                         );
                     }
@@ -864,7 +864,7 @@ pub fn run() {
                     let closed = tauri::async_runtime::block_on(async {
                         tokio::time::timeout(
                             std::time::Duration::from_secs(3),
-                            state.close_all_external_live_sessions(),
+                            state.external_live_sessions().close_all(),
                         )
                         .await
                     });
@@ -873,7 +873,7 @@ pub fn run() {
                     }
                     // 杀掉所有跟踪中的后台 run_command 进程组（跨 turn 存活，只在这里或
                     // 显式 kill_background 才清理），删除其 per-job 日志，避免孤儿进程/文件。
-                    let killed = state.kill_all_background_commands();
+                    let killed = state.background_commands_handle().kill_all();
                     if killed > 0 {
                         eprintln!("Killed {killed} background command process group(s) on exit.");
                     }

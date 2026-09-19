@@ -152,11 +152,14 @@ pub async fn list_external_cli_slash_commands(
     if def.slash_strategy == SlashStrategy::Dsh {
         if let Ok(cwd) = resolve_slash_cwd(app, conversation_id) {
             let key = cache_key(agent_id, &cwd);
-            if let Some(cached) = state.get_cached_external_slash_commands(
-                &key,
-                SLASH_COMMANDS_CACHE_TTL,
-                SLASH_COMMANDS_EMPTY_CACHE_TTL,
-            ) {
+            if let Some(cached) = state
+                .external_discovery()
+                .get_cached_external_slash_commands(
+                    &key,
+                    SLASH_COMMANDS_CACHE_TTL,
+                    SLASH_COMMANDS_EMPTY_CACHE_TTL,
+                )
+            {
                 return Ok((true, cached, None));
             }
         }
@@ -169,11 +172,14 @@ pub async fn list_external_cli_slash_commands(
 
     let cwd = resolve_slash_cwd(app, conversation_id)?;
     let key = cache_key(agent_id, &cwd);
-    if let Some(cached) = state.get_cached_external_slash_commands(
-        &key,
-        SLASH_COMMANDS_CACHE_TTL,
-        SLASH_COMMANDS_EMPTY_CACHE_TTL,
-    ) {
+    if let Some(cached) = state
+        .external_discovery()
+        .get_cached_external_slash_commands(
+            &key,
+            SLASH_COMMANDS_CACHE_TTL,
+            SLASH_COMMANDS_EMPTY_CACHE_TTL,
+        )
+    {
         return Ok((true, cached, None));
     }
 
@@ -262,7 +268,9 @@ pub async fn list_external_cli_slash_commands(
 
     // R1: cache the result even when empty (negative cache) so切会话/切 agent 不再每次重探。
     // 空列表由 get 的 short TTL 兜底；非空走长 TTL。
-    state.set_cached_external_slash_commands(key, commands.clone());
+    state
+        .external_discovery()
+        .set_cached_external_slash_commands(key, commands.clone());
 
     if commands.is_empty()
         && matches!(

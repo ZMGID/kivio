@@ -49,8 +49,9 @@ pub async fn chat_detect_external_agents(
         crate::external_agents::spawn::clear_probe_cache();
     }
     if !force {
-        if let Some(agents) =
-            state.get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
+        if let Some(agents) = state
+            .external_discovery()
+            .get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
         {
             return Ok(serde_json::json!({
                 "success": true,
@@ -77,8 +78,9 @@ pub async fn chat_detect_external_agents(
         .acquire_availability_probe()
         .await;
     if !force {
-        if let Some(agents) =
-            state.get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
+        if let Some(agents) = state
+            .external_discovery()
+            .get_cached_detected_agents(AVAILABILITY_CACHE_KEY, AVAILABILITY_CACHE_TTL)
         {
             return Ok(serde_json::json!({
                 "success": true,
@@ -88,7 +90,9 @@ pub async fn chat_detect_external_agents(
         }
     }
     let agents = detect_availability_all().await;
-    state.set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), agents.clone());
+    state
+        .external_discovery()
+        .set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), agents.clone());
     save_availability_snapshot(&state, &agents);
     Ok(serde_json::json!({
         "success": true,
@@ -106,7 +110,9 @@ fn spawn_availability_refresh(app: AppHandle) {
             return;
         };
         let agents = detect_availability_all().await;
-        state.set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), agents.clone());
+        state
+            .external_discovery()
+            .set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), agents.clone());
         save_availability_snapshot(&state, &agents);
         let _ = app.emit(
             "external-agents-updated",
@@ -216,7 +222,7 @@ pub async fn chat_detect_external_agent_models(
     let key = cache_key(&agent_id, &cwd_key);
 
     if !force {
-        if let Some(cached) = state.get_cached_external_agent_models(
+        if let Some(cached) = state.external_discovery().get_cached_external_agent_models(
             &key,
             EXTERNAL_AGENT_MODELS_CACHE_TTL,
             EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
@@ -225,9 +231,9 @@ pub async fn chat_detect_external_agent_models(
         }
     }
 
-    let _guard = state.acquire_model_probe(&key).await;
+    let _guard = state.external_discovery().acquire_model_probe(&key).await;
     if !force {
-        if let Some(cached) = state.get_cached_external_agent_models(
+        if let Some(cached) = state.external_discovery().get_cached_external_agent_models(
             &key,
             EXTERNAL_AGENT_MODELS_CACHE_TTL,
             EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
@@ -239,7 +245,7 @@ pub async fn chat_detect_external_agent_models(
     if !probe.models.is_empty() {
         // probed 长 TTL，fallback 短 TTL 负缓存——由 get 侧按 source 分别裁定过期。
         // reasoning_options 必须一并写入：ACP/kimi 档位只来自探测，def 静态表为空。
-        state.set_cached_external_agent_models(
+        state.external_discovery().set_cached_external_agent_models(
             key,
             CachedAgentModels {
                 models: probe.models.clone(),

@@ -4,15 +4,15 @@ use std::sync::atomic::{AtomicI32, Ordering};
 #[derive(Default)]
 pub(crate) struct FrontmostAppState {
     lens: FocusReturnSlot,
-    main: FocusReturnSlot,
+    translator: FocusReturnSlot,
 }
 
 impl FrontmostAppState {
     pub(crate) fn lens(&self) -> &FocusReturnSlot {
         &self.lens
     }
-    pub(crate) fn main(&self) -> &FocusReturnSlot {
-        &self.main
+    pub(crate) fn translator(&self) -> &FocusReturnSlot {
+        &self.translator
     }
 }
 
@@ -46,13 +46,13 @@ mod tests {
     fn slots_are_independent_and_restoration_consumes_identity_once() {
         let state = FrontmostAppState::default();
         state.lens().remember(7, 99);
-        state.main().remember(8, 99);
+        state.translator().remember(8, 99);
         assert_eq!(state.lens().previous(), 7);
         assert_eq!(state.lens().take_previous(), 7);
         assert_eq!(state.lens().take_previous(), 0);
-        assert_eq!(state.main().previous(), 8);
-        state.main().forget();
-        assert_eq!(state.main().take_previous(), 0);
+        assert_eq!(state.translator().previous(), 8);
+        state.translator().forget();
+        assert_eq!(state.translator().take_previous(), 0);
         state.lens().remember(99, 99);
         assert_eq!(state.lens().previous(), 0);
     }

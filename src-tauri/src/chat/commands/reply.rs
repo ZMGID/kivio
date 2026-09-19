@@ -77,7 +77,10 @@ pub(super) async fn complete_assistant_reply(
         {
             break;
         }
-        if state.has_goal_user_queue_pending(&conversation.id) {
+        if state
+            .chat_runtime()
+            .has_goal_user_queue_pending(&conversation.id)
+        {
             break;
         }
         let continuation_skill = conversation.active_skill_id.clone();
@@ -148,8 +151,8 @@ pub(super) async fn complete_assistant_reply_inner(
 ) -> Result<ArmReplyOutcome, String> {
     if conversation.agent_runtime.is_external() {
         // 外部 CLI 路径在 run.rs 内自带 generation；这里登记一条 per-run 回复槽位，
-        // 让 `conversation_has_active_reply` 在外部回复期间也能拒绝并发新发送（防回归）。
-        let ext_generation = state.next_chat_generation(&conversation.id);
+        // 让 `chat_runtime().has_active_reply` 在外部回复期间也能拒绝并发新发送（防回归）。
+        let ext_generation = state.chat_runtime().begin_generation(&conversation.id);
         let ext_run_id = format!("chat-run-ext-{}-{}", ext_generation, Uuid::new_v4());
         let _ext_reply_guard =
             ChatReplyGuard::try_new(state.inner(), &conversation.id, &ext_run_id, ext_generation);
@@ -262,7 +265,7 @@ pub(super) async fn complete_assistant_reply_inner(
                 .into(),
         );
     }
-    let run_generation = state.next_chat_generation(&conversation.id);
+    let run_generation = state.chat_runtime().begin_generation(&conversation.id);
     let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
     if let Some(goal) = conversation

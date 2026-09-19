@@ -190,6 +190,17 @@ describe('SettingsEditorController', () => {
     controller.dispose()
   })
 
+  it('navigation close still leaves after a previous keep-alive close issued', async () => {
+    const controller = new SettingsEditorController(port(snapshot(settings(), 1), async () => snapshot(settings(), 2)))
+    controller.start()
+    const closed = vi.fn()
+    await controller.requestClose(closed, { waitForSave: false })
+    expect(closed).toHaveBeenCalledOnce()
+    await controller.requestClose(closed, { waitForSave: false })
+    expect(closed).toHaveBeenCalledTimes(2)
+    controller.dispose()
+  })
+
   it('does not close a reopened view when an older flush finishes late', async () => {
     const pending = deferred<SettingsSnapshot>()
     const controller = new SettingsEditorController(port(snapshot(settings(), 1), () => pending.promise))

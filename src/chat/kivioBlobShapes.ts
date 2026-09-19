@@ -103,12 +103,29 @@ function polar(count: number, radiusAt: (a: number) => number): Pt[] {
 // ---------------------------------------------------------------------------
 
 /**
- * 身体形态。默认永远是圆；其余按状态借用（思考=云、干活=圆角方、检索=竖起来的蛋、
+ * 身体形态。默认永远是圆；其余按状态借用（思考=云、干活=圆角方、
  * 说话=带尾巴的气泡、出错=摊成一滩 + 抖的时候炸毛），闲置偶尔随机换一个玩。
  */
-export type BodyShape = 'circle' | 'squircle' | 'cloud' | 'egg' | 'bubble' | 'puddle' | 'burst'
+export type BodyShape =
+  | 'circle'
+  | 'squircle'
+  | 'cloud'
+  | 'bubble'
+  | 'puddle'
+  | 'burst'
+  | 'pebble'
+  | 'bean'
 
-export const BODY_SHAPES: readonly BodyShape[] = ['circle', 'squircle', 'cloud', 'egg', 'bubble', 'puddle', 'burst']
+export const BODY_SHAPES: readonly BodyShape[] = [
+  'circle',
+  'squircle',
+  'cloud',
+  'bubble',
+  'puddle',
+  'burst',
+  'pebble',
+  'bean',
+]
 
 function bodyLocal(shape: BodyShape): Pt[] {
   const R = BODY_R
@@ -140,12 +157,6 @@ function bodyLocal(shape: BodyShape): Pt[] {
         return best
       }).map(([x, y]) => [x * grow, (y > 0 ? floor * Math.tanh(y / floor) : y) * grow])
     }
-    case 'egg':
-      // 顶部收窄、整体拉高：竖起耳朵的样子。
-      return superellipse(R * 0.95, R * 1.05, 2.2, BODY_POINTS).map(([x, y]) => {
-        const top = (-y / (R * 1.05) + 1) / 2 // 1 = 顶, 0 = 底
-        return [x * (1 - 0.2 * top), y]
-      })
     case 'bubble':
       // 圆 + 左下一个高斯尾巴 = 对话气泡。
       return polar(BODY_POINTS, (a) => {
@@ -161,6 +172,19 @@ function bodyLocal(shape: BodyShape): Pt[] {
         const phase = ((9 * (a + Math.PI / 2)) / TAU) % 1
         const tri = 1 - 2 * Math.abs(phase - 0.5)
         return R * (0.9 + 0.15 * tri)
+      })
+    case 'pebble':
+      // 不规则但重心稳定的圆石；细小起伏让轮廓有手捏感，不抢表情。
+      return polar(BODY_POINTS, (a) => R * (
+        0.95
+        + 0.055 * Math.sin(3 * a + 0.7)
+        + 0.032 * Math.sin(5 * a - 0.45)
+      ))
+    case 'bean':
+      // 横向豆豆：左厚右翘，刻意避免再次出现纵向椭圆。
+      return superellipse(R * 1.1, R * 0.78, 2.7, BODY_POINTS).map(([x, y]) => {
+        const nx = x / (R * 1.1)
+        return [x, y + R * (0.08 * nx + 0.09 * (1 - nx * nx))]
       })
     case 'circle':
     default:

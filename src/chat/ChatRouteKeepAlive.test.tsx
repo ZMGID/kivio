@@ -18,7 +18,8 @@ describe('ChatRouteKeepAlive', () => {
       </ChatRouteKeepAlive>,
     )
     expect(firstPane).toBeInTheDocument()
-    expect((firstPane?.parentElement as HTMLElement).style.display).toBe('none')
+    expect((firstPane?.parentElement as HTMLElement).hidden).toBe(true)
+    expect(firstPane?.parentElement?.hasAttribute('inert')).toBe(true)
 
     rerender(
       <ChatRouteKeepAlive activeKey="conversation">
@@ -26,6 +27,7 @@ describe('ChatRouteKeepAlive', () => {
       </ChatRouteKeepAlive>,
     )
     expect(document.querySelector('[data-testid="chat-pane"]')).toBe(firstPane)
+    expect((firstPane?.parentElement as HTMLElement).hidden).toBe(false)
     expect(firstPane).toHaveTextContent('chat updated')
   })
 })

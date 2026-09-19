@@ -163,7 +163,7 @@ export function emptyHeroJab(
   return list[Math.floor(random() * list.length)]
 }
 
-/** 闲置小动作时嘟囔一句（变云 / 变方 / 竖起来 / 蹦一下），说完收回。多数时候不说：
+/** 闲置小动作时嘟囔一句（变云 / 变方 / 蹦一下），说完收回。多数时候不说：
  *  蹦是最常见的小动作，几乎不配词；变形态本身就稀罕，也只有一半不到会念一句。 */
 export const EMPTY_HERO_MUTTER_MS = 3200
 export const EMPTY_HERO_MUTTER_CHANCE = 0.45
@@ -173,13 +173,15 @@ const MUTTERS: Record<Lang, Partial<Record<BlobAntic, readonly string[]>>> = {
   zh: {
     cloud: ['走神了', '飘一会', '在想别的', '云一下'],
     squircle: ['今天装方的', '方一下', '换个形状', '有棱有角'],
-    egg: ['竖起来听', '有动静？', '站直了', '警觉'],
+    pebble: ['稳一会', '圆润点', '石头模式', '安静待着'],
+    bean: ['横着待会', '豆一下', '换个姿势', '躺会'],
     hop: ['活动一下', '蹦', '腿麻了', '抖抖'],
   },
   en: {
     cloud: ['Zoning out.', 'Drifting.', 'Elsewhere.', 'Cloud mode.'],
     squircle: ['Boxy today.', 'Squared up.', 'New shape.', 'Edgy.'],
-    egg: ['Ears up.', 'Heard something?', 'Standing tall.', 'Alert.'],
+    pebble: ['Steady.', 'Smooth mode.', 'Rock mode.', 'Sitting quietly.'],
+    bean: ['Going sideways.', 'Bean mode.', 'New pose.', 'Lying down.'],
     hop: ['Stretching.', 'Boing.', 'Legs asleep.', 'Shake it off.'],
   },
 }

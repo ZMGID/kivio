@@ -114,12 +114,14 @@ impl OpenAiResponsesProvider<'_> {
                 && super::openai::error_rejects_prompt_cache_key(err)
             {
                 self.state
+                    .provider_runtime()
                     .mark_prompt_cache_key_unsupported(&self.provider.base_url);
                 learned = true;
             } else if body.get("prompt_cache_retention").is_some()
                 && super::openai::error_rejects_prompt_cache_retention(err)
             {
                 self.state
+                    .provider_runtime()
                     .mark_prompt_cache_retention_unsupported(&self.provider.base_url);
                 learned = true;
             } else if body_replays_reasoning_items(&body)
@@ -129,6 +131,7 @@ impl OpenAiResponsesProvider<'_> {
                 // 直接 4xx）。学习后本会话不再对该 base_url 回放——去掉 item 的请求永远
                 // 合法，所以这条重试是严格安全的降级（回到修复前的行为）。
                 self.state
+                    .provider_runtime()
                     .mark_reasoning_replay_unsupported(&self.provider.base_url);
                 learned = true;
             }
@@ -441,6 +444,7 @@ impl OpenAiResponsesProvider<'_> {
         let reasoning_replay = (!is_xai
             && !self
                 .state
+                .provider_runtime()
                 .reasoning_replay_unsupported(&self.provider.base_url))
         .then_some(request.model.as_str());
         let mut body = serde_json::json!({
@@ -567,6 +571,7 @@ impl OpenAiResponsesProvider<'_> {
             && self.provider.prompt_caching_enabled()
             && !self
                 .state
+                .provider_runtime()
                 .prompt_cache_key_unsupported(&self.provider.base_url)
         {
             if let Some(conversation_id) = request
@@ -581,6 +586,7 @@ impl OpenAiResponsesProvider<'_> {
                     crate::settings::CacheRetention::Long
                 ) && !self
                     .state
+                    .provider_runtime()
                     .prompt_cache_retention_unsupported(&self.provider.base_url)
                 {
                     body["prompt_cache_retention"] = Value::String("24h".to_string());
@@ -2010,7 +2016,9 @@ mod tests {
         let long = body_with("long");
         assert_eq!(long["prompt_cache_key"], "conv_abc");
         assert_eq!(long["prompt_cache_retention"], "24h");
-        state.mark_prompt_cache_retention_unsupported("https://api.openai.com/v1");
+        state
+            .provider_runtime()
+            .mark_prompt_cache_retention_unsupported("https://api.openai.com/v1");
         let after = body_with("long");
         assert_eq!(after["prompt_cache_key"], "conv_abc");
         assert!(after.get("prompt_cache_retention").is_none());
@@ -2376,7 +2384,9 @@ mod tests {
     #[test]
     fn learned_unsupported_endpoint_stops_replaying_reasoning_items() {
         let state = fresh_state();
-        state.mark_reasoning_replay_unsupported("https://relay.example.com/v1");
+        state
+            .provider_runtime()
+            .mark_reasoning_replay_unsupported("https://relay.example.com/v1");
         let body = replay_request_body(&state, "openai_responses", "gpt-5.6", "gpt-5.6");
         let input = body["input"].as_array().unwrap();
         assert!(

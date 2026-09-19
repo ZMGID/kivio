@@ -1,5 +1,5 @@
-import { memo, useRef } from 'react'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { StrictMode, memo, useEffect, useRef, useState } from 'react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
 import {
@@ -14,6 +14,10 @@ import type { ConversationStreamSnapshot } from './conversationRuns'
 import type { ChatMessage } from './types'
 import * as messageNavigator from './messageNavigator'
 import { beginGroup, endGroup, resetGroups } from './groupStreamingStore'
+import { createChatExecutionOwner } from './chatExecutionOwner'
+import { createChatStreamLifecycleOwner } from './chatStreamLifecycleOwner'
+import { createStreamPreviewOwner } from './streamPreviewOwner'
+import type { ChatStreamPayload } from '../api/tauri'
 
 // 真实集成：挂载真 MessageList（订阅真 streamingStore），按 Chat 各 helper 的调用方式驱动 store，
 // 验证「流式更新只重渲订阅者、不波及兄弟节点」这一核心收益，以及各 helper→store 映射的渲染结果。
@@ -67,6 +71,56 @@ function message(id: number): ChatMessage {
 }
 
 describe('MessageList ← streamingStore 集成', () => {
+  it('keeps single-run deltas visible after StrictMode replays mount effects', async () => {
+    const conversationId = 'strict-mode-live'
+    const base = { conversationId, runId: 'run-strict', messageId: 'message-strict' }
+    let start: () => void = () => { throw new Error('harness not mounted') }
+    let receive: (payload: ChatStreamPayload) => void = () => { throw new Error('harness not mounted') }
+    function Harness() {
+      const [execution] = useState(createChatExecutionOwner)
+      const [preview] = useState(createStreamPreviewOwner)
+      const [lifecycle] = useState(() => createChatStreamLifecycleOwner(execution, preview))
+      useEffect(() => {
+        preview.attach()
+        preview.activate(conversationId)
+        return () => preview.dispose()
+      }, [preview])
+      start = () => {
+        execution.begin({ conversationId, kind: 'send', startedAt: Date.now() - 3000 })
+        preview.begin(conversationId, Date.now() - 3000)
+      }
+      receive = (payload) => { lifecycle.receive(payload) }
+      return <MessageList messages={[]} conversationId={conversationId} />
+    }
+    const { container } = render(<StrictMode><Harness /></StrictMode>)
+    act(() => {
+      start()
+      receive({ ...base, type: 'run_started', recovery: null } as ChatStreamPayload)
+      receive({ ...base, type: 'text_delta', delta: 'visible partial' } as ChatStreamPayload)
+    })
+    await waitFor(() => expect(container).toHaveTextContent('visible partial'))
+    await waitFor(() => expect(container.textContent).toMatch(/[1-9]\d*s ·/))
+  })
+
+  it('renders a live delta and seconds before the run completes', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const lifecycle = createChatStreamLifecycleOwner(execution, preview)
+    const conversationId = 'live-delta'
+    const base = { conversationId, runId: 'run-live', messageId: 'message-live' }
+    preview.activate(conversationId)
+    execution.begin({ conversationId, kind: 'send', startedAt: Date.now() - 3000 })
+    preview.begin(conversationId, Date.now() - 3000)
+    const { container } = render(<MessageList messages={[]} conversationId={conversationId} />)
+    act(() => {
+      lifecycle.receive({ ...base, type: 'run_started', recovery: null } as ChatStreamPayload)
+      lifecycle.receive({ ...base, type: 'text_delta', delta: 'first partial' } as ChatStreamPayload)
+    })
+    await waitFor(() => expect(container).toHaveTextContent('first partial'))
+    await waitFor(() => expect(container.textContent).toMatch(/[1-9]\d*s ·/))
+    preview.dispose()
+  })
+
   it('preserves the selected model and its content when a live group commits', async () => {
     const conversationId = 'group-continuity'
     const user: ChatMessage = { id: 'group-user', role: 'user', content: 'question', timestamp: 1, group_id: 'g1' }

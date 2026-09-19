@@ -415,7 +415,7 @@ mod discovery_tests {
             url: format!("http://{address}/mcp"),
             ..Default::default()
         }];
-        let generation = state.next_chat_generation(conversation_id);
+        let generation = state.chat_runtime().begin_generation(conversation_id);
         let reply = async {
             let _send = ChatSendReservation::try_acquire(&state, conversation_id).unwrap();
             let _reply =
@@ -449,14 +449,16 @@ mod discovery_tests {
         );
         assert!(matches!(result.unwrap(), Err(error) if error == "cancelled"));
         assert!(ChatSendReservation::try_acquire(&state, conversation_id).is_some());
-        assert!(!state.is_chat_generation_active(conversation_id, generation));
+        assert!(!state
+            .chat_runtime()
+            .is_generation_active(conversation_id, generation));
     }
 
     #[tokio::test]
     async fn cancelled_run_does_not_start_tool_discovery() {
         let state = crate::state::test_app_state();
         let id = "conv_already_cancelled";
-        let generation = state.next_chat_generation(id);
+        let generation = state.chat_runtime().begin_generation(id);
         state.cancel_chat_generation(id);
         let started = AtomicBool::new(false);
         let result = await_chat_tool_discovery(&state, id, generation, async {
@@ -472,7 +474,7 @@ mod discovery_tests {
     async fn active_run_keeps_the_discovered_tool_catalog() {
         let state = crate::state::test_app_state();
         let id = "conv_discovery_success";
-        let generation = state.next_chat_generation(id);
+        let generation = state.chat_runtime().begin_generation(id);
         let result = await_chat_tool_discovery(&state, id, generation, async {
             ChatToolList {
                 tools: vec![mcp::types::native_web_fetch_tool()],

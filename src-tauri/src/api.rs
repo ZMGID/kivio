@@ -453,7 +453,10 @@ where
         if is_cancelled() {
             return Err(format!("{} cancelled", label));
         }
-        let idx = match state.pick_active_key(provider_id, total, &tried) {
+        let idx = match state
+            .provider_runtime()
+            .pick_active_key(provider_id, total, &tried)
+        {
             Some(i) => i,
             None => break,
         };
@@ -461,7 +464,10 @@ where
         let key = api_keys[idx].as_str();
 
         // 是否还有未试过的备用 key —— 决定 429 是否在阈值处提前交回外层换 key。
-        let has_backup_key = state.pick_active_key(provider_id, total, &tried).is_some();
+        let has_backup_key = state
+            .provider_runtime()
+            .pick_active_key(provider_id, total, &tried)
+            .is_some();
         let rate_limit_cap = if has_backup_key {
             Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD)
         } else {
@@ -479,12 +485,12 @@ where
         .await
         {
             Ok(resp) => {
-                state.mark_key_ok(provider_id, idx);
+                state.provider_runtime().mark_key_ok(provider_id, idx);
                 return Ok(resp);
             }
             Err(err_msg) => {
                 if is_failover_error(&err_msg) && tried.len() < total {
-                    state.mark_key_failed(provider_id, idx);
+                    state.provider_runtime().mark_key_failed(provider_id, idx);
                     eprintln!(
                         "[failover] {} key #{}/{} failed, switching to next: {}",
                         label,
@@ -497,7 +503,7 @@ where
                 }
                 // 非 failover 错误（或已穷举所有 key）→ 直接返回
                 if is_failover_error(&err_msg) {
-                    state.mark_key_failed(provider_id, idx);
+                    state.provider_runtime().mark_key_failed(provider_id, idx);
                 }
                 return Err(err_msg);
             }

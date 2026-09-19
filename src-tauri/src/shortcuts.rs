@@ -13,7 +13,7 @@ use crate::settings::Settings;
 use crate::state::AppState;
 use crate::windows::{
     apply_chat_window_chrome, apply_frameless_window_chrome, ensure_chat_window,
-    ensure_chat_window_with_hash, ensure_main_window, normalize_chat_window_behavior,
+    ensure_chat_window_with_hash, ensure_translator_window, normalize_chat_window_behavior,
 };
 #[cfg(target_os = "macos")]
 use crate::windows::{
@@ -572,7 +572,7 @@ pub(crate) fn register_hotkeys_for_settings(
         } else if let Err(err) =
             shortcut_manager.on_shortcut(hotkey.as_str(), move |app, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
-                    toggle_main_window(app);
+                    toggle_translator_window(app);
                 }
             })
         {
@@ -880,15 +880,15 @@ pub(crate) fn get_mouse_position(app: &AppHandle) -> Option<tauri::PhysicalPosit
 }
 
 /// 切换输入翻译窗口。
-/// 可见时关闭销毁 main WebView；显示时跟随鼠标位置偏移 (10,10) 弹出，翻译器保持置顶。
-pub(crate) fn toggle_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+/// 可见时关闭销毁 translator WebView；显示时跟随鼠标位置偏移 (10,10) 弹出，翻译器保持置顶。
+pub(crate) fn toggle_translator_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(crate::windows::TRANSLATOR_WINDOW_LABEL) {
         if window.is_visible().unwrap_or(false) {
             #[cfg(target_os = "macos")]
             {
                 crate::windows::destroy_overlay_window(&window);
                 let st = app.state::<AppState>();
-                restore_previous_frontmost_app(app, st.frontmost_apps().main());
+                restore_previous_frontmost_app(app, st.frontmost_apps().translator());
             }
             #[cfg(not(target_os = "macos"))]
             let _ = window.close();
@@ -899,18 +899,18 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let st = app.state::<AppState>();
-        remember_frontmost_app(st.frontmost_apps().main());
+        remember_frontmost_app(st.frontmost_apps().translator());
     }
 
-    let window = match ensure_main_window(app) {
+    let window = match ensure_translator_window(app) {
         Ok(window) => window,
         Err(err) => {
             #[cfg(target_os = "macos")]
             {
                 let st = app.state::<AppState>();
-                restore_previous_frontmost_app(app, st.frontmost_apps().main());
+                restore_previous_frontmost_app(app, st.frontmost_apps().translator());
             }
-            eprintln!("Failed to ensure main window: {}", err);
+            eprintln!("Failed to ensure translator window: {}", err);
             return;
         }
     };
@@ -920,15 +920,14 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         ensure_overlay_panel(&window);
-        // ensure_main_window 的冷创建若短暂激活了 Kivio，在显示非激活 Panel 前立刻纠正；
+        // ensure_translator_window 的冷创建若短暂激活了 Kivio，在显示非激活 Panel 前立刻纠正；
         // 不触碰 Chat 窗口本身。
         let st = app.state::<AppState>();
-        reassert_previous_frontmost_app(app, st.frontmost_apps().main());
+        reassert_previous_frontmost_app(app, st.frontmost_apps().translator());
     }
 
-    // 重置 hash 为翻译模式；main 现在只承载输入翻译。
     let _ = window.eval(
-        "window.location.hash = ''; window.dispatchEvent(new HashChangeEvent('hashchange'));",
+        "window.location.hash = '#translator'; window.dispatchEvent(new HashChangeEvent('hashchange'));",
     );
 
     let pos = get_mouse_position(app).map(|cursor| {
@@ -952,7 +951,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle) {
             // 某些 macOS/tao 组合即便已带 NonactivatingPanel tag，冷创建后的首次
             // makeKeyWindow 仍会激活宿主 App；显示后再校正一次，确保普通 Chat 不被带到前面。
             let st = app_for_task.state::<AppState>();
-            reassert_previous_frontmost_app(&app_for_task, st.frontmost_apps().main());
+            reassert_previous_frontmost_app(&app_for_task, st.frontmost_apps().translator());
             refocus_overlay_after_frontmost_reassert(&window_for_task);
         });
         return;
@@ -1168,7 +1167,7 @@ pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
     {
         let st = app.state::<AppState>();
         forget_frontmost_app(st.frontmost_apps().lens());
-        forget_frontmost_app(st.frontmost_apps().main());
+        forget_frontmost_app(st.frontmost_apps().translator());
     }
     let existing_window = app.get_webview_window("chat");
     let window = ensure_chat_window(app)?;
@@ -1207,7 +1206,7 @@ pub(crate) fn open_chat_settings_window(app: &AppHandle) -> Result<(), String> {
     {
         let st = app.state::<AppState>();
         forget_frontmost_app(st.frontmost_apps().lens());
-        forget_frontmost_app(st.frontmost_apps().main());
+        forget_frontmost_app(st.frontmost_apps().translator());
     }
     let existing_window = app.get_webview_window("chat");
     let window = ensure_chat_window_with_hash(app, "chat/settings")?;
@@ -1275,7 +1274,7 @@ pub(crate) fn open_settings_window_for_activation(app: &AppHandle) -> Result<(),
     // 激活（单实例二次启动 / Windows 普通启动）时，优先把用户当前已开的主窗口带到前台：
     // 绝不强跳 Chat，更不能把正在 #chat/settings 配置的用户重置回 #chat（会丢失填到一半的
     // API key）。只有一个主窗口都没开时，才新开 Chat 作为默认入口。
-    for label in ["settings", "chat", "main"] {
+    for label in ["settings", "chat", "translator"] {
         let Some(window) = app.get_webview_window(label) else {
             continue;
         };
@@ -1375,7 +1374,7 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                     eprintln!("Failed to open chat window: {}", err);
                 }
             }
-            "show" => match ensure_main_window(app) {
+            "show" => match ensure_translator_window(app) {
                 Ok(window) => {
                     apply_frameless_window_chrome(&window);
                     #[cfg(not(target_os = "macos"))]
@@ -1383,7 +1382,7 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                     #[cfg(target_os = "macos")]
                     {
                         let st = app.state::<AppState>();
-                        remember_frontmost_app(st.frontmost_apps().main());
+                        remember_frontmost_app(st.frontmost_apps().translator());
                         ensure_overlay_panel(&window);
                     }
                     let _ = window.eval(
@@ -1396,7 +1395,7 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
                     #[cfg(not(target_os = "macos"))]
                     let _ = window.set_focus();
                 }
-                Err(err) => eprintln!("Failed to ensure main window: {}", err),
+                Err(err) => eprintln!("Failed to ensure translator window: {}", err),
             },
             "settings" => {
                 if let Err(err) = open_chat_settings_window(app) {

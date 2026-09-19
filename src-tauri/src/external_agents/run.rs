@@ -469,7 +469,7 @@ pub(crate) async fn run_external_cli_reply_in(
             .unwrap_or_else(|| composed.full_prompt.clone()),
     });
 
-    let run_generation = state.next_chat_generation(&conversation.id);
+    let run_generation = state.chat_runtime().begin_generation(&conversation.id);
     let run_id = format!("ext-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
     crate::chat::protocol::register_run(
@@ -549,7 +549,9 @@ pub(crate) async fn run_external_cli_reply_in(
 
     let mut emit_event = |event: UnifiedAgentEvent| {
         if let Some(commands) = slash::slash_commands_from_event(&event) {
-            state.set_cached_external_slash_commands(slash_cache_key.clone(), commands);
+            state
+                .external_discovery()
+                .set_cached_external_slash_commands(slash_cache_key.clone(), commands);
         }
         apply_unified_event(
             app,
@@ -572,7 +574,11 @@ pub(crate) async fn run_external_cli_reply_in(
         );
     };
 
-    let cancel_check = || !state.is_chat_generation_active(&conversation_id, run_generation);
+    let cancel_check = || {
+        !state
+            .chat_runtime()
+            .is_generation_active(&conversation_id, run_generation)
+    };
 
     // 本轮接不接工具审批 / 问用户。claude 的判据取自即将启动的 argv 本身
     // （`--permission-prompt-tool stdio`），从 argv 读回来就不可能与 `build_args` 分叉。
@@ -990,11 +996,16 @@ where
     // ⇒ 丢弃条目（actor 自行关停旧进程）并走下面的连接分支**带原生 resume**，于是新 flag
     // 生效而上下文不丢（spec 第 8 条：UI 所见必须与会话实际配置一致）。
     let force_pi_fork = matches!(protocol, StreamFormat::PiRpc) && pi_regenerate.is_some();
-    let previous_control = state.external_live_session_control_any(conversation_id);
+    let previous_control = state.external_live_sessions().control_any(conversation_id);
     let reusable_control = if force_pi_fork {
         None
     } else {
-        state.external_live_session_control(conversation_id, agent_id, &cwd_str, launch_config)
+        state.external_live_sessions().reusable_control(
+            conversation_id,
+            agent_id,
+            &cwd_str,
+            launch_config,
+        )
     };
     if reusable_control.is_none() {
         if let Some(stale) = previous_control {
@@ -1011,7 +1022,7 @@ where
             }
         }
         if force_pi_fork {
-            state.remove_external_live_session(conversation_id);
+            state.external_live_sessions().remove(conversation_id);
         }
     }
     let (mut control, mut prompt) = if let Some(regenerate) =
@@ -1052,7 +1063,7 @@ where
             &native_id,
         );
         resumable_native = Some(native_id);
-        state.register_external_live_session(
+        state.external_live_sessions().register(
             conversation_id.to_string(),
             LiveSession {
                 control: control.clone(),
@@ -1150,7 +1161,7 @@ where
                         cwd: cwd_str.clone(),
                     },
                 );
-                state.register_external_live_session(
+                state.external_live_sessions().register(
                     conversation_id.to_string(),
                     LiveSession {
                         control: control.clone(),
@@ -1189,7 +1200,7 @@ where
     // 会往注册表塞一条全新的 `LiveSession`（`busy: false`），旧 guard 还指着旧会话的 Arc
     // —— 不重挂的话，恰好是刚付过冷启动的那条路反而不受保护。
     // 下划线名字是必要的：这个值只靠 Drop 起作用，没有任何读取点。
-    let mut _busy = state.mark_external_live_session_busy(conversation_id);
+    let mut _busy = state.external_live_sessions().mark_busy(conversation_id);
 
     // At most one automatic fresh reconnect after a non-cancel / non-auth failure (R3), plus one
     // reconnect for a config change that only a relaunch can apply (R4 NeedsReconnect). Each is
@@ -1219,7 +1230,7 @@ where
         // 子进程）；只有「协议级取消之后会话仍可用」的协议例外 —— 否则用户点一次「停止」
         // 就把常驻进程连带杀掉，上下文延续与 0.1s 冷启动全部作废（见 `cancel_keeps_live_session`）。
         if !cancel_keeps_live_session(&err, protocol) {
-            state.remove_external_live_session(conversation_id);
+            state.external_live_sessions().remove(conversation_id);
         }
 
         match persistent_failure_action(
@@ -1291,7 +1302,7 @@ where
         // 又重连一次时续的是这条会话（续接成功 ⇒ 同一个 id；失败降级成新会话 ⇒ 新 id）。
         resumable_native = reconnect_native.filter(|id| !id.trim().is_empty());
         // 新会话进了注册表 ⇒ 旧 guard 已经指不到它了，重挂一个（旧的在赋值时落地）。
-        _busy = state.mark_external_live_session_busy(conversation_id);
+        _busy = state.external_live_sessions().mark_busy(conversation_id);
         control = next_control;
         prompt = if resumed {
             reuse_prompt.to_string()
@@ -1380,7 +1391,7 @@ async fn reconnect_fresh(
             cwd: cwd_str.to_string(),
         },
     );
-    state.register_external_live_session(
+    state.external_live_sessions().register(
         conversation_id.to_string(),
         LiveSession {
             control: control.clone(),
@@ -2184,14 +2195,16 @@ fn background_task_sink(
             description,
             summary,
         }) => {
-            app.state::<AppState>().upsert_external_background_task(
-                &conversation_id,
-                &task_id,
-                &status,
-                kind.as_deref(),
-                description.as_deref(),
-                summary.as_deref(),
-            );
+            app.state::<AppState>()
+                .external_background_tasks()
+                .upsert_external_background_task(
+                    &conversation_id,
+                    &task_id,
+                    &status,
+                    kind.as_deref(),
+                    description.as_deref(),
+                    summary.as_deref(),
+                );
         }
         IdleSideEffect::Task(_) => {}
         // sink 是同步闭包，持久化是 async —— 甩给运行时，失败只打日志（唤醒消息
@@ -2266,7 +2279,7 @@ async fn present_dsh_idle_ask(
     ask: crate::external_agents::session::live::ApprovalAsk,
 ) -> crate::external_agents::session::live::ApprovalDecision {
     let state = app.state::<AppState>();
-    let generation = state.next_chat_generation(&conversation_id);
+    let generation = state.chat_runtime().begin_generation(&conversation_id);
     let run_id = format!("dsh-ask-{}", Uuid::new_v4());
     let message_id = format!("msg_{}", Uuid::new_v4());
     let arguments = serde_json::to_string(&ask.input).unwrap_or_else(|_| "{}".to_string());
@@ -2298,7 +2311,9 @@ async fn present_dsh_idle_ask(
         auto_allow_tools: std::sync::atomic::AtomicBool::new(true),
     };
     let decision = host.ask(ask).await;
-    state.end_chat_generation(&conversation_id, generation);
+    state
+        .chat_runtime()
+        .end_generation(&conversation_id, generation);
     if let Some(revision) = persisted {
         crate::chat::protocol::finish_run(&app, &run_id, "done", "", revision);
     }
@@ -2355,14 +2370,16 @@ fn apply_idle_dsh_event(app: &AppHandle, conversation_id: &str, event: UnifiedAg
             description,
             summary,
         } => {
-            app.state::<AppState>().upsert_external_background_task(
-                conversation_id,
-                &task_id,
-                &status,
-                kind.as_deref(),
-                description.as_deref(),
-                summary.as_deref(),
-            );
+            app.state::<AppState>()
+                .external_background_tasks()
+                .upsert_external_background_task(
+                    conversation_id,
+                    &task_id,
+                    &status,
+                    kind.as_deref(),
+                    description.as_deref(),
+                    summary.as_deref(),
+                );
             if status == "running" && summary.is_none() {
                 return;
             }
@@ -2417,6 +2434,7 @@ fn apply_idle_dsh_event(app: &AppHandle, conversation_id: &str, event: UnifiedAg
             .map(|cwd| slash::cache_key("dsh", &cwd.to_string_lossy()))
             .unwrap_or_else(|_| slash::cache_key("dsh", conversation_id));
             app.state::<AppState>()
+                .external_discovery()
                 .set_cached_external_slash_commands(key, commands);
         }
         _ => {}
@@ -3208,14 +3226,16 @@ fn apply_unified_event(
             description,
             summary,
         } => {
-            app.state::<AppState>().upsert_external_background_task(
-                conversation_id,
-                &task_id,
-                &status,
-                kind.as_deref(),
-                description.as_deref(),
-                summary.as_deref(),
-            );
+            app.state::<AppState>()
+                .external_background_tasks()
+                .upsert_external_background_task(
+                    conversation_id,
+                    &task_id,
+                    &status,
+                    kind.as_deref(),
+                    description.as_deref(),
+                    summary.as_deref(),
+                );
             // dsh 后台子代理的 tool/result 只是派出回执。终态走 BackgroundTask，
             // 同一轮里把对应工具卡从 Running 收掉（跨轮要靠空闲读，目前 dsh 没有）。
             if status != "running" {

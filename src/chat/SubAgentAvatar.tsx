@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { bodyPoints, facePoints, polyPath, type BodyShape, type FaceName } from './kivioBlobShapes'
 
-const bodies: BodyShape[] = ['cloud', 'squircle', 'egg', 'bubble', 'puddle', 'burst', 'circle']
+const bodies: BodyShape[] = ['cloud', 'squircle', 'pebble', 'bean', 'bubble', 'puddle', 'burst', 'circle']
 const faces: FaceName[] = ['dots', 'focus', 'peek', 'wide', 'smirk', 'neutral', 'happy', 'content', 'lookUp', 'tiny']
 
 /** Derive each feature independently so identities are stable without repeating six presets. */

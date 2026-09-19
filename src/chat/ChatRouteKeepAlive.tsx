@@ -10,6 +10,10 @@ interface ChatRouteKeepAliveProps {
  * 聊天历史和设置页都包含较大的 React/Markdown 子树。路由分支直接互斥渲染时，
  * 从设置返回聊天会让 MessageList 从零挂载；这里把这两个稳定路由缓存为同一个 key，
  * 让 React 复用原实例。非聊天中心页不缓存，避免把多个中心页的大树长期留在内存里。
+ *
+ * Hidden panes must be a real `display:none` box (`hidden` + `inert`).
+ * `display: contents` lets a cached conversation composer leak into the
+ * settings layout and swallow the back-button click.
  */
 export function ChatRouteKeepAlive({ activeKey, children }: ChatRouteKeepAliveProps) {
   const cacheRef = useRef(new Map<string, ReactNode>())
@@ -17,17 +21,22 @@ export function ChatRouteKeepAlive({ activeKey, children }: ChatRouteKeepAlivePr
   if (keep) cacheRef.current.set(activeKey, children)
 
   return (
-    <div className="contents">
-      {[...cacheRef.current.entries()].map(([key, node]) => (
-        <div
-          key={key}
-          style={{ display: key === activeKey ? 'contents' : 'none' }}
-          aria-hidden={key === activeKey ? undefined : true}
-        >
-          {node}
-        </div>
-      ))}
-      {!keep && <div style={{ display: 'contents' }}>{children}</div>}
+    <div className="flex min-h-0 min-w-0 flex-1">
+      {[...cacheRef.current.entries()].map(([key, node]) => {
+        const active = key === activeKey
+        return (
+          <div
+            key={key}
+            className={active ? 'flex min-h-0 min-w-0 flex-1' : undefined}
+            hidden={!active}
+            aria-hidden={active ? undefined : true}
+            {...(active ? {} : { inert: '' })}
+          >
+            {node}
+          </div>
+        )
+      })}
+      {!keep && <div className="flex min-h-0 min-w-0 flex-1">{children}</div>}
     </div>
   )
 }

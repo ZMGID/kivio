@@ -244,7 +244,7 @@ pub(crate) fn chat_list_background_tasks(
         for t in state
             .external_background_tasks()
             .snapshot_reconciled(wanted, |id| {
-                state.external_live_session_control_any(id).is_some()
+                state.external_live_sessions().control_any(id).is_some()
             })
         {
             let value = serde_json::json!({
@@ -294,7 +294,7 @@ pub(crate) async fn chat_stop_external_background_task(
     conversation_id: String,
     task_id: String,
 ) -> Result<(), String> {
-    if let Some(control) = state.external_live_session_control_any(&conversation_id) {
+    if let Some(control) = state.external_live_sessions().control_any(&conversation_id) {
         let _ = control
             .send(
                 crate::external_agents::session::live::SessionCommand::StopTask {
@@ -304,7 +304,9 @@ pub(crate) async fn chat_stop_external_background_task(
             .await;
     }
     // 会话已没了 ⇒ 任务随进程消失，同样落到 stopped。
-    state.upsert_external_background_task(&conversation_id, &task_id, "stopped", None, None, None);
+    state
+        .external_background_tasks()
+        .upsert_external_background_task(&conversation_id, &task_id, "stopped", None, None, None);
     Ok(())
 }
 
@@ -385,7 +387,7 @@ pub(crate) async fn chat_steer_message(
         return Ok(false);
     };
     // 常驻 CLI 会话优先：这条对话由外部 CLI 在跑时，内置信箱根本没人来取。
-    if let Some(control) = state.external_live_session_control_any(&conversation_id) {
+    if let Some(control) = state.external_live_sessions().control_any(&conversation_id) {
         let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
         let sent = control
             .send(
@@ -405,7 +407,9 @@ pub(crate) async fn chat_steer_message(
         // actor 每条命令都会答复；真丢了（actor 中途没了）按未受理处理。
         return Ok(accepted_rx.await.unwrap_or(false));
     }
-    Ok(state.push_chat_steering(&conversation_id, message))
+    Ok(state
+        .chat_runtime()
+        .push_steering(&conversation_id, message))
 }
 
 /// 原生 follow-up：把消息排到当前运行结束后，由同一个常驻会话 / 内置循环继续处理。
@@ -430,8 +434,9 @@ pub(crate) async fn chat_follow_up_message(
     let (image_paths, file_paths): (Vec<_>, Vec<_>) = paths
         .into_iter()
         .partition(|path| crate::external_agents::attachments::image_mime_for_path(path).is_some());
-    if let Some((control, image_mime_whitelist)) =
-        state.external_follow_up_live_session(&conversation_id)
+    if let Some((control, image_mime_whitelist)) = state
+        .external_live_sessions()
+        .follow_up_control(&conversation_id)
     {
         let (images, degraded_images) = crate::external_agents::attachments::load_image_blocks(
             &image_paths,
@@ -474,7 +479,9 @@ pub(crate) async fn chat_follow_up_message(
     let Some(message) = crate::chat::agent::SteeringMessage::new(follow_up_id, &content) else {
         return Ok(false);
     };
-    Ok(state.push_chat_follow_up(&conversation_id, message))
+    Ok(state
+        .chat_runtime()
+        .push_follow_up(&conversation_id, message))
 }
 
 pub(super) fn emit_chat_plan_state(
@@ -501,7 +508,10 @@ pub(super) async fn request_session_consent(
     generation: u64,
 ) -> bool {
     // Already granted for this conversation — no prompt.
-    if state.has_chat_consent(conversation_id) {
+    if state
+        .chat_interactions()
+        .has_session_consent(conversation_id)
+    {
         return true;
     }
     // Serialize prompts so concurrent first-round tools (read/grep/find/ls run
@@ -509,7 +519,10 @@ pub(super) async fn request_session_consent(
     // Whoever wins the lock prompts once; the rest re-check consent and reuse
     // the grant without a second dialog.
     let _prompt_guard = state.chat_interactions().lock_consent_prompt().await;
-    if state.has_chat_consent(conversation_id) {
+    if state
+        .chat_interactions()
+        .has_session_consent(conversation_id)
+    {
         return true;
     }
     let rx = state
@@ -531,7 +544,9 @@ pub(super) async fn request_session_consent(
     crate::chat::protocol::resolve_session_consent(app, run_id);
     match result {
         Ok(Ok(true)) => {
-            state.grant_chat_consent(conversation_id);
+            state
+                .chat_interactions()
+                .grant_session_consent(conversation_id);
             true
         }
         _ => {
@@ -567,7 +582,10 @@ pub(crate) async fn request_tool_approval_outcome(
 ) -> crate::chat::interaction_state::ToolApprovalOutcome {
     // 用户此前对该工具按过「总是允许」→ 本对话内直接放行，不弹卡、不占挂起表。
     // 内置 agent 与外部 CLI 都走这个函数，所以一处判断两条路同时生效。
-    if state.has_tool_always_allow(conversation_id, &record.name) {
+    if state
+        .chat_interactions()
+        .has_tool_always_allow(conversation_id, &record.name)
+    {
         return crate::chat::interaction_state::ToolApprovalOutcome {
             approved: true,
             permission_mode: None,
@@ -671,7 +689,10 @@ pub(crate) async fn request_user_response(
 }
 
 pub(super) async fn wait_for_chat_cancel(state: &AppState, conversation_id: &str, generation: u64) {
-    while state.is_chat_generation_active(conversation_id, generation) {
+    while state
+        .chat_runtime()
+        .is_generation_active(conversation_id, generation)
+    {
         sleep(Duration::from_millis(100)).await;
     }
 }

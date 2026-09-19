@@ -183,7 +183,8 @@ pub fn launch(app: &AppHandle, mut request: SubAgentRequest, key: &str) -> Resul
     )?;
     if !app
         .state::<AppState>()
-        .is_chat_generation_active(&request.parent_conversation_id, request.parent_generation)
+        .chat_runtime()
+        .is_generation_active(&request.parent_conversation_id, request.parent_generation)
     {
         // Supervision must attach even if cancellation cannot yet be persisted.
         // Volatile cancellation is set first; the supervisor retries final storage.
@@ -365,7 +366,11 @@ pub async fn operate(
                 if let Some(reason) = wait_reason(&runtime, conversation, target, cursor) {
                     break reason;
                 }
-                if app.state::<AppState>().has_chat_pending_input(conversation) {
+                if app
+                    .state::<AppState>()
+                    .chat_runtime()
+                    .has_pending_input(conversation)
+                {
                     break "user_input";
                 }
                 if tokio::time::Instant::now() >= deadline {

@@ -10,22 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Kivio Desktop",
-        "width": 392,
-        "height": 152,
-        "resizable": true,
-        "decorations": false,
-        "transparent": true,
-        "shadow": false,
-        "visibleOnAllWorkspaces": true,
-        "create": false,
-        "skipTaskbar": true,
-        "visible": false
-      }
-    ],
+    "windows": [],
     "macOSPrivateApi": true
   },
   "bundle": {

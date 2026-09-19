@@ -354,6 +354,7 @@ pub fn handle_conversation_tool_call<'a>(
                             .map_err(|e| format!("Invalid arguments: {e}"))?;
                         if app
                             .state::<AppState>()
+                            .chat_runtime()
                             .has_goal_user_queue_pending(conversation_id)
                         {
                             return Err(
@@ -790,7 +791,9 @@ pub fn chat_set_goal_user_queue_pending(
     conversation_id: String,
     pending: bool,
 ) {
-    state.set_goal_user_queue_pending(&conversation_id, pending);
+    state
+        .chat_runtime()
+        .set_goal_user_queue_pending(&conversation_id, pending);
 }
 fn response(mut c: Conversation) -> Value {
     crate::chat::commands::catalog::strip_transcripts_for_frontend(&mut c);

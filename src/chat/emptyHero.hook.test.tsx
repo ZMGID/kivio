@@ -116,8 +116,10 @@ describe('useEmptyHeroMutter', () => {
   })
 
   it('多数时候不说：变形态不到一半会念，蹦几乎不配词', () => {
-    expect(emptyHeroMutter('zh', 'egg', () => 0.3)).not.toBeNull()
-    expect(emptyHeroMutter('zh', 'egg', () => 0.5)).toBeNull()
+    expect(emptyHeroMutter('zh', 'cloud', () => 0.3)).not.toBeNull()
+    expect(emptyHeroMutter('zh', 'cloud', () => 0.5)).toBeNull()
+    expect(emptyHeroMutter('zh', 'pebble', () => 0)).toBe('稳一会')
+    expect(emptyHeroMutter('en', 'bean', () => 0)).toBe('Going sideways.')
     expect(emptyHeroMutter('zh', 'hop', () => 0.3)).toBeNull()
     expect(emptyHeroMutter('en', 'hop', () => 0.1)).toBe('Stretching.')
     expect(emptyHeroMutter('en', 'squircle', () => 0.9)).toBeNull()

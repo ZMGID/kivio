@@ -26,6 +26,15 @@ describe('stream preview owner', () => {
     vi.useRealTimers()
   })
 
+  it('publishes the local start time before the first backend packet', () => {
+    const owner = createStreamPreviewOwner()
+    owner.activate('a')
+    owner.begin('a', 1234)
+    expect(getCoarse().streaming).toBe(true)
+    expect(getSnapshot().startedAt).toBe(1234)
+    owner.dispose()
+  })
+
   it('keeps background deltas and stale frames out of the selected conversation', () => {
     const owner = createStreamPreviewOwner()
     owner.activate('a')

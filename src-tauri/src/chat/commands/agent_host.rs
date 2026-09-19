@@ -184,21 +184,22 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
 
     fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
         self.state
-            .is_chat_generation_active(conversation_id, generation)
+            .chat_runtime()
+            .is_generation_active(conversation_id, generation)
     }
 
     fn take_steering_messages(
         &self,
         conversation_id: &str,
     ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.state.take_chat_steering(conversation_id)
+        self.state.chat_runtime().take_steering(conversation_id)
     }
 
     fn take_follow_up_messages(
         &self,
         conversation_id: &str,
     ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.state.take_chat_follow_up(conversation_id)
+        self.state.chat_runtime().take_follow_up(conversation_id)
     }
 
     fn wait_for_generation_inactive<'a>(
@@ -320,7 +321,8 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
 
     fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
         self.state
-            .is_chat_generation_active(conversation_id, generation)
+            .chat_runtime()
+            .is_generation_active(conversation_id, generation)
     }
 
     fn wait_for_generation_inactive<'a>(

@@ -95,12 +95,12 @@ const FACE_HOLD: Record<BlobMood, [number, number]> = {
 const BODY_PLAY: Record<BlobMood, BodyShape[]> = {
   idle: ['circle'],
   think: ['cloud', 'cloud', 'circle', 'cloud'],
-  search: ['egg', 'egg', 'circle'],
+  search: ['circle'],
   work: ['squircle', 'squircle', 'circle', 'squircle'],
   speak: ['bubble', 'circle', 'bubble', 'bubble'],
   error: ['puddle'],
   done: ['circle'],
-  wait: ['circle', 'egg'],
+  wait: ['circle'],
 }
 const BODY_CHANCE: Record<BlobMood, number> = {
   idle: 1,
@@ -123,7 +123,7 @@ const BODY_HOLD: Record<BlobMood, [number, number]> = {
   wait: [4000, 8000],
 }
 /** 闲置偶尔随机变一下形态玩（连同 hop 一起对外汇报，让空态标题能接一句嘴）。 */
-const IDLE_ANTIC_SHAPES: BodyShape[] = ['squircle', 'cloud', 'egg']
+const IDLE_ANTIC_SHAPES: BodyShape[] = ['squircle', 'cloud', 'pebble', 'bean']
 export type BlobAntic = BodyShape | 'hop'
 
 const BLINK: Record<BlobMood, [number, number] | null> = {

@@ -299,11 +299,13 @@ pub fn apply_frameless_window_chrome(window: &WebviewWindow) {
     }
 }
 
-/**
- * 获取主窗口
- */
-pub fn get_main_window(app: &AppHandle) -> Option<WebviewWindow> {
-    app.get_webview_window("main")
+pub const TRANSLATOR_WINDOW_LABEL: &str = "translator";
+const TRANSLATOR_WINDOW_TITLE: &str = "Translator";
+const TRANSLATOR_WINDOW_WIDTH: f64 = 392.0;
+const TRANSLATOR_WINDOW_HEIGHT: f64 = 152.0;
+
+pub fn get_translator_window(app: &AppHandle) -> Option<WebviewWindow> {
+    app.get_webview_window(TRANSLATOR_WINDOW_LABEL)
 }
 
 pub fn get_chat_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -365,27 +367,35 @@ pub fn chat_remember_last_route(app: AppHandle, route: Option<String>) -> Result
     }
 }
 
-/**
- * 确保主窗口存在（不存在则创建）
- * 从 tauri.conf.json 中读取主窗口配置进行创建
- */
-pub fn ensure_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    if let Some(window) = get_main_window(app) {
+/// 确保输入翻译浮层存在。与 chat / lens 一样走 Rust builder，不占用静态 `main`。
+pub fn ensure_translator_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = get_translator_window(app) {
         return Ok(window);
     }
 
-    let config = app
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|w| w.label == "main")
-        .ok_or_else(|| "Main window config not found".to_string())?;
+    let window = WebviewWindowBuilder::new(
+        app,
+        TRANSLATOR_WINDOW_LABEL,
+        WebviewUrl::App("index.html#translator".into()),
+    )
+    .title(TRANSLATOR_WINDOW_TITLE)
+    .inner_size(TRANSLATOR_WINDOW_WIDTH, TRANSLATOR_WINDOW_HEIGHT)
+    .resizable(true)
+    .decorations(false)
+    .shadow(false)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .visible_on_all_workspaces(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    .build()
+    .map_err(|e| e.to_string())?;
 
-    WebviewWindowBuilder::from_config(app, config)
-        .map_err(|e| e.to_string())?
-        .build()
-        .map_err(|e| e.to_string())
+    #[cfg(target_os = "macos")]
+    ensure_overlay_panel(&window);
+
+    Ok(window)
 }
 
 /**

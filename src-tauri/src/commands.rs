@@ -31,7 +31,7 @@ use crate::shortcuts::{
 };
 use crate::state::AppState;
 use crate::utils::{language_name, resolve_target_lang};
-use crate::windows::get_main_window;
+use crate::windows::get_translator_window;
 
 pub(crate) fn apply_launch_at_startup(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let auto_launch = app.autolaunch();
@@ -263,7 +263,9 @@ async fn apply_settings(
         }
     };
 
-    state.sync_preferred_api_keys(&previous_settings, &committed.settings);
+    state
+        .provider_runtime()
+        .sync_preferred_api_keys(&previous_settings, &committed.settings);
 
     if previous_settings.keep_chat_window_alive && !committed.settings.keep_chat_window_alive {
         crate::shortcuts::destroy_hidden_chat_window(app);
@@ -323,11 +325,14 @@ pub(crate) fn open_settings_window(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) fn close_translator_window(app: AppHandle, _state: State<'_, AppState>) {
-    if let Some(window) = get_main_window(&app) {
+    if let Some(window) = get_translator_window(&app) {
         #[cfg(target_os = "macos")]
         {
             crate::windows::destroy_overlay_window(&window);
-            crate::windows::restore_previous_frontmost_app(&app, _state.frontmost_apps().main());
+            crate::windows::restore_previous_frontmost_app(
+                &app,
+                _state.frontmost_apps().translator(),
+            );
         }
         #[cfg(not(target_os = "macos"))]
         let _ = window.close();
@@ -397,18 +402,18 @@ pub(crate) async fn commit_translation(
     // commit 用下面的 [NSApp hide:] 把前台让回原 App（成熟路径）。先清掉翻译窗的前台快照，
     // 避免后续窗口事件再次驱动焦点交还。
     #[cfg(target_os = "macos")]
-    crate::windows::forget_frontmost_app(state.frontmost_apps().main());
+    crate::windows::forget_frontmost_app(state.frontmost_apps().translator());
 
     // macOS 输入翻译窗口被重分类为 KivioOverlayPanel；必须先换回 TaoWindow 再 destroy，
     // 否则 WebKit 清理 contentLayoutRect KVO observer 时会抛 ObjC 异常并让 Rust abort。
     #[cfg(target_os = "macos")]
-    if let Some(window) = get_main_window(&app) {
+    if let Some(window) = get_translator_window(&app) {
         crate::windows::destroy_overlay_window(&window);
     }
 
     // 其他平台没有 macOS TSM/IMK 的销毁问题，保持原有的关闭释放行为。
     #[cfg(not(target_os = "macos"))]
-    if let Some(window) = get_main_window(&app) {
+    if let Some(window) = get_translator_window(&app) {
         let _ = window.close();
     }
 
@@ -935,7 +940,9 @@ pub(crate) async fn fetch_models(
         return Err("Missing API Key".to_string());
     }
     if let Some(idx) = preferred_idx {
-        state.prefer_key(&provider_id, idx.min(api_keys.len() - 1));
+        state
+            .provider_runtime()
+            .prefer_key(&provider_id, idx.min(api_keys.len() - 1));
     }
 
     let base = base_url.trim_end_matches('/');

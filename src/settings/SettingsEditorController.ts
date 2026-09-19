@@ -236,6 +236,9 @@ export class SettingsEditorController {
       onClose()
     }
     if (options?.waitForSave === false) {
+      // Keep-alive can leave this controller mounted after a previous close.
+      // Navigation must still be able to tell the host to hide us again.
+      this.closeIssued = false
       closeOnce()
       return pending.then(() => {})
     }

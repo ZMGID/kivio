@@ -1,6 +1,6 @@
 # Kivio 架构收口：语义一致性、状态所有权与验收
 
-状态：实施中（R1–R3 代码完成，R4 分批纵切进行中但尚未验收，R5 待实施；平台验收未完成）。基线：`dc1eb6cf`。日期：2026-09-19。
+状态：代码验收完成，平台实机验收待补（R1–R5 已实施；macOS 未验证，Windows T15 尚未实机执行）。基线：`dc1eb6cf`。日期：2026-09-19。
 
 发布记录：[GitHub #52](https://github.com/ZMGID/kivio/issues/52)，标签：`ready-for-agent`。
 
@@ -198,3 +198,27 @@
 - Settings：Provider 目录、备份、热键录制及 Provider 弹窗各有 owner；引导重启不再忽略失败的 flush 或用 `replace` 丢弃新增草稿；OCR 与更新下载防重复执行、过期结果和卸载后回写。导航/只读展示状态可留页面。
 - Lens：关闭意图、历史恢复与截图复制计时使旧 capture/请求/反馈失效；迟到标注保存和选区失败不关新开场；历史图像提交及最终回包补全由 history owner 持有。内容 owner 原子协调打开、隐藏、恢复历史，页面保留布局、画布与 OS 动画。接口级 open/hide/restore 测试与实际页面时序测试覆盖这些转换。
 - 复验：在上述已提交纵切后，前端全量 250 文件、1981 项测试通过；各纵切的 TypeScript、受影响 ESLint 与定向测试通过。R4 尚需 Chat 执行/发送及展示剩余所有权验收；R5 和 Windows/macOS 平台实机验收仍待进行。
+
+### R4e 页面 controller 收口
+
+- Chat：发送准备、同步/外部发送、再生成与指定模型回复、取消、队列投递、run 交互、流终态和弹出归属分别由明确 owner 执行。页面只连接领域动作与展示；导航 lease 阻止迟到创建、错误和终态覆盖新目标。外部发送从破坏性取走改为同进程内 claim/renew/release/ack，窗口卸载后未确认请求可重交接；确认前崩溃仍可能重复，不能声称恰好一次或跨进程持久。
+- Lens：内容 controller 接管 answer 与“发送到 AI 客户端”两种请求生命周期；标注注册、迟到结果、失败恢复和关闭均以请求身份判定。原生隐藏先遮蔽页面，成功才清空会话，失败只回滚同一 opening，因此保留截图与输入。
+- 删除的重复规则：页面不再补偿发送 owner 的 run 终态，也不自行拼接 Lens handoff 的 busy/注册/发送/清理；Settings 保持单一 canonical/draft 编辑权威。
+- 失败用例与复验：并发 run、旧终态、外部消息卸载与 StrictMode 重入、超过租约时长的运行、Lens 关闭失败与迟到标注/回包有定向测试。最终完整前端 259 文件、2125 项测试，Rust library 2522 项通过、47 项按原有配置忽略；TypeScript、ESLint 与架构门禁通过。页面仍保留布局、OS 动画和组合代码，行数本身不作为验收标准。
+- 已知极端边界：若原生隐藏在首次 `openContent` 之前失败，冷启动恢复会让当前可见 select 重新可截图且不清除用户草稿，但已取走、尚未应用的 reset payload（冻结帧/选中文本）不会自动重放；自动重放可能覆盖当前输入或重触发翻译。该边界与平台实机行为需继续核查，不把恢复等同于无损重放。
+
+### R5 逻辑依赖与生成门禁
+
+- 旧入口：仅检查文件图；`api/tauri.ts` 运行时依赖 Chat Dock normalizer，Settings 经多个浅 facade 依赖 Chat 配置实现，Chat 与 Settings 在不同文件形成聚合环。
+- 新 owner：`architecture-boundaries.json` 声明逻辑 Module 与职责；门禁同时检查文件图和按 Module 聚合的图，将 type-only、运行时、re-export 与字面量动态导入纳入约束，给出精确环路见证，未映射路径失败关闭。自动化与 Dock/Git 传输契约及 normalizer 归 API；Chat-only 图语义留在 Chat；外部 CLI 设置传输、事件和 DTO 归 API；共享图标、平台判定、模型偏好和应用 i18n 归公共所有者。Chat 通过注入的视图槽组合对话库、插件中心和更新说明；Settings 的会话视图槽接收当前草稿语言而非持久化旧值。
+- 删除的重复规则：移除 Chat 内传输契约浅转发、6 个 Settings-facing Chat 浅 facade，以及 Settings 对 Chat Markdown/中心页的直接引用；未新增临时架构例外。
+- 失败用例与复验：T14 覆盖跨文件、Adapter、barrel、alias、type-only 与动态边；门禁 12 项测试及真实仓库检查通过，文件图与 Module 图均无环、无临时例外。生成契约、资源/图标/打包规则、全量前端与 Rust library 回归均通过；Windows 生产打包及 T15 实机结果见下方平台记录。
+
+### 平台验收记录（T15）
+
+| 平台 | 自动化构建/测试 | 热键、窗口恢复、截图、后台退出、页面视觉实机 |
+|---|---|---|
+| Windows | 前端生产构建、Rust library、资源/图标/打包检查通过；完整 Tauri 生产打包进行中 | 未执行本次新构建的人工实机巡检；正在运行的开发版不代表新构建 |
+| macOS | 当前 Windows 环境无法构建或运行 macOS 目标 | 未验证，需 macOS 实机补测 |
+
+因此状态上限是“代码验收完成，平台验收待补”，不得标记整期完全完成。

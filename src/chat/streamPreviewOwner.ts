@@ -221,6 +221,11 @@ export function createStreamPreviewOwner() {
   }
 
   return {
+    /** React StrictMode replays effect cleanup/setup without constructing a new
+     * owner. Re-arm presentation on setup after the simulated unmount. */
+    attach(): void {
+      disposed = false
+    },
     summary(conversationId: string): Readonly<ConversationStreamSnapshot> | null {
       return snapshots.get(conversationId) ?? null
     },
@@ -277,6 +282,7 @@ export function createStreamPreviewOwner() {
       }
       if (selectedId === conversationId) {
         clearVisible()
+        if (mode === 'single') setSnapshot(snapshots.get(conversationId)!)
         setCoarse({ streaming: true, streamFrozen: false })
       }
     },

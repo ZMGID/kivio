@@ -3243,8 +3243,10 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
     // 首次启动的内置专家迁移会在 AppState manage 之前保存设置，此时还没有缓存可清。
     use tauri::Manager;
     if let Some(state) = app.try_state::<crate::state::AppState>() {
-        state.clear_all_external_agent_models_cache();
-        state.clear_detected_agents_cache();
+        state
+            .external_discovery()
+            .clear_all_external_agent_models_cache();
+        state.external_discovery().clear_detected_agents_cache();
     }
     Ok(())
 }
