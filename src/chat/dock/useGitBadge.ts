@@ -2,7 +2,7 @@
 import { useCallback, useSyncExternalStore } from 'react'
 import { dockApi } from './api'
 import { gitStatusSignature } from './gitReviewModel'
-import type { GitDiffStat, GitRepoState } from './types'
+import type { GitDiffStat, GitRepoState } from '../../api/dockContracts'
 import { workspaceActivity } from './workspaceActivity'
 
 export type GitBadge = {

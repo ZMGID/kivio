@@ -6,7 +6,7 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { isTauriRuntime } from '../utils'
 import { dockApi } from './api'
-import { normalizeWorkspaceActivityEvent, type WorkspaceActivityEvent } from './types'
+import { normalizeWorkspaceActivityEvent, type WorkspaceActivityEvent } from '../../api/dockContracts'
 
 export type WorkspaceActivityListener = (event: WorkspaceActivityEvent) => void
 

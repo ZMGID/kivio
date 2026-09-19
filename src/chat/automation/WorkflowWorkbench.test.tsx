@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkflowWorkbench } from './WorkflowWorkbench'
 import { createBlankAutomation, createFlowNode, connectNodes } from './graph'
-import type { AutomationRun } from './types'
+import type { AutomationRun } from '../../api/automationContracts'
 
 const source = createFlowNode('trigger.manual', { label: '上游' }, { x: 0, y: 0 })
 const node = createFlowNode('action.notify', { label: '通知', notify: { body: '' } }, { x: 0, y: 0 })

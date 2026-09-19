@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { GitHistory } from './GitHistory'
 import { dockApi } from './api'
-import type { GitLogResult } from './types'
+import type { GitLogResult } from '../../api/dockContracts'
 
 vi.mock('virtua', () => ({ VList: ({ children }: { children: ReactNode }) => <div>{children}</div> }))
 vi.mock('./workspaceActivity', () => ({ workspaceActivity: { subscribe: () => () => {}, isAvailable: () => true } }))

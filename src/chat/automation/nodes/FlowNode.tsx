@@ -10,7 +10,8 @@ import {
   isAgentSlotRequired,
   slotAllowsMany,
 } from '../agentModel'
-import { isAttachmentType, isIfType, isSwitchType, isTriggerType, branchHandles, type AutomationNodeType, type FlowNodeData, type NodeRunStatus } from '../types'
+import type { AutomationNodeType, FlowNodeData, NodeRunStatus } from '../../../api/automationContracts'
+import { isAttachmentType, isIfType, isSwitchType, isTriggerType, branchHandles } from '../nodeSemantics'
 import { CanvasChromeContext, NodeRunStatusContext } from './chrome'
 import { ValidationContext } from './chrome'
 

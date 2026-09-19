@@ -22,7 +22,7 @@ import { GitHistory } from './GitHistory'
 import { DockContextMenu, type DockMenuAnchor, type DockMenuItem } from './DockContextMenu'
 import { partitionStatusEntries, statusLetter, type StatusLetter } from './gitReviewModel'
 import { useGitReview } from './useGitReview'
-import type { GitBranchItem, GitStatusEntry } from './types'
+import type { GitBranchItem, GitStatusEntry } from '../../api/dockContracts'
 
 const STATUS_BADGE_CLASS: Record<StatusLetter, string> = {
   M: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',

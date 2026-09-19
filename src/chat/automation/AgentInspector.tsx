@@ -8,7 +8,7 @@ import { chatApi, type DetectedExternalAgent } from '../api'
 import { AgentIcon } from '../../components/AgentIcon'
 import { normalizeAgent, toAgentData, withRuntimeKind, type NormalizedAgent } from './agentModel'
 import { isAutomationOptInTool, pruneAlwaysOnToolIds } from './agentTools'
-import type { AgentSlot, FlowNode } from './types'
+import type { AgentSlot, FlowNode } from '../../api/automationContracts'
 
 function Section({
   id,

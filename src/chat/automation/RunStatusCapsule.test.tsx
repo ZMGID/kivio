@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { RunStatusCapsule } from './RunStatusCapsule'
-import type { AutomationRunSummary } from './types'
+import type { AutomationRunSummary } from '../../api/automationContracts'
 
 const runs: AutomationRunSummary[] = [
   { id: '1', origin: 'manual', status: 'success', startedAt: '2026-08-30T04:57:00.000Z' },

@@ -12,7 +12,7 @@ import {
   ROOT_PATH,
   type FileTreeNodes,
 } from './fileTreeModel'
-import type { DockFsEntry, DockFsEntryKind } from './types'
+import type { DockFsEntry, DockFsEntryKind } from '../../api/dockContracts'
 import { workspaceActivity } from './workspaceActivity'
 
 const SEARCH_DEBOUNCE_MS = 180

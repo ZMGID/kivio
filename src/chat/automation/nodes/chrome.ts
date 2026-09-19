@@ -1,8 +1,8 @@
 import { createContext } from 'react'
-import type { ValidationIssue } from '../types'
+import type { ValidationIssue } from '../../../api/automationContracts'
 export const ValidationContext = createContext<ValidationIssue[]>([])
-import type { AgentSlot } from '../types'
-import type { NodeRunStatus } from '../types'
+import type { AgentSlot } from '../../../api/automationContracts'
+import type { NodeRunStatus } from '../../../api/automationContracts'
 
 export const NodeRunStatusContext = createContext<Record<string, NodeRunStatus>>({})
 

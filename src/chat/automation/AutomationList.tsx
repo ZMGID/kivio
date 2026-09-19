@@ -3,7 +3,7 @@ import { Toggle } from '../../settings/public/controls'
 import { Plus, Trash2, Upload } from 'lucide-react'
 import { useT } from '../../settings/public/i18n'
 import { catalogEntry } from './nodeCatalog'
-import type { AutomationMeta } from './types'
+import type { AutomationMeta } from '../../api/automationContracts'
 
 function triggerLabel(meta: AutomationMeta, t: ReturnType<typeof useT>): string {
   if (!meta.triggerType) return t.chatAutomationNoTrigger

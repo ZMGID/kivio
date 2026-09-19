@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { layoutGitGraph } from './gitGraph'
-import type { GitCommitItem } from './types'
+import type { GitCommitItem } from '../../api/dockContracts'
 
 const commit = (sha: string, parents: string[] = []): GitCommitItem => ({ sha, parents, shortSha: sha, subject: sha, authorName: '', authorDate: '', refs: [] })
 

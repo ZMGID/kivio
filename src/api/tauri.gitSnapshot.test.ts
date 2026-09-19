@@ -25,4 +25,22 @@ describe('Git snapshot IPC boundary', () => {
     expect(snapshot.state.head).toBe('main')
     expect(snapshot.diffStat).toBeNull()
   })
+
+  it('normalizes snake_case Git wire fields at the API boundary', async () => {
+    invoke.mockResolvedValue({
+      state: {
+        status: 'ready', repo_root: '/repo', head: 'main', stash_count: 2,
+        entries: [{ path: 'a.txt', index_status: 'M', worktree_status: ' ', staged: true }],
+      },
+      diffStat: {
+        files_changed: 1, additions: 3, deletions: 1,
+        files: [{ path: 'a.txt', additions: 3, deletions: 1 }],
+      },
+    })
+
+    const snapshot = await api.dockGitSnapshot('/repo', true)
+    expect(snapshot.state).toMatchObject({ repoRoot: '/repo', stashCount: 2 })
+    expect(snapshot.state.entries[0]).toMatchObject({ indexStatus: 'M', worktreeStatus: ' ', staged: true })
+    expect(snapshot.diffStat).toMatchObject({ filesChanged: 1, additions: 3, deletions: 1 })
+  })
 })

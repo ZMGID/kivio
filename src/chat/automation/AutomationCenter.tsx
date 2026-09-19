@@ -7,7 +7,7 @@ import { automationApi } from './api'
 import { AutomationEditor } from './AutomationEditor'
 import { AutomationList } from './AutomationList'
 import { createBlankAutomation } from './graph'
-import type { Automation, AutomationMeta } from './types'
+import type { Automation, AutomationMeta } from '../../api/automationContracts'
 
 function clearTimeoutRef(ref: { current: ReturnType<typeof setTimeout> | null }) {
   if (ref.current == null) return

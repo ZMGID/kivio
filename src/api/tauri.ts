@@ -17,8 +17,9 @@ import type {
   ChatRunEventEnvelope,
   ChatSegmentPayload as GeneratedChatSegmentPayload,
 } from '../generated/chatProtocol'
-import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary, GoalState } from '../chat/public/apiContracts'
-import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from '../chat/public/apiContracts'
+import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary, NodeOutput, ValidationIssue } from './automationContracts'
+import type { GoalState } from './goalContracts'
+import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from './dockContracts'
 
 // ========== 类型定义 ==========
 
@@ -1843,7 +1844,7 @@ export const api = {
   /** 笔记目录的绝对路径，用于订阅 workspace:activity 自动刷新。 */
   notesDirPath: () => invoke<string>('notes_dir_path'),
 
-  /** 扩展 → 自动化。图存在 `{app_data}/automations/`，类型归 `src/chat/automation/types.ts`。 */
+  /** 扩展 → 自动化。图存在 `{app_data}/automations/`，传输类型归 `src/api/automationContracts.ts`。 */
   automationList: () => invoke<AutomationMeta[]>('automation_list'),
   automationGet: (id: string) => invoke<Automation>('automation_get', { id }),
   automationSave: (automation: Automation) =>
@@ -1860,10 +1861,10 @@ export const api = {
   automationRunsList: (id: string) => invoke<AutomationRunSummary[]>('automation_runs_list', { id }),
   automationActiveRun: (id: string) => invoke<AutomationRun | null>('automation_active_run', { id }),
   automationRunGet: (id: string, runId: string) => invoke<AutomationRun>('automation_run_get', { id, runId }),
-  automationTestNode: (id: string, nodeId: string, input: import('../chat/public/apiContracts').NodeOutput) =>
+  automationTestNode: (id: string, nodeId: string, input: NodeOutput) =>
     invoke<AutomationRunStarted>('automation_test_node', { id, nodeId, input }),
   automationValidate: (automation: Automation) =>
-    invoke<import('../chat/public/apiContracts').ValidationIssue[]>('automation_validate', { automation }),
+    invoke<ValidationIssue[]>('automation_validate', { automation }),
   onAutomationRun: (listener: (payload: AutomationRunEvent) => void) =>
     on<AutomationRunEvent>('automation-run', listener),
   onAutomationChanged: (listener: (payload: AutomationChangedEvent) => void) =>

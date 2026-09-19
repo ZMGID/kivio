@@ -468,54 +468,8 @@ export interface AgentPlanState {
   updatedAt?: number
 }
 
-export type GoalStatus = 'active' | 'verifying' | 'waiting' | 'paused' | 'blocked' | 'completed' | 'cancelled'
-
-export interface GoalCriterion {
-  id: string
-  text: string
-  verified: boolean
-  evidence?: string | null
-  evidence_kind?: 'model_self_check' | 'tool_result' | 'source' | 'artifact' | string | null
-  evidenceKind?: 'model_self_check' | 'tool_result' | 'source' | 'artifact' | string | null
-  evidence_ref?: string | null
-  evidenceRef?: string | null
-}
-
-export interface GoalState {
-  id: string
-  version: number
-  objective: string
-  status: GoalStatus
-  criteria: GoalCriterion[]
-  status_reason?: string | null
-  statusReason?: string | null
-  progress_summary?: string | null
-  progressSummary?: string | null
-  progress_revision?: number
-  progressRevision?: number
-  active_run_id?: string | null
-  activeRunId?: string | null
-  automatic_runs?: number
-  automaticRuns?: number
-  no_progress_runs?: number
-  noProgressRuns?: number
-  last_response_fingerprint?: string | null
-  lastResponseFingerprint?: string | null
-  input_tokens?: number | null
-  inputTokens?: number | null
-  output_tokens?: number | null
-  outputTokens?: number | null
-  total_tokens?: number | null
-  totalTokens?: number | null
-  completed_at?: number | null
-  completedAt?: number | null
-  completed_message_id?: string | null
-  completedMessageId?: string | null
-  created_at?: number
-  createdAt?: number
-  updated_at?: number
-  updatedAt?: number
-}
+export type { GoalStatus, GoalCriterion, GoalState } from '../api/goalContracts'
+import type { GoalState } from '../api/goalContracts'
 
 export interface AgentRuntimeConfig {
   kind: 'builtin' | 'chat' | 'external'
@@ -560,39 +514,7 @@ export interface CliImportResult {
   failures: Array<{ agentId: string; sessionId: string; error: string }>
 }
 
-export interface NativeProviderSummary {
-  id: string
-  name: string
-  baseUrl?: string | null
-  api?: string | null
-  modelCount: number
-  isDefault: boolean
-}
-
-export interface DetectedExternalAgent {
-  id: string
-  name: string
-  available: boolean
-  nativeProviders?: NativeProviderSummary[]
-  path?: string | null
-  version?: string | null
-  models: Array<{ id: string; label: string; contextWindowTokens?: number | null; context_window_tokens?: number | null }>
-  reasoningOptions?: Array<{ id: string; label: string }>
-  reasoning_options?: Array<{ id: string; label: string }>
-  sandboxOptions?: Array<{ id: string; label: string }>
-  sandbox_options?: Array<{ id: string; label: string }>
-  authStatus?: string | null
-  auth_status?: string | null
-  /** 设置页里被用户停用：不出现在运行时选择器，但已绑定它的旧会话照常。 */
-  disabled?: boolean
-  /** 该 CLI 的协议能否往在飞的轮次里注入一条用户消息（「立刻引导」）。 */
-  supportsSteering?: boolean
-  supports_steering?: boolean
-  /** 该 CLI 是否支持在当前运行后原生排队继续处理（Pi / dsh）。 */
-  supportsFollowUp?: boolean
-  supports_follow_up?: boolean
-}
-
+export type { NativeProviderSummary, DetectedExternalAgent } from '../api/externalCliSettings'
 export interface Conversation {
   id: string
   revision: number

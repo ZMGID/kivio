@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { useT, type I18n } from '../../settings/public/i18n'
-import type { AutomationRunSummary } from './types'
+import type { AutomationRunSummary } from '../../api/automationContracts'
 
 const RECENT_LIMIT = 8
 

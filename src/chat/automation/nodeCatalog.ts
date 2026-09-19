@@ -2,7 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 import { Bell, Bot, Clipboard, Clock, FileText, FolderOpen, GitBranch, Globe, Keyboard, MousePointerClick, Sparkles, Split, SquarePen, Terminal, Timer, Wrench } from 'lucide-react'
 import { agentSelectedModel, normalizeAgent } from './agentModel'
 import type { I18n } from '../../settings/public/i18n'
-import type { AgentSlot, AutomationNodeType, FlowNodeData } from './types'
+import type { AgentSlot, AutomationNodeType, FlowNodeData } from '../../api/automationContracts'
 
 function clip(text: string, max = 32): string {
   const oneLine = text.replace(/\s+/g, ' ').trim()

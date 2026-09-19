@@ -49,7 +49,7 @@ import { useFileTree } from './useFileTree'
 import { FileViewer } from './FileViewer'
 import { DiffView } from './DiffView'
 import { ChatMarkdown } from '../ChatMarkdown'
-import type { DockFsEntry } from './types'
+import type { DockFsEntry } from '../../api/dockContracts'
 import type { DockPreviewRequest } from './RightDock'
 
 const ROW_HEIGHT = 28

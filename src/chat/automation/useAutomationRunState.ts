@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isTauriRuntime } from '../../api/tauri'
 import { automationApi } from './api'
-import type { AutomationRun, AutomationRunSummary, NodeRunStatus } from './types'
+import type { AutomationRun, AutomationRunSummary, NodeRunStatus } from '../../api/automationContracts'
 
 function nodeStatus(status: string): NodeRunStatus {
   if (status === 'running' || status === 'error') return status

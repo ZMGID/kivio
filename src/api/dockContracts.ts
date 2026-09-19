@@ -1,6 +1,5 @@
-// Right Dock 类型定义与容错 normalizer。
-// 后端（src-tauri/src/dock/*）serde 输出 camelCase，但 normalizer 同时接受 snake_case，
-// 与 kivio 现有 normalize 风格（见 src/chat/api.ts normalizeAgentRuntime）一致。
+// Dock 文件系统与 Git 的 Tauri 传输契约及容错 normalizer。
+// 后端（src-tauri/src/dock/*）serde 输出 camelCase，但 normalizer 同时接受 snake_case。
 
 export type DockFsEntryKind = 'file' | 'dir'
 

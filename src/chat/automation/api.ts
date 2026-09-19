@@ -4,7 +4,8 @@ import type {
   AutomationMeta,
   AutomationRunStarted,
   AutomationRunSummary,
-} from './types'
+  NodeOutput,
+} from '../../api/automationContracts'
 
 export const automationApi = {
   list: () => api.automationList(),
@@ -17,7 +18,7 @@ export const automationApi = {
   listRuns: (id: string) => api.automationRunsList(id),
   activeRun: (id: string) => api.automationActiveRun(id),
   getRun: (id: string, runId: string) => api.automationRunGet(id, runId),
-  testNode: (id: string, nodeId: string, input: import('./types').NodeOutput) => api.automationTestNode(id, nodeId, input),
+  testNode: (id: string, nodeId: string, input: NodeOutput) => api.automationTestNode(id, nodeId, input),
   validate: (automation: Automation) => api.automationValidate(automation),
   exportToFile: (id: string, path: string) => api.automationExport(id, path),
   importFromFile: (path: string) => api.automationImport(path),

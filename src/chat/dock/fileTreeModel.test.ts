@@ -14,7 +14,7 @@ import {
   toggleExpanded,
   type FileTreeNodes,
 } from './fileTreeModel'
-import type { DockFsEntry } from './types'
+import type { DockFsEntry } from '../../api/dockContracts'
 
 function entry(path: string, kind: 'file' | 'dir' = 'file', hidden = false): DockFsEntry {
   return { path, kind, hidden }

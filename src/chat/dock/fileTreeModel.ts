@@ -1,6 +1,6 @@
 // 文件树纯数据模型：节点表 + 排序 + list 响应合并 + 扁平化 + 展开集合操作。
 // 无 React 依赖，全部纯函数，直接可单测。
-import type { DockFsEntry } from './types'
+import type { DockFsEntry } from '../../api/dockContracts'
 
 export const ROOT_PATH = ''
 

@@ -1,4 +1,5 @@
-import { isAttachmentType, isTriggerType, type Automation, type FlowNode, type ValidationIssue } from './types'
+import type { Automation, FlowNode, ValidationIssue } from '../../api/automationContracts'
+import { isAttachmentType, isTriggerType } from './nodeSemantics'
 import { isSlotEdge } from './agentModel'
 
 export function upstreamNodes(graph: Automation, selectedId: string): FlowNode[] {

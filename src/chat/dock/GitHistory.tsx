@@ -7,7 +7,7 @@ import { DiffView } from './DiffView'
 import { GRAPH_COLORS, layoutGitGraph, type GraphRow } from './gitGraph'
 import { relativeTime } from './gitReviewModel'
 import { workspaceActivity } from './workspaceActivity'
-import type { GitCommitItem, GitDiffResult } from './types'
+import type { GitCommitItem, GitDiffResult } from '../../api/dockContracts'
 
 function GraphCell({ row, columns }: { row: GraphRow; columns: number }) {
   const x = (lane: number) => 10 + lane * 12

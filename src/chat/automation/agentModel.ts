@@ -7,7 +7,7 @@ import type {
   FlowEdge,
   FlowNode,
   FlowNodeData,
-} from './types'
+} from '../../api/automationContracts'
 
 export const AGENT_SLOTS: readonly AgentSlot[] = ['runtime', 'context', 'tool', 'skill']
 

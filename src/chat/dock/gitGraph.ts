@@ -1,4 +1,4 @@
-import type { GitCommitItem } from './types'
+import type { GitCommitItem } from '../../api/dockContracts'
 
 export const GRAPH_COLORS = ['#a855f7', '#f59e0b', '#ec4899', '#14b8a6', '#3b82f6', '#f97316']
 type Lane = { sha: string; color: number }

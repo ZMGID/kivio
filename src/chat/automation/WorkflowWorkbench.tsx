@@ -3,7 +3,8 @@ import { useLang } from '../../settings/public/i18n'
 import { Button } from '../../components/Button'
 import { Select } from '../../settings/public/controls'
 import { dataFields, insertReference, templateFields, upstreamNodes } from './workflowData'
-import { isAttachmentType, isStepType, type Automation, type AutomationRun, type FlowNode, type NodeOutput, type ValidationIssue } from './types'
+import type { Automation, AutomationRun, FlowNode, NodeOutput, ValidationIssue } from '../../api/automationContracts'
+import { isAttachmentType, isStepType } from './nodeSemantics'
 
 export function WorkflowWorkbench({ graph, node, run, running, issues, onChange, onTest, children }: {
   graph: Automation; node: FlowNode; run: AutomationRun | null; running: boolean; issues: ValidationIssue[]

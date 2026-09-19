@@ -24,7 +24,7 @@ import {
   type GitMutationResult,
   type GitRepoState,
   type GitSnapshot,
-} from './types'
+} from '../../api/dockContracts'
 
 const MOCK_NOT_REPO: GitRepoState = {
   repoRoot: '',

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { dockApi } from './api'
 import { gitStatusSignature } from './gitReviewModel'
-import type { GitDiffResult, GitDiffStatFile, GitMutationResult, GitRepoState } from './types'
+import type { GitDiffResult, GitDiffStatFile, GitMutationResult, GitRepoState } from '../../api/dockContracts'
 import { workspaceActivity } from './workspaceActivity'
 
 const FALLBACK_POLL_MS = 10_000

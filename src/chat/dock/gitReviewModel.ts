@@ -1,5 +1,5 @@
 // Git 面板的纯逻辑（从 useGitReview 抽出以便单测）。
-import type { GitCommitItem, GitRepoState, GitStatusEntry } from './types'
+import type { GitCommitItem, GitRepoState, GitStatusEntry } from '../../api/dockContracts'
 
 /** refresh 的响应签名：签名相同则跳过 setState，避免 10s 轮询/事件刷新打出的恒等重渲。 */
 export function gitStatusSignature(state: GitRepoState | null): string {

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GitDiffChip } from './GitDiffChip'
 import { GitStatusPill } from './GitStatusPill'
-import type { GitRepoState, GitSnapshot, WorkspaceActivityEvent } from './types'
+import type { GitRepoState, GitSnapshot, WorkspaceActivityEvent } from '../../api/dockContracts'
 
 const mocks = vi.hoisted(() => ({
   gitStatus: vi.fn(),

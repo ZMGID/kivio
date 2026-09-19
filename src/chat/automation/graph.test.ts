@@ -14,7 +14,7 @@ import {
   pruneDanglingBranchEdges,
   topologicalOrder,
 } from './graph'
-import { AUTOMATION_SCHEMA_VERSION, type Automation } from './types'
+import { AUTOMATION_SCHEMA_VERSION, type Automation } from '../../api/automationContracts'
 import { slotAttachPosition } from './agentModel'
 
 function node(id: string, type: 'trigger.manual' | 'action.agent' | 'action.notify' | 'logic.if', x = 0) {

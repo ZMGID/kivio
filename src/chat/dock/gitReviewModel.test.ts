@@ -5,7 +5,7 @@ import {
   partitionStatusEntries,
   statusLetter,
 } from './gitReviewModel'
-import type { GitCommitItem, GitRepoState, GitStatusEntry } from './types'
+import type { GitCommitItem, GitRepoState, GitStatusEntry } from '../../api/dockContracts'
 
 function statusEntry(partial: Partial<GitStatusEntry> & { path: string }): GitStatusEntry {
   return {

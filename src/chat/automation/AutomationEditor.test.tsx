@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 import type { ReactFlowProps } from '@xyflow/react'
 import type { AutomationRfNode } from './nodes/FlowNode'
-import type { Automation } from './types'
+import type { Automation } from '../../api/automationContracts'
 import { AutomationEditor } from './AutomationEditor'
 import { createBlankAutomation, ensureNodeSpacing } from './graph'
 

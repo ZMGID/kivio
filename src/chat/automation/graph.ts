@@ -1,4 +1,5 @@
-import { AUTOMATION_SCHEMA_VERSION, branchHandles, isAttachmentType, isStepType, isTriggerType, type Automation, type AutomationNodeType, type FlowEdge, type FlowNode, type FlowNodeData } from './types'
+import { AUTOMATION_SCHEMA_VERSION, type Automation, type AutomationNodeType, type FlowEdge, type FlowNode, type FlowNodeData } from '../../api/automationContracts'
+import { branchHandles, isAttachmentType, isStepType, isTriggerType } from './nodeSemantics'
 import { AGENT_SLOTS, FLOW_AGENT_WIDTH, connectSlotEdge, isSlotEdge, resolveSlotConnection, slotAllowsMany } from './agentModel'
 
 /* n8n 式节点：卡片本体 104×80，文字标签悬挂在卡片下方（不占节点边界）。

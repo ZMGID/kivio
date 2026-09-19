@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AutomationRun, AutomationRunEvent } from './types'
+import type { AutomationRun, AutomationRunEvent } from '../../api/automationContracts'
 import { useAutomationRunState } from './useAutomationRunState'
 
 const mocks = vi.hoisted(() => ({ subscribe: vi.fn(), active: vi.fn(), list: vi.fn(), get: vi.fn(), unlisten: vi.fn() }))
