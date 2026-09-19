@@ -1,3 +1,18 @@
 {
+  "modules": [
+    { "name": "app", "role": "composition", "purpose": "Application and Lens window mounting roots", "paths": ["src/App.tsx", "src/Lens.tsx", "src/main.tsx"] },
+    { "name": "chat", "role": "feature", "purpose": "Chat conversations, execution, and presentation", "paths": ["src/chat/**"] },
+    { "name": "settings", "role": "feature", "purpose": "Settings editing and related user flows", "paths": ["src/settings/**"] },
+    { "name": "lens", "role": "feature", "purpose": "Lens capture, request, and history lifecycle", "paths": ["src/lens/**"] },
+    { "name": "onboarding", "role": "feature", "purpose": "First-run setup flow", "paths": ["src/onboarding/**"] },
+    { "name": "api", "role": "adapter", "purpose": "Tauri transport and IPC adapters", "paths": ["src/api/**"] },
+    { "name": "components", "role": "shared-ui", "purpose": "Domain-neutral reusable UI", "paths": ["src/components/**"] },
+    { "name": "data", "role": "foundation", "purpose": "Model database and catalog normalization", "paths": ["src/data/**"] },
+    { "name": "generated", "role": "foundation", "purpose": "Generated transport contracts", "paths": ["src/generated/**"] },
+    { "name": "utils", "role": "foundation", "purpose": "Domain-neutral utilities", "paths": ["src/utils/**"] },
+    { "name": "test", "role": "foundation", "purpose": "Shared test setup", "paths": ["src/test/**"] },
+    { "name": "theme", "role": "foundation", "purpose": "Shared theme colors", "paths": ["src/themeColors.ts"] },
+    { "name": "vite-types", "role": "foundation", "purpose": "Build-time Vite ambient types", "paths": ["src/vite-env.d.ts"] }
+  ],
   "existingViolations": []
 }

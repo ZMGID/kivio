@@ -74,6 +74,15 @@ test('detects a cross-feature cycle even when both imports use public interfaces
       cycle: ['src/chat/public/a.ts', 'src/settings/public/b.ts'],
     },
     {
+      kind: 'module_cycle',
+      modules: ['chat', 'settings'],
+      cycle: ['chat', 'settings', 'chat'],
+      witness: [
+        { source: 'src/chat/public/a.ts', line: 1, specifier: '../../settings/public/b', target: 'src/settings/public/b.ts', type: 're-export' },
+        { source: 'src/settings/public/b.ts', line: 1, specifier: '../../chat/public/a', target: 'src/chat/public/a.ts', type: 're-export' },
+      ],
+    },
+    {
       kind: 'public_reverse_dependency',
       source: 'src/chat/public/a.ts',
       target: 'src/settings/public/b.ts',
@@ -143,10 +152,25 @@ test('detects cross-feature cycles that pass through an adapter', () => {
 
   assert.deepEqual(newViolations(root, { existingViolations: [] }), [
     {
+      kind: 'adapter_to_feature',
+      source: 'src/api/bridge.ts',
+      target: 'src/settings/public/b.ts',
+    },
+    {
       kind: 'cross_feature_cycle',
       source: 'src/api/bridge.ts',
       target: 'src/api/bridge.ts',
       cycle: ['src/api/bridge.ts', 'src/chat/public/a.ts', 'src/settings/public/b.ts'],
+    },
+    {
+      kind: 'module_cycle',
+      modules: ['api', 'chat', 'settings'],
+      cycle: ['api', 'settings', 'chat', 'api'],
+      witness: [
+        { source: 'src/api/bridge.ts', line: 1, specifier: '../settings/public/b', target: 'src/settings/public/b.ts', type: 're-export' },
+        { source: 'src/settings/public/b.ts', line: 1, specifier: '../../chat/public/a', target: 'src/chat/public/a.ts', type: 're-export' },
+        { source: 'src/chat/public/a.ts', line: 1, specifier: '../../api/bridge', target: 'src/api/bridge.ts', type: 're-export' },
+      ],
     },
     {
       kind: 'public_reverse_dependency',
@@ -154,6 +178,52 @@ test('detects cross-feature cycles that pass through an adapter', () => {
       target: 'src/chat/public/a.ts',
     },
   ])
+})
+
+test('finds a dispersed Module cycle with a precise type-only, dynamic and re-export witness', () => {
+  const root = fixture({
+    'src/chat/consumer.ts': "import type { Setting } from '@/settings/public/types'\nexport type ChatSetting = Setting",
+    'src/chat/other.ts': 'export const chat = 1',
+    'src/settings/public/types.ts': 'export type Setting = string',
+    'src/settings/loader.ts': "void import('@/api/gateway')",
+    'src/api/gateway.ts': "export { chat } from '../chat/other'",
+  })
+
+  const cycles = newViolations(root, { existingViolations: [] })
+    .filter((violation) => violation.kind === 'module_cycle')
+  assert.deepEqual(cycles, [{
+    kind: 'module_cycle',
+    modules: ['api', 'chat', 'settings'],
+    cycle: ['api', 'chat', 'settings', 'api'],
+    witness: [
+      { source: 'src/api/gateway.ts', line: 1, specifier: '../chat/other', target: 'src/chat/other.ts', type: 're-export' },
+      { source: 'src/chat/consumer.ts', line: 1, specifier: '@/settings/public/types', target: 'src/settings/public/types.ts', type: 'type-only' },
+      { source: 'src/settings/loader.ts', line: 1, specifier: '@/api/gateway', target: 'src/api/gateway.ts', type: 'dynamic' },
+    ],
+  }])
+})
+
+test('fails closed when a new src path has no declared Module', () => {
+  const root = fixture({ 'src/unclaimed/entry.ts': 'export const entry = 1' })
+  assert.deepEqual(newViolations(root, {
+    modules: [{ name: 'chat', role: 'feature', paths: ['src/chat/**'] }],
+    existingViolations: [],
+  }), [{ kind: 'unknown_module_path', source: 'src/unclaimed/entry.ts', target: 'src/unclaimed/entry.ts' }])
+})
+
+test('CLI diagnostic prints every exact witness edge instead of undefined endpoints', async () => {
+  const { formatViolation } = await import('./check-architecture.mjs')
+  const formatted = formatViolation({
+    kind: 'module_cycle', modules: ['api', 'chat'], cycle: ['api', 'chat', 'api'], witness: [
+      { source: 'src/api/bridge.ts', line: 4, specifier: '../chat/public/x', target: 'src/chat/public/x.ts', type: 're-export' },
+      { source: 'src/chat/a.ts', line: 9, specifier: '../api/bridge', target: 'src/api/bridge.ts', type: 'type-only' },
+    ],
+  })
+  assert.equal(formatted, [
+    '[module_cycle] api -> chat -> api (SCC: api, chat)',
+    '    [re-export] src/api/bridge.ts:4 -> src/chat/public/x.ts (../chat/public/x)',
+    '    [type-only] src/chat/a.ts:9 -> src/api/bridge.ts (../api/bridge)',
+  ].join('\n'))
 })
 
 test('allows only an explicitly registered composition root to mount feature implementations', () => {
