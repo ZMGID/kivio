@@ -4,6 +4,8 @@ export interface ChatRunTerminal {
   conversationId: string
   runId?: string | null
   reason?: string
+  /** Execution generation captured before asynchronous invoke settlement. */
+  turnEpoch?: number
 }
 
 interface SettlementPorts {

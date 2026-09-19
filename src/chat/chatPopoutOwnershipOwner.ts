@@ -107,6 +107,7 @@ export function createChatPopoutOwnershipOwner(port: Port = chatApi) {
       const id = payload.conversationId
       const owned = ids.has(id)
       const active = runs.get(id)
+      const wasTracked = Boolean(payload.runId && active?.has(payload.runId))
       let effect: RunProjection['effect'] = 'none'
       if (owned && payload.type === 'run_started' && payload.runId) {
         const next = active ?? new Set<string>()
@@ -124,7 +125,7 @@ export function createChatPopoutOwnershipOwner(port: Port = chatApi) {
       }
       if (effect !== 'none') publish()
       return {
-        suppressMainProjection: owned,
+        suppressMainProjection: owned || wasTracked,
         running: runs.has(id),
         effect,
       }

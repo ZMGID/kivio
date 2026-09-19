@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatStreamPayload } from '../api/tauri'
 import { createChatExecutionOwner } from './chatExecutionOwner'
+import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
 import { createChatStreamLifecycleOwner } from './chatStreamLifecycleOwner'
-import { resetGroups } from './groupStreamingStore'
+import { getActiveGroup, resetGroups } from './groupStreamingStore'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import { reset as resetStreamStore } from './streamingStore'
 
@@ -26,7 +27,9 @@ describe('chat stream lifecycle owner', () => {
     execution.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })
     preview.begin('a', 1)
     expect(owner.receive(packet('local', 'run_started'))).toMatchObject({ kind: 'started' })
-    expect(owner.receive(packet('local', 'run_completed'))).toMatchObject({ kind: 'deferred' })
+    expect(owner.receive(packet('local', 'run_completed'))).toMatchObject({
+      kind: 'deferred', terminal: { turnEpoch: execution.turnEpoch('a') },
+    })
     expect(execution.snapshot('a').inFlight).toBe(true)
     preview.dispose()
   })
@@ -43,6 +46,49 @@ describe('chat stream lifecycle owner', () => {
     const final = owner.receive(packet('two', 'run_completed'))
     expect(final.kind).toBe('ready')
     expect(execution.snapshot('a').inFlight).toBe(true)
+    preview.dispose()
+  })
+
+  it('counts hidden popout group arms even when the window docks between terminals', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    const hidden = { project: false }
+    expect(owner.receive(packet('one', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 0 }), hidden).kind).toBe('started')
+    expect(owner.receive(packet('two', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 1 }), hidden).kind).toBe('started')
+    expect(preview.summary('a')).toBeNull()
+    expect(getActiveGroup('a')).toBeUndefined()
+    expect(owner.receive(packet('one', 'run_completed'), hidden).kind).toBe('pending')
+    const final = owner.receive(packet('two', 'run_completed'), hidden)
+    if (final.kind !== 'ready') throw new Error('Expected the last arm to settle')
+    expect(await owner.settleExternalTerminal(final.permit, async () => null, () => {})).toBe(true)
+    expect(execution.snapshot('a').inFlight).toBe(false)
+    expect(preview.summary('a')).toBeNull()
+    preview.dispose()
+  })
+
+  it('keeps a popped-out group hidden and unsettled when it docks before its first terminal', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const lifecycle = createChatStreamLifecycleOwner(execution, preview)
+    const popout = createChatPopoutOwnershipOwner({
+      listConversationPopouts: vi.fn(), openConversationPopout: vi.fn(), closeConversationPopout: vi.fn(),
+    })
+    popout.changed(['a'])
+    const receive = (event: ChatStreamPayload) => {
+      const ownership = popout.observeRun(event)
+      return lifecycle.receive(event, { project: !ownership.suppressMainProjection })
+    }
+    receive(packet('one', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 0 }))
+    receive(packet('two', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 1 }))
+    popout.changed([])
+    expect(receive(packet('one', 'run_completed')).kind).toBe('pending')
+    expect(execution.snapshot('a').inFlight).toBe(true)
+    const last = receive(packet('two', 'run_completed'))
+    if (last.kind !== 'ready') throw new Error('Expected last arm to settle')
+    expect(await lifecycle.settleExternalTerminal(last.permit, async () => null, () => {})).toBe(true)
+    expect(execution.snapshot('a').inFlight).toBe(false)
+    expect(getActiveGroup('a')).toBeUndefined()
     preview.dispose()
   })
 

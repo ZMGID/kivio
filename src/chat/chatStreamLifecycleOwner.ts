@@ -36,7 +36,7 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
     return { kind: decision.kind, terminal }
   }
   return {
-    receive(payload: ChatStreamPayload): StreamLifecycleResult {
+    receive(payload: ChatStreamPayload, options: { project?: boolean } = {}): StreamLifecycleResult {
       const id = payload.conversationId
       const started = payload.type === 'run_started'
       if (!started && !executionOwner.allowsStreamPayload(payload)) return { kind: 'ignored' }
@@ -50,8 +50,14 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
 
       const terminal = isStreamTerminal(payload)
       const terminalPayload = terminal
-        ? { conversationId: id, runId: payload.runId, reason: streamTerminalReason(payload) }
+        ? { conversationId: id, runId: payload.runId, reason: streamTerminalReason(payload), turnEpoch: executionOwner.turnEpoch(id) }
         : null
+      if (options.project === false) {
+        if (started) return { kind: 'started', conversationId: id, runId: payload.runId, external: !wasInFlight }
+        return terminalPayload
+          ? classifyTerminal(terminalPayload, 'single')
+          : { kind: 'projected', conversationId: id }
+      }
       if (!started && !previewOwner.summary(id) && !getActiveGroup(id)
         && !executionOwner.snapshot(id).inFlight) {
         return terminalPayload ? classifyTerminal(terminalPayload, 'single') : { kind: 'ignored' }

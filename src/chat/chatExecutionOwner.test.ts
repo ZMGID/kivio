@@ -14,6 +14,21 @@ const ports = () => ({
 })
 
 describe('chat execution owner', () => {
+  it('advances a per-conversation turn epoch only when a newer execution starts', async () => {
+    const owner = createChatExecutionOwner()
+    const initial = owner.turnEpoch('a')
+    const first = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })!
+    const duringFirst = owner.turnEpoch('a')
+    expect(duringFirst).toBeGreaterThan(initial)
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'first', started: true })
+    expect(owner.turnEpoch('a')).toBe(duringFirst)
+    await owner.finish(first, null, ports())
+    expect(owner.turnEpoch('a')).toBe(duringFirst)
+    expect(owner.begin({ conversationId: 'a', kind: 'send', startedAt: 2 })).not.toBeNull()
+    expect(owner.turnEpoch('a')).toBeGreaterThan(duringFirst)
+    expect(owner.turnEpoch('b')).toBe(initial)
+  })
+
   it('grants one cancellation request per run and suppresses only its late content', () => {
     const owner = createChatExecutionOwner()
     owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })

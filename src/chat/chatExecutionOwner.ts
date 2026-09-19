@@ -104,6 +104,10 @@ export function createChatExecutionOwner(
   const retiredExternalRunIds = new Map<string, Set<string>>()
   let externalSequence = 0
   const cancellations = new Map<string, { permit: CancellationPermit; runId: string | null; groupId: string | null }>()
+  const turnEpochs = new Map<string, number>()
+  const advanceTurn = (conversationId: string) => {
+    turnEpochs.set(conversationId, (turnEpochs.get(conversationId) ?? 0) + 1)
+  }
   const listeners = new Set<() => void>()
   let revision = 0
   const publish = () => {
@@ -148,6 +152,7 @@ export function createChatExecutionOwner(
       return () => { listeners.delete(listener) }
     },
     getRevision: () => revision,
+    turnEpoch: (conversationId: string) => turnEpochs.get(conversationId) ?? 0,
     snapshot,
     activeConversationIds: () => [...new Set([...active.keys(), ...external])],
     overlayMessages: optimistic.overlay,
@@ -232,6 +237,7 @@ export function createChatExecutionOwner(
         settlement.clearConversation(id)
         throw error
       }
+      advanceTurn(id)
       publish()
       return lease
     },
@@ -269,6 +275,7 @@ export function createChatExecutionOwner(
               run = undefined
             }
             if (!run) {
+              advanceTurn(id)
               run = {
                 token: ++externalSequence,
                 groupId: event.groupId ?? null,
@@ -285,13 +292,17 @@ export function createChatExecutionOwner(
         }
         return true
       }
-      if (event.kind === 'externalStarted' && !active.has(id)) external.add(id)
+      if (event.kind === 'externalStarted' && !active.has(id)) {
+        if (!external.has(id)) advanceTurn(id)
+        external.add(id)
+      }
       if (event.kind === 'externalEnded') {
         external.delete(id)
         retireExternal(id)
         cancellations.delete(id)
       }
       if (event.kind === 'drop') {
+        advanceTurn(id)
         const invocation = active.get(id)
         if (invocation?.claim) abandonSend(invocation.claim)
         if (invocation?.optimisticToken != null) optimistic.settle(id, invocation.optimisticToken)
@@ -319,6 +330,7 @@ export function createChatExecutionOwner(
       if (!run && terminal.runId
         && !retiredExternalRunIds.get(id)?.has(terminal.runId)) {
         // A terminal can be the first observed packet after a protocol gap.
+        advanceTurn(id)
         run = {
           token: ++externalSequence, groupId: null, expectedArms: 1,
           runIds: new Set([terminal.runId]), terminalIds: new Set(),

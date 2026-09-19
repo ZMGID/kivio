@@ -55,8 +55,9 @@ describe('chat popout ownership owner', () => {
     const closed = await owner.close('a')
     expect([...closed.exited]).toEqual(['a'])
     expect([...owner.snapshot().runningConversationIds]).toEqual(['a'])
+    expect(owner.observeRun({ conversationId: 'a', runId: 'new-main', type: 'content_delta' }).suppressMainProjection).toBe(false)
     expect(owner.observeRun({ conversationId: 'a', runId: 'r2', type: 'run_cancelled' })).toMatchObject({
-      suppressMainProjection: false, running: false, effect: 'finished',
+      suppressMainProjection: true, running: false, effect: 'finished',
     })
     expect([...owner.snapshot().runningConversationIds]).toEqual([])
   })
