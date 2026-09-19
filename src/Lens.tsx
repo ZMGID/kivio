@@ -16,7 +16,6 @@ import { AnnotateToolbar } from './lens/AnnotateToolbar'
 import { MosaicPreview } from './lens/MosaicPreview'
 import { ReplaceTranslateOverlay } from './lens/ReplaceTranslateOverlay'
 import { composeAnnotatedImage } from './lens/annotation'
-import { HISTORY_THUMB_SIZE, makeThumbnail } from './lens/history'
 import { ANCHOR_GAP, FLOATING_GAP, FLOATING_PADDING, READY_BAR_H, SELECT_REVEAL_DELAY_MS, TRANSITION_MS, clamp, computeChatBarWidth, computeMetrics, computeSelectBar, isMacPlatform } from './lens/layout'
 
 // 翻译卡缩放后内容区高度固定，此值预留 header+footer+padding，
@@ -295,7 +294,7 @@ export default function Lens() {
     }
   }, [stage, keepFullscreen, freezeFramePreview, devicePixelRatio, viewport.w, viewport.h])
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
-  const { items: history, upsert: upsertHistory } = useLensHistory()
+  const { items: history, recordCompleted: recordHistory } = useLensHistory()
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyPanelH, setHistoryPanelH] = useState(0)
 
@@ -332,9 +331,8 @@ export default function Lens() {
   const preparingSendRef = useRef(false)
   const answerFinishedRef = useRef(false)
   const lastLensStreamEventRef = useRef('')
-  // Stream 真实结束（成功 / 错误 / 用户主动取消）后才置 true，
-  // 让历史持久化 effect 只在这一次 rerun 触发 push；restoreHistory / enterSelect / resetBeforeHide 防御性清零，
-  // 避免恢复历史时 setMessages 触发 effect 把恢复的对话又当新条目写一遍历史。
+  // A completed turn remains recordable until a new turn/context replaces it:
+  // the invoke result may still enrich its final messages after a stream done event.
   const justFinishedStreamRef = useRef(false)
   // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
   // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
@@ -527,7 +525,7 @@ export default function Lens() {
       void (async () => {
         try {
           const text = await api.takeLensSelection()
-          if (!isSelectionCurrent(myReq)) return
+          if (!isInitializationCurrent(initializationSeq) || !isSelectionCurrent(myReq)) return
           if (text.length > 200_000 || !text.trim()) {
             void api.lensClose()
             return
@@ -561,6 +559,7 @@ export default function Lens() {
             finishRequest(requestToken)
           }
         } catch (err) {
+          if (!isInitializationCurrent(initializationSeq) || !isSelectionCurrent(myReq)) return
           console.warn('[lens] take selection failed:', err)
           void api.lensClose()
         }
@@ -571,7 +570,7 @@ export default function Lens() {
       void (async () => {
         try {
           const text = await api.takeLensSelection()
-          if (!isSelectionCurrent(myReq) || motionSeq !== motionSeqRef.current) return
+          if (!isInitializationCurrent(initializationSeq) || !isSelectionCurrent(myReq) || motionSeq !== motionSeqRef.current) return
           if (text.length > 200_000) return
           if (text.trim()) {
             selectText(text)
@@ -714,8 +713,8 @@ export default function Lens() {
   // translate 模式不入对话历史（OCR+翻译是一次性任务，无对话语义）。
   // 缩略图压缩到 96x96 jpeg 再写历史，避免 localStorage 被几 MB 的 base64 撑爆。
   useEffect(() => {
-    // 只在真实"流刚结束"路径触发：handleSend / handleStop 的 finally 会先置 ref 再 setStreaming(false)。
-    // restoreHistory / enterSelect / resetBeforeHide 调用前会显式清零 ref，避免恢复历史时 effect 误触发。
+    // History owns durable image/thumbnail work and supersedes older snapshots of the same turn.
+    // A final invoke or a view reset must not cancel a completed turn's pending persistence.
     if (!justFinishedStreamRef.current) return
     if (mode !== 'chat') return
     if (streaming) return
@@ -723,32 +722,15 @@ export default function Lens() {
     if (!id || messages.length === 0) return
     const hasAssistant = messages.some(m => m.role === 'assistant' && m.content)
     if (!hasAssistant) return
-    justFinishedStreamRef.current = false
-
-    let cancelled = false
-    void (async () => {
-      try {
-        // Persist the image before writing the history row. Otherwise a fast close
-        // can delete the temp file and leave an unusable history item behind.
-        // 纯文本会话没有图，跳过持久化（否则 commit 会报 "Image not available" 直接 bail）。
-        if (imageIdRef.current) await api.lensCommitImageToHistory(imageIdRef.current)
-      } catch (err) {
-        console.error('[lens-history] commit failed:', err)
-        return
-      }
-      const thumb = imagePreview ? await makeThumbnail(imagePreview, HISTORY_THUMB_SIZE) : ''
-      if (cancelled) return
-      upsertHistory({
-        id,
-        imagePreview: thumb,
-        appLabel,
-        messages,
-        capturedFrame,
-        timestamp: Date.now(),
-      })
-    })()
-    return () => { cancelled = true }
-  }, [mode, streaming, messages, imagePreview, appLabel, capturedFrame, upsertHistory])
+    void recordHistory({
+      id,
+      imagePreview,
+      appLabel,
+      messages,
+      capturedFrame,
+      timestamp: Date.now(),
+    }, imageIdRef.current)
+  }, [mode, streaming, messages, imagePreview, appLabel, capturedFrame, recordHistory])
 
   // 监听 lens-stream 事件：把 reasoning_delta / delta 累积到最后一条 assistant 消息
   // StrictMode 双挂载下 listen 是 async：cleanup 时 unlisten 可能还没赋值，需要 cancelled 旗标
@@ -1469,6 +1451,7 @@ export default function Lens() {
     if (streaming) return
     setHistoryOpen(false)
     answerFinishedRef.current = false
+    justFinishedStreamRef.current = false
 
     // 先进入 sending UI，再做合成/注册，避免这段异步窗口被 Esc 关闭掉。
     const isFirstTurn = messages.length === 0
@@ -1725,11 +1708,13 @@ export default function Lens() {
 
   const handleAnnotateSave = async () => {
     if (annotateSaving) return
+    const token = currentToken()
     setAnnotationSaving(true)
     try {
       const base64 = await composeCurrentAnnotated()
-      if (!base64) return
+      if (!base64 || !isTokenCurrent(token)) return
       const { save } = await import('@tauri-apps/plugin-dialog')
+      if (!isTokenCurrent(token)) return
       const now = new Date()
       const pad = (n: number) => String(n).padStart(2, '0')
       const defaultName = `screenshot-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`
@@ -1737,8 +1722,9 @@ export default function Lens() {
         defaultPath: defaultName,
         filters: [{ name: 'PNG', extensions: ['png'] }],
       })
-      if (!path) return // 用户取消：留在标注态
+      if (!path || !isTokenCurrent(token)) return // 用户取消或切换会话：不继续旧保存
       const result = await api.lensSaveAnnotatedPng(base64, path)
+      if (!isTokenCurrent(token)) return
       if (!result.success) {
         console.error('[lens-annotate] save failed:', result.error)
         return
@@ -1747,7 +1733,7 @@ export default function Lens() {
     } catch (err) {
       console.error('[lens-annotate] save failed:', err)
     } finally {
-      setAnnotationSaving(false)
+      if (isTokenCurrent(token)) setAnnotationSaving(false)
     }
   }
 
