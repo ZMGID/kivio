@@ -806,6 +806,26 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     syncGeneratingConversationIds()
   }, [executionOwner, syncGeneratingConversationIds])
 
+  // These hooks retain the latest callbacks internally, so their commands can be
+  // used by earlier lifecycle handlers without a second Chat-level ref bridge.
+  const messageQueue = useMessageQueue({
+    onSendMessage: (content, attachments, options) =>
+      handleSendMessage(content, attachments, options),
+    onRestoreToComposer: (message) => insertTextIntoComposer(message.content),
+    onPendingChange: (conversationId, pending) => {
+      void chatApi.setGoalUserQueuePending(conversationId, pending)
+    },
+  })
+  const queueCommands = messageQueue.commands
+  const { drainExternalSends, wakeAfterRun } = useExternalSendQueue({
+    onEnterConversationView: () => setChatView('conversation'),
+    onImportConversation: (messages, attachmentPaths) =>
+      importExternalConversation(messages, attachmentPaths),
+    onSendMessage: (content, attachments, options) =>
+      handleSendMessage(content, attachments, options),
+    onError: setStreamError,
+  })
+
   // B：彻底把一个会话从所有本地乐观/in-flight/快照状态中剔除（ghost 清理）。
   // 不触碰 currentConversation/route，由调用方按场景决定。
   const dropConversationLocally = useCallback((conversationId: string) => {
@@ -814,11 +834,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     previewOwner.drop(conversationId)
     executionOwner.observe({ kind: 'drop', conversationId })
     // 排队消息也一起剔除：会话没了，队列里那几条再没有能落到的地方（`drain` 也拿不到会话对象）。
-    // 经 ref 调用是因为队列 hook 声明在下方（它要转发 handleSendMessage）。
-    messageQueueRef.current.clearConversation(conversationId)
+    queueCommands.clearConversation(conversationId)
     setOptimisticSidebarConversations((items) => items.filter((item) => item.id !== conversationId))
     syncGeneratingConversationIds()
-  }, [executionOwner, interactionInbox, previewOwner, syncGeneratingConversationIds])
+  }, [executionOwner, interactionInbox, previewOwner, queueCommands, syncGeneratingConversationIds])
 
   const setStreamErrorForConversation = useCallback((conversationId: string, error: string) => {
     if (error) {
@@ -1850,8 +1869,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       abandonPreview: (id) => {
         if (!freezeStreamSnapshot(id)) clearStreamSnapshot(id)
       },
-      settleQueue: (id, conversation) => messageQueueRef.current.settleAfterRun(id, conversation),
-    }), [clearStreamSnapshot, finishStreamingRun, finishStreamingRunWithConversation, freezeStreamSnapshot])
+      settleQueue: (id, conversation) => {
+        const delivery = queueCommands.settleAfterRun(id, conversation)
+        void wakeAfterRun()
+        return delivery
+      },
+    }), [clearStreamSnapshot, finishStreamingRun, finishStreamingRunWithConversation, freezeStreamSnapshot, queueCommands, wakeAfterRun])
 
   useTauriEvent(api.onChatProtocolIssue, ({ issue, conversationId }) => {
     if (issue === 'version_mismatch') {
@@ -2005,10 +2028,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       // 插话卡到了 = 那条「立刻引导」真的进了模型历史，现在才把它从队列里摘掉。
       // （在此之前它一直留着，好让「没赶上轮次边界」退化成运行结束后的自动发送。）
       if (result.confirmedQueueMessageId) {
-        messageQueueRef.current.confirm(payload.conversationId, result.confirmedQueueMessageId)
+        queueCommands.confirm(payload.conversationId, result.confirmedQueueMessageId)
       }
       syncGeneratingConversationIds()
-  }, [executionOwner, previewOwner, syncGeneratingConversationIds])
+  }, [executionOwner, previewOwner, queueCommands, syncGeneratingConversationIds])
 
   // Live nested sub-agent progress (P3): merge onto the parent tool card's
   // structuredContent.subagentProgress, addressed by parentToolCallId.
@@ -2532,13 +2555,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     effectiveSkillId, enabledSkills, usesChatRuntime, selectedProject?.id,
     selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
-  // 用 ref 持有最新 handleSendMessage，使下方的 drainExternalSends 保持稳定身份，
-  // 避免其依赖抖动导致订阅 effect 反复 cleanup/重订阅（重订阅缝隙会丢掉外部发送事件）。
-  const handleSendMessageRef = useRef(handleSendMessage)
-  handleSendMessageRef.current = handleSendMessage
-
   // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
-  // 同 handleSendMessageRef 思路用 ref 持有，保持 drainExternalSends 稳定身份。
   const importExternalConversation = useCallback(async (
     messages: { role: string; content: string }[],
     attachmentPaths: string[],
@@ -2567,30 +2584,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       return false
     }
   }, [activeModel, activeProviderId, applyConversation, refreshSidebar, selectedProject?.id, syncConversationRoute])
-  const importExternalConversationRef = useRef(importExternalConversation)
-  importExternalConversationRef.current = importExternalConversation
-
-  const { drainExternalSends, hasPendingDrainRequest } = useExternalSendQueue({
-    onEnterConversationView: () => setChatView('conversation'),
-    onImportConversation: (messages, attachmentPaths) =>
-      importExternalConversationRef.current(messages, attachmentPaths),
-    onSendMessage: (content, attachments, options) =>
-      handleSendMessageRef.current(content, attachments, options),
-    onError: setStreamError,
-  })
-
-  // 运行中的消息队列（Codex 式排队 + 立刻引导）。同上用 ref 转发 handleSendMessage，
-  // 保持 drain 的身份稳定（它被 handleSendMessage 自己的 finally 调用，不能互相拖依赖）。
-  const messageQueue = useMessageQueue({
-    onSendMessage: (content, attachments, options) =>
-      handleSendMessageRef.current(content, attachments, options),
-    onRestoreToComposer: (message) => insertTextIntoComposer(message.content),
-    onPendingChange: (conversationId, pending) => {
-      void chatApi.setGoalUserQueuePending(conversationId, pending)
-    },
-  })
-  const messageQueueRef = useRef(messageQueue)
-  messageQueueRef.current = messageQueue
 
   const currentQueuedMessages = currentConversation
     ? messageQueue.queued[currentConversation.id] ?? NO_QUEUED_MESSAGES
@@ -2625,11 +2618,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const handleQueueMessage = useCallback((content: string, attachments: PendingAttachment[]) => {
     const conversation = currentConversationRef.current
     if (!conversation) return
-    const message = messageQueueRef.current.enqueue(conversation.id, content, attachments)
+    const message = queueCommands.enqueue(conversation.id, content, attachments)
     if (message && canFollowUpCurrentConversation) {
-      void messageQueueRef.current.followUp(conversation, message.id)
+      void queueCommands.followUp(conversation, message.id)
     }
-  }, [canFollowUpCurrentConversation])
+  }, [canFollowUpCurrentConversation, queueCommands])
 
   const [closedAsyncQuestions, setClosedAsyncQuestions] = useState<Record<string, string[]>>({})
   const asyncQuestionsValue = useMemo(() => {
@@ -2649,10 +2642,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         const conversation = currentConversationRef.current
         if (!conversation || conversation.id !== conversationId) throw new Error('对话已切换，请重试')
         if (text) {
-          const queued = messageQueueRef.current.enqueue(conversation.id, text, [])
+          const queued = queueCommands.enqueue(conversation.id, text, [])
           if (!queued) throw new Error('答复未能加入消息队列，请重试')
           if (!generatingConversationIdsRef.current.has(conversation.id)) {
-            void messageQueueRef.current.drain(conversation)
+            void queueCommands.drain(conversation)
           }
         }
         setClosedAsyncQuestions((previous) => ({
@@ -2660,25 +2653,25 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         }))
       },
     }
-  }, [closedAsyncQuestions, currentConversation])
+  }, [closedAsyncQuestions, currentConversation, queueCommands])
 
   const handleSteerQueuedMessage = useCallback((messageId: string) => {
     const conversationId = currentConversationIdRef.current
     if (!conversationId) return
-    void messageQueueRef.current.steer(conversationId, messageId)
-  }, [])
+    void queueCommands.steer(conversationId, messageId)
+  }, [queueCommands])
 
   const handleRemoveQueuedMessage = useCallback((messageId: string) => {
     const conversationId = currentConversationIdRef.current
     if (!conversationId) return
-    messageQueueRef.current.remove(conversationId, messageId)
-  }, [])
+    queueCommands.remove(conversationId, messageId)
+  }, [queueCommands])
 
   const handleRestoreQueuedMessage = useCallback((messageId: string) => {
     const conversationId = currentConversationIdRef.current
     if (!conversationId) return
-    messageQueueRef.current.restoreToComposer(conversationId, messageId)
-  }, [])
+    queueCommands.restoreToComposer(conversationId, messageId)
+  }, [queueCommands])
 
   const handleExecuteAgentPlan = useCallback(async (messageId: string) => {
     const conversation = currentConversation
@@ -2739,12 +2732,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       disposers.forEach((dispose) => dispose())
     }
   }, [drainExternalSends])
-
-  useEffect(() => {
-    if (!streamCoarse.streaming && hasPendingDrainRequest()) {
-      void drainExternalSends()
-    }
-  }, [drainExternalSends, hasPendingDrainRequest, streamCoarse.streaming])
 
   const handleUpdateMessage = useCallback(
     async (messageId: string, content: string) => {

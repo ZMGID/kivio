@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { api, type ChatExternalSendRequest } from '../../api/tauri'
 import type { Conversation, PendingAttachment } from '../types'
 
@@ -9,7 +9,7 @@ interface UseExternalSendQueueParams {
   onImportConversation: (
     messages: NonNullable<ChatExternalSendRequest['messages']>,
     attachmentPaths: string[],
-  ) => Promise<unknown>
+  ) => Promise<boolean>
   /** 发送一条外部消息；返回 false 表示当前发不出去（如正在生成），需重排。 */
   onSendMessage: (
     content: string,
@@ -44,12 +44,20 @@ export function useExternalSendQueue({
   const processingRef = useRef(false)
   const requestedRef = useRef(false)
   const partialByRequestRef = useRef(new Map<string, Conversation>())
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryDelayRef = useRef(100)
+  const disposedRef = useRef(false)
 
   // 参数回调每次渲染都是新身份；经 ref 读取以保持 drain 本身稳定。
   const callbacksRef = useRef({ onEnterConversationView, onImportConversation, onSendMessage, onError })
   callbacksRef.current = { onEnterConversationView, onImportConversation, onSendMessage, onError }
 
   const drainExternalSends = useCallback(async () => {
+    if (disposedRef.current) return
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
     if (processingRef.current) {
       requestedRef.current = true
       return
@@ -61,6 +69,7 @@ export function useExternalSendQueue({
         requestedRef.current = false
 
         const result = await api.chatTakeExternalSends()
+        if (disposedRef.current) return
         if (!result.success) {
           const error = 'error' in result && typeof result.error === 'string'
             ? result.error
@@ -81,8 +90,14 @@ export function useExternalSendQueue({
 
         // 历史预置分支：把 Lens 完整多轮历史 + 截图搬成一个新会话（不发消息、不触发回复），落地末尾可续聊。
         if (request.messages && request.messages.length > 0) {
-          await callbacksRef.current.onImportConversation(request.messages, attachmentPaths)
+          const imported = await callbacksRef.current.onImportConversation(request.messages, attachmentPaths)
+          if (disposedRef.current) return
+          if (!imported) {
+            requestedRef.current = true
+            break
+          }
           queueRef.current.shift()
+          retryDelayRef.current = 100
           continue
         }
 
@@ -105,25 +120,50 @@ export function useExternalSendQueue({
             },
           },
         )
+        if (disposedRef.current) return
         if (accepted) {
           partialByRequestRef.current.delete(request.id)
           queueRef.current.shift()
+          retryDelayRef.current = 100
         } else {
           requestedRef.current = true
           break
         }
       } while (requestedRef.current || queueRef.current.length > 0)
     } catch (err) {
+      if (disposedRef.current) return
       console.error('Failed to process external Chat message:', err)
+      requestedRef.current = true
       callbacksRef.current.onError(
         typeof err === 'string' ? err : (err as Error).message || '外部消息发送失败',
       )
     } finally {
       processingRef.current = false
-      if (requestedRef.current) {
-        window.setTimeout(() => {
+      if (!disposedRef.current && requestedRef.current) {
+        const delay = retryDelayRef.current
+        retryDelayRef.current = Math.min(delay * 2, 5000)
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null
           void drainExternalSends()
-        }, 0)
+        }, delay)
+      }
+    }
+  }, [])
+
+  /** A completed run can retry immediately; timer remains the bounded fallback. */
+  const wakeAfterRun = useCallback(async () => {
+    if (requestedRef.current || queueRef.current.length > 0) {
+      await drainExternalSends()
+    }
+  }, [drainExternalSends])
+
+  useEffect(() => {
+    disposedRef.current = false
+    return () => {
+      disposedRef.current = true
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
       }
     }
   }, [])
@@ -131,5 +171,5 @@ export function useExternalSendQueue({
   /** 流式结束后调用方据此判断要不要补一次 drain（搬迁前是直接读 ref）。 */
   const hasPendingDrainRequest = useCallback(() => requestedRef.current, [])
 
-  return { drainExternalSends, hasPendingDrainRequest }
+  return { drainExternalSends, wakeAfterRun, hasPendingDrainRequest }
 }

@@ -35,6 +35,52 @@ beforeEach(() => {
 })
 
 describe('useMessageQueue', () => {
+  it('只给同一会话一个正在交付的条目，另一个并发 drain 不抢发下一条', async () => {
+    let releaseFirst!: (accepted: boolean) => void
+    const firstDelivery = new Promise<boolean>((resolve) => { releaseFirst = resolve })
+    const onSendMessage = vi.fn()
+      .mockImplementationOnce(() => firstDelivery)
+      .mockResolvedValue(true)
+    const { result } = renderHook(() => useMessageQueue({
+      onSendMessage,
+      onRestoreToComposer: vi.fn(),
+    }))
+    act(() => {
+      result.current.enqueue('conv-1', '第一条', [])
+      result.current.enqueue('conv-1', '第二条', [])
+    })
+
+    let sendingFirst!: Promise<void>
+    act(() => { sendingFirst = result.current.drain(conversation) })
+    await act(async () => { await result.current.drain(conversation) })
+    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    expect(result.current.queued['conv-1'].map((item) => item.content)).toEqual(['第二条'])
+
+    await act(async () => { releaseFirst(true); await sendingFirst })
+    await act(async () => { await result.current.drain(conversation) })
+    expect(onSendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('删除会话后迟到的发送拒绝不会把旧消息重新塞回队列', async () => {
+    let rejectDelivery!: (accepted: boolean) => void
+    const onSendMessage = vi.fn(() => new Promise<boolean>((resolve) => { rejectDelivery = resolve }))
+    const { result } = renderHook(() => useMessageQueue({ onSendMessage, onRestoreToComposer: vi.fn() }))
+    act(() => { result.current.enqueue('conv-1', '已删除', []) })
+    let pending!: Promise<void>
+    act(() => { pending = result.current.drain(conversation) })
+    act(() => { result.current.clearConversation('conv-1') })
+    await act(async () => { rejectDelivery(false); await pending })
+    expect(result.current.queued['conv-1']).toBeUndefined()
+  })
+
+  it('暴露稳定的语义命令 Interface，供页面前置声明后直接调用', () => {
+    const { result } = setup()
+    const commands = result.current.commands
+    act(() => { result.current.enqueue('conv-1', '测试', []) })
+    expect(result.current.commands).toBe(commands)
+    expect(commands.enqueue('conv-1', '后续', [])?.content).toBe('后续')
+  })
+
   it('向后端标记尚未提交的用户输入，提交为 follow-up 后清除标记', async () => {
     const onPendingChange = vi.fn()
     const { result } = renderHook(() => useMessageQueue({
@@ -80,15 +126,14 @@ describe('useMessageQueue', () => {
     expect(result.current.queued['conv-1'].map((item) => item.content)).toEqual(['留下'])
   })
 
-  // 回归：drain 要 await 一整轮，而那一轮结束时它自己又会调 drain。早前用「每会话一个
-  // draining 标志」时这里会被自己挡住，第二条永远发不出去。
-  it('发送过程中被再次触发时接着发下一条，而不是把自己挡住', async () => {
+  // 回归：第一条的 send 等待整轮，settleAfterRun 必须显式转交下一条的交付权。
+  it('run 收尾时转交交付权，接着发下一条', async () => {
     const sent: string[] = []
     const onRestoreToComposer = vi.fn()
     let reenter: (() => Promise<void>) | null = null
     const onSendMessage = vi.fn().mockImplementation(async (content: string) => {
       sent.push(content)
-      // 模拟这一轮结束时（还在 await 里）由 run 的 finally 再次触发 drain。
+      // 模拟这一轮结束时（还在 await 里）由 run 的 finally 触发收尾。
       if (reenter) await reenter()
       return true
     })
@@ -99,7 +144,7 @@ describe('useMessageQueue', () => {
     })
     reenter = async () => {
       reenter = null
-      await result.current.drain(conversation)
+      await result.current.settleAfterRun('conv-1', conversation)
     }
 
     await act(async () => { await result.current.drain(conversation) })

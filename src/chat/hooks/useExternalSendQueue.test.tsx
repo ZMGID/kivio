@@ -1,5 +1,5 @@
 import { renderHook, act } from '@testing-library/react'
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { useExternalSendQueue } from './useExternalSendQueue'
 import { api } from '../../api/tauri'
 import type { Conversation } from '../types'
@@ -19,7 +19,7 @@ const mockTake = vi.mocked(api.chatTakeExternalSends)
  */
 function setup() {
   const onEnterConversationView = vi.fn()
-  const onImportConversation = vi.fn().mockResolvedValue(undefined)
+  const onImportConversation = vi.fn().mockResolvedValue(true)
   const onSendMessage = vi.fn().mockResolvedValue(true)
   const onError = vi.fn()
   const rendered = renderHook(() => useExternalSendQueue({
@@ -37,6 +37,8 @@ beforeEach(() => {
   mockTake.mockReset()
   mockTake.mockResolvedValue({ success: true, requests: [] } as never)
 })
+
+afterEach(() => { vi.useRealTimers() })
 
 describe('useExternalSendQueue 基本流转', () => {
   it('无消息时不发送、不报错', async () => {
@@ -75,6 +77,19 @@ describe('useExternalSendQueue 基本流转', () => {
     expect(onSendMessage).not.toHaveBeenCalled()
   })
 
+  it('历史导入返回 false 时保留已取走的请求，后续唤醒可重试', async () => {
+    mockTake
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'history-retry', messages: [{ role: 'user', content: '历史' }] }] } as never)
+      .mockResolvedValue({ success: true, requests: [] } as never)
+    const { result, onImportConversation } = setup()
+    onImportConversation.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+    await act(async () => { await result.current.drainExternalSends() })
+    expect(onImportConversation).toHaveBeenCalledTimes(1)
+    await act(async () => { await result.current.wakeAfterRun() })
+    expect(onImportConversation).toHaveBeenCalledTimes(2)
+  })
+
   it('附件映射：无 path 的被过滤，name/type 有兜底', async () => {
     mockTake.mockResolvedValueOnce({
       success: true,
@@ -98,6 +113,82 @@ describe('useExternalSendQueue 基本流转', () => {
 })
 
 describe('useExternalSendQueue 单飞与重排', () => {
+  it('卸载期间 take 才失败，不会在 finally 重新挂定时器', async () => {
+    vi.useFakeTimers()
+    let rejectTake!: (error: Error) => void
+    mockTake.mockImplementationOnce(() => new Promise((_, reject) => { rejectTake = reject }))
+    const { result, unmount, onError } = setup()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const pending = result.current.drainExternalSends()
+    unmount()
+    rejectTake(new Error('late failure'))
+    await pending
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(mockTake).toHaveBeenCalledTimes(1)
+    error.mockRestore()
+  })
+
+  it('卸载期间发送才被拒绝，不会继续重试该外部请求', async () => {
+    vi.useFakeTimers()
+    mockTake.mockResolvedValueOnce({ success: true, requests: [{ id: 'late-send', content: 'X' }] } as never)
+    let rejectSend!: (accepted: boolean) => void
+    const { result, onSendMessage, unmount } = setup()
+    onSendMessage.mockImplementationOnce(() => new Promise((resolve) => { rejectSend = resolve }))
+
+    const pending = result.current.drainExternalSends()
+    await Promise.resolve()
+    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    unmount()
+    rejectSend(false)
+    await pending
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    expect(mockTake).toHaveBeenCalledTimes(1)
+  })
+
+  it('忙碌拒绝后不以 0ms 自旋，执行结束信号立即重试部分创建的会话', async () => {
+    vi.useFakeTimers()
+    mockTake
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'partial-wake', content: 'X', attachments: [] }] } as never)
+      .mockResolvedValue({ success: true, requests: [] } as never)
+    const { result, onSendMessage, unmount } = setup()
+    onSendMessage.mockImplementationOnce(async (_content, _attachments, options) => {
+      options.onPartialConversation(partialConversation)
+      return false
+    })
+
+    await act(async () => { await result.current.drainExternalSends() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(onSendMessage).toHaveBeenCalledTimes(1)
+    onSendMessage.mockResolvedValueOnce(true)
+    await act(async () => { await result.current.wakeAfterRun() })
+    expect(onSendMessage).toHaveBeenCalledTimes(2)
+    expect(onSendMessage.mock.calls[1][2].conversationOverride).toEqual(partialConversation)
+    unmount()
+  })
+
+  it('take 失败后会以有界定时器自愈，无需页面 coarse 补偿 effect', async () => {
+    vi.useFakeTimers()
+    mockTake
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValue({ success: true, requests: [] } as never)
+    const { result, onError, unmount } = setup()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await act(async () => { await result.current.drainExternalSends() })
+    expect(onError).toHaveBeenCalledWith('temporary')
+    expect(mockTake).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(99) })
+    expect(mockTake).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(mockTake).toHaveBeenCalledTimes(2)
+    error.mockRestore()
+    unmount()
+  })
   it('drain 进行中再次调用不并发取消息', async () => {
     let release: (() => void) | undefined
     mockTake.mockImplementationOnce(() => new Promise((resolve) => {

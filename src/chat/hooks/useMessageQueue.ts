@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { chatApi } from '../api'
 import { userFollowUpId, userSteerId } from '../segments'
 import type { Conversation, PendingAttachment } from '../types'
@@ -55,12 +55,9 @@ function nextQueuedId(): string {
 export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingChange }: UseMessageQueueParams) {
   const [queued, setQueued] = useState<Record<string, QueuedMessage[]>>({})
   const queuedRef = useRef(queued)
-  /**
-   * 已认领待发的条目 id。同步认领、发完才释放，挡住同一条被两个 drain 各发一遍。
-   * 不能用「每会话一个 draining 标志」：drain 要 await 一整轮，那一轮结束时它自己
-   * 又会调 drain —— 标志此刻仍然挂着，第二条就永远发不出去了。
-   */
-  const claimedRef = useRef<Set<string>>(new Set())
+  /** 每会话只能有一条正在交付；run 收尾会显式转交下一条的交付权。 */
+  const deliveringRef = useRef<Map<string, string>>(new Map())
+  const clearedEpochRef = useRef<Map<string, number>>(new Map())
   const callbacksRef = useRef({ onSendMessage, onRestoreToComposer, onPendingChange })
   callbacksRef.current = { onSendMessage, onRestoreToComposer, onPendingChange }
 
@@ -140,6 +137,8 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
   }, [patch])
 
   const clearConversation = useCallback((conversationId: string) => {
+    clearedEpochRef.current.set(conversationId, (clearedEpochRef.current.get(conversationId) ?? 0) + 1)
+    deliveringRef.current.delete(conversationId)
     patch(conversationId, () => [])
   }, [patch])
 
@@ -149,10 +148,12 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
    */
   const drain = useCallback(async (conversation: Conversation) => {
     const conversationId = conversation.id
+    if (deliveringRef.current.has(conversationId)) return
     const next = (queuedRef.current[conversationId] ?? [])
-      .find((item) => !isQueuedSubmitted(item) && !claimedRef.current.has(item.id))
+      .find((item) => !isQueuedSubmitted(item))
     if (!next) return
-    claimedRef.current.add(next.id)
+    const clearedEpoch = clearedEpochRef.current.get(conversationId) ?? 0
+    deliveringRef.current.set(conversationId, next.id)
     patch(conversationId, (items) => items.filter((item) => item.id !== next.id))
     let accepted = false
     try {
@@ -164,9 +165,11 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     } catch (err) {
       console.error('Failed to send a queued message:', err)
     } finally {
-      claimedRef.current.delete(next.id)
+      if (deliveringRef.current.get(conversationId) === next.id) {
+        deliveringRef.current.delete(conversationId)
+      }
     }
-    if (!accepted) {
+    if (!accepted && clearedEpoch === (clearedEpochRef.current.get(conversationId) ?? 0)) {
       patch(conversationId, (items) => [next, ...items])
     }
   }, [patch])
@@ -269,13 +272,23 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
         }
       }
       releaseSubmitted(conversation.id)
+      // The prior delivery awaits the whole run. Its settlement transfers ownership
+      // before that promise resolves so the next queued message can start.
+      deliveringRef.current.delete(conversation.id)
       return drain(conversation)
     }
     releaseSubmitted(conversationId)
   }, [confirm, drain, releaseSubmitted])
 
+  const commands = useMemo(() => ({
+    enqueue, remove, restoreToComposer, restoreClearedQueue, clearConversation,
+    drain, steer, followUp, confirm, settleAfterRun,
+  }), [enqueue, remove, restoreToComposer, restoreClearedQueue, clearConversation,
+    drain, steer, followUp, confirm, settleAfterRun])
+
   return {
     queued,
+    commands,
     enqueue,
     remove,
     restoreToComposer,
