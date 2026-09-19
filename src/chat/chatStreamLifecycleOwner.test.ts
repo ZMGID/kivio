@@ -3,6 +3,7 @@ import type { ChatStreamPayload } from '../api/tauri'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
 import { createChatStreamLifecycleOwner } from './chatStreamLifecycleOwner'
+import { beginConversationTransition, captureConversationNavigation, isCurrentConversationNavigation } from './conversationTransitionStore'
 import { getActiveGroup, resetGroups } from './groupStreamingStore'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import { reset as resetStreamStore } from './streamingStore'
@@ -112,6 +113,31 @@ describe('chat stream lifecycle owner', () => {
     expect(await settling).toBe(false)
     expect(commit).not.toHaveBeenCalled()
     expect(execution.snapshot('a').inFlight).toBe(true)
+    preview.dispose()
+  })
+
+  it('retires a finished run without presenting its late read after A-B-A navigation', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    beginConversationTransition('a')
+    const navigationLease = captureConversationNavigation()
+    owner.receive(packet('old', 'run_started'))
+    const terminal = owner.receive(packet('old', 'run_completed'))
+    if (terminal.kind !== 'ready') throw new Error('Expected terminal to settle')
+    let resolveRead!: (value: string) => void
+    const present = vi.fn()
+    const settling = owner.settleExternalTerminal(
+      terminal.permit,
+      () => new Promise<string>((resolve) => { resolveRead = resolve }),
+      (outcome) => { if (isCurrentConversationNavigation(navigationLease)) present(outcome) },
+    )
+    beginConversationTransition('b')
+    beginConversationTransition('a')
+    resolveRead('obsolete A')
+    expect(await settling).toBe(true)
+    expect(present).not.toHaveBeenCalled()
+    expect(execution.snapshot('a').inFlight).toBe(false)
     preview.dispose()
   })
 

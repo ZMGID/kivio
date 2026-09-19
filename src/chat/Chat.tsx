@@ -43,8 +43,10 @@ import { withExternalModel } from './externalModelEffort'
 import { findUnavailableRecommendedTools } from './toolAvailability'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import {
+  captureConversationNavigation,
   completeConversationTransition,
   invalidateConversationTransition,
+  isCurrentConversationNavigation,
 } from './conversationTransitionStore'
 import type { AssistantStreamStats, MessageListProps } from './MessageList'
 import type { InputBarProps } from './InputBar'
@@ -1740,7 +1742,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         )
       }
       if (currentConversationIdRef.current === conversationId) {
-        await reloadConversation(conversationId, { force: true, canCommit })
+        try {
+          await reloadConversation(conversationId, { force: true, canCommit })
+        } catch (error) {
+          if (canCommit()) {
+            const message = error instanceof Error ? error.message : String(error)
+            setStreamErrorForConversation(conversationId, `回复已结束，但会话回载失败；重新打开此会话重试：${message}`)
+          }
+        }
       }
       if (!canCommit()) return
       refreshSidebar()
@@ -1755,20 +1764,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const finishExternalStreamingRun = useCallback((ready: Extract<StreamLifecycleResult, { kind: 'ready' }>) => {
     const { conversationId, reason } = ready.terminal
+    const navigationLease = captureConversationNavigation()
+    const canPresent = () => isCurrentConversationNavigation(navigationLease)
+      && currentConversationIdRef.current === conversationId
+      && !popoutOwner.owns(conversationId)
     void streamLifecycleOwner.settleExternalTerminal(
       ready.permit,
       // Reading is side-effect-free. A stale terminal must not call the
       // navigation helper, which applies its result before the run permit is
       // checked again.
-      () => currentConversationIdRef.current === conversationId
-        && !popoutOwner.owns(conversationId)
-        ? chatApi.getConversation(conversationId)
-        : Promise.resolve(null),
+      () => canPresent() ? chatApi.getConversation(conversationId) : Promise.resolve(null),
       (outcome) => {
         const conversation = outcome.kind === 'loaded' ? outcome.value : null
         const loadError = outcome.kind === 'failed' ? outcome.error : null
-        if (conversation && currentConversationIdRef.current === conversationId
-          && !popoutOwner.owns(conversationId)) {
+        if (conversation && canPresent()) {
           applyConversation(conversation)
         }
         markConversationCompacting(conversationId, false)
@@ -1777,15 +1786,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
         } else {
           previewOwner.complete(conversationId, {
-            kind: 'persisted', committedMessages: conversation?.messages ?? [],
+            kind: 'persisted', committedMessages: canPresent()
+              ? conversation?.messages ?? []
+              : currentConversationRef.current?.id === conversationId
+                ? currentConversationRef.current.messages : [],
           })
         }
-        if (loadError) {
+        if (loadError && canPresent()) {
           setStreamErrorForConversation(
             conversationId,
             `回复已结束，但会话回载失败；重新打开此会话重试：${loadError.message}`,
           )
-        } else if (reason === 'error') {
+        } else if (reason === 'error' && canPresent()) {
           setStreamErrorForConversation(
             conversationId,
             streamErrorsRef.current[conversationId] || '回复生成失败，请稍后重试。',
