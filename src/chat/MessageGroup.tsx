@@ -3,7 +3,7 @@ import { Check, Columns2, Square } from 'lucide-react'
 import type { ChatMessage, ModelRef } from './types'
 import { MessageBubble } from './MessageBubble'
 import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
-import { ModelIcon } from './ModelIcon'
+import { ModelIcon } from '../components/ModelIcon'
 import { getActiveGroup, useGroupVersion, type GroupColumnSnapshot } from './groupStreamingStore'
 import { useMultiAnswerViewMode } from './multiAnswerViewMode'
 

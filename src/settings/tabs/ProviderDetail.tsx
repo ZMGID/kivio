@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { Select, Input, SettingsGroup, FieldBlock, Toggle } from '../components'
 import { Button, IconButton } from '../../components/Button'
-import { ModelIcon } from '../../chat/public/modelIcons'
+import { ModelIcon } from '../../components/ModelIcon'
 import { PROVIDER_PRESETS } from '../providerPresets'
 import { ProviderRequestPanel } from '../ProviderRequestPanel'
 import { ProviderOAuthPanel } from '../ProviderOAuthPanel'

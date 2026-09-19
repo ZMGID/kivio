@@ -16,7 +16,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { AgentIcon } from '../chat/public/agentIcon'
+import { AgentIcon } from '../components/AgentIcon'
 import {
   externalAgentSettingsApi,
   type CcSwitchProvider,

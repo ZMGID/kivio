@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { X, RefreshCw, Check } from 'lucide-react'
 import { api } from '../api/tauri'
 import type { ProviderRequestConfig } from '../api/tauri'
-import { ModelIcon } from '../chat/public/modelIcons'
+import { ModelIcon } from '../components/ModelIcon'
 import { Button, IconButton } from '../components/Button'
 import { MODEL_TEST_CONCURRENCY, runPool } from '../components/providerModelTestPool'
 

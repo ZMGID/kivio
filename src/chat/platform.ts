@@ -1,11 +1,6 @@
-export const isMac =
-  typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
+import { isMac, isWindows, usesNativeTitlebar } from '../utils/windowPlatform'
 
-export const isWindows =
-  typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)
-
-/** macOS Chat 使用 Tauri Overlay 标题栏，交通灯由系统绘制 */
-export const usesNativeTitlebar = isMac
+export { isMac, isWindows, usesNativeTitlebar }
 
 /** 侧栏 / 主内容顶栏行高与垂直居中 */
 export const chatTitlebarRowClass = usesNativeTitlebar

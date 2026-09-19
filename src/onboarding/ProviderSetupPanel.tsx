@@ -8,7 +8,7 @@ import { Input, Label } from '../settings/public/controls'
 import type { I18n, Lang } from '../settings/public/i18n'
 import { PROVIDER_PRESETS, type ProviderPreset } from '../settings/public/modelSelection'
 import { isProviderEnabled } from '../settings/public/providers'
-import { ProviderIcon } from '../chat/public/modelIcons'
+import { ProviderIcon } from '../components/ModelIcon'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
 
 type ProviderSetupPanelProps = {

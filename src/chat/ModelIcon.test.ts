@@ -5,7 +5,7 @@ import {
   _providerIconMapKeysForTest as providerIconMapKeys,
   PROVIDER_BRANDS,
   PROVIDER_PICKER_KEYS,
-} from './ModelIcon'
+} from '../components/ModelIcon'
 
 describe('ModelIcon model→brand mapping', () => {
   it('covers the OpenCode free catalog with the correct known brands', () => {

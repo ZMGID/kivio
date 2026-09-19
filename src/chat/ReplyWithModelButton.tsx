@@ -5,7 +5,7 @@ import { getSettingsCached, setFavoriteModelsCached, subscribeSettings } from '.
 import { IconButton } from '../components/Button'
 import { useT } from '../settings/public/i18n'
 import { isProviderEnabled } from '../settings/public/providers'
-import { ModelIcon } from './ModelIcon'
+import { ModelIcon } from '../components/ModelIcon'
 import { MAX_REPLY_MODELS } from './messageGroups'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import type { ModelRef } from './types'
