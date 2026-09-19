@@ -14,6 +14,125 @@ const ports = () => ({
 })
 
 describe('chat execution owner', () => {
+  it('grants one cancellation request per run and suppresses only its late content', () => {
+    const owner = createChatExecutionOwner()
+    owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })
+    owner.begin({ conversationId: 'b', kind: 'send', startedAt: 2 })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'run-a', started: true })
+    owner.observe({ kind: 'runEvent', conversationId: 'b', runId: 'run-b', started: true })
+    const permit = owner.requestCancellation('a', 'run-a')
+    expect(permit).not.toBeNull()
+    expect(owner.requestCancellation('a', 'run-a')).toBeNull()
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'run-a', type: 'delta' })).toBe(false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', type: 'delta' })).toBe(false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'unrelated', type: 'delta' })).toBe(true)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'run-a', type: 'run_cancelled' })).toBe(true)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'run-a', type: 'run_completed' })).toBe(true)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'run-a', type: 'run_failed' })).toBe(true)
+    expect(owner.allowsStreamPayload({ conversationId: 'b', runId: 'run-b', type: 'delta' })).toBe(true)
+    expect(owner.requestCancellation('b', 'run-b')).not.toBeNull()
+  })
+
+  it('allows a failed cancellation to be retried and restores content delivery', () => {
+    const owner = createChatExecutionOwner()
+    owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })
+    const first = owner.requestCancellation('a', null)!
+    owner.completeCancellation(first, false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', type: 'delta' })).toBe(true)
+    expect(owner.requestCancellation('a', null)).not.toBeNull()
+  })
+
+  it('keeps an unidentified cancelled run fenced when its first run ID arrives late', () => {
+    const owner = createChatExecutionOwner()
+    owner.observe({ kind: 'externalStarted', conversationId: 'a' })
+    const permit = owner.requestCancellation('a')!
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'first', groupId: 'group-1', started: true })
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'first', type: 'delta' })).toBe(false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'first', type: 'run_cancelled' })).toBe(true)
+    owner.completeCancellation(permit, true)
+    expect(owner.requestCancellation('a', 'first')).toBeNull()
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'next', groupId: 'group-2', started: true })
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'next', type: 'delta' })).toBe(true)
+  })
+
+  it('does not let an old cancellation completion clear a newer run fence', async () => {
+    const owner = createChatExecutionOwner()
+    const old = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })!
+    const oldPermit = owner.requestCancellation('a', 'old')!
+    await owner.finish(old, null, ports())
+    owner.begin({ conversationId: 'a', kind: 'send', startedAt: 2 })
+    const newPermit = owner.requestCancellation('a', 'new')!
+    owner.completeCancellation(oldPermit, false)
+    expect(owner.requestCancellation('a', 'new')).toBeNull()
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'new', type: 'delta' })).toBe(false)
+    owner.completeCancellation(newPermit, false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'new', type: 'delta' })).toBe(true)
+  })
+
+  it('clears a previous cancellation when an external new run starts', () => {
+    const owner = createChatExecutionOwner()
+    owner.observe({ kind: 'externalStarted', conversationId: 'a' })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'old', groupId: 'group-1', started: true })
+    // The caller may not know the run ID even after the owner has observed it.
+    const oldPermit = owner.requestCancellation('a', null)!
+    owner.completeCancellation(oldPermit, true)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'old', type: 'delta' })).toBe(false)
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'new', groupId: 'group-2', started: true })
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'new', type: 'delta' })).toBe(true)
+    expect(owner.requestCancellation('a', 'new')).not.toBeNull()
+    owner.completeCancellation(oldPermit, false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'new', type: 'delta' })).toBe(false)
+  })
+
+  it('does not mistake another arm of the same restored group for a new execution', () => {
+    const owner = createChatExecutionOwner()
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-a', groupId: 'group-1', started: true })
+    owner.requestCancellation('a')
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-b', groupId: 'group-1', started: true })
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'arm-a', type: 'delta' })).toBe(false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'arm-b', type: 'delta' })).toBe(false)
+    expect(owner.requestCancellation('a', 'arm-b')).toBeNull()
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-c', started: true })
+    expect(owner.requestCancellation('a', 'arm-c')).toBeNull()
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'next', groupId: 'group-2', started: true })
+    expect(owner.requestCancellation('a', 'next')).not.toBeNull()
+  })
+
+  it('fences every arm of a locally owned multi-answer group after a conversation-level cancel', () => {
+    const owner = createChatExecutionOwner({ begin: vi.fn(), end: vi.fn() })
+    owner.begin({
+      conversationId: 'a', kind: 'send', startedAt: 1,
+      group: { groupId: 'group-1', arms: [{ providerId: 'p', model: 'm' }] },
+    })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-a', started: true })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-b', started: true })
+    owner.requestCancellation('a', 'arm-a')
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'arm-a', type: 'delta' })).toBe(false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'arm-b', type: 'delta' })).toBe(false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'arm-b', type: 'run_completed' })).toBe(true)
+  })
+
+  it('uses external end as the boundary when a new run has no group identity', () => {
+    const owner = createChatExecutionOwner()
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'old', started: true })
+    owner.requestCancellation('a')
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'ambiguous', started: true })
+    expect(owner.requestCancellation('a', 'ambiguous')).toBeNull()
+    owner.observe({ kind: 'externalEnded', conversationId: 'a' })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'new', started: true })
+    expect(owner.requestCancellation('a', 'new')).not.toBeNull()
+  })
+
+  it('rejects late content after finish through run settlement even though the cancellation fence is gone', async () => {
+    const owner = createChatExecutionOwner()
+    const lease = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })!
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'old', started: true })
+    owner.requestCancellation('a', 'old')
+    await owner.finish(lease, conversation('a'), ports())
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'old', type: 'delta' })).toBe(true)
+    expect(owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'old' })).toBe(false)
+  })
+
   it('owns parallel conversations independently and publishes their execution snapshots', async () => {
     const owner = createChatExecutionOwner()
     const changed = vi.fn()

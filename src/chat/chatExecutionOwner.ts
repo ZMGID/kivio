@@ -16,6 +16,18 @@ export interface ExecutionLease {
   readonly token: number
 }
 
+declare const cancellationPermitBrand: unique symbol
+export type CancellationPermit = {
+  readonly conversationId: string
+  readonly [cancellationPermitBrand]: true
+}
+
+type StreamPayloadIdentity = {
+  conversationId: string
+  runId?: string | null
+  type?: string
+}
+
 export type PreparedSingleRunOutcome =
   | { kind: 'persisted'; conversation: Conversation }
   | { kind: 'persisted_error'; conversation: Conversation; error: Error }
@@ -43,7 +55,7 @@ type BeginIntent = {
 }
 
 type ExecutionEvent =
-  | { kind: 'runEvent'; conversationId: string; runId: string | null | undefined; started?: boolean }
+  | { kind: 'runEvent'; conversationId: string; runId: string | null | undefined; started?: boolean; groupId?: string }
   | { kind: 'deferTerminal'; terminal: ChatRunTerminal }
   | { kind: 'externalStarted' | 'externalEnded' | 'drop'; conversationId: string }
 
@@ -69,6 +81,9 @@ export function createChatExecutionOwner(
   }>()
   const claims = new Map<SendClaim, Reservation>()
   const external = new Set<string>()
+  const externalRunIds = new Map<string, string>()
+  const externalGroupIds = new Map<string, string>()
+  const cancellations = new Map<string, { permit: CancellationPermit; runId: string | null; groupId: string | null }>()
   const listeners = new Set<() => void>()
   let revision = 0
   const publish = () => {
@@ -103,6 +118,44 @@ export function createChatExecutionOwner(
     snapshot,
     activeConversationIds: () => [...new Set([...active.keys(), ...external])],
     overlayMessages: optimistic.overlay,
+    /** Grants one cancellation attempt for the current execution. The permit
+     * remains the identity of its content fence until failure or run turnover. */
+    requestCancellation(conversationId: string, runId: string | null = null): CancellationPermit | null {
+      if ((!active.has(conversationId) && !external.has(conversationId))
+        || cancellations.has(conversationId)) return null
+      const permit = { conversationId } as CancellationPermit
+      const activeRunIds = active.get(conversationId)?.runIds
+      const observedRunId = activeRunIds?.size
+        ? [...activeRunIds][activeRunIds.size - 1]
+        : externalRunIds.get(conversationId)
+      cancellations.set(conversationId, {
+        permit,
+        runId: runId ?? observedRunId ?? null,
+        groupId: active.get(conversationId)?.groupId ?? externalGroupIds.get(conversationId) ?? null,
+      })
+      publish()
+      return permit
+    },
+    /** A failed backend request reopens cancellation and content delivery.
+     * A successful request keeps the fence until terminal settlement/new run. */
+    completeCancellation(permit: CancellationPermit, succeeded: boolean): void {
+      const current = cancellations.get(permit.conversationId)
+      if (!current || current.permit !== permit) return
+      if (!succeeded) {
+        cancellations.delete(permit.conversationId)
+        publish()
+      }
+    },
+    /** Terminal events are authoritative even after local cancellation. */
+    allowsStreamPayload(payload: StreamPayloadIdentity): boolean {
+      if (payload.type === 'run_cancelled' || payload.type === 'run_completed' || payload.type === 'run_failed') return true
+      const cancelled = cancellations.get(payload.conversationId)
+      if (!cancelled) return true
+      // cancelStream is conversation-level: every arm of this group stops,
+      // even when only one arm's run ID was known at cancellation time.
+      if (cancelled.groupId) return false
+      return Boolean(cancelled.runId && payload.runId && cancelled.runId !== payload.runId)
+    },
     claimSend: (conversationId: string | null): SendClaim | null => {
       const reservation = reservations.claim(conversationId)
       if (!reservation) return null
@@ -121,6 +174,9 @@ export function createChatExecutionOwner(
       if (intent.kind === 'regenerate' && intent.group) {
         throw new Error('Regeneration cannot begin a multi-answer group')
       }
+      cancellations.delete(id)
+      externalRunIds.delete(id)
+      externalGroupIds.delete(id)
       const token = settlement.beginInvoke(id)
       const lease = { conversationId: id, token }
       const optimisticToken = intent.optimistic
@@ -152,14 +208,40 @@ export function createChatExecutionOwner(
         if (!settlement.acceptRunEvent(id, event.runId, event.started)) return false
         if (event.started && event.runId) {
           const invocation = active.get(id)
-          if (invocation) invocation.runIds.add(event.runId)
-          else external.add(id)
+          if (invocation) {
+            invocation.runIds.add(event.runId)
+            const cancelled = cancellations.get(id)
+            if (cancelled && !cancelled.runId) cancelled.runId = event.runId
+          }
+          else {
+            const cancelled = cancellations.get(id)
+            if (cancelled) {
+              if (!cancelled.runId) {
+                cancelled.runId = event.runId
+                cancelled.groupId = event.groupId ?? cancelled.groupId
+              } else if (cancelled.runId !== event.runId
+                && cancelled.groupId && event.groupId
+                && cancelled.groupId !== event.groupId) {
+                // Different run IDs may be arms of one restored group. Only an
+                // explicit different group identity proves a new execution.
+                cancellations.delete(id)
+              }
+            }
+            external.add(id)
+            externalRunIds.set(id, event.runId)
+            if (event.groupId) externalGroupIds.set(id, event.groupId)
+          }
           publish()
         }
         return true
       }
       if (event.kind === 'externalStarted' && !active.has(id)) external.add(id)
-      if (event.kind === 'externalEnded') external.delete(id)
+      if (event.kind === 'externalEnded') {
+        external.delete(id)
+        externalRunIds.delete(id)
+        externalGroupIds.delete(id)
+        cancellations.delete(id)
+      }
       if (event.kind === 'drop') {
         const invocation = active.get(id)
         if (invocation?.claim) abandonSend(invocation.claim)
@@ -167,6 +249,9 @@ export function createChatExecutionOwner(
         if (invocation?.groupId) groups.end(id)
         active.delete(id)
         external.delete(id)
+        externalRunIds.delete(id)
+        externalGroupIds.delete(id)
+        cancellations.delete(id)
         settlement.clearConversation(id)
         optimistic.clear(id)
       }
@@ -178,6 +263,7 @@ export function createChatExecutionOwner(
       const invocation = active.get(id)
       if (!invocation || invocation.lease.token !== lease.token) return
       active.delete(id)
+      cancellations.delete(id)
       if (invocation.optimisticToken != null) optimistic.settle(id, invocation.optimisticToken)
       if (invocation.groupId) groups.end(id)
       if (invocation.claim) abandonSend(invocation.claim)
