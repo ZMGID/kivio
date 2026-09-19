@@ -1,7 +1,7 @@
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
 import { freezeCancelledStream, isLocallyCancelledPayload } from './streamCancellation'
-import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
+import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { PanelRight, SquareArrowOutUpRight } from 'lucide-react'
 import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
@@ -10,6 +10,9 @@ import { useChatRouting } from './hooks/useChatRouting'
 import { createChatNavigationController } from './chatNavigationController'
 import { createChatSendReservations } from './chatSendReservations'
 import { createChatRunSettlement } from './chatRunSettlement'
+import { prepareConversationForSend } from './prepareConversationForSend'
+import { applyConversationStreamEvent, beginRunSnapshot, restoreRunSnapshot } from './streamPresentation'
+import { createOptimisticUserPresentation } from './optimisticUserPresentation'
 import { useExternalSendQueue } from './hooks/useExternalSendQueue'
 import { useMessageQueue } from './hooks/useMessageQueue'
 import type { QueuedMessage } from './hooks/useMessageQueue'
@@ -176,22 +179,14 @@ import { composerGoal } from './goalPresentation'
 import { PopoutOccupiedPlaceholder } from './popout/PopoutOccupiedPlaceholder'
 import { emptyPopoutConversation, stripConversationMessages } from './popout/conversationStub'
 import {
-  applyStreamDeltaToSnapshot,
   applyToolRecordToSnapshot,
-  findReasoningSegmentForText,
   findSubagentToolIndex,
-  finalizeReasoningDurationOnDone,
   hasStreamPreview,
   isStreamTerminal,
   mergeSubagentProgress,
   messageToolCalls,
-  streamPayloadToSegment,
-  streamReasoningDelta,
   streamTerminalReason,
-  streamTextDelta,
   toolEventToRecord,
-  updateReasoningSegmentDuration,
-  upsertStreamSegment,
   upsertToolStreamSegment,
   userPromptEventToRecord,
 } from './streamApply'
@@ -457,15 +452,6 @@ function additionalDirectoriesOf(conversation: Conversation | null | undefined):
   return conversation?.additional_directories ?? conversation?.additionalDirectories ?? []
 }
 
-function sameAdditionalDirectories(left: AdditionalDirectory[], right: AdditionalDirectory[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((entry, index) =>
-      entry.path === right[index]?.path && (entry.name ?? '') === (right[index]?.name ?? '')
-    )
-  )
-}
-
 function attachmentExtension(name: string): string {
   return name.split('.').pop()?.toLowerCase() ?? ''
 }
@@ -515,14 +501,6 @@ function isPlainBlankConversation(conversation: Conversation | null): boolean {
     && conversation.messages.length === 0
     && !(conversation.assistant_id ?? conversation.assistantId),
   )
-}
-
-function conversationUsesModel(
-  conversation: Conversation,
-  providerId: string,
-  model: string,
-): boolean {
-  return conversation.provider_id === providerId && conversation.model === model
 }
 
 function optimisticConversationListItem(
@@ -602,6 +580,8 @@ type SendMessageOptions = {
   planMessageId?: string
   forceNewConversation?: boolean
   conversationOverride?: Conversation | null
+  /** 外部队列可记录已创建/已 patch 的会话，失败重试继续该会话。 */
+  onPartialConversation?: (conversation: Conversation) => void
   /** 前置校验完成、消息正式进入本地发送流程；输入框可立即清空。 */
   onAccepted?: () => void
 }
@@ -655,8 +635,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // 内容快照由 MessageList 直接订阅，避免每帧 token 拖着整个 Chat 重渲。
   const streamCoarse = useStreamCoarse()
   /** 发送中待显示的用户消息（与 conversation 分离，避免 route reload 冲掉） */
-  const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null)
-  const [pendingUserMessageConversationId, setPendingUserMessageConversationId] = useState<string | null>(null)
+  const optimisticUserPresentation = useRef(createOptimisticUserPresentation()).current
+  useSyncExternalStore(
+    optimisticUserPresentation.subscribe,
+    optimisticUserPresentation.getRevision,
+  )
   const [assistantStreamStatsByMessageId, setAssistantStreamStatsByMessageId] =
     useState<Record<string, AssistantStreamStats>>({})
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0)
@@ -902,6 +885,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     clearConversationLocalState(localState(), conversationId, {
       inFlight: true, streamErrors: true,
     })
+    optimisticUserPresentation.clear(conversationId)
     runSettlement.clearConversation(conversationId)
     // 若该会话还挂着待刷新的合帧，连带取消，避免被剔除的 ghost 还闪一帧。
     cancelPendingFrameFor(conversationId)
@@ -910,7 +894,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     messageQueueRef.current.clearConversation(conversationId)
     setOptimisticSidebarConversations((items) => items.filter((item) => item.id !== conversationId))
     syncGeneratingConversationIds()
-  }, [cancelPendingFrameFor, localState, runSettlement, syncGeneratingConversationIds])
+  }, [cancelPendingFrameFor, localState, optimisticUserPresentation, runSettlement, syncGeneratingConversationIds])
 
   const setStreamErrorForConversation = useCallback((conversationId: string, error: string) => {
     if (error) {
@@ -2092,12 +2076,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         if (hasActiveGroup(payload.conversationId) && payload.messageId) {
           const column = ensureGroupColumn(payload.conversationId, payload.messageId)
           if (column) {
-            Object.assign(column, createEmptyStreamSnapshot(), {
-              runId: payload.runId,
-              messageId: payload.messageId,
-              streaming: true,
-              startedAt: Date.now(),
-            })
+            Object.assign(column, restoreRunSnapshot(payload))
             touchGroup(payload.conversationId)
           }
           if (currentConversationIdRef.current === payload.conversationId) {
@@ -2105,11 +2084,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           }
           return
         }
-        const restored = createEmptyStreamSnapshot()
-        restored.runId = payload.runId
-        restored.messageId = payload.messageId
-        restored.streaming = true
-        restored.startedAt = Date.now()
+        const restored = restoreRunSnapshot(payload)
         streamSnapshotsRef.current[payload.conversationId] = restored
         syncGeneratingConversationIds()
         showStreamSnapshotIfCurrent(payload.conversationId, restored)
@@ -2131,11 +2106,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           payload.messageId,
         )
         if (!column) return
-        if (!acceptStreamRun(column, payload.runId)) return
-        const segment = streamPayloadToSegment(payload)
-        applyStreamDeltaToSnapshot(column, payload, segment)
+        if (!applyConversationStreamEvent(column, payload)) return
         if (terminal) {
-          finalizeReasoningDurationOnDone(column)
           column.streaming = false
           // 列结束是终止帧：立即 flush（不等下一帧），让该列完成态尽快可见。
           flushGroups(payload.conversationId)
@@ -2154,72 +2126,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         return
       }
       const snapshot = ensureStreamSnapshot(payload.conversationId)
-      if (!acceptStreamRun(snapshot, payload.runId)) return
-      // 所有 run 事件都带有 messageId；补上它可以覆盖本窗口先创建的空快照，
-      // 也让协议快照恢复时的历史草稿与实时预览能够按同一条消息互斥渲染。
-      if (payload.messageId) snapshot.messageId = payload.messageId
-      const segment = streamPayloadToSegment(payload)
-      const textDelta = streamTextDelta(payload)
-      const reasoningDelta = streamReasoningDelta(payload)
-      // 正文/思考恢复流动 = 上游重试已经成功（没有显式的成功帧），状态行的重试尾巴即刻清除。
-      if (textDelta || reasoningDelta) snapshot.statusNote = null
-      if (segment) {
-        snapshot.segments = upsertStreamSegment(
-          snapshot.segments,
-          segment,
-          segment.kind === 'reasoning' ? reasoningDelta : textDelta,
-        )
-      }
-      if (reasoningDelta) {
-        const now = Date.now()
-        if (snapshot.reasoningStartedAt == null) {
-          snapshot.reasoningStartedAt = now
-        }
-        if (segment?.kind === 'reasoning') {
-          const segmentStartedAt = snapshot.reasoningStartedAtBySegmentId[segment.id] ?? now
-          snapshot.reasoningStartedAtBySegmentId[segment.id] = segmentStartedAt
-          updateReasoningSegmentDuration(snapshot, segment.id, now)
-        }
-        snapshot.streaming = true
-        snapshot.reasoningStreaming = true
-        snapshot.reasoning += reasoningDelta
-        snapshot.reasoningDurationMs = Math.max(
-          snapshot.reasoningDurationMs ?? 0,
-          now - snapshot.reasoningStartedAt,
-        )
-      }
-      if (textDelta) {
-        if (snapshot.reasoningStreaming && snapshot.reasoningStartedAt != null) {
-          snapshot.reasoningDurationMs = Math.max(
-            snapshot.reasoningDurationMs ?? 0,
-            Date.now() - snapshot.reasoningStartedAt,
-          )
-        }
-        if (segment?.kind === 'text') {
-          const activeReasoningSegment = findReasoningSegmentForText(snapshot.segments, segment)
-          if (activeReasoningSegment) {
-            updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id)
-          }
-        }
-        snapshot.streaming = true
-        snapshot.reasoningStreaming = false
-        snapshot.content += textDelta
-      }
+      if (!applyConversationStreamEvent(snapshot, payload)) return
       syncGeneratingConversationIds()
       showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
       if (terminal) {
-        if (snapshot.reasoningStartedAt != null && snapshot.reasoningStreaming) {
-          snapshot.reasoningDurationMs = Math.max(
-            snapshot.reasoningDurationMs ?? 0,
-            Date.now() - snapshot.reasoningStartedAt,
-          )
-          const activeReasoningSegment = [...snapshot.segments]
-            .reverse()
-            .find((item) => item.kind === 'reasoning')
-          if (activeReasoningSegment) {
-            updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id)
-          }
-        }
         // done：立即 flush 最后一帧，别让合帧吞掉收尾内容。
         showStreamSnapshotIfCurrent(payload.conversationId, snapshot, true)
         if (restoredRunIdsRef.current.delete(payload.runId)) {
@@ -2699,8 +2609,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     applyConversation(null)
     restoreStreamingPreview(null)
     syncConversationRoute(null)
-    setPendingUserMessage(null)
-    setPendingUserMessageConversationId(null)
     setContextError('')
     setContextLoading(false)
     setStreamError('')
@@ -2728,8 +2636,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
     if (!conversationId) {
       setAssistantStreamStatsByMessageId({})
-      setPendingUserMessage(null)
-      setPendingUserMessageConversationId(null)
       setStreamError('')
       return
     }
@@ -2744,13 +2650,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         await chatApi.cancelStream(conversationId)
       }
       clearConversationLocalState(localState(), conversationId, { streamErrors: true })
+      optimisticUserPresentation.clear(conversationId)
       clearConversationInFlight(conversationId)
       if (currentConversationIdRef.current === conversationId) {
         forgetRememberedChatRoute()
         currentConversationIdRef.current = null
         setAssistantStreamStatsByMessageId({})
-        setPendingUserMessage(null)
-        setPendingUserMessageConversationId(null)
         setContextState(null)
         setContextError('')
         applyConversation(null)
@@ -2766,7 +2671,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         typeof err === 'string' ? err : (err as Error).message || '清空对话失败',
       )
     }
-  }, [applyConversation, clearConversationInFlight, localState, refreshSidebar, restoreStreamingPreview, setStreamErrorForConversation, syncConversationRoute])
+  }, [applyConversation, clearConversationInFlight, localState, optimisticUserPresentation, refreshSidebar, restoreStreamingPreview, setStreamErrorForConversation, syncConversationRoute])
 
   const handleStartAssistantChat = useCallback(async (assistant: ChatAssistant) => {
     const startingConversationId = currentConversationIdRef.current
@@ -2902,8 +2807,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setSelectedProject(project)
     setSelectedSet(null)
     setAssistantStreamStatsByMessageId({})
-    setPendingUserMessage(null)
-    setPendingUserMessageConversationId(null)
     currentConversationIdRef.current = null
     applyConversation(null)
     restoreStreamingPreview(null)
@@ -2915,8 +2818,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setSelectedSet(set)
     setSelectedProject(null)
     setAssistantStreamStatsByMessageId({})
-    setPendingUserMessage(null)
-    setPendingUserMessageConversationId(null)
     currentConversationIdRef.current = null
     applyConversation(null)
     restoreStreamingPreview(null)
@@ -2985,9 +2886,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       return false
     }
 
-    const sendTarget = options.forceNewConversation
-      ? null
-      : options.conversationOverride?.id ?? currentConversationIdRef.current
+    const sendTarget = options.conversationOverride?.id
+      ?? (options.forceNewConversation ? null : currentConversationIdRef.current)
     const reservation = sendReservationsRef.current.claim(sendTarget)
     if (!reservation) {
       const message = '该对话正在发送中，请稍后再试'
@@ -2996,167 +2896,56 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       return false
     }
 
+    let optimisticUserClaim: { conversationId: string; token: number } | null = null
     try {
 
-    let conversation = options.conversationOverride
-      ?? (options.forceNewConversation ? null : currentConversation)
-    if (
-      conversation
-      && !options.conversationOverride
-      && isPlainBlankConversation(conversation)
-      && !conversationUsesModel(conversation, activeProviderId, activeModel)
-    ) {
-      conversation = null
-    }
-    if (!conversation) {
-      try {
-        conversation = await chatApi.createConversation(
-          activeProviderId || undefined,
-          activeModel || undefined,
-          selectedProject?.name,
-          selectedProject?.id ?? null,
-          undefined,
-          selectedSet?.id ?? null,
-        )
+    const prepared = await prepareConversationForSend({
+      conversation: options.conversationOverride ?? currentConversation,
+      override: Boolean(options.conversationOverride),
+      forceNew: Boolean(options.forceNewConversation),
+      providerId: activeProviderId,
+      model: activeModel,
+      projectName: selectedProject?.name ?? null,
+      projectId: selectedProject?.id ?? null,
+      setId: selectedSet?.id ?? null,
+      draft: {
+        agentRuntime: draftAgentRuntime,
+        knowledgeBaseIds: draftKnowledgeBaseIds,
+        forceKnowledgeSearch: draftForceKnowledgeSearch,
+        additionalDirectories: draftAdditionalDirectories,
+        thinkingLevel: draftThinkingLevel,
+        webSearchMode: draftWebSearchMode,
+        rememberedWebSearchMode: loadLastWebSearchMode(),
+        replyModels: draftReplyModels,
+      },
+      providerOAuthTypes,
+    }, chatApi, (phase, preparedConversation) => {
+      if (phase === 'created') {
+        if (!reservation.bind(preparedConversation.id)) return false
+        options.onPartialConversation?.(preparedConversation)
         if (currentConversationIdRef.current === startingConversationId) {
-          currentConversationIdRef.current = conversation.id
-          applyConversation(conversation)
-          syncConversationRoute(conversation.id)
+          currentConversationIdRef.current = preparedConversation.id
+          applyConversation(preparedConversation)
+          syncConversationRoute(preparedConversation.id)
         }
-      } catch (err) {
-        console.error('Failed to create conversation before send:', err)
-        if (currentConversationIdRef.current === startingConversationId) {
-          setStreamError(typeof err === 'string' ? err : (err as Error).message || '创建对话失败')
-        }
-        return false
+      } else {
+        options.onPartialConversation?.(preparedConversation)
+        applyConversationIfCurrent(preparedConversation.id, preparedConversation)
       }
+    })
+    if (!prepared.ok) {
+      console.error(`Failed to prepare conversation before send (${prepared.stage}):`, prepared.error)
+      if (prepared.conversation) {
+        setStreamErrorForConversation(prepared.conversation.id, prepared.error.message)
+      } else if (currentConversationIdRef.current === startingConversationId) {
+        setStreamError(prepared.error.message || '创建对话失败')
+      }
+      return false
     }
-
+    const conversation = prepared.conversation
     if (!reservation.bind(conversation.id)) {
       setStreamErrorForConversation(conversation.id, '该对话正在发送中，请稍后再试')
       return false
-    }
-
-    // 草稿运行时只落到「尚无消息」的会话（欢迎页选好 Agent → 首次发送建会话的场景）。已有消息的
-    // 会话以其自身运行时为准：draft 在切换会话/重启后可能是陈旧的（如初始 BUILTIN），无条件回写
-    // 会被后端「一 agent 一对话」绑定校验（check_runtime_switch_allowed）拒绝，把正常发送卡死。
-    // 空会话判定与后端放行条件一致。
-    if (
-      (conversation.messages?.length ?? 0) === 0
-      && !agentRuntimesEqual(normalizeAgentRuntime(conversation), draftAgentRuntime)
-    ) {
-      try {
-        conversation = await chatApi.setAgentRuntime(conversation.id, draftAgentRuntime)
-        applyConversationIfCurrent(conversation.id, conversation)
-      } catch (err) {
-        console.error('Failed to apply agent runtime before send:', err)
-        setStreamErrorForConversation(
-          conversation.id,
-          typeof err === 'string' ? err : (err as Error).message || 'Agent 切换失败',
-        )
-        return false
-      }
-    }
-
-    // Apply the welcome-page knowledge-base draft to the freshly-created
-    // conversation (mounting on the welcome screen had no conversation yet).
-    {
-      const convKb = conversation.knowledge_base_ids ?? conversation.knowledgeBaseIds ?? []
-      const sameKb =
-        convKb.length === draftKnowledgeBaseIds.length &&
-        convKb.every((id) => draftKnowledgeBaseIds.includes(id))
-      if (draftKnowledgeBaseIds.length > 0 && !sameKb) {
-        try {
-          conversation = await chatApi.updateConversation(conversation.id, {
-            knowledgeBaseIds: draftKnowledgeBaseIds,
-          })
-          applyConversationIfCurrent(conversation.id, conversation)
-        } catch (err) {
-          console.error('Failed to apply knowledge base draft before send:', err)
-        }
-      }
-      // 同步「强制检索」草稿到新会话。
-      const convForce =
-        conversation.force_knowledge_search ?? conversation.forceKnowledgeSearch ?? false
-      if (draftForceKnowledgeSearch && !convForce) {
-        try {
-          conversation = await chatApi.updateConversation(conversation.id, {
-            forceKnowledgeSearch: true,
-          })
-          applyConversationIfCurrent(conversation.id, conversation)
-        } catch (err) {
-          console.error('Failed to apply force-knowledge-search draft before send:', err)
-        }
-      }
-    }
-
-    {
-      const convDirs = additionalDirectoriesOf(conversation)
-      if (draftAdditionalDirectories.length > 0 && !sameAdditionalDirectories(convDirs, draftAdditionalDirectories)) {
-        try {
-          conversation = await chatApi.updateConversation(conversation.id, {
-            additionalDirectories: draftAdditionalDirectories,
-          })
-          applyConversationIfCurrent(conversation.id, conversation)
-        } catch (err) {
-          console.error('Failed to apply additional directory draft before send:', err)
-        }
-      }
-    }
-
-    // 把全局默认思考等级套到「从未显式设过等级」的会话上（新会话 / 旧的 null 会话）。
-    // 只在 convLevel 为 null 时应用——绝不覆盖用户为某个会话显式选的等级。
-    if (draftThinkingLevel) {
-      const convLevel = conversation.thinking_level ?? conversation.thinkingLevel ?? null
-      if (convLevel === null) {
-        try {
-          conversation = await chatApi.updateConversation(conversation.id, {
-            thinkingLevel: draftThinkingLevel,
-          })
-          applyConversationIfCurrent(conversation.id, conversation)
-        } catch (err) {
-          console.error('Failed to apply thinking level draft before send:', err)
-        }
-      }
-    }
-
-    // 会话级三态联网搜索（任务 07-23）：把欢迎页草稿或记住的全局默认落到新会话上
-    // （仅当会话尚未显式设过模式时），后端 Builtin 注入依赖会话字段而非前端展示值。
-    {
-      const desiredMode = resolveProviderWebSearchMode(
-        draftWebSearchMode ?? loadLastWebSearchMode(), providerOAuthTypes[conversation.provider_id],
-      )
-      const convMode = conversation.web_search_mode ?? conversation.webSearchMode ?? null
-      if (desiredMode && convMode === null) {
-        try {
-          conversation = await chatApi.updateConversation(conversation.id, {
-            webSearchMode: desiredMode,
-          })
-          applyConversationIfCurrent(conversation.id, conversation)
-        } catch (err) {
-          console.error('Failed to apply web search mode draft before send:', err)
-        }
-      }
-    }
-
-    // 多模型一问多答（任务 06-30）：把欢迎页选好的多答模型草稿落到新会话上。
-    {
-      const convReplyModels = conversation.reply_models ?? conversation.replyModels ?? []
-      const sameReply =
-        convReplyModels.length === draftReplyModels.length &&
-        convReplyModels.every((ref, i) =>
-          ref.provider_id === draftReplyModels[i]?.provider_id
-          && ref.model === draftReplyModels[i]?.model)
-      if (draftReplyModels.length > 0 && !sameReply) {
-        try {
-          conversation = await chatApi.updateConversation(conversation.id, {
-            replyModels: draftReplyModels,
-          })
-          applyConversationIfCurrent(conversation.id, conversation)
-        } catch (err) {
-          console.error('Failed to apply reply models draft before send:', err)
-        }
-      }
     }
 
     const conversationId = conversation.id
@@ -3173,36 +2962,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       ...items.filter((item) => item.id !== conversationId),
     ])
 
-    const pendingUserId = `pending-user-${Date.now()}`
-    const optimisticUserMessage: ChatMessage = {
-      id: pendingUserId,
-      role: 'user',
-      content: trimmed,
-      attachments: attachments.map((attachment) => ({
-        id: attachment.id,
-        type: attachment.type,
-        name: attachment.name,
-        path: attachment.path,
-      })),
-      timestamp: Math.floor(Date.now() / 1000),
-    }
-
     resetLocalCancellation()
     const startedAt = Date.now()
-    const snapshot = ensureStreamSnapshot(conversationId)
-    snapshot.streaming = true
-    snapshot.content = ''
-    snapshot.reasoning = ''
-    snapshot.reasoningStreaming = false
-    snapshot.toolCalls = []
-    snapshot.segments = []
-    snapshot.startedAt = startedAt
-    snapshot.reasoningStartedAt = null
-    snapshot.reasoningDurationMs = null
-    snapshot.reasoningStartedAtBySegmentId = {}
-    snapshot.reasoningDurationMsBySegmentId = {}
-    snapshot.runId = null
-    snapshot.messageId = null
+    const optimisticUser = optimisticUserPresentation.begin(conversationId, trimmed, attachments, startedAt, conversation.messages)
+    optimisticUserClaim = { conversationId, token: optimisticUser.token }
+    streamSnapshotsRef.current[conversationId] = beginRunSnapshot(startedAt)
     syncGeneratingConversationIds()
 
     if (currentConversationIdRef.current === conversationId) {
@@ -3216,8 +2980,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       streamStartedAtRef.current = startedAt
       streamingContentRef.current = ''
       streamingReasoningRef.current = ''
-      setPendingUserMessage(optimisticUserMessage)
-      setPendingUserMessageConversationId(conversationId)
     }
 
     const settlementToken = runSettlement.beginInvoke(conversationId)
@@ -3263,8 +3025,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       sendAccepted = true
       if (currentConversationIdRef.current === conversationId) {
         applyAssistantStreamStats(updatedConv)
-        setPendingUserMessage(null)
-        setPendingUserMessageConversationId(null)
         // 原地替换而非移除：行不消失，SwapTitle 在标题文字变化时播放替换过渡。
         settleOptimisticConversationListItem(
           setOptimisticSidebarConversations,
@@ -3285,8 +3045,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       // 而不是连问题一起消失（旧行为）。
       const keptConversation = (err as { conversation?: Conversation })?.conversation
       if (currentConversationIdRef.current === conversationId) {
-        setPendingUserMessage(null)
-        setPendingUserMessageConversationId(null)
         if (keptConversation) {
           applyConversation(keptConversation)
         }
@@ -3304,6 +3062,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       // 用户消息已落盘 → 草稿清掉是对的；否则 InputBar 必须把原文回填，不能 return true。
       sendAccepted = Boolean(keptConversation)
     } finally {
+      optimisticUserPresentation.settle(conversationId, optimisticUser.token)
       clearConversationInFlight(conversationId)
       // settleAfterRun may immediately drain the next queued send. Release its
       // claim first, while retaining the outer finally for all earlier errors.
@@ -3315,6 +3074,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
     return sendAccepted
     } finally {
+      if (optimisticUserClaim) {
+        optimisticUserPresentation.settle(optimisticUserClaim.conversationId, optimisticUserClaim.token)
+      }
       reservation.release()
     }
   }, [
@@ -3337,9 +3099,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     effectiveSkillId,
     enabledSkills,
     usesChatRuntime,
-    ensureStreamSnapshot,
     freezeStreamSnapshot,
     markConversationInFlight,
+    optimisticUserPresentation,
     refreshSidebar,
     resetLocalCancellation,
     runSettlement,
@@ -3764,19 +3526,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       ))
       resetLocalCancellation()
       const startedAt = Date.now()
-      const snapshot = ensureStreamSnapshot(conversationId)
-      snapshot.streaming = true
-      snapshot.content = ''
-      snapshot.reasoning = ''
-      snapshot.reasoningStreaming = false
-      snapshot.toolCalls = []
-      snapshot.segments = []
-      snapshot.startedAt = startedAt
-      snapshot.reasoningStartedAt = null
-      snapshot.reasoningDurationMs = null
-      snapshot.reasoningStartedAtBySegmentId = {}
-      snapshot.reasoningDurationMsBySegmentId = {}
-      snapshot.runId = null
+      streamSnapshotsRef.current[conversationId] = beginRunSnapshot(startedAt)
       syncGeneratingConversationIds()
 
       if (currentConversationIdRef.current === conversationId) {
@@ -3818,7 +3568,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         await settleRun(conversationId, settlementToken, persistedConversation)
       }
     },
-    [applyAssistantStreamStats, applyConversation, clearConversationInFlight, clearStreamSnapshot, ensureStreamSnapshot, freezeStreamSnapshot, markConversationInFlight, refreshSidebar, reloadConversation, resetLocalCancellation, runSettlement, setStreamErrorForConversation, settleRun, syncGeneratingConversationIds],
+    [applyAssistantStreamStats, applyConversation, clearConversationInFlight, clearStreamSnapshot, freezeStreamSnapshot, markConversationInFlight, refreshSidebar, reloadConversation, resetLocalCancellation, runSettlement, setStreamErrorForConversation, settleRun, syncGeneratingConversationIds],
   )
 
   const handleReplyWithModel = useCallback(
@@ -4187,18 +3937,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [cancelCurrentRunLocally, setStreamErrorForConversation])
 
-  const displayMessages = useMemo(() => {
-    const stored = currentConversation?.messages ?? []
-    if (!pendingUserMessage || pendingUserMessageConversationId !== currentConversation?.id) return stored
-    const alreadyStored = stored.some(
-      (message) =>
-        message.id === pendingUserMessage.id ||
-        (message.role === 'user' &&
-          message.content === pendingUserMessage.content &&
-          message.timestamp >= pendingUserMessage.timestamp - 2),
-    )
-    return alreadyStored ? stored : [...stored, pendingUserMessage]
-  }, [currentConversation?.id, currentConversation?.messages, pendingUserMessage, pendingUserMessageConversationId])
+  const displayMessages = optimisticUserPresentation.overlay(
+    currentConversation?.id,
+    currentConversation?.messages ?? [],
+  )
 
   const hasMessages = displayMessages.length > 0
   const conversationOccupied = Boolean(

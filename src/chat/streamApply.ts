@@ -232,6 +232,7 @@ export function applyStreamDeltaToSnapshot(
   snapshot: ConversationStreamSnapshot,
   payload: ChatStreamPayload,
   segment: ChatMessageSegment | null,
+  now = Date.now(),
 ) {
   const textDelta = streamTextDelta(payload)
   const reasoningDelta = streamReasoningDelta(payload)
@@ -243,7 +244,6 @@ export function applyStreamDeltaToSnapshot(
     )
   }
   if (reasoningDelta) {
-    const now = Date.now()
     if (snapshot.reasoningStartedAt == null) {
       snapshot.reasoningStartedAt = now
     }
@@ -264,13 +264,13 @@ export function applyStreamDeltaToSnapshot(
     if (snapshot.reasoningStreaming && snapshot.reasoningStartedAt != null) {
       snapshot.reasoningDurationMs = Math.max(
         snapshot.reasoningDurationMs ?? 0,
-        Date.now() - snapshot.reasoningStartedAt,
+        now - snapshot.reasoningStartedAt,
       )
     }
     if (segment?.kind === 'text') {
       const activeReasoningSegment = findReasoningSegmentForText(snapshot.segments, segment)
       if (activeReasoningSegment) {
-        updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id)
+        updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id, now)
       }
     }
     snapshot.streaming = true
@@ -279,17 +279,17 @@ export function applyStreamDeltaToSnapshot(
   }
 }
 
-export function finalizeReasoningDurationOnDone(snapshot: ConversationStreamSnapshot) {
+export function finalizeReasoningDurationOnDone(snapshot: ConversationStreamSnapshot, now = Date.now()) {
   if (snapshot.reasoningStartedAt != null && snapshot.reasoningStreaming) {
     snapshot.reasoningDurationMs = Math.max(
       snapshot.reasoningDurationMs ?? 0,
-      Date.now() - snapshot.reasoningStartedAt,
+      now - snapshot.reasoningStartedAt,
     )
     const activeReasoningSegment = [...snapshot.segments]
       .reverse()
       .find((item) => item.kind === 'reasoning')
     if (activeReasoningSegment) {
-      updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id)
+      updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id, now)
     }
   }
 }

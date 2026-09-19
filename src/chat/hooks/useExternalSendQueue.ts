@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { api, type ChatExternalSendRequest } from '../../api/tauri'
-import type { PendingAttachment } from '../types'
+import type { Conversation, PendingAttachment } from '../types'
 
 interface UseExternalSendQueueParams {
   /** 取到消息后先切回会话视图。 */
@@ -14,7 +14,11 @@ interface UseExternalSendQueueParams {
   onSendMessage: (
     content: string,
     attachments: PendingAttachment[],
-    options: { forceNewConversation: true },
+    options: {
+      forceNewConversation: true
+      conversationOverride?: Conversation
+      onPartialConversation: (conversation: Conversation) => void
+    },
   ) => Promise<boolean>
   onError: (message: string) => void
 }
@@ -39,6 +43,7 @@ export function useExternalSendQueue({
   const queueRef = useRef<ChatExternalSendRequest[]>([])
   const processingRef = useRef(false)
   const requestedRef = useRef(false)
+  const partialByRequestRef = useRef(new Map<string, Conversation>())
 
   // 参数回调每次渲染都是新身份；经 ref 读取以保持 drain 本身稳定。
   const callbacksRef = useRef({ onEnterConversationView, onImportConversation, onSendMessage, onError })
@@ -92,9 +97,16 @@ export function useExternalSendQueue({
         const accepted = await callbacksRef.current.onSendMessage(
           request.content ?? '',
           attachments,
-          { forceNewConversation: true },
+          {
+            forceNewConversation: true,
+            conversationOverride: partialByRequestRef.current.get(request.id),
+            onPartialConversation: (conversation) => {
+              partialByRequestRef.current.set(request.id, conversation)
+            },
+          },
         )
         if (accepted) {
+          partialByRequestRef.current.delete(request.id)
           queueRef.current.shift()
         } else {
           requestedRef.current = true

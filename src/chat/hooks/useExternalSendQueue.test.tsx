@@ -2,6 +2,7 @@ import { renderHook, act } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { useExternalSendQueue } from './useExternalSendQueue'
 import { api } from '../../api/tauri'
+import type { Conversation } from '../types'
 
 vi.mock('../../api/tauri', () => ({
   api: { chatTakeExternalSends: vi.fn() },
@@ -27,6 +28,11 @@ function setup() {
   return { ...rendered, onEnterConversationView, onImportConversation, onSendMessage, onError }
 }
 
+const partialConversation = {
+  id: 'created-partial', revision: 1, title: 'partial', provider_id: 'p', model: 'm',
+  messages: [], created_at: 1, updated_at: 1,
+} as Conversation
+
 beforeEach(() => {
   mockTake.mockReset()
   mockTake.mockResolvedValue({ success: true, requests: [] } as never)
@@ -48,7 +54,7 @@ describe('useExternalSendQueue 基本流转', () => {
     const { result, onEnterConversationView, onSendMessage } = setup()
     await act(async () => { await result.current.drainExternalSends() })
     expect(onEnterConversationView).toHaveBeenCalled()
-    expect(onSendMessage).toHaveBeenCalledWith('你好', [], { forceNewConversation: true })
+    expect(onSendMessage).toHaveBeenCalledWith('你好', [], expect.objectContaining({ forceNewConversation: true }))
   })
 
   it('带 messages 的请求走 import 而非 send', async () => {
@@ -128,6 +134,22 @@ describe('useExternalSendQueue 单飞与重排', () => {
     await act(async () => { await result.current.drainExternalSends() })
     expect(onSendMessage).toHaveBeenCalledTimes(2)
     expect(onSendMessage.mock.calls[1][0]).toBe('X')
+  })
+
+  it('retries a partially created conversation instead of creating a duplicate', async () => {
+    mockTake
+      .mockResolvedValueOnce({ success: true, requests: [{ id: 'r-partial', content: 'X', attachments: [] }] } as never)
+      .mockResolvedValue({ success: true, requests: [] } as never)
+    const { result, onSendMessage } = setup()
+    onSendMessage.mockImplementationOnce(async (_content, _attachments, options) => {
+      options.onPartialConversation(partialConversation)
+      return false
+    })
+    await act(async () => { await result.current.drainExternalSends() })
+    onSendMessage.mockResolvedValueOnce(true)
+    await act(async () => { await result.current.drainExternalSends() })
+
+    expect(onSendMessage.mock.calls[1][2].conversationOverride).toEqual(partialConversation)
   })
 
   it('发送成功后请求出队，不重复发', async () => {
