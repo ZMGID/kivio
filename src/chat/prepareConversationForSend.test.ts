@@ -53,6 +53,23 @@ describe('prepare conversation for send', () => {
     expect(updateConversation).toHaveBeenCalledTimes(1)
   })
 
+  it('retries an external force-new request against its partial conversation without creating another', async () => {
+    const created = conversation('new-a')
+    const patched = { ...created, revision: 2, knowledge_base_ids: ['kb-a'] }
+    const createConversation = vi.fn().mockResolvedValue(created)
+    const updateConversation = vi.fn()
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+      .mockResolvedValueOnce(patched)
+    const persistence = { createConversation, setAgentRuntime: vi.fn(), updateConversation }
+    const first = await prepareConversationForSend(intent({ forceNew: true }), persistence, vi.fn())
+    expect(first).toMatchObject({ ok: false, conversation: created })
+    const retry = await prepareConversationForSend(intent({
+      forceNew: true, override: true, conversation: first.conversation,
+    }), persistence, vi.fn())
+    expect(retry).toMatchObject({ ok: true, conversation: patched })
+    expect(createConversation).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps a late draft update off a newly selected conversation while background preparation completes', async () => {
     let finishPatch!: (value: Conversation) => void
     const patched = { ...conversation('a'), knowledge_base_ids: ['kb-a'] }

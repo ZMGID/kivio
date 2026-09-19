@@ -8,7 +8,7 @@ import { ChatSidebarPane } from './ChatSidebarPane'
 import { completeSettingsExit, type PendingSettingsAction } from './settingsExit'
 import { useChatRouting } from './hooks/useChatRouting'
 import { createChatNavigationController } from './chatNavigationController'
-import { createChatExecutionOwner, type ExecutionLease } from './chatExecutionOwner'
+import { createChatExecutionOwner, type ExecutionLease, type PreparedSingleRunOutcome } from './chatExecutionOwner'
 import { prepareConversationForSend } from './prepareConversationForSend'
 import { applyConversationStreamEvent, beginRunSnapshot, restoreRunSnapshot } from './streamPresentation'
 import { applyRunDisplayEvent } from './runDisplayEvents'
@@ -1957,16 +1957,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [applyConversation, localState, settleStreamingPreview, syncGeneratingConversationIds])
 
-  const settleRun = useCallback((lease: ExecutionLease, persistedConversation: Conversation | null) => (
-    executionOwner.finish(lease, persistedConversation, {
+  const settlementPorts = useMemo<Parameters<ReturnType<typeof createChatExecutionOwner>['finish']>[2]>(() => ({
       completeWithConversation: finishStreamingRunWithConversation,
       completeTerminal: finishStreamingRun,
       abandonPreview: (id) => {
         if (!freezeStreamSnapshot(id)) clearStreamSnapshot(id)
       },
       settleQueue: (id, conversation) => messageQueueRef.current.settleAfterRun(id, conversation),
-    })
-  ), [clearStreamSnapshot, executionOwner, finishStreamingRun, finishStreamingRunWithConversation, freezeStreamSnapshot])
+    }), [clearStreamSnapshot, finishStreamingRun, finishStreamingRunWithConversation, freezeStreamSnapshot])
+
+  const settleRun = useCallback((lease: ExecutionLease, persistedConversation: Conversation | null) => (
+    executionOwner.finish(lease, persistedConversation, settlementPorts)
+  ), [executionOwner, settlementPorts])
 
   useTauriEvent(api.onChatProtocolIssue, ({ issue, conversationId }) => {
     if (issue === 'version_mismatch') {
@@ -2973,6 +2975,53 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         ? inferSingleAttachmentSkillId(attachments, enabledSkills)
         : effectiveSkillId ?? inferSingleAttachmentSkillId(attachments, enabledSkills)
 
+    if (!willFanOut) {
+      let outcome: PreparedSingleRunOutcome
+      try {
+        outcome = await executionOwner.submitPreparedSingleRun({
+          lease: executionLease,
+          content: trimmed,
+          attachments,
+          attachmentSkillId,
+          planMessageId: options.planMessageId,
+        }, {
+          ...settlementPorts,
+          onOutcome: (result) => {
+            if (result.kind === 'persisted') {
+              if (currentConversationIdRef.current === conversationId) {
+                applyAssistantStreamStats(result.conversation)
+                settleOptimisticConversationListItem(
+                  setOptimisticSidebarConversations,
+                  conversationId,
+                  result.conversation,
+                )
+                applyConversation(result.conversation)
+                if (!locallyCancelledConversationIdRef.current) resetLocalCancellation()
+              }
+              refreshSidebar()
+              return
+            }
+            console.error('Failed to send message:', result.error)
+            const keptConversation = result.kind === 'persisted_error' ? result.conversation : null
+            if (keptConversation && currentConversationIdRef.current === conversationId) {
+              applyConversation(keptConversation)
+            }
+            settleOptimisticConversationListItem(
+              setOptimisticSidebarConversations,
+              conversationId,
+              keptConversation,
+            )
+            if (keptConversation) refreshSidebar()
+            setStreamErrorForConversation(conversationId, result.error.message || '发送失败')
+            if (!freezeStreamSnapshot(conversationId)) clearStreamSnapshot(conversationId)
+          },
+        })
+      } finally {
+        syncGeneratingConversationIds()
+      }
+      return outcome.kind !== 'not_committed'
+    }
+
     let persistedConversation: Conversation | null = null
     let sendAccepted = false
     try {
@@ -3061,6 +3110,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     sendDisabledReason,
     setStreamErrorForConversation,
     settleRun,
+    settlementPorts,
     syncConversationRoute,
     syncGeneratingConversationIds,
   ])

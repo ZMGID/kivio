@@ -2,16 +2,35 @@ import { beginGroup, endGroup, type GroupArmSeed } from './groupStreamingStore'
 import { createChatRunSettlement, type ChatRunTerminal } from './chatRunSettlement'
 import { createChatSendReservations } from './chatSendReservations'
 import { createOptimisticUserPresentation } from './optimisticUserPresentation'
+import { chatApi } from './api'
 import type { ChatMessage, Conversation, PendingAttachment } from './types'
 
 type Reservation = NonNullable<ReturnType<ReturnType<typeof createChatSendReservations>['claim']>>
 type SettlementPorts = Parameters<ReturnType<typeof createChatRunSettlement>['settleInvoke']>[3]
+type SingleRunPort = Pick<typeof chatApi, 'sendMessage'>
 declare const sendClaimBrand: unique symbol
 export type SendClaim = { readonly [sendClaimBrand]: true }
 
 export interface ExecutionLease {
   readonly conversationId: string
   readonly token: number
+}
+
+export type PreparedSingleRunOutcome =
+  | { kind: 'persisted'; conversation: Conversation }
+  | { kind: 'persisted_error'; conversation: Conversation; error: Error }
+  | { kind: 'not_committed'; error: Error }
+
+type PreparedSingleRunIntent = {
+  lease: ExecutionLease
+  content: string
+  attachments: PendingAttachment[]
+  attachmentSkillId: string | null
+  planMessageId?: string
+}
+
+type SingleRunEffects = SettlementPorts & {
+  onOutcome: (outcome: PreparedSingleRunOutcome) => void | Promise<void>
 }
 
 type BeginIntent = {
@@ -33,7 +52,10 @@ type GroupStore = { begin: typeof beginGroup; end: typeof endGroup }
 /** Owns the identity and lifetime of a Chat execution. The high-frequency
  * stream/group content stores remain presentation adapters; neither they nor
  * the current route may decide whether an invoke is still active. */
-export function createChatExecutionOwner(groups: GroupStore = { begin: beginGroup, end: endGroup }) {
+export function createChatExecutionOwner(
+  groups: GroupStore = { begin: beginGroup, end: endGroup },
+  singleRunPort: SingleRunPort = chatApi,
+) {
   const settlement = createChatRunSettlement()
   const reservations = createChatSendReservations()
   const optimistic = createOptimisticUserPresentation()
@@ -161,6 +183,54 @@ export function createChatExecutionOwner(groups: GroupStore = { begin: beginGrou
       if (invocation.claim) abandonSend(invocation.claim)
       publish()
       await settlement.settleInvoke(id, lease.token, persisted, ports)
+    },
+    /** Prepared, single-model only. The caller owns conversation preparation,
+     * canonical fan-out selection and UI projection; this method owns invoke
+     * classification and the release-before-queue settlement order. */
+    async submitPreparedSingleRun(
+      intent: PreparedSingleRunIntent,
+      effects: SingleRunEffects,
+    ): Promise<PreparedSingleRunOutcome> {
+      if (!active.get(intent.lease.conversationId)
+        || active.get(intent.lease.conversationId)?.lease.token !== intent.lease.token) {
+        return { kind: 'not_committed', error: new Error('该对话没有活跃发送') }
+      }
+      let outcome: PreparedSingleRunOutcome
+      let persistedForSettlement: Conversation | null = null
+      try {
+        const conversation = await singleRunPort.sendMessage(
+          intent.lease.conversationId,
+          intent.content,
+          intent.attachments,
+          intent.attachmentSkillId,
+          intent.planMessageId,
+        )
+        persistedForSettlement = conversation
+        outcome = { kind: 'persisted', conversation }
+      } catch (value) {
+        const error = value instanceof Error
+          ? value
+          : new Error(typeof value === 'string'
+            ? value
+            : typeof (value as { message?: unknown } | null)?.message === 'string'
+              ? (value as { message: string }).message
+              : '发送失败')
+        const kept = (value as { conversation?: Conversation } | null)?.conversation
+        outcome = kept
+          ? { kind: 'persisted_error', conversation: kept, error }
+          : { kind: 'not_committed', error }
+      }
+      try {
+        await effects.onOutcome(outcome)
+      } catch (error) {
+        // The backend commit is authoritative even if a view projection fails.
+        // Keep the original three-state result so the composer cannot restore
+        // a message that was already persisted; settlement still applies it.
+        console.error('Failed to present single Chat run outcome:', error)
+      } finally {
+        await this.finish(intent.lease, persistedForSettlement, effects)
+      }
+      return outcome
     },
   }
 }
