@@ -358,3 +358,150 @@ describe('SettingsEditorController', () => {
     controller.dispose()
   })
 })
+
+describe('T5 two windows share one CAS store', () => {
+  // The product only has one Settings page, but each webview owns its own
+  // settings cache. T5 is two of those clients submitting through CAS.
+  function createCasStore(initial: SettingsSnapshot) {
+    let current = structuredClone(initial)
+    const listeners = new Set<(value: SettingsSnapshot) => void>()
+    const attempts: Array<{ draft: Settings; version: { epoch: string; revision: number } }> = []
+
+    const persist = (): SettingsSnapshot => structuredClone(current)
+
+    const commit = (draft: Settings, expectedVersion: SettingsSnapshot['version']): SettingsSnapshot => {
+      attempts.push({ draft: structuredClone(draft), version: { ...expectedVersion } })
+      if (
+        expectedVersion.epoch !== current.version.epoch
+        || expectedVersion.revision !== current.version.revision
+      ) {
+        throw {
+          code: 'versionConflict',
+          message: 'stale settings',
+          expectedVersion: { ...expectedVersion },
+          actualVersion: { ...current.version },
+        }
+      }
+      current = {
+        settings: structuredClone(draft),
+        version: { epoch: current.version.epoch, revision: current.version.revision + 1 },
+      }
+      const next = persist()
+      for (const listener of listeners) listener(persist())
+      return next
+    }
+
+    const connect = (gate?: { wait: () => Promise<void> }): SettingsEditorPort => {
+      let cached = persist()
+      return {
+        peek: () => structuredClone(cached),
+        load: async () => {
+          cached = persist()
+          return structuredClone(cached)
+        },
+        refresh: async () => {
+          cached = persist()
+          return structuredClone(cached)
+        },
+        save: async (draft, expectedVersion) => {
+          if (gate) await gate.wait()
+          const saved = commit(draft, expectedVersion)
+          cached = saved
+          return structuredClone(saved)
+        },
+        subscribe: (listener) => {
+          const wrapped = (value: SettingsSnapshot) => {
+            if (
+              value.version.epoch !== cached.version.epoch
+              || value.version.revision > cached.version.revision
+            ) {
+              cached = structuredClone(value)
+            }
+            listener(structuredClone(value))
+          }
+          listeners.add(wrapped)
+          return () => { listeners.delete(wrapped) }
+        },
+      }
+    }
+
+    return { persist, connect, attempts }
+  }
+
+  it('lets B rebase a non-conflicting edit after A commits first', async () => {
+    const store = createCasStore(snapshot(settings(), 1))
+    const bEntered = deferred<void>()
+    const bMayEnter = deferred<void>()
+    const windowA = new SettingsEditorController(store.connect())
+    const windowB = new SettingsEditorController(store.connect({
+      wait: async () => {
+        bEntered.resolve()
+        await bMayEnter.promise
+      },
+    }))
+    windowA.start()
+    windowB.start()
+    windowA.edit((draft) => ({ ...draft, theme: 'dark' }))
+    windowB.edit((draft) => ({ ...draft, favoriteModels: ['one'] }))
+
+    const bFlush = windowB.flush()
+    await bEntered.promise
+    expect(await windowA.flush()).toBe(true)
+    expect(store.persist().settings.theme).toBe('dark')
+    expect(store.persist().version.revision).toBe(2)
+
+    bMayEnter.resolve()
+    expect(await bFlush).toBe(true)
+
+    expect(store.attempts[0]?.version).toEqual({ epoch: 'boot', revision: 1 })
+    expect(store.attempts[1]?.version).toEqual({ epoch: 'boot', revision: 1 })
+    expect(store.persist().settings.theme).toBe('dark')
+    expect(store.persist().settings.favoriteModels).toEqual(['one'])
+    expect(store.persist().version.revision).toBe(3)
+    expect(windowA.snapshot.settings?.theme).toBe('dark')
+    expect(windowA.snapshot.settings?.favoriteModels).toEqual(['one'])
+    expect(windowB.snapshot.settings?.theme).toBe('dark')
+    expect(windowB.snapshot.settings?.favoriteModels).toEqual(['one'])
+    expect(windowA.snapshot.hasUnsavedChanges).toBe(false)
+    expect(windowB.snapshot.hasUnsavedChanges).toBe(false)
+    expect(windowB.snapshot.conflicts).toEqual([])
+    windowA.dispose()
+    windowB.dispose()
+  })
+
+  it('keeps B\'s same-field draft and does not let the stale submit overwrite A', async () => {
+    const store = createCasStore(snapshot(settings(), 1))
+    const bEntered = deferred<void>()
+    const bMayEnter = deferred<void>()
+    const windowA = new SettingsEditorController(store.connect())
+    const windowB = new SettingsEditorController(store.connect({
+      wait: async () => {
+        bEntered.resolve()
+        await bMayEnter.promise
+      },
+    }))
+    windowA.start()
+    windowB.start()
+    windowA.edit((draft) => ({ ...draft, theme: 'dark' }))
+    windowB.edit((draft) => ({ ...draft, theme: 'system' }))
+
+    const bFlush = windowB.flush()
+    await bEntered.promise
+    expect(await windowA.flush()).toBe(true)
+    expect(store.persist().settings.theme).toBe('dark')
+
+    bMayEnter.resolve()
+    expect(await bFlush).toBe(false)
+
+    expect(store.attempts.map((attempt) => attempt.version.revision)).toEqual([1, 1])
+    expect(store.persist().settings.theme).toBe('dark')
+    expect(store.persist().version.revision).toBe(2)
+    expect(windowA.snapshot.settings?.theme).toBe('dark')
+    expect(windowB.snapshot.settings?.theme).toBe('system')
+    expect(windowB.snapshot.conflicts.map((conflict) => conflict.path)).toEqual(['theme'])
+    expect(windowB.snapshot.hasUnsavedChanges).toBe(true)
+    expect(windowB.snapshot.saveError).toContain('theme')
+    windowA.dispose()
+    windowB.dispose()
+  })
+})
