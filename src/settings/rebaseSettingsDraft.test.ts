@@ -57,6 +57,79 @@ function server(partial: Partial<ChatMcpServer> & Pick<ChatMcpServer, 'id'>): Ch
 }
 
 describe('settings editor canonical state', () => {
+  describe.each(['providers', 'chatTools.servers'] as const)('%s keyed merge', (path) => {
+    const withRows = (rows: ChatMcpServer[]) => path === 'providers'
+      ? settings({ providers: rows })
+      : settings({ chatTools: { ...settings({}).chatTools, servers: rows } })
+    const rowsOf = (value: Settings) => path === 'providers' ? value.providers : value.chatTools.servers
+    const merge = (base: ChatMcpServer[], local: ChatMcpServer[], remote: ChatMcpServer[]) => (
+      receiveSettingsSnapshot(
+        updateSettingsEditorDraft(createSettingsEditorState(withRows(base)), withRows(local)),
+        withRows(remote),
+      )
+    )
+
+    it('preserves additions from both sides alongside a remote edit', () => {
+      const original = server({ id: 'one' })
+      const remoteEdit = { ...original, name: 'Remote' }
+      const localNew = server({ id: 'local-new' })
+      const remoteNew = server({ id: 'remote-new' })
+      const next = merge([original], [original, localNew], [remoteEdit, remoteNew])
+
+      expect(rowsOf(next.draft)).toEqual([remoteEdit, remoteNew, localNew])
+      expect(next.conflicts).toEqual([])
+    })
+
+    it.each(['local', 'remote'])('does not resurrect an unchanged entity deleted by %s', (side) => {
+      const original = server({ id: 'one' })
+      const added = server({ id: 'new' })
+      const next = side === 'local'
+        ? merge([original], [], [original, added])
+        : merge([original], [original, added], [])
+
+      expect(rowsOf(next.draft)).toEqual([added])
+      expect(next.conflicts).toEqual([])
+    })
+
+    it('reports different additions with the same id as a conflict', () => {
+      const local = server({ id: 'new', name: 'Local' })
+      const remote = server({ id: 'new', name: 'Remote' })
+      const next = merge([], [local], [remote])
+
+      expect(rowsOf(next.draft)).toEqual([local])
+      expect(next.conflicts).toEqual([{ path: `${path}.new`, base: undefined, local, remote }])
+    })
+
+    it.each(['local', 'remote'])('retains a %s deletion conflict through unrelated snapshots', (side) => {
+      const original = server({ id: 'one' })
+      const edited = { ...original, name: 'Edited' }
+      const remote = withRows(side === 'local' ? [edited] : [])
+      const conflicted = merge([original], side === 'local' ? [] : [edited], rowsOf(remote) as ChatMcpServer[])
+      const next = receiveSettingsSnapshot(conflicted, { ...remote, favoriteModels: ['m1'] })
+
+      expect(rowsOf(next.draft)).toEqual(side === 'local' ? [] : [edited])
+      expect(next.conflicts).toEqual(conflicted.conflicts)
+      expect(next.conflicts).toHaveLength(1)
+    })
+  })
+
+  it('retains unresolved conflicts, refreshes remote values, and clears them on convergence', () => {
+    const edited = updateSettingsEditorDraft(createSettingsEditorState(settings({})), settings({ theme: 'dark' }))
+    const conflicted = receiveSettingsSnapshot(edited, settings({ theme: 'system' }))
+    const unrelated = receiveSettingsSnapshot(conflicted, settings({ theme: 'system', favoriteModels: ['m1'] }))
+    expect(unrelated.conflicts).toEqual(conflicted.conflicts)
+    expect(unrelated.draft.favoriteModels).toEqual(['m1'])
+
+    const changedAgain = receiveSettingsSnapshot(unrelated, settings({ theme: 'light', favoriteModels: ['m1'] }))
+    expect(changedAgain.conflicts).toHaveLength(1)
+    expect(changedAgain.conflicts[0]).toMatchObject({ path: 'theme', local: 'dark', remote: 'light' })
+    expect(updateSettingsEditorDraft(changedAgain, { ...changedAgain.draft, theme: 'system' }).conflicts).toEqual([])
+
+    const converged = receiveSettingsSnapshot(changedAgain, settings({ theme: 'dark', favoriteModels: ['m1'] }))
+    expect(converged.conflicts).toEqual([])
+    expect(converged.draft).toEqual(converged.acknowledgedDraft)
+  })
+
   it('advances the canonical baseline across consecutive external snapshots', () => {
     const initial = settings({ favoriteModels: [] })
     const first = settings({ favoriteModels: ['one'] })

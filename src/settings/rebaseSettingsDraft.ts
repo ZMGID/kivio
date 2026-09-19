@@ -61,6 +61,11 @@ function mergeKeyedCollection(
     const itemPath = `${path}.${id}`
 
     if (!localHas && !remoteHas) continue
+    if (!baseById.has(id) && (!localHas || !remoteHas)) {
+      // Absence on the other side is not a deletion when this id is new.
+      value.push(localHas ? localValue : remoteValue)
+      continue
+    }
     if (!localHas) {
       if (baseValue !== undefined && !same(remoteValue, baseValue)) {
         conflicts.push({ path: itemPath, base: baseValue, local: undefined, remote: remoteValue })
@@ -68,7 +73,7 @@ function mergeKeyedCollection(
       continue
     }
     if (!remoteHas) {
-      if (baseValue === undefined || same(localValue, baseValue)) continue
+      if (same(localValue, baseValue)) continue
       conflicts.push({ path: itemPath, base: baseValue, local: localValue, remote: undefined })
       value.push(localValue)
       continue
@@ -234,7 +239,18 @@ export function receiveSettingsSnapshot(
       ? value
       : { ...value, chatTools: { ...value.chatTools, servers } }
   }
-  const conflicts = [...acknowledged.conflicts, ...current.conflicts].filter((conflict) => (
+  // Advancing the baseline does not resolve an earlier disagreement. Keep it
+  // until the user edits that value or the remote value converges with it.
+  const conflictsByPath = new Map<string, SettingsMergeConflict>()
+  for (const conflict of state.conflicts) {
+    const local = valueAtConflictPath(draft, conflict.path)
+    const remote = valueAtConflictPath(fresh, conflict.path)
+    if (!same(local, remote)) conflictsByPath.set(conflict.path, { ...conflict, local, remote })
+  }
+  for (const conflict of [...acknowledged.conflicts, ...current.conflicts]) {
+    conflictsByPath.set(conflict.path, conflict)
+  }
+  const conflicts = [...conflictsByPath.values()].filter((conflict) => (
     ![...pluginIds].some((id) => conflict.path === `chatTools.servers.${id}`
       || conflict.path.startsWith(`chatTools.servers.${id}.`))
   ))

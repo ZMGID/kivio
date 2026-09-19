@@ -34,6 +34,90 @@ function port(initial: SettingsSnapshot, save: SettingsEditorPort['save']): Sett
 }
 
 describe('SettingsEditorController', () => {
+  it('persists both windows\' new providers after a remote edit', async () => {
+    const provider = { id: 'one', name: 'One', apiKeys: ['key'] } as Settings['providers'][number]
+    const initial = snapshot({ ...settings(), providers: [provider] }, 1)
+    const localNew = { ...provider, id: 'local-new' }
+    const remoteNew = { ...provider, id: 'remote-new' }
+    const remoteEdit = { ...provider, name: 'Remote' }
+    let receive!: (value: SettingsSnapshot) => void
+    const save = vi.fn(async (draft: Settings) => snapshot(draft, 3))
+    const controller = new SettingsEditorController({
+      ...port(initial, save),
+      subscribe: (listener) => { receive = listener; return () => {} },
+    })
+    try {
+      controller.start()
+      await Promise.resolve()
+      controller.edit((draft) => ({ ...draft, providers: [...draft.providers, localNew] }))
+      receive(snapshot({ ...settings(), providers: [remoteEdit, remoteNew] }, 2))
+
+      expect(await controller.flush()).toBe(true)
+      expect(save).toHaveBeenCalledOnce()
+      expect(save.mock.calls[0][0].providers).toEqual([remoteEdit, remoteNew, localNew])
+      expect(controller.snapshot.hasUnsavedChanges).toBe(false)
+    } finally {
+      controller.dispose()
+    }
+  })
+
+  it('does not autosave an unresolved conflict after unrelated notifications', async () => {
+    vi.useFakeTimers()
+    const initial = snapshot(settings(), 1)
+    let receive!: (value: SettingsSnapshot) => void
+    const save = vi.fn(async (draft: Settings) => snapshot(draft, 5))
+    const controller = new SettingsEditorController({
+      ...port(initial, save),
+      subscribe: (listener) => { receive = listener; return () => {} },
+    })
+    try {
+      controller.start()
+      await Promise.resolve()
+      controller.edit((draft) => ({ ...draft, theme: 'dark' }))
+      receive(snapshot(settings('system'), 2))
+      receive(snapshot({ ...settings('system'), favoriteModels: ['one'] }, 3))
+      receive(snapshot({ ...settings('system'), favoriteModels: ['one', 'two'] }, 4))
+      await vi.advanceTimersByTimeAsync(800)
+
+      expect(save).not.toHaveBeenCalled()
+      expect(await controller.flush()).toBe(false)
+      expect(controller.snapshot.conflicts.map((conflict) => conflict.path)).toEqual(['theme'])
+      expect(controller.snapshot.settings?.favoriteModels).toEqual(['one', 'two'])
+    } finally {
+      controller.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([true, false])('ordinary close works after a keep-alive close (waitForSave=%s)', async (waitForSave) => {
+    const controller = new SettingsEditorController(port(snapshot(settings(), 1), async () => snapshot(settings(), 2)))
+    controller.start()
+    const closed = vi.fn()
+    try {
+      await controller.requestClose(closed, { waitForSave })
+      await controller.requestClose(closed)
+      expect(closed).toHaveBeenCalledTimes(2)
+    } finally {
+      controller.dispose()
+    }
+  })
+
+  it('navigation supersedes an ordinary close still waiting for a save', async () => {
+    const pending = deferred<SettingsSnapshot>()
+    const controller = new SettingsEditorController(port(snapshot(settings(), 1), () => pending.promise))
+    controller.start()
+    controller.edit((draft) => ({ ...draft, theme: 'dark' }))
+    const ordinaryClose = vi.fn()
+    const navigationClose = vi.fn()
+    const ordinary = controller.requestClose(ordinaryClose)
+    const navigation = controller.requestClose(navigationClose, { waitForSave: false })
+    expect(navigationClose).toHaveBeenCalledOnce()
+    pending.resolve(snapshot(settings('dark'), 2))
+    await Promise.all([ordinary, navigation])
+    expect(ordinaryClose).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
   it('ordinary close waits for edits made during an in-flight save', async () => {
     const first = deferred<SettingsSnapshot>()
     const second = deferred<SettingsSnapshot>()

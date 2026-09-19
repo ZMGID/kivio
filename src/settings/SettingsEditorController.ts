@@ -49,7 +49,6 @@ export class SettingsEditorController {
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null
   private saveFlight: Promise<boolean> | null = null
   private closeFlight: Promise<void> | null = null
-  private closeIssued = false
   private pendingSnapshot: SettingsSnapshot | null = null
   private loadGeneration = 0
   private disposed = false
@@ -101,7 +100,6 @@ export class SettingsEditorController {
   /** Starts cache-first loading and subscribes to future canonical snapshots. */
   start() {
     this.disposed = false
-    this.closeIssued = false
     this.closeFlight = null
     const generation = ++this.loadGeneration
     this.unsubscribe?.()
@@ -231,19 +229,19 @@ export class SettingsEditorController {
     const pending = this.flush()
     const generation = this.loadGeneration
     const closeOnce = () => {
-      if (this.closeIssued || this.disposed || generation !== this.loadGeneration) return
-      this.closeIssued = true
+      if (this.disposed || generation !== this.loadGeneration) return
       onClose()
     }
     if (options?.waitForSave === false) {
-      // Keep-alive can leave this controller mounted after a previous close.
-      // Navigation must still be able to tell the host to hide us again.
-      this.closeIssued = false
+      // Navigation supersedes any ordinary close still waiting for this save.
+      this.closeFlight = null
       closeOnce()
       return pending.then(() => {})
     }
     if (this.closeFlight) return this.closeFlight
     const flight = pending.then((saved) => {
+      // Deduplicate only this pending request, not future keep-alive visits.
+      if (this.closeFlight !== flight) return
       // A failed/conflicted draft stays visible for repair and retry. Loading
       // or read-error pages have no editable draft and may always close.
       if (saved || !this.editor) closeOnce()
