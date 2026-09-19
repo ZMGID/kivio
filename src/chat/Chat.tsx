@@ -1728,6 +1728,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (!conversationId) return
       const terminalEpoch = payload.turnEpoch ?? executionOwner.turnEpoch(conversationId)
       const canCommit = () => executionOwner.turnEpoch(conversationId) === terminalEpoch
+      const navigationLease = captureConversationNavigation()
+      const canPresent = () => canCommit() && isCurrentConversationNavigation(navigationLease)
       if (!canCommit()) return
       interactionInbox.observe(payload.runId
         ? { kind: 'runTerminal', conversationId, runId: payload.runId }
@@ -1743,9 +1745,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       if (currentConversationIdRef.current === conversationId) {
         try {
-          await reloadConversation(conversationId, { force: true, canCommit })
+          await reloadConversation(conversationId, { force: true, canCommit: canPresent })
         } catch (error) {
-          if (canCommit()) {
+          if (canPresent() && currentConversationIdRef.current === conversationId) {
             const message = error instanceof Error ? error.message : String(error)
             setStreamErrorForConversation(conversationId, `回复已结束，但会话回载失败；重新打开此会话重试：${message}`)
           }
