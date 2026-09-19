@@ -226,6 +226,60 @@ describe('chat execution owner', () => {
     expect(effects.completeTerminal).not.toHaveBeenCalled()
   })
 
+  it('defers a local invoke terminal instead of treating it as an external completion', async () => {
+    const owner = createChatExecutionOwner()
+    const lease = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })!
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'local', started: true })
+    expect(owner.observeTerminal({ conversationId: 'a', runId: 'local', reason: 'done' }, 'single'))
+      .toMatchObject({ kind: 'deferred' })
+    const effects = ports()
+    await owner.finish(lease, conversation('a'), effects)
+    expect(effects.completeWithConversation).toHaveBeenCalledTimes(1)
+    expect(effects.completeTerminal).not.toHaveBeenCalled()
+  })
+
+  it('finishes a recovered group only after every arm has a terminal', () => {
+    const groups = { begin: vi.fn(), end: vi.fn() }
+    const owner = createChatExecutionOwner(groups)
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-1', started: true, groupId: 'group-a', groupSize: 2 })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-2', started: true, groupId: 'group-a', groupSize: 2 })
+    expect(owner.observeTerminal({ conversationId: 'a', runId: 'arm-1', reason: 'done' }, 'group'))
+      .toMatchObject({ kind: 'pending' })
+    expect(groups.end).not.toHaveBeenCalled()
+    const ready = owner.observeTerminal({ conversationId: 'a', runId: 'arm-2', reason: 'done' }, 'group')
+    expect(ready.kind).toBe('ready')
+    expect(groups.end).toHaveBeenCalledOnce()
+    expect(owner.snapshot('a').inFlight).toBe(true)
+    if (ready.kind !== 'ready') throw new Error('Expected a terminal permit')
+    expect(owner.completeExternalTerminal(ready.permit)).toBe(true)
+    expect(owner.snapshot('a').inFlight).toBe(false)
+  })
+
+  it('does not let a late old terminal settle a newer recovered group', () => {
+    const owner = createChatExecutionOwner({ begin: vi.fn(), end: vi.fn() })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'old', started: true, groupId: 'old-group', groupSize: 1 })
+    const old = owner.observeTerminal({ conversationId: 'a', runId: 'old', reason: 'done' }, 'group')
+    if (old.kind !== 'ready') throw new Error('Expected an old terminal permit')
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'new', started: true, groupId: 'new-group', groupSize: 1 })
+    expect(owner.completeExternalTerminal(old.permit)).toBe(false)
+    expect(owner.observeTerminal({ conversationId: 'a', runId: 'old', reason: 'done' }, 'group'))
+      .toMatchObject({ kind: 'ignored' })
+    expect(owner.snapshot('a').inFlight).toBe(true)
+    expect(owner.observeTerminal({ conversationId: 'a', runId: 'new', reason: 'done' }, 'group').kind).toBe('ready')
+  })
+
+  it('treats an explicit recovered group as a new run after an unidentified external run', () => {
+    const owner = createChatExecutionOwner({ begin: vi.fn(), end: vi.fn() })
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'old', started: true })
+    const cancelled = owner.requestCancellation('a', 'old')!
+    owner.completeCancellation(cancelled, true)
+    owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'arm-1', started: true, groupId: 'group-a', groupSize: 2 })
+    expect(owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'old' })).toBe(false)
+    expect(owner.allowsStreamPayload({ conversationId: 'a', runId: 'arm-1', type: 'text_delta' })).toBe(true)
+    expect(owner.observeTerminal({ conversationId: 'a', runId: 'arm-1', reason: 'done' }, 'group'))
+      .toMatchObject({ kind: 'pending' })
+  })
+
   it('distinguishes a failed assistant run that kept the user message from an uncommitted send', async () => {
     const kept = conversation('a')
     kept.messages = [{ id: 'user-1', role: 'user', content: 'hello', timestamp: 1 }]

@@ -22,6 +22,17 @@ export type CancellationPermit = {
   readonly [cancellationPermitBrand]: true
 }
 
+declare const externalTerminalPermitBrand: unique symbol
+export type ExternalTerminalPermit = {
+  readonly conversationId: string
+  readonly token: number
+  readonly [externalTerminalPermitBrand]: true
+}
+
+export type TerminalDisposition =
+  | { kind: 'ignored' | 'pending' | 'deferred' }
+  | { kind: 'ready'; permit: ExternalTerminalPermit }
+
 type StreamPayloadIdentity = {
   conversationId: string
   runId?: string | null
@@ -55,7 +66,7 @@ type BeginIntent = {
 }
 
 type ExecutionEvent =
-  | { kind: 'runEvent'; conversationId: string; runId: string | null | undefined; started?: boolean; groupId?: string }
+  | { kind: 'runEvent'; conversationId: string; runId: string | null | undefined; started?: boolean; groupId?: string; groupSize?: number }
   | { kind: 'deferTerminal'; terminal: ChatRunTerminal }
   | { kind: 'externalStarted' | 'externalEnded' | 'drop'; conversationId: string }
 
@@ -81,14 +92,36 @@ export function createChatExecutionOwner(
   }>()
   const claims = new Map<SendClaim, Reservation>()
   const external = new Set<string>()
-  const externalRunIds = new Map<string, string>()
-  const externalGroupIds = new Map<string, string>()
+  const externalRuns = new Map<string, {
+    token: number
+    groupId: string | null
+    expectedArms: number
+    runIds: Set<string>
+    terminalIds: Set<string>
+    ready: boolean
+    groupEnded: boolean
+  }>()
+  const retiredExternalRunIds = new Map<string, Set<string>>()
+  let externalSequence = 0
   const cancellations = new Map<string, { permit: CancellationPermit; runId: string | null; groupId: string | null }>()
   const listeners = new Set<() => void>()
   let revision = 0
   const publish = () => {
     revision += 1
     listeners.forEach((listener) => listener())
+  }
+  const retireExternal = (conversationId: string) => {
+    const run = externalRuns.get(conversationId)
+    if (!run) return
+    const retired = retiredExternalRunIds.get(conversationId) ?? new Set<string>()
+    for (const runId of run.runIds) retired.add(runId)
+    while (retired.size > 32) retired.delete(retired.values().next().value!)
+    retiredExternalRunIds.set(conversationId, retired)
+    externalRuns.delete(conversationId)
+  }
+  const isExternalTerminalCurrent = (permit: ExternalTerminalPermit) => {
+    const run = externalRuns.get(permit.conversationId)
+    return Boolean(run?.ready && run.token === permit.token)
   }
   const abandonSend = (claim: SendClaim) => {
     const reservation = claims.get(claim)
@@ -125,13 +158,14 @@ export function createChatExecutionOwner(
         || cancellations.has(conversationId)) return null
       const permit = { conversationId } as CancellationPermit
       const activeRunIds = active.get(conversationId)?.runIds
+      const externalRunIds = externalRuns.get(conversationId)?.runIds
       const observedRunId = activeRunIds?.size
         ? [...activeRunIds][activeRunIds.size - 1]
-        : externalRunIds.get(conversationId)
+        : externalRunIds?.size ? [...externalRunIds][externalRunIds.size - 1] : undefined
       cancellations.set(conversationId, {
         permit,
         runId: runId ?? observedRunId ?? null,
-        groupId: active.get(conversationId)?.groupId ?? externalGroupIds.get(conversationId) ?? null,
+        groupId: active.get(conversationId)?.groupId ?? externalRuns.get(conversationId)?.groupId ?? null,
       })
       publish()
       return permit
@@ -176,8 +210,7 @@ export function createChatExecutionOwner(
         throw new Error('Regeneration cannot begin a multi-answer group')
       }
       cancellations.delete(id)
-      externalRunIds.delete(id)
-      externalGroupIds.delete(id)
+      retireExternal(id)
       const token = settlement.beginInvoke(id)
       const lease = { conversationId: id, token }
       const optimisticToken = intent.optimistic
@@ -206,6 +239,7 @@ export function createChatExecutionOwner(
       if (event.kind === 'deferTerminal') return settlement.deferTerminal(event.terminal)
       const id = event.conversationId
       if (event.kind === 'runEvent') {
+        if (event.runId && retiredExternalRunIds.get(id)?.has(event.runId)) return false
         if (!settlement.acceptRunEvent(id, event.runId, event.started)) return false
         if (event.started && event.runId) {
           const invocation = active.get(id)
@@ -221,16 +255,31 @@ export function createChatExecutionOwner(
                 cancelled.runId = event.runId
                 cancelled.groupId = event.groupId ?? cancelled.groupId
               } else if (cancelled.runId !== event.runId
-                && cancelled.groupId && event.groupId
-                && cancelled.groupId !== event.groupId) {
+                && event.groupId && cancelled.groupId !== event.groupId) {
                 // Different run IDs may be arms of one restored group. Only an
                 // explicit different group identity proves a new execution.
                 cancellations.delete(id)
               }
             }
+            let run = externalRuns.get(id)
+            const newGroup = Boolean(run && event.groupId && event.groupId !== run.groupId)
+            const replacedRun = Boolean(run && run.ready && !run.runIds.has(event.runId))
+            if (newGroup || replacedRun) {
+              retireExternal(id)
+              run = undefined
+            }
+            if (!run) {
+              run = {
+                token: ++externalSequence,
+                groupId: event.groupId ?? null,
+                expectedArms: Math.max(1, event.groupSize ?? 1),
+                runIds: new Set(), terminalIds: new Set(), ready: false, groupEnded: false,
+              }
+              externalRuns.set(id, run)
+            }
+            run.runIds.add(event.runId)
+            if (event.groupSize) run.expectedArms = Math.max(run.expectedArms, event.groupSize)
             external.add(id)
-            externalRunIds.set(id, event.runId)
-            if (event.groupId) externalGroupIds.set(id, event.groupId)
           }
           publish()
         }
@@ -239,8 +288,7 @@ export function createChatExecutionOwner(
       if (event.kind === 'externalStarted' && !active.has(id)) external.add(id)
       if (event.kind === 'externalEnded') {
         external.delete(id)
-        externalRunIds.delete(id)
-        externalGroupIds.delete(id)
+        retireExternal(id)
         cancellations.delete(id)
       }
       if (event.kind === 'drop') {
@@ -250,12 +298,55 @@ export function createChatExecutionOwner(
         if (invocation?.groupId) groups.end(id)
         active.delete(id)
         external.delete(id)
-        externalRunIds.delete(id)
-        externalGroupIds.delete(id)
+        retireExternal(id)
         cancellations.delete(id)
         settlement.clearConversation(id)
         optimistic.clear(id)
       }
+      publish()
+      return true
+    },
+    /** Terminal ownership is decided here, where invoke and recovered-run
+     * identities already live. A restored group settles once, after all arms. */
+    observeTerminal(terminal: ChatRunTerminal, target: 'single' | 'group'): TerminalDisposition {
+      const id = terminal.conversationId
+      const invocation = active.get(id)
+      if (invocation) {
+        if (target === 'group' || invocation.groupId) return { kind: 'pending' }
+        return settlement.deferTerminal(terminal) ? { kind: 'deferred' } : { kind: 'ignored' }
+      }
+      let run = externalRuns.get(id)
+      if (!run && terminal.runId
+        && !retiredExternalRunIds.get(id)?.has(terminal.runId)) {
+        // A terminal can be the first observed packet after a protocol gap.
+        run = {
+          token: ++externalSequence, groupId: null, expectedArms: 1,
+          runIds: new Set([terminal.runId]), terminalIds: new Set(),
+          ready: false, groupEnded: false,
+        }
+        externalRuns.set(id, run)
+        external.add(id)
+      }
+      if (!run || !terminal.runId || !run.runIds.has(terminal.runId)
+        || run.terminalIds.has(terminal.runId)) return { kind: 'ignored' }
+      run.terminalIds.add(terminal.runId)
+      if (run.terminalIds.size < run.expectedArms) return { kind: 'pending' }
+      run.ready = true
+      if (run.groupId && !run.groupEnded) {
+        groups.end(id)
+        run.groupEnded = true
+      }
+      return {
+        kind: 'ready',
+        permit: { conversationId: id, token: run.token } as ExternalTerminalPermit,
+      }
+    },
+    isExternalTerminalCurrent,
+    completeExternalTerminal(permit: ExternalTerminalPermit): boolean {
+      if (!isExternalTerminalCurrent(permit)) return false
+      external.delete(permit.conversationId)
+      retireExternal(permit.conversationId)
+      cancellations.delete(permit.conversationId)
       publish()
       return true
     },
