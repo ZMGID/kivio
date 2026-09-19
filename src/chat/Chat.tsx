@@ -66,7 +66,7 @@ import {
   type AgentRuntimeConfig,
 } from './api'
 import { loadLastAgentRuntime, saveLastAgentRuntime } from './lastAgentRuntime'
-import { loadLastModel, resolvePreferredChatModel, saveLastModel } from './lastModel'
+import { loadLastModel, resolvePreferredChatModel, saveLastModel } from '../data/chatModelPreference'
 import {
   chatTitlebarMacInsetClass,
   chatTitlebarRowClass,
@@ -103,7 +103,7 @@ import { getSettingsCached, refreshSettings, subscribeSettings, updateSettingsCa
 import { setExclusiveConversationIds } from '../api/chatProtocol'
 import { isPluginManagedServer, preservePluginManagedServers } from '../settings/public/connectors'
 import { OnboardingShell } from '../onboarding/public/shell'
-import type { SettingsShellHandle, SettingsShellProps, SettingsTab } from '../settings/public/shell'
+import type { SettingsShellHandle, SettingsTab } from '../settings/public/shell'
 import { i18n, LangContext, type Lang } from '../settings/public/i18n'
 import { estimateTokens } from '../utils/tokens'
 import {
@@ -175,6 +175,15 @@ const importSettingsShell = () => import('../settings/public/shell')
 
 const SettingsShell = lazy(() => importSettingsShell().then((module) => ({
   default: module.SettingsShell,
+})))
+const SessionCenter = lazy(() => import('./public/sessionCenter').then((module) => ({
+  default: module.SessionCenter,
+})))
+const PluginCenter = lazy(() => import('./public/pluginCenter').then((module) => ({
+  default: module.PluginCenter,
+})))
+const ChatMarkdown = lazy(() => import('./public/markdown').then((module) => ({
+  default: module.ChatMarkdown,
 })))
 
 const SkillCenter = lazy(() => import('./SkillCenter').then((module) => ({
@@ -254,7 +263,7 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onClose,
   onSettingsChange,
   onReady,
-  sessionLibrary,
+  sessionCenter,
   onRender,
 }: {
   settingsRef: Ref<SettingsShellHandle>
@@ -265,7 +274,7 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onClose: () => void
   onSettingsChange: () => void
   onReady: () => void
-  sessionLibrary: NonNullable<SettingsShellProps['sessionLibrary']>
+  sessionCenter: ReactNode
   onRender: ProfilerOnRenderCallback
 }) {
   return (
@@ -284,7 +293,16 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
             onClose={onClose}
             onSettingsChange={onSettingsChange}
             onReady={onReady}
-            sessionLibrary={sessionLibrary}
+            sessionCenter={sessionCenter}
+            renderPluginCenter={({ section, onSectionChange, lang, connectors }) => (
+              <PluginCenter
+                section={section}
+                onSectionChange={onSectionChange}
+                lang={lang}
+                connectors={connectors}
+              />
+            )}
+            renderReleaseNotes={(markdown) => <ChatMarkdown content={markdown} />}
           />
         </Profiler>
       </SettingsEnterPane>
@@ -4256,14 +4274,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onClose={handleSettingsClose}
             onSettingsChange={handleSettingsChange}
             onReady={emitContentReady}
-            sessionLibrary={{
-              currentConversationId: currentConversation?.id,
-              generatingConversationIds,
-              onSelectConversation: handleSidebarSelectConversation,
-              onConversationDeleted: handleSidebarConversationDeleted,
-              onForceDropConversation: handleSidebarForceDropConversation,
-              onConversationsChanged: refreshSidebar,
-            }}
+            sessionCenter={
+              <SessionCenter
+                lang={uiLang}
+                embedded
+                currentConversationId={currentConversation?.id}
+                generatingConversationIds={generatingConversationIds}
+                onSelectConversation={handleSidebarSelectConversation}
+                onConversationDeleted={handleSidebarConversationDeleted}
+                onForceDropConversation={handleSidebarForceDropConversation}
+                onConversationsChanged={refreshSidebar}
+              />
+            }
             onRender={onChatPerfProfiler}
           />
         ) : chatView === 'assistants' ? (

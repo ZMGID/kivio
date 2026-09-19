@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type SetStateAction } from 'react'
+import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw, Monitor,
   Download, Upload, ArrowLeft,
@@ -28,13 +28,11 @@ import { useSettingsUpdateController } from './useSettingsUpdateController'
 import { useSettingsOcrDownloads } from './useSettingsOcrDownloads'
 import { useSettingsPermissions } from './useSettingsPermissions'
 import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDraftIntents'
-import { i18n } from './i18n'
+import { i18n, type Lang } from './i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
   AgentIcon, WebSearchIcon, PluginsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
 } from './NavIcons'
-import { SessionCenter, type SessionCenterProps } from '../chat/public/sessionCenter'
-import { PluginCenter, type PluginCenterSection } from '../chat/public/pluginCenter'
 import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
@@ -63,7 +61,7 @@ import { ModelDetailDrawer } from './ModelDetailDrawer'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
 import { Button } from '../components/Button'
 import { resolveModelInfo } from '../data/modelMatching'
-import { loadLastModel, resolvePreferredChatModel } from '../chat/public/modelPreference'
+import { loadLastModel, resolvePreferredChatModel } from '../data/chatModelPreference'
 import { useWindowInteractionFocus } from '../api/windowFocus'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chatTools'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from './uiFont'
@@ -91,15 +89,15 @@ export interface SettingsShellProps {
   initialTab?: SettingsTab
   /** embedded 单页模式：隐藏左侧设置导航，只显示 initialTab 对应页（如从扩展点「知识库」进入） */
   hideNav?: boolean
-  /** 对话库（原扩展中心页）嵌在设置里，选中一条对话时由 Chat 宿主切回去 */
-  sessionLibrary?: {
-    currentConversationId?: string
-    generatingConversationIds?: ReadonlySet<string>
-    onSelectConversation: SessionCenterProps['onSelectConversation']
-    onConversationDeleted?: SessionCenterProps['onConversationDeleted']
-    onForceDropConversation?: SessionCenterProps['onForceDropConversation']
-    onConversationsChanged?: SessionCenterProps['onConversationsChanged']
-  }
+  /** Chat 宿主提供的领域视图；设置只决定它们出现的位置。 */
+  sessionCenter?: ReactNode
+  renderPluginCenter: (input: {
+    section: 'plugins' | 'connectors'
+    onSectionChange: (section: 'plugins' | 'connectors') => void
+    lang: Lang
+    connectors: ReactNode
+  }) => ReactNode
+  renderReleaseNotes: (markdown: string) => ReactNode
 }
 
 export interface SettingsShellHandle {
@@ -143,7 +141,7 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
  * 设置面板主组件（standalone / embedded 双宿主）
  */
 export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>(function SettingsShell(
-  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, sessionLibrary },
+  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, sessionCenter, renderPluginCenter, renderReleaseNotes },
   ref,
 ) {
   const onSettingsChangeRef = useRef(onSettingsChange)
@@ -170,7 +168,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [editorController])
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<Exclude<SettingsTab, 'connectors'>>(initialTab === 'connectors' ? 'plugins' : initialTab ?? 'general')
-  const [pluginSection, setPluginSection] = useState<PluginCenterSection>(initialTab === 'connectors' ? 'connectors' : 'plugins')
+  const [pluginSection, setPluginSection] = useState<'plugins' | 'connectors'>(initialTab === 'connectors' ? 'connectors' : 'plugins')
   const navigateToSettingsTab = useCallback((tab: SettingsTab) => {
     if (tab === 'connectors') {
       setPluginSection('connectors')
@@ -1223,11 +1221,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
             {/* ===== 插件与连接器；第三方应用入口已删除 ===== */}
             {activeTab === 'plugins' && (
-              <PluginCenter
-                section={pluginSection}
-                onSectionChange={setPluginSection}
-                lang={lang}
-                connectors={
+              renderPluginCenter({
+                section: pluginSection,
+                onSectionChange: setPluginSection,
+                lang,
+                connectors:
                   <ConnectorsPanel
                     servers={settings.chatTools.servers}
                     updateChatTools={updateChatTools}
@@ -1246,23 +1244,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                         return null
                       }
                     }}
-                  />
-                }
-              />
+                  />,
+              })
             )}
 
-            {activeTab === 'sessions' && sessionLibrary && (
-              <SessionCenter
-                lang={lang}
-                embedded
-                currentConversationId={sessionLibrary.currentConversationId}
-                generatingConversationIds={sessionLibrary.generatingConversationIds}
-                onSelectConversation={sessionLibrary.onSelectConversation}
-                onConversationDeleted={sessionLibrary.onConversationDeleted}
-                onForceDropConversation={sessionLibrary.onForceDropConversation}
-                onConversationsChanged={sessionLibrary.onConversationsChanged}
-              />
-            )}
+            {activeTab === 'sessions' && sessionCenter}
 
             {/* ===== 网络搜索标签页 ===== */}
             {activeTab === 'webSearch' && (
@@ -1359,6 +1345,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   onOpenReleasePage={updates.openReleasePage}
                   onOpenGithubReleases={updates.openGithubReleases}
                   onDismiss={updates.dismiss}
+                  renderReleaseNotes={renderReleaseNotes}
                 />
               </>
             )}

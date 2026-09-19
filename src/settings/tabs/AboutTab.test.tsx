@@ -7,10 +7,6 @@ import { i18n } from '../i18n'
 
 const t = i18n.zh
 
-vi.mock('../../chat/ChatMarkdown', () => ({
-  ChatMarkdown: ({ content }: { content: string }) => <div data-testid="md">{content}</div>,
-}))
-
 /**
  * 回归重点：更新流程是个状态机（idle→checking→available→downloading→downloaded/failed），
  * 拆分时把 6 个分量收进了 UpdateFlowState 对象，每个状态该显示什么按钮必须逐个验。
@@ -35,6 +31,7 @@ function renderUpdate(update: Partial<UpdateFlowState> = {}) {
     onOpenReleasePage: vi.fn(),
     onOpenGithubReleases: vi.fn(),
     onDismiss: vi.fn(),
+    renderReleaseNotes: (content: string) => <div data-testid="md">{content}</div>,
   }
   render(<UpdateGroup {...props} />)
   return props

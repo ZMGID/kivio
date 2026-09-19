@@ -1,7 +1,7 @@
 import { RefreshCw, Download, ExternalLink } from 'lucide-react'
 import { Toggle, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
-import { ChatMarkdown } from '../../chat/public/markdown'
+import type { ReactNode } from 'react'
 import type { I18n, Lang } from '../i18n'
 import type { Settings as SettingsData, UpdateInfo } from '../../api/tauri'
 
@@ -64,6 +64,7 @@ export function UpdateGroup({
   onOpenReleasePage,
   onOpenGithubReleases,
   onDismiss,
+  renderReleaseNotes,
 }: {
   settings: SettingsData | null
   t: I18n
@@ -75,6 +76,7 @@ export function UpdateGroup({
   onOpenReleasePage: () => void
   onOpenGithubReleases: () => void
   onDismiss: () => void
+  renderReleaseNotes: (markdown: string) => ReactNode
 }) {
   const { status, info, downloadState, downloadPercent, downloadError } = update
 
@@ -124,7 +126,7 @@ export function UpdateGroup({
           </div>
           {info.body && (
             <div className="custom-scrollbar mb-3 max-h-40 overflow-y-auto text-[12px] leading-relaxed">
-              <ChatMarkdown content={info.body} />
+              {renderReleaseNotes(info.body)}
             </div>
           )}
 

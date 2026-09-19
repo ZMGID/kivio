@@ -4,7 +4,7 @@ import {
   loadLastModel,
   resolvePreferredChatModel,
   saveLastModel,
-} from './lastModel'
+} from './chatModelPreference'
 
 const google = { providerId: 'google', model: 'models/gemini-3.1-flash-lite' }
 const deepseek = { providerId: 'ds', model: 'deepseek-v4-flash' }
