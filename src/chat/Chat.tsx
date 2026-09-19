@@ -13,6 +13,7 @@ import { createChatRunSettlement } from './chatRunSettlement'
 import { prepareConversationForSend } from './prepareConversationForSend'
 import { applyConversationStreamEvent, beginRunSnapshot, restoreRunSnapshot } from './streamPresentation'
 import { createOptimisticUserPresentation } from './optimisticUserPresentation'
+import { applyRunDisplayEvent } from './runDisplayEvents'
 import { useExternalSendQueue } from './hooks/useExternalSendQueue'
 import { useMessageQueue } from './hooks/useMessageQueue'
 import type { QueuedMessage } from './hooks/useMessageQueue'
@@ -138,7 +139,6 @@ import { isTauriRuntime } from './utils'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../utils/chatTools'
 import { onChatImageViewerOpen, type ChatImageViewerItem } from './imageViewer'
 import {
-  acceptStreamRun,
   collectGeneratingConversationIds,
   createEmptyStreamSnapshot,
   isConversationBusy,
@@ -167,7 +167,6 @@ import {
   touchGroup,
 } from './groupStreamingStore'
 import { assistantTurnSpan } from './messageGroups'
-import { userFollowUpId, userSteerId } from './segments'
 import { latestCompactionBoundaryId, mergeCompactionContextState } from './compactionBoundary'
 import { latestClearBoundaryId, mergeClearContextState } from './contextClearBoundary'
 import { applyLiveContextUsage } from './contextPanel'
@@ -179,15 +178,12 @@ import { composerGoal } from './goalPresentation'
 import { PopoutOccupiedPlaceholder } from './popout/PopoutOccupiedPlaceholder'
 import { emptyPopoutConversation, stripConversationMessages } from './popout/conversationStub'
 import {
-  applyToolRecordToSnapshot,
   findSubagentToolIndex,
   hasStreamPreview,
   isStreamTerminal,
   mergeSubagentProgress,
   messageToolCalls,
   streamTerminalReason,
-  toolEventToRecord,
-  upsertToolStreamSegment,
   userPromptEventToRecord,
 } from './streamApply'
 import {
@@ -2253,26 +2249,22 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (hasActiveGroup(payload.conversationId) && payload.messageId) {
         const column = ensureGroupColumn(payload.conversationId, payload.messageId)
         if (!column) return
-        if (!acceptStreamRun(column, payload.runId)) return
-        const record = toolEventToRecord(payload)
-        applyToolRecordToSnapshot(column, record)
+        const result = applyRunDisplayEvent(column, { kind: 'tool', payload })
+        if (!result.accepted) return
+        if (result.confirmedQueueMessageId) {
+          messageQueueRef.current.confirm(payload.conversationId, result.confirmedQueueMessageId)
+        }
         touchGroup(payload.conversationId)
         return
       }
       const snapshot = ensureStreamSnapshot(payload.conversationId)
-      if (!acceptStreamRun(snapshot, payload.runId)) return
-      const record = toolEventToRecord(payload)
-      snapshot.streaming = true
-      snapshot.reasoningStreaming = false
+      const result = applyRunDisplayEvent(snapshot, { kind: 'tool', payload })
+      if (!result.accepted) return
       // 插话卡到了 = 那条「立刻引导」真的进了模型历史，现在才把它从队列里摘掉。
       // （在此之前它一直留着，好让「没赶上轮次边界」退化成运行结束后的自动发送。）
-      const injectionId = userSteerId(record) ?? userFollowUpId(record)
-      if (injectionId) messageQueueRef.current.confirm(payload.conversationId, injectionId)
-      const index = snapshot.toolCalls.findIndex((item) => item.id === record.id)
-      snapshot.toolCalls = index < 0
-        ? [...snapshot.toolCalls, record]
-        : snapshot.toolCalls.map((item, i) => (i === index ? { ...item, ...record } : item))
-      snapshot.segments = upsertToolStreamSegment(snapshot.segments, record)
+      if (result.confirmedQueueMessageId) {
+        messageQueueRef.current.confirm(payload.conversationId, result.confirmedQueueMessageId)
+      }
       syncGeneratingConversationIds()
       showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
   }, [ensureStreamSnapshot, runSettlement, showStreamSnapshotIfCurrent, syncGeneratingConversationIds])
@@ -2285,8 +2277,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const snapshot = streamSnapshotsRef.current[payload.conversationId]
     if (!snapshot) return
     if (!runSettlement.acceptRunEvent(payload.conversationId, payload.runId)) return
-    if (!acceptStreamRun(snapshot, payload.runId)) return
-    snapshot.statusNote = payload.note
+    if (!applyRunDisplayEvent(snapshot, { kind: 'status', payload }).accepted) return
     showStreamSnapshotIfCurrent(payload.conversationId, snapshot)
   }, [runSettlement, showStreamSnapshotIfCurrent])
 
@@ -2300,13 +2291,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (inFlight) {
         if (!runSettlement.acceptRunEvent(payload.parentConversationId, payload.parentRunId)) return
         const snapshot = ensureStreamSnapshot(payload.parentConversationId)
-        // Match the active run when known; only drop when both ids are set and differ.
-        if (!acceptStreamRun(snapshot, payload.parentRunId)) return
-        const index = findSubagentToolIndex(snapshot.toolCalls, payload)
-        if (index < 0) return
-        snapshot.toolCalls = snapshot.toolCalls.map((item, i) => (
-          i === index ? mergeSubagentProgress(item, payload) : item
-        ))
+        if (!applyRunDisplayEvent(snapshot, { kind: 'subagent', payload }).accepted) return
         showStreamSnapshotIfCurrent(payload.parentConversationId, snapshot)
         return
       }
@@ -2340,14 +2325,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (!isConversationInFlight(inFlightConversationsRef.current, payload.conversationId)) return
       if (!runSettlement.acceptRunEvent(payload.conversationId, payload.runId)) return
       const snapshot = ensureStreamSnapshot(payload.conversationId)
-      if (!acceptStreamRun(snapshot, payload.runId)) return
-      const record = userPromptEventToRecord(payload)
-      snapshot.streaming = true
-      snapshot.reasoningStreaming = false
-      const index = snapshot.toolCalls.findIndex((item) => item.id === record.id)
-      snapshot.toolCalls = index < 0
-        ? [...snapshot.toolCalls, record]
-        : snapshot.toolCalls.map((item, i) => (i === index ? { ...item, ...record } : item))
+      if (!applyRunDisplayEvent(snapshot, { kind: 'userPrompt', payload }).accepted) return
       // 同时排进「输入框上方」那张面板的队列：消息流里的那条只是痕迹，真正作答在面板上。
       const queue = pendingUserPromptsRef.current[payload.conversationId] ?? []
       const queued = queue.some((item) => item.toolCallId === payload.toolCallId)
