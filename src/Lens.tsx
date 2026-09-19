@@ -29,15 +29,10 @@ import { ThinkingBlock } from './lens/ThinkingBlock'
 import { WebSearchBlock } from './lens/WebSearchBlock'
 import { useWindowInteractionFocus } from './utils/windowFocus'
 import { useFreezeFramePreview } from './lens/useFreezeFramePreview'
-import { useImageObjectUrl } from './lens/useImageObjectUrl'
 import { readDevicePixelRatio, useDevicePixelRatio } from './lens/useDevicePixelRatio'
-import { useLensHistory } from './lens/useLensHistory'
-import { useLensSessionCoordinator, type LensSessionToken } from './lens/useLensSessionCoordinator'
-import { useLensConversationController } from './lens/useLensConversationController'
-import { useLensSelectionController } from './lens/useLensSelectionController'
-import { useLensAnnotationController } from './lens/useLensAnnotationController'
+import type { LensSessionToken } from './lens/useLensSessionCoordinator'
+import { useLensContentController } from './lens/useLensContentController'
 import { useLensBarMotionController } from './lens/useLensBarMotionController'
-import { useLensTranslationSession } from './lens/useLensTranslationSession'
 
 /** 解析 webview hash query：'#lens?mode=translate' → 'translate' */
 function readModeFromHash(): Mode {
@@ -136,27 +131,25 @@ const waitForVisibleIdle = (timeout = LENS_HIDE_IDLE_TIMEOUT_MS) => new Promise<
  * 关键：webview 始终全屏，整个过渡靠 CSS。后端 lens_resolve_anchor 仅算目标坐标，不缩窗口。
  */
 export default function Lens() {
-  const conversation = useLensConversationController()
+  const content = useLensContentController({ initialMode: readModeFromHash(), cancelRequest: api.lensCancelStream })
+  const {
+    conversation, selection, annotation, mode, imagePreview, history,
+    beginOpening, open: openContent, hide: hideContent, restoreHistory: restoreContentHistory,
+    captureImage, adoptAnnotatedImage, currentImageId, beginTextTranslation,
+    prepareSend, releaseSendPreparation, isPreparingSend, beginAnswer, finishAnswer: finishAnswering,
+  } = content
   const { stage, appLabel, input, selectionText, messages, streaming, copied } = conversation.view
   const {
-    open: openConversationView,
-    hide: hideConversationView,
-    restoreHistory: restoreConversationHistory,
     showStage, capture: showCapturedConversation, editInput, selectText,
-    beginAnswer, applyStream, applyWebSearch, applyFinal, setBusy,
+    applyStream, applyWebSearch, applyFinal, setBusy,
     handoffFailed, showCopied,
   } = conversation
-  const selection = useLensSelectionController()
   const { windows, hovered, dragStart, dragCurrent, dragging, pendingCapture, capturedFrame, showCaptureHint } = selection.view
   const {
-    open: openSelectionView, hide: hideSelectionView, windowsDiscovered, hoverWindow,
+    windowsDiscovered, hoverWindow,
     startDrag, moveDrag, recoverDrag, clearDrag, queueCapture, captureFrame, showHint,
   } = selection
   const [winOrigin, setWinOrigin] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [previewSource, setPreviewSource] = useState<{ imageId: string; url: string }>({ imageId: '', url: '' })
-  const capturedPreview = useImageObjectUrl(previewSource.imageId, api.lensReadImage)
-  const imagePreview = previewSource.url || capturedPreview
-  const setImagePreview = useCallback((url: string) => setPreviewSource({ imageId: '', url }), [])
   // Lens 启动前 Rust 端抓到的选中文本：作为本次会话的上下文前缀
   // 仅在首轮 chat 消息发送时拼接进 prompt；徽章静态显示行数；次轮不再注入。
   const [lang, setLang] = useState<Lang>('zh')
@@ -164,7 +157,6 @@ export default function Lens() {
   const [webSearchAvailable, setWebSearchAvailable] = useState(false)
   const [webSearchEnabled, setWebSearchEnabled] = useState(false)
   const [keepFullscreen, setKeepFullscreen] = useState(() => readModeFromHash() !== 'translateText')
-  const [mode, setMode] = useState<Mode>(() => readModeFromHash())
   const [surfaceDormant, setSurfaceDormant] = useState(false)
   const {
     applyReplacementPayload,
@@ -180,16 +172,14 @@ export default function Lens() {
     replacePhase,
     replaceSlots,
     replaceWarning,
-    reset: resetTranslationSession,
     translateError,
     translateOriginal,
     translateText,
-  } = useLensTranslationSession({ onFinished: () => showStage('translated') })
+  } = content.translation
   const {
     acceptsRequestEvent,
     beginCapture,
     beginInitialization,
-    beginOpening,
     beginRequest,
     beginSelectionRead,
     canCapture,
@@ -212,10 +202,7 @@ export default function Lens() {
     isSelectionCurrent,
     isTokenCurrent,
     markCaptureReady,
-    replaceFreezeFrame,
-    resetForHide: resetSessionForHide,
-    restoreSession,
-  } = useLensSessionCoordinator({ cancelRequest: api.lensCancelStream })
+  } = content.session
   // Cropping consumes the backend frame ID, but the rendered background must
   // stay alive through annotation/translation until the entire session closes.
   const freezeFramePreview = useFreezeFramePreview(freezeFramePreviewId)
@@ -251,10 +238,9 @@ export default function Lens() {
   // 标注（箭头/矩形/马赛克）:chat 模式在 stage==='ready' 的 drawMode 子模式（仅箭头）；
   // screenshot 模式在 ready 态常开（工具可切换）。
   // annotations / draftAnnotation 坐标系 = capturedFrame 逻辑像素 (左上角为原点)
-  const annotation = useLensAnnotationController()
   const { drawMode, arrows, draft: draftArrow, tool: annotateTool, copied: annotateCopied, saving: annotateSaving } = annotation.view
   const {
-    hide: hideAnnotation, stageChanged: annotationStageChanged, toggleDraw, exitDraw,
+    toggleDraw, exitDraw,
     selectTool: selectAnnotationTool, begin: beginAnnotation, move: moveAnnotation,
     finish: finishAnnotation, cancelDraft: cancelAnnotationDraft, undo: undoAnnotation,
     clearSubmitted: clearSubmittedAnnotations, setCopied: setAnnotationCopied,
@@ -262,7 +248,6 @@ export default function Lens() {
   } = annotation
   // 源码/渲染切换：false=渲染模式(ChatMarkdown)，true=源码模式(原始文本)
   const [sourceMode, setSourceMode] = useState(false)
-  useEffect(() => annotationStageChanged(stage), [annotationStageChanged, stage])
   // 冻结帧绘制：把 Blob URL 画进 canvas，backing store = 图片原生像素，CSS 铺满 viewport，
   // 使全屏冻结帧按设备像素 1:1 显示，与实时桌面同等清晰（避免 <img> 被重采样发虚）。
   // 全屏态（select 及 keepFullscreen 的 ready/answering）整段会话都保留作背景，直到关闭 Lens。
@@ -294,7 +279,6 @@ export default function Lens() {
     }
   }, [stage, keepFullscreen, freezeFramePreview, devicePixelRatio, viewport.w, viewport.h])
   // 内存历史：单次 app 生命周期保留，esc/hide 不清空
-  const { items: history, recordCompleted: recordHistory } = useLensHistory()
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyPanelH, setHistoryPanelH] = useState(0)
 
@@ -307,10 +291,6 @@ export default function Lens() {
   const modeRef = useRef<Mode>(mode)
   const historyOpenRef = useRef(false)
   const drawModeRef = useRef(false)
-  const imageIdRef = useRef('')
-  // 历史记录 key：截图会话 = imageId；纯文本会话（无截图）后端 image_id 必须为空，
-  // 否则会被当成有图去读图报错，所以另给一个合成 key 专供历史去重/持久化。
-  const historyKeyRef = useRef('')
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const floatingRebaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const focusReqIdRef = useRef(0)
@@ -328,12 +308,7 @@ export default function Lens() {
   // 快速翻译结果卡宽度（截图翻译 + 选中文本翻译共用，来自设置，默认 480）
   const cardWidthRef = useRef(480)
   const prevStreamingRef = useRef(false)
-  const preparingSendRef = useRef(false)
-  const answerFinishedRef = useRef(false)
   const lastLensStreamEventRef = useRef('')
-  // A completed turn remains recordable until a new turn/context replaces it:
-  // the invoke result may still enrich its final messages after a stream done event.
-  const justFinishedStreamRef = useRef(false)
   // capture 期间 macOS screencapture 可能短暂让 lens webview 失焦 → 触发 blur 误关闭。
   // 这个 ref 标记"截图进行中"，blur handler 看到就跳过。
   // selectionText 异步 take 的重入 token：每次 enterSelect / resetBeforeHide / restoreHistory 都 +1，
@@ -354,14 +329,6 @@ export default function Lens() {
   modeRef.current = mode
   historyOpenRef.current = historyOpen
   drawModeRef.current = drawMode
-
-  const finishAnswering = useCallback(() => {
-    if (answerFinishedRef.current) return
-    answerFinishedRef.current = true
-    // 必须在关闭 streaming 前置 true：历史持久化 effect 依赖 streaming 变化触发。
-    justFinishedStreamRef.current = true
-    setBusy(false)
-  }, [setBusy])
 
   const cancelPendingMotion = useCallback(() => {
     motionSeqRef.current++
@@ -453,8 +420,8 @@ export default function Lens() {
     const initializationSeq = requestedInitialization ?? beginInitialization()
     // Invalidate/cancel the previous opening before any settings or reset-payload
     // await can allow its stream to publish into the newly opening surface.
-    const { first: firstEntry } = requestedOpening ?? beginOpening()
-    preparingSendRef.current = false
+    const opening = requestedOpening ?? beginOpening()
+    const { first: firstEntry } = opening
     const curMode = readModeFromHash()
     await loadLensSettings(curMode)
     if (!isInitializationCurrent(initializationSeq)) return
@@ -473,31 +440,18 @@ export default function Lens() {
     }
     const motionSeq = motionSeqRef.current
     fullscreenMetricsRef.current = null
-    // 防御：会话打开会清消息和 streaming；历史持久化只接受真实终态。
-    // 持久化分支，但显式清零更稳
-    justFinishedStreamRef.current = false
-    preparingSendRef.current = false
     // 用 flushSync 同步提交所有 reset 后的状态：webview show 之前 DOM 必须已经反映新位置，
     // 否则 Rust 的 show() 会先把旧 frame 露出来。
     // barNoTransition 同 frame 一起置 true → bar 从老坐标 snap 到 select 坐标，不回放动画。
     flushSync(() => {
       openBarMotion(openingBarRect)
       setSurfaceDormant(false)
-      openConversationView(curMode)
-      setMode(curMode)
+      openContent({ mode: curMode, opening, freezeFrameImageId: resetFreezeFrameImageId })
       setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
-      // The cold-start drag may precede the reset payload; later openings clear it.
-      openSelectionView(firstEntry)
-      hideAnnotation()
-      setImagePreview('')
-      resetTranslationSession()
-      replaceFreezeFrame(resetFreezeFrameImageId)
       setViewport({ w: openingWidth, h: openingHeight })
       if (resetFrame) setWinOrigin({ x: resetFrame.x, y: resetFrame.y })
     })
     selectRevealedRef.current = false
-    imageIdRef.current = ''
-    historyKeyRef.current = ''
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
     focusLensSurface([0, 40, 120])
@@ -531,9 +485,7 @@ export default function Lens() {
             return
           }
           const requestId = makeTextRequestId()
-          imageIdRef.current = requestId
-          const requestToken = beginRequest('translate_text', requestId)
-          selectText(text)
+          const requestToken = beginTextTranslation(text, requestId)
           if (motionSeq === motionSeqRef.current) {
             requestAnimationFrame(() => {
               requestAnimationFrame(() => {
@@ -544,7 +496,6 @@ export default function Lens() {
               })
             })
           }
-          beginTranslation()
           try {
             if (!isSelectionCurrent(myReq) || motionSeq !== motionSeqRef.current) return
             const result = await api.lensTranslateText(text, requestId)
@@ -614,7 +565,7 @@ export default function Lens() {
       if (motionSeq === motionSeqRef.current) windowsDiscovered([])
     }
     focusLensSurface()
-  }, [beginInitialization, beginOpening, beginRequest, beginSelectionRead, beginTranslation, cancelPendingMotion, failTranslation, finishRequest, focusLensSurface, hideAnnotation, isInitializationCurrent, isRequestCurrent, isSelectionCurrent, loadLensSettings, markCaptureReady, openBarMotion, openConversationView, openSelectionView, replaceFreezeFrame, resetTranslationSession, revealBarMotion, selectText, setImagePreview, showHint, windowsDiscovered])
+  }, [beginInitialization, beginOpening, beginSelectionRead, beginTextTranslation, cancelPendingMotion, failTranslation, finishRequest, focusLensSurface, isInitializationCurrent, isRequestCurrent, isSelectionCurrent, loadLensSettings, markCaptureReady, openBarMotion, openContent, revealBarMotion, selectText, showHint, windowsDiscovered])
 
   useEffect(() => {
     // 冷挂载 与 复用收到 lens:reset 走同一路径：主动 take 后端暂存的复位载荷（frame +
@@ -708,30 +659,6 @@ export default function Lens() {
     }
   }, [viewport, metrics, snapBarRect])
 
-  // 流式结束（streaming → false 且有任意 assistant 回答）时把当前会话推入历史。
-  // 按 imageId 去重：同一张截图多轮对话作为单条历史持续更新到最前。
-  // translate 模式不入对话历史（OCR+翻译是一次性任务，无对话语义）。
-  // 缩略图压缩到 96x96 jpeg 再写历史，避免 localStorage 被几 MB 的 base64 撑爆。
-  useEffect(() => {
-    // History owns durable image/thumbnail work and supersedes older snapshots of the same turn.
-    // A final invoke or a view reset must not cancel a completed turn's pending persistence.
-    if (!justFinishedStreamRef.current) return
-    if (mode !== 'chat') return
-    if (streaming) return
-    const id = imageIdRef.current || historyKeyRef.current
-    if (!id || messages.length === 0) return
-    const hasAssistant = messages.some(m => m.role === 'assistant' && m.content)
-    if (!hasAssistant) return
-    void recordHistory({
-      id,
-      imagePreview,
-      appLabel,
-      messages,
-      capturedFrame,
-      timestamp: Date.now(),
-    }, imageIdRef.current)
-  }, [mode, streaming, messages, imagePreview, appLabel, capturedFrame, recordHistory])
-
   // 监听 lens-stream 事件：把 reasoning_delta / delta 累积到最后一条 assistant 消息
   // StrictMode 双挂载下 listen 是 async：cleanup 时 unlisten 可能还没赋值，需要 cancelled 旗标
   // 让 promise resolve 时立即 dispose，否则会留下"幽灵 listener"导致每个事件触发 N 次（字符重复）
@@ -823,36 +750,24 @@ export default function Lens() {
   }, [])
 
   const resetBeforeHide = useCallback(() => {
-    resetSessionForHide()
     cancelPendingMotion()
     releaseFreezeCanvas()
     // 会话结束：清掉 take-once 载荷缓存，避免下次 StrictMode 重放到旧会话的冻结帧
     lastResetPayloadCacheRef.current = null
     fullscreenMetricsRef.current = null
-    // 防御：和 enterSelect 同理 —— reset 路径不该走持久化
-    justFinishedStreamRef.current = false
-    preparingSendRef.current = false
     flushSync(() => {
       hideBarMotion(computeSelectBar(viewport.w, viewport.h, metrics))
       setSurfaceDormant(true)
-      hideConversationView()
-      hideSelectionView()
-      setImagePreview('')
-      resetTranslationSession()
-      hideAnnotation()
+      hideContent()
       setSourceMode(false)
       setHistoryOpen(false)
       setHistoryPanelH(0)
     })
     selectRevealedRef.current = false
-    imageIdRef.current = ''
-    historyKeyRef.current = ''
     translateCardDragRef.current = null
     translateCardResizeRef.current = null
-    // 让任何还没落地的 takeLensSelection 老 promise 作废，避免关闭后 setSelectionText 拖回来
-    beginSelectionRead()
     focusReqIdRef.current++
-  }, [beginSelectionRead, cancelPendingMotion, hideAnnotation, hideBarMotion, hideConversationView, hideSelectionView, releaseFreezeCanvas, resetSessionForHide, resetTranslationSession, viewport, metrics, setImagePreview])
+  }, [cancelPendingMotion, hideBarMotion, hideContent, releaseFreezeCanvas, viewport, metrics])
 
   const closeAfterReset = useCallback(async (feedback?: { token: LensSessionToken; delayMs: number }) => {
     try {
@@ -875,7 +790,7 @@ export default function Lens() {
       if (e.key !== 'Escape') return
       e.preventDefault()
       e.stopPropagation()
-      if (preparingSendRef.current) return
+      if (isPreparingSend()) return
       if (drawModeRef.current) return
       if (stageRef.current === 'answering' && streaming) {
         const cancellation = cancelActiveRequest()
@@ -887,7 +802,7 @@ export default function Lens() {
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [cancelActiveRequest, finishAnswering, streaming, closeAfterReset])
+  }, [cancelActiveRequest, finishAnswering, isPreparingSend, streaming, closeAfterReset])
 
   // chat 模式的全局 Esc 兜底联动：后端在打开浮窗时对所有模式注册了全局 Esc（保证 select
   // 全屏阶段即使 webview 没拿到键盘焦点/挂死也能退出）。但 chat 模式截图落定后 Esc 有
@@ -1321,7 +1236,7 @@ export default function Lens() {
         return
       }
       const newId = result.imageId
-      imageIdRef.current = newId
+      captureImage(newId)
 
       // 记录截图框（webview 内坐标）作为已截视觉标记，截完保留显示
       captureFrame({
@@ -1331,7 +1246,6 @@ export default function Lens() {
         height: info.height,
         label: info.owner,
       })
-      setPreviewSource({ imageId: newId, url: '' })
       if (mode === 'screenshot') {
         // 截图标注：无对话栏可飞，直接进 ready（工具栏对着 capturedFrame 渲染）
         flushSync(() => { showStage('ready') })
@@ -1381,7 +1295,7 @@ export default function Lens() {
         return
       }
       const newId = result.imageId
-      imageIdRef.current = newId
+      captureImage(newId)
       consumeFreezeFrame()
       // 不清 freezeFramePreview：截图后仍把冻结帧作为全屏背景保留，直到按 Esc 关闭 Lens
       // （enterSelect / resetBeforeHide 会在重开 / 隐藏时清理）。
@@ -1393,7 +1307,6 @@ export default function Lens() {
         height: params.height,
         label: '',
       })
-      setPreviewSource({ imageId: newId, url: '' })
       if (mode === 'screenshot') {
         flushSync(() => { showStage('ready') })
         focusLensSurface([0, 80, 200])
@@ -1450,12 +1363,10 @@ export default function Lens() {
   const doSend = async (question: string) => {
     if (streaming) return
     setHistoryOpen(false)
-    answerFinishedRef.current = false
-    justFinishedStreamRef.current = false
 
     // 先进入 sending UI，再做合成/注册，避免这段异步窗口被 Esc 关闭掉。
     const isFirstTurn = messages.length === 0
-    const hasScreenshot = !!imageIdRef.current
+    const hasScreenshot = !!currentImageId()
     const ctx = (isFirstTurn && mode === 'chat' && !hasScreenshot) ? selectionText.trim() : ''
     if (!hasScreenshot && !ctx && !question.trim()) return
     const userContent = ctx
@@ -1467,12 +1378,11 @@ export default function Lens() {
     const transferToChat = mode === 'chat' && sendToChatRef.current !== false
     if (transferToChat) {
       // 发送到 AI 客户端：不要切到 'answering'（那会让窗口高度加上 answer 区 → 浮窗展开）。
-      // 用 streaming 显示忙碌、preparingSendRef 守卫 Esc（见 Esc 处理），浮窗保持紧凑直接交接。
+      // 用 streaming 显示忙碌、content 的准备状态守卫 Esc，浮窗保持紧凑直接交接。
       setBusy(true)
-      preparingSendRef.current = true
-      let requestToken = beginRequest('handoff', imageIdRef.current || '')
+      let requestToken = prepareSend('handoff')
       try {
-        let effectiveImageId = imageIdRef.current
+        let effectiveImageId = currentImageId()
         if (arrows.length > 0 && imagePreview && capturedFrame) {
           try {
             const base64 = await composeAnnotatedImage(
@@ -1485,10 +1395,9 @@ export default function Lens() {
             if (!isRequestCurrent(requestToken)) return
             if (result.success && result.imageId) {
               effectiveImageId = result.imageId
-              imageIdRef.current = result.imageId
+              adoptAnnotatedImage(result.imageId, `data:image/png;base64,${base64}`)
               finishRequest(requestToken)
-              requestToken = beginRequest('handoff', result.imageId)
-              setImagePreview(`data:image/png;base64,${base64}`)
+              requestToken = prepareSend('handoff')
               clearSubmittedAnnotations()
             } else {
               console.warn('[lens-arrow] register annotated image failed:', result.error)
@@ -1514,7 +1423,7 @@ export default function Lens() {
         finishRequest(requestToken)
         handoffFailed()
       } finally {
-        if (isRequestLatest(requestToken)) preparingSendRef.current = false
+        releaseSendPreparation(requestToken)
       }
       return
     }
@@ -1522,18 +1431,16 @@ export default function Lens() {
     const userMsg: ExplainMessage = { role: 'user', content: userContent }
     const placeholder: ExplainMessage = { role: 'assistant', content: '' }
     const sendMessages: ExplainMessage[] = [...messages, userMsg]
-    // 历史 key：有截图用 imageId；纯文本会话首轮生成一个合成 key（后续追问沿用）。
-    historyKeyRef.current = imageIdRef.current || historyKeyRef.current || makeTextRequestId()
+    // 内容 owner 负责截图或纯文本会话的历史身份。
     flushSync(() => {
       beginAnswer([...sendMessages, placeholder])
     })
     lastLensStreamEventRef.current = ''
-    preparingSendRef.current = true
-    let requestToken = beginRequest('chat', imageIdRef.current || '')
+    let requestToken = prepareSend('chat')
 
     // 默认沿用当前 image_id;若有箭头则先合成 + 注册新图,把后续 ask 切到合成版
     try {
-      let effectiveImageId = imageIdRef.current
+      let effectiveImageId = currentImageId()
       if (arrows.length > 0 && imagePreview && capturedFrame) {
         try {
           const base64 = await composeAnnotatedImage(
@@ -1546,10 +1453,9 @@ export default function Lens() {
           if (!isRequestCurrent(requestToken)) return
           if (result.success && result.imageId) {
             effectiveImageId = result.imageId
-            imageIdRef.current = result.imageId
+            adoptAnnotatedImage(result.imageId, `data:image/png;base64,${base64}`)
             finishRequest(requestToken)
-            requestToken = beginRequest('chat', result.imageId)
-            setImagePreview(`data:image/png;base64,${base64}`)
+            requestToken = prepareSend('chat')
             clearSubmittedAnnotations()
           } else {
             console.warn('[lens-arrow] register annotated image failed:', result.error)
@@ -1559,7 +1465,7 @@ export default function Lens() {
         }
       }
       if (!isRequestCurrent(requestToken)) return
-      preparingSendRef.current = false
+      releaseSendPreparation(requestToken)
       const result = await api.lensAsk(effectiveImageId || '', sendMessages, {
         webSearch: mode === 'chat' && webSearchEnabled && webSearchAvailable,
       })
@@ -1586,7 +1492,7 @@ export default function Lens() {
       finishRequest(requestToken)
       finishAnswering()
     } finally {
-      if (isRequestLatest(requestToken)) preparingSendRef.current = false
+      releaseSendPreparation(requestToken)
     }
   }
 
@@ -1625,10 +1531,9 @@ export default function Lens() {
       .map(m => ({ role: m.role, content: m.content }))
     if (history.length === 0) return
     setBusy(true)
-    preparingSendRef.current = true
-    let requestToken = beginRequest('handoff', imageIdRef.current || '')
+    let requestToken = prepareSend('handoff')
     try {
-      let effectiveImageId = imageIdRef.current
+      let effectiveImageId = currentImageId()
       if (arrows.length > 0 && imagePreview && capturedFrame) {
         try {
           const base64 = await composeAnnotatedImage(
@@ -1641,9 +1546,9 @@ export default function Lens() {
           if (!isRequestCurrent(requestToken)) return
           if (result.success && result.imageId) {
             effectiveImageId = result.imageId
-            imageIdRef.current = result.imageId
+            adoptAnnotatedImage(result.imageId)
             finishRequest(requestToken)
-            requestToken = beginRequest('handoff', result.imageId)
+            requestToken = prepareSend('handoff')
           }
         } catch (err) {
           console.warn('[lens-chat] compose annotated image failed, fallback to original:', err)
@@ -1666,7 +1571,7 @@ export default function Lens() {
       finishRequest(requestToken)
       setBusy(false)
     } finally {
-      if (isRequestLatest(requestToken)) preparingSendRef.current = false
+      releaseSendPreparation(requestToken)
     }
   }
 
@@ -1741,19 +1646,7 @@ export default function Lens() {
   // 取消任何正在跑的流，避免后端继续 emit delta 灌入新恢复的 messages（如果新旧 imageId 巧合相同会污染）
   const restoreHistory = (item: HistoryItem) => {
     setHistoryOpen(false)
-    void restoreSession(() => {
-      // 纯文本会话的后端 image_id 必须留空；历史 key 只用于去重。
-      const isTextOnly = !item.imagePreview
-      imageIdRef.current = isTextOnly ? '' : item.id
-      historyKeyRef.current = item.id
-      justFinishedStreamRef.current = false
-      preparingSendRef.current = false
-      flushSync(() => {
-        setImagePreview(item.imagePreview)
-        restoreConversationHistory(item.appLabel, item.messages)
-        captureFrame(null)
-      })
-    }).catch(err => console.error(err))
+    void restoreContentHistory(item).catch((err: unknown) => console.error(err))
     focusLensSurface([50, 140, 260])
   }
 
