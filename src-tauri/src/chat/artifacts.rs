@@ -1,5 +1,5 @@
-//! One durable identity for model reads, edits, downloads and the Works library.
-//! Immutable content is shared by hash; records retain independent provenance.
+//! Artifact IDs for model reads/edits, and the Works gallery index.
+//! Files stay where they were created. Works is a view of delivered conversation files.
 use super::{ChatMessage, Conversation};
 use crate::mcp::types::{ChatToolArtifact, ChatToolDefinition, McpToolCallResult};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -9,7 +9,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 use tauri::{AppHandle, Manager};
@@ -131,21 +130,145 @@ fn blob_unused(root: &Path, blob: &str) -> bool {
     })
 }
 
-/// Drop a Works library entry. Chat history is unchanged; a tombstone stops
-/// the next import from bringing the same snapshot back.
-fn remove_from_library(root: &Path, id: &str) -> Result<(), String> {
+fn is_managed_blob(root: &Path, path: &str) -> bool {
+    let path = Path::new(path);
+    ["files", "fileless"]
+        .into_iter()
+        .any(|name| path.starts_with(root.join(name)))
+}
+
+fn unique_persist_path(dir: &Path, filename: &str) -> PathBuf {
+    let candidate = dir.join(filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let stem = Path::new(filename)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("artifact");
+    let ext = Path::new(filename)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    for index in 2..=99 {
+        let next = dir.join(format!("{stem}-{index}{ext}"));
+        if !next.exists() {
+            return next;
+        }
+    }
+    dir.join(format!("{stem}-{}{ext}", uuid::Uuid::new_v4().simple()))
+}
+
+fn persist_filename(name: &str) -> String {
+    sanitized_name(name, name).unwrap_or_else(|_| "artifact.bin".into())
+}
+
+fn visible_in_works(delivered: bool, conversation_exists: bool) -> bool {
+    delivered && conversation_exists
+}
+
+fn conversation_artifact_ids(conversation: &Conversation) -> HashSet<String> {
+    conversation
+        .messages
+        .iter()
+        .flat_map(|message| {
+            message
+                .artifacts
+                .iter()
+                .chain(
+                    message
+                        .tool_calls
+                        .iter()
+                        .flat_map(|tool| tool.artifacts.iter()),
+                )
+                .filter_map(|artifact| artifact.id.clone())
+        })
+        .collect()
+}
+
+fn drop_record(root: &Path, id: &str, tombstone: bool) -> Result<(), String> {
     let path = record_path(root, id)?;
     if let Ok(record) = load(root, id) {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
         if let Some(blob) = record.artifact.path.as_deref() {
-            if blob_unused(root, blob) {
+            if is_managed_blob(root, blob) && blob_unused(root, blob) {
                 let _ = fs::remove_file(blob);
             }
         }
     } else if path.exists() {
         fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
-    mark_removed(root, id)
+    if tombstone {
+        mark_removed(root, id)?;
+    }
+    Ok(())
+}
+
+/// Hide a Works gallery entry. The original file and chat stay put; a tombstone
+/// stops the next import from bringing the same item back.
+fn remove_from_library(root: &Path, id: &str) -> Result<(), String> {
+    drop_record(root, id, true)
+}
+
+fn each_record(root: &Path, mut visit: impl FnMut(ArtifactRecord)) {
+    let Ok(entries) = fs::read_dir(root.join("records")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.path().extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let Some(record) = fs::read(entry.path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<ArtifactRecord>(&bytes).ok())
+        else {
+            continue;
+        };
+        visit(record);
+    }
+}
+
+fn forget_conversation_in(root: &Path, conversation_id: &str) {
+    let mut ids = Vec::new();
+    each_record(root, |record| {
+        if record.conversation_id == conversation_id {
+            ids.push(record.id);
+        }
+    });
+    for id in ids {
+        let _ = drop_record(root, &id, false);
+    }
+    let cache = root.join("imported-revisions.json");
+    if let Ok(bytes) = fs::read(&cache) {
+        if let Ok(mut imported) = serde_json::from_slice::<HashMap<String, u64>>(&bytes) {
+            if imported.remove(conversation_id).is_some() {
+                if let Ok(json) = serde_json::to_string(&imported) {
+                    let _ = super::storage::atomic_write(&cache, &json, "artifact import cache");
+                }
+            }
+        }
+    }
+}
+
+/// Drop gallery records when the source conversation is deleted.
+pub(crate) fn forget_conversation(app: &AppHandle, conversation_id: &str) {
+    let Ok(root) = root(app) else {
+        return;
+    };
+    forget_conversation_in(&root, conversation_id);
+}
+
+fn prune_missing_records(root: &Path, conversation_id: &str, live_ids: &HashSet<String>) {
+    let mut ids = Vec::new();
+    each_record(root, |record| {
+        if record.conversation_id == conversation_id && !live_ids.contains(&record.id) {
+            ids.push(record.id);
+        }
+    });
+    for id in ids {
+        let _ = drop_record(root, &id, false);
+    }
 }
 
 /// The only path interpretation for stored tool artifacts, including old records.
@@ -208,6 +331,7 @@ fn register(
     root: &Path,
     mut record: ArtifactRecord,
     source_path: Option<&Path>,
+    persist_dir: Option<&Path>,
 ) -> Result<ArtifactRecord, String> {
     if let Ok(existing) = load(root, &record.id) {
         if existing.conversation_id != record.conversation_id {
@@ -216,30 +340,29 @@ fn register(
         // Registration is idempotent. Never turn a thumbnail into a new original.
         return Ok(existing);
     }
-    let bytes = bytes_for(&record.artifact, source_path)?;
-    let ext = Path::new(&record.artifact.name)
-        .extension()
-        .and_then(|v| v.to_str())
-        .filter(|v| v.len() <= 12 && v.bytes().all(|b| b.is_ascii_alphanumeric()))
-        .unwrap_or("bin")
-        .to_ascii_lowercase();
-    let blobs = root.join("files");
-    fs::create_dir_all(&blobs).map_err(|e| e.to_string())?;
-    let target = blobs.join(format!("{:x}.{ext}", Sha256::digest(&bytes)));
-    if !target.is_file() {
-        let temporary = blobs.join(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let written = (|| -> std::io::Result<()> {
-            let mut file = fs::File::create(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&temporary, &target)
-        })();
-        if let Err(error) = written {
-            let _ = fs::remove_file(temporary);
-            return Err(format!("Artifact could not be saved: {error}"));
+    if let Some(source) = source_path {
+        let meta = fs::metadata(source).map_err(|_| "Artifact file is missing".to_string())?;
+        if !meta.is_file() || meta.len() > 512 * 1024 * 1024 {
+            return Err("Artifact exceeds the 512 MB limit".into());
         }
+        record.artifact.path = Some(source.to_string_lossy().into_owned());
+        record.artifact.size_bytes = Some(meta.len());
+        if record.artifact.mime_type.starts_with("image/") {
+            if let Ok(bytes) = fs::read(source) {
+                record.artifact.data_url =
+                    super::attachments::make_thumbnail_data_url(&bytes).unwrap_or_default();
+            }
+        } else if record.artifact.data_url.len() > 64 * 1024 {
+            record.artifact.data_url.clear();
+        }
+        save(root, &record)?;
+        return Ok(record);
     }
+    let bytes = bytes_for(&record.artifact, None)?;
+    let dir = persist_dir.ok_or("Artifact has no local file")?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let target = unique_persist_path(dir, &persist_filename(&record.artifact.name));
+    fs::write(&target, &bytes).map_err(|e| format!("Artifact could not be saved: {e}"))?;
     record.artifact.path = Some(target.to_string_lossy().into_owned());
     record.artifact.size_bytes = Some(bytes.len() as u64);
     record.artifact.data_url = if record.artifact.mime_type.starts_with("image/") {
@@ -327,6 +450,11 @@ pub fn prepare_output<'a>(
                     .as_ref()
                     .map(|_| file_path(&app, &conversation_id, artifact))
                     .transpose()?;
+                let persist = if path.is_none() {
+                    super::storage::conversation_attachments_dir(&app, &conversation_id).ok()
+                } else {
+                    None
+                };
                 let record = register(
                     &root,
                     ArtifactRecord {
@@ -345,6 +473,7 @@ pub fn prepare_output<'a>(
                         artifact: artifact.clone(),
                     },
                     path.as_deref(),
+                    persist.as_deref(),
                 )?;
                 *artifact = record.artifact;
             }
@@ -380,6 +509,11 @@ pub fn resolve(app: &AppHandle, conversation: &str, id: &str) -> Result<ChatTool
         .as_ref()
         .map(|_| file_path(app, conversation, &artifact))
         .transpose()?;
+    let persist = if path.is_none() {
+        super::storage::conversation_attachments_dir(app, conversation).ok()
+    } else {
+        None
+    };
     register(
         &root,
         ArtifactRecord {
@@ -395,12 +529,13 @@ pub fn resolve(app: &AppHandle, conversation: &str, id: &str) -> Result<ChatTool
             artifact,
         },
         path.as_deref(),
+        persist.as_deref(),
     )
     .map(|r| r.artifact)
 }
 
-/// Import the existing chat-owned results into durable Works snapshots. Does not
-/// rewrite the conversation or touch original files. Repeated imports are cheap.
+/// Index delivered conversation files for the Works gallery. Does not rewrite
+/// the conversation or copy original files. Repeated imports are cheap.
 fn import_conversation(
     app: &AppHandle,
     root: &Path,
@@ -408,6 +543,7 @@ fn import_conversation(
     removed: &HashSet<String>,
 ) -> usize {
     let mut warnings = 0;
+    let mut live_ids = conversation_artifact_ids(conversation);
     for message in &conversation.messages {
         if message.role != "assistant" {
             continue;
@@ -444,6 +580,7 @@ fn import_conversation(
                 || tool == "mixer_generate_image"
                 || (tool == "present_artifacts" && args["mode"].as_str() != Some("preview"))
                 || referenced.contains(&id);
+            live_ids.insert(id.clone());
             if !delivered || removed.contains(&id) {
                 continue;
             }
@@ -481,11 +618,17 @@ fn import_conversation(
                 delivered,
                 artifact,
             };
-            if register(root, record, path.as_deref()).is_err() {
+            let persist = if path.is_none() {
+                super::storage::conversation_attachments_dir(app, &conversation.id).ok()
+            } else {
+                None
+            };
+            if register(root, record, path.as_deref(), persist.as_deref()).is_err() {
                 warnings += 1;
             }
         }
     }
+    prune_missing_records(root, &conversation.id, &live_ids);
     warnings
 }
 
@@ -594,13 +737,13 @@ pub async fn chat_artifacts_list(app: AppHandle) -> Result<LibraryPage, String> 
                     warnings += 1;
                     continue;
                 };
-                if !record.delivered {
-                    continue;
-                }
                 let source = index
                     .conversations
                     .iter()
                     .find(|c| c.id == record.conversation_id);
+                if !visible_in_works(record.delivered, source.is_some()) {
+                    continue;
+                }
                 if let Some(source) = source {
                     record.title = source.title.clone();
                 }
@@ -612,7 +755,7 @@ pub async fn chat_artifacts_list(app: AppHandle) -> Result<LibraryPage, String> 
                 items.push(LibraryItem {
                     record,
                     available,
-                    source_available: source.is_some(),
+                    source_available: true,
                 });
             }
         }
@@ -670,20 +813,9 @@ pub async fn chat_artifact_action(
             }
             "open" => {
                 use tauri_plugin_shell::ShellExt;
-                // External editors may save in place. Give them a fresh copy so
-                // opening a document cannot mutate a saved historical version.
-                let directory = std::env::temp_dir()
-                    .join("kivio-artifact-open")
-                    .join(uuid::Uuid::new_v4().to_string());
-                fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-                let name = Path::new(&record.artifact.name)
-                    .file_name()
-                    .ok_or("Invalid artifact filename")?;
-                let copy = directory.join(name);
-                fs::copy(path, &copy).map_err(|e| e.to_string())?;
                 #[allow(deprecated)]
                 app.shell()
-                    .open(copy.to_string_lossy(), None)
+                    .open(path.to_string(), None)
                     .map_err(|e| e.to_string())?;
                 Ok(None)
             }
@@ -738,42 +870,56 @@ mod tests {
         }
     }
     #[test]
-    fn successful_registration_is_readable_and_idempotent_across_snapshots() {
+    fn register_keeps_existing_source_path_and_does_not_copy() {
         let dir = tempfile::tempdir().unwrap();
-        let original = record("art_one", b"original bytes");
-        for _ in 0..10 {
-            let saved = register(dir.path(), original.clone(), None).unwrap();
-            assert_eq!(
-                fs::read(saved.artifact.path.unwrap()).unwrap(),
-                b"original bytes"
-            );
+        let project = dir.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let file = project.join("report.xlsx");
+        fs::write(&file, b"workbook").unwrap();
+        let original = record("art_one", b"ignored");
+        for _ in 0..3 {
+            let saved = register(dir.path(), original.clone(), Some(&file), None).unwrap();
+            assert_eq!(PathBuf::from(saved.artifact.path.as_ref().unwrap()), file);
         }
-        assert_eq!(fs::read_dir(dir.path().join("files")).unwrap().count(), 1);
+        assert!(!dir.path().join("files").exists());
         assert_eq!(fs::read_dir(dir.path().join("records")).unwrap().count(), 1);
+        assert_eq!(fs::read(&file).unwrap(), b"workbook");
     }
+
     #[test]
-    fn snapshots_survive_source_removal_and_equal_content_keeps_separate_identities() {
+    fn register_without_source_writes_to_conversation_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source.png");
-        fs::write(&source, b"same").unwrap();
-        let first = register(dir.path(), record("art_first", b"ignored"), Some(&source)).unwrap();
-        let second = register(dir.path(), record("art_second", b"same"), None).unwrap();
-        fs::remove_file(source).unwrap();
-        assert_ne!(first.id, second.id);
-        assert_eq!(first.artifact.path, second.artifact.path);
-        assert!(Path::new(first.artifact.path.as_ref().unwrap()).is_file());
+        let attachments = dir.path().join("attachments");
+        let saved = register(
+            dir.path(),
+            record("art_img", b"png-bytes"),
+            None,
+            Some(&attachments),
+        )
+        .unwrap();
+        let path = PathBuf::from(saved.artifact.path.unwrap());
+        assert!(path.starts_with(&attachments));
+        assert!(!path.starts_with(dir.path().join("files")));
+        assert_eq!(fs::read(&path).unwrap(), b"png-bytes");
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("drawing.png")
+        );
     }
+
     #[test]
-    fn ids_cannot_escape_records_and_missing_content_is_not_success() {
+    fn missing_source_is_not_copied_into_a_works_folder() {
         let dir = tempfile::tempdir().unwrap();
         assert!(record_path(dir.path(), "art_../../secret").is_err());
         assert!(register(
             dir.path(),
             record("art_no", b"x"),
-            Some(&dir.path().join("missing"))
+            Some(&dir.path().join("missing")),
+            None
         )
         .is_err());
         assert!(!dir.path().join("records/art_no.json").exists());
+        assert!(!dir.path().join("files").exists());
     }
     #[test]
     fn examples_do_not_promote_internal_artifacts() {
@@ -823,17 +969,76 @@ mod tests {
     }
 
     #[test]
-    fn delete_drops_the_record_keeps_shared_bytes_and_blocks_reimport() {
+    fn delete_hides_the_record_without_touching_the_source_file() {
         let dir = tempfile::tempdir().unwrap();
-        let first = register(dir.path(), record("art_first", b"same"), None).unwrap();
-        let second = register(dir.path(), record("art_second", b"same"), None).unwrap();
-        assert_eq!(first.artifact.path, second.artifact.path);
+        let file = dir.path().join("keep.xlsx");
+        fs::write(&file, b"keep").unwrap();
+        register(dir.path(), record("art_first", b"x"), Some(&file), None).unwrap();
         remove_from_library(dir.path(), "art_first").unwrap();
         assert!(load(dir.path(), "art_first").is_err());
         assert!(load_removed(dir.path()).contains("art_first"));
-        assert!(Path::new(second.artifact.path.as_ref().unwrap()).is_file());
-        assert_eq!(load(dir.path(), "art_second").unwrap().id, "art_second");
-        remove_from_library(dir.path(), "art_second").unwrap();
-        assert!(!Path::new(second.artifact.path.as_ref().unwrap()).is_file());
+        assert_eq!(fs::read(&file).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn forget_conversation_drops_its_records_and_leaves_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("project-report.xlsx");
+        fs::write(&file, b"report").unwrap();
+        for index in 0..24 {
+            register(
+                dir.path(),
+                record(&format!("art_keep_{index}"), b"x"),
+                Some(&file),
+                None,
+            )
+            .unwrap();
+        }
+        let mut other = record("art_other", b"y");
+        other.conversation_id = "conv_other".into();
+        register(dir.path(), other, Some(&file), None).unwrap();
+        forget_conversation_in(dir.path(), "conv_test");
+        for index in 0..24 {
+            assert!(load(dir.path(), &format!("art_keep_{index}")).is_err());
+        }
+        assert_eq!(load(dir.path(), "art_other").unwrap().id, "art_other");
+        assert_eq!(fs::read(&file).unwrap(), b"report");
+    }
+
+    #[test]
+    fn works_gallery_requires_a_living_conversation() {
+        assert!(visible_in_works(true, true));
+        assert!(!visible_in_works(true, false));
+        assert!(!visible_in_works(false, true));
+    }
+
+    #[test]
+    fn prune_drops_records_removed_from_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gone.xlsx");
+        fs::write(&file, b"x").unwrap();
+        register(dir.path(), record("art_stale", b"x"), Some(&file), None).unwrap();
+        register(dir.path(), record("art_live", b"x"), Some(&file), None).unwrap();
+        prune_missing_records(dir.path(), "conv_test", &HashSet::from(["art_live".into()]));
+        assert!(load(dir.path(), "art_stale").is_err());
+        assert_eq!(load(dir.path(), "art_live").unwrap().id, "art_live");
+        assert!(file.is_file());
+    }
+
+    #[test]
+    fn managed_blob_paths_are_only_the_legacy_dump_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(is_managed_blob(
+            dir.path(),
+            dir.path().join("files/abc.png").to_str().unwrap()
+        ));
+        assert!(is_managed_blob(
+            dir.path(),
+            dir.path().join("fileless/abc.png").to_str().unwrap()
+        ));
+        assert!(!is_managed_blob(
+            dir.path(),
+            dir.path().join("project/report.xlsx").to_str().unwrap()
+        ));
     }
 }

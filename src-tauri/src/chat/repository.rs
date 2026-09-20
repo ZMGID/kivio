@@ -493,7 +493,9 @@ impl ConversationRepository {
         let lock = self.conversation_lock(id);
         let _conversation = lock.lock().await;
         let _index = self.index_lock.lock().await;
-        super::storage::delete_conversation(app, id).map_err(Into::into)
+        let warnings = super::storage::delete_conversation(app, id)?;
+        super::artifacts::forget_conversation(app, id);
+        Ok(warnings)
     }
 
     /// Exclusive multi-conversation mutation used by project/set/workspace

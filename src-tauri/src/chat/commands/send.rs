@@ -256,6 +256,8 @@ pub(crate) async fn chat_send_message(
                     return Err(format!("message already exists: {}", user_message.id));
                 }
                 latest.messages.push(user_message);
+                // 往归档对话里继续发 = 重新启用。否则侧栏排除归档后，乐观行一剪这条就消失。
+                latest.archived = false;
                 if let Some(plan) = selected_plan {
                     if let Some(message) = latest.messages.iter_mut().find(|m| Some(m.id.as_str()) == plan_message_id.as_deref()) {
                         message.agent_plan = Some(plan.clone());

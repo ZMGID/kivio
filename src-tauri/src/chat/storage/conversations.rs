@@ -298,6 +298,27 @@ pub fn get_conversations(
     Ok(index.conversations[offset..end].to_vec())
 }
 
+pub(super) fn reusable_blank_index_matches(
+    item: &ConversationListItem,
+    provider_id: &str,
+    model: &str,
+    folder: Option<&str>,
+    project_id: Option<&str>,
+    set_id: Option<&str>,
+    assistant_id: Option<&str>,
+) -> bool {
+    // 归档对话只出现在对话库「归档」书架。复用它当新对话，侧栏会在乐观行剪掉后把它吃掉：
+    // 用户只能在生成中看到这条会话，结束后找不到。
+    !item.archived
+        && item.message_count == 0
+        && item.provider_id == provider_id
+        && item.model == model
+        && item.folder.as_deref() == folder
+        && item.project_id.as_deref() == project_id
+        && item.set_id.as_deref() == set_id
+        && item.assistant_id.as_deref() == assistant_id
+}
+
 pub fn find_reusable_blank_conversation(
     app: &AppHandle,
     provider_id: &str,
@@ -313,22 +334,15 @@ pub fn find_reusable_blank_conversation(
         .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
     for item in index.conversations {
-        if item.message_count != 0 {
-            continue;
-        }
-        if item.provider_id != provider_id || item.model != model {
-            continue;
-        }
-        if item.folder.as_deref() != folder {
-            continue;
-        }
-        if item.project_id.as_deref() != project_id {
-            continue;
-        }
-        if item.set_id.as_deref() != set_id {
-            continue;
-        }
-        if item.assistant_id.as_deref() != assistant_id {
+        if !reusable_blank_index_matches(
+            &item,
+            provider_id,
+            model,
+            folder,
+            project_id,
+            set_id,
+            assistant_id,
+        ) {
             continue;
         }
         let conversation = match load_conversation(app, &item.id) {
@@ -338,6 +352,9 @@ pub fn find_reusable_blank_conversation(
                 continue;
             }
         };
+        if conversation.archived {
+            continue;
+        }
         if conversation.messages.is_empty()
             && conversation.provider_id == provider_id
             && conversation.model == model
@@ -440,5 +457,42 @@ mod persistence_tests {
         assert_eq!(reloaded.title, "survives restart");
         assert_eq!(reloaded.messages.len(), 1);
         assert_eq!(reloaded.messages[0].content, "persist me");
+    }
+
+    fn blank_item(archived: bool) -> ConversationListItem {
+        serde_json::from_value(serde_json::json!({
+            "id": "conv_blank",
+            "title": "新对话",
+            "preview": "",
+            "provider_id": "p",
+            "model": "m",
+            "message_count": 0,
+            "created_at": 1,
+            "updated_at": 1,
+            "archived": archived
+        }))
+        .expect("blank list item")
+    }
+
+    #[test]
+    fn reusable_blank_skips_archived_index_entries() {
+        assert!(super::reusable_blank_index_matches(
+            &blank_item(false),
+            "p",
+            "m",
+            None,
+            None,
+            None,
+            None
+        ));
+        assert!(!super::reusable_blank_index_matches(
+            &blank_item(true),
+            "p",
+            "m",
+            None,
+            None,
+            None,
+            None
+        ));
     }
 }

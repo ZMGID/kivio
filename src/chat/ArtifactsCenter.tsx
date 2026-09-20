@@ -183,7 +183,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
   return <section className={`kv-works custom-scrollbar${managing ? ' is-selecting' : ''}`} aria-label={zh ? '作品' : 'Works'}>
     <header className="kv-works-header">
       <div><h1>{zh ? '作品' : 'Works'} <span>{groups.length}</span></h1>
-        <p>{zh ? '把灵感留下，把作品接着做好。' : 'Keep what you create. Pick up where you left off.'}</p></div>
+        <p>{zh ? '这里只展示聊天里交付的文件，仍留在原来的位置。' : 'A gallery of files delivered in chats. They stay where they were created.'}</p></div>
       <div className="kv-works-search"><Search size={16} /><Input aria-label={zh ? '搜索作品' : 'Search works'} placeholder={zh ? '搜索作品或聊天…' : 'Search works or chats…'} value={query} onChange={setQuery} /><IconButton className={query ? '' : 'is-idle'} label={zh ? '清除搜索' : 'Clear search'} disabled={!query} onClick={() => setQuery('')}><X size={14} /></IconButton></div>
     </header>
     <div className="kv-works-toolbar">
@@ -209,7 +209,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
     </div>
     {error && <div role="alert" className="kv-works-notice">{error}<Button size="sm" onClick={reload}>{zh ? '重试' : 'Retry'}</Button></div>}
     {loading && !page.items.length ? <div className="kv-works-empty" role="status">{zh ? '正在整理作品…' : 'Loading works…'}</div>
-        : !filtered.length ? <div className="kv-works-empty"><span className="kv-works-mark-well"><WorksIcon size={34} strokeWidth={1.6} /></span><h2>{query || activeKind !== 'all' ? (zh ? '没有找到匹配的作品' : 'No matching works') : (zh ? '你的创作，从这里开始' : 'Your creations belong here')}</h2><p>{zh ? '聊天中交付的文档、图片、表格等会自动收录。' : 'Documents, images, spreadsheets and other files delivered in chats appear here.'}</p></div>
+        : !filtered.length ? <div className="kv-works-empty"><span className="kv-works-mark-well"><WorksIcon size={34} strokeWidth={1.6} /></span><h2>{query || activeKind !== 'all' ? (zh ? '没有找到匹配的作品' : 'No matching works') : (zh ? '你的创作，从这里开始' : 'Your creations belong here')}</h2><p>{zh ? '聊天里交付的文档、图片、表格会显示在这里，文件仍留在项目或对话原来的位置。删除对话后，对应作品会一起消失。' : 'Documents, images and spreadsheets delivered in chats appear here. The files stay in the project or conversation. Deleting a chat removes its works from this gallery.'}</p></div>
         : <div className={`kv-works-grid ${list ? 'is-list' : ''}`} aria-busy={loading}>
           {filtered.map((items) => <WorkCard key={items[0].id} item={items[0]} versions={items.length} zh={zh} list={list} checked={chosen.has(items[0].workId)} managing={managing} loadPreview={loadPreview}
             onOpen={() => managing ? toggleChosen(items[0].workId) : setSelectedId(items[0].id)}
@@ -221,6 +221,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
       onRename={() => setRename({ id: selected.id, name: selected.artifact.name })} onDelete={() => deleteWorks([selected.workId])} />}
     {menu && menuWork && <DockContextMenu anchor={menu.anchor} onClose={() => setMenu(null)} items={[
       { key: 'open', label: zh ? '预览' : 'Preview', icon: <ExternalLink size={16} />, onSelect: () => setSelectedId(menuWork[0].id) },
+      { key: 'reveal', label: zh ? '打开所在位置' : 'Show in folder', icon: <FolderOpen size={16} />, disabled: !menuWork[0].available, onSelect: () => { void api.chatArtifactAction(menuWork[0].id, 'reveal') } },
       { key: 'rename', label: zh ? '重命名' : 'Rename', icon: <Pencil size={16} />, onSelect: () => setRename({ id: menuWork[0].id, name: menuWork[0].artifact.name }) },
       { key: 'source', label: zh ? '回到聊天' : 'Open chat', icon: <MessageSquare size={16} />, disabled: !menuWork[0].sourceAvailable, onSelect: () => onOpenConversation(menuWork[0].conversationId) },
       { key: 'export', label: zh ? '另存为' : 'Save as', icon: <Download size={16} />, disabled: !menuWork[0].available, onSelect: () => exportWorks([menuWork[0]]) },
@@ -347,7 +348,7 @@ function WorkPreview({ item, versions, zh, loadPreview, onVersion, onClose, onSo
         <Button size="sm" variant="ghost" disabled={busy} onClick={onRename}><Pencil size={14} />{zh ? '重命名' : 'Rename'}</Button>
         <div className="grow" />
         <IconButton label={zh ? '在文件夹中显示' : 'Show in folder'} disabled={!item.available || busy} onClick={() => void action('reveal')}><FolderOpen size={16} /></IconButton>
-        <Button size="sm" disabled={!item.available || busy} title={zh ? '用默认应用打开副本，保留作品原版本' : 'Open a copy in the default app, preserving this version'} onClick={() => void action('open')}><ExternalLink size={14} />{zh ? '打开副本' : 'Open copy'}</Button>
+        <Button size="sm" disabled={!item.available || busy} title={zh ? '用默认应用打开原文件' : 'Open the original file in the default app'} onClick={() => void action('open')}><ExternalLink size={14} />{zh ? '打开' : 'Open'}</Button>
         <Button size="sm" variant="primary" disabled={!item.available || busy} onClick={() => void action('export')}><Download size={14} />{zh ? '另存为' : 'Save as'}</Button>
         <IconButton label={zh ? '删除作品' : 'Delete work'} variant="danger" disabled={busy} onClick={onDelete}><Trash2 size={16} /></IconButton>
       </footer>

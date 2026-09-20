@@ -77,6 +77,7 @@ import {
   skillRecommendedTools,
 } from './skillSelection'
 import {
+  conversationLastMessageContent,
   optimisticConversationListItem,
   pruneSettledOptimisticItems,
   settleOptimisticConversationListItems,
@@ -2299,6 +2300,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       pruneSettledOptimisticItems(prev, generatingConversationIdsRef.current))
   }, [])
 
+  const openSidebarConversation = useMemo(() => {
+    if (!currentConversation) return null
+    return optimisticConversationListItem(
+      currentConversation,
+      conversationLastMessageContent(currentConversation),
+    )
+  }, [currentConversation])
+
   const settingsPanelActive = chatView === 'settings' && extensionsNavItem === null
 
   const handleSidebarOpenExtensionsItem = useCallback((item: ExtensionsNavItem) => {
@@ -2696,6 +2705,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           currentConversationId={currentConversation?.id}
           generatingConversationIds={generatingConversationIds}
           optimisticConversations={optimisticSidebarConversations}
+          openConversation={openSidebarConversation}
           selectedProject={selectedProject}
           onSelectProject={handleSidebarSelectProject}
           selectedSet={selectedSet}

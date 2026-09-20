@@ -195,6 +195,45 @@ describe('Sidebar pin while generating', () => {
   })
 })
 
+describe('Sidebar open archived conversation', () => {
+  it('keeps the open conversation visible when the list omitted it as archived', async () => {
+    const open = conversation('conversation-open', '交给你一个任务，使用浏览器已经登录', project1)
+    vi.spyOn(chatApi, 'getProjects').mockResolvedValue([project1])
+    vi.spyOn(chatApi, 'getSets').mockResolvedValue([])
+    vi.spyOn(chatApi, 'getAssistants').mockResolvedValue([])
+    vi.spyOn(chatApi, 'getConversations').mockResolvedValue([
+      conversation('conversation-other', '其他对话', project1),
+    ])
+    vi.spyOn(chatApi, 'getConversationPins').mockResolvedValue({})
+
+    render(
+      <Sidebar
+        lang="zh"
+        currentConversationId={open.id}
+        openConversation={open}
+        selectedProject={null}
+        onSelectProject={vi.fn()}
+        selectedSet={null}
+        onSelectSet={vi.fn()}
+        onSelectConversation={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onOpenExtensionsItem={vi.fn()}
+        onSelectLang={vi.fn()}
+        onOpenUsage={vi.fn()}
+        collapsed={false}
+        onToggleCollapsed={vi.fn()}
+        refreshKey={0}
+        searchOpen={false}
+        onSearchOpenChange={vi.fn()}
+      />,
+    )
+
+    expect(await screen.findByRole('button', { name: /交给你一个任务/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /其他对话/ })).toBeInTheDocument()
+  })
+})
+
 describe('Sidebar archive race', () => {
   it('does not flash an archived row back when a refresh races persist', async () => {
     const user = userEvent.setup()
