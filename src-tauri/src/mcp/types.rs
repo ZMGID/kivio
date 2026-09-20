@@ -36,8 +36,15 @@ pub fn resolve_reserved_wire_alias(name: &str) -> &str {
 /// **方向与 `RESERVED_WIRE_ALIASES` 相反**：wire 别名是"内部名 → 模型可见名"（改对外暴露）；
 /// 这里是"旧输入名 → 现内部名"（把历史输入规整到现工具），**不参与**工具声明/提示词渲染。
 const LEGACY_TOOL_ALIASES: &[(&str, &str)] = &[
-    ("ls", "read"),                     // ls 并入 read（read 现在可读目录）
-    ("find", "glob"),                   // find 改名 glob
+    ("read_file", "read"), // 对外名缩短前的文件工具
+    ("write_file", "write"),
+    ("edit_file", "edit"),
+    ("list_dir", "read"), // list_dir / ls 并入 read（read 现在可读目录）
+    ("ls", "read"),
+    ("search_files", "grep"),
+    ("glob_files", "glob"),
+    ("find", "glob"), // find 改名 glob
+    ("run_command", "bash"),
     ("list_background", "bash_output"), // list_background 并入 bash_output（无 job_id=列表）
     ("todo_update", "todo_write"),      // todo_update 并入 todo_write（整表替换）
     ("skill_activate", "skill"),        // skill_activate 改名 skill（合并 read_file/run_script 后）
@@ -1484,14 +1491,22 @@ mod tests {
     #[test]
     fn canonical_tool_name_maps_legacy_names() {
         // 旧名 → 现名（移除/合并/改名后仍可路由）。
+        assert_eq!(canonical_tool_name("read_file"), "read");
+        assert_eq!(canonical_tool_name("write_file"), "write");
+        assert_eq!(canonical_tool_name("edit_file"), "edit");
+        assert_eq!(canonical_tool_name("list_dir"), "read");
         assert_eq!(canonical_tool_name("ls"), "read");
+        assert_eq!(canonical_tool_name("search_files"), "grep");
+        assert_eq!(canonical_tool_name("glob_files"), "glob");
         assert_eq!(canonical_tool_name("find"), "glob");
+        assert_eq!(canonical_tool_name("run_command"), "bash");
         assert_eq!(canonical_tool_name("list_background"), "bash_output");
         assert_eq!(canonical_tool_name("todo_update"), "todo_write");
         // 现名与未知名原样返回。
         assert_eq!(canonical_tool_name("read"), "read");
         assert_eq!(canonical_tool_name("glob"), "glob");
         assert_eq!(canonical_tool_name("bash"), "bash");
+        assert_eq!(canonical_tool_name("read_file_extra"), "read_file_extra");
     }
 
     #[test]

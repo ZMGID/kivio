@@ -287,6 +287,22 @@ mod tests {
     }
 
     #[test]
+    fn allow_list_legacy_file_names_match_current_tools() {
+        let mut tools = vec![native("read"), native("write"), native("bash")];
+        filter_tools_for_agent(&mut tools, &def(vec!["read_file", "run_command"]));
+        assert_eq!(names(&tools), vec!["read", "bash"]);
+    }
+
+    #[test]
+    fn legacy_native_alias_does_not_collapse_mcp_tool_names() {
+        let mut tools = vec![native("read"), mcp("files", "read_file")];
+        let mut d = def(vec![]);
+        d.disallowed_tools = vec!["read".to_string()];
+        filter_tools_for_agent(&mut tools, &d);
+        assert_eq!(names(&tools), vec!["read_file"]);
+    }
+
+    #[test]
     fn disallowed_tools_alone_narrows_by_subtraction() {
         let mut tools = vec![
             native("agent"),

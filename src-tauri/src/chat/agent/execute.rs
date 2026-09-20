@@ -76,8 +76,8 @@ pub fn match_tool_call<'a>(
     {
         return Some(exact);
     }
-    // 旧名归一化：工具被移除/合并/改名后（find→glob、ls→read、list_background→bash_output、
-    // todo_update→todo_write、skill_activate→skill），模型仍可能按旧名出牌。规整到现名后精确再比一次。
+    // 旧名归一化：工具被移除/合并/改名后（read_file→read、run_command→bash、
+    // find→glob、ls→read 等），模型仍可能按旧名出牌。规整到现名后精确再比一次。
     let canonical = crate::mcp::types::canonical_tool_name(function_name);
     if canonical != function_name {
         if let Some(hit) = tools
@@ -1428,12 +1428,26 @@ mod tests {
         // 旧名（移除/合并/改名前的名字）经归一化路由到现工具。
         let tools = vec![
             named_test_tool("read"),
+            named_test_tool("write"),
+            named_test_tool("edit"),
+            named_test_tool("grep"),
             named_test_tool("glob"),
+            named_test_tool("bash"),
             named_test_tool("bash_output"),
             named_test_tool("todo_write"),
         ];
+        assert_eq!(match_tool_call(&tools, "read_file").unwrap().name, "read");
+        assert_eq!(match_tool_call(&tools, "write_file").unwrap().name, "write");
+        assert_eq!(match_tool_call(&tools, "edit_file").unwrap().name, "edit");
+        assert_eq!(match_tool_call(&tools, "list_dir").unwrap().name, "read");
         assert_eq!(match_tool_call(&tools, "ls").unwrap().name, "read");
+        assert_eq!(
+            match_tool_call(&tools, "search_files").unwrap().name,
+            "grep"
+        );
+        assert_eq!(match_tool_call(&tools, "glob_files").unwrap().name, "glob");
         assert_eq!(match_tool_call(&tools, "find").unwrap().name, "glob");
+        assert_eq!(match_tool_call(&tools, "run_command").unwrap().name, "bash");
         assert_eq!(
             match_tool_call(&tools, "list_background").unwrap().name,
             "bash_output"

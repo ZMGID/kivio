@@ -88,9 +88,11 @@ pub fn disabled_builtin_tool_feedback(function_name: &str) -> Option<String> {
     // Builtin name set = static native registry (17 native + todo/ask_user)
     // plus the non-native builtin sources listed here.
     const EXTRA_BUILTIN_NAMES: &[&str] = &["mixer_generate_image", "mixer_video_analysis"];
-    // 模型按 wire 名（保留名别名）调用——反查回内部名再比对注册表。
+    // 模型按 wire 名（保留名别名）或改名前的旧名调用——规整到现名再比对注册表。
     let function_name = crate::mcp::types::resolve_reserved_wire_alias(function_name);
+    let canonical = crate::mcp::types::canonical_tool_name(function_name);
     let is_builtin = crate::mcp::native_registry::find_entry(function_name).is_some()
+        || crate::mcp::native_registry::find_entry(canonical).is_some()
         || EXTRA_BUILTIN_NAMES.contains(&function_name);
     if is_builtin {
         Some(format!(
@@ -969,17 +971,20 @@ pub(crate) fn tool_matches_recommended_name(tool: &ChatToolDefinition, recommend
     if recommended.is_empty() {
         return false;
     }
-    // 旧名归一化：persona/skill 白名单里写的旧工具名（find/ls/todo_update/list_background）
-    // 规整到现名，避免改名后被静默剔除。
-    let recommended = crate::mcp::types::canonical_tool_name(recommended);
-    tool.name == recommended
-        || tool.id == recommended
-        || tool.openai_tool_name() == recommended
+    // 只规整白名单条目，不规整工具自己的名字：MCP 完全可以真有一个叫
+    // `read_file` 的工具，不能被当成内置 `read`。条目是旧名时对上现名；
+    // 条目与工具都仍是旧名时也对上。
+    let canonical_recommended = crate::mcp::types::canonical_tool_name(recommended);
+    let wire = tool.openai_tool_name();
+    let matches_name =
+        |candidate: &str| candidate == recommended || candidate == canonical_recommended;
+    matches_name(&tool.name)
+        || matches_name(&tool.id)
+        || matches_name(&wire)
         || tool
             .server_id
             .as_deref()
-            .map(|server_id| format!("{server_id}:{}", tool.name) == recommended)
-            .unwrap_or(false)
+            .is_some_and(|server_id| matches_name(&format!("{server_id}:{}", tool.name)))
 }
 
 fn workbench_location_prompt(
@@ -1875,6 +1880,10 @@ mod tests {
         let alias_feedback = disabled_builtin_tool_feedback("search_web")
             .expect("wire alias resolves to the builtin tool");
         assert!(alias_feedback.contains("not enabled"));
+        let renamed = disabled_builtin_tool_feedback("read_file")
+            .expect("pre-rename file tool names resolve to the current builtin");
+        assert!(renamed.contains("not enabled"));
+        assert!(renamed.contains("this tool only"));
     }
 
     #[test]
