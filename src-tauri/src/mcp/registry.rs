@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::types::{
-    list_native_builtin_tool_defs, mixer_generate_image_tool, native_skill_tools,
+    list_native_builtin_tool_defs, mixer_generate_image_tool_for, native_skill_tools,
     tool_definition_from_mcp, ChatToolDefinition, McpToolCallResult,
 };
 
@@ -131,7 +131,7 @@ async fn list_enabled_tool_catalog_inner(
         crate::settings::chat_memory_tools_enabled(&settings),
     );
     if let Some((provider_id, model)) = settings.image_generation_model() {
-        let mut tool = mixer_generate_image_tool();
+        let mut tool = mixer_generate_image_tool_for(Some(&model));
         let provider_name = settings
             .get_provider(&provider_id)
             .map(|provider| {

@@ -709,10 +709,16 @@ pub fn native_memory_search_tool() -> ChatToolDefinition {
 }
 
 pub fn mixer_generate_image_tool() -> ChatToolDefinition {
+    mixer_generate_image_tool_for(None)
+}
+
+/// Mixer 生图工具。`model` 写进 description，因为发给上游的只有 name/description/parameters，
+/// `server_id` 只给 UI，模型看不见。
+pub fn mixer_generate_image_tool_for(model: Option<&str>) -> ChatToolDefinition {
     ChatToolDefinition {
         id: "mixer__generate_image".to_string(),
         name: "mixer_generate_image".to_string(),
-        description: "Generate or edit image artifacts using the Mixer image generation model configured in Settings. For image-to-image / edits, pass paths of local images or artifact_ids of images generated earlier in this conversation. If the user attached images this turn and you omit both, those attachments are used automatically.".to_string(),
+        description: mixer_generate_image_description(model),
         source: "mixer".to_string(),
         server_id: None,
         server_name: Some("Mixer".to_string()),
@@ -721,34 +727,41 @@ pub fn mixer_generate_image_tool() -> ChatToolDefinition {
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "Detailed image generation or edit prompt"
+                    "description": "What the image should look like, or how to change the reference"
                 },
                 "size": {
                     "type": "string",
-                    "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"],
-                    "description": "Optional output size. Use auto unless the user asked for a square, portrait, or landscape image."
+                    "description": "Only if the user asked. 512, 1K, 2K, 4K, or WIDTHxHEIGHT such as 1536x864."
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "enum": [
+                        "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9",
+                        "2:1", "1:2", "1:4", "4:1"
+                    ],
+                    "description": "Only if the user asked for a shape. Omit to let the model choose."
                 },
                 "quality": {
                     "type": "string",
-                    "enum": ["auto", "low", "medium", "high"],
-                    "description": "Optional quality setting"
+                    "enum": ["low", "medium", "high"],
+                    "description": "Only if the user asked"
                 },
                 "n": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 4,
-                    "description": "Number of images to generate"
+                    "description": "How many images. Default 1"
                 },
                 "paths": {
                     "type": "array",
-                    "description": "Local image files to edit or use as references. Use Kivio attachment copy paths from this turn, or files you already read.",
+                    "description": "Local image files to edit",
                     "items": { "type": "string", "minLength": 1 },
                     "minItems": 1,
                     "maxItems": 4
                 },
                 "artifact_ids": {
                     "type": "array",
-                    "description": "IDs of images generated earlier in this conversation to edit or use as references.",
+                    "description": "art_ IDs from earlier generate/edit results",
                     "items": { "type": "string", "minLength": 1 },
                     "minItems": 1,
                     "maxItems": 4
@@ -760,6 +773,24 @@ pub fn mixer_generate_image_tool() -> ChatToolDefinition {
         annotations: None,
         output_schema: None,
     }
+}
+
+fn mixer_generate_image_description(model: Option<&str>) -> String {
+    let model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("the Mixer image model from Settings");
+    format!(
+        "Generate or edit an image with {model}. The image model is fixed; do not pass a model name.\n\
+         New image: {{\"prompt\":\"a fox in snow\"}}\n\
+         Widescreen 2K: {{\"prompt\":\"city skyline\",\"aspect_ratio\":\"16:9\",\"size\":\"2K\"}}\n\
+         4K: {{\"prompt\":\"poster\",\"aspect_ratio\":\"16:9\",\"size\":\"4K\"}}\n\
+         Custom pixels: {{\"prompt\":\"poster\",\"size\":\"1536x864\"}}\n\
+         Edit a file: {{\"prompt\":\"make it night\",\"paths\":[\"C:/ref.png\"]}}\n\
+         Edit a prior result: {{\"prompt\":\"add a title\",\"artifact_ids\":[\"art_...\"]}}\n\
+         User attached images this turn: omit paths and artifact_ids.\n\
+         Omit size and aspect_ratio unless the user asked. quality=low|medium|high only if asked. n=1-4."
+    )
 }
 
 pub fn native_web_fetch_tool() -> ChatToolDefinition {
@@ -1106,6 +1137,32 @@ mod tests {
         }
         assert!(!looks_sensitive_tool("read_file"));
         assert!(!looks_sensitive_tool("web_search"));
+    }
+
+    #[test]
+    fn mixer_image_tool_description_names_model_and_shows_calls() {
+        let unnamed = mixer_generate_image_tool();
+        assert!(unnamed.description.contains("Mixer image model"));
+        assert!(unnamed
+            .description
+            .contains("{\"prompt\":\"a fox in snow\"}"));
+        assert!(unnamed.description.contains("aspect_ratio"));
+        assert!(unnamed.description.contains("2K"));
+        assert!(unnamed.description.contains("paths"));
+        assert!(unnamed.description.contains("artifact_ids"));
+
+        let named = mixer_generate_image_tool_for(Some("gpt-image-2"));
+        assert!(
+            named.description.contains("gpt-image-2"),
+            "{}",
+            named.description
+        );
+        assert!(named.description.contains("do not pass a model name"));
+        let wire = named.to_openai_tool();
+        assert_eq!(wire["function"]["name"], "mixer_generate_image");
+        assert!(wire["function"]["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("gpt-image-2")));
     }
 
     #[test]

@@ -47,7 +47,10 @@ const OPENROUTER_CHAT_VENDOR_PREFIXES: [&str; 8] = [
 #[derive(Debug, Clone)]
 struct ImageGenerationRequest {
     prompt: String,
+    /// `auto`, `1K`/`2K`, or a validated `WIDTHxHEIGHT`.
     size: String,
+    /// `auto` or an official ratio such as `16:9`.
+    aspect_ratio: String,
     quality: String,
     n: usize,
     input_images: Vec<InputImage>,
@@ -352,16 +355,18 @@ fn parse_request(arguments: &Value) -> Result<ImageGenerationRequest, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Image generation requires prompt".to_string())?;
     let prompt = truncate_chars(prompt, MAX_PROMPT_CHARS);
-    let size = match arguments
-        .get("size")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_SIZE)
-    {
-        valid @ ("auto" | "1024x1024" | "1024x1536" | "1536x1024") => valid,
-        other => return Err(format!("Unsupported image size: {other}")),
-    };
+    let size = parse_size_arg(
+        arguments
+            .get("size")
+            .and_then(|value| value.as_str())
+            .unwrap_or(DEFAULT_SIZE),
+    )?;
+    let aspect_ratio = parse_aspect_ratio_arg(
+        arguments
+            .get("aspect_ratio")
+            .and_then(|value| value.as_str())
+            .unwrap_or("auto"),
+    )?;
     let quality = match arguments
         .get("quality")
         .and_then(|value| value.as_str())
@@ -380,7 +385,8 @@ fn parse_request(arguments: &Value) -> Result<ImageGenerationRequest, String> {
 
     Ok(ImageGenerationRequest {
         prompt,
-        size: size.to_string(),
+        size,
+        aspect_ratio,
         quality: quality.to_string(),
         n,
         input_images: Vec::new(),
@@ -431,25 +437,7 @@ async fn generate_with_images_api(
         .await;
     }
     let url = images_api_url(&provider.base_url, false);
-    let mut body = serde_json::json!({
-        "model": model,
-        "prompt": request.prompt.as_str(),
-        "n": request.n,
-    });
-    if uses_xai_images_api(provider, model) {
-        body["response_format"] = Value::String("b64_json".to_string());
-        if let Some(aspect_ratio) = size_aspect_ratio(&request.size) {
-            body["aspect_ratio"] = Value::String(aspect_ratio.to_string());
-        }
-    } else if uses_gpt_image_api_model(model) {
-        body["size"] = Value::String(request.size.clone());
-        body["background"] = Value::String("auto".to_string());
-    } else if request.size != "auto" {
-        body["size"] = Value::String(request.size.clone());
-    }
-    if !uses_xai_images_api(provider, model) && request.quality != "auto" {
-        body["quality"] = Value::String(request.quality.clone());
-    }
+    let body = images_generations_json_body(provider, model, request);
 
     let response = send_with_failover(
         state,
@@ -591,12 +579,35 @@ async fn read_images_api_response(
     parse_images_api_response(state, provider, &value).await
 }
 
+fn images_api_error_message(value: &Value) -> Option<String> {
+    let error = value.get("error")?;
+    if let Some(message) = error
+        .as_str()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        return Some(message.to_string());
+    }
+    if let Some(message) = error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        return Some(message.to_string());
+    }
+    Some(error.to_string())
+}
+
 async fn parse_images_api_response(
     state: &AppState,
     provider: &ModelProvider,
     value: &Value,
 ) -> Result<Vec<GeneratedImage>, String> {
     let Some(data) = value.get("data").and_then(|value| value.as_array()) else {
+        if let Some(message) = images_api_error_message(value) {
+            return Err(format!("Image generation failed: {message}"));
+        }
         return Err("Image generation response missing data array".to_string());
     };
     let mut images = Vec::new();
@@ -667,8 +678,8 @@ async fn generate_with_openrouter_chat(
         "modalities": openrouter_modalities(model),
         "stream": false,
     });
-    if let Some(aspect_ratio) = openrouter_aspect_ratio(&request.size) {
-        body["image_config"] = serde_json::json!({ "aspect_ratio": aspect_ratio });
+    if let Some(image_config) = openrouter_image_config(request) {
+        body["image_config"] = image_config;
     }
 
     let response = send_with_failover(
@@ -881,8 +892,8 @@ fn build_gemini_native_body(request: &ImageGenerationRequest) -> Value {
     let mut generation_config = serde_json::json!({
         "responseModalities": ["TEXT", "IMAGE"],
     });
-    if let Some(aspect_ratio) = size_aspect_ratio(&request.size) {
-        generation_config["imageConfig"] = serde_json::json!({ "aspectRatio": aspect_ratio });
+    if let Some(image_config) = gemini_image_config(request) {
+        generation_config["imageConfig"] = image_config;
     }
     let mut parts = request
         .input_images
@@ -1071,17 +1082,287 @@ fn is_openrouter_base_url(base_url: &str) -> bool {
         .contains("openrouter.ai")
 }
 
-fn openrouter_aspect_ratio(size: &str) -> Option<&'static str> {
-    size_aspect_ratio(size)
+/// Union of official ratios we accept from the tool. Each vendor only receives
+/// ratios from its own allow-list.
+const ASPECT_RATIOS: &[&str] = &[
+    "1:1", "1:2", "2:1", "1:4", "4:1", "1:8", "8:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4",
+    "5:2", "9:16", "16:9", "21:9", "19.5:9", "9:19.5", "20:9", "9:20",
+];
+/// Gemini `imageConfig.aspectRatio` (ai.google.dev image-generation).
+const GEMINI_ASPECT_RATIOS: &[&str] = &[
+    "1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9",
+    "21:9",
+];
+/// xAI Imagine `aspect_ratio` (docs.x.ai images/generation).
+const XAI_ASPECT_RATIOS: &[&str] = &[
+    "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9",
+    "9:20", "21:9", "5:2",
+];
+
+fn parse_size_arg(raw: &str) -> Result<String, String> {
+    let size = raw.trim();
+    if size.is_empty() || size.eq_ignore_ascii_case("auto") {
+        return Ok("auto".to_string());
+    }
+    let lower = size.to_ascii_lowercase();
+    if matches!(lower.as_str(), "512" | "0.5k" | "05k") {
+        return Ok("512".to_string());
+    }
+    if lower == "1k" {
+        return Ok("1K".to_string());
+    }
+    if lower == "2k" {
+        return Ok("2K".to_string());
+    }
+    if lower == "4k" {
+        return Ok("4K".to_string());
+    }
+    let Some((width, height)) = parse_pixel_pair(size) else {
+        return Err(format!("Unsupported image size: {raw}"));
+    };
+    let (width, height) = (snap16(width), snap16(height));
+    validate_openai_pixels(width, height)?;
+    Ok(format!("{width}x{height}"))
 }
 
-fn size_aspect_ratio(size: &str) -> Option<&'static str> {
-    match size {
-        "1024x1024" => Some("1:1"),
-        "1024x1536" => Some("2:3"),
-        "1536x1024" => Some("3:2"),
+fn parse_aspect_ratio_arg(raw: &str) -> Result<String, String> {
+    let ratio = raw.trim().replace('/', ":");
+    if ratio.is_empty() || ratio.eq_ignore_ascii_case("auto") {
+        return Ok("auto".to_string());
+    }
+    ASPECT_RATIOS
+        .iter()
+        .find(|known| **known == ratio)
+        .map(|known| (*known).to_string())
+        .ok_or_else(|| format!("Unsupported aspect ratio: {raw}"))
+}
+
+fn parse_pixel_pair(size: &str) -> Option<(u32, u32)> {
+    let (width, height) = size.split_once('x')?;
+    let width = width.trim().parse().ok()?;
+    let height = height.trim().parse().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+fn snap16(value: u32) -> u32 {
+    ((value + 8) / 16 * 16).max(16)
+}
+
+fn validate_openai_pixels(width: u32, height: u32) -> Result<(), String> {
+    if width % 16 != 0 || height % 16 != 0 || width > 3840 || height > 3840 {
+        return Err(format!(
+            "Image size {width}x{height} must have edges that are multiples of 16 and at most 3840"
+        ));
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    if !(655_360..=8_294_400).contains(&pixels) {
+        return Err(format!(
+            "Image size {width}x{height} is outside the official 655360–8294400 pixel range"
+        ));
+    }
+    let (long, short) = if width >= height {
+        (width, height)
+    } else {
+        (height, width)
+    };
+    if short == 0 || long > short * 3 {
+        return Err(format!(
+            "Image size {width}x{height} exceeds the official 3:1 aspect-ratio limit"
+        ));
+    }
+    Ok(())
+}
+
+fn openai_size(request: &ImageGenerationRequest) -> Option<String> {
+    match request.size.as_str() {
+        "auto" if request.aspect_ratio == "auto" => None,
+        "auto" => Some(pixels_for_tier_and_ratio("1K", &request.aspect_ratio)),
+        "512" | "1K" | "2K" | "4K" => {
+            let ratio = if request.aspect_ratio == "auto" {
+                "1:1"
+            } else {
+                request.aspect_ratio.as_str()
+            };
+            Some(pixels_for_tier_and_ratio(&request.size, ratio))
+        }
+        pixels => Some(pixels.to_string()),
+    }
+}
+
+fn pixels_for_tier_and_ratio(tier: &str, ratio: &str) -> String {
+    let ratio = if aspect_ratio_value(ratio) > 3.0 || aspect_ratio_value(ratio) < 1.0 / 3.0 {
+        if aspect_ratio_value(ratio) >= 1.0 {
+            "3:1"
+        } else {
+            "1:3"
+        }
+    } else {
+        ratio
+    };
+    // OpenAI gpt-image-2 has no 1K/2K field; these are official popular sizes
+    // or 16-aligned equivalents inside the documented pixel limits.
+    // 512 is below the official 655360 minimum, so it uses the 1K row.
+    let tier = if tier == "512" { "1K" } else { tier };
+    match (tier, ratio) {
+        ("1K", "1:1") => "1024x1024",
+        ("1K", "16:9") => "1536x864",
+        ("1K", "9:16") => "864x1536",
+        ("1K", "3:2") => "1536x1024",
+        ("1K", "2:3") => "1024x1536",
+        ("1K", "4:3") => "1024x768",
+        ("1K", "3:4") => "768x1024",
+        ("1K", "4:5") => "896x1120",
+        ("1K", "5:4") => "1120x896",
+        ("1K", "21:9") => "1536x656",
+        ("1K", "2:1") => "1536x768",
+        ("1K", "1:2") => "768x1536",
+        ("1K", "3:1") => "1536x512",
+        ("1K", "1:3") => "512x1536",
+        ("2K", "1:1") => "2048x2048",
+        ("2K", "16:9") => "2048x1152",
+        ("2K", "9:16") => "1152x2048",
+        ("2K", "3:2") => "2048x1360",
+        ("2K", "2:3") => "1360x2048",
+        ("2K", "4:3") => "2048x1536",
+        ("2K", "3:4") => "1536x2048",
+        ("2K", "4:5") => "1792x2240",
+        ("2K", "5:4") => "2240x1792",
+        ("2K", "21:9") => "2560x1104",
+        ("2K", "2:1") => "2048x1024",
+        ("2K", "1:2") => "1024x2048",
+        ("2K", "3:1") => "2304x768",
+        ("2K", "1:3") => "768x2304",
+        ("4K", "1:1") => "2880x2880",
+        ("4K", "16:9") => "3840x2160",
+        ("4K", "9:16") => "2160x3840",
+        ("4K", "3:2") => "3072x2048",
+        ("4K", "2:3") => "2048x3072",
+        ("4K", "4:3") => "3072x2304",
+        ("4K", "3:4") => "2304x3072",
+        ("4K", "21:9") => "3840x1648",
+        ("4K", "2:1") => "3840x1920",
+        ("4K", "1:2") => "1920x3840",
+        _ => "1024x1024",
+    }
+    .to_string()
+}
+
+fn requested_aspect_ratio(request: &ImageGenerationRequest) -> Option<String> {
+    if request.aspect_ratio != "auto" {
+        return Some(request.aspect_ratio.clone());
+    }
+    parse_pixel_pair(&request.size)
+        .map(|(width, height)| nearest_allowed_aspect(ASPECT_RATIOS, width as f64 / height as f64))
+}
+
+fn vendor_aspect_ratio(request: &ImageGenerationRequest, allowed: &[&str]) -> Option<String> {
+    requested_aspect_ratio(request).map(|ratio| {
+        if allowed.contains(&ratio.as_str()) {
+            ratio
+        } else {
+            nearest_allowed_aspect(allowed, aspect_ratio_value(&ratio))
+        }
+    })
+}
+
+fn nearest_allowed_aspect(allowed: &[&str], value: f64) -> String {
+    allowed
+        .iter()
+        .copied()
+        .min_by(|left, right| {
+            (aspect_ratio_value(left) - value)
+                .abs()
+                .total_cmp(&(aspect_ratio_value(right) - value).abs())
+        })
+        .unwrap_or("1:1")
+        .to_string()
+}
+
+fn aspect_ratio_value(ratio: &str) -> f64 {
+    let (width, height) = ratio.split_once(':').unwrap_or(("1", "1"));
+    width.parse::<f64>().unwrap_or(1.0) / height.parse::<f64>().unwrap_or(1.0)
+}
+
+fn requested_resolution_tier(request: &ImageGenerationRequest) -> Option<&'static str> {
+    match request.size.as_str() {
+        "512" => Some("512"),
+        "1K" => Some("1K"),
+        "2K" => Some("2K"),
+        "4K" => Some("4K"),
+        "auto" => None,
+        pixels => parse_pixel_pair(pixels).map(|(width, height)| match width.max(height) {
+            n if n >= 3000 => "4K",
+            n if n >= 1920 => "2K",
+            n if n >= 768 => "1K",
+            _ => "512",
+        }),
+    }
+}
+
+/// Gemini official `imageSize`: `512` | `1K` | `2K` | `4K` (uppercase K).
+fn gemini_image_size(request: &ImageGenerationRequest) -> Option<&'static str> {
+    requested_resolution_tier(request)
+}
+
+/// xAI official `resolution`: `1k` | `2k` only.
+fn xai_resolution(request: &ImageGenerationRequest) -> Option<&'static str> {
+    match requested_resolution_tier(request)? {
+        "512" | "1K" => Some("1k"),
+        "2K" | "4K" => Some("2k"),
         _ => None,
     }
+}
+
+fn gemini_image_config(request: &ImageGenerationRequest) -> Option<Value> {
+    let aspect_ratio = vendor_aspect_ratio(request, GEMINI_ASPECT_RATIOS);
+    let image_size = gemini_image_size(request);
+    if aspect_ratio.is_none() && image_size.is_none() {
+        return None;
+    }
+    let mut config = serde_json::Map::new();
+    if let Some(aspect_ratio) = aspect_ratio {
+        config.insert("aspectRatio".to_string(), Value::String(aspect_ratio));
+    }
+    if let Some(image_size) = image_size {
+        config.insert(
+            "imageSize".to_string(),
+            Value::String(image_size.to_string()),
+        );
+    }
+    Some(Value::Object(config))
+}
+
+fn openrouter_image_config(request: &ImageGenerationRequest) -> Option<Value> {
+    let aspect_ratio = requested_aspect_ratio(request);
+    let image_size = requested_resolution_tier(request);
+    let quality = openai_quality(&request.quality);
+    if aspect_ratio.is_none() && image_size.is_none() && quality.is_none() {
+        return None;
+    }
+    let mut config = serde_json::Map::new();
+    if let Some(aspect_ratio) = aspect_ratio {
+        config.insert("aspect_ratio".to_string(), Value::String(aspect_ratio));
+    }
+    if let Some(image_size) = image_size {
+        config.insert(
+            "image_size".to_string(),
+            Value::String(image_size.to_string()),
+        );
+    }
+    if let Some(quality) = quality {
+        config.insert("quality".to_string(), Value::String(quality.to_string()));
+    }
+    Some(Value::Object(config))
+}
+
+/// OpenAI GPT Image: `quality` is optional; default is `auto`.
+fn openai_quality(quality: &str) -> Option<&str> {
+    matches!(quality, "low" | "medium" | "high").then_some(quality)
+}
+
+/// xAI Imagine: official `quality` is `low` | `medium` | `auto`. Omit `auto`.
+fn xai_quality(quality: &str) -> Option<&str> {
+    matches!(quality, "low" | "medium").then_some(quality)
 }
 
 fn uses_xai_images_api(provider: &ModelProvider, model: &str) -> bool {
@@ -1097,6 +1378,48 @@ fn uses_openai_images_api_model(model: &str) -> bool {
 
 fn uses_gpt_image_api_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("gpt-image")
+}
+
+/// Official Image APIs treat size/quality as optional (`auto` is the default).
+/// Only send a concrete vendor field when the tool call asked for one.
+fn images_generations_json_body(
+    provider: &ModelProvider,
+    model: &str,
+    request: &ImageGenerationRequest,
+) -> Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "prompt": request.prompt.as_str(),
+        "n": request.n,
+    });
+    if uses_xai_images_api(provider, model) {
+        body["response_format"] = Value::String("b64_json".to_string());
+        apply_xai_image_options(&mut body, request);
+        return body;
+    }
+    apply_openai_image_options(&mut body, request);
+    body
+}
+
+fn apply_openai_image_options(body: &mut Value, request: &ImageGenerationRequest) {
+    if let Some(size) = openai_size(request) {
+        body["size"] = Value::String(size);
+    }
+    if let Some(quality) = openai_quality(&request.quality) {
+        body["quality"] = Value::String(quality.to_string());
+    }
+}
+
+fn apply_xai_image_options(body: &mut Value, request: &ImageGenerationRequest) {
+    if let Some(aspect_ratio) = vendor_aspect_ratio(request, XAI_ASPECT_RATIOS) {
+        body["aspect_ratio"] = Value::String(aspect_ratio);
+    }
+    if let Some(resolution) = xai_resolution(request) {
+        body["resolution"] = Value::String(resolution.to_string());
+    }
+    if let Some(quality) = xai_quality(&request.quality) {
+        body["quality"] = Value::String(quality.to_string());
+    }
 }
 
 fn openrouter_modalities(model: &str) -> Value {
@@ -1162,12 +1485,7 @@ fn openai_compat_edits_json_body(model: &str, request: &ImageGenerationRequest) 
         "prompt": request.prompt.as_str(),
         "n": request.n,
     });
-    if uses_gpt_image_api_model(model) || request.size != "auto" {
-        body["size"] = Value::String(request.size.clone());
-    }
-    if request.quality != "auto" {
-        body["quality"] = Value::String(request.quality.clone());
-    }
+    apply_openai_image_options(&mut body, request);
     let urls = request
         .input_images
         .iter()
@@ -1188,9 +1506,7 @@ fn xai_edits_body(model: &str, request: &ImageGenerationRequest) -> Value {
         "n": request.n,
         "response_format": "b64_json",
     });
-    if let Some(aspect_ratio) = size_aspect_ratio(&request.size) {
-        body["aspect_ratio"] = Value::String(aspect_ratio.to_string());
-    }
+    apply_xai_image_options(&mut body, request);
     let refs = request
         .input_images
         .iter()
@@ -1241,11 +1557,11 @@ fn images_edits_form(
         .text("model", model.to_string())
         .text("prompt", request.prompt.clone())
         .text("n", request.n.to_string());
-    if uses_gpt_image_api_model(model) || request.size != "auto" {
-        form = form.text("size", request.size.clone());
+    if let Some(size) = openai_size(request) {
+        form = form.text("size", size);
     }
-    if request.quality != "auto" {
-        form = form.text("quality", request.quality.clone());
+    if let Some(quality) = openai_quality(&request.quality) {
+        form = form.text("quality", quality.to_string());
     }
     let field = if uses_gpt_image_api_model(model) || files.len() > 1 {
         "image[]"
@@ -1760,6 +2076,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_request_accepts_resolution_tier_and_custom_pixels() {
+        let request = parse_request(&serde_json::json!({
+            "prompt": "city skyline",
+            "size": "2k",
+            "aspect_ratio": "16:9",
+        }))
+        .expect("request should parse");
+        assert_eq!(request.size, "2K");
+        assert_eq!(request.aspect_ratio, "16:9");
+
+        let custom = parse_request(&serde_json::json!({
+            "prompt": "poster",
+            "size": "1920x1080",
+        }))
+        .expect("custom size should snap to 16");
+        assert_eq!(custom.size, "1920x1088");
+        assert_eq!(custom.aspect_ratio, "auto");
+
+        let four_k = parse_request(&serde_json::json!({
+            "prompt": "poster",
+            "size": "4k",
+            "aspect_ratio": "4:5",
+        }))
+        .expect("4K and 4:5 are official Gemini values");
+        assert_eq!(four_k.size, "4K");
+        assert_eq!(four_k.aspect_ratio, "4:5");
+    }
+
+    #[test]
     fn openrouter_flux_models_use_image_only_modality() {
         assert_eq!(
             openrouter_modalities("black-forest-labs/flux.2-pro"),
@@ -1881,6 +2226,7 @@ mod tests {
         let request = ImageGenerationRequest {
             prompt: "draw a cat".to_string(),
             size: "1024x1024".to_string(),
+            aspect_ratio: "auto".to_string(),
             quality: "auto".to_string(),
             n: 1,
             input_images: Vec::new(),
@@ -1988,6 +2334,7 @@ mod tests {
         let request = ImageGenerationRequest {
             prompt: "a red mug".to_string(),
             size: "auto".to_string(),
+            aspect_ratio: "auto".to_string(),
             quality: "auto".to_string(),
             n: 1,
             input_images: Vec::new(),
@@ -2003,6 +2350,7 @@ mod tests {
         let request = ImageGenerationRequest {
             prompt: "make it night".to_string(),
             size: "auto".to_string(),
+            aspect_ratio: "auto".to_string(),
             quality: "auto".to_string(),
             n: 1,
             input_images: vec![sample_input_image()],
@@ -2021,6 +2369,7 @@ mod tests {
         let request = ImageGenerationRequest {
             prompt: "make it night".to_string(),
             size: "auto".to_string(),
+            aspect_ratio: "auto".to_string(),
             quality: "auto".to_string(),
             n: 1,
             input_images: vec![sample_input_image()],
@@ -2038,6 +2387,7 @@ mod tests {
         let one = ImageGenerationRequest {
             prompt: "sketch".to_string(),
             size: "1024x1024".to_string(),
+            aspect_ratio: "auto".to_string(),
             quality: "auto".to_string(),
             n: 1,
             input_images: vec![sample_input_image()],
@@ -2062,6 +2412,7 @@ mod tests {
         let request = ImageGenerationRequest {
             prompt: "make it night".to_string(),
             size: "1024x1024".to_string(),
+            aspect_ratio: "auto".to_string(),
             quality: "high".to_string(),
             n: 1,
             input_images: vec![sample_input_image()],
@@ -2073,10 +2424,170 @@ mod tests {
 
         let many = ImageGenerationRequest {
             input_images: vec![sample_input_image(), sample_input_image()],
-            ..request
+            ..request.clone()
         };
         let body = openai_compat_edits_json_body("gpt-image-1.5", &many);
         assert_eq!(body["image"].as_array().map(|v| v.len()), Some(2));
+
+        let auto = ImageGenerationRequest {
+            size: "auto".to_string(),
+            aspect_ratio: "auto".to_string(),
+            quality: "auto".to_string(),
+            ..request
+        };
+        let auto_body = openai_compat_edits_json_body("gpt-image-2", &auto);
+        assert!(auto_body.get("size").is_none());
+        assert!(auto_body.get("quality").is_none());
+    }
+
+    fn images_provider(base_url: &str) -> ModelProvider {
+        ModelProvider {
+            id: "img".to_string(),
+            name: "Images".to_string(),
+            api_keys: vec!["k".to_string()],
+            api_key_legacy: None,
+            base_url: base_url.to_string(),
+            available_models: Vec::new(),
+            enabled_models: Vec::new(),
+            enabled: true,
+            api_format: "openai_chat".to_string(),
+            model_overrides: std::collections::HashMap::new(),
+            compress_request_body: false,
+            request: Default::default(),
+            active_key_index: 0,
+        }
+    }
+
+    #[test]
+    fn image_bodies_omit_optional_auto_and_map_official_sizes() {
+        let auto = ImageGenerationRequest {
+            prompt: "wallpaper".to_string(),
+            size: "auto".to_string(),
+            aspect_ratio: "auto".to_string(),
+            quality: "auto".to_string(),
+            n: 1,
+            input_images: Vec::new(),
+        };
+        let landscape = ImageGenerationRequest {
+            size: "1536x1024".to_string(),
+            aspect_ratio: "auto".to_string(),
+            quality: "high".to_string(),
+            ..auto.clone()
+        };
+        let openai = images_provider("https://api.openai.com/v1");
+        let openai_auto = images_generations_json_body(&openai, "gpt-image-2", &auto);
+        assert!(openai_auto.get("size").is_none());
+        assert!(openai_auto.get("quality").is_none());
+        assert!(openai_auto.get("background").is_none());
+        let openai_size = images_generations_json_body(&openai, "gpt-image-2", &landscape);
+        assert_eq!(openai_size["size"], "1536x1024");
+        assert_eq!(openai_size["quality"], "high");
+
+        let xai = images_provider("https://api.x.ai/v1");
+        let xai_auto = images_generations_json_body(&xai, "grok-imagine-image-2.0", &auto);
+        assert_eq!(xai_auto["response_format"], "b64_json");
+        assert!(xai_auto.get("aspect_ratio").is_none());
+        assert!(xai_auto.get("size").is_none());
+        assert!(xai_auto.get("quality").is_none());
+        let xai_size = images_generations_json_body(&xai, "grok-imagine-image-2.0", &landscape);
+        assert_eq!(xai_size["aspect_ratio"], "3:2");
+        assert_eq!(xai_size["resolution"], "1k");
+        assert!(xai_size.get("size").is_none());
+        assert!(
+            xai_size.get("quality").is_none(),
+            "xAI official quality is low|medium|auto; high is omitted"
+        );
+
+        let widescreen = ImageGenerationRequest {
+            size: "2K".to_string(),
+            aspect_ratio: "16:9".to_string(),
+            quality: "auto".to_string(),
+            ..auto.clone()
+        };
+        let openai_2k = images_generations_json_body(&openai, "gpt-image-2", &widescreen);
+        assert_eq!(openai_2k["size"], "2048x1152");
+        let openrouter = openrouter_image_config(&widescreen).expect("chat image_config");
+        assert_eq!(openrouter["aspect_ratio"], "16:9");
+        assert_eq!(openrouter["image_size"], "2K");
+        let xai_2k = images_generations_json_body(&xai, "grok-imagine-image-2.0", &widescreen);
+        assert_eq!(xai_2k["aspect_ratio"], "16:9");
+        assert_eq!(xai_2k["resolution"], "2k");
+        let custom = ImageGenerationRequest {
+            size: parse_size_arg("1920x1080").expect("snap 16"),
+            ..auto.clone()
+        };
+        assert_eq!(
+            images_generations_json_body(&openai, "gpt-image-2", &custom)["size"],
+            "1920x1088"
+        );
+        let xai_medium = ImageGenerationRequest {
+            quality: "medium".to_string(),
+            ..landscape.clone()
+        };
+        let xai_medium_body =
+            images_generations_json_body(&xai, "grok-imagine-image-2.0", &xai_medium);
+        assert_eq!(xai_medium_body["quality"], "medium");
+
+        let gemini_auto = build_gemini_native_body(&auto);
+        assert!(gemini_auto["generationConfig"].get("imageConfig").is_none());
+        let gemini_size = build_gemini_native_body(&landscape);
+        assert_eq!(
+            gemini_size["generationConfig"]["imageConfig"]["aspectRatio"],
+            "3:2"
+        );
+        assert_eq!(
+            gemini_size["generationConfig"]["imageConfig"]["imageSize"],
+            "1K"
+        );
+        let gemini_2k = build_gemini_native_body(&widescreen);
+        assert_eq!(
+            gemini_2k["generationConfig"]["imageConfig"]["aspectRatio"],
+            "16:9"
+        );
+        assert_eq!(
+            gemini_2k["generationConfig"]["imageConfig"]["imageSize"],
+            "2K"
+        );
+
+        let four_k = ImageGenerationRequest {
+            size: "4K".to_string(),
+            aspect_ratio: "16:9".to_string(),
+            ..auto.clone()
+        };
+        assert_eq!(
+            images_generations_json_body(&openai, "gpt-image-2", &four_k)["size"],
+            "3840x2160"
+        );
+        let xai_4k = images_generations_json_body(&xai, "grok-imagine-image-2.0", &four_k);
+        assert_eq!(xai_4k["aspect_ratio"], "16:9");
+        assert_eq!(xai_4k["resolution"], "2k");
+        let gemini_4k = build_gemini_native_body(&four_k);
+        assert_eq!(
+            gemini_4k["generationConfig"]["imageConfig"]["imageSize"],
+            "4K"
+        );
+        let gemini_phone = ImageGenerationRequest {
+            size: "auto".to_string(),
+            aspect_ratio: "4:5".to_string(),
+            ..auto.clone()
+        };
+        assert_eq!(
+            build_gemini_native_body(&gemini_phone)["generationConfig"]["imageConfig"]
+                ["aspectRatio"],
+            "4:5"
+        );
+    }
+
+    #[test]
+    fn images_api_error_message_reads_provider_error_object() {
+        let value = serde_json::json!({
+            "error": {
+                "type": "image_generation_user_error",
+                "message": "Invalid value: 'auto'. Size must satisfy the documented pixel constraints."
+            }
+        });
+        let message = images_api_error_message(&value).expect("error message");
+        assert!(message.contains("Size must satisfy"));
     }
 
     #[tokio::test]
@@ -2138,6 +2649,7 @@ mod tests {
         let request = ImageGenerationRequest {
             prompt: "make it dark blue".into(),
             size: "1024x1024".into(),
+            aspect_ratio: "auto".into(),
             quality: "auto".into(),
             n: 1,
             input_images: vec![sample_input_image()],
@@ -2325,6 +2837,7 @@ mod tests {
             &ImageGenerationRequest {
                 prompt: "sketch".to_string(),
                 size: "auto".to_string(),
+                aspect_ratio: "auto".to_string(),
                 quality: "auto".to_string(),
                 n: 1,
                 input_images: four[..3].to_vec(),

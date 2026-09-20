@@ -189,7 +189,7 @@ pub(crate) async fn list_tools_for_chat(
         crate::chat::model_metadata::image_generation_model_for_session(settings, session)
     {
         if !tools.iter().any(|tool| tool.name == "mixer_generate_image") {
-            let mut tool = mcp::types::mixer_generate_image_tool();
+            let mut tool = mcp::types::mixer_generate_image_tool_for(Some(&model));
             let provider_name = settings
                 .get_provider(&provider_id)
                 .map(|provider| {

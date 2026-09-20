@@ -1139,7 +1139,7 @@ fn native_tools_prompt(available_builtin_tools: &[String], _has_workbench: bool)
     }
     if has_image_generation {
         bullets.push(
-            "When the user asks to create, generate, draw, or edit an image, call mixer_generate_image; do not merely describe it. Pass paths or artifact_ids to edit existing images; this turn's attached images are used automatically if omitted.".to_string(),
+            "To create or edit an image, call mixer_generate_image using the argument examples in that tool's description.".to_string(),
         );
     }
     if has_advisor {
@@ -2190,8 +2190,7 @@ mod tests {
         let prompt =
             native_tools_prompt(&["mixer_generate_image".to_string()], false).expect("prompt");
         assert!(prompt.contains("mixer_generate_image"), "{prompt}");
-        assert!(prompt.contains("edit"), "{prompt}");
-        assert!(prompt.contains("artifact_ids"), "{prompt}");
+        assert!(prompt.contains("argument examples"), "{prompt}");
     }
 
     #[test]
