@@ -1,6 +1,6 @@
 import { memo, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Check, Columns2, Square } from 'lucide-react'
-import type { ChatMessage, ModelRef } from './types'
+import type { ChatMessage, ChatToolArtifact, ModelRef } from './types'
 import { MessageBubble } from './MessageBubble'
 import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import { ModelIcon } from '../components/ModelIcon'
@@ -25,6 +25,7 @@ import { useMultiAnswerViewMode } from './multiAnswerViewMode'
 
 interface MessageGroupProps {
   conversationId?: string | null
+  conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
   groupId: string
   // 落库后的本组 assistant 消息（顺序即列序）；流式中为空。
   messages: ChatMessage[]
@@ -84,6 +85,7 @@ function ColumnScrollBody({ children }: { children: ReactNode }) {
 function GroupColumnView({
   column,
   conversationId,
+  conversationArtifactsById,
   live,
   isSelected,
   isFocused,
@@ -103,6 +105,7 @@ function GroupColumnView({
 }: {
   column: GroupColumn
   conversationId?: string | null
+  conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
   live: boolean
   isSelected: boolean
   isFocused: boolean
@@ -169,6 +172,7 @@ function GroupColumnView({
           <MessageBubble
             message={message}
             conversationId={conversationId}
+            conversationArtifactsById={conversationArtifactsById}
             messageStreaming={streaming}
             // 实时列先结束的臂保持「出字中」上下文（mermaid 源码 / eager 岛不在原地翻转）；
             // 这些内容变化留给落库后的 group twin 首挂一次完成。
@@ -191,6 +195,7 @@ function GroupColumnView({
         <MessageBubble
           message={message}
           conversationId={conversationId}
+          conversationArtifactsById={conversationArtifactsById}
           messageStreaming={streaming}
           markdownStreaming={live || streaming}
           // tabs 模式：当前显示列即聚焦列 → 正常展示流式思考。
@@ -286,6 +291,7 @@ function GroupFooter({
 
 function MessageGroupBase({
   conversationId,
+  conversationArtifactsById,
   groupId,
   messages,
   selectedMessageId,
@@ -361,6 +367,7 @@ function MessageGroupBase({
               key={column.message.id}
               column={column}
               conversationId={conversationId}
+              conversationArtifactsById={conversationArtifactsById}
               live={live}
               isSelected={!live && column.message.id === effectiveSelectedId}
               isFocused={index === focusedIndex}
@@ -385,6 +392,7 @@ function MessageGroupBase({
           key={tabColumn.message.id}
           column={tabColumn}
           conversationId={conversationId}
+          conversationArtifactsById={conversationArtifactsById}
           live={live}
           isSelected={false}
           // tabs 当前显示列即聚焦列（正常展示流式思考）。

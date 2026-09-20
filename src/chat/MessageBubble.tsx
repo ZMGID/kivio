@@ -62,6 +62,7 @@ interface MessageBubbleProps {
   readOnly?: boolean
   message: ChatMessage
   conversationId?: string | null
+  conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
   tokensPerSec?: number
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
@@ -999,6 +1000,7 @@ function MessageBubbleComponent({
   readOnly = false,
   message,
   conversationId,
+  conversationArtifactsById,
   tokensPerSec,
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
@@ -1059,8 +1061,21 @@ function MessageBubbleComponent({
     const hasTimelineSegments = timelineSegments.length > 0
     const messageArtifacts = message.artifacts ?? []
     const toolArtifacts = toolCalls.flatMap((toolCall) => toolCall.artifacts ?? [])
-    // Markdown 和显式展示引用仍使用全量 artifacts；回答末尾自动区域只兼容旧的无 ID artifact。
-    const renderArtifacts = [...messageArtifacts, ...toolArtifacts]
+    const artifactReferenceContent = [
+      message.content,
+      ...timelineSegments.map((segment) => segmentText(segment)),
+    ].join('\n\n')
+    const localArtifacts = [...messageArtifacts, ...toolArtifacts]
+    const localIds = new Set(localArtifacts.map(artifactId))
+    const earlierReferencedArtifacts = [...referencedArtifactIds(artifactReferenceContent)]
+      .filter(id => !localIds.has(id))
+      .flatMap(id => {
+        const artifact = conversationArtifactsById?.get(id)
+        return artifact ? [artifact] : []
+      })
+    // A later reply may cite an artifact produced by an earlier turn. Only add
+    // the cited IDs so unrelated files cannot affect relative image matching.
+    const renderArtifacts = [...earlierReferencedArtifacts, ...localArtifacts]
     const legacyMessageArtifacts = messageArtifacts.filter((artifact) => !artifactId(artifact))
     const legacyToolCalls = toolCalls.map((toolCall) => ({
       ...toolCall,
@@ -1068,10 +1083,6 @@ function MessageBubbleComponent({
     }))
     const isDirectImageGenerationPending =
       !isUser && message.content.trim() === DIRECT_IMAGE_GENERATION_PENDING
-    const artifactReferenceContent = [
-      message.content,
-      ...timelineSegments.map((segment) => segmentText(segment)),
-    ].join('\n\n')
     // 答案下方画廊：只挂「未引用 + 最后一轮截图」，避免 3 轮验收堆 9 张同名图
     const galleryImageArtifacts = selectGalleryImageArtifacts(
       legacyMessageArtifacts,
@@ -1104,7 +1115,7 @@ function MessageBubbleComponent({
       hasGeneratedImages,
       hasGeneratedFiles,
     }
-  }, [isUser, message])
+  }, [conversationArtifactsById, isUser, message])
   const {
     attachments,
     toolCalls,

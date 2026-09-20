@@ -1,0 +1,87 @@
+{
+  "id": "3b6b6755-532e-44f8-852e-811451afb2d4",
+  "automationId": "codex-schedule-smoke-20260920",
+  "origin": "schedule",
+  "status": "success",
+  "startedAt": "2026-09-19T18:44:46Z",
+  "finishedAt": "2026-09-19T18:44:46Z",
+  "nodes": [
+    {
+      "nodeId": "t",
+      "nodeType": "trigger.schedule",
+      "status": "success",
+      "input": {
+        "text": "schedule",
+        "json": {
+          "at": "2026-09-19T18:44:46Z",
+          "origin": "schedule"
+        }
+      },
+      "result": {
+        "text": "schedule",
+        "json": {
+          "at": "2026-09-19T18:44:46Z",
+          "origin": "schedule",
+          "trigger": "trigger.schedule"
+        },
+        "sources": {
+          "t": {
+            "json": {
+              "at": "2026-09-19T18:44:46Z",
+              "origin": "schedule",
+              "trigger": "trigger.schedule"
+            },
+            "text": "schedule"
+          }
+        }
+      },
+      "output": "schedule"
+    },
+    {
+      "nodeId": "a",
+      "nodeType": "action.set",
+      "status": "success",
+      "input": {
+        "text": "schedule",
+        "json": {
+          "at": "2026-09-19T18:44:46Z",
+          "origin": "schedule",
+          "trigger": "trigger.schedule"
+        },
+        "sources": {
+          "t": {
+            "json": {
+              "at": "2026-09-19T18:44:46Z",
+              "origin": "schedule",
+              "trigger": "trigger.schedule"
+            },
+            "text": "schedule"
+          }
+        }
+      },
+      "result": {
+        "text": "{\n  \"smoke\": \"live-schedule-ok\"\n}",
+        "json": {
+          "smoke": "live-schedule-ok"
+        },
+        "sources": {
+          "a": {
+            "json": {
+              "smoke": "live-schedule-ok"
+            },
+            "text": "{\n  \"smoke\": \"live-schedule-ok\"\n}"
+          },
+          "t": {
+            "json": {
+              "at": "2026-09-19T18:44:46Z",
+              "origin": "schedule",
+              "trigger": "trigger.schedule"
+            },
+            "text": "schedule"
+          }
+        }
+      },
+      "output": "{\n  \"smoke\": \"live-schedule-ok\"\n}"
+    }
+  ]
+}
