@@ -342,6 +342,22 @@ pub(super) struct RegistryToolExecutor<'a> {
     pub(super) video_analysis: tokio::sync::Mutex<crate::chat::video_analysis::VideoTool>,
 }
 impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
+    fn prepare_result<'a>(
+        &'a self,
+        ctx: &crate::chat::agent::ToolExecutionContext<'_>,
+        tool: &ChatToolDefinition,
+        arguments: &Value,
+        output: crate::mcp::types::McpToolCallResult,
+    ) -> crate::chat::agent::ToolExecutorFuture<'a> {
+        crate::chat::artifacts::prepare_output(
+            &self.app,
+            ctx.tool_conversation_id,
+            ctx.message_id,
+            tool,
+            arguments,
+            output,
+        )
+    }
     fn call<'a>(
         &'a self,
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,

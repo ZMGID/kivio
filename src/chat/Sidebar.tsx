@@ -55,7 +55,7 @@ function resolveChatUserProfile(
 
 const modLabel = isMac ? '⌘' : 'Ctrl'
 
-export type ExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations'
+export type ExtensionsNavItem = import('./chatRoutes').ChatExtensionsNavItem
 
 /**
  * 点击会话时要同步切换的侧栏导航上下文。
@@ -1408,8 +1408,14 @@ export const Sidebar = memo(function Sidebar({
           active={searchOpen}
           iconMotion="group-hover:scale-110"
         />
+        <NavRow
+          icon={<Layers size={17} strokeWidth={1.75} />}
+          label={t.chatNavArtifacts}
+          onClick={() => onOpenExtensionsItem('artifacts')}
+          active={extensionsActive === 'artifacts'}
+        />
         <ExtensionsNav
-          activeItem={extensionsActive}
+          activeItem={extensionsActive === 'artifacts' ? null : extensionsActive}
           onSelectItem={onOpenExtensionsItem}
         />
       </nav>

@@ -12,11 +12,13 @@ export type ChatRouteKind =
   | 'mcp'
   | 'knowledge'
   | 'notes'
+  | 'artifacts'
   | 'onboarding'
   | 'popout'
   | 'other'
 
 type ChatCenterRouteKind = Exclude<ChatRouteKind, 'root' | 'conversation' | 'other'>
+export type ChatView = Exclude<ChatRouteKind, 'root' | 'plugins' | 'sessions' | 'popout' | 'other'>
 
 /**
  * Route vocabulary is declared once in routeContract.json and consumed by both this codec and

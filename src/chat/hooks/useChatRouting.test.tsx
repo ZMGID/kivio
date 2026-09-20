@@ -92,6 +92,7 @@ describe('useChatRouting 分支顺序', () => {
     ['#chat/mcp', 'mcp'],
     ['#chat/knowledge', 'knowledge'],
     ['#chat/notes', 'notes'],
+    ['#chat/artifacts', 'artifacts'],
     ['#chat/automations', 'automations'],
     ['#chat/onboarding', 'onboarding'],
   ]

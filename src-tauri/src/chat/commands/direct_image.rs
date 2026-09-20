@@ -70,6 +70,20 @@ pub(super) async fn complete_direct_image_generation_reply(
         }
     };
 
+    let result = match result {
+        Ok(output) => {
+            crate::chat::artifacts::prepare_output(
+                app,
+                &conversation.id,
+                &assistant_message_id,
+                &crate::mcp::types::mixer_generate_image_tool(),
+                &arguments,
+                output,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
     match result {
         Ok(output) if !output.is_error => {
             // 有图 → 渲染图片；模型只回文字（澄清/拒绝）无图 → 展示那段文字。
@@ -136,7 +150,13 @@ pub(super) async fn complete_direct_image_generation_reply(
 fn direct_image_generation_content(artifacts: &[ChatToolArtifact]) -> String {
     artifacts
         .iter()
-        .map(|artifact| format!("![{}]({})", artifact.name, artifact.name))
+        .map(|artifact| {
+            format!(
+                "![{}](artifact:{})",
+                artifact.name,
+                artifact.id.as_deref().unwrap_or_default()
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }

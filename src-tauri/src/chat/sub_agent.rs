@@ -399,6 +399,22 @@ struct SubAgentToolExecutor {
 }
 
 impl ToolExecutor for SubAgentToolExecutor {
+    fn prepare_result<'a>(
+        &'a self,
+        ctx: &ToolExecutionContext<'_>,
+        tool: &ChatToolDefinition,
+        arguments: &Value,
+        output: crate::mcp::types::McpToolCallResult,
+    ) -> ToolExecutorFuture<'a> {
+        crate::chat::artifacts::prepare_output(
+            &self.app,
+            ctx.tool_conversation_id,
+            ctx.message_id,
+            tool,
+            arguments,
+            output,
+        )
+    }
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,

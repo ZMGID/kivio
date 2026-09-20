@@ -199,14 +199,11 @@ pub(crate) async fn generate_image_with_provider(
         })
         .collect::<Vec<_>>();
 
-    let mut content = if artifacts.len() == 1 {
+    let content = if artifacts.len() == 1 {
         "Generated 1 image.".to_string()
     } else {
         format!("Generated {} images.", artifacts.len())
     };
-    for artifact in &artifacts {
-        content.push_str(&format!("\n\n![{}]({})", artifact.name, artifact.name));
-    }
 
     Ok(McpToolCallResult {
         content,
@@ -517,17 +514,34 @@ async fn generate_with_images_edits(
         )
         .await?
     } else {
-        post_images_json(
-            state,
-            provider,
-            &url,
-            &openai_compat_edits_json_body(model, request),
-            retry_attempts,
-            operation,
-        )
-        .await?
+        let mut body = openai_compat_edits_json_body(model, request);
+        let response =
+            post_images_json(state, provider, &url, &body, retry_attempts, operation).await;
+        match response {
+            Err(error) if requires_images_image_url(&error) => {
+                // The proxy explicitly rejected the reference field before
+                // generation. Adapt once, retaining every reference and the
+                // edit prompt; never turn an edit into text-to-image.
+                body.as_object_mut()
+                    .expect("edit body is an object")
+                    .remove("image");
+                body["images"] = Value::Array(
+                    request
+                        .input_images
+                        .iter()
+                        .map(|image| serde_json::json!({"image_url": data_url_for_input(image)}))
+                        .collect(),
+                );
+                post_images_json(state, provider, &url, &body, retry_attempts, operation).await?
+            }
+            result => result?,
+        }
     };
     read_images_api_response(state, provider, response).await
+}
+
+fn requires_images_image_url(error: &str) -> bool {
+    error.contains("400 Bad Request") && error.contains("images[].image_url is required")
 }
 
 async fn post_images_json(
@@ -1325,10 +1339,20 @@ fn collect_mixer_input_images(
     let mut images = Vec::new();
     let mut missing = Vec::new();
 
-    let artifacts = resolve_mixer_artifacts(conversation, drafts, &artifact_ids)?;
+    let artifacts = if let Some(conversation) = conversation {
+        artifact_ids
+            .iter()
+            .map(|id| crate::chat::artifacts::resolve(app, &conversation.id, id))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        resolve_mixer_artifacts(conversation, drafts, &artifact_ids)?
+            .into_iter()
+            .cloned()
+            .collect()
+    };
     if let Some(conversation) = conversation {
         for artifact in artifacts {
-            match input_image_from_artifact(app, &conversation.id, artifact) {
+            match input_image_from_artifact(app, &conversation.id, &artifact) {
                 Ok(image) => push_input_image(&mut images, image),
                 Err(err) => missing.push(err),
             }
@@ -1414,7 +1438,10 @@ fn resolve_mixer_artifacts<'a>(
     let mut found = Vec::new();
     let mut missing = Vec::new();
     for id in artifact_ids {
-        match find_artifact_in_messages(drafts.iter().chain(conversation.messages.iter()), id) {
+        match crate::chat::artifacts::find_in_messages(
+            drafts.iter().chain(conversation.messages.iter()),
+            id,
+        ) {
             Some(artifact) => found.push(artifact),
             None => missing.push(format!("Unknown artifact_id: {id}")),
         }
@@ -1423,24 +1450,6 @@ fn resolve_mixer_artifacts<'a>(
         return Err(missing.join("; "));
     }
     Ok(found)
-}
-
-fn find_artifact_in_messages<'a, I>(messages: I, artifact_id: &str) -> Option<&'a ChatToolArtifact>
-where
-    I: IntoIterator<Item = &'a crate::chat::ChatMessage>,
-{
-    messages.into_iter().find_map(|message| {
-        message
-            .artifacts
-            .iter()
-            .chain(
-                message
-                    .tool_calls
-                    .iter()
-                    .flat_map(|call| call.artifacts.iter()),
-            )
-            .find(|artifact| artifact.id.as_deref() == Some(artifact_id))
-    })
 }
 
 fn input_image_from_artifact(
@@ -1454,13 +1463,12 @@ fn input_image_from_artifact(
             artifact.id.as_deref().unwrap_or(&artifact.name)
         ));
     }
-    if let Some(rel) = artifact.path.as_deref().filter(|path| !path.is_empty()) {
-        let candidate = Path::new(rel);
-        let path = if candidate.is_absolute() {
-            candidate.to_path_buf()
-        } else {
-            crate::chat::storage::conversation_attachments_dir(app, conversation_id)?.join(rel)
-        };
+    if artifact
+        .path
+        .as_deref()
+        .is_some_and(|path| !path.is_empty())
+    {
+        let path = crate::chat::artifacts::file_path(app, conversation_id, artifact)?;
         if path.is_file() {
             return load_input_image_from_path(&path);
         }
@@ -2069,6 +2077,100 @@ mod tests {
         };
         let body = openai_compat_edits_json_body("gpt-image-1.5", &many);
         assert_eq!(body["image"].as_array().map(|v| v.len()), Some(2));
+    }
+
+    #[tokio::test]
+    async fn edits_preserve_reference_when_proxy_requires_images_image_url() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                let header_end = loop {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                while request.len() < header_end + length {
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let body: Value =
+                    serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+                let (status, response) = if attempt == 0 {
+                    assert_eq!(body["image"], "data:image/png;base64,aGVsbG8=");
+                    (
+                        "400 Bad Request",
+                        r#"{"error":{"message":"images[].image_url is required","type":"invalid_request_error"}}"#,
+                    )
+                } else {
+                    assert!(body.get("image").is_none());
+                    assert_eq!(
+                        body["images"][0]["image_url"],
+                        "data:image/png;base64,aGVsbG8="
+                    );
+                    assert_eq!(body["prompt"], "make it dark blue");
+                    ("200 OK", r#"{"data":[{"b64_json":"aGVsbG8="}]}"#)
+                };
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let mut provider = gemini_provider();
+        provider.base_url = format!("http://{address}/v1");
+        provider.api_format = "openai_responses".into();
+        let state = crate::state::test_app_state();
+        let request = ImageGenerationRequest {
+            prompt: "make it dark blue".into(),
+            size: "1024x1024".into(),
+            quality: "auto".into(),
+            n: 1,
+            input_images: vec![sample_input_image()],
+        };
+        let result = generate_with_images_edits(
+            &state,
+            &provider,
+            "gpt-image-2",
+            &request,
+            1,
+            "edit regression",
+        )
+        .await;
+        if result.is_err() {
+            server.abort();
+        }
+        assert!(
+            result.is_ok(),
+            "Reference-preserving edit failed: {}",
+            result.err().unwrap_or_default()
+        );
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn edit_schema_adaptation_does_not_retry_timeouts_or_unrelated_errors() {
+        assert!(!requires_images_image_url("request timed out"));
+        assert!(!requires_images_image_url(
+            "500 Internal Server Error: images[].image_url is required"
+        ));
+        assert!(!requires_images_image_url(
+            "400 Bad Request: image is invalid"
+        ));
     }
 
     #[test]

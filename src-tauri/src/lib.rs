@@ -630,6 +630,8 @@ pub fn run() {
             chat::commands::interaction::chat_steer_message,
             chat::commands::interaction::chat_follow_up_message,
             chat::commands::attachments::chat_read_attachment,
+            chat::artifacts::chat_artifacts_list,
+            chat::artifacts::chat_artifact_action,
             chat::commands::attachments::chat_open_attachment,
             chat::commands::attachments::chat_reveal_attachment,
             chat::commands::attachments::chat_open_generated_artifact,

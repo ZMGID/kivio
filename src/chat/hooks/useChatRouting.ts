@@ -8,6 +8,7 @@ import {
   isChatKnowledgeCenterPath,
   isChatMcpCenterPath,
   isChatNotesPath,
+  isChatArtifactsPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
   isChatSessionCenterPath,
@@ -17,9 +18,7 @@ import {
   type ChatExtensionsNavItem,
 } from '../chatRoutes'
 
-type ChatView =
-  | 'conversation' | 'settings' | 'assistants' | 'skill'
-  | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'onboarding'
+type ChatView = import('../routeCodec').ChatView
 
 interface UseChatRoutingParams {
   onViewChange: (view: ChatView) => void
@@ -118,6 +117,11 @@ export function useChatRouting({
         onViewChange('notes')
         return
       }
+      if (isChatArtifactsPath(path)) {
+        onLeaveConversation()
+        onViewChange('artifacts')
+        return
+      }
       if (isChatAutomationsPath(path)) {
         onLeaveConversation()
         onViewChange('automations')
@@ -204,6 +208,11 @@ export function useChatRouting({
 
   const openExtensionsItem = useCallback((item: ChatExtensionsNavItem) => {
     setExtensionsNavItem(item)
+    if (item === 'artifacts') {
+      onViewChange('artifacts')
+      syncNonConversationRoute('#chat/artifacts')
+      return
+    }
     if (item === 'assistants') {
       openAssistantCenter()
       return
@@ -230,7 +239,7 @@ export function useChatRouting({
     }
   }, [
     openAssistantCenter, openSkillCenter, openMcpCenter, openKnowledgeCenter,
-    openNotesCenter, openAutomationsCenter, setExtensionsNavItem,
+    openNotesCenter, openAutomationsCenter, setExtensionsNavItem, onViewChange, syncNonConversationRoute,
   ])
 
   return {

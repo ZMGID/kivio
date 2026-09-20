@@ -22,6 +22,19 @@ pub type ToolExecutorFuture<'a> =
     Pin<Box<dyn Future<Output = Result<McpToolCallResult, String>> + Send + 'a>>;
 
 pub trait ToolExecutor: Send + Sync {
+    /// Publish a complete, readable result before the model or UI sees success.
+    fn prepare_result<'a>(
+        &'a self,
+        _ctx: &ToolExecutionContext<'_>,
+        _tool: &ChatToolDefinition,
+        _arguments: &Value,
+        mut output: McpToolCallResult,
+    ) -> ToolExecutorFuture<'a> {
+        Box::pin(async move {
+            assign_artifact_ids(&mut output.artifacts);
+            Ok(output)
+        })
+    }
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
@@ -313,7 +326,14 @@ pub async fn execute_tool_call(
     host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
     let started = Instant::now();
     let timeout_ms = effective_tool_timeout_ms(settings, tool, &call.arguments);
-    let call_fut = executor.call(ctx, tool, call.arguments.clone(), skill_cache);
+    let call_fut = async {
+        let output = executor
+            .call(ctx, tool, call.arguments.clone(), skill_cache)
+            .await?;
+        executor
+            .prepare_result(ctx, tool, &call.arguments, output)
+            .await
+    };
     let result = if host.requires_tool_completion() {
         // Cancellation stops further steps, but the worker remains "stopping"
         // until this operation returns. Its own native/provider deadlines still
@@ -345,7 +365,6 @@ pub async fn execute_tool_call(
     let mut follow_ups: Vec<Value> = Vec::new();
     let mut tool_content = match result {
         Ok(Ok(mut output)) if !output.is_error => {
-            assign_artifact_ids(&mut output.artifacts);
             if tool.name == "present_artifacts" {
                 complete_artifact_presentation(&mut output);
             }
@@ -870,13 +889,19 @@ fn artifact_presentation_hint(artifacts: &[ChatToolArtifact]) -> Option<String> 
             "- {id}: {} ({})",
             artifact.name, artifact.mime_type
         ));
+        if let Some(path) = artifact.path.as_deref() {
+            items.push(format!(
+                "  Local file: {}",
+                serde_json::to_string(path).unwrap_or_default()
+            ));
+        }
     }
     if items.is_empty() {
         return None;
     }
     Some(format!(
         "Available artifacts (not shown automatically):\n{}\nIn your final answer, reference only necessary deliverables at the relevant paragraph: [label](artifact:art_ID) for files, ![description](artifact:art_ID) for images. Replace art_ID with an exact ID listed above. Internal QA screenshots, extracted frames, drafts, and failed attempts normally stay in the work log. Do not pass file contents, base64, or data URLs. Use present_artifacts with paths to prepare selected existing local files; use mode preview only for an explicit user preview or choice.",
-        items.join("\n"),
+        format!("{}\nTo inspect a generated image, call read with artifact_ids containing its exact ID. Do not search the filesystem for generated filenames. The local file above is available for file-based tools. Showing an image does not mean you have visually inspected it.", items.join("\n")),
     ))
 }
 

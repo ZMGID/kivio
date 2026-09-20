@@ -721,10 +721,10 @@ fn externalize_image_artifact_in_dir(dir: &Path, artifact: &mut ChatToolArtifact
 
     let file_name = format!(
         "artifact-{}.{}",
-        Uuid::new_v4(),
+        sha256_hex(&bytes),
         extension_for_image_mime(&mime)
     );
-    if fs::write(dir.join(&file_name), &bytes).is_err() {
+    if !dir.join(&file_name).is_file() && fs::write(dir.join(&file_name), &bytes).is_err() {
         return false;
     }
 
@@ -1367,6 +1367,20 @@ mod tests {
             "path": path,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn repeated_draft_snapshots_share_one_original_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = artifact_with(format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(big_png_bytes())), None);
+        let mut paths = std::collections::HashSet::new();
+        for _ in 0..10 {
+            let mut snapshot = original.clone();
+            assert!(externalize_image_artifact_in_dir(dir.path(), &mut snapshot));
+            paths.insert(snapshot.path.unwrap());
+        }
+        assert_eq!(paths.len(), 1, "saving a fresh draft clone must not duplicate the original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     /// present_artifacts 的成果卡：文件已在盘上 ⇒ 只缩 data_url，不写第二份字节，path 不动。

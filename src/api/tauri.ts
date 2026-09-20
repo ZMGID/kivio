@@ -237,6 +237,8 @@ export type ChatToolStatus =
   | 'cancelled'
 
 export type ChatToolArtifact = {
+  id?: string | null
+  path?: string | null
   name: string
   mime_type?: string
   mimeType?: string
@@ -245,6 +247,23 @@ export type ChatToolArtifact = {
   size_bytes?: number | null
   sizeBytes?: number | null
 }
+
+export type ArtifactLibraryItem = {
+  id: string
+  workId: string
+  parentId: string | null
+  conversationId: string
+  messageId: string
+  title: string
+  createdAt: number
+  sourceTool: string
+  delivered: boolean
+  artifact: ChatToolArtifact
+  available: boolean
+  sourceAvailable: boolean
+}
+
+export type ArtifactLibraryPage = { items: ArtifactLibraryItem[]; warnings: number }
 
 export type ChatToolProgressPayload = {
   conversationId: string
@@ -1736,6 +1755,9 @@ function chatSubagentControl(conversationId: string, args: SubAgentControlReques
 }
 
 export const api = {
+  chatArtifactsList: () => invoke<ArtifactLibraryPage>('chat_artifacts_list'),
+  chatArtifactAction: (id: string, action: 'preview' | 'open' | 'reveal' | 'export', destination?: string) =>
+    invoke<string | null>('chat_artifact_action', { id, action, destination }),
   chatSubagentControl,
   /** 一次状态扫描可选附带行数统计，供同工作目录的 Git 徽标共享。 */
   async dockGitSnapshot(workdir: string, includeDiffStat = false): Promise<GitSnapshot> {

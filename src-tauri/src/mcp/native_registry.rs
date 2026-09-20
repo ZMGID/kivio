@@ -562,6 +562,34 @@ pub fn text_tool_result(content: String) -> McpToolCallResult {
 
 fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
+        let artifact_ids = string_list_argument(ctx.arguments, "artifact_ids")?;
+        let mut resolved_arguments = ctx.arguments.clone();
+        if !artifact_ids.is_empty() {
+            if ctx.arguments.get("path").is_some() || ctx.arguments.get("paths").is_some() {
+                return Err("Use artifact_ids or paths, not both".into());
+            }
+            let nc = ctx
+                .native_ctx
+                .ok_or("artifact_ids require an active conversation")?;
+            let paths = artifact_ids
+                .iter()
+                .map(|id| {
+                    let artifact =
+                        crate::chat::artifacts::resolve(ctx.app, &nc.conversation_id, id)?;
+                    crate::chat::artifacts::file_path(ctx.app, &nc.conversation_id, &artifact)
+                        .map(|p| p.to_string_lossy().into_owned())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            if paths.len() == 1 {
+                resolved_arguments["path"] = serde_json::json!(paths[0]);
+            } else {
+                resolved_arguments["paths"] = serde_json::json!(paths);
+            }
+        }
+        let ctx = NativeCallCtx {
+            arguments: &resolved_arguments,
+            ..ctx
+        };
         let extra_paths = string_list_argument(ctx.arguments, "paths")?;
         let single_path = ctx
             .arguments
@@ -634,7 +662,7 @@ fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             }
         }
         if raw_path.is_empty() {
-            return Err("read requires path or paths".to_string());
+            return Err("read requires path, paths or artifact_ids".to_string());
         }
         // 文本文件（及无法预解析为图片/文档的路径）→ 原同步文本读取。
         let result = crate::native_tools::read_file(ctx.workspace, ctx.arguments)?;

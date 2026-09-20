@@ -282,6 +282,7 @@ pub fn native_read_file_tool() -> ChatToolDefinition {
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "File path to read. Relative paths resolve from the project root/current workspace; absolute and ~/ paths are also accepted when allowed by workspace mode." },
+                "artifact_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 12, "description": "Exact art_ IDs returned by tools in this conversation. Read generated images directly by ID without searching for files; also resolves generated documents to their local path." },
                 "paths": {
                     "type": "array",
                     "description": "Several image files to inspect in one call (png/jpg/webp/gif, max 12). Default is one image each. Do not use this for text files.",

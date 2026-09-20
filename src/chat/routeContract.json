@@ -10,6 +10,7 @@
     "mcp",
     "knowledge",
     "notes",
+    "artifacts",
     "onboarding",
     "popout"
   ],
@@ -21,9 +22,19 @@
     "automations",
     "mcp",
     "knowledge",
-    "notes"
+    "notes",
+    "artifacts"
   ],
   "cases": [
+    {
+      "name": "works library",
+      "raw": "#chat/artifacts",
+      "path": "chat/artifacts",
+      "kind": "artifacts",
+      "decodedConversationId": null,
+      "rememberable": true,
+      "restorable": true
+    },
     {
       "name": "root",
       "raw": "chat",

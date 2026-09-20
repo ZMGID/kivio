@@ -27,6 +27,7 @@ import {
   isChatKnowledgeCenterPath,
   isChatMcpCenterPath,
   isChatNotesPath,
+  isChatArtifactsPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
   isChatSessionCenterPath,
@@ -184,12 +185,13 @@ const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => 
 const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
   default: module.NotesCenter,
 })))
+const ArtifactsCenter = lazy(() => import('./ArtifactsCenter').then((module) => ({ default: module.ArtifactsCenter })))
 
 const AutomationCenter = lazy(() => import('./automation/AutomationCenter').then((module) => ({
   default: module.AutomationCenter,
 })))
 
-type ChatView = 'conversation' | 'settings' | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'onboarding'
+type ChatView = import('./routeCodec').ChatView
 
 interface ChatProps {
   onSettingsChange: () => void
@@ -331,6 +333,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
     if (isChatNotesPath(path)) return 'notes'
+    if (isChatArtifactsPath(path)) return 'artifacts'
     if (isChatAutomationsPath(path)) return 'automations'
     // 旧 `#chat/sessions`：对话库已迁设置
     if (isChatSessionCenterPath(path)) return 'settings'
@@ -2794,6 +2797,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <KnowledgeCenter />
+            </Suspense>
+          </div>
+        ) : chatView === 'artifacts' ? (
+          <div key="center" className={centerPageClass}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
             </Suspense>
           </div>
         ) : chatView === 'notes' ? (

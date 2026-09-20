@@ -85,6 +85,7 @@ function useSelectMenuOpen(
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault()
         setOpen(false)
         triggerRef.current?.focus()
       }
@@ -107,6 +108,7 @@ function useSelectMenuOpen(
 /** 与 Select 同款的选项菜单（portal）。 */
 function SelectMenuPortal({
   open,
+  triggerRef,
   menuRef,
   menuRect,
   options,
@@ -114,6 +116,7 @@ function SelectMenuPortal({
   onPick,
 }: {
   open: boolean
+  triggerRef: RefObject<HTMLElement | null>
   menuRef: RefObject<HTMLDivElement | null>
   menuRect: { left: number; top?: number; bottom?: number; width: number; maxHeight: number }
   options: SelectOption[]
@@ -148,7 +151,8 @@ function SelectMenuPortal({
         )
       })}
     </div>,
-    document.body,
+    // Native dialogs occupy the top layer; their menus must stay in that layer.
+    triggerRef.current?.closest('dialog[open]') ?? document.body,
   )
 }
 
@@ -206,6 +210,7 @@ export function Select({ value, onChange, options, className = '', disabled: dis
 
       <SelectMenuPortal
         open={open}
+        triggerRef={triggerRef}
         menuRef={menuRef}
         menuRect={menuRect}
         options={options}
@@ -285,6 +290,7 @@ export function SuggestInput({
       )}
       <SelectMenuPortal
         open={open && canSuggest}
+        triggerRef={triggerRef}
         menuRef={menuRef}
         menuRect={menuRect}
         options={options}

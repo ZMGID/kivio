@@ -4,9 +4,7 @@ import type { SettingsShellHandle } from '../../settings/public/shell'
 /** 退场下滑动画时长，与 Settings 入场容器的 CSS 对齐。 */
 const SETTINGS_EXIT_MS = 220
 
-type ChatView =
-  | 'conversation' | 'settings' | 'assistants' | 'skill'
-  | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'onboarding'
+type ChatView = import('../routeCodec').ChatView
 
 interface PendingSettingsAction {
   action: () => void
