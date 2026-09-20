@@ -755,6 +755,7 @@ pub fn generate_request_from_openai_messages(
             model_messages.push(model_message);
         }
     }
+    repair_legacy_tool_result_order(&mut model_messages);
     if let Some(first) = system_parts.first_mut() {
         if let Some((prefix, suffix)) = split_workbench_system_suffix(first) {
             *first = prefix;
@@ -794,6 +795,56 @@ pub fn model_messages_from_openai_messages(messages: Vec<Value>) -> Vec<ModelMes
         .into_iter()
         .filter_map(|message| model_message_from_openai_message(&message))
         .collect()
+}
+
+/// Older stored tool rounds inserted image/user messages between results from
+/// the same assistant call batch. Repair that ordering at the request boundary
+/// so existing conversations can continue without deleting their history.
+/// Only move results for this batch, never across the next assistant turn; do
+/// not invent missing results or discard unrelated messages.
+fn repair_legacy_tool_result_order(messages: &mut [ModelMessage]) {
+    let mut start = 0;
+    while start < messages.len() {
+        if messages[start].role != ModelRole::Assistant {
+            start += 1;
+            continue;
+        }
+        let mut pending: std::collections::HashSet<String> = messages[start]
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::ToolCall { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let end = (start + 1..messages.len())
+            .find(|&index| messages[index].role == ModelRole::Assistant)
+            .unwrap_or(messages.len());
+        let mut insert_at = start + 1;
+        for index in start + 1..end {
+            let message = &messages[index];
+            if pending.is_empty() {
+                break;
+            }
+            if message.role != ModelRole::Tool
+                || message.content.is_empty()
+                || !message.content.iter().all(|part| {
+                    matches!(part,
+                    MessagePart::ToolResult { tool_call_id, .. } if pending.contains(tool_call_id))
+                })
+            {
+                continue;
+            }
+            for part in &message.content {
+                if let MessagePart::ToolResult { tool_call_id, .. } = part {
+                    pending.remove(tool_call_id);
+                }
+            }
+            messages[insert_at..=index].rotate_right(1);
+            insert_at += 1;
+        }
+        start = end;
+    }
 }
 
 pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<Value> {
@@ -1442,6 +1493,65 @@ MCP note after the path.";
             panic!("expected text part");
         };
         assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn tool_image_follow_up_replay_repairs_legacy_interleaved_results() {
+        let messages = vec![
+            serde_json::json!({"role":"user", "content":"请找官方群"}),
+            serde_json::json!({"role":"assistant", "tool_calls":[
+                {"id":"read_image", "type":"function", "function":{"name":"read", "arguments":"{}"}},
+                {"id":"run_command", "type":"function", "function":{"name":"bash", "arguments":"{}"}}
+            ]}),
+            serde_json::json!({"role":"tool", "tool_call_id":"read_image", "content":"image loaded"}),
+            serde_json::json!({"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}),
+            serde_json::json!({"role":"tool", "tool_call_id":"run_command", "content":"ok"}),
+            serde_json::json!({"role":"assistant", "content":"answer"}),
+            serde_json::json!({"role":"user", "content":"你回答用的是英文。为啥"}),
+        ];
+        let request = generate_request_from_openai_messages(
+            "m",
+            messages,
+            None,
+            Default::default(),
+            "t",
+            Default::default(),
+        );
+        let items = responses_input_from_model_messages(&request.messages, None);
+        assert_eq!(
+            items[4]["type"], "function_call_output",
+            "No tool output found for run_command before image turn"
+        );
+        assert_eq!(items[4]["call_id"], "run_command");
+        assert_eq!(items[5]["role"], "user");
+        assert_eq!(items[6]["role"], "assistant");
+        assert_eq!(items[7]["content"][0]["text"], "你回答用的是英文。为啥");
+    }
+
+    #[test]
+    fn tool_image_follow_up_repair_does_not_cross_assistant_turns_or_invent_results() {
+        let messages = vec![
+            serde_json::json!({"role":"assistant", "tool_calls":[
+                {"id":"missing", "type":"function", "function":{"name":"read", "arguments":"{}"}}
+            ]}),
+            serde_json::json!({"role":"user", "content":"new instruction"}),
+            serde_json::json!({"role":"tool", "tool_call_id":"unrelated", "content":"keep"}),
+            serde_json::json!({"role":"assistant", "content":"next turn"}),
+            serde_json::json!({"role":"tool", "tool_call_id":"missing", "content":"late"}),
+        ];
+        let expected = model_messages_from_openai_messages(messages.clone());
+        let request = generate_request_from_openai_messages(
+            "m",
+            messages,
+            None,
+            Default::default(),
+            "t",
+            Default::default(),
+        );
+        assert_eq!(
+            serde_json::to_value(request.messages).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
     }
 
     #[test]

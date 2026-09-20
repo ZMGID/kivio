@@ -326,6 +326,7 @@ struct RecordingExecutor {
     active: AtomicUsize,
     max_active: AtomicUsize,
     events: Arc<Mutex<Vec<String>>>,
+    image_after_read: bool,
 }
 
 impl RecordingExecutor {
@@ -370,7 +371,16 @@ impl ToolExecutor for RecordingExecutor {
                 raw: Value::Null,
                 artifacts: Vec::new(),
                 structured_content: None,
-                follow_up_user_messages: Vec::new(),
+                follow_up_user_messages: if self.image_after_read && name == "read" {
+                    vec![serde_json::json!({
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {
+                            "url": "data:image/png;base64,aGVsbG8="
+                        }}]
+                    })]
+                } else {
+                    Vec::new()
+                },
             })
         })
     }
@@ -822,6 +832,52 @@ fn tool_round_limit_reached_only_for_finite_limits_at_boundary() {
     assert!(!tool_round_limit_reached(Some(3), 2));
     assert!(tool_round_limit_reached(Some(3), 3));
     assert!(tool_round_limit_reached(Some(3), 4));
+}
+
+#[tokio::test]
+async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() {
+    // Regression: read(image) + bash produced tool/read, user/image, tool/bash.
+    // Strict providers reject the image turn with "No tool output found" for bash.
+    for trailing in ["web_fetch", "bash", "missing_tool"] {
+        let host = TestHost::default();
+        let executor = RecordingExecutor {
+            image_after_read: true,
+            ..Default::default()
+        };
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        let tools = vec![
+            native_read_file_tool(),
+            native_web_fetch_tool(),
+            native_run_command_tool(),
+        ];
+        let mut skill_cache = skills::SkillRunCache::default();
+        let result = execute_tool_round(
+            &host,
+            &executor,
+            &settings,
+            test_round_context(),
+            &tools,
+            &[],
+            vec![
+                pending_tool_call("call_read", "read"),
+                pending_tool_call("call_next", trailing),
+            ],
+            &mut skill_cache,
+        )
+        .await;
+        assert!(!result.cancelled);
+        assert_eq!(result.response_messages.len(), 3);
+        assert_eq!(result.response_messages[0]["tool_call_id"], "call_read");
+        assert_eq!(
+            result.response_messages[1]["tool_call_id"], "call_next",
+            "No tool output found for call_next before image turn ({trailing})"
+        );
+        assert_eq!(
+            result.response_messages[2]["content"][0]["type"],
+            "image_url"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1619,6 +1675,49 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
 
 /// Fallback B: streamed synthesis request fails (HTTP 400) after a successful
 /// tool round; the tool records must survive with the bilingual fallback text.
+#[tokio::test]
+async fn tool_image_follow_up_recovery_keeps_question_and_language() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Status(
+            400,
+            r#"{"error":"No tool output found for call next"}"#.into(),
+        ),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"恢复回答"},"finish_reason":"stop"}]}"#.into(),
+            "[DONE]".into(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    // Real user messages can also have mixed text/image parts.
+    config.runtime_messages[1] = serde_json::json!({"role":"user", "content":[
+        {"type":"text", "text":"有GLM的官方群吗？"}
+    ]});
+    let executor = RecordingExecutor {
+        image_after_read: true,
+        ..Default::default()
+    };
+    let result = run_agent_loop(config, &TestHost::default(), &executor)
+        .await
+        .unwrap();
+    assert_eq!(result.stream_outcome, "recovered");
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 3);
+    let recovery: Value = serde_json::from_str(&bodies[2]).unwrap();
+    assert!(
+        recovery["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("有GLM的官方群吗？"),
+        "Recovery lost the actual question after a tool-generated image: {recovery}"
+    );
+    assert!(recovery["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("zh-CN"));
+}
+
 #[tokio::test]
 async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback() {
     let server = MockModelServer::start(vec![

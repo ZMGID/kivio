@@ -126,8 +126,8 @@ struct ToolExecutionResult {
     response_message: Value,
     record: Option<ToolCallRecord>,
     cancelled: bool,
-    /// Extra user-role messages (OpenAI shape) appended right after this tool's
-    /// result message — used by `read` to feed an image to a vision model.
+    /// Extra user-role messages (OpenAI shape) appended after ALL results in the
+    /// round — used by `read` to feed an image to a vision model.
     follow_up_messages: Vec<Value>,
 }
 
@@ -372,9 +372,14 @@ fn push_tool_execution_result(
     if let Some(record) = result.record {
         tool_records.push(record);
     }
-    response_messages.push(result.response_message);
-    // Follow-up user messages (e.g. an image for a vision model) must come
-    // after the tool-result message so tool_call_ids are answered first.
+    // A round may span parallel batches, serial calls, errors and cancellation.
+    // Answer every call before any image/user turn, including follow-ups already
+    // collected from an earlier batch. Preserve order within both groups.
+    let result_end = response_messages
+        .iter()
+        .position(|message| message["role"] != "tool")
+        .unwrap_or(response_messages.len());
+    response_messages.insert(result_end, result.response_message);
     response_messages.extend(result.follow_up_messages);
     cancelled
 }

@@ -229,10 +229,22 @@ fn last_user_text(messages: &[Value]) -> Option<String> {
     messages
         .iter()
         .rev()
-        .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
+        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .find_map(|message| {
+            // Tool-generated image turns carry no question. Keep looking for
+            // the user's text, including multimodal messages and steering.
+            let text = match message.get("content")? {
+                Value::String(text) => text.clone(),
+                Value::Array(parts) => parts
+                    .iter()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => return None,
+            };
+            (!text.trim().is_empty()).then_some(text)
+        })
 }
 
 /// 收集本轮成功工具产出的可读摘要(用于去敏重做的输入)。
@@ -253,11 +265,12 @@ fn gathered_previews(state: &RunState) -> Vec<String> {
 
 /// 去敏 + 精简的恢复输入:仅用「用户问题 + 工具产出摘要 + 中立指令」重做一次合成,
 /// 去掉触发审核的完整正文/历史。
-fn build_neutral_reduced_messages(state: &RunState) -> Vec<Value> {
+fn build_neutral_reduced_messages(state: &RunState, language: &str) -> Vec<Value> {
     let question = last_user_text(&state.runtime_messages).unwrap_or_default();
     let previews = gathered_previews(state).join("\n\n");
-    let system =
-        "Answer the user's question objectively and neutrally, strictly based on the search snippets below. Only organize and state information already present in the snippets; add no commentary, stance, or outside content.";
+    let system = format!(
+        "Answer the user's question objectively and neutrally, strictly based on the search snippets below. Only organize and state information already present in the snippets; add no commentary, stance, or outside content. Respond in the language of the user's question unless they request another language. If unclear, use the configured language: {language}."
+    );
     let user = format!("User question: {question}\n\nSearch snippets:\n{previews}");
     vec![
         json!({ "role": "system", "content": system }),
@@ -412,7 +425,7 @@ async fn recover_remediate(
     failure_message: &str,
 ) -> String {
     let config = env.config;
-    let reduced = build_neutral_reduced_messages(state);
+    let reduced = build_neutral_reduced_messages(state, &config.language);
     // 同 recover_overflow_compact_and_retry：恢复重试必须接取消。
     let result = tokio::select! {
         result = config.provider_runtime.message(super::provider_runtime::MessageRequest {
