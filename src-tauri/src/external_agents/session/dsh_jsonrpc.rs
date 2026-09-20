@@ -112,6 +112,9 @@ struct MapSessionState {
     context_window: Option<u64>,
     compact: Option<PendingCompact>,
     background_calls: HashMap<String, PendingBackground>,
+    streamed_text: String,
+    streamed_reasoning: String,
+    streamed_usage: bool,
 }
 
 #[derive(Default)]
@@ -1770,6 +1773,11 @@ fn map_session_event(
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) -> Option<Result<(), String>> {
     match event_type {
+        "step/start" => {
+            state.streamed_text.clear();
+            state.streamed_reasoning.clear();
+            state.streamed_usage = false;
+        }
         "request/context" => {
             if let Some(window) = data.get("contextWindow").and_then(Value::as_u64) {
                 state.context_window = Some(window);
@@ -1781,6 +1789,7 @@ fn map_session_event(
                 "text-delta" => {
                     if let Some(delta) = chunk.get("text").and_then(Value::as_str) {
                         if !delta.is_empty() {
+                            state.streamed_text.push_str(delta);
                             sink(UnifiedAgentEvent::TextDelta {
                                 delta: delta.to_string(),
                             });
@@ -1790,6 +1799,7 @@ fn map_session_event(
                 "reasoning-delta" => {
                     if let Some(delta) = chunk.get("text").and_then(Value::as_str) {
                         if !delta.is_empty() {
+                            state.streamed_reasoning.push_str(delta);
                             sink(UnifiedAgentEvent::ThinkingDelta {
                                 delta: delta.to_string(),
                             });
@@ -1798,12 +1808,44 @@ fn map_session_event(
                 }
                 "usage" => {
                     if let Some(usage) = parse_usage(chunk.get("usage"), state.context_window) {
+                        state.streamed_usage = true;
                         sink(UnifiedAgentEvent::Usage { usage });
                     }
                 }
                 // block-start / block-end / tool-call-delta / finish 都有更权威的独立事件或
                 // 轮终点。尤其 tool-call-delta 是一个字符一个字符地来，不能拿它造工具卡。
                 _ => {}
+            }
+        }
+        "assistant/message" => {
+            let content = data
+                .get("message")
+                .and_then(|message| message.get("content"));
+            let reasoning = content_blocks_of_type(content, "reasoning");
+            if let Some(missing) = reasoning.strip_prefix(&state.streamed_reasoning) {
+                if !missing.is_empty() {
+                    sink(UnifiedAgentEvent::ThinkingDelta {
+                        delta: missing.to_string(),
+                    });
+                }
+            }
+            state.streamed_reasoning = reasoning;
+
+            let text = content_blocks_text(content);
+            if let Some(missing) = text.strip_prefix(&state.streamed_text) {
+                if !missing.is_empty() {
+                    sink(UnifiedAgentEvent::TextDelta {
+                        delta: missing.to_string(),
+                    });
+                }
+            }
+            state.streamed_text = text;
+
+            if !state.streamed_usage {
+                if let Some(usage) = parse_usage(data.get("usage"), state.context_window) {
+                    sink(UnifiedAgentEvent::Usage { usage });
+                    state.streamed_usage = true;
+                }
             }
         }
         "tool/call" => {
@@ -2120,13 +2162,17 @@ fn parse_dsh_slash_commands(result: &Value) -> Vec<ExternalCliSlashCommand> {
 }
 
 fn content_blocks_text(value: Option<&Value>) -> String {
+    content_blocks_of_type(value, "text")
+}
+
+fn content_blocks_of_type(value: Option<&Value>, block_type: &str) -> String {
     value
         .and_then(Value::as_array)
         .map(|items| {
             items
                 .iter()
                 .filter_map(|item| {
-                    if item.get("type").and_then(Value::as_str) == Some("text") {
+                    if item.get("type").and_then(Value::as_str) == Some(block_type) {
                         item.get("text").and_then(Value::as_str).map(str::to_string)
                     } else {
                         None
@@ -2829,6 +2875,57 @@ mod tests {
         // reasoning 是 output 的子集，不能再加一次：166 + 184 + 1152 = 1502。
         assert_eq!(usage.total_tokens, Some(1502));
         assert_eq!(usage.context_window_tokens, Some(1_000_000));
+    }
+
+    #[test]
+    fn maps_v3_assistant_message_when_chunks_are_embedded_in_the_message() {
+        let events = map_events(&[
+            ("step/start", json!({ "turn": 1, "step": 1 })),
+            (
+                "assistant/message",
+                json!({
+                    "message": { "role": "assistant", "content": [
+                        { "type": "reasoning", "text": "Thinking" },
+                        { "type": "text", "text": "你好呀！" }
+                    ] },
+                    "usage": { "inputTokens": 11, "outputTokens": 4, "reasoningTokens": 2 }
+                }),
+            ),
+        ]);
+        assert!(
+            matches!(&events[0], UnifiedAgentEvent::ThinkingDelta { delta } if delta == "Thinking")
+        );
+        assert!(
+            matches!(&events[1], UnifiedAgentEvent::TextDelta { delta } if delta == "你好呀！")
+        );
+        assert!(
+            matches!(&events[2], UnifiedAgentEvent::Usage { usage } if usage.total_tokens == Some(15))
+        );
+    }
+
+    #[test]
+    fn assistant_message_does_not_repeat_legacy_streamed_chunks() {
+        let events = map_events(&[
+            ("step/start", json!({ "turn": 1, "step": 1 })),
+            (
+                "assistant/chunk",
+                json!({ "chunk": { "type": "text-delta", "text": "你好" } }),
+            ),
+            (
+                "assistant/message",
+                json!({
+                    "message": { "role": "assistant", "content": [ { "type": "text", "text": "你好呀！" } ] }
+                }),
+            ),
+        ]);
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::TextDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "你好呀！");
     }
 
     #[test]

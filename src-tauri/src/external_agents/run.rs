@@ -1011,15 +1011,7 @@ where
         if let Some(stale) = previous_control {
             // A new dsh process must not resume while the old process can still write the same
             // native session log. Close the actor and wait for its receiver to disappear first.
-            let _ = stale
-                .send(crate::external_agents::session::live::SessionCommand::Close)
-                .await;
-            if tokio::time::timeout(std::time::Duration::from_secs(5), stale.closed())
-                .await
-                .is_err()
-            {
-                return Err("旧外部 CLI 会话关闭超时，请重试".to_string());
-            }
+            close_live_control(&stale).await?;
         }
         if force_pi_fork {
             state.external_live_sessions().remove(conversation_id);
@@ -1278,6 +1270,10 @@ where
             }
         }
 
+        // Removing the registry entry does not close the actor while this local sender still
+        // exists. dsh now enforces one writer per native session, so wait for the old process
+        // before reopening that same id after a failed turn.
+        close_live_control(&control).await?;
         let (next_control, resumed, reconnect_native) = reconnect_fresh(
             app,
             state,
@@ -1317,6 +1313,22 @@ where
             emit(context_reset_notice_event());
         }
     }
+}
+
+async fn close_live_control(
+    control: &tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
+) -> Result<(), String> {
+    use crate::external_agents::session::live::SessionCommand;
+
+    let close = async {
+        if !control.is_closed() {
+            let _ = control.send(SessionCommand::Close).await;
+            control.closed().await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), close)
+        .await
+        .map_err(|_| "旧外部 CLI 会话关闭超时，请重试".to_string())
 }
 
 /// Connect a persistent session for the reconnect paths, persist its handle, and register it.
@@ -4389,6 +4401,20 @@ mod tests {
             persistent_failure_action(NEEDS_RECONNECT, "grok", false, true, false),
             PersistentFailureAction::Fatal
         );
+    }
+
+    #[tokio::test]
+    async fn reconnect_waits_for_old_session_actor_to_close() {
+        use crate::external_agents::session::live::SessionCommand;
+
+        let (control, mut commands) = tokio::sync::mpsc::channel(1);
+        let actor = tokio::spawn(async move {
+            assert!(matches!(commands.recv().await, Some(SessionCommand::Close)));
+        });
+
+        close_live_control(&control).await.unwrap();
+        actor.await.unwrap();
+        assert!(control.is_closed());
     }
 
     // ---- resume 失效必须降级，而不是把 CLI 的英文原句甩给用户 ----

@@ -552,7 +552,7 @@ pub async fn ensure_profile_ready(
     if !packages_match_core(&dir, &core_version) {
         install_packages(bin, &core_version).await?;
     }
-    strip_profile_agent_presets_dep(&dir);
+    normalize_profile_manifest(&dir)?;
 
     // patch 在依赖之后写：`dsh plugin` 首次会按模板初始化 profile 目录并写一份占位
     // `cordis.patch.yml`（内容是 `[]`），先写就会被它覆盖掉。
@@ -565,20 +565,31 @@ pub async fn ensure_profile_ready(
         .map_err(|e| format!("写入 dsh profile 配置失败：{e}"))
 }
 
-fn strip_profile_agent_presets_dep(dir: &Path) {
+fn normalize_profile_manifest(dir: &Path) -> Result<(), String> {
     let package_json = dir.join("package.json");
-    if let Ok(raw) = std::fs::read_to_string(&package_json) {
-        if let Ok(mut value) = serde_json::from_str::<Value>(&raw) {
-            let removed = value
-                .get_mut("dependencies")
-                .and_then(Value::as_object_mut)
-                .is_some_and(|deps| deps.remove(PROFILE_PRESET_PACKAGE).is_some());
-            if removed {
-                if let Ok(next) = serde_json::to_string_pretty(&value) {
-                    let _ = std::fs::write(&package_json, format!("{next}\n"));
-                }
-            }
-        }
+    let raw = std::fs::read_to_string(&package_json)
+        .map_err(|e| format!("读取 dsh profile package.json 失败：{e}"))?;
+    let mut value: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("解析 dsh profile package.json 失败：{e}"))?;
+    let manifest = value
+        .as_object_mut()
+        .ok_or_else(|| "dsh profile package.json 必须是 JSON 对象".to_string())?;
+    // dsh 0.1.5 的默认插件清单扩展会在首轮请求前读取活动插件的
+    // package.json；没有 version 会以 REQUEST_EXTENSION 失败。
+    let version = env!("CARGO_PKG_VERSION");
+    let version_changed = manifest.get("version").and_then(Value::as_str) != Some(version);
+    if version_changed {
+        manifest.insert("version".to_string(), Value::String(version.to_string()));
+    }
+    let removed_preset = manifest
+        .get_mut("dependencies")
+        .and_then(Value::as_object_mut)
+        .is_some_and(|deps| deps.remove(PROFILE_PRESET_PACKAGE).is_some());
+    if version_changed || removed_preset {
+        let next = serde_json::to_string_pretty(&value)
+            .map_err(|e| format!("序列化 dsh profile package.json 失败：{e}"))?;
+        std::fs::write(&package_json, format!("{next}\n"))
+            .map_err(|e| format!("写入 dsh profile package.json 失败：{e}"))?;
     }
     let relative = PROFILE_PRESET_PACKAGE.trim_start_matches('@');
     if let Some((scope, name)) = relative.split_once('/') {
@@ -588,6 +599,7 @@ fn strip_profile_agent_presets_dep(dir: &Path) {
                 .join(name),
         );
     }
+    Ok(())
 }
 
 /// `dsh plugin --profile kivio add <pkgs>`。
@@ -929,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_profile_agent_presets_dep_removes_the_shadowing_copy() {
+    fn normalize_profile_manifest_removes_the_shadowing_preset() {
         let dir =
             std::env::temp_dir().join(format!("kivio-dsh-preset-strip-{}", std::process::id()));
         let pkg_dir = dir
@@ -940,11 +952,11 @@ mod tests {
         std::fs::write(pkg_dir.join("package.json"), "{}").unwrap();
         std::fs::write(
             dir.join("package.json"),
-            r#"{"dependencies":{"@deepseek-ai/dsh-agent-presets":"0.0.1-rc.1","@deepseek-ai/dsh-sdk-protocol":"0.0.1-rc.1"}}"#,
+            r#"{"name":"dsh-profile-kivio","dependencies":{"@deepseek-ai/dsh-agent-presets":"0.0.1-rc.1","@deepseek-ai/dsh-sdk-protocol":"0.0.1-rc.1"}}"#,
         )
         .unwrap();
 
-        strip_profile_agent_presets_dep(&dir);
+        normalize_profile_manifest(&dir).unwrap();
 
         let value: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).unwrap())
@@ -956,8 +968,35 @@ mod tests {
             value["dependencies"]["@deepseek-ai/dsh-sdk-protocol"],
             "0.0.1-rc.1"
         );
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert!(!pkg_dir.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_manifest_without_legacy_preset_still_gets_a_version() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"dsh-profile-kivio","private":true,"dependencies":{"@deepseek-ai/dsh-sdk-protocol":"0.1.5-rc.2"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base"]}}}"#,
+        )
+        .unwrap();
+
+        normalize_profile_manifest(dir.path()).unwrap();
+
+        let value: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("package.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            value["dependencies"]["@deepseek-ai/dsh-sdk-protocol"],
+            "0.1.5-rc.2"
+        );
+        assert_eq!(
+            value["dsh"]["profile"]["bundles"][0],
+            "@deepseek-ai/dsh-base"
+        );
     }
 
     #[test]
