@@ -179,6 +179,18 @@ export function ConnectorsIcon(props: IconProps) {
   )
 }
 
+// 作品：扁封套，口里露出折角 / 方片 / 圆片
+export function WorksIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <path d="M4 9.2 H20 A1.4 1.4 0 0 1 21.4 10.6 V18.6 A1.6 1.6 0 0 1 19.8 20.2 H4.2 A1.6 1.6 0 0 1 2.6 18.6 V10.6 A1.4 1.4 0 0 1 4 9.2 Z" />
+      <path d="M7.2 9.2 V6.4 A1.5 1.5 0 0 1 8.7 4.9 H11.1" />
+      <rect x="12.2" y="3.6" width="4.6" height="5.6" rx="1.3" />
+      <circle cx="18.8" cy="6.2" r="1.35" />
+    </svg>
+  )
+}
+
 // 对话库：两枚叠放的对话气泡
 export function SessionsIcon(props: IconProps) {
   return (

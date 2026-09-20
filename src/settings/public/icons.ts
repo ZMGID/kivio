@@ -1,1 +1,1 @@
-export { AgentIcon, KnowledgeIcon, McpIcon, SkillIcon, WebSearchIcon } from '../NavIcons'
+export { AgentIcon, KnowledgeIcon, McpIcon, SkillIcon, WebSearchIcon, WorksIcon } from '../NavIcons'

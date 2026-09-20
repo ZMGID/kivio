@@ -5,7 +5,7 @@ import { ArtifactsCenter } from './ArtifactsCenter'
 
 vi.mock('../api/tauri', () => ({ api: { chatArtifactsList: vi.fn(), chatArtifactAction: vi.fn() } }))
 vi.mock('../components/i18n', () => ({ useLang: () => 'zh' }))
-vi.mock('@tauri-apps/plugin-dialog', () => ({ save: vi.fn().mockResolvedValue(null) }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ save: vi.fn().mockResolvedValue(null), open: vi.fn().mockResolvedValue(null) }))
 
 function work(id: string, overrides: Partial<ArtifactLibraryItem> = {}): ArtifactLibraryItem {
   return { id, workId: id, parentId: null, conversationId: 'conv_source', messageId: 'msg_source', title: '头像设计', createdAt: 2, sourceTool: 'mixer_generate_image', delivered: true, artifact: { id, name: `${id}.png`, mime_type: 'image/png' }, available: true, sourceAvailable: true, ...overrides }
@@ -99,5 +99,36 @@ describe('Works library', () => {
     fireEvent.click(screen.getByRole('button', { name: '项目计划.txt' }))
     await waitFor(() => expect(screen.getByRole('dialog').textContent).toContain(content))
     expect(api.chatArtifactAction).toHaveBeenCalledTimes(1)
+  })
+  it('hides empty type filters and keeps populated ones', async () => {
+    vi.mocked(api.chatArtifactsList).mockResolvedValue({ items: [work('art_image')], warnings: 0 })
+    render(<ArtifactsCenter onOpenConversation={vi.fn()} />)
+    await screen.findByRole('button', { name: 'art_image.png' })
+    expect(screen.getByRole('button', { name: '图片' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '文档' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '表格' })).toBeNull()
+  })
+  it('renames from the reader and deletes a selected work from the library', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.mocked(api.chatArtifactsList).mockResolvedValue({ items: [work('art_image'), work('art_other')], warnings: 0 })
+    render(<ArtifactsCenter onOpenConversation={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'art_image.png' }))
+    fireEvent.click(screen.getByRole('button', { name: '重命名' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '作品名称' }), { target: { value: '封面.png' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(api.chatArtifactAction).toHaveBeenCalledWith('art_image', 'rename', undefined, '封面.png'))
+    fireEvent.click(screen.getByRole('button', { name: '关闭预览' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择' }))
+    fireEvent.click(screen.getByRole('button', { name: 'art_other.png' }))
+    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+    await waitFor(() => expect(api.chatArtifactAction).toHaveBeenCalledWith('art_other', 'delete'))
+    expect(window.confirm).toHaveBeenCalled()
+  })
+  it('keeps import warnings out of the empty canvas', async () => {
+    vi.mocked(api.chatArtifactsList).mockResolvedValue({ items: [], warnings: 3 })
+    render(<ArtifactsCenter onOpenConversation={vi.fn()} />)
+    const heading = await screen.findByRole('heading', { name: '你的创作，从这里开始' })
+    expect(heading.closest('.kv-works-empty')?.textContent).not.toMatch(/历史内容未导入/)
+    expect(screen.getByText('3 项历史内容未导入').closest('.kv-works-empty')).toBeNull()
   })
 })

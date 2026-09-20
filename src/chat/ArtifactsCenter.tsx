@@ -1,11 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { save } from '@tauri-apps/plugin-dialog'
-import { Code2, Download, ExternalLink, File, FileText, FolderOpen, Image, Layers, LayoutGrid, List, MessageSquare, Music2, Presentation, RefreshCw, Search, Table2, X } from 'lucide-react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { open, save } from '@tauri-apps/plugin-dialog'
+import { CheckSquare, Code2, Download, ExternalLink, File, FileText, FolderOpen, Image, Layers, LayoutGrid, List, MessageSquare, MoreHorizontal, Music2, Pencil, Presentation, RefreshCw, Search, Table2, Trash2, X } from 'lucide-react'
 import { api, type ArtifactLibraryItem, type ArtifactLibraryPage } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { Input, Select } from '../settings/public/controls'
 import { useLang } from '../components/i18n'
+import { WorksIcon } from '../settings/public/icons'
 import { artifactDataUrl, artifactMimeType } from './artifacts'
+import { DockContextMenu, type DockMenuAnchor } from './dock/DockContextMenu'
 import './ArtifactsCenter.css'
 
 const MarkdownPreview = lazy(() => import('./ChatMarkdown').then((module) => ({ default: module.ChatMarkdown })))
@@ -28,6 +30,10 @@ function isText(item: ArtifactLibraryItem) {
 }
 function decodeText(data: string) {
   try { return new TextDecoder().decode(Uint8Array.from(atob(data.slice(data.indexOf(',') + 1)), (c) => c.charCodeAt(0))) } catch { return '' }
+}
+function joinDest(dir: string, name: string) {
+  const sep = dir.includes('\\') ? '\\' : '/'
+  return `${dir.replace(/[\\/]+$/, '')}${sep}${name}`
 }
 
 function kindOf(item: ArtifactLibraryItem): Kind {
@@ -52,6 +58,11 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
   const [list, setList] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [sort, setSort] = useState('recent')
+  const [picking, setPicking] = useState(false)
+  const [chosen, setChosen] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState(false)
+  const [rename, setRename] = useState<{ id: string; name: string } | null>(null)
+  const [menu, setMenu] = useState<{ workId: string; anchor: DockMenuAnchor } | null>(null)
   // Immutable IDs let card excerpts and the reader share a read during this visit.
   const previews = useRef(new Map<string, Promise<string | null>>())
   const loadPreview = useCallback((id: string) => {
@@ -88,42 +99,152 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
     for (const versions of result.values()) versions.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
     return [...result.values()].sort((a, b) => b[0].createdAt - a[0].createdAt)
   }, [page.items])
-  const filtered = groups.filter(([item]) => (kind === 'all' || kindOf(item) === kind)
+  const kindCounts = useMemo(() => {
+    const counts = new Map<Kind, number>()
+    for (const [item] of groups) counts.set(kindOf(item), (counts.get(kindOf(item)) ?? 0) + 1)
+    return counts
+  }, [groups])
+  const visibleKinds = kinds.filter((value) => value === 'all' || (kindCounts.get(value) ?? 0) > 0)
+  const activeKind = visibleKinds.includes(kind) ? kind : 'all'
+  const filtered = groups.filter(([item]) => (activeKind === 'all' || kindOf(item) === activeKind)
     && `${item.title} ${item.artifact.name}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
     .sort((a, b) => sort === 'name' ? displayTitle(a[0]).localeCompare(displayTitle(b[0]), zh ? 'zh-CN' : 'en') : sort === 'oldest' ? a[0].createdAt - b[0].createdAt : b[0].createdAt - a[0].createdAt)
   const selected = page.items.find((item) => item.id === selectedId)
   const versions = selected ? groups.find((items) => items[0].workId === selected.workId) ?? [] : []
+  const managing = picking || chosen.size > 0
+  const chosenWorks = filtered.filter(([item]) => chosen.has(item.workId))
 
-  return <section className="kv-works custom-scrollbar" aria-label={zh ? '作品' : 'Works'}>
+  const reload = () => { previews.current.clear(); setRefresh((v) => v + 1) }
+  const toggleChosen = (workId: string) => {
+    setChosen((prev) => {
+      const next = new Set(prev)
+      if (next.has(workId)) next.delete(workId)
+      else next.add(workId)
+      return next
+    })
+  }
+  async function run(action: () => Promise<void>) {
+    if (busy) return
+    setBusy(true); setError('')
+    try { await action() }
+    catch (e) { setError(String(e)) }
+    finally { setBusy(false) }
+  }
+  function recordIds(workIds: string[]) {
+    return groups.filter(([item]) => workIds.includes(item.workId)).flatMap((items) => items.map((item) => item.id))
+  }
+  function deleteWorks(workIds: string[]) {
+    const ids = recordIds(workIds)
+    if (!ids.length) return
+    if (!window.confirm(zh ? `删除 ${workIds.length} 件作品？原聊天记录仍会保留。` : `Delete ${workIds.length} work${workIds.length === 1 ? '' : 's'}? Source chats stay unchanged.`)) return
+    void run(async () => {
+      for (const id of ids) await api.chatArtifactAction(id, 'delete')
+      if (selected && workIds.includes(selected.workId)) setSelectedId(null)
+      setChosen(new Set())
+      setPicking(false)
+      reload()
+    })
+  }
+  function exportWorks(items: ArtifactLibraryItem[]) {
+    void run(async () => {
+      if (items.length === 1) {
+        const destination = await save({ defaultPath: items[0].artifact.name, title: zh ? '作品另存为' : 'Save work as' })
+        if (!destination) return
+        await api.chatArtifactAction(items[0].id, 'export', destination)
+        return
+      }
+      const dir = await open({ directory: true, multiple: false, title: zh ? '选择保存目录' : 'Choose a folder' })
+      if (typeof dir !== 'string') return
+      for (const item of items) {
+        if (!item.available) continue
+        await api.chatArtifactAction(item.id, 'export', joinDest(dir, item.artifact.name))
+      }
+    })
+  }
+  async function submitRename() {
+    if (!rename || busy) return
+    const name = rename.name.trim()
+    if (!name) return
+    await run(async () => {
+      await api.chatArtifactAction(rename.id, 'rename', undefined, name)
+      setRename(null)
+      reload()
+    })
+  }
+  const menuWork = menu ? filtered.find(([item]) => item.workId === menu.workId) : undefined
+
+  useEffect(() => {
+    if (!managing) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setChosen(new Set()); setPicking(false) } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [managing])
+
+  return <section className={`kv-works custom-scrollbar${managing ? ' is-selecting' : ''}`} aria-label={zh ? '作品' : 'Works'}>
     <header className="kv-works-header">
       <div><h1>{zh ? '作品' : 'Works'} <span>{groups.length}</span></h1>
         <p>{zh ? '把灵感留下，把作品接着做好。' : 'Keep what you create. Pick up where you left off.'}</p></div>
-      <div className="kv-works-search"><Search size={16} /><Input aria-label={zh ? '搜索作品' : 'Search works'} placeholder={zh ? '搜索作品或聊天…' : 'Search works or chats…'} value={query} onChange={setQuery} />{query && <IconButton label={zh ? '清除搜索' : 'Clear search'} onClick={() => setQuery('')}><X size={14} /></IconButton>}</div>
+      <div className="kv-works-search"><Search size={16} /><Input aria-label={zh ? '搜索作品' : 'Search works'} placeholder={zh ? '搜索作品或聊天…' : 'Search works or chats…'} value={query} onChange={setQuery} /><IconButton className={query ? '' : 'is-idle'} label={zh ? '清除搜索' : 'Clear search'} disabled={!query} onClick={() => setQuery('')}><X size={14} /></IconButton></div>
     </header>
-    <nav className="kv-works-categories custom-scrollbar" aria-label={zh ? '作品类型' : 'Work types'}>{kinds.map((value) => {
-      const Icon = kindIcons[value]
-      const count = value === 'all' ? groups.length : groups.filter(([item]) => kindOf(item) === value).length
-      return <Button key={value} variant={kind === value ? 'default' : 'ghost'} aria-pressed={kind === value} onClick={() => setKind(value)}><Icon size={16} /><span>{kindNames[value][zh ? 0 : 1]}</span><small>{count}</small></Button>
-    })}</nav>
     <div className="kv-works-toolbar">
-      <span className="kv-works-count">{zh ? `${filtered.length} 件作品` : `${filtered.length} works`}</span>
-      <Select className="w-32" ariaLabel={zh ? '作品排序' : 'Sort works'} value={sort} onChange={setSort} options={[{ value: 'recent', label: zh ? '最近创建' : 'Newest first' }, { value: 'oldest', label: zh ? '最早创建' : 'Oldest first' }, { value: 'name', label: zh ? '按名称' : 'Name' }]} />
-      <div className="kv-works-layout"><Button size="sm" variant={list ? 'ghost' : 'default'} aria-label={zh ? '网格视图' : 'Grid view'} title={zh ? '网格视图' : 'Grid view'} aria-pressed={!list} onClick={() => setList(false)}><LayoutGrid size={16} /></Button><Button size="sm" variant={list ? 'default' : 'ghost'} aria-label={zh ? '列表视图' : 'List view'} title={zh ? '列表视图' : 'List view'} aria-pressed={list} onClick={() => setList(true)}><List size={16} /></Button></div>
-      <IconButton label={zh ? '刷新作品' : 'Refresh works'} disabled={loading} onClick={() => { previews.current.clear(); setRefresh((v) => v + 1) }}><RefreshCw size={15} className={loading ? 'animate-spin' : ''} /></IconButton>
+      {visibleKinds.length > 1 && <nav className="kv-works-kinds custom-scrollbar kv-scrollbar-autohide" aria-label={zh ? '作品类型' : 'Work types'}>{visibleKinds.map((value) => {
+        const count = value === 'all' ? groups.length : (kindCounts.get(value) ?? 0)
+        return <button key={value} type="button" className="kv-works-kind" aria-label={kindNames[value][zh ? 0 : 1]} aria-pressed={activeKind === value} onClick={() => setKind(value)}>{kindNames[value][zh ? 0 : 1]}<small>{count}</small></button>
+      })}</nav>}
+      <div className="kv-works-tools">
+        <span className="kv-works-count">{managing ? (zh ? `已选 ${chosen.size} 件` : `${chosen.size} selected`) : (zh ? `${filtered.length} 件作品` : `${filtered.length} works`)}</span>
+        <div className="kv-works-tools-pane" hidden={managing}>
+          <Select className="w-32" ariaLabel={zh ? '作品排序' : 'Sort works'} value={sort} onChange={setSort} options={[{ value: 'recent', label: zh ? '最近创建' : 'Newest first' }, { value: 'oldest', label: zh ? '最早创建' : 'Oldest first' }, { value: 'name', label: zh ? '按名称' : 'Name' }]} />
+          <div className="kv-works-layout"><Button size="sm" variant={list ? 'ghost' : 'default'} aria-label={zh ? '网格视图' : 'Grid view'} title={zh ? '网格视图' : 'Grid view'} aria-pressed={!list} onClick={() => setList(false)}><LayoutGrid size={16} /></Button><Button size="sm" variant={list ? 'default' : 'ghost'} aria-label={zh ? '列表视图' : 'List view'} title={zh ? '列表视图' : 'List view'} aria-pressed={list} onClick={() => setList(true)}><List size={16} /></Button></div>
+          <Button size="sm" variant="ghost" disabled={!filtered.length} onClick={() => setPicking(true)}><CheckSquare size={14} />{zh ? '选择' : 'Select'}</Button>
+          <IconButton label={zh ? '刷新作品' : 'Refresh works'} disabled={loading} onClick={reload}><RefreshCw size={15} className={loading ? 'animate-spin' : ''} /></IconButton>
+        </div>
+        <div className="kv-works-tools-pane" hidden={!managing}>
+          <Button size="sm" disabled={busy || !filtered.length} onClick={() => setChosen(new Set(filtered.map(([item]) => item.workId)))}>{zh ? '全选' : 'Select all'}</Button>
+          <Button size="sm" disabled={busy || !chosenWorks.length} onClick={() => exportWorks(chosenWorks.map(([item]) => item))}><Download size={14} />{zh ? '另存为' : 'Save as'}</Button>
+          <Button size="sm" variant="danger" disabled={busy || !chosen.size} onClick={() => deleteWorks([...chosen])}><Trash2 size={14} />{zh ? '删除' : 'Delete'}</Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setChosen(new Set()); setPicking(false) }}>{zh ? '完成' : 'Done'}</Button>
+        </div>
+      </div>
     </div>
-    {error && <div role="alert" className="kv-works-notice">{error}<Button size="sm" onClick={() => setRefresh((v) => v + 1)}>{zh ? '重试' : 'Retry'}</Button></div>}
+    {error && <div role="alert" className="kv-works-notice">{error}<Button size="sm" onClick={reload}>{zh ? '重试' : 'Retry'}</Button></div>}
     {loading && !page.items.length ? <div className="kv-works-empty" role="status">{zh ? '正在整理作品…' : 'Loading works…'}</div>
-        : !filtered.length ? <div className="kv-works-empty"><Layers size={36} strokeWidth={1.2} /><h2>{query || kind !== 'all' ? (zh ? '没有找到匹配的作品' : 'No matching works') : (zh ? '你的创作，从这里开始' : 'Your creations belong here')}</h2><p>{zh ? '聊天中交付的文档、图片、表格等会自动收录。' : 'Documents, images, spreadsheets and other files delivered in chats appear here.'}</p></div>
+        : !filtered.length ? <div className="kv-works-empty"><span className="kv-works-mark-well"><WorksIcon size={34} strokeWidth={1.6} /></span><h2>{query || activeKind !== 'all' ? (zh ? '没有找到匹配的作品' : 'No matching works') : (zh ? '你的创作，从这里开始' : 'Your creations belong here')}</h2><p>{zh ? '聊天中交付的文档、图片、表格等会自动收录。' : 'Documents, images, spreadsheets and other files delivered in chats appear here.'}</p></div>
         : <div className={`kv-works-grid ${list ? 'is-list' : ''}`} aria-busy={loading}>
-          {filtered.map((items) => <WorkCard key={items[0].id} item={items[0]} versions={items.length} zh={zh} list={list} loadPreview={loadPreview} onOpen={() => setSelectedId(items[0].id)} />)}
+          {filtered.map((items) => <WorkCard key={items[0].id} item={items[0]} versions={items.length} zh={zh} list={list} checked={chosen.has(items[0].workId)} managing={managing} loadPreview={loadPreview}
+            onOpen={() => managing ? toggleChosen(items[0].workId) : setSelectedId(items[0].id)}
+            onToggle={() => toggleChosen(items[0].workId)}
+            onMenu={(anchor) => setMenu({ workId: items[0].workId, anchor })} />)}
         </div>}
     {page.warnings > 0 && <details className="kv-works-import-note"><summary>{zh ? `${page.warnings} 项历史内容未导入` : `${page.warnings} historical items not imported`}</summary><p>{zh ? '部分历史附件暂时无法读取。原聊天记录保留，你可以回到聊天查看，恢复文件后刷新重试。' : 'Some historical attachments could not be read. Their chats are unchanged. Restore the files and refresh to retry.'}</p></details>}
-    {selected && <WorkPreview key={selected.id} item={selected} versions={versions} zh={zh} loadPreview={loadPreview} onVersion={setSelectedId} onClose={() => setSelectedId(null)} onSource={() => onOpenConversation(selected.conversationId)} />}
+    {selected && <WorkPreview key={selected.id} item={selected} versions={versions} zh={zh} loadPreview={loadPreview} onVersion={setSelectedId} onClose={() => setSelectedId(null)} onSource={() => onOpenConversation(selected.conversationId)}
+      onRename={() => setRename({ id: selected.id, name: selected.artifact.name })} onDelete={() => deleteWorks([selected.workId])} />}
+    {menu && menuWork && <DockContextMenu anchor={menu.anchor} onClose={() => setMenu(null)} items={[
+      { key: 'open', label: zh ? '预览' : 'Preview', icon: <ExternalLink size={16} />, onSelect: () => setSelectedId(menuWork[0].id) },
+      { key: 'rename', label: zh ? '重命名' : 'Rename', icon: <Pencil size={16} />, onSelect: () => setRename({ id: menuWork[0].id, name: menuWork[0].artifact.name }) },
+      { key: 'source', label: zh ? '回到聊天' : 'Open chat', icon: <MessageSquare size={16} />, disabled: !menuWork[0].sourceAvailable, onSelect: () => onOpenConversation(menuWork[0].conversationId) },
+      { key: 'export', label: zh ? '另存为' : 'Save as', icon: <Download size={16} />, disabled: !menuWork[0].available, onSelect: () => exportWorks([menuWork[0]]) },
+      { key: 'delete', label: zh ? '删除' : 'Delete', icon: <Trash2 size={16} />, danger: true, onSelect: () => deleteWorks([menuWork[0].workId]) },
+    ]} />}
+    {rename && <RenameDialog zh={zh} name={rename.name} busy={busy} onChange={(name) => setRename({ ...rename, name })} onCancel={() => setRename(null)} onSave={() => void submitRename()} />}
   </section>
 }
 
-function WorkCard({ item, versions, zh, list, loadPreview, onOpen }: { item: ArtifactLibraryItem; versions: number; zh: boolean; list: boolean; loadPreview: (id: string) => Promise<string | null>; onOpen: () => void }) {
-  const root = useRef<HTMLButtonElement>(null)
+function RenameDialog({ zh, name, busy, onChange, onCancel, onSave }: { zh: boolean; name: string; busy: boolean; onChange: (name: string) => void; onCancel: () => void; onSave: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => { dialog.current?.showModal() }, [])
+  return <dialog ref={dialog} className="kv-modal kv-work-rename" aria-label={zh ? '重命名作品' : 'Rename work'} onCancel={onCancel} onClick={(e) => { if (e.target === e.currentTarget) onCancel() }}>
+    <h2>{zh ? '重命名' : 'Rename'}</h2>
+    <Input autoFocus aria-label={zh ? '作品名称' : 'Work name'} value={name} onChange={onChange} onKeyDown={(e) => { if (e.key === 'Enter') onSave(); if (e.key === 'Escape') onCancel() }} />
+    <div className="kv-work-rename-actions"><Button size="sm" variant="ghost" onClick={onCancel}>{zh ? '取消' : 'Cancel'}</Button><Button size="sm" variant="primary" disabled={busy || !name.trim()} onClick={onSave}>{zh ? '保存' : 'Save'}</Button></div>
+  </dialog>
+}
+
+function WorkCard({ item, versions, zh, list, checked, managing, loadPreview, onOpen, onToggle, onMenu }: {
+  item: ArtifactLibraryItem; versions: number; zh: boolean; list: boolean; checked: boolean; managing: boolean
+  loadPreview: (id: string) => Promise<string | null>; onOpen: () => void; onToggle: () => void; onMenu: (anchor: DockMenuAnchor) => void
+}) {
+  const root = useRef<HTMLElement>(null)
   const [excerpt, setExcerpt] = useState('')
   const kind = kindOf(item)
   const Icon = kindIcons[kind]
@@ -144,24 +265,32 @@ function WorkCard({ item, versions, zh, list, loadPreview, onOpen }: { item: Art
     else read()
     return () => { active = false; observer?.disconnect() }
   }, [item, list, loadPreview])
-  return <button ref={root} type="button" className={`kv-work-card kind-${kind}`} aria-label={item.artifact.name} onClick={onOpen}>
-    <div className="kv-work-cover">
-      {kind === 'image' && thumb && !imageFailed ? <img src={thumb} alt="" loading="lazy" onError={() => setImageFailed(true)} /> : <div className={`kv-work-file-cover ${excerpt ? 'has-excerpt' : ''}`}>
-        <div className="kv-work-file-format"><Icon size={22} strokeWidth={1.5} /><span>{extension(item)}</span></div>
-        <strong>{displayTitle(item)}</strong>
-        {excerpt ? <p className={kind === 'code' ? 'is-code' : ''}>{excerpt}</p> : <span className="kv-work-file-caption">{kindNames[kind][zh ? 0 : 1]}{sizeLabel(item) && ` · ${sizeLabel(item)}`}</span>}
-      </div>}
-      {versions > 1 && <span className="kv-work-versions"><Layers size={12} />{versions} {zh ? '个版本' : 'versions'}</span>}
-    </div>
-    <div className="kv-work-info"><div className="kv-work-title"><Icon size={15} /><h2 title={item.artifact.name}>{title}</h2><span className="kv-work-format">{extension(item)}</span></div><p title={item.title}>{sourceIsTitle ? <File size={12} /> : <MessageSquare size={12} />}<span>{sourceIsTitle ? item.artifact.name : item.title || (zh ? '来源聊天' : 'Source chat')}</span></p></div>
-    <div className="kv-work-meta"><span>{new Date(item.createdAt * 1000).toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span><span>{item.available ? sizeLabel(item) : (zh ? '文件缺失' : 'File missing')}</span></div>
-  </button>
+  const openMenu = (e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); onMenu({ left: e.clientX, top: e.clientY }) }
+  return <article ref={root} className={`kv-work-card kind-${kind}${checked ? ' is-selected' : ''}`}>
+    <label className="kv-work-check" onClick={(e) => e.stopPropagation()}>
+      <input type="checkbox" checked={checked} onChange={onToggle} aria-label={zh ? `选择 ${title}` : `Select ${title}`} />
+    </label>
+    <IconButton className="kv-work-more" label={zh ? '更多操作' : 'More actions'} onClick={(e) => { e.stopPropagation(); onMenu({ left: e.currentTarget.getBoundingClientRect().right - 168, top: e.currentTarget.getBoundingClientRect().bottom + 4 }) }}><MoreHorizontal size={15} /></IconButton>
+    <button type="button" className="kv-work-open" aria-label={item.artifact.name} onClick={onOpen} onContextMenu={managing ? undefined : openMenu}>
+      <div className="kv-work-cover">
+        {kind === 'image' && thumb && !imageFailed ? <img src={thumb} alt="" loading="lazy" onError={() => setImageFailed(true)} /> : <div className={`kv-work-file-cover ${excerpt ? 'has-excerpt' : ''}`}>
+          <div className="kv-work-file-format"><Icon size={18} strokeWidth={1.5} /><span>{extension(item)}</span></div>
+          <strong>{displayTitle(item)}</strong>
+          {excerpt ? <p className={kind === 'code' ? 'is-code' : ''}>{excerpt}</p> : <span className="kv-work-file-caption">{kindNames[kind][zh ? 0 : 1]}{sizeLabel(item) && ` · ${sizeLabel(item)}`}</span>}
+        </div>}
+        {versions > 1 && <span className="kv-work-versions"><Layers size={11} />{versions} {zh ? '个版本' : 'versions'}</span>}
+      </div>
+      <div className="kv-work-info"><div className="kv-work-title"><Icon size={14} /><h2 title={item.artifact.name}>{title}</h2><span className="kv-work-format">{extension(item)}</span></div><p title={item.title}>{sourceIsTitle ? <File size={11} /> : <MessageSquare size={11} />}<span>{sourceIsTitle ? item.artifact.name : item.title || (zh ? '来源聊天' : 'Source chat')}</span></p></div>
+      <div className="kv-work-meta"><span>{new Date(item.createdAt * 1000).toLocaleDateString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span><span>{item.available ? sizeLabel(item) : (zh ? '文件缺失' : 'File missing')}</span></div>
+    </button>
+  </article>
 }
 
-function WorkPreview({ item, versions, zh, loadPreview, onVersion, onClose, onSource }: {
+function WorkPreview({ item, versions, zh, loadPreview, onVersion, onClose, onSource, onRename, onDelete }: {
   item: ArtifactLibraryItem; versions: ArtifactLibraryItem[]; zh: boolean
   loadPreview: (id: string) => Promise<string | null>
   onVersion: (id: string) => void; onClose: () => void; onSource: () => void
+  onRename: () => void; onDelete: () => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [data, setData] = useState('')
@@ -215,10 +344,12 @@ function WorkPreview({ item, versions, zh, loadPreview, onVersion, onClose, onSo
       <footer>
         {versions.length > 1 && <Select className="w-36" ariaLabel={zh ? '历史版本' : 'Version history'} value={item.id} onChange={onVersion} options={versions.map((v, i) => ({ value: v.id, label: `${zh ? '版本' : 'Version'} ${versions.length - i}${i === 0 ? (zh ? ' · 最新' : ' · Latest') : ''}` }))} />}
         <Button size="sm" disabled={!item.sourceAvailable} title={item.sourceAvailable ? item.title : (zh ? '来源聊天已删除' : 'Source chat deleted')} onClick={onSource}><MessageSquare size={14} />{zh ? '回到聊天修改' : 'Continue in chat'}</Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onRename}><Pencil size={14} />{zh ? '重命名' : 'Rename'}</Button>
         <div className="grow" />
         <IconButton label={zh ? '在文件夹中显示' : 'Show in folder'} disabled={!item.available || busy} onClick={() => void action('reveal')}><FolderOpen size={16} /></IconButton>
         <Button size="sm" disabled={!item.available || busy} title={zh ? '用默认应用打开副本，保留作品原版本' : 'Open a copy in the default app, preserving this version'} onClick={() => void action('open')}><ExternalLink size={14} />{zh ? '打开副本' : 'Open copy'}</Button>
         <Button size="sm" variant="primary" disabled={!item.available || busy} onClick={() => void action('export')}><Download size={14} />{zh ? '另存为' : 'Save as'}</Button>
+        <IconButton label={zh ? '删除作品' : 'Delete work'} variant="danger" disabled={busy} onClick={onDelete}><Trash2 size={16} /></IconButton>
       </footer>
       {error && <p role="alert" className="kv-works-notice">{error}</p>}
       {notice && <p role="status" className="kv-works-notice">{notice}</p>}

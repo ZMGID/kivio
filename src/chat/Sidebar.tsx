@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
-import { AgentIcon, KnowledgeIcon, McpIcon, SkillIcon } from '../settings/public/icons'
+import { AgentIcon, KnowledgeIcon, McpIcon, SkillIcon, WorksIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { ProjectContextMenu } from './ProjectContextMenu'
@@ -1409,7 +1409,7 @@ export const Sidebar = memo(function Sidebar({
           iconMotion="group-hover:scale-110"
         />
         <NavRow
-          icon={<Layers size={17} strokeWidth={1.75} />}
+          icon={<WorksIcon size={17} strokeWidth={1.75} />}
           label={t.chatNavArtifacts}
           onClick={() => onOpenExtensionsItem('artifacts')}
           active={extensionsActive === 'artifacts'}

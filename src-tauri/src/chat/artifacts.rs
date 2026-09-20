@@ -77,6 +77,77 @@ fn save(root: &Path, record: &ArtifactRecord) -> Result<(), String> {
     )
 }
 
+fn removed_path(root: &Path) -> PathBuf {
+    root.join("removed.json")
+}
+
+fn load_removed(root: &Path) -> HashSet<String> {
+    fs::read(removed_path(root))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn mark_removed(root: &Path, id: &str) -> Result<(), String> {
+    let mut removed = load_removed(root);
+    removed.insert(id.to_string());
+    super::storage::atomic_write(
+        &removed_path(root),
+        &serde_json::to_string(&removed).map_err(|e| e.to_string())?,
+        "artifact removed",
+    )
+}
+
+fn sanitized_name(current: &str, proposed: &str) -> Result<String, String> {
+    let name = proposed.trim();
+    if name.is_empty() || name.len() > 180 {
+        return Err("Invalid file name".into());
+    }
+    if name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+        || name.bytes().any(|b| b < 32)
+    {
+        return Err("Invalid file name".into());
+    }
+    if Path::new(name).extension().is_none() {
+        if let Some(ext) = Path::new(current).extension().and_then(|e| e.to_str()) {
+            return Ok(format!("{name}.{ext}"));
+        }
+    }
+    Ok(name.to_string())
+}
+
+fn blob_unused(root: &Path, blob: &str) -> bool {
+    let Ok(entries) = fs::read_dir(root.join("records")) else {
+        return true;
+    };
+    !entries.flatten().any(|entry| {
+        entry.path().extension().is_some_and(|e| e == "json")
+            && fs::read(entry.path())
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<ArtifactRecord>(&bytes).ok())
+                .is_some_and(|record| record.artifact.path.as_deref() == Some(blob))
+    })
+}
+
+/// Drop a Works library entry. Chat history is unchanged; a tombstone stops
+/// the next import from bringing the same snapshot back.
+fn remove_from_library(root: &Path, id: &str) -> Result<(), String> {
+    let path = record_path(root, id)?;
+    if let Ok(record) = load(root, id) {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+        if let Some(blob) = record.artifact.path.as_deref() {
+            if blob_unused(root, blob) {
+                let _ = fs::remove_file(blob);
+            }
+        }
+    } else if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    mark_removed(root, id)
+}
+
 /// The only path interpretation for stored tool artifacts, including old records.
 pub fn file_path(
     app: &AppHandle,
@@ -330,7 +401,12 @@ pub fn resolve(app: &AppHandle, conversation: &str, id: &str) -> Result<ChatTool
 
 /// Import the existing chat-owned results into durable Works snapshots. Does not
 /// rewrite the conversation or touch original files. Repeated imports are cheap.
-fn import_conversation(app: &AppHandle, root: &Path, conversation: &Conversation) -> usize {
+fn import_conversation(
+    app: &AppHandle,
+    root: &Path,
+    conversation: &Conversation,
+    removed: &HashSet<String>,
+) -> usize {
     let mut warnings = 0;
     for message in &conversation.messages {
         if message.role != "assistant" {
@@ -368,7 +444,7 @@ fn import_conversation(app: &AppHandle, root: &Path, conversation: &Conversation
                 || tool == "mixer_generate_image"
                 || (tool == "present_artifacts" && args["mode"].as_str() != Some("preview"))
                 || referenced.contains(&id);
-            if !delivered {
+            if !delivered || removed.contains(&id) {
                 continue;
             }
             if let Ok(mut existing) = load(root, &id) {
@@ -460,6 +536,7 @@ fn omit_repeated_image_reads(items: &mut Vec<LibraryItem>) {
 pub async fn chat_artifacts_list(app: AppHandle) -> Result<LibraryPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = root(&app)?;
+        let removed = load_removed(&root);
         let index = super::storage::load_index(&app)?;
         let mut warnings = 0;
         // The conversation revision owns invalidation. Failed imports remain
@@ -479,7 +556,7 @@ pub async fn chat_artifacts_list(app: AppHandle) -> Result<LibraryPage, String> 
             }
             match super::storage::load_conversation(&app, &item.id) {
                 Ok(conversation) => {
-                    let count = import_conversation(&app, &root, &conversation);
+                    let count = import_conversation(&app, &root, &conversation, &removed);
                     warnings += count;
                     if count == 0 {
                         if let Some(revision) = item.revision {
@@ -558,9 +635,25 @@ pub async fn chat_artifact_action(
     id: String,
     action: String,
     destination: Option<String>,
+    name: Option<String>,
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let record = load(&root(&app)?, &id)?;
+        let root = root(&app)?;
+        match action.as_str() {
+            "delete" => {
+                remove_from_library(&root, &id)?;
+                return Ok(None);
+            }
+            "rename" => {
+                let proposed = name.or(destination).ok_or("Choose a name")?;
+                let mut record = load(&root, &id)?;
+                record.artifact.name = sanitized_name(&record.artifact.name, &proposed)?;
+                save(&root, &record)?;
+                return Ok(None);
+            }
+            _ => {}
+        }
+        let record = load(&root, &id)?;
         let path = record
             .artifact
             .path
@@ -605,7 +698,7 @@ pub async fn chat_artifact_action(
                     .ok_or("Invalid destination")?
                     .canonicalize()
                     .map_err(|e| e.to_string())?;
-                if parent.starts_with(root(&app)?.canonicalize().map_err(|e| e.to_string())?) {
+                if parent.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
                     return Err("Choose a location outside the managed Works folder".into());
                 }
                 if target.canonicalize().ok() != Path::new(path).canonicalize().ok() {
@@ -716,5 +809,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["art_original", "art_unrelated"]
         );
+    }
+
+    #[test]
+    fn rename_keeps_extension_and_rejects_path_characters() {
+        assert_eq!(sanitized_name("drawing.png", "封面").unwrap(), "封面.png");
+        assert_eq!(
+            sanitized_name("drawing.png", "cover.jpg").unwrap(),
+            "cover.jpg"
+        );
+        assert!(sanitized_name("drawing.png", "../secret").is_err());
+        assert!(sanitized_name("drawing.png", "").is_err());
+    }
+
+    #[test]
+    fn delete_drops_the_record_keeps_shared_bytes_and_blocks_reimport() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = register(dir.path(), record("art_first", b"same"), None).unwrap();
+        let second = register(dir.path(), record("art_second", b"same"), None).unwrap();
+        assert_eq!(first.artifact.path, second.artifact.path);
+        remove_from_library(dir.path(), "art_first").unwrap();
+        assert!(load(dir.path(), "art_first").is_err());
+        assert!(load_removed(dir.path()).contains("art_first"));
+        assert!(Path::new(second.artifact.path.as_ref().unwrap()).is_file());
+        assert_eq!(load(dir.path(), "art_second").unwrap().id, "art_second");
+        remove_from_library(dir.path(), "art_second").unwrap();
+        assert!(!Path::new(second.artifact.path.as_ref().unwrap()).is_file());
     }
 }
