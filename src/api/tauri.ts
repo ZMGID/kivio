@@ -1,7 +1,7 @@
 // Tauri 前端与 Rust 后端的桥接模块
 // 所有 invoke 调用和事件监听都集中在这里，作为前后端的统一接口层
 
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
@@ -361,6 +361,15 @@ export type ChatToolDefinition = {
   sensitive: boolean
 }
 
+export type McpOAuthClient = {
+  clientId: string
+  clientSecret?: string
+  scopes?: string[]
+}
+
+export type ConnectorOAuthArgs = { catalogId?: string; url?: string; name?: string; client?: McpOAuthClient }
+export type OAuthDevicePrompt = { userCode: string; verificationUri: string; expiresIn: number }
+
 export type ChatMcpServer = {
   id: string
   name: string
@@ -383,6 +392,7 @@ export type ChatMcpServer = {
     expiresAt?: number
     tokenEndpoint?: string
     clientId?: string
+    clientSecret?: string
     scopes?: string[]
     /** 真实账户标识（邮箱 / 工作区名 / 用户名）。授权时尽力提取，拿不到则缺省。 */
     account?: string
@@ -1811,10 +1821,24 @@ export const api = {
     invoke<void>('open_local_file', { href, conversationId: conversationId ?? null }),
   openHtmlPreview: (html: string) => invoke<void>('open_html_preview', { html }),
 
-  // 连接器 OAuth：跑完整 OAuth（PKCE + DCR + loopback，会打开浏览器授权）→
+  // 连接器 OAuth：GitHub 内置设备授权；其他服务使用已注册应用或 DCR + PKCE + loopback。
   // 返回物化好的 ChatMcpServer（不写 settings，由前端合并进 chatTools.servers 并保存）。
-  connectorOauthConnect: (args: { catalogId?: string; url?: string; name?: string }) =>
-    invoke<ChatMcpServer>('connector_oauth_connect', args),
+  connectorOauthConnect: async (args: ConnectorOAuthArgs, onDeviceCode?: (prompt: OAuthDevicePrompt) => void, signal?: AbortSignal) => {
+    if (signal?.aborted) throw new Error('OAUTH_CANCELLED')
+    const requestId = crypto.randomUUID()
+    const channel = new Channel<OAuthDevicePrompt>()
+    channel.onmessage = (prompt) => { if (!signal?.aborted) onDeviceCode?.(prompt) }
+    const cancel = () => { void invoke('connector_oauth_cancel', { requestId }).catch(() => {}) }
+    signal?.addEventListener('abort', cancel, { once: true })
+    try {
+      const server = await invoke<ChatMcpServer>('connector_oauth_connect', { ...args, requestId, onDeviceCode: channel })
+      if (signal?.aborted) throw new Error('OAUTH_CANCELLED')
+      return server
+    } finally {
+      signal?.removeEventListener('abort', cancel)
+      channel.onmessage = () => {}
+    }
+  },
 
   listObsidianVaults: () =>
     invoke<{ name: string; path: string }[]>('list_obsidian_vaults_cmd'),

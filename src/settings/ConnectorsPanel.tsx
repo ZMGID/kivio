@@ -23,6 +23,8 @@ import {
 } from './ConnectorBrandIcons'
 import { ConnectorDetailModal } from './ConnectorDetailModal'
 import { Button } from '../components/Button'
+import { OAuthDeviceDialog } from './ConnectorOAuth'
+import { useConnectorOAuth } from './useConnectorOAuth'
 
 // catalog 项 iconKey → 品牌图标组件查找表；未命中（含自定义连接器）回退到通用 link 图标。
 const CONNECTOR_ICON_BY_KEY: Record<
@@ -103,6 +105,7 @@ export function ConnectorsPanel({
 
   // OAuth 授权进行中的目录项 id（卡片显示「授权中…」）。
   const [oauthBusyFor, setOauthBusyFor] = useState<string | null>(null)
+  const { connect: connectOAuth, prompt: devicePrompt, cancel: cancelOAuth } = useConnectorOAuth()
   // OAuth 错误提示（按目录项 id 暂存）。
   const [oauthError, setOauthError] = useState<{ id: string; message: string } | null>(null)
 
@@ -218,7 +221,8 @@ export function ConnectorsPanel({
       setOauthError(null)
       setOauthBusyFor(entry.id)
       try {
-        const server = await api.connectorOauthConnect({ catalogId: entry.id, url: entry.url })
+        const server = await connectOAuth({ catalogId: entry.id, url: entry.url })
+        if (!server) return
         writeServer(server)
         // 授权后顺手测一下连接，填充工具数。
         setBusyId(server.id)
@@ -236,7 +240,7 @@ export function ConnectorsPanel({
         setOauthBusyFor(null)
       }
     },
-    [testServer, writeServer],
+    [connectOAuth, testServer, writeServer],
   )
 
   const addCustomConnector = useCallback(async () => {
@@ -249,7 +253,8 @@ export function ConnectorsPanel({
       setOauthError(null)
       setOauthBusyFor('custom')
       try {
-        const server = await api.connectorOauthConnect({ url, name })
+        const server = await connectOAuth({ url, name })
+        if (!server) return
         writeServer(server)
         setCustomName('')
         setCustomUrl('')
@@ -312,7 +317,7 @@ export function ConnectorsPanel({
     } finally {
       setBusyId(null)
     }
-  }, [customAuth, customName, customToken, customUrl, testServer, writeServer])
+  }, [connectOAuth, customAuth, customName, customToken, customUrl, testServer, writeServer])
 
   // 已连接卡（MCP server；Obsidian 单独渲染）。插件 MCP 走「插件」页，不在这里出现。
   const connectedServers = servers.filter(
@@ -479,7 +484,7 @@ export function ConnectorsPanel({
               variant="primary"
               size="sm"
               className="shrink-0"
-              disabled={oauthBusy}
+              disabled={oauthBusyFor !== null}
               onClick={(e) => {
                 e.stopPropagation()
                 void connectOauthConnector(entry)
@@ -632,6 +637,7 @@ export function ConnectorsPanel({
 
   return (
     <>
+      <OAuthDeviceDialog prompt={devicePrompt} onCancel={cancelOAuth} lang={lang} />
       <SettingsGroup title={t.connectorsSectionConnected}>
         {connectedServers.length === 0 && !obsidianConnected ? (
           <div className="kv-row-desc py-2">{t.connectorsEmptyConnected}</div>

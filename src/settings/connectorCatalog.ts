@@ -87,26 +87,22 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     id: 'github',
     name: 'GitHub',
     description: {
-      zh: '访问仓库、Issue、PR 与代码搜索（使用 Personal Access Token）。',
-      en: 'Access repos, issues, PRs, and code search (via Personal Access Token).',
+      zh: '通过 GitHub 浏览器授权访问公开仓库、Issue、PR 与代码搜索。',
+      en: 'Authorize in GitHub to access public repos, issues, PRs, and code search.',
     },
     iconKey: 'github',
     url: 'https://api.githubcopilot.com/mcp/',
-    authKind: 'token',
-    tokenHint: {
-      zh: '粘贴 GitHub Personal Access Token（PAT）',
-      en: 'Paste a GitHub Personal Access Token (PAT)',
-    },
+    authKind: 'oauth',
     overview: {
       zh: [
         '访问仓库、Issue、Pull Request 与代码搜索。',
         '读取文件内容、提交记录与分支信息。',
-        '使用 Personal Access Token 鉴权，权限由 token scope 决定。',
+        '在浏览器输入短码完成授权，无需注册应用或填写密钥。默认仅授权公开仓库。',
       ],
       en: [
         'Access repositories, issues, pull requests, and code search.',
         'Read file contents, commit history, and branch info.',
-        'Authenticated via a Personal Access Token; scope-limited.',
+        'Enter a short code in your browser; no app registration or secret needed. Public repositories only by default.',
       ],
     },
     website: 'https://github.com',

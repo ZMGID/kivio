@@ -425,6 +425,7 @@ impl<'a> McpManager<'a> {
             client_id.as_deref(),
             // RFC 8707：刷新也要带 resource，否则新 token 又丢了 audience 绑定。
             Some(server.url.as_str()),
+            auth.client_secret.as_deref(),
         )
         .await
         {
@@ -1177,6 +1178,7 @@ mod tests {
             expires_at: Some(1),
             token_endpoint: Some("https://auth.example/token".to_string()),
             client_id: Some("client".to_string()),
+            client_secret: None,
             scopes: Vec::new(),
             account: None,
         };
@@ -1215,6 +1217,7 @@ mod tests {
             expires_at: Some(9_999),
             token_endpoint: Some("https://auth.example/token".to_string()),
             client_id: Some("client".to_string()),
+            client_secret: None,
             scopes: Vec::new(),
             account: None,
         });
@@ -1275,6 +1278,7 @@ mod tests {
             expires_at: Some(10),
             token_endpoint: Some("https://auth.example/token".to_string()),
             client_id: Some("c".to_string()),
+            client_secret: None,
             scopes: Vec::new(),
             account: None,
         });

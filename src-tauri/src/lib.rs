@@ -226,6 +226,9 @@ pub fn run() {
             }
             tauri::WindowEvent::Destroyed => {
                 let label = window.label();
+                if let Some(flows) = window.app_handle().try_state::<connectors::OAuthFlows>() {
+                    flows.cancel_window(label);
+                }
                 chat::notification_viewing::clear_window(label);
                 if crate::chat::popout::is_popout_label(label) {
                     crate::chat::popout::on_popout_destroyed(window.app_handle(), label);
@@ -372,6 +375,7 @@ pub fn run() {
                 rapidocr::RapidOcrClient::new(offline_models),
             ));
             app.manage(chat::repository::ConversationRepository::default());
+            app.manage(connectors::OAuthFlows::default());
 
             // 崩溃残留的中断草稿日志:按每个 message_id 的最后一行合并回会话文件后删除。
             // setup 阶段不可能有活跃 run,没有并发写冲突。
@@ -704,6 +708,7 @@ pub fn run() {
             mcp::registry::chat_mcp_reload_server,
             mcp::registry::chat_mcp_warmup,
             connectors::connector_oauth_connect,
+            connectors::connector_oauth_cancel,
             connectors::obsidian::list_obsidian_vaults_cmd,
             plugins::plugins_list,
             plugins::packages::plugin_packages_list,

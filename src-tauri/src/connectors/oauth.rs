@@ -1,7 +1,6 @@
-//! 远程 MCP 的 OAuth 2.1 授权流程（PKCE + 动态客户端注册 DCR + loopback 回调）。
+//! 远程 MCP 的 OAuth 授权（PKCE + 已注册应用 / DCR + loopback 回调）。
 //!
-//! 符合 MCP Authorization / OAuth 2.1，对 Notion 及任意支持 DCR 的远程 MCP 通用。
-//! 流程：发现授权服务器 → DCR 注册公有客户端 → 生成 PKCE → 起 loopback 监听并开浏览器
+//! 流程：发现授权服务器 → 使用已注册应用或 DCR 注册 → 生成 PKCE → 起 loopback 监听并开浏览器
 //! 授权 → 拿 code 换 token → 物化成带 Authorization header 的 ChatMcpServer。
 //!
 //! 设计原则：把"判断/构造"做成纯函数（可单测，不碰网络/时间/IO），IO 与时间只在
@@ -38,9 +37,19 @@ pub struct AuthServerMetadata {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub registration_endpoint: Option<String>,
+    pub device_authorization_endpoint: Option<String>,
     pub scopes_supported: Vec<String>,
     /// OIDC userinfo 端点（若 metadata 提供）。token 响应缺账户信息时可用它兜底取 email/name。
     pub userinfo_endpoint: Option<String>,
+}
+
+/// Optional application registered with the authorization server out of band.
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OAuthClientConfig {
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub scopes: Option<Vec<String>>,
 }
 
 /// PKCE 一对：verifier 发往 token 端点，challenge 发往 authorize 端点。
@@ -115,6 +124,10 @@ pub fn parse_auth_server_metadata(value: &serde_json::Value) -> Option<AuthServe
         authorization_endpoint,
         token_endpoint,
         registration_endpoint,
+        device_authorization_endpoint: value
+            .get("device_authorization_endpoint")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         scopes_supported,
         userinfo_endpoint: value
             .get("userinfo_endpoint")
@@ -154,10 +167,21 @@ pub fn protected_resource_well_known_urls(origin: &str, path: &str) -> Vec<Strin
 /// 候选的 authorization-server metadata well-known URL（标准在前，OIDC 回退在后）。
 pub fn auth_server_well_known_urls(auth_server: &str) -> Vec<String> {
     let base = auth_server.trim_end_matches('/');
-    vec![
-        format!("{base}/.well-known/oauth-authorization-server"),
-        format!("{base}/.well-known/openid-configuration"),
-    ]
+    let Ok((origin, path)) = split_origin_and_path(base) else {
+        return Vec::new();
+    };
+    let mut urls = vec![format!(
+        "{origin}/.well-known/oauth-authorization-server{path}"
+    )];
+    if !path.is_empty() {
+        urls.push(format!("{origin}/.well-known/openid-configuration{path}"));
+    }
+    urls.push(format!("{base}/.well-known/openid-configuration"));
+    if !path.is_empty() {
+        // Retain the old non-standard discovery location as a last fallback.
+        urls.push(format!("{base}/.well-known/oauth-authorization-server"));
+    }
+    urls
 }
 
 /// RFC 8707 的 resource indicator：这次授权/这枚 token 是**给哪个 MCP 服务器**用的。
@@ -492,9 +516,11 @@ pub fn materialize_server(
         format!("Bearer {}", token.access_token),
     );
     let scopes = match &token.scope {
-        Some(scope) if !scope.trim().is_empty() => {
-            scope.split_whitespace().map(|s| s.to_string()).collect()
-        }
+        Some(scope) if !scope.trim().is_empty() => scope
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
         _ => requested_scopes.to_vec(),
     };
     let auth = ConnectorAuth {
@@ -504,6 +530,7 @@ pub fn materialize_server(
         expires_at: compute_expires_at(now_unix, token.expires_in),
         token_endpoint: Some(token_endpoint.to_string()),
         client_id: Some(client_id.to_string()),
+        client_secret: None,
         scopes,
         account: token.account.clone(),
     };
@@ -525,7 +552,7 @@ pub fn materialize_server(
 }
 
 /// 当前 unix 时间戳（秒）。
-fn now_unix() -> i64 {
+pub(super) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -541,6 +568,7 @@ pub async fn run_oauth_connect(
     connector_id: &str,
     name: &str,
     resource_url: &str,
+    client: Option<&OAuthClientConfig>,
 ) -> Result<ChatMcpServer, String> {
     // 1. 起 loopback 监听，拿真实端口 → redirect_uri。
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -553,21 +581,18 @@ pub async fn run_oauth_connect(
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
     // 2. 发现授权服务器与端点。
-    let metadata = discover_auth_server(http, resource_url).await?;
-    let registration_endpoint = metadata.registration_endpoint.clone().ok_or_else(|| {
-        "This server does not advertise dynamic client registration (DCR); \
-         Phase B only supports the DCR path."
-            .to_string()
-    })?;
-
-    // 3. DCR 注册公有客户端。
-    let client_id = register_client(
-        http,
-        &registration_endpoint,
-        &redirect_uri,
-        &metadata.scopes_supported,
-    )
-    .await?;
+    let mut metadata = discover_auth_server(http, resource_url).await?;
+    if let Some(scopes) = client.and_then(|client| client.scopes.as_ref()) {
+        metadata.scopes_supported = scopes
+            .iter()
+            .map(|scope| scope.trim().to_string())
+            .filter(|scope| !scope.is_empty())
+            .collect();
+    }
+    let client_id = resolve_client_id(http, &metadata, &redirect_uri, client).await?;
+    let client_secret = client
+        .and_then(|client| client.client_secret.as_deref())
+        .filter(|secret| !secret.is_empty());
 
     // 4. PKCE + state + RFC 8707 resource。
     let pkce = generate_pkce();
@@ -599,6 +624,7 @@ pub async fn run_oauth_connect(
         &client_id,
         &pkce.verifier,
         &resource,
+        client_secret,
     )
     .await?;
 
@@ -614,7 +640,7 @@ pub async fn run_oauth_connect(
         }
     }
 
-    Ok(materialize_server(
+    let mut server = materialize_server(
         connector_id,
         name,
         resource_url,
@@ -623,11 +649,48 @@ pub async fn run_oauth_connect(
         &client_id,
         &metadata.scopes_supported,
         now_unix(),
-    ))
+    );
+    if let Some(auth) = server.auth.as_mut() {
+        auth.client_secret = client_secret.map(str::to_string);
+    }
+    Ok(server)
+}
+
+async fn resolve_client_id(
+    http: &reqwest::Client,
+    metadata: &AuthServerMetadata,
+    redirect_uri: &str,
+    client: Option<&OAuthClientConfig>,
+) -> Result<String, String> {
+    if let Some(client) = client {
+        let client_id = client.client_id.trim();
+        if !client_id.is_empty() {
+            return Ok(client_id.to_string());
+        }
+        if client
+            .client_secret
+            .as_ref()
+            .is_some_and(|secret| !secret.is_empty())
+        {
+            return Err(
+                "OAUTH_CLIENT_REQUIRED: A Client ID is required when using a Client Secret.".into(),
+            );
+        }
+    }
+    let registration_endpoint = metadata.registration_endpoint.as_deref().ok_or_else(|| {
+        "OAUTH_CLIENT_REQUIRED: This service requires a registered OAuth application. Configure its Client ID and, if required, Client Secret before authorizing.".to_string()
+    })?;
+    register_client(
+        http,
+        registration_endpoint,
+        redirect_uri,
+        &metadata.scopes_supported,
+    )
+    .await
 }
 
 /// 发现授权服务器元数据。失败给出清晰错误（不硬编码任何厂商端点）。
-async fn discover_auth_server(
+pub(super) async fn discover_auth_server(
     http: &reqwest::Client,
     resource_url: &str,
 ) -> Result<AuthServerMetadata, String> {
@@ -819,8 +882,9 @@ async fn exchange_code(
     client_id: &str,
     code_verifier: &str,
     resource: &str,
+    client_secret: Option<&str>,
 ) -> Result<TokenResponse, String> {
-    let form = [
+    let mut form = vec![
         ("grant_type", "authorization_code"),
         ("code", code),
         ("redirect_uri", redirect_uri),
@@ -829,9 +893,15 @@ async fn exchange_code(
         // 见 `canonical_resource_indicator`：授权请求与 token 请求**两处都**要带。
         ("resource", resource),
     ];
+    if let Some(secret) = client_secret.filter(|secret| !secret.is_empty()) {
+        form.push(("client_secret", secret));
+    }
     let response = timeout(
         DISCOVERY_TIMEOUT,
-        http.post(token_endpoint).form(&form).send(),
+        http.post(token_endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .form(&form)
+            .send(),
     )
     .await
     .map_err(|_| "Token exchange timed out".to_string())?
@@ -882,12 +952,19 @@ pub async fn refresh_access_token(
     // 该 MCP 服务器的 URL（RFC 8707 resource indicator）。拿不到时传 `None`，
     // 但正常路径上应该总是有 —— 见 `canonical_resource_indicator`。
     resource_url: Option<&str>,
+    client_secret: Option<&str>,
 ) -> Result<TokenResponse, String> {
     let resource = resource_url.and_then(|url| canonical_resource_indicator(url).ok());
-    let form = build_refresh_form(refresh_token, client_id, resource.as_deref());
+    let mut form = build_refresh_form(refresh_token, client_id, resource.as_deref());
+    if let Some(secret) = client_secret.filter(|secret| !secret.is_empty()) {
+        form.push(("client_secret".into(), secret.into()));
+    }
     let response = timeout(
         DISCOVERY_TIMEOUT,
-        http.post(token_endpoint).form(&form).send(),
+        http.post(token_endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .form(&form)
+            .send(),
     )
     .await
     .map_err(|_| "Token refresh timed out".to_string())?
@@ -910,6 +987,174 @@ pub async fn refresh_access_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn oauth_endpoint(body: &'static str) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let request = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0; 4096];
+            loop {
+                let count = stream.read(&mut buf).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&buf[..count]);
+                if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            String::from_utf8(bytes).unwrap()
+        });
+        (url, request)
+    }
+
+    #[tokio::test]
+    async fn token_exchange_requests_json_for_github() {
+        let (url, request) = oauth_endpoint(r#"{"access_token":"test-access","token_type":"bearer","refresh_token":"test-refresh"}"#).await;
+        let token = exchange_code(
+            &reqwest::Client::new(),
+            &url,
+            "test-code",
+            "http://127.0.0.1:12345/callback",
+            "test-client",
+            "test-verifier",
+            "https://mcp.example/mcp",
+            Some("test-secret"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(token.access_token, "test-access");
+        let request = request.await.unwrap();
+        assert!(request.to_lowercase().contains("accept: application/json"));
+        assert!(request.contains("client_secret=test-secret"));
+        assert!(request.contains("code_verifier=test-verifier"));
+        assert!(request.contains("resource=https%3A%2F%2Fmcp.example%2Fmcp"));
+    }
+
+    #[tokio::test]
+    async fn preregistered_oauth_client_does_not_require_dcr() {
+        let metadata = parse_auth_server_metadata(&serde_json::json!({
+            "authorization_endpoint": "https://github.com/login/oauth/authorize",
+            "token_endpoint": "https://github.com/login/oauth/access_token"
+        }))
+        .unwrap();
+        let client = OAuthClientConfig {
+            client_id: "kivio-app".into(),
+            ..Default::default()
+        };
+        let id = resolve_client_id(
+            &reqwest::Client::new(),
+            &metadata,
+            "http://127.0.0.1:12345/callback",
+            Some(&client),
+        )
+        .await;
+        assert_eq!(id.unwrap(), "kivio-app");
+    }
+
+    #[tokio::test]
+    async fn dcr_remains_available_without_a_preregistered_client() {
+        let (url, request) = oauth_endpoint(r#"{"client_id":"registered-client"}"#).await;
+        let metadata = parse_auth_server_metadata(&serde_json::json!({
+            "authorization_endpoint": "https://auth.example/authorize",
+            "token_endpoint": "https://auth.example/token",
+            "registration_endpoint": url,
+            "scopes_supported": ["read"]
+        }))
+        .unwrap();
+        let id = resolve_client_id(
+            &reqwest::Client::new(),
+            &metadata,
+            "http://127.0.0.1:12345/callback",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(id, "registered-client");
+        let raw = request.await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["redirect_uris"][0], "http://127.0.0.1:12345/callback");
+        assert_eq!(body["token_endpoint_auth_method"], "none");
+        assert_eq!(body["scope"], "read");
+    }
+
+    #[tokio::test]
+    async fn missing_dcr_and_client_returns_actionable_error() {
+        let metadata = parse_auth_server_metadata(&serde_json::json!({
+            "authorization_endpoint": "https://github.com/login/oauth/authorize",
+            "token_endpoint": "https://github.com/login/oauth/access_token"
+        }))
+        .unwrap();
+        let error = resolve_client_id(
+            &reqwest::Client::new(),
+            &metadata,
+            "http://127.0.0.1:12345/callback",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.starts_with("OAUTH_CLIENT_REQUIRED:"));
+        assert!(!error.contains("Phase B"));
+    }
+
+    #[tokio::test]
+    async fn refresh_sends_preregistered_secret_and_requests_json() {
+        let (url, request) = oauth_endpoint(r#"{"access_token":"new-token"}"#).await;
+        let token = refresh_access_token(
+            &reqwest::Client::new(),
+            &url,
+            "test-refresh",
+            Some("test-client"),
+            Some("https://mcp.example/mcp"),
+            Some("test-secret"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(token.access_token, "new-token");
+        let request = request.await.unwrap();
+        assert!(request.to_lowercase().contains("accept: application/json"));
+        assert!(request.contains("client_secret=test-secret"));
+        assert!(request.contains("grant_type=refresh_token"));
+        assert!(request.contains("resource=https%3A%2F%2Fmcp.example%2Fmcp"));
+    }
+
+    #[test]
+    fn client_secret_persistence_is_backward_compatible() {
+        let mut auth: ConnectorAuth = serde_json::from_value(serde_json::json!({
+            "kind":"oauth", "accessToken":"test-token", "clientId":"test-client"
+        }))
+        .unwrap();
+        assert!(auth.client_secret.is_none());
+        auth.client_secret = Some("test-secret".into());
+        let restored: ConnectorAuth =
+            serde_json::from_value(serde_json::to_value(auth).unwrap()).unwrap();
+        assert_eq!(restored.client_secret.as_deref(), Some("test-secret"));
+    }
+
+    #[test]
+    fn authorization_discovery_inserts_well_known_before_issuer_path() {
+        let urls = auth_server_well_known_urls("https://github.com/login/oauth");
+        assert_eq!(
+            urls[0],
+            "https://github.com/.well-known/oauth-authorization-server/login/oauth"
+        );
+        assert!(urls.contains(
+            &"https://github.com/login/oauth/.well-known/openid-configuration".to_string()
+        ));
+    }
 
     #[test]
     fn pkce_challenge_matches_rfc7636_test_vector() {
@@ -1048,6 +1293,7 @@ mod tests {
             expires_at,
             token_endpoint: Some("https://auth.example.com/token".to_string()),
             client_id: Some("client-1".to_string()),
+            client_secret: None,
             scopes: Vec::new(),
             account: None,
         }

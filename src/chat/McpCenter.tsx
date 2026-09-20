@@ -13,6 +13,7 @@ import {
   type ChatToolsConfig,
   type CliImportScan,
   type McpServerState,
+  type McpOAuthClient,
   type Settings,
 } from '../api/tauri'
 import { peekSettings, refreshSettings, subscribeSettings, updateSettingsCached } from '../api/settingsCache'
@@ -35,7 +36,7 @@ import {
   textToArgs,
   textToEnv,
 } from '../settings/public/mcpTools'
-import { adoptFreshPluginManagedServers, isPluginManagedServer, preservePluginManagedServers } from '../settings/public/connectors'
+import { adoptFreshPluginManagedServers, isPluginManagedServer, preservePluginManagedServers, isBuiltinGithubOAuth, useConnectorOAuth, OAuthDeviceDialog } from '../settings/public/connectors'
 import {
   buildInstalledMcpList,
   entriesOfKind,
@@ -46,6 +47,7 @@ import {
 } from './mcpInstalledList'
 
 type TestFeedback = { ok: boolean; message: string }
+type OAuthClientDraft = { clientId: string; clientSecret?: string; scopesText?: string }
 
 function StatusDot({ state }: { state?: McpServerState }) {
   const t = useT()
@@ -70,6 +72,7 @@ const TEXTAREA_CLASS =
 export function McpCenter() {
   const t = useT()
   const lang = useLang()
+  const { connect: connectOAuth, prompt: devicePrompt, cancel: cancelOAuth } = useConnectorOAuth()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [states, setStates] = useState<Record<string, McpServerState>>({})
   const [view, setView] = useState<'installed' | 'store' | 'import' | 'advanced'>('installed')
@@ -78,6 +81,8 @@ export function McpCenter() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
   const [oauthId, setOauthId] = useState<string | null>(null)
+  const [oauthClients, setOauthClients] = useState<Record<string, OAuthClientDraft>>({})
+  const [oauthAppOpen, setOauthAppOpen] = useState<Record<string, boolean>>({})
   const [testFeedback, setTestFeedback] = useState<Record<string, TestFeedback>>({})
   const [cliScan, setCliScan] = useState<CliImportScan | null>(null)
   const [cliScanning, setCliScanning] = useState(false)
@@ -212,7 +217,14 @@ export function McpCenter() {
   }, [])
 
   const updateServer = useCallback((id: string, updates: Partial<ChatMcpServer>) => {
-    void mutateServers((list) => list.map((s) => (s.id === id ? { ...s, ...updates } : s)))
+    void mutateServers((list) => list.map((s) => {
+      if (s.id !== id) return s
+      if (updates.url !== undefined && updates.url !== s.url) {
+        const headers = Object.fromEntries(Object.entries(s.headers).filter(([key]) => key.toLowerCase() !== 'authorization'))
+        return { ...s, ...updates, auth: undefined, headers }
+      }
+      return { ...s, ...updates }
+    }))
   }, [mutateServers])
 
   // 启用即连：先落设置（后端按 settings 判定 eligible），再后台预热该 server。
@@ -306,20 +318,37 @@ export function McpCenter() {
     }
   }, [chatTools, t])
 
-  // OAuth 授权 remote(streamable_http) MCP：复用连接器 PKCE+DCR，把返回的 auth+Authorization 拼回本条。
+  // OAuth applications are scoped to this server URL, not just its editable row id.
+  const oauthClientFor = (server: ChatMcpServer): OAuthClientDraft =>
+    oauthClients[`${server.id}:${server.url}`] ?? {
+      clientId: server.auth?.clientId ?? '',
+      clientSecret: server.auth?.clientSecret,
+      scopesText: server.auth?.scopes?.join(' '),
+    }
+
+  // OAuth 授权复用连接器的已注册应用 / DCR + PKCE 流程。
   const handleOauth = useCallback(async (entry: McpInstalledEntry) => {
     const server = entry.server
     const url = (server.url || '').trim()
     if (!url) return
     setOauthId(server.id)
     try {
-      const authed = await api.connectorOauthConnect({ url, name: server.name })
+      const draft = oauthClients[`${server.id}:${server.url}`]
+      const client: McpOAuthClient | undefined = draft ? {
+        clientId: draft.clientId.trim(), clientSecret: draft.clientSecret,
+        scopes: draft.scopesText?.trim() ? draft.scopesText.trim().split(/\s+/) : undefined,
+      } : (!isBuiltinGithubOAuth(url) && server.auth?.clientId ? {
+        clientId: server.auth.clientId, clientSecret: server.auth.clientSecret, scopes: server.auth.scopes,
+      } : undefined)
+      const authed = await connectOAuth({ url, name: server.name, client })
+      if (!authed) return
       const authorization = authed.headers?.Authorization
-      const nextHeaders = authorization ? { ...(server.headers || {}), Authorization: authorization } : (server.headers || {})
+      let serverToTest: ChatMcpServer
       if (entry.kind === 'websearch' && server.id === TINYFISH_MCP_ID) {
         const saved = await updateSettingsCached((fresh) => {
           const currentWebSearch = fresh.lens?.webSearch
           if (!currentWebSearch) throw new Error(t.chatMcpTestFailed)
+          if ((currentWebSearch.tinyfishMcpUrl?.trim() || 'https://agent.tinyfish.ai/mcp') !== url) throw new Error(t.chatMcpOauthChanged)
           return {
             ...fresh,
             lens: {
@@ -333,16 +362,33 @@ export function McpCenter() {
         })
         settingsRef.current = saved
         setSettings(saved)
+        serverToTest = { ...server, auth: authed.auth, headers: authed.headers }
       } else {
-        await mutateServers((list) => list.map((s) => (s.id === server.id ? { ...s, auth: authed.auth, headers: nextHeaders } : s)))
+        const saved = await updateSettingsCached((fresh) => {
+          const current = fresh.chatTools.servers.find((s) => s.id === server.id)
+          if (!current || current.url.trim() !== url) throw new Error(t.chatMcpOauthChanged)
+          const headers = { ...current.headers }
+          if (authorization) {
+            for (const key of Object.keys(headers)) if (key.toLowerCase() === 'authorization') delete headers[key]
+            headers.Authorization = authorization
+          }
+          const servers = fresh.chatTools.servers.map((s) => s.id === server.id ? { ...s, auth: authed.auth, headers } : s)
+          return { ...fresh, chatTools: { ...fresh.chatTools, servers: preservePluginManagedServers(fresh.chatTools.servers, servers) } }
+        })
+        settingsRef.current = saved
+        setSettings(saved)
+        serverToTest = saved.chatTools.servers.find((s) => s.id === server.id)!
       }
-      await handleTest({ ...server, auth: authed.auth, headers: nextHeaders })
+      await handleTest(serverToTest)
     } catch (err) {
-      setTestFeedback((prev) => ({ ...prev, [server.id]: { ok: false, message: err instanceof Error ? err.message : String(err) } }))
+      const message = err instanceof Error ? err.message : String(err)
+      const requiresClient = message.startsWith('OAUTH_CLIENT_REQUIRED:')
+      if (requiresClient) setOauthAppOpen((prev) => ({ ...prev, [`${server.id}:${server.url}`]: true }))
+      setTestFeedback((prev) => ({ ...prev, [server.id]: { ok: false, message: requiresClient ? t.chatMcpOauthClientRequired : message } }))
     } finally {
       setOauthId(null)
     }
-  }, [handleTest, mutateServers, t])
+  }, [connectOAuth, handleTest, oauthClients, t])
 
   const lockedNote = (kind: McpInstalledKind) =>
     kind === 'plugin' ? t.chatMcpPluginNote
@@ -408,6 +454,34 @@ export function McpCenter() {
 
         {expanded && (
           <div className="chat-motion-search-reveal space-y-3 border-t border-neutral-100 px-4 py-3 dark:border-neutral-800/70">
+            {isHttp && (
+              <>
+              {isBuiltinGithubOAuth(server.url) && <p className="text-[12px] text-neutral-500">{t.chatMcpGithubBuiltin}</p>}
+              <details open={oauthAppOpen[`${server.id}:${server.url}`] ?? false}
+                onToggle={(event) => {
+                  const open = event.currentTarget.open
+                  setOauthAppOpen((prev) => prev[`${server.id}:${server.url}`] === open ? prev : { ...prev, [`${server.id}:${server.url}`]: open })
+                }}>
+                <summary className="cursor-pointer text-[12px] text-neutral-500">{isBuiltinGithubOAuth(server.url) ? t.chatMcpOauthAdvancedApp : t.chatMcpOauthApp}</summary>
+                <div className="mt-2 space-y-2">
+                  <p className="text-[12px] text-neutral-500">{t.chatMcpOauthAppHint}</p>
+                  {(['clientId', 'clientSecret', 'scopesText'] as const).map((field) => (
+                    <label key={field} className="block text-[12px]">
+                      {field === 'clientId' ? 'Client ID' : field === 'clientSecret' ? 'Client Secret' : 'Scopes'}
+                      <input className={TEXTAREA_CLASS} type={field === 'clientSecret' ? 'password' : 'text'}
+                        autoComplete="off" disabled={oauthId === server.id}
+                        value={oauthClientFor(server)[field] ?? ''}
+                        placeholder={field === 'scopesText' ? t.chatMcpOauthScopes : field === 'clientSecret' ? t.chatMcpOauthOptional : ''}
+                        onChange={(event) => {
+                          const text = event.target.value
+                          setOauthClients((prev) => ({ ...prev, [`${server.id}:${server.url}`]: { ...oauthClientFor(server), [field]: text } }))
+                        }} />
+                    </label>
+                  ))}
+                </div>
+              </details>
+              </>
+            )}
             {manageLocked ? (
               <>
                 {note && (
@@ -423,7 +497,7 @@ export function McpCenter() {
                     {testingId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpTestConnection}
                   </Button>
                   {isHttp && (
-                    <Button size="sm" variant="ghost" onClick={() => void handleOauth(entry)} disabled={oauthId === server.id} data-tauri-drag-region="false">
+                    <Button size="sm" variant="ghost" onClick={() => void handleOauth(entry)} disabled={oauthId !== null} data-tauri-drag-region="false">
                       {oauthId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpOauthAuthorize}
                     </Button>
                   )}
@@ -476,7 +550,7 @@ export function McpCenter() {
                     {testingId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpTestConnection}
                   </Button>
                   {isHttp && (
-                    <Button size="sm" variant="ghost" onClick={() => void handleOauth(entry)} disabled={oauthId === server.id} data-tauri-drag-region="false">
+                    <Button size="sm" variant="ghost" onClick={() => void handleOauth(entry)} disabled={oauthId !== null} data-tauri-drag-region="false">
                       {oauthId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpOauthAuthorize}
                     </Button>
                   )}
@@ -512,6 +586,7 @@ export function McpCenter() {
 
   return (
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
+      <OAuthDeviceDialog prompt={devicePrompt} onCancel={cancelOAuth} lang={lang} />
 
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex h-full min-h-0 w-full max-w-[1040px] flex-col px-9 pb-10 pt-7">
