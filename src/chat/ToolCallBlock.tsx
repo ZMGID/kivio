@@ -1524,6 +1524,49 @@ function readLineLabel(toolCall: ToolCallRecord, args: Record<string, unknown> |
   return ''
 }
 
+interface ReadFileView {
+  startLine: number
+  content: string
+  /** 后端 ReadFileResult.warnings：续读通知（`[Showing lines … Use offset=N to continue.]`）。 */
+  notices: string[]
+}
+
+/** read 文本结果的结构化内容（就是 ReadFileResult）。图片读取 / 目录清单没有
+ *  `content` + `total_lines` 这对字段，返回 null 走通用预览。 */
+function structuredReadFile(toolCall: ToolCallRecord): ReadFileView | null {
+  const rawName = toolRawName(toolCall)
+  if (rawName !== 'read' && rawName !== 'read_file') return null
+  const structured = objectValue(toolCall.structured_content ?? toolCall.structuredContent)
+  if (!structured || typeof structured.content !== 'string' || typeof structured.total_lines !== 'number') {
+    return null
+  }
+  return {
+    startLine: numberValue(structured.start_line),
+    content: structured.content,
+    notices: stringArrayValue(structured.warnings),
+  }
+}
+
+const READ_PREVIEW_MAX_LINES = 12
+const READ_PREVIEW_MAX_LINE_CHARS = 160
+
+/** 展开区「结果」：保留换行的前几行（带行号）+ 省略计数 + 末尾续读通知，与模型看到的
+ *  尾注一致。不走 compact()：把两千行正文压成一段 220 字的糊，续读提示也跟着糊掉。 */
+function formatReadFilePreview(view: ReadFileView): string {
+  const lines = view.content ? view.content.split('\n') : []
+  const shown = lines.slice(0, READ_PREVIEW_MAX_LINES)
+  const start = Math.max(1, view.startLine)
+  const parts = shown.map((line, index) => {
+    const body =
+      line.length > READ_PREVIEW_MAX_LINE_CHARS ? `${line.slice(0, READ_PREVIEW_MAX_LINE_CHARS)}…` : line
+    return `${start + index}  ${body}`
+  })
+  const hidden = lines.length - shown.length
+  if (hidden > 0) parts.push(`… 还有 ${hidden} 行`)
+  parts.push(...view.notices)
+  return parts.join('\n')
+}
+
 /** 折叠行的「目标」：以输入参数为主（文件名 / 命令 / pattern / url），不含动词、不含结果。
  *  Cursor 风格 —— 行内只呈现「动词 + 目标」，其余细节（结果、diff、错误）放展开区。 */
 function getToolTarget(toolCall: ToolCallRecord): string {
@@ -1692,6 +1735,8 @@ function getResultPreview(toolCall: ToolCallRecord): string {
     }
     return `已应用 ${fileMutationPreview(fileMutation)}`
   }
+  const readFile = structuredReadFile(toolCall)
+  if (readFile) return formatReadFilePreview(readFile)
   const raw =
     toolCall.result_preview ||
     toolCall.resultPreview ||

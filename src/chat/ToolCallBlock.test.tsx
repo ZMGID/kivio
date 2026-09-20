@@ -63,6 +63,40 @@ describe('ToolCallBlock', () => {
     expect(within(button).getByText('Lens.tsx L1880-1939')).toBeInTheDocument()
   })
 
+  it('keeps line breaks and the trailing continuation notice in the expanded read result', async () => {
+    const user = userEvent.setup()
+    const content = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n')
+    const notice = '[Showing lines 2261-2290 of 4818 (50KB limit). Use offset=2291 to continue.]'
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'read',
+          arguments: { path: 'bot.py', offset: 2261 },
+          result_preview: `bot.py — lines 2261-2290 of 4818\n${content}\n\n${notice}`,
+          structured_content: {
+            path: 'bot.py',
+            content,
+            total_lines: 4818,
+            start_line: 2261,
+            end_line: 2290,
+            truncated: true,
+            next_offset: 2291,
+            warnings: [notice],
+          },
+        })}
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: /Read/ }))
+    // getByText 默认会折叠空白做匹配，取到节点后再用原始 textContent 校验换行。
+    const result = screen.getByText(/^2261\s+line 1/)
+    const text = result.textContent ?? ''
+    // 不再被 compact() 压成一行：前 12 行各占一行，其余折成计数，通知贴在末尾。
+    expect(text.startsWith('2261  line 1\n2262  line 2\n')).toBe(true)
+    expect(text).toContain('\n… 还有 18 行\n')
+    expect(text.endsWith(notice)).toBe(true)
+    expect(text).not.toContain('line 13')
+  })
+
   it('keeps the error out of the collapsed row and shows it (not red) in the expanded detail', async () => {
     const user = userEvent.setup()
     render(

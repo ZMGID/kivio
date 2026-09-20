@@ -103,7 +103,7 @@ pub fn read_file(
     let path = arguments
         .get("path")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "read_file requires path".to_string())?;
+        .ok_or_else(|| "read requires path".to_string())?;
     let full = resolve_tool_read_path(workspace, path)?;
     if !full.is_file() {
         return Err(format!("不是可读取的文件: {path}"));
@@ -131,7 +131,8 @@ pub fn read_file(
 
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
-    let start = offset.saturating_sub(1).min(lines.len());
+    let start = offset.saturating_sub(1);
+    offset_in_bounds(offset, start, total_lines)?;
     let requested_end = limit
         .map(|lim| (start + lim).min(lines.len()))
         .unwrap_or(lines.len());
@@ -146,6 +147,7 @@ pub fn read_file(
         lines[start..end].join("\n")
     };
     let display_path = workspace_display_path(workspace, &full);
+    let next_offset = truncated.then(|| next_offset_after(start, end, kept, capped));
     Ok(ReadFileResult {
         resolved_path: full.display().to_string(),
         content: returned_content,
@@ -154,10 +156,21 @@ pub fn read_file(
         end_line: end,
         truncated,
         file_size: metadata.len(),
-        next_offset: truncated.then(|| next_offset_after(start, end, kept, capped)),
-        warnings: cap_warnings(capped, &display_path, start, end, kept),
+        next_offset,
+        warnings: continuation_notice(capped, &display_path, start, end, total_lines, next_offset),
         path: display_path,
     })
+}
+
+/// 对齐 pi：`offset` 落在文件末尾之后是调用错误，不是「读到 0 行」的空成功。
+/// 空文件读 `offset=1` 仍允许（没有行也能给出 0-0 of 0）。
+fn offset_in_bounds(offset: usize, start: usize, total_lines: usize) -> Result<(), String> {
+    if total_lines > 0 && start >= total_lines {
+        return Err(format!(
+            "Offset {offset} is beyond end of file ({total_lines} lines total)"
+        ));
+    }
+    Ok(())
 }
 
 /// 下一次续读的起始行。
@@ -210,36 +223,44 @@ fn truncate_head(lines: &[&str]) -> (usize, Option<TruncatedBy>) {
     (lines.len(), None)
 }
 
-/// 把触顶原因翻成模型能照做的一句话（对齐 pi 的 `[Showing lines … Use offset=N to
-/// continue.]`）。没触顶就没有 warning——文件本来就读完了，不该吓唬模型。
-fn cap_warnings(
+/// 给模型的续读通知，照抄 pi `read.ts` 的四种句式；由 `read_file_tool_result` 贴在正文
+/// **末尾**（不是头上），这样模型读完一页最后看到的就是下一步。读完了就没有通知。
+///
+/// - 行数顶到：`[Showing lines X-Y of Z. Use offset=N to continue.]`
+/// - 字节顶到：`[Showing lines X-Y of Z (50KB limit). Use offset=N to continue.]`
+/// - 自己给的 limit 停下、文件还有：`[R more lines in file. Use offset=N to continue.]`
+/// - 首行单行就超预算：指去 bash 单独取那一行；`next_offset` 已跳过它，避免原地打转。
+fn continuation_notice(
     capped: Option<TruncatedBy>,
     path: &str,
     start: usize,
     end: usize,
-    kept: usize,
+    total_lines: usize,
+    next_offset: Option<usize>,
 ) -> Vec<String> {
+    let Some(next) = next_offset else {
+        return Vec::new();
+    };
     let kb = TOOL_OUTPUT_MAX_BYTES / 1024;
+    let first = start + 1;
     match capped {
-        None => Vec::new(),
-        // 怪物长行的逃生口。`head -c` 取的是 run_command 的**内联**上限而不是 50KB：
-        // 超过那个数 run_command 会把输出转存成日志文件，模型还得回头 read 它，那一行
-        // 依旧超 50KB —— 兜了一圈回到原点。命令给的是示例（Windows 上未必有 sed），
-        // 路径是真路径，模型可以直接照抄。
-        Some(TruncatedBy::Bytes) if kept == 0 => vec![format!(
-            "第 {line} 行单行就超过 {kb}KB 的单次读取上限。用 run_command 单独取它，\
-             例如 `sed -n '{line}p' {path} | head -c {inline}`；或用 offset={next} 跳过这一行继续。",
-            line = start + 1,
-            next = start + 2,
+        // 怪物长行的逃生口。`head -c` 取的是 bash 的**内联**上限而不是 50KB：超过那个数
+        // bash 会把输出转存成日志文件，模型还得回头 read 它，那一行依旧超 50KB —— 兜了一圈
+        // 回到原点。命令是示例（Windows 上未必有 sed），路径是真路径，模型可以直接照抄。
+        Some(TruncatedBy::Bytes) if end == start => vec![format!(
+            "[Line {first} exceeds the {kb}KB limit. Use bash: sed -n '{first}p' {path} | head -c {inline}. \
+             Or use offset={next} to skip it.]",
             inline = super::shell::MAX_INLINE_COMMAND_OUTPUT_BYTES,
         )],
         Some(TruncatedBy::Bytes) => vec![format!(
-            "单次读取上限 {kb}KB 已触顶（不是文件结尾），用 offset={} 继续。",
-            end + 1
+            "[Showing lines {first}-{end} of {total_lines} ({kb}KB limit). Use offset={next} to continue.]"
         )],
         Some(TruncatedBy::Lines) => vec![format!(
-            "单次读取上限 {TOOL_OUTPUT_MAX_LINES} 行已触顶（不是文件结尾），用 offset={} 继续。",
-            end + 1
+            "[Showing lines {first}-{end} of {total_lines}. Use offset={next} to continue.]"
+        )],
+        None => vec![format!(
+            "[{remaining} more lines in file. Use offset={next} to continue.]",
+            remaining = total_lines.saturating_sub(end),
         )],
     }
 }
@@ -284,6 +305,7 @@ fn read_file_window_streaming(
         total_lines += 1;
     }
 
+    offset_in_bounds(offset, start, total_lines)?;
     let start = start.min(total_lines);
     let kept = window.len();
     let end = (start + kept).min(total_lines);
@@ -296,6 +318,7 @@ fn read_file_window_streaming(
         None
     };
     let display_path = workspace_display_path(workspace, full);
+    let next_offset = truncated.then(|| next_offset_after(start, end, kept, capped));
     Ok(ReadFileResult {
         resolved_path: full.display().to_string(),
         content: window.join("\n"),
@@ -304,8 +327,8 @@ fn read_file_window_streaming(
         end_line: end,
         truncated,
         file_size: metadata.len(),
-        next_offset: truncated.then(|| next_offset_after(start, end, kept, capped)),
-        warnings: cap_warnings(capped, &display_path, start, end, kept),
+        next_offset,
+        warnings: continuation_notice(capped, &display_path, start, end, total_lines, next_offset),
         path: display_path,
     })
 }
@@ -1775,9 +1798,74 @@ mod tests {
         assert!(result.content.starts_with("2000 "));
         assert!(result.truncated);
         assert_eq!(result.next_offset, Some(2003));
-        assert!(result.warnings.is_empty(), "user limit is not a cap hit");
+        assert_eq!(
+            result.warnings,
+            vec!["[998 more lines in file. Use offset=2003 to continue.]".to_string()],
+            "user limit is reported as remaining lines, not as a cap hit"
+        );
+
+        // Streaming path also rejects an offset past the end.
+        let err = read_file(
+            &workspace,
+            &json!({ "path": file.to_string_lossy(), "offset": 3001 }),
+        )
+        .unwrap_err();
+        assert!(err.contains("beyond end of file"), "{err}");
 
         let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn read_file_rejects_offset_past_end_and_reports_user_limit_remainder() {
+        let workspace = NativeToolWorkspace::global(&[]);
+        let file = std::env::temp_dir().join(format!("kivio_off_{}.txt", uuid::Uuid::new_v4()));
+        let body = (1..=100)
+            .map(|i| format!("Line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&file, &body).expect("write");
+
+        // pi: offset beyond EOF is an error, not an empty success.
+        let err = read_file(
+            &workspace,
+            &json!({ "path": file.to_string_lossy(), "offset": 101 }),
+        )
+        .unwrap_err();
+        assert_eq!(err, "Offset 101 is beyond end of file (100 lines total)");
+
+        // Last line is still readable.
+        let tail = read_file(
+            &workspace,
+            &json!({ "path": file.to_string_lossy(), "offset": 100 }),
+        )
+        .expect("read last line");
+        assert_eq!(tail.content, "Line 100");
+        assert!(!tail.truncated);
+        assert!(tail.warnings.is_empty(), "nothing left → no notice");
+
+        // Self-set limit that stops early: remaining-lines notice (pi wording).
+        let window = read_file(
+            &workspace,
+            &json!({ "path": file.to_string_lossy(), "offset": 41, "limit": 20 }),
+        )
+        .expect("windowed read");
+        assert_eq!(window.start_line, 41);
+        assert_eq!(window.end_line, 60);
+        assert_eq!(
+            window.warnings,
+            vec!["[40 more lines in file. Use offset=61 to continue.]".to_string()]
+        );
+
+        // Empty file: offset 1 is fine and yields 0-0 of 0 without a notice.
+        let empty = std::env::temp_dir().join(format!("kivio_empty_{}.txt", uuid::Uuid::new_v4()));
+        fs::write(&empty, "").expect("write");
+        let result =
+            read_file(&workspace, &json!({ "path": empty.to_string_lossy() })).expect("empty read");
+        assert_eq!(result.total_lines, 0);
+        assert!(result.warnings.is_empty());
+
+        let _ = fs::remove_file(file);
+        let _ = fs::remove_file(empty);
     }
 
     #[test]
@@ -1796,7 +1884,10 @@ mod tests {
         assert_eq!(result.end_line, TOOL_OUTPUT_MAX_LINES);
         assert!(result.truncated);
         assert_eq!(result.next_offset, Some(TOOL_OUTPUT_MAX_LINES + 1));
-        assert!(result.warnings[0].contains("2000 行"));
+        assert_eq!(
+            result.warnings,
+            vec!["[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]".to_string()]
+        );
         // An oversized model-supplied `limit` cannot lift the cap.
         let forced = read_file(
             &workspace,
@@ -1814,7 +1905,10 @@ mod tests {
             read_file(&workspace, &json!({ "path": fat.to_string_lossy() })).expect("read fat");
         assert!(result.content.len() <= TOOL_OUTPUT_MAX_BYTES);
         assert_eq!(result.end_line, 2, "two 20KB lines fit under 50KB");
-        assert!(result.warnings[0].contains("50KB"));
+        assert_eq!(
+            result.warnings,
+            vec!["[Showing lines 1-2 of 4 (50KB limit). Use offset=3 to continue.]".to_string()]
+        );
         let _ = fs::remove_file(fat);
 
         // A single line bigger than the whole budget: nothing to return, but the
@@ -1825,7 +1919,9 @@ mod tests {
             .expect("read monster line");
         assert!(result.content.is_empty());
         assert_eq!(result.next_offset, Some(2), "skips past the monster line");
-        assert!(result.warnings[0].contains("run_command"));
+        assert!(result.warnings[0]
+            .starts_with("[Line 1 exceeds the 50KB limit. Use bash: sed -n '1p' "));
+        assert!(result.warnings[0].ends_with("Or use offset=2 to skip it.]"));
         let _ = fs::remove_file(monster);
     }
 
@@ -1844,7 +1940,11 @@ mod tests {
         )
         .expect("zero limit");
         assert_eq!(result.next_offset, Some(1), "must not skip line 1");
-        assert!(result.warnings.is_empty(), "no cap was hit");
+        assert_eq!(
+            result.warnings,
+            vec!["[3 more lines in file. Use offset=1 to continue.]".to_string()],
+            "no cap was hit; the notice is the plain remaining-lines form"
+        );
         let _ = fs::remove_file(file);
 
         // The byte budget counts BYTES, not chars: CJK is 3 bytes per char, so two

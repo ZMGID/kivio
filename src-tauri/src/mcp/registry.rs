@@ -1251,22 +1251,14 @@ pub fn read_file_tool_result(result: ReadFileResult) -> Result<McpToolCallResult
     })
 }
 
-/// 把 ReadFileResult 渲染成模型友好的 `cat -n` 文本：一行精简元数据头 + `右对齐行号\t原文`。
+/// 把 ReadFileResult 渲染成模型友好的 `cat -n` 文本：一行精简元数据头 + `右对齐行号\t原文`，
+/// 续读通知贴在**末尾**（对齐 pi）：模型读完一页，最后一眼看到的就是「用 offset=N 继续」，
+/// 不会被两千行正文冲掉。没截断就没有尾注。
 fn format_read_file_for_model(result: &ReadFileResult) -> String {
     let mut out = format!(
         "{} — lines {}-{} of {}",
         result.path, result.start_line, result.end_line, result.total_lines
     );
-    if result.truncated {
-        match result.next_offset {
-            Some(next) => out.push_str(&format!(" (truncated; continue with offset={next})")),
-            None => out.push_str(" (truncated)"),
-        }
-    }
-    for warning in &result.warnings {
-        out.push_str("\n! ");
-        out.push_str(warning);
-    }
     if !result.content.is_empty() {
         let start = result.start_line.max(1);
         out.push('\n');
@@ -1278,7 +1270,25 @@ fn format_read_file_for_model(result: &ReadFileResult) -> String {
             .collect();
         out.push_str(&numbered.join("\n"));
     }
+    let footer = read_continuation_footer(result);
+    if !footer.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&footer);
+    }
     out
+}
+
+/// 尾注正文：优先用 `read_file` 产出的通知（已含触顶原因）；截断了却没通知时兜底给一句
+/// 最简的「用 offset=N 继续」，保证「截断必有下一步」这条契约不依赖上游。
+fn read_continuation_footer(result: &ReadFileResult) -> String {
+    if !result.warnings.is_empty() {
+        return result.warnings.join("\n");
+    }
+    match (result.truncated, result.next_offset) {
+        (true, Some(next)) => format!("[More lines in file. Use offset={next} to continue.]"),
+        (true, None) => "[Output truncated.]".to_string(),
+        (false, _) => String::new(),
+    }
 }
 
 async fn resolve_native_workspace(
@@ -1712,11 +1722,25 @@ while True:
             next_offset: Some(12),
             warnings: Vec::new(),
         };
-        let output = read_file_tool_result(result).expect("tool result");
+        // 没有上游通知时，尾注兜底；且一定在正文**之后**。
+        let output = read_file_tool_result(result.clone()).expect("tool result");
         assert_eq!(
             output.content,
-            "src/big.txt — lines 10-11 of 100 (truncated; continue with offset=12)\n    10\tline ten\n    11\tline eleven"
+            "src/big.txt — lines 10-11 of 100\n    10\tline ten\n    11\tline eleven\n\n[More lines in file. Use offset=12 to continue.]"
         );
+
+        // 上游给了通知（触顶原因）就原样贴在末尾，不再重复头部的 truncated 标记。
+        let output = read_file_tool_result(ReadFileResult {
+            warnings: vec![
+                "[Showing lines 10-11 of 100 (50KB limit). Use offset=12 to continue.]".to_string(),
+            ],
+            ..result
+        })
+        .expect("tool result");
+        assert!(output.content.ends_with(
+            "    11\tline eleven\n\n[Showing lines 10-11 of 100 (50KB limit). Use offset=12 to continue.]"
+        ));
+        assert!(!output.content.contains("truncated;"));
     }
 
     fn temp_home(tag: &str) -> std::path::PathBuf {
