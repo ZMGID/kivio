@@ -632,19 +632,15 @@ fn unknown_or_disabled_tool_result(
     };
     // 喂回自愈（对齐 opencode）：错误作为 tool result 返回时附上已声明工具清单，
     // 让模型下一轮自我纠正（Cursor 系模型会间歇性按训练时的工具名出牌，如大写 Grep）。
-    let content = disabled.unwrap_or_else(|| {
-        let mut available: Vec<String> = tools
-            .iter()
-            .map(|tool| tool.openai_tool_name())
-            .collect();
-        available.sort();
-        available.dedup();
-        format!(
-            "Unknown tool: {}. Available tools: {}. Please call one of the declared tools with its exact name.",
-            tool_call.function_name,
-            available.join(", ")
-        )
-    });
+    let mut available: Vec<String> = tools.iter().map(|tool| tool.openai_tool_name()).collect();
+    available.sort();
+    available.dedup();
+    let reason = disabled.unwrap_or_else(|| format!("Unknown tool: {}.", tool_call.function_name));
+    let content = if available.is_empty() {
+        format!("{reason} Available tools: none in this request. Explain the limitation using the available context.")
+    } else {
+        format!("{reason} Available tools: {}. Use a declared tool with its exact name if it can perform the requested work.", available.join(", "))
+    };
     ToolExecutionResult {
         response_message: tool_message(tool_call.id, content),
         record,

@@ -2659,28 +2659,47 @@ mod tests {
     }
 
     #[test]
-    fn project_workspace_rejects_escape_paths() {
-        let root = std::env::temp_dir().join(format!("kivio_project_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).expect("mkdir");
-        let workspace = NativeToolWorkspace::project(
-            "proj_test".to_string(),
-            "Test".to_string(),
-            Some(root.to_string_lossy().into_owned()),
-        );
-
-        let err = read_file(&workspace, &json!({ "path": "../secret.txt" })).unwrap_err();
-        assert!(err.contains(".."));
-
-        // Explicit absolute paths outside the project are allowed for reads,
-        // matching non-project conversations.
-        let outside = std::env::temp_dir().join(format!("kivio_outside_{}", uuid::Uuid::new_v4()));
-        fs::write(&outside, "secret").expect("write outside");
-        let result = read_file(&workspace, &json!({ "path": outside.to_string_lossy() }))
-            .expect("absolute read outside project");
-        assert_eq!(result.content, "secret");
-
-        let _ = fs::remove_file(outside);
-        let _ = fs::remove_dir_all(root);
+    fn empty_workbench_allows_explicit_external_file_access() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workbench");
+        let downloads = fixture.path().join("Downloads").join("bot");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&downloads).unwrap();
+        let outside = downloads.join("bot.py");
+        fs::write(&outside, "print('external file')").unwrap();
+        for workspace in [
+            NativeToolWorkspace::conversation(root.clone()),
+            NativeToolWorkspace::project(
+                "proj_test".into(),
+                "Test".into(),
+                Some(root.to_string_lossy().into_owned()),
+            ),
+        ] {
+            let empty: Value =
+                serde_json::from_str(&glob_files(&workspace, &json!({"pattern": "*.py"})).unwrap())
+                    .unwrap();
+            assert_eq!(empty["matches"].as_array().unwrap().len(), 0);
+            let read = read_file(&workspace, &json!({"path": outside})).unwrap();
+            assert_eq!(read.content, "print('external file')");
+            let relative =
+                read_file(&workspace, &json!({"path": "../Downloads/bot/bot.py"})).unwrap();
+            assert_eq!(relative.content, read.content);
+            let found: Value = serde_json::from_str(
+                &glob_files(&workspace, &json!({"path": downloads, "pattern": "*.py"})).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(found["matches"].as_array().unwrap().len(), 1);
+            let matches = search_files(
+                &workspace,
+                &json!({"path": outside, "query": "external file"}),
+            )
+            .unwrap();
+            assert!(matches.contains("external file"));
+            assert_eq!(
+                super::super::resolve_tool_existing_dir(&workspace, downloads.to_str()).unwrap(),
+                fs::canonicalize(&downloads).unwrap()
+            );
+        }
     }
 
     #[test]

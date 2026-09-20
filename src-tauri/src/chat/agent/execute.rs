@@ -901,7 +901,7 @@ fn artifact_presentation_hint(artifacts: &[ChatToolArtifact]) -> Option<String> 
     }
     Some(format!(
         "Available artifacts (not shown automatically):\n{}\nIn your final answer, reference only necessary deliverables at the relevant paragraph: [label](artifact:art_ID) for files, ![description](artifact:art_ID) for images. Replace art_ID with an exact ID listed above. Internal QA screenshots, extracted frames, drafts, and failed attempts normally stay in the work log. Do not pass file contents, base64, or data URLs. Use present_artifacts with paths to prepare selected existing local files; use mode preview only for an explicit user preview or choice.",
-        format!("{}\nTo inspect a generated image, call read with artifact_ids containing its exact ID. Do not search the filesystem for generated filenames. The local file above is available for file-based tools. Showing an image does not mean you have visually inspected it.", items.join("\n")),
+        format!("{}\nTo inspect an artifact listed here, call read with artifact_ids containing its exact ID. If a local path is listed, it can also be used by file-based tools. For a user-provided disk path, use read with path directly; no artifact registration is required. Avoid guessing or searching for a generated filename when its exact ID or path is already available. Showing an image does not mean you have visually inspected it.", items.join("\n")),
     ))
 }
 
@@ -1409,6 +1409,8 @@ mod tests {
         assert!(hint.contains("Internal QA screenshots"));
         assert!(hint.contains("Do not pass file contents, base64, or data URLs"));
         assert!(hint.contains("prepare selected existing local files"));
+        assert!(hint.contains("user-provided disk path"));
+        assert!(!hint.contains("Do not search the filesystem for generated filenames."));
     }
 
     #[test]

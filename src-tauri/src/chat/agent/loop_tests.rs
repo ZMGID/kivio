@@ -783,6 +783,35 @@ fn visible_tool_segment_calls_skip_hidden_disabled_builtin_feedback() {
     );
 }
 
+#[tokio::test]
+async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_access() {
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+    let mut settings = Settings::default();
+    settings.chat_tools.approval_policy = "auto".into();
+    let mut cache = skills::SkillRunCache::default();
+    let result = execute_tool_round(
+        &host,
+        &executor,
+        &settings,
+        test_round_context(),
+        &[native_read_file_tool()],
+        &[],
+        vec![
+            pending_tool_call("disabled_bash", "bash"),
+            pending_tool_call("available_read", "read"),
+        ],
+        &mut cache,
+    )
+    .await;
+    let feedback = result.response_messages[0]["content"].as_str().unwrap();
+    assert!(feedback.contains("Available tools: read"), "{feedback}");
+    assert!(feedback.contains("this tool only"), "{feedback}");
+    assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(result.tool_records[0].status, ToolCallStatus::Success);
+}
+
 #[test]
 fn reasoning_segment_order_precedes_text_in_same_step() {
     let mut builder = SegmentBuilder::new();

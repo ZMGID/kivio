@@ -94,7 +94,7 @@ pub fn disabled_builtin_tool_feedback(function_name: &str) -> Option<String> {
         || EXTRA_BUILTIN_NAMES.contains(&function_name);
     if is_builtin {
         Some(format!(
-            "Kivio tool `{function_name}` is not enabled for this chat. Do not call it again; answer using the available context and enabled tools only."
+            "Kivio tool `{function_name}` is not enabled in the current tool set, so this call was not executed. This applies to this tool only; it does not establish a filesystem restriction or that other tools are unavailable. Continue with a currently declared tool if it can perform the requested work. If none can, explain the specific missing capability without inventing a permission or provider error."
         ))
     } else {
         None
@@ -467,7 +467,7 @@ pub fn build_chat_system_prompt_with_segments(
         );
     }
 
-    // Chat 没有文件/shell/skill 激活：这些段会教模型去 list_dir / run_command，
+    // Chat 没有文件/shell/skill 激活：这些段会教模型去 read / bash，
     // 和「写文件 / Shell 只在 Agent 可用」矛盾，故整段跳过。
     if !is_chat_runtime {
         if let Some(path) = obsidian_vault_path
@@ -477,8 +477,8 @@ pub fn build_chat_system_prompt_with_segments(
             let text = format!(
                 "Obsidian vault path: {path}\n\
                  This is a local Obsidian markdown vault. Use the native file tools: \
-                 list_dir to browse (entries include modified time), glob_files to find *.md by name, \
-                 search_files to search by content/keyword, read_file to read a note; \
+                 read with the vault directory path to browse, glob with that path to find *.md by name, \
+                 grep with that path to search by content/keyword, read with a note's path to read it. Use only tools declared in this request; \
                  notes cross-reference each other via [[wikilink]].\n\
                  For Obsidian syntax or file-format details, activate the obsidian-markdown / \
                  obsidian-bases / json-canvas / obsidian-cli skills."
@@ -1048,7 +1048,12 @@ fn native_tools_prompt(available_builtin_tools: &[String], _has_workbench: bool)
     let mut bullets: Vec<String> = Vec::new();
     if has_file_cwd {
         bullets.push(
-            "Relative file paths and omitted command cwd resolve from the current default workbench (the bound project root for project conversations, or the per-conversation workbench otherwise). Explicit absolute or ~/ paths remain unrestricted and always take precedence.".to_string(),
+            "Relative file paths and omitted command cwd resolve from the current default workbench (the bound project root for project conversations, or the per-conversation workbench otherwise). Explicit absolute or ~/ paths can target locations outside it; normal OS permissions, tool approvals, and user constraints still apply. An empty workbench or search result does not show what exists elsewhere. Use the user's explicit path as given; when searching another directory, pass it as the search tool's path.".to_string(),
+        );
+    }
+    if has("read") {
+        bullets.push(
+            "For a user-provided disk file, call read with path directly; disk files do not need an artifact ID or registration with present_artifacts. Use read with artifact_ids only for exact art_ IDs already returned by tools. File reading, artifact registration, and showing a file to the user are separate operations.".to_string(),
         );
     }
     if has_write || has_edit {
@@ -1095,7 +1100,7 @@ fn native_tools_prompt(available_builtin_tools: &[String], _has_workbench: bool)
             "Runtime environment: {os_name}; bash runs via {shell_name}. Match that shell's syntax ({shell_syntax_hint}). Each bash call is a fresh process — cwd does NOT persist across calls; switch directories with the `cwd` parameter, not a prior `cd`. To run multi-line or quoted code, write it to a file with write and run that — do not cram it into inline commands like `python -c \"...\"` (inline quotes are fragile across shells). When a tool returns a hard rejection, change strategy instead of retrying variants of the same action; never re-run a failed command unchanged; don't drop one-off probe or cleanup scripts into the project."
         ));
         bullets.push(
-            "bash runs on the host shell from the current default workbench; non-zero exit means failure. Paths with spaces must use the `cwd` parameter—never `cd path && command`; do not combine `cwd` with a leading `cd ... &&` prefix. Finite commands (builds, tests, image-generation batches) stay in the foreground: bash waits until the process exits. Put parallel work inside one command (a script --concurrency flag, etc.), not as N bash jobs. Pass timeout_ms only if you want the process killed at that deadline. Never-ending servers such as `npm run dev`, `tauri dev`, and `vite` start in the background automatically and return a job_id immediately; do not start the same dev server twice. Explain and get confirmation before destructive, network, or environment-changing commands. Run a skill's bundled scripts with run_command; never use host pip unless the user explicitly asked for a host Python install.".to_string(),
+            "bash runs on the host shell from the current default workbench; non-zero exit means failure. Paths with spaces must use the `cwd` parameter—never `cd path && command`; do not combine `cwd` with a leading `cd ... &&` prefix. Finite commands (builds, tests, image-generation batches) stay in the foreground: bash waits until the process exits. Put parallel work inside one command (a script --concurrency flag, etc.), not as N bash jobs. Pass timeout_ms only if you want the process killed at that deadline. Never-ending servers such as `npm run dev`, `tauri dev`, and `vite` start in the background automatically and return a job_id immediately; do not start the same dev server twice. Obey user constraints and obtain any required authorization for destructive, network, or environment-changing commands. Run a skill's bundled scripts with bash; never use host pip unless the user explicitly asked for a host Python install.".to_string(),
         );
         bullets.push(
             "Background commands (bash with background:true, or auto-detected never-ending servers): the call returns a job_id immediately. Inspect with bash_output (pass the job_id; default wait ~30s; use next_offset for the next read). Do not background a command that will exit. List jobs with bash_output (no job_id), and stop one with kill_background. Status in history may be stale, so refresh once with bash_output before reporting a background command's result. Background commands survive across turns until you kill them or the app exits, so kill_background a dev server when you no longer need it.".to_string(),
@@ -1863,6 +1868,8 @@ mod tests {
 
         assert!(feedback.contains("not enabled"));
         assert!(feedback.contains("web_search"));
+        assert!(feedback.contains("this tool only"));
+        assert!(!feedback.contains("Do not call it again; answer"));
         assert!(disabled_builtin_tool_feedback("mcp__server__tool").is_none());
         // 模型按 wire 别名调用时同样识别为内置工具（保留名规避）。
         let alias_feedback = disabled_builtin_tool_feedback("search_web")
@@ -1878,6 +1885,19 @@ mod tests {
         let prompt = native_tools_prompt(&names, false).expect("prompt");
         assert!(prompt.contains("search_web"), "{prompt}");
         assert!(!prompt.contains("web_search"), "{prompt}");
+    }
+
+    #[test]
+    fn file_guidance_distinguishes_disk_paths_from_artifact_ids() {
+        let prompt = native_tools_prompt(
+            &["read".into(), "bash".into(), "present_artifacts".into()],
+            false,
+        )
+        .unwrap();
+        assert!(!prompt.contains("with run_command"));
+        assert!(prompt.contains("read with path"));
+        assert!(prompt.contains("does not show what exists elsewhere"));
+        assert!(prompt.contains("do not need an artifact ID"));
     }
 
     #[test]
