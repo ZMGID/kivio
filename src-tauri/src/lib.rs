@@ -638,6 +638,7 @@ pub fn run() {
             chat::commands::attachments::chat_reveal_generated_artifact,
             chat::commands::attachments::chat_save_pasted_image,
             chat::commands::attachments::chat_save_pasted_attachment,
+            chat::commands::attachments::chat_inspect_attachment_paths,
             chat::commands::attachments::chat_read_clipboard_files,
             chat::commands::attachments::chat_read_clipboard,
             chat::commands::attachments::chat_write_clipboard_text,

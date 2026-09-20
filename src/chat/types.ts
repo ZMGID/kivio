@@ -242,7 +242,7 @@ export interface MessageUsage {
 
 export interface Attachment {
   id: string
-  type: 'image' | 'file' | 'video'
+  type: 'image' | 'file' | 'video' | 'folder'
   name: string
   path: string
   /**
@@ -254,7 +254,7 @@ export interface Attachment {
 
 export interface PendingAttachment {
   id: string
-  type: 'image' | 'file' | 'video'
+  type: 'image' | 'file' | 'video' | 'folder'
   name: string
   path: string
   /**

@@ -699,6 +699,27 @@ export const InputBar = memo(function InputBar({
     [t],
   )
 
+  const pendingFromPaths = useCallback(async (paths: string[]) => {
+    if (paths.length === 0) return []
+    try {
+      const inspected = await api.chatInspectAttachmentPaths(paths)
+      const next = inspected
+        .filter((item): item is typeof item & { type: PendingAttachment['type'] } => (
+          item.type === 'image' || item.type === 'file' || item.type === 'video' || item.type === 'folder'
+        ))
+        .map((item) => ({
+          id: `pending-att-${crypto.randomUUID()}`,
+          type: item.type,
+          name: item.name || t.chatAttachmentFallbackName,
+          path: item.path,
+        }))
+      if (next.length > 0) return next
+    } catch (err) {
+      console.error('Failed to classify chat attachments:', err)
+    }
+    return attachmentsFromPaths(paths)
+  }, [attachmentsFromPaths, t])
+
   const loadProjectOptions = useCallback(async () => {
     if (!projectEntryEnabled) return
     setProjectOptionsLoading(true)
@@ -1132,14 +1153,14 @@ export const InputBar = memo(function InputBar({
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
       if (paths.length === 0) return
 
-      addAttachments(attachmentsFromPaths(paths))
+      addAttachments(await pendingFromPaths(paths))
     } catch (err) {
       console.error('Failed to add chat attachment:', err)
       setAttachmentError(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatAttachmentAddFailed,
       )
     }
-  }, [addAttachments, attachmentsFromPaths, closeProjectMenu, composerLocked, t])
+  }, [addAttachments, closeProjectMenu, composerLocked, pendingFromPaths, t])
 
   const handleSlashCommandSelect = useCallback(async (command: SlashCommandDefinition) => {
     if (disabled) return
@@ -1548,7 +1569,7 @@ export const InputBar = memo(function InputBar({
       const pastedAttachments: PendingAttachment[] = []
 
       if (hasNativeFiles) {
-        pastedAttachments.push(...attachmentsFromPaths(nativePaths))
+        pastedAttachments.push(...await pendingFromPaths(nativePaths))
       } else for (const [index, file] of attachableClipboardFiles.entries()) {
         const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
 
@@ -1806,7 +1827,7 @@ export const InputBar = memo(function InputBar({
 
       if (event.payload.type === 'drop') {
         setDragActive(false)
-        addAttachments(attachmentsFromPaths(event.payload.paths))
+        void pendingFromPaths(event.payload.paths).then(addAttachments)
       }
     }).then((handler) => {
       if (cancelled) {
@@ -1823,7 +1844,7 @@ export const InputBar = memo(function InputBar({
       setDragActive(false)
       unlisten?.()
     }
-  }, [addAttachments, attachmentsFromPaths, composerLocked])
+  }, [addAttachments, composerLocked, pendingFromPaths])
 
   const canSend = (Boolean(input.trim()) || attachments.length > 0)
     && !slashPanelOpen

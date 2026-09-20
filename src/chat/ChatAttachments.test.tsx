@@ -74,4 +74,18 @@ describe('ChatAttachments 卡片形态', () => {
     expect(container.textContent).toContain('notes.pdf')
     expect(container.textContent).toContain('PDF')
   })
+
+  it('renders dropped folders as FOLDER cards', () => {
+    const { container } = render(
+      <ChatAttachments
+        attachments={[
+          { id: 'd1', name: 'testend', type: 'folder', path: 'E:\\ZM database\\testend' },
+        ]}
+        variant="composer"
+      />,
+    )
+
+    expect(container.textContent).toContain('testend')
+    expect(container.textContent).toContain('FOLDER')
+  })
 })

@@ -2311,6 +2311,11 @@ export const api = {
     invoke<ChatPastedImageResult>('chat_save_pasted_image', { name, mimeType, dataBase64 }),
   chatSavePastedAttachment: (name: string, dataBase64: string) =>
     invoke<ChatPastedImageResult>('chat_save_pasted_attachment', { name, dataBase64 }),
+  chatInspectAttachmentPaths: (paths: string[]) =>
+    invoke<Array<{ path: string; name: string; type: 'image' | 'file' | 'video' | 'folder' }>>(
+      'chat_inspect_attachment_paths',
+      { paths },
+    ),
   chatReadClipboardFiles: () =>
     invoke<ChatClipboardFilesResult>('chat_read_clipboard_files'),
   chatReadClipboard: () => invoke<ChatClipboardContent>('chat_read_clipboard'),

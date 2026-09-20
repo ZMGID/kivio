@@ -3,8 +3,9 @@ use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
 use crate::chat::attachments::{
-    is_attachable_file_name, read_attachment_as_data_url, resolve_attachment_file_path,
-    save_pasted_attachment, save_pasted_image, PastedAttachmentSave, PastedImageSave,
+    inspect_attachment_sources, read_attachment_as_data_url, resolve_attachment_file_path,
+    save_pasted_attachment, save_pasted_image, InspectedAttachment, PastedAttachmentSave,
+    PastedImageSave,
 };
 
 /// 读取附件为 data URL，供前端 `<img>` 预览。`conversation_id` 为空时按本机绝对路径读取（发送前预览）。
@@ -120,25 +121,21 @@ pub(crate) fn chat_read_clipboard_files() -> Result<serde_json::Value, String> {
         }
     };
 
-    let files: Vec<Value> = paths
-        .into_iter()
-        .filter(|path| path.is_file())
-        .filter_map(|path| {
-            let name = path.file_name()?.to_string_lossy().to_string();
-            if !is_attachable_file_name(&name) {
-                return None;
-            }
-            Some(serde_json::json!({
-                "path": path.to_string_lossy(),
-                "name": name,
-            }))
-        })
-        .collect();
+    let files: Vec<Value> =
+        inspect_attachment_sources(paths.iter().map(|path| path.to_string_lossy().into_owned()))
+            .into_iter()
+            .filter_map(|item| serde_json::to_value(item).ok())
+            .collect();
 
     Ok(serde_json::json!({
         "success": true,
         "files": files,
     }))
+}
+
+#[tauri::command]
+pub(crate) fn chat_inspect_attachment_paths(paths: Vec<String>) -> Vec<InspectedAttachment> {
+    inspect_attachment_sources(paths)
 }
 
 /// Explicit paste action in the desktop editor. Read through the OS clipboard,
@@ -152,7 +149,10 @@ pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
 
         let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
         if let Ok(paths) = clipboard.get().file_list() {
-            let paths: Vec<_> = paths.into_iter().filter(|path| path.is_file()).collect();
+            let paths: Vec<_> = paths
+                .into_iter()
+                .filter(|path| path.is_file() || path.is_dir())
+                .collect();
             if !paths.is_empty() {
                 return Ok(serde_json::json!({ "kind": "files", "paths": paths }));
             }

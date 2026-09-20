@@ -124,6 +124,7 @@ function FileAttachmentCard({
   return (
     <FileChip
       name={attachment.name}
+      kind={attachment.type === 'folder' ? 'folder' : undefined}
       onRevealLocation={fileLocationAction(attachment.path, conversationId)}
       onClick={() => {
         if (typeof attachment.content === 'string' && onEdit) {

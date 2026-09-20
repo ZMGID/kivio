@@ -179,6 +179,13 @@ pub fn file_attachments_note_for(cli_bin: Option<&Path>, paths: &[PathBuf]) -> S
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("attachment");
+        if path.is_dir() {
+            out.push_str(&format!(
+                "Attached folder: {name}\nPath: {}\n\n",
+                prompt_path_for_cli(cli_bin, path)
+            ));
+            continue;
+        }
         let mime = file_mime_for_path(path);
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         out.push_str(&format!(
@@ -293,6 +300,17 @@ mod tests {
         assert!(note.contains("Attached file: report.pdf"));
         assert!(note.contains("Path: /tmp/report.pdf"));
         assert!(note.contains("application/pdf"));
+    }
+
+    #[test]
+    fn file_note_marks_existing_folders() {
+        let dir = std::env::temp_dir().join(format!("kivio-ext-att-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let note = file_attachments_note(&[dir.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(note.contains("Attached folder:"));
+        assert!(note.contains("Path: "));
+        assert!(!note.contains("MIME:"));
     }
 
     #[test]

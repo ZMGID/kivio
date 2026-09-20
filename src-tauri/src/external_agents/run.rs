@@ -356,6 +356,11 @@ pub(crate) async fn run_external_cli_reply_in(
         if let Ok(dir) = crate::chat::storage::conversation_attachments_dir(app, &conversation.id) {
             extra_dirs.push(dir.to_string_lossy().to_string());
         }
+        for path in file_paths {
+            if path.is_dir() {
+                extra_dirs.push(path.to_string_lossy().into_owned());
+            }
+        }
     }
     for directory in &conversation.additional_directories {
         if !directory.path.trim().is_empty() {

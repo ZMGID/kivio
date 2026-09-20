@@ -7,6 +7,7 @@ import {
   FilePlay,
   FileSpreadsheet,
   FileText,
+  Folder,
   Presentation,
   FolderOpen,
 } from 'lucide-react'
@@ -33,6 +34,15 @@ function extensionOf(name: string): string {
   const dot = base.lastIndexOf('.')
   if (dot <= 0 || dot === base.length - 1) return ''
   return base.slice(dot + 1).toLowerCase()
+}
+
+function folderKindVisual(): FileKindVisual {
+  return {
+    Icon: Folder,
+    label: 'FOLDER',
+    iconClass: 'text-amber-600 dark:text-amber-400',
+    wellClass: 'bg-amber-500/10 dark:bg-amber-400/15',
+  }
 }
 
 function fileKindVisual(name: string): FileKindVisual {
@@ -74,12 +84,14 @@ function fileKindVisual(name: string): FileKindVisual {
 /** 上传附件使用卡片，正文产物使用跟随文字行高的链接。 */
 export function FileChip({
   name,
+  kind,
   onClick,
   ariaLabel,
   variant = 'card',
   onRevealLocation,
 }: {
   name: string
+  kind?: 'folder'
   onClick: () => void
   ariaLabel?: string
   variant?: 'card' | 'inline'
@@ -87,7 +99,7 @@ export function FileChip({
 }) {
   const [menuAnchor, setMenuAnchor] = useState<DockMenuAnchor | null>(null)
   const [locationError, setLocationError] = useState(false)
-  const visual = fileKindVisual(name)
+  const visual = kind === 'folder' ? folderKindVisual() : fileKindVisual(name)
   const Icon = visual.Icon
   const contextMenu = onRevealLocation ? (event: React.MouseEvent) => {
     event.preventDefault()

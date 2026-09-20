@@ -106,7 +106,7 @@ pub fn resolve_sandbox_export_file_path(path: &str) -> Result<PathBuf, String> {
     if !full.is_absolute() {
         return Err("Generated file path must be absolute".to_string());
     }
-    if !full.is_file() {
+    if !full.is_file() && !full.is_dir() {
         return Err("Generated file does not exist".to_string());
     }
     fs::canonicalize(full).map_err(|err| format!("Resolve generated file path failed: {err}"))
@@ -732,6 +732,8 @@ mod tests {
         fs::write(&file, "ok").expect("write");
         let resolved = resolve_sandbox_export_file_path(&file.to_string_lossy()).expect("resolve");
         assert_eq!(resolved, fs::canonicalize(&file).unwrap());
+        let folder = resolve_sandbox_export_file_path(&dir.to_string_lossy()).expect("resolve dir");
+        assert_eq!(folder, fs::canonicalize(&dir).unwrap());
         let _ = fs::remove_dir_all(dir);
     }
 }

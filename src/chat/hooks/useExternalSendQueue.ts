@@ -149,8 +149,10 @@ export function useExternalSendQueue({
           .filter((attachment) => attachment.path)
           .map<PendingAttachment>((attachment, index) => ({
             id: attachment.id || `external-${request.id}-${index}`,
-            type: attachment.type === 'video' ? 'video' : attachment.type === 'file' ? 'file' : 'image',
-            name: attachment.name || (attachment.type === 'file' ? 'Attachment' : 'Image'),
+            type: attachment.type === 'video' || attachment.type === 'file' || attachment.type === 'folder'
+              ? attachment.type
+              : 'image',
+            name: attachment.name || (attachment.type === 'image' ? 'Image' : 'Attachment'),
             path: attachment.path,
           }))
         const accepted = await callbacksRef.current.onSendMessage(
