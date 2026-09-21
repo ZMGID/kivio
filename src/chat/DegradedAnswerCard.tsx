@@ -45,20 +45,20 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
 
   return (
     <div
-      className={`my-2 rounded-xl border px-3.5 py-3 ${tone.border}`}
+      className={`my-2 w-full min-w-0 max-w-full rounded-xl border px-3.5 py-3 ${tone.border}`}
       role="status"
       data-degraded-kind={degraded.kind}
     >
-      <div className="flex items-start gap-2.5">
+      <div className="flex min-w-0 items-start gap-2.5">
         <Icon size={15} strokeWidth={2} className={`mt-0.5 shrink-0 ${tone.icon}`} />
         <div className="min-w-0 flex-1">
           <div className={`text-[13px] font-medium ${tone.label}`}>{meta.label}</div>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+          <p className="mt-1 min-w-0 [overflow-wrap:anywhere] text-[12.5px] leading-relaxed text-neutral-600 dark:text-neutral-400">
             {degraded.reason}
           </p>
 
           {detail && (
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/[0.04] px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-neutral-600 dark:bg-white/[0.06] dark:text-neutral-400">
+            <pre className="custom-scrollbar mt-2 max-h-40 min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/[0.04] px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-neutral-600 dark:bg-white/[0.06] dark:text-neutral-400">
               {detail}
             </pre>
           )}

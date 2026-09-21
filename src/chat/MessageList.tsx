@@ -2061,7 +2061,7 @@ function MessageListBase({
           )
         case 'error':
           return (
-            <div className="chat-motion-fade-up flex flex-col items-start gap-2 py-3">
+            <div className="chat-motion-fade-up flex w-full min-w-0 flex-col items-start gap-2 py-3">
               <DegradedAnswerCard degraded={streamErrorDegraded(item.text)} />
               {item.retryMessageId && onRetryLastUser && (
                 <button
