@@ -140,7 +140,7 @@ const NAVIGATOR_UNLOCK_FRAMES = 10
 const NAVIGATOR_PENDING_SELECTOR = '[data-chat-heavy-hydrated="false"], [data-chat-async-pending="true"]'
 const NAVIGATOR_ALIGN_EPSILON_PX = 1
 const HEADING_NAVIGATOR_TOP_INSET_PX = 16
-// 未响应的异步块不能无限挡住会话；超时后仍须等实际布局稳定。
+// 布局稳定后尽早揭开；慢媒体或持续重排最多挡住已挂载的正文 2 秒。
 const OPEN_SETTLE_MAX_MS = 2_000
 const OPEN_SETTLE_QUIET_MS = 80
 
@@ -356,6 +356,7 @@ function MessageListBase({
   }, [])
 
   const committedRenderRequestRef = useRef(0)
+  const openingDeadlineRef = useRef<{ conversationId: string; requestId: number; deadline: number } | null>(null)
   useLayoutEffect(() => {
     if (
       !contentEl
@@ -364,40 +365,47 @@ function MessageListBase({
       || renderRequestId <= 0
       || committedRenderRequestRef.current === renderRequestId
     ) return
+    // 同一次打开的截止时间不随回调身份、DOM 绑定或组件重渲染延后。
+    if (openingDeadlineRef.current?.conversationId !== conversationId
+      || openingDeadlineRef.current.requestId !== renderRequestId) {
+      openingDeadlineRef.current = {
+        conversationId, requestId: renderRequestId, deadline: performance.now() + OPEN_SETTLE_MAX_MS,
+      }
+    }
+    const deadline = openingDeadlineRef.current.deadline
     let cancelled = false
     let readyRaf: number | null = null
+    let timeoutId: number | null = null
     let previousLayout = ''
     let stableFrames = 0
     let stableSince = performance.now()
-    const startedAt = performance.now()
 
     const completeNow = () => {
       if (cancelled || committedRenderRequestRef.current === renderRequestId) return
       committedRenderRequestRef.current = renderRequestId
       observer.disconnect()
+      if (readyRaf !== null) cancelAnimationFrame(readyRaf)
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
       onInitialRender?.(conversationId, renderRequestId)
     }
 
     const completeIfReady = (): boolean => {
       const now = performance.now()
+      if (now >= deadline) {
+        completeNow()
+        return true
+      }
       const pendingMedia = [...contentEl.querySelectorAll('img')].some(image => !image.complete)
         || document.fonts?.status === 'loading'
       const pendingBlock = Boolean(contentEl.querySelector(NAVIGATOR_PENDING_SELECTOR))
       // Images update their aspect ratio on load; a stable placeholder is not
       // their final geometry. Failed images are complete and do not block.
-      if (pendingMedia || (pendingBlock && now - startedAt < OPEN_SETTLE_MAX_MS)) {
+      if (pendingMedia || pendingBlock) {
         previousLayout = ''
         stableFrames = 0
         stableSince = now
         return false
       }
-      // Active output is expected to keep changing. Once its mounted content
-      // is ready, don't make opening the conversation wait for the run to end.
-      if (streaming && !pendingBlock && now - startedAt >= OPEN_SETTLE_MAX_MS) {
-        completeNow()
-        return true
-      }
-
       // 虚拟列表总高是估算值；相邻行一增一减、宽度重排、滚动补偿都可能
       // 不改变 scrollHeight。检查已挂载行的实际尺寸/位置以及视口，直到
       // ResizeObserver → virtualizer → React 的纠正连续多帧安静下来。
@@ -441,13 +449,16 @@ function MessageListBase({
       childList: true,
       subtree: true,
     })
+    // rAF 暂停时也能结束等待；媒体加载和虚拟列表测高在揭开后继续。
+    timeoutId = window.setTimeout(completeNow, Math.max(0, deadline - performance.now()))
     scheduleReadyCheck()
     return () => {
       cancelled = true
       observer.disconnect()
       if (readyRaf !== null) cancelAnimationFrame(readyRaf)
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
     }
-  }, [contentEl, viewportEl, conversationId, onInitialRender, renderRequestId, streaming])
+  }, [contentEl, viewportEl, conversationId, onInitialRender, renderRequestId])
 
 
   useLayoutEffect(() => {
