@@ -972,7 +972,6 @@ function MessageListBase({
       scrollOffset: instance.scrollOffset ?? 0,
       scrollAdjustments: instance.scrollAdjustments,
       itemSizeCache: instance.itemSizeCache,
-      scrollDirection: instance.scrollDirection,
     })
   }
 

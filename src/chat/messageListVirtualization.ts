@@ -428,31 +428,23 @@ export type ChatItemResizeContext = {
   scrollOffset: number
   scrollAdjustments: number
   itemSizeCache: ReadonlyMap<number | string | bigint, number>
-  scrollDirection: 'forward' | 'backward' | null
 }
 
 /**
- * Resize-compensation baseline aligned with LiveAgent / TanStack 3.17 default:
- * - only rows starting above the reading anchor may shift scrollTop
- * - first measurements always compensate (estimate→actual must land)
- * - re-measurements during backward scroll are skipped
- *
- * The live-row growth carve-out (streaming append below a detached reader) is
- * applied by MessageList on top of this predicate.
+ * Preserve the reading anchor when rows above it change height, in either
+ * scroll direction. Remounted heavy content can shrink to a placeholder and
+ * grow again; skipping its remeasurements during upward scroll moves history.
+ * A measured row containing the anchor must not shift it when content below
+ * the reader expands. First measurements still reconcile estimate to reality.
+ * MessageList separately handles navigation, width changes and disclosures.
  */
 export function shouldAdjustChatItemSizeChange(
   item: Pick<VirtualItem, 'key' | 'start' | 'end'>,
   context: ChatItemResizeContext,
 ): boolean {
   const anchor = context.scrollOffset + context.scrollAdjustments
-  // Upstream default: only above-viewport resizes may shift scrollTop.
   if (item.start >= anchor) return false
-  // Upstream default: re-measurements are skipped during backward scroll;
-  // first measurements always compensate.
-  if (context.itemSizeCache.has(item.key) && context.scrollDirection === 'backward') {
-    return false
-  }
-  return true
+  return !context.itemSizeCache.has(item.key) || item.end <= anchor
 }
 
 /**

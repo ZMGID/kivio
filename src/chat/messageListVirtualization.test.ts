@@ -240,30 +240,29 @@ describe('row resize anchoring', () => {
     scrollOffset: 500,
     scrollAdjustments: 0,
     itemSizeCache: new Map<string, number>([['measured', 100]]),
-    scrollDirection: null as 'forward' | 'backward' | null,
   }
 
-  it('adjusts rows that start above the reading anchor (LiveAgent / TanStack default)', () => {
+  it('compensates measured rows fully above the anchor, but not the row being read', () => {
     expect(shouldAdjustChatItemSizeChange(
       { key: 'measured', start: 100, end: 200 },
       base,
     )).toBe(true)
-    // 跨过锚点但仍从上方开始：默认补偿，live 行特例由 MessageList 再裁。
+    // 已测过的可见行在阅读位置下方长高，不应把正在读的内容推走。
     expect(shouldAdjustChatItemSizeChange(
       { key: 'measured', start: 450, end: 550 },
       base,
-    )).toBe(true)
+    )).toBe(false)
     expect(shouldAdjustChatItemSizeChange(
       { key: 'measured', start: 550, end: 650 },
       base,
     )).toBe(false)
   })
 
-  it('does not compensate a measured row while scrolling backward', () => {
+  it('includes pending scroll adjustments in the reading anchor', () => {
     expect(shouldAdjustChatItemSizeChange(
-      { key: 'measured', start: 100, end: 200 },
-      { ...base, scrollDirection: 'backward' },
-    )).toBe(false)
+      { key: 'measured', start: 550, end: 600 },
+      { ...base, scrollAdjustments: 100 },
+    )).toBe(true)
   })
 
   it('compensates an unmeasured row above the anchor once (estimate→actual)', () => {
@@ -271,11 +270,45 @@ describe('row resize anchoring', () => {
       { key: 'unmeasured', start: 300, end: 700 },
       base,
     )).toBe(true)
-    // 首次测量即使 backward 也要补偿（上游「上滚时条目跳动」修复）。
+    // 首次测量按行起点判断，补偿估算到真实高度的差值。
     expect(shouldAdjustChatItemSizeChange(
       { key: 'unmeasured', start: 100, end: 200 },
-      { ...base, scrollDirection: 'backward' },
+      base,
     )).toBe(true)
+  })
+
+  it.each(['forward', 'backward'] as const)('preserves the reading anchor through real virtualizer resizes during %s scroll', direction => {
+    for (const index of [28, 30]) {
+      for (const nextHeight of [562, 1438]) {
+        let scrollTop = 30_500
+        const list = new Virtualizer<HTMLElement, HTMLElement>({
+          count: 60,
+          estimateSize: () => 1000,
+          getScrollElement: () => null,
+          initialOffset: scrollTop,
+          initialRect: { width: 900, height: 800 },
+          initialMeasurementsCache: Array.from({ length: 60 }, (_, index) => ({
+            key: index, index, start: index * 1000, end: (index + 1) * 1000, size: 1000, lane: 0,
+          })),
+          observeElementRect: () => undefined,
+          observeElementOffset: () => undefined,
+          scrollToFn: (offset, { adjustments = 0 }) => { scrollTop = offset + adjustments },
+        })
+        list.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => shouldAdjustChatItemSizeChange(item, {
+          scrollOffset: instance.scrollOffset ?? 0,
+          scrollAdjustments: instance.scrollAdjustments,
+          itemSizeCache: instance.itemSizeCache,
+        })
+        list.getTotalSize()
+        list.scrollDirection = direction
+        const before = list.measurementsCache[30].start - scrollTop
+        // A remounted row above the reader can shrink to a placeholder and grow
+        // back to its diagram. A visible row growing below the reader is different.
+        list.resizeItem(index, nextHeight)
+        list.getTotalSize()
+        expect(list.measurementsCache[30].start - scrollTop, `row=${index}, height=${nextHeight}`).toBe(before)
+      }
+    }
   })
 })
 
