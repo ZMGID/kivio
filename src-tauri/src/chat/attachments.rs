@@ -193,6 +193,7 @@ fn normalize_pasted_image_mime(mime_type: &str) -> Result<&'static str, String> 
 
 fn extension_for_image_mime(mime_type: &str) -> &'static str {
     match mime_type {
+        "image/svg+xml" => "svg",
         "image/jpeg" => "jpg",
         "image/gif" => "gif",
         "image/webp" => "webp",
@@ -211,6 +212,7 @@ fn mime_type_for_attachment(name: &str) -> &'static str {
         .map(|ext| ext.to_ascii_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
+        "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -1205,6 +1207,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn svg_attachment_preview_preserves_mime_and_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 30"><rect width="40" height="30" fill="red"/></svg>"#;
+        for name in ["diagram.svg", "diagram.SVG"] {
+            let path = dir.path().join(name);
+            fs::write(&path, svg).unwrap();
+            let data_url = read_attachment_as_data_url(&path).unwrap();
+            let (mime, encoded) = parse_data_url(&data_url).unwrap();
+            assert_eq!(mime, "image/svg+xml");
+            assert_eq!(general_purpose::STANDARD.decode(encoded).unwrap(), svg);
+        }
+    }
+
+    #[test]
     fn attachment_type_detects_images_case_insensitively() {
         assert_eq!(attachment_type_for_name("screenshot.PNG"), "image");
         assert_eq!(attachment_type_for_name("scan.tif"), "image");
@@ -1520,6 +1536,36 @@ mod tests {
             "path": path,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn externalized_svg_can_be_reopened_as_an_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><!--{}--><rect width="40" height="30" fill="red"/></svg>"#,
+            " ".repeat(ARTIFACT_INLINE_THRESHOLD_BYTES)
+        );
+        let data_url = format!(
+            "data:image/svg+xml;base64,{}",
+            general_purpose::STANDARD.encode(svg.as_bytes())
+        );
+        let mut artifact: ChatToolArtifact = serde_json::from_value(serde_json::json!({
+            "name": "diagram.svg",
+            "mime_type": "image/svg+xml",
+            "data_url": data_url,
+        }))
+        .unwrap();
+
+        assert!(externalize_image_artifact_in_dir(dir.path(), &mut artifact));
+        let path = dir.path().join(artifact.path.as_ref().unwrap());
+        assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("svg"));
+        assert_eq!(read_attachment_as_data_url(&path).unwrap(), data_url);
+        assert!(artifact.data_url.is_empty());
+        assert!(!externalize_image_artifact_in_dir(
+            dir.path(),
+            &mut artifact
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
