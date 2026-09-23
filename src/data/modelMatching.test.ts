@@ -2,6 +2,45 @@ import { describe, expect, it } from 'vitest'
 import { matchModel, matchModelExact, resolveModelInfo } from './modelMatching'
 
 describe('matchModel', () => {
+  it.each([
+    ['openai/gpt-6-sol', 'GPT-6 Sol', 256000, 2, 10, 0.2],
+    ['openai/gpt-6-luna', 'GPT-6 Luna', 256000, 0.1, 0.5, 0.01],
+    ['anthropic/claude-opus-5-5', 'Claude Opus 5.5', 1000000, 4, 20, 0.2],
+    ['xiaomi/mimo-v2.6-pro', 'MiMo V2.6 Pro', 1048576, 0.435, 0.87, 0.0036],
+    ['xiaomi/mimo-v2.6-flash', 'MiMo V2.6 Flash', 1048576, 0.14, 0.28, 0.0028],
+    ['z-ai/glm-5.3-flashx', 'GLM-5.3 FlashX', 1000000, 0.37, 1.25, 0.075],
+    ['x-ai/grok-4.7', 'Grok 4.7', 500000, 2, 6, 0.5],
+    ['qwen/qwen3.8-omni-flash', 'Qwen3.8 Omni Flash', 1000000, 0.15, 0.47, 0.016],
+  ])('resolves the September 24 catalog entry for %s without inheriting an older variant', (id, name, context, input, output, cachedInput) => {
+    expect(matchModelExact(id)).toMatchObject({
+      displayName: name, contextWindow: context,
+      pricing: { input, output, cachedInput },
+      capabilities: { vision: true, reasoning: true, functionCalling: true, streaming: true },
+    })
+    expect(matchModel(id)).toEqual(matchModelExact(id))
+  })
+
+  it('keeps published effort controls and user overrides for the new models', () => {
+    for (const id of ['gpt-6-sol', 'gpt-6-luna', 'claude-opus-5-5']) {
+      expect(matchModel(id)?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    }
+    for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash']) {
+      expect(matchModel(id)?.reasoningEfforts).toEqual([])
+    }
+    expect(resolveModelInfo('gpt-6-sol', { 'gpt-6-sol': { contextWindow: 1050000 } }).contextWindow).toBe(1050000)
+    expect(matchModel('claude-opus-5')?.displayName).toBe('Claude Opus 5')
+    expect(matchModel('mimo-v2.5-pro')?.capabilities?.vision).toBe(false)
+    expect(matchModel('grok-4.6')?.displayName).toBe('Grok 4.6')
+    expect(matchModel('grok-4.7')?.maxOutput).toBe(0)
+    expect(matchModel('qwen3.8-omni-flash')?.maxOutput).toBe(131072)
+  })
+
+  it('refreshes changed prices without changing old family identities', () => {
+    expect(matchModel('claude-sonnet-5')?.pricing).toEqual({ input: 2, output: 10, cachedInput: 0.2 })
+    expect(matchModel('glm-5.3-flash')?.pricing).toEqual({ input: 0.15, output: 0.5, cachedInput: 0.03 })
+    expect(matchModel('mimo-v2.5')?.pricing).toEqual({ input: 0.14, output: 0.28, cachedInput: 0.0028 })
+  })
+
   it('resolves all eight OpenCode free variants without inheriting paid limits or prices', () => {
     for (const id of ['big-pickle', 'deepseek-v4-flash-free', 'ling-3.0-flash-fin-free', 'mimo-v2.5-free', 'muse-spark-1.2-contributor-free', 'muse-spark-1.3-contributor-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free']) {
       const info = matchModelExact(id)
@@ -339,8 +378,8 @@ describe('matchModel', () => {
     expect(flash?.displayName).toBe('GLM-5.3 Flash')
     expect(flash?.capabilities?.vision).toBe(true)
     expect(flash?.maxOutput).toBe(131_072)
-    expect(flash?.pricing?.input).toBe(0.075)
-    expect(flash?.pricing?.output).toBe(0.25)
+    expect(flash?.pricing?.input).toBe(0.15)
+    expect(flash?.pricing?.output).toBe(0.5)
     expect(matchModel('glm-5.3-flash')?.displayName).not.toBe('GLM-5.3')
 
     const glm47 = matchModel('glm-4.7')

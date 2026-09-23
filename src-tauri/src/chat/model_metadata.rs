@@ -366,7 +366,7 @@ pub(crate) struct ClaudeThinkingProfile {
     pub supports_output_effort: bool,
     supports_xhigh: bool,
     supports_max: bool,
-    /// Sonnet 5 / Opus 5 默认思考开着，Off 必须显式 `type: "disabled"`。
+    /// Sonnet 5 / Opus 5 默认思考开着，Off 须显式 disabled；Opus 5.5+ 不接受 disabled。
     pub(crate) send_disabled_on_off: bool,
     /// Fable/Mythos/Preview / Opus 4.7+ / Sonnet 5：非默认 temperature 一律 400。
     pub(crate) forbid_temperature: bool,
@@ -573,8 +573,11 @@ fn profile_for_claude_version(
         supports_output_effort,
         supports_xhigh,
         supports_max,
-        send_disabled_on_off: matches!(family, ClaudeFamily::Opus | ClaudeFamily::Sonnet)
-            && major >= 5,
+        send_disabled_on_off: match family {
+            ClaudeFamily::Opus => major >= 5 && !version_at_least(major, minor, 5, 5),
+            ClaudeFamily::Sonnet => major >= 5,
+            _ => false,
+        },
         forbid_temperature: match family {
             ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
             ClaudeFamily::Opus => version_at_least(major, minor, 4, 7),

@@ -1940,6 +1940,22 @@ mod tests {
     }
 
     #[test]
+    fn opus_55_keeps_always_on_thinking_and_supported_efforts() {
+        for model in ["claude-opus-5-5", "anthropic/claude-opus-5.5"] {
+            let off = build_anthropic_body_with(model, None, false, Some(0.4), None);
+            assert!(off.get("thinking").is_none(), "body: {off}");
+            assert!(off.get("temperature").is_none(), "body: {off}");
+            for level in ["low", "medium", "high", "xhigh", "max"] {
+                let body = build_anthropic_body_for(model, Some(level), None, None);
+                assert_eq!(body["thinking"]["type"], "adaptive");
+                assert_eq!(body["output_config"]["effort"], level);
+            }
+        }
+        let opus5 = build_anthropic_body_with("claude-opus-5", None, false, None, None);
+        assert_eq!(opus5["thinking"]["type"], "disabled");
+    }
+
+    #[test]
     fn claude_3_does_not_send_thinking() {
         for model in [
             "claude-3-5-sonnet-20241022",

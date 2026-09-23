@@ -16,6 +16,8 @@ describe('imported model video capabilities', () => {
     'kimi-k2.7-code-highspeed', 'moonshotai/kimi-k2.7-code', 'kimi-k3',
     'gemini-3-pro-preview', 'models/gemini-3-pro-preview',
     'gemini-3.1-pro-preview', 'gemini-3.8-flash', 'google/gemini-2.5-pro',
+    'mimo-v2.6-pro', 'xiaomi/mimo-v2.6-flash', 'mimo-v2.5',
+    'glm-5.3-flash', 'z-ai/glm-5.3-flashx', 'qwen3.8-omni-flash',
   ])('enables video for %s when the catalog contains only IDs', (id) => {
     const imported = applyModelCatalog(provider, { models: [id], capabilities: {} })
     expect(resolveModelInfo(id, imported.modelOverrides, provider).capabilities?.videoInput).toBe(true)

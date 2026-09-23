@@ -1,8 +1,20 @@
 {
   "_meta": {
-    "version": "2026-09-12",
+    "version": "2026-09-24",
     "description": "AI model database for Kivio. Keyed by model ID patterns. Used for auto-filling model info when adding models.",
     "sources": [
+      "https://developers.openai.com/api/docs/models/gpt-6-sol",
+      "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+      "https://platform.claude.com/docs/en/models/sonnet-5/overview",
+      "https://mimo.mi.com/models/en-US/mimo-v2.6-pro",
+      "https://mimo.mi.com/models/en-US/mimo-v2.6-flash",
+      "https://mimo.mi.com/models/en-US/mimo-v2.5-pro",
+      "https://mimo.mi.com/models/en-US/mimo-v2.5",
+      "https://docs.x.ai/developers/grok-4-7",
+      "https://help.aliyun.com/zh/model-studio/qwen3-8-omni-flash",
+      "https://help.aliyun.com/zh/model-studio/qwen-omni",
+      "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
       "https://deepseek.com/en/news/deepseek-v4-1-flash/",
       "https://api-docs.deepseek.com/quick_start/pricing/",
       "https://api-docs.deepseek.com/guides/thinking_mode/",
@@ -89,6 +101,71 @@
     ]
   },
 
+  "gpt-6-sol": {
+    "displayName": "GPT-6 Sol",
+    "contextWindow": 256000,
+    "maxOutput": 128000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+    "pricing": { "input": 2, "output": 10, "cachedInput": 0.2 }
+  },
+  "gpt-6-luna": {
+    "displayName": "GPT-6 Luna",
+    "contextWindow": 256000,
+    "maxOutput": 128000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+    "pricing": { "input": 0.1, "output": 0.5, "cachedInput": 0.01 }
+  },
+  "claude-opus-5.5": {
+    "displayName": "Claude Opus 5.5",
+    "contextWindow": 1000000,
+    "maxOutput": 128000,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+    "pricing": { "input": 4, "output": 20, "cachedInput": 0.2 }
+  },
+  "mimo-v2.6-pro": {
+    "displayName": "MiMo V2.6 Pro",
+    "contextWindow": 1048576,
+    "maxOutput": 131072,
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": [],
+    "pricing": { "input": 0.435, "output": 0.87, "cachedInput": 0.0036 }
+  },
+  "mimo-v2.6-flash": {
+    "displayName": "MiMo V2.6 Flash",
+    "contextWindow": 1048576,
+    "maxOutput": 131072,
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": [],
+    "pricing": { "input": 0.14, "output": 0.28, "cachedInput": 0.0028 }
+  },
+  "grok-4.7": {
+    "displayName": "Grok 4.7",
+    "contextWindow": 500000,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": ["low", "medium", "high", "xhigh"],
+    "pricing": { "input": 2, "output": 6, "cachedInput": 0.5 }
+  },
+  "glm-5.3-flashx": {
+    "displayName": "GLM-5.3 FlashX",
+    "contextWindow": 1000000,
+    "maxOutput": 131072,
+    "temperature": 1,
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "reasoningEfforts": ["low", "high", "max"],
+    "pricing": { "input": 0.37, "output": 1.25, "cachedInput": 0.075 }
+  },
+  "qwen3.8-omni-flash": {
+    "displayName": "Qwen3.8 Omni Flash",
+    "contextWindow": 1000000,
+    "maxOutput": 131072,
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
+    "pricing": { "input": 0.15, "output": 0.47, "cachedInput": 0.016 }
+  },
   "deepseek-flash": {
     "displayName": "DeepSeek V4.1 Flash",
     "contextWindow": 1048576,
@@ -927,7 +1004,7 @@
     "maxOutput": 128000,
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
     "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
-    "pricing": { "input": 3.00, "output": 15.00, "cachedInput": 0.30 }
+    "pricing": { "input": 2, "output": 10, "cachedInput": 0.2 }
   },
   "claude-sonnet-4.6": {
     "displayName": "Claude Sonnet 4.6",
@@ -1439,9 +1516,9 @@
     "contextWindow": 1000000,
     "maxOutput": 131072,
     "temperature": 1,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
     "reasoningEfforts": ["low", "high", "max"],
-    "pricing": { "input": 0.075, "output": 0.25, "cachedInput": 0.015 }
+    "pricing": { "input": 0.15, "output": 0.5, "cachedInput": 0.03 }
   },
   "glm-5.3": {
     "displayName": "GLM-5.3",
@@ -1716,14 +1793,17 @@
     "displayName": "MiMo V2.5 Pro",
     "contextWindow": 1048576,
     "maxOutput": 131072,
-    "capabilities": { "vision": false, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
-    "pricing": { "input": 0.435, "output": 0.87 }
+    "capabilities": { "vision": false, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": [],
+    "pricing": { "input": 0.435, "output": 0.87, "cachedInput": 0.0036 }
   },
   "mimo-v2.5": {
     "displayName": "MiMo V2.5",
     "contextWindow": 1048576,
     "maxOutput": 131072,
-    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false }
+    "capabilities": { "vision": true, "videoInput": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": true },
+    "reasoningEfforts": [],
+    "pricing": { "input": 0.14, "output": 0.28, "cachedInput": 0.0028 }
   },
   "mimo-v2-pro": {
     "displayName": "MiMo V2 Pro",
