@@ -20,7 +20,7 @@ import { useMultiAnswerViewMode } from './multiAnswerViewMode'
 // 组末尾 footer：视图切换控件 + 一排模型 chip（点 chip = 切显示条 +「续聊选中条」一举两用）。
 //
 // 性能降级（步骤 8 / R10）：N 列同时全量渲染 reasoning + markdown 是内存/CPU 大头。
-// 「聚焦列」（hover 的列 / tabs 模式当前显示列）展开 reasoning 流式；其余「非聚焦列」
+// 「聚焦列」（鼠标悬停或键盘聚焦的列 / tabs 模式当前显示列）展开 reasoning 流式；其余「非聚焦列」
 // 通过 ReasoningPreviewContext 暂停预览并卸载正文，不能把失焦当成思考完成。
 // 复用既有 KaTeX Shadow DOM / rAF 合帧（touchGroup）/ virtualizer 屏外卸载，不重复造轮子。
 
@@ -92,7 +92,7 @@ function GroupColumnView({
   isFocused,
   showColumnChrome,
   groupId,
-  onMouseEnter,
+  onActivate,
   onSelectColumn,
   onUpdateMessage,
   onRegenerateMessage,
@@ -113,7 +113,7 @@ function GroupColumnView({
   // columns 模式渲染列头（model 标签 + 「用这条继续」按钮）；tabs 模式列头交给 footer chip。
   showColumnChrome: boolean
   groupId: string
-  onMouseEnter?: () => void
+  onActivate?: () => void
   onSelectColumn?: (groupId: string, messageId: string) => void
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string) => Promise<void>
@@ -136,7 +136,8 @@ function GroupColumnView({
   return (
     <ReasoningPreviewContext.Provider value={!live || isFocused}>
     <div
-      onMouseEnter={onMouseEnter}
+      onMouseEnter={onActivate}
+      onFocusCapture={onActivate}
       className={wrapperClass}
       data-chat-message-group-focused={isFocused ? 'true' : 'false'}
     >
@@ -375,7 +376,7 @@ function MessageGroupBase({
               isFocused={index === focusedIndex}
               showColumnChrome
               groupId={groupId}
-              onMouseEnter={() => setFocusedIndex(index)}
+              onActivate={() => setFocusedIndex(index)}
               onSelectColumn={onSelectColumn}
               onUpdateMessage={onUpdateMessage}
               onRegenerateMessage={onRegenerateMessage}

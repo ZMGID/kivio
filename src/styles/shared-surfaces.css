@@ -77,16 +77,12 @@
   font-size: 0.875rem;
   font-weight: 400;
   line-height: 1.5rem;
-  color: rgb(115, 115, 115);
+  color: var(--color-muted-foreground);
 }
 
 .reasoning-line-text {
   display: inline-block;
   min-width: max-content;
-}
-
-.dark .reasoning-line-preview {
-  color: rgb(161, 161, 170);
 }
 
 .reasoning-plain-text {

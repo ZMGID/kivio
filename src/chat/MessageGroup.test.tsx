@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageGroup } from './MessageGroup'
 import { beginGroup, ensureGroupColumn, flushGroups, resetGroups } from './groupStreamingStore'
@@ -36,6 +37,36 @@ function assistant(id: string, content: string, providerId: string, model: strin
 describe('MessageGroup — columns 模式', () => {
   beforeEach(() => {
     setMultiAnswerViewMode('columns')
+  })
+
+  it.each(['{Enter}', ' '])('键盘聚焦非活动列后可用 %s 展开思考，其他列仍卸载正文', async (key) => {
+    const user = userEvent.setup()
+    act(() => {
+      beginGroup('c1', 'g1', [
+        { providerId: 'openai', model: 'gpt-4o' },
+        { providerId: 'anthropic', model: 'claude-3' },
+      ])
+      const a = ensureGroupColumn('c1', 'msg_a', 'openai', 'gpt-4o')!
+      a.streaming = true
+      a.reasoning = 'Column A thought'
+      const b = ensureGroupColumn('c1', 'msg_b', 'anthropic', 'claude-3')!
+      b.streaming = true
+      b.reasoning = 'Column B thought'
+      flushGroups()
+    })
+    const { container } = render(<MessageGroup conversationId="c1" groupId="g1" messages={[]} />)
+    const columns = container.querySelectorAll('.chat-message-group-col')
+    const first = columns[0].querySelector<HTMLButtonElement>('button[title="展开完整思考"]')!
+    fireEvent.click(first)
+    expect(columns[0].querySelector('[data-testid="reasoning-text"]')).not.toBeNull()
+    const second = columns[1].querySelector<HTMLButtonElement>('button[title="展开完整思考"]')!
+    // Move keyboard focus without hovering or clicking the second column.
+    act(() => second.focus())
+    await user.keyboard(key)
+    expect(second).toHaveAttribute('aria-expanded', 'true')
+    expect(columns[1].querySelector('[data-testid="reasoning-text"]')).toHaveTextContent('Column B thought')
+    expect(columns[0].querySelector('[data-testid="reasoning-text"]')).toBeNull()
+    expect(columns[0].querySelector('[data-testid="reasoning-preview"]')).toBeNull()
   })
 
   it('落库态：渲染每列的「model | provider」标签', () => {
