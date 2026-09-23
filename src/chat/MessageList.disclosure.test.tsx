@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
+import { patchSnapshot, reset, setCoarse } from './streamingStore'
+import type { ChatMessage } from './types'
 
 let list: Virtualizer<Element, Element>
 vi.mock('@tanstack/react-virtual', async (importOriginal) => {
@@ -15,7 +17,7 @@ vi.mock('@tanstack/react-virtual', async (importOriginal) => {
   }
 })
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { act(() => reset()); vi.restoreAllMocks() })
 
 async function mount() {
   const { container } = render(<MessageList conversationId="disclosure-regression" messages={[
@@ -40,6 +42,36 @@ async function mount() {
 }
 
 describe('MessageList disclosure scroll anchoring', () => {
+  it('retains the live thinking node when the streamed row becomes stored history', async () => {
+    const thought = { id: 'thought', kind: 'reasoning', phase: 'plain', order: 0, text: 'Live preview survives commit' } as const
+    act(() => {
+      setCoarse({ streaming: true })
+      patchSnapshot({ runId: 'preview-run', messageId: 'preview-answer', streaming: true, reasoningStreaming: true, reasoning: thought.text, segments: [thought] })
+    })
+    const { rerender, container } = render(<MessageList conversationId="preview-commit" messages={[]} />)
+    await act(async () => { await Promise.resolve() })
+    const preview = screen.getByTestId('reasoning-preview')
+    act(() => {
+      setCoarse({ streamFrozen: true })
+      patchSnapshot({ streaming: false, reasoningStreaming: false })
+    })
+    expect(preview).toBeVisible()
+    const message: ChatMessage = { id: 'preview-answer', role: 'assistant', content: 'Done', timestamp: 1, stream_outcome: 'completed', segments: [
+      thought, { id: 'answer', kind: 'text', phase: 'synthesis', order: 1, text: 'Done' },
+    ] }
+    rerender(<MessageList conversationId="preview-commit" messages={[message]} />)
+    act(() => reset())
+    await act(async () => { await Promise.resolve() })
+    expect(container.querySelector('[data-chat-message-list-item="message"]')).not.toBeNull()
+    expect(screen.getByTestId('reasoning-preview')).toBe(preview)
+    expect(preview).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+    rerender(<MessageList conversationId="other-conversation" messages={[]} />)
+    rerender(<MessageList conversationId="preview-commit" messages={[message]} />)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('does not follow an expanded or collapsed process at the bottom of the list', async () => {
     const { viewport, button, index } = await mount()
     const offset = list.getTotalSize() - list.scrollRect!.height

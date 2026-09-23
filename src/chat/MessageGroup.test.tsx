@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, renderHook, screen } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageGroup } from './MessageGroup'
 import { beginGroup, ensureGroupColumn, flushGroups, resetGroups } from './groupStreamingStore'
@@ -128,12 +128,17 @@ describe('MessageGroup — columns 模式', () => {
       flushGroups()
     })
     const { container } = render(<MessageGroup conversationId="c1" groupId="g1" messages={[]} />)
-    // 默认聚焦第一列（msg_a）：其 ReasoningBlock 流式展开（aria-hidden=false）。
-    // 非聚焦第二列（msg_b）：reasoningStreaming=false → 折叠 hideBody（aria-hidden=true）。
-    const reasoningSections = container.querySelectorAll('section[aria-label="Thinking"] > [aria-hidden]')
-    expect(reasoningSections.length).toBe(2)
-    expect(reasoningSections[0].getAttribute('aria-hidden')).toBe('false')
-    expect(reasoningSections[1].getAttribute('aria-hidden')).toBe('true')
+    // Only the focused column mounts the latest-line preview; full text stays lazy.
+    const columns = container.querySelectorAll('.chat-message-group-col')
+    expect(columns[0].querySelector('[data-testid="reasoning-preview"]')).not.toBeNull()
+    expect(columns[1].querySelector('[data-testid="reasoning-preview"]')).toBeNull()
+    fireEvent.mouseEnter(columns[1])
+    expect(columns[0].querySelector('[data-testid="reasoning-preview"]')).toBeNull()
+    expect(columns[1].querySelector('[data-testid="reasoning-preview"]')).not.toBeNull()
+    expect(columns[0].querySelector('[data-testid="reasoning-text"]')).toBeNull()
+    fireEvent.mouseEnter(columns[0])
+    expect(columns[0].querySelector('[data-testid="reasoning-preview"]')).not.toBeNull()
+    expect(columns[1].querySelector('[data-testid="reasoning-preview"]')).toBeNull()
   })
 })
 

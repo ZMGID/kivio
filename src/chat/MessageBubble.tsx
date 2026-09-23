@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   Check,
@@ -30,6 +30,7 @@ import { loadArtifactDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
+import { ReasoningPreviewContext } from './reasoningPreview'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ImageReadCluster } from './ToolCallBlock'
@@ -721,7 +722,7 @@ function renderProcessSegments({
 /**
  * 一轮过程共用一个 Working 开关；产物前后的过程按时间顺序分别展示。
  * - 整轮生成中默认展开，后续过程不再被搬到已交付产物上方。
- * - 流式结束后默认收起，最终答复始终是容器外的独立正文。
+ * - 实时展示过思考预览的过程结束后保留；历史首挂仍默认收起。
  * - 用户手动点过开关后以用户操作为准。
  * - 折叠态只留 header，不挂组内 ReasoningBlock / ToolCallBlock / 过程旁白。
  */
@@ -730,6 +731,7 @@ function TimelineGroupBlock({
   allProcessSegments,
   showHeader,
   userOpen,
+  defaultOpen,
   onToggle,
   toolCalls,
   toolCallById,
@@ -746,6 +748,7 @@ function TimelineGroupBlock({
   allProcessSegments: ChatMessageSegment[]
   showHeader: boolean
   userOpen: boolean | null
+  defaultOpen: boolean
   onToggle: () => void
   toolCalls: ToolCallRecord[]
   toolCallById: ReadonlyMap<string, ToolCallRecord>
@@ -768,7 +771,7 @@ function TimelineGroupBlock({
     [allProcessSegments, toolCalls, toolCallById, reasoningDurationMs],
   )
   const title = workingGroupTitle(generating, durationMs)
-  const renderDetails = userOpen ?? generating
+  const renderDetails = userOpen ?? defaultOpen
 
   if (!showHeader && !renderDetails) return null
 
@@ -860,6 +863,13 @@ function TimelineSegments({
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const previewEnabled = useContext(ReasoningPreviewContext)
+  const [sawLiveReasoning, setSawLiveReasoning] = useState(false)
+  if (previewEnabled && userOpen !== false && reasoningStreaming && !sawLiveReasoning
+    && segments.some(segment => segment.kind === 'reasoning' && segmentText(segment).trim())) {
+    setSawLiveReasoning(true)
+  }
+  const defaultOpen = messageStreaming || (previewEnabled && sawLiveReasoning)
   const prepared = useMemo(() => {
     const ordered = segments
     const toolCallById = new Map<string, ToolCallRecord>()
@@ -970,7 +980,8 @@ function TimelineSegments({
             allProcessSegments={allProcessSegments}
             showHeader={showHeader}
             userOpen={userOpen}
-            onToggle={() => setUserOpen(current => !(current ?? messageStreaming))}
+            defaultOpen={defaultOpen}
+            onToggle={() => setUserOpen(current => !(current ?? defaultOpen))}
             toolCalls={toolCalls}
             toolCallById={toolCallById}
             artifacts={artifacts}

@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><title>Chat scroll regression fixture</title></head>
+<body><div id="root"></div><script type="module">
+// Development-only fixture: real chat components, synthetic data, no model calls.
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { MessageList } from '/src/chat/MessageList.tsx';
+import { createChatPerformanceFixture } from '/src/chat/performanceFixtures.ts';
+import '/src/styles/app.css';
+
+const heavy = new URLSearchParams(location.search).has('heavy');
+const messages = createChatPerformanceFixture('F2').messages.map(message => {
+  if (!heavy || message.role !== 'assistant') return message;
+  return {...message, content: message.content.replaceAll(
+    '  return input.trim().toUpperCase()',
+    Array.from({length: 50}, (_, index) => `  const result${index} = input.trim().toUpperCase()`).join('\n'),
+  )};
+});
+createRoot(document.getElementById('root')).render(React.createElement('div', {
+  className: 'chat-main-pane', style: {height: '100vh', display: 'flex', flexDirection: 'column'},
+}, React.createElement(MessageList, {conversationId: 'scroll-regression', messages})));
+</script></body></html>

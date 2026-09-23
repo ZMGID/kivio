@@ -2,6 +2,7 @@ import { memo, useMemo, useState, type CSSProperties, type ReactNode } from 'rea
 import { Check, Columns2, Square } from 'lucide-react'
 import type { ChatMessage, ChatToolArtifact, ModelRef } from './types'
 import { MessageBubble } from './MessageBubble'
+import { ReasoningPreviewContext } from './reasoningPreview'
 import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import { ModelIcon } from '../components/ModelIcon'
 import { getActiveGroup, useGroupVersion, type GroupColumnSnapshot } from './groupStreamingStore'
@@ -19,8 +20,8 @@ import { useMultiAnswerViewMode } from './multiAnswerViewMode'
 // 组末尾 footer：视图切换控件 + 一排模型 chip（点 chip = 切显示条 +「续聊选中条」一举两用）。
 //
 // 性能降级（步骤 8 / R10）：N 列同时全量渲染 reasoning + markdown 是内存/CPU 大头。
-// 「聚焦列」（hover 的列 / tabs 模式当前显示列）展开 reasoning 流式；其余「非聚焦列」把
-// reasoningStreaming 置 false → ReasoningBlock 折叠并把正文从 DOM 卸载（hideBody）。
+// 「聚焦列」（hover 的列 / tabs 模式当前显示列）展开 reasoning 流式；其余「非聚焦列」
+// 通过 ReasoningPreviewContext 暂停预览并卸载正文，不能把失焦当成思考完成。
 // 复用既有 KaTeX Shadow DOM / rAF 合帧（touchGroup）/ virtualizer 屏外卸载，不重复造轮子。
 
 interface MessageGroupProps {
@@ -133,6 +134,7 @@ function GroupColumnView({
       }`
     : 'chat-message-group-tab flex w-full flex-col'
   return (
+    <ReasoningPreviewContext.Provider value={!live || isFocused}>
     <div
       onMouseEnter={onMouseEnter}
       className={wrapperClass}
@@ -177,8 +179,7 @@ function GroupColumnView({
             // 实时列先结束的臂保持「出字中」上下文（mermaid 源码 / eager 岛不在原地翻转）；
             // 这些内容变化留给落库后的 group twin 首挂一次完成。
             markdownStreaming={live || streaming}
-            // 性能降级（R10）：非聚焦列把 reasoningStreaming 置 false，让 ReasoningBlock 折叠
-            // 并把思维链正文从 DOM 卸载（hideBody）；聚焦列正常展示流式思考。
+            // 非聚焦列由外层 context 暂停预览；聚焦列正常展示流式思考。
             reasoningStreaming={streaming && isFocused}
             onUpdateMessage={!live ? onUpdateMessage : undefined}
             onRegenerateMessage={!live ? onRegenerateMessage : undefined}
@@ -212,6 +213,7 @@ function GroupColumnView({
         />
       )}
     </div>
+    </ReasoningPreviewContext.Provider>
   )
 }
 

@@ -454,6 +454,26 @@ describe('MessageBubble timeline orphan tools', () => {
 })
 
 describe('MessageBubble timeline grouping', () => {
+  it('keeps a seen thinking preview through answer start and whole-turn completion', () => {
+    const message: ChatMessage = { id: 'seen-thinking', role: 'assistant', timestamp: 1, content: '', segments: [
+      { id: 'thought', kind: 'reasoning', phase: 'plain', order: 0, text: 'Visible live thought' },
+    ] }
+    const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
+    const preview = screen.getByTestId('reasoning-preview')
+    const answered: ChatMessage = { ...message, content: 'Final answer', stream_outcome: 'completed', segments: [
+      ...message.segments!, { id: 'answer', kind: 'text', phase: 'synthesis', order: 1, text: 'Final answer' },
+    ] }
+    rerender(<MessageBubble message={answered} messageStreaming />)
+    expect(preview).toBeVisible()
+    rerender(<MessageBubble message={answered} />)
+    expect(screen.getByTestId('reasoning-preview')).toBe(preview)
+    expect(preview).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Final answer')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    expect(screen.queryByText('Visible live thought')).not.toBeInTheDocument()
+  })
+
   it('collapses a completed group into a one-line summary by default', () => {
     const message: ChatMessage = {
       id: 'msg-2',
@@ -576,6 +596,7 @@ describe('MessageBubble timeline grouping', () => {
     await user.click(toggle)
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await user.click(screen.getByRole('button', { name: /^Thought/ }))
     expect(screen.getByText('planning details')).toBeInTheDocument()
     // 展开后组内工具块挂载：Cursor 式动词 Read + 目标（文件名）
     expect(screen.getByText('a.ts')).toBeInTheDocument()
@@ -711,7 +732,7 @@ describe('MessageBubble timeline grouping', () => {
     }
 
     const { rerender } = render(<MessageBubble message={message} messageStreaming />)
-    expect(screen.getByText('live details')).toBeInTheDocument()
+    expect(screen.queryByText('live details')).not.toBeInTheDocument()
     expect(screen.getByText('Run')).toBeInTheDocument()
 
     rerender(<MessageBubble message={message} messageStreaming={false} />)

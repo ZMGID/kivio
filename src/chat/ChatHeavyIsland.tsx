@@ -11,8 +11,8 @@ type IdleWindow = Window & {
 
 /**
  * Heavy chat content is allowed to hydrate after the surrounding text becomes
- * interactive. The intrinsic size keeps virtual rows stable while the island
- * is waiting for an idle slice.
+ * interactive. Keep the fallback's real layout while waiting for an idle slice:
+ * an intrinsic-size substitute would corrupt virtual-row measurements offscreen.
  *
  * 例外：会话切换覆盖层 / 消息导航 settle 期间强制同步 hydrate —— 否则占位高度
  * 在跳转后才撑开，virtualizer 二次纠正就是「抽一下」。
@@ -67,10 +67,9 @@ export function ChatHeavyIsland({
       data-chat-heavy-island="true"
       data-chat-heavy-hydrated={hydrated ? 'true' : 'false'}
       style={{
-        // 已 hydrate 的内容不要再让浏览器用 containIntrinsicSize 偷懒：
-        // 导航跳到该行时会先按 minHeight 占位再真布局，和延迟 hydrate 一样抽。
-        contentVisibility: hydrated ? 'visible' : 'auto',
-        containIntrinsicSize: hydrated ? undefined : `${minHeight}px`,
+        // Virtualization already bounds mounted rows. Layout the cheap fallback
+        // at its real height so scrolling cannot shrink a cached long code block
+        // to minHeight and then expand it again during hydration.
         minHeight: hydrated ? undefined : minHeight,
       }}
     >

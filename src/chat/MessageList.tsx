@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { flushSync } from 'react-dom'
 import { ChevronDown, RotateCw } from 'lucide-react'
 import {
-  defaultRangeExtractor,
   observeElementRect as observeVirtualRect,
   useVirtualizer,
   type Range,
@@ -869,6 +868,7 @@ function MessageListBase({
     [conversationId, layoutKey, measurementRevision],
   )
   const widthAnchorIndex = widthAnchorRef.current?.index ?? null
+  const viewportHeight = viewportEl?.clientHeight || 800
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: itemCount,
     enabled: true,
@@ -919,10 +919,11 @@ function MessageListBase({
           if (logicalKey) estimateSizeRef.current.set(logicalKey, size)
           setCachedRowMeasurement(layoutKey, key, size)
         }
-        // ResizeObserver runs before paint. During a manual height animation,
-        // commit sibling positions now so they cannot lag behind by one frame.
+        // ResizeObserver runs before paint. Commit measurements and sibling
+        // positions together: scroll compensation is synchronous, so deferring
+        // the transforms exposes a frame with the new scrollTop and old rows.
         // Ref measurements have no entry and must never flush inside React.
-        if (entry && previousSize !== size && element.querySelector('[data-chat-disclosure-animating]')) {
+        if (entry && previousSize !== size) {
           flushSync(() => instance.resizeItem(index, size))
         }
         return size
@@ -930,7 +931,24 @@ function MessageListBase({
       return measured
     },
     rangeExtractor: useCallback((range: Range) => {
-      let indexes = defaultRangeExtractor(range)
+      // A fixed row count can mount tens of screens of long answers. Keep up
+      // to two viewports on each side, still capped at six rows for short chat.
+      const budget = viewportHeight * 2
+      const rowHeight = (index: number) => {
+        const item = historyItems[index]
+        return item ? estimateSizeRef.current.get(item.key) ?? 96 : 96
+      }
+      let from = range.startIndex
+      let to = range.endIndex
+      let height = 0
+      while (from > 0 && range.startIndex - from < range.overscan && height < budget) {
+        height += rowHeight(--from)
+      }
+      height = 0
+      while (to < range.count - 1 && to - range.endIndex < range.overscan && height < budget) {
+        height += rowHeight(++to)
+      }
+      let indexes = Array.from({ length: to - from + 1 }, (_, index) => from + index)
       // 消息导航：目标行附近强制挂载渲染测高，再一次性跳转。
       for (const forced of [forceMountRenderIndex, widthAnchorIndex]) {
         if (forced == null || itemCount === 0) continue
@@ -941,21 +959,22 @@ function MessageListBase({
         indexes = [...set].sort((a, b) => a - b)
       }
       return indexes
-    }, [forceMountRenderIndex, itemCount, widthAnchorIndex]),
+    }, [forceMountRenderIndex, historyItems, itemCount, viewportHeight, widthAnchorIndex]),
 
 
     overscan: 6,
     // jsdom/test environments have no layout box before the first observer tick;
     // a conservative initial viewport keeps the first render useful while the
     // real browser immediately replaces it with the measured client rect.
-    initialRect: { width: 0, height: viewportEl?.clientHeight || 800 },
+    initialRect: { width: 0, height: viewportHeight },
     // TanStack's end anchoring bypasses shouldAdjustScrollPositionOnItemSizeChange.
     // Disable it when the reader takes over, including disclosure clicks at bottom.
     anchorTo: following ? 'end' : 'start',
     scrollEndThreshold: 12,
     followOnAppend: false,
     useAnimationFrameWithResizeObserver: false,
-    useFlushSync: false,
+    // Commit the new visible range before a fast scroll can paint an empty frame.
+    useFlushSync: true,
   })
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     // 导航 prepare/hold 期间禁止测高改 scrollTop：那是点导航后上下抽的主因。
@@ -977,7 +996,16 @@ function MessageListBase({
 
   const virtualItems = virtualizer.getVirtualItems()
   const measureHistoryRow = useCallback((element: HTMLDivElement | null) => {
-    measureRow(element, virtualizer)
+    // Ref attachment is already inside React's commit. Its measurements must
+    // schedule the follow-up render without recursively calling flushSync.
+    // Scroll events and ResizeObserver deliveries keep synchronous updates.
+    const onChange = virtualizer.options.onChange
+    virtualizer.options.onChange = (instance) => onChange(instance, false)
+    try {
+      measureRow(element, virtualizer)
+    } finally {
+      virtualizer.options.onChange = onChange
+    }
   }, [measureRow, virtualizer])
   useLayoutEffect(() => { restoreWidthAnchor(virtualizer) })
   // Row ResizeObservers and TanStack's own viewport observer update mounted rows.

@@ -482,15 +482,14 @@ function DeferredCodeBlock({ code, language }: { code: string; language: string 
   const streaming = useContext(MarkdownStreamingContext)
   // ⚠️ fallback 必须与 CodeBlock 逐像素同几何：同 figure（my-3 + border）、同 pre
   // padding（pt-10 pb-4 px-4）、同 nowrap 横向滚动、渲染**全文**（不截断）。
-  // 回翻历史时行先按 fallback 首测入列，~180ms 后 hydrate 换真身；backward 滚动中的
-  // re-measure 刻意不做滚动补偿（shouldAdjustChatItemSizeChange 对齐上游默认），
-  // fallback 与真身的任何高度差都会直接变成「翻历史时抽一下」。旧 fallback 是裸
+  // 回翻历史时行先按 fallback 首测入列，空闲时 hydrate 换真身；
+  // fallback 与真身的任何高度差都需要补偿，也会移动行内的阅读位置。旧 fallback 是裸
   // pre（少 24px 外边距/边框、py-4 vs pt-10）+ pre-wrap（长行换行）+ >14k 截断，
   // 三处全在制造高度差。纯文本是单个 text node，渲染很便宜 —— 贵的是高亮 token
   // span，所以全文照渲、只延后高亮。
   return (
     <ChatHeavyIsland
-      minHeight={112}
+      minHeight={0}
       delayMs={180}
       eager={conversationOpening || streaming}
       fallback={(
