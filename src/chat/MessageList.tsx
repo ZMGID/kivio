@@ -93,6 +93,7 @@ export interface MessageListProps {
   historyStart?: number
   historyDirectory?: NonNullable<Conversation['history_directory']>
   onLoadOlder?: () => void | Promise<void>
+  historyLoadError?: string | null
   onFocusHistoryMessage?: (conversationId: string, messageId: string) => void | Promise<void>
   renderRequestId?: number
   onInitialRender?: (conversationId: string, requestId: number) => void
@@ -248,6 +249,7 @@ function MessageListBase({
   historyStart = 0,
   historyDirectory = EMPTY_HISTORY_DIRECTORY,
   onLoadOlder,
+  historyLoadError,
   onFocusHistoryMessage,
 }: MessageListProps) {
   // Durable worker receipts belong to the model context and the task dock,
@@ -1053,31 +1055,42 @@ function MessageListBase({
   }
   useEffect(() => () => saveMeasurementSnapshotRef.current(), [])
 
-  const pageAnchorRef = useRef<{ key: string; offset: number } | null>(null)
-  const previousHistoryStartRef = useRef(historyStart)
-  const requestOlderHistory = useCallback(() => {
-    if (!viewportEl || !onLoadOlder) return
+  const pageAnchorRef = useRef<{ key: string; revision: string; offset: number } | null>(null)
+  const previousHistoryRef = useRef({ conversationId, historyStart })
+  const capturePageAnchor = useCallback(() => {
+    if (!viewportEl || historyStart === 0) return
     const row = virtualizer.getVirtualItems().find((item) => item.end > viewportEl.scrollTop
       && itemAt(item.index)?.kind !== 'spacer')
       ?? virtualizer.measurementsCache.find((item) => itemAt(item.index)?.kind !== 'spacer')
-    const key = row ? itemAt(row.index)?.key : null
-    if (row && key) pageAnchorRef.current = { key, offset: viewportEl.scrollTop - row.start }
+    const item = row ? itemAt(row.index) : null
+    if (row && item) pageAnchorRef.current = {
+      key: item.key, revision: measurementKey(item), offset: viewportEl.scrollTop - row.start,
+    }
+  }, [historyStart, itemAt, viewportEl, virtualizer])
+  const requestOlderHistory = useCallback(() => {
+    if (!viewportEl || !onLoadOlder) return
+    capturePageAnchor()
     followHandle.releaseFollow()
     void onLoadOlder()
-  }, [followHandle, itemAt, onLoadOlder, viewportEl, virtualizer])
+  }, [capturePageAnchor, followHandle, onLoadOlder, viewportEl])
 
   useLayoutEffect(() => {
-    const previous = previousHistoryStartRef.current
-    previousHistoryStartRef.current = historyStart
-    if (historyStart >= previous || !pageAnchorRef.current) return
+    const previous = previousHistoryRef.current
+    previousHistoryRef.current = { conversationId, historyStart }
+    if (previous.conversationId !== conversationId) {
+      pageAnchorRef.current = null
+      return
+    }
+    if (historyStart >= previous.historyStart || !pageAnchorRef.current) return
     const anchor = pageAnchorRef.current
     pageAnchorRef.current = null
-    const index = historyItems.findIndex((item) => item.key === anchor.key)
+    const index = historyItems.findIndex((item) => item.key === anchor.key
+      && measurementKey(item) === anchor.revision)
     if (index < 0) return
     const start = virtualizer.measurementsCache[index]?.start
       ?? virtualizer.getOffsetForIndex(index, 'start')?.[0]
     if (start !== undefined) followHandle.restoreReadingPosition(start + anchor.offset)
-  }, [followHandle, historyItems, historyStart, virtualizer])
+  }, [conversationId, followHandle, historyItems, historyStart, virtualizer])
 
   useLayoutEffect(() => {
     if (!contentEl) return
@@ -1871,8 +1884,9 @@ function MessageListBase({
         }
       }
     }
+    if (!followHandle.isFollowing()) capturePageAnchor()
     scheduleNavigatorSync()
-  }, [alignViewportToNavigationTarget, followHandle, scheduleNavigatorSync])
+  }, [alignViewportToNavigationTarget, capturePageAnchor, followHandle, scheduleNavigatorSync])
 
   // 用户滚轮 = 用户接管视口。回底/导航 hold 期间若继续硬钉：wheel(up) 先解除跟随，
   // 下一个 scroll 事件又被 handleNavigatorScroll 的 jumpToBottom()（forceFollow）钉回，
@@ -1968,6 +1982,10 @@ function MessageListBase({
   // changes are handled by the existing virtualizer and width anchor.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, viewportEl])
+
+  useLayoutEffect(() => {
+    if (!followHandle.isFollowing()) capturePageAnchor()
+  }, [capturePageAnchor, followHandle])
 
   // New user messages force follow; committed answers keep an existing follow intent.
   useLayoutEffect(() => {
@@ -2319,6 +2337,7 @@ function MessageListBase({
 
         />
       )}
+      {historyLoadError && <div role="alert" className="absolute left-1/2 top-14 z-10 -translate-x-1/2 rounded-md bg-destructive px-3 py-2 text-sm text-destructive-foreground">{historyLoadError}</div>}
       {historyStart > 0 && onLoadOlder && (
         <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
           <Button size="sm" onClick={requestOlderHistory}>加载更早消息</Button>

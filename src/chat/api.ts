@@ -357,6 +357,16 @@ const mockChatApi = {
       directory.push({ kind: 'compaction', id: `compaction-${record.id}`, message_id: anchor,
         message_index: index, title: '已压缩此前上下文', answer_preview: record.summary_content?.slice(0, 120) })
     }
+    if ((context?.compaction_boundaries ?? context?.compactionBoundaries ?? []).length === 0
+      && context?.summary && !context.summary.stale) {
+      const summary = context.summary
+      const anchor = summary.source_until_message_id ?? summary.sourceUntilMessageId
+      const index = anchor ? indexById.get(anchor) : undefined
+      if (index !== undefined && anchor) directory.push({
+        kind: 'compaction', id: `compaction-${summary.id}`, message_id: anchor,
+        message_index: index, title: '已压缩此前上下文', answer_preview: summary.content.slice(0, 120),
+      })
+    }
     for (const record of context?.clear_boundaries ?? context?.clearBoundaries ?? []) {
       const anchor = record.source_until_message_id ?? record.sourceUntilMessageId
       const index = anchor ? indexById.get(anchor) : undefined

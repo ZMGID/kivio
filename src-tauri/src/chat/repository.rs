@@ -347,10 +347,15 @@ impl ConversationRepository {
     /// updated by repository writes; no conversation body crosses IPC here.
     pub async fn revision(&self, app: &AppHandle, id: &str) -> RepositoryResult<Option<u64>> {
         let _barrier = self.barrier.read().await;
+        let lock = self.conversation_lock(id);
+        let _conversation = lock.lock().await;
         let app = app.clone();
         let id = id.to_string();
         Self::spawn_storage(
             move || {
+                if !super::storage::conversation_file_path(&app, &id)?.is_file() {
+                    return Ok(None);
+                }
                 let index = super::storage::load_index_or_scan(&app)?;
                 Ok(index
                     .conversations

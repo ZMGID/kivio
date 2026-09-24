@@ -360,6 +360,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [emitContentReady])
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
   const historyPageInFlightRef = useRef(new Set<string>())
+  const [historyLoadError, setHistoryLoadError] = useState<{ conversationId: string; message: string } | null>(null)
   const [warmConversationCache] = useState(createConversationWarmCache)
   const [conversationRenderRequestId, setConversationRenderRequestId] = useState(0)
   /** 全局搜索跳转目标；MessageList 完成滚动后清空。 */
@@ -633,7 +634,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         name: 'conversation-background-hydrate', durationMs: performance.now() - started,
         mountedRows: 0, domNodes: 0, detail: `${id}:messages=${complete.messages.length}`,
       })
-      if (!cancelled && currentConversationIdRef.current === id) applyConversation(complete)
+      if (!cancelled && currentConversationIdRef.current === id) {
+        applyConversation(complete)
+        setHistoryLoadError((previous) => previous?.conversationId === id ? null : previous)
+      }
     }).catch((error) => {
       if (!cancelled) console.error('Failed to hydrate conversation history:', error)
     })
@@ -644,6 +648,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const current = currentConversationRef.current
     if (!current || !isPartialConversation(current) || historyPageInFlightRef.current.has(current.id)) return
     historyPageInFlightRef.current.add(current.id)
+    setHistoryLoadError(null)
     try {
       const page = await chatApi.getConversationPage(current.id, current.history_start!)
       if (currentConversationIdRef.current !== current.id) return
@@ -655,21 +660,32 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         const complete = await chatApi.getConversation(current.id)
         if (currentConversationIdRef.current === current.id) applyConversation(complete)
       }
+      setHistoryLoadError((previous) => previous?.conversationId === current.id ? null : previous)
     } catch (error) {
       console.error('Failed to load older conversation history:', error)
+      if (currentConversationIdRef.current === current.id) setHistoryLoadError({
+        conversationId: current.id,
+        message: '加载更早消息失败，请重试。',
+      })
     } finally {
       historyPageInFlightRef.current.delete(current.id)
     }
   }, [applyConversation])
 
   const focusHistoryMessage = useCallback(async (conversationId: string, messageId: string) => {
+    setHistoryLoadError(null)
     try {
       const complete = await chatApi.getConversation(conversationId)
       if (currentConversationIdRef.current !== conversationId) return
       applyConversation(complete)
       setFocusMessageId(messageId)
+      setHistoryLoadError((previous) => previous?.conversationId === conversationId ? null : previous)
     } catch (error) {
       console.error('Failed to load historical navigation target:', error)
+      if (currentConversationIdRef.current === conversationId) setHistoryLoadError({
+        conversationId,
+        message: '打开历史消息失败，请重试。',
+      })
     }
   }, [applyConversation])
 
@@ -2686,6 +2702,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     messages: displayMessages,
     historyStart: currentConversation?.history_start ?? 0,
     historyDirectory: currentConversation?.history_directory ?? EMPTY_HISTORY_DIRECTORY,
+    historyLoadError: historyLoadError?.conversationId === currentConversation?.id
+      ? historyLoadError?.message : null,
     onLoadOlder: loadOlderHistory,
     onFocusHistoryMessage: focusHistoryMessage,
     renderRequestId: conversationRenderRequestId,
@@ -2723,6 +2741,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     contextCompressing,
     contextState,
     currentConversation,
+    historyLoadError,
     conversationRenderRequestId,
     displayMessages,
     loadOlderHistory,

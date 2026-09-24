@@ -92,6 +92,48 @@ it('keeps the visible row anchored when an older page is prepended', async () =>
   expect(viewport.scrollTop).toBe(list.measurementsCache[index].start - originalStart)
 })
 
+it('keeps a detached reader on the same row when background history hydration prepends messages', async () => {
+  const recent = Array.from({ length: 8 }, (_, index) => ({
+    id: `recent-${index}`, role: 'user' as const, content: 'Recent', timestamp: index + 2,
+  }))
+  const older = Array.from({ length: 2 }, (_, index) => ({
+    id: `old-${index}`, role: 'user' as const, content: 'Old', timestamp: index,
+  }))
+  const { container, rerender } = render(<MessageList conversationId="background-anchor"
+    messages={recent} historyStart={2} onLoadOlder={vi.fn()} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  const original = list.measurementsCache.find((item) => String(list.options.getItemKey(item.index)).endsWith(':recent-3'))!
+  act(() => {
+    fireEvent.wheel(viewport, { deltaY: -100 })
+    viewport.scrollTop = original.start + 12
+    fireEvent.scroll(viewport)
+  })
+  rerender(<MessageList conversationId="background-anchor" messages={[...older, ...recent]}
+    historyStart={0} onLoadOlder={vi.fn()} />)
+  await act(async () => { await Promise.resolve() })
+  const index = Array.from({ length: list.options.count }, (_, value) => value)
+    .find((value) => String(list.options.getItemKey(value)).endsWith(':recent-3'))!
+  expect(viewport.scrollTop).toBe(list.measurementsCache[index].start + 12)
+})
+
+it('shows a failed history page request and lets the reader retry', async () => {
+  const load = vi.fn()
+  const props = {
+    conversationId: 'page-error',
+    messages: [{ id: 'recent', role: 'user' as const, content: 'Recent', timestamp: 2 }],
+    historyStart: 2,
+    onLoadOlder: load,
+  }
+  const { rerender } = render(<MessageList {...props} />)
+  fireEvent.click([...document.querySelectorAll('button')].find((button) => button.textContent === '加载更早消息')!)
+  expect(load).toHaveBeenCalledOnce()
+  rerender(<MessageList {...props} historyLoadError="加载更早消息失败，请重试。" />)
+  expect(document.querySelector('[role="alert"]')).toHaveTextContent('加载更早消息失败，请重试。')
+  fireEvent.click([...document.querySelectorAll('button')].find((button) => button.textContent === '加载更早消息')!)
+  expect(load).toHaveBeenCalledTimes(2)
+})
+
 it('mounts a distant scroll range before the scroll delivery can paint', async () => {
   const { container } = render(<MessageList conversationId="fast-scroll-range" messages={
     Array.from({ length: 60 }, (_, index) => ({

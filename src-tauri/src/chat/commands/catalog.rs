@@ -231,6 +231,25 @@ pub(crate) async fn chat_get_conversation_window(
             "answer_preview": record.summary_content.chars().take(120).collect::<String>(),
         }));
     }
+    if conversation.context_state.compaction_boundaries.is_empty() {
+        if let Some(summary) = conversation
+            .context_state
+            .summary
+            .as_ref()
+            .filter(|summary| !summary.stale)
+        {
+            if let Some(&index) = message_indices.get(summary.source_until_message_id.as_str()) {
+                directory.push(serde_json::json!({
+                    "kind": "compaction",
+                    "id": format!("compaction-{}", summary.id),
+                    "message_id": summary.source_until_message_id,
+                    "message_index": index,
+                    "title": "已压缩此前上下文",
+                    "answer_preview": summary.content.chars().take(120).collect::<String>(),
+                }));
+            }
+        }
+    }
     for record in &conversation.context_state.clear_boundaries {
         let Some(&index) = message_indices.get(record.source_until_message_id.as_str()) else {
             continue;
