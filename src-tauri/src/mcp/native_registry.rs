@@ -1274,6 +1274,17 @@ fn call_present_artifacts(
     if artifact_ids.len() + paths.len() > 16 {
         return Err("present_artifacts accepts at most 16 files".to_string());
     }
+    let (artifact_ids, invalid_ids): (Vec<_>, Vec<_>) = artifact_ids
+        .into_iter()
+        .partition(|id| crate::chat::artifacts::is_valid_artifact_id(id));
+    let invalid_id_notice = if invalid_ids.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Invalid artifact ID(s): {}. Use exact art_ IDs returned by tools. For local files, pass paths and omit artifact_ids or use artifact_ids: []; never invent placeholder IDs.",
+            invalid_ids.join(", "),
+        ))
+    };
 
     // 模型常把生成图的 artifact 名（generated-image-1.png）当成 path 一起传进来。
     // 单个 path 读不到不能废掉整次调用，否则同一调用里的 artifact_ids 也一起丢，图就不显示了。
@@ -1286,6 +1297,9 @@ fn call_present_artifacts(
         }
     }
     if artifacts.is_empty() && artifact_ids.is_empty() {
+        if let Some(notice) = invalid_id_notice {
+            skipped.push(notice);
+        }
         return Err(skipped.join("; "));
     }
     let caption = arguments
@@ -1323,6 +1337,9 @@ fn call_present_artifacts(
             skipped.len(),
             skipped.join("; "),
         ));
+    }
+    if let Some(notice) = invalid_id_notice {
+        content.push_str(&format!("\n\n{notice} These IDs were ignored; the valid files listed above are unaffected."));
     }
     Ok(McpToolCallResult {
         content,
@@ -1775,6 +1792,44 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn present_artifacts_keeps_local_image_when_model_adds_dummy_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("board.png");
+        image::RgbaImage::new(2, 2).save(&path).unwrap();
+        let result = call_present_artifacts(
+            &NativeToolWorkspace::standalone(),
+            &serde_json::json!({
+                "artifact_ids": ["dummy"], "paths": [path], "mode": "prepare", "caption": ""
+            }),
+        ).expect("valid local image must remain usable");
+        assert_eq!(result.artifacts.len(), 1);
+        assert_eq!(result.structured_content.as_ref().unwrap()["artifactIds"], serde_json::json!([]));
+        assert!(result.content.contains("Prepared 1 file"), "{}", result.content);
+        assert!(result.content.contains("dummy"));
+    }
+
+    #[test]
+    fn present_artifacts_reports_invalid_ids_and_retains_valid_selection() {
+        let workspace = NativeToolWorkspace::standalone();
+        for mode in ["prepare", "preview"] {
+            let result = call_present_artifacts(&workspace, &serde_json::json!({
+                "artifact_ids": ["dummy", "art_existing"], "paths": [], "mode": mode
+            })).unwrap();
+            assert_eq!(result.structured_content.unwrap()["artifactIds"], serde_json::json!(["art_existing"]));
+            assert!(result.content.contains("1 file"));
+            assert!(result.content.contains("dummy"));
+        }
+        let error = call_present_artifacts(&workspace, &serde_json::json!({
+            "artifact_ids": ["dummy"], "paths": []
+        })).unwrap_err();
+        assert!(error.contains("artifact_ids: []"), "{error}");
+        assert!(!error.contains("Prepared"));
+        assert!(call_present_artifacts(&workspace, &serde_json::json!({
+            "artifact_ids": [], "paths": []
+        })).is_err());
+    }
+
     #[test]
     fn present_artifacts_returns_deduplicated_structured_ids() {
         let workspace = NativeToolWorkspace::standalone();

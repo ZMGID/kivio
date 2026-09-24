@@ -289,6 +289,8 @@ function pathBasename(path: string): string {
 
 /** `read` 正在看图片：结果带 image_read / 图片 artifact，或参数路径是图片。 */
 export function isImageReadToolCall(toolCall: ToolCallRecord): boolean {
+  const status = normalizeToolCallStatus(toolCall.status)
+  if (status === 'error' || status === 'cancelled' || status === 'skipped') return false
   const folded = foldToolName(canonicalToolName(toolCall))
   if (folded !== 'read' && folded !== 'readfile') return false
   const structured = toolCall.structured_content ?? toolCall.structuredContent
@@ -300,6 +302,7 @@ export function isImageReadToolCall(toolCall: ToolCallRecord): boolean {
 }
 
 export type ImageReadItem = {
+  id?: string
   path: string
   name: string
   dataUrl: string
@@ -309,6 +312,7 @@ export function imageReadItems(toolCall: ToolCallRecord): ImageReadItem[] {
   const fromArtifacts = (toolCall.artifacts ?? []).filter(isImageArtifact).map((artifact) => {
     const path = artifact.path ?? artifact.filePath ?? artifact.localPath ?? ''
     return {
+      id: artifact.id ?? undefined,
       path,
       name: artifact.name || pathBasename(path) || 'image',
       dataUrl: artifact.dataUrl ?? artifact.data_url ?? '',

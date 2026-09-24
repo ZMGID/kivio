@@ -1,7 +1,11 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
+import { openChatImageViewer } from './imageViewer'
+import * as attachmentPreview from './attachmentPreview'
+
+vi.mock('./imageViewer', () => ({ openChatImageViewer: vi.fn() }))
 
 const prepared: ChatMessage = {
   id: 'selected-deliverables', role: 'assistant', timestamp: 1, content: '',
@@ -22,6 +26,42 @@ function withAnswer(content: string, outcome = 'completed'): ChatMessage {
 }
 
 describe('selected final deliverables', () => {
+  it('loads a stored image read and opens its original in the owning conversation', async () => {
+    const load = vi.spyOn(attachmentPreview, 'loadAttachmentDataUrl').mockResolvedValue('data:image/png;base64,AAAA')
+    const message: ChatMessage = { id: 'stored-read', role: 'assistant', timestamp: 1, content: '',
+      tool_calls: [{ id: 'read', name: 'read', status: 'completed',
+        artifacts: [{ id: 'art_stored', name: 'stored.png', path: 'stored.png', mime_type: 'image/png' }],
+      }],
+      segments: [{ id: 'read', kind: 'tool', phase: 'tool_loop', order: 0, tool_call_id: 'read' }],
+    }
+    try {
+      render(<MessageBubble message={message} conversationId="image-conversation" messageStreaming />)
+      fireEvent.click(screen.getByRole('button', { name: /已查看 1 张图像/ }))
+      fireEvent.click(await screen.findByRole('button', { name: '预览图片' }))
+      expect(load).toHaveBeenCalledWith(expect.objectContaining({ path: 'stored.png' }), 'image-conversation')
+      expect(openChatImageViewer).toHaveBeenCalledWith(expect.objectContaining({ path: 'stored.png', conversationId: 'image-conversation' }))
+    } finally {
+      load.mockRestore()
+    }
+  })
+
+  it.each(['prepare', 'preview'])('resolves an earlier image selected by %s without a markdown reference', mode => {
+    const previousImage = prepared.artifacts![1]
+    const message: ChatMessage = { ...prepared, artifacts: [],
+      tool_calls: [{ ...prepared.tool_calls![0], structured_content: {
+        type: 'artifact_presentation', artifactIds: ['art_final'], mode,
+      } }],
+    }
+    const { container, unmount } = render(<MessageBubble message={message}
+      conversationArtifactsById={new Map([['art_final', previousImage]])} />)
+    expect(screen.queryByText(/文件不可用/)).not.toBeInTheDocument()
+    if (mode === 'preview') expect(screen.getByRole('img')).toHaveAttribute('src', previousImage.data_url)
+    else expect(container.querySelector('[aria-label="交付文件"]')).toHaveTextContent('final.png')
+    unmount()
+    render(<MessageBubble message={message} conversationArtifactsById={new Map([['art_final', previousImage]])} />)
+    expect(screen.queryByText(/文件不可用/)).not.toBeInTheDocument()
+  })
+
   it('keeps intermediate files out of the answer and renders chosen files in place through completion and reload', () => {
     const { container, rerender, unmount } = render(<MessageBubble message={prepared} messageStreaming />)
     expect(screen.getByText('已准备 2 个文件')).toBeVisible()

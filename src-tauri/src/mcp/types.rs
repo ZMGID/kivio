@@ -562,16 +562,16 @@ pub fn native_present_artifacts_tool() -> ChatToolDefinition {
             "properties": {
                 "artifact_ids": {
                     "type": "array",
-                    "description": "Copy `art_…` ids from tool results verbatim. Short strings only — not file names, paths, bytes, base64, or data URLs. Generated files have these ids and no usable path.",
+                    "description": "Copy `art_…` ids from tool results verbatim. For local files passed in paths, omit artifact_ids or use []; never supply dummy or placeholder IDs. Short strings only — not file names, paths, bytes, base64, or data URLs. Generated files have these ids and no usable path.",
                     "items": { "type": "string", "minLength": 1 },
-                    "minItems": 1,
+                    "minItems": 0,
                     "maxItems": 16
                 },
                 "paths": {
                     "type": "array",
-                    "description": "Existing disk paths for files you already read or wrote. Do not use for generated artifacts (those use artifact_ids). Never file contents.",
+                    "description": "Existing disk paths for files you already read or wrote. Omit or use [] when selecting only artifact_ids. For a local file, use paths with artifact_ids: []. Do not use for generated artifacts (those use artifact_ids). Never file contents.",
                     "items": { "type": "string", "minLength": 1 },
-                    "minItems": 1,
+                    "minItems": 0,
                     "maxItems": 16
                 },
                 "mode": {

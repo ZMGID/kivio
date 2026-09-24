@@ -291,7 +291,7 @@ function ArtifactPresentationBlock({
   if (!presentation) {
     return (
       <ToolCallErrorBoundary>
-        <ToolCallBlock toolCall={toolCall} />
+        <ToolCallBlock toolCall={toolCall} conversationId={conversationId} />
       </ToolCallErrorBoundary>
     )
   }
@@ -308,7 +308,7 @@ function ArtifactPresentationBlock({
   if (presentation.artifactIds.length === 0) {
     return (
       <ToolCallErrorBoundary>
-        <ToolCallBlock toolCall={toolCall} />
+        <ToolCallBlock toolCall={toolCall} conversationId={conversationId} />
       </ToolCallErrorBoundary>
     )
   }
@@ -455,7 +455,7 @@ function ClusteredToolCalls({
           return (
             <div key={key} className={itemClassName}>
               <ToolCallErrorBoundary>
-                <ImageReadCluster toolCalls={item.toolCalls} />
+                <ImageReadCluster toolCalls={item.toolCalls} conversationId={conversationId} />
               </ToolCallErrorBoundary>
             </div>
           )
@@ -474,7 +474,7 @@ function ClusteredToolCalls({
               />
             ) : (
               <ToolCallErrorBoundary>
-                <ToolCallBlock toolCall={toolCall} />
+                <ToolCallBlock toolCall={toolCall} conversationId={conversationId} />
               </ToolCallErrorBoundary>
             )}
           </div>
@@ -517,7 +517,7 @@ function TimelineToolSegment({
   }
   return (
     <ToolCallErrorBoundary>
-      <ToolCallBlock toolCall={toolCall} />
+      <ToolCallBlock toolCall={toolCall} conversationId={conversationId} />
     </ToolCallErrorBoundary>
   )
 }
@@ -689,7 +689,7 @@ function renderProcessSegments({
         nodes.push(
           <div key={segment.id}>
             <ToolCallErrorBoundary>
-              <ImageReadCluster toolCalls={imageReads} />
+              <ImageReadCluster toolCalls={imageReads} conversationId={conversationId} />
             </ToolCallErrorBoundary>
           </div>,
         )
@@ -1101,14 +1101,18 @@ function MessageBubbleComponent({
     ].join('\n\n')
     const localArtifacts = [...messageArtifacts, ...toolArtifacts]
     const localIds = new Set(localArtifacts.map(artifactId))
-    const earlierReferencedArtifacts = [...referencedArtifactIds(artifactReferenceContent)]
+    const selectedIds = new Set([
+      ...referencedArtifactIds(artifactReferenceContent),
+      ...toolCalls.flatMap(tool => artifactPresentationFromToolCall(tool)?.artifactIds ?? []),
+    ])
+    const earlierReferencedArtifacts = [...selectedIds]
       .filter(id => !localIds.has(id))
       .flatMap(id => {
         const artifact = conversationArtifactsById?.get(id)
         return artifact ? [artifact] : []
       })
     // A later reply may cite an artifact produced by an earlier turn. Only add
-    // the cited IDs so unrelated files cannot affect relative image matching.
+    // the cited or explicitly presented IDs so unrelated files cannot affect relative image matching.
     const renderArtifacts = [...earlierReferencedArtifacts, ...localArtifacts]
     const legacyMessageArtifacts = messageArtifacts.filter((artifact) => !artifactId(artifact))
     const legacyToolCalls = toolCalls.map((toolCall) => ({

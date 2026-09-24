@@ -51,13 +51,16 @@ fn root(app: &AppHandle) -> Result<PathBuf, String> {
         .join("artifacts"))
 }
 
-fn record_path(root: &Path, id: &str) -> Result<PathBuf, String> {
-    if !id.starts_with("art_")
-        || id.len() > 160
-        || !id
+pub(crate) fn is_valid_artifact_id(id: &str) -> bool {
+    id.starts_with("art_")
+        && id.len() <= 160
+        && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
+}
+
+fn record_path(root: &Path, id: &str) -> Result<PathBuf, String> {
+    if !is_valid_artifact_id(id) {
         return Err("Invalid artifact ID".into());
     }
     Ok(root.join("records").join(format!("{id}.json")))
@@ -457,8 +460,13 @@ pub fn prepare_output<'a>(
         .and_then(|ids| ids[0].as_str())
         .map(str::to_string);
     let present_ids: Vec<String> = if prepared {
-        arguments["artifact_ids"]
-            .as_array()
+        // Native presentation already filtered malformed IDs. Re-reading the
+        // raw arguments here would reintroduce them and discard valid files.
+        output
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("artifactIds"))
+            .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(|v| v.as_str().map(str::to_string))

@@ -58,6 +58,7 @@ import type { ImageReadItem } from './segments'
 export interface ToolCallBlockProps {
   toolCall: ToolCallRecord
   defaultOpen?: boolean
+  conversationId?: string | null
 }
 
 interface FileMutationFile {
@@ -2013,7 +2014,7 @@ function collectImageReadItems(toolCalls: ToolCallRecord[]): ImageReadItem[] {
   const items: ImageReadItem[] = []
   for (const toolCall of toolCalls) {
     for (const item of imageReadItems(toolCall)) {
-      const key = item.path || item.name
+      const key = item.path || item.id || item.dataUrl || item.name
       if (!key || seen.has(key)) continue
       seen.add(key)
       items.push(item)
@@ -2022,7 +2023,7 @@ function collectImageReadItems(toolCalls: ToolCallRecord[]): ImageReadItem[] {
   return items
 }
 
-function ImageReadThumb({ item }: { item: ImageReadItem }) {
+function ImageReadThumb({ item, conversationId }: { item: ImageReadItem; conversationId?: string | null }) {
   const t = useT()
   const [src, setSrc] = useState<string | null>(item.dataUrl || null)
   const [failed, setFailed] = useState(false)
@@ -2040,7 +2041,7 @@ function ImageReadThumb({ item }: { item: ImageReadItem }) {
     let cancelled = false
     setSrc(null)
     setFailed(false)
-    void loadAttachmentDataUrl({ type: 'image', path: item.path, name: item.name }, null).then((dataUrl) => {
+    void loadAttachmentDataUrl({ type: 'image', path: item.path, name: item.name }, conversationId).then((dataUrl) => {
       if (cancelled) return
       if (dataUrl) setSrc(dataUrl)
       else setFailed(true)
@@ -2048,7 +2049,7 @@ function ImageReadThumb({ item }: { item: ImageReadItem }) {
     return () => {
       cancelled = true
     }
-  }, [item.dataUrl, item.path, item.name])
+  }, [item.dataUrl, item.path, item.name, conversationId])
 
   if (failed) {
     return (
@@ -2077,7 +2078,7 @@ function ImageReadThumb({ item }: { item: ImageReadItem }) {
         alt: item.name,
         name: item.name,
         path: item.path || null,
-        conversationId: null,
+        conversationId,
       })}
     >
       <img src={src} alt="" className="h-full w-full object-cover" loading="lazy" />
@@ -2085,15 +2086,18 @@ function ImageReadThumb({ item }: { item: ImageReadItem }) {
   )
 }
 
-export function ImageReadCluster({ toolCalls }: { toolCalls: ToolCallRecord[] }) {
+export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: ToolCallRecord[]; conversationId?: string | null }) {
   const t = useT()
   const [open, setOpen] = useState(false)
   const items = useMemo(() => collectImageReadItems(toolCalls), [toolCalls])
-  const count = Math.max(
-    items.length,
-    toolCalls.reduce((total, toolCall) => total + imageReadCount(toolCall), 0),
-  )
-  const running = toolCalls.some((toolCall) => normalizeToolCallStatus(toolCall.status) === 'running')
+  // Count the same deduplicated images as the thumbnails, not read operations.
+  // Historical records without identities can only contribute their reported count.
+  const count = items.length + toolCalls.reduce((total, toolCall) =>
+    total + (imageReadItems(toolCall).length === 0 ? imageReadCount(toolCall) : 0), 0)
+  const running = toolCalls.some((toolCall) => {
+    const status = normalizeToolCallStatus(toolCall.status)
+    return status === 'running' || status === 'pending'
+  })
   const label = (running ? t.chatViewingImages : t.chatViewedImages).replace('{n}', String(Math.max(1, count)))
 
   return (
@@ -2127,7 +2131,7 @@ export function ImageReadCluster({ toolCalls }: { toolCalls: ToolCallRecord[] })
         <ChatDisclosureBody open={open}>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {items.map((item, index) => (
-              <ImageReadThumb key={item.path || `${item.name}-${index}`} item={item} />
+              <ImageReadThumb key={item.path || item.id || `${item.name}-${index}`} item={item} conversationId={conversationId} />
             ))}
           </div>
         </ChatDisclosureBody>
@@ -2144,7 +2148,7 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
     return <AskUserBlock toolCall={props.toolCall} />
   }
   if (isImageReadToolCall(props.toolCall)) {
-    return <ImageReadCluster toolCalls={[props.toolCall]} />
+    return <ImageReadCluster toolCalls={[props.toolCall]} conversationId={props.conversationId} />
   }
   if (isSubAgentRecord(props.toolCall)) {
     return <SubAgentCard {...props} />
