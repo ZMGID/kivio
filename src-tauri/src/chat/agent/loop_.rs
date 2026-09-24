@@ -412,6 +412,31 @@ pub async fn run_agent_loop(
                         inject_follow_up_messages(&env, &mut state, round).await?;
                         continue;
                     }
+                    let child_activity = host
+                        .wait_for_child_results(
+                            &config.conversation_id,
+                            &config.run_id,
+                            config.generation,
+                        )
+                        .await?;
+                    if !host.is_generation_active(&config.conversation_id, config.generation) {
+                        if let Some(hooks) = hooks {
+                            hooks.cancel();
+                        }
+                        let result = cancelled_run_result_from_state(&env, &mut state);
+                        return Ok(attach_usage(result, &mut state));
+                    }
+                    if child_activity {
+                        if let Some(message) = state.planning_final_message.take() {
+                            absorb_final_answer(&mut state, message);
+                        }
+                        // Follow-ups can arrive while waiting, after the check
+                        // above. Inject them before the next model request.
+                        if follow_up_pending(&env, &mut state) {
+                            inject_follow_up_messages(&env, &mut state, round).await?;
+                        }
+                        continue;
+                    }
                     break;
                 }
                 PlanningStepOutcome::ToolsUnsupported => break,

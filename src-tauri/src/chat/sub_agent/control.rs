@@ -45,6 +45,46 @@ pub fn runtime(app: &AppHandle) -> Result<Arc<Runtime>, String> {
     Ok(runtime)
 }
 
+/// Keep only the current collaboration alive. Subscribe before inspecting the
+/// snapshot so a completion at the answer boundary cannot be missed. Reports
+/// are still consumed by collect_results, one completion at a time.
+pub(crate) async fn wait_for_parent_results(
+    runtime: &Runtime,
+    conversation: &str,
+    parent_run: &str,
+    interrupted: impl Fn() -> bool,
+) -> Result<bool, String> {
+    let mut events = runtime.subscribe_results();
+    loop {
+        events.borrow_and_update();
+        let records = runtime.list(conversation)?;
+        let runs = || records.iter().flat_map(|record| &record.runs);
+        if runs().any(|run| {
+            !run.status.active()
+                && !run.delivered
+                && runtime.can_collect(&run.parent_run, parent_run)
+        }) {
+            return Ok(true);
+        }
+        if !runs().any(|run| run.parent_run == parent_run && run.status.active()) {
+            return Ok(false);
+        }
+        loop {
+            if interrupted() {
+                return Ok(true);
+            }
+            // Input/cancellation currently have no watch channel. Poll only
+            // their in-memory flags; reread child snapshots only on a result.
+            if tokio::time::timeout(std::time::Duration::from_millis(100), events.changed())
+                .await
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+}
+
 /// Persist a report and its receipt together before acknowledging delivery.
 pub async fn collect_results(
     app: &AppHandle,
@@ -70,7 +110,7 @@ pub async fn collect_results(
 }
 
 /// Shared by the production host and integration tests. Delivery does not judge
-/// an assignment and never waits for other active children or blocks a final answer.
+/// an assignment. The parent answer boundary owns waiting for outstanding work.
 pub(crate) async fn collect_results_with<F, Fut>(
     runtime: &Runtime,
     conversation: &str,
@@ -308,6 +348,9 @@ pub async fn operate(
     let id = args["id"].as_str().unwrap_or("");
     let key = args["message_id"].as_str().unwrap_or("");
     let text = args["message"].as_str().unwrap_or("");
+    if matches!(operation, "get" | "message" | "continue" | "stop") && id.trim().is_empty() {
+        return Err(format!("{operation} requires id: use the child id returned by agent or agent_control list. execution_id identifies an execution and does not replace id."));
+    }
     match operation {
         "list" => Ok(
             json!({"sequence":runtime.result_sequence(conversation), "agents":runtime.list(conversation)?}),
@@ -422,12 +465,14 @@ pub async fn chat_subagent_control(
 pub fn definition() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__agent_control".into(), name: "agent_control".into(),
-        description: "Control this conversation's children. Guide them when their work drifts, follow up where needed, and keep each child's findings and uncertainties distinct in your summary. List shows identities and brief progress; get(id) reads one child. Use get with execution_id and next_offset as offset to read further result pages; offsets count Unicode characters. message adds information; continue runs an idle child or supplements an active one; stop needs the current execution_id. Wait accepts an optional id to wait only for that child. Wait for needed results instead of polling: it wakes on new results, user input or timeout (at most 60000 ms). Reuse sequence as cursor; waited_ms is elapsed time. Timeout and parent-turn completion do not stop children. Reuse message_id for retries. Continue a user-stopped child only on a new explicit user instruction, with user_requested=true.".into(),
+        description: "Control this conversation's children. Guide them when their work drifts, follow up where needed, and keep each child's findings and uncertainties distinct in your summary. List shows identities and brief progress; get(id) reads one child. Use get with execution_id and next_offset as offset to read further result pages; offsets count Unicode characters. message and continue require id (the child id) and message (the new instructions). message only adds information; continue runs an idle child or supplements an active one. stop requires id and the current execution_id. Wait accepts an optional id to wait only for that child. Wait for needed results instead of polling: it wakes on new results, user input or timeout (at most 60000 ms). Reuse sequence as cursor; waited_ms is elapsed time. Handle each result as it arrives and continue until all required child work is incorporated; a child failure does not finish the main task. A normal final answer waits for this turn's active children; stop branches you no longer need. message_id is optional for model calls and generated from the tool call identity; reuse accepted_message_id when explicitly retrying the same message. Continue a user-stopped child only on a new explicit user instruction, with user_requested=true.".into(),
         source: "native".into(), server_id: None, server_name: Some("Kivio".into()),
         input_schema: json!({"type":"object","properties":{
             "operation":{"type":"string","enum":["list","get","message","continue","stop","wait"]},
-            "id":{"type":"string"}, "execution_id":{"type":"string"},
-            "message_id":{"type":"string"}, "message":{"type":"string"},
+            "id":{"type":"string","description":"Child agent id returned by agent/list; required for get, message, continue and stop. Do not substitute execution_id."},
+            "execution_id":{"type":"string","description":"Execution within a child; required for stop, optional for get. Does not replace id."},
+            "message_id":{"type":"string","description":"Optional idempotency key for message/continue. Generated automatically if omitted. Reuse accepted_message_id for an explicit retry of the same message."},
+            "message":{"type":"string","description":"Required nonblank instructions for message/continue; at most 100000 UTF-8 bytes."},
             "view":{"type":"string","enum":["result","tools"],"description":"For get, defaults to result. Use tools to read saved tool calls and outputs, including interrupted work, before repeating investigations. The result field contains paged JSON text; concatenate pages before parsing. Pin execution_id when paging."},
             "offset":{"type":"integer","minimum":0,"description":"Character offset in the selected get view; use next_offset to continue."},
             "limit":{"type":"integer","minimum":1,"maximum":4000,"description":"Maximum result characters per get page; defaults to 4000."},
@@ -445,15 +490,20 @@ pub fn dispatch(
         if ctx.native_ctx.depth != 0 {
             return Err("Only the main agent can control children".into());
         }
+        let arguments = model_arguments(
+            ctx.arguments,
+            &ctx.native_ctx.run_id,
+            ctx.native_ctx.tool_call_id.as_deref(),
+        )?;
         let value = operate(
             ctx.app,
             &ctx.native_ctx.conversation_id,
             &ctx.native_ctx.run_id,
             "main_agent",
-            ctx.arguments,
+            &arguments,
         )
         .await?;
-        let value = model_view(ctx.arguments, value);
+        let value = model_view(&arguments, value);
         let content = bounded_output(&serde_json::to_string(&value).map_err(|e| e.to_string())?);
         let mut receipt = value;
         receipt["type"] = json!("subagent_control");
@@ -467,6 +517,23 @@ pub fn dispatch(
             follow_up_user_messages: Vec::new(),
         })
     })
+}
+
+/// Transport retries reuse the same tool identity. Keep durable message keys
+/// out of the model's required arguments, while retaining explicit retry keys.
+fn model_arguments(args: &Value, parent_run: &str, call_id: Option<&str>) -> Result<Value, String> {
+    let mut args = args.clone();
+    if matches!(args["operation"].as_str(), Some("message" | "continue"))
+        && args["message_id"]
+            .as_str()
+            .is_none_or(|id| id.trim().is_empty())
+    {
+        let call_id = call_id
+            .filter(|id| !id.is_empty())
+            .ok_or("Cannot assign message_id without a tool call id")?;
+        args["message_id"] = json!(format!("agent-control:{parent_run}:{call_id}"));
+    }
+    Ok(args)
 }
 
 /// Model control replies are receipts, not copies of the worker's prompt and
@@ -571,6 +638,194 @@ fn excerpt(value: &Value, limit: usize) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_continue_without_message_id_is_accepted_once_and_can_be_retried() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(directory.path().into()).unwrap();
+        let child = runtime
+            .start(
+                "conv",
+                "parent",
+                "start",
+                "A",
+                Profile::default(),
+                "Inspect",
+            )
+            .unwrap();
+        runtime
+            .finish(
+                "conv",
+                &child.id,
+                &child.current().id,
+                Ok(("Initial report".into(), None)),
+            )
+            .unwrap();
+        let original =
+            json!({"operation":"continue", "id":child.id, "message":"Implement the fix"});
+        let args = model_arguments(&original, "parent", Some("call-1")).unwrap();
+        let resume = |args: &Value| {
+            runtime.resume(
+                "conv",
+                args["id"].as_str().unwrap(),
+                "parent",
+                args["message_id"].as_str().unwrap(),
+                "main_agent",
+                args["message"].as_str().unwrap(),
+            )
+        };
+        let (continued, starts) = resume(&args).unwrap();
+        assert!(starts);
+        assert_ne!(continued.current().id, child.current().id);
+        let (replayed, starts) =
+            resume(&model_arguments(&original, "parent", Some("call-1")).unwrap()).unwrap();
+        assert!(!starts);
+        assert_eq!(replayed.runs.len(), 2);
+        assert_eq!(replayed.messages.len(), 1);
+        let receipt = model_view(&args, json!(continued));
+        let mut retry = original.clone();
+        retry["message_id"] = receipt["accepted_message_id"].clone();
+        assert!(
+            !resume(&model_arguments(&retry, "parent", Some("call-2")).unwrap())
+                .unwrap()
+                .1
+        );
+        retry["message"] = json!("Different instructions");
+        assert!(resume(&retry).unwrap_err().contains("different content"));
+        assert_ne!(
+            model_arguments(&original, "next-parent", Some("call-1")).unwrap()["message_id"],
+            args["message_id"]
+        );
+    }
+
+    #[test]
+    fn model_message_without_message_id_keeps_idle_child_idle() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(directory.path().into()).unwrap();
+        let child = runtime
+            .start(
+                "conv",
+                "parent",
+                "start",
+                "A",
+                Profile::default(),
+                "Inspect",
+            )
+            .unwrap();
+        runtime
+            .finish(
+                "conv",
+                &child.id,
+                &child.current().id,
+                Ok(("Report".into(), None)),
+            )
+            .unwrap();
+        let args = model_arguments(
+            &json!({"operation":"message", "id":child.id, "message":"Extra context"}),
+            "parent",
+            Some("call-1"),
+        )
+        .unwrap();
+        let record = runtime
+            .send(
+                "conv",
+                &child.id,
+                args["message_id"].as_str().unwrap(),
+                "main_agent",
+                "Extra context",
+            )
+            .unwrap();
+        assert_eq!(record.runs.len(), 1);
+        assert!(!record.current().status.active());
+        assert_eq!(record.messages.len(), 1);
+        assert_eq!(record.messages[0].consumed_by, None);
+        assert!(runtime
+            .send("conv", &child.id, "another", "main_agent", " ")
+            .unwrap_err()
+            .starts_with("message must"));
+        assert!(runtime
+            .send("conv", &child.id, "", "main_agent", "Context")
+            .unwrap_err()
+            .starts_with("message_id is required"));
+    }
+
+    #[tokio::test]
+    async fn parent_wait_is_scoped_and_does_not_consume_or_miss_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(directory.path().into()).unwrap();
+        runtime.register_parent("other");
+        let other = runtime
+            .start(
+                "conv",
+                "other",
+                "other",
+                "Other",
+                Profile::default(),
+                "Inspect",
+            )
+            .unwrap();
+        assert!(
+            !wait_for_parent_results(&runtime, "conv", "parent", || false)
+                .await
+                .unwrap()
+        );
+        let child = runtime
+            .start(
+                "conv",
+                "parent",
+                "start",
+                "A",
+                Profile::default(),
+                "Inspect",
+            )
+            .unwrap();
+        let wait = wait_for_parent_results(&runtime, "conv", "parent", || false);
+        tokio::pin!(wait);
+        assert!(futures::poll!(&mut wait).is_pending());
+        runtime
+            .finish(
+                "conv",
+                &other.id,
+                &other.current().id,
+                Ok(("Unrelated".into(), None)),
+            )
+            .unwrap();
+        assert!(futures::poll!(&mut wait).is_pending());
+        runtime
+            .finish(
+                "conv",
+                &child.id,
+                &child.current().id,
+                Err("Request failed".into()),
+            )
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut wait)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        // A fresh wait also sees an already-pending result; wait never consumes it.
+        assert!(
+            wait_for_parent_results(&runtime, "conv", "parent", || false)
+                .await
+                .unwrap()
+        );
+        let reports = collect_results_with(&runtime, "conv", "parent", |_, _| async { Ok(true) })
+            .await
+            .unwrap();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Request failed"));
+        assert!(
+            !wait_for_parent_results(&runtime, "conv", "parent", || false)
+                .await
+                .unwrap()
+        );
+        assert!(!runtime.get("conv", &other.id).unwrap().current().delivered);
+    }
 
     #[test]
     fn get_tools_pages_read_saved_results_without_mixing_executions() {

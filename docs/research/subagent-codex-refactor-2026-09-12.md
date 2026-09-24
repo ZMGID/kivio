@@ -4,6 +4,17 @@
 
 后续定稿：六项产品决定记录在 [ADR-0005](../adr/0005-subagents-retain-identity-across-tasks.md)，当前重构范围与验收以 [本地规格](../prd/subagent-runtime-refactor-spec.md) 为准。本文保留研究时的建议与候选接口，不能视为全部已确认；规格尚未实现。
 
+## 2026-09-24 持续性修复复核
+
+重新通过 GitHub API 获取官方 `openai/codex` 的 main，并读取固定提交 `421082e79d3186b0077bccbbbe2c77c0b1a26520` 的实现。原本地参考目录已无可读源码，未将旧研究结论当作本次验证结果。此处是源码阅读，未编译运行 Codex。
+
+- 官方文档描述多个子代理完成所需结果后由主代理统一汇总：[Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)。
+- V2 `wait_agent` 先订阅信箱活动并读取已待处理活动，再等待 watch 通知；有信箱消息、用户引导或超时分别返回。它不负责验收成果，也不是反复向模型询问进度：[wait.rs](https://github.com/openai/codex/blob/421082e79d3186b0077bccbbbe2c77c0b1a26520/codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs)。
+- 终态结果由控制层路由到父代理，`InterAgentCommunication` 的 `trigger_turn` 为 false；完成通知本身不承诺重启空闲父轮：[completion.rs](https://github.com/openai/codex/blob/421082e79d3186b0077bccbbbe2c77c0b1a26520/codex-rs/core/src/agent/control/completion.rs)。
+- `send_message` 与 `followup_task` 都只要求模型提供 `target`、`message`，在共享投递路径区分 QueueOnly 与 TriggerTurn；工具调用标识属于运行时上下文：[message_tool.rs](https://github.com/openai/codex/blob/421082e79d3186b0077bccbbbe2c77c0b1a26520/codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs)。
+
+本次 Kivio 修复借鉴事件等待、逐个投递和精简模型参数。正常终答边界保留当前父轮、等待本轮所派子执行，是针对用户所报告故障增加的 Kivio 保障；不声称以上 Codex 文件实现了同样的强制收尾检查。不会自动启动已结束父轮，也不恢复旧的成果分类、resolve 或答案替换流程。消息持久化及重试幂等继续由 Kivio 原有运行时负责。
+
 ## 1. 范围与结论
 
 最值得借鉴的不是工具名称，而是将 **Agent 的身份和历史、一次 Turn 的执行、消息投递、等待订阅、资源驻留** 拆开。Codex 的 spawn 工具只负责创建子线程并提交首个输入，不负责等待整个任务完成；之后由独立控制入口操作同一 Agent。这个结构才能同时支持“中途补充信息”“单独停止”“完成后继续”“每件事新开一个”。[创建与提交路径][spawn-core]
