@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react'
+import { ImageOff } from 'lucide-react'
 import { ChatImageContextMenu, type ChatImageMenuAnchor } from './ChatImageContextMenu'
+import { loadArtifactOriginalDataUrl } from './attachmentPreview'
 import { useConversationTransition } from './conversationTransitionStore'
 import { fileLocationAction } from './fileLocation'
 
@@ -41,7 +43,20 @@ function tileWidthPx(ratio: number): number {
  * 解法是让盒子尺寸只由**宽高比**决定：最长边恒 ≤240，多张才能在一行里并排。
  * 未知比例先按 1:1 占位，避免解码前撑满整行、把后面的图挤下去。
  */
-export function ChatInlineImage({
+export function ChatInlineImage(props: {
+  src: string
+  alt: string
+  name?: string
+  path?: string | null
+  conversationId?: string | null
+  onOpenViewer?: () => void
+  className?: string
+}) {
+  // src 改变时重建图片自身的加载状态，比例从有界缓存恢复。
+  return <ChatInlineImageSource key={props.src} {...props} />
+}
+
+function ChatInlineImageSource({
   src,
   alt,
   name,
@@ -62,6 +77,8 @@ export function ChatInlineImage({
   const { loading: conversationOpening } = useConversationTransition()
   const [menuAnchor, setMenuAnchor] = useState<ChatImageMenuAnchor | null>(null)
   const [ratio, setRatio] = useState<number>(() => ratioCache.get(ratioKey(src)) ?? 1)
+  const [failed, setFailed] = useState(false)
+  const [retry, setRetry] = useState(0)
 
   const handleLoad = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
     const { naturalWidth, naturalHeight, currentSrc } = event.currentTarget
@@ -70,6 +87,7 @@ export function ChatInlineImage({
     rememberRatio(src, next)
     if (currentSrc && currentSrc !== src) rememberRatio(currentSrc, next)
     setRatio(next)
+    setFailed(false)
   }, [src])
 
   return (
@@ -77,13 +95,13 @@ export function ChatInlineImage({
       <button
         type="button"
         data-chat-inline-image=""
-        className={`inline-block max-w-full min-w-0 cursor-zoom-in overflow-hidden rounded-md p-0 text-left align-top ${className}`}
+        className={`inline-block max-w-full min-w-0 overflow-hidden rounded-md p-0 text-left align-top ${failed ? 'cursor-pointer' : 'cursor-zoom-in'} ${className}`}
         style={{
           aspectRatio: String(ratio),
           width: tileWidthPx(ratio),
           maxWidth: '100%',
         }}
-        onClick={onOpenViewer}
+        onClick={failed ? () => { setFailed(false); setRetry((value) => value + 1) } : onOpenViewer}
         onContextMenu={(event) => {
           event.preventDefault()
           // 必须掐断冒泡：滚动容器上还挂着消息级右键菜单（MessageList.handleContextMenu），
@@ -92,20 +110,24 @@ export function ChatInlineImage({
           event.stopPropagation()
           setMenuAnchor({ left: event.clientX, top: event.clientY })
         }}
-        aria-label="预览图片"
+        aria-label={failed ? '重试加载图片' : '预览图片'}
       >
         <img
+          key={retry}
           src={src}
           alt={alt}
           onLoad={handleLoad}
+          onError={() => setFailed(true)}
           loading={src.startsWith('data:') ? undefined : conversationOpening ? 'eager' : 'lazy'}
-          className={`h-full w-full min-w-0 max-w-full ${IMAGE_CLASS}`}
+          className={`h-full w-full min-w-0 max-w-full ${IMAGE_CLASS} ${failed ? 'hidden' : ''}`}
         />
+        {failed ? <span className="flex h-full w-full items-center justify-center text-neutral-500 dark:text-neutral-400"><ImageOff size={18} aria-hidden="true" /></span> : null}
       </button>
       {menuAnchor ? (
         <ChatImageContextMenu
           anchor={menuAnchor}
           src={src}
+          loadFullSrc={path && src.startsWith('data:') ? () => loadArtifactOriginalDataUrl({ path }, conversationId) : undefined}
           name={name}
           onRevealLocation={fileLocationAction(path, conversationId)}
           onOpenViewer={onOpenViewer}

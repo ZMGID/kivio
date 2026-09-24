@@ -58,6 +58,33 @@ describe('ChatInlineImage', () => {
     expect(second.container.querySelector('button')!.style.aspectRatio).toBe('2')
   })
 
+  it('resets ratio and loading state when the source changes', () => {
+    const first = `${PNG}source-a`
+    const second = `${PNG}source-b`
+    const view = render(<ChatInlineImage src={first} alt="x" />)
+    fireLoad(view.container.querySelector('img')!, 800, 400)
+    expect(view.container.querySelector('button')!.style.aspectRatio).toBe('2')
+    view.rerender(<ChatInlineImage src={second} alt="x" />)
+    expect(view.container.querySelector('button')!.style.aspectRatio).toBe('1')
+    act(() => { view.container.querySelector('img')!.dispatchEvent(new Event('error')) })
+    expect(view.container.querySelector('button')).toHaveAttribute('aria-label', '重试加载图片')
+    view.rerender(<ChatInlineImage src={first} alt="x" />)
+    expect(view.container.querySelector('button')!.style.aspectRatio).toBe('2')
+    expect(view.container.querySelector('button')).toHaveAttribute('aria-label', '预览图片')
+  })
+
+  it('lets the user retry a failed source', () => {
+    const onOpenViewer = vi.fn()
+    const view = render(<ChatInlineImage src="https://example.com/missing.png" alt="missing" onOpenViewer={onOpenViewer} />)
+    const original = view.container.querySelector('img')!
+    act(() => { original.dispatchEvent(new Event('error')) })
+    expect(view.container.querySelector('button')).toHaveAttribute('aria-label', '重试加载图片')
+    act(() => { view.container.querySelector('button')!.click() })
+    expect(view.container.querySelector('img')).not.toBe(original)
+    expect(onOpenViewer).not.toHaveBeenCalled()
+    expect(view.container.querySelector('button')).toHaveAttribute('aria-label', '预览图片')
+  })
+
   it('does not lazy-load data URLs (bytes are already in memory)', () => {
     const inline = render(<ChatInlineImage src={`${PNG}C`} alt="x" />)
     expect(inline.container.querySelector('img')!.getAttribute('loading')).toBeNull()

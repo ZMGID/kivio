@@ -9,6 +9,7 @@ export interface ComposerDraft {
   input: string
   quotes: string[]
   attachments: PendingAttachment[]
+  attachmentError?: string
 }
 
 const NEW_CHAT_KEY = '__new__'
@@ -23,11 +24,16 @@ export function getComposerDraft(key: string): ComposerDraft | undefined {
 }
 
 export function setComposerDraft(key: string, draft: ComposerDraft): void {
-  if (!draft.input && draft.quotes.length === 0 && draft.attachments.length === 0) {
+  if (!draft.input && draft.quotes.length === 0 && draft.attachments.length === 0 && !draft.attachmentError) {
     drafts.delete(key)
   } else {
     drafts.set(key, draft)
   }
+}
+
+/** 异步附件结果只修改启动时的草稿，不覆盖期间输入的正文和引用。 */
+export function updateComposerDraft(key: string, update: (draft: ComposerDraft) => ComposerDraft): void {
+  setComposerDraft(key, update(getComposerDraft(key) ?? { input: '', quotes: [], attachments: [] }))
 }
 
 /**

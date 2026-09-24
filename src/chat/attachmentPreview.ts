@@ -8,29 +8,77 @@ function isLocalAttachmentPath(path: string): boolean {
   return path.includes('/') || path.includes('\\')
 }
 
+// 已发送附件使用对话目录中的唯一文件名，内容不会再被覆盖。只缓存这类稳定身份；
+// 草稿的绝对路径可能被外部程序改写，只在并发读取期间去重。
+const CACHE_MAX_BYTES = 24 * 1024 * 1024
+const CACHE_TTL_MS = 30_000
+const completed = new Map<string, { data: string; bytes: number; expires: number }>()
+const reading = new Map<string, Promise<string | null>>()
+let completedBytes = 0
+
+function cached(key: string): string | null {
+  const item = completed.get(key)
+  if (!item) return null
+  completed.delete(key)
+  completedBytes -= item.bytes
+  if (item.expires <= Date.now()) return null
+  completed.set(key, item)
+  completedBytes += item.bytes
+  return item.data
+}
+
+function remember(key: string, data: string): void {
+  // JS 字符串以最多 2 字节/字符计，宁可少缓存，不低估内存预算。
+  const bytes = data.length * 2
+  if (bytes > CACHE_MAX_BYTES) return
+  const previous = completed.get(key)
+  if (previous) completedBytes -= previous.bytes
+  completed.delete(key)
+  completed.set(key, { data, bytes, expires: Date.now() + CACHE_TTL_MS })
+  completedBytes += bytes
+  for (const [entryKey, item] of completed) {
+    if (completedBytes <= CACHE_MAX_BYTES && item.expires > Date.now()) break
+    completed.delete(entryKey)
+    completedBytes -= item.bytes
+  }
+}
+
+async function readImageDataUrl(path: string, conversationId?: string | null): Promise<string | null> {
+  const stable = !isLocalAttachmentPath(path) && !!conversationId
+  const key = `${conversationId ?? ''}\u0000${path}`
+  if (stable) {
+    const hit = cached(key)
+    if (hit) return hit
+  }
+  const pending = reading.get(key)
+  if (pending) return pending
+  const request = (async () => {
+    try {
+      const result = await invoke<{ success: boolean; data?: string; error?: string }>(
+        'chat_read_attachment',
+        { conversationId: isLocalAttachmentPath(path) ? null : conversationId ?? null, path },
+      )
+      if (!result.success || !result.data) return null
+      if (stable) remember(key, result.data)
+      return result.data
+    } catch (err) {
+      console.warn('Failed to load attachment preview:', err)
+      return null
+    } finally {
+      reading.delete(key)
+    }
+  })()
+  reading.set(key, request)
+  return request
+}
+
 export async function loadAttachmentDataUrl(
   attachment: AttachmentLike,
   conversationId?: string | null,
 ): Promise<string | null> {
   if (!isTauriRuntime() || attachment.type !== 'image') return null
   const previewConversationId = isLocalAttachmentPath(attachment.path) ? null : conversationId
-  try {
-    const result = await invoke<{ success: boolean; data?: string; error?: string }>(
-      'chat_read_attachment',
-      {
-        conversationId: previewConversationId ?? null,
-        path: attachment.path,
-      },
-    )
-    if (!result.success || !result.data) {
-      console.warn('Failed to load attachment preview:', result.error ?? attachment.name)
-      return null
-    }
-    return result.data
-  } catch (err) {
-    console.warn('Failed to load attachment preview:', err)
-    return null
-  }
+  return readImageDataUrl(attachment.path, previewConversationId)
 }
 
 export async function openAttachment(
@@ -64,20 +112,18 @@ export async function loadArtifactDataUrl(
   conversationId?: string | null,
 ): Promise<string | null> {
   const inline = artifactInlineDataUrl(artifact)
+  return (await loadArtifactOriginalDataUrl(artifact, conversationId)) ?? (inline || null)
+}
+
+/** 复制和另存必须读到原图；失败时不能把缩略图当成成功结果。 */
+export async function loadArtifactOriginalDataUrl(
+  artifact: ArtifactLike,
+  conversationId?: string | null,
+): Promise<string | null> {
   const path = artifact.path ?? ''
   const isBareName = !!path && !path.includes('/') && !path.includes('\\')
-  if (!isTauriRuntime() || !path || (isBareName && !conversationId)) return inline || null
-  try {
-    const result = await invoke<{ success: boolean; data?: string; error?: string }>(
-      'chat_read_attachment',
-      { conversationId: isBareName ? conversationId : null, path },
-    )
-    if (!result.success || !result.data) return inline || null
-    return result.data
-  } catch (err) {
-    console.warn('Failed to load artifact full image:', err)
-    return inline || null
-  }
+  if (!isTauriRuntime() || !path || (isBareName && !conversationId)) return null
+  return readImageDataUrl(path, isBareName ? conversationId : null)
 }
 
 export type DisplayAttachment = Attachment | PendingAttachment

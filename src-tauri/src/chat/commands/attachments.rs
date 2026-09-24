@@ -138,8 +138,26 @@ pub(crate) fn chat_inspect_attachment_paths(paths: Vec<String>) -> Vec<Inspected
     inspect_attachment_sources(paths)
 }
 
+// 菜单粘贴的同步快路只认输入框规则的安全子集：制表符或 <table 单词边界。
+// 完整选择规则留在输入框；这里仅跳过明确无用的 PNG 编码，不扩大文本优先范围。
+fn has_spreadsheet_clipboard_text(text: &str, html: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if text.contains('\t') {
+        return true;
+    }
+    let html = html.to_ascii_lowercase();
+    html.match_indices("<table").any(|(index, _)| {
+        html.as_bytes()
+            .get(index + "<table".len())
+            .is_some_and(|next| !next.is_ascii_alphanumeric() && *next != b'_')
+    })
+}
+
 /// Explicit paste action in the desktop editor. Read through the OS clipboard,
-/// never through WebView clipboard permissions. File lists take priority over images/text.
+/// never through WebView clipboard permissions. File lists take priority; image
+/// results also carry text/HTML so the composer can prefer spreadsheet cells.
 #[tauri::command]
 pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -157,6 +175,17 @@ pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
                 return Ok(serde_json::json!({ "kind": "files", "paths": paths }));
             }
         }
+        let text_result = clipboard.get_text();
+        let html = if matches!(text_result, Ok(ref text) if !text.is_empty()) {
+            clipboard.get().html().ok().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if let Ok(ref text) = text_result {
+            if has_spreadsheet_clipboard_text(text, &html) {
+                return Ok(serde_json::json!({ "kind": "text", "text": text }));
+            }
+        }
         match clipboard.get_image() {
             Ok(image) => {
                 let width = u32::try_from(image.width).map_err(|e| e.to_string())?;
@@ -167,12 +196,13 @@ pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
                     .map_err(|e| e.to_string())?;
                 return Ok(serde_json::json!({
                     "kind": "image", "dataBase64": base64::engine::general_purpose::STANDARD.encode(png),
+                    "text": text_result.as_ref().ok(), "html": html,
                 }));
             }
             Err(arboard::Error::ContentNotAvailable) => {}
             Err(error) => return Err(error.to_string()),
         }
-        match clipboard.get_text() {
+        match text_result {
             Ok(text) => Ok(serde_json::json!({ "kind": "text", "text": text })),
             Err(arboard::Error::ContentNotAvailable) => Ok(serde_json::json!({ "kind": "empty" })),
             Err(error) => Err(error.to_string()),
@@ -184,4 +214,24 @@ pub(crate) async fn chat_read_clipboard() -> Result<Value, String> {
 pub(crate) fn chat_write_clipboard_text(text: String) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod spreadsheet_clipboard_tests {
+    use super::has_spreadsheet_clipboard_text;
+
+    #[test]
+    fn host_fast_path_only_accepts_clear_table_evidence() {
+        assert!(has_spreadsheet_clipboard_text("A\tB", ""));
+        assert!(has_spreadsheet_clipboard_text(
+            "A",
+            "<table><tr><td>A</td></tr></table>"
+        ));
+        assert!(has_spreadsheet_clipboard_text(
+            "A",
+            "<table class=\"excel\">"
+        ));
+        assert!(!has_spreadsheet_clipboard_text("A", "<tableau>"));
+        assert!(!has_spreadsheet_clipboard_text("", "<table>"));
+    }
 }

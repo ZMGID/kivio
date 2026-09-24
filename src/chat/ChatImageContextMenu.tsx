@@ -16,6 +16,8 @@ interface ChatImageContextMenuProps {
   anchor: ChatImageMenuAnchor
   /** 图片的 data URL（复制/另存都从它取字节）。 */
   src: string
+  /** 列表显示缩略图时，复制/另存前按需取原图。 */
+  loadFullSrc?: () => Promise<string | null>
   name?: string
   onOpenViewer?: () => void
   onRevealLocation?: () => Promise<void>
@@ -25,6 +27,7 @@ interface ChatImageContextMenuProps {
 export function ChatImageContextMenu({
   anchor,
   src,
+  loadFullSrc,
   name,
   onOpenViewer,
   onRevealLocation,
@@ -35,8 +38,16 @@ export function ChatImageContextMenu({
   const { closing, startClose, onAnimationEnd } = useCloseAnimation(onCloseProp)
   const onClose = startClose
   const [copied, setCopied] = useState(false)
+  const [fullImageError, setFullImageError] = useState(false)
   const [locationError, setLocationError] = useState(false)
   const base64 = base64FromDataUrl(src)
+
+  const actionImage = async (): Promise<string | null> => {
+    if (!loadFullSrc) return src
+    const full = await loadFullSrc()
+    setFullImageError(!full)
+    return full
+  }
 
   useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {
@@ -55,9 +66,12 @@ export function ChatImageContextMenu({
   }, [onClose])
 
   const handleCopy = async () => {
-    if (!base64) return
+    const image = await actionImage()
+    if (!image) return
+    const payload = base64FromDataUrl(image)
+    if (!payload) return
     // 复用 Lens 标注早就有的剪贴板写图命令（解码 → arboard set_image），不另造一条。
-    const result = await api.lensCopyImageToClipboard(base64)
+    const result = await api.lensCopyImageToClipboard(payload)
     if (!result.success) {
       window.alert(`复制失败：${result.error ?? '未知错误'}`)
       return
@@ -67,14 +81,17 @@ export function ChatImageContextMenu({
   }
 
   const handleSave = async () => {
-    if (!base64) return
-    const ext = imageExtension(src, name)
+    const image = await actionImage()
+    if (!image) return
+    const payload = base64FromDataUrl(image)
+    if (!payload) return
+    const ext = imageExtension(image, name)
     const path = await save({
       defaultPath: name || `image.${ext}`,
       filters: [{ name: 'Image', extensions: [ext] }],
     })
     if (!path) return
-    const result = await api.lensSaveAnnotatedPng(base64, path)
+    const result = await api.lensSaveAnnotatedPng(payload, path)
     if (!result.success) window.alert(`保存失败：${result.error ?? '未知错误'}`)
     onClose()
   }
@@ -137,6 +154,7 @@ export function ChatImageContextMenu({
         打开所在位置
       </button>}
       {locationError && <span role="status" className="block max-w-64 px-3 py-1 text-xs text-neutral-500">无法打开所在位置，请检查文件是否仍存在。</span>}
+      {fullImageError && <span role="status" className="block max-w-64 px-3 py-1 text-xs text-neutral-500">无法读取原图，请重试。</span>}
     </div>
   )
 

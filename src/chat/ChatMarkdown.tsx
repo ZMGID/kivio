@@ -17,6 +17,7 @@ import { artifactReferenceId, inlineArtifactReferenceLinks } from './artifactRef
 import { artifactId } from './artifactPresentation'
 import { ArtifactFileChip } from './GeneratedFileArtifacts'
 import { loadArtifactDataUrl } from './attachmentPreview'
+import { openChatImageViewer } from './imageViewer'
 import { remarkCitations, type CitationView } from './citations'
 import { citationPopoverPosition, type CitationPopoverPosition } from './citationPopover'
 import { isWebCitation } from './webSearchCitations'
@@ -1064,7 +1065,7 @@ function buildArtifactLookup(artifacts: ChatToolArtifact[]): Map<string, ChatToo
   return lookup
 }
 
-/** Markdown 内图片：有 path 时懒加载整图，缩略图仅作占位（重载对话后不再显示 256px 小图）。 */
+/** Markdown 内图片优先显示已有缩略图；查看器按需读取原图。 */
 function MarkdownArtifactImage({
   rawSrc,
   alt,
@@ -1086,8 +1087,11 @@ function MarkdownArtifactImage({
 
   useEffect(() => {
     let cancelled = false
-    if (artifact?.path && conversationId) {
-      if (inline) setSrc(inline)
+    if (inline) {
+      setSrc(inline)
+      return
+    }
+    if (artifact?.path) {
       void loadArtifactDataUrl(artifact, conversationId).then((loaded) => {
         if (!cancelled && loaded) setSrc(loaded)
       })
@@ -1095,18 +1099,20 @@ function MarkdownArtifactImage({
         cancelled = true
       }
     }
-    if (inline) {
-      setSrc(inline)
-      return
-    }
-    if (isExternalOrAbsoluteImageSrc(rawSrc)) setSrc(rawSrc)
+    setSrc(isExternalOrAbsoluteImageSrc(rawSrc) ? rawSrc : '')
     return () => {
       cancelled = true
     }
   }, [artifact, conversationId, inline, rawSrc])
 
   if (!src) return null
-  const openViewer = () => onImageClick?.(src, alt, rawSrc)
+  const openViewer = () => {
+    if (artifact?.path) {
+      openChatImageViewer({ src, alt, name: artifact.name ?? rawSrc, path: artifact.path, conversationId })
+    } else {
+      onImageClick?.(src, alt, rawSrc)
+    }
+  }
   return (
     <span data-chat-md-image="" className="inline-block max-w-full align-top">
       <ChatInlineImage

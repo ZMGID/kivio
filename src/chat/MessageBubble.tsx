@@ -156,13 +156,16 @@ function ArtifactImage({
 }) {
   const inline = artifactDataUrl(artifact)
   const path = (artifact.path ?? '').trim()
-  // 有 path 时 data_url 通常是 256px 缩略图（落盘外置后）；聊天区应显示整图，缩略图仅作秒显占位。
+  // 列表使用已落盘的真实缩略图；查看器按需读取原图。
   const [src, setSrc] = useState<string>(inline)
 
   useEffect(() => {
     let cancelled = false
-    if (path && conversationId) {
-      if (inline) setSrc(inline)
+    if (inline) {
+      setSrc(inline)
+      return
+    }
+    if (path) {
       void loadArtifactDataUrl(artifact, conversationId).then((loaded) => {
         if (!cancelled && loaded) setSrc(loaded)
       })
@@ -170,10 +173,7 @@ function ArtifactImage({
         cancelled = true
       }
     }
-    if (inline) {
-      setSrc(inline)
-      return
-    }
+    setSrc('')
     return () => {
       cancelled = true
     }

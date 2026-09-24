@@ -484,7 +484,7 @@ export type ChatClipboardFilesResult = {
 
 export type ChatClipboardContent =
   | { kind: 'files'; paths: string[] }
-  | { kind: 'image'; dataBase64: string }
+  | { kind: 'image'; dataBase64: string; text?: string; html?: string }
   | { kind: 'text'; text: string }
   | { kind: 'empty' }
 

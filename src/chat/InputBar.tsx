@@ -34,7 +34,7 @@ import { ComposerAddMenu } from './ComposerAddMenu'
 import { useComposerContextMenu, type ComposerPasteTarget } from './useComposerContextMenu'
 import { SourcesButton } from './SourcesButton'
 import { onComposerInsert, onComposerTextInsert } from './composerInsert'
-import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft } from './composerDraft'
+import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft, updateComposerDraft } from './composerDraft'
 import { applyComposerAutoHeight } from './composerAutoHeight'
 import { canOptimizeComposerText } from './promptOptimize'
 import { AssistantPicker } from './AssistantPicker'
@@ -61,6 +61,11 @@ import { isTauriRuntime } from './utils'
 import { isVideoFile } from './attachmentType'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif']
+type AttachmentOperationScope = { key: string; removedPaths: Set<string> }
+const SPREADSHEET_HTML = /<table\b|office:excel|Excel\.Sheet|Microsoft\s+Excel|mso-(?:number-format|displayed-decimal-separator)/iu
+function preferSpreadsheetText(text: string, html: string): boolean {
+  return text.length > 0 && (text.includes('\t') || SPREADSHEET_HTML.test(html))
+}
 /** 与 `index.css` 问题优化出场 / 入场时长对齐：`--kv-dur-slow`、`slow + fast`。 */
 const OPTIMIZE_OUT_MS = 320
 const OPTIMIZE_IN_MS = 470
@@ -559,7 +564,7 @@ export const InputBar = memo(function InputBar({
   }, [input])
   const [quotes, setQuotes] = useState<string[]>(() => getComposerDraft(draftKeyValue)?.quotes ?? [])
   const [attachments, setAttachments] = useState<PendingAttachment[]>(() => getComposerDraft(draftKeyValue)?.attachments ?? [])
-  const [attachmentError, setAttachmentError] = useState('')
+  const [attachmentError, setAttachmentError] = useState(() => getComposerDraft(draftKeyValue)?.attachmentError ?? '')
   const [editingAttachment, setEditingAttachment] = useState<PendingAttachment | null>(null)
   const [dragActive, setDragActive] = useState(false)
   const [toolPanelOpen, setToolPanelOpen] = useState(false)
@@ -590,6 +595,12 @@ export const InputBar = memo(function InputBar({
   // 草稿持久化：会话 key 变化（切对话且未卸载）时载入对应草稿；每次内容变化写回内存 store。
   // keyRef 保证写回落到当前会话，不串到刚切走的会话。
   const draftKeyRef = useRef(draftKeyValue)
+  const pendingAttachmentScopesRef = useRef(new Set<AttachmentOperationScope>())
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
   // 发送等待期间如果「新会话占位键」迁移成真实会话 id，清理目标也要跟着迁移；
   // 但普通切会话没有发生草稿迁移时，绝不能误清新会话自己的草稿。
   const sendingDraftKeyRef = useRef<string | null>(null)
@@ -601,7 +612,15 @@ export const InputBar = memo(function InputBar({
     draftKeyRef.current = draftKeyValue
     // 新建会话刚落库拿到 id（切 plan/orchestrate 模式等会触发）：草稿跟着搬过去，
     // 本地 state 已经是那份内容，直接返回，别当成「切到了另一条会话」把字清掉。
-    if (migrateNewChatDraft(prevKey, draftKeyValue)) {
+    const migratedDraft = migrateNewChatDraft(prevKey, draftKeyValue)
+    const migratedPendingOnly = !migratedDraft
+      && prevKey === draftKey(undefined)
+      && !getComposerDraft(draftKeyValue)
+      && [...pendingAttachmentScopesRef.current].some((scope) => scope.key === prevKey)
+    if (migratedDraft || migratedPendingOnly) {
+      for (const scope of pendingAttachmentScopesRef.current) {
+        if (scope.key === prevKey) scope.key = draftKeyValue
+      }
       if (sendingDraftKeyRef.current === prevKey) {
         sendingDraftKeyRef.current = draftKeyValue
       }
@@ -611,6 +630,7 @@ export const InputBar = memo(function InputBar({
     setInput(d?.input ?? '')
     setQuotes(d?.quotes ?? [])
     setAttachments(d?.attachments ?? [])
+    setAttachmentError(d?.attachmentError ?? '')
     setOptimizeSnapshot(null)
     setOptimizeError('')
     setOptimizing(false)
@@ -619,8 +639,8 @@ export const InputBar = memo(function InputBar({
     optimizeRequestRef.current += 1
   }, [draftKeyValue])
   useEffect(() => {
-    setComposerDraft(draftKeyRef.current, { input, quotes, attachments })
-  }, [input, quotes, attachments])
+    setComposerDraft(draftKeyRef.current, { input, quotes, attachments, attachmentError })
+  }, [input, quotes, attachments, attachmentError])
   useEffect(() => {
     if (optimizeMotion !== 'out') return
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -1032,17 +1052,27 @@ export const InputBar = memo(function InputBar({
   const selectedSlashCommand = filteredSlashCommands[slashSelectedIndex]
     ?? filteredSlashCommands[0]
 
+  const setScopedAttachmentError = useCallback((message: string, scope?: AttachmentOperationScope) => {
+    if (!scope || (mountedRef.current && scope.key === draftKeyRef.current)) {
+      setAttachmentError(message)
+    } else {
+      updateComposerDraft(scope.key, (draft) => ({ ...draft, attachmentError: message }))
+    }
+  }, [])
+
   const addAttachments = useCallback(
-    (next: PendingAttachment[], options?: { imagesOnly?: boolean }) => {
+    (next: PendingAttachment[], options?: { imagesOnly?: boolean }, scope?: AttachmentOperationScope) => {
+      const addable = scope ? next.filter((attachment) => !scope.removedPaths.has(attachment.path)) : next
+      if (addable.length === 0 && next.length > 0) return
       const filtered = options?.imagesOnly
-        ? next.filter((attachment) => attachment.type === 'image')
-        : next.filter((attachment) => attachment.name.trim() !== '')
+        ? addable.filter((attachment) => attachment.type === 'image')
+        : addable.filter((attachment) => attachment.name.trim() !== '')
       if (filtered.length === 0) {
-        setAttachmentError(options?.imagesOnly ? t.chatDropImagesOnly : t.chatNoAddableFiles)
+        setScopedAttachmentError(options?.imagesOnly ? t.chatDropImagesOnly : t.chatNoAddableFiles, scope)
         return
       }
 
-      setAttachments((prev) => {
+      const append = (prev: PendingAttachment[]) => {
         const existing = new Set(prev.map((attachment) => attachment.path))
         const dedupedNext = filtered.filter((attachment) => {
           if (existing.has(attachment.path)) return false
@@ -1050,15 +1080,25 @@ export const InputBar = memo(function InputBar({
           return true
         })
         if (dedupedNext.length === 0) {
-          setAttachmentError(t.chatAttachmentAdded)
-          return prev
+          return { attachments: prev, error: t.chatAttachmentAdded }
         }
-        setAttachmentError('')
-        return [...prev, ...dedupedNext]
-      })
-      textareaRef.current?.focus()
+        return { attachments: [...prev, ...dedupedNext], error: '' }
+      }
+      if (scope && (!mountedRef.current || scope.key !== draftKeyRef.current)) {
+        updateComposerDraft(scope.key, (draft) => {
+          const result = append(draft.attachments)
+          return { ...draft, attachments: result.attachments, attachmentError: result.error }
+        })
+      } else {
+        setAttachments((prev) => {
+          const result = append(prev)
+          setAttachmentError(result.error)
+          return result.attachments
+        })
+        textareaRef.current?.focus()
+      }
     },
-    [t],
+    [setScopedAttachmentError, t],
   )
 
   // 编辑弹窗保存：用编辑后的内容重建内存附件数据（提交时由 api 层生成新的 File/Blob 内容）。
@@ -1141,10 +1181,12 @@ export const InputBar = memo(function InputBar({
 
   const openAttachmentPicker = useCallback(async () => {
     if (composerLocked) return
+    const scope: AttachmentOperationScope = { key: draftKeyRef.current, removedPaths: new Set() }
+    pendingAttachmentScopesRef.current.add(scope)
     setToolPanelOpen(false)
     closeProjectMenu()
     setSlashPanelOpen(false)
-    setAttachmentError('')
+    setScopedAttachmentError('', scope)
     try {
       const selected = await open({
         multiple: true,
@@ -1153,14 +1195,17 @@ export const InputBar = memo(function InputBar({
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
       if (paths.length === 0) return
 
-      addAttachments(await pendingFromPaths(paths))
+      addAttachments(await pendingFromPaths(paths), undefined, scope)
     } catch (err) {
       console.error('Failed to add chat attachment:', err)
-      setAttachmentError(
+      setScopedAttachmentError(
         typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatAttachmentAddFailed,
+        scope,
       )
+    } finally {
+      pendingAttachmentScopesRef.current.delete(scope)
     }
-  }, [addAttachments, closeProjectMenu, composerLocked, pendingFromPaths, t])
+  }, [addAttachments, closeProjectMenu, composerLocked, pendingFromPaths, setScopedAttachmentError, t])
 
   const handleSlashCommandSelect = useCallback(async (command: SlashCommandDefinition) => {
     if (disabled) return
@@ -1498,131 +1543,140 @@ export const InputBar = memo(function InputBar({
     e: { clipboardData: Pick<DataTransfer, 'files' | 'getData'>; preventDefault: () => void },
     menuTarget?: ComposerPasteTarget,
     knownNativePaths?: string[],
+    operationScope?: AttachmentOperationScope,
   ) => {
     if (composerLocked || optimizeBusy || (!isTauriRuntime() && !menuTarget)) return
 
-    const attachableClipboardFiles = Array.from(e.clipboardData.files).filter(isAttachableClipboardFile)
-    const textarea = textareaRef.current
-    const clipText = e.clipboardData.getData('text/plain')
-    const selectionStart = textarea?.selectionStart ?? input.length
-    const selectionEnd = textarea?.selectionEnd ?? input.length
-    const valueBeforePaste = textarea?.value ?? input
-
-    // 需同步拦截的两种情形：剪贴板有 File 对象（阻止文件名文本插入），或超长纯文本
-    // （转虚拟附件，阻止正文插入）。必须在任何 await 之前调用 preventDefault——
-    // 事件处理是 async 的，等读取完系统文件路径再调，浏览器默认粘贴早已把文本
-    // 插入输入框（事后清空又会误删用户已写内容）。
-    if (attachableClipboardFiles.length > 0 || clipText.length > PASTE_TEXT_ATTACHMENT_THRESHOLD) {
-      e.preventDefault()
-    }
-
-    const nativePaths: string[] = knownNativePaths ?? []
+    const scope: AttachmentOperationScope = operationScope ?? { key: draftKeyRef.current, removedPaths: new Set() }
+    pendingAttachmentScopesRef.current.add(scope)
     try {
-      if (!knownNativePaths && isTauriRuntime()) {
-        const native = await api.chatReadClipboardFiles()
-        if (native.success && native.files?.length) {
-          nativePaths.push(...native.files.map((file) => file.path))
-        }
+      const clipText = e.clipboardData.getData('text/plain')
+      const spreadsheetText = preferSpreadsheetText(clipText, e.clipboardData.getData('text/html'))
+      const attachableClipboardFiles = spreadsheetText ? [] : Array.from(e.clipboardData.files).filter(isAttachableClipboardFile)
+      const textarea = textareaRef.current
+      const selectionStart = textarea?.selectionStart ?? input.length
+      const selectionEnd = textarea?.selectionEnd ?? input.length
+      const valueBeforePaste = textarea?.value ?? input
+
+      // 需同步拦截的两种情形：剪贴板有 File 对象（阻止文件名文本插入），或超长纯文本
+      // （转虚拟附件，阻止正文插入）。必须在任何 await 之前调用 preventDefault——
+      // 事件处理是 async 的，等读取完系统文件路径再调，浏览器默认粘贴早已把文本
+      // 插入输入框（事后清空又会误删用户已写内容）。
+      if (attachableClipboardFiles.length > 0 || clipText.length > PASTE_TEXT_ATTACHMENT_THRESHOLD) {
+        e.preventDefault()
       }
-    } catch (err) {
-      console.error('Failed to read clipboard files:', err)
-    }
 
-    if (menuTarget && !menuTarget.isCurrent()) return
-    const hasNativeFiles = nativePaths.length > 0
-    const hasClipboardFiles = attachableClipboardFiles.length > 0
-
-    // 纯文字粘贴：短文本放行交给浏览器默认处理；超长文本已在上方同步阶段 preventDefault
-    // （正文不会进输入框），这里只需生成内存虚拟 txt 附件（不落盘）。
-    if (!hasNativeFiles && !hasClipboardFiles) {
-      if (clipText.length > PASTE_TEXT_ATTACHMENT_THRESHOLD) {
-        addAttachments([
-          {
-            id: `pending-att-${crypto.randomUUID()}`,
-            type: 'file',
-            name: t.chatPastedTextAttachmentName,
-            path: `memory://${crypto.randomUUID()}`,
-            content: clipText,
-          },
-        ])
-      } else if (clipText) menuTarget?.insertText(clipText)
-      return
-    }
-
-    if (hasNativeFiles && textarea && !menuTarget) {
-      // 等浏览器默认粘贴与 React onChange 完成后，只在内容完全等于“插入了文件名”时撤销。
-      window.setTimeout(() => {
-        undoAccidentalFilenamePaste(
-          textarea,
-          valueBeforePaste,
-          clipText,
-          selectionStart,
-          selectionEnd,
-          setInput,
-        )
-      }, 0)
-    }
-
-    setAttachmentError('')
-
-    try {
-      const pastedAttachments: PendingAttachment[] = []
-
-      if (hasNativeFiles) {
-        pastedAttachments.push(...await pendingFromPaths(nativePaths))
-      } else for (const [index, file] of attachableClipboardFiles.entries()) {
-        const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
-
-        if (file.type.startsWith('image/') || IMAGE_EXTENSIONS.includes(ext)) {
-          const imageExt = file.type.startsWith('image/')
-            ? imageExtensionForMime(file.type)
-            : ext
-          const name = file.name || `pasted-image-${Date.now()}-${index + 1}.${imageExt}`
-          const dataBase64 = await readFileAsBase64(file, t.chatClipboardImageReadFailed)
-          const result = await api.chatSavePastedImage(
-            name,
-            file.type || `image/${imageExt}`,
-            dataBase64,
-          )
-          if (!result.success || !result.path || !result.name) {
-            throw new Error(result.error || t.chatPasteImageFailed)
+      const nativePaths: string[] = knownNativePaths ?? []
+      try {
+        if (!spreadsheetText && !knownNativePaths && isTauriRuntime()) {
+          const native = await api.chatReadClipboardFiles()
+          if (native.success && native.files?.length) {
+            nativePaths.push(...native.files.map((file) => file.path))
           }
-          pastedAttachments.push({
-            id: `pending-att-${crypto.randomUUID()}`,
-            type: 'image',
-            name: result.name,
-            path: result.path,
-          })
-          continue
         }
-
-        if (file.size <= 0) continue
-
-        const name = file.name || `pasted-file-${Date.now()}-${index + 1}.${ext}`
-        const dataBase64 = await readFileAsBase64(file, t.chatClipboardImageReadFailed)
-        const result = await api.chatSavePastedAttachment(name, dataBase64)
-        if (!result.success || !result.path || !result.name) {
-          throw new Error(result.error || t.chatPasteAttachmentFailed)
-        }
-        pastedAttachments.push({
-          id: `pending-att-${crypto.randomUUID()}`,
-          type: isVideoFile(result.name) ? 'video' : 'file',
-          name: result.name,
-          path: result.path,
-        })
+      } catch (err) {
+        console.error('Failed to read clipboard files:', err)
       }
 
-      if (pastedAttachments.length === 0) {
-        setAttachmentError(t.chatNoAddableFiles)
+      const hasNativeFiles = !spreadsheetText && nativePaths.length > 0
+      const hasClipboardFiles = attachableClipboardFiles.length > 0
+      if (menuTarget && !menuTarget.isCurrent() && !hasNativeFiles && !hasClipboardFiles) return
+
+      // 纯文字粘贴：短文本放行交给浏览器默认处理；超长文本已在上方同步阶段 preventDefault
+      // （正文不会进输入框），这里只需生成内存虚拟 txt 附件（不落盘）。
+      if (!hasNativeFiles && !hasClipboardFiles) {
+        if (clipText.length > PASTE_TEXT_ATTACHMENT_THRESHOLD) {
+          addAttachments([
+            {
+              id: `pending-att-${crypto.randomUUID()}`,
+              type: 'file',
+              name: t.chatPastedTextAttachmentName,
+              path: `memory://${crypto.randomUUID()}`,
+              content: clipText,
+            },
+          ], undefined, scope)
+        } else if (clipText) menuTarget?.insertText(clipText)
         return
       }
 
-      if (!menuTarget || menuTarget.isCurrent()) addAttachments(pastedAttachments)
-    } catch (err) {
-      console.error('Failed to paste chat attachment:', err)
-      setAttachmentError(
-        typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatPasteAttachmentFailed,
-      )
+      if (hasNativeFiles && textarea && !menuTarget) {
+        // 等浏览器默认粘贴与 React onChange 完成后，只在内容完全等于“插入了文件名”时撤销。
+        window.setTimeout(() => {
+          undoAccidentalFilenamePaste(
+            textarea,
+            valueBeforePaste,
+            clipText,
+            selectionStart,
+            selectionEnd,
+            setInput,
+          )
+        }, 0)
+      }
+
+      setScopedAttachmentError('', scope)
+
+      try {
+        const pastedAttachments: PendingAttachment[] = []
+
+        if (hasNativeFiles) {
+          pastedAttachments.push(...await pendingFromPaths(nativePaths))
+        } else for (const [index, file] of attachableClipboardFiles.entries()) {
+          const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+
+          if (file.type.startsWith('image/') || IMAGE_EXTENSIONS.includes(ext)) {
+            const imageExt = file.type.startsWith('image/')
+              ? imageExtensionForMime(file.type)
+              : ext
+            const name = file.name || `pasted-image-${Date.now()}-${index + 1}.${imageExt}`
+            const dataBase64 = await readFileAsBase64(file, t.chatClipboardImageReadFailed)
+            const result = await api.chatSavePastedImage(
+              name,
+              file.type || `image/${imageExt}`,
+              dataBase64,
+            )
+            if (!result.success || !result.path || !result.name) {
+              throw new Error(result.error || t.chatPasteImageFailed)
+            }
+            pastedAttachments.push({
+              id: `pending-att-${crypto.randomUUID()}`,
+              type: 'image',
+              name: result.name,
+              path: result.path,
+            })
+            continue
+          }
+
+          if (file.size <= 0) continue
+
+          const name = file.name || `pasted-file-${Date.now()}-${index + 1}.${ext}`
+          const dataBase64 = await readFileAsBase64(file, t.chatClipboardImageReadFailed)
+          const result = await api.chatSavePastedAttachment(name, dataBase64)
+          if (!result.success || !result.path || !result.name) {
+            throw new Error(result.error || t.chatPasteAttachmentFailed)
+          }
+          pastedAttachments.push({
+            id: `pending-att-${crypto.randomUUID()}`,
+            type: isVideoFile(result.name) ? 'video' : 'file',
+            name: result.name,
+            path: result.path,
+          })
+        }
+
+        if (pastedAttachments.length === 0) {
+          setScopedAttachmentError(t.chatNoAddableFiles, scope)
+          return
+        }
+
+        addAttachments(pastedAttachments, undefined, scope)
+      } catch (err) {
+        console.error('Failed to paste chat attachment:', err)
+        setScopedAttachmentError(
+          typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatPasteAttachmentFailed,
+          scope,
+        )
+      }
+    } finally {
+      pendingAttachmentScopesRef.current.delete(scope)
     }
   }
 
@@ -1630,46 +1684,64 @@ export const InputBar = memo(function InputBar({
     textareaRef, scopeKey: draftKeyValue, readOnly: composerLocked || optimizeBusy,
     onError: setAttachmentError,
     onPaste: async (target) => {
-      // 桌面端全部走系统剪贴板；WebView 的 read/readText 会弹出网站权限请求。
-      let nativePaths: string[] = []
-      const clipboard = new DataTransfer()
-      if (isTauriRuntime()) {
-        const content = await api.chatReadClipboard()
-        if (!target.isCurrent()) return
-        if (content.kind === 'files') nativePaths = content.paths
-        if (content.kind === 'text') clipboard.setData('text/plain', content.text)
-        if (content.kind === 'image') {
-          const bytes = Uint8Array.from(atob(content.dataBase64), char => char.charCodeAt(0))
-          clipboard.items.add(new File([bytes], 'pasted-image.png', { type: 'image/png' }))
-        }
-        await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths)
-        return
-      }
-      if (!target.isCurrent()) return
-      if (!nativePaths.length) {
-        if (navigator.clipboard?.read) {
-          const items = await navigator.clipboard.read()
-          for (const item of items) {
-            const imageType = item.types.find(type => type.startsWith('image/'))
-            if (imageType) {
-              const blob = await item.getType(imageType)
-              clipboard.items.add(new File([blob], `pasted-image.${imageExtensionForMime(imageType)}`, { type: imageType }))
-            } else if (item.types.includes('text/plain')) {
-              clipboard.setData('text/plain', await (await item.getType('text/plain')).text())
+      const scope: AttachmentOperationScope = { key: draftKeyRef.current, removedPaths: new Set() }
+      pendingAttachmentScopesRef.current.add(scope)
+      try {
+        // 桌面端全部走系统剪贴板；WebView 的 read/readText 会弹出网站权限请求。
+        let nativePaths: string[] = []
+        const clipboard = new DataTransfer()
+        if (isTauriRuntime()) {
+          const content = await api.chatReadClipboard()
+          if (content.kind === 'text' && !target.isCurrent()) return
+          if (content.kind === 'files') nativePaths = content.paths
+          if (content.kind === 'text') clipboard.setData('text/plain', content.text)
+          if (content.kind === 'image') {
+            if (preferSpreadsheetText(content.text ?? '', content.html ?? '')) {
+              clipboard.setData('text/plain', content.text ?? '')
+              clipboard.setData('text/html', content.html ?? '')
+            } else {
+              const bytes = Uint8Array.from(atob(content.dataBase64), char => char.charCodeAt(0))
+              clipboard.items.add(new File([bytes], 'pasted-image.png', { type: 'image/png' }))
             }
           }
-        } else if (navigator.clipboard?.readText) {
-          clipboard.setData('text/plain', await navigator.clipboard.readText())
-        } else {
-          throw new Error('Clipboard is unavailable')
+          await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths, scope)
+          return
         }
+        if (!nativePaths.length) {
+          if (navigator.clipboard?.read) {
+            const items = await navigator.clipboard.read()
+            for (const item of items) {
+              const imageType = item.types.find(type => type.startsWith('image/'))
+              if (imageType) {
+                const blob = await item.getType(imageType)
+                clipboard.items.add(new File([blob], `pasted-image.${imageExtensionForMime(imageType)}`, { type: imageType }))
+              } else if (item.types.includes('text/plain')) {
+                clipboard.setData('text/plain', await (await item.getType('text/plain')).text())
+              }
+            }
+          } else if (navigator.clipboard?.readText) {
+            clipboard.setData('text/plain', await navigator.clipboard.readText())
+          } else {
+            throw new Error('Clipboard is unavailable')
+          }
+        }
+        await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths, scope)
+      } catch (err) {
+        console.error('Failed to read clipboard:', err)
+        setScopedAttachmentError('无法读取剪贴板，请重试或使用 Ctrl+V。', scope)
+      } finally {
+        pendingAttachmentScopesRef.current.delete(scope)
       }
-      if (!target.isCurrent()) return
-      await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths)
     },
   })
 
   const removeAttachment = (id: string) => {
+    const removed = attachments.find((attachment) => attachment.id === id)
+    if (removed) {
+      for (const scope of pendingAttachmentScopesRef.current) {
+        if (scope.key === draftKeyRef.current) scope.removedPaths.add(removed.path)
+      }
+    }
     setAttachments((prev) => prev.filter((attachment) => attachment.id !== id))
     setAttachmentError('')
   }
@@ -1827,7 +1899,11 @@ export const InputBar = memo(function InputBar({
 
       if (event.payload.type === 'drop') {
         setDragActive(false)
-        void pendingFromPaths(event.payload.paths).then(addAttachments)
+        const scope: AttachmentOperationScope = { key: draftKeyRef.current, removedPaths: new Set() }
+        pendingAttachmentScopesRef.current.add(scope)
+        void pendingFromPaths(event.payload.paths)
+          .then((attachments) => addAttachments(attachments, undefined, scope))
+          .finally(() => pendingAttachmentScopesRef.current.delete(scope))
       }
     }).then((handler) => {
       if (cancelled) {
