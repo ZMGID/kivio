@@ -5,6 +5,7 @@ import { estimateTokens } from '../utils/tokens'
 import { isTauriRuntime } from './utils'
 import { recordChatPerfSample } from './chatPerformanceProbe'
 import { historyWindowStart } from './conversationHistoryWindow'
+import { resolveCompactionBoundaries } from './compactionBoundary'
 import { externalCliSettingsApi } from '../api/externalCliSettings'
 import type { ConversationPin } from './conversationPins'
 import type {
@@ -275,6 +276,7 @@ function estimateMockContext(conversation: Conversation): ConversationContextSta
   const usageRatio = estimatedInputTokens / contextWindowTokens
   const summary = conversation.context_state?.summary ?? conversation.contextState?.summary ?? null
   return {
+    ...(conversation.context_state ?? conversation.contextState),
     estimated_input_tokens: estimatedInputTokens,
     context_window_tokens: contextWindowTokens,
     context_window_estimated: true,
@@ -349,23 +351,11 @@ const mockChatApi = {
       : [])
     const indexById = new Map(conversation.messages.map((message, index) => [message.id, index]))
     const context = conversation.context_state ?? conversation.contextState
-    for (const record of context?.compaction_boundaries ?? context?.compactionBoundaries ?? []) {
-      const anchor = record.display_after_message_id ?? record.displayAfterMessageId
-        ?? record.source_until_message_id ?? record.sourceUntilMessageId
-      const index = anchor ? indexById.get(anchor) : undefined
-      if (index === undefined || !anchor) continue
+    for (const { record, afterIndex: index } of resolveCompactionBoundaries(conversation.messages, context)) {
+      const anchor = conversation.messages[index].id
       directory.push({ kind: 'compaction', id: `compaction-${record.id}`, message_id: anchor,
-        message_index: index, title: '已压缩此前上下文', answer_preview: record.summary_content?.slice(0, 120) })
-    }
-    if ((context?.compaction_boundaries ?? context?.compactionBoundaries ?? []).length === 0
-      && context?.summary && !context.summary.stale) {
-      const summary = context.summary
-      const anchor = summary.source_until_message_id ?? summary.sourceUntilMessageId
-      const index = anchor ? indexById.get(anchor) : undefined
-      if (index !== undefined && anchor) directory.push({
-        kind: 'compaction', id: `compaction-${summary.id}`, message_id: anchor,
-        message_index: index, title: '已压缩此前上下文', answer_preview: summary.content.slice(0, 120),
-      })
+        message_index: index, title: '已压缩此前上下文',
+        answer_preview: (record.summary_content ?? record.summaryContent ?? '').slice(0, 120) })
     }
     for (const record of context?.clear_boundaries ?? context?.clearBoundaries ?? []) {
       const anchor = record.source_until_message_id ?? record.sourceUntilMessageId

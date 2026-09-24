@@ -2745,6 +2745,27 @@ fn boundary_at(created_at: i64) -> CompactionBoundaryRecord {
 }
 
 #[test]
+fn history_directory_keeps_compaction_after_display_anchor_deletion() {
+    let mut conversation = test_conversation_with_messages(vec![
+        test_chat_message("u1", "user", "old question", 1),
+        test_chat_message("a2", "assistant", "replacement", 3),
+    ]);
+    let mut boundary = boundary_at(2);
+    boundary.display_after_message_id = Some("deleted-assistant".to_string());
+    conversation
+        .context_state
+        .compaction_boundaries
+        .push(boundary);
+    let directory = super::catalog::conversation_history_directory(&conversation);
+    let entry = directory
+        .iter()
+        .find(|entry| entry["kind"] == "compaction")
+        .expect("the fallback compaction marker must stay navigable");
+    assert_eq!(entry["message_id"], "u1");
+    assert_eq!(entry["message_index"], 0);
+}
+
+#[test]
 fn resolve_usage_anchor_reports_prompt_and_trailing() {
     let conv = test_conversation_with_messages(vec![
         test_chat_message("u1", "user", "hi", 1),

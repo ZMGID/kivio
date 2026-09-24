@@ -12,6 +12,7 @@ import {
   type ConversationLoadHint,
 } from './conversationTransitionStore'
 import { forgetRememberedChatRoute } from './persistence'
+import { draftKey, migrateNewChatDraft } from './composerDraft'
 import type { Conversation } from './types'
 
 interface NavigationPorts {
@@ -33,6 +34,8 @@ interface NavigationPorts {
   focusPopout: (conversationId: string) => void
   occupyPopout: (conversationId: string) => void
   prepareSelection: (focusMessageId: string | null, fresh: boolean) => void
+  showHistoryTarget: (conversation: Conversation, messageId: string) => void
+  reportHistoryError: (conversationId: string, message: string | null) => void
   showConversation: (conversation: Conversation, context: {
     renderRequestId: number
     selection: boolean
@@ -57,6 +60,25 @@ function asError(value: unknown, fallback = '对话加载失败，已从列表�
 /** Owns navigation commit rights. Backend runs are deliberately not cancelled
  * when a view changes: only an obsolete UI result loses its lease. */
 export function createChatNavigationController(ports: NavigationPorts) {
+  let historyFocusSequence = 0
+  const focusHistoryMessage = async (conversationId: string, messageId: string, signal: AbortSignal) => {
+    const sequence = ++historyFocusSequence
+    const navigation = captureConversationNavigation()
+    const isCurrent = () => !signal.aborted && sequence === historyFocusSequence
+      && isCurrentConversationNavigation(navigation)
+      && ports.currentConversationId() === conversationId
+    if (!isCurrent()) return
+    ports.reportHistoryError(conversationId, null)
+    try {
+      const complete = await ports.readConversation(conversationId)
+      if (!isCurrent()) return
+      ports.showHistoryTarget(complete, messageId)
+    } catch (error) {
+      if (!isCurrent()) return
+      console.error('Failed to load historical navigation target:', error)
+      ports.reportHistoryError(conversationId, '打开历史消息失败，请重试。')
+    }
+  }
   const beginConversationCreation = () => {
     // A creation is a navigation intent even while its backend request is
     // pending. Revoking the previous generation also orders two creations
@@ -78,6 +100,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     permit: ReturnType<typeof beginConversationCreation>, conversation: Conversation,
   ): boolean => {
     if (!isConversationCreationCurrent(permit)) return false
+    if (permit.startingConversationId === null) migrateNewChatDraft(draftKey(null), conversation.id)
     ports.showConversation(conversation, { renderRequestId: 0, selection: true })
     syncConversationRoute(conversation.id)
     return true
@@ -274,6 +297,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
   }
 
   return {
+    focusHistoryMessage,
     beginConversationCreation,
     isConversationCreationCurrent,
     commitCreatedConversation,

@@ -34,7 +34,7 @@ import { ComposerAddMenu } from './ComposerAddMenu'
 import { useComposerContextMenu, type ComposerPasteTarget } from './useComposerContextMenu'
 import { SourcesButton } from './SourcesButton'
 import { onComposerInsert, onComposerTextInsert } from './composerInsert'
-import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft, updateComposerDraft } from './composerDraft'
+import { beginComposerDraftOperation, draftKey, getComposerDraft, registerComposerDraftScope, setComposerDraft, subscribeComposerDraft, updateComposerDraft } from './composerDraft'
 import { applyComposerAutoHeight } from './composerAutoHeight'
 import { canOptimizeComposerText } from './promptOptimize'
 import { AssistantPicker } from './AssistantPicker'
@@ -61,7 +61,10 @@ import { isTauriRuntime } from './utils'
 import { isVideoFile } from './attachmentType'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif']
-type AttachmentOperationScope = { key: string; removedPaths: Set<string> }
+type AttachmentOperationScope = ReturnType<typeof beginComposerDraftOperation> & { removedPaths: Set<string> }
+function beginAttachmentOperation(key: string): AttachmentOperationScope {
+  return Object.assign(beginComposerDraftOperation(key), { removedPaths: new Set<string>() })
+}
 const SPREADSHEET_HTML = /<table\b|office:excel|Excel\.Sheet|Microsoft\s+Excel|mso-(?:number-format|displayed-decimal-separator)/iu
 function preferSpreadsheetText(text: string, html: string): boolean {
   return text.length > 0 && (text.includes('\t') || SPREADSHEET_HTML.test(html))
@@ -593,39 +596,33 @@ export const InputBar = memo(function InputBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const slashHighlightRef = useRef<HTMLDivElement>(null)
   // 草稿持久化：会话 key 变化（切对话且未卸载）时载入对应草稿；每次内容变化写回内存 store。
-  // keyRef 保证写回落到当前会话，不串到刚切走的会话。
-  const draftKeyRef = useRef(draftKeyValue)
+  // scope 保证写回落到当前会话，不串到刚切走的会话。
+  const draftScopeRef = useRef({ key: draftKeyValue })
+  useEffect(() => {
+    const scope = draftScopeRef.current
+    const release = registerComposerDraftScope(scope)
+    const unsubscribe = subscribeComposerDraft((key, draft) => {
+      if (scope.key !== key) return
+      setInput(draft.input)
+      setQuotes(draft.quotes)
+      setAttachments(draft.attachments)
+      setAttachmentError(draft.attachmentError ?? '')
+    })
+    return () => { unsubscribe(); release() }
+  }, [])
   const pendingAttachmentScopesRef = useRef(new Set<AttachmentOperationScope>())
   const mountedRef = useRef(true)
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
-  // 发送等待期间如果「新会话占位键」迁移成真实会话 id，清理目标也要跟着迁移；
-  // 但普通切会话没有发生草稿迁移时，绝不能误清新会话自己的草稿。
-  const sendingDraftKeyRef = useRef<string | null>(null)
   useEffect(() => {
-    if (draftKeyRef.current === draftKeyValue) return
+    if (draftScopeRef.current.key === draftKeyValue) return
     historyRef.current = null
     historyCaretRef.current = null
-    const prevKey = draftKeyRef.current
-    draftKeyRef.current = draftKeyValue
-    // 新建会话刚落库拿到 id（切 plan/orchestrate 模式等会触发）：草稿跟着搬过去，
-    // 本地 state 已经是那份内容，直接返回，别当成「切到了另一条会话」把字清掉。
-    const migratedDraft = migrateNewChatDraft(prevKey, draftKeyValue)
-    const migratedPendingOnly = !migratedDraft
-      && prevKey === draftKey(undefined)
-      && !getComposerDraft(draftKeyValue)
-      && [...pendingAttachmentScopesRef.current].some((scope) => scope.key === prevKey)
-    if (migratedDraft || migratedPendingOnly) {
-      for (const scope of pendingAttachmentScopesRef.current) {
-        if (scope.key === prevKey) scope.key = draftKeyValue
-      }
-      if (sendingDraftKeyRef.current === prevKey) {
-        sendingDraftKeyRef.current = draftKeyValue
-      }
-      return
-    }
+    draftScopeRef.current.key = draftKeyValue
+    // Creation commits migrate the store before this binding changes. Ordinary
+    // navigation only loads the target draft; it never transfers ownership.
     const d = getComposerDraft(draftKeyValue)
     setInput(d?.input ?? '')
     setQuotes(d?.quotes ?? [])
@@ -639,7 +636,7 @@ export const InputBar = memo(function InputBar({
     optimizeRequestRef.current += 1
   }, [draftKeyValue])
   useEffect(() => {
-    setComposerDraft(draftKeyRef.current, { input, quotes, attachments, attachmentError })
+    setComposerDraft(draftScopeRef.current.key, { input, quotes, attachments, attachmentError })
   }, [input, quotes, attachments, attachmentError])
   useEffect(() => {
     if (optimizeMotion !== 'out') return
@@ -1053,7 +1050,7 @@ export const InputBar = memo(function InputBar({
     ?? filteredSlashCommands[0]
 
   const setScopedAttachmentError = useCallback((message: string, scope?: AttachmentOperationScope) => {
-    if (!scope || (mountedRef.current && scope.key === draftKeyRef.current)) {
+    if (!scope || (mountedRef.current && scope.key === draftScopeRef.current.key)) {
       setAttachmentError(message)
     } else {
       updateComposerDraft(scope.key, (draft) => ({ ...draft, attachmentError: message }))
@@ -1084,7 +1081,7 @@ export const InputBar = memo(function InputBar({
         }
         return { attachments: [...prev, ...dedupedNext], error: '' }
       }
-      if (scope && (!mountedRef.current || scope.key !== draftKeyRef.current)) {
+      if (scope && (!mountedRef.current || scope.key !== draftScopeRef.current.key)) {
         updateComposerDraft(scope.key, (draft) => {
           const result = append(draft.attachments)
           return { ...draft, attachments: result.attachments, attachmentError: result.error }
@@ -1181,7 +1178,7 @@ export const InputBar = memo(function InputBar({
 
   const openAttachmentPicker = useCallback(async () => {
     if (composerLocked) return
-    const scope: AttachmentOperationScope = { key: draftKeyRef.current, removedPaths: new Set() }
+    const scope = beginAttachmentOperation(draftScopeRef.current.key)
     pendingAttachmentScopesRef.current.add(scope)
     setToolPanelOpen(false)
     closeProjectMenu()
@@ -1204,6 +1201,7 @@ export const InputBar = memo(function InputBar({
       )
     } finally {
       pendingAttachmentScopesRef.current.delete(scope)
+      scope.release()
     }
   }, [addAttachments, closeProjectMenu, composerLocked, pendingFromPaths, setScopedAttachmentError, t])
 
@@ -1300,7 +1298,7 @@ export const InputBar = memo(function InputBar({
   const clearSentDraft = (sentDraftKey: string) => {
     setComposerDraft(sentDraftKey, { input: '', quotes: [], attachments: [] })
     // 等待发送时用户可能已经切到另一条有自己草稿的会话。只清本次提交实际归属的输入框。
-    if (draftKeyRef.current !== sentDraftKey) return
+    if (draftScopeRef.current.key !== sentDraftKey) return
     historyRef.current = null
     setInput('')
     setQuotes([])
@@ -1379,9 +1377,9 @@ export const InputBar = memo(function InputBar({
       : trimmed
     if (disabled && onQueue) {
       onQueue(content, attachments)
-      clearSentDraft(draftKeyRef.current)
+      clearSentDraft(draftScopeRef.current.key)
     } else {
-      sendingDraftKeyRef.current = draftKeyRef.current
+      const sendingScope = beginComposerDraftOperation(draftScopeRef.current.key)
       setSendPending(true)
       const sentSnapshot = {
         input,
@@ -1393,17 +1391,16 @@ export const InputBar = memo(function InputBar({
       const notifyAccepted = () => {
         if (acceptedNotified) return
         acceptedNotified = true
-        // 必须读 ref：欢迎页首发会把 `__new__` 迁到真实会话 id，冻在发送开始会清错键。
-        clearedDraftKey = sendingDraftKeyRef.current ?? draftKeyRef.current
+        // Creation may migrate the scope even if the welcome composer unmounted.
+        clearedDraftKey = sendingScope.key
         clearSentDraft(clearedDraftKey)
-        sendingDraftKeyRef.current = null
         // 后端生成仍在继续，但输入框已经可以接收下一条排队消息。
         setSendPending(false)
       }
       const restoreRejectedDraft = () => {
         if (!acceptedNotified || !clearedDraftKey) return
         const typedAfterAccept = (textareaRef.current?.value ?? '').trim().length > 0
-        if (draftKeyRef.current !== clearedDraftKey || typedAfterAccept) return
+        if (draftScopeRef.current.key !== clearedDraftKey || typedAfterAccept) return
         setComposerDraft(clearedDraftKey, sentSnapshot)
         setInput(sentSnapshot.input)
         setQuotes(sentSnapshot.quotes)
@@ -1422,7 +1419,7 @@ export const InputBar = memo(function InputBar({
         console.error('Failed to submit composer message:', error)
         restoreRejectedDraft()
       } finally {
-        sendingDraftKeyRef.current = null
+        sendingScope.release()
         setSendPending(false)
       }
     }
@@ -1547,7 +1544,7 @@ export const InputBar = memo(function InputBar({
   ) => {
     if (composerLocked || optimizeBusy || (!isTauriRuntime() && !menuTarget)) return
 
-    const scope: AttachmentOperationScope = operationScope ?? { key: draftKeyRef.current, removedPaths: new Set() }
+    const scope = operationScope ?? beginAttachmentOperation(draftScopeRef.current.key)
     pendingAttachmentScopesRef.current.add(scope)
     try {
       const clipText = e.clipboardData.getData('text/plain')
@@ -1677,6 +1674,7 @@ export const InputBar = memo(function InputBar({
       }
     } finally {
       pendingAttachmentScopesRef.current.delete(scope)
+      scope.release()
     }
   }
 
@@ -1684,7 +1682,7 @@ export const InputBar = memo(function InputBar({
     textareaRef, scopeKey: draftKeyValue, readOnly: composerLocked || optimizeBusy,
     onError: setAttachmentError,
     onPaste: async (target) => {
-      const scope: AttachmentOperationScope = { key: draftKeyRef.current, removedPaths: new Set() }
+      const scope = beginAttachmentOperation(draftScopeRef.current.key)
       pendingAttachmentScopesRef.current.add(scope)
       try {
         // 桌面端全部走系统剪贴板；WebView 的 read/readText 会弹出网站权限请求。
@@ -1731,6 +1729,7 @@ export const InputBar = memo(function InputBar({
         setScopedAttachmentError('无法读取剪贴板，请重试或使用 Ctrl+V。', scope)
       } finally {
         pendingAttachmentScopesRef.current.delete(scope)
+        scope.release()
       }
     },
   })
@@ -1739,7 +1738,7 @@ export const InputBar = memo(function InputBar({
     const removed = attachments.find((attachment) => attachment.id === id)
     if (removed) {
       for (const scope of pendingAttachmentScopesRef.current) {
-        if (scope.key === draftKeyRef.current) scope.removedPaths.add(removed.path)
+        if (scope.key === draftScopeRef.current.key) scope.removedPaths.add(removed.path)
       }
     }
     setAttachments((prev) => prev.filter((attachment) => attachment.id !== id))
@@ -1899,11 +1898,11 @@ export const InputBar = memo(function InputBar({
 
       if (event.payload.type === 'drop') {
         setDragActive(false)
-        const scope: AttachmentOperationScope = { key: draftKeyRef.current, removedPaths: new Set() }
+        const scope = beginAttachmentOperation(draftScopeRef.current.key)
         pendingAttachmentScopesRef.current.add(scope)
         void pendingFromPaths(event.payload.paths)
           .then((attachments) => addAttachments(attachments, undefined, scope))
-          .finally(() => pendingAttachmentScopesRef.current.delete(scope))
+          .finally(() => { pendingAttachmentScopesRef.current.delete(scope); scope.release() })
       }
     }).then((handler) => {
       if (cancelled) {

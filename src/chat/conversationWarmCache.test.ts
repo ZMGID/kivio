@@ -8,6 +8,23 @@ const conversation = (id: string, revision = 1): Conversation => ({
 })
 
 describe('conversation warm cache', () => {
+  it('evicts by aggregate bytes and keeps accounting correct after replacement and removal', () => {
+    const cache = createConversationWarmCache()
+    const large = (id: string) => ({ ...conversation(id), messages: [
+      { id: 'm', role: 'user' as const, content: 'x'.repeat(7 * 1024 * 1024), timestamp: 1 },
+    ] })
+    const a = large('a')
+    const b = large('b')
+    cache.remember(a)
+    expect(cache.stats().bytes).toBe(JSON.stringify(a).length * 2)
+    cache.remember(b)
+    expect(cache.stats()).toEqual({ entries: 1, bytes: JSON.stringify(b).length * 2 })
+    const smaller = conversation('b', 2)
+    cache.remember(smaller)
+    expect(cache.stats()).toEqual({ entries: 1, bytes: JSON.stringify(smaller).length * 2 })
+    cache.forget('b')
+    expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
+  })
   it('reuses a short-lived snapshot only when the repository revision still matches', async () => {
     let clock = 0
     const cache = createConversationWarmCache(() => clock)

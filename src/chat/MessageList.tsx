@@ -94,7 +94,7 @@ export interface MessageListProps {
   historyDirectory?: NonNullable<Conversation['history_directory']>
   onLoadOlder?: () => void | Promise<void>
   historyLoadError?: string | null
-  onFocusHistoryMessage?: (conversationId: string, messageId: string) => void | Promise<void>
+  onFocusHistoryMessage?: (conversationId: string, messageId: string, signal: AbortSignal) => void | Promise<void>
   renderRequestId?: number
   onInitialRender?: (conversationId: string, requestId: number) => void
   agentPlanState?: AgentPlanState | null
@@ -1056,6 +1056,12 @@ function MessageListBase({
   useEffect(() => () => saveMeasurementSnapshotRef.current(), [])
 
   const pageAnchorRef = useRef<{ key: string; revision: string; offset: number } | null>(null)
+  const historyNavigationRef = useRef<AbortController | null>(null)
+  const cancelHistoryNavigation = useCallback(() => {
+    historyNavigationRef.current?.abort()
+    historyNavigationRef.current = null
+  }, [])
+  useEffect(() => cancelHistoryNavigation, [cancelHistoryNavigation, conversationId])
   const previousHistoryRef = useRef({ conversationId, historyStart })
   const capturePageAnchor = useCallback(() => {
     if (!viewportEl || historyStart === 0) return
@@ -1069,10 +1075,11 @@ function MessageListBase({
   }, [historyStart, itemAt, viewportEl, virtualizer])
   const requestOlderHistory = useCallback(() => {
     if (!viewportEl || !onLoadOlder) return
+    cancelHistoryNavigation()
     capturePageAnchor()
     followHandle.releaseFollow()
     void onLoadOlder()
-  }, [capturePageAnchor, followHandle, onLoadOlder, viewportEl])
+  }, [cancelHistoryNavigation, capturePageAnchor, followHandle, onLoadOlder, viewportEl])
 
   useLayoutEffect(() => {
     const previous = previousHistoryRef.current
@@ -1084,6 +1091,7 @@ function MessageListBase({
     if (historyStart >= previous.historyStart || !pageAnchorRef.current) return
     const anchor = pageAnchorRef.current
     pageAnchorRef.current = null
+    if (followHandle.isFollowing()) return
     const index = historyItems.findIndex((item) => item.key === anchor.key
       && measurementKey(item) === anchor.revision)
     if (index < 0) return
@@ -1486,6 +1494,8 @@ function MessageListBase({
 
 
   const navigateToNavigatorNode = useCallback((node: MessageNavigatorNode) => {
+    cancelHistoryNavigation()
+    pageAnchorRef.current = null
     // 跳到上方消息：先脱离跟随，否则跟随纠正器会把视口又钉回底部。
     followHandle.releaseFollow()
     headingNavigationTargetRef.current = null
@@ -1496,7 +1506,11 @@ function MessageListBase({
       let targetId = entry?.message_id ?? (node.kind === 'turn' ? node.userMessageId : null)
       if (entry?.kind === 'compaction') targetId = `compaction-summary-${entry.id.slice('compaction-'.length)}`
       if (entry?.kind === 'clear') targetId = `context-clear-divider-${entry.id.slice('clear-'.length)}`
-      if (targetId && conversationId) void onFocusHistoryMessage?.(conversationId, targetId)
+      if (targetId && conversationId) {
+        const request = new AbortController()
+        historyNavigationRef.current = request
+        void onFocusHistoryMessage?.(conversationId, targetId, request.signal)
+      }
       return
     }
 
@@ -1509,6 +1523,7 @@ function MessageListBase({
     // 先渲染（当前画面不动），就绪后在 layout 里跳一次并 hold 消抽搐。
     prepareThenJumpToNavigatorNode(generation, node.targetRenderIndex)
   }, [
+    cancelHistoryNavigation,
     clearNavigatorPrepare,
     followHandle,
     historyItems.length,
@@ -1520,6 +1535,7 @@ function MessageListBase({
   ])
 
   const navigateToOutlineHeading = useCallback((item: MarkdownHeadingOutlineItem) => {
+    cancelHistoryNavigation()
     const targetIndex = outlineRenderIndexByOwner.get(activeOutlineOwnerId ?? '')
     if (targetIndex == null || targetIndex < 0 || targetIndex >= historyItems.length) return
     followHandle.releaseFollow()
@@ -1532,6 +1548,7 @@ function MessageListBase({
     prepareThenJumpToNavigatorNode(generation, targetIndex)
   }, [
     activeOutlineOwnerId,
+    cancelHistoryNavigation,
     clearNavigatorPrepare,
     followHandle,
     historyItems.length,
@@ -1641,6 +1658,8 @@ function MessageListBase({
    * scrollHeight 会在落地后猛涨，贴底 pin 连跳几次就是抽一下。
    */
   const handleJumpToBottom = useCallback(() => {
+    pageAnchorRef.current = null
+    cancelHistoryNavigation()
     cancelNavigatorSettle()
     navigatorHoldRef.current = null
     navigatorFrozenScrollTopRef.current = null
@@ -1664,6 +1683,7 @@ function MessageListBase({
     }
     setBottomHoldEpoch((value) => value + 1)
   }, [
+    cancelHistoryNavigation,
     cancelNavigatorSettle,
     followHandle,
     historyItems.length,
@@ -1899,6 +1919,7 @@ function MessageListBase({
     if (!viewportEl) return
     const handleWheel = (event: WheelEvent) => {
       if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+      cancelHistoryNavigation()
       const sessionActive = navigationLockRef.current
         || navigatorSettleRafRef.current !== null
         || navigatorHoldRef.current !== null
@@ -1908,13 +1929,27 @@ function MessageListBase({
       endNavigatorSession(navigatorSettleGenerationRef.current)
     }
     viewportEl.addEventListener('wheel', handleWheel, { passive: true })
-    return () => viewportEl.removeEventListener('wheel', handleWheel)
-  }, [cancelNavigatorSettle, endNavigatorSession, viewportEl])
+    viewportEl.addEventListener('pointerdown', cancelHistoryNavigation)
+    viewportEl.addEventListener('touchstart', cancelHistoryNavigation, { passive: true })
+    const handleKey = (event: KeyboardEvent) => {
+      const target = event.target
+      if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelHistoryNavigation()
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => {
+      viewportEl.removeEventListener('wheel', handleWheel)
+      viewportEl.removeEventListener('pointerdown', cancelHistoryNavigation)
+      viewportEl.removeEventListener('touchstart', cancelHistoryNavigation)
+      window.removeEventListener('keydown', handleKey)
+    }
+  }, [cancelHistoryNavigation, cancelNavigatorSettle, endNavigatorSession, viewportEl])
 
 
   const handleDisclosureClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const button = (event.target as Element).closest<HTMLElement>('[data-chat-disclosure]')
     if (!button) return
+    cancelHistoryNavigation()
     // Capture runs before the toggle changes height, including keyboard clicks.
     // Reading details takes over from stream following and navigation holds.
     followHandle.releaseFollow()
@@ -1925,7 +1960,7 @@ function MessageListBase({
     disclosureAnchorRef.current = index >= 0
       ? { key: virtualizer.options.getItemKey(index), button }
       : null
-  }, [clearNavigatorPrepare, followHandle, virtualizer])
+  }, [cancelHistoryNavigation, clearNavigatorPrepare, followHandle, virtualizer])
 
   // 消息区右键：读取当前选中文本 + 命中的消息，弹内置菜单。两者都空则不弹（放行给全局屏蔽）。
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -1994,13 +2029,14 @@ function MessageListBase({
     if (count > prevMessageCountRef.current
       && messages[count - 1]?.id !== prevLastMessageIdRef.current) {
       const lastRole = messages[count - 1]?.role
+      if (lastRole === 'user') cancelHistoryNavigation()
       if (lastRole === 'user' || (lastRole === 'assistant' && followHandle.isFollowing())) {
         followHandle.stickToBottom()
       }
     }
     prevMessageCountRef.current = count
     prevLastMessageIdRef.current = messages[count - 1]?.id
-  }, [messages, followHandle])
+  }, [messages, followHandle, cancelHistoryNavigation])
 
   // After the row ref measures the handoff, keep following while heavy content hydrates.
   const liveScrollHandoffRef = useRef(liveRowActive)

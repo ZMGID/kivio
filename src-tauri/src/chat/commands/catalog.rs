@@ -195,6 +195,20 @@ pub(crate) async fn chat_get_conversation_window(
     strip_transcripts_for_frontend(&mut conversation);
     let total = conversation.messages.len();
     let start = history_window_start(&conversation.messages, total);
+    let directory = conversation_history_directory(&conversation);
+    conversation.messages = conversation.messages.split_off(start);
+    Ok(serde_json::json!({
+        "success": true,
+        "conversation": conversation,
+        "history_start": start,
+        "history_total": total,
+        "history_directory": directory,
+        "read_ms": read_ms,
+        "prepare_ms": started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
+    }))
+}
+
+pub(super) fn conversation_history_directory(conversation: &Conversation) -> Vec<Value> {
     let mut directory = Vec::new();
     let message_indices: std::collections::HashMap<&str, usize> = conversation
         .messages
@@ -218,6 +232,7 @@ pub(crate) async fn chat_get_conversation_window(
         let anchor = record
             .display_after_message_id
             .as_deref()
+            .filter(|anchor| message_indices.contains_key(*anchor))
             .unwrap_or(&record.source_until_message_id);
         let Some(&index) = message_indices.get(anchor) else {
             continue;
@@ -263,16 +278,7 @@ pub(crate) async fn chat_get_conversation_window(
         }));
     }
     directory.sort_by_key(|entry| entry["message_index"].as_u64().unwrap_or(u64::MAX));
-    conversation.messages = conversation.messages.split_off(start);
-    Ok(serde_json::json!({
-        "success": true,
-        "conversation": conversation,
-        "history_start": start,
-        "history_total": total,
-        "history_directory": directory,
-        "read_ms": read_ms,
-        "prepare_ms": started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
-    }))
+    directory
 }
 
 /// Older pages are admitted only by the renderer when revision still matches.

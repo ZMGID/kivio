@@ -54,6 +54,7 @@ export function createConversationWarmCache(now = Date.now) {
     const bytes = JSON.stringify(conversation).length * 2
     if (bytes > MAX_BYTES) return
     entries.set(conversation.id, { conversation, bytes, expiresAt: now() + TTL_MS })
+    usedBytes += bytes
     prune()
   }
 

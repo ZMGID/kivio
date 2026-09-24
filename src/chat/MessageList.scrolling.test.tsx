@@ -64,9 +64,14 @@ it('uses the lightweight directory to open a turn outside the first window', asy
   />)
   await act(async () => { await Promise.resolve() })
   fireEvent.click(container.querySelector('[data-message-navigator-id="turn-old"]')!)
-  expect(focus).toHaveBeenCalledWith('directory', 'old')
+  expect(focus).toHaveBeenCalledWith('directory', 'old', expect.any(AbortSignal))
+  const firstSignal = focus.mock.calls[0][2] as AbortSignal
   fireEvent.click(container.querySelector('[data-message-navigator-id="compaction-middle"]')!)
-  expect(focus).toHaveBeenCalledWith('directory', 'compaction-summary-middle')
+  expect(firstSignal.aborted).toBe(true)
+  expect(focus).toHaveBeenCalledWith('directory', 'compaction-summary-middle', expect.any(AbortSignal))
+  const secondSignal = focus.mock.calls[1][2] as AbortSignal
+  fireEvent.wheel(container.querySelector('.chat-scroll-viewport')!, { deltaY: -100 })
+  expect(secondSignal.aborted).toBe(true)
 })
 
 it('keeps the visible row anchored when an older page is prepended', async () => {
@@ -132,6 +137,31 @@ it('shows a failed history page request and lets the reader retry', async () => 
   expect(document.querySelector('[role="alert"]')).toHaveTextContent('加载更早消息失败，请重试。')
   fireEvent.click([...document.querySelectorAll('button')].find((button) => button.textContent === '加载更早消息')!)
   expect(load).toHaveBeenCalledTimes(2)
+})
+
+it('keeps following after returning to the bottom while history is still loading', async () => {
+  const recent = Array.from({ length: 8 }, (_, index) => ({
+    id: `follow-${index}`, role: 'user' as const, content: 'Recent', timestamp: index + 2,
+  }))
+  const { container, rerender } = render(<MessageList conversationId="hydrate-follow"
+    messages={recent} historyStart={2} onLoadOlder={vi.fn()} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 3000 })
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 })
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  viewport.scrollTop = 100
+  fireEvent.scroll(viewport)
+  fireEvent.click(container.querySelector('[aria-label="回到底部"]')!)
+  expect(list.options.anchorTo).toBe('end')
+  // Let the temporary bottom hold finish before the delayed read resolves.
+  for (let frame = 0; frame < 45; frame += 1) {
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)) })
+  }
+  rerender(<MessageList conversationId="hydrate-follow" historyStart={0}
+    messages={[{ id: 'older', role: 'user', content: 'Old', timestamp: 1 }, ...recent]} />)
+  await act(async () => { await Promise.resolve() })
+  expect(list.options.anchorTo).toBe('end')
 })
 
 it('mounts a distant scroll range before the scroll delivery can paint', async () => {

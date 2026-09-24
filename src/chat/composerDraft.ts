@@ -14,6 +14,23 @@ export interface ComposerDraft {
 
 const NEW_CHAT_KEY = '__new__'
 const drafts = new Map<string, ComposerDraft>()
+const listeners = new Set<(key: string, draft: ComposerDraft) => void>()
+
+export function subscribeComposerDraft(listener: (key: string, draft: ComposerDraft) => void) {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+/** A pending operation follows only an explicitly committed draft migration. */
+const operations = new Set<{ key: string }>()
+export function registerComposerDraftScope(scope: { key: string }) {
+  operations.add(scope)
+  return () => { operations.delete(scope) }
+}
+export function beginComposerDraftOperation(key: string) {
+  const scope = { key }
+  return Object.assign(scope, { release: registerComposerDraftScope(scope) })
+}
 
 export function draftKey(conversationId: string | null | undefined): string {
   return conversationId || NEW_CHAT_KEY
@@ -29,6 +46,7 @@ export function setComposerDraft(key: string, draft: ComposerDraft): void {
   } else {
     drafts.set(key, draft)
   }
+  for (const listener of listeners) listener(key, draft)
 }
 
 /** 异步附件结果只修改启动时的草稿，不覆盖期间输入的正文和引用。 */
@@ -50,8 +68,14 @@ export function migrateNewChatDraft(fromKey: string, toKey: string): boolean {
   if (fromKey !== NEW_CHAT_KEY || toKey === NEW_CHAT_KEY) return false
   if (drafts.has(toKey)) return false
   const draft = drafts.get(NEW_CHAT_KEY)
-  if (!draft) return false
-  drafts.set(toKey, draft)
+  let migrated = Boolean(draft)
+  for (const scope of operations) {
+    if (scope.key === fromKey) {
+      scope.key = toKey
+      migrated = true
+    }
+  }
+  if (draft) setComposerDraft(toKey, draft)
   drafts.delete(NEW_CHAT_KEY)
-  return true
+  return migrated
 }

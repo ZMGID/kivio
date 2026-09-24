@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createChatNavigationController } from './chatNavigationController'
 import { getConversationTransitionSnapshot, invalidateConversationTransition } from './conversationTransitionStore'
 import type { Conversation } from './types'
+import { beginComposerDraftOperation, draftKey, getComposerDraft, setComposerDraft } from './composerDraft'
 
 vi.mock('./persistence', () => ({ forgetRememberedChatRoute: vi.fn() }))
 
@@ -43,6 +44,8 @@ function setup(withWindow = false) {
     if (clearCurrentView && current?.id === conversationId) current = null
   })
   const reportClearError = vi.fn()
+  const showHistoryTarget = vi.fn()
+  const reportHistoryError = vi.fn()
   const controller = createChatNavigationController({
     currentConversation: () => current,
     currentConversationId: () => current?.id ?? null,
@@ -70,6 +73,8 @@ function setup(withWindow = false) {
     focusPopout: vi.fn(),
     occupyPopout,
     prepareSelection: vi.fn(),
+    showHistoryTarget,
+    reportHistoryError,
     showConversation: (value) => {
       current = value
       shown.push(value.id)
@@ -81,12 +86,89 @@ function setup(withWindow = false) {
     controller, ownership, reads, readStarted, windowReads, windowStarted, shown, errors, occupyPopout,
     prepareNewConversation, clearEmptyChat, requestClearChat, deleteConversation,
     cancelDeletedRun, finalizeDeletedChat, reportClearError,
+    showHistoryTarget, reportHistoryError,
     setCurrent: (value: Conversation | null) => { current = value },
     setInFlight: (value: boolean) => { inFlight = value },
   }
 }
 
 describe('chat navigation controller', () => {
+  it('only focuses the latest unloaded target when reads finish out of order', async () => {
+    const state = setup()
+    state.setCurrent(conversation('a'))
+    const first = state.controller.focusHistoryMessage('a', 'first', new AbortController().signal)
+    const firstRead = state.reads.get('a')!
+    const second = state.controller.focusHistoryMessage('a', 'second', new AbortController().signal)
+    state.reads.get('a')!.resolve(conversation('a'))
+    await second
+    firstRead.resolve(conversation('a'))
+    await first
+    expect(state.showHistoryTarget.mock.calls.map((call) => call[1])).toEqual(['second'])
+  })
+
+  it.each(['resolve', 'reject'] as const)('ignores a %s after the reader cancels historical navigation', async (outcome) => {
+    const state = setup()
+    state.setCurrent(conversation('a'))
+    const request = new AbortController()
+    const pending = state.controller.focusHistoryMessage('a', 'old', request.signal)
+    request.abort()
+    if (outcome === 'resolve') state.reads.get('a')!.resolve(conversation('a'))
+    else state.reads.get('a')!.reject(new Error('late failure'))
+    await pending
+    expect(state.showHistoryTarget).not.toHaveBeenCalled()
+    expect(state.reportHistoryError).toHaveBeenCalledTimes(1)
+    expect(state.reportHistoryError).toHaveBeenCalledWith('a', null)
+  })
+
+  it('invalidates historical focus across an A to B to A navigation', async () => {
+    const state = setup()
+    state.setCurrent(conversation('a'))
+    const pending = state.controller.focusHistoryMessage('a', 'old', new AbortController().signal)
+    state.controller.leaveConversation()
+    state.setCurrent(conversation('a'))
+    state.reads.get('a')!.resolve(conversation('a'))
+    await pending
+    expect(state.showHistoryTarget).not.toHaveBeenCalled()
+  })
+
+  it('reports a current history read failure and allows a successful retry', async () => {
+    const state = setup()
+    state.setCurrent(conversation('a'))
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const failed = state.controller.focusHistoryMessage('a', 'old', new AbortController().signal)
+      state.reads.get('a')!.reject(new Error('read failed'))
+      await failed
+      expect(state.reportHistoryError).toHaveBeenLastCalledWith('a', '打开历史消息失败，请重试。')
+      const retry = state.controller.focusHistoryMessage('a', 'old', new AbortController().signal)
+      state.reads.get('a')!.resolve(conversation('a'))
+      await retry
+      expect(state.reportHistoryError).toHaveBeenLastCalledWith('a', null)
+      expect(state.showHistoryTarget).toHaveBeenCalledWith(conversation('a'), 'old')
+    } finally { log.mockRestore() }
+  })
+  it('moves the new draft and pending scope only when a creation commits', async () => {
+    const state = setup()
+    const newKey = draftKey(null)
+    setComposerDraft(newKey, { input: 'new draft', quotes: [], attachments: [] })
+    const scope = beginComposerDraftOperation(newKey)
+    try {
+      const selecting = state.controller.selectConversation('already-exists')
+      state.ownership.resolve(new Set())
+      await state.readStarted.promise
+      state.reads.get('already-exists')!.resolve(conversation('already-exists'))
+      await selecting
+      expect(scope.key).toBe(newKey)
+      expect(getComposerDraft('already-exists')).toBeUndefined()
+      state.controller.startNewConversation()
+      state.setCurrent(null)
+      const permit = state.controller.beginConversationCreation()
+      expect(state.controller.commitCreatedConversation(permit, conversation('actually-created'))).toBe(true)
+      expect(scope.key).toBe('actually-created')
+      expect(getComposerDraft('actually-created')?.input).toBe('new draft')
+      expect(getComposerDraft(newKey)).toBeUndefined()
+    } finally { scope.release() }
+  })
   beforeEach(() => {
     invalidateConversationTransition()
     window.location.hash = '#chat'

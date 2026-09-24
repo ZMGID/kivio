@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { insertTextIntoComposer } from './composerInsert'
-import { draftKey, getComposerDraft, setComposerDraft } from './composerDraft'
+import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft } from './composerDraft'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({
@@ -58,6 +58,28 @@ function RewindFirstMessage({ conversationId }: { conversationId: string }) {
 }
 
 describe('InputBar 发送清草稿', () => {
+  it('does not write the outgoing input into the target when editing and switching share a commit', () => {
+    setComposerDraft('batched-draft-a', { input: 'A draft', quotes: [], attachments: [] })
+    setComposerDraft('batched-draft-b', { input: 'B draft', quotes: [], attachments: [] })
+    const { rerender } = render(<InputBar onSend={() => {}} conversationId="batched-draft-a" />)
+    act(() => {
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A edited' } })
+      rerender(<InputBar onSend={() => {}} conversationId="batched-draft-b" />)
+    })
+    expect(screen.getByRole('textbox')).toHaveValue('B draft')
+    expect(getComposerDraft('batched-draft-b')?.input).toBe('B draft')
+  })
+  it('keeps typing between a committed draft migration and the deferred conversation render', () => {
+    setComposerDraft(draftKey(null), { input: '', quotes: [], attachments: [] })
+    const { rerender } = render(<InputBar onSend={() => {}} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'first' } })
+    migrateNewChatDraft(draftKey(null), 'deferred-creation')
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'first and latest' } })
+    rerender(<InputBar onSend={() => {}} conversationId="deferred-creation" />)
+    expect(screen.getByRole('textbox')).toHaveValue('first and latest')
+    expect(getComposerDraft('deferred-creation')?.input).toBe('first and latest')
+    expect(getComposerDraft(draftKey(null))).toBeUndefined()
+  })
   it('显示自定义编辑菜单，拦截原生菜单且不冒泡到全局', () => {
     const blockContextMenu = vi.fn((event: Event) => event.preventDefault())
     document.addEventListener('contextmenu', blockContextMenu)
@@ -257,6 +279,7 @@ describe('InputBar 发送清草稿', () => {
     fireEvent.change(textarea, { target: { value: '首条消息' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
+    migrateNewChatDraft(draftKey(undefined), 'c-created-after-send')
     rerender(<InputBar onSend={() => send} conversationId="c-created-after-send" />)
     expect(textarea).toHaveValue('首条消息')
     await act(async () => { resolveSend(true) })

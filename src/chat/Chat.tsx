@@ -672,23 +672,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [applyConversation])
 
-  const focusHistoryMessage = useCallback(async (conversationId: string, messageId: string) => {
-    setHistoryLoadError(null)
-    try {
-      const complete = await chatApi.getConversation(conversationId)
-      if (currentConversationIdRef.current !== conversationId) return
-      applyConversation(complete)
-      setFocusMessageId(messageId)
-      setHistoryLoadError((previous) => previous?.conversationId === conversationId ? null : previous)
-    } catch (error) {
-      console.error('Failed to load historical navigation target:', error)
-      if (currentConversationIdRef.current === conversationId) setHistoryLoadError({
-        conversationId,
-        message: '打开历史消息失败，请重试。',
-      })
-    }
-  }, [applyConversation])
-
   const occupyConversationInMain = useCallback((
     conversationId: string,
     source?: Conversation | ConversationListItem | null,
@@ -1010,6 +993,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       refreshSidebar()
     },
     reportClearError: setStreamErrorForConversation,
+    showHistoryTarget: (conversation, messageId) => {
+      applyConversation(conversation)
+      setFocusMessageId(messageId)
+    },
+    reportHistoryError: (conversationId, message) => {
+      setHistoryLoadError(message ? { conversationId, message } : null)
+    },
     focusPopout: (conversationId) => { void chatApi.focusConversationPopout(conversationId) },
     occupyPopout: (conversationId) => occupyConversationInMain(conversationId, currentConversationRef.current),
     prepareSelection: (focusMessageId, fresh) => {
@@ -2705,7 +2695,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     historyLoadError: historyLoadError?.conversationId === currentConversation?.id
       ? historyLoadError?.message : null,
     onLoadOlder: loadOlderHistory,
-    onFocusHistoryMessage: focusHistoryMessage,
+    onFocusHistoryMessage: navigation.focusHistoryMessage,
     renderRequestId: conversationRenderRequestId,
     onInitialRender: handleConversationFirstCommit,
     agentPlanState: currentConversation?.agent_plan_state ?? currentConversation?.agentPlanState ?? null,
@@ -2745,7 +2735,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationRenderRequestId,
     displayMessages,
     loadOlderHistory,
-    focusHistoryMessage,
+    navigation.focusHistoryMessage,
     handleConversationFirstCommit,
     handleDeleteMessage,
     handleExecuteAgentPlan,

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
-import { draftKey, getComposerDraft, setComposerDraft } from './composerDraft'
+import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft } from './composerDraft'
 
 const clipboard = vi.hoisted(() => ({ read: vi.fn(), readText: vi.fn(), writeText: vi.fn() }))
 const openDialog = vi.hoisted(() => vi.fn())
@@ -64,6 +64,19 @@ function openMenu(value = '前面选中后面', start = 2, end = 4) {
 }
 
 describe('composer custom editing menu', () => {
+  it('keeps a pending new-chat attachment when navigating to an existing empty conversation', async () => {
+    setComposerDraft(draftKey(undefined), { input: '', quotes: [], attachments: [] })
+    let resolve!: (value: { success: true; files: { path: string }[] }) => void
+    api.chatReadClipboardFiles.mockReturnValue(new Promise(r => { resolve = r }))
+    const view = render(<InputBar onSend={() => {}} />)
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: new TestTransfer() })
+    view.rerender(<InputBar onSend={() => {}} conversationId="existing-empty" />)
+    await act(async () => resolve({ success: true, files: [{ path: '/tmp/new-only.csv' }] }))
+    expect(screen.queryByText('new-only.csv')).toBeNull()
+    expect(getComposerDraft('existing-empty')).toBeUndefined()
+    expect(getComposerDraft(draftKey(undefined))?.attachments[0]?.name).toBe('new-only.csv')
+    setComposerDraft(draftKey(undefined), { input: '', quotes: [], attachments: [] })
+  })
   it('shows an async attachment result while mounted under StrictMode', async () => {
     let resolve!: (paths: string[]) => void
     openDialog.mockReturnValue(new Promise(r => { resolve = r }))
@@ -136,11 +149,26 @@ describe('composer custom editing menu', () => {
     const view = render(<InputBar onSend={() => {}} />)
     fireEvent.paste(screen.getByRole('textbox'), { clipboardData: new TestTransfer() })
     await waitFor(() => expect(api.chatReadClipboardFiles).toHaveBeenCalled())
+    migrateNewChatDraft(draftKey(undefined), 'paste-new-created')
     view.rerender(<InputBar onSend={() => {}} conversationId="paste-new-created" />)
     await act(async () => resolve({ success: true, files: [{ path: '/tmp/created.csv' }] }))
     expect(await screen.findByText('created.csv')).toBeInTheDocument()
     expect(getComposerDraft('paste-new-created')?.attachments[0]?.name).toBe('created.csv')
     expect(getComposerDraft(draftKey(undefined))).toBeUndefined()
+  })
+
+  it('shows a migrated attachment that finishes after the welcome composer remounts', async () => {
+    setComposerDraft(draftKey(undefined), { input: '', quotes: [], attachments: [] })
+    let resolve!: (value: { success: true; files: { path: string }[] }) => void
+    api.chatReadClipboardFiles.mockReturnValue(new Promise(r => { resolve = r }))
+    const welcome = render(<InputBar onSend={() => {}} layout="inline" />)
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: new TestTransfer() })
+    act(() => { migrateNewChatDraft(draftKey(undefined), 'paste-remounted') })
+    welcome.unmount()
+    render(<InputBar onSend={() => {}} conversationId="paste-remounted" />)
+    await act(async () => resolve({ success: true, files: [{ path: '/tmp/remounted.csv' }] }))
+    expect(await screen.findByText('remounted.csv')).toBeInTheDocument()
+    expect(getComposerDraft('paste-remounted')?.attachments[0]?.name).toBe('remounted.csv')
   })
 
   it('prefers spreadsheet cells over a clipboard image', async () => {
